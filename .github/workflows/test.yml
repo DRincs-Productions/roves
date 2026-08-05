@@ -31,7 +31,7 @@ on:
   push:
     paths:
       - 'patches/**'
-      - '.github/workflows/servo-test-build.yml'
+      - '.github/workflows/test.yml'
   workflow_dispatch: {}
 
 env:
@@ -118,15 +118,25 @@ jobs:
             exit 1
           fi
           cd servo-src
+          chmod +x mach
           for p in "${patches[@]}"; do
             echo "Applying $(basename "$p")..."
             patch -p1 < "../$p"
           done
 
+      # IMPORTANT: invoke `./mach`, never `python3 ./mach`. `mach` is a polyglot
+      # shell+python script (see its own top comment): run as a shell script, it
+      # re-execs itself via `uv run --frozen python ...` so the pyproject.toml/
+      # uv.lock-managed venv (which has `packaging` and everything else `mach`
+      # needs) is on sys.path. Feeding it to `python3` directly skips that re-exec
+      # entirely — Python parses the shell wrapper as an inert string literal —
+      # and runs against a bare interpreter with none of those deps installed,
+      # which is exactly the `ModuleNotFoundError: No module named 'packaging'`
+      # this comment is here to keep from silently regressing.
       - name: mach bootstrap (installs build dependencies)
         shell: bash
         working-directory: servo-src
-        run: python3 ./mach bootstrap --force --yes --skip-lints --skip-nextest
+        run: ./mach bootstrap --force --yes --skip-lints --skip-nextest
 
       # Debug build, not --release: this workflow exists to smoke-test behavior
       # (e.g. "are the tabs really gone?"), not to ship an optimized binary. Debug
@@ -134,7 +144,7 @@ jobs:
       - name: mach build (debug)
         shell: bash
         working-directory: servo-src
-        run: python3 ./mach build
+        run: ./mach build
 
       - name: assemble test bundle
         shell: bash
