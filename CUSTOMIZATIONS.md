@@ -1,12 +1,16 @@
 # Customizations over upstream Servo
 
-Baseline: Servo `v0.4.0` (https://github.com/servo/servo/archive/refs/tags/v0.4.0.zip).
+Baseline: Servo `v0.4.0` (<https://github.com/servo/servo/archive/refs/tags/v0.4.0.zip>).
 
 This file lists every deviation from that pristine upstream source, in the order they were
 made. See `CLAUDE.md` for why this file exists and the protocol for keeping it current —
 short version: **add an entry here in the same turn you change a file under `servo/`.**
 
-Each entry: file path, upstream location the change replaces, what changed, why.
+Each entry: file path, upstream location the change replaces, what changed, why, and the
+matching patch file under `patches/servo-v0.4.0/` that makes the change mechanically
+reproducible (see `CLAUDE.md` — `.github/workflows/servo-test-build.yml` applies those
+patches to a fresh pristine download on every run once it's actually running somewhere, so
+they must stay in sync with reality).
 
 ---
 
@@ -14,6 +18,8 @@ Each entry: file path, upstream location the change replaces, what changed, why.
 
 **File:** `ports/servoshell/desktop/gui.rs`, in `Gui::update` (was line ~392-579 in the
 `v0.4.0` baseline).
+
+**Patch:** `patches/servo-v0.4.0/0001-remove-toolbar-and-tabs.patch`
 
 **Upstream behavior:** the top toolbar (back/forward/reload/stop, address bar, experimental
 prefs toggle) and the tab strip (tab list, new-tab button, new-window button) were drawn

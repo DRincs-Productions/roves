@@ -1,0 +1,219 @@
+name: 'Build Servo Test Binaries (from source, with local patches)'
+
+# Lives inside servo/ (this directory), not the parent pixi-vn-react-template repo's own
+# .github/workflows/ — see ../CLAUDE.md: this vendored Servo copy is meant to be fully
+# self-contained and eventually separable from the parent project, so anything Servo-
+# specific (patches, this CI) lives here, not scattered in the parent repo.
+#
+# IMPORTANT / current status: GitHub Actions only auto-discovers workflows under
+# .github/workflows/ at an actual *repository root*. Today, this `servo/` directory is
+# just a subfolder of the parent repo (and is gitignored there — see ../CLAUDE.md), so
+# this workflow will NOT run anywhere until `servo/` itself is pushed as its own
+# top-level GitHub repository (e.g. the BlackRam-oss/servo fork created for this
+# purpose). Until then, this file just sits here ready for that day.
+#
+# This does NOT build the real "embedded" release (see the parent project's
+# .github/workflows/embedded.yml, which downloads the official prebuilt servoshell
+# binary). This workflow instead builds Servo *from source* — pristine upstream tag +
+# our own patches/ applied on top — purely to smoke-test local customizations (see
+# ../CUSTOMIZATIONS.md) on real Windows/Linux/macOS machines, without needing to compile
+# Servo (a very heavy, hours-long build) on a dev machine. Every run overwrites the same
+# "test" GitHub Release — it is not versioned, not meant to be depended on.
+#
+# Why build from a fresh download instead of just using the working tree directly: most
+# of this directory's pristine content (~1.3GB, almost entirely the WPT test suite) is
+# itself gitignored (see ../.gitignore) and so isn't guaranteed to exist wherever this
+# workflow runs. patches/servo-v<tag>/*.patch is the tracked source of truth for our
+# customizations; this workflow downloads the pristine tag fresh on every run and
+# applies them, so nothing bulky needs to be committed anywhere.
+
+on:
+  push:
+    paths:
+      - 'patches/**'
+      - '.github/workflows/servo-test-build.yml'
+  workflow_dispatch: {}
+
+env:
+  SERVO_TAG: '0.4.0'
+  TEST_RELEASE_TAG: 'test'
+
+jobs:
+  # ── Create the rolling "test" release exactly once before the matrix starts ────
+  ensure-test-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: ensure release "test" exists
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release view "$TEST_RELEASE_TAG" 2>/dev/null || \
+          gh release create "$TEST_RELEASE_TAG" \
+            --title "Servo customization test build" \
+            --notes "Rolling test build from source (Servo v${SERVO_TAG} + patches/). Overwritten on every push touching patches/. Not a real release — see embedded.yml for that. Latest build: commit ${{ github.sha }}." \
+            --prerelease \
+            2>/dev/null || \
+          gh release view "$TEST_RELEASE_TAG" > /dev/null
+
+  # ── Build Servo from source (pristine tag + our patches) and upload per platform ─
+  build-and-publish:
+    needs: ensure-test-release
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'windows-latest'
+            os_name: 'windows'
+          - platform: 'macos-latest'
+            os_name: 'macos'
+          - platform: 'ubuntu-22.04'
+            os_name: 'linux'
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: setup python (gives a consistent `python3` across all 3 OSes)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: setup uv (needed by ./mach, see servo/README.md)
+        uses: astral-sh/setup-uv@v5
+
+      # rustup ships preinstalled on all 3 GitHub-hosted runner images. We don't
+      # install a toolchain explicitly: rustup auto-detects and fetches whatever
+      # `rust-toolchain.toml` in the downloaded Servo source pins, the first time
+      # cargo/mach runs inside that directory. This just forces that fetch early,
+      # with its own clear log output, instead of burying it inside the build step.
+      - name: prefetch pinned rust toolchain
+        shell: bash
+        run: |
+          curl -fsSL -o /tmp/rust-toolchain.toml "https://raw.githubusercontent.com/servo/servo/v${SERVO_TAG}/rust-toolchain.toml"
+          mkdir -p /tmp/toolchain-probe && cp /tmp/rust-toolchain.toml /tmp/toolchain-probe/
+          cd /tmp/toolchain-probe && rustup show
+
+      # ── Download pristine upstream Servo source for the pinned tag, then apply
+      #    every patch under patches/servo-v${SERVO_TAG}/ on top, in order. This
+      #    reconstructs this same directory's tree (minus what ../.gitignore
+      #    excludes) plus our customizations — see ../CUSTOMIZATIONS.md for what
+      #    each patch does and why.
+      - name: download + patch Servo source
+        shell: bash
+        run: |
+          curl -fsSL -o servo-src.zip "https://github.com/servo/servo/archive/refs/tags/v${SERVO_TAG}.zip"
+          python3 -c "import zipfile; zipfile.ZipFile('servo-src.zip').extractall('servo-src-tmp')"
+          mv "servo-src-tmp/servo-${SERVO_TAG}" servo-src
+          rm -rf servo-src-tmp servo-src.zip
+
+          shopt -s nullglob
+          patches=(patches/servo-v${SERVO_TAG}/*.patch)
+          if [ ${#patches[@]} -eq 0 ]; then
+            echo "::error::No patches found in patches/servo-v${SERVO_TAG}/ — nothing to test."
+            exit 1
+          fi
+          cd servo-src
+          for p in "${patches[@]}"; do
+            echo "Applying $(basename "$p")..."
+            patch -p1 < "../$p"
+          done
+
+      - name: mach bootstrap (installs build dependencies)
+        shell: bash
+        working-directory: servo-src
+        run: python3 ./mach bootstrap --force --yes --skip-lints --skip-nextest
+
+      # Debug build, not --release: this workflow exists to smoke-test behavior
+      # (e.g. "are the tabs really gone?"), not to ship an optimized binary. Debug
+      # compiles noticeably faster, which matters since this runs on every push.
+      - name: mach build (debug)
+        shell: bash
+        working-directory: servo-src
+        run: python3 ./mach build
+
+      - name: assemble test bundle
+        shell: bash
+        run: |
+          mkdir -p release/dist
+          cat > release/dist/index.html << 'EOF'
+          <!DOCTYPE html>
+          <html>
+            <head><title>Servo test build</title></head>
+            <body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;
+                         background:#1b1b1f;color:#eee;font-family:sans-serif;font-size:1.4rem;">
+              Servo customization test build — no toolbar, no tabs.
+            </body>
+          </html>
+          EOF
+
+          if [ "${{ matrix.os_name }}" = "windows" ]; then
+            cp servo-src/target/debug/servoshell.exe release/
+            cat > release/play.bat << 'EOF'
+          @echo off
+          cd /d "%~dp0"
+          servoshell.exe "dist\index.html" --window-size 1280x720
+          EOF
+            cat > release/NOTE.txt << 'EOF'
+          Debug test build — GStreamer runtime DLLs are not bundled here (unlike the
+          real embedded.yml release). If playback-related features fail, install
+          GStreamer separately. This build only exists to check window chrome/behavior.
+          EOF
+          elif [ "${{ matrix.os_name }}" = "macos" ]; then
+            cp servo-src/target/debug/servoshell release/
+            chmod +x release/servoshell
+            cat > release/play.sh << 'EOF'
+          #!/usr/bin/env bash
+          cd "$(dirname "$0")"
+          ./servoshell "dist/index.html" --window-size 1280x720
+          EOF
+            chmod +x release/play.sh
+            cat > release/NOTE.txt << 'EOF'
+          Debug test build, native arch of the macos-latest runner only (no universal
+          binary, no x86_64 cross-build). GStreamer runtime not bundled — install via
+          Homebrew if playback-related features fail. This build only exists to check
+          window chrome/behavior.
+          EOF
+          else
+            cp servo-src/target/debug/servoshell release/
+            chmod +x release/servoshell
+            mkdir -p release/libs
+            ldd release/servoshell | awk '{print $3}' | grep '^/' | sort -u | while read -r lib; do
+              case "$(basename "$lib")" in
+                libgst*|libnice*|liborc*|libsrtp*) cp -Ln "$lib" release/libs/ 2>/dev/null || true ;;
+              esac
+            done
+            cat > release/play.sh << 'EOF'
+          #!/usr/bin/env bash
+          cd "$(dirname "$0")"
+          export LD_LIBRARY_PATH="$PWD/libs:$LD_LIBRARY_PATH"
+          ./servoshell "dist/index.html" --window-size 1280x720
+          EOF
+            chmod +x release/play.sh
+          fi
+
+      - name: zip bundle (Linux/macOS)
+        if: matrix.os_name != 'windows'
+        run: |
+          ZIP="servoshell-test_${{ matrix.os_name }}.zip"
+          (cd release && zip -r "../$ZIP" .)
+          echo "ZIP=$ZIP" >> "$GITHUB_ENV"
+
+      - name: zip bundle (Windows)
+        if: matrix.os_name == 'windows'
+        shell: pwsh
+        run: |
+          $zip = "servoshell-test_windows.zip"
+          Compress-Archive -Path release/* -DestinationPath $zip
+          echo "ZIP=$zip" >> $env:GITHUB_ENV
+
+      - name: upload to "test" release
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "$TEST_RELEASE_TAG" "$ZIP" --clobber

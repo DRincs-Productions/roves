@@ -20,23 +20,53 @@ tagged source zip and applying targeted patches locally is far cheaper to mainta
 `servo/servo` or any fork. It was `git init`-ed here purely so the customizations layered on
 top of pristine upstream Servo can be diffed/tracked locally. `servo/.gitignore` extends
 upstream's own `.gitignore` to additionally exclude upstream bulk/noise we'll never touch
-(`tests/`, `docs/`, `.github/`, `.devcontainer/`, project governance files) — see that file
-for the full list. Everything else (`ports/`, `components/`, `python/`, `resources/`,
-`support/`, build files) stays trackable.
+(`tests/`, `docs/`, `.devcontainer/`, project governance files) — see that file for the full
+list. Everything else (`ports/`, `components/`, `python/`, `resources/`, `support/`, build
+files, and our own `.github/` and `patches/` — see below) stays trackable.
 
-## CRITICAL: keep CUSTOMIZATIONS.md up to date
+## This directory is meant to be self-contained and separable
 
-**Every time you change a file under this `servo/` directory, add or update an entry in
-[`CUSTOMIZATIONS.md`](./CUSTOMIZATIONS.md) in the same turn** — file touched, what changed,
-why. Do this unprompted; don't wait to be asked.
+Everything Servo-specific — patches, and the CI that tests them — lives inside `servo/`
+itself (`patches/`, `.github/workflows/`), not in the parent project's own `.github/` or
+repo root. The intent is that `servo/` will eventually have nothing to do with the parent
+pixi-vn-react-template project and could be lifted out wholesale (e.g. pushed as its own
+`BlackRam-oss/servo` repo) without leaving anything behind. Keep that in mind before adding
+anything Servo-related outside this directory.
 
-This is the entire point of the setup: when the Servo version gets bumped later, the
-workflow is "download the new tag's zip, extract it, open `CUSTOMIZATIONS.md`, reapply each
-listed change to the new tree." Without an accurate, current changelog, every future upgrade
-means re-deriving each customization from scratch by re-diffing behavior against vanilla
-Servo — exactly the tedious work this file exists to avoid. A stale or incomplete
-`CUSTOMIZATIONS.md` is worse than an honest gap: if a change here isn't reflected there, note
-it in `CUSTOMIZATIONS.md` as soon as you notice, even for changes you didn't make yourself.
+One consequence: **`servo/.github/workflows/servo-test-build.yml` does not currently run
+anywhere.** GitHub Actions only auto-discovers workflows under `.github/workflows/` at an
+actual repository root. Today `servo/` is just a gitignored subfolder of the parent repo —
+not its own pushed repository — so this workflow is dormant until `servo/` is pushed as a
+real top-level GitHub repo. See the note at the top of that file.
+
+## CRITICAL: keep CUSTOMIZATIONS.md *and* patches/ up to date
+
+**Every time you change a file under this `servo/` directory, in the same turn:**
+
+1. Add or update an entry in [`CUSTOMIZATIONS.md`](./CUSTOMIZATIONS.md) — file touched, what
+   changed, why (prose, for humans and for the "reapply on upgrade" workflow below).
+2. Regenerate the matching patch file under `patches/servo-v<TAG>/` (one file per logical
+   change, numbered `0001-`, `0002-`, ...) — a real, machine-applicable unified diff against
+   the pristine upstream file for the current tag. Verify it applies cleanly to a fresh
+   pristine copy before moving on (`patch -p1 --dry-run < the.patch` from a clean extraction).
+
+Do this unprompted; don't wait to be asked. **The patch files are not optional documentation
+— `.github/workflows/servo-test-build.yml` (once running — see that file for why it's
+currently dormant) downloads a pristine copy of this same tag on every run and applies every
+`.patch` file under `patches/servo-v<TAG>/` to it.** If a change here isn't reflected as an
+up-to-date patch, that CI silently tests something other than what's actually in this
+directory.
+
+This two-file setup (prose changelog + real patches) is the entire point of vendoring
+instead of forking: when the Servo version gets bumped later, the workflow is "download the
+new tag's zip, extract it, read `CUSTOMIZATIONS.md` for context on intent, then try applying
+each patch from `patches/` — for any that fail to apply cleanly (upstream code moved or
+changed shape), manually re-derive that one change against the new source." Without an
+accurate, current changelog and patch set, every future upgrade means re-deriving each
+customization from scratch by re-diffing behavior against vanilla Servo — exactly the
+tedious work this setup exists to avoid. A stale or incomplete `CUSTOMIZATIONS.md`/patch is
+worse than an honest gap: if a change here isn't reflected there, fix it as soon as you
+notice, even for changes you didn't make yourself.
 
 ## Upgrading to a newer Servo version (rough steps)
 
