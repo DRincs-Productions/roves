@@ -1,0 +1,104 @@
+/.servo
+/.cargo/*
+!/.cargo/config.*
+/.rustup
+/.servobuild
+/.wpt
+/.vs
+/target
+/tests/wpt/reftests-report/report.html
+/python/_virtualenv*
+/python/_venv*
+/python/tidy/servo_tidy.egg-info
+/tests/wpt/sync
+/tests/wpt/**/**/.cache/
+/tests/dromaeo/dromaeo
+*.pkl
+*.pyc
+*.swp
+*.swo
+*.csv
+*.rej
+*.orig
+.coverage
+.DS_Store
+Servo.app
+servo.pftrace
+.config.mk.last
+/glfw
+webrender-captures/
+/screenshots
+/etc/notarization/
+
+# Python setuptools
+/servo.egg-info
+
+# Allow CSV files to be used as resources in tests
+!/tests/**/*.csv
+
+# Editors
+## IntelliJ
+.idea
+*.iws
+*.iml
+
+## VSCode
+.vscode
+!/.vscode/extensions.json
+!/.vscode/settings.json
+
+## Emacs
+*~
+.#*
+\#*
+\#*\#
+
+## Vim
+Session.vim
+Sessionx.vim
+
+# Zed
+/.zed
+
+# NeoVim
+.nvim.lua
+
+/unminified-js
+/unminified-css
+
+# Layout debugger trace files
+layout_trace*
+
+# Package managers
+support/macos/Brewfile.lock.json
+
+# direnv
+.envrc
+
+# Justfiles
+justfile
+
+# ---------------------------------------------------------------------------
+# Local additions: this is a vendored copy of Servo v0.4.0 customized for
+# this project. Keep the tracked history focused on what we might actually
+# touch (ports/servoshell, components, build tooling); exclude upstream
+# bulk/noise we'll never need to track here.
+# ---------------------------------------------------------------------------
+
+# Web Platform Tests + perf benchmarks mirror — ~1.2GB of engine conformance
+# tests, irrelevant to customizing servoshell.
+/tests/
+
+# Upstream project docs/governance — irrelevant to us.
+/docs/
+/.github/
+/.devcontainer/
+CODE_OF_CONDUCT.md
+CONTRIBUTING.md
+PULL_REQUEST_TEMPLATE.md
+SECURITY.md
+.mailmap
+about.toml
+deny.toml
+servo-tidy.toml
+.python-version
