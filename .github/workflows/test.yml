@@ -71,7 +71,7 @@ jobs:
             os_name: 'windows'
           - platform: 'macos-latest'
             os_name: 'macos'
-          - platform: 'ubuntu-22.04'
+          - platform: 'ubuntu-24.04'
             os_name: 'linux'
 
     runs-on: ${{ matrix.platform }}
