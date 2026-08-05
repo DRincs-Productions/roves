@@ -156,10 +156,18 @@ jobs:
       # Debug build, not --release: this workflow exists to smoke-test behavior
       # (e.g. "are the tabs really gone?"), not to ship an optimized binary. Debug
       # compiles noticeably faster, which matters since this runs on every push.
+      #
+      # --media-stack dummy: by default `./mach build` resolves to the real
+      # gstreamer media stack on every non-cross build and hard-fails if
+      # GStreamer isn't installed (`command_base.py`'s `is_media_enabled`/
+      # `run_cargo_build_like_command`) — independently of servoshell's own
+      # Cargo `media-gstreamer` feature not being in its default set. We don't
+      # need real media playback to check window chrome, and `dummy` sidesteps
+      # needing GStreamer installed (build- or run-time) on any platform here.
       - name: mach build (debug)
         shell: bash
         working-directory: servo-src
-        run: ./mach build
+        run: ./mach build --media-stack dummy
 
       - name: assemble test bundle
         shell: bash
@@ -176,17 +184,20 @@ jobs:
           </html>
           EOF
 
+          # No GStreamer harvesting/bundling needed on any platform below: built
+          # with --media-stack dummy, so servoshell doesn't link against it at all.
+          cat > release/NOTE.txt << 'EOF'
+          Debug test build, media stack "dummy" (no GStreamer, no video/audio
+          playback). This build only exists to check window chrome/behavior —
+          see the parent project's embedded.yml for the real release build.
+          EOF
+
           if [ "${{ matrix.os_name }}" = "windows" ]; then
             cp servo-src/target/debug/servoshell.exe release/
             cat > release/play.bat << 'EOF'
           @echo off
           cd /d "%~dp0"
           servoshell.exe "dist\index.html" --window-size 1280x720
-          EOF
-            cat > release/NOTE.txt << 'EOF'
-          Debug test build — GStreamer runtime DLLs are not bundled here (unlike the
-          real embedded.yml release). If playback-related features fail, install
-          GStreamer separately. This build only exists to check window chrome/behavior.
           EOF
           elif [ "${{ matrix.os_name }}" = "macos" ]; then
             cp servo-src/target/debug/servoshell release/
@@ -197,25 +208,13 @@ jobs:
           ./servoshell "dist/index.html" --window-size 1280x720
           EOF
             chmod +x release/play.sh
-            cat > release/NOTE.txt << 'EOF'
-          Debug test build, native arch of the macos-latest runner only (no universal
-          binary, no x86_64 cross-build). GStreamer runtime not bundled — install via
-          Homebrew if playback-related features fail. This build only exists to check
-          window chrome/behavior.
-          EOF
+            echo "Native arch of the macos-latest runner only (no universal binary, no x86_64 cross-build)." >> release/NOTE.txt
           else
             cp servo-src/target/debug/servoshell release/
             chmod +x release/servoshell
-            mkdir -p release/libs
-            ldd release/servoshell | awk '{print $3}' | grep '^/' | sort -u | while read -r lib; do
-              case "$(basename "$lib")" in
-                libgst*|libnice*|liborc*|libsrtp*) cp -Ln "$lib" release/libs/ 2>/dev/null || true ;;
-              esac
-            done
             cat > release/play.sh << 'EOF'
           #!/usr/bin/env bash
           cd "$(dirname "$0")"
-          export LD_LIBRARY_PATH="$PWD/libs:$LD_LIBRARY_PATH"
           ./servoshell "dist/index.html" --window-size 1280x720
           EOF
             chmod +x release/play.sh
