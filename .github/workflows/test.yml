@@ -133,10 +133,25 @@ jobs:
       # and runs against a bare interpreter with none of those deps installed,
       # which is exactly the `ModuleNotFoundError: No module named 'packaging'`
       # this comment is here to keep from silently regressing.
+      #
+      # Windows gets `--skip-platform`: servo's own Windows bootstrap
+      # (python/servo/platform/windows.py) shells out to choco *and* to the
+      # GStreamer MSI installer via `Start-Process -verb runAs` — a UAC
+      # elevation request. There's no interactive session on a GH runner to
+      # click through it, so that call just hangs for hours instead of
+      # failing. This is safe to skip entirely here: `media-gstreamer` isn't
+      # in servoshell's default Cargo features, so GStreamer isn't needed to
+      # build at all, and windows-latest already ships CMake/LLVM/Ninja (the
+      # only other things that step would have installed).
       - name: mach bootstrap (installs build dependencies)
         shell: bash
         working-directory: servo-src
-        run: ./mach bootstrap --force --yes --skip-lints --skip-nextest
+        run: |
+          if [ "${{ matrix.os_name }}" = "windows" ]; then
+            ./mach bootstrap --force --yes --skip-lints --skip-nextest --skip-platform
+          else
+            ./mach bootstrap --force --yes --skip-lints --skip-nextest
+          fi
 
       # Debug build, not --release: this workflow exists to smoke-test behavior
       # (e.g. "are the tabs really gone?"), not to ship an optimized binary. Debug
