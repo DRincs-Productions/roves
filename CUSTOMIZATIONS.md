@@ -280,6 +280,22 @@ sandbox has no Steam client to test against) — treat the next real `--features
 as the actual verification, particularly whether `steamworks-sys` actually places
 `libsteam_api.*` where `copy_steam_lib` expects it.
 
+**Follow-up (2026-08-06) — mixed-content blocking on `fetch('steam:...')`:** the manual
+verification aid below surfaced `TypeError: Network error: Blocked as mixed content` on both
+the `invoke("steam_is_available")` and `fetch("steam:is_available")` test-page buttons.
+Servo's mixed-content check (`components/net/fetch/methods.rs`'s
+`should_request_be_blocked_as_mixed_content`, via
+`components/net/protocols/mod.rs::is_url_potentially_trustworthy`) treats a custom scheme as
+trustworthy only if its `ProtocolHandler::is_secure()` returns `true` — `SteamProtocolHandler`
+only overrode `is_fetchable()` (needed for direct, non-`no-cors` `fetch()` access) and left
+`is_secure()` at its default `false`, the same gap `protocols/urlinfo.rs`'s
+`UrlInfoProtocolHander` already avoids by overriding both. Fixed by adding
+`fn is_secure(&self) -> bool { true }` next to `is_fetchable` in `SteamProtocolHandler`,
+folded into `patches/servo-v0.4.0/0005-add-steam-bridge.patch` (regenerated the whole
+new-file hunk for `steam.rs` rather than hand-editing a diff-of-a-diff). The same gap existed
+in `RovesProtocolHandler` (`roves:`, see the entry below) and was fixed there too, even
+though its test-page button hadn't been exercised yet — same trait, same missing override.
+
 **Manual verification aid:** `../.github/workflows/test.yml`'s synthetic test page (in its
 "assemble test bundle" step) has two buttons for exactly this: one hits `steam:is_available`
 directly via `fetch()`, the other reproduces an `invoke(cmd, args)` →
@@ -352,6 +368,11 @@ app" commands the same way later, instead of accumulating one bespoke protocol p
 `Send`/`Sync`-safe and on `RunningAppState::windows()`/`ServoShellWindow::schedule_close`
 keeping their current signatures — all `pub(crate)`, low-level, and not upstream-churn-prone,
 but re-check if a version bump changes `app.rs`'s event-loop structure materially.
+
+**Follow-up (2026-08-06) — mixed-content blocking:** `RovesProtocolHandler` had the same
+`is_secure()` gap as `SteamProtocolHandler` — see that entry's follow-up above for the root
+cause. Fixed the same way (added `fn is_secure(&self) -> bool { true }`), folded into
+`patches/servo-v0.4.0/0006-add-roves-invoke-bridge.patch`.
 
 **Follow-up (2026-08-06) — CI-confirmed build break:** the "not verified against an actual
 build" risk noted above materialized: CI failed with `error[E0004]: non-exhaustive patterns:

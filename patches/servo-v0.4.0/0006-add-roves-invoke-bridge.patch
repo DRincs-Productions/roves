@@ -85,10 +85,10 @@ diff --git a/ports/servoshell/desktop/protocols/mod.rs b/ports/servoshell/deskto
  pub(crate) mod steam;
 diff --git a/ports/servoshell/desktop/protocols/roves.rs b/ports/servoshell/desktop/protocols/roves.rs
 new file mode 100644
-index 00000000000..41e8e2486bd
+index 00000000000..5390165c4f3
 --- /dev/null
 +++ b/ports/servoshell/desktop/protocols/roves.rs
-@@ -0,0 +1,88 @@
+@@ -0,0 +1,92 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
@@ -130,6 +130,10 @@ index 00000000000..41e8e2486bd
 +
 +impl ProtocolHandler for RovesProtocolHandler {
 +    fn is_fetchable(&self) -> bool {
++        true
++    }
++
++    fn is_secure(&self) -> bool {
 +        true
 +    }
 +

@@ -57,6 +57,10 @@ impl ProtocolHandler for SteamProtocolHandler {
         true
     }
 
+    fn is_secure(&self) -> bool {
+        true
+    }
+
     fn load(
         &self,
         request: &mut Request,
