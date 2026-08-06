@@ -296,7 +296,8 @@ exercises the same underlying `steam:` protocol either way.)
 
 **Files:** `ports/servoshell/desktop/event_loop.rs`, `ports/servoshell/desktop/app.rs`,
 `ports/servoshell/desktop/protocols/mod.rs`, new file
-`ports/servoshell/desktop/protocols/roves.rs`. Plus, outside this `servo/` directory (not
+`ports/servoshell/desktop/protocols/roves.rs`, `ports/servoshell/desktop/tracing.rs` (added
+2026-08-06, see CI-failure note below). Plus, outside this `servo/` directory (not
 patch-tracked — see the README.md/examples/ precedent above): the new `roves-api/` package
 at the repo root, and `src/lib/hooks/quit-hooks.ts`/`src/lib/steam.ts` in the parent project.
 
@@ -350,7 +351,17 @@ app" commands the same way later, instead of accumulating one bespoke protocol p
 (`Arc<Mutex<EventLoopProxy<AppEvent>>>`) depends on `winit`'s `EventLoopProxy` staying
 `Send`/`Sync`-safe and on `RunningAppState::windows()`/`ServoShellWindow::schedule_close`
 keeping their current signatures — all `pub(crate)`, low-level, and not upstream-churn-prone,
-but re-check if a version bump changes `app.rs`'s event-loop structure materially. Not
-verified against an actual `./mach build` (multi-hour; not run for this change) — treat the
-next real build as the actual verification, in particular whether `AppEvent::CloseAllWindows`
-compiles cleanly through the `matches!`/`if let` restructuring in `App::user_event`.
+but re-check if a version bump changes `app.rs`'s event-loop structure materially.
+
+**Follow-up (2026-08-06) — CI-confirmed build break:** the "not verified against an actual
+build" risk noted above materialized: CI failed with `error[E0004]: non-exhaustive patterns:
+&winit::event::Event::UserEvent(AppEvent::CloseAllWindows) not covered` in
+`ports/servoshell/desktop/tracing.rs`'s `LogTarget for winit::event::Event<AppEvent>` impl
+(was line ~42-61 in the `v0.4.0` baseline) — an exhaustive `match self` over every
+`AppEvent` variant that wasn't updated when `CloseAllWindows` was added above. Fixed by
+adding `Self::UserEvent(AppEvent::CloseAllWindows) => target!("UserEvent(CloseAllWindows)"),`
+alongside the existing `Waker`/`Accessibility` arms, folded into
+`patches/servo-v0.4.0/0006-add-roves-invoke-bridge.patch` as an additional hunk rather than a
+separate patch file, since it's part of the same logical change (this file was simply missed
+the first time). No behavior change beyond making the match exhaustive again — `tracing.rs`
+only affects `RUST_LOG` filtering granularity, never actual event handling.
