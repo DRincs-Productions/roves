@@ -19,6 +19,14 @@ pub enum AppEvent {
     /// Another process or thread has kicked the OS event loop with EventLoopWaker.
     Waker,
     Accessibility(egui_winit::accesskit_winit::Event),
+    /// Requested by `protocols::roves::RovesProtocolHandler` (the `roves:` scheme's
+    /// `exit`/`close_window` command — see `@drincs/roves-api`'s `process.exit()`) from
+    /// whatever thread is servicing that `fetch()`. `RunningAppState`/`ServoShellWindow`
+    /// are `Rc`-based (main-thread-only), so a `ProtocolHandler` (`Send + Sync`, and run
+    /// off-thread) can't call `schedule_close()` directly — it has to ask the main thread
+    /// to do it instead, the same way `HeadedEventLoopWaker` already asks the main thread
+    /// to wake up, via this same `EventLoopProxy`.
+    CloseAllWindows,
 }
 
 impl From<egui_winit::accesskit_winit::Event> for AppEvent {
@@ -31,6 +39,7 @@ impl AppEvent {
     pub(crate) fn window_id(&self) -> Option<WindowId> {
         match self {
             AppEvent::Waker => None,
+            AppEvent::CloseAllWindows => None,
             AppEvent::Accessibility(event) => Some(event.window_id),
         }
     }

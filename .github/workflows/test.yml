@@ -198,9 +198,71 @@ jobs:
           <!DOCTYPE html>
           <html>
             <head><title>Servo test build</title></head>
-            <body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;
-                         background:#1b1b1f;color:#eee;font-family:sans-serif;font-size:1.4rem;">
-              Servo customization test build — no toolbar, no tabs.
+            <body style="margin:0;min-height:100vh;box-sizing:border-box;padding:2rem;display:flex;
+                         flex-direction:column;align-items:center;justify-content:center;gap:1rem;
+                         background:#1b1b1f;color:#eee;font-family:sans-serif;">
+              <h1 style="font-size:1.4rem;margin:0;text-align:center;">Servo customization test build — no toolbar, no tabs.</h1>
+
+              <!--
+                Two native-bridge checks for whatever the src/lib/steam.ts side actually
+                relies on (see ../../CUSTOMIZATIONS.md's steam: protocol entry):
+                  1. the steam: protocol handler itself, reachable directly via fetch()
+                  2. the invoke(cmd, args) shape steam.ts actually calls, going through
+                     the same window.__TAURI_INTERNALS__.invoke hook mockIPC() installs
+                     there — reproduced inline below so this static page doesn't need a
+                     bundler to pull in @tauri-apps/api just to exercise it.
+                Both are manual/best-effort: this is a diagnostic page for a human to
+                click through after downloading the release, not a CI assertion.
+              -->
+              <div style="display:flex;gap:0.75rem;flex-wrap:wrap;justify-content:center;">
+                <button id="check-steam-fetch">Test steam: protocol (raw fetch)</button>
+                <button id="check-invoke">Test invoke() via mocked Tauri bridge</button>
+              </div>
+              <pre id="result" style="background:#111;padding:1rem;border-radius:6px;max-width:90vw;
+                                       white-space:pre-wrap;word-break:break-word;">Click a button above.</pre>
+
+              <script type="module">
+                const result = document.getElementById('result');
+                const show = (label, value) => {
+                  result.textContent = `${label}\n${typeof value === 'string' ? value : JSON.stringify(value, null, 2)}`;
+                };
+
+                // Mirrors @tauri-apps/api/core's own invoke() — a two-line wrapper
+                // around window.__TAURI_INTERNALS__.invoke(cmd, args, options). See
+                // src/lib/steam.ts for the real app's copy of this same contract.
+                async function invoke(cmd, args) {
+                  return window.__TAURI_INTERNALS__.invoke(cmd, args);
+                }
+
+                document.getElementById('check-steam-fetch').addEventListener('click', async () => {
+                  try {
+                    const response = await fetch('steam:is_available');
+                    show('fetch("steam:is_available") — reachable', { status: response.status, body: await response.json() });
+                  } catch (error) {
+                    show('fetch("steam:is_available") — NOT reachable', String(error));
+                  }
+                });
+
+                document.getElementById('check-invoke').addEventListener('click', async () => {
+                  window.__TAURI_INTERNALS__ = window.__TAURI_INTERNALS__ ?? {};
+                  window.__TAURI_INTERNALS__.invoke = async (cmd, args) => {
+                    const params = new URLSearchParams();
+                    for (const [key, value] of Object.entries(args ?? {})) {
+                      if (value !== null && value !== undefined) params.set(key, String(value));
+                    }
+                    const query = params.toString();
+                    const response = await fetch(`steam:${cmd.replace(/^steam_/, '')}${query ? `?${query}` : ''}`);
+                    if (!response.ok) throw new Error(`steam: '${cmd}' failed`);
+                    return response.json();
+                  };
+                  try {
+                    const value = await invoke('steam_is_available');
+                    show('invoke("steam_is_available") — ok', value);
+                  } catch (error) {
+                    show('invoke("steam_is_available") — FAILED', String(error));
+                  }
+                });
+              </script>
             </body>
           </html>
           EOF

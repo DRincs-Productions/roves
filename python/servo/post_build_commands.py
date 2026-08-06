@@ -369,9 +369,16 @@ fn main() {{
         core_path = path.join(macos_dir, core_name)
         shutil.copy(servo_binary, core_path)
         os.chmod(core_path, 0o755)
-        for f in os.listdir(binary_dir):
-            if f.endswith(".dylib"):
-                shutil.copy(path.join(binary_dir, f), macos_dir)
+        # servoshell is always linked with `-rpath @executable_path/lib/`
+        # (see ports/servoshell/build.rs) — dylibs have to land in a `lib/`
+        # subdirectory next to whatever the renamed core binary ends up
+        # being, not flat next to it, or dyld won't find them at runtime.
+        dylibs = [f for f in os.listdir(binary_dir) if f.endswith(".dylib")]
+        if dylibs:
+            lib_dir = path.join(macos_dir, "lib")
+            os.makedirs(lib_dir)
+            for f in dylibs:
+                shutil.copy(path.join(binary_dir, f), lib_dir)
 
         info_plist = """<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

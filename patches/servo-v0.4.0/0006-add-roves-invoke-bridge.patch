@@ -1,0 +1,179 @@
+diff --git a/ports/servoshell/desktop/event_loop.rs b/ports/servoshell/desktop/event_loop.rs
+index 80a47795d05..3d042d53f3b 100644
+--- a/ports/servoshell/desktop/event_loop.rs
++++ b/ports/servoshell/desktop/event_loop.rs
+@@ -19,6 +19,14 @@ pub enum AppEvent {
+     /// Another process or thread has kicked the OS event loop with EventLoopWaker.
+     Waker,
+     Accessibility(egui_winit::accesskit_winit::Event),
++    /// Requested by `protocols::roves::RovesProtocolHandler` (the `roves:` scheme's
++    /// `exit`/`close_window` command — see `@drincs/roves-api`'s `process.exit()`) from
++    /// whatever thread is servicing that `fetch()`. `RunningAppState`/`ServoShellWindow`
++    /// are `Rc`-based (main-thread-only), so a `ProtocolHandler` (`Send + Sync`, and run
++    /// off-thread) can't call `schedule_close()` directly — it has to ask the main thread
++    /// to do it instead, the same way `HeadedEventLoopWaker` already asks the main thread
++    /// to wake up, via this same `EventLoopProxy`.
++    CloseAllWindows,
+ }
+ 
+ impl From<egui_winit::accesskit_winit::Event> for AppEvent {
+@@ -31,6 +39,7 @@ impl AppEvent {
+     pub(crate) fn window_id(&self) -> Option<WindowId> {
+         match self {
+             AppEvent::Waker => None,
++            AppEvent::CloseAllWindows => None,
+             AppEvent::Accessibility(event) => Some(event.window_id),
+         }
+     }
+diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
+--- a/ports/servoshell/desktop/app.rs
++++ b/ports/servoshell/desktop/app.rs
+@@ -6,6 +6,7 @@
+ 
+ use std::path::Path;
+ use std::rc::Rc;
++use std::sync::{Arc, Mutex};
+ use std::time::Instant;
+ use std::{env, fs};
+ 
+@@ -91,6 +92,17 @@
+             "resource",
+             protocols::resource::ResourceProtocolHandler::default(),
+         );
++        // `@drincs/roves-api`'s `core`/`process` modules talk to this — see
++        // protocols/roves.rs. `None` in headless mode (no window, no winit
++        // event loop to send AppEvent::CloseAllWindows through).
++        let close_proxy = self
++            .event_loop_proxy
++            .clone()
++            .map(|proxy| Arc::new(Mutex::new(proxy)));
++        let _ = protocol_registry.register(
++            "roves",
++            protocols::roves::RovesProtocolHandler::new(close_proxy),
++        );
+         // Only registered with `--features steam` (see ports/servoshell/Cargo.toml)
+         // — mirrors the parent project's Tauri `steam` feature. `SteamProtocolHandler::new()`
+         // tries to init Steam once here; it degrades to "unavailable" answers rather
+@@ -225,7 +237,16 @@
+             return;
+         };
+ 
+-        if let Some(window) = app_event
++        if matches!(app_event, AppEvent::CloseAllWindows) {
++            // See protocols/roves.rs and event_loop.rs's own doc comment on
++            // this variant: this is the only way a `ProtocolHandler` (which
++            // must be `Send + Sync`, and runs off the main thread) can ask
++            // the main thread to close windows, since `ServoShellWindow`
++            // itself is `Rc`-based and can't be touched from there directly.
++            for window in state.windows().values() {
++                window.schedule_close();
++            }
++        } else if let Some(window) = app_event
+             .window_id()
+             .and_then(|window_id| state.window(ServoShellWindowId::from(u64::from(window_id)))) &&
+             let Some(headed_window) = window.platform_window().as_headed_window()
+diff --git a/ports/servoshell/desktop/protocols/mod.rs b/ports/servoshell/desktop/protocols/mod.rs
+--- a/ports/servoshell/desktop/protocols/mod.rs
++++ b/ports/servoshell/desktop/protocols/mod.rs
+@@ -3,6 +3,7 @@
+  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+ 
+ pub(crate) mod resource;
++pub(crate) mod roves;
+ pub(crate) mod servo;
+ #[cfg(feature = "steam")]
+ pub(crate) mod steam;
+diff --git a/ports/servoshell/desktop/protocols/roves.rs b/ports/servoshell/desktop/protocols/roves.rs
+new file mode 100644
+index 00000000000..41e8e2486bd
+--- /dev/null
++++ b/ports/servoshell/desktop/protocols/roves.rs
+@@ -0,0 +1,88 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! Roves' own general-purpose `invoke()` bridge — the `@drincs/roves-api`
++//! `core` module (see servo/packages/roves-api) talks to this over a
++//! `roves:` custom protocol, fetchable from ordinary page JS
++//! (`fetch('roves:exit')`), the same way `protocols/steam.rs` exposes
++//! Steamworks over `steam:`. This is the generic "control this app from JS"
++//! surface (window/process lifecycle today); Steam has its own dedicated
++//! scheme since it's a large, separate SDK surface, not something that
++//! belongs generically here.
++
++use std::future::Future;
++use std::pin::Pin;
++use std::sync::{Arc, Mutex};
++
++use headers::{ContentType, HeaderMapExt};
++use servo::protocol_handler::{
++    DoneChannel, FetchContext, NetworkError, ProtocolHandler, Request, ResourceFetchTiming,
++    Response, ResponseBody,
++};
++use winit::event_loop::EventLoopProxy;
++
++use crate::desktop::event_loop::AppEvent;
++
++pub struct RovesProtocolHandler {
++    /// `None` in headless mode, where there's no window to close and no
++    /// winit event loop to send this through in the first place (see
++    /// `ServoShellEventLoop::event_loop_proxy`).
++    close_proxy: Option<Arc<Mutex<EventLoopProxy<AppEvent>>>>,
++}
++
++impl RovesProtocolHandler {
++    pub fn new(close_proxy: Option<Arc<Mutex<EventLoopProxy<AppEvent>>>>) -> Self {
++        Self { close_proxy }
++    }
++}
++
++impl ProtocolHandler for RovesProtocolHandler {
++    fn is_fetchable(&self) -> bool {
++        true
++    }
++
++    fn load(
++        &self,
++        request: &mut Request,
++        _done_chan: &mut DoneChannel,
++        _context: &FetchContext,
++    ) -> Pin<Box<dyn Future<Output = Response> + Send>> {
++        let command = request.current_url().path().to_owned();
++
++        let result: Result<&'static str, String> = match command.as_str() {
++            // Closes every open window. In this fork's usual single-window
++            // kiosk setup (see ../../CUSTOMIZATIONS.md's toolbar/tab removal
++            // entries) that's equivalent to quitting the app: once no
++            // windows remain, `App::pump_servo_event_loop` returns `false`
++            // and the event loop exits on its own — see app.rs.
++            "exit" | "close_window" => match &self.close_proxy {
++                Some(proxy) => match proxy.lock().unwrap().send_event(AppEvent::CloseAllWindows) {
++                    Ok(()) => Ok("true"),
++                    Err(_) => Err("Failed to reach the main event loop".to_owned()),
++                },
++                None => Err("No window to close (headless mode)".to_owned()),
++            },
++            _ => {
++                return Box::pin(std::future::ready(Response::network_error(
++                    NetworkError::ResourceLoadError(format!("Unknown roves: command '{command}'")),
++                )));
++            },
++        };
++
++        Box::pin(std::future::ready(match result {
++            Ok(body) => json_response(request, body.to_owned()),
++            Err(error) => Response::network_error(NetworkError::ResourceLoadError(error)),
++        }))
++    }
++}
++
++fn json_response(request: &Request, body: String) -> Response {
++    let mut response = Response::new(
++        request.current_url(),
++        ResourceFetchTiming::new(request.timing_type()),
++    );
++    response.headers.typed_insert(ContentType::json());
++    *response.body.lock() = ResponseBody::Done(body.into_bytes());
++    response
++}

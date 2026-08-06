@@ -51,6 +51,49 @@ The following are on the roadmap but not yet functional:
 - Xbox Series X|S
 - Nintendo Switch
 
+## Embedding
+
+Your web content has no way to know on its own that it's running inside Roves rather than
+a regular browser (or, for that matter, Tauri) — Roves doesn't inject any global marker
+into the page. Whoever builds your frontend needs to bake that signal in itself, at build
+time, however it prefers to (an env var read by the bundler, a build flag, etc.). The
+parent pixi-vn-react-template project this fork ships with does exactly that: it sets an
+`EMBEDDED_TARGET=roves` environment variable when building the frontend for Roves (see its
+`.github/workflows/embedded.yml`), and Vite bakes that into a `__EMBEDDED_TARGET__` constant
+the frontend code checks against (`__EMBEDDED_TARGET__ === "roves"`, see e.g. its
+`src/lib/hooks/quit-hooks.ts`) — this is a convention of that project, not something Roves
+itself provides or requires.
+
+### Talking to native APIs
+
+Web content can't call into Rust directly — there's no Tauri-style `invoke()` runtime built
+in. Instead, Roves lets native code register custom URL schemes (`ProtocolHandler`s — see
+`ports/servoshell/desktop/protocols/`) that respond to ordinary `fetch()` calls from page
+JS. Two are shipped today:
+
+- **`roves:`** (`protocols/roves.rs`) — a small, generic "control this app" surface
+  (window/process lifecycle; currently just `exit`/`close_window`).
+- **`steam:`** (`protocols/steam.rs`) — a full Steamworks wrapper, with its own dedicated
+  protocol rather than being routed through `roves:`, since it's a large, separate SDK
+  surface.
+
+[**`@drincs/roves-api`**](../roves-api) is the JS package wrapping both, deliberately shaped
+to feel familiar if you already know `@tauri-apps/api` (though it's a real, independent
+implementation, not a shim over Tauri's runtime):
+
+- `@drincs/roves-api/core` — the generic `invoke(cmd, args)`, talking to `roves:`.
+- `@drincs/roves-api/process` — `exit()`, built on `core`.
+- `@drincs/roves-api/steam` — a full Steamworks wrapper (achievements, stats, DLC, overlay,
+  store), talking to `steam:` directly.
+
+See the "`steam:` protocol bridge" and "Roves' own general-purpose `invoke()` bridge"
+entries in [CUSTOMIZATIONS.md] for how the Rust side of both is wired up.
+
+The parent pixi-vn-react-template project's own `src/lib/steam.ts` builds on the same idea,
+extended to also run under Tauri: it picks between `@drincs/roves-api/steam` and a
+Tauri-`invoke()`-based implementation of the same `SteamApi` interface, depending on which
+shell is actually running it.
+
 ## Getting started
 
 These are the same build steps as upstream Servo — Roves is a source-level fork, not a
