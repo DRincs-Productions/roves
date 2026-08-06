@@ -48,3 +48,34 @@ function (their only call sites were inside the removed block). This produces tw
 `unused variable` warnings — not errors (`servoshell`'s `Cargo.toml` has no
 `deny(warnings)`/`forbid(warnings)`). Not fixed further since it's cosmetic; revisit if this
 crate ever turns warnings into errors.
+
+---
+
+## 2026-08-06 — Skip GStreamer DLL packaging on Windows when media is disabled
+
+**File:** `python/servo/build_commands.py`, `run_post_build_tasks` (Windows branch) and
+`copy_windows_dlls_to_build_directory` (was line ~197-347 in the `v0.4.0` baseline).
+
+**Patch:** `patches/servo-v0.4.0/0002-skip-gstreamer-dll-copy-when-media-disabled.patch`
+
+**Upstream behavior:** after a successful build, `run_post_build_tasks` packages
+platform-specific runtime files. On macOS this is correctly gated on `self.enable_media`
+(only copies GStreamer dylibs if the media stack is actually enabled). On Windows, the
+equivalent call — `copy_windows_dlls_to_build_directory` → `package_gstreamer_dlls` —
+runs unconditionally regardless of `self.enable_media`, and hard-fails the whole build if
+`servo.platform.get().gstreamer_root(...)` can't find a GStreamer install.
+
+**Change:** `copy_windows_dlls_to_build_directory` now takes an `enable_media: bool`
+parameter (passed as `self.enable_media` from the call site) and only calls
+`package_gstreamer_dlls` when it's true, mirroring the existing darwin branch. ANGLE and
+MSVC DLL copying are unaffected — those aren't GStreamer-related and still run
+unconditionally.
+
+**Why:** `../.github/workflows/test.yml` builds with `--media-stack dummy` specifically to
+avoid needing GStreamer installed at all on CI (see that file's comments — installing it on
+Windows would require an interactive UAC prompt that hangs forever on a GH runner). But this
+upstream inconsistency meant the ~25-minute Windows compile still failed at the very last
+step, in the post-build DLL-copy phase, with "Could not find GStreamer installation
+directory." — independent of `--media-stack dummy` and independent of `--skip-platform`
+during bootstrap. Without this fix, Windows CI can never pass while GStreamer bootstrap is
+intentionally skipped.

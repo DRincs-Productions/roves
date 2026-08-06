@@ -202,7 +202,7 @@ class MachCommands(CommandBase):
         assert os.path.exists(binary_dir)
 
         if "windows" in target_triple:
-            if not copy_windows_dlls_to_build_directory(built_binary, self.target):
+            if not copy_windows_dlls_to_build_directory(built_binary, self.target, self.enable_media):
                 return 1
 
         elif "darwin" in target_triple:
@@ -316,7 +316,7 @@ class MachCommands(CommandBase):
             env["TARGET_CXXFLAGS"] += " -fsanitize=thread"
 
 
-def copy_windows_dlls_to_build_directory(servo_binary: str, target: BuildTarget) -> bool:
+def copy_windows_dlls_to_build_directory(servo_binary: str, target: BuildTarget, enable_media: bool) -> bool:
     servo_exe_dir = os.path.dirname(servo_binary)
     assert os.path.exists(servo_exe_dir)
 
@@ -336,9 +336,10 @@ def copy_windows_dlls_to_build_directory(servo_binary: str, target: BuildTarget)
     find_and_copy_built_dll("libEGL.dll")
     find_and_copy_built_dll("libGLESv2.dll")
 
-    print(" • Copying GStreamer DLLs to binary directory...")
-    if not package_gstreamer_dlls(servo_exe_dir, target):
-        return False
+    if enable_media:
+        print(" • Copying GStreamer DLLs to binary directory...")
+        if not package_gstreamer_dlls(servo_exe_dir, target):
+            return False
 
     print(" • Copying MSVC DLLs to binary directory...")
     if not package_msvc_dlls(servo_exe_dir, target):
