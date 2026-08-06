@@ -65,6 +65,39 @@ rendering funzioni, ma anche quale renderer/GPU viene effettivamente riportato (
 Servo/ANGLE al lancio) su ciascuna piattaforma della matrice CI (Windows/macOS/Linux). Non
 ancora verificato su una build reale.
 
+## 6. Schermata bianca su contenuto `file://` — causa risolta in questo fork, ma non ancora nella build "embedded" reale
+
+**Stato:** causa individuata e patchata in questo fork (vedi `CUSTOMIZATIONS.md`, patch
+`0007-stable-file-origin-for-module-script-loading`); compila (`cargo check -p servo-url`
+pulito), **ma non ancora verificata end-to-end** con una build reale (`./mach build` +
+`./mach bundle` + click manuale) — non fatto perché la compilazione completa di Servo
+richiede ore. Da fare con priorità alta prima di considerare il punto chiuso.
+
+Causa: `ImmutableOrigin::new_opaque_for_file()` in `components/url/origin.rs` generava un
+UUID casuale nuovo ad ogni chiamata per gli URL `file://`, quindi due chiamate a `.origin()`
+sullo stesso URL `file://` non erano mai uguali tra loro. Questo faceva fallire
+silenziosamente il fetch di qualunque `<script type="module" src="...">` esterno aperto via
+`file://` (la fetch va in modalità "cors", che richiede same-origin, che per `file://` non
+era mai vero) — lo script non veniva mai eseguito e la pagina restava bianca. Qualunque
+bundle Vite "normale" (multi-chunk, script esterno) — sia quello di `../test-page/` sia
+quello del progetto principale (root `vite.config.ts`, chunk multipli via `manualChunks`) —
+ne era affetto. Il fix rende l'origine `file://` stabile (stesso id fisso per tutte le
+origini `file://`) invece che casuale ad ogni chiamata — vedi `CUSTOMIZATIONS.md` per i
+dettagli e i trade-off accettati (storage condiviso tra documenti `file://`, inerte per
+questo fork perché apre sempre un solo documento `file://` e non espone navigazione ad
+altri).
+
+**Importante — questo fix da solo non basta per la build "embedded" reale:** il punto 1 di
+questo file spiega che `../.github/workflows/embedded.yml` scarica oggi il binario
+`servoshell` **stock, non patchato**, non il fork con le patch di questa cartella. Questo fix
+vive solo nelle patch di questo fork, quindi finché il punto 1 non viene risolto (far
+costruire/consegnare a `embedded.yml` il binario patchato), la build "embedded" realmente
+distribuita continuerà ad avere questo identico bug, non toccata da questa patch.
+
+Prossimi passi: (1) far girare `./mach build` + `./mach bundle --content-dir
+../test-page/dist` e verificare a occhio che `../test-page/` non sia più bianca; (2) una
+volta risolto anche il punto 1, ripetere la verifica con il `dist/` reale del gioco.
+
 ## Note
 
 - Punto risolto nella sessione del 2026-08-06: stato di navigazione browser morto

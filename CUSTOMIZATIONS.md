@@ -280,10 +280,9 @@ sandbox has no Steam client to test against) — treat the next real `--features
 as the actual verification, particularly whether `steamworks-sys` actually places
 `libsteam_api.*` where `copy_steam_lib` expects it.
 
-**Follow-up (2026-08-06) — mixed-content blocking on `fetch('steam:...')`:** the manual
-verification aid below surfaced `TypeError: Network error: Blocked as mixed content` on both
-the `invoke("steam_is_available")` and `fetch("steam:is_available")` test-page buttons.
-Servo's mixed-content check (`components/net/fetch/methods.rs`'s
+**Follow-up (2026-08-06) — mixed-content blocking on `fetch('steam:...')`:** manual testing
+surfaced `TypeError: Network error: Blocked as mixed content` on a `fetch("steam:is_available")`
+call. Servo's mixed-content check (`components/net/fetch/methods.rs`'s
 `should_request_be_blocked_as_mixed_content`, via
 `components/net/protocols/mod.rs::is_url_potentially_trustworthy`) treats a custom scheme as
 trustworthy only if its `ProtocolHandler::is_secure()` returns `true` — `SteamProtocolHandler`
@@ -294,30 +293,7 @@ only overrode `is_fetchable()` (needed for direct, non-`no-cors` `fetch()` acces
 folded into `patches/servo-v0.4.0/0005-add-steam-bridge.patch` (regenerated the whole
 new-file hunk for `steam.rs` rather than hand-editing a diff-of-a-diff). The same gap existed
 in `RovesProtocolHandler` (`roves:`, see the entry below) and was fixed there too, even
-though its test-page button hadn't been exercised yet — same trait, same missing override.
-
-**Manual verification aid:** `../test-page/` (a small Vite + React app, built by
-`../.github/workflows/test.yml`'s "build test-page" step and handed to `./mach bundle` in
-"assemble test bundle") has a button that hits `steam:is_available` directly via a raw
-`fetch()` — click it after a `--features steam` build lands in the "test" release, instead of
-re-deriving this by hand. This is the same underlying request both `src/lib/steam.ts` (Tauri)
-and `@drincs/roves-api/steam` (Roves) make; it deliberately doesn't import
-`@drincs/roves-api` itself, since that package isn't published to npm yet (only resolved via
-the parent monorepo's own npm workspace) and this directory needs to stay buildable
-standalone (see `../CLAUDE.md`) — see `../test-page/src/App.tsx`'s own comment. Revisit once
-`@drincs/roves-api` is published for real.
-
-The same page also has "Test PixiJS render" / "Test Three.js render" buttons (see
-`PixiPanel.tsx`/`ThreePanel.tsx`), unrelated to the `steam:`/`roves:` bridges — they check
-whether this Servo build can create a WebGL context and sustain a render loop at all, using
-two independent libraries (the real game's own renderer, PixiJS, plus Three.js as a
-control) so a failure can be pinned on "WebGL in this Servo build" rather than "this
-particular library".
-
-(An earlier version of this page hand-rolled a fake `window.__TAURI_INTERNALS__.invoke` mock
-to exercise the old Tauri-shaped call chain — dropped 2026-08-06 in favor of the plain
-`fetch()` check above: it never reflected an actual Roves code path anyway, since Roves' own
-bridge is `roves:`/`core.invoke()`, not a Tauri lookalike routed through `steam:`.)
+though it hadn't been exercised yet by manual testing — same trait, same missing override.
 
 ---
 
@@ -399,3 +375,58 @@ alongside the existing `Waker`/`Accessibility` arms, folded into
 separate patch file, since it's part of the same logical change (this file was simply missed
 the first time). No behavior change beyond making the match exhaustive again — `tracing.rs`
 only affects `RUST_LOG` filtering granularity, never actual event handling.
+
+---
+
+## 2026-08-06 — Stable `file://` origin, so content opened from disk actually loads
+
+**File:** `components/url/origin.rs`, `ImmutableOrigin::new_opaque_for_file` (was line
+86-92 in the `v0.4.0` baseline).
+
+**Patch:** `patches/servo-v0.4.0/0007-stable-file-origin-for-module-script-loading.patch`
+
+**Upstream behavior:** `new_opaque_for_file()` mints a brand-new random `Uuid::new_v4()` on
+every call, with no caching (`ServoUrl::origin()`, `components/url/lib.rs:90-92`, calls
+`ImmutableOrigin::new()` — and therefore this — fresh every time). Two `.origin()` calls on
+the *exact same* `file://` URL are therefore never equal to each other, let alone two
+different `file://` URLs. Manual testing (see `TODO.md`'s "schermata bianca" writeup)
+reproduced the consequence directly: a normal Vite build (external
+`<script type="module" src="...">`, the default output shape for anything past a
+single-file toy) opened from a `file://` URL renders a blank page. Root cause: the HTML
+module-script spec always fetches external module scripts in CORS mode regardless of the
+`crossorigin` attribute, and CORS mode's same-origin check
+(`components/net/fetch/methods.rs:547-548`,
+`*origin == request.current_url_with_blob_claim().origin()`) can never succeed for
+`file://` given the above — the fetch falls through to `methods.rs:597`'s
+`NetworkError::UnsupportedScheme`, the entry script never runs, and the page stays exactly as
+the HTML parser left it. (`fetch()` to this fork's own `steam:`/`roves:` protocols is
+unaffected — those are marked `is_fetchable()`, which explicitly bypasses this same-origin
+check — but a plain `fetch()` of a `file://` URL, or any other CORS-mode `file://` request,
+would hit the same wall.)
+
+**Change:** `new_opaque_for_file()` now returns a fixed id (`Uuid::nil()`, via a new
+`FILE_ORIGIN_ID` constant) instead of a fresh random one, so every `file://` origin this
+build ever produces compares equal to every other one.
+
+**Why:** this build only ever opens one `file://` document — its own bundled
+`dist/index.html` — and exposes no way to navigate to any other `file://` URL (no address
+bar, no tabs, see the 2026-08-05 toolbar-removal entry). "Are two `file://` origins the same
+origin" has no real answer in the spec itself (opaque origins are supposed to be globally
+unique, but see <https://github.com/whatwg/html/issues/3099> for the standing ambiguity
+specifically about `file://`), and mainstream browsers already lean toward usability over
+strict uniqueness here in practice. For this fork's one-document-only use case there is no
+realistic downside to always treating `file://` as the same origin, and it's what makes an
+ordinary Vite (or webpack, etc.) build actually load when opened from disk, matching how it
+would behave served over `http(s)://`.
+
+**Side effects to know about when upgrading:** this changes origin *equality* for `file://`
+only — `is_potentially_trustworthy()` already special-cased `file://` as trustworthy
+regardless of id (see the mixed-content follow-up above), so that behavior is unchanged.
+Storage (`localStorage`, etc.) and any other same-origin-keyed state would now be shared
+across *all* `file://` documents in the same process, which would be a real regression for
+stock Servo (general-purpose browsing, multiple unrelated `file://` pages) but is inert here
+given the single-document constraint above — revisit this reasoning if this fork ever grows
+a way to open more than one `file://` document. Verified with `cargo check -p servo-url`
+(compiles clean); not yet verified against an actual `./mach build` + `./mach bundle` +
+manual click-through (see `TODO.md`) — treat that as the real verification of whether this
+actually fixes the blank-page repro end to end.

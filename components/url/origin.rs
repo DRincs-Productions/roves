@@ -12,6 +12,11 @@ use serde::{Deserialize, Serialize};
 use url::{Host, Origin, Url};
 use uuid::Uuid;
 
+/// Fixed id shared by every `file://` opaque origin — see `ImmutableOrigin::
+/// new_opaque_for_file`'s doc comment for why this isn't a fresh `Uuid::new_v4()`
+/// like the other opaque-origin constructors in this file.
+const FILE_ORIGIN_ID: Uuid = Uuid::nil();
+
 /// The origin of an URL
 #[derive(Clone, Debug, Deserialize, Eq, Hash, MallocSizeOf, PartialEq, Serialize)]
 pub enum ImmutableOrigin {
@@ -83,9 +88,30 @@ impl ImmutableOrigin {
         })
     }
 
+    /// Kiosk/embedded fork: unlike every other opaque-origin constructor here, this one
+    /// does *not* mint a fresh random id per call — it always returns the same fixed id
+    /// (see `FILE_ORIGIN_ID` below), so two `file://` URLs (even the exact same URL
+    /// resolved twice) compare as same-origin instead of never matching anything, ever.
+    ///
+    /// Upstream minted a new `Uuid::new_v4()` here on every call, which is defensible
+    /// per spec (opaque origins are meant to be globally unique) but means the Fetch
+    /// same-origin check (`is_url_potentially_trustworthy`/`should_request_be_blocked_
+    /// as_mixed_content` and friends) can never succeed for anything loaded from
+    /// `file://` — including a page fetching its own sibling files. That specifically
+    /// breaks external `<script type="module" src="...">` (the module-script spec always
+    /// fetches those in CORS mode, which needs same-origin here), i.e. any normal Vite/
+    /// webpack/etc. build opened via a `file://` URL — see `../TODO.md`'s "schermata
+    /// bianca" writeup for the manual repro. Mainstream browsers don't have this problem
+    /// in practice (they treat `file://` content as usable roughly the way a real site
+    /// would be — the spec itself leaves this underspecified, see
+    /// <https://github.com/whatwg/html/issues/3099>), which this change now matches for
+    /// this fork's purposes: this build only ever opens one `file://` document (the
+    /// game's own bundled `dist/index.html`) and never exposes navigation to any other
+    /// `file://` URL (no address bar, no tabs — see the toolbar-removal patch), so
+    /// treating all `file://` origins as the same origin has no realistic downside here.
     pub fn new_opaque_for_file() -> ImmutableOrigin {
         ImmutableOrigin::Opaque(OpaqueOrigin {
-            id: Uuid::new_v4(),
+            id: FILE_ORIGIN_ID,
             is_for_data_worker_from_secure_context: false,
             is_file_origin: true,
         })
