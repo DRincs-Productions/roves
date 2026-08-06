@@ -296,15 +296,28 @@ new-file hunk for `steam.rs` rather than hand-editing a diff-of-a-diff). The sam
 in `RovesProtocolHandler` (`roves:`, see the entry below) and was fixed there too, even
 though its test-page button hadn't been exercised yet — same trait, same missing override.
 
-**Manual verification aid:** `../.github/workflows/test.yml`'s synthetic test page (in its
-"assemble test bundle" step) has two buttons for exactly this: one hits `steam:is_available`
-directly via `fetch()`, the other reproduces an `invoke(cmd, args)` →
-`window.__TAURI_INTERNALS__.invoke` → `fetch('steam:...')` chain inline (no bundler, so no
-real npm package import there) — click through both after a `--features steam` build lands
-in the "test" release, instead of re-deriving this by hand. (`src/lib/steam.ts` itself no
-longer goes through that `window.__TAURI_INTERNALS__` indirection — see the "Roves' own
-general-purpose `invoke()` bridge" entry below for why — but the test page's chain still
-exercises the same underlying `steam:` protocol either way.)
+**Manual verification aid:** `../test-page/` (a small Vite + React app, built by
+`../.github/workflows/test.yml`'s "build test-page" step and handed to `./mach bundle` in
+"assemble test bundle") has a button that hits `steam:is_available` directly via a raw
+`fetch()` — click it after a `--features steam` build lands in the "test" release, instead of
+re-deriving this by hand. This is the same underlying request both `src/lib/steam.ts` (Tauri)
+and `@drincs/roves-api/steam` (Roves) make; it deliberately doesn't import
+`@drincs/roves-api` itself, since that package isn't published to npm yet (only resolved via
+the parent monorepo's own npm workspace) and this directory needs to stay buildable
+standalone (see `../CLAUDE.md`) — see `../test-page/src/App.tsx`'s own comment. Revisit once
+`@drincs/roves-api` is published for real.
+
+The same page also has "Test PixiJS render" / "Test Three.js render" buttons (see
+`PixiPanel.tsx`/`ThreePanel.tsx`), unrelated to the `steam:`/`roves:` bridges — they check
+whether this Servo build can create a WebGL context and sustain a render loop at all, using
+two independent libraries (the real game's own renderer, PixiJS, plus Three.js as a
+control) so a failure can be pinned on "WebGL in this Servo build" rather than "this
+particular library".
+
+(An earlier version of this page hand-rolled a fake `window.__TAURI_INTERNALS__.invoke` mock
+to exercise the old Tauri-shaped call chain — dropped 2026-08-06 in favor of the plain
+`fetch()` check above: it never reflected an actual Roves code path anyway, since Roves' own
+bridge is `roves:`/`core.invoke()`, not a Tauri lookalike routed through `steam:`.)
 
 ---
 

@@ -1,0 +1,25 @@
+{
+  "name": "servo-test-page",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Manual diagnostic page for servo/.github/workflows/test.yml's build-from-source smoke test — click through the buttons after a --features steam build lands in the \"test\" GitHub release. Not part of the parent project's own npm workspace; see ../CLAUDE.md.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build"
+  },
+  "dependencies": {
+    "pixi.js": "^8.19.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "three": "^0.185.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.15",
+    "@types/react-dom": "^19.2.3",
+    "@types/three": "^0.185.4",
+    "@vitejs/plugin-react": "^6.0.2",
+    "typescript": "~6.0.3",
+    "vite": "^8.0.16"
+  }
+}

@@ -89,6 +89,12 @@ justfile
 # tests, irrelevant to customizing servoshell.
 /tests/
 
+# test-page/ (the .github/workflows/test.yml diagnostic page) is its own npm
+# project, built via `npm run build` in that CI step — none of this is source.
+/test-page/node_modules/
+/test-page/dist/
+/test-page/package-lock.json
+
 # Upstream project docs/governance — irrelevant to us.
 # (Note: v0.4.0's tag archive doesn't actually ship a /.github/ of its own — this
 # directory is exclusively ours: our own CI, see /.github/workflows/servo-test-build.yml.
