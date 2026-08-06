@@ -10,6 +10,7 @@
 import json
 import os
 import os.path as path
+import shutil
 import subprocess
 from subprocess import CompletedProcess
 from shutil import copy2
@@ -27,12 +28,16 @@ import servo.util
 import servo.platform
 
 from servo.command_base import (
+    BuildNotFound,
     CommandBase,
     check_call,
     is_linux,
     is_freebsd,
+    is_macosx,
+    is_windows,
 )
 from servo.platform.build_target import is_android
+from servo.util import delete
 
 from python.servo.command_base import BuildType
 
@@ -51,6 +56,30 @@ def shell_quote(arg: str) -> str:
     # use single quotes, and put single quotes into double quotes
     # the string $'b is then quoted as '$'"'"'b'
     return "'" + arg.replace("'", "'\"'\"'") + "'"
+
+
+def _escape_rust_str(arg: str) -> str:
+    """Escape `arg` for embedding as a double-quoted Rust string literal."""
+    return arg.replace("\\", "\\\\").replace('"', '\\"')
+
+
+# Debian's arch names don't match Rust's. Extend as new targets need `--deb`.
+_DEBIAN_ARCH_BY_RUST_ARCH = {
+    "x86_64": "amd64",
+    "aarch64": "arm64",
+    "i686": "i386",
+}
+
+
+def _place_bundle_content(bundle_root: str, html_file: str, content_dir: Optional[str]) -> None:
+    """Copy `content_dir` (e.g. a built `dist/`) into `bundle_root` at whatever
+    relative location `html_file` expects to find it at (e.g. `html_file` of
+    `dist/index.html` puts the content at `bundle_root/dist/`)."""
+    if not content_dir:
+        return
+    rel_dir = path.dirname(html_file)
+    dest = path.join(bundle_root, rel_dir) if rel_dir else bundle_root
+    shutil.copytree(content_dir, dest, dirs_exist_ok=True)
 
 
 @CommandProvider
@@ -194,6 +223,294 @@ class PostBuildCommands(CommandBase):
                 print("Servo Binary can't be found! Run './mach build' and try again!")
             else:
                 raise exception
+
+    @Command(
+        "bundle",
+        description="Package a completed build into a portable, double-click-runnable bundle",
+        category="post-build",
+    )
+    @CommandArgument(
+        "--html-file", default="dist/index.html", help="HTML file (relative to the bundle) to open on launch"
+    )
+    @CommandArgument("--window-size", default="1280x720", help="Initial window size, e.g. 1280x720")
+    @CommandArgument(
+        "--output", "-o", default=None, help="Directory to write the bundle to (default: <build dir>/bundle)"
+    )
+    @CommandArgument(
+        "--content-dir",
+        default=None,
+        help="Directory of web content (e.g. a built dist/) to copy into the bundle, so --html-file "
+        "resolves without a separate copy step",
+    )
+    @CommandArgument(
+        "--deb",
+        action="store_true",
+        help="Linux only: build a .deb package instead of the default self-contained play.sh bundle",
+    )
+    @CommandArgument("--deb-package-name", default="servoshell", help="Package name to use with --deb")
+    @CommandArgument("--deb-version", default="0.0.0", help="Package version to use with --deb")
+    @CommandArgument("params", nargs="...", help="Extra command-line arguments to pass through to servoshell on launch")
+    @CommandBase.common_command_arguments(binary_selection=True)
+    def bundle(
+        self,
+        servo_binary: str,
+        html_file: str = "dist/index.html",
+        window_size: str = "1280x720",
+        output: Optional[str] = None,
+        content_dir: Optional[str] = None,
+        deb: bool = False,
+        deb_package_name: str = "servoshell",
+        deb_version: str = "0.0.0",
+        params: Optional[List[str]] = None,
+        **kwargs: Any,
+    ) -> int | None:
+        """Turn a build produced by `./mach build` into something a user can
+        double-click to run, instead of the bare build artifact in target/:
+
+        * Windows: a play.exe (built with the "windows" subsystem, so it
+          never flashes a console — see ports/servoshell/main.rs for the
+          same attribute on servoshell.exe itself) that launches the engine
+          binary, which is tucked away in a bin/ subdirectory.
+        * macOS: a minimal Servo.app bundle. Finder launches
+          Contents/MacOS/<exec> directly, with no Terminal involved at all.
+        * Linux: by default, a play.sh next to the engine binary, which
+          ships without its executable bit — play.sh is the only supported
+          entry point, so a curious `./servoshell-core` fails with
+          "Permission denied" instead of launching without the args/
+          LD_LIBRARY_PATH it actually needs. With --deb, a proper .deb
+          package instead (see _bundle_linux_deb for what it does and does
+          not attempt).
+
+        None of this touches target/<profile>/ itself or the binary Cargo
+        put there — `./mach run` and friends keep working exactly as before.
+        """
+        if deb and not is_linux():
+            print("--deb is only supported on Linux.")
+            return 1
+
+        binary_dir = path.dirname(servo_binary)
+        output_dir = output or path.join(binary_dir, "bundle")
+        if path.exists(output_dir):
+            delete(output_dir)
+        os.makedirs(output_dir)
+
+        launch_args = [html_file, "--window-size", window_size] + list(params or [])
+
+        if is_windows():
+            self._bundle_windows(servo_binary, binary_dir, output_dir, launch_args)
+            bundle_root = output_dir
+        elif is_macosx():
+            bundle_root = path.join(output_dir, "Servo.app", "Contents", "Resources")
+            os.makedirs(bundle_root)
+            self._bundle_macos(servo_binary, binary_dir, output_dir, launch_args)
+        elif deb:
+            self._bundle_linux_deb(
+                servo_binary, binary_dir, output_dir, launch_args, deb_package_name, deb_version, html_file, content_dir
+            )
+            print(f"Bundle written to {output_dir}")
+            return None
+        else:
+            self._bundle_linux(servo_binary, binary_dir, output_dir, launch_args)
+            bundle_root = output_dir
+
+        _place_bundle_content(bundle_root, html_file, content_dir)
+        print(f"Bundle written to {output_dir}")
+        return None
+
+    def _bundle_windows(self, servo_binary: str, binary_dir: str, output_dir: str, launch_args: List[str]) -> None:
+        bin_dir = path.join(output_dir, "bin")
+        os.makedirs(bin_dir)
+        shutil.copy(servo_binary, bin_dir)
+        for f in os.listdir(binary_dir):
+            if f.lower().endswith(".dll"):
+                shutil.copy(path.join(binary_dir, f), bin_dir)
+                # play.exe (built below) is an MSVC-linked binary too, and
+                # lives next to bin/ rather than inside it, so it needs its
+                # own copy of the same runtime DLLs alongside itself to
+                # start at all.
+                shutil.copy(path.join(binary_dir, f), output_dir)
+
+        binary_name = path.basename(servo_binary)
+        rust_args = ", ".join(f'"{_escape_rust_str(a)}"' for a in launch_args)
+        launcher_source = f"""#![windows_subsystem = "windows"]
+use std::env;
+use std::process::Command;
+
+fn main() {{
+    let exe_dir = env::current_exe()
+        .expect("could not resolve own path")
+        .parent()
+        .expect("exe has no parent directory")
+        .to_path_buf();
+    let servoshell = exe_dir.join("bin").join("{binary_name}");
+    // Fire-and-forget: servoshell manages its own window from here.
+    let _ = Command::new(servoshell)
+        .current_dir(&exe_dir)
+        .args([{rust_args}])
+        .spawn();
+}}
+"""
+        launcher_src_path = path.join(output_dir, "_play_launcher.rs")
+        with open(launcher_src_path, "w") as f:
+            f.write(launcher_source)
+        try:
+            subprocess.check_call(
+                ["rustc", "--edition", "2021", "-O", "-o", path.join(output_dir, "play.exe"), launcher_src_path]
+            )
+        finally:
+            os.remove(launcher_src_path)
+
+    def _bundle_macos(self, servo_binary: str, binary_dir: str, output_dir: str, launch_args: List[str]) -> None:
+        contents_dir = path.join(output_dir, "Servo.app", "Contents")
+        macos_dir = path.join(contents_dir, "MacOS")
+        os.makedirs(macos_dir)
+
+        core_name = f"{path.basename(servo_binary)}-core"
+        core_path = path.join(macos_dir, core_name)
+        shutil.copy(servo_binary, core_path)
+        os.chmod(core_path, 0o755)
+        for f in os.listdir(binary_dir):
+            if f.endswith(".dylib"):
+                shutil.copy(path.join(binary_dir, f), macos_dir)
+
+        info_plist = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>Servo</string>
+    <key>CFBundleIdentifier</key>
+    <string>org.servo.servoshell.bundle</string>
+    <key>CFBundleName</key>
+    <string>Servo</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>10.13</string>
+</dict>
+</plist>
+"""
+        with open(path.join(contents_dir, "Info.plist"), "w") as f:
+            f.write(info_plist)
+
+        quoted_args = " ".join(shell_quote(a) for a in launch_args)
+        launcher_script = f"""#!/usr/bin/env bash
+DIR="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
+cd "$DIR/../../.."
+exec "$DIR/{core_name}" {quoted_args}
+"""
+        launcher_path = path.join(macos_dir, "Servo")
+        with open(launcher_path, "w") as f:
+            f.write(launcher_script)
+        os.chmod(launcher_path, 0o755)
+
+    def _bundle_linux(self, servo_binary: str, binary_dir: str, output_dir: str, launch_args: List[str]) -> None:
+        core_name = f"{path.basename(servo_binary)}-core"
+        core_path = path.join(output_dir, core_name)
+        shutil.copy(servo_binary, core_path)
+        for f in os.listdir(binary_dir):
+            if ".so" in f:
+                shutil.copy(path.join(binary_dir, f), output_dir)
+        os.chmod(core_path, 0o644)
+
+        quoted_args = " ".join(shell_quote(a) for a in launch_args)
+        play_sh = f"""#!/usr/bin/env bash
+cd "$(dirname "$0")"
+chmod +x {shell_quote(core_name)}
+export LD_LIBRARY_PATH="$(pwd):$LD_LIBRARY_PATH"
+./{core_name} {quoted_args}
+"""
+        play_path = path.join(output_dir, "play.sh")
+        with open(play_path, "w") as f:
+            f.write(play_sh)
+        os.chmod(play_path, 0o755)
+
+    def _bundle_linux_deb(
+        self,
+        servo_binary: str,
+        binary_dir: str,
+        output_dir: str,
+        launch_args: List[str],
+        package_name: str,
+        version: str,
+        html_file: str,
+        content_dir: Optional[str],
+    ) -> None:
+        """Build a real, installable .deb: `dpkg -i` puts the engine + its
+        content under /usr/lib/<package_name>/, a launcher under /usr/bin/,
+        and a .desktop entry so it shows up in application launchers. This
+        is a functional package, not a lintian-clean one — no changelog,
+        no man page, no maintainer scripts; add those if this ever needs to
+        go through a real Debian/Ubuntu review.
+        """
+        if not shutil.which("dpkg-deb"):
+            print("--deb requires `dpkg-deb` (from dpkg-dev), which was not found on PATH.")
+            raise BuildNotFound("dpkg-deb not found")
+
+        arch = self.target.triple().split("-")[0]
+        debian_arch = _DEBIAN_ARCH_BY_RUST_ARCH.get(arch, arch)
+
+        pkg_root = path.join(output_dir, "pkgroot")
+        lib_dir = path.join(pkg_root, "usr", "lib", package_name)
+        bin_dir = path.join(pkg_root, "usr", "bin")
+        applications_dir = path.join(pkg_root, "usr", "share", "applications")
+        debian_dir = path.join(pkg_root, "DEBIAN")
+        for d in (lib_dir, bin_dir, applications_dir, debian_dir):
+            os.makedirs(d)
+
+        core_name = path.basename(servo_binary)
+        shutil.copy(servo_binary, path.join(lib_dir, core_name))
+        os.chmod(path.join(lib_dir, core_name), 0o755)
+        for f in os.listdir(binary_dir):
+            if ".so" in f:
+                shutil.copy(path.join(binary_dir, f), lib_dir)
+        _place_bundle_content(lib_dir, html_file, content_dir)
+
+        quoted_args = " ".join(shell_quote(a) for a in launch_args)
+        launcher_script = f"""#!/usr/bin/env bash
+cd /usr/lib/{shell_quote(package_name)}
+export LD_LIBRARY_PATH="/usr/lib/{shell_quote(package_name)}:$LD_LIBRARY_PATH"
+exec ./{shell_quote(core_name)} {quoted_args}
+"""
+        launcher_path = path.join(bin_dir, package_name)
+        with open(launcher_path, "w") as f:
+            f.write(launcher_script)
+        os.chmod(launcher_path, 0o755)
+
+        desktop_entry = f"""[Desktop Entry]
+Type=Application
+Name={package_name}
+Exec=/usr/bin/{package_name}
+Terminal=false
+Categories=Network;WebBrowser;
+"""
+        with open(path.join(applications_dir, f"{package_name}.desktop"), "w") as f:
+            f.write(desktop_entry)
+
+        installed_size_kb = sum(
+            path.getsize(path.join(dirpath, name))
+            for dirpath, _dirnames, filenames in os.walk(pkg_root)
+            for name in filenames
+        ) // 1024
+        control = f"""Package: {package_name}
+Version: {version}
+Section: web
+Priority: optional
+Architecture: {debian_arch}
+Installed-Size: {installed_size_kb}
+Maintainer: unspecified <unspecified@example.com>
+Description: {package_name} (Servo-based application bundle)
+ Packaged by `mach bundle --deb`; see servo/CUSTOMIZATIONS.md for how this
+ differs from stock Servo.
+"""
+        with open(path.join(debian_dir, "control"), "w") as f:
+            f.write(control)
+
+        deb_path = path.join(output_dir, f"{package_name}_{version}_{debian_arch}.deb")
+        subprocess.check_call(["dpkg-deb", "--build", "--root-owner-group", pkg_root, deb_path])
+        delete(pkg_root)
 
     @Command("coverage-report", description="Create Servo Code Coverage report.", category="post-build")
     @CommandArgument("params", nargs="...", help="Command-line arguments to be passed through to cargo llvm-cov")

@@ -1,22 +1,62 @@
-# The Servo Parallel Browser Engine Project
+# Roves
 
-Servo is a prototype web browser engine written in the
-[Rust](https://github.com/rust-lang/rust) language. It is currently developed on
-64-bit macOS, 64-bit Linux, 64-bit Windows, 64-bit OpenHarmony, and Android.
+**Roves** (an anagram of *Servo*) is a customized fork of the [Servo](https://servo.org/)
+web engine, repurposed as a runtime for shipping **web-based games** as real native
+applications — instead of as a browser.
 
-Servo welcomes contribution from everyone. Check out:
+## What this is
 
-- The [Servo Book](https://book.servo.org) for documentation
-- [servo.org](https://servo.org/) for news and guides
+[Servo](https://servo.org/) is a general-purpose web browser engine written in
+[Rust](https://github.com/rust-lang/rust). Roves takes that engine and strips out
+everything that exists to make it *behave like a browser* — the toolbar, the tab strip,
+the address bar, back/forward history, favicon handling, and the state that only existed
+to feed all of that — none of which a game needs (see [CUSTOMIZATIONS.md] for the full,
+itemized list of what was removed and why).
 
-Coordination of Servo development happens:
-- Here in the Github Issues
-- On the [Servo Zulip](https://servo.zulipchat.com/)
-- In video calls advertised in the [Servo Project](https://github.com/servo/project/issues) repo.
+What's left is a lean embeddable window that loads a local web bundle (HTML/CSS/JS —
+Phaser, PixiJS, Three.js, or your own engine, anything that renders to a page) full-window,
+looking and behaving like a native application, not a browser tab.
+
+Roves is a **vendored, patched copy** of a pinned Servo release, not a live Git fork or
+submodule — see [CLAUDE.md](./CLAUDE.md) for why, and [CUSTOMIZATIONS.md] for exactly what
+changed on top of pristine upstream Servo and how those changes are carried forward when
+upstream is upgraded.
+
+[CUSTOMIZATIONS.md]: ./CUSTOMIZATIONS.md
+
+## Goal
+
+Ship web-based games as real, native, double-click-to-run desktop (and, eventually,
+console) binaries — without bundling a full general-purpose browser engine like Electron
+or CEF, and without paying Chromium's footprint and overhead for a game that only ever
+needs a canvas and a window. Servo is already lighter and written in Rust; this fork trims
+it down further to exactly what a game needs and nothing else.
+
+`./mach bundle` (see its own `--help`) turns a build into that double-click-ready package
+per target platform — see [CUSTOMIZATIONS.md] for what it produces on each.
+
+## Supported platforms
+
+### Desktop — supported today
+
+- **Windows** (x64)
+- **macOS** (Apple Silicon and Intel)
+- **Linux** (x64)
+
+### Consoles — in development
+
+The following are on the roadmap but not yet functional:
+
+- PlayStation 5
+- Xbox Series X|S
+- Nintendo Switch
 
 ## Getting started
 
-For more detailed build instructions, see the Servo Book under [Getting the Code] and [Building Servo].
+These are the same build steps as upstream Servo — Roves is a source-level fork, not a
+different build system. For deeper background, see the Servo Book's own [Getting the Code]
+and [Building Servo] pages; where this fork's behavior actually differs from what's
+described there, that's covered in [CUSTOMIZATIONS.md] instead.
 
 [Getting the Code]: https://book.servo.org/building/getting-the-code.html
 [Building Servo]: https://book.servo.org/building/building.html
@@ -24,11 +64,12 @@ For more detailed build instructions, see the Servo Book under [Getting the Code
 ### macOS
 
 - Download and install [Xcode](https://developer.apple.com/xcode/) and [`brew`](https://brew.sh/).
-- Install `uv`: `curl -LsSf https://astral.sh/uv/install.sh | sh` 
+- Install `uv`: `curl -LsSf https://astral.sh/uv/install.sh | sh`
 - Install `rustup`: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
 - Restart your shell to make sure `cargo` is available
 - Install the other dependencies: `./mach bootstrap`
-- Build servoshell: `./mach build`
+- Build: `./mach build`
+- Package a runnable bundle: `./mach bundle`
 
 ### Linux
 
@@ -37,11 +78,13 @@ For more detailed build instructions, see the Servo Book under [Getting the Code
   - Debian, Ubuntu: `sudo apt install curl`
   - Fedora: `sudo dnf install curl`
   - Gentoo: `sudo emerge net-misc/curl`
-- Install `uv`: `curl -LsSf https://astral.sh/uv/install.sh | sh` 
+- Install `uv`: `curl -LsSf https://astral.sh/uv/install.sh | sh`
 - Install `rustup`: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
 - Restart your shell to make sure `cargo` is available
 - Install the other dependencies: `./mach bootstrap`
-- Build servoshell: `./mach build`
+- Build: `./mach build`
+- Package a runnable bundle: `./mach bundle` (add `--deb` for a Debian/Ubuntu package instead
+  of the default self-contained `play.sh`)
 
 ### Windows
 
@@ -53,38 +96,13 @@ For more detailed build instructions, see the Servo Book under [Getting the Code
   - **C++ ATL for latest v143 build tools (x86 & x64)** (`Microsoft.VisualStudio.Component.VC.ATL`)
 - Restart your shell to make sure `cargo` is available
 - Install the other dependencies: `.\mach bootstrap`
-- Build servoshell: `.\mach build`
+- Build: `.\mach build`
+- Package a runnable bundle: `.\mach bundle`
 
-### Android
+## Relationship to upstream Servo
 
-- Ensure that the following environment variables are set:
-  - `ANDROID_SDK_ROOT`
-  - `ANDROID_NDK_ROOT`: `$ANDROID_SDK_ROOT/ndk/28.2.13676358/`
- `ANDROID_SDK_ROOT` can be any directory (such as `~/android-sdk`).
-  All of the Android build dependencies will be installed there.
-- Install the latest version of the [Android command-line
-  tools](https://developer.android.com/studio#command-tools) to
-  `$ANDROID_SDK_ROOT/cmdline-tools/latest`.
-- Run the following command to install the necessary components:
-  ```shell
-  sudo $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --install \
-   "build-tools;36.0.0" \
-   "emulator" \
-   "ndk;28.2.13676358" \
-   "platform-tools" \
-   "platforms;android-37" \
-   "system-images;android-37;google_apis;x86_64"
-  ```
-- Follow the instructions above for the platform you are building on
-
-### OpenHarmony
-
-- Follow the instructions above for the platform you are building on to prepare the environment.
-- Depending on the target distribution (e.g. `HarmonyOS NEXT` vs pure `OpenHarmony`) the build configuration will differ slightly.
-- Ensure that the following environment variables are set
-  - `DEVECO_SDK_HOME` (Required when targeting `HarmonyOS NEXT`)
-  - `OHOS_BASE_SDK_HOME` (Required when targeting `OpenHarmony`)
-  - `OHOS_SDK_NATIVE` (e.g. `${DEVECO_SDK_HOME}/default/openharmony/native` or `${OHOS_BASE_SDK_HOME}/${API_VERSION}/native`)
-  - `SERVO_OHOS_SIGNING_CONFIG`: Path to json file containing a valid signing configuration for the demo app.
-- Review the detailed instructions at [Building for OpenHarmony].
-- The target distribution can be modified by passing `--flavor=<default|harmonyos>` to `mach <build|package|install>`.
+Roves tracks a pinned upstream Servo release plus a small set of targeted patches — see
+[CUSTOMIZATIONS.md] for the itemized list, and [CLAUDE.md](./CLAUDE.md) for how upgrades to
+a newer Servo release are meant to happen. All credit for the underlying engine goes to the
+[Servo Project](https://github.com/servo/servo) and its contributors; issues specific to
+this fork's own customizations should stay local to this repository rather than upstream.

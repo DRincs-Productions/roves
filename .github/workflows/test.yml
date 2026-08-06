@@ -73,6 +73,13 @@ jobs:
             os_name: 'macos'
           - platform: 'ubuntu-24.04'
             os_name: 'linux'
+          # Same OS/build as the 'linux' entry above, but packaged as a .deb
+          # (mach bundle --deb) instead of the default self-contained
+          # play.sh — a separate zip entirely, not a variant of the plain
+          # Linux one (see mach bundle's own --deb handling for what it
+          # produces and doesn't attempt).
+          - platform: 'ubuntu-24.04'
+            os_name: 'linux-deb'
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -152,6 +159,13 @@ jobs:
           else
             ./mach bootstrap --force --yes --skip-lints --skip-nextest
           fi
+          # dpkg-dev ships preinstalled on the ubuntu-24.04 runner image, but
+          # `mach bundle --deb` (see the assemble step below) hard-depends on
+          # `dpkg-deb` from it, so make that explicit rather than relying on
+          # what happens to already be there.
+          if [ "${{ matrix.os_name }}" = "linux-deb" ]; then
+            sudo apt-get update && sudo apt-get install -y --no-install-recommends dpkg-dev
+          fi
 
       # Debug build, not --release: this workflow exists to smoke-test behavior
       # (e.g. "are the tabs really gone?"), not to ship an optimized binary. Debug
@@ -169,11 +183,18 @@ jobs:
         working-directory: servo-src
         run: ./mach build --media-stack dummy
 
+      # `mach bundle` (see ../CUSTOMIZATIONS.md) is what actually builds the
+      # play.exe/Servo.app/play.sh launcher and hides the raw engine binary —
+      # this step's only job is to hand it this build's fake "app content"
+      # (a real run would point --content-dir at the parent project's own
+      # `dist/`) and, for the linux-deb matrix entry, ask for --deb instead
+      # of the default play.sh.
       - name: assemble test bundle
         shell: bash
+        working-directory: servo-src
         run: |
-          mkdir -p release/dist
-          cat > release/dist/index.html << 'EOF'
+          mkdir -p /tmp/test-content
+          cat > /tmp/test-content/index.html << 'EOF'
           <!DOCTYPE html>
           <html>
             <head><title>Servo test build</title></head>
@@ -184,57 +205,23 @@ jobs:
           </html>
           EOF
 
-          # No GStreamer harvesting/bundling needed on any platform below: built
-          # with --media-stack dummy, so servoshell doesn't link against it at all.
-          cat > release/NOTE.txt << 'EOF'
+          BUNDLE_ARGS=(--content-dir /tmp/test-content --output ../release)
+          if [ "${{ matrix.os_name }}" = "linux-deb" ]; then
+            BUNDLE_ARGS+=(--deb --deb-package-name servoshell-test --deb-version "${SERVO_TAG}")
+          fi
+          ./mach bundle "${BUNDLE_ARGS[@]}"
+
+          cat > ../release/NOTE.txt << 'EOF'
           Debug test build, media stack "dummy" (no GStreamer, no video/audio
           playback). This build only exists to check window chrome/behavior —
           see the parent project's embedded.yml for the real release build.
           EOF
-
-          # Copy the main binary AND every sibling shared library `mach build`'s
-          # post-build step dropped next to it in target/debug/. On Windows
-          # this is always ANGLE's libEGL.dll/libGLESv2.dll plus the MSVC
-          # redist msvcp140.dll/vcruntime140.dll — needed even with
-          # --media-stack dummy, since dummy only skips GStreamer, not
-          # ANGLE/MSVC (see build_commands.py's copy_windows_dlls_to_build_
-          # directory). On macOS/Linux this glob is a no-op today (dummy means
-          # nothing extra lands there), but doing it unconditionally on every
-          # platform means this step can't silently drop a dependency again if
-          # that ever changes. Without this, the binary fails to start with no
-          # visible error the moment it's moved outside target/debug/, since
-          # its sibling DLLs/dylibs/so's are missing from wherever it's run.
-          shopt -s nullglob
-          if [ "${{ matrix.os_name }}" = "windows" ]; then
-            cp servo-src/target/debug/servoshell.exe release/
-            cp servo-src/target/debug/*.dll release/ 2>/dev/null || true
-            cat > release/play.bat << 'EOF'
-          @echo off
-          cd /d "%~dp0"
-          servoshell.exe "dist\index.html" --window-size 1280x720
-          EOF
-          elif [ "${{ matrix.os_name }}" = "macos" ]; then
-            cp servo-src/target/debug/servoshell release/
-            cp servo-src/target/debug/*.dylib release/ 2>/dev/null || true
-            chmod +x release/servoshell
-            cat > release/play.sh << 'EOF'
-          #!/usr/bin/env bash
-          cd "$(dirname "$0")"
-          ./servoshell "dist/index.html" --window-size 1280x720
-          EOF
-            chmod +x release/play.sh
-            echo "Native arch of the macos-latest runner only (no universal binary, no x86_64 cross-build)." >> release/NOTE.txt
+          if [ "${{ matrix.os_name }}" = "macos" ]; then
+            echo "Native arch of the macos-latest runner only (no universal binary, no x86_64 cross-build)." >> ../release/NOTE.txt
+          elif [ "${{ matrix.os_name }}" = "linux-deb" ]; then
+            echo "Install with: sudo dpkg -i *.deb — then launch via your app menu, or /usr/bin/servoshell-test." >> ../release/NOTE.txt
           else
-            cp servo-src/target/debug/servoshell release/
-            cp servo-src/target/debug/*.so* release/ 2>/dev/null || true
-            chmod +x release/servoshell
-            cat > release/play.sh << 'EOF'
-          #!/usr/bin/env bash
-          cd "$(dirname "$0")"
-          export LD_LIBRARY_PATH="$(dirname "$0"):$LD_LIBRARY_PATH"
-          ./servoshell "dist/index.html" --window-size 1280x720
-          EOF
-            chmod +x release/play.sh
+            echo "Run play.exe (Windows) / Servo.app (macOS) / play.sh (Linux) — the other file(s) here are the engine itself, not meant to be run directly." >> ../release/NOTE.txt
           fi
 
       - name: zip bundle (Linux/macOS)

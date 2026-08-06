@@ -139,3 +139,74 @@ re-check this patch still applies cleanly — it's a bigger diff than 0001 and t
 `Gui`'s internals. Not verified against an actual `./mach build` (Servo's build is
 multi-hour and wasn't run for this change) — treat the next real build of this fork as the
 actual verification and fix up any compile errors this patch introduces before relying on it.
+
+---
+
+## 2026-08-06 — New `mach bundle` command: package a build into something runnable
+
+**File:** `python/servo/post_build_commands.py`.
+
+**Patch:** `patches/servo-v0.4.0/0004-add-mach-bundle-command.patch`
+
+**Upstream behavior:** `./mach build` leaves the raw Cargo output in `target/<profile>/` —
+just the engine binary plus (on Windows) ANGLE/MSVC DLLs dropped next to it by
+`copy_windows_dlls_to_build_directory`. Running that binary bare opens Servo's own default
+start page, not this fork's intended content, and on Windows it has no window-size/URL args
+set, so it isn't something a non-technical person can be handed and told to double-click.
+
+**Change:** added a new command, `./mach bundle [--html-file dist/index.html]
+[--window-size 1280x720] [--output DIR] [--content-dir DIR] [--deb] [-- extra servoshell
+args]`, category `post-build`. It does **not** touch `target/<profile>/` or move the binary
+Cargo put there — `./mach run` and everything else that calls `get_binary_path()` keeps
+working exactly as before. Instead, into a separate output directory (default:
+`target/<profile>/bundle/`) it produces, per platform:
+
+- **Windows:** the engine binary + its DLLs moved into a `bin/` subdirectory, plus a real
+  `play.exe` at the top level — a tiny std-only Rust program, compiled on the fly with plain
+  `rustc` (no Cargo project), built with `#![windows_subsystem = "windows"]` (the same
+  attribute `ports/servoshell/main.rs` already uses on `servoshell.exe` itself — see the
+  2026-08-05 entries) so double-clicking it never flashes a console. It just spawns
+  `bin/servoshell.exe` with the configured args and exits.
+- **macOS:** a minimal `Servo.app` bundle (`Contents/Info.plist` + `Contents/MacOS/Servo`, a
+  small shell script that `exec`s the engine binary — renamed `<binary>-core` and tucked
+  inside the bundle — with the configured args). Finder launches
+  `Contents/MacOS/Servo` directly; no `Terminal.app` involved at all, unlike double-clicking
+  a loose `.sh`.
+- **Linux (default):** the engine binary renamed `<binary>-core` **without its executable
+  bit**, plus a `play.sh` that `chmod +x`'s it, sets `LD_LIBRARY_PATH`, and execs it with the
+  configured args. `play.sh` is the only supported entry point; a curious
+  `./<binary>-core` fails with "Permission denied" instead of launching without the
+  args/`LD_LIBRARY_PATH` it actually needs.
+- **Linux with `--deb`:** a real, installable `.deb` instead (`<name>_<version>_<arch>.deb`,
+  built via `dpkg-deb --build --root-owner-group`) — engine + content under
+  `/usr/lib/<name>/`, a launcher at `/usr/bin/<name>`, and a `.desktop` entry so it shows up
+  in application launchers. Requires `dpkg-deb` (from `dpkg-dev`) on `PATH`; raises
+  `BuildNotFound` with a clear message if missing rather than a bare traceback. This is a
+  functional package, not a lintian-clean one — no changelog, man page, or maintainer
+  scripts.
+
+`--content-dir` (e.g. a built `dist/`) is copied into the bundle at whatever relative
+location `--html-file` expects it (default `dist/index.html` → a `dist/` next to the
+launcher, or under `/usr/lib/<name>/` for `--deb`) — see `_place_bundle_content`. Passing it
+is optional: a caller can instead place content into the output directory itself after the
+command returns, which is how `../.github/workflows/test.yml`'s `assemble test bundle` step
+originally worked before being simplified to just call this command directly.
+
+**Why:** originally this exact logic (per-platform launcher, hidden/renamed core binary, no
+console/Terminal) was hand-rolled as bash inside `../.github/workflows/test.yml`. That's
+backwards: this fork's whole reason for existing is `git`-vendoring Servo instead of
+depending on it as a black box (see `../CLAUDE.md`), specifically so *product* behavior like
+"how does a build actually get handed to someone to run" lives in the product (`mach`), not
+duplicated across whichever CI happens to build it. `../.github/workflows/embedded.yml` (the
+*real* release pipeline) currently has its own near-identical hand-rolled
+play.bat/play.sh generation, with the exact same "opens a terminal, no nice extension"
+UX gap this command fixes — it doesn't consume this command yet because it doesn't build
+from this fork at all today (it downloads upstream's official prebuilt binaries; see that
+file's own comments), but the plan is for it to eventually point at this fork instead, at
+which point it should switch to `./mach bundle` too instead of re-diverging.
+
+**Side effects to know about when upgrading:** none of this depends on Servo internals
+beyond `get_binary_path()`/`self.target` (stable, low-level `CommandBase` API), so it should
+survive a version bump untouched. If a future Servo version changes what
+`copy_windows_dlls_to_build_directory` drops next to the Windows binary, double check
+`_bundle_windows`'s DLL glob still catches everything needed.
