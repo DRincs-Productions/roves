@@ -192,8 +192,22 @@ jobs:
           see the parent project's embedded.yml for the real release build.
           EOF
 
+          # Copy the main binary AND every sibling shared library `mach build`'s
+          # post-build step dropped next to it in target/debug/. On Windows
+          # this is always ANGLE's libEGL.dll/libGLESv2.dll plus the MSVC
+          # redist msvcp140.dll/vcruntime140.dll — needed even with
+          # --media-stack dummy, since dummy only skips GStreamer, not
+          # ANGLE/MSVC (see build_commands.py's copy_windows_dlls_to_build_
+          # directory). On macOS/Linux this glob is a no-op today (dummy means
+          # nothing extra lands there), but doing it unconditionally on every
+          # platform means this step can't silently drop a dependency again if
+          # that ever changes. Without this, the binary fails to start with no
+          # visible error the moment it's moved outside target/debug/, since
+          # its sibling DLLs/dylibs/so's are missing from wherever it's run.
+          shopt -s nullglob
           if [ "${{ matrix.os_name }}" = "windows" ]; then
             cp servo-src/target/debug/servoshell.exe release/
+            cp servo-src/target/debug/*.dll release/ 2>/dev/null || true
             cat > release/play.bat << 'EOF'
           @echo off
           cd /d "%~dp0"
@@ -201,6 +215,7 @@ jobs:
           EOF
           elif [ "${{ matrix.os_name }}" = "macos" ]; then
             cp servo-src/target/debug/servoshell release/
+            cp servo-src/target/debug/*.dylib release/ 2>/dev/null || true
             chmod +x release/servoshell
             cat > release/play.sh << 'EOF'
           #!/usr/bin/env bash
@@ -211,10 +226,12 @@ jobs:
             echo "Native arch of the macos-latest runner only (no universal binary, no x86_64 cross-build)." >> release/NOTE.txt
           else
             cp servo-src/target/debug/servoshell release/
+            cp servo-src/target/debug/*.so* release/ 2>/dev/null || true
             chmod +x release/servoshell
             cat > release/play.sh << 'EOF'
           #!/usr/bin/env bash
           cd "$(dirname "$0")"
+          export LD_LIBRARY_PATH="$(dirname "$0"):$LD_LIBRARY_PATH"
           ./servoshell "dist/index.html" --window-size 1280x720
           EOF
             chmod +x release/play.sh
