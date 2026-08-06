@@ -2,7 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use std::collections::HashMap;
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
 use std::fs;
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
@@ -26,8 +25,7 @@ use euclid::{Length, Point2D, Rect, Scale, Size2D};
 use log::info;
 use log::warn;
 use servo::{
-    DeviceIndependentPixel, DevicePixel, Image, LoadStatus, OffscreenRenderingContext, PixelFormat,
-    RenderingContext, WebView, WebViewId,
+    DeviceIndependentPixel, DevicePixel, OffscreenRenderingContext, RenderingContext, WebView,
 };
 use url::Url;
 use winit::event::WindowEvent;
@@ -46,27 +44,8 @@ pub struct Gui {
     context: EguiGlow,
     toolbar_height: Length<f32, DeviceIndependentPixel>,
 
-    location: String,
-
-    /// Whether the location has been edited by the user without clicking Go.
-    location_dirty: bool,
-
-    /// The [`LoadStatus`] of the active `WebView`.
-    load_status: LoadStatus,
-
     /// The text to display in the status bar on the bottom of the window.
     status_text: Option<String>,
-
-    /// Whether or not the current `WebView` can navigate backward.
-    can_go_back: bool,
-
-    /// Whether or not the current `WebView` can navigate forward.
-    can_go_forward: bool,
-
-    /// Handle to the GPU texture of the favicon.
-    ///
-    /// These need to be cached across egui draw calls.
-    favicon_textures: HashMap<WebViewId, (egui::TextureHandle, egui::load::SizedTexture)>,
 
     /// AccessKit tree updates pending the next egui tick.
     /// This allows us to ensure that graft nodes are sent before the subtrees they graft.
@@ -190,7 +169,9 @@ impl Gui {
         event_loop: &ActiveEventLoop,
         event_loop_proxy: EventLoopProxy<AppEvent>,
         rendering_context: Rc<OffscreenRenderingContext>,
-        initial_url: Url,
+        // Kept only so callers don't need updating: the address bar this used to
+        // seed no longer exists. See CUSTOMIZATIONS.md.
+        _initial_url: Url,
     ) -> Self {
         rendering_context
             .make_current()
@@ -225,13 +206,7 @@ impl Gui {
             rendering_context,
             context,
             toolbar_height: Default::default(),
-            location: initial_url.to_string(),
-            location_dirty: false,
-            load_status: LoadStatus::Complete,
             status_text: None,
-            can_go_back: false,
-            can_go_forward: false,
-            favicon_textures: Default::default(),
             pending_accesskit_updates: vec![],
         }
     }
@@ -379,16 +354,11 @@ impl Gui {
             rendering_context,
             context,
             toolbar_height,
-            location,
-            location_dirty,
-            favicon_textures,
             ..
         } = self;
 
         let winit_window = headed_window.winit_window();
         context.run(winit_window, |ctx| {
-            load_pending_favicons(ctx, window, favicon_textures);
-
             // Kiosk/embedded fork: never draw the toolbar or tab strip, in windowed
             // mode or fullscreen — this build is meant to look like a native app
             // window, not a browser.
@@ -478,43 +448,6 @@ impl Gui {
         self.rendering_context.parent_context().present();
     }
 
-    /// Updates the location field from the given [`RunningAppState`], unless the user has started
-    /// editing it without clicking Go, returning true iff it has changed (needing an egui update).
-    fn update_location_in_toolbar(&mut self, window: &ServoShellWindow) -> bool {
-        // User edited without clicking Go?
-        if self.location_dirty {
-            return false;
-        }
-
-        let current_url_string = window
-            .active_webview()
-            .and_then(|webview| Some(webview.url()?.to_string()));
-        match current_url_string {
-            Some(location) if location != self.location => {
-                self.location = location;
-                true
-            },
-            _ => false,
-        }
-    }
-
-    fn update_load_status(&mut self, window: &ServoShellWindow) -> bool {
-        let state_status = window
-            .active_webview()
-            .map(|webview| webview.load_status())
-            .unwrap_or(LoadStatus::Complete);
-        let old_status = std::mem::replace(&mut self.load_status, state_status);
-        let status_changed = old_status != self.load_status;
-
-        // When the load status changes, we want the new changes to the URL to start
-        // being reflected in the location bar.
-        if status_changed {
-            self.location_dirty = false;
-        }
-
-        status_changed
-    }
-
     fn update_status_text(&mut self, window: &ServoShellWindow) -> bool {
         let state_status = window
             .active_webview()
@@ -523,27 +456,10 @@ impl Gui {
         old_status != self.status_text
     }
 
-    fn update_can_go_back_and_forward(&mut self, window: &ServoShellWindow) -> bool {
-        let (can_go_back, can_go_forward) = window
-            .active_webview()
-            .map(|webview| (webview.can_go_back(), webview.can_go_forward()))
-            .unwrap_or((false, false));
-        let old_can_go_back = std::mem::replace(&mut self.can_go_back, can_go_back);
-        let old_can_go_forward = std::mem::replace(&mut self.can_go_forward, can_go_forward);
-        old_can_go_back != self.can_go_back || old_can_go_forward != self.can_go_forward
-    }
-
-    /// Updates all fields taken from the given [`ServoShellWindow`], such as the location field.
-    /// Returns true iff the egui needs an update.
+    /// Updates all fields taken from the given [`ServoShellWindow`]. Returns true iff the egui
+    /// needs an update.
     pub(crate) fn update_webview_data(&mut self, window: &ServoShellWindow) -> bool {
-        // Note: We must use the "bitwise OR" (|) operator here instead of "logical OR" (||)
-        //       because logical OR would short-circuit if any of the functions return true.
-        //       We want to ensure that all functions are called. The "bitwise OR" operator
-        //       does not short-circuit.
-        self.update_load_status(window) |
-            self.update_location_in_toolbar(window) |
-            self.update_status_text(window) |
-            self.update_can_go_back_and_forward(window)
+        self.update_status_text(window)
     }
 
     /// Returns true if a redraw is required after handling the provided event.
@@ -575,63 +491,5 @@ impl Gui {
 
     pub(crate) fn notify_accessibility_tree_update(&mut self, tree_update: accesskit::TreeUpdate) {
         self.pending_accesskit_updates.push(tree_update);
-    }
-}
-
-fn embedder_image_to_egui_image(image: &Image) -> egui::ColorImage {
-    let width = image.width as usize;
-    let height = image.height as usize;
-
-    match image.format {
-        PixelFormat::K8 => egui::ColorImage::from_gray([width, height], image.data()),
-        PixelFormat::KA8 => {
-            // Convert to rgba
-            let data: Vec<u8> = image
-                .data()
-                .chunks_exact(2)
-                .flat_map(|pixel| [pixel[0], pixel[0], pixel[0], pixel[1]])
-                .collect();
-            egui::ColorImage::from_rgba_unmultiplied([width, height], &data)
-        },
-        PixelFormat::RGB8 => egui::ColorImage::from_rgb([width, height], image.data()),
-        PixelFormat::RGBA8 => {
-            egui::ColorImage::from_rgba_unmultiplied([width, height], image.data())
-        },
-        PixelFormat::BGRA8 => {
-            // Convert from BGRA to RGBA
-            let data: Vec<u8> = image
-                .data()
-                .chunks_exact(4)
-                .flat_map(|chunk| [chunk[2], chunk[1], chunk[0], chunk[3]])
-                .collect();
-            egui::ColorImage::from_rgba_unmultiplied([width, height], &data)
-        },
-    }
-}
-
-/// Uploads all favicons that have not yet been processed to the GPU.
-fn load_pending_favicons(
-    ctx: &egui::Context,
-    window: &ServoShellWindow,
-    texture_cache: &mut HashMap<WebViewId, (egui::TextureHandle, egui::load::SizedTexture)>,
-) {
-    for id in window.take_pending_favicon_loads() {
-        let Some(webview) = window.webview_by_id(id) else {
-            continue;
-        };
-        let Some(favicon) = webview.favicon() else {
-            continue;
-        };
-
-        let egui_image = embedder_image_to_egui_image(&favicon);
-        let handle = ctx.load_texture(format!("favicon-{id:?}"), egui_image, Default::default());
-        let texture = egui::load::SizedTexture::new(
-            handle.id(),
-            egui::vec2(favicon.width as f32, favicon.height as f32),
-        );
-
-        // We don't need the handle anymore but we can't drop it either since that would cause
-        // the texture to be freed.
-        texture_cache.insert(id, (handle, texture));
     }
 }
