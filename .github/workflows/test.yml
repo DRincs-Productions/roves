@@ -208,7 +208,7 @@ jobs:
         run: ./mach build --media-stack dummy --features steam
 
       # `mach bundle` (see ../CUSTOMIZATIONS.md) is what actually builds the
-      # play.exe/Servo.app/play.sh launcher and hides the raw engine binary —
+      # play.exe/Roves.app/play.sh launcher and hides the raw engine binary —
       # this step's only job is to hand it the diagnostic page built above
       # (../test-page/dist — a real run would point --content-dir at the
       # parent project's own `dist/` instead) and, for the linux-deb matrix
@@ -233,7 +233,7 @@ jobs:
           elif [ "${{ matrix.os_name }}" = "linux-deb" ]; then
             echo "Install with: sudo dpkg -i *.deb — then launch via your app menu, or /usr/bin/servoshell-test." >> ../release/NOTE.txt
           else
-            echo "Run play.exe (Windows) / Servo.app (macOS) / play.sh (Linux) — the other file(s) here are the engine itself, not meant to be run directly." >> ../release/NOTE.txt
+            echo "Run play.exe (Windows) / Roves.app (macOS) / play.sh (Linux) — the other file(s) here are the engine itself, not meant to be run directly." >> ../release/NOTE.txt
           fi
 
       - name: zip bundle (Linux/macOS)

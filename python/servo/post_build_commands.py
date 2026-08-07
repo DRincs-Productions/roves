@@ -271,7 +271,7 @@ class PostBuildCommands(CommandBase):
           never flashes a console — see ports/servoshell/main.rs for the
           same attribute on servoshell.exe itself) that launches the engine
           binary, which is tucked away in a bin/ subdirectory.
-        * macOS: a minimal Servo.app bundle. Finder launches
+        * macOS: a minimal Roves.app bundle. Finder launches
           Contents/MacOS/<exec> directly, with no Terminal involved at all.
         * Linux: by default, a play.sh next to the engine binary, which
           ships without its executable bit — play.sh is the only supported
@@ -300,7 +300,7 @@ class PostBuildCommands(CommandBase):
             self._bundle_windows(servo_binary, binary_dir, output_dir, launch_args)
             bundle_root = output_dir
         elif is_macosx():
-            bundle_root = path.join(output_dir, "Servo.app", "Contents", "Resources")
+            bundle_root = path.join(output_dir, "Roves.app", "Contents", "Resources")
             os.makedirs(bundle_root)
             self._bundle_macos(servo_binary, binary_dir, output_dir, launch_args)
         elif deb:
@@ -361,7 +361,7 @@ fn main() {{
             os.remove(launcher_src_path)
 
     def _bundle_macos(self, servo_binary: str, binary_dir: str, output_dir: str, launch_args: List[str]) -> None:
-        contents_dir = path.join(output_dir, "Servo.app", "Contents")
+        contents_dir = path.join(output_dir, "Roves.app", "Contents")
         macos_dir = path.join(contents_dir, "MacOS")
         os.makedirs(macos_dir)
 
@@ -385,11 +385,11 @@ fn main() {{
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key>
-    <string>Servo</string>
+    <string>Roves</string>
     <key>CFBundleIdentifier</key>
     <string>org.servo.servoshell.bundle</string>
     <key>CFBundleName</key>
-    <string>Servo</string>
+    <string>Roves</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -408,7 +408,7 @@ DIR="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
 cd "$DIR/../../.."
 exec "$DIR/{core_name}" {quoted_args}
 """
-        launcher_path = path.join(macos_dir, "Servo")
+        launcher_path = path.join(macos_dir, "Roves")
         with open(launcher_path, "w") as f:
             f.write(launcher_script)
         os.chmod(launcher_path, 0o755)

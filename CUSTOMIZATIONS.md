@@ -694,3 +694,86 @@ patch/entry beyond this note — but worth knowing if a fresh `cargo check` myst
 `webrender` but exposed a second, independent gap right behind it — see the `libclang`/
 `mozangle` caveat repeated on all three entries above — so `cargo check -p servoshell --bin
 servoshell` still doesn't currently complete in this particular sandbox even with this fixed.
+
+---
+
+## 2026-08-07 — Rename user/OS-facing labels from "Servo" to "Roves"
+
+**Files:** `ports/servoshell/desktop/headed_window.rs`, `ports/servoshell/desktop/webxr.rs`,
+`resources/org.servo.Servo.desktop` (renamed to `resources/org.roves.Roves.desktop`),
+`python/servo/post_build_commands.py`. Also `.github/workflows/test.yml` (two comment/echo
+strings, not patch-tracked — see caveat below) and `README.md` (not patch-tracked, see
+`CLAUDE.md`'s scope note on what needs patches vs. plain doc updates).
+
+**Patch:** `patches/servo-v0.4.0/0013-rename-servo-labels-to-roves.patch`
+
+**Upstream behavior:** every label a player or the OS actually shows for this application
+still said "Servo" (the upstream project's name), not "Roves" (this fork's actual product
+name — see `README.md`'s intro): the window title (`INITIAL_WINDOW_TITLE`), the XR window
+title, the Linux WM/taskbar app id (`with_name("org.servo.Servo", "Servo")`), the OpenXR
+`AppInfo` application name, the `.desktop` launcher entry's `Name=`, and the custom `mach
+bundle` command's (see the 2026-08-06 `mach bundle` entry above) generated macOS bundle name
+(`Servo.app`) and `Info.plist` `CFBundleExecutable`/`CFBundleName`.
+
+**Change:** each of the above now says "Roves" instead of "Servo":
+
+- `headed_window.rs`: `INITIAL_WINDOW_TITLE = "Roves"`, XR window title `"Roves XR"`,
+  `with_name("org.roves.Roves", "Roves")`.
+- `webxr.rs`: `OpenXrAppInfo::new("Roves", 0, "Servo", 0)` — only the *application* name
+  changed; the *engine* name argument deliberately still says "Servo", since the underlying
+  engine genuinely still is Servo (see "Deliberately left alone" below).
+- `resources/org.servo.Servo.desktop` renamed to `resources/org.roves.Roves.desktop`,
+  `Name=Servo` → `Name=Roves`, and the file's own self-referential setup instructions
+  (`cp org.servo.Servo.desktop ...`) updated to match the new filename.
+- `post_build_commands.py`'s `_bundle_macos`/`bundle` methods: `Servo.app` → `Roves.app` (both
+  the folder name and the docstring describing it), and the generated `Info.plist`'s
+  `CFBundleExecutable`/`CFBundleName` (and the launcher script file they must match,
+  `Contents/MacOS/Servo` → `Contents/MacOS/Roves`) → `"Roves"`.
+- `.github/workflows/test.yml`: two comment/log strings referencing `Servo.app` updated to
+  `Roves.app` to stay consistent with the rename above (this workflow only describes/exercises
+  `mach bundle`'s output; see its own header comment on why it doesn't run anywhere yet).
+- `README.md`: added a "Naming" section explaining the current state (Roves labels vs. the
+  still-Servo-named engine/binary) so this doesn't read as an inconsistency to a new reader.
+
+**Deliberately left alone (broader rename intentionally out of scope for this change):**
+
+- The `servoshell` Cargo package/binary name itself (directory `ports/servoshell/`, `[package]
+  name = "servoshell"` and everything derived from it) — **not** renamed to `rovesshell`. This
+  is a much larger, riskier change: a repo-wide `grep -rl servoshell` turns up ~50 files,
+  including upstream Python build-system internals under `python/servo/` (`command_base.py`,
+  `gstreamer.py`, `devtools_tests/*`, etc.) that have nothing to do with branding, plus
+  `Cargo.lock` regeneration. Tracked as still-open in [`TODO.md`](./TODO.md).
+- `ContextMenu`/`CFBundleIdentifier` (`org.servo.servoshell.bundle`) and Android's
+  `ANDROID_APP_NAME` (`org.servo.servoshell`, `post_build_commands.py`) — bundle/package
+  identifiers, not display labels; changing an Android package name in particular makes the
+  OS treat it as a completely different app (losing update continuity), so this needs an
+  explicit decision, not a mechanical rename alongside display strings.
+- `ports/servoshell/prefs.rs`'s on-disk config directory name (`config_dir.push("Servo")`) —
+  changing this moves where preferences/persistent data are read from on an existing install;
+  needs a migration decision, not a silent rename.
+- `ports/servoshell/platform/macos/Info.plist` (upstream's own static bundle metadata, used by
+  `./mach package`, a different mechanism than the `mach bundle` command above) and
+  `etc/macos_sign.py`/`support/macos/Servo.entitlements` (codesigning/notarization) — a larger,
+  more sensitive surface (signing identity, entitlements) not covered by this pass.
+- `webxr.rs`'s OpenXR *engine* name argument (see above) and any other place that credits the
+  actual Servo engine rather than naming the product — this fork doesn't rename Servo's
+  internals, only the shell around it (see `README.md`'s "What this is").
+
+**Why:** this fork's product is Roves, not Servo (see `README.md`), but several places a
+player or the OS directly shows text still said "Servo" — inconsistent with the actual product
+identity and confusing for anyone who notices (window title bar, Alt-Tab/taskbar, Finder/dock,
+the Linux app menu). Scoped deliberately to *display labels only* (not the underlying
+binary/package name, bundle identifiers, on-disk paths, or codesigning) after discussing the
+size/risk of the full rename with the project owner — see the deliberately-left-alone list
+above and `TODO.md` point 4 for what's still open.
+
+**Side effects to know about when upgrading:** `.github/workflows/test.yml` and `README.md`
+are this fork's own files with no upstream counterpart, so they aren't part of the
+patch-against-pristine-tag mechanism the same way source files are (no prior patch in this
+directory touches `.github/`, by existing convention — see e.g. patches 0001-0012, none of
+which touch `.github/`); their changes are captured here in prose only, not replayed by
+`0013`'s patch — if this repo is ever restructured so `.github/` *is* patch-tracked, fold
+these two small string changes in then. If a future Servo version changes `AppInfo`'s
+constructor signature/parameter order in `components/webxr/openxr/mod.rs`, double check which
+argument is `application_name` vs `engine_name` before reapplying — swapping them would put
+"Roves" in the wrong field.

@@ -59,7 +59,7 @@ use crate::window::{
     ServoShellWindowId,
 };
 
-pub(crate) const INITIAL_WINDOW_TITLE: &str = "Servo";
+pub(crate) const INITIAL_WINDOW_TITLE: &str = "Roves";
 
 pub struct HeadedWindow {
     /// The egui interface that is responsible for showing the user interface elements of
@@ -129,7 +129,7 @@ impl HeadedWindow {
 
         // Set a name so it can be pinned to taskbars in Linux.
         #[cfg(target_os = "linux")]
-        let window_attr = window_attr.with_name("org.servo.Servo", "Servo");
+        let window_attr = window_attr.with_name("org.roves.Roves", "Roves");
 
         #[allow(deprecated)]
         let winit_window = event_loop
@@ -975,7 +975,7 @@ impl PlatformWindow for HeadedWindow {
         let size = self.winit_window.outer_size();
 
         let window_attr = winit::window::Window::default_attributes()
-            .with_title("Servo XR".to_string())
+            .with_title("Roves XR".to_string())
             .with_inner_size(size)
             .with_visible(false);
 
