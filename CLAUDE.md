@@ -75,8 +75,24 @@ notice, even for changes you didn't make yourself.
 3. Read `CUSTOMIZATIONS.md` top to bottom; reapply each entry's change to the freshly
    extracted tree (the upstream file/line in question may have moved or changed shape since
    `v0.4.0` — re-verify the intent still applies, don't blindly copy-paste diffs).
-4. Swap the new, patched tree in for this `servo/` directory.
-5. Update `SERVO_TAG` in `../.github/workflows/embedded.yml`.
-6. Build (`./mach build --release`) and manually verify each customization still behaves as
+4. Re-reason about the default-on experimental prefs (`CUSTOMIZATIONS.md`'s "Default-on
+   experimental web platform features" entry, patch `0009-default-on-experimental-web-
+   platform-prefs`) — **don't just mechanically reapply that patch's literal 18 field
+   names.** That list was a snapshot of one Servo version's `EXPERIMENTAL_PREFS`
+   (`ports/servoshell/prefs.rs`) and `Preferences` struct (`components/config/prefs.rs`), not
+   a fixed policy. The new tag's versions of both will likely differ — new prefs added,
+   some removed, some graduated from experimental to stable (already `true` upstream, so
+   nothing to do). For every pref that's new in either place compared to the old tag, reason
+   about it the same way that `CUSTOMIZATIONS.md` entry did: would a real video game
+   plausibly want this (graphics/audio/input/storage/UI capability), or is it dev-tooling,
+   testing-only, or unrelated to running a game (the entry lists what was deliberately left
+   off and why: WebRTC, Web Animations, Screen Wake Lock, Bluetooth, Geolocation, Credential
+   Management — plausibly game-relevant but not upstream's own vetted bundle, so left as a
+   judgment call rather than defaulted on)? Default the former to `true` here, leave the
+   latter alone, and update that `CUSTOMIZATIONS.md` entry's field list and reasoning to
+   match — don't leave it describing the previous version's set.
+5. Swap the new, patched tree in for this `servo/` directory.
+6. Update `SERVO_TAG` in `../.github/workflows/embedded.yml`.
+7. Build (`./mach build --release`) and manually verify each customization still behaves as
    intended (no toolbar/tabs, etc.) before considering the upgrade done.
-7. Update `CUSTOMIZATIONS.md` with the new baseline version at the top.
+8. Update `CUSTOMIZATIONS.md` with the new baseline version at the top.

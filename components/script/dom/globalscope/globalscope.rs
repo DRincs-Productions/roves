@@ -746,7 +746,9 @@ impl GlobalScope {
         let key = self.obtain_storage_key_for_non_storage_purposes();
 
         // Step 2: If key's origin is an opaque origin, then return failure.
-        if let ImmutableOrigin::Opaque(_) = key {
+        // Roves: `can_access_storage()` instead of a blanket opaque-origin check — see its
+        // doc comment in components/url/origin.rs for why `file://` documents are exempted.
+        if !key.can_access_storage() {
             return None;
         }
 

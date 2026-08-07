@@ -436,3 +436,120 @@ a way to open more than one `file://` document. Verified with `cargo check -p se
 (compiles clean); not yet verified against an actual `./mach build` + `./mach bundle` +
 manual click-through (see `TODO.md`) — treat that as the real verification of whether this
 actually fixes the blank-page repro end to end.
+
+---
+
+## 2026-08-07 — Storage access for `file://` origins
+
+**Files:** `components/url/origin.rs`, `components/script/dom/window/window.rs`,
+`components/script/dom/globalscope/globalscope.rs`, `components/storage/client_storage.rs`.
+
+**Patch:** `patches/servo-v0.4.0/0008-allow-storage-for-file-origin.patch`
+
+**Upstream behavior:** manual testing of `../test-page/` on a real build (see `TODO.md`'s
+now-removed storage findings) surfaced `localStorage`/`sessionStorage` throwing
+`SecurityError: Cannot access ... from opaque origin.`, and `indexedDB.open()`/
+`navigator.storage.{persist,persisted,estimate}()` rejecting with the equivalent for the
+same reason: `Window::GetLocalStorage`/`GetSessionStorage`, `GlobalScope::
+obtain_storage_key`, and `client_storage.rs`'s `obtain_a_local_storage_shelf` each reject any
+origin that isn't `ImmutableOrigin::Tuple`, and every `file://` document in this fork is
+`ImmutableOrigin::Opaque` (see the 2026-08-06 entry above). This is a faithful
+implementation of the Storage Standard/HTML "obtain a local/session storage bottle map"
+algorithms, not a Servo-specific bug — Firefox rejects `file://` storage the same way;
+Chrome's own internal origin model just doesn't follow the spec here, which is why it looks
+fine there.
+
+**Change:** new `ImmutableOrigin::can_access_storage()` (mirrored on `MutableOrigin`) in
+`origin.rs`: `self.is_tuple() || self.is_file_origin()`. The three call sites above
+(`window.rs`'s two storage-bottle-map checks, `globalscope.rs`'s `obtain_storage_key()`, and
+`client_storage.rs`'s `obtain_a_local_storage_shelf`) now call this instead of `is_tuple()`/a
+blanket opaque-origin check, so `file://` documents specifically are exempted from the
+Storage Standard's opaque-origin restriction — `localStorage`, `sessionStorage`,
+`indexedDB`, and `navigator.storage` all go through one of these four checks. Every other
+opaque origin (`data:`, `blob:`-without-origin, etc.) still gets rejected exactly as before.
+
+**Why:** Roves ships games, and a web game with no way to persist save data is a hard
+blocker, not a nice-to-have — the whole point of this fork is to make an ordinary web game's
+existing code just work. The `can_access_storage()` exemption deliberately mirrors
+`is_potentially_trustworthy()`'s existing `is_file_origin` carve-out (same file, added in the
+2026-08-06 entry above) rather than making `file://` a tuple origin outright: that broader
+change would also alter Cookie Store, CORS/same-origin, and mixed content behavior, none of
+which were broken and none of which this change touches.
+
+**Side effects to know about when upgrading:** `can_access_storage()`'s safety rests on the
+exact same single-document assumption as `new_opaque_for_file()`'s origin-stability change
+(all `file://` documents share one fixed origin, and this fork only ever has one open at a
+time) — re-verify that assumption still holds before reusing this pattern if this fork ever
+opens more than one `file://` document, or a second one concurrently (a devtools popup, a
+future multi-window feature, etc.). Verified with `cargo check -p servo-url` and
+`cargo check -p servo-storage` (both clean). `cargo check -p servo-script` (covers
+`window.rs`/`globalscope.rs`) could **not** be run in the sandbox this was authored in — its
+`mozjs_sys` build script needs `llvm-objdump`, which isn't installed there; this is a
+toolchain gap in that environment, not a code issue, but it does mean the `window.rs`/
+`globalscope.rs` hunks are unverified by any compiler here. Both edits are a single
+`if`-condition swap using a method that already compiles correctly against the same type in
+`servo-url`, so risk is low, but treat an actual `cargo check -p servo-script`/`./mach build`
+as the real verification before considering this entry closed. Not yet re-verified
+end-to-end against a real build either way (same caveat as the 2026-08-06 entry above).
+
+**Future consoles:** none of PS4/PS5/Xbox/Switch/etc. (see `README.md`'s platform table) are
+implemented yet, but when they are, `localStorage`/`indexedDB` are very unlikely to be the
+right save-data backend there at all — consoles have their own native save-data APIs
+(platform-specific save containers, cloud sync, storage quotas tied to the OS, etc.), and a
+game shipped on Roves should use *those*, not an emulated Web Storage shim on top of
+whatever generic filesystem access that console port ends up with. This entry's fix is
+scoped to desktop `file://` specifically; it isn't meant to imply `localStorage`/`indexedDB`
+should keep being the save-data path once console ports exist — that's a separate,
+per-platform bridge (conceptually the same shape as the `steam:` protocol bridge above:
+a native command surface web content calls into, backed by whatever the platform actually
+offers) that hasn't been designed yet.
+
+---
+
+## 2026-08-07 — Default-on experimental web platform features
+
+**Files:** `components/config/prefs.rs`.
+
+**Patch:** `patches/servo-v0.4.0/0009-default-on-experimental-web-platform-prefs.patch`
+
+**Upstream behavior:** upstream Servo curates its own bundle of off-by-default features in
+`EXPERIMENTAL_PREFS` (`ports/servoshell/prefs.rs`), all flipped on together only when
+launched with `--enable-experimental-web-platform-features`. Two of them
+(`dom_async_clipboard_enabled`, `dom_indexeddb_enabled`) were exactly the clipboard/IndexedDB
+gaps found while testing the storage fix above — `navigator.clipboard` was `undefined`, and
+`indexedDB.open()` had a second, independent reason to fail beyond the opaque-origin one
+(see the entry above). The other 16 entries in that same bundle
+(`dom_exec_command_enabled`, `dom_fontface_enabled`, `dom_intersection_observer_enabled`,
+`dom_navigator_protocol_handlers_enabled`, `dom_notification_enabled`,
+`dom_offscreen_canvas_enabled`, `dom_permissions_enabled`, `dom_sanitizer_enabled`,
+`dom_storage_manager_api_enabled`, `dom_webgl2_enabled`, `dom_webgpu_enabled`,
+`layout_css_attr_enabled`, `layout_columns_enabled`, `layout_container_queries_enabled`,
+`layout_grid_enabled`, `layout_variable_fonts_enabled`) were all still off too — notably
+`dom_webgl2_enabled`, which meant `../test-page/`'s own `GpuInfoPanel`/PixiJS/Three.js
+WebGL2 probes could never have seen a real WebGL2 context in this build, only WebGL1.
+
+**Change:** all 18 `EXPERIMENTAL_PREFS` entries now default to `true` in
+`Preferences::const_default()`, each commented at its own field. `dom_storage_manager_api_enabled`
+additionally needed the `can_access_storage()` exemption from the entry above (same
+opaque-origin gate, different call site) to actually work under `file://`, not just be
+exposed.
+
+**Why:** this fork exists to run real games' existing web code, not to browse the general
+web — there's no "untrusted third-party site" threat model here that the
+experimental/unstable split is protecting against (single bundled document, no navigation,
+see the toolbar/tab-removal entries). Upstream's own curation is a reasonable, already-vetted
+line to default this fork to, rather than either leaving real game APIs (WebGL2, WebGPU,
+OffscreenCanvas, Notifications, CSS Grid/Container Queries, etc.) off by default or
+re-deriving an equivalent list from scratch. Deliberately did **not** extend this to prefs
+outside that bundle (e.g. WebRTC, Web Animations, Screen Wake Lock, Bluetooth, Geolocation,
+Credential Management) despite some being plausibly game-relevant too — those aren't part of
+upstream's own vetted experimental set, so enabling them here would be this fork's own
+untested judgment call rather than reuse of an existing one; worth reconsidering
+individually, not automatically, if a real game needs one.
+
+**Side effects to know about when upgrading:** if a future Servo version changes
+`EXPERIMENTAL_PREFS`'s membership (adds/removes entries, or an entry graduates to stable and
+disappears from the list entirely), re-diff that list against this entry's 18 names rather
+than assuming they still match. Verified with `cargo check -p servo-config` (clean, and this
+crate has no heavy native deps so this check is fully trustworthy, unlike the `servo-script`
+caveat above). Not yet verified end-to-end against a real build.

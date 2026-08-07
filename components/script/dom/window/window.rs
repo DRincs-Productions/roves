@@ -1463,7 +1463,9 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
         // Step 2. Let map be the result of running obtain a session storage bottle map
         // with this's relevant settings object and "sessionStorage".
         // Step 3. If map is failure, then throw a "SecurityError" DOMException.
-        if !self.origin().is_tuple() {
+        // Roves: `can_access_storage()` instead of `is_tuple()` — see its doc comment in
+        // components/url/origin.rs for why `file://` documents are exempted here.
+        if !self.origin().can_access_storage() {
             return Err(Error::Security(Some(
                 "Cannot access sessionStorage from opaque origin.".to_string(),
             )));
@@ -1490,7 +1492,9 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
         // Step 2. Let map be the result of running obtain a local storage bottle map
         // with this's relevant settings object and "localStorage".
         // Step 3. If map is failure, then throw a "SecurityError" DOMException.
-        if !self.origin().is_tuple() {
+        // Roves: `can_access_storage()` instead of `is_tuple()` — see its doc comment in
+        // components/url/origin.rs for why `file://` documents are exempted here.
+        if !self.origin().can_access_storage() {
             return Err(Error::Security(Some(
                 "Cannot access localStorage from opaque origin.".to_string(),
             )));

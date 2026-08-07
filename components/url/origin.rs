@@ -161,6 +161,29 @@ impl ImmutableOrigin {
         )
     }
 
+    /// Kiosk/embedded fork: whether this origin is allowed to use Storage-Standard
+    /// storage (`localStorage`/`sessionStorage`/`indexedDB`) despite `file://` documents
+    /// being opaque origins (see `new_opaque_for_file`'s doc comment above).
+    ///
+    /// Per spec, opaque origins never get a storage shelf (`is_tuple()` alone gates it in
+    /// upstream) — correct for e.g. `data:`/`blob:`-without-origin, which really are
+    /// meant to be storage-isolated from everything, including each other. `file://` here
+    /// is different: `new_opaque_for_file` already made every `file://` document compare
+    /// as the *same* fixed origin (`FILE_ORIGIN_ID`) specifically because this fork only
+    /// ever opens one `file://` document at a time (the game's own bundled `dist/`), with
+    /// no navigation to any other origin — the same reasoning that made stabilizing the
+    /// origin safe there applies just as well to storage: there is no second `file://`
+    /// document around to leak into or collide with.
+    ///
+    /// Deliberately narrower than making `file://` a tuple origin outright (which would
+    /// also affect Cookie Store, CORS/same-origin checks, mixed content, etc. — see
+    /// `is_potentially_trustworthy` below for the one other spot this fork already carves
+    /// out a `file://` exception, for the same reason): this only lifts the storage
+    /// restriction, so everything else stays spec-strict.
+    pub fn can_access_storage(&self) -> bool {
+        self.is_tuple() || self.is_file_origin()
+    }
+
     pub fn is_for_data_worker_from_secure_context(&self) -> bool {
         matches!(
             self,
@@ -296,6 +319,11 @@ impl MutableOrigin {
 
     pub fn is_tuple(&self) -> bool {
         self.immutable().is_tuple()
+    }
+
+    /// See `ImmutableOrigin::can_access_storage`'s doc comment.
+    pub fn can_access_storage(&self) -> bool {
+        self.immutable().can_access_storage()
     }
 
     pub fn scheme(&self) -> Option<&str> {

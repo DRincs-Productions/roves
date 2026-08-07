@@ -1,0 +1,103 @@
+diff --git a/components/script/dom/globalscope/globalscope.rs b/components/script/dom/globalscope/globalscope.rs
+index 1ac4aac79eb..45c6d88f784 100644
+--- a/components/script/dom/globalscope/globalscope.rs
++++ b/components/script/dom/globalscope/globalscope.rs
+@@ -746,7 +746,9 @@ impl GlobalScope {
+         let key = self.obtain_storage_key_for_non_storage_purposes();
+ 
+         // Step 2: If key's origin is an opaque origin, then return failure.
+-        if let ImmutableOrigin::Opaque(_) = key {
++        // Roves: `can_access_storage()` instead of a blanket opaque-origin check — see its
++        // doc comment in components/url/origin.rs for why `file://` documents are exempted.
++        if !key.can_access_storage() {
+             return None;
+         }
+ 
+diff --git a/components/script/dom/window/window.rs b/components/script/dom/window/window.rs
+index ce02f59a629..615467e66a6 100644
+--- a/components/script/dom/window/window.rs
++++ b/components/script/dom/window/window.rs
+@@ -1463,7 +1463,9 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
+         // Step 2. Let map be the result of running obtain a session storage bottle map
+         // with this's relevant settings object and "sessionStorage".
+         // Step 3. If map is failure, then throw a "SecurityError" DOMException.
+-        if !self.origin().is_tuple() {
++        // Roves: `can_access_storage()` instead of `is_tuple()` — see its doc comment in
++        // components/url/origin.rs for why `file://` documents are exempted here.
++        if !self.origin().can_access_storage() {
+             return Err(Error::Security(Some(
+                 "Cannot access sessionStorage from opaque origin.".to_string(),
+             )));
+@@ -1490,7 +1492,9 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
+         // Step 2. Let map be the result of running obtain a local storage bottle map
+         // with this's relevant settings object and "localStorage".
+         // Step 3. If map is failure, then throw a "SecurityError" DOMException.
+-        if !self.origin().is_tuple() {
++        // Roves: `can_access_storage()` instead of `is_tuple()` — see its doc comment in
++        // components/url/origin.rs for why `file://` documents are exempted here.
++        if !self.origin().can_access_storage() {
+             return Err(Error::Security(Some(
+                 "Cannot access localStorage from opaque origin.".to_string(),
+             )));
+diff --git a/components/storage/client_storage.rs b/components/storage/client_storage.rs
+index 868ffaadca2..f263e250533 100644
+--- a/components/storage/client_storage.rs
++++ b/components/storage/client_storage.rs
+@@ -318,7 +318,10 @@ fn obtain_a_local_storage_shelf(
+     origin: &ImmutableOrigin,
+     tx: &Transaction,
+ ) -> Result<StorageShelf, String> {
+-    if !origin.is_tuple() {
++    // Roves: `can_access_storage()` instead of `is_tuple()` — see its doc comment in
++    // components/url/origin.rs for why `file://` documents are exempted here, same as
++    // the localStorage/indexedDB checks in window.rs/globalscope.rs.
++    if !origin.can_access_storage() {
+         return Err("Storage is unavailable for opaque origins".to_owned());
+     }
+ 
+diff --git a/components/url/origin.rs b/components/url/origin.rs
+index b238a67798c..3daca276a8a 100644
+--- a/components/url/origin.rs
++++ b/components/url/origin.rs
+@@ -161,6 +161,29 @@ impl ImmutableOrigin {
+         )
+     }
+ 
++    /// Kiosk/embedded fork: whether this origin is allowed to use Storage-Standard
++    /// storage (`localStorage`/`sessionStorage`/`indexedDB`) despite `file://` documents
++    /// being opaque origins (see `new_opaque_for_file`'s doc comment above).
++    ///
++    /// Per spec, opaque origins never get a storage shelf (`is_tuple()` alone gates it in
++    /// upstream) — correct for e.g. `data:`/`blob:`-without-origin, which really are
++    /// meant to be storage-isolated from everything, including each other. `file://` here
++    /// is different: `new_opaque_for_file` already made every `file://` document compare
++    /// as the *same* fixed origin (`FILE_ORIGIN_ID`) specifically because this fork only
++    /// ever opens one `file://` document at a time (the game's own bundled `dist/`), with
++    /// no navigation to any other origin — the same reasoning that made stabilizing the
++    /// origin safe there applies just as well to storage: there is no second `file://`
++    /// document around to leak into or collide with.
++    ///
++    /// Deliberately narrower than making `file://` a tuple origin outright (which would
++    /// also affect Cookie Store, CORS/same-origin checks, mixed content, etc. — see
++    /// `is_potentially_trustworthy` below for the one other spot this fork already carves
++    /// out a `file://` exception, for the same reason): this only lifts the storage
++    /// restriction, so everything else stays spec-strict.
++    pub fn can_access_storage(&self) -> bool {
++        self.is_tuple() || self.is_file_origin()
++    }
++
+     pub fn is_for_data_worker_from_secure_context(&self) -> bool {
+         matches!(
+             self,
+@@ -298,6 +321,11 @@ impl MutableOrigin {
+         self.immutable().is_tuple()
+     }
+ 
++    /// See `ImmutableOrigin::can_access_storage`'s doc comment.
++    pub fn can_access_storage(&self) -> bool {
++        self.immutable().can_access_storage()
++    }
++
+     pub fn scheme(&self) -> Option<&str> {
+         self.immutable().scheme()
+     }

@@ -404,7 +404,11 @@ impl Preferences {
             dom_adoptedstylesheet_enabled: false,
             dom_allow_preloading_module_descendants: false,
             dom_allow_scripts_to_close_windows: false,
-            dom_async_clipboard_enabled: false,
+            // Roves: on by default (upstream: false) — part of upstream's own
+            // EXPERIMENTAL_PREFS bundle (ports/servoshell/prefs.rs), always on here instead
+            // of opt-in via --enable-experimental-web-platform-features. See
+            // CUSTOMIZATIONS.md's "default-on experimental web platform features" entry.
+            dom_async_clipboard_enabled: true,
             dom_bluetooth_enabled: false,
             dom_bluetooth_testing_enabled: false,
             dom_canvas_capture_enabled: false,
@@ -419,27 +423,40 @@ impl Preferences {
             dom_document_dblclick_dist: 1,
             dom_document_dblclick_timeout: 300,
             dom_entries_api_enabled: false,
-            dom_exec_command_enabled: false,
-            dom_fontface_enabled: false,
+            // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the entry above.
+            dom_exec_command_enabled: true,
+            // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the entry above.
+            dom_fontface_enabled: true,
             dom_fullscreen_test: false,
             dom_gamepad_enabled: true,
             dom_geolocation_enabled: false,
             dom_wakelock_enabled: false,
-            dom_indexeddb_enabled: false,
-            dom_intersection_observer_enabled: false,
+            // Roves: on by default (upstream: false) — part of the EXPERIMENTAL_PREFS
+            // bundle *and* needed for file:// storage access, see the entry above.
+            dom_indexeddb_enabled: true,
+            // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the entry above.
+            dom_intersection_observer_enabled: true,
             dom_microdata_testing_enabled: false,
             dom_uievent_which_enabled: true,
             dom_mutation_observer_enabled: true,
-            dom_navigator_protocol_handlers_enabled: false,
-            dom_notification_enabled: false,
+            // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the entry above.
+            dom_navigator_protocol_handlers_enabled: true,
+            // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the entry above.
+            dom_notification_enabled: true,
             dom_parallel_css_parsing_enabled: true,
-            dom_offscreen_canvas_enabled: false,
-            dom_permissions_enabled: false,
+            // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the entry above.
+            dom_offscreen_canvas_enabled: true,
+            // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the entry above.
+            dom_permissions_enabled: true,
             dom_permissions_testing_allowed_in_nonsecure_contexts: false,
             dom_resize_observer_enabled: true,
-            dom_sanitizer_enabled: false,
+            // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the entry above.
+            dom_sanitizer_enabled: true,
             dom_script_asynch: true,
-            dom_storage_manager_api_enabled: false,
+            // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the entry above. Its
+            // own origin check (components/storage/client_storage.rs) uses
+            // `can_access_storage()` too, same as localStorage/indexedDB above.
+            dom_storage_manager_api_enabled: true,
             dom_serviceworker_enabled: false,
             dom_serviceworker_timeout_seconds: 60,
             dom_sharedworker_enabled: true,
@@ -464,8 +481,15 @@ impl Preferences {
                 cfg!(target_env = "ohos"),
             dom_transient_activation_duration_ms: 5000,
             dom_web_animations_enabled: false,
-            dom_webgl2_enabled: false,
-            dom_webgpu_enabled: false,
+            // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the entry above. Also
+            // the WebGL version both PixiJS and Three.js probe for first (see
+            // ../test-page/src/GpuInfoPanel.tsx) — off by default meant this fork's own
+            // diagnostics page could never see a real WebGL2 context.
+            dom_webgl2_enabled: true,
+            // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the entry above. The
+            // `webgpu` Cargo feature is already compiled in by default
+            // (ports/servoshell/Cargo.toml) — this was the matching DOM-exposure pref.
+            dom_webgpu_enabled: true,
             dom_webgpu_wgpu_backend: String::new(),
             dom_webrtc_enabled: false,
             dom_webrtc_transceiver_enabled: false,
@@ -532,17 +556,27 @@ impl Preferences {
             js_wasm_ion_enabled: true,
             largest_contentful_paint_enabled: false,
             layout_animations_test_enabled: false,
-            layout_columns_enabled: false,
-            layout_container_queries_enabled: false,
-            layout_css_attr_enabled: false,
-            layout_grid_enabled: false,
+            // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the
+            // dom_async_clipboard_enabled entry above.
+            layout_columns_enabled: true,
+            // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the
+            // dom_async_clipboard_enabled entry above.
+            layout_container_queries_enabled: true,
+            // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the
+            // dom_async_clipboard_enabled entry above.
+            layout_css_attr_enabled: true,
+            // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the
+            // dom_async_clipboard_enabled entry above.
+            layout_grid_enabled: true,
             layout_style_sharing_cache_enabled: true,
             // TODO(mrobinson): This should likely be based on the number of processors.
             layout_threads: 3,
             layout_parallelism_job_count_minimum: 4,
             layout_parallelism_job_size_minimum: 16,
             layout_unimplemented: false,
-            layout_variable_fonts_enabled: false,
+            // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the
+            // dom_async_clipboard_enabled entry above.
+            layout_variable_fonts_enabled: true,
             layout_writing_mode_enabled: false,
             media_glvideo_enabled: false,
             media_testing_enabled: false,

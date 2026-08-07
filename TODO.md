@@ -74,8 +74,9 @@ reale** su ciascuna piattaforma della matrice CI (Windows/macOS/Linux) — non a
 `0007-stable-file-origin-for-module-script-loading`). **Verificato end-to-end il
 2026-08-07**: `../test-page/` (bundle Vite multi-chunk, script esterno) carica ed esegue
 correttamente su una build reale — niente più schermata bianca, i pulsanti diagnostici
-rispondono. Quel test reale ha però scoperto una conseguenza dell'origine opaca che resta:
-vedi il punto 6b sotto.
+rispondono. Quel test reale aveva scoperto una conseguenza dell'origine opaca su
+`localStorage`/`sessionStorage`/`indexedDB` (più clipboard, causa indipendente) — risolto,
+vedi la voce del 2026-08-07 in `CUSTOMIZATIONS.md`.
 
 Causa: `ImmutableOrigin::new_opaque_for_file()` in `components/url/origin.rs` generava un
 UUID casuale nuovo ad ogni chiamata per gli URL `file://`, quindi due chiamate a `.origin()`
@@ -101,44 +102,6 @@ distribuita continuerà ad avere questo identico bug, non toccata da questa patc
 Prossimi passi: una volta risolto anche il punto 1, ripetere la verifica con il `dist/`
 reale del gioco (non solo `../test-page/`).
 
-## 6b. Storage (`localStorage`/`indexedDB`) inutilizzabile su contenuto `file://` — limite strutturale, non un bug della patch del punto 6
-
-**Scoperto:** 2026-08-07, testando `../test-page/` su una build reale — `DiagnosticsPanel`/
-`StorageButton` riportano `SecurityError: Cannot access localStorage from opaque origin.`;
-`IndexedDbButton` fallisce nello stesso modo.
-
-**Causa:** il fix del punto 6 rende l'origine `file://` *stabile* (stesso id fisso ad ogni
-chiamata), ma resta comunque un'origine **opaca** (`ImmutableOrigin::Opaque`, non `Tuple`) —
-`ImmutableOrigin::new()` in `components/url/origin.rs` tratta `file://` come opaco a
-prescindere, e `components/script/dom/storage/storagemanager.rs` (righe 136/181/237) nega
-esplicitamente qualunque storage shelf per origini opache: `"Storage is unavailable for
-opaque origins"`. Questo è comportamento voluto dallo Storage Standard, non un difetto della
-patch del punto 6 — nessuna origine opaca, in nessun browser conforme, può avere
-`localStorage`/`indexedDB`/Cache API. Non è quindi "risolvibile" restando su `file://`.
-
-**Perché conta per Roves:** un gioco web tipico usa `localStorage`/`indexedDB` per i
-salvataggi. Se il bundle viene aperto come oggi (`file://`, via `--content-dir`/
-`--html-file` di `./mach bundle`), i salvataggi lato-storage **non funzioneranno mai**, su
-nessuna piattaforma — non è un bug da aspettare che si risolva, è strutturale a `file://`.
-
-**Possibile via d'uscita (non implementata, da valutare):** servire il bundle tramite uno
-schema custom con un host (es. `resource://app/index.html` invece di
-`resource:///percorso`, o un nuovo schema dedicato) invece che `file://`. Un `ProtocolHandler`
-del genere esiste già come pattern (`protocols/resource.rs`), ma oggi non ha host e comunque
-`ImmutableOrigin::new()` delegherebbe a `url.origin()`, che per uno schema non "speciale"
-(non in ftp/file/http/https/ws/wss) ritorna comunque opaco — servirebbe un secondo
-special-case in `origin.rs`, analogo a quello già presente per `file`, che costruisca un
-`ImmutableOrigin::Tuple` per quello schema. Non fatto: è una scelta architetturale (aggiunge
-un'origine "vera" navigabile, da valutare rispetto al modello kiosk single-document attuale),
-non un fix a riga singola.
-
-**Nota collaterale:** anche `navigator.clipboard` è risultato `undefined` nello stesso test —
-causa diversa, non legata all'origine: è dietro il pref Servo `dom_async_clipboard_enabled`
-(`components/config/prefs.rs:407`), `false` di default upstream, più `[SecureContext]` nel
-WebIDL (`Navigator.webidl:77`). Si abilita passando `--pref dom_async_clipboard_enabled=true`
-al lancio di `servoshell`; se serve acceso di default per i giochi Roves, è un candidato per
-un futuro override dei pref di default in questo fork (non fatto).
-
 ## Note
 
 - Punto risolto nella sessione del 2026-08-06: stato di navigazione browser morto
@@ -147,3 +110,12 @@ un futuro override dei pref di default in questo fork (non fatto).
   Lasciato intenzionalmente intatto `browser_tab`/`toolbar_button`: sono dead code senza
   alcun chiamante, già eliminati dal compilatore nelle build di release, quindi rimuoverli
   non avrebbe alcun effetto sul pacchetto di gioco finale.
+- Punto risolto nella sessione del 2026-08-07: `localStorage`/`sessionStorage`/`indexedDB`/
+  `navigator.storage` bloccati dall'origine opaca di `file://` — vedi `CUSTOMIZATIONS.md`,
+  patch `0008-allow-storage-for-file-origin`. Insieme a questo, tutti i 18 pref del bundle
+  `EXPERIMENTAL_PREFS` di upstream (clipboard, IndexedDB, WebGL2, WebGPU, OffscreenCanvas,
+  Notifications, CSS Grid/Container Queries, ecc.) sono ora accesi di default — vedi patch
+  `0009-default-on-experimental-web-platform-prefs`. Non ancora verificato end-to-end su una
+  build reale (solo `cargo check` sui crate coinvolti, e `servo-script` non è stato
+  verificabile in questa sandbox — vedi caveat nella voce 0008 di `CUSTOMIZATIONS.md`) —
+  stesso caveat delle altre voci di questo file in attesa del punto 1 (build patchata reale).

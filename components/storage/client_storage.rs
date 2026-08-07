@@ -318,7 +318,10 @@ fn obtain_a_local_storage_shelf(
     origin: &ImmutableOrigin,
     tx: &Transaction,
 ) -> Result<StorageShelf, String> {
-    if !origin.is_tuple() {
+    // Roves: `can_access_storage()` instead of `is_tuple()` — see its doc comment in
+    // components/url/origin.rs for why `file://` documents are exempted here, same as
+    // the localStorage/indexedDB checks in window.rs/globalscope.rs.
+    if !origin.can_access_storage() {
         return Err("Storage is unavailable for opaque origins".to_owned());
     }
 
