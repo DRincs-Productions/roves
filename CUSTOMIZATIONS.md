@@ -553,3 +553,144 @@ disappears from the list entirely), re-diff that list against this entry's 18 na
 than assuming they still match. Verified with `cargo check -p servo-config` (clean, and this
 crate has no heavy native deps so this check is fully trustworthy, unlike the `servo-script`
 caveat above). Not yet verified end-to-end against a real build.
+
+---
+
+## 2026-08-07 — Disable the right-click context menu entirely
+
+**Files:** `ports/servoshell/desktop/dialog.rs`, `ports/servoshell/desktop/headed_window.rs`.
+
+**Patch:** `patches/servo-v0.4.0/0010-disable-context-menu-popup.patch`
+
+**Upstream behavior:** right-clicking web content sends `EmbedderControl::ContextMenu` to the
+embedder (`show_embedder_control` in `headed_window.rs`), which built a `Dialog::ContextMenu`
+(`dialog.rs`) and rendered it as an `egui` popup — a browser-style menu (Back/Forward/Reload/
+Copy Link/Open in New View/Cut/Copy/Paste/Select All, contextually filtered).
+
+**Change:** `EmbedderControl::ContextMenu(prompt)` in `headed_window.rs` now just `drop(prompt)`
+instead of building and showing a `Dialog`. `ContextMenu::drop` (`components/servo/
+webview_delegate.rs`, unmodified) already sends the "no selection" response when a `ContextMenu`
+is dropped without an explicit `select`/`dismiss` call, so this is a correct, immediate dismissal
+from Servo's point of view — not a hang or a leaked request. With the only call site gone, the
+entire `Dialog::ContextMenu` implementation in `dialog.rs` became dead code and was deleted
+outright rather than left unreachable: the enum variant, its `update()` match arm (the `egui`
+`Area`/`Frame` popup rendering and per-item button logic), its `embedder_control_id()` arm, and
+the `new_context_menu` constructor. The now-unused bare `egui` imports (`Area`, `Button`,
+`CornerRadius`, `Frame`, `Id`, `Order`, `Sense`, `Stroke`, `Vec2`, `pos2`) and `servo::{ContextMenu,
+ContextMenuItem}` were removed from `dialog.rs`'s `use` statements accordingly — everything else
+in that file still uses `Modal`/`RichText` and fully-qualified `egui::` paths for the pieces it
+still needs, so those two stayed.
+
+**Why:** [`TODO.md`](./TODO.md) point 2 — a videogame using this fork has no use for a
+browser-style right-click menu, and entries like "View Source" or "Inspect" make no sense
+outside an actual browser and would break immersion. Decided to disable it outright rather than
+replace it with a custom menu (no game-relevant right-click actions were identified).
+
+**Side effects to know about when upgrading:** if a future Servo version adds new
+`ContextMenuAction`/`ContextMenuItem` variants, no code here needs updating — the menu is never
+constructed at all, so nothing consumes those enums in this fork. **Not verified against an
+actual `cargo check -p servoshell --bin servoshell`/`./mach build`**: this session's
+`cargo check` got past a stale `webrender` build-script cache left over from before this
+checkout was renamed/relocated (unrelated to this change — see the entry below), but then hit
+`mozangle`'s (a `components/servo`/`components/script` dependency needed to build *any*
+`servoshell` binary, on every platform, regardless of this change) `bindgen`-based build script
+failing with "Unable to find libclang" — no `libclang.so` is installed in this sandbox and
+`apt install libclang-dev` needs interactive `sudo` auth this session doesn't have. Same
+category of gap as the `servo-script`/`llvm-objdump` caveat on the 2026-08-07 storage-access
+entry above: a toolchain gap in *this* environment, not evidence of a code problem. What *was*
+verified: all three edits (this entry and the two below) were applied with `patch -p1
+--forward` to a fresh, unmodified extraction of the `v0.4.0` tag's `dialog.rs`/
+`headed_window.rs`, applied cleanly with no fuzz/offset warnings, and the patched result was
+byte-for-byte diffed against this fork's actual working copy of both files with zero
+differences — so the patches are known to faithfully reproduce this exact change, even though
+the change itself hasn't been compiler-checked here. Treat an actual build (with `libclang`
+available) as the real verification before relying on this compiling.
+
+---
+
+## 2026-08-07 — Remove the page-reload keyboard shortcuts
+
+**File:** `ports/servoshell/desktop/headed_window.rs`, `notify_input_event_handled` (was line
+1061-1064 in the `v0.4.0` baseline).
+
+**Patch:** `patches/servo-v0.4.0/0011-remove-page-reload-shortcuts.patch`
+
+**Upstream behavior:** `Cmd`/`Ctrl+R` and `F5` both called `webview.reload()` unconditionally.
+
+**Change:** both shortcut registrations removed from the `ShortcutMatcher` chain. Nothing else
+in `notify_input_event_handled` references them; the zoom shortcuts immediately above are
+untouched.
+
+**Why:** [`TODO.md`](./TODO.md) point 3 — reloading resets whatever in-memory game state the
+page has built up (this fork has no navigation history/session-restore concept to fall back on),
+so an accidental `Ctrl+R`/`F5` is pure data loss for a player, with no equivalent "refresh the
+page" use case a game needs. The right-click menu's own `Reload` entry is covered separately by
+the 2026-08-07 context-menu removal above (the menu that would have offered it no longer exists
+at all).
+
+**Side effects to know about when upgrading:** `UserInterfaceCommand::Reload`/`ReloadAll` (
+`running_app_state.rs`) and `WebView::reload()` itself are deliberately left alone — they're
+still reachable from the `roves-api`/Android-embedding-style `egl::App::reload()` public API
+(`ports/servoshell/egl/app.rs`) used by native host code on those targets, which is out of scope
+for this entry (see `TODO.md` point 3's framing: keyboard/menu/gesture, not the embedding API
+surface). Only the desktop keyboard entry points a player can trigger directly were removed.
+**Not verified against an actual build** — same `libclang`/`mozangle` sandbox gap as the
+context-menu entry above; verified the same way instead (patch applies cleanly to a pristine
+`v0.4.0` `headed_window.rs` and reproduces this fork's actual file byte-for-byte).
+
+---
+
+## 2026-08-07 — Remove all back/forward history navigation
+
+**File:** `ports/servoshell/desktop/headed_window.rs` (keyboard shortcuts, was line 384-405 in
+the `v0.4.0` baseline; mouse side-button handling, was line 603-618).
+
+**Patch:** `patches/servo-v0.4.0/0012-remove-back-forward-navigation.patch`
+
+**Upstream behavior:** `Cmd/Ctrl+Alt+Right`/`Cmd/Ctrl+]` called `active_webview.go_forward(1)`,
+`Cmd/Ctrl+Alt+Left`/`Cmd/Ctrl+[` called `active_webview.go_back(1)`, and pressing the mouse's
+side "Forward"/"Back" buttons (`winit::event::MouseButton::Forward`/`Back`) queued
+`UserInterfaceCommand::Forward`/`Back`, which `window.rs`'s `handle_interface_commands` resolves
+to the same `go_forward`/`go_back` calls.
+
+**Change:** the four keyboard shortcut registrations were removed from the `ShortcutMatcher`
+chain (replaced with an explanatory comment, no replacement binding), which left the
+`CMD_OR_ALT` import unused and it was removed too. The `MouseButton::Forward` and
+`MouseButton::Back` match arms were merged into a single arm that still sets `consumed = true`
+(so the button press doesn't fall through to `egui`/the page) but no longer queues a navigation
+command — the side buttons are now inert rather than triggering history navigation.
+
+**Why:** [`TODO.md`](./TODO.md) point 4 — for a game, navigating "back" out of the page's
+current state can silently and completely break whatever the game was doing (no browser chrome
+exists to explain what happened or offer "forward" as a recovery). This needed covering across
+every input path a player could trigger it from: the keyboard shortcuts here, the mouse side
+buttons here, and the context menu's own `GoBack`/`GoForward` entries, which are covered by the
+2026-08-07 context-menu removal above (that menu no longer exists to offer them).
+
+**Side effects to know about when upgrading:** same scope note as the reload entry above —
+`UserInterfaceCommand::Back`/`Forward`, `WebView::go_back`/`go_forward`, and the `egl::App`
+public API's `go_back()`/`go_forward()` (used by native host code embedding this engine, e.g. on
+Android/OpenHarmony) are deliberately untouched; only the desktop player-facing input paths were
+disabled. If a future Servo version adds another way to reach back/forward navigation from
+player input (a new gesture, a new named key), re-apply the same reasoning to it. **Not
+verified against an actual build** — same `libclang`/`mozangle` sandbox gap as the two entries
+above; verified the same way instead (patch applies cleanly to a pristine `v0.4.0`
+`headed_window.rs` and reproduces this fork's actual file byte-for-byte).
+
+---
+
+## 2026-08-07 — Aside: stale `webrender` build-script cache after this checkout was relocated
+
+Not a patch, not a customization — a note for whoever next runs `cargo check`/`./mach build` in
+this exact checkout. `webrender`'s build script had previously generated
+`target/debug/build/webrender-*/out/shaders.rs` containing `include_str!("/home/simone/
+template/pixi-vn-react-template/servo/target/...")` — an absolute path baked in from before this
+directory was relocated/renamed to its current path. `cargo check -p servoshell` therefore failed
+immediately with "No such file or directory" for every shader, unrelated to any Servo source
+change. Fixed for this checkout with `cargo clean -p webrender` (forces the build script to
+rerun and regenerate `shaders.rs` with the current, correct path). Not a code change, so no
+patch/entry beyond this note — but worth knowing if a fresh `cargo check` mysteriously fails on
+`webrender` shaders again after moving/copying this checkout. Clearing that cache unblocked
+`webrender` but exposed a second, independent gap right behind it — see the `libclang`/
+`mozangle` caveat repeated on all three entries above — so `cargo check -p servoshell --bin
+servoshell` still doesn't currently complete in this particular sandbox even with this fixed.

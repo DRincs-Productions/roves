@@ -25,36 +25,7 @@ quel file). Le opzioni sono, in ordine di probabile complessità:
   `CLAUDE.md`) e far scaricare a `embedded.yml` gli artifact di build di quel repo;
 - oppure integrare uno step di build-from-source direttamente dentro `embedded.yml` stesso.
 
-## 2. Rimuovere il popup del menu contestuale (tasto destro) in `dialog.rs`
-
-`Dialog::ContextMenu` in `ports/servoshell/desktop/dialog.rs` espone un menu tasto-destro in
-stile browser (Back/Forward/Reload/View Source/Inspect...). Per un videogioco questo è
-indesiderato: rompe l'immersione e espone voci come "View Source" che non hanno senso fuori
-da un browser.
-
-**Deciso:** disabilitarlo del tutto (no-op sul tasto destro), non sostituirlo con un menu
-alternativo. Non ancora toccato — nessuna patch esiste per questo punto.
-
-## 3. Rimuovere la possibilità di effettuare il reload della pagina
-
-Per un videogioco il reload della pagina (scorciatoia da tastiera e/o voce di menu) è
-indesiderato: può resettare stato di gioco in modo inatteso. Da individuare dove il reload è
-attualmente esposto (es. `Dialog::ContextMenu` in `ports/servoshell/desktop/dialog.rs`,
-eventuali keybinding come Ctrl+R/F5) e disabilitarlo. Non ancora toccato — nessuna patch
-esiste per questo punto.
-
-## 4. Rimuovere del tutto la possibilità di navigazione "indietro"
-
-L'utente non deve poter tornare a una pagina precedente in nessun modo (scorciatoie da
-tastiera, gesture del trackpad/mouse, ecc.) — per un videogioco tornare "indietro"
-può rompere completamente lo stato di gioco. Da `CUSTOMIZATIONS.md` (voce del 2026-08-06
-sulla rimozione dello stato di navigazione morto da `gui.rs`): la navigazione back/forward
-reale (Alt+freccia sinistra/destra, ecc.) chiama `WebView::go_back`/`go_forward` direttamente
-in `headed_window.rs`, bypassando `Gui` — è lì che va cercato e disabilitato il keybinding,
-oltre a qualunque voce "Back" rimasta nel menu contestuale (vedi punto 2 sopra). Non ancora
-toccato — nessuna patch esiste per questo punto.
-
-## 5. Verificare che la GPU venga usata correttamente (no fallback software)
+## 2. Verificare che la GPU venga usata correttamente (no fallback software)
 
 Da verificare che questa build di Servo usi effettivamente l'accelerazione hardware per il
 rendering (WebGL/WebGPU) e non finisca su un fallback software (es. llvmpipe/SwiftShader),
@@ -68,7 +39,7 @@ esattamente il "quale renderer/GPU viene effettivamente riportato" che mancava. 
 fare: controllare i log di Servo/ANGLE al lancio, e soprattutto **verificarlo su una build
 reale** su ciascuna piattaforma della matrice CI (Windows/macOS/Linux) — non ancora fatto.
 
-## 6. Schermata bianca su contenuto `file://` — causa risolta in questo fork, ma non ancora nella build "embedded" reale
+## 3. Schermata bianca su contenuto `file://` — causa risolta in questo fork, ma non ancora nella build "embedded" reale
 
 **Stato:** causa individuata e patchata in questo fork (vedi `CUSTOMIZATIONS.md`, patch
 `0007-stable-file-origin-for-module-script-loading`). **Verificato end-to-end il
@@ -102,6 +73,57 @@ distribuita continuerà ad avere questo identico bug, non toccata da questa patc
 Prossimi passi: una volta risolto anche il punto 1, ripetere la verifica con il `dist/`
 reale del gioco (non solo `../test-page/`).
 
+## 4. Rinominare da "Servo" a "Roves" tutte le label rivolte all'utente/OS
+
+**Stato:** noto, non ancora fatto.
+
+Questo fork si chiama Roves, ma diverse stringhe rivolte all'utente o al sistema operativo
+dicono ancora "Servo" (nome upstream). Punti noti da sistemare:
+
+- `ports/servoshell/desktop/headed_window.rs`: `INITIAL_WINDOW_TITLE` (titolo finestra
+  principale, `"Servo"`), titolo finestra XR (`"Servo XR"`), `with_name("org.servo.Servo",
+  "Servo")` (app id/nome per il window manager Linux/Wayland).
+- `ports/servoshell/desktop/webxr.rs`: `OpenXrAppInfo::new("Servoshell", 0, "Servo", 0)`.
+- `resources/org.servo.Servo.desktop`: `Name=Servo`, `Icon=servo`, entry point `.desktop`
+  per Linux — da rinominare/rifare anche il file stesso (nome file, app id).
+- `python/servo/post_build_commands.py` (comando `mach bundle`, vedi `CUSTOMIZATIONS.md`
+  patch `0004-add-mach-bundle-command`): bundle macOS di default chiamato `Servo.app`,
+  `CFBundleName`/`CFBundleDisplayName` in `Info.plist` = `Servo`, launcher interno
+  `Contents/MacOS/Servo`.
+- `ports/servoshell/prefs.rs`: la cartella di config utente su disco si chiama `Servo`
+  (`config_dir.push("Servo")`, usata due volte) — **attenzione**: rinominarla sposta dove
+  Servo/Roves legge/scrive preferenze e (potenzialmente) dati persistenti esistenti; da
+  valutare se serve una migrazione o se è accettabile perdere/non trovare più config vecchie
+  già scritte in `.../Servo/`.
+
+Da verificare anche se esistono altre occorrenze (icone, changelog utente, messaggi di
+errore mostrati a schermo) oltre a queste già individuate con una ricerca mirata — non fatta
+una ricerca esaustiva di tutte le occorrenze di "Servo" nel codice (moltissime sono commenti/
+nomi interni legittimi che non vanno toccati, es. licenze, nomi di crate upstream, commenti
+storici — solo le label effettivamente visibili all'utente finale o all'OS vanno rinominate).
+
+**Da fare insieme a questo punto: rinominare il binario/crate `servoshell` in `rovesshell`.**
+Più invasivo delle sole label sopra — non è solo testo mostrato all'utente, è il nome del
+pacchetto Cargo e del binario prodotto dalla build:
+
+- `ports/servoshell/Cargo.toml`: `[package] name = "servoshell"`, `[lib] name = "servoshell"`,
+  `[[bin]] name = "servoshell"`.
+- root `Cargo.toml`: membro workspace `"ports/servoshell"` e `default-members`.
+- la cartella stessa `ports/servoshell/` (nome directory).
+- ogni riferimento a `servoshell`/`servoshell.exe` nei comandi `mach` (`./mach build`,
+  `./mach run`, `./mach bundle` — vedi `CUSTOMIZATIONS.md` patch `0004-add-mach-bundle-command`),
+  in `../.github/workflows/embedded.yml` (`SERVO_TAG`/download del binario), e in
+  `resources/org.servo.Servo.desktop` (`Exec=.../servoshell %u`, vedi sopra).
+- **Da spiegare nel `README.md`** (root del progetto): oggi il README già usa "Roves (an
+  anagram of Servo)" come framing, ma nomina `servoshell`/percorsi `ports/servoshell/` più
+  volte dando per scontato quel nome — se si rinomina il binario, il README va aggiornato di
+  conseguenza e dovrebbe spiegare esplicitamente il cambio nome (`servoshell` → `rovesshell`)
+  per chi viene dall'upstream Servo e si aspetta quel nome.
+
+Non ancora fatto nessuno dei due (rename label + rename binario/crate): entrambi vanno
+affrontati nella stessa sessione per evitare che riferimenti a `servoshell`/`"Servo"` restino
+inconsistenti tra codice, `mach`, CI e documentazione.
+
 ## Note
 
 - Punto risolto nella sessione del 2026-08-06: stato di navigazione browser morto
@@ -119,3 +141,27 @@ reale del gioco (non solo `../test-page/`).
   build reale (solo `cargo check` sui crate coinvolti, e `servo-script` non è stato
   verificabile in questa sandbox — vedi caveat nella voce 0008 di `CUSTOMIZATIONS.md`) —
   stesso caveat delle altre voci di questo file in attesa del punto 1 (build patchata reale).
+- Punto risolto nella sessione del 2026-08-07: menu contestuale (tasto destro) disabilitato
+  del tutto, no-op, nessun menu alternativo — vedi `CUSTOMIZATIONS.md`, patch
+  `0010-disable-context-menu-popup`. `Dialog::ContextMenu` (rendering, costruttore, variante)
+  rimosso interamente da `dialog.rs` in quanto diventato dead code.
+- Punto risolto nella sessione del 2026-08-07: scorciatoie di reload (`Ctrl+R`/`F5`) rimosse
+  da `headed_window.rs` — vedi `CUSTOMIZATIONS.md`, patch
+  `0011-remove-page-reload-shortcuts`. Lasciata intenzionalmente intatta l'API di embedding
+  nativo (`egl::App::reload()`, Android/OpenHarmony), fuori scope.
+- Punto risolto nella sessione del 2026-08-07: navigazione "indietro"/"avanti" rimossa da
+  tutti gli input path lato giocatore — scorciatoie da tastiera e pulsanti laterali del mouse
+  in `headed_window.rs` — vedi `CUSTOMIZATIONS.md`, patch
+  `0012-remove-back-forward-navigation`. Le voci equivalenti nel menu contestuale sono coperte
+  dalla rimozione del menu stesso, sopra. Stessa nota di scope: API di embedding nativo
+  (`egl::App::go_back`/`go_forward`) lasciata intatta.
+  Nessuna di queste tre voci è stata verificata contro una build reale in questa sessione:
+  `cargo check -p servoshell` in questa sandbox non completa per una lacuna di toolchain
+  preesistente e indipendente da queste modifiche (manca `libclang` per la build script di
+  `mozangle`, necessaria per qualunque binario `servoshell` su qualsiasi piattaforma — vedi
+  `CUSTOMIZATIONS.md`). Verificate invece applicando le tre patch in sequenza contro
+  un'estrazione pristine del tag `v0.4.0` e confrontando byte-per-byte il risultato con la
+  copia di lavoro di questo fork — le patch riproducono fedelmente la modifica, ma il codice
+  non è stato controllato dal compilatore in questa sessione. Stesso caveat delle altre voci
+  di questo file in attesa del punto 1 (build patchata reale) e di un ambiente con `libclang`
+  disponibile.
