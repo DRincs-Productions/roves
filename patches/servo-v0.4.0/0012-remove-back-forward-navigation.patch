@@ -1,0 +1,68 @@
+diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/desktop/headed_window.rs
+index f318159..b6d6555 100644
+--- a/ports/servoshell/desktop/headed_window.rs
++++ b/ports/servoshell/desktop/headed_window.rs
+@@ -46,7 +46,7 @@ use {
+ };
+ 
+ use super::geometry::{winit_position_to_euclid_point, winit_size_to_euclid_size};
+-use super::keyutils::{CMD_OR_ALT, keyboard_event_from_winit};
++use super::keyutils::keyboard_event_from_winit;
+ use crate::desktop::accelerated_gl_media::setup_gl_accelerated_media;
+ use crate::desktop::dialog::Dialog;
+ use crate::desktop::event_loop::AppEvent;
+@@ -381,28 +381,9 @@ impl HeadedWindow {
+             .shortcut(Modifiers::CONTROL, Key::Named(NamedKey::F12), || {
+                 active_webview.toggle_webrender_debugging(WebRenderDebugOption::Profiler);
+             })
+-            .shortcut(CMD_OR_ALT, Key::Named(NamedKey::ArrowRight), || {
+-                active_webview.go_forward(1);
+-            })
+-            .optional_shortcut(
+-                cfg!(not(target_os = "windows")),
+-                CMD_OR_CONTROL,
+-                ']',
+-                || {
+-                    active_webview.go_forward(1);
+-                },
+-            )
+-            .shortcut(CMD_OR_ALT, Key::Named(NamedKey::ArrowLeft), || {
+-                active_webview.go_back(1);
+-            })
+-            .optional_shortcut(
+-                cfg!(not(target_os = "windows")),
+-                CMD_OR_CONTROL,
+-                '[',
+-                || {
+-                    active_webview.go_back(1);
+-                },
+-            )
++            // Back/forward history navigation (Cmd/Ctrl+Alt+Left/Right, Cmd/Ctrl+[/]) is
++            // intentionally not bound to a shortcut here: a player navigating "back" out of
++            // the game's page can silently destroy in-game state.
+             .optional_shortcut(
+                 self.get_fullscreen(),
+                 Modifiers::empty(),
+@@ -602,18 +583,12 @@ impl HeadedWindow {
+             },
+             WindowEvent::MouseInput {
+                 state: ElementState::Pressed,
+-                button: MouseButton::Forward,
+-                ..
+-            } => {
+-                window.queue_user_interface_command(UserInterfaceCommand::Forward);
+-                consumed = true;
+-            },
+-            WindowEvent::MouseInput {
+-                state: ElementState::Pressed,
+-                button: MouseButton::Back,
++                button: MouseButton::Forward | MouseButton::Back,
+                 ..
+             } => {
+-                window.queue_user_interface_command(UserInterfaceCommand::Back);
++                // Mouse "back"/"forward" side buttons are swallowed rather than triggering
++                // history navigation, for the same reason the keyboard shortcuts and context
++                // menu entries are disabled: navigating away can silently destroy game state.
+                 consumed = true;
+             },
+             WindowEvent::MouseWheel { .. } | WindowEvent::MouseInput { .. }

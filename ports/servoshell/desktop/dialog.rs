@@ -4,17 +4,15 @@
 
 use std::path::Path;
 
-use egui::{
-    Area, Button, CornerRadius, Frame, Id, Modal, Order, RichText, Sense, Stroke, Vec2, pos2,
-};
+use egui::{Modal, RichText};
 use egui_file_dialog::{DialogState, FileDialog as EguiFileDialog, Filter};
 use euclid::Length;
 use log::{error, warn};
 use servo::{
     AlertDialog, AuthenticationRequest, BluetoothDeviceSelectionRequest, ColorPicker,
-    ConfirmDialog, ContextMenu, ContextMenuItem, DeviceIndependentPixel, EmbedderControlId,
-    FilePicker, PermissionRequest, PromptDialog, RgbColor, SelectElement, SelectElementOption,
-    SelectElementOptionOrOptgroup, SimpleDialog,
+    ConfirmDialog, DeviceIndependentPixel, EmbedderControlId, FilePicker, PermissionRequest,
+    PromptDialog, RgbColor, SelectElement, SelectElementOption, SelectElementOptionOrOptgroup,
+    SimpleDialog,
 };
 
 /// The minimum width of many UI elements including dialog boxes and menus,
@@ -50,10 +48,6 @@ pub enum Dialog {
     ColorPicker {
         current_color: egui::Color32,
         maybe_prompt: Option<ColorPicker>,
-        toolbar_offset: Length<f32, DeviceIndependentPixel>,
-    },
-    ContextMenu {
-        menu: Option<ContextMenu>,
         toolbar_offset: Length<f32, DeviceIndependentPixel>,
     },
 }
@@ -640,81 +634,6 @@ impl Dialog {
 
                 is_open
             },
-            Dialog::ContextMenu {
-                menu,
-                toolbar_offset,
-            } => {
-                let mut is_open = true;
-                if let Some(context_menu) = menu {
-                    let mut selected_action = None;
-                    let mut position = context_menu.position();
-                    position.min.y += toolbar_offset.0 as i32;
-                    position.max.y += toolbar_offset.0 as i32;
-
-                    let response = Area::new(Id::new("context_menu"))
-                        .fixed_pos(pos2(position.min.x as f32, position.min.y as f32))
-                        .order(Order::Foreground)
-                        .show(ctx, |ui| {
-                            Frame::popup(ui.style()).show(ui, |ui| {
-                                ui.set_min_width(MINIMUM_UI_ELEMENT_WIDTH);
-                                for item in context_menu.items() {
-                                    match item {
-                                        ContextMenuItem::Item {
-                                            label,
-                                            action,
-                                            enabled,
-                                        } => {
-                                            let (color, sense) = match enabled {
-                                                true => (
-                                                    ui.visuals().strong_text_color(),
-                                                    Sense::click(),
-                                                ),
-                                                false => {
-                                                    (ui.visuals().weak_text_color(), Sense::empty())
-                                                },
-                                            };
-
-                                            ui.style_mut().visuals.widgets.inactive.weak_bg_fill =
-                                                ui.visuals().panel_fill;
-                                            ui.style_mut().visuals.widgets.inactive.bg_fill =
-                                                ui.visuals().panel_fill;
-                                            let button =
-                                                Button::new(RichText::new(label).color(color))
-                                                    .sense(sense)
-                                                    .corner_radius(CornerRadius::ZERO)
-                                                    .stroke(Stroke::NONE)
-                                                    .wrap_mode(egui::TextWrapMode::Extend)
-                                                    .min_size(Vec2 {
-                                                        x: MINIMUM_UI_ELEMENT_WIDTH,
-                                                        y: 0.0,
-                                                    });
-
-                                            if ui.add(button).clicked() {
-                                                selected_action = Some(*action);
-                                                ui.close();
-                                            }
-                                        },
-                                        ContextMenuItem::Separator => {
-                                            ui.separator();
-                                        },
-                                    }
-                                }
-                            })
-                        });
-
-                    if response.response.clicked_elsewhere() {
-                        is_open = false;
-                    }
-
-                    if let Some(action) = selected_action &&
-                        let Some(context_menu) = menu.take()
-                    {
-                        context_menu.select(action);
-                        return false;
-                    }
-                }
-                is_open
-            },
         }
     }
 
@@ -726,18 +645,7 @@ impl Dialog {
             Dialog::ColorPicker { maybe_prompt, .. } => {
                 maybe_prompt.as_ref().map(|element| element.id())
             },
-            Dialog::ContextMenu { menu, .. } => menu.as_ref().map(|menu| menu.id()),
             _ => None,
-        }
-    }
-
-    pub(crate) fn new_context_menu(
-        menu: ContextMenu,
-        toolbar_offset: Length<f32, DeviceIndependentPixel>,
-    ) -> Dialog {
-        Dialog::ContextMenu {
-            menu: Some(menu),
-            toolbar_offset,
         }
     }
 }

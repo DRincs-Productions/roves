@@ -1,0 +1,15 @@
+diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/desktop/headed_window.rs
+index 1cfd504..f318159 100644
+--- a/ports/servoshell/desktop/headed_window.rs
++++ b/ports/servoshell/desktop/headed_window.rs
+@@ -1057,10 +1057,6 @@ impl PlatformWindow for HeadedWindow {
+             })
+             .shortcut(CMD_OR_CONTROL, '0', || {
+                 webview.set_page_zoom(1.0);
+-            })
+-            .shortcut(CMD_OR_CONTROL, 'R', || webview.reload())
+-            .shortcut(Modifiers::empty(), Key::Named(NamedKey::F5), || {
+-                webview.reload()
+             });
+     }
+ 
