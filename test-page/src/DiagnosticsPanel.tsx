@@ -28,9 +28,11 @@ const KEY_EXTENSIONS = [
 ];
 
 function probeWebgl() {
-  const canvas = document.createElement("canvas");
-  const gl2 = canvas.getContext("webgl2");
-  const gl1 = canvas.getContext("webgl");
+  // Two separate canvases: a canvas can only ever be bound to one context
+  // type — asking the same canvas for both "webgl2" and "webgl" would make
+  // the second call return null regardless of what's actually supported.
+  const gl2 = document.createElement("canvas").getContext("webgl2");
+  const gl1 = document.createElement("canvas").getContext("webgl");
   const gl = gl2 ?? gl1;
 
   if (!gl) {
@@ -82,7 +84,15 @@ function probeWebgl() {
     renderer,
     unmaskedVendor,
     unmaskedRenderer,
-    hardwareAccelerated: !/swiftshader|llvmpipe|software|warp/i.test(`${renderer} ${unmaskedRenderer}`),
+    // `null` (not a guess) when `WEBGL_debug_renderer_info` isn't available:
+    // without the unmasked string, this heuristic has nothing real to check
+    // — `renderer` alone is just the generic browser-controlled placeholder
+    // every WebGL implementation returns for the masked RENDERER parameter,
+    // so it will never contain "swiftshader"/"llvmpipe" regardless of what's
+    // actually rendering, and reporting `true` there would be a false signal.
+    hardwareAccelerated: debugInfo
+      ? !/swiftshader|llvmpipe|software|warp/i.test(unmaskedRenderer)
+      : null,
     maxTextureSize: Number(gl.getParameter(gl.MAX_TEXTURE_SIZE)),
     floatTexturesSupported: gl2 !== null || gl.getExtension("OES_texture_float") !== null,
     msaaSupported: gl.getContextAttributes()?.antialias ?? false,
