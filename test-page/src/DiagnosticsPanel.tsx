@@ -92,6 +92,59 @@ function probeWebgl() {
   };
 }
 
+// Both storage checks are real round-trips, not just "does the API exist" —
+// they're keyed off the document's *origin*, and a `file://` document in
+// this fork gets an opaque origin (see ../../components/url/origin.rs's
+// `new_opaque_for_file`), for which the Storage Standard mandates a
+// `SecurityError`/rejected promise for every storage shelf, localStorage
+// and indexedDB alike. That's spec-mandated, not a bug this page could
+// paper over — see IndexedDbButton.tsx/StorageButton.tsx for the standalone
+// versions of these same two checks.
+function testIndexedDb(): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (!("indexedDB" in window)) {
+      resolve(false);
+      return;
+    }
+
+    const dbName = "roves-diagnostics-probe";
+    const value = Date.now();
+
+    try {
+      const openRequest = indexedDB.open(dbName, 1);
+      openRequest.onupgradeneeded = () => {
+        openRequest.result.createObjectStore("kv");
+      };
+      openRequest.onerror = () => resolve(false);
+      openRequest.onblocked = () => resolve(false);
+      openRequest.onsuccess = () => {
+        const db = openRequest.result;
+        const writeTx = db.transaction("kv", "readwrite");
+        writeTx.objectStore("kv").put(value, "probe");
+        writeTx.onerror = () => {
+          db.close();
+          resolve(false);
+        };
+        writeTx.oncomplete = () => {
+          const readRequest = db.transaction("kv", "readonly").objectStore("kv").get("probe");
+          readRequest.onerror = () => {
+            db.close();
+            resolve(false);
+          };
+          readRequest.onsuccess = () => {
+            const ok = readRequest.result === value;
+            db.close();
+            indexedDB.deleteDatabase(dbName);
+            resolve(ok);
+          };
+        };
+      };
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
 async function probeCapabilities() {
   const localStorageOk = (() => {
     const key = "roves-diagnostics-probe";
@@ -109,7 +162,7 @@ async function probeCapabilities() {
   // "steam: protocol bridge" entry for why this degrades to `false` instead
   // of throwing when the `steam` Cargo feature wasn't compiled in, or Steam
   // just isn't running (`steam.isAvailable()` already swallows that itself).
-  const steamAvailable = await steam.isAvailable();
+  const [indexedDbOk, steamAvailable] = await Promise.all([testIndexedDb(), steam.isAvailable()]);
 
   return {
     audio: typeof AudioContext !== "undefined",
@@ -117,7 +170,7 @@ async function probeCapabilities() {
     clipboard: typeof navigator.clipboard?.writeText === "function",
     fullscreen: document.fullscreenEnabled,
     localStorage: localStorageOk,
-    indexedDb: "indexedDB" in window,
+    indexedDb: indexedDbOk,
     steamAvailable,
   };
 }

@@ -6,6 +6,7 @@ import DiagnosticsPanel from "./DiagnosticsPanel.tsx";
 import FullscreenButton from "./FullscreenButton.tsx";
 import GamepadPanel from "./GamepadPanel.tsx";
 import GpuInfoPanel from "./GpuInfoPanel.tsx";
+import IndexedDbButton from "./IndexedDbButton.tsx";
 import PixiPanel from "./PixiPanel.tsx";
 import StorageButton from "./StorageButton.tsx";
 import ThreePanel from "./ThreePanel.tsx";
@@ -145,6 +146,7 @@ export default function App() {
         <FullscreenButton />
         <AudioButton />
         <StorageButton />
+        <IndexedDbButton />
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
           <button type="button" onClick={quitApp}>
             Quit (@drincs/roves-api/process exit())
