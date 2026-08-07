@@ -6,6 +6,7 @@
 
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use std::{env, fs};
 
@@ -91,6 +92,24 @@ impl App {
             "resource",
             protocols::resource::ResourceProtocolHandler::default(),
         );
+        // `@drincs/roves-api`'s `core`/`process` modules talk to this — see
+        // protocols/roves.rs. `None` in headless mode (no window, no winit
+        // event loop to send AppEvent::CloseAllWindows through).
+        let close_proxy = self
+            .event_loop_proxy
+            .clone()
+            .map(|proxy| Arc::new(Mutex::new(proxy)));
+        let _ = protocol_registry.register(
+            "roves",
+            protocols::roves::RovesProtocolHandler::new(close_proxy),
+        );
+        // Only registered with `--features steam` (see ports/servoshell/Cargo.toml)
+        // — mirrors the parent project's Tauri `steam` feature. `SteamProtocolHandler::new()`
+        // tries to init Steam once here; it degrades to "unavailable" answers rather
+        // than failing when Steam isn't running (e.g. outside Steam, in CI).
+        #[cfg(feature = "steam")]
+        let _ =
+            protocol_registry.register("steam", protocols::steam::SteamProtocolHandler::new());
 
         let servo_builder = ServoBuilder::default()
             .opts(self.opts.clone())
@@ -218,7 +237,16 @@ impl ApplicationHandler<AppEvent> for App {
             return;
         };
 
-        if let Some(window) = app_event
+        if matches!(app_event, AppEvent::CloseAllWindows) {
+            // See protocols/roves.rs and event_loop.rs's own doc comment on
+            // this variant: this is the only way a `ProtocolHandler` (which
+            // must be `Send + Sync`, and runs off the main thread) can ask
+            // the main thread to close windows, since `ServoShellWindow`
+            // itself is `Rc`-based and can't be touched from there directly.
+            for window in state.windows().values() {
+                window.schedule_close();
+            }
+        } else if let Some(window) = app_event
             .window_id()
             .and_then(|window_id| state.window(ServoShellWindowId::from(u64::from(window_id)))) &&
             let Some(headed_window) = window.platform_window().as_headed_window()

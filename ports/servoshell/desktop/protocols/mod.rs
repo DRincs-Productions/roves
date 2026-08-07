@@ -3,5 +3,8 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 pub(crate) mod resource;
+pub(crate) mod roves;
 pub(crate) mod servo;
+#[cfg(feature = "steam")]
+pub(crate) mod steam;
 pub(crate) mod urlinfo;

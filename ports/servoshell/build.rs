@@ -8,6 +8,50 @@ use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 
+// Copies the Steamworks redistributable library from steamworks-sys's OUT_DIR
+// into target/<profile>/, right next to the built `servoshell` binary — see
+// the parent project's `src-tauri/build.rs` for the equivalent Tauri-side
+// copy (which lands the same file in src-tauri/ for Tauri's own bundler to
+// pick up instead). Landing it in target/<profile>/ means `./mach bundle`
+// (see ../../CUSTOMIZATIONS.md) picks it up for free via the same
+// *.dll/*.dylib/*.so glob it already uses for ANGLE/GStreamer — no extra
+// plumbing needed there.
+fn copy_steam_lib(target_profile_dir: &Path) {
+    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
+    let out_dir = Path::new(&out_dir);
+    // OUT_DIR layout: .../target/<profile>/build/<pkg-hash>/out — walk up to
+    // the shared `build/` directory to find steamworks-sys's own OUT_DIR,
+    // which is a sibling of ours, not a descendant.
+    let build_dir = out_dir
+        .ancestors()
+        .nth(2)
+        .expect("unexpected OUT_DIR layout");
+
+    let lib_name = match std::env::var("CARGO_CFG_TARGET_OS").as_deref() {
+        Ok("windows") => "steam_api64.dll",
+        Ok("macos") => "libsteam_api.dylib",
+        _ => "libsteam_api.so",
+    };
+
+    let Ok(entries) = std::fs::read_dir(build_dir) else {
+        panic!("Steam: could not read {}", build_dir.display());
+    };
+    for entry in entries.flatten() {
+        let candidate = entry.path().join("out").join(lib_name);
+        if candidate.exists() {
+            let dest = target_profile_dir.join(lib_name);
+            std::fs::copy(&candidate, &dest)
+                .unwrap_or_else(|e| panic!("failed to copy {lib_name}: {e}"));
+            println!("cargo:warning=Steam: copied {lib_name} -> {}", dest.display());
+            return;
+        }
+    }
+    panic!(
+        "Steam: could not find `{lib_name}` in build artifacts. \
+         Ensure `--features steam` is active and steamworks-sys compiled successfully."
+    );
+}
+
 fn git_sha() -> Result<String, String> {
     let output = Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
@@ -47,6 +91,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     // and not the target platform
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
     let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap();
+
+    // `CARGO_FEATURE_STEAM` (not `#[cfg(feature = "steam")]`, which build
+    // scripts don't get applied to their own compilation) is how Cargo tells
+    // a build script that the crate's `steam` feature is enabled.
+    if std::env::var("CARGO_FEATURE_STEAM").is_ok() {
+        copy_steam_lib(build.parent().unwrap());
+    }
 
     if target_os == "windows" {
         #[cfg(windows)]

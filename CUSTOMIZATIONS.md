@@ -139,3 +139,300 @@ re-check this patch still applies cleanly — it's a bigger diff than 0001 and t
 `Gui`'s internals. Not verified against an actual `./mach build` (Servo's build is
 multi-hour and wasn't run for this change) — treat the next real build of this fork as the
 actual verification and fix up any compile errors this patch introduces before relying on it.
+
+---
+
+## 2026-08-06 — New `mach bundle` command: package a build into something runnable
+
+**File:** `python/servo/post_build_commands.py`.
+
+**Patch:** `patches/servo-v0.4.0/0004-add-mach-bundle-command.patch`
+
+**Upstream behavior:** `./mach build` leaves the raw Cargo output in `target/<profile>/` —
+just the engine binary plus (on Windows) ANGLE/MSVC DLLs dropped next to it by
+`copy_windows_dlls_to_build_directory`. Running that binary bare opens Servo's own default
+start page, not this fork's intended content, and on Windows it has no window-size/URL args
+set, so it isn't something a non-technical person can be handed and told to double-click.
+
+**Change:** added a new command, `./mach bundle [--html-file dist/index.html]
+[--window-size 1280x720] [--output DIR] [--content-dir DIR] [--deb] [-- extra servoshell
+args]`, category `post-build`. It does **not** touch `target/<profile>/` or move the binary
+Cargo put there — `./mach run` and everything else that calls `get_binary_path()` keeps
+working exactly as before. Instead, into a separate output directory (default:
+`target/<profile>/bundle/`) it produces, per platform:
+
+- **Windows:** the engine binary + its DLLs moved into a `bin/` subdirectory, plus a real
+  `play.exe` at the top level — a tiny std-only Rust program, compiled on the fly with plain
+  `rustc` (no Cargo project), built with `#![windows_subsystem = "windows"]` (the same
+  attribute `ports/servoshell/main.rs` already uses on `servoshell.exe` itself — see the
+  2026-08-05 entries) so double-clicking it never flashes a console. It just spawns
+  `bin/servoshell.exe` with the configured args and exits.
+- **macOS:** a minimal `Servo.app` bundle (`Contents/Info.plist` + `Contents/MacOS/Servo`, a
+  small shell script that `exec`s the engine binary — renamed `<binary>-core` and tucked
+  inside the bundle — with the configured args). Finder launches
+  `Contents/MacOS/Servo` directly; no `Terminal.app` involved at all, unlike double-clicking
+  a loose `.sh`.
+- **Linux (default):** the engine binary renamed `<binary>-core` **without its executable
+  bit**, plus a `play.sh` that `chmod +x`'s it, sets `LD_LIBRARY_PATH`, and execs it with the
+  configured args. `play.sh` is the only supported entry point; a curious
+  `./<binary>-core` fails with "Permission denied" instead of launching without the
+  args/`LD_LIBRARY_PATH` it actually needs.
+- **Linux with `--deb`:** a real, installable `.deb` instead (`<name>_<version>_<arch>.deb`,
+  built via `dpkg-deb --build --root-owner-group`) — engine + content under
+  `/usr/lib/<name>/`, a launcher at `/usr/bin/<name>`, and a `.desktop` entry so it shows up
+  in application launchers. Requires `dpkg-deb` (from `dpkg-dev`) on `PATH`; raises
+  `BuildNotFound` with a clear message if missing rather than a bare traceback. This is a
+  functional package, not a lintian-clean one — no changelog, man page, or maintainer
+  scripts.
+
+`--content-dir` (e.g. a built `dist/`) is copied into the bundle at whatever relative
+location `--html-file` expects it (default `dist/index.html` → a `dist/` next to the
+launcher, or under `/usr/lib/<name>/` for `--deb`) — see `_place_bundle_content`. Passing it
+is optional: a caller can instead place content into the output directory itself after the
+command returns, which is how `../.github/workflows/test.yml`'s `assemble test bundle` step
+originally worked before being simplified to just call this command directly.
+
+**Why:** originally this exact logic (per-platform launcher, hidden/renamed core binary, no
+console/Terminal) was hand-rolled as bash inside `../.github/workflows/test.yml`. That's
+backwards: this fork's whole reason for existing is `git`-vendoring Servo instead of
+depending on it as a black box (see `../CLAUDE.md`), specifically so *product* behavior like
+"how does a build actually get handed to someone to run" lives in the product (`mach`), not
+duplicated across whichever CI happens to build it. `../.github/workflows/embedded.yml` (the
+*real* release pipeline) currently has its own near-identical hand-rolled
+play.bat/play.sh generation, with the exact same "opens a terminal, no nice extension"
+UX gap this command fixes — it doesn't consume this command yet because it doesn't build
+from this fork at all today (it downloads upstream's official prebuilt binaries; see that
+file's own comments), but the plan is for it to eventually point at this fork instead, at
+which point it should switch to `./mach bundle` too instead of re-diverging.
+
+**Side effects to know about when upgrading:** none of this depends on Servo internals
+beyond `get_binary_path()`/`self.target` (stable, low-level `CommandBase` API), so it should
+survive a version bump untouched. If a future Servo version changes what
+`copy_windows_dlls_to_build_directory` drops next to the Windows binary, double check
+`_bundle_windows`'s DLL glob still catches everything needed.
+
+**Correction (same day):** `_bundle_macos` originally copied `.dylib` files flat into
+`Contents/MacOS/`. `ports/servoshell/build.rs` links `servoshell` with
+`-Wl,-rpath,@executable_path/lib/` unconditionally on macOS (see that file), so dyld only
+ever looks in a `lib/` subdirectory next to the binary — flat placement meant any dylib
+dependency (GStreamer today if `--media-stack gstreamer`, Steamworks below) would silently
+fail to load at runtime despite bundling successfully. Fixed to copy into
+`Contents/MacOS/lib/`, matching the same convention `run_post_build_tasks`'s own darwin
+branch already uses for `package_gstreamer_dylibs` (`path.join(path.dirname(built_binary),
+"lib/")`).
+
+---
+
+## 2026-08-06 — `steam:` protocol bridge, so web content can reach Steamworks
+
+**Files:** `ports/servoshell/Cargo.toml`, `ports/servoshell/build.rs`,
+`ports/servoshell/desktop/app.rs`, `ports/servoshell/desktop/protocols/mod.rs`, new file
+`ports/servoshell/desktop/protocols/steam.rs`.
+
+**Patch:** `patches/servo-v0.4.0/0005-add-steam-bridge.patch`
+
+**Upstream behavior:** Servo has no notion of Steamworks; web content has no way to reach
+any native SDK beyond what `ProtocolHandler`s already expose (the `servo:`/`resource:`/
+`urlinfo:` schemes registered in `app.rs`, see `protocols/servo.rs`).
+
+**Change:** added a `steam` Cargo feature (`dep:steamworks`, desktop-only — same
+`not(any(target_os = "android", target_env = "ohos"))` dependency block `headers`/
+`serde_json` already live in) that, when enabled, registers a new `steam:` custom protocol
+handler alongside the existing ones in `app.rs`. `SteamProtocolHandler::new()` calls
+`steamworks::Client::init()` once at registration time (spawning the same 100ms
+`run_callbacks()` pump thread the Tauri build's `steam::try_init()` already does) and
+degrades to "Steam unavailable" answers rather than failing when Steam isn't running —
+mirrors the parent project's `src-tauri/src/steam.rs` **command-for-command** (achievements,
+int/float stats, DLC check, overlay, store page), so `src/lib/steam.ts` in the parent
+project can expose the *exact same* JS API regardless of which native shell (Tauri or
+Roves) is running the game: `fetch('steam:unlock_achievement?achievement_id=ACH_X')` instead
+of `invoke('steam_unlock_achievement', { achievementId: 'ACH_X' })`, both landing on the same
+underlying Steamworks call. See `src/lib/steam.ts`'s own `callRoves()`/`isSteamSupported()`
+for the JS-side half of this bridge (outside this `servo/` directory — that's the parent
+project's own file, not part of this fork's patches). Notably there's no build-time "is
+steam enabled" flag on the JS side: an earlier version baked one in via a `STEAM_ENABLED`
+env var, but that could drift from whether *this particular binary* actually has the feature
+compiled in — `isSteamSupported()` asks the real running binary instead (per-shell: `invoke`
+on Tauri, `callRoves` on Roves), and caches the answer.
+
+`build.rs` additionally copies the Steamworks redistributable (`steam_api64.dll` /
+`libsteam_api.dylib` / `libsteam_api.so`) from steamworks-sys's own `OUT_DIR` into
+`target/<profile>/`, right next to the built binary — mirrors `src-tauri/build.rs`'s
+equivalent copy (which lands the same file in `src-tauri/` for Tauri's bundler instead).
+Landing it in `target/<profile>/` means `./mach bundle` (see the 2026-08-06 entry above)
+picks it up for free through the DLL/dylib/so glob it already has, no extra plumbing needed
+there — only guarded by `CARGO_FEATURE_STEAM`, since build scripts don't get
+`#[cfg(feature = ...)]` applied to their own compilation.
+
+**Why:** shipping on Steam (achievements, cloud stats, overlay) is a stated goal for this
+fork regardless of which native shell a given release uses — the Tauri build already had
+this wired up; Roves had no equivalent path to any native API at all, since it's meant to
+run untouched web content with zero JS-side awareness of which shell it's in beyond the
+existing `__EMBEDDED_TARGET__` build flag.
+
+**Side effects to know about when upgrading:** `ProtocolHandler` (`components/net/protocols/
+mod.rs`) is a stable, low-level trait uninvolved in most of Servo's churn — this should
+survive a version bump untouched. If a future Servo version changes `ServoUrl`'s API
+(`as_url()`/`query_pairs()`), or `steamworks-rs` cuts a new major version with a different
+`Client`/`UserStats` surface, re-check `steam.rs`'s `handle_command` still matches.
+
+**Follow-up (2026-08-07) — CI now actually builds `--features steam`:** the "not verified"
+gap above is closed: `../.github/workflows/test.yml`'s `mach build` step now passes
+`--features steam` on all 3 platforms, so every push exercises `steamworks-sys` actually
+compiling/linking and `build.rs`'s `copy_steam_lib` finding and copying the Steamworks
+redistributable (`steam_api64.dll`/`libsteam_api.*`) next to the binary — this workflow is
+still dormant today (see its own header comment on why), so this only takes effect once
+`servo/` is pushed as its own top-level repo. No Steam client is available on any CI runner
+either way, so this still only proves the build/link step, not a real `Client::init()`
+success — `handle_unavailable`'s degrade path is what runs there regardless.
+
+**Follow-up (2026-08-06) — mixed-content blocking on `fetch('steam:...')`:** manual testing
+surfaced `TypeError: Network error: Blocked as mixed content` on a `fetch("steam:is_available")`
+call. Servo's mixed-content check (`components/net/fetch/methods.rs`'s
+`should_request_be_blocked_as_mixed_content`, via
+`components/net/protocols/mod.rs::is_url_potentially_trustworthy`) treats a custom scheme as
+trustworthy only if its `ProtocolHandler::is_secure()` returns `true` — `SteamProtocolHandler`
+only overrode `is_fetchable()` (needed for direct, non-`no-cors` `fetch()` access) and left
+`is_secure()` at its default `false`, the same gap `protocols/urlinfo.rs`'s
+`UrlInfoProtocolHander` already avoids by overriding both. Fixed by adding
+`fn is_secure(&self) -> bool { true }` next to `is_fetchable` in `SteamProtocolHandler`,
+folded into `patches/servo-v0.4.0/0005-add-steam-bridge.patch` (regenerated the whole
+new-file hunk for `steam.rs` rather than hand-editing a diff-of-a-diff). The same gap existed
+in `RovesProtocolHandler` (`roves:`, see the entry below) and was fixed there too, even
+though it hadn't been exercised yet by manual testing — same trait, same missing override.
+
+---
+
+## 2026-08-06 — Roves' own general-purpose `invoke()` bridge (`roves:` protocol) + `@drincs/roves-api`
+
+**Files:** `ports/servoshell/desktop/event_loop.rs`, `ports/servoshell/desktop/app.rs`,
+`ports/servoshell/desktop/protocols/mod.rs`, new file
+`ports/servoshell/desktop/protocols/roves.rs`, `ports/servoshell/desktop/tracing.rs` (added
+2026-08-06, see CI-failure note below). Plus, outside this `servo/` directory (not
+patch-tracked — see the README.md/examples/ precedent above): the new `roves-api/` package
+at the repo root, and `src/lib/hooks/quit-hooks.ts`/`src/lib/steam.ts` in the parent project.
+
+**Patch:** `patches/servo-v0.4.0/0006-add-roves-invoke-bridge.patch`
+
+**Upstream behavior:** no equivalent — this is new functionality, not a modification of
+existing upstream logic.
+
+**Change:** added a `roves:` custom protocol handler (`RovesProtocolHandler`, always
+registered — unlike `steam:`, not feature-gated), the Roves equivalent of Tauri's IPC:
+web content calls `fetch('roves:<command>?<args>')`, and gets a JSON result back. Today it
+answers exactly one command, `exit`/`close_window`, which closes every open window
+(`ServoShellWindow::schedule_close`) — in this fork's usual single-window setup, that's
+equivalent to quitting the app, since `App::pump_servo_event_loop` returning `false` once no
+windows remain makes the event loop exit on its own (`app.rs`).
+
+The interesting part is *how* it reaches the window at all: `ProtocolHandler` implementors
+must be `Send + Sync` and are invoked off the main thread (fetches run on network/IO
+threads), but `RunningAppState`/`ServoShellWindow` are `Rc`-based — deliberately
+single-threaded, main-thread-only types. A protocol handler can't touch them directly. The
+fix reuses a mechanism this codebase already had for exactly this shape of problem:
+`HeadedEventLoopWaker` (`event_loop.rs`) already wakes the main thread from other threads via
+`Arc<Mutex<EventLoopProxy<AppEvent>>>` + `winit`'s own cross-thread-safe `EventLoopProxy`.
+`RovesProtocolHandler` holds the same kind of handle (built from `App`'s own
+`event_loop_proxy` field at registration time, `None` in headless mode) and sends a new
+`AppEvent::CloseAllWindows` variant through it; `App::user_event` (already the place
+`AppEvent`s get handled on the main thread) matches on it and calls `schedule_close()` on
+every window in `RunningAppState::windows()`.
+
+Outside `servo/`: a new npm package, **`@drincs/roves-api`** (repo root `roves-api/`,
+registered as an npm workspace — see the root `package.json`), wraps this in JS with a
+`core.invoke(cmd, args)` shaped exactly like `@tauri-apps/api/core`'s `invoke()`, plus a
+`process.exit()` (the Roves equivalent of `@tauri-apps/plugin-process`'s `exit()`) and a full
+`steam` module (talking to `steam:` directly, not through `roves:` — see the entry above for
+why Steam gets its own dedicated protocol). It's a real, independent implementation, not a
+shim over Tauri's runtime — deliberately shaped to feel familiar, nothing more. The parent
+project's `src/lib/hooks/quit-hooks.ts` now calls `@drincs/roves-api/process`'s `exit()` on
+Roves instead of `window.close()` (unreliable there: scripted `window.close()` is only
+granted on windows the page itself opened via `window.open()`, not a shell-created top-level
+window), and `src/lib/steam.ts` picks between a Tauri-`invoke()`-based `SteamApi`
+implementation and `@drincs/roves-api/steam`'s own, once, at module load — both conform to
+the exact same `SteamApi` interface exported from the package.
+
+**Why:** closing/quitting the app is exactly the kind of basic native capability every
+embedded shell needs, and `window.close()` doesn't reliably provide it (see above) — Roves
+had no way to do this at all before. Building it as a small, generic `invoke()`-shaped
+bridge (rather than a one-off `close:` protocol) gives Roves room to grow more "control this
+app" commands the same way later, instead of accumulating one bespoke protocol per feature.
+
+**Side effects to know about when upgrading:** the cross-thread handle pattern
+(`Arc<Mutex<EventLoopProxy<AppEvent>>>`) depends on `winit`'s `EventLoopProxy` staying
+`Send`/`Sync`-safe and on `RunningAppState::windows()`/`ServoShellWindow::schedule_close`
+keeping their current signatures — all `pub(crate)`, low-level, and not upstream-churn-prone,
+but re-check if a version bump changes `app.rs`'s event-loop structure materially.
+
+**Follow-up (2026-08-06) — mixed-content blocking:** `RovesProtocolHandler` had the same
+`is_secure()` gap as `SteamProtocolHandler` — see that entry's follow-up above for the root
+cause. Fixed the same way (added `fn is_secure(&self) -> bool { true }`), folded into
+`patches/servo-v0.4.0/0006-add-roves-invoke-bridge.patch`.
+
+**Follow-up (2026-08-06) — CI-confirmed build break:** the "not verified against an actual
+build" risk noted above materialized: CI failed with `error[E0004]: non-exhaustive patterns:
+&winit::event::Event::UserEvent(AppEvent::CloseAllWindows) not covered` in
+`ports/servoshell/desktop/tracing.rs`'s `LogTarget for winit::event::Event<AppEvent>` impl
+(was line ~42-61 in the `v0.4.0` baseline) — an exhaustive `match self` over every
+`AppEvent` variant that wasn't updated when `CloseAllWindows` was added above. Fixed by
+adding `Self::UserEvent(AppEvent::CloseAllWindows) => target!("UserEvent(CloseAllWindows)"),`
+alongside the existing `Waker`/`Accessibility` arms, folded into
+`patches/servo-v0.4.0/0006-add-roves-invoke-bridge.patch` as an additional hunk rather than a
+separate patch file, since it's part of the same logical change (this file was simply missed
+the first time). No behavior change beyond making the match exhaustive again — `tracing.rs`
+only affects `RUST_LOG` filtering granularity, never actual event handling.
+
+---
+
+## 2026-08-06 — Stable `file://` origin, so content opened from disk actually loads
+
+**File:** `components/url/origin.rs`, `ImmutableOrigin::new_opaque_for_file` (was line
+86-92 in the `v0.4.0` baseline).
+
+**Patch:** `patches/servo-v0.4.0/0007-stable-file-origin-for-module-script-loading.patch`
+
+**Upstream behavior:** `new_opaque_for_file()` mints a brand-new random `Uuid::new_v4()` on
+every call, with no caching (`ServoUrl::origin()`, `components/url/lib.rs:90-92`, calls
+`ImmutableOrigin::new()` — and therefore this — fresh every time). Two `.origin()` calls on
+the *exact same* `file://` URL are therefore never equal to each other, let alone two
+different `file://` URLs. Manual testing (see `TODO.md`'s "schermata bianca" writeup)
+reproduced the consequence directly: a normal Vite build (external
+`<script type="module" src="...">`, the default output shape for anything past a
+single-file toy) opened from a `file://` URL renders a blank page. Root cause: the HTML
+module-script spec always fetches external module scripts in CORS mode regardless of the
+`crossorigin` attribute, and CORS mode's same-origin check
+(`components/net/fetch/methods.rs:547-548`,
+`*origin == request.current_url_with_blob_claim().origin()`) can never succeed for
+`file://` given the above — the fetch falls through to `methods.rs:597`'s
+`NetworkError::UnsupportedScheme`, the entry script never runs, and the page stays exactly as
+the HTML parser left it. (`fetch()` to this fork's own `steam:`/`roves:` protocols is
+unaffected — those are marked `is_fetchable()`, which explicitly bypasses this same-origin
+check — but a plain `fetch()` of a `file://` URL, or any other CORS-mode `file://` request,
+would hit the same wall.)
+
+**Change:** `new_opaque_for_file()` now returns a fixed id (`Uuid::nil()`, via a new
+`FILE_ORIGIN_ID` constant) instead of a fresh random one, so every `file://` origin this
+build ever produces compares equal to every other one.
+
+**Why:** this build only ever opens one `file://` document — its own bundled
+`dist/index.html` — and exposes no way to navigate to any other `file://` URL (no address
+bar, no tabs, see the 2026-08-05 toolbar-removal entry). "Are two `file://` origins the same
+origin" has no real answer in the spec itself (opaque origins are supposed to be globally
+unique, but see <https://github.com/whatwg/html/issues/3099> for the standing ambiguity
+specifically about `file://`), and mainstream browsers already lean toward usability over
+strict uniqueness here in practice. For this fork's one-document-only use case there is no
+realistic downside to always treating `file://` as the same origin, and it's what makes an
+ordinary Vite (or webpack, etc.) build actually load when opened from disk, matching how it
+would behave served over `http(s)://`.
+
+**Side effects to know about when upgrading:** this changes origin *equality* for `file://`
+only — `is_potentially_trustworthy()` already special-cased `file://` as trustworthy
+regardless of id (see the mixed-content follow-up above), so that behavior is unchanged.
+Storage (`localStorage`, etc.) and any other same-origin-keyed state would now be shared
+across *all* `file://` documents in the same process, which would be a real regression for
+stock Servo (general-purpose browsing, multiple unrelated `file://` pages) but is inert here
+given the single-document constraint above — revisit this reasoning if this fork ever grows
+a way to open more than one `file://` document. Verified with `cargo check -p servo-url`
+(compiles clean); not yet verified against an actual `./mach build` + `./mach bundle` +
+manual click-through (see `TODO.md`) — treat that as the real verification of whether this
+actually fixes the blank-page repro end to end.
