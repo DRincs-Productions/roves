@@ -40,7 +40,7 @@ impl XrDiscoveryWebXrRegistry {
         let xr_discovery = if preferences.dom_webxr_openxr_enabled {
             #[cfg(target_os = "windows")]
             {
-                let app_info = OpenXrAppInfo::new("Servoshell", 0, "Servo", 0);
+                let app_info = OpenXrAppInfo::new("Roves", 0, "Servo", 0);
                 Some(XrDiscovery::OpenXr(OpenXrDiscovery::new(None, app_info)))
             }
             #[cfg(not(target_os = "windows"))]

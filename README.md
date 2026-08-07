@@ -24,6 +24,23 @@ upstream is upgraded.
 
 [CUSTOMIZATIONS.md]: ./CUSTOMIZATIONS.md
 
+## Naming: "Roves" vs. "Servo" vs. `servoshell`
+
+Every label a player or the OS actually sees — the window title, the taskbar/dock app
+identity, the Linux `.desktop` menu entry, the macOS `.app` bundle name — says **Roves**,
+not Servo (see [CUSTOMIZATIONS.md] for the exact rename). What's still named after the
+upstream project:
+
+- The underlying engine itself is genuinely still Servo — Roves doesn't fork Servo's
+  rendering/DOM/script internals, just the shell around it (see "What this is" above) —
+  so places that credit *the engine* (not the product) intentionally still say "Servo".
+- The binary and Cargo package are, and will keep being, named `servoshell` (e.g.
+  `target/release/servoshell`, `ports/servoshell/`). Renaming it to something like
+  `rovesshell` was considered and deliberately decided against: it would touch the upstream
+  Python build tooling under `python/servo/` too (not just branding, and not verifiable
+  without a real build), for no functional benefit. This is a settled decision, not a
+  pending one — don't expect or propose a `rovesshell` rename later.
+
 ## Goal
 
 Ship web-based games as real, native, double-click-to-run desktop (and, eventually,
