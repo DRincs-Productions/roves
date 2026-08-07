@@ -34,10 +34,12 @@ upstream project:
 - The underlying engine itself is genuinely still Servo — Roves doesn't fork Servo's
   rendering/DOM/script internals, just the shell around it (see "What this is" above) —
   so places that credit *the engine* (not the product) intentionally still say "Servo".
-- The binary and Cargo package are still literally named `servoshell` (e.g.
-  `target/release/servoshell`, `ports/servoshell/`), not yet `rovesshell` — this is a
-  larger, riskier rename (it touches the upstream Python build tooling under `python/servo/`
-  too, not just branding) that hasn't been done yet; see [`TODO.md`](./TODO.md).
+- The binary and Cargo package are, and will keep being, named `servoshell` (e.g.
+  `target/release/servoshell`, `ports/servoshell/`). Renaming it to something like
+  `rovesshell` was considered and deliberately decided against: it would touch the upstream
+  Python build tooling under `python/servo/` too (not just branding, and not verifiable
+  without a real build), for no functional benefit. This is a settled decision, not a
+  pending one — don't expect or propose a `rovesshell` rename later.
 
 ## Goal
 

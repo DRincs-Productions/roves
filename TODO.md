@@ -39,92 +39,6 @@ esattamente il "quale renderer/GPU viene effettivamente riportato" che mancava. 
 fare: controllare i log di Servo/ANGLE al lancio, e soprattutto **verificarlo su una build
 reale** su ciascuna piattaforma della matrice CI (Windows/macOS/Linux) — non ancora fatto.
 
-## 3. Schermata bianca su contenuto `file://` — causa risolta in questo fork, ma non ancora nella build "embedded" reale
-
-**Stato:** causa individuata e patchata in questo fork (vedi `CUSTOMIZATIONS.md`, patch
-`0007-stable-file-origin-for-module-script-loading`). **Verificato end-to-end il
-2026-08-07**: `../test-page/` (bundle Vite multi-chunk, script esterno) carica ed esegue
-correttamente su una build reale — niente più schermata bianca, i pulsanti diagnostici
-rispondono. Quel test reale aveva scoperto una conseguenza dell'origine opaca su
-`localStorage`/`sessionStorage`/`indexedDB` (più clipboard, causa indipendente) — risolto,
-vedi la voce del 2026-08-07 in `CUSTOMIZATIONS.md`.
-
-Causa: `ImmutableOrigin::new_opaque_for_file()` in `components/url/origin.rs` generava un
-UUID casuale nuovo ad ogni chiamata per gli URL `file://`, quindi due chiamate a `.origin()`
-sullo stesso URL `file://` non erano mai uguali tra loro. Questo faceva fallire
-silenziosamente il fetch di qualunque `<script type="module" src="...">` esterno aperto via
-`file://` (la fetch va in modalità "cors", che richiede same-origin, che per `file://` non
-era mai vero) — lo script non veniva mai eseguito e la pagina restava bianca. Qualunque
-bundle Vite "normale" (multi-chunk, script esterno) — sia quello di `../test-page/` sia
-quello del progetto principale (root `vite.config.ts`, chunk multipli via `manualChunks`) —
-ne era affetto. Il fix rende l'origine `file://` stabile (stesso id fisso per tutte le
-origini `file://`) invece che casuale ad ogni chiamata — vedi `CUSTOMIZATIONS.md` per i
-dettagli e i trade-off accettati (storage condiviso tra documenti `file://`, inerte per
-questo fork perché apre sempre un solo documento `file://` e non espone navigazione ad
-altri).
-
-**Importante — questo fix da solo non basta per la build "embedded" reale:** il punto 1 di
-questo file spiega che `../.github/workflows/embedded.yml` scarica oggi il binario
-`servoshell` **stock, non patchato**, non il fork con le patch di questa cartella. Questo fix
-vive solo nelle patch di questo fork, quindi finché il punto 1 non viene risolto (far
-costruire/consegnare a `embedded.yml` il binario patchato), la build "embedded" realmente
-distribuita continuerà ad avere questo identico bug, non toccata da questa patch.
-
-Prossimi passi: una volta risolto anche il punto 1, ripetere la verifica con il `dist/`
-reale del gioco (non solo `../test-page/`).
-
-## 4. Rinominare il binario/crate `servoshell` in `rovesshell`
-
-**Stato:** parzialmente risolto nella sessione del 2026-08-07 — vedi sotto per cosa resta.
-
-La parte "label rivolte all'utente/OS" di questo punto è **risolta**: vedi
-`CUSTOMIZATIONS.md`, voce "Rename user/OS-facing labels from 'Servo' to 'Roves'", patch
-`0013-rename-servo-labels-to-roves.patch`. Titolo finestra principale e XR, app id per il
-window manager Linux (`headed_window.rs`), nome applicazione OpenXR (`webxr.rs`), voce menu
-`.desktop` (rinominato in `resources/org.roves.Roves.desktop`), e bundle macOS del comando
-`mach bundle` (`Roves.app`, `Info.plist`) dicono ora tutti "Roves" invece di "Servo". Nota nel
-`README.md` (sezione "Naming") che spiega lo stato attuale.
-
-**Resta da fare — rinominare il binario/crate `servoshell` in `rovesshell`.** Deliberatamente
-non affrontato nella stessa sessione: è molto più invasivo delle sole label (non è solo testo
-mostrato all'utente, è il nome del pacchetto Cargo e del binario prodotto dalla build) e non
-verificabile con una build reale in questa sandbox (vedi punti 2/3 e i caveat `libclang` in
-`CUSTOMIZATIONS.md`). Una ricerca (`grep -rl servoshell`) trova ~50 file, incluso lo strumento
-di build Python upstream sotto `python/servo/` (`command_base.py`, `gstreamer.py`,
-`devtools_tests/*`, ecc.) che non c'entra col branding — non solo file di questo fork. Punti
-noti da toccare quando si affronta:
-
-- `ports/servoshell/Cargo.toml`: `[package] name = "servoshell"`, `[lib] name = "servoshell"`,
-  `[[bin]] name = "servoshell"`.
-- root `Cargo.toml`: membro workspace `"ports/servoshell"` e `default-members`, più
-  rigenerazione di `Cargo.lock`.
-- la cartella stessa `ports/servoshell/` (nome directory).
-- ogni riferimento a `servoshell`/`servoshell.exe` nei comandi `mach` (`./mach build`,
-  `./mach run`, `./mach bundle` — vedi `CUSTOMIZATIONS.md` patch `0004-add-mach-bundle-command`),
-  in `../.github/workflows/embedded.yml` (`SERVO_TAG`/download del binario), e in
-  `resources/org.roves.Roves.desktop` (`Exec=.../servoshell %u`).
-- `CFBundleIdentifier` (`org.servo.servoshell.bundle`, in `post_build_commands.py`) e
-  `ANDROID_APP_NAME` (`org.servo.servoshell`, stesso file) — identificatori di bundle/pacchetto,
-  non semplici label: rinominare l'`ANDROID_APP_NAME` in particolare fa sì che Android tratti
-  l'app come un'app completamente diversa (perdita di continuità sugli aggiornamenti) — richiede
-  una decisione esplicita, non un rename meccanico.
-- **Da spiegare nel `README.md`**: la sezione "Naming" già aggiunta in questa sessione lo
-  anticipa; va aggiornata quando il rename effettivo viene fatto (rimuovere la nota "non ancora
-  rinominato").
-
-Non affrontati in questa sessione, scoperti durante il lavoro sul rename delle label (elencati
-qui per completezza, non sono bloccanti per nessun altro punto):
-
-- `ports/servoshell/prefs.rs`: la cartella di config utente su disco si chiama `Servo`
-  (`config_dir.push("Servo")`, usata due volte) — **attenzione**: rinominarla sposta dove
-  Servo/Roves legge/scrive preferenze e (potenzialmente) dati persistenti esistenti; da
-  valutare se serve una migrazione o se è accettabile perdere/non trovare più config vecchie
-  già scritte in `.../Servo/`.
-- `ports/servoshell/platform/macos/Info.plist` (Info.plist statico usato da `./mach package`,
-  meccanismo diverso dal comando `mach bundle` già sistemato sopra) e
-  `etc/macos_sign.py`/`support/macos/Servo.entitlements` (codesigning/notarizzazione) — superficie
-  più sensibile (identità di firma, entitlements), non toccata in questa sessione.
-
 ## Note
 
 - Punto risolto nella sessione del 2026-08-06: stato di navigazione browser morto
@@ -133,6 +47,15 @@ qui per completezza, non sono bloccanti per nessun altro punto):
   Lasciato intenzionalmente intatto `browser_tab`/`toolbar_button`: sono dead code senza
   alcun chiamante, già eliminati dal compilatore nelle build di release, quindi rimuoverli
   non avrebbe alcun effetto sul pacchetto di gioco finale.
+- Punto risolto nella sessione del 2026-08-06/07: schermata bianca su contenuto `file://` —
+  vedi `CUSTOMIZATIONS.md`, patch `0007-stable-file-origin-for-module-script-loading`.
+  **Verificato end-to-end il 2026-08-07** su `../test-page/` (bundle Vite multi-chunk, script
+  esterno carica ed esegue correttamente su una build reale). Resta un limite noto, non un
+  problema di questa patch: il fix vive solo nelle patch di questo fork, quindi finché il
+  punto 1 non viene risolto (far costruire/consegnare a `embedded.yml` il binario patchato),
+  la build "embedded" realmente distribuita continua ad avere questo stesso bug — da
+  riverificare con il `dist/` reale del gioco (non solo `../test-page/`) una volta risolto
+  anche il punto 1.
 - Punto risolto nella sessione del 2026-08-07: `localStorage`/`sessionStorage`/`indexedDB`/
   `navigator.storage` bloccati dall'origine opaca di `file://` — vedi `CUSTOMIZATIONS.md`,
   patch `0008-allow-storage-for-file-origin`. Insieme a questo, tutti i 18 pref del bundle

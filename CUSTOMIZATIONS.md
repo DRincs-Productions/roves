@@ -738,11 +738,13 @@ bundle` command's (see the 2026-08-06 `mach bundle` entry above) generated macOS
 **Deliberately left alone (broader rename intentionally out of scope for this change):**
 
 - The `servoshell` Cargo package/binary name itself (directory `ports/servoshell/`, `[package]
-  name = "servoshell"` and everything derived from it) — **not** renamed to `rovesshell`. This
-  is a much larger, riskier change: a repo-wide `grep -rl servoshell` turns up ~50 files,
-  including upstream Python build-system internals under `python/servo/` (`command_base.py`,
-  `gstreamer.py`, `devtools_tests/*`, etc.) that have nothing to do with branding, plus
-  `Cargo.lock` regeneration. Tracked as still-open in [`TODO.md`](./TODO.md).
+  name = "servoshell"` and everything derived from it) — considered, and **decided against**,
+  not just deferred. A repo-wide `grep -rl servoshell` turns up ~50 files, including upstream
+  Python build-system internals under `python/servo/` (`command_base.py`, `gstreamer.py`,
+  `devtools_tests/*`, etc.) that have nothing to do with branding, plus `Cargo.lock`
+  regeneration — too large and too unverifiable in a sandbox without `libclang` (see the
+  caveats above) for no functional benefit. `servoshell` stays the binary/package name going
+  forward; see `README.md`'s "Naming" section.
 - `ContextMenu`/`CFBundleIdentifier` (`org.servo.servoshell.bundle`) and Android's
   `ANDROID_APP_NAME` (`org.servo.servoshell`, `post_build_commands.py`) — bundle/package
   identifiers, not display labels; changing an Android package name in particular makes the
