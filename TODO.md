@@ -73,6 +73,57 @@ distribuita continuerà ad avere questo identico bug, non toccata da questa patc
 Prossimi passi: una volta risolto anche il punto 1, ripetere la verifica con il `dist/`
 reale del gioco (non solo `../test-page/`).
 
+## 4. Rinominare da "Servo" a "Roves" tutte le label rivolte all'utente/OS
+
+**Stato:** noto, non ancora fatto.
+
+Questo fork si chiama Roves, ma diverse stringhe rivolte all'utente o al sistema operativo
+dicono ancora "Servo" (nome upstream). Punti noti da sistemare:
+
+- `ports/servoshell/desktop/headed_window.rs`: `INITIAL_WINDOW_TITLE` (titolo finestra
+  principale, `"Servo"`), titolo finestra XR (`"Servo XR"`), `with_name("org.servo.Servo",
+  "Servo")` (app id/nome per il window manager Linux/Wayland).
+- `ports/servoshell/desktop/webxr.rs`: `OpenXrAppInfo::new("Servoshell", 0, "Servo", 0)`.
+- `resources/org.servo.Servo.desktop`: `Name=Servo`, `Icon=servo`, entry point `.desktop`
+  per Linux — da rinominare/rifare anche il file stesso (nome file, app id).
+- `python/servo/post_build_commands.py` (comando `mach bundle`, vedi `CUSTOMIZATIONS.md`
+  patch `0004-add-mach-bundle-command`): bundle macOS di default chiamato `Servo.app`,
+  `CFBundleName`/`CFBundleDisplayName` in `Info.plist` = `Servo`, launcher interno
+  `Contents/MacOS/Servo`.
+- `ports/servoshell/prefs.rs`: la cartella di config utente su disco si chiama `Servo`
+  (`config_dir.push("Servo")`, usata due volte) — **attenzione**: rinominarla sposta dove
+  Servo/Roves legge/scrive preferenze e (potenzialmente) dati persistenti esistenti; da
+  valutare se serve una migrazione o se è accettabile perdere/non trovare più config vecchie
+  già scritte in `.../Servo/`.
+
+Da verificare anche se esistono altre occorrenze (icone, changelog utente, messaggi di
+errore mostrati a schermo) oltre a queste già individuate con una ricerca mirata — non fatta
+una ricerca esaustiva di tutte le occorrenze di "Servo" nel codice (moltissime sono commenti/
+nomi interni legittimi che non vanno toccati, es. licenze, nomi di crate upstream, commenti
+storici — solo le label effettivamente visibili all'utente finale o all'OS vanno rinominate).
+
+**Da fare insieme a questo punto: rinominare il binario/crate `servoshell` in `rovesshell`.**
+Più invasivo delle sole label sopra — non è solo testo mostrato all'utente, è il nome del
+pacchetto Cargo e del binario prodotto dalla build:
+
+- `ports/servoshell/Cargo.toml`: `[package] name = "servoshell"`, `[lib] name = "servoshell"`,
+  `[[bin]] name = "servoshell"`.
+- root `Cargo.toml`: membro workspace `"ports/servoshell"` e `default-members`.
+- la cartella stessa `ports/servoshell/` (nome directory).
+- ogni riferimento a `servoshell`/`servoshell.exe` nei comandi `mach` (`./mach build`,
+  `./mach run`, `./mach bundle` — vedi `CUSTOMIZATIONS.md` patch `0004-add-mach-bundle-command`),
+  in `../.github/workflows/embedded.yml` (`SERVO_TAG`/download del binario), e in
+  `resources/org.servo.Servo.desktop` (`Exec=.../servoshell %u`, vedi sopra).
+- **Da spiegare nel `README.md`** (root del progetto): oggi il README già usa "Roves (an
+  anagram of Servo)" come framing, ma nomina `servoshell`/percorsi `ports/servoshell/` più
+  volte dando per scontato quel nome — se si rinomina il binario, il README va aggiornato di
+  conseguenza e dovrebbe spiegare esplicitamente il cambio nome (`servoshell` → `rovesshell`)
+  per chi viene dall'upstream Servo e si aspetta quel nome.
+
+Non ancora fatto nessuno dei due (rename label + rename binario/crate): entrambi vanno
+affrontati nella stessa sessione per evitare che riferimenti a `servoshell`/`"Servo"` restino
+inconsistenti tra codice, `mach`, CI e documentazione.
+
 ## Note
 
 - Punto risolto nella sessione del 2026-08-06: stato di navigazione browser morto
