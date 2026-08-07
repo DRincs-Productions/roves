@@ -14,7 +14,7 @@ import shutil
 import subprocess
 from subprocess import CompletedProcess
 from shutil import copy2
-from typing import Any, Optional, List
+from typing import Any, Optional, List, Tuple, cast
 
 import mozdebug
 
@@ -42,6 +42,16 @@ from servo.util import delete
 from python.servo.command_base import BuildType
 
 ANDROID_APP_NAME = "org.servo.servoshell"
+
+# Where `extract` (see support/content-packer) reconstructs packed content at
+# launch time, relative to wherever the launcher itself lives. Fixed on
+# purpose: the launcher bakes in a path pointing here rather than computing it
+# at runtime, so the extraction step and the engine's launch arg always agree.
+CONTENT_CACHE_DIRNAME = ".content-cache"
+
+
+def _packer_binary_name() -> str:
+    return "roves-content-packer.exe" if is_windows() else "roves-content-packer"
 
 
 def read_file(filename: str, if_exists: bool = False) -> str | None:
@@ -71,15 +81,52 @@ _DEBIAN_ARCH_BY_RUST_ARCH = {
 }
 
 
-def _place_bundle_content(bundle_root: str, html_file: str, content_dir: Optional[str]) -> None:
+def _place_bundle_content(
+    bundle_root: str,
+    html_file: str,
+    content_dir: Optional[str],
+    compress: str,
+    packer_binary: Optional[str],
+    compression_level: int,
+    max_pack_size: str,
+    exclude: List[str],
+) -> None:
     """Copy `content_dir` (e.g. a built `dist/`) into `bundle_root` at whatever
     relative location `html_file` expects to find it at (e.g. `html_file` of
-    `dist/index.html` puts the content at `bundle_root/dist/`)."""
+    `dist/index.html` puts the content at `bundle_root/dist/`).
+
+    When `compress` is `"none"`, this is a plain recursive copy, exactly as
+    before. Otherwise `content_dir` is packed into a handful of tar+zstd
+    archives instead (see `support/content-packer` and CUSTOMIZATIONS.md) —
+    the release then ships those archives, not the individually-browsable
+    loose files; the generated launcher (`_bundle_windows`/`_bundle_macos`/
+    `_bundle_linux`/`_bundle_linux_deb`) extracts them back at launch time.
+    """
     if not content_dir:
         return
     rel_dir = path.dirname(html_file)
     dest = path.join(bundle_root, rel_dir) if rel_dir else bundle_root
-    shutil.copytree(content_dir, dest, dirs_exist_ok=True)
+    if compress == "none":
+        shutil.copytree(content_dir, dest, dirs_exist_ok=True)
+        return
+
+    assert packer_binary is not None
+    os.makedirs(dest, exist_ok=True)
+    pack_args = [
+        packer_binary,
+        "pack",
+        "--input",
+        content_dir,
+        "--output",
+        dest,
+        "--level",
+        str(compression_level),
+        "--max-pack-size",
+        max_pack_size,
+    ]
+    for pattern in exclude:
+        pack_args += ["--exclude", pattern]
+    subprocess.check_call(pack_args)
 
 
 @CommandProvider
@@ -243,6 +290,36 @@ class PostBuildCommands(CommandBase):
         "resolves without a separate copy step",
     )
     @CommandArgument(
+        "--content-compress",
+        default="auto",
+        choices=["auto", "none"],
+        help="'auto' (default): pack --content-dir into a handful of tar+zstd archives instead of "
+        "shipping it as loose, individually browsable files (see support/content-packer and "
+        "CUSTOMIZATIONS.md). 'none': copy it in as-is, exactly like before this option existed.",
+    )
+    @CommandArgument(
+        "--content-compression-level",
+        default=1,
+        type=int,
+        help="zstd compression level used by --content-compress=auto. Low values (the default) favor "
+        "speed over ratio — see CUSTOMIZATIONS.md for why that's the right tradeoff here.",
+    )
+    @CommandArgument(
+        "--content-max-pack-size",
+        default="500M",
+        help="Split --content-dir's archives so no single one exceeds this size, e.g. 500M or 1G "
+        "(default: 500M). Only meaningful with --content-compress=auto.",
+    )
+    @CommandArgument(
+        "--content-exclude",
+        action="append",
+        default=[],
+        metavar="GLOB",
+        help="Glob (relative to --content-dir), repeatable, of files to leave as loose, uncompressed "
+        "files instead of packing them — e.g. a save-data or user-config subfolder that shouldn't sit "
+        "inside a read-only archive. Only meaningful with --content-compress=auto.",
+    )
+    @CommandArgument(
         "--deb",
         action="store_true",
         help="Linux only: build a .deb package instead of the default self-contained play.sh bundle",
@@ -258,6 +335,10 @@ class PostBuildCommands(CommandBase):
         window_size: str = "1280x720",
         output: Optional[str] = None,
         content_dir: Optional[str] = None,
+        content_compress: str = "auto",
+        content_compression_level: int = 1,
+        content_max_pack_size: str = "500M",
+        content_exclude: Optional[List[str]] = None,
         deb: bool = False,
         deb_package_name: str = "servoshell",
         deb_version: str = "0.0.0",
@@ -281,6 +362,15 @@ class PostBuildCommands(CommandBase):
           package instead (see _bundle_linux_deb for what it does and does
           not attempt).
 
+        By default (`--content-compress=auto`), `--content-dir` isn't copied
+        into the bundle as loose files: it's packed into a handful of
+        tar+zstd archives (see support/content-packer and CUSTOMIZATIONS.md),
+        and the launcher above extracts them back to plain files at launch
+        time instead — so the shipped bundle itself never contains an
+        individually browsable copy of the game's web content. Pass
+        `--content-compress=none` to get the old, always-loose-files
+        behavior back.
+
         None of this touches target/<profile>/ itself or the binary Cargo
         put there — `./mach run` and friends keep working exactly as before.
         """
@@ -294,30 +384,90 @@ class PostBuildCommands(CommandBase):
             delete(output_dir)
         os.makedirs(output_dir)
 
-        launch_args = [html_file, "--window-size", window_size] + list(params or [])
+        content_exclude = content_exclude or []
+        compress_enabled = bool(content_dir) and content_compress != "none"
+        packer_binary = self._build_content_packer() if compress_enabled else None
+        if compress_enabled:
+            runtime_html_file = path.join(CONTENT_CACHE_DIRNAME, path.basename(html_file))
+            extraction: Optional[Tuple[str, str, str]] = (
+                path.dirname(html_file),
+                CONTENT_CACHE_DIRNAME,
+                packer_binary,  # type: ignore[assignment]
+            )
+        else:
+            runtime_html_file = html_file
+            extraction = None
+
+        launch_args = [runtime_html_file, "--window-size", window_size] + list(params or [])
 
         if is_windows():
-            self._bundle_windows(servo_binary, binary_dir, output_dir, launch_args)
+            self._bundle_windows(servo_binary, binary_dir, output_dir, launch_args, extraction)
             bundle_root = output_dir
         elif is_macosx():
             bundle_root = path.join(output_dir, "Roves.app", "Contents", "Resources")
             os.makedirs(bundle_root)
-            self._bundle_macos(servo_binary, binary_dir, output_dir, launch_args)
+            self._bundle_macos(servo_binary, binary_dir, output_dir, launch_args, extraction)
         elif deb:
             self._bundle_linux_deb(
-                servo_binary, binary_dir, output_dir, launch_args, deb_package_name, deb_version, html_file, content_dir
+                servo_binary,
+                binary_dir,
+                output_dir,
+                launch_args,
+                deb_package_name,
+                deb_version,
+                html_file,
+                content_dir,
+                content_compress,
+                packer_binary,
+                content_compression_level,
+                content_max_pack_size,
+                content_exclude,
+                extraction,
             )
             print(f"Bundle written to {output_dir}")
             return None
         else:
-            self._bundle_linux(servo_binary, binary_dir, output_dir, launch_args)
+            self._bundle_linux(servo_binary, binary_dir, output_dir, launch_args, extraction)
             bundle_root = output_dir
 
-        _place_bundle_content(bundle_root, html_file, content_dir)
+        _place_bundle_content(
+            bundle_root,
+            html_file,
+            content_dir,
+            content_compress,
+            packer_binary,
+            content_compression_level,
+            content_max_pack_size,
+            content_exclude,
+        )
         print(f"Bundle written to {output_dir}")
         return None
 
-    def _bundle_windows(self, servo_binary: str, binary_dir: str, output_dir: str, launch_args: List[str]) -> None:
+    def _build_content_packer(self) -> str:
+        """Builds (release profile) and returns the path to
+        `roves-content-packer` — used both here, to `pack` `--content-dir`,
+        and copied into the bundle so the generated launcher can run its
+        `extract` subcommand at launch time. See `support/content-packer`
+        and CUSTOMIZATIONS.md. Always a host-native build (no --target):
+        packing happens on the machine running `mach bundle`, and the copy
+        shipped into the bundle only ever needs to run on that same host
+        platform (Windows/macOS/Linux), never cross-compiled."""
+        manifest_path = path.join(self.context.topdir, "support", "content-packer", "Cargo.toml")
+        subprocess.check_call(
+            ["cargo", "build", "--release", "--manifest-path", manifest_path],
+            env=cast(dict[str, str], self.build_env()),
+        )
+        target_dir = servo.util.get_target_dir()
+        return path.join(target_dir, "release", _packer_binary_name())
+
+    def _bundle_windows(
+        self,
+        servo_binary: str,
+        binary_dir: str,
+        output_dir: str,
+        launch_args: List[str],
+        extraction: Optional[Tuple[str, str, str]],
+    ) -> None:
         bin_dir = path.join(output_dir, "bin")
         os.makedirs(bin_dir)
         shutil.copy(servo_binary, bin_dir)
@@ -332,6 +482,26 @@ class PostBuildCommands(CommandBase):
 
         binary_name = path.basename(servo_binary)
         rust_args = ", ".join(f'"{_escape_rust_str(a)}"' for a in launch_args)
+
+        # When content is packed (see CUSTOMIZATIONS.md's content-compression
+        # entry), play.exe is what runs `roves-content-packer extract` to
+        # reconstruct plain files into CONTENT_CACHE_DIRNAME *before* handing
+        # off to servoshell — synchronously (`.status()`, not `.spawn()`),
+        # since servoshell must not open its html file until this finishes.
+        extraction_snippet = ""
+        if extraction is not None:
+            packed_rel_dir, cache_rel_dir, packer_binary = extraction
+            shutil.copy(packer_binary, bin_dir)
+            packer_name = path.basename(packer_binary)
+            extraction_snippet = f"""
+    let packer = bin_dir.join("{_escape_rust_str(packer_name)}");
+    let _ = Command::new(&packer)
+        .arg("extract")
+        .arg("--content-dir").arg(exe_dir.join("{_escape_rust_str(packed_rel_dir)}"))
+        .arg("--dest").arg(exe_dir.join("{_escape_rust_str(cache_rel_dir)}"))
+        .status();
+"""
+
         launcher_source = f"""#![windows_subsystem = "windows"]
 use std::env;
 use std::process::Command;
@@ -342,8 +512,9 @@ fn main() {{
         .parent()
         .expect("exe has no parent directory")
         .to_path_buf();
-    let servoshell = exe_dir.join("bin").join("{binary_name}");
-    // Fire-and-forget: servoshell manages its own window from here.
+    let bin_dir = exe_dir.join("bin");
+    let servoshell = bin_dir.join("{binary_name}");
+{extraction_snippet}    // Fire-and-forget: servoshell manages its own window from here.
     let _ = Command::new(servoshell)
         .current_dir(&exe_dir)
         .args([{rust_args}])
@@ -360,7 +531,14 @@ fn main() {{
         finally:
             os.remove(launcher_src_path)
 
-    def _bundle_macos(self, servo_binary: str, binary_dir: str, output_dir: str, launch_args: List[str]) -> None:
+    def _bundle_macos(
+        self,
+        servo_binary: str,
+        binary_dir: str,
+        output_dir: str,
+        launch_args: List[str],
+        extraction: Optional[Tuple[str, str, str]],
+    ) -> None:
         contents_dir = path.join(output_dir, "Roves.app", "Contents")
         macos_dir = path.join(contents_dir, "MacOS")
         os.makedirs(macos_dir)
@@ -403,9 +581,28 @@ fn main() {{
             f.write(info_plist)
 
         quoted_args = " ".join(shell_quote(a) for a in launch_args)
+
+        # Content (packed by _place_bundle_content) sits in Contents/Resources,
+        # a sibling of this script's own directory (Contents/MacOS). Extract
+        # to output_dir/CONTENT_CACHE_DIRNAME — the same place Windows/Linux
+        # use — so the relative html-file argument already baked into
+        # `quoted_args` (relative to the `cd` below) resolves correctly here
+        # too, without needing a separate absolute-path case for macOS.
+        extraction_snippet = ""
+        if extraction is not None:
+            packed_rel_dir, cache_rel_dir, packer_binary = extraction
+            packer_dest = path.join(macos_dir, path.basename(packer_binary))
+            shutil.copy(packer_binary, packer_dest)
+            os.chmod(packer_dest, 0o755)
+            extraction_snippet = (
+                f'"$DIR/{path.basename(packer_binary)}" extract '
+                f'--content-dir "$DIR/../Resources/{packed_rel_dir}" '
+                f'--dest "$DIR/../../../{cache_rel_dir}"\n'
+            )
+
         launcher_script = f"""#!/usr/bin/env bash
 DIR="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
-cd "$DIR/../../.."
+{extraction_snippet}cd "$DIR/../../.."
 exec "$DIR/{core_name}" {quoted_args}
 """
         launcher_path = path.join(macos_dir, "Roves")
@@ -413,7 +610,14 @@ exec "$DIR/{core_name}" {quoted_args}
             f.write(launcher_script)
         os.chmod(launcher_path, 0o755)
 
-    def _bundle_linux(self, servo_binary: str, binary_dir: str, output_dir: str, launch_args: List[str]) -> None:
+    def _bundle_linux(
+        self,
+        servo_binary: str,
+        binary_dir: str,
+        output_dir: str,
+        launch_args: List[str],
+        extraction: Optional[Tuple[str, str, str]],
+    ) -> None:
         core_name = f"{path.basename(servo_binary)}-core"
         core_path = path.join(output_dir, core_name)
         shutil.copy(servo_binary, core_path)
@@ -422,12 +626,27 @@ exec "$DIR/{core_name}" {quoted_args}
                 shutil.copy(path.join(binary_dir, f), output_dir)
         os.chmod(core_path, 0o644)
 
+        # Content lives right here in output_dir (bundle_root for the
+        # non-.deb Linux case), and play.sh already `cd`s into output_dir
+        # before running anything, so both packed content and the extraction
+        # cache are plain paths relative to the script's own directory.
+        extraction_snippet = ""
+        if extraction is not None:
+            packed_rel_dir, cache_rel_dir, packer_binary = extraction
+            packer_dest = path.join(output_dir, path.basename(packer_binary))
+            shutil.copy(packer_binary, packer_dest)
+            os.chmod(packer_dest, 0o755)
+            extraction_snippet = (
+                f"chmod +x {shell_quote(path.basename(packer_binary))}\n"
+                f'./{path.basename(packer_binary)} extract --content-dir "./{packed_rel_dir}" --dest "./{cache_rel_dir}"\n'
+            )
+
         quoted_args = " ".join(shell_quote(a) for a in launch_args)
         play_sh = f"""#!/usr/bin/env bash
 cd "$(dirname "$0")"
 chmod +x {shell_quote(core_name)}
 export LD_LIBRARY_PATH="$(pwd):$LD_LIBRARY_PATH"
-./{core_name} {quoted_args}
+{extraction_snippet}./{core_name} {quoted_args}
 """
         play_path = path.join(output_dir, "play.sh")
         with open(play_path, "w") as f:
@@ -444,6 +663,12 @@ export LD_LIBRARY_PATH="$(pwd):$LD_LIBRARY_PATH"
         version: str,
         html_file: str,
         content_dir: Optional[str],
+        content_compress: str,
+        packer_binary: Optional[str],
+        compression_level: int,
+        max_pack_size: str,
+        exclude: List[str],
+        extraction: Optional[Tuple[str, str, str]],
     ) -> None:
         """Build a real, installable .deb: `dpkg -i` puts the engine + its
         content under /usr/lib/<package_name>/, a launcher under /usr/bin/,
@@ -473,13 +698,40 @@ export LD_LIBRARY_PATH="$(pwd):$LD_LIBRARY_PATH"
         for f in os.listdir(binary_dir):
             if ".so" in f:
                 shutil.copy(path.join(binary_dir, f), lib_dir)
-        _place_bundle_content(lib_dir, html_file, content_dir)
+        _place_bundle_content(
+            lib_dir, html_file, content_dir, content_compress, packer_binary, compression_level, max_pack_size, exclude
+        )
 
-        quoted_args = " ".join(shell_quote(a) for a in launch_args)
+        # /usr/lib/<package_name> is root-owned post-install (dpkg's usual
+        # 755), so — unlike the portable Windows/macOS/Linux bundles above,
+        # which extract right next to themselves — the cache has to go
+        # somewhere the invoking user can actually write to. Computed at
+        # launch time, not baked in at build time, since $HOME varies per
+        # user; that also means the html-file launch arg (which *is* baked
+        # in as a path relative to CONTENT_CACHE_DIRNAME) needs overriding
+        # here with the real absolute path.
+        extraction_snippet = ""
+        exec_args = " ".join(shell_quote(a) for a in launch_args)
+        if extraction is not None:
+            # cache_rel_dir (CONTENT_CACHE_DIRNAME) isn't used here — this
+            # branch computes its own user-cache-relative location below
+            # instead, since /usr/lib/<package_name> isn't user-writable.
+            packed_rel_dir, _cache_rel_dir, extraction_packer_binary = extraction
+            packer_name = path.basename(extraction_packer_binary)
+            shutil.copy(extraction_packer_binary, path.join(lib_dir, packer_name))
+            os.chmod(path.join(lib_dir, packer_name), 0o755)
+            html_basename = path.basename(launch_args[0])
+            rest_args = " ".join(shell_quote(a) for a in launch_args[1:])
+            extraction_snippet = (
+                f'CACHE_DIR="${{XDG_CACHE_HOME:-$HOME/.cache}}/{package_name}/content-cache"\n'
+                f"./{packer_name} extract --content-dir \"./{packed_rel_dir}\" --dest \"$CACHE_DIR\"\n"
+            )
+            exec_args = f'"$CACHE_DIR/{html_basename}" {rest_args}'
+
         launcher_script = f"""#!/usr/bin/env bash
 cd /usr/lib/{shell_quote(package_name)}
 export LD_LIBRARY_PATH="/usr/lib/{shell_quote(package_name)}:$LD_LIBRARY_PATH"
-exec ./{shell_quote(core_name)} {quoted_args}
+{extraction_snippet}exec ./{shell_quote(core_name)} {exec_args}
 """
         launcher_path = path.join(bin_dir, package_name)
         with open(launcher_path, "w") as f:

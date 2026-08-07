@@ -52,6 +52,47 @@ it down further to exactly what a game needs and nothing else.
 `./mach bundle` (see its own `--help`) turns a build into that double-click-ready package
 per target platform — see [CUSTOMIZATIONS.md] for what it produces on each.
 
+## Content packing & compression
+
+By default, `./mach bundle --content-dir dist/` does **not** copy your game's built web
+content into the release as plain, individually browsable files — the loose `.html`/`.js`/
+image/audio files a bundler like Vite produces are exactly what someone poking around inside
+an unzipped release would otherwise find and lift straight out. Instead, `--content-dir` is
+packed into a handful of `tar`+`zstd` archives, and the generated launcher (`play.exe`/
+`Roves.app`/`play.sh`/the `.deb`) reconstructs plain files from them at launch time, into a
+`.content-cache/` next to itself (cleanly re-derived every time the packed content actually
+changes, reused as-is otherwise — see [CUSTOMIZATIONS.md] for exactly how that cache works).
+
+This is about not handing out your source assets for free by default, **not** DRM or
+anti-tampering — the archives aren't encrypted, and anyone willing to run the extractor
+themselves (it ships right there in the bundle) gets the original files back byte-for-byte.
+
+How the split works, so a large game doesn't turn into either one giant archive or hundreds
+of tiny ones: `dist/`'s own root files become one archive; each direct subfolder's own files
+become another; everything nested deeper than that (however many levels) is flattened into a
+third archive per top-level subfolder. Every archive is capped at 500 MB by default, splitting
+into further parts past that. Files with an already-compressed extension (images, audio,
+video, fonts, existing archives) skip zstd entirely instead of spending CPU for no size win.
+
+Tune or disable all of this with flags on `./mach bundle`:
+
+```sh
+# Compression level (zstd; low favors speed, the default) and the per-archive size cap:
+./mach bundle --content-dir dist/ --content-compression-level 3 --content-max-pack-size 250M
+
+# Leave a subfolder (e.g. local save data your game itself writes into `dist/`) as
+# plain, uncompressed files instead of packing it — repeatable:
+./mach bundle --content-dir dist/ --content-exclude "saves/**"
+
+# Opt back into the old behavior — content-dir copied in as-is, no packing, no launch-time
+# extraction step, no .content-cache/:
+./mach bundle --content-dir dist/ --content-compress none
+```
+
+See the "Pack game content into compressed archives" entry in [CUSTOMIZATIONS.md] for the
+full design (archive naming, the manifest format, the extraction cache, and why `tar`+`zstd`)
+and for what's deliberately out of scope today (per-file integrity hashes, real encryption).
+
 ## Supported platforms
 
 | Device | Status | Compatibility library |

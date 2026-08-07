@@ -779,3 +779,106 @@ these two small string changes in then. If a future Servo version changes `AppIn
 constructor signature/parameter order in `components/webxr/openxr/mod.rs`, double check which
 argument is `application_name` vs `engine_name` before reapplying — swapping them would put
 "Roves" in the wrong field.
+
+---
+
+## 2026-08-07 — Pack game content into compressed archives instead of shipping loose files
+
+**Files:** `python/servo/post_build_commands.py` (`bundle`, `_place_bundle_content`,
+`_bundle_windows`/`_bundle_macos`/`_bundle_linux`/`_bundle_linux_deb`), `Cargo.toml` (new
+workspace member), and a brand-new crate, `support/content-packer/` (bin
+`roves-content-packer`). Also `test-page/public/` — new test fixtures, not part of the patch
+(see "Side effects" below).
+
+**Patch:** `patches/servo-v0.4.0/0014-pack-and-compress-game-content.patch`
+
+**Motivating problem:** since the 2026-08-06 `mach bundle` entry above, `--content-dir` (a
+game's built `dist/`) was copied into the release bundle with a plain `shutil.copytree` —
+every source file landed in the shipped zip exactly as built, trivially browsable/extractable
+by anyone who unzips a release. Nothing about `mach bundle`'s job (produce something
+double-click-runnable) required that; it was just the simplest thing `_place_bundle_content`
+could do.
+
+**Change:** `mach bundle` gained four new flags: `--content-compress {auto,none}` (default
+`auto`), `--content-compression-level N` (default `1` — zstd, favoring speed over ratio),
+`--content-max-pack-size SIZE` (default `500M`), `--content-exclude GLOB` (repeatable). With
+the new default, `--content-dir` is no longer copied in as loose files. Instead:
+
+- `_place_bundle_content` shells out to `roves-content-packer pack`, which walks
+  `--content-dir` and splits it into a small, fixed number of `tar`+`zstd` archives
+  (`.pack` files) plus a `manifest.json`, by depth: dist's own root-level files → one archive;
+  each direct subfolder's own direct files → one archive per subfolder; everything deeper than
+  that (grandchildren and beyond) → one more archive per top-level subfolder, with every
+  descendant flattened into it (tar entries keep their full relative path, so unpacking
+  reconstructs the original tree regardless of which archive a file ended up in). Each archive
+  is capped at `--content-max-pack-size`, splitting into `.1.pack`/`.2.pack`/... past that.
+  Files whose extension is already internally compressed (images, audio, video, fonts,
+  archives — see `STORED_EXTENSIONS` in `support/content-packer/src/pack.rs`) go into a
+  separate, *uncompressed* tar per bucket (`<bucket>.stored.pack`) instead of being fed through
+  zstd a second time for no size benefit. `--content-exclude` globs (matched relative to
+  `--content-dir`) are left as plain, unpacked files instead — e.g. a save-data/user-config
+  subfolder a game ships inside `dist/` that shouldn't sit inside a read-only archive.
+  Archiving order is fully deterministic (sorted paths throughout), so packing the same input
+  twice produces byte-identical output — `manifest.json`'s `content_hash` (sha256 over every
+  packed/excluded file's path+contents, in that same sorted order) changes iff the real output
+  would.
+- Each generated launcher (`play.exe`/`Roves`/`play.sh`/the `.deb`'s `/usr/bin/<pkg>` script)
+  gets a copy of `roves-content-packer` alongside itself, and now runs its `extract`
+  subcommand — synchronously, before starting the engine — to reconstruct plain files into a
+  `.content-cache/` directory, which is what the engine's `--html-file` argument actually
+  points at (rewritten at bundle-build time from e.g. `dist/index.html` to
+  `.content-cache/index.html`). `extract` skips the work entirely on a re-launch with
+  unchanged content: it compares `manifest.json`'s `content_hash` against a `.content-hash`
+  marker left in the destination from the previous run. Windows/macOS/non-`.deb`-Linux extract
+  to `.content-cache/` right next to the bundle itself (all three are meant to be portable,
+  fully self-contained folders — see the 2026-08-06 entry). The `.deb` variant is the one
+  exception: `/usr/lib/<package_name>/` is root-owned post-install and not writable by the
+  user actually running the app, so its launcher computes
+  `${XDG_CACHE_HOME:-$HOME/.cache}/<package_name>/content-cache` at *launch* time instead
+  (`$HOME` isn't known at `mach bundle` time) and overrides the engine's html-file argument
+  with that resolved absolute path rather than relying on the baked-in relative one.
+- `--content-compress=none` restores the exact previous behavior (plain `copytree`, no
+  `.content-cache` indirection, no packer binary shipped) — an escape hatch, not a special
+  case sprinkled through the packing logic: `_place_bundle_content` branches on it right at the
+  top and returns early.
+
+**Why:** a fork whose stated purpose is embedding a game (see `README.md`) shouldn't make
+that game's own source assets sit unprotected in every release by default — a curious end
+user opening the zip finds a `tar`+`zstd` archive, not a folder of ready-to-copy JS/images.
+"Very little compression, prioritize speed" (low zstd level, skip already-compressed
+extensions entirely) was the explicit ask driving the tool choice: `tar`+`zstd` because zstd
+is a widely-deployed, mature compression format with first-class Rust bindings already
+resolvable in this workspace's `Cargo.lock` (pulled in transitively before this change), not
+because of any exotic requirement. Splitting into a handful of archives by folder depth
+(rather than either one giant archive or one archive per file/folder) balances two things a
+single choice can't: fewer files to manage/ship than "one per folder" would produce on a
+deeply-nested asset tree, while still keeping any *individual* archive small enough to
+regenerate/re-download cheaply and to respect `--content-max-pack-size` without needing to
+chunk a single archive mid-stream. The launch-time (not bundle-build-time) extraction step,
+plus the content-hash cache, is what actually delivers on "not sitting in the clear on disk
+by default": the shipped artifact itself never contains a plain copy, and a normal user run
+only ever produces one in a temp/cache-style location, re-derived from the archives rather
+than persisted as the source of truth.
+
+**Deliberately left out of this pass (see the AskUserQuestion exchange that shaped this
+entry, in the conversation that produced it, for the full list and rationale):** per-file
+hashes in the manifest (no current consumer — nothing here does incremental
+patching/integrity verification yet, so it would be dead weight); any actual encryption or
+DRM-style obfuscation (the request was specifically for compression, and a fake-security XOR
+scheme would be worse than no scheme — see `support/content-packer/`'s own lack of one). Real
+protection against a motivated reverse-engineerer is a materially different, larger feature
+and wasn't asked for.
+
+**Side effects to know about when upgrading:** none of this touches Servo internals — it's
+new Python (a fourth `_bundle_*` parameter plus a new helper) and a wholly new, dependency-thin
+Rust crate (`tar`, `zstd`, `walkdir`, `glob`, `sha2`, `serde`/`serde_json`, `bpaf` — all either
+already workspace dependencies or already resolvable in `Cargo.lock` at the versions pinned in
+`support/content-packer/Cargo.toml`), so it should survive a version bump untouched as long as
+`_place_bundle_content`'s and the four `_bundle_*` methods' call sites in `bundle()` aren't
+restructured upstream (they're 100% this fork's own code, not upstream Servo's, so that risk
+is really just "did a later patch in this same set change their signatures again" — check
+`0004`/`0013` first). `test-page/public/`'s new image/audio/JSON/SVG fixtures (root files, two
+direct subfolders each with their own files plus a nested sub-subfolder) exist purely to give
+`test.yml`'s `npm run build` something realistic to exercise all three archive levels against
+— they aren't part of the patch set since they're not derived from any upstream file at all,
+just plain test fixtures tracked directly in this repo.

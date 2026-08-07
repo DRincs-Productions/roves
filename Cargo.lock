@@ -7117,6 +7117,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "roves-content-packer"
+version = "0.1.0"
+dependencies = [
+ "bpaf",
+ "glob",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tar",
+ "walkdir",
+ "zstd",
+]
+
+[[package]]
 name = "roxmltree"
 version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

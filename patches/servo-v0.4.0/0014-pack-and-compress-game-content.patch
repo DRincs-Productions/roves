@@ -1,0 +1,1042 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 63373339382..7695a689de6 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -5,6 +5,7 @@ members = [
+     "components/xpath",
+     "ffi/capi",
+     "ports/servoshell",
++    "support/content-packer",
+     "tests/capi",
+     "tests/unit/*",
+ ]
+diff --git a/python/servo/post_build_commands.py b/python/servo/post_build_commands.py
+index 0882dcd4853..f942252ee4a 100644
+--- a/python/servo/post_build_commands.py
++++ b/python/servo/post_build_commands.py
+@@ -14,7 +14,7 @@ import shutil
+ import subprocess
+ from subprocess import CompletedProcess
+ from shutil import copy2
+-from typing import Any, Optional, List
++from typing import Any, Optional, List, Tuple, cast
+ 
+ import mozdebug
+ 
+@@ -43,6 +43,16 @@ from python.servo.command_base import BuildType
+ 
+ ANDROID_APP_NAME = "org.servo.servoshell"
+ 
++# Where `extract` (see support/content-packer) reconstructs packed content at
++# launch time, relative to wherever the launcher itself lives. Fixed on
++# purpose: the launcher bakes in a path pointing here rather than computing it
++# at runtime, so the extraction step and the engine's launch arg always agree.
++CONTENT_CACHE_DIRNAME = ".content-cache"
++
++
++def _packer_binary_name() -> str:
++    return "roves-content-packer.exe" if is_windows() else "roves-content-packer"
++
+ 
+ def read_file(filename: str, if_exists: bool = False) -> str | None:
+     if if_exists and not path.exists(filename):
+@@ -71,15 +81,52 @@ _DEBIAN_ARCH_BY_RUST_ARCH = {
+ }
+ 
+ 
+-def _place_bundle_content(bundle_root: str, html_file: str, content_dir: Optional[str]) -> None:
++def _place_bundle_content(
++    bundle_root: str,
++    html_file: str,
++    content_dir: Optional[str],
++    compress: str,
++    packer_binary: Optional[str],
++    compression_level: int,
++    max_pack_size: str,
++    exclude: List[str],
++) -> None:
+     """Copy `content_dir` (e.g. a built `dist/`) into `bundle_root` at whatever
+     relative location `html_file` expects to find it at (e.g. `html_file` of
+-    `dist/index.html` puts the content at `bundle_root/dist/`)."""
++    `dist/index.html` puts the content at `bundle_root/dist/`).
++
++    When `compress` is `"none"`, this is a plain recursive copy, exactly as
++    before. Otherwise `content_dir` is packed into a handful of tar+zstd
++    archives instead (see `support/content-packer` and CUSTOMIZATIONS.md) —
++    the release then ships those archives, not the individually-browsable
++    loose files; the generated launcher (`_bundle_windows`/`_bundle_macos`/
++    `_bundle_linux`/`_bundle_linux_deb`) extracts them back at launch time.
++    """
+     if not content_dir:
+         return
+     rel_dir = path.dirname(html_file)
+     dest = path.join(bundle_root, rel_dir) if rel_dir else bundle_root
+-    shutil.copytree(content_dir, dest, dirs_exist_ok=True)
++    if compress == "none":
++        shutil.copytree(content_dir, dest, dirs_exist_ok=True)
++        return
++
++    assert packer_binary is not None
++    os.makedirs(dest, exist_ok=True)
++    pack_args = [
++        packer_binary,
++        "pack",
++        "--input",
++        content_dir,
++        "--output",
++        dest,
++        "--level",
++        str(compression_level),
++        "--max-pack-size",
++        max_pack_size,
++    ]
++    for pattern in exclude:
++        pack_args += ["--exclude", pattern]
++    subprocess.check_call(pack_args)
+ 
+ 
+ @CommandProvider
+@@ -242,6 +289,36 @@ class PostBuildCommands(CommandBase):
+         help="Directory of web content (e.g. a built dist/) to copy into the bundle, so --html-file "
+         "resolves without a separate copy step",
+     )
++    @CommandArgument(
++        "--content-compress",
++        default="auto",
++        choices=["auto", "none"],
++        help="'auto' (default): pack --content-dir into a handful of tar+zstd archives instead of "
++        "shipping it as loose, individually browsable files (see support/content-packer and "
++        "CUSTOMIZATIONS.md). 'none': copy it in as-is, exactly like before this option existed.",
++    )
++    @CommandArgument(
++        "--content-compression-level",
++        default=1,
++        type=int,
++        help="zstd compression level used by --content-compress=auto. Low values (the default) favor "
++        "speed over ratio — see CUSTOMIZATIONS.md for why that's the right tradeoff here.",
++    )
++    @CommandArgument(
++        "--content-max-pack-size",
++        default="500M",
++        help="Split --content-dir's archives so no single one exceeds this size, e.g. 500M or 1G "
++        "(default: 500M). Only meaningful with --content-compress=auto.",
++    )
++    @CommandArgument(
++        "--content-exclude",
++        action="append",
++        default=[],
++        metavar="GLOB",
++        help="Glob (relative to --content-dir), repeatable, of files to leave as loose, uncompressed "
++        "files instead of packing them — e.g. a save-data or user-config subfolder that shouldn't sit "
++        "inside a read-only archive. Only meaningful with --content-compress=auto.",
++    )
+     @CommandArgument(
+         "--deb",
+         action="store_true",
+@@ -258,6 +335,10 @@ class PostBuildCommands(CommandBase):
+         window_size: str = "1280x720",
+         output: Optional[str] = None,
+         content_dir: Optional[str] = None,
++        content_compress: str = "auto",
++        content_compression_level: int = 1,
++        content_max_pack_size: str = "500M",
++        content_exclude: Optional[List[str]] = None,
+         deb: bool = False,
+         deb_package_name: str = "servoshell",
+         deb_version: str = "0.0.0",
+@@ -281,6 +362,15 @@ class PostBuildCommands(CommandBase):
+           package instead (see _bundle_linux_deb for what it does and does
+           not attempt).
+ 
++        By default (`--content-compress=auto`), `--content-dir` isn't copied
++        into the bundle as loose files: it's packed into a handful of
++        tar+zstd archives (see support/content-packer and CUSTOMIZATIONS.md),
++        and the launcher above extracts them back to plain files at launch
++        time instead — so the shipped bundle itself never contains an
++        individually browsable copy of the game's web content. Pass
++        `--content-compress=none` to get the old, always-loose-files
++        behavior back.
++
+         None of this touches target/<profile>/ itself or the binary Cargo
+         put there — `./mach run` and friends keep working exactly as before.
+         """
+@@ -294,30 +384,90 @@ class PostBuildCommands(CommandBase):
+             delete(output_dir)
+         os.makedirs(output_dir)
+ 
+-        launch_args = [html_file, "--window-size", window_size] + list(params or [])
++        content_exclude = content_exclude or []
++        compress_enabled = bool(content_dir) and content_compress != "none"
++        packer_binary = self._build_content_packer() if compress_enabled else None
++        if compress_enabled:
++            runtime_html_file = path.join(CONTENT_CACHE_DIRNAME, path.basename(html_file))
++            extraction: Optional[Tuple[str, str, str]] = (
++                path.dirname(html_file),
++                CONTENT_CACHE_DIRNAME,
++                packer_binary,  # type: ignore[assignment]
++            )
++        else:
++            runtime_html_file = html_file
++            extraction = None
++
++        launch_args = [runtime_html_file, "--window-size", window_size] + list(params or [])
+ 
+         if is_windows():
+-            self._bundle_windows(servo_binary, binary_dir, output_dir, launch_args)
++            self._bundle_windows(servo_binary, binary_dir, output_dir, launch_args, extraction)
+             bundle_root = output_dir
+         elif is_macosx():
+             bundle_root = path.join(output_dir, "Roves.app", "Contents", "Resources")
+             os.makedirs(bundle_root)
+-            self._bundle_macos(servo_binary, binary_dir, output_dir, launch_args)
++            self._bundle_macos(servo_binary, binary_dir, output_dir, launch_args, extraction)
+         elif deb:
+             self._bundle_linux_deb(
+-                servo_binary, binary_dir, output_dir, launch_args, deb_package_name, deb_version, html_file, content_dir
++                servo_binary,
++                binary_dir,
++                output_dir,
++                launch_args,
++                deb_package_name,
++                deb_version,
++                html_file,
++                content_dir,
++                content_compress,
++                packer_binary,
++                content_compression_level,
++                content_max_pack_size,
++                content_exclude,
++                extraction,
+             )
+             print(f"Bundle written to {output_dir}")
+             return None
+         else:
+-            self._bundle_linux(servo_binary, binary_dir, output_dir, launch_args)
++            self._bundle_linux(servo_binary, binary_dir, output_dir, launch_args, extraction)
+             bundle_root = output_dir
+ 
+-        _place_bundle_content(bundle_root, html_file, content_dir)
++        _place_bundle_content(
++            bundle_root,
++            html_file,
++            content_dir,
++            content_compress,
++            packer_binary,
++            content_compression_level,
++            content_max_pack_size,
++            content_exclude,
++        )
+         print(f"Bundle written to {output_dir}")
+         return None
+ 
+-    def _bundle_windows(self, servo_binary: str, binary_dir: str, output_dir: str, launch_args: List[str]) -> None:
++    def _build_content_packer(self) -> str:
++        """Builds (release profile) and returns the path to
++        `roves-content-packer` — used both here, to `pack` `--content-dir`,
++        and copied into the bundle so the generated launcher can run its
++        `extract` subcommand at launch time. See `support/content-packer`
++        and CUSTOMIZATIONS.md. Always a host-native build (no --target):
++        packing happens on the machine running `mach bundle`, and the copy
++        shipped into the bundle only ever needs to run on that same host
++        platform (Windows/macOS/Linux), never cross-compiled."""
++        manifest_path = path.join(self.context.topdir, "support", "content-packer", "Cargo.toml")
++        subprocess.check_call(
++            ["cargo", "build", "--release", "--manifest-path", manifest_path],
++            env=cast(dict[str, str], self.build_env()),
++        )
++        target_dir = servo.util.get_target_dir()
++        return path.join(target_dir, "release", _packer_binary_name())
++
++    def _bundle_windows(
++        self,
++        servo_binary: str,
++        binary_dir: str,
++        output_dir: str,
++        launch_args: List[str],
++        extraction: Optional[Tuple[str, str, str]],
++    ) -> None:
+         bin_dir = path.join(output_dir, "bin")
+         os.makedirs(bin_dir)
+         shutil.copy(servo_binary, bin_dir)
+@@ -332,6 +482,26 @@ class PostBuildCommands(CommandBase):
+ 
+         binary_name = path.basename(servo_binary)
+         rust_args = ", ".join(f'"{_escape_rust_str(a)}"' for a in launch_args)
++
++        # When content is packed (see CUSTOMIZATIONS.md's content-compression
++        # entry), play.exe is what runs `roves-content-packer extract` to
++        # reconstruct plain files into CONTENT_CACHE_DIRNAME *before* handing
++        # off to servoshell — synchronously (`.status()`, not `.spawn()`),
++        # since servoshell must not open its html file until this finishes.
++        extraction_snippet = ""
++        if extraction is not None:
++            packed_rel_dir, cache_rel_dir, packer_binary = extraction
++            shutil.copy(packer_binary, bin_dir)
++            packer_name = path.basename(packer_binary)
++            extraction_snippet = f"""
++    let packer = bin_dir.join("{_escape_rust_str(packer_name)}");
++    let _ = Command::new(&packer)
++        .arg("extract")
++        .arg("--content-dir").arg(exe_dir.join("{_escape_rust_str(packed_rel_dir)}"))
++        .arg("--dest").arg(exe_dir.join("{_escape_rust_str(cache_rel_dir)}"))
++        .status();
++"""
++
+         launcher_source = f"""#![windows_subsystem = "windows"]
+ use std::env;
+ use std::process::Command;
+@@ -342,8 +512,9 @@ fn main() {{
+         .parent()
+         .expect("exe has no parent directory")
+         .to_path_buf();
+-    let servoshell = exe_dir.join("bin").join("{binary_name}");
+-    // Fire-and-forget: servoshell manages its own window from here.
++    let bin_dir = exe_dir.join("bin");
++    let servoshell = bin_dir.join("{binary_name}");
++{extraction_snippet}    // Fire-and-forget: servoshell manages its own window from here.
+     let _ = Command::new(servoshell)
+         .current_dir(&exe_dir)
+         .args([{rust_args}])
+@@ -360,7 +531,14 @@ fn main() {{
+         finally:
+             os.remove(launcher_src_path)
+ 
+-    def _bundle_macos(self, servo_binary: str, binary_dir: str, output_dir: str, launch_args: List[str]) -> None:
++    def _bundle_macos(
++        self,
++        servo_binary: str,
++        binary_dir: str,
++        output_dir: str,
++        launch_args: List[str],
++        extraction: Optional[Tuple[str, str, str]],
++    ) -> None:
+         contents_dir = path.join(output_dir, "Roves.app", "Contents")
+         macos_dir = path.join(contents_dir, "MacOS")
+         os.makedirs(macos_dir)
+@@ -403,9 +581,28 @@ fn main() {{
+             f.write(info_plist)
+ 
+         quoted_args = " ".join(shell_quote(a) for a in launch_args)
++
++        # Content (packed by _place_bundle_content) sits in Contents/Resources,
++        # a sibling of this script's own directory (Contents/MacOS). Extract
++        # to output_dir/CONTENT_CACHE_DIRNAME — the same place Windows/Linux
++        # use — so the relative html-file argument already baked into
++        # `quoted_args` (relative to the `cd` below) resolves correctly here
++        # too, without needing a separate absolute-path case for macOS.
++        extraction_snippet = ""
++        if extraction is not None:
++            packed_rel_dir, cache_rel_dir, packer_binary = extraction
++            packer_dest = path.join(macos_dir, path.basename(packer_binary))
++            shutil.copy(packer_binary, packer_dest)
++            os.chmod(packer_dest, 0o755)
++            extraction_snippet = (
++                f'"$DIR/{path.basename(packer_binary)}" extract '
++                f'--content-dir "$DIR/../Resources/{packed_rel_dir}" '
++                f'--dest "$DIR/../../../{cache_rel_dir}"\n'
++            )
++
+         launcher_script = f"""#!/usr/bin/env bash
+ DIR="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
+-cd "$DIR/../../.."
++{extraction_snippet}cd "$DIR/../../.."
+ exec "$DIR/{core_name}" {quoted_args}
+ """
+         launcher_path = path.join(macos_dir, "Roves")
+@@ -413,7 +610,14 @@ exec "$DIR/{core_name}" {quoted_args}
+             f.write(launcher_script)
+         os.chmod(launcher_path, 0o755)
+ 
+-    def _bundle_linux(self, servo_binary: str, binary_dir: str, output_dir: str, launch_args: List[str]) -> None:
++    def _bundle_linux(
++        self,
++        servo_binary: str,
++        binary_dir: str,
++        output_dir: str,
++        launch_args: List[str],
++        extraction: Optional[Tuple[str, str, str]],
++    ) -> None:
+         core_name = f"{path.basename(servo_binary)}-core"
+         core_path = path.join(output_dir, core_name)
+         shutil.copy(servo_binary, core_path)
+@@ -422,12 +626,27 @@ exec "$DIR/{core_name}" {quoted_args}
+                 shutil.copy(path.join(binary_dir, f), output_dir)
+         os.chmod(core_path, 0o644)
+ 
++        # Content lives right here in output_dir (bundle_root for the
++        # non-.deb Linux case), and play.sh already `cd`s into output_dir
++        # before running anything, so both packed content and the extraction
++        # cache are plain paths relative to the script's own directory.
++        extraction_snippet = ""
++        if extraction is not None:
++            packed_rel_dir, cache_rel_dir, packer_binary = extraction
++            packer_dest = path.join(output_dir, path.basename(packer_binary))
++            shutil.copy(packer_binary, packer_dest)
++            os.chmod(packer_dest, 0o755)
++            extraction_snippet = (
++                f"chmod +x {shell_quote(path.basename(packer_binary))}\n"
++                f'./{path.basename(packer_binary)} extract --content-dir "./{packed_rel_dir}" --dest "./{cache_rel_dir}"\n'
++            )
++
+         quoted_args = " ".join(shell_quote(a) for a in launch_args)
+         play_sh = f"""#!/usr/bin/env bash
+ cd "$(dirname "$0")"
+ chmod +x {shell_quote(core_name)}
+ export LD_LIBRARY_PATH="$(pwd):$LD_LIBRARY_PATH"
+-./{core_name} {quoted_args}
++{extraction_snippet}./{core_name} {quoted_args}
+ """
+         play_path = path.join(output_dir, "play.sh")
+         with open(play_path, "w") as f:
+@@ -444,6 +663,12 @@ export LD_LIBRARY_PATH="$(pwd):$LD_LIBRARY_PATH"
+         version: str,
+         html_file: str,
+         content_dir: Optional[str],
++        content_compress: str,
++        packer_binary: Optional[str],
++        compression_level: int,
++        max_pack_size: str,
++        exclude: List[str],
++        extraction: Optional[Tuple[str, str, str]],
+     ) -> None:
+         """Build a real, installable .deb: `dpkg -i` puts the engine + its
+         content under /usr/lib/<package_name>/, a launcher under /usr/bin/,
+@@ -473,13 +698,40 @@ export LD_LIBRARY_PATH="$(pwd):$LD_LIBRARY_PATH"
+         for f in os.listdir(binary_dir):
+             if ".so" in f:
+                 shutil.copy(path.join(binary_dir, f), lib_dir)
+-        _place_bundle_content(lib_dir, html_file, content_dir)
++        _place_bundle_content(
++            lib_dir, html_file, content_dir, content_compress, packer_binary, compression_level, max_pack_size, exclude
++        )
++
++        # /usr/lib/<package_name> is root-owned post-install (dpkg's usual
++        # 755), so — unlike the portable Windows/macOS/Linux bundles above,
++        # which extract right next to themselves — the cache has to go
++        # somewhere the invoking user can actually write to. Computed at
++        # launch time, not baked in at build time, since $HOME varies per
++        # user; that also means the html-file launch arg (which *is* baked
++        # in as a path relative to CONTENT_CACHE_DIRNAME) needs overriding
++        # here with the real absolute path.
++        extraction_snippet = ""
++        exec_args = " ".join(shell_quote(a) for a in launch_args)
++        if extraction is not None:
++            # cache_rel_dir (CONTENT_CACHE_DIRNAME) isn't used here — this
++            # branch computes its own user-cache-relative location below
++            # instead, since /usr/lib/<package_name> isn't user-writable.
++            packed_rel_dir, _cache_rel_dir, extraction_packer_binary = extraction
++            packer_name = path.basename(extraction_packer_binary)
++            shutil.copy(extraction_packer_binary, path.join(lib_dir, packer_name))
++            os.chmod(path.join(lib_dir, packer_name), 0o755)
++            html_basename = path.basename(launch_args[0])
++            rest_args = " ".join(shell_quote(a) for a in launch_args[1:])
++            extraction_snippet = (
++                f'CACHE_DIR="${{XDG_CACHE_HOME:-$HOME/.cache}}/{package_name}/content-cache"\n'
++                f"./{packer_name} extract --content-dir \"./{packed_rel_dir}\" --dest \"$CACHE_DIR\"\n"
++            )
++            exec_args = f'"$CACHE_DIR/{html_basename}" {rest_args}'
+ 
+-        quoted_args = " ".join(shell_quote(a) for a in launch_args)
+         launcher_script = f"""#!/usr/bin/env bash
+ cd /usr/lib/{shell_quote(package_name)}
+ export LD_LIBRARY_PATH="/usr/lib/{shell_quote(package_name)}:$LD_LIBRARY_PATH"
+-exec ./{shell_quote(core_name)} {quoted_args}
++{extraction_snippet}exec ./{shell_quote(core_name)} {exec_args}
+ """
+         launcher_path = path.join(bin_dir, package_name)
+         with open(launcher_path, "w") as f:
+diff --git a/support/content-packer/Cargo.toml b/support/content-packer/Cargo.toml
+new file mode 100644
+index 00000000000..5f995a86ea4
+--- /dev/null
++++ b/support/content-packer/Cargo.toml
+@@ -0,0 +1,21 @@
++[package]
++name = "roves-content-packer"
++version = "0.1.0"
++edition = "2024"
++license = "MPL-2.0"
++publish = false
++description = "Packs a built game dist/ into a handful of tar+zstd archives (instead of shipping it as loose files), and extracts them back at launch time. See ../../CUSTOMIZATIONS.md."
++
++[[bin]]
++name = "roves-content-packer"
++path = "src/main.rs"
++
++[dependencies]
++bpaf = { workspace = true }
++serde = { workspace = true, features = ["derive"] }
++serde_json = { workspace = true }
++sha2 = { workspace = true }
++glob = "0.3.3"
++tar = "0.4.46"
++walkdir = "2.5.0"
++zstd = "0.13.3"
+diff --git a/support/content-packer/src/extract.rs b/support/content-packer/src/extract.rs
+new file mode 100644
+index 00000000000..3a14b3cdd63
+--- /dev/null
++++ b/support/content-packer/src/extract.rs
+@@ -0,0 +1,68 @@
++use std::fs;
++use std::path::PathBuf;
++
++use crate::manifest::Manifest;
++
++pub struct ExtractOptions {
++    pub content_dir: PathBuf,
++    pub dest: PathBuf,
++    pub force: bool,
++}
++
++/// Marker file dropped in `dest` recording the `content_hash` of the manifest
++/// it was extracted from, so a later run with unchanged content can skip
++/// re-extracting entirely instead of paying the decompression cost on every
++/// launch.
++const HASH_MARKER: &str = ".content-hash";
++
++pub fn extract(opts: &ExtractOptions) -> Result<(), String> {
++    let manifest_path = opts.content_dir.join("manifest.json");
++    let manifest_bytes =
++        fs::read(&manifest_path).map_err(|e| format!("reading {manifest_path:?}: {e}"))?;
++    let manifest: Manifest = serde_json::from_slice(&manifest_bytes)
++        .map_err(|e| format!("parsing {manifest_path:?}: {e}"))?;
++
++    let hash_marker = opts.dest.join(HASH_MARKER);
++    if !opts.force {
++        if let Ok(existing) = fs::read_to_string(&hash_marker) {
++            if existing.trim() == manifest.content_hash {
++                return Ok(());
++            }
++        }
++    }
++
++    if opts.dest.exists() {
++        fs::remove_dir_all(&opts.dest).map_err(|e| format!("clearing {:?}: {e}", opts.dest))?;
++    }
++    fs::create_dir_all(&opts.dest).map_err(|e| format!("creating {:?}: {e}", opts.dest))?;
++
++    for pack in &manifest.packs {
++        let pack_path = opts.content_dir.join(&pack.file);
++        let file = fs::File::open(&pack_path).map_err(|e| format!("opening {pack_path:?}: {e}"))?;
++        if pack.compressed {
++            let decoder =
++                zstd::Decoder::new(file).map_err(|e| format!("decoding {pack_path:?}: {e}"))?;
++            tar::Archive::new(decoder)
++                .unpack(&opts.dest)
++                .map_err(|e| format!("extracting {pack_path:?}: {e}"))?;
++        } else {
++            tar::Archive::new(file)
++                .unpack(&opts.dest)
++                .map_err(|e| format!("extracting {pack_path:?}: {e}"))?;
++        }
++    }
++
++    for rel in &manifest.excluded {
++        let src = opts.content_dir.join(rel);
++        let dst = opts.dest.join(rel);
++        if let Some(parent) = dst.parent() {
++            fs::create_dir_all(parent).map_err(|e| format!("creating {parent:?}: {e}"))?;
++        }
++        fs::copy(&src, &dst).map_err(|e| format!("copying {src:?}: {e}"))?;
++    }
++
++    fs::write(&hash_marker, &manifest.content_hash)
++        .map_err(|e| format!("writing {hash_marker:?}: {e}"))?;
++
++    Ok(())
++}
+diff --git a/support/content-packer/src/main.rs b/support/content-packer/src/main.rs
+new file mode 100644
+index 00000000000..017b6d4c08f
+--- /dev/null
++++ b/support/content-packer/src/main.rs
+@@ -0,0 +1,136 @@
++//! `roves-content-packer` — see ../../../CUSTOMIZATIONS.md for why this
++//! exists. Two subcommands:
++//!
++//! - `pack`: turns a built `dist/`-shaped directory into a handful of
++//!   `.pack` archives (tar, zstd-compressed unless made entirely of
++//!   already-compressed extensions) plus a `manifest.json`, instead of
++//!   shipping it as loose files.
++//! - `extract`: reverses that, decompressing back to plain files — used at
++//!   game launch time (see the generated `play.sh`/`play.exe`/`Roves.app`
++//!   launchers) rather than at bundle/build time, so the release artifact
++//!   itself never contains the plain, browsable dist tree.
++
++mod extract;
++mod manifest;
++mod pack;
++mod size;
++
++use std::path::PathBuf;
++use std::process::ExitCode;
++
++use bpaf::Parser;
++
++#[derive(Debug, Clone)]
++enum Cmd {
++    Pack(PackCli),
++    Extract(ExtractCli),
++}
++
++#[derive(Debug, Clone)]
++struct PackCli {
++    input: PathBuf,
++    output: PathBuf,
++    level: i32,
++    max_pack_size: String,
++    exclude: Vec<String>,
++}
++
++#[derive(Debug, Clone)]
++struct ExtractCli {
++    content_dir: PathBuf,
++    dest: PathBuf,
++    force: bool,
++}
++
++fn pack_cli() -> impl Parser<PackCli> {
++    let input = bpaf::long("input")
++        .help("Directory to pack, e.g. a built dist/")
++        .argument::<PathBuf>("DIR");
++    let output = bpaf::long("output")
++        .help("Directory to write .pack files + manifest.json into")
++        .argument::<PathBuf>("DIR");
++    let level = bpaf::long("level")
++        .help("zstd compression level — low values favor speed over ratio")
++        .argument::<i32>("N")
++        .fallback(1)
++        .display_fallback();
++    let max_pack_size = bpaf::long("max-pack-size")
++        .help("Split into multiple archives past this size, e.g. 500M")
++        .argument::<String>("SIZE")
++        .fallback("500M".to_string())
++        .display_fallback();
++    let exclude = bpaf::long("exclude")
++        .help("Glob (relative to --input) of files to leave as loose, uncompressed files; repeatable")
++        .argument::<String>("GLOB")
++        .many();
++    bpaf::construct!(PackCli { input, output, level, max_pack_size, exclude })
++}
++
++fn extract_cli() -> impl Parser<ExtractCli> {
++    let content_dir = bpaf::long("content-dir")
++        .help("Directory containing manifest.json + .pack files, produced by `pack`")
++        .argument::<PathBuf>("DIR");
++    let dest = bpaf::long("dest")
++        .help("Directory to extract the original files into")
++        .argument::<PathBuf>("DIR");
++    let force = bpaf::long("force")
++        .help("Re-extract even if the cached content hash in --dest already matches")
++        .switch();
++    bpaf::construct!(ExtractCli { content_dir, dest, force })
++}
++
++fn cmd() -> Cmd {
++    let pack = pack_cli()
++        .map(Cmd::Pack)
++        .to_options()
++        .descr("Pack a dist/-shaped directory into a handful of tar+zstd archives");
++    let extract = extract_cli()
++        .map(Cmd::Extract)
++        .to_options()
++        .descr("Extract archives produced by `pack` back into plain files");
++    let pack_cmd = pack.command("pack");
++    let extract_cmd = extract.command("extract");
++    bpaf::construct!([pack_cmd, extract_cmd])
++        .to_options()
++        .descr("Packs/unpacks a game's dist/ so a release doesn't ship it as trivially browsable loose files")
++        .run()
++}
++
++fn main() -> ExitCode {
++    let result = match cmd() {
++        Cmd::Pack(args) => run_pack(args),
++        Cmd::Extract(args) => run_extract(args),
++    };
++    match result {
++        Ok(()) => ExitCode::SUCCESS,
++        Err(e) => {
++            eprintln!("error: {e}");
++            ExitCode::FAILURE
++        }
++    }
++}
++
++fn run_pack(args: PackCli) -> Result<(), String> {
++    let exclude = args
++        .exclude
++        .iter()
++        .map(|pattern| glob::Pattern::new(pattern).map_err(|e| format!("--exclude {pattern:?}: {e}")))
++        .collect::<Result<Vec<_>, _>>()?;
++    let opts = pack::PackOptions {
++        input: args.input,
++        output: args.output,
++        level: args.level,
++        max_pack_size: size::parse_size(&args.max_pack_size)?,
++        exclude,
++    };
++    pack::pack(&opts)
++}
++
++fn run_extract(args: ExtractCli) -> Result<(), String> {
++    let opts = extract::ExtractOptions {
++        content_dir: args.content_dir,
++        dest: args.dest,
++        force: args.force,
++    };
++    extract::extract(&opts)
++}
+diff --git a/support/content-packer/src/manifest.rs b/support/content-packer/src/manifest.rs
+new file mode 100644
+index 00000000000..19890ead81d
+--- /dev/null
++++ b/support/content-packer/src/manifest.rs
+@@ -0,0 +1,32 @@
++use serde::{Deserialize, Serialize};
++
++/// On-disk `manifest.json` sitting next to a set of `.pack` files, produced by
++/// `pack` and consumed by `extract`. Bumped whenever the pack/extract contract
++/// changes shape, so an old extractor refuses to (mis)handle a newer manifest.
++pub const FORMAT_VERSION: u32 = 1;
++
++#[derive(Debug, Serialize, Deserialize)]
++pub struct Manifest {
++    pub format_version: u32,
++    /// sha256 over every packed/excluded file's relative path + contents, in a
++    /// fixed sorted order — changes iff the extracted output would change.
++    /// Used by `extract` to skip re-extracting unchanged content.
++    pub content_hash: String,
++    pub compression_level: i32,
++    pub packs: Vec<PackEntry>,
++    /// Relative paths (forward-slash, relative to the content root) that were
++    /// left out of every pack by `--exclude` and instead sit next to the packs
++    /// as plain files, to be copied verbatim by `extract`.
++    pub excluded: Vec<String>,
++}
++
++#[derive(Debug, Serialize, Deserialize)]
++pub struct PackEntry {
++    /// Filename of the archive, relative to the directory the manifest lives in.
++    pub file: String,
++    /// `true` = `file` is a zstd-compressed tar (`tar.zst`). `false` = a plain,
++    /// uncompressed tar — used for buckets made entirely of already-compressed
++    /// extensions (images/audio/video/fonts/archives), where re-compressing
++    /// would spend CPU for essentially no size win.
++    pub compressed: bool,
++}
+diff --git a/support/content-packer/src/pack.rs b/support/content-packer/src/pack.rs
+new file mode 100644
+index 00000000000..5d077bd63bb
+--- /dev/null
++++ b/support/content-packer/src/pack.rs
+@@ -0,0 +1,268 @@
++use std::collections::{BTreeMap, HashSet};
++use std::fs::{self, File};
++use std::io::Write;
++use std::path::{Path, PathBuf};
++
++use sha2::{Digest, Sha256};
++use walkdir::WalkDir;
++
++use crate::manifest::{FORMAT_VERSION, Manifest, PackEntry};
++
++/// Extensions that are already internally compressed (lossy/lossless image,
++/// audio, video, font and archive formats) — re-running zstd over them buys
++/// essentially nothing and just spends CPU, so files with these extensions go
++/// into a plain, uncompressed tar ("stored") instead of a `tar.zst`.
++const STORED_EXTENSIONS: &[&str] = &[
++    "png", "jpg", "jpeg", "webp", "avif", "gif", "ico", "mp3", "ogg", "oga", "opus", "m4a", "aac",
++    "flac", "mp4", "webm", "mov", "mkv", "avi", "woff", "woff2", "zip", "gz", "bz2", "xz", "zst",
++    "br", "7z", "rar", "ktx2", "basis", "astc", "dds",
++];
++
++pub struct PackOptions {
++    pub input: PathBuf,
++    pub output: PathBuf,
++    pub level: i32,
++    pub max_pack_size: u64,
++    pub exclude: Vec<glob::Pattern>,
++}
++
++struct FileEntry {
++    /// Forward-slash path relative to `input`, e.g. `assets/icons/logo.png`.
++    rel_path: String,
++    abs_path: PathBuf,
++    size: u64,
++}
++
++pub fn pack(opts: &PackOptions) -> Result<(), String> {
++    fs::create_dir_all(&opts.output).map_err(|e| format!("creating {:?}: {e}", opts.output))?;
++
++    let mut all_files = collect_files(&opts.input)?;
++    all_files.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
++
++    let mut excluded = Vec::new();
++    let mut packable = Vec::new();
++    for f in all_files {
++        if opts.exclude.iter().any(|p| p.matches(&f.rel_path)) {
++            excluded.push(f);
++        } else {
++            packable.push(f);
++        }
++    }
++
++    // Bucket key: `None` = dist's own root files. `Some((folder, nested))` =
++    // files directly inside a direct subfolder of dist (`nested = false`), or
++    // files anywhere deeper than that, flattened into one bucket per
++    // top-level subfolder (`nested = true`) — see CUSTOMIZATIONS.md.
++    let mut buckets: BTreeMap<(Option<String>, bool), Vec<FileEntry>> = BTreeMap::new();
++    for f in packable {
++        let mut components = f.rel_path.split('/');
++        let first = components.next().unwrap_or("");
++        let depth_after_first = components.count();
++        let key = if first == f.rel_path {
++            (None, false)
++        } else if depth_after_first == 1 {
++            (Some(first.to_string()), false)
++        } else {
++            (Some(first.to_string()), true)
++        };
++        buckets.entry(key).or_default().push(f);
++    }
++
++    let mut hasher = Sha256::new();
++    let mut pack_entries = Vec::new();
++    let mut used_names = HashSet::new();
++
++    for ((folder, nested), files) in buckets {
++        let base_name = bucket_base_name(folder.as_deref(), nested, &mut used_names);
++        let (stored, compressible): (Vec<_>, Vec<_>) =
++            files.into_iter().partition(|f| is_stored_extension(&f.rel_path));
++
++        write_group(opts, &base_name, false, compressible, &mut pack_entries, &mut hasher)?;
++        write_group(opts, &base_name, true, stored, &mut pack_entries, &mut hasher)?;
++    }
++
++    let mut excluded_rel = Vec::new();
++    for f in &excluded {
++        let bytes = fs::read(&f.abs_path).map_err(|e| format!("reading {:?}: {e}", f.abs_path))?;
++        hasher.update(f.rel_path.as_bytes());
++        hasher.update(bytes.len().to_le_bytes());
++        hasher.update(&bytes);
++
++        let dest = opts.output.join(&f.rel_path);
++        if let Some(parent) = dest.parent() {
++            fs::create_dir_all(parent).map_err(|e| format!("creating {parent:?}: {e}"))?;
++        }
++        fs::write(&dest, &bytes).map_err(|e| format!("writing {dest:?}: {e}"))?;
++        excluded_rel.push(f.rel_path.clone());
++    }
++
++    let manifest = Manifest {
++        format_version: FORMAT_VERSION,
++        content_hash: format!("sha256:{}", hex_encode(&hasher.finalize())),
++        compression_level: opts.level,
++        packs: pack_entries,
++        excluded: excluded_rel,
++    };
++    let manifest_path = opts.output.join("manifest.json");
++    let manifest_file =
++        File::create(&manifest_path).map_err(|e| format!("creating {manifest_path:?}: {e}"))?;
++    serde_json::to_writer_pretty(manifest_file, &manifest)
++        .map_err(|e| format!("writing {manifest_path:?}: {e}"))?;
++    Ok(())
++}
++
++fn collect_files(root: &Path) -> Result<Vec<FileEntry>, String> {
++    let mut files = Vec::new();
++    for entry in WalkDir::new(root) {
++        let entry = entry.map_err(|e| format!("walking {root:?}: {e}"))?;
++        if !entry.file_type().is_file() {
++            continue;
++        }
++        let abs_path = entry.path().to_path_buf();
++        let rel_path = abs_path
++            .strip_prefix(root)
++            .map_err(|e| format!("{abs_path:?} is not under {root:?}: {e}"))?
++            .components()
++            .map(|c| c.as_os_str().to_string_lossy().into_owned())
++            .collect::<Vec<_>>()
++            .join("/");
++        let size = entry.metadata().map_err(|e| e.to_string())?.len();
++        files.push(FileEntry { rel_path, abs_path, size });
++    }
++    Ok(files)
++}
++
++/// Picks the on-disk basename for a bucket's archive(s), sanitized for safe
++/// use as a filename and disambiguated against any other bucket that would
++/// otherwise produce the same name (e.g. a real subfolder literally named
++/// `root` colliding with the fixed root-bucket name).
++fn bucket_base_name(folder: Option<&str>, nested: bool, used: &mut HashSet<String>) -> String {
++    let sanitized = match folder {
++        None => "__root__".to_string(),
++        Some(f) => f
++            .chars()
++            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
++            .collect::<String>(),
++    };
++    let mut name = if nested { format!("{sanitized}.nested") } else { sanitized.clone() };
++    let mut suffix = 2;
++    while !used.insert(name.clone()) {
++        name = format!("{sanitized}_{suffix}");
++        if nested {
++            name.push_str(".nested");
++        }
++        suffix += 1;
++    }
++    name
++}
++
++fn hex_encode(bytes: &[u8]) -> String {
++    bytes.iter().map(|b| format!("{b:02x}")).collect()
++}
++
++fn is_stored_extension(rel_path: &str) -> bool {
++    match rel_path.rsplit_once('.') {
++        Some((_, ext)) => STORED_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()),
++        None => false,
++    }
++}
++
++/// Splits `files` into `--max-pack-size`-bounded parts and writes each as its
++/// own `.pack` archive (`<base_name>[.stored][.N].pack`), recording a
++/// [`PackEntry`] per part. No-op if `files` is empty (a bucket with only
++/// stored, or only compressible, files skips the other archive entirely).
++fn write_group(
++    opts: &PackOptions,
++    base_name: &str,
++    stored: bool,
++    files: Vec<FileEntry>,
++    pack_entries: &mut Vec<PackEntry>,
++    hasher: &mut Sha256,
++) -> Result<(), String> {
++    if files.is_empty() {
++        return Ok(());
++    }
++
++    let mut parts: Vec<Vec<FileEntry>> = Vec::new();
++    let mut current = Vec::new();
++    let mut current_size = 0u64;
++    for f in files {
++        if !current.is_empty() && current_size + f.size > opts.max_pack_size {
++            parts.push(std::mem::take(&mut current));
++            current_size = 0;
++        }
++        current_size += f.size;
++        current.push(f);
++    }
++    if !current.is_empty() {
++        parts.push(current);
++    }
++
++    let multi_part = parts.len() > 1;
++    for (i, part_files) in parts.into_iter().enumerate() {
++        let mut name = base_name.to_string();
++        if stored {
++            name.push_str(".stored");
++        }
++        if multi_part {
++            name.push('.');
++            name.push_str(&(i + 1).to_string());
++        }
++        name.push_str(".pack");
++
++        let out_path = opts.output.join(&name);
++        write_pack_file(&out_path, &part_files, !stored, opts.level, hasher)?;
++        pack_entries.push(PackEntry { file: name, compressed: !stored });
++    }
++    Ok(())
++}
++
++fn write_pack_file(
++    out_path: &Path,
++    files: &[FileEntry],
++    compress: bool,
++    level: i32,
++    hasher: &mut Sha256,
++) -> Result<(), String> {
++    let out_file = File::create(out_path).map_err(|e| format!("creating {out_path:?}: {e}"))?;
++    if compress {
++        let encoder =
++            zstd::Encoder::new(out_file, level).map_err(|e| format!("{out_path:?}: {e}"))?;
++        let mut builder = tar::Builder::new(encoder);
++        append_entries(&mut builder, files, hasher)?;
++        let encoder = builder.into_inner().map_err(|e| format!("{out_path:?}: {e}"))?;
++        let mut inner = encoder.finish().map_err(|e| format!("{out_path:?}: {e}"))?;
++        inner.flush().map_err(|e| format!("{out_path:?}: {e}"))?;
++    } else {
++        let mut builder = tar::Builder::new(out_file);
++        append_entries(&mut builder, files, hasher)?;
++        let mut inner = builder.into_inner().map_err(|e| format!("{out_path:?}: {e}"))?;
++        inner.flush().map_err(|e| format!("{out_path:?}: {e}"))?;
++    }
++    Ok(())
++}
++
++fn append_entries<W: Write>(
++    builder: &mut tar::Builder<W>,
++    files: &[FileEntry],
++    hasher: &mut Sha256,
++) -> Result<(), String> {
++    for f in files {
++        let bytes = fs::read(&f.abs_path).map_err(|e| format!("reading {:?}: {e}", f.abs_path))?;
++        hasher.update(f.rel_path.as_bytes());
++        hasher.update(bytes.len().to_le_bytes());
++        hasher.update(&bytes);
++
++        let mut header = tar::Header::new_gnu();
++        header
++            .set_path(&f.rel_path)
++            .map_err(|e| format!("tar path {}: {e}", f.rel_path))?;
++        header.set_size(bytes.len() as u64);
++        header.set_mode(0o644);
++        header.set_cksum();
++        builder
++            .append(&header, bytes.as_slice())
++            .map_err(|e| format!("appending {}: {e}", f.rel_path))?;
++    }
++    Ok(())
++}
+diff --git a/support/content-packer/src/size.rs b/support/content-packer/src/size.rs
+new file mode 100644
+index 00000000000..0dd924f1869
+--- /dev/null
++++ b/support/content-packer/src/size.rs
+@@ -0,0 +1,34 @@
++/// Parses sizes like `"500M"`, `"1G"`, `"250000000"` into a byte count.
++/// Suffixes are decimal (K=1000, M=1000^2, G=1000^3), matching how most
++/// release-size limits (e.g. GitHub's) are usually quoted — not `KiB`/`MiB`.
++pub fn parse_size(input: &str) -> Result<u64, String> {
++    let input = input.trim();
++    let (digits, mult) = match input.chars().last() {
++        Some(c) if c.eq_ignore_ascii_case(&'k') => (&input[..input.len() - 1], 1_000u64),
++        Some(c) if c.eq_ignore_ascii_case(&'m') => (&input[..input.len() - 1], 1_000_000u64),
++        Some(c) if c.eq_ignore_ascii_case(&'g') => (&input[..input.len() - 1], 1_000_000_000u64),
++        _ => (input, 1u64),
++    };
++    let value: f64 = digits
++        .trim()
++        .parse()
++        .map_err(|_| format!("invalid size: {input:?}"))?;
++    if value < 0.0 {
++        return Err(format!("size cannot be negative: {input:?}"));
++    }
++    Ok((value * mult as f64) as u64)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::parse_size;
++
++    #[test]
++    fn parses_plain_and_suffixed_sizes() {
++        assert_eq!(parse_size("500").unwrap(), 500);
++        assert_eq!(parse_size("500M").unwrap(), 500_000_000);
++        assert_eq!(parse_size("1.5M").unwrap(), 1_500_000);
++        assert_eq!(parse_size("2G").unwrap(), 2_000_000_000);
++        assert_eq!(parse_size("10k").unwrap(), 10_000);
++    }
++}

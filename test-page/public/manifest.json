@@ -1,0 +1,5 @@
+{
+  "name": "Roves test-page",
+  "description": "Diagnostic assets used to exercise the content packer's root/subfolder/nested-subfolder split — see CUSTOMIZATIONS.md.",
+  "icons": ["favicon.svg"]
+}
