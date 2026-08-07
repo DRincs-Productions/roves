@@ -11,7 +11,7 @@ index 63373339382..7695a689de6 100644
      "tests/unit/*",
  ]
 diff --git a/python/servo/post_build_commands.py b/python/servo/post_build_commands.py
-index 0882dcd4853..f942252ee4a 100644
+index 0882dcd4853..10353793000 100644
 --- a/python/servo/post_build_commands.py
 +++ b/python/servo/post_build_commands.py
 @@ -14,7 +14,7 @@ import shutil
@@ -19,28 +19,46 @@ index 0882dcd4853..f942252ee4a 100644
  from subprocess import CompletedProcess
  from shutil import copy2
 -from typing import Any, Optional, List
-+from typing import Any, Optional, List, Tuple, cast
++from typing import Any, Optional, List, NamedTuple, cast
  
  import mozdebug
  
-@@ -43,6 +43,16 @@ from python.servo.command_base import BuildType
- 
+@@ -44,6 +44,34 @@ from python.servo.command_base import BuildType
  ANDROID_APP_NAME = "org.servo.servoshell"
  
-+# Where `extract` (see support/content-packer) reconstructs packed content at
-+# launch time, relative to wherever the launcher itself lives. Fixed on
-+# purpose: the launcher bakes in a path pointing here rather than computing it
-+# at runtime, so the extraction step and the engine's launch arg always agree.
-+CONTENT_CACHE_DIRNAME = ".content-cache"
-+
-+
+ 
 +def _packer_binary_name() -> str:
 +    return "roves-content-packer.exe" if is_windows() else "roves-content-packer"
 +
- 
++
++class ContentExtraction(NamedTuple):
++    """Everything a generated launcher needs to run `roves-content-packer
++    extract` for itself before starting the engine — see the `bundle`
++    command and CUSTOMIZATIONS.md's content-compression entry. Deliberately
++    has no destination directory: every launcher calls `extract` without
++    `--dest`, so it picks its own location under the OS temp directory (see
++    `support/content-packer/src/extract.rs`) and prints it, which the
++    launcher captures — nothing is ever extracted next to the bundle itself.
++    """
++
++    #: Where the `.pack` files + `manifest.json` live, relative to wherever
++    #: the launcher resolves bundle-relative paths from (e.g. `"dist"`).
++    packed_rel_dir: str
++    #: Basename of the html file to open once extracted (e.g. `"index.html"`).
++    html_basename: str
++    #: Absolute path, on the machine running `mach bundle`, to the built
++    #: `roves-content-packer` binary — copied into the bundle so the
++    #: launcher can run it on the *player's* machine.
++    packer_binary: str
++    #: Launch args other than the html file itself (`--window-size ...` plus
++    #: anything passed after `--` on the `mach bundle` command line).
++    extra_args: List[str]
++
++
  def read_file(filename: str, if_exists: bool = False) -> str | None:
      if if_exists and not path.exists(filename):
-@@ -71,15 +81,52 @@ _DEBIAN_ARCH_BY_RUST_ARCH = {
+         return None
+@@ -71,15 +99,52 @@ _DEBIAN_ARCH_BY_RUST_ARCH = {
  }
  
  
@@ -96,7 +114,7 @@ index 0882dcd4853..f942252ee4a 100644
  
  
  @CommandProvider
-@@ -242,6 +289,36 @@ class PostBuildCommands(CommandBase):
+@@ -242,6 +307,36 @@ class PostBuildCommands(CommandBase):
          help="Directory of web content (e.g. a built dist/) to copy into the bundle, so --html-file "
          "resolves without a separate copy step",
      )
@@ -133,7 +151,7 @@ index 0882dcd4853..f942252ee4a 100644
      @CommandArgument(
          "--deb",
          action="store_true",
-@@ -258,6 +335,10 @@ class PostBuildCommands(CommandBase):
+@@ -258,6 +353,10 @@ class PostBuildCommands(CommandBase):
          window_size: str = "1280x720",
          output: Optional[str] = None,
          content_dir: Optional[str] = None,
@@ -144,7 +162,7 @@ index 0882dcd4853..f942252ee4a 100644
          deb: bool = False,
          deb_package_name: str = "servoshell",
          deb_version: str = "0.0.0",
-@@ -281,6 +362,15 @@ class PostBuildCommands(CommandBase):
+@@ -281,6 +380,15 @@ class PostBuildCommands(CommandBase):
            package instead (see _bundle_linux_deb for what it does and does
            not attempt).
  
@@ -160,7 +178,7 @@ index 0882dcd4853..f942252ee4a 100644
          None of this touches target/<profile>/ itself or the binary Cargo
          put there — `./mach run` and friends keep working exactly as before.
          """
-@@ -294,30 +384,90 @@ class PostBuildCommands(CommandBase):
+@@ -294,30 +402,93 @@ class PostBuildCommands(CommandBase):
              delete(output_dir)
          os.makedirs(output_dir)
  
@@ -168,18 +186,21 @@ index 0882dcd4853..f942252ee4a 100644
 +        content_exclude = content_exclude or []
 +        compress_enabled = bool(content_dir) and content_compress != "none"
 +        packer_binary = self._build_content_packer() if compress_enabled else None
-+        if compress_enabled:
-+            runtime_html_file = path.join(CONTENT_CACHE_DIRNAME, path.basename(html_file))
-+            extraction: Optional[Tuple[str, str, str]] = (
-+                path.dirname(html_file),
-+                CONTENT_CACHE_DIRNAME,
-+                packer_binary,  # type: ignore[assignment]
-+            )
-+        else:
-+            runtime_html_file = html_file
-+            extraction = None
 +
-+        launch_args = [runtime_html_file, "--window-size", window_size] + list(params or [])
++        extra_args = ["--window-size", window_size] + list(params or [])
++        # Used only when compression is off — otherwise each launcher builds
++        # its own args at *launch* time (see ContentExtraction's docstring).
++        launch_args = [html_file] + extra_args
++        extraction: Optional[ContentExtraction] = (
++            ContentExtraction(
++                packed_rel_dir=path.dirname(html_file),
++                html_basename=path.basename(html_file),
++                packer_binary=cast(str, packer_binary),
++                extra_args=extra_args,
++            )
++            if compress_enabled
++            else None
++        )
  
          if is_windows():
 -            self._bundle_windows(servo_binary, binary_dir, output_dir, launch_args)
@@ -253,39 +274,71 @@ index 0882dcd4853..f942252ee4a 100644
 +        binary_dir: str,
 +        output_dir: str,
 +        launch_args: List[str],
-+        extraction: Optional[Tuple[str, str, str]],
++        extraction: Optional[ContentExtraction],
 +    ) -> None:
          bin_dir = path.join(output_dir, "bin")
          os.makedirs(bin_dir)
          shutil.copy(servo_binary, bin_dir)
-@@ -332,6 +482,26 @@ class PostBuildCommands(CommandBase):
+@@ -331,22 +502,69 @@ class PostBuildCommands(CommandBase):
+                 shutil.copy(path.join(binary_dir, f), output_dir)
  
          binary_name = path.basename(servo_binary)
-         rust_args = ", ".join(f'"{_escape_rust_str(a)}"' for a in launch_args)
+-        rust_args = ", ".join(f'"{_escape_rust_str(a)}"' for a in launch_args)
 +
 +        # When content is packed (see CUSTOMIZATIONS.md's content-compression
-+        # entry), play.exe is what runs `roves-content-packer extract` to
-+        # reconstruct plain files into CONTENT_CACHE_DIRNAME *before* handing
-+        # off to servoshell — synchronously (`.status()`, not `.spawn()`),
-+        # since servoshell must not open its html file until this finishes.
-+        extraction_snippet = ""
++        # entry), play.exe first runs `roves-content-packer extract` — with
++        # no `--dest`, so it picks its own location under the OS temp
++        # directory rather than anything living next to the bundle — and
++        # captures the directory it printed, to build the real html-file
++        # argument at *this* launch (`--dest` isn't known until then: it's
++        # keyed by a hash, computed inside the packer, of this machine's
++        # resolved content path). `.output()`, not `.spawn()`: servoshell
++        # must not open its html file until extraction actually finishes.
++        # `CREATE_NO_WINDOW` keeps that child's console from flashing on
++        # screen for an instant before servoshell's own window opens — this
++        # is a `windows_subsystem = "windows"` binary, and without that flag
++        # spawning any ordinary console-subsystem child (roves-content-packer
++        # itself has no reason to be a windows-subsystem binary) briefly pops
++        # one open.
 +        if extraction is not None:
-+            packed_rel_dir, cache_rel_dir, packer_binary = extraction
-+            shutil.copy(packer_binary, bin_dir)
-+            packer_name = path.basename(packer_binary)
-+            extraction_snippet = f"""
++            shutil.copy(extraction.packer_binary, bin_dir)
++            packer_name = path.basename(extraction.packer_binary)
++            extra_rust_args = ", ".join(
++                f'"{_escape_rust_str(a)}".to_string()' for a in extraction.extra_args
++            )
++            args_snippet = f"""
 +    let packer = bin_dir.join("{_escape_rust_str(packer_name)}");
-+    let _ = Command::new(&packer)
++    let output = Command::new(&packer)
 +        .arg("extract")
-+        .arg("--content-dir").arg(exe_dir.join("{_escape_rust_str(packed_rel_dir)}"))
-+        .arg("--dest").arg(exe_dir.join("{_escape_rust_str(cache_rel_dir)}"))
-+        .status();
++        .arg("--content-dir")
++        .arg(exe_dir.join("{_escape_rust_str(extraction.packed_rel_dir)}"))
++        .creation_flags(CREATE_NO_WINDOW)
++        .output()
++        .expect("failed to run roves-content-packer extract");
++    let cache_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
++    let args: Vec<String> = vec![
++        format!("{{}}/{_escape_rust_str(extraction.html_basename)}", cache_dir),
++        {extra_rust_args}
++    ];
 +"""
++            extra_use = "use std::os::windows::process::CommandExt;\n"
++            extra_const = "\nconst CREATE_NO_WINDOW: u32 = 0x0800_0000;\n"
++        else:
++            rust_args = ", ".join(f'"{_escape_rust_str(a)}".to_string()' for a in launch_args)
++            args_snippet = f"""
++    let args: Vec<String> = vec![{rust_args}];
++"""
++            extra_use = ""
++            extra_const = ""
 +
          launcher_source = f"""#![windows_subsystem = "windows"]
  use std::env;
  use std::process::Command;
-@@ -342,8 +512,9 @@ fn main() {{
+-
++{extra_use}{extra_const}
+ fn main() {{
+     let exe_dir = env::current_exe()
+         .expect("could not resolve own path")
          .parent()
          .expect("exe has no parent directory")
          .to_path_buf();
@@ -293,11 +346,15 @@ index 0882dcd4853..f942252ee4a 100644
 -    // Fire-and-forget: servoshell manages its own window from here.
 +    let bin_dir = exe_dir.join("bin");
 +    let servoshell = bin_dir.join("{binary_name}");
-+{extraction_snippet}    // Fire-and-forget: servoshell manages its own window from here.
++{args_snippet}    // Fire-and-forget: servoshell manages its own window from here.
      let _ = Command::new(servoshell)
          .current_dir(&exe_dir)
-         .args([{rust_args}])
-@@ -360,7 +531,14 @@ fn main() {{
+-        .args([{rust_args}])
++        .args(&args)
+         .spawn();
+ }}
+ """
+@@ -360,7 +578,14 @@ fn main() {{
          finally:
              os.remove(launcher_src_path)
  
@@ -308,42 +365,45 @@ index 0882dcd4853..f942252ee4a 100644
 +        binary_dir: str,
 +        output_dir: str,
 +        launch_args: List[str],
-+        extraction: Optional[Tuple[str, str, str]],
++        extraction: Optional[ContentExtraction],
 +    ) -> None:
          contents_dir = path.join(output_dir, "Roves.app", "Contents")
          macos_dir = path.join(contents_dir, "MacOS")
          os.makedirs(macos_dir)
-@@ -403,9 +581,28 @@ fn main() {{
+@@ -402,18 +627,44 @@ fn main() {{
+         with open(path.join(contents_dir, "Info.plist"), "w") as f:
              f.write(info_plist)
  
-         quoted_args = " ".join(shell_quote(a) for a in launch_args)
-+
+-        quoted_args = " ".join(shell_quote(a) for a in launch_args)
 +        # Content (packed by _place_bundle_content) sits in Contents/Resources,
-+        # a sibling of this script's own directory (Contents/MacOS). Extract
-+        # to output_dir/CONTENT_CACHE_DIRNAME — the same place Windows/Linux
-+        # use — so the relative html-file argument already baked into
-+        # `quoted_args` (relative to the `cd` below) resolves correctly here
-+        # too, without needing a separate absolute-path case for macOS.
-+        extraction_snippet = ""
++        # a sibling of this script's own directory (Contents/MacOS). `extract`
++        # is called with no `--dest`, so it picks (and prints) its own
++        # location under the OS temp directory rather than anything inside
++        # the .app bundle — captured into $CACHE_DIR and used to build the
++        # real html-file argument for this launch.
 +        if extraction is not None:
-+            packed_rel_dir, cache_rel_dir, packer_binary = extraction
-+            packer_dest = path.join(macos_dir, path.basename(packer_binary))
-+            shutil.copy(packer_binary, packer_dest)
++            packer_dest = path.join(macos_dir, path.basename(extraction.packer_binary))
++            shutil.copy(extraction.packer_binary, packer_dest)
 +            os.chmod(packer_dest, 0o755)
++            quoted_extra = " ".join(shell_quote(a) for a in extraction.extra_args)
 +            extraction_snippet = (
-+                f'"$DIR/{path.basename(packer_binary)}" extract '
-+                f'--content-dir "$DIR/../Resources/{packed_rel_dir}" '
-+                f'--dest "$DIR/../../../{cache_rel_dir}"\n'
++                f'CACHE_DIR="$("$DIR/{path.basename(extraction.packer_binary)}" extract '
++                f'--content-dir "$DIR/../Resources/{extraction.packed_rel_dir}")"\n'
 +            )
++            final_args = f'"$CACHE_DIR/{extraction.html_basename}" {quoted_extra}'
++        else:
++            extraction_snippet = ""
++            final_args = " ".join(shell_quote(a) for a in launch_args)
 +
          launcher_script = f"""#!/usr/bin/env bash
  DIR="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
 -cd "$DIR/../../.."
+-exec "$DIR/{core_name}" {quoted_args}
 +{extraction_snippet}cd "$DIR/../../.."
- exec "$DIR/{core_name}" {quoted_args}
++exec "$DIR/{core_name}" {final_args}
  """
          launcher_path = path.join(macos_dir, "Roves")
-@@ -413,7 +610,14 @@ exec "$DIR/{core_name}" {quoted_args}
+         with open(launcher_path, "w") as f:
              f.write(launcher_script)
          os.chmod(launcher_path, 0o755)
  
@@ -354,41 +414,47 @@ index 0882dcd4853..f942252ee4a 100644
 +        binary_dir: str,
 +        output_dir: str,
 +        launch_args: List[str],
-+        extraction: Optional[Tuple[str, str, str]],
++        extraction: Optional[ContentExtraction],
 +    ) -> None:
          core_name = f"{path.basename(servo_binary)}-core"
          core_path = path.join(output_dir, core_name)
          shutil.copy(servo_binary, core_path)
-@@ -422,12 +626,27 @@ exec "$DIR/{core_name}" {quoted_args}
+@@ -422,12 +673,32 @@ exec "$DIR/{core_name}" {quoted_args}
                  shutil.copy(path.join(binary_dir, f), output_dir)
          os.chmod(core_path, 0o644)
  
+-        quoted_args = " ".join(shell_quote(a) for a in launch_args)
 +        # Content lives right here in output_dir (bundle_root for the
 +        # non-.deb Linux case), and play.sh already `cd`s into output_dir
-+        # before running anything, so both packed content and the extraction
-+        # cache are plain paths relative to the script's own directory.
-+        extraction_snippet = ""
++        # before running anything, so the packed content is a plain path
++        # relative to the script's own directory. `extract` is called with
++        # no `--dest`, so it picks (and prints) its own location under the
++        # OS temp directory instead — captured into $CACHE_DIR.
 +        if extraction is not None:
-+            packed_rel_dir, cache_rel_dir, packer_binary = extraction
-+            packer_dest = path.join(output_dir, path.basename(packer_binary))
-+            shutil.copy(packer_binary, packer_dest)
++            packer_name = path.basename(extraction.packer_binary)
++            packer_dest = path.join(output_dir, packer_name)
++            shutil.copy(extraction.packer_binary, packer_dest)
 +            os.chmod(packer_dest, 0o755)
++            quoted_extra = " ".join(shell_quote(a) for a in extraction.extra_args)
 +            extraction_snippet = (
-+                f"chmod +x {shell_quote(path.basename(packer_binary))}\n"
-+                f'./{path.basename(packer_binary)} extract --content-dir "./{packed_rel_dir}" --dest "./{cache_rel_dir}"\n'
++                f"chmod +x {shell_quote(packer_name)}\n"
++                f'CACHE_DIR="$(./{packer_name} extract --content-dir "./{extraction.packed_rel_dir}")"\n'
 +            )
++            final_args = f'"$CACHE_DIR/{extraction.html_basename}" {quoted_extra}'
++        else:
++            extraction_snippet = ""
++            final_args = " ".join(shell_quote(a) for a in launch_args)
 +
-         quoted_args = " ".join(shell_quote(a) for a in launch_args)
          play_sh = f"""#!/usr/bin/env bash
  cd "$(dirname "$0")"
  chmod +x {shell_quote(core_name)}
  export LD_LIBRARY_PATH="$(pwd):$LD_LIBRARY_PATH"
 -./{core_name} {quoted_args}
-+{extraction_snippet}./{core_name} {quoted_args}
++{extraction_snippet}./{core_name} {final_args}
  """
          play_path = path.join(output_dir, "play.sh")
          with open(play_path, "w") as f:
-@@ -444,6 +663,12 @@ export LD_LIBRARY_PATH="$(pwd):$LD_LIBRARY_PATH"
+@@ -444,6 +715,12 @@ export LD_LIBRARY_PATH="$(pwd):$LD_LIBRARY_PATH"
          version: str,
          html_file: str,
          content_dir: Optional[str],
@@ -397,11 +463,11 @@ index 0882dcd4853..f942252ee4a 100644
 +        compression_level: int,
 +        max_pack_size: str,
 +        exclude: List[str],
-+        extraction: Optional[Tuple[str, str, str]],
++        extraction: Optional[ContentExtraction],
      ) -> None:
          """Build a real, installable .deb: `dpkg -i` puts the engine + its
          content under /usr/lib/<package_name>/, a launcher under /usr/bin/,
-@@ -473,13 +698,40 @@ export LD_LIBRARY_PATH="$(pwd):$LD_LIBRARY_PATH"
+@@ -473,13 +750,32 @@ export LD_LIBRARY_PATH="$(pwd):$LD_LIBRARY_PATH"
          for f in os.listdir(binary_dir):
              if ".so" in f:
                  shutil.copy(path.join(binary_dir, f), lib_dir)
@@ -411,30 +477,22 @@ index 0882dcd4853..f942252ee4a 100644
 +        )
 +
 +        # /usr/lib/<package_name> is root-owned post-install (dpkg's usual
-+        # 755), so — unlike the portable Windows/macOS/Linux bundles above,
-+        # which extract right next to themselves — the cache has to go
-+        # somewhere the invoking user can actually write to. Computed at
-+        # launch time, not baked in at build time, since $HOME varies per
-+        # user; that also means the html-file launch arg (which *is* baked
-+        # in as a path relative to CONTENT_CACHE_DIRNAME) needs overriding
-+        # here with the real absolute path.
-+        extraction_snippet = ""
-+        exec_args = " ".join(shell_quote(a) for a in launch_args)
++        # 755) — but that no longer matters here: `extract` is called with no
++        # `--dest`, so it picks (and prints) its own writable location under
++        # the OS temp directory itself, the same as every other platform
++        # above. No cwd-relative or $HOME-relative bookkeeping needed here.
 +        if extraction is not None:
-+            # cache_rel_dir (CONTENT_CACHE_DIRNAME) isn't used here — this
-+            # branch computes its own user-cache-relative location below
-+            # instead, since /usr/lib/<package_name> isn't user-writable.
-+            packed_rel_dir, _cache_rel_dir, extraction_packer_binary = extraction
-+            packer_name = path.basename(extraction_packer_binary)
-+            shutil.copy(extraction_packer_binary, path.join(lib_dir, packer_name))
++            packer_name = path.basename(extraction.packer_binary)
++            shutil.copy(extraction.packer_binary, path.join(lib_dir, packer_name))
 +            os.chmod(path.join(lib_dir, packer_name), 0o755)
-+            html_basename = path.basename(launch_args[0])
-+            rest_args = " ".join(shell_quote(a) for a in launch_args[1:])
++            quoted_extra = " ".join(shell_quote(a) for a in extraction.extra_args)
 +            extraction_snippet = (
-+                f'CACHE_DIR="${{XDG_CACHE_HOME:-$HOME/.cache}}/{package_name}/content-cache"\n'
-+                f"./{packer_name} extract --content-dir \"./{packed_rel_dir}\" --dest \"$CACHE_DIR\"\n"
++                f'CACHE_DIR="$(./{packer_name} extract --content-dir "./{extraction.packed_rel_dir}")"\n'
 +            )
-+            exec_args = f'"$CACHE_DIR/{html_basename}" {rest_args}'
++            exec_args = f'"$CACHE_DIR/{extraction.html_basename}" {quoted_extra}'
++        else:
++            extraction_snippet = ""
++            exec_args = " ".join(shell_quote(a) for a in launch_args)
  
 -        quoted_args = " ".join(shell_quote(a) for a in launch_args)
          launcher_script = f"""#!/usr/bin/env bash
@@ -474,67 +532,102 @@ index 00000000000..5f995a86ea4
 +zstd = "0.13.3"
 diff --git a/support/content-packer/src/extract.rs b/support/content-packer/src/extract.rs
 new file mode 100644
-index 00000000000..3a14b3cdd63
+index 00000000000..8de9384da8e
 --- /dev/null
 +++ b/support/content-packer/src/extract.rs
-@@ -0,0 +1,68 @@
+@@ -0,0 +1,103 @@
 +use std::fs;
-+use std::path::PathBuf;
++use std::path::{Path, PathBuf};
++
++use sha2::{Digest, Sha256};
 +
 +use crate::manifest::Manifest;
 +
 +pub struct ExtractOptions {
 +    pub content_dir: PathBuf,
-+    pub dest: PathBuf,
++    /// Where to extract to. `None` picks a location under the OS temp
++    /// directory instead — see [`default_dest`] — which is how every
++    /// generated launcher calls this in practice: nothing is ever extracted
++    /// next to the bundle itself.
++    pub dest: Option<PathBuf>,
 +    pub force: bool,
 +}
 +
-+/// Marker file dropped in `dest` recording the `content_hash` of the manifest
-+/// it was extracted from, so a later run with unchanged content can skip
-+/// re-extracting entirely instead of paying the decompression cost on every
-+/// launch.
++/// Marker file dropped in the destination recording the `content_hash` of
++/// the manifest it was extracted from, so a later run with unchanged content
++/// can skip re-extracting entirely instead of paying the decompression cost
++/// on every launch.
 +const HASH_MARKER: &str = ".content-hash";
 +
-+pub fn extract(opts: &ExtractOptions) -> Result<(), String> {
-+    let manifest_path = opts.content_dir.join("manifest.json");
++/// Picks a stable, per-install destination under the OS temp directory —
++/// used whenever the caller doesn't pass an explicit `--dest` (i.e. every
++/// generated launcher). Keyed by a hash of the resolved `content_dir` path so
++/// repeat launches of the *same* install reuse the same destination (letting
++/// the content-hash skip-cache below actually help), while different
++/// installs/games on the same machine don't collide with each other. Nothing
++/// is ever written next to the bundle: the OS temp directory is periodically
++/// cleaned by the OS itself (tmpfs on Linux is RAM-backed and cleared on
++/// reboot; Windows/macOS both prune old temp entries on their own schedule),
++/// which is the whole point — see CUSTOMIZATIONS.md.
++fn default_dest(content_dir: &Path) -> PathBuf {
++    let mut hasher = Sha256::new();
++    hasher.update(content_dir.to_string_lossy().as_bytes());
++    let digest = hasher.finalize();
++    let short: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
++    std::env::temp_dir().join(format!("roves-content-{short}"))
++}
++
++/// Extracts the packed content at `opts.content_dir` back to plain files,
++/// returning the directory it extracted (or already-cached-and-skipped) into.
++pub fn extract(opts: &ExtractOptions) -> Result<PathBuf, String> {
++    let content_dir = opts
++        .content_dir
++        .canonicalize()
++        .map_err(|e| format!("resolving {:?}: {e}", opts.content_dir))?;
++    let dest = match &opts.dest {
++        Some(dest) => dest.clone(),
++        None => default_dest(&content_dir),
++    };
++
++    let manifest_path = content_dir.join("manifest.json");
 +    let manifest_bytes =
 +        fs::read(&manifest_path).map_err(|e| format!("reading {manifest_path:?}: {e}"))?;
 +    let manifest: Manifest = serde_json::from_slice(&manifest_bytes)
 +        .map_err(|e| format!("parsing {manifest_path:?}: {e}"))?;
 +
-+    let hash_marker = opts.dest.join(HASH_MARKER);
++    let hash_marker = dest.join(HASH_MARKER);
 +    if !opts.force {
 +        if let Ok(existing) = fs::read_to_string(&hash_marker) {
 +            if existing.trim() == manifest.content_hash {
-+                return Ok(());
++                return Ok(dest);
 +            }
 +        }
 +    }
 +
-+    if opts.dest.exists() {
-+        fs::remove_dir_all(&opts.dest).map_err(|e| format!("clearing {:?}: {e}", opts.dest))?;
++    if dest.exists() {
++        fs::remove_dir_all(&dest).map_err(|e| format!("clearing {dest:?}: {e}"))?;
 +    }
-+    fs::create_dir_all(&opts.dest).map_err(|e| format!("creating {:?}: {e}", opts.dest))?;
++    fs::create_dir_all(&dest).map_err(|e| format!("creating {dest:?}: {e}"))?;
 +
 +    for pack in &manifest.packs {
-+        let pack_path = opts.content_dir.join(&pack.file);
++        let pack_path = content_dir.join(&pack.file);
 +        let file = fs::File::open(&pack_path).map_err(|e| format!("opening {pack_path:?}: {e}"))?;
 +        if pack.compressed {
 +            let decoder =
 +                zstd::Decoder::new(file).map_err(|e| format!("decoding {pack_path:?}: {e}"))?;
 +            tar::Archive::new(decoder)
-+                .unpack(&opts.dest)
++                .unpack(&dest)
 +                .map_err(|e| format!("extracting {pack_path:?}: {e}"))?;
 +        } else {
 +            tar::Archive::new(file)
-+                .unpack(&opts.dest)
++                .unpack(&dest)
 +                .map_err(|e| format!("extracting {pack_path:?}: {e}"))?;
 +        }
 +    }
 +
 +    for rel in &manifest.excluded {
-+        let src = opts.content_dir.join(rel);
-+        let dst = opts.dest.join(rel);
++        let src = content_dir.join(rel);
++        let dst = dest.join(rel);
 +        if let Some(parent) = dst.parent() {
 +            fs::create_dir_all(parent).map_err(|e| format!("creating {parent:?}: {e}"))?;
 +        }
@@ -544,14 +637,14 @@ index 00000000000..3a14b3cdd63
 +    fs::write(&hash_marker, &manifest.content_hash)
 +        .map_err(|e| format!("writing {hash_marker:?}: {e}"))?;
 +
-+    Ok(())
++    Ok(dest)
 +}
 diff --git a/support/content-packer/src/main.rs b/support/content-packer/src/main.rs
 new file mode 100644
-index 00000000000..017b6d4c08f
+index 00000000000..1c830d31021
 --- /dev/null
 +++ b/support/content-packer/src/main.rs
-@@ -0,0 +1,136 @@
+@@ -0,0 +1,144 @@
 +//! `roves-content-packer` — see ../../../CUSTOMIZATIONS.md for why this
 +//! exists. Two subcommands:
 +//!
@@ -592,7 +685,7 @@ index 00000000000..017b6d4c08f
 +#[derive(Debug, Clone)]
 +struct ExtractCli {
 +    content_dir: PathBuf,
-+    dest: PathBuf,
++    dest: Option<PathBuf>,
 +    force: bool,
 +}
 +
@@ -625,8 +718,11 @@ index 00000000000..017b6d4c08f
 +        .help("Directory containing manifest.json + .pack files, produced by `pack`")
 +        .argument::<PathBuf>("DIR");
 +    let dest = bpaf::long("dest")
-+        .help("Directory to extract the original files into")
-+        .argument::<PathBuf>("DIR");
++        .help("Directory to extract the original files into. Defaults to a stable, per-install \
++            location under the OS temp directory — nothing is extracted next to --content-dir \
++            unless this is passed explicitly.")
++        .argument::<PathBuf>("DIR")
++        .optional();
 +    let force = bpaf::long("force")
 +        .help("Re-extract even if the cached content hash in --dest already matches")
 +        .switch();
@@ -686,7 +782,12 @@ index 00000000000..017b6d4c08f
 +        dest: args.dest,
 +        force: args.force,
 +    };
-+    extract::extract(&opts)
++    // Printed so callers (the generated launchers) that don't pass --dest
++    // explicitly can capture where extraction actually landed, e.g.
++    // `CACHE_DIR="$(roves-content-packer extract --content-dir "$DIR")"`.
++    let dest = extract::extract(&opts)?;
++    println!("{}", dest.display());
++    Ok(())
 +}
 diff --git a/support/content-packer/src/manifest.rs b/support/content-packer/src/manifest.rs
 new file mode 100644

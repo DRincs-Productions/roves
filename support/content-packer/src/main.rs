@@ -38,7 +38,7 @@ struct PackCli {
 #[derive(Debug, Clone)]
 struct ExtractCli {
     content_dir: PathBuf,
-    dest: PathBuf,
+    dest: Option<PathBuf>,
     force: bool,
 }
 
@@ -71,8 +71,11 @@ fn extract_cli() -> impl Parser<ExtractCli> {
         .help("Directory containing manifest.json + .pack files, produced by `pack`")
         .argument::<PathBuf>("DIR");
     let dest = bpaf::long("dest")
-        .help("Directory to extract the original files into")
-        .argument::<PathBuf>("DIR");
+        .help("Directory to extract the original files into. Defaults to a stable, per-install \
+            location under the OS temp directory — nothing is extracted next to --content-dir \
+            unless this is passed explicitly.")
+        .argument::<PathBuf>("DIR")
+        .optional();
     let force = bpaf::long("force")
         .help("Re-extract even if the cached content hash in --dest already matches")
         .switch();
@@ -132,5 +135,10 @@ fn run_extract(args: ExtractCli) -> Result<(), String> {
         dest: args.dest,
         force: args.force,
     };
-    extract::extract(&opts)
+    // Printed so callers (the generated launchers) that don't pass --dest
+    // explicitly can capture where extraction actually landed, e.g.
+    // `CACHE_DIR="$(roves-content-packer extract --content-dir "$DIR")"`.
+    let dest = extract::extract(&opts)?;
+    println!("{}", dest.display());
+    Ok(())
 }

@@ -59,9 +59,11 @@ content into the release as plain, individually browsable files — the loose `.
 image/audio files a bundler like Vite produces are exactly what someone poking around inside
 an unzipped release would otherwise find and lift straight out. Instead, `--content-dir` is
 packed into a handful of `tar`+`zstd` archives, and the generated launcher (`play.exe`/
-`Roves.app`/`play.sh`/the `.deb`) reconstructs plain files from them at launch time, into a
-`.content-cache/` next to itself (cleanly re-derived every time the packed content actually
-changes, reused as-is otherwise — see [CUSTOMIZATIONS.md] for exactly how that cache works).
+`Roves.app`/`play.sh`/the `.deb`) reconstructs plain files from them at launch time — into a
+location under the OS's own temp directory, **not** anywhere inside the shipped game folder.
+That location is re-derived (cleanly re-extracted) whenever the packed content actually
+changes, and reused as-is otherwise, so a normal relaunch doesn't pay the decompression cost
+again — see [CUSTOMIZATIONS.md] for exactly how that cache works.
 
 This is about not handing out your source assets for free by default, **not** DRM or
 anti-tampering — the archives aren't encrypted, and anyone willing to run the extractor

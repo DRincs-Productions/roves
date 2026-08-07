@@ -824,19 +824,17 @@ the new default, `--content-dir` is no longer copied in as loose files. Instead:
   would.
 - Each generated launcher (`play.exe`/`Roves`/`play.sh`/the `.deb`'s `/usr/bin/<pkg>` script)
   gets a copy of `roves-content-packer` alongside itself, and now runs its `extract`
-  subcommand — synchronously, before starting the engine — to reconstruct plain files into a
-  `.content-cache/` directory, which is what the engine's `--html-file` argument actually
-  points at (rewritten at bundle-build time from e.g. `dist/index.html` to
-  `.content-cache/index.html`). `extract` skips the work entirely on a re-launch with
-  unchanged content: it compares `manifest.json`'s `content_hash` against a `.content-hash`
-  marker left in the destination from the previous run. Windows/macOS/non-`.deb`-Linux extract
-  to `.content-cache/` right next to the bundle itself (all three are meant to be portable,
-  fully self-contained folders — see the 2026-08-06 entry). The `.deb` variant is the one
-  exception: `/usr/lib/<package_name>/` is root-owned post-install and not writable by the
-  user actually running the app, so its launcher computes
-  `${XDG_CACHE_HOME:-$HOME/.cache}/<package_name>/content-cache` at *launch* time instead
-  (`$HOME` isn't known at `mach bundle` time) and overrides the engine's html-file argument
-  with that resolved absolute path rather than relying on the baked-in relative one.
+  subcommand — synchronously, before starting the engine — to reconstruct plain files. Called
+  with no `--dest`, `extract` picks (and prints) its own location under the OS temp directory
+  (`std::env::temp_dir()`), keyed by a hash of the resolved `--content-dir` path, and each
+  launcher captures that printed path (`CACHE_DIR="$(./roves-content-packer extract
+  --content-dir ...)"` in bash; `Command::output()` — not `.status()` — on Windows) to build the
+  engine's real html-file argument at *this* launch. Nothing is ever extracted next to the
+  bundle itself, on any platform — see the same-day correction below for why that changed.
+  `extract` skips the work entirely on a re-launch with unchanged content: it compares
+  `manifest.json`'s `content_hash` against a `.content-hash` marker left in the destination
+  from the previous run, so the OS temp directory being outside the bundle doesn't mean paying
+  the decompression cost on every single launch.
 - `--content-compress=none` restores the exact previous behavior (plain `copytree`, no
   `.content-cache` indirection, no packer binary shipped) — an escape hatch, not a special
   case sprinkled through the packing logic: `_place_bundle_content` branches on it right at the
@@ -868,6 +866,31 @@ DRM-style obfuscation (the request was specifically for compression, and a fake-
 scheme would be worse than no scheme — see `support/content-packer/`'s own lack of one). Real
 protection against a motivated reverse-engineerer is a materially different, larger feature
 and wasn't asked for.
+
+**Correction (same day):** the first version of this extracted into a fixed `.content-cache/`
+directory sitting right next to the bundle (baked into the html-file launch arg at
+`mach bundle` time), and each launcher ran the extractor via a blocking call that, on Windows,
+is a console-subsystem child process spawned from a `windows_subsystem = "windows"` parent —
+which flashes a console window for an instant before servoshell's own window opens. Two
+problems reported after trying an actual bundle: that window flash (read as "two windows, one
+closing to open the other"), and not wanting a `.content-cache/` folder visibly sitting inside
+the shipped game folder at all, even though it holds re-derived, re-creatable content rather
+than anything load-bearing. Fixed by (1) making `--dest` optional in `extract`, defaulting to
+a hash-keyed path under the OS temp directory instead of a caller-supplied one, which is what
+let every launcher stop hardcoding a bundle-relative cache path and made the `.deb` launcher's
+old `${XDG_CACHE_HOME:-$HOME/.cache}/<package_name>/content-cache` special case (needed only
+because `/usr/lib/<package_name>/` isn't user-writable) unnecessary too — `temp_dir()` resolves
+to something writable regardless of `--content-dir`'s own location; and (2) passing
+`CREATE_NO_WINDOW` (`0x0800_0000`) via `CommandExt::creation_flags` on the Windows launcher's
+child `Command`. A true zero-disk-writes design (a custom `content:` protocol handler
+decompressing on demand, entirely in memory, never touching any filesystem path) was
+considered and explicitly deferred rather than chosen — see "Deliberately left out" above and
+this file's own note on why: it would need `components/url/origin.rs`'s `file://`-specific
+opaque-origin/storage-access/trustworthy-origin carve-outs (2026-08-06 "Stable `file://`
+origin" and 2026-08-07 "Storage access for `file://` origins" above) extended to a second
+scheme, which is real spec-sensitive surface to get right and verify, not something to rush
+through right before a release. OS-temp-directory extraction gets the actual complaint (no
+visible artifact in the shipped game's own folder) without touching that surface at all.
 
 **Side effects to know about when upgrading:** none of this touches Servo internals — it's
 new Python (a fourth `_bundle_*` parameter plus a new helper) and a wholly new, dependency-thin
