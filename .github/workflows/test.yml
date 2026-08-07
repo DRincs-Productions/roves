@@ -193,10 +193,19 @@ jobs:
       # Cargo `media-gstreamer` feature not being in its default set. We don't
       # need real media playback to check window chrome, and `dummy` sidesteps
       # needing GStreamer installed (build- or run-time) on any platform here.
+      #
+      # --features steam: `steam` is opt-in (not in servoshell's default Cargo
+      # features, see ports/servoshell/Cargo.toml) and, until now, had never
+      # actually been compiled by CI — see CUSTOMIZATIONS.md's "steam:` protocol
+      # bridge" entry, which flagged exactly this as unverified. Building it here
+      # on all 3 platforms is that verification: it exercises steamworks-sys
+      # actually compiling/linking and build.rs's copy_steam_lib finding and
+      # copying the Steamworks redistributable (steam_api64.dll/libsteam_api.*)
+      # next to the binary, which the bundle step below then picks up.
       - name: mach build (debug)
         shell: bash
         working-directory: servo-src
-        run: ./mach build --media-stack dummy
+        run: ./mach build --media-stack dummy --features steam
 
       # `mach bundle` (see ../CUSTOMIZATIONS.md) is what actually builds the
       # play.exe/Servo.app/play.sh launcher and hides the raw engine binary —

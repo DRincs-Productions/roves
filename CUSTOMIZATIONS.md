@@ -274,11 +274,17 @@ existing `__EMBEDDED_TARGET__` build flag.
 mod.rs`) is a stable, low-level trait uninvolved in most of Servo's churn — this should
 survive a version bump untouched. If a future Servo version changes `ServoUrl`'s API
 (`as_url()`/`query_pairs()`), or `steamworks-rs` cuts a new major version with a different
-`Client`/`UserStats` surface, re-check `steam.rs`'s `handle_command` still matches. Not
-verified against an actual `./mach build --features steam` (multi-hour build, and this
-sandbox has no Steam client to test against) — treat the next real `--features steam` build
-as the actual verification, particularly whether `steamworks-sys` actually places
-`libsteam_api.*` where `copy_steam_lib` expects it.
+`Client`/`UserStats` surface, re-check `steam.rs`'s `handle_command` still matches.
+
+**Follow-up (2026-08-07) — CI now actually builds `--features steam`:** the "not verified"
+gap above is closed: `../.github/workflows/test.yml`'s `mach build` step now passes
+`--features steam` on all 3 platforms, so every push exercises `steamworks-sys` actually
+compiling/linking and `build.rs`'s `copy_steam_lib` finding and copying the Steamworks
+redistributable (`steam_api64.dll`/`libsteam_api.*`) next to the binary — this workflow is
+still dormant today (see its own header comment on why), so this only takes effect once
+`servo/` is pushed as its own top-level repo. No Steam client is available on any CI runner
+either way, so this still only proves the build/link step, not a real `Client::init()`
+success — `handle_unavailable`'s degrade path is what runs there regardless.
 
 **Follow-up (2026-08-06) — mixed-content blocking on `fetch('steam:...')`:** manual testing
 surfaced `TypeError: Network error: Blocked as mixed content` on a `fetch("steam:is_available")`

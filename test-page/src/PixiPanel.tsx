@@ -10,6 +10,7 @@ import { useEffect, useRef, useState } from "react";
 export default function PixiPanel() {
   const containerRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState("Not started.");
+  const [fps, setFps] = useState<number | null>(null);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -17,6 +18,7 @@ export default function PixiPanel() {
 
     let app: Application | undefined;
     let cancelled = false;
+    let fpsInterval: number | undefined;
 
     (async () => {
       try {
@@ -36,6 +38,10 @@ export default function PixiPanel() {
         });
 
         setStatus(`ok — renderer: ${app.renderer.type === RendererType.WEBGL ? "webgl" : "webgpu"}`);
+        // Rendering without throwing doesn't rule out a crawling software
+        // fallback (see TODO.md's GPU-verification item) — surface the
+        // actual frame rate too, not just "it worked".
+        fpsInterval = window.setInterval(() => setFps(app?.ticker.FPS ?? null), 500);
       } catch (error) {
         setStatus(`FAILED — ${String(error)}`);
       }
@@ -43,13 +49,17 @@ export default function PixiPanel() {
 
     return () => {
       cancelled = true;
+      if (fpsInterval !== undefined) window.clearInterval(fpsInterval);
       app?.destroy(true);
     };
   }, []);
 
   return (
     <div>
-      <p>PixiJS: {status}</p>
+      <p>
+        PixiJS: {status}
+        {fps !== null && ` (${fps.toFixed(0)} fps)`}
+      </p>
       <div ref={containerRef} style={{ width: 300, height: 200 }} />
     </div>
   );

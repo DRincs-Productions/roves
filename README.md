@@ -37,19 +37,22 @@ per target platform — see [CUSTOMIZATIONS.md] for what it produces on each.
 
 ## Supported platforms
 
-### Desktop — supported today
+| Device | Status | Compatibility library |
+| --- | --- | --- |
+| **Windows** (x64) | ✅ Implemented | native (Rust std) |
+| **macOS** (Apple Silicon and Intel) | ✅ Implemented | native (Rust std) |
+| **Linux** (x64) | ✅ Implemented | native (Rust std) |
+| Nintendo Switch | 🚧 In development | `nx` |
+| Nintendo 3DS | 🚧 In development | `ctru-rs` |
+| PlayStation Portable (PSP) | 🚧 In development | `rust-psp` |
+| PlayStation Vita | 🚧 In development | `vitasdk-rs` |
+| PlayStation 4 | 🚧 In development | — (official SDK, NDA-gated; no public Rust crate) |
+| PlayStation 5 | 🚧 In development | — (official SDK, NDA-gated; no public Rust crate) |
+| Xbox One | 🚧 In development | — (official SDK, NDA-gated; no public Rust crate) |
+| Xbox Series X\|S | 🚧 In development | — (official SDK, NDA-gated; no public Rust crate) |
 
-- **Windows** (x64)
-- **macOS** (Apple Silicon and Intel)
-- **Linux** (x64)
-
-### Consoles — in development
-
-The following are on the roadmap but not yet functional:
-
-- PlayStation 5
-- Xbox Series X|S
-- Nintendo Switch
+Desktop targets (Windows, macOS, Linux) are supported today. All console targets are on the
+roadmap but not yet functional.
 
 ## Embedding
 
@@ -69,30 +72,38 @@ itself provides or requires.
 Web content can't call into Rust directly — there's no Tauri-style `invoke()` runtime built
 in. Instead, Roves lets native code register custom URL schemes (`ProtocolHandler`s — see
 `ports/servoshell/desktop/protocols/`) that respond to ordinary `fetch()` calls from page
-JS. Two are shipped today:
+JS. One is shipped today:
 
 - **`roves:`** (`protocols/roves.rs`) — a small, generic "control this app" surface
   (window/process lifecycle; currently just `exit`/`close_window`).
-- **`steam:`** (`protocols/steam.rs`) — a full Steamworks wrapper, with its own dedicated
-  protocol rather than being routed through `roves:`, since it's a large, separate SDK
-  surface.
 
-[**`@drincs/roves-api`**](../roves-api) is the JS package wrapping both, deliberately shaped
+[**`@drincs/roves-api`**](../roves-api) is the JS package wrapping it, deliberately shaped
 to feel familiar if you already know `@tauri-apps/api` (though it's a real, independent
 implementation, not a shim over Tauri's runtime):
 
 - `@drincs/roves-api/core` — the generic `invoke(cmd, args)`, talking to `roves:`.
 - `@drincs/roves-api/process` — `exit()`, built on `core`.
-- `@drincs/roves-api/steam` — a full Steamworks wrapper (achievements, stats, DLC, overlay,
-  store), talking to `steam:` directly.
 
-See the "`steam:` protocol bridge" and "Roves' own general-purpose `invoke()` bridge"
-entries in [CUSTOMIZATIONS.md] for how the Rust side of both is wired up.
+See the "Roves' own general-purpose `invoke()` bridge" entry in [CUSTOMIZATIONS.md] for how
+the Rust side is wired up.
 
-The parent pixi-vn-react-template project's own `src/lib/steam.ts` builds on the same idea,
-extended to also run under Tauri: it picks between `@drincs/roves-api/steam` and a
-Tauri-`invoke()`-based implementation of the same `SteamApi` interface, depending on which
-shell is actually running it.
+### Steam
+
+Steam support is opt-in at build time: passing `--features steam` (e.g.
+`./mach build --features steam`) compiles in a second, dedicated custom protocol,
+`steam:` (`protocols/steam.rs`), rather than routing it through `roves:` — Steamworks is a
+large, self-contained SDK surface, not a generic app command. When the feature isn't
+enabled — the default — the `steam:` scheme doesn't exist in the binary at all.
+
+It wraps the [`steamworks`](https://crates.io/crates/steamworks) crate, which binds the
+official Steamworks SDK (achievements, stats, DLC checks, the overlay, the store page). If
+the feature is enabled but the app wasn't actually launched through Steam, every command
+degrades to a harmless default instead of failing (`is_available` reports `false`, writes
+are silent no-ops).
+
+From JS, use [**`@drincs/roves-api/steam`**](../roves-api) — a full Steamworks wrapper
+(achievements, stats, DLC, overlay, store) talking to `steam:` directly. See the "`steam:`
+protocol bridge" entry in [CUSTOMIZATIONS.md] for how the Rust side is wired up.
 
 ## Getting started
 

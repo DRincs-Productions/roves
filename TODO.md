@@ -59,11 +59,14 @@ toccato — nessuna patch esiste per questo punto.
 Da verificare che questa build di Servo usi effettivamente l'accelerazione hardware per il
 rendering (WebGL/WebGPU) e non finisca su un fallback software (es. llvmpipe/SwiftShader),
 che per un gioco significherebbe prestazioni inaccettabili. `../test-page/` (vedi
-`CUSTOMIZATIONS.md`, voce sul bridge `steam:`) ha già due pulsanti — "Test PixiJS render" e
-"Test Three.js render" — pensati apposta per questa verifica: controllare non solo che il
-rendering funzioni, ma anche quale renderer/GPU viene effettivamente riportato (e i log di
-Servo/ANGLE al lancio) su ciascuna piattaforma della matrice CI (Windows/macOS/Linux). Non
-ancora verificato su una build reale.
+`CUSTOMIZATIONS.md`, voce sul bridge `steam:`) ha due pulsanti — "Test PixiJS render" e
+"Test Three.js render" — pensati apposta per questa verifica, ed entrambi ora riportano anche
+gli fps a schermo, non solo "ok/failed". Da fine 2026-08-07 la pagina include anche
+`GpuInfoPanel`, che legge `WEBGL_debug_renderer_info` e stampa il renderer/vendor GPU
+*effettivo* (mascherato e non mascherato) e un'euristica "software renderer" — questo è
+esattamente il "quale renderer/GPU viene effettivamente riportato" che mancava. Restano da
+fare: controllare i log di Servo/ANGLE al lancio, e soprattutto **verificarlo su una build
+reale** su ciascuna piattaforma della matrice CI (Windows/macOS/Linux) — non ancora fatto.
 
 ## 6. Schermata bianca su contenuto `file://` — causa risolta in questo fork, ma non ancora nella build "embedded" reale
 

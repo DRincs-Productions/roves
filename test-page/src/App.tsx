@@ -1,5 +1,13 @@
+import { exit } from "@drincs/roves-api/process";
+import { steam } from "@drincs/roves-api/steam";
 import { useState } from "react";
+import AudioButton from "./AudioButton.tsx";
+import DiagnosticsPanel from "./DiagnosticsPanel.tsx";
+import FullscreenButton from "./FullscreenButton.tsx";
+import GamepadPanel from "./GamepadPanel.tsx";
+import GpuInfoPanel from "./GpuInfoPanel.tsx";
 import PixiPanel from "./PixiPanel.tsx";
+import StorageButton from "./StorageButton.tsx";
 import ThreePanel from "./ThreePanel.tsx";
 
 type RenderTest = "none" | "pixi" | "three";
@@ -9,25 +17,40 @@ type RenderTest = "none" | "pixi" | "three";
  * smoke test — a human clicks through this after downloading a build from the
  * "test" GitHub release, it's not a CI assertion.
  *
- * Steam check: the `steam:` protocol handler the real game's `src/lib/steam.ts`
- * (Tauri) / `@drincs/roves-api/steam` (Roves) both ultimately call via plain
- * `fetch()` — see ../../CUSTOMIZATIONS.md's "steam: protocol bridge" entry. This
- * deliberately calls `fetch()` directly rather than importing
- * `@drincs/roves-api/steam` itself: that package isn't published to npm yet (it's
- * only resolved today via the parent monorepo's npm workspace — see its own
- * package.json), and this directory is meant to stay buildable as a standalone
- * repo (see ../CLAUDE.md), so it can't take a dependency that only resolves
- * inside that other workspace. Revisit once `@drincs/roves-api` is actually
- * published — at that point this can import and call the real `steam.isAvailable()`
- * instead of hand-rolling the same request shape.
+ * Steam checks: two deliberately separate ones, at two different layers —
+ * "raw fetch" hand-rolls `fetch("steam:is_available")` directly against the
+ * `steam:` protocol handler (see ../../CUSTOMIZATIONS.md's "steam: protocol
+ * bridge" entry), while "roves-api" instead calls the real
+ * `@drincs/roves-api/steam` wrapper the actual game imports — now a normal
+ * published npm dependency (see package.json), not resolved through the
+ * parent monorepo's own workspace. Keeping both checks means a failure here
+ * can tell apart "the protocol itself is broken" from "the JS wrapper has a
+ * bug the protocol doesn't" — the raw-fetch one isn't just legacy left in
+ * place.
+ *
+ * The "quit" button below exercises `@drincs/roves-api/process`'s `exit()`
+ * the same way — the real, destructive `roves:exit` command, guarded behind
+ * a confirm() since it actually closes the window.
  *
  * PixiJS / Three.js checks: the real game renders through PixiJS
  * (`@drincs/pixi-vn`); Three.js is a second, unrelated WebGL consumer included
  * purely to tell apart "WebGL itself is broken in this Servo build" from
- * "something specific to PixiJS is broken" — see PixiPanel.tsx/ThreePanel.tsx.
+ * "something specific to PixiJS is broken" — see PixiPanel.tsx/ThreePanel.tsx,
+ * both now also reporting fps alongside the render check.
+ *
+ * The rest (GpuInfoPanel, GamepadPanel, FullscreenButton, AudioButton,
+ * StorageButton) round out the page into game-platform diagnostics rather
+ * than just "does WebGL work": which GPU/renderer string is actually behind
+ * WebGL, gamepad input, fullscreen, audio, and save-data persistence.
+ *
+ * DiagnosticsPanel bundles all of the above (plus resolution/memory/fps/UA)
+ * into one copy-pasteable JSON report, mirroring the parent project's own
+ * in-game diagnostics report shape — see that file for why it's a plain
+ * toggled view rather than a native `<dialog>`.
  */
 export default function App() {
-  const [steamResult, setSteamResult] = useState("Click the button above.");
+  const [steamResult, setSteamResult] = useState("Click a button above.");
+  const [exitStatus, setExitStatus] = useState<string | null>(null);
   const [renderTest, setRenderTest] = useState<RenderTest>("none");
 
   const checkSteamFetch = async () => {
@@ -39,6 +62,26 @@ export default function App() {
       );
     } catch (error) {
       setSteamResult(`fetch("steam:is_available") — NOT reachable\n${String(error)}`);
+    }
+  };
+
+  const checkSteamApi = async () => {
+    try {
+      const available = await steam.isAvailable();
+      setSteamResult(`@drincs/roves-api/steam — steam.isAvailable(): ${available}`);
+    } catch (error) {
+      setSteamResult(`@drincs/roves-api/steam — FAILED: ${String(error)}`);
+    }
+  };
+
+  const quitApp = async () => {
+    if (!window.confirm("This calls @drincs/roves-api/process's exit() — it will close this window. Continue?")) {
+      return;
+    }
+    try {
+      await exit();
+    } catch (error) {
+      setExitStatus(`exit() FAILED: ${String(error)}`);
     }
   };
 
@@ -71,6 +114,9 @@ export default function App() {
         <button type="button" onClick={checkSteamFetch}>
           Test steam: protocol (raw fetch)
         </button>
+        <button type="button" onClick={checkSteamApi}>
+          Test steam: protocol (@drincs/roves-api)
+        </button>
         <button type="button" onClick={() => toggleRenderTest("pixi")}>
           {renderTest === "pixi" ? "Stop" : "Test"} PixiJS render
         </button>
@@ -94,6 +140,23 @@ export default function App() {
 
       {renderTest === "pixi" && <PixiPanel />}
       {renderTest === "three" && <ThreePanel />}
+
+      <div style={{ display: "flex", gap: "1.5rem", flexWrap: "wrap", justifyContent: "center" }}>
+        <FullscreenButton />
+        <AudioButton />
+        <StorageButton />
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+          <button type="button" onClick={quitApp}>
+            Quit (@drincs/roves-api/process exit())
+          </button>
+          {exitStatus && <span>{exitStatus}</span>}
+        </div>
+      </div>
+
+      <GpuInfoPanel />
+      <GamepadPanel />
+
+      <DiagnosticsPanel />
     </div>
   );
 }

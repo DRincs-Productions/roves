@@ -11,6 +11,7 @@ import * as THREE from "three";
 export default function ThreePanel() {
   const containerRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState("Not started.");
+  const [fps, setFps] = useState<number | null>(null);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -18,6 +19,8 @@ export default function ThreePanel() {
 
     let renderer: THREE.WebGLRenderer | undefined;
     let frameId: number | undefined;
+    let fpsInterval: number | undefined;
+    let frameCount = 0;
 
     try {
       const width = 300;
@@ -41,9 +44,17 @@ export default function ThreePanel() {
         cube.rotation.x += 0.02;
         cube.rotation.y += 0.03;
         renderer!.render(scene, camera);
+        frameCount += 1;
         frameId = requestAnimationFrame(animate);
       };
       animate();
+
+      // Same rationale as PixiPanel's FPS readout: rendering without
+      // throwing doesn't rule out a crawling software fallback.
+      fpsInterval = window.setInterval(() => {
+        setFps(frameCount * 2);
+        frameCount = 0;
+      }, 500);
 
       setStatus("ok — WebGLRenderer created, render loop running");
     } catch (error) {
@@ -52,13 +63,17 @@ export default function ThreePanel() {
 
     return () => {
       if (frameId !== undefined) cancelAnimationFrame(frameId);
+      if (fpsInterval !== undefined) window.clearInterval(fpsInterval);
       renderer?.dispose();
     };
   }, []);
 
   return (
     <div>
-      <p>Three.js: {status}</p>
+      <p>
+        Three.js: {status}
+        {fps !== null && ` (${fps} fps)`}
+      </p>
       <div ref={containerRef} style={{ width: 300, height: 200 }} />
     </div>
   );
