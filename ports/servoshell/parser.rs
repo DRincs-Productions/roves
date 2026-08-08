@@ -9,6 +9,35 @@ use servo::{ServoUrl, is_reg_domain};
 
 #[cfg(not(any(target_os = "android", target_env = "ohos")))]
 pub fn parse_url_or_filename(cwd: &Path, input: &str) -> Result<ServoUrl, ()> {
+    // Kiosk/embedded fork: an absolute Windows path (`C:\dir\index.html`) is a
+    // perfectly *valid* URL as far as the WHATWG parser is concerned — scheme
+    // `c`, opaque path `\dir\index.html` — so `ServoUrl::parse` below returns
+    // `Ok` for it and it never reaches the `RelativeUrlWithoutBase` "treat it
+    // as a filename" arm. The result gets navigated to as a `c:` URL, which no
+    // protocol handler claims, and the window shows "Could not load the
+    // requested page: Unsupported scheme". POSIX absolute paths don't hit this
+    // (a leading `/` is not a scheme, so they do fail to parse and do reach the
+    // filename arm), which is why this only ever bit Windows.
+    //
+    // It became reachable when the generated `play.exe` launcher started
+    // passing an *absolute* html path — the extraction cache directory printed
+    // by `roves-content-packer extract`, unknown until launch (see
+    // `python/servo/post_build_commands.py` and CUSTOMIZATIONS.md's lazy
+    // extraction entry). Before that it passed a bundle-relative path, which
+    // parsed as a relative URL and worked.
+    //
+    // Handled here rather than by hand-assembling a `file:///` string in the
+    // launcher: `Url::from_file_path` does the percent-encoding correctly for
+    // paths containing spaces, `#`, `?` and friends (Windows temp directories
+    // live under the user's profile, so `C:\Users\Mario Rossi\...` is entirely
+    // ordinary), and this way *any* Windows path handed to servoshell on the
+    // command line works, not just the launcher's.
+    if is_windows_absolute_path(input) {
+        if let Ok(url) = url::Url::from_file_path(input) {
+            return Ok(ServoUrl::from_url(url));
+        }
+    }
+
     match ServoUrl::parse(input) {
         Ok(url) => Ok(url),
         Err(url::ParseError::RelativeUrlWithoutBase) => {
@@ -16,6 +45,21 @@ pub fn parse_url_or_filename(cwd: &Path, input: &str) -> Result<ServoUrl, ()> {
         },
         Err(_) => Err(()),
     }
+}
+
+/// `C:\dir\file.html` / `C:/dir/file.html` (drive-absolute) or
+/// `\\server\share\file.html` (UNC). Deliberately not `#[cfg(windows)]`-gated:
+/// the conversion above is guarded by `Url::from_file_path` succeeding, which
+/// on a non-Windows build rejects both shapes (neither is an absolute path
+/// there), so behavior off Windows is unchanged.
+#[cfg(not(any(target_os = "android", target_env = "ohos")))]
+fn is_windows_absolute_path(input: &str) -> bool {
+    let bytes = input.as_bytes();
+    let drive_absolute = bytes.len() >= 3 &&
+        bytes[0].is_ascii_alphabetic() &&
+        bytes[1] == b':' &&
+        (bytes[2] == b'\\' || bytes[2] == b'/');
+    drive_absolute || input.starts_with(r"\\")
 }
 
 #[cfg(not(any(target_os = "android", target_env = "ohos")))]

@@ -1020,3 +1020,71 @@ on the crate that actually uses it, not merely present somewhere in the workspac
 Fixed by adding `http = { workspace = true }` there. Exactly the gap the note above flagged
 ("reviewed-but-not-compiled") — this is that real `./mach build` confirmation, and it caught a
 real, if narrow, bug on the first try.
+
+---
+
+## 2026-08-08 — Accept absolute Windows paths on the command line (`Unsupported scheme` fix)
+
+**File:** `ports/servoshell/parser.rs`
+
+**Patch:** `patches/servo-v0.4.0/0016-accept-absolute-windows-paths-on-the-command-line.patch`
+
+**Symptom:** on Windows, the bundled `play.exe` produced by `mach bundle` opened a window
+showing nothing but Servo's network-error page — *"Could not load the requested page:
+Unsupported scheme"* — instead of the game. Linux (`play.sh`) and macOS (`Roves.app`) were
+unaffected.
+
+**Cause:** `parse_url_or_filename` tries `ServoUrl::parse(input)` first and only falls back to
+"treat this as a filename" on `ParseError::RelativeUrlWithoutBase`. An absolute Windows path
+never produces that error: per the WHATWG URL spec, `C:\dir\index.html` parses *successfully*
+as scheme `c` with the opaque path `\dir\index.html` (a single letter is a valid scheme). So
+`get_default_url` sees a URL whose scheme isn't `file`, whose `to_file_path()` fails, and whose
+scheme is neither localhost nor domain-like — every arm misses, it falls through to
+`location_bar_input_to_url`, which re-parses the same string and hands back that same `c:` URL.
+The engine then fetches it, `components/net/fetch/methods.rs`'s `scheme_fetch` finds no handler
+registered for `c`, and returns `NetworkError::UnsupportedScheme`. POSIX absolute paths dodge
+all of this because a leading `/` genuinely is not a scheme, so they do fail to parse and do
+reach the filename fallback — which is why this only ever bit Windows.
+
+The bug is latent upstream (`servo.exe C:\page.html` has presumably always behaved this way),
+but only became *reachable for Roves* with the lazy-extraction entry above: `play.exe` now
+passes an **absolute** html path — `roves-content-packer extract`'s printed cache directory,
+which isn't known until launch time — where it previously passed a bundle-relative path that
+parsed as a relative URL and worked fine.
+
+**Change:** before the existing `ServoUrl::parse` attempt, detect the two absolute-Windows-path
+shapes (`C:\…` / `C:/…` drive-absolute, and `\\server\share\…` UNC) with a new
+`is_windows_absolute_path` helper, and for those hand the string straight to
+`url::Url::from_file_path`. On Windows that yields the correct `file:///C:/…` URL with no host
+(exactly what `get_default_url`'s `("file", None, Ok(path))` arm expects) and with each segment
+percent-encoded properly. Everything else takes the original path unchanged.
+
+**Why here and not in the launcher:** hand-assembling a `file:///` string inside the generated
+`play.exe` (which is compiled by a bare `rustc` invocation with no dependencies available, so
+no `url` crate) would mean hand-rolling percent-encoding for paths containing spaces, `#` or
+`?` — and Windows temp directories live under the user's profile, so `C:\Users\Mario
+Rossi\AppData\Local\Temp\…` is entirely ordinary, not an edge case. Fixing it in the parser
+gets correct encoding from `Url::from_file_path` for free and makes *any* Windows path passed
+to servoshell on the command line work, not just the launcher's.
+
+**Deliberately not `#[cfg(windows)]`-gated:** the conversion only happens if
+`Url::from_file_path` succeeds, and on a non-Windows build it rejects both shapes (neither is
+an absolute path there), so behavior off Windows is provably unchanged — one code path to
+reason about instead of two.
+
+**Known limit, left alone:** the UNC shape now parses into a `file://server/share/…` URL, whose
+host is `Some`, so `get_default_url`'s `("file", None, …)` arm still won't take it and a UNC
+argument still falls through to the homepage. That's unchanged from before this fix (it
+previously failed even earlier), Roves' launchers never generate one, and widening that arm is
+a separate judgment call about whether an embedded game should load its content off a network
+share at all.
+
+**Verification:** the WHATWG parse behavior was confirmed directly against `url` 2.5.4 —
+`Url::parse(r"C:\Users\me\AppData\Local\Temp\roves-content-ab12/index.html")` returns
+`Ok`, scheme `"c"`, `to_file_path()` `Err`; the POSIX equivalent returns
+`Err(RelativeUrlWithoutBase)`. The Windows side of `from_file_path`
+(`path_to_file_url_segments_windows`) was read to confirm it maps a `Prefix::Disk` to a
+host-less `file:///C:/…` serialization and percent-encodes each segment, and that mixed
+separators (`C:\dir/index.html`, exactly the shape `play.exe`'s `format!` produces) are handled
+— `Path::components()` splits on both on Windows. Not exercised by a compiled Windows build in
+this environment; confirm with a real `mach bundle` + `play.exe` run.
