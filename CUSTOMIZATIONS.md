@@ -1008,3 +1008,15 @@ before ever reaching this code; `roves-content-packer` itself (manifest v2, boot
 the incremental extraction cache, `ensure_file_available`) is fully covered by
 `support/content-packer/tests/roundtrip.rs` and passes. Treat the servoshell-side pieces as
 reviewed-but-not-compiled until a real `./mach build` confirms them.
+
+**Correction (next day, after `.github/workflows/test.yml` actually ran this patch on real
+Windows/macOS/Linux runners):** exactly one compile error, on every platform —
+`ports/servoshell/desktop/protocols/file.rs`'s `use http::Method;` was an unresolved import
+(E0432). `headers` (already a `servoshell` dependency, used for the rest of this file's Range
+handling) doesn't re-export the `http` crate; `http` itself is a workspace dependency
+(`Cargo.toml`'s `[workspace.dependencies]`) but hadn't been added to
+`ports/servoshell/Cargo.toml`'s own `[dependencies]` — Rust's crate resolution needs it listed
+on the crate that actually uses it, not merely present somewhere in the workspace lockfile.
+Fixed by adding `http = { workspace = true }` there. Exactly the gap the note above flagged
+("reviewed-but-not-compiled") — this is that real `./mach build` confirmation, and it caught a
+real, if narrow, bug on the first try.

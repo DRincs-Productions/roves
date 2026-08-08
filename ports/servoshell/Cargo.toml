@@ -74,6 +74,7 @@ crossbeam-channel = { workspace = true }
 dpi = { workspace = true }
 euclid = { workspace = true }
 hitrace = { workspace = true, optional = true }
+http = { workspace = true }
 image = { workspace = true }
 keyboard-types = { workspace = true }
 libc = { workspace = true }

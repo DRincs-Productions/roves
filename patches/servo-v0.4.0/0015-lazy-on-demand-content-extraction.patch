@@ -42,10 +42,17 @@ index 947f39fa65b..b8ef5ec4a70 100644
          // The `Paint` coordinates with the client window to create the final
          // rendered page and display it somewhere.
 diff --git a/ports/servoshell/Cargo.toml b/ports/servoshell/Cargo.toml
-index 17e1c85de1b..62fa96ffd87 100644
+index 17e1c85de1b..2d5288b3d23 100644
 --- a/ports/servoshell/Cargo.toml
 +++ b/ports/servoshell/Cargo.toml
-@@ -80,6 +80,7 @@ libc = { workspace = true }
+@@ -74,12 +74,14 @@ crossbeam-channel = { workspace = true }
+ dpi = { workspace = true }
+ euclid = { workspace = true }
+ hitrace = { workspace = true, optional = true }
++http = { workspace = true }
+ image = { workspace = true }
+ keyboard-types = { workspace = true }
+ libc = { workspace = true }
  log = { workspace = true }
  mime_guess = { workspace = true }
  raw-window-handle = { workspace = true }
