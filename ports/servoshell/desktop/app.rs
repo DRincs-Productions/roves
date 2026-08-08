@@ -92,6 +92,14 @@ impl App {
             "resource",
             protocols::resource::ResourceProtocolHandler::default(),
         );
+        // Takes over from the engine's own internal `file:` handler — see
+        // `components/servo/servo.rs`'s protocol-registry merge-order change,
+        // without which this registration would silently be discarded.
+        let initial_file_path = self.initial_url.as_url().to_file_path().ok();
+        let _ = protocol_registry.register(
+            "file",
+            protocols::file::FileProtocolHandler::new(initial_file_path.as_deref()),
+        );
         // `@drincs/roves-api`'s `core`/`process` modules talk to this — see
         // protocols/roves.rs. `None` in headless mode (no window, no winit
         // event loop to send AppEvent::CloseAllWindows through).

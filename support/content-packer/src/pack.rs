@@ -24,6 +24,14 @@ pub struct PackOptions {
     pub level: i32,
     pub max_pack_size: u64,
     pub exclude: Vec<glob::Pattern>,
+    /// Relative path (within `input`) of the entry html file, e.g. `"index.html"`.
+    /// Always in the boot set itself; scanned for local `src`/`href`
+    /// references to grow the boot set automatically.
+    pub html_file: String,
+    /// Extra globs (relative to `input`), repeatable, of files to add to the
+    /// boot set beyond the html file and what it references directly — e.g.
+    /// a splash image shown before the page itself has rendered anything.
+    pub boot_include: Vec<glob::Pattern>,
 }
 
 struct FileEntry {
@@ -31,6 +39,14 @@ struct FileEntry {
     rel_path: String,
     abs_path: PathBuf,
     size: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum BucketKey {
+    Boot,
+    Root,
+    Own(String),
+    Nested(String),
 }
 
 pub fn pack(opts: &PackOptions) -> Result<(), String> {
@@ -49,36 +65,63 @@ pub fn pack(opts: &PackOptions) -> Result<(), String> {
         }
     }
 
-    // Bucket key: `None` = dist's own root files. `Some((folder, nested))` =
-    // files directly inside a direct subfolder of dist (`nested = false`), or
-    // files anywhere deeper than that, flattened into one bucket per
-    // top-level subfolder (`nested = true`) — see CUSTOMIZATIONS.md.
-    let mut buckets: BTreeMap<(Option<String>, bool), Vec<FileEntry>> = BTreeMap::new();
+    let boot_set = detect_boot_set(&opts.input, &opts.html_file, &opts.boot_include, &packable)?;
+
+    // Bucket key: `Boot` = the boot set (see `detect_boot_set`), regardless of
+    // where its files actually live in the tree. Otherwise: `Root` = dist's
+    // own root files. `Own(folder)` = files directly inside a direct
+    // subfolder of dist. `Nested(folder)` = files anywhere deeper than that,
+    // flattened into one bucket per top-level subfolder — see CUSTOMIZATIONS.md.
+    let mut buckets: BTreeMap<BucketKey, Vec<FileEntry>> = BTreeMap::new();
     for f in packable {
-        let mut components = f.rel_path.split('/');
-        let first = components.next().unwrap_or("");
-        let depth_after_first = components.count();
-        let key = if first == f.rel_path {
-            (None, false)
-        } else if depth_after_first == 1 {
-            (Some(first.to_string()), false)
+        let key = if boot_set.contains(&f.rel_path) {
+            BucketKey::Boot
         } else {
-            (Some(first.to_string()), true)
+            let mut components = f.rel_path.split('/');
+            let first = components.next().unwrap_or("");
+            let depth_after_first = components.count();
+            if first == f.rel_path {
+                BucketKey::Root
+            } else if depth_after_first == 1 {
+                BucketKey::Own(first.to_string())
+            } else {
+                BucketKey::Nested(first.to_string())
+            }
         };
         buckets.entry(key).or_default().push(f);
     }
 
     let mut hasher = Sha256::new();
     let mut pack_entries = Vec::new();
+    let mut file_locations: BTreeMap<String, String> = BTreeMap::new();
     let mut used_names = HashSet::new();
 
-    for ((folder, nested), files) in buckets {
-        let base_name = bucket_base_name(folder.as_deref(), nested, &mut used_names);
+    for (key, files) in buckets {
+        let is_boot = key == BucketKey::Boot;
+        let base_name = bucket_base_name(&key, &mut used_names);
         let (stored, compressible): (Vec<_>, Vec<_>) =
             files.into_iter().partition(|f| is_stored_extension(&f.rel_path));
 
-        write_group(opts, &base_name, false, compressible, &mut pack_entries, &mut hasher)?;
-        write_group(opts, &base_name, true, stored, &mut pack_entries, &mut hasher)?;
+        write_group(
+            opts,
+            &base_name,
+            false,
+            is_boot,
+            compressible,
+            &mut pack_entries,
+            &mut file_locations,
+            &mut hasher,
+        )?;
+        write_group(
+            opts,
+            &base_name,
+            true,
+            is_boot,
+            stored,
+            &mut pack_entries,
+            &mut file_locations,
+            &mut hasher,
+        )?;
     }
 
     let mut excluded_rel = Vec::new();
@@ -102,6 +145,7 @@ pub fn pack(opts: &PackOptions) -> Result<(), String> {
         compression_level: opts.level,
         packs: pack_entries,
         excluded: excluded_rel,
+        files: file_locations,
     };
     let manifest_path = opts.output.join("manifest.json");
     let manifest_file =
@@ -109,6 +153,96 @@ pub fn pack(opts: &PackOptions) -> Result<(), String> {
     serde_json::to_writer_pretty(manifest_file, &manifest)
         .map_err(|e| format!("writing {manifest_path:?}: {e}"))?;
     Ok(())
+}
+
+/// The boot set: the html file itself, every local `src=`/`href=` reference
+/// it contains (script/link/img tags — a normal bundler's entry chunk, main
+/// stylesheet, favicon, etc.), and anything matching `--boot-include`. This
+/// is a lightweight attribute scan, not a real HTML parser — good enough for
+/// the flat `<script src>`/`<link href>` markup every bundler emits, not
+/// meant to handle arbitrary hand-written HTML.
+fn detect_boot_set(
+    input: &Path,
+    html_file: &str,
+    boot_include: &[glob::Pattern],
+    packable: &[FileEntry],
+) -> Result<HashSet<String>, String> {
+    let mut boot = HashSet::new();
+    boot.insert(html_file.to_string());
+
+    let html_path = input.join(html_file);
+    if let Ok(html) = fs::read_to_string(&html_path) {
+        let html_dir = Path::new(html_file)
+            .parent()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        for raw_ref in extract_local_refs(&html) {
+            boot.insert(normalize_local_ref(&html_dir, &raw_ref));
+        }
+    } else {
+        return Err(format!("reading html file {html_path:?} for boot-set detection"));
+    }
+
+    for f in packable {
+        if boot_include.iter().any(|p| p.matches(&f.rel_path)) {
+            boot.insert(f.rel_path.clone());
+        }
+    }
+
+    Ok(boot)
+}
+
+fn extract_local_refs(html: &str) -> Vec<String> {
+    let mut refs = Vec::new();
+    for attr in ["src=", "href="] {
+        let mut rest = html;
+        while let Some(pos) = rest.find(attr) {
+            rest = &rest[pos + attr.len()..];
+            let Some(quote) = rest.chars().next() else {
+                break;
+            };
+            if quote != '"' && quote != '\'' {
+                continue;
+            }
+            let after_quote = &rest[1..];
+            let Some(end) = after_quote.find(quote) else {
+                break;
+            };
+            let value = &after_quote[..end];
+            if is_local_ref(value) {
+                refs.push(value.to_string());
+            }
+            rest = &after_quote[end + 1..];
+        }
+    }
+    refs
+}
+
+fn is_local_ref(value: &str) -> bool {
+    if value.is_empty() || value.starts_with('#') {
+        return false;
+    }
+    !(value.contains("://") || value.starts_with("//") || value.starts_with("data:") || value.starts_with("mailto:"))
+}
+
+fn normalize_local_ref(html_dir: &str, raw: &str) -> String {
+    let without_query = raw.split(['?', '#']).next().unwrap_or(raw);
+    let joined = if html_dir.is_empty() {
+        without_query.to_string()
+    } else {
+        format!("{html_dir}/{without_query}")
+    };
+    let mut stack: Vec<&str> = Vec::new();
+    for seg in joined.split('/') {
+        match seg {
+            "" | "." => {},
+            ".." => {
+                stack.pop();
+            },
+            _ => stack.push(seg),
+        }
+    }
+    stack.join("/")
 }
 
 fn collect_files(root: &Path) -> Result<Vec<FileEntry>, String> {
@@ -135,14 +269,13 @@ fn collect_files(root: &Path) -> Result<Vec<FileEntry>, String> {
 /// Picks the on-disk basename for a bucket's archive(s), sanitized for safe
 /// use as a filename and disambiguated against any other bucket that would
 /// otherwise produce the same name (e.g. a real subfolder literally named
-/// `root` colliding with the fixed root-bucket name).
-fn bucket_base_name(folder: Option<&str>, nested: bool, used: &mut HashSet<String>) -> String {
-    let sanitized = match folder {
-        None => "__root__".to_string(),
-        Some(f) => f
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
-            .collect::<String>(),
+/// `root`/`boot` colliding with a fixed bucket name).
+fn bucket_base_name(key: &BucketKey, used: &mut HashSet<String>) -> String {
+    let (sanitized, nested) = match key {
+        BucketKey::Boot => ("__boot__".to_string(), false),
+        BucketKey::Root => ("__root__".to_string(), false),
+        BucketKey::Own(f) => (sanitize(f), false),
+        BucketKey::Nested(f) => (sanitize(f), true),
     };
     let mut name = if nested { format!("{sanitized}.nested") } else { sanitized.clone() };
     let mut suffix = 2;
@@ -154,6 +287,12 @@ fn bucket_base_name(folder: Option<&str>, nested: bool, used: &mut HashSet<Strin
         suffix += 1;
     }
     name
+}
+
+fn sanitize(name: &str) -> String {
+    name.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect()
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -169,14 +308,17 @@ fn is_stored_extension(rel_path: &str) -> bool {
 
 /// Splits `files` into `--max-pack-size`-bounded parts and writes each as its
 /// own `.pack` archive (`<base_name>[.stored][.N].pack`), recording a
-/// [`PackEntry`] per part. No-op if `files` is empty (a bucket with only
-/// stored, or only compressible, files skips the other archive entirely).
+/// [`PackEntry`] and a [`FileLocation`] per file. No-op if `files` is empty (a
+/// bucket with only stored, or only compressible, files skips the other
+/// archive entirely).
 fn write_group(
     opts: &PackOptions,
     base_name: &str,
     stored: bool,
+    boot: bool,
     files: Vec<FileEntry>,
     pack_entries: &mut Vec<PackEntry>,
+    file_locations: &mut BTreeMap<String, String>,
     hasher: &mut Sha256,
 ) -> Result<(), String> {
     if files.is_empty() {
@@ -210,9 +352,13 @@ fn write_group(
         }
         name.push_str(".pack");
 
+        for f in &part_files {
+            file_locations.insert(f.rel_path.clone(), name.clone());
+        }
+
         let out_path = opts.output.join(&name);
         write_pack_file(&out_path, &part_files, !stored, opts.level, hasher)?;
-        pack_entries.push(PackEntry { file: name, compressed: !stored });
+        pack_entries.push(PackEntry { file: name, compressed: !stored, boot });
     }
     Ok(())
 }

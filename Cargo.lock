@@ -9267,6 +9267,7 @@ dependencies = [
  "ohos-vsync",
  "ohos-window-manager-sys",
  "raw-window-handle",
+ "roves-content-packer",
  "rustls",
  "serde_json",
  "servo",

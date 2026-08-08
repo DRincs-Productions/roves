@@ -4,21 +4,22 @@
 //! - `pack`: turns a built `dist/`-shaped directory into a handful of
 //!   `.pack` archives (tar, zstd-compressed unless made entirely of
 //!   already-compressed extensions) plus a `manifest.json`, instead of
-//!   shipping it as loose files.
-//! - `extract`: reverses that, decompressing back to plain files — used at
-//!   game launch time (see the generated `play.sh`/`play.exe`/`Roves.app`
-//!   launchers) rather than at bundle/build time, so the release artifact
-//!   itself never contains the plain, browsable dist tree.
-
-mod extract;
-mod manifest;
-mod pack;
-mod size;
+//!   shipping it as loose files. The html file itself, whatever it directly
+//!   references, and anything matching `--boot-include` are split into their
+//!   own dedicated "boot" archive(s).
+//! - `extract`: extracts just the boot set (+ any excluded/loose files) back
+//!   to plain files — used at game launch time (see the generated
+//!   `play.sh`/`play.exe`/`Roves.app` launchers), so the release artifact
+//!   itself never contains the plain, browsable dist tree. Everything past
+//!   the boot set stays compressed until the engine's own `file:` handler
+//!   asks for it on demand — see `roves_content_packer::extract::ensure_file_available`,
+//!   used directly (not via this CLI) from `ports/servoshell`.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use bpaf::Parser;
+use roves_content_packer::{extract, pack, size};
 
 #[derive(Debug, Clone)]
 enum Cmd {
@@ -33,6 +34,8 @@ struct PackCli {
     level: i32,
     max_pack_size: String,
     exclude: Vec<String>,
+    html_file: String,
+    boot_include: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -63,7 +66,18 @@ fn pack_cli() -> impl Parser<PackCli> {
         .help("Glob (relative to --input) of files to leave as loose, uncompressed files; repeatable")
         .argument::<String>("GLOB")
         .many();
-    bpaf::construct!(PackCli { input, output, level, max_pack_size, exclude })
+    let html_file = bpaf::long("html-file")
+        .help("Entry html file, relative to --input — always in the boot set, and scanned for \
+            local src=/href= references to grow it automatically")
+        .argument::<String>("PATH")
+        .fallback("index.html".to_string())
+        .display_fallback();
+    let boot_include = bpaf::long("boot-include")
+        .help("Glob (relative to --input), repeatable, of extra files to add to the boot set \
+            beyond the html file and what it directly references")
+        .argument::<String>("GLOB")
+        .many();
+    bpaf::construct!(PackCli { input, output, level, max_pack_size, exclude, html_file, boot_include })
 }
 
 fn extract_cli() -> impl Parser<ExtractCli> {
@@ -71,9 +85,9 @@ fn extract_cli() -> impl Parser<ExtractCli> {
         .help("Directory containing manifest.json + .pack files, produced by `pack`")
         .argument::<PathBuf>("DIR");
     let dest = bpaf::long("dest")
-        .help("Directory to extract the original files into. Defaults to a stable, per-install \
-            location under the OS temp directory — nothing is extracted next to --content-dir \
-            unless this is passed explicitly.")
+        .help("Directory to extract the boot set into. Defaults to a stable, per-install \
+            location under the OS's own cache directory — nothing is extracted next to \
+            --content-dir unless this is passed explicitly.")
         .argument::<PathBuf>("DIR")
         .optional();
     let force = bpaf::long("force")
@@ -90,7 +104,7 @@ fn cmd() -> Cmd {
     let extract = extract_cli()
         .map(Cmd::Extract)
         .to_options()
-        .descr("Extract archives produced by `pack` back into plain files");
+        .descr("Extract just the boot set back into plain files");
     let pack_cmd = pack.command("pack");
     let extract_cmd = extract.command("extract");
     bpaf::construct!([pack_cmd, extract_cmd])
@@ -119,12 +133,19 @@ fn run_pack(args: PackCli) -> Result<(), String> {
         .iter()
         .map(|pattern| glob::Pattern::new(pattern).map_err(|e| format!("--exclude {pattern:?}: {e}")))
         .collect::<Result<Vec<_>, _>>()?;
+    let boot_include = args
+        .boot_include
+        .iter()
+        .map(|pattern| glob::Pattern::new(pattern).map_err(|e| format!("--boot-include {pattern:?}: {e}")))
+        .collect::<Result<Vec<_>, _>>()?;
     let opts = pack::PackOptions {
         input: args.input,
         output: args.output,
         level: args.level,
         max_pack_size: size::parse_size(&args.max_pack_size)?,
         exclude,
+        html_file: args.html_file,
+        boot_include,
     };
     pack::pack(&opts)
 }
@@ -135,10 +156,10 @@ fn run_extract(args: ExtractCli) -> Result<(), String> {
         dest: args.dest,
         force: args.force,
     };
-    // Printed so callers (the generated launchers) that don't pass --dest
-    // explicitly can capture where extraction actually landed, e.g.
+    // Printed so callers (the generated launchers) can capture where
+    // extraction actually landed, e.g.
     // `CACHE_DIR="$(roves-content-packer extract --content-dir "$DIR")"`.
-    let dest = extract::extract(&opts)?;
+    let dest = extract::extract_boot(&opts)?;
     println!("{}", dest.display());
     Ok(())
 }

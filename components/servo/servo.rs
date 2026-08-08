@@ -942,8 +942,19 @@ impl Servo {
 
         // Create the constellation, which maintains the engine pipelines, including script and
         // layout, as well as the navigation context.
-        let mut protocols = ProtocolRegistry::with_internal_protocols();
-        protocols.merge(builder.protocol_registry);
+        //
+        // Kiosk/embedded fork: the embedder's registrations win over the internal defaults
+        // (`data`/`blob`/`file`) for any scheme it explicitly registered itself, not just the
+        // reverse — `ProtocolRegistry::merge`'s `or_insert` only fills in *vacant* entries, so
+        // building the internal-defaults registry first and merging the embedder's registry
+        // into *that* (the original order) meant an embedder could never override `file` (or
+        // `data`/`blob`) even on purpose. Starting from the embedder's own registry and merging
+        // the internal defaults in on top preserves the exact same behavior for every embedder
+        // that doesn't register those schemes itself (the common case — internal defaults still
+        // fill every scheme the embedder left alone) while letting one that does (see
+        // `ports/servoshell/desktop/protocols/file.rs`) actually take effect.
+        let mut protocols = builder.protocol_registry;
+        protocols.merge(ProtocolRegistry::with_internal_protocols());
 
         // The `Paint` coordinates with the client window to create the final
         // rendered page and display it somewhere.

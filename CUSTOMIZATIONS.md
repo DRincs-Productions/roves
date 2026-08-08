@@ -905,3 +905,106 @@ direct subfolders each with their own files plus a nested sub-subfolder) exist p
 `test.yml`'s `npm run build` something realistic to exercise all three archive levels against
 — they aren't part of the patch set since they're not derived from any upstream file at all,
 just plain test fixtures tracked directly in this repo.
+
+---
+
+## 2026-08-08 — Split packed content into an eager "boot set" + lazy, on-demand extraction
+
+**Files:** `components/servo/servo.rs` (protocol-registry merge order), `components/servo/lib.rs`
+(new re-exports), a brand-new `ports/servoshell/desktop/protocols/file.rs`, plus
+`ports/servoshell/desktop/protocols/mod.rs`/`desktop/app.rs` (registration),
+`ports/servoshell/Cargo.toml` (new dependency), `python/servo/post_build_commands.py`, and
+`support/content-packer/` (manifest format v2, `pack`/`extract` behavior, new `src/lib.rs` +
+`tests/roundtrip.rs`).
+
+**Patch:** `patches/servo-v0.4.0/0015-lazy-on-demand-content-extraction.patch`
+
+**Motivating problem:** the previous two entries above extract *all* packed content eagerly
+before the engine starts — fine for a small diagnostic page, but for a game whose assets reach
+the multi-GB range, that means (a) a first-launch (or first-launch-after-a-content-update)
+stall proportional to the *entire* game's size, even for content the player won't touch for
+hours (a later level, an optional cosmetic pack), and (b) briefly needing disk space for both
+the compressed archives and the full decompressed copy at once. Raised directly: "il
+funzionamento... in un progetto di GB non rallenterà il sistema??"
+
+**Change:** `roves-content-packer pack` now splits packed content into two tiers instead of
+one:
+
+- A small **boot set** — the html file itself, plus every local `src=`/`href=` it references
+  directly (a lightweight attribute scan, not a full HTML parser; catches a bundler's entry
+  `<script>`, `<link rel="modulepreload">` hints, a favicon, etc. — verified against
+  `test-page/dist`'s real Vite output), plus anything matching the new `--boot-include`
+  (`mach bundle --content-boot-include`) glob. These get their own dedicated archive(s)
+  (`__boot__.pack`/`__boot__.stored.pack`), extracted eagerly by `roves-content-packer extract`
+  (still called by every generated launcher exactly as before — its *contract* didn't change,
+  only what it extracts) before the engine even starts.
+- **Everything else** stays compressed. `manifest.json` (format v2) now also carries a
+  `files: {path: pack}` map, so a specific path can be traced back to the one archive that
+  holds it without touching any other. Nothing extracts it until something actually asks —
+  which is the new part.
+
+That "something asking" is a new `file:` protocol handler
+(`ports/servoshell/desktop/protocols/file.rs`), replicating the stock handler's behavior
+(plain reads, HTTP Range support for `<video>`/`<audio>` seeking) with one addition: if a
+requested path doesn't exist yet and falls under the known content-cache directory, it
+decompresses whichever pack contains it (a `roves_content_packer::extract::ensure_file_available`
+call, guarded by a mutex so two near-simultaneous requests for the same not-yet-extracted pack
+don't race) *before* the read proceeds — extraction is per-pack, not per-file (tar/zstd can't
+cheaply seek to one member without processing everything before it), so a request "waits" at
+most for its own bucket's archive, never the whole game. This is why `ensure_pack_extracted`'s
+marker-file cache (see the previous entry) had to become *incremental*: a destination now
+holds boot files plus whichever lazy packs have been touched so far, and only a genuine
+content change (a mismatched `content_hash`) wipes it — an unchanged relaunch keeps everything
+already extracted in earlier sessions, not just the boot set.
+
+Registering a *custom* `file:` handler at all needed one real engine change:
+`ProtocolRegistry::merge`'s `entry().or_insert()` only fills vacant slots, and
+`components/servo/servo.rs` built the internal-defaults registry (which always has `file`)
+first, then merged the embedder's registry into *that* — meaning an embedder's own `file`
+registration was always silently discarded. Swapped the merge direction (embedder's registry
+first, internal defaults merged in on top) so it isn't, for every scheme an embedder
+explicitly claims — a no-op for any other embedder of the `servo` crate, since none of them
+register `file`/`data`/`blob` today. `components/servo/lib.rs`'s `protocol_handler` facade
+module also gained re-exports of three already-`pub` `net::protocols` functions
+(`get_range_request_bounds`/`partial_content`/`range_not_satisfiable_error`) so the new
+handler could reuse them instead of reimplementing Range-request math.
+
+**Deliberately not replicated:** the stock handler's directory-listing fallback
+(`local_directory_listing`) — Roves never opens more than one `file://` document and never
+navigates to a bare directory (no address bar, no tabs), so that code path doesn't apply, and
+reusing it would need a `pub(crate)` → `pub` visibility patch to `components/net` this doesn't
+justify. A directory request now returns a network error instead.
+
+**Why:** the boot set is deliberately *tiny by construction* (an entry chunk, a stylesheet, an
+icon), so paying its extraction cost on every cold start is cheap regardless of the game's
+total size — the multi-GB case only ever pays for what a session actually touches, exactly
+once, and everything already touched survives a relaunch unless the content genuinely
+changed. Note the honest limit: how small the boot set stays is downstream of the game's own
+bundler code-splitting — a bundler that statically imports (or `modulepreload`-hints) most of
+the app from the entry HTML will end up with most of the app in the boot set too, same as it
+would eagerly fetch it in a browser regardless of this feature. Structuring lazy content
+behind dynamic `import()` (standard web performance practice already) is what actually keeps
+the boot set small for a large game — this tool respects exactly what the entry HTML declares
+as immediately needed, it doesn't second-guess it.
+
+**Explicitly considered and deferred:** a native "loading" splash shown by the launcher during
+boot extraction. Not implemented — the boot set is small enough that this gap is typically
+sub-second, and a real per-platform splash window (creation, synchronization with the
+launcher's blocking extraction call, closing it at the right moment the engine's own window
+appears) is a meaningfully sized, purely additive UI task on its own; standard web practice
+(a page's own loading indicator while it fetches further lazy assets) already covers the more
+common case of *waiting on gameplay assets*, which is the game's own responsibility, not
+Roves'.
+
+**Side effects to know about when upgrading:** the `components/servo/servo.rs` merge-order
+swap and the `components/servo/lib.rs` re-exports are the first changes in this patch set that
+touch genuinely shared engine code rather than code local to `ports/servoshell` or
+`support/content-packer` — re-verify both still make sense if a future Servo version reshapes
+`ProtocolRegistry`/`protocol_handler`'s module layout. **Not independently verified by a real
+build in this environment** — `cargo check -p servoshell` (and `-p servo`, which
+`ports/servoshell/desktop/protocols/file.rs` and the `servo.rs`/`lib.rs` changes are part of)
+both hit the pre-existing `libclang`/`bindgen`/`mozangle` gap noted elsewhere in this file
+before ever reaching this code; `roves-content-packer` itself (manifest v2, boot detection,
+the incremental extraction cache, `ensure_file_available`) is fully covered by
+`support/content-packer/tests/roundtrip.rs` and passes. Treat the servoshell-side pieces as
+reviewed-but-not-compiled until a real `./mach build` confirms them.

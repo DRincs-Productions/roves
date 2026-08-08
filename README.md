@@ -58,23 +58,37 @@ By default, `./mach bundle --content-dir dist/` does **not** copy your game's bu
 content into the release as plain, individually browsable files — the loose `.html`/`.js`/
 image/audio files a bundler like Vite produces are exactly what someone poking around inside
 an unzipped release would otherwise find and lift straight out. Instead, `--content-dir` is
-packed into a handful of `tar`+`zstd` archives, and the generated launcher (`play.exe`/
-`Roves.app`/`play.sh`/the `.deb`) reconstructs plain files from them at launch time — into a
-location under the OS's own temp directory, **not** anywhere inside the shipped game folder.
-That location is re-derived (cleanly re-extracted) whenever the packed content actually
-changes, and reused as-is otherwise, so a normal relaunch doesn't pay the decompression cost
-again — see [CUSTOMIZATIONS.md] for exactly how that cache works.
+packed into a handful of `tar`+`zstd` archives, split into two tiers:
+
+- A small **boot set** — the html file itself, plus whatever it directly references
+  (`<script src>`, `<link href>`, `modulepreload` hints, etc.), plus anything matched by
+  `--content-boot-include`. This gets extracted eagerly, in full, before the engine even
+  starts — into your OS's own cache directory (`~/.cache`, `Library/Caches`, `%LOCALAPPDATA%`
+  — real disk, not anywhere inside the shipped game folder, and not a RAM-backed location
+  either, which matters once a project's assets reach the multi-GB range).
+- **Everything else** stays compressed and is decompressed on demand, per archive, the first
+  time the running page actually requests a file from it — so a large game's first launch
+  only ever pays for what that session actually touches, not the whole install. Once
+  decompressed, a pack stays that way (including across relaunches) until the packed content
+  actually changes.
 
 This is about not handing out your source assets for free by default, **not** DRM or
 anti-tampering — the archives aren't encrypted, and anyone willing to run the extractor
 themselves (it ships right there in the bundle) gets the original files back byte-for-byte.
 
 How the split works, so a large game doesn't turn into either one giant archive or hundreds
-of tiny ones: `dist/`'s own root files become one archive; each direct subfolder's own files
-become another; everything nested deeper than that (however many levels) is flattened into a
-third archive per top-level subfolder. Every archive is capped at 500 MB by default, splitting
-into further parts past that. Files with an already-compressed extension (images, audio,
-video, fonts, existing archives) skip zstd entirely instead of spending CPU for no size win.
+of tiny ones: past the boot set, `dist/`'s own root files become one archive; each direct
+subfolder's own files become another; everything nested deeper than that (however many
+levels) is flattened into a third archive per top-level subfolder. Every archive is capped at
+500 MB by default, splitting into further parts past that. Files with an already-compressed
+extension (images, audio, video, fonts, existing archives) skip zstd entirely instead of
+spending CPU for no size win.
+
+How small the boot set stays depends on your own bundler's code-splitting: a bundler that
+statically imports (or `modulepreload`-hints) most of the app from the entry HTML ends up with
+most of the app in the boot set too — same as a plain browser would eagerly fetch it. Structure
+anything not needed immediately (a later level, optional content) behind a dynamic `import()`
+to keep it lazy.
 
 Tune or disable all of this with flags on `./mach bundle`:
 
@@ -86,14 +100,20 @@ Tune or disable all of this with flags on `./mach bundle`:
 # plain, uncompressed files instead of packing it — repeatable:
 ./mach bundle --content-dir dist/ --content-exclude "saves/**"
 
+# Add a file to the eager boot set beyond the html file and what it directly
+# references — e.g. a splash image — repeatable:
+./mach bundle --content-dir dist/ --content-boot-include "splash.png"
+
 # Opt back into the old behavior — content-dir copied in as-is, no packing, no launch-time
-# extraction step, no .content-cache/:
+# extraction, no on-demand decompression:
 ./mach bundle --content-dir dist/ --content-compress none
 ```
 
-See the "Pack game content into compressed archives" entry in [CUSTOMIZATIONS.md] for the
-full design (archive naming, the manifest format, the extraction cache, and why `tar`+`zstd`)
-and for what's deliberately out of scope today (per-file integrity hashes, real encryption).
+See the "Pack game content into compressed archives" and "Split packed content into an eager
+boot set + lazy, on-demand extraction" entries in [CUSTOMIZATIONS.md] for the full design
+(archive naming, the manifest format, the extraction cache, the `file:` handler, and why
+`tar`+`zstd`) and for what's deliberately out of scope today (per-file integrity hashes, real
+encryption, a native loading splash).
 
 ## Supported platforms
 

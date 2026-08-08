@@ -105,6 +105,12 @@ pub mod webxr {
 pub mod protocol_handler {
     pub use net::fetch::methods::{DoneChannel, FetchContext};
     pub use net::filemanager_thread::FILE_CHUNK_SIZE;
+    // Kiosk/embedded fork: re-exported so an embedder-side `file:` handler (see
+    // `ports/servoshell/desktop/protocols/file.rs`) can replicate the stock `file:`
+    // handler's HTTP Range-request support (e.g. `<video>`/`<audio>` seeking) instead of
+    // silently dropping it — these three are already `pub fn` in `net::protocols`, just
+    // not previously threaded through this facade module.
+    pub use net::protocols::{get_range_request_bounds, partial_content, range_not_satisfiable_error};
     pub use net::protocols::{ProtocolHandler, ProtocolRegistry};
     pub use net_traits::filemanager_thread::RelativePos;
     pub use net_traits::http_status::HttpStatus;

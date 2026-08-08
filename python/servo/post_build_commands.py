@@ -108,6 +108,7 @@ def _place_bundle_content(
     compression_level: int,
     max_pack_size: str,
     exclude: List[str],
+    boot_include: List[str],
 ) -> None:
     """Copy `content_dir` (e.g. a built `dist/`) into `bundle_root` at whatever
     relative location `html_file` expects to find it at (e.g. `html_file` of
@@ -117,8 +118,11 @@ def _place_bundle_content(
     before. Otherwise `content_dir` is packed into a handful of tar+zstd
     archives instead (see `support/content-packer` and CUSTOMIZATIONS.md) —
     the release then ships those archives, not the individually-browsable
-    loose files; the generated launcher (`_bundle_windows`/`_bundle_macos`/
-    `_bundle_linux`/`_bundle_linux_deb`) extracts them back at launch time.
+    loose files. `roves-content-packer pack` splits off a small "boot set"
+    (the html file itself plus whatever it directly references, or matched by
+    `boot_include`) into its own archive(s): the generated launcher extracts
+    only *that* eagerly at startup; everything else stays compressed until
+    servoshell's own `file:` handler asks for it on demand.
     """
     if not content_dir:
         return
@@ -141,9 +145,13 @@ def _place_bundle_content(
         str(compression_level),
         "--max-pack-size",
         max_pack_size,
+        "--html-file",
+        path.basename(html_file),
     ]
     for pattern in exclude:
         pack_args += ["--exclude", pattern]
+    for pattern in boot_include:
+        pack_args += ["--boot-include", pattern]
     subprocess.check_call(pack_args)
 
 
@@ -338,6 +346,16 @@ class PostBuildCommands(CommandBase):
         "inside a read-only archive. Only meaningful with --content-compress=auto.",
     )
     @CommandArgument(
+        "--content-boot-include",
+        action="append",
+        default=[],
+        metavar="GLOB",
+        help="Glob (relative to --content-dir), repeatable, of extra files to add to the eagerly-"
+        "extracted 'boot set' beyond the html file and whatever it directly references (e.g. a "
+        "splash image shown before the page itself has rendered anything). Only meaningful with "
+        "--content-compress=auto.",
+    )
+    @CommandArgument(
         "--deb",
         action="store_true",
         help="Linux only: build a .deb package instead of the default self-contained play.sh bundle",
@@ -357,6 +375,7 @@ class PostBuildCommands(CommandBase):
         content_compression_level: int = 1,
         content_max_pack_size: str = "500M",
         content_exclude: Optional[List[str]] = None,
+        content_boot_include: Optional[List[str]] = None,
         deb: bool = False,
         deb_package_name: str = "servoshell",
         deb_version: str = "0.0.0",
@@ -403,6 +422,7 @@ class PostBuildCommands(CommandBase):
         os.makedirs(output_dir)
 
         content_exclude = content_exclude or []
+        content_boot_include = content_boot_include or []
         compress_enabled = bool(content_dir) and content_compress != "none"
         packer_binary = self._build_content_packer() if compress_enabled else None
 
@@ -443,6 +463,7 @@ class PostBuildCommands(CommandBase):
                 content_compression_level,
                 content_max_pack_size,
                 content_exclude,
+                content_boot_include,
                 extraction,
             )
             print(f"Bundle written to {output_dir}")
@@ -460,6 +481,7 @@ class PostBuildCommands(CommandBase):
             content_compression_level,
             content_max_pack_size,
             content_exclude,
+            content_boot_include,
         )
         print(f"Bundle written to {output_dir}")
         return None
@@ -720,6 +742,7 @@ export LD_LIBRARY_PATH="$(pwd):$LD_LIBRARY_PATH"
         compression_level: int,
         max_pack_size: str,
         exclude: List[str],
+        boot_include: List[str],
         extraction: Optional[ContentExtraction],
     ) -> None:
         """Build a real, installable .deb: `dpkg -i` puts the engine + its
@@ -751,7 +774,15 @@ export LD_LIBRARY_PATH="$(pwd):$LD_LIBRARY_PATH"
             if ".so" in f:
                 shutil.copy(path.join(binary_dir, f), lib_dir)
         _place_bundle_content(
-            lib_dir, html_file, content_dir, content_compress, packer_binary, compression_level, max_pack_size, exclude
+            lib_dir,
+            html_file,
+            content_dir,
+            content_compress,
+            packer_binary,
+            compression_level,
+            max_pack_size,
+            exclude,
+            boot_include,
         )
 
         # /usr/lib/<package_name> is root-owned post-install (dpkg's usual

@@ -6,6 +6,10 @@ license = "MPL-2.0"
 publish = false
 description = "Packs a built game dist/ into a handful of tar+zstd archives (instead of shipping it as loose files), and extracts them back at launch time. See ../../CUSTOMIZATIONS.md."
 
+[lib]
+name = "roves_content_packer"
+path = "src/lib.rs"
+
 [[bin]]
 name = "roves-content-packer"
 path = "src/main.rs"
