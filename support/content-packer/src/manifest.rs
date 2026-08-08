@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 /// changes shape, so an old extractor refuses to (mis)handle a newer manifest.
 ///
 /// v2 added `PackEntry::boot` and `Manifest::files` (the boot/lazy split —
-/// see CUSTOMIZATIONS.md).
-pub const FORMAT_VERSION: u32 = 2;
+/// see CUSTOMIZATIONS.md). v3 added `Manifest::entry_html`.
+pub const FORMAT_VERSION: u32 = 3;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Manifest {
@@ -32,6 +32,13 @@ pub struct Manifest {
     /// serializes in a fixed, sorted key order — see `pack`'s deterministic
     /// output guarantee.
     pub files: BTreeMap<String, String>,
+    /// Relative path (forward-slash, relative to the content root) of the
+    /// entry html file — the same string passed as `--html-file` at pack
+    /// time. Read back by the engine's own in-process boot extraction (see
+    /// CUSTOMIZATIONS.md's single-executable-bundle entry) to build the
+    /// final `file:` URL to open, without needing that filename threaded
+    /// through as a separate CLI argument.
+    pub entry_html: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -35,10 +35,10 @@ cc = { workspace = true }
 winresource = { workspace = true }
 
 [package.metadata.winresource]
-FileDescription = "ServoShell"
+FileDescription = "Roves"
 LegalCopyright = "© The Servo Project Developers"
-OriginalFilename = "servoshell.exe"
-ProductName = "ServoShell"
+OriginalFilename = "Roves.exe"
+ProductName = "Roves"
 
 [features]
 default = ["baked-in-resources", "gamepad", "servo/clipboard", "js_jit", "max_log_level", "webgpu", "webxr"]

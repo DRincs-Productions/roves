@@ -217,8 +217,8 @@ described there, that's covered in [CUSTOMIZATIONS.md] instead.
 - Restart your shell to make sure `cargo` is available
 - Install the other dependencies: `./mach bootstrap`
 - Build: `./mach build`
-- Package a runnable bundle: `./mach bundle` (add `--deb` for a Debian/Ubuntu package instead
-  of the default self-contained `play.sh`)
+- Package a runnable bundle: `./mach bundle` (add `--deb` for an installable Debian/Ubuntu
+  package instead of the default self-contained `play` binary)
 
 ### Windows
 

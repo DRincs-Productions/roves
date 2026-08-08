@@ -48,25 +48,26 @@ def _packer_binary_name() -> str:
     return "roves-content-packer.exe" if is_windows() else "roves-content-packer"
 
 
-class ContentExtraction(NamedTuple):
-    """Everything a generated launcher needs to run `roves-content-packer
-    extract` for itself before starting the engine — see the `bundle`
-    command and CUSTOMIZATIONS.md's content-compression entry. Deliberately
-    has no destination directory: every launcher calls `extract` without
-    `--dest`, so it picks its own location under the OS temp directory (see
-    `support/content-packer/src/extract.rs`) and prints it, which the
-    launcher captures — nothing is ever extracted next to the bundle itself.
+class BundleLaunchInfo(NamedTuple):
+    """Everything the shipped bundle's `launch.json` needs, read back at
+    startup by the engine's own `ports/servoshell/desktop/bundle_launch.rs`
+    to resolve its launch args in-process — see CUSTOMIZATIONS.md's
+    single-executable-bundle entry. Always constructed (regardless of
+    whether content ended up packed), so `_write_launch_config` has one
+    shape to write either way.
     """
 
-    #: Where the `.pack` files + `manifest.json` live, relative to wherever
-    #: the launcher resolves bundle-relative paths from (e.g. `"dist"`).
-    packed_rel_dir: str
-    #: Basename of the html file to open once extracted (e.g. `"index.html"`).
-    html_basename: str
-    #: Absolute path, on the machine running `mach bundle`, to the built
-    #: `roves-content-packer` binary — copied into the bundle so the
-    #: launcher can run it on the *player's* machine.
-    packer_binary: str
+    #: Where the `.pack` files + `manifest.json` live, relative to
+    #: `launch.json`'s own directory (e.g. `"dist"`) — `None` when content
+    #: isn't packed (`--content-compress=none`, or no `--content-dir` at
+    #: all), in which case `html_file` below is used directly instead.
+    packed_rel_dir: Optional[str]
+    #: Bundle-relative path (relative to `launch.json`'s own directory) to
+    #: the html file to open — only used when `packed_rel_dir` is `None`,
+    #: since a packed build's actual entry file is only known after
+    #: extraction (recorded in `manifest.json`'s `entry_html`, read by the
+    #: engine itself, not threaded through here).
+    html_file: str
     #: Launch args other than the html file itself (`--window-size ...` plus
     #: anything passed after `--` on the `mach bundle` command line).
     extra_args: List[str]
@@ -84,11 +85,6 @@ def shell_quote(arg: str) -> str:
     # use single quotes, and put single quotes into double quotes
     # the string $'b is then quoted as '$'"'"'b'
     return "'" + arg.replace("'", "'\"'\"'") + "'"
-
-
-def _escape_rust_str(arg: str) -> str:
-    """Escape `arg` for embedding as a double-quoted Rust string literal."""
-    return arg.replace("\\", "\\\\").replace('"', '\\"')
 
 
 # Debian's arch names don't match Rust's. Extend as new targets need `--deb`.
@@ -153,6 +149,25 @@ def _place_bundle_content(
     for pattern in boot_include:
         pack_args += ["--boot-include", pattern]
     subprocess.check_call(pack_args)
+
+
+def _write_launch_config(config_dir: str, info: BundleLaunchInfo) -> None:
+    """Writes `launch.json` into `config_dir` (always a sibling of the real,
+    single shipped binary — see the `_bundle_*` methods below). This is the
+    entire replacement for what used to be a separate generated launcher
+    executable: previously each platform got its own generated source/script
+    hardcoding these same values and (for packed content) shelling out to
+    `roves-content-packer extract` at startup; now the engine reads this
+    plain data file and calls the equivalent extraction code itself,
+    in-process, as a library — see `ports/servoshell/desktop/bundle_launch.rs`.
+    """
+    config = {
+        "content_dir": info.packed_rel_dir,
+        "url": None if info.packed_rel_dir else info.html_file,
+        "args": info.extra_args,
+    }
+    with open(path.join(config_dir, "launch.json"), "w") as f:
+        json.dump(config, f)
 
 
 @CommandProvider
@@ -360,7 +375,7 @@ class PostBuildCommands(CommandBase):
         action="store_true",
         help="Linux only: build a .deb package instead of the default self-contained play.sh bundle",
     )
-    @CommandArgument("--deb-package-name", default="servoshell", help="Package name to use with --deb")
+    @CommandArgument("--deb-package-name", default="roves", help="Package name to use with --deb")
     @CommandArgument("--deb-version", default="0.0.0", help="Package version to use with --deb")
     @CommandArgument("params", nargs="...", help="Extra command-line arguments to pass through to servoshell on launch")
     @CommandBase.common_command_arguments(binary_selection=True)
@@ -377,7 +392,7 @@ class PostBuildCommands(CommandBase):
         content_exclude: Optional[List[str]] = None,
         content_boot_include: Optional[List[str]] = None,
         deb: bool = False,
-        deb_package_name: str = "servoshell",
+        deb_package_name: str = "roves",
         deb_version: str = "0.0.0",
         params: Optional[List[str]] = None,
         **kwargs: Any,
@@ -385,28 +400,31 @@ class PostBuildCommands(CommandBase):
         """Turn a build produced by `./mach build` into something a user can
         double-click to run, instead of the bare build artifact in target/:
 
-        * Windows: a play.exe (built with the "windows" subsystem, so it
-          never flashes a console — see ports/servoshell/main.rs for the
-          same attribute on servoshell.exe itself) that launches the engine
-          binary, which is tucked away in a bin/ subdirectory.
-        * macOS: a minimal Roves.app bundle. Finder launches
-          Contents/MacOS/<exec> directly, with no Terminal involved at all.
-        * Linux: by default, a play.sh next to the engine binary, which
-          ships without its executable bit — play.sh is the only supported
-          entry point, so a curious `./servoshell-core` fails with
-          "Permission denied" instead of launching without the args/
-          LD_LIBRARY_PATH it actually needs. With --deb, a proper .deb
-          package instead (see _bundle_linux_deb for what it does and does
-          not attempt).
+        * Windows: a single play.exe (built with the "windows" subsystem, so
+          it never flashes a console — see ports/servoshell/main.rs for the
+          same attribute the underlying engine binary already carries).
+        * macOS: a minimal Roves.app bundle whose Contents/MacOS/Roves *is*
+          the engine binary itself. Finder launches it directly, no
+          Terminal involved at all.
+        * Linux: by default, a single `play` binary. With --deb, a proper
+          .deb package instead (see _bundle_linux_deb for what it does and
+          does not attempt).
+
+        Every platform ships exactly one executable — no separate launcher
+        process and no `roves-content-packer` binary alongside it. A small
+        `launch.json` sits next to the binary instead, read back by the
+        engine's own `ports/servoshell/desktop/bundle_launch.rs` at startup
+        to resolve its launch args (window size, content location) and, for
+        packed content, run the equivalent of `roves-content-packer extract`
+        in-process as a library call rather than a separate program.
 
         By default (`--content-compress=auto`), `--content-dir` isn't copied
         into the bundle as loose files: it's packed into a handful of
         tar+zstd archives (see support/content-packer and CUSTOMIZATIONS.md),
-        and the launcher above extracts them back to plain files at launch
-        time instead — so the shipped bundle itself never contains an
-        individually browsable copy of the game's web content. Pass
-        `--content-compress=none` to get the old, always-loose-files
-        behavior back.
+        extracted back to plain files in-process at launch time instead — so
+        the shipped bundle itself never contains an individually browsable
+        copy of the game's web content. Pass `--content-compress=none` to
+        get the old, always-loose-files behavior back.
 
         None of this touches target/<profile>/ itself or the binary Cargo
         put there — `./mach run` and friends keep working exactly as before.
@@ -427,33 +445,25 @@ class PostBuildCommands(CommandBase):
         packer_binary = self._build_content_packer() if compress_enabled else None
 
         extra_args = ["--window-size", window_size] + list(params or [])
-        # Used only when compression is off — otherwise each launcher builds
-        # its own args at *launch* time (see ContentExtraction's docstring).
-        launch_args = [html_file] + extra_args
-        extraction: Optional[ContentExtraction] = (
-            ContentExtraction(
-                packed_rel_dir=path.dirname(html_file),
-                html_basename=path.basename(html_file),
-                packer_binary=cast(str, packer_binary),
-                extra_args=extra_args,
-            )
-            if compress_enabled
-            else None
+        launch_info = BundleLaunchInfo(
+            packed_rel_dir=path.dirname(html_file) if compress_enabled else None,
+            html_file=html_file,
+            extra_args=extra_args,
         )
 
         if is_windows():
-            self._bundle_windows(servo_binary, binary_dir, output_dir, launch_args, extraction)
+            self._bundle_windows(servo_binary, binary_dir, output_dir, launch_info)
             bundle_root = output_dir
         elif is_macosx():
             bundle_root = path.join(output_dir, "Roves.app", "Contents", "Resources")
             os.makedirs(bundle_root)
-            self._bundle_macos(servo_binary, binary_dir, output_dir, launch_args, extraction)
+            self._bundle_macos(servo_binary, binary_dir, output_dir, launch_info)
         elif deb:
             self._bundle_linux_deb(
                 servo_binary,
                 binary_dir,
                 output_dir,
-                launch_args,
+                launch_info,
                 deb_package_name,
                 deb_version,
                 html_file,
@@ -464,12 +474,11 @@ class PostBuildCommands(CommandBase):
                 content_max_pack_size,
                 content_exclude,
                 content_boot_include,
-                extraction,
             )
             print(f"Bundle written to {output_dir}")
             return None
         else:
-            self._bundle_linux(servo_binary, binary_dir, output_dir, launch_args, extraction)
+            self._bundle_linux(servo_binary, binary_dir, output_dir, launch_info)
             bundle_root = output_dir
 
         _place_bundle_content(
@@ -488,13 +497,13 @@ class PostBuildCommands(CommandBase):
 
     def _build_content_packer(self) -> str:
         """Builds (release profile) and returns the path to
-        `roves-content-packer` — used both here, to `pack` `--content-dir`,
-        and copied into the bundle so the generated launcher can run its
-        `extract` subcommand at launch time. See `support/content-packer`
-        and CUSTOMIZATIONS.md. Always a host-native build (no --target):
-        packing happens on the machine running `mach bundle`, and the copy
-        shipped into the bundle only ever needs to run on that same host
-        platform (Windows/macOS/Linux), never cross-compiled."""
+        `roves-content-packer` — used to `pack` `--content-dir` here on the
+        machine running `mach bundle`. Not shipped into the bundle itself:
+        extraction on the player's machine happens in-process, inside the
+        engine binary, which already links `roves_content_packer` as a
+        library (see `ports/servoshell/desktop/bundle_launch.rs` and
+        CUSTOMIZATIONS.md). Always a host-native build (no --target) —
+        packing only ever needs to run here, on this host."""
         manifest_path = path.join(self.context.topdir, "support", "content-packer", "Cargo.toml")
         subprocess.check_call(
             ["cargo", "build", "--release", "--manifest-path", manifest_path],
@@ -508,118 +517,44 @@ class PostBuildCommands(CommandBase):
         servo_binary: str,
         binary_dir: str,
         output_dir: str,
-        launch_args: List[str],
-        extraction: Optional[ContentExtraction],
+        launch_info: BundleLaunchInfo,
     ) -> None:
-        bin_dir = path.join(output_dir, "bin")
-        os.makedirs(bin_dir)
-        shutil.copy(servo_binary, bin_dir)
+        """The engine binary itself, copied and renamed to `play.exe`,
+        sitting flat in `output_dir` — no `bin/` subdirectory, no separate
+        launcher. `#![windows_subsystem = "windows"]` (so it never flashes a
+        console) is already set on this binary itself, in
+        `ports/servoshell/main.rs`. See `_write_launch_config`/
+        `ports/servoshell/desktop/bundle_launch.rs` for how it resolves its
+        launch args and, for packed content, extracts it, entirely
+        in-process — no `roves-content-packer.exe` is shipped here either.
+        """
+        shutil.copy(servo_binary, path.join(output_dir, "play.exe"))
         for f in os.listdir(binary_dir):
             if f.lower().endswith(".dll"):
-                shutil.copy(path.join(binary_dir, f), bin_dir)
-                # play.exe (built below) is an MSVC-linked binary too, and
-                # lives next to bin/ rather than inside it, so it needs its
-                # own copy of the same runtime DLLs alongside itself to
-                # start at all.
                 shutil.copy(path.join(binary_dir, f), output_dir)
-
-        binary_name = path.basename(servo_binary)
-
-        # When content is packed (see CUSTOMIZATIONS.md's content-compression
-        # entry), play.exe first runs `roves-content-packer extract` — with
-        # no `--dest`, so it picks its own location under the OS temp
-        # directory rather than anything living next to the bundle — and
-        # captures the directory it printed, to build the real html-file
-        # argument at *this* launch (`--dest` isn't known until then: it's
-        # keyed by a hash, computed inside the packer, of this machine's
-        # resolved content path). `.output()`, not `.spawn()`: servoshell
-        # must not open its html file until extraction actually finishes.
-        # `CREATE_NO_WINDOW` keeps that child's console from flashing on
-        # screen for an instant before servoshell's own window opens — this
-        # is a `windows_subsystem = "windows"` binary, and without that flag
-        # spawning any ordinary console-subsystem child (roves-content-packer
-        # itself has no reason to be a windows-subsystem binary) briefly pops
-        # one open.
-        if extraction is not None:
-            shutil.copy(extraction.packer_binary, bin_dir)
-            packer_name = path.basename(extraction.packer_binary)
-            extra_rust_args = ", ".join(
-                f'"{_escape_rust_str(a)}".to_string()' for a in extraction.extra_args
-            )
-            args_snippet = f"""
-    let packer = bin_dir.join("{_escape_rust_str(packer_name)}");
-    let output = Command::new(&packer)
-        .arg("extract")
-        .arg("--content-dir")
-        .arg(exe_dir.join("{_escape_rust_str(extraction.packed_rel_dir)}"))
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .expect("failed to run roves-content-packer extract");
-    let cache_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let args: Vec<String> = vec![
-        format!("{{}}/{_escape_rust_str(extraction.html_basename)}", cache_dir),
-        {extra_rust_args}
-    ];
-"""
-            extra_use = "use std::os::windows::process::CommandExt;\n"
-            extra_const = "\nconst CREATE_NO_WINDOW: u32 = 0x0800_0000;\n"
-        else:
-            rust_args = ", ".join(f'"{_escape_rust_str(a)}".to_string()' for a in launch_args)
-            args_snippet = f"""
-    let args: Vec<String> = vec![{rust_args}];
-"""
-            extra_use = ""
-            extra_const = ""
-
-        launcher_source = f"""#![windows_subsystem = "windows"]
-use std::env;
-use std::process::Command;
-{extra_use}{extra_const}
-fn main() {{
-    let exe_dir = env::current_exe()
-        .expect("could not resolve own path")
-        .parent()
-        .expect("exe has no parent directory")
-        .to_path_buf();
-    let bin_dir = exe_dir.join("bin");
-    let servoshell = bin_dir.join("{binary_name}");
-{args_snippet}    // Fire-and-forget: servoshell manages its own window from here.
-    let _ = Command::new(servoshell)
-        .current_dir(&exe_dir)
-        .args(&args)
-        .spawn();
-}}
-"""
-        launcher_src_path = path.join(output_dir, "_play_launcher.rs")
-        with open(launcher_src_path, "w") as f:
-            f.write(launcher_source)
-        try:
-            subprocess.check_call(
-                ["rustc", "--edition", "2021", "-O", "-o", path.join(output_dir, "play.exe"), launcher_src_path]
-            )
-        finally:
-            os.remove(launcher_src_path)
+        _write_launch_config(output_dir, launch_info)
 
     def _bundle_macos(
         self,
         servo_binary: str,
         binary_dir: str,
         output_dir: str,
-        launch_args: List[str],
-        extraction: Optional[ContentExtraction],
+        launch_info: BundleLaunchInfo,
     ) -> None:
+        """The engine binary itself becomes `Contents/MacOS/Roves` directly
+        — no wrapper script. Finder (and `CFBundleExecutable` below) launch
+        it as-is."""
         contents_dir = path.join(output_dir, "Roves.app", "Contents")
         macos_dir = path.join(contents_dir, "MacOS")
         os.makedirs(macos_dir)
 
-        core_name = f"{path.basename(servo_binary)}-core"
-        core_path = path.join(macos_dir, core_name)
-        shutil.copy(servo_binary, core_path)
-        os.chmod(core_path, 0o755)
-        # servoshell is always linked with `-rpath @executable_path/lib/`
-        # (see ports/servoshell/build.rs) — dylibs have to land in a `lib/`
-        # subdirectory next to whatever the renamed core binary ends up
-        # being, not flat next to it, or dyld won't find them at runtime.
+        exe_path = path.join(macos_dir, "Roves")
+        shutil.copy(servo_binary, exe_path)
+        os.chmod(exe_path, 0o755)
+        # Linked with `-rpath @executable_path/lib/` (see
+        # ports/servoshell/build.rs) — dylibs have to land in a `lib/`
+        # subdirectory next to the binary, not flat next to it, or dyld
+        # won't find them at runtime.
         dylibs = [f for f in os.listdir(binary_dir) if f.endswith(".dylib")]
         if dylibs:
             lib_dir = path.join(macos_dir, "lib")
@@ -627,6 +562,12 @@ fn main() {{
             for f in dylibs:
                 shutil.copy(path.join(binary_dir, f), lib_dir)
 
+        # CFBundleIdentifier deliberately still says "servoshell", not
+        # "roves" — the 2026-08-07 rename entry in CUSTOMIZATIONS.md already
+        # considered and deliberately deferred this exact string, since a
+        # bundle identifier (unlike a display label) affects macOS-level
+        # identity (defaults/prefs, TCC permission grants, code signing) and
+        # needs its own explicit decision, not a mechanical rename.
         info_plist = """<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -650,89 +591,35 @@ fn main() {{
             f.write(info_plist)
 
         # Content (packed by _place_bundle_content) sits in Contents/Resources,
-        # a sibling of this script's own directory (Contents/MacOS). `extract`
-        # is called with no `--dest`, so it picks (and prints) its own
-        # location under the OS temp directory rather than anything inside
-        # the .app bundle — captured into $CACHE_DIR and used to build the
-        # real html-file argument for this launch.
-        if extraction is not None:
-            packer_dest = path.join(macos_dir, path.basename(extraction.packer_binary))
-            shutil.copy(extraction.packer_binary, packer_dest)
-            os.chmod(packer_dest, 0o755)
-            quoted_extra = " ".join(shell_quote(a) for a in extraction.extra_args)
-            extraction_snippet = (
-                f'CACHE_DIR="$("$DIR/{path.basename(extraction.packer_binary)}" extract '
-                f'--content-dir "$DIR/../Resources/{extraction.packed_rel_dir}")"\n'
-            )
-            final_args = f'"$CACHE_DIR/{extraction.html_basename}" {quoted_extra}'
-        else:
-            extraction_snippet = ""
-            final_args = " ".join(shell_quote(a) for a in launch_args)
-
-        launcher_script = f"""#!/usr/bin/env bash
-DIR="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
-{extraction_snippet}cd "$DIR/../../.."
-exec "$DIR/{core_name}" {final_args}
-"""
-        launcher_path = path.join(macos_dir, "Roves")
-        with open(launcher_path, "w") as f:
-            f.write(launcher_script)
-        os.chmod(launcher_path, 0o755)
+        # a sibling of Contents/MacOS — `bundle_launch.rs` knows to look
+        # there specifically on macOS.
+        _write_launch_config(macos_dir, launch_info)
 
     def _bundle_linux(
         self,
         servo_binary: str,
         binary_dir: str,
         output_dir: str,
-        launch_args: List[str],
-        extraction: Optional[ContentExtraction],
+        launch_info: BundleLaunchInfo,
     ) -> None:
-        core_name = f"{path.basename(servo_binary)}-core"
-        core_path = path.join(output_dir, core_name)
-        shutil.copy(servo_binary, core_path)
+        """The engine binary itself, copied and renamed to `play`, sitting
+        flat in `output_dir` next to its `.so` dependencies (which it now
+        finds via the `$ORIGIN` rpath added in `ports/servoshell/build.rs`
+        — no `LD_LIBRARY_PATH` wrapper script needed)."""
+        play_path = path.join(output_dir, "play")
+        shutil.copy(servo_binary, play_path)
+        os.chmod(play_path, 0o755)
         for f in os.listdir(binary_dir):
             if ".so" in f:
                 shutil.copy(path.join(binary_dir, f), output_dir)
-        os.chmod(core_path, 0o644)
-
-        # Content lives right here in output_dir (bundle_root for the
-        # non-.deb Linux case), and play.sh already `cd`s into output_dir
-        # before running anything, so the packed content is a plain path
-        # relative to the script's own directory. `extract` is called with
-        # no `--dest`, so it picks (and prints) its own location under the
-        # OS temp directory instead — captured into $CACHE_DIR.
-        if extraction is not None:
-            packer_name = path.basename(extraction.packer_binary)
-            packer_dest = path.join(output_dir, packer_name)
-            shutil.copy(extraction.packer_binary, packer_dest)
-            os.chmod(packer_dest, 0o755)
-            quoted_extra = " ".join(shell_quote(a) for a in extraction.extra_args)
-            extraction_snippet = (
-                f"chmod +x {shell_quote(packer_name)}\n"
-                f'CACHE_DIR="$(./{packer_name} extract --content-dir "./{extraction.packed_rel_dir}")"\n'
-            )
-            final_args = f'"$CACHE_DIR/{extraction.html_basename}" {quoted_extra}'
-        else:
-            extraction_snippet = ""
-            final_args = " ".join(shell_quote(a) for a in launch_args)
-
-        play_sh = f"""#!/usr/bin/env bash
-cd "$(dirname "$0")"
-chmod +x {shell_quote(core_name)}
-export LD_LIBRARY_PATH="$(pwd):$LD_LIBRARY_PATH"
-{extraction_snippet}./{core_name} {final_args}
-"""
-        play_path = path.join(output_dir, "play.sh")
-        with open(play_path, "w") as f:
-            f.write(play_sh)
-        os.chmod(play_path, 0o755)
+        _write_launch_config(output_dir, launch_info)
 
     def _bundle_linux_deb(
         self,
         servo_binary: str,
         binary_dir: str,
         output_dir: str,
-        launch_args: List[str],
+        launch_info: BundleLaunchInfo,
         package_name: str,
         version: str,
         html_file: str,
@@ -743,14 +630,17 @@ export LD_LIBRARY_PATH="$(pwd):$LD_LIBRARY_PATH"
         max_pack_size: str,
         exclude: List[str],
         boot_include: List[str],
-        extraction: Optional[ContentExtraction],
     ) -> None:
         """Build a real, installable .deb: `dpkg -i` puts the engine + its
-        content under /usr/lib/<package_name>/, a launcher under /usr/bin/,
-        and a .desktop entry so it shows up in application launchers. This
-        is a functional package, not a lintian-clean one — no changelog,
-        no man page, no maintainer scripts; add those if this ever needs to
-        go through a real Debian/Ubuntu review.
+        content under /usr/lib/<package_name>/, with /usr/bin/<package_name>
+        a plain symlink to it (not a wrapper script — the engine now finds
+        its own `.so` dependencies via the `$ORIGIN` rpath added in
+        `ports/servoshell/build.rs`, and resolves its own launch args
+        in-process, so nothing needs to run before it), and a .desktop entry
+        so it shows up in application launchers. This is a functional
+        package, not a lintian-clean one — no changelog, no man page, no
+        maintainer scripts; add those if this ever needs to go through a
+        real Debian/Ubuntu review.
         """
         if not shutil.which("dpkg-deb"):
             print("--deb requires `dpkg-deb` (from dpkg-dev), which was not found on PATH.")
@@ -767,9 +657,9 @@ export LD_LIBRARY_PATH="$(pwd):$LD_LIBRARY_PATH"
         for d in (lib_dir, bin_dir, applications_dir, debian_dir):
             os.makedirs(d)
 
-        core_name = path.basename(servo_binary)
-        shutil.copy(servo_binary, path.join(lib_dir, core_name))
-        os.chmod(path.join(lib_dir, core_name), 0o755)
+        binary_name = path.basename(servo_binary)
+        shutil.copy(servo_binary, path.join(lib_dir, binary_name))
+        os.chmod(path.join(lib_dir, binary_name), 0o755)
         for f in os.listdir(binary_dir):
             if ".so" in f:
                 shutil.copy(path.join(binary_dir, f), lib_dir)
@@ -784,34 +674,14 @@ export LD_LIBRARY_PATH="$(pwd):$LD_LIBRARY_PATH"
             exclude,
             boot_include,
         )
+        _write_launch_config(lib_dir, launch_info)
 
-        # /usr/lib/<package_name> is root-owned post-install (dpkg's usual
-        # 755) — but that no longer matters here: `extract` is called with no
-        # `--dest`, so it picks (and prints) its own writable location under
-        # the OS temp directory itself, the same as every other platform
-        # above. No cwd-relative or $HOME-relative bookkeeping needed here.
-        if extraction is not None:
-            packer_name = path.basename(extraction.packer_binary)
-            shutil.copy(extraction.packer_binary, path.join(lib_dir, packer_name))
-            os.chmod(path.join(lib_dir, packer_name), 0o755)
-            quoted_extra = " ".join(shell_quote(a) for a in extraction.extra_args)
-            extraction_snippet = (
-                f'CACHE_DIR="$(./{packer_name} extract --content-dir "./{extraction.packed_rel_dir}")"\n'
-            )
-            exec_args = f'"$CACHE_DIR/{extraction.html_basename}" {quoted_extra}'
-        else:
-            extraction_snippet = ""
-            exec_args = " ".join(shell_quote(a) for a in launch_args)
-
-        launcher_script = f"""#!/usr/bin/env bash
-cd /usr/lib/{shell_quote(package_name)}
-export LD_LIBRARY_PATH="/usr/lib/{shell_quote(package_name)}:$LD_LIBRARY_PATH"
-{extraction_snippet}exec ./{shell_quote(core_name)} {exec_args}
-"""
-        launcher_path = path.join(bin_dir, package_name)
-        with open(launcher_path, "w") as f:
-            f.write(launcher_script)
-        os.chmod(launcher_path, 0o755)
+        # /usr/lib/<package_name> isn't on PATH, so /usr/bin/<package_name>
+        # needs to point at the real binary somehow — a symlink is a
+        # filesystem alias, not a second executable/process, and
+        # `env::current_exe()` (what `bundle_launch.rs` looks next to)
+        # resolves through it to the real path on Linux automatically.
+        os.symlink(path.join("/usr", "lib", package_name, binary_name), path.join(bin_dir, package_name))
 
         desktop_entry = f"""[Desktop Entry]
 Type=Application
@@ -823,8 +693,14 @@ Categories=Network;WebBrowser;
         with open(path.join(applications_dir, f"{package_name}.desktop"), "w") as f:
             f.write(desktop_entry)
 
+        # `lstat`, not `getsize`/`stat`: `usr/bin/{package_name}` is now a
+        # symlink whose target (`/usr/lib/{package_name}/{binary_name}`) is
+        # an absolute path that doesn't exist on *this* (build) machine —
+        # only after installation — so following it here would raise
+        # `FileNotFoundError`. `lstat` reports the symlink's own (tiny)
+        # size instead, matching how `du`/real `dpkg-deb` account for it.
         installed_size_kb = sum(
-            path.getsize(path.join(dirpath, name))
+            os.lstat(path.join(dirpath, name)).st_size
             for dirpath, _dirnames, filenames in os.walk(pkg_root)
             for name in filenames
         ) // 1024

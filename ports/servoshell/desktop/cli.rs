@@ -5,6 +5,7 @@
 use std::{env, panic};
 
 use crate::desktop::app::App;
+use crate::desktop::bundle_launch::resolve_bundled_launch_args;
 use crate::desktop::event_loop::ServoShellEventLoop;
 use crate::panic_hook;
 use crate::prefs::{ArgumentParsingResult, parse_command_line_arguments};
@@ -17,8 +18,12 @@ pub fn main() {
     // log_panics::init()?
     panic::set_hook(Box::new(panic_hook::panic_hook));
 
-    // Skip the first argument, which is the binary name.
-    let args: Vec<String> = env::args().skip(1).collect();
+    // A bundled build (see `python/servo/post_build_commands.py`'s `bundle`
+    // command and CUSTOMIZATIONS.md) resolves its own launch args from a
+    // `launch.json` sitting next to the running executable, in place of the
+    // separate launcher process a bundle used to spawn. Falls back to the
+    // real argv (skipping the binary name) for every other invocation.
+    let args: Vec<String> = resolve_bundled_launch_args().unwrap_or_else(|| env::args().skip(1).collect());
     let (opts, preferences, servoshell_preferences) = match parse_command_line_arguments(&*args) {
         ArgumentParsingResult::ContentProcess(token) => return servo::run_content_process(token),
         ArgumentParsingResult::ChromeProcess(opts, preferences, servoshell_preferences) => {

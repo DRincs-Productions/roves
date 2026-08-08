@@ -71,6 +71,7 @@ fn boot_set_is_html_plus_directly_referenced_files_only() {
         !is_boot_pack(pack_for("images/levels/level1-bg.png")),
         "an image never referenced by index.html must NOT be in the boot set"
     );
+    assert_eq!(manifest.entry_html, "index.html", "manifest must record the entry html file passed to pack()");
 }
 
 #[test]

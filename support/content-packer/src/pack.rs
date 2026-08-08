@@ -146,6 +146,7 @@ pub fn pack(opts: &PackOptions) -> Result<(), String> {
         packs: pack_entries,
         excluded: excluded_rel,
         files: file_locations,
+        entry_html: opts.html_file.clone(),
     };
     let manifest_path = opts.output.join("manifest.json");
     let manifest_file =

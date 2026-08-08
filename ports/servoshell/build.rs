@@ -144,6 +144,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path/lib/");
     }
 
+    // Kiosk/embedded fork: on Linux, `mach bundle` ships `.so` dependencies
+    // flat next to the binary (see `python/servo/post_build_commands.py`),
+    // and used to rely on a wrapper launcher script (`play.sh`) setting
+    // `LD_LIBRARY_PATH` before exec'ing the real engine binary. That
+    // wrapper is gone (see CUSTOMIZATIONS.md's single-executable-bundle
+    // entry) — the shipped binary now needs to find its own siblings, same
+    // as the macOS case above.
+    if target_os == "linux" {
+        println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
+    }
+
     // On OpenHarmony, libservoshell.so is loaded by ArkTS as a NAPI module.
     // Passing a version script allows us to inform the linker about required
     // symbol visibility (only one), which improves stripping of unused sections.

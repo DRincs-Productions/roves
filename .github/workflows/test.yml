@@ -75,8 +75,8 @@ jobs:
           - platform: 'ubuntu-24.04'
             os_name: 'linux'
           # Same OS/build as the 'linux' entry above, but packaged as a .deb
-          # (mach bundle --deb) instead of the default self-contained
-          # play.sh — a separate zip entirely, not a variant of the plain
+          # (mach bundle --deb) instead of the default self-contained `play`
+          # binary — a separate zip entirely, not a variant of the plain
           # Linux one (see mach bundle's own --deb handling for what it
           # produces and doesn't attempt).
           - platform: 'ubuntu-24.04'
@@ -208,11 +208,11 @@ jobs:
         run: ./mach build --media-stack dummy --features steam
 
       # `mach bundle` (see ../CUSTOMIZATIONS.md) is what actually builds the
-      # play.exe/Roves.app/play.sh launcher and hides the raw engine binary —
-      # this step's only job is to hand it the diagnostic page built above
-      # (../test-page/dist — a real run would point --content-dir at the
-      # parent project's own `dist/` instead) and, for the linux-deb matrix
-      # entry, ask for --deb instead of the default play.sh.
+      # single play.exe/Roves.app/play executable — this step's only job is
+      # to hand it the diagnostic page built above (../test-page/dist — a
+      # real run would point --content-dir at the parent project's own
+      # `dist/` instead) and, for the linux-deb matrix entry, ask for --deb
+      # instead of the default self-contained `play` binary.
       - name: assemble test bundle
         shell: bash
         working-directory: servo-src
@@ -233,7 +233,7 @@ jobs:
           elif [ "${{ matrix.os_name }}" = "linux-deb" ]; then
             echo "Install with: sudo dpkg -i *.deb — then launch via your app menu, or /usr/bin/servoshell-test." >> ../release/NOTE.txt
           else
-            echo "Run play.exe (Windows) / Roves.app (macOS) / play.sh (Linux) — the other file(s) here are the engine itself, not meant to be run directly." >> ../release/NOTE.txt
+            echo "Run play.exe (Windows) / Roves.app (macOS) / play (Linux) — the only executable here; no separate engine binary or extractor tool is included." >> ../release/NOTE.txt
           fi
 
       - name: zip bundle (Linux/macOS)

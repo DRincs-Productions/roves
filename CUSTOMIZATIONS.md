@@ -144,6 +144,12 @@ actual verification and fix up any compile errors this patch introduces before r
 
 ## 2026-08-06 — New `mach bundle` command: package a build into something runnable
 
+> **Superseded (2026-08-08):** the per-platform launcher/hidden-core-binary shape this
+> entry describes below (`bin/servoshell.exe` + `play.exe`, `<binary>-core` + `play.sh`/a
+> bash script) is no longer current — see the "Single-executable bundle" entry near the
+> end of this file. Kept as-written for its still-accurate motivation/history; don't use
+> its per-platform bullet list as a description of what `mach bundle` produces today.
+
 **File:** `python/servo/post_build_commands.py`.
 
 **Patch:** `patches/servo-v0.4.0/0004-add-mach-bundle-command.patch`
@@ -910,6 +916,14 @@ just plain test fixtures tracked directly in this repo.
 
 ## 2026-08-08 — Split packed content into an eager "boot set" + lazy, on-demand extraction
 
+> **Note (2026-08-08, later same day):** the "generated launcher calls `roves-content-packer
+> extract`" description below (Windows/macOS/Linux launcher scripts/binaries) is superseded
+> by the "Single-executable bundle" entry near the end of this file — that extraction call
+> now happens in-process, inside the engine binary itself, via the same
+> `roves_content_packer::extract` functions named below. Everything else in this entry (the
+> boot/lazy split itself, the manifest format, the `file:` handler) is unaffected and still
+> current.
+
 **Files:** `components/servo/servo.rs` (protocol-registry merge order), `components/servo/lib.rs`
 (new re-exports), a brand-new `ports/servoshell/desktop/protocols/file.rs`, plus
 `ports/servoshell/desktop/protocols/mod.rs`/`desktop/app.rs` (registration),
@@ -1088,3 +1102,123 @@ host-less `file:///C:/…` serialization and percent-encodes each segment, and t
 separators (`C:\dir/index.html`, exactly the shape `play.exe`'s `format!` produces) are handled
 — `Path::components()` splits on both on Windows. Not exercised by a compiled Windows build in
 this environment; confirm with a real `mach bundle` + `play.exe` run.
+
+---
+
+## 2026-08-08 — Single-executable bundle: eliminate the separate launcher
+
+**Files:** `support/content-packer/src/manifest.rs`/`pack.rs` (new `Manifest::entry_html`
+field, `FORMAT_VERSION` bumped to 3), a brand-new `ports/servoshell/desktop/bundle_launch.rs`,
+plus `ports/servoshell/desktop/mod.rs`/`desktop/cli.rs` (registration/call site),
+`ports/servoshell/build.rs` (Linux rpath), `ports/servoshell/Cargo.toml` (winresource
+metadata), `ports/servoshell/platform/windows/servoshell.exe.manifest` (assembly identity),
+and `python/servo/post_build_commands.py` (every `_bundle_*` method, `bundle()` itself).
+
+**Patch:** `patches/servo-v0.4.0/0017-single-executable-bundle.patch`
+
+**Motivating problem:** every `mach bundle` output shipped **two** executables — a tiny
+generated launcher (`play.exe` / `play.sh` / a bash script inside `Roves.app`) plus the real
+engine binary, hidden in a `bin/` subdirectory (Windows, still literally named
+`servoshell.exe` there) or under a `<binary>-core` suffix (macOS/Linux). The launcher's only
+job was: run `roves-content-packer extract` (also shipped into the bundle, a *third*
+executable), capture the cache directory it printed, and spawn/exec the real binary with the
+resolved html path + `--window-size` + extra args. Noticed directly: a Windows user found
+`servoshell.exe` sitting in `bin/` and asked for exactly one executable, named `play`,
+everywhere — not just hidden better.
+
+**Change:** the engine binary itself now does what the launcher used to do, in-process,
+before opening any window — and is shipped as the single executable directly, under the
+`play`/`play.exe`/`Roves` name. Concretely:
+
+- `roves_content_packer::extract` was already linked into `servoshell` as a library (used by
+  `desktop/protocols/file.rs` for on-demand lazy extraction — see the entry above) — the new
+  `desktop/bundle_launch.rs` module calls the exact same `load_manifest`/`extract_boot`
+  functions the launcher used to reach via a subprocess, so no `roves-content-packer` binary
+  needs to ship to players at all anymore (still built and used locally, on the machine
+  running `mach bundle`, to run `pack` — see `_build_content_packer`'s updated docstring).
+- `mach bundle` writes a small `launch.json` next to the shipped binary instead of
+  generating+compiling/writing a wrapper. Shape: `{"content_dir": "dist", "url": null,
+  "args": ["--window-size", "1280x720", ...]}` for packed content, or `{"content_dir": null,
+  "url": "dist/index.html", "args": [...]}` for `--content-compress=none`/loose builds. All
+  paths relative to `launch.json`'s own directory.
+- `bundle_launch::resolve_bundled_launch_args()`, called from `desktop/cli.rs` right where
+  `env::args()` used to be read directly: looks for `launch.json` next to
+  `env::current_exe()` (on macOS, content itself is resolved one level up into the sibling
+  `Contents/Resources/`, matching the standard app-bundle layout — `launch.json` itself still
+  sits next to the binary in `Contents/MacOS/`). If `content_dir` is present, resolves it,
+  calls `extract_boot`, and uses `dest.join(&manifest.entry_html)` as the resolved URL — which
+  is *why* `Manifest` gained `entry_html` (bumped to format v3): the actual entry file to open
+  after extraction was previously known only because each generated launcher had it baked
+  into its own source at bundle time; now the engine needs to look it up itself, and the
+  manifest is the only thing both `pack` (dev machine) and the engine (player's machine)
+  share. Falls back to the engine's normal preference-based default (rather than crashing) if
+  extraction fails, and returns the resolved args in exactly the shape the old launchers
+  already passed as argv (`[url, "--window-size", "WxH", ...]`), so nothing downstream
+  (`prefs.rs`'s `bpaf` parsing, `parser.rs`'s `get_default_url`, `app.rs`) needed to change at
+  all.
+- **Critical safety rule:** `resolve_bundled_launch_args()` only ever consults `launch.json`
+  when the process's real `argv` is completely empty. This isn't just conservatism — Servo's
+  own multiprocess mode re-executes the running binary as content-process children with
+  `--content-process <token>` in their argv (`prefs.rs`'s `content_process` field); once the
+  launcher and the engine are the same binary, that child relaunch would otherwise find
+  `launch.json` right next to itself too and silently discard its real startup args. Verified
+  `multiprocess` defaults `false` and `mach bundle` never threads `-M`/`--multiprocess`
+  through today, so this was latent rather than actively triggered — but it's a real
+  correctness requirement for any future `mach bundle -- -M` (or a project that ever enables
+  it), not just defensive style. An explicit invocation (a developer running the shipped
+  binary from a terminal, a Steam launch-options override) hits the same rule and is likewise
+  always left untouched.
+- Linux never had a linker rpath (unlike the macOS `-rpath @executable_path/lib/` a previous
+  entry added) — `.so` resolution was entirely `play.sh`'s job, setting `LD_LIBRARY_PATH`
+  before exec. With that wrapper gone, `build.rs` now also emits
+  `-Wl,-rpath,$ORIGIN` for Linux, so the single binary finds its sibling `.so` files itself.
+- `_bundle_linux_deb`'s `/usr/bin/<package_name>` is now a plain symlink to the real binary
+  under `/usr/lib/<package_name>/`, not a wrapper script — a symlink is a filesystem alias,
+  not a second process, and `env::current_exe()` (what `bundle_launch.rs` looks next to)
+  resolves through it via `/proc/self/exe` automatically. One real bug caught while writing
+  this: `installed_size_kb`'s `os.walk` + `path.getsize` combination would have raised
+  `FileNotFoundError` trying to follow that symlink's absolute target
+  (`/usr/lib/<pkg>/<binary>`), which doesn't exist on the *build* machine — switched to
+  `os.lstat(...).st_size` (the symlink's own tiny size, matching how `du`/real `dpkg-deb`
+  account for symlinks) to actually verify this before it shipped.
+- Two places baked a literal "ServoShell" string into the *artifact itself* (not just a
+  filename, so renaming the shipped file alone wouldn't have erased them, unlike when the
+  hidden `servoshell.exe` sat safely inside `bin/`): `Cargo.toml`'s
+  `[package.metadata.winresource]` (`FileDescription`/`ProductName`/`OriginalFilename`, read
+  by `winresource` into the `.exe`'s Windows version resource — visible via Explorer's
+  Properties → Details) and `servoshell.exe.manifest`'s `assemblyIdentity name=`. Both now say
+  "Roves"/`org.roves.Roves`, matching the WM-class string `headed_window.rs` already used.
+  **Deliberately did *not* touch** `_bundle_macos`'s `Info.plist` `CFBundleIdentifier`
+  (`org.servo.servoshell.bundle`) even though it's the same kind of leaked string — the
+  2026-08-07 rename entry above already considered this exact string and deliberately
+  deferred it (a bundle identifier affects macOS-level identity — defaults/prefs, TCC
+  permission grants, code signing — unlike a display label, so it needs its own explicit
+  decision). Caught and reverted a first pass at changing it anyway before finalizing this
+  entry; left a comment at the call site pointing back at that reasoning. Also deliberately
+  left `resources/org.roves.Roves.desktop` alone — it's dev-only instructions for pinning a
+  local build to your own taskbar (mentions "Servo sources" accurately for that use), not
+  anything `mach bundle` actually produces; the real `--deb` desktop-entry generation was
+  already clean. Also changed `--deb-package-name`'s default from `servoshell` to `roves`.
+
+**Why:** the user's ask was specifically "the only exe should be play, not servoshell,
+anywhere" — hiding the second binary better (as macOS/Linux already did with the `-core`
+suffix) wasn't enough; a real second binary still existed to be found. Making the engine
+absorb the launcher's job removes it entirely rather than hiding it further, and was
+free-of-new-dependencies since `roves_content_packer` was already linked in as a library for
+an unrelated reason (on-demand lazy extraction).
+
+**Verification:** `support/content-packer` (`entry_html`/`FORMAT_VERSION` bump) compiles and
+tests cleanly in a plain sandbox — no `libclang`/`bindgen` dependency — confirmed with
+`cargo test --manifest-path support/content-packer/Cargo.toml`: all pre-existing
+`tests/roundtrip.rs` cases still pass, plus a new assertion that `load_manifest(...).entry_html
+== "index.html"`. `bundle_launch.rs`'s pure logic (JSON parsing, the macOS `../Resources`
+join, a real `extract_boot` call against a packed fixture) was additionally exercised in an
+isolated standalone Rust program using this workspace's actual crate versions. **The
+`servoshell`/`servo` crates themselves were not compiled** — same pre-existing
+`libclang`/`bindgen` gap noted in the entry above and elsewhere in this file. `python/servo/post_build_commands.py`
+was syntax-checked (`ast.parse`/`py_compile`) but not run end-to-end (no real `mach build` in
+this environment). **Needs a real `./mach build && ./mach bundle` to confirm end-to-end** —
+the previous entry's Windows path-parsing fix was already confirmed working on the user's own
+Windows machine; this change should be verified there too (single `play.exe`, no `bin/`, game
+actually launches), and ideally spot-checked by file listing on Linux/macOS if available,
+though full runtime testing there isn't expected in this pass.

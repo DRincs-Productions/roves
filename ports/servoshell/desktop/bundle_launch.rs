@@ -1,0 +1,112 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
+//! Resolves the CLI args a bundled build should launch with, in-process,
+//! instead of relying on a separate launcher executable to compute and pass
+//! them in. `mach bundle` (see `python/servo/post_build_commands.py`) writes
+//! a small `launch.json` next to the shipped binary; this reads it back so
+//! the shipped bundle can contain exactly one executable (`play`/`play.exe`/
+//! `Roves`) instead of a thin launcher plus a separately-named engine
+//! binary. See CUSTOMIZATIONS.md's single-executable-bundle entry.
+//!
+//! `launch.json` shape (all paths relative to the config file's own
+//! directory):
+//! ```json
+//! {
+//!   "content_dir": "dist",   // present only for --content-compress=auto builds
+//!   "url": "dist/index.html", // used only when content_dir is absent
+//!   "args": ["--window-size", "1280x720"]
+//! }
+//! ```
+
+use std::env;
+use std::path::{Path, PathBuf};
+
+use roves_content_packer::extract;
+
+const LAUNCH_CONFIG_FILE: &str = "launch.json";
+
+/// Returns the args to launch with, exactly as if they'd been passed on the
+/// command line (a positional URL followed by flags), or `None` to fall back
+/// to the process's real `argv` unchanged.
+///
+/// Deliberately only consulted when the real `argv` is completely empty —
+/// this is what a genuine double-click launch looks like, and it's the only
+/// case it's safe to override: an explicit invocation (a developer running
+/// the shipped binary from a terminal, a Steam launch-options override, and
+/// critically Servo's own multiprocess content-process children
+/// re-executing *themselves* with `--content-process <token>` in argv, see
+/// `ports/servoshell/prefs.rs`'s `content_process` field) must always be
+/// left untouched, or a bundled multiprocess build would have every child
+/// process silently discard its real startup args and try to open the game
+/// window all over again.
+pub(crate) fn resolve_bundled_launch_args() -> Option<Vec<String>> {
+    if env::args().nth(1).is_some() {
+        return None;
+    }
+
+    let exe_dir = env::current_exe().ok()?.parent()?.to_path_buf();
+    let config_path = exe_dir.join(LAUNCH_CONFIG_FILE);
+    // Absence is the common case: a plain `./mach run`/dev invocation never
+    // has a launch.json sitting next to it. Not an error.
+    let text = std::fs::read_to_string(&config_path).ok()?;
+    let config: serde_json::Value = serde_json::from_str(&text)
+        .inspect_err(|e| log::error!("parsing {config_path:?}: {e}"))
+        .ok()?;
+
+    let extra_args: Vec<String> = config
+        .get("args")
+        .and_then(|v| v.as_array())
+        .map(|values| values.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+        .unwrap_or_default();
+
+    let url = if let Some(content_rel_dir) = config.get("content_dir").and_then(|v| v.as_str()) {
+        resolve_packed_content_url(&exe_dir, content_rel_dir)?
+    } else {
+        let rel_url = config.get("url").and_then(|v| v.as_str())?;
+        exe_dir.join(rel_url).to_string_lossy().into_owned()
+    };
+
+    let mut args = vec![url];
+    args.extend(extra_args);
+    Some(args)
+}
+
+/// macOS app bundles keep the executable in `Contents/MacOS/` and bundled
+/// resources — here, packed game content — in the sibling
+/// `Contents/Resources/`, the standard layout `_bundle_macos` (see
+/// `python/servo/post_build_commands.py`) already places content into.
+/// Windows/Linux keep content flat, next to the binary.
+#[cfg(target_os = "macos")]
+fn content_root(exe_dir: &Path) -> PathBuf {
+    exe_dir.join("..").join("Resources")
+}
+
+#[cfg(not(target_os = "macos"))]
+fn content_root(exe_dir: &Path) -> PathBuf {
+    exe_dir.to_path_buf()
+}
+
+/// Extracts the boot set of a packed-content build (in-process — this is
+/// the same `roves_content_packer::extract` call
+/// `desktop/protocols/file.rs` already links against for on-demand lazy
+/// extraction) and returns the absolute path of the resulting entry html
+/// file. Any failure (missing/corrupt content) is logged and treated as
+/// "no bundled launch config", leaving the engine to fall back to its
+/// normal preference-based default rather than hard-crashing on a broken
+/// install.
+fn resolve_packed_content_url(exe_dir: &Path, content_rel_dir: &str) -> Option<String> {
+    let content_dir = content_root(exe_dir).join(content_rel_dir);
+    let manifest = extract::load_manifest(&content_dir)
+        .inspect_err(|e| log::error!("loading packed-content manifest at {content_dir:?}: {e}"))
+        .ok()?;
+    let dest = extract::extract_boot(&extract::ExtractOptions {
+        content_dir,
+        dest: None,
+        force: false,
+    })
+    .inspect_err(|e| log::error!("extracting boot content: {e}"))
+    .ok()?;
+    Some(dest.join(&manifest.entry_html).to_string_lossy().into_owned())
+}
