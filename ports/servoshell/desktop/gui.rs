@@ -50,6 +50,26 @@ pub struct Gui {
     /// AccessKit tree updates pending the next egui tick.
     /// This allows us to ensure that graft nodes are sent before the subtrees they graft.
     pending_accesskit_updates: Vec<accesskit::TreeUpdate>,
+
+    /// Loaded once, in [`Gui::new`], for [`Gui::update_splash`]'s boot splash — always
+    /// `resources/servo_64.png` regardless of any game-supplied window/taskbar icon (see
+    /// `headed_window.rs`'s icon loading), since the splash is explicitly Roves-branded, not
+    /// the game's own branding.
+    splash_icon_texture: egui::TextureHandle,
+}
+
+/// Decodes `resources/servo_64.png` into an `egui::ColorImage` for the boot
+/// splash's icon — see [`Gui::update_splash`]. Deliberately independent of
+/// `headed_window.rs`'s own (Linux/Windows-only) `load_icon`/winit `Icon`
+/// loading: this must work on macOS too, and egui wants a `ColorImage`, not
+/// a winit `Icon`.
+fn load_splash_icon_image() -> egui::ColorImage {
+    let bytes = include_bytes!("../../../resources/servo_64.png");
+    let image = image::load_from_memory(bytes)
+        .expect("Failed to load boot splash icon")
+        .to_rgba8();
+    let (width, height) = image.dimensions();
+    egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], image.as_raw())
 }
 
 fn truncate_with_ellipsis(input: &str, max_length: usize) -> String {
@@ -202,12 +222,19 @@ impl Gui {
             options.fallback_theme = egui::Theme::Light;
         });
 
+        let splash_icon_texture = context.egui_ctx.load_texture(
+            "boot-splash-icon",
+            load_splash_icon_image(),
+            egui::TextureOptions::default(),
+        );
+
         Self {
             rendering_context,
             context,
             toolbar_height: Default::default(),
             status_text: None,
             pending_accesskit_updates: vec![],
+            splash_icon_texture,
         }
     }
 
@@ -434,6 +461,37 @@ impl Gui {
         for tree_update in self.pending_accesskit_updates.drain(..) {
             adapter.update_if_active(|| tree_update);
         }
+    }
+
+    /// Update the boot splash (see `AppState::Booting` in `app.rs`) — a
+    /// minimal, deliberately unstyled black screen with the Roves icon and
+    /// name, shown in place of the normal browser UI while a packed-content
+    /// launch's boot extraction still hasn't finished. `progress`, once
+    /// `Some`, is shown as a progress bar; kept `None` for the splash's
+    /// short appear-delay so a fast/no-op extraction never flashes one.
+    /// Call [`Gui::paint`] afterward, same as [`Gui::update`].
+    pub(crate) fn update_splash(&mut self, winit_window: &Window, progress: Option<f32>) {
+        self.rendering_context
+            .make_current()
+            .expect("Could not make RenderingContext current");
+        let icon = egui::Image::from_texture(&self.splash_icon_texture).max_height(64.0);
+        self.context.run(winit_window, |ctx| {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::default().fill(egui::Color32::BLACK))
+                .show(ctx, |ui| {
+                    ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                        ui.add_space(ui.available_height() / 2.0 - 40.0);
+                        ui.horizontal(|ui| {
+                            ui.add(icon);
+                            ui.colored_label(egui::Color32::WHITE, "Roves");
+                        });
+                        if let Some(progress) = progress {
+                            ui.add_space(12.0);
+                            ui.add(egui::ProgressBar::new(progress).desired_width(200.0));
+                        }
+                    });
+                });
+        });
     }
 
     /// Paint the GUI, as of the last update.

@@ -23,7 +23,14 @@ pub fn main() {
     // `launch.json` sitting next to the running executable, in place of the
     // separate launcher process a bundle used to spawn. Falls back to the
     // real argv (skipping the binary name) for every other invocation.
-    let args: Vec<String> = resolve_bundled_launch_args().unwrap_or_else(|| env::args().skip(1).collect());
+    // `pending_boot_extraction` (packed-content builds only) is threaded
+    // through to `App::new` unresolved — `resolve_bundled_launch_args`
+    // never blocks on it; see `bundle_launch.rs` and `App::init`'s boot
+    // splash handling.
+    let (args, pending_boot_extraction) = match resolve_bundled_launch_args() {
+        Some(bundled) => (bundled.args, bundled.pending_boot_extraction),
+        None => (env::args().skip(1).collect(), None),
+    };
     let (opts, preferences, servoshell_preferences) = match parse_command_line_arguments(&*args) {
         ArgumentParsingResult::ContentProcess(token) => return servo::run_content_process(token),
         ArgumentParsingResult::ChromeProcess(opts, preferences, servoshell_preferences) => {
@@ -46,7 +53,8 @@ pub fn main() {
     };
 
     {
-        let mut app = App::new(opts, preferences, servoshell_preferences, &event_loop);
+        let mut app =
+            App::new(opts, preferences, servoshell_preferences, &event_loop, pending_boot_extraction);
         event_loop.run_app(&mut app);
     }
 

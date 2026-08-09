@@ -87,6 +87,21 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("cargo:rustc-cfg=servo_do_not_use_in_production");
     }
 
+    // The window/taskbar icon (`headed_window.rs`'s `include_bytes!`) and — on
+    // Windows, below — the compiled `.exe`'s own icon resource both prefer a
+    // game-supplied icon over Roves' own branding, so a shipped game looks
+    // like itself rather than the shell it happens to be built on. Falls back
+    // to the Roves-branded resource if the game hasn't supplied one — see
+    // CUSTOMIZATIONS.md. The boot splash's icon is deliberately exempt from
+    // this fallback (always Roves-branded, see `gui.rs`'s `update_splash`).
+    let game_window_icon = Path::new("../../test-page/public/icon.png");
+    let fallback_window_icon = Path::new("../../resources/servo_64.png");
+    println!("cargo:rerun-if-changed={}", game_window_icon.display());
+    println!("cargo:rerun-if-changed={}", fallback_window_icon.display());
+    let window_icon_src = if game_window_icon.exists() { game_window_icon } else { fallback_window_icon };
+    std::fs::copy(window_icon_src, out.join("window_icon.png"))
+        .expect("failed to copy window icon into OUT_DIR");
+
     // Note: We can't use `#[cfg(windows)]`, since that would check the host platform
     // and not the target platform
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
@@ -102,8 +117,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     if target_os == "windows" {
         #[cfg(windows)]
         {
+            let game_exe_icon = Path::new("../../test-page/public/icon.ico");
+            println!("cargo:rerun-if-changed={}", game_exe_icon.display());
+            let exe_icon = if game_exe_icon.exists() {
+                game_exe_icon
+            } else {
+                Path::new("../../resources/servo.ico")
+            };
+
             let mut res = winresource::WindowsResource::new();
-            res.set_icon("../../resources/servo.ico");
+            res.set_icon(exe_icon.to_str().expect("icon path is not valid UTF-8"));
             res.set_manifest_file("platform/windows/servoshell.exe.manifest");
             res.compile().unwrap();
         }

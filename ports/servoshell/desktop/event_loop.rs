@@ -27,6 +27,15 @@ pub enum AppEvent {
     /// to do it instead, the same way `HeadedEventLoopWaker` already asks the main thread
     /// to wake up, via this same `EventLoopProxy`.
     CloseAllWindows,
+    /// Sent by the background boot-extraction thread `App::init` spawns for a
+    /// packed-content launch (see `bundle_launch.rs`'s `BundledLaunch`) as extraction
+    /// proceeds, so the boot splash's progress bar can be repainted with real progress
+    /// (0.0-1.0) instead of just spinning.
+    BootProgress(f32),
+    /// Sent once by that same background thread when boot extraction finishes (or fails —
+    /// either way the boot URL's files are as ready as they'll get), so `App` can finish
+    /// building Servo/`RunningAppState` and open the real webview. See `AppState::Booting`.
+    BootReady,
 }
 
 impl From<egui_winit::accesskit_winit::Event> for AppEvent {
@@ -40,6 +49,8 @@ impl AppEvent {
         match self {
             AppEvent::Waker => None,
             AppEvent::CloseAllWindows => None,
+            AppEvent::BootProgress(_) => None,
+            AppEvent::BootReady => None,
             AppEvent::Accessibility(event) => Some(event.window_id),
         }
     }

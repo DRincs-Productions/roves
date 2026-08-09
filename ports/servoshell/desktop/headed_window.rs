@@ -138,7 +138,11 @@ impl HeadedWindow {
 
         #[cfg(any(target_os = "linux", target_os = "windows"))]
         {
-            let icon_bytes = include_bytes!("../../../resources/servo_64.png");
+            // `build.rs` copies whichever of the game's own `icon.png` or
+            // Roves' own `resources/servo_64.png` exists into `OUT_DIR` at
+            // compile time — see CUSTOMIZATIONS.md. Not the boot splash's
+            // icon, which is always Roves-branded regardless (`gui.rs`).
+            let icon_bytes = include_bytes!(concat!(env!("OUT_DIR"), "/window_icon.png"));
             winit_window.set_window_icon(Some(load_icon(icon_bytes)));
         }
 
@@ -219,6 +223,18 @@ impl HeadedWindow {
 
     pub(crate) fn winit_window(&self) -> &winit::window::Window {
         &self.winit_window
+    }
+
+    /// Paints the boot splash (see `AppState::Booting` in `app.rs`) instead
+    /// of the normal browser UI — used while a packed-content launch's boot
+    /// extraction is still running on a background thread, before there's a
+    /// `RunningAppState`/webview to draw. `progress`, once `Some`, is shown
+    /// as a progress bar (`None` before the splash's short appear-delay has
+    /// passed — see `SPLASH_PROGRESS_BAR_DELAY`).
+    pub(crate) fn paint_splash(&self, progress: Option<f32>) {
+        let mut gui = self.gui.borrow_mut();
+        gui.update_splash(&self.winit_window, progress);
+        gui.paint(&self.winit_window);
     }
 
     fn handle_keyboard_input(

@@ -27,9 +27,22 @@ use roves_content_packer::extract;
 
 const LAUNCH_CONFIG_FILE: &str = "launch.json";
 
-/// Returns the args to launch with, exactly as if they'd been passed on the
-/// command line (a positional URL followed by flags), or `None` to fall back
-/// to the process's real `argv` unchanged.
+/// Result of [`resolve_bundled_launch_args`]: the args to launch with,
+/// exactly as if they'd been passed on the command line (a positional URL
+/// followed by flags), plus — for a packed-content build — the boot
+/// extraction that still needs to actually run before that URL's files
+/// exist on disk. Resolving the args never blocks on extraction itself (see
+/// `resolve_packed_content_url`); the caller (`App`, see `app.rs`) is what
+/// runs `pending_boot_extraction` in the background and shows a splash
+/// while it does, instead of extraction happening synchronously before the
+/// window even exists.
+pub(crate) struct BundledLaunch {
+    pub(crate) args: Vec<String>,
+    pub(crate) pending_boot_extraction: Option<extract::ExtractOptions>,
+}
+
+/// Returns the args to launch with, or `None` to fall back to the process's
+/// real `argv` unchanged.
 ///
 /// Deliberately only consulted when the real `argv` is completely empty —
 /// this is what a genuine double-click launch looks like, and it's the only
@@ -41,7 +54,7 @@ const LAUNCH_CONFIG_FILE: &str = "launch.json";
 /// left untouched, or a bundled multiprocess build would have every child
 /// process silently discard its real startup args and try to open the game
 /// window all over again.
-pub(crate) fn resolve_bundled_launch_args() -> Option<Vec<String>> {
+pub(crate) fn resolve_bundled_launch_args() -> Option<BundledLaunch> {
     if env::args().nth(1).is_some() {
         return None;
     }
@@ -61,16 +74,18 @@ pub(crate) fn resolve_bundled_launch_args() -> Option<Vec<String>> {
         .map(|values| values.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
         .unwrap_or_default();
 
-    let url = if let Some(content_rel_dir) = config.get("content_dir").and_then(|v| v.as_str()) {
-        resolve_packed_content_url(&exe_dir, content_rel_dir)?
-    } else {
-        let rel_url = config.get("url").and_then(|v| v.as_str())?;
-        exe_dir.join(rel_url).to_string_lossy().into_owned()
-    };
+    let (url, pending_boot_extraction) =
+        if let Some(content_rel_dir) = config.get("content_dir").and_then(|v| v.as_str()) {
+            let (url, opts) = resolve_packed_content_url(&exe_dir, content_rel_dir)?;
+            (url, Some(opts))
+        } else {
+            let rel_url = config.get("url").and_then(|v| v.as_str())?;
+            (exe_dir.join(rel_url).to_string_lossy().into_owned(), None)
+        };
 
     let mut args = vec![url];
     args.extend(extra_args);
-    Some(args)
+    Some(BundledLaunch { args, pending_boot_extraction })
 }
 
 /// macOS app bundles keep the executable in `Contents/MacOS/` and bundled
@@ -88,25 +103,30 @@ fn content_root(exe_dir: &Path) -> PathBuf {
     exe_dir.to_path_buf()
 }
 
-/// Extracts the boot set of a packed-content build (in-process — this is
-/// the same `roves_content_packer::extract` call
-/// `desktop/protocols/file.rs` already links against for on-demand lazy
-/// extraction) and returns the absolute path of the resulting entry html
-/// file. Any failure (missing/corrupt content) is logged and treated as
-/// "no bundled launch config", leaving the engine to fall back to its
-/// normal preference-based default rather than hard-crashing on a broken
-/// install.
-fn resolve_packed_content_url(exe_dir: &Path, content_rel_dir: &str) -> Option<String> {
+/// Resolves the absolute `file:` URL a packed-content build will open, and
+/// the [`extract::ExtractOptions`] that must still be run to actually make
+/// that URL's files exist. Deliberately does **not** extract anything
+/// itself — only `extract::resolve_dest` (a path/hash computation) and a
+/// `manifest.json` read, both fast — so this never blocks the caller. The
+/// actual (slow) decompression is the caller's job: `App::init` (`app.rs`)
+/// runs it on a background thread while showing a boot splash, and
+/// `desktop/protocols/file.rs` separately extracts individual lazy packs
+/// on demand once the engine is running. Any failure (missing/corrupt
+/// content) is logged and treated as "no bundled launch config", leaving
+/// the engine to fall back to its normal preference-based default rather
+/// than hard-crashing on a broken install.
+fn resolve_packed_content_url(
+    exe_dir: &Path,
+    content_rel_dir: &str,
+) -> Option<(String, extract::ExtractOptions)> {
     let content_dir = content_root(exe_dir).join(content_rel_dir);
     let manifest = extract::load_manifest(&content_dir)
         .inspect_err(|e| log::error!("loading packed-content manifest at {content_dir:?}: {e}"))
         .ok()?;
-    let dest = extract::extract_boot(&extract::ExtractOptions {
-        content_dir,
-        dest: None,
-        force: false,
-    })
-    .inspect_err(|e| log::error!("extracting boot content: {e}"))
-    .ok()?;
-    Some(dest.join(&manifest.entry_html).to_string_lossy().into_owned())
+    let (content_dir, dest) = extract::resolve_dest(&content_dir, None)
+        .inspect_err(|e| log::error!("resolving boot content destination: {e}"))
+        .ok()?;
+    let url = dest.join(&manifest.entry_html).to_string_lossy().into_owned();
+    let opts = extract::ExtractOptions { content_dir, dest: Some(dest), force: false };
+    Some((url, opts))
 }

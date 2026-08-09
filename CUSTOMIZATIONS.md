@@ -1222,3 +1222,172 @@ the previous entry's Windows path-parsing fix was already confirmed working on t
 Windows machine; this change should be verified there too (single `play.exe`, no `bin/`, game
 actually launches), and ideally spot-checked by file listing on Linux/macOS if available,
 though full runtime testing there isn't expected in this pass.
+
+---
+
+## 2026-08-09 — Native boot splash instead of a blank window during first-run extraction
+
+**Files:** `support/content-packer/src/extract.rs`, `ports/servoshell/desktop/bundle_launch.rs`,
+`ports/servoshell/desktop/cli.rs`, `ports/servoshell/desktop/event_loop.rs`,
+`ports/servoshell/desktop/app.rs`, `ports/servoshell/desktop/gui.rs`,
+`ports/servoshell/desktop/headed_window.rs`.
+
+**Patch:** `patches/servo-v0.4.0/0018-native-boot-splash-screen.patch`
+
+**Upstream behavior:** for a packed-content bundle, `resolve_bundled_launch_args()`
+(`bundle_launch.rs`, see the "Single-executable bundle" entry above) called
+`extract::extract_boot` — the actual, potentially slow decompression of the boot pack set —
+synchronously, in `cli.rs`, *before* the winit event loop or window even existed. On a slow
+first launch (large boot set), there was nothing on screen at all during that wait; once the
+window did appear, it showed a blank/uninitialized frame until Servo's compositor painted the
+real page on top. No splash/loading-screen mechanism existed at all (a doc comment in
+`pack.rs` floated the idea of an in-page HTML splash image via `--boot-include`, but nothing
+implemented it, native or otherwise).
+
+**Change:** the window now appears immediately, showing a minimal native splash (black
+background, the Roves icon + "Roves" in white, and — after a ~300ms delay, so a fast/no-op
+extraction never flashes one — a progress bar tracking real extraction progress) instead of
+whatever was there before. Deliberately unstyled beyond that; styling is a follow-up.
+
+- `extract.rs`: `resolve_dest` is `prepare_dest`'s canonicalize-and-pick-destination half,
+  split out and made `pub` so a caller can learn *where* boot content will land (to build the
+  `file:` URL it'll eventually load) without paying for decompression. `extract_boot`'s body
+  is factored into a private `extract_boot_impl(opts, on_progress: Option<&mut dyn
+  FnMut(f32)>)`; `extract_boot` (unchanged signature, all existing call sites — the CLI, the
+  6 `roundtrip.rs` tests — untouched) calls it with `None`. New `pub fn
+  extract_boot_with_progress(opts, on_progress: impl FnMut(f32))` calls it with `Some`,
+  reporting `done/total` after each boot pack plus a final `1.0` — coarse (per-pack, not
+  per-byte) but boot sets are deliberately just the html file and whatever it directly
+  references, so usually only one or two packs. No manifest/`FORMAT_VERSION` changes needed.
+- `bundle_launch.rs`: `resolve_packed_content_url` no longer calls `extract_boot` at all —
+  only `extract::resolve_dest` (path/hash math) plus the already-loaded manifest's
+  `entry_html`, both fast. `resolve_bundled_launch_args()` now returns `Option<BundledLaunch>`
+  (`{ args, pending_boot_extraction: Option<ExtractOptions> }`) instead of
+  `Option<Vec<String>>` — the caller decides when/how to actually run the still-pending
+  extraction instead of it happening inline.
+- `cli.rs`: destructures `BundledLaunch` and threads `pending_boot_extraction` through to a
+  new `App::new` parameter, unresolved.
+- `event_loop.rs`: two new `AppEvent` variants, `BootProgress(f32)` and `BootReady`, sent by
+  the background extraction thread `App::init` spawns (see below) — mirrors the existing
+  `Arc<Mutex<EventLoopProxy<AppEvent>>>` background-thread-to-main-thread pattern already used
+  by `HeadedEventLoopWaker` and `protocols/roves.rs`'s `RovesProtocolHandler`, simplified to a
+  single owned `EventLoopProxy` clone (no sharing needed for one thread).
+- `app.rs`: new `AppState::Booting { window, extraction_started, progress }` variant. `App`
+  gained a `pending_extraction` field (the `ExtractOptions` from `cli.rs`, consumed by the
+  first `init` call). `init` now always creates the platform window immediately (window
+  creation never depended on the boot URL being ready — `HeadedWindow::new`/`Gui::new` don't
+  touch it beyond an already-dead `_initial_url` parameter), then: with no pending extraction,
+  proceeds exactly as before (moved into a new `finish_init` helper); headless with a pending
+  extraction, runs `extract_boot` synchronously as before (no splash to show); headed with a
+  pending extraction, spawns a background thread running `extract_boot_with_progress` (sending
+  `BootProgress`/`BootReady` back), enters `Booting`, and defers `finish_init` (building the
+  protocol registry, Servo, `RunningAppState`, and opening the real webview) until
+  `AppEvent::BootReady` arrives. A new `new_events` hook forces one redraw when the splash's
+  progress-bar delay elapses even without a fresh `BootProgress` tick. `window_event`/
+  `user_event` both gained a `Booting` branch (paint the splash / update progress and hand off
+  to `finish_init`) ahead of the existing `Running`-only logic.
+
+  One correctness-critical ordering detail: `finish_init` (not `init`) is what constructs
+  `protocols::file::FileProtocolHandler`, which looks for the `.roves-content-source` marker
+  extraction writes — moving *all* of protocol-registry setup into `finish_init` (not just the
+  Servo/webview part) means that marker always exists by the time the handler is built,
+  whether extraction ran synchronously (headless) or finished on the background thread first
+  (headed, `BootReady` fires only after `extract_boot_with_progress` returns). Building the
+  handler any earlier would silently disable on-demand lazy extraction for the entire session.
+- `gui.rs`: new `Gui::update_splash(winit_window, progress: Option<f32>)`, painted via the
+  existing `EguiGlow`/`Gui::paint` pipeline `Gui::update` already uses — a black
+  `CentralPanel`, the boot icon (decoded once in `Gui::new` from `resources/servo_64.png` via
+  `image::load_from_memory`, independent of `headed_window.rs`'s Linux/Windows-only
+  `load_icon`, since this must also work on macOS), "Roves" in white, and, when `progress` is
+  `Some`, an `egui::ProgressBar`.
+- `headed_window.rs`: new `paint_splash(progress: Option<f32>)`, calling the above plus the
+  existing `Gui::paint`.
+
+**Why:** asked directly — a blank window (or nothing at all) during first-run extraction reads
+as a hang, especially on a slow disk with a large boot set. Reusing the existing
+`Gui`/`EguiGlow`/window machinery (rather than a second winit window/event loop, which winit
+doesn't reliably support creating more than one of per process) kept this to one native window
+throughout, with extraction genuinely running concurrently instead of blocking startup.
+
+**Side effects to know about when upgrading:** the boot splash's icon is always
+`resources/servo_64.png`, deliberately never the game-supplied icon from the entry below —
+the splash is explicitly Roves' own branding moment, not the game's. `finish_init`'s
+`active_event_loop` parameter is unused when compiled without the `webxr` feature (only
+consulted inside a `#[cfg(feature = "webxr")]` block) — a pre-existing kind of harmless
+`unused variable` warning this codebase already tolerates elsewhere (see the
+toolbar-removal entry above).
+
+**Verification:** `cargo test --manifest-path support/content-packer/Cargo.toml` — all 6
+pre-existing `roundtrip.rs` cases plus the `size` unit test still pass unchanged, confirming
+the `extract_boot`/`ExtractOptions` signature is untouched for every existing call site.
+Every new/changed `egui`/`winit` API call (`egui::Image::from_texture`, `ColorImage::
+from_rgba_unmultiplied`, `TextureHandle`/`SizedTexture`, `ProgressBar`, `CentralPanel`/`Frame`,
+`ApplicationHandler::new_events`/`StartCause::ResumeTimeReached`) was checked directly against
+this workspace's pinned versions' source (`egui`/`egui-winit` 0.34.3, `winit` 0.30.13) rather
+than assumed. **`servoshell` itself could not be fully compiled in this environment** —
+`cargo check -p servoshell` got past the usual `libclang`/`bindgen` gap (worked around with
+`LIBCLANG_PATH` pointed at an Android NDK's `libclang.so`) and compiled several hundred
+dependencies including `egui` 0.34.3 itself with no errors, but then hit an unrelated, sandbox
+-specific wall: `libudev-sys`'s build script hard-requires a system `libudev.pc` via
+`pkg-config`, which isn't installed here and can't be (no `sudo`) — this is a system-library
+gap, not a code issue, and reproduces identically even with the `gamepad` feature disabled (
+something else in the dependency graph also pulls it in). **Needs a real `./mach build`/
+`./mach run` on a machine with a full toolchain to confirm end-to-end** — window appears
+immediately, splash shows icon+text with no delay, progress bar appears only after the delay
+and reflects real extraction progress, then the real page loads.
+
+---
+
+## 2026-08-09 — Game-supplied icon (with Roves fallback) for the window/taskbar/exe
+
+**Files:** `ports/servoshell/build.rs`, `ports/servoshell/desktop/headed_window.rs`. Also
+`test-page/index.html` and two new fixtures, `test-page/public/icon.png`/`icon.ico` — not part
+of the patch (same as `test-page/public/`'s other fixtures, see the "Pack game content" entry
+above: plain test assets, not derived from any upstream file).
+
+**Patch:** `patches/servo-v0.4.0/0019-game-supplied-icon-fallback.patch`
+
+**Upstream behavior:** the window/taskbar icon (`headed_window.rs`, Linux/Windows only) and
+the compiled `.exe`'s own icon resource (`build.rs`, Windows only) were both unconditionally
+`resources/servo_64.png`/`servo.ico` — Servo's own branding, not any particular game's.
+Separately, `test-page/`'s `index.html` never referenced its own already-present (but unused)
+`public/favicon.svg` placeholder, so a normal browser tab showing it had no icon at all.
+
+**Change:** `test-page/index.html` now links `favicon.svg` like a normal website would. Two
+new raster fixtures next to it, `test-page/public/icon.png` (window/taskbar) and `icon.ico`
+(Windows exe resource, multi-size 16-256px), redraw `favicon.svg`'s same placeholder design
+(solid `#6c5ce7` square, centered white "R") as bitmaps, since nothing in this sandbox can
+rasterize SVG and the native side needs a raster format either way. `build.rs` now copies
+whichever of `test-page/public/icon.png` or `resources/servo_64.png` exists into
+`$OUT_DIR/window_icon.png` (with `cargo:rerun-if-changed` on both), and — on Windows — prefers
+`test-page/public/icon.ico` over `resources/servo.ico` for `WindowsResource::set_icon`.
+`headed_window.rs`'s window-icon `include_bytes!` now reads `$OUT_DIR/window_icon.png` instead
+of the hardcoded `resources/servo_64.png` path. Net effect: once a real game supplies its own
+`icon.png`/`icon.ico` in `test-page/public/`, the window, taskbar, and compiled executable all
+show it automatically; absent that, everything falls back to today's Roves-branded assets
+exactly as before.
+
+**Deliberately out of scope:** the boot splash's icon (see the entry above) is exempt from
+this fallback on purpose — always Roves-branded, regardless of what the game supplies. Linux's
+`.desktop` `Icon=` and macOS's `.icns`/`Info.plist` aren't wired to this fallback either —
+different formats/tooling (an installed XDG icon-theme entry, `iconutil`) not worth the extra
+surface in this pass; noted here as a follow-up, mirroring how the "Rename Servo to Roves"
+entry above documents its own similarly-deferred branding work.
+
+**Why:** asked directly — once this engine ships more than one game, a game should look like
+itself (window/taskbar/exe icon) rather than the shell it happens to run on, without needing
+to be told; falling back to Roves' own icon keeps today's behavior for any game that hasn't
+supplied one yet.
+
+**Side effects to know about when upgrading:** `build.rs` now does filesystem I/O
+(`std::fs::copy`) unconditionally on every target, not just Windows — cheap, but note it if
+ever auditing `build.rs` for why it touches paths outside its own crate.
+
+**Verification:** same environment limitation as the entry above — `cargo check -p
+servoshell` could not fully complete here (unrelated `libudev-sys`/`pkg-config` gap), so the
+new `build.rs` logic and `headed_window.rs`'s `include_bytes!(concat!(env!("OUT_DIR"), ...))`
+change weren't compiler-verified end-to-end. `icon.ico`'s multi-size embedding (16/32/48/64/
+128/256) was confirmed with Pillow (`Image.open(...).info["sizes"]`) after generation. **Needs
+a real `./mach build` on Windows to confirm the `.exe`'s Explorer icon and the window/taskbar
+icon both actually change** when `test-page/public/icon.{png,ico}` are present, and fall back
+correctly when they're removed.

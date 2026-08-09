@@ -84,6 +84,20 @@ pub fn load_manifest(content_dir: &Path) -> Result<Manifest, String> {
     serde_json::from_slice(&bytes).map_err(|e| format!("parsing {manifest_path:?}: {e}"))
 }
 
+/// Resolves `content_dir` to its canonical form and picks the destination
+/// (`dest`, or [`default_dest`] if `None`) — the cheap, non-extracting half
+/// of [`prepare_dest`], split out so a caller can learn *where* boot content
+/// will end up (e.g. to build the `file:` URL it'll load once extraction
+/// finishes) without paying for the actual decompression yet. Does no I/O
+/// beyond `canonicalize`.
+pub fn resolve_dest(content_dir: &Path, dest: Option<PathBuf>) -> Result<(PathBuf, PathBuf), String> {
+    let content_dir = content_dir
+        .canonicalize()
+        .map_err(|e| format!("resolving {content_dir:?}: {e}"))?;
+    let dest = dest.unwrap_or_else(|| default_dest(&content_dir));
+    Ok((content_dir, dest))
+}
+
 /// Resolves `content_dir`/`dest`, loads the manifest, and ensures `dest`
 /// isn't stale — wiping and recreating it (fresh marker directory, fresh
 /// `.roves-content-hash`/`.roves-content-source`) if its recorded content
@@ -94,10 +108,7 @@ fn prepare_dest(
     dest: Option<PathBuf>,
     force: bool,
 ) -> Result<(PathBuf, PathBuf, Manifest), String> {
-    let content_dir = content_dir
-        .canonicalize()
-        .map_err(|e| format!("resolving {content_dir:?}: {e}"))?;
-    let dest = dest.unwrap_or_else(|| default_dest(&content_dir));
+    let (content_dir, dest) = resolve_dest(content_dir, dest)?;
     let manifest = load_manifest(&content_dir)?;
 
     let hash_marker = dest.join(CONTENT_HASH_MARKER);
@@ -170,6 +181,32 @@ fn copy_excluded(content_dir: &Path, dest: &Path, manifest: &Manifest) -> Result
     Ok(())
 }
 
+/// Shared body of [`extract_boot`]/[`extract_boot_with_progress`]. `on_progress`,
+/// when given, is called after each boot pack finishes (as `done / total`,
+/// where `total` is the boot pack count) and once more with `1.0` after the
+/// final `copy_excluded` — coarse (per-pack, not per-byte) but the boot set
+/// is deliberately just the html file and whatever it directly references,
+/// so it's usually only one or two packs anyway.
+fn extract_boot_impl(
+    opts: &ExtractOptions,
+    mut on_progress: Option<&mut dyn FnMut(f32)>,
+) -> Result<PathBuf, String> {
+    let (content_dir, dest, manifest) = prepare_dest(&opts.content_dir, opts.dest.clone(), opts.force)?;
+    let boot_packs: Vec<_> = manifest.packs.iter().filter(|p| p.boot).collect();
+    let total = boot_packs.len().max(1);
+    for (i, pack) in boot_packs.into_iter().enumerate() {
+        ensure_pack_extracted(&content_dir, &dest, pack)?;
+        if let Some(cb) = on_progress.as_deref_mut() {
+            cb((i + 1) as f32 / total as f32);
+        }
+    }
+    copy_excluded(&content_dir, &dest, &manifest)?;
+    if let Some(cb) = on_progress.as_deref_mut() {
+        cb(1.0);
+    }
+    Ok(dest)
+}
+
 /// Extracts just the boot set (every [`PackEntry`] with `boot: true`) plus
 /// every excluded/loose file, and returns the destination directory. This is
 /// what every generated launcher calls before starting the engine — small
@@ -178,12 +215,18 @@ fn copy_excluded(content_dir: &Path, dest: &Path, manifest: &Manifest) -> Result
 /// compressed until [`ensure_file_available`] is asked for it, in-process,
 /// by the engine's own `file:` handler.
 pub fn extract_boot(opts: &ExtractOptions) -> Result<PathBuf, String> {
-    let (content_dir, dest, manifest) = prepare_dest(&opts.content_dir, opts.dest.clone(), opts.force)?;
-    for pack in manifest.packs.iter().filter(|p| p.boot) {
-        ensure_pack_extracted(&content_dir, &dest, pack)?;
-    }
-    copy_excluded(&content_dir, &dest, &manifest)?;
-    Ok(dest)
+    extract_boot_impl(opts, None)
+}
+
+/// Same as [`extract_boot`], but calls `on_progress` as extraction proceeds
+/// — see [`extract_boot_impl`]. Used by the engine to drive a boot splash's
+/// progress bar while extraction runs on a background thread; not exposed
+/// through the CLI, which has no equivalent UI to feed.
+pub fn extract_boot_with_progress(
+    opts: &ExtractOptions,
+    mut on_progress: impl FnMut(f32),
+) -> Result<PathBuf, String> {
+    extract_boot_impl(opts, Some(&mut on_progress))
 }
 
 /// Looks up `rel_path` (forward-slash, relative to `dest`) in `manifest` and

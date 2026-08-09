@@ -1,0 +1,611 @@
+diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
+index c2cc586..68a1aa4 100644
+--- a/ports/servoshell/desktop/app.rs
++++ b/ports/servoshell/desktop/app.rs
+@@ -7,16 +7,18 @@
+ use std::path::Path;
+ use std::rc::Rc;
+ use std::sync::{Arc, Mutex};
+-use std::time::Instant;
++use std::thread;
++use std::time::{Duration, Instant};
+ use std::{env, fs};
+ 
++use roves_content_packer::extract;
+ use servo::protocol_handler::ProtocolRegistry;
+ use servo::{
+     EventLoopWaker, Opts, Preferences, ServoBuilder, ServoUrl, UserContentManager, UserScript,
+ };
+ use url::Url;
+ use winit::application::ApplicationHandler;
+-use winit::event::WindowEvent;
++use winit::event::{StartCause, WindowEvent};
+ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
+ use winit::window::WindowId;
+ 
+@@ -33,8 +35,26 @@ use crate::running_app_state::RunningAppState;
+ use crate::running_app_state::ServoshellGamepadDelegate;
+ use crate::window::{PlatformWindow, ServoShellWindowId};
+ 
++/// How long the boot splash shows before its progress bar appears — see
++/// `AppState::Booting` and `Gui::update_splash`. Short enough to feel
++/// immediate on a slow first launch, long enough that a fast/no-op
++/// extraction (content already cached from a previous run) never shows a
++/// bar at all.
++const SPLASH_PROGRESS_BAR_DELAY: Duration = Duration::from_millis(300);
++
+ pub(crate) enum AppState {
+     Initializing,
++    /// A headed, packed-content launch whose boot extraction hasn't finished
++    /// yet — `window` is already created and showing the boot splash (see
++    /// `HeadedWindow::paint_splash`) while a background thread (spawned from
++    /// `App::init`) decompresses the boot set. `extraction_started` drives
++    /// the progress bar's appear-after-a-delay behavior; `progress` is
++    /// updated by incoming `AppEvent::BootProgress`.
++    Booting {
++        window: Rc<dyn PlatformWindow>,
++        extraction_started: Instant,
++        progress: f32,
++    },
+     Running(Rc<RunningAppState>),
+     ShuttingDown,
+ }
+@@ -46,6 +66,11 @@ pub struct App {
+     waker: Box<dyn EventLoopWaker>,
+     event_loop_proxy: Option<EventLoopProxy<AppEvent>>,
+     initial_url: ServoUrl,
++    /// A packed-content launch's still-to-run boot extraction (see
++    /// `bundle_launch.rs`'s `BundledLaunch`), taken (and consumed) by the
++    /// first call to `init`. `None` for a dev run, a plain `--url` launch,
++    /// or a packed-content launch whose destination was already up to date.
++    pending_extraction: Option<extract::ExtractOptions>,
+     t_start: Instant,
+     t: Instant,
+     state: AppState,
+@@ -57,6 +82,7 @@ impl App {
+         preferences: Preferences,
+         servo_shell_preferences: ServoShellPreferences,
+         event_loop: &ServoShellEventLoop,
++        pending_boot_extraction: Option<extract::ExtractOptions>,
+     ) -> Self {
+         let initial_url = get_default_url(
+             servo_shell_preferences.url.as_deref(),
+@@ -73,14 +99,74 @@ impl App {
+             waker: event_loop.create_event_loop_waker(),
+             event_loop_proxy: event_loop.event_loop_proxy(),
+             initial_url,
++            pending_extraction: pending_boot_extraction,
+             t_start: t,
+             t,
+             state: AppState::Initializing,
+         }
+     }
+ 
+-    /// Initialize Application once event loop start running.
++    /// Initialize Application once event loop start running. Always creates
++    /// the window immediately. If a boot extraction is still pending for a
++    /// headed launch, defers the rest of startup (`finish_init`) until it
++    /// completes — extraction runs on a background thread while a splash
++    /// shows in the meantime (see `AppState::Booting`) instead of blocking
++    /// window creation on it, as a plain synchronous call used to. Headless
++    /// launches have no splash to show, so a pending extraction there just
++    /// runs synchronously, exactly as before.
+     pub fn init(&mut self, active_event_loop: Option<&ActiveEventLoop>) {
++        let url = self.initial_url.as_url().clone();
++        let platform_window = self.create_platform_window(url, active_event_loop);
++
++        let Some(opts) = self.pending_extraction.take() else {
++            self.finish_init(platform_window, active_event_loop);
++            return;
++        };
++
++        let Some(active_event_loop) = active_event_loop else {
++            if let Err(error) = extract::extract_boot(&opts) {
++                log::error!("extracting boot content: {error}");
++            }
++            self.finish_init(platform_window, None);
++            return;
++        };
++
++        // Show the splash immediately, then make sure we wake up again once
++        // the progress bar's appear delay has passed even if no
++        // `BootProgress` tick arrives before then — see `new_events`.
++        if let Some(headed_window) = platform_window.as_headed_window() {
++            headed_window.winit_window().request_redraw();
++        }
++        active_event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + SPLASH_PROGRESS_BAR_DELAY));
++
++        let proxy = self
++            .event_loop_proxy
++            .clone()
++            .expect("Should always have event loop proxy in headed mode.");
++        thread::spawn(move || {
++            let result = extract::extract_boot_with_progress(&opts, |progress| {
++                let _ = proxy.send_event(AppEvent::BootProgress(progress));
++            });
++            if let Err(error) = result {
++                log::error!("extracting boot content: {error}");
++            }
++            // Sent even on failure: the page will simply fail to load (same
++            // failure philosophy as elsewhere for missing/corrupt content)
++            // rather than leaving the app stuck on the splash forever.
++            let _ = proxy.send_event(AppEvent::BootReady);
++        });
++        self.state = AppState::Booting {
++            window: platform_window,
++            extraction_started: Instant::now(),
++            progress: 0.0,
++        };
++    }
++
++    /// The rest of startup, deferred behind boot extraction when there is
++    /// one (see `init`): builds the protocol registry/Servo instance,
++    /// constructs `RunningAppState`, and opens the real webview into
++    /// `platform_window` (already created by `init`).
++    fn finish_init(&mut self, platform_window: Rc<dyn PlatformWindow>, active_event_loop: Option<&ActiveEventLoop>) {
+         let mut protocol_registry = ProtocolRegistry::default();
+         let _ = protocol_registry.register(
+             "urlinfo",
+@@ -125,9 +211,6 @@ impl App {
+             .protocol_registry(protocol_registry)
+             .event_loop_waker(self.waker.clone());
+ 
+-        let url = self.initial_url.as_url().clone();
+-        let platform_window = self.create_platform_window(url, active_event_loop);
+-
+         #[cfg(feature = "webxr")]
+         let servo_builder =
+             servo_builder.webxr_registry(super::webxr::XrDiscoveryWebXrRegistry::new_boxed(
+@@ -208,6 +291,20 @@ impl ApplicationHandler<AppEvent> for App {
+         self.init(Some(event_loop));
+     }
+ 
++    /// Only used while `Booting`, to force one redraw once the splash's
++    /// progress-bar delay (`SPLASH_PROGRESS_BAR_DELAY`) elapses even if no
++    /// `AppEvent::BootProgress` tick has arrived yet — see `init`'s
++    /// `ControlFlow::WaitUntil` and `window_event`'s Booting branch, which
++    /// re-arms it until the bar is actually shown.
++    fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
++        if matches!(cause, StartCause::ResumeTimeReached { .. }) &&
++            let AppState::Booting { window, .. } = &self.state &&
++            let Some(headed_window) = window.as_headed_window()
++        {
++            headed_window.winit_window().request_redraw();
++        }
++    }
++
+     fn window_event(
+         &mut self,
+         event_loop: &ActiveEventLoop,
+@@ -223,6 +320,22 @@ impl ApplicationHandler<AppEvent> for App {
+         );
+         self.t = now;
+ 
++        if let AppState::Booting { window, extraction_started, progress } = &self.state {
++            let elapsed = extraction_started.elapsed();
++            if let Some(headed_window) = window.as_headed_window() &&
++                headed_window.winit_window().id() == window_id &&
++                matches!(window_event, WindowEvent::RedrawRequested | WindowEvent::Resized(_))
++            {
++                headed_window.paint_splash((elapsed >= SPLASH_PROGRESS_BAR_DELAY).then_some(*progress));
++            }
++            event_loop.set_control_flow(if elapsed >= SPLASH_PROGRESS_BAR_DELAY {
++                ControlFlow::Wait
++            } else {
++                ControlFlow::WaitUntil(Instant::now() + (SPLASH_PROGRESS_BAR_DELAY - elapsed))
++            });
++            return;
++        }
++
+         let AppState::Running(state) = &self.state else {
+             return;
+         };
+@@ -241,6 +354,29 @@ impl ApplicationHandler<AppEvent> for App {
+     }
+ 
+     fn user_event(&mut self, event_loop: &ActiveEventLoop, app_event: AppEvent) {
++        let boot_ready_window = if let AppState::Booting { window, progress, .. } = &mut self.state {
++            match app_event {
++                AppEvent::BootProgress(new_progress) => {
++                    *progress = new_progress;
++                    if let Some(headed_window) = window.as_headed_window() {
++                        headed_window.winit_window().request_redraw();
++                    }
++                    None
++                },
++                AppEvent::BootReady => Some(window.clone()),
++                _ => None,
++            }
++        } else {
++            None
++        };
++        if let Some(window) = boot_ready_window {
++            self.finish_init(window, Some(event_loop));
++            return;
++        }
++        if matches!(self.state, AppState::Booting { .. }) {
++            return;
++        }
++
+         let AppState::Running(state) = &self.state else {
+             return;
+         };
+diff --git a/ports/servoshell/desktop/bundle_launch.rs b/ports/servoshell/desktop/bundle_launch.rs
+index dce9e2b..a825e76 100644
+--- a/ports/servoshell/desktop/bundle_launch.rs
++++ b/ports/servoshell/desktop/bundle_launch.rs
+@@ -27,9 +27,22 @@ use roves_content_packer::extract;
+ 
+ const LAUNCH_CONFIG_FILE: &str = "launch.json";
+ 
+-/// Returns the args to launch with, exactly as if they'd been passed on the
+-/// command line (a positional URL followed by flags), or `None` to fall back
+-/// to the process's real `argv` unchanged.
++/// Result of [`resolve_bundled_launch_args`]: the args to launch with,
++/// exactly as if they'd been passed on the command line (a positional URL
++/// followed by flags), plus — for a packed-content build — the boot
++/// extraction that still needs to actually run before that URL's files
++/// exist on disk. Resolving the args never blocks on extraction itself (see
++/// `resolve_packed_content_url`); the caller (`App`, see `app.rs`) is what
++/// runs `pending_boot_extraction` in the background and shows a splash
++/// while it does, instead of extraction happening synchronously before the
++/// window even exists.
++pub(crate) struct BundledLaunch {
++    pub(crate) args: Vec<String>,
++    pub(crate) pending_boot_extraction: Option<extract::ExtractOptions>,
++}
++
++/// Returns the args to launch with, or `None` to fall back to the process's
++/// real `argv` unchanged.
+ ///
+ /// Deliberately only consulted when the real `argv` is completely empty —
+ /// this is what a genuine double-click launch looks like, and it's the only
+@@ -41,7 +54,7 @@ const LAUNCH_CONFIG_FILE: &str = "launch.json";
+ /// left untouched, or a bundled multiprocess build would have every child
+ /// process silently discard its real startup args and try to open the game
+ /// window all over again.
+-pub(crate) fn resolve_bundled_launch_args() -> Option<Vec<String>> {
++pub(crate) fn resolve_bundled_launch_args() -> Option<BundledLaunch> {
+     if env::args().nth(1).is_some() {
+         return None;
+     }
+@@ -61,16 +74,18 @@ pub(crate) fn resolve_bundled_launch_args() -> Option<Vec<String>> {
+         .map(|values| values.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+         .unwrap_or_default();
+ 
+-    let url = if let Some(content_rel_dir) = config.get("content_dir").and_then(|v| v.as_str()) {
+-        resolve_packed_content_url(&exe_dir, content_rel_dir)?
+-    } else {
+-        let rel_url = config.get("url").and_then(|v| v.as_str())?;
+-        exe_dir.join(rel_url).to_string_lossy().into_owned()
+-    };
++    let (url, pending_boot_extraction) =
++        if let Some(content_rel_dir) = config.get("content_dir").and_then(|v| v.as_str()) {
++            let (url, opts) = resolve_packed_content_url(&exe_dir, content_rel_dir)?;
++            (url, Some(opts))
++        } else {
++            let rel_url = config.get("url").and_then(|v| v.as_str())?;
++            (exe_dir.join(rel_url).to_string_lossy().into_owned(), None)
++        };
+ 
+     let mut args = vec![url];
+     args.extend(extra_args);
+-    Some(args)
++    Some(BundledLaunch { args, pending_boot_extraction })
+ }
+ 
+ /// macOS app bundles keep the executable in `Contents/MacOS/` and bundled
+@@ -88,25 +103,30 @@ fn content_root(exe_dir: &Path) -> PathBuf {
+     exe_dir.to_path_buf()
+ }
+ 
+-/// Extracts the boot set of a packed-content build (in-process — this is
+-/// the same `roves_content_packer::extract` call
+-/// `desktop/protocols/file.rs` already links against for on-demand lazy
+-/// extraction) and returns the absolute path of the resulting entry html
+-/// file. Any failure (missing/corrupt content) is logged and treated as
+-/// "no bundled launch config", leaving the engine to fall back to its
+-/// normal preference-based default rather than hard-crashing on a broken
+-/// install.
+-fn resolve_packed_content_url(exe_dir: &Path, content_rel_dir: &str) -> Option<String> {
++/// Resolves the absolute `file:` URL a packed-content build will open, and
++/// the [`extract::ExtractOptions`] that must still be run to actually make
++/// that URL's files exist. Deliberately does **not** extract anything
++/// itself — only `extract::resolve_dest` (a path/hash computation) and a
++/// `manifest.json` read, both fast — so this never blocks the caller. The
++/// actual (slow) decompression is the caller's job: `App::init` (`app.rs`)
++/// runs it on a background thread while showing a boot splash, and
++/// `desktop/protocols/file.rs` separately extracts individual lazy packs
++/// on demand once the engine is running. Any failure (missing/corrupt
++/// content) is logged and treated as "no bundled launch config", leaving
++/// the engine to fall back to its normal preference-based default rather
++/// than hard-crashing on a broken install.
++fn resolve_packed_content_url(
++    exe_dir: &Path,
++    content_rel_dir: &str,
++) -> Option<(String, extract::ExtractOptions)> {
+     let content_dir = content_root(exe_dir).join(content_rel_dir);
+     let manifest = extract::load_manifest(&content_dir)
+         .inspect_err(|e| log::error!("loading packed-content manifest at {content_dir:?}: {e}"))
+         .ok()?;
+-    let dest = extract::extract_boot(&extract::ExtractOptions {
+-        content_dir,
+-        dest: None,
+-        force: false,
+-    })
+-    .inspect_err(|e| log::error!("extracting boot content: {e}"))
+-    .ok()?;
+-    Some(dest.join(&manifest.entry_html).to_string_lossy().into_owned())
++    let (content_dir, dest) = extract::resolve_dest(&content_dir, None)
++        .inspect_err(|e| log::error!("resolving boot content destination: {e}"))
++        .ok()?;
++    let url = dest.join(&manifest.entry_html).to_string_lossy().into_owned();
++    let opts = extract::ExtractOptions { content_dir, dest: Some(dest), force: false };
++    Some((url, opts))
+ }
+diff --git a/ports/servoshell/desktop/cli.rs b/ports/servoshell/desktop/cli.rs
+index 2c4987f..e3c568d 100644
+--- a/ports/servoshell/desktop/cli.rs
++++ b/ports/servoshell/desktop/cli.rs
+@@ -23,7 +23,14 @@ pub fn main() {
+     // `launch.json` sitting next to the running executable, in place of the
+     // separate launcher process a bundle used to spawn. Falls back to the
+     // real argv (skipping the binary name) for every other invocation.
+-    let args: Vec<String> = resolve_bundled_launch_args().unwrap_or_else(|| env::args().skip(1).collect());
++    // `pending_boot_extraction` (packed-content builds only) is threaded
++    // through to `App::new` unresolved — `resolve_bundled_launch_args`
++    // never blocks on it; see `bundle_launch.rs` and `App::init`'s boot
++    // splash handling.
++    let (args, pending_boot_extraction) = match resolve_bundled_launch_args() {
++        Some(bundled) => (bundled.args, bundled.pending_boot_extraction),
++        None => (env::args().skip(1).collect(), None),
++    };
+     let (opts, preferences, servoshell_preferences) = match parse_command_line_arguments(&*args) {
+         ArgumentParsingResult::ContentProcess(token) => return servo::run_content_process(token),
+         ArgumentParsingResult::ChromeProcess(opts, preferences, servoshell_preferences) => {
+@@ -46,7 +53,8 @@ pub fn main() {
+     };
+ 
+     {
+-        let mut app = App::new(opts, preferences, servoshell_preferences, &event_loop);
++        let mut app =
++            App::new(opts, preferences, servoshell_preferences, &event_loop, pending_boot_extraction);
+         event_loop.run_app(&mut app);
+     }
+ 
+diff --git a/ports/servoshell/desktop/event_loop.rs b/ports/servoshell/desktop/event_loop.rs
+index 3d042d5..ef1df9e 100644
+--- a/ports/servoshell/desktop/event_loop.rs
++++ b/ports/servoshell/desktop/event_loop.rs
+@@ -27,6 +27,15 @@ pub enum AppEvent {
+     /// to do it instead, the same way `HeadedEventLoopWaker` already asks the main thread
+     /// to wake up, via this same `EventLoopProxy`.
+     CloseAllWindows,
++    /// Sent by the background boot-extraction thread `App::init` spawns for a
++    /// packed-content launch (see `bundle_launch.rs`'s `BundledLaunch`) as extraction
++    /// proceeds, so the boot splash's progress bar can be repainted with real progress
++    /// (0.0-1.0) instead of just spinning.
++    BootProgress(f32),
++    /// Sent once by that same background thread when boot extraction finishes (or fails —
++    /// either way the boot URL's files are as ready as they'll get), so `App` can finish
++    /// building Servo/`RunningAppState` and open the real webview. See `AppState::Booting`.
++    BootReady,
+ }
+ 
+ impl From<egui_winit::accesskit_winit::Event> for AppEvent {
+@@ -40,6 +49,8 @@ impl AppEvent {
+         match self {
+             AppEvent::Waker => None,
+             AppEvent::CloseAllWindows => None,
++            AppEvent::BootProgress(_) => None,
++            AppEvent::BootReady => None,
+             AppEvent::Accessibility(event) => Some(event.window_id),
+         }
+     }
+diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
+index 3ab01d2..6e08fb3 100644
+--- a/ports/servoshell/desktop/gui.rs
++++ b/ports/servoshell/desktop/gui.rs
+@@ -50,6 +50,26 @@ pub struct Gui {
+     /// AccessKit tree updates pending the next egui tick.
+     /// This allows us to ensure that graft nodes are sent before the subtrees they graft.
+     pending_accesskit_updates: Vec<accesskit::TreeUpdate>,
++
++    /// Loaded once, in [`Gui::new`], for [`Gui::update_splash`]'s boot splash — always
++    /// `resources/servo_64.png` regardless of any game-supplied window/taskbar icon (see
++    /// `headed_window.rs`'s icon loading), since the splash is explicitly Roves-branded, not
++    /// the game's own branding.
++    splash_icon_texture: egui::TextureHandle,
++}
++
++/// Decodes `resources/servo_64.png` into an `egui::ColorImage` for the boot
++/// splash's icon — see [`Gui::update_splash`]. Deliberately independent of
++/// `headed_window.rs`'s own (Linux/Windows-only) `load_icon`/winit `Icon`
++/// loading: this must work on macOS too, and egui wants a `ColorImage`, not
++/// a winit `Icon`.
++fn load_splash_icon_image() -> egui::ColorImage {
++    let bytes = include_bytes!("../../../resources/servo_64.png");
++    let image = image::load_from_memory(bytes)
++        .expect("Failed to load boot splash icon")
++        .to_rgba8();
++    let (width, height) = image.dimensions();
++    egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], image.as_raw())
+ }
+ 
+ fn truncate_with_ellipsis(input: &str, max_length: usize) -> String {
+@@ -202,12 +222,19 @@ impl Gui {
+             options.fallback_theme = egui::Theme::Light;
+         });
+ 
++        let splash_icon_texture = context.egui_ctx.load_texture(
++            "boot-splash-icon",
++            load_splash_icon_image(),
++            egui::TextureOptions::default(),
++        );
++
+         Self {
+             rendering_context,
+             context,
+             toolbar_height: Default::default(),
+             status_text: None,
+             pending_accesskit_updates: vec![],
++            splash_icon_texture,
+         }
+     }
+ 
+@@ -436,6 +463,37 @@ impl Gui {
+         }
+     }
+ 
++    /// Update the boot splash (see `AppState::Booting` in `app.rs`) — a
++    /// minimal, deliberately unstyled black screen with the Roves icon and
++    /// name, shown in place of the normal browser UI while a packed-content
++    /// launch's boot extraction still hasn't finished. `progress`, once
++    /// `Some`, is shown as a progress bar; kept `None` for the splash's
++    /// short appear-delay so a fast/no-op extraction never flashes one.
++    /// Call [`Gui::paint`] afterward, same as [`Gui::update`].
++    pub(crate) fn update_splash(&mut self, winit_window: &Window, progress: Option<f32>) {
++        self.rendering_context
++            .make_current()
++            .expect("Could not make RenderingContext current");
++        let icon = egui::Image::from_texture(&self.splash_icon_texture).max_height(64.0);
++        self.context.run(winit_window, |ctx| {
++            egui::CentralPanel::default()
++                .frame(egui::Frame::default().fill(egui::Color32::BLACK))
++                .show(ctx, |ui| {
++                    ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
++                        ui.add_space(ui.available_height() / 2.0 - 40.0);
++                        ui.horizontal(|ui| {
++                            ui.add(icon);
++                            ui.colored_label(egui::Color32::WHITE, "Roves");
++                        });
++                        if let Some(progress) = progress {
++                            ui.add_space(12.0);
++                            ui.add(egui::ProgressBar::new(progress).desired_width(200.0));
++                        }
++                    });
++                });
++        });
++    }
++
+     /// Paint the GUI, as of the last update.
+     pub(crate) fn paint(&mut self, window: &Window) {
+         self.rendering_context
+diff --git a/support/content-packer/src/extract.rs b/support/content-packer/src/extract.rs
+index a58567f..0422f06 100644
+--- a/support/content-packer/src/extract.rs
++++ b/support/content-packer/src/extract.rs
+@@ -84,6 +84,20 @@ pub fn load_manifest(content_dir: &Path) -> Result<Manifest, String> {
+     serde_json::from_slice(&bytes).map_err(|e| format!("parsing {manifest_path:?}: {e}"))
+ }
+ 
++/// Resolves `content_dir` to its canonical form and picks the destination
++/// (`dest`, or [`default_dest`] if `None`) — the cheap, non-extracting half
++/// of [`prepare_dest`], split out so a caller can learn *where* boot content
++/// will end up (e.g. to build the `file:` URL it'll load once extraction
++/// finishes) without paying for the actual decompression yet. Does no I/O
++/// beyond `canonicalize`.
++pub fn resolve_dest(content_dir: &Path, dest: Option<PathBuf>) -> Result<(PathBuf, PathBuf), String> {
++    let content_dir = content_dir
++        .canonicalize()
++        .map_err(|e| format!("resolving {content_dir:?}: {e}"))?;
++    let dest = dest.unwrap_or_else(|| default_dest(&content_dir));
++    Ok((content_dir, dest))
++}
++
+ /// Resolves `content_dir`/`dest`, loads the manifest, and ensures `dest`
+ /// isn't stale — wiping and recreating it (fresh marker directory, fresh
+ /// `.roves-content-hash`/`.roves-content-source`) if its recorded content
+@@ -94,10 +108,7 @@ fn prepare_dest(
+     dest: Option<PathBuf>,
+     force: bool,
+ ) -> Result<(PathBuf, PathBuf, Manifest), String> {
+-    let content_dir = content_dir
+-        .canonicalize()
+-        .map_err(|e| format!("resolving {content_dir:?}: {e}"))?;
+-    let dest = dest.unwrap_or_else(|| default_dest(&content_dir));
++    let (content_dir, dest) = resolve_dest(content_dir, dest)?;
+     let manifest = load_manifest(&content_dir)?;
+ 
+     let hash_marker = dest.join(CONTENT_HASH_MARKER);
+@@ -170,6 +181,32 @@ fn copy_excluded(content_dir: &Path, dest: &Path, manifest: &Manifest) -> Result
+     Ok(())
+ }
+ 
++/// Shared body of [`extract_boot`]/[`extract_boot_with_progress`]. `on_progress`,
++/// when given, is called after each boot pack finishes (as `done / total`,
++/// where `total` is the boot pack count) and once more with `1.0` after the
++/// final `copy_excluded` — coarse (per-pack, not per-byte) but the boot set
++/// is deliberately just the html file and whatever it directly references,
++/// so it's usually only one or two packs anyway.
++fn extract_boot_impl(
++    opts: &ExtractOptions,
++    mut on_progress: Option<&mut dyn FnMut(f32)>,
++) -> Result<PathBuf, String> {
++    let (content_dir, dest, manifest) = prepare_dest(&opts.content_dir, opts.dest.clone(), opts.force)?;
++    let boot_packs: Vec<_> = manifest.packs.iter().filter(|p| p.boot).collect();
++    let total = boot_packs.len().max(1);
++    for (i, pack) in boot_packs.into_iter().enumerate() {
++        ensure_pack_extracted(&content_dir, &dest, pack)?;
++        if let Some(cb) = on_progress.as_deref_mut() {
++            cb((i + 1) as f32 / total as f32);
++        }
++    }
++    copy_excluded(&content_dir, &dest, &manifest)?;
++    if let Some(cb) = on_progress.as_deref_mut() {
++        cb(1.0);
++    }
++    Ok(dest)
++}
++
+ /// Extracts just the boot set (every [`PackEntry`] with `boot: true`) plus
+ /// every excluded/loose file, and returns the destination directory. This is
+ /// what every generated launcher calls before starting the engine — small
+@@ -178,12 +215,18 @@ fn copy_excluded(content_dir: &Path, dest: &Path, manifest: &Manifest) -> Result
+ /// compressed until [`ensure_file_available`] is asked for it, in-process,
+ /// by the engine's own `file:` handler.
+ pub fn extract_boot(opts: &ExtractOptions) -> Result<PathBuf, String> {
+-    let (content_dir, dest, manifest) = prepare_dest(&opts.content_dir, opts.dest.clone(), opts.force)?;
+-    for pack in manifest.packs.iter().filter(|p| p.boot) {
+-        ensure_pack_extracted(&content_dir, &dest, pack)?;
+-    }
+-    copy_excluded(&content_dir, &dest, &manifest)?;
+-    Ok(dest)
++    extract_boot_impl(opts, None)
++}
++
++/// Same as [`extract_boot`], but calls `on_progress` as extraction proceeds
++/// — see [`extract_boot_impl`]. Used by the engine to drive a boot splash's
++/// progress bar while extraction runs on a background thread; not exposed
++/// through the CLI, which has no equivalent UI to feed.
++pub fn extract_boot_with_progress(
++    opts: &ExtractOptions,
++    mut on_progress: impl FnMut(f32),
++) -> Result<PathBuf, String> {
++    extract_boot_impl(opts, Some(&mut on_progress))
+ }
+ 
+ /// Looks up `rel_path` (forward-slash, relative to `dest`) in `manifest` and
+diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/desktop/headed_window.rs
+index 45aeda9..9a7e9f3 100644
+--- a/ports/servoshell/desktop/headed_window.rs
++++ b/ports/servoshell/desktop/headed_window.rs
+@@ -221,6 +221,18 @@ impl HeadedWindow {
+         &self.winit_window
+     }
+ 
++    /// Paints the boot splash (see `AppState::Booting` in `app.rs`) instead
++    /// of the normal browser UI — used while a packed-content launch's boot
++    /// extraction is still running on a background thread, before there's a
++    /// `RunningAppState`/webview to draw. `progress`, once `Some`, is shown
++    /// as a progress bar (`None` before the splash's short appear-delay has
++    /// passed — see `SPLASH_PROGRESS_BAR_DELAY`).
++    pub(crate) fn paint_splash(&self, progress: Option<f32>) {
++        let mut gui = self.gui.borrow_mut();
++        gui.update_splash(&self.winit_window, progress);
++        gui.paint(&self.winit_window);
++    }
++
+     fn handle_keyboard_input(
+         &self,
+         state: Rc<RunningAppState>,
