@@ -54,6 +54,8 @@ mod from_winit {
                 Self::UserEvent(AppEvent::Waker) => target!("UserEvent(Waker)"),
                 Self::UserEvent(AppEvent::Accessibility(..)) => target!("UserEvent(Accessibility)"),
                 Self::UserEvent(AppEvent::CloseAllWindows) => target!("UserEvent(CloseAllWindows)"),
+                Self::UserEvent(AppEvent::BootProgress(..)) => target!("UserEvent(BootProgress)"),
+                Self::UserEvent(AppEvent::BootReady) => target!("UserEvent(BootReady)"),
                 Self::Suspended => target!("Suspended"),
                 Self::Resumed => target!("Resumed"),
                 Self::AboutToWait => target!("AboutToWait"),

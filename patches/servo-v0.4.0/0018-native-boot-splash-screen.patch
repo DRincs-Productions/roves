@@ -403,7 +403,7 @@ index 3d042d5..ef1df9e 100644
          }
      }
 diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
-index 3ab01d2..6e08fb3 100644
+index 3ab01d2..73870d0 100644
 --- a/ports/servoshell/desktop/gui.rs
 +++ b/ports/servoshell/desktop/gui.rs
 @@ -50,6 +50,26 @@ pub struct Gui {
@@ -453,7 +453,7 @@ index 3ab01d2..6e08fb3 100644
          }
      }
  
-@@ -436,6 +463,37 @@ impl Gui {
+@@ -436,6 +463,43 @@ impl Gui {
          }
      }
  
@@ -470,13 +470,19 @@ index 3ab01d2..6e08fb3 100644
 +            .expect("Could not make RenderingContext current");
 +        let icon = egui::Image::from_texture(&self.splash_icon_texture).max_height(64.0);
 +        self.context.run(winit_window, |ctx| {
++            // `Panel::show` (the top-level entry point, as opposed to
++            // `show_inside` for nesting inside another container) is
++            // deprecated in this egui version in favor of hand-building a
++            // full-window `Ui` — not worth the extra internal-API surface
++            // for this deliberately simple splash.
++            #[expect(deprecated)]
 +            egui::CentralPanel::default()
 +                .frame(egui::Frame::default().fill(egui::Color32::BLACK))
 +                .show(ctx, |ui| {
 +                    ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
 +                        ui.add_space(ui.available_height() / 2.0 - 40.0);
 +                        ui.horizontal(|ui| {
-+                            ui.add(icon);
++                            ui.add(icon.clone());
 +                            ui.colored_label(egui::Color32::WHITE, "Roves");
 +                        });
 +                        if let Some(progress) = progress {
@@ -491,6 +497,19 @@ index 3ab01d2..6e08fb3 100644
      /// Paint the GUI, as of the last update.
      pub(crate) fn paint(&mut self, window: &Window) {
          self.rendering_context
+diff --git a/ports/servoshell/desktop/tracing.rs b/ports/servoshell/desktop/tracing.rs
+index ba6b155..7dc2c44 100644
+--- a/ports/servoshell/desktop/tracing.rs
++++ b/ports/servoshell/desktop/tracing.rs
+@@ -54,6 +54,8 @@ mod from_winit {
+                 Self::UserEvent(AppEvent::Waker) => target!("UserEvent(Waker)"),
+                 Self::UserEvent(AppEvent::Accessibility(..)) => target!("UserEvent(Accessibility)"),
+                 Self::UserEvent(AppEvent::CloseAllWindows) => target!("UserEvent(CloseAllWindows)"),
++                Self::UserEvent(AppEvent::BootProgress(..)) => target!("UserEvent(BootProgress)"),
++                Self::UserEvent(AppEvent::BootReady) => target!("UserEvent(BootReady)"),
+                 Self::Suspended => target!("Suspended"),
+                 Self::Resumed => target!("Resumed"),
+                 Self::AboutToWait => target!("AboutToWait"),
 diff --git a/support/content-packer/src/extract.rs b/support/content-packer/src/extract.rs
 index a58567f..0422f06 100644
 --- a/support/content-packer/src/extract.rs

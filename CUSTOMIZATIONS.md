@@ -1230,7 +1230,7 @@ though full runtime testing there isn't expected in this pass.
 **Files:** `support/content-packer/src/extract.rs`, `ports/servoshell/desktop/bundle_launch.rs`,
 `ports/servoshell/desktop/cli.rs`, `ports/servoshell/desktop/event_loop.rs`,
 `ports/servoshell/desktop/app.rs`, `ports/servoshell/desktop/gui.rs`,
-`ports/servoshell/desktop/headed_window.rs`.
+`ports/servoshell/desktop/headed_window.rs`, `ports/servoshell/desktop/tracing.rs`.
 
 **Patch:** `patches/servo-v0.4.0/0018-native-boot-splash-screen.patch`
 
@@ -1272,6 +1272,11 @@ whatever was there before. Deliberately unstyled beyond that; styling is a follo
   `Arc<Mutex<EventLoopProxy<AppEvent>>>` background-thread-to-main-thread pattern already used
   by `HeadedEventLoopWaker` and `protocols/roves.rs`'s `RovesProtocolHandler`, simplified to a
   single owned `EventLoopProxy` clone (no sharing needed for one thread).
+- `tracing.rs`: its `LogTarget` impl for `winit::event::Event<AppEvent>` pattern-matches every
+  `AppEvent` variant by name (for the `RUST_LOG='servoshell<winit@...'` trace filters this
+  file documents) — adding the two variants above without a matching arm here is a compile
+  error (non-exhaustive match), not just a missed log line. Added
+  `UserEvent(BootProgress)`/`UserEvent(BootReady)` targets alongside the existing ones.
 - `app.rs`: new `AppState::Booting { window, extraction_started, progress }` variant. `App`
   gained a `pending_extraction` field (the `ExtractOptions` from `cli.rs`, consumed by the
   first `init` call). `init` now always creates the platform window immediately (window
@@ -1299,7 +1304,14 @@ whatever was there before. Deliberately unstyled beyond that; styling is a follo
   `CentralPanel`, the boot icon (decoded once in `Gui::new` from `resources/servo_64.png` via
   `image::load_from_memory`, independent of `headed_window.rs`'s Linux/Windows-only
   `load_icon`, since this must also work on macOS), "Roves" in white, and, when `progress` is
-  `Some`, an `egui::ProgressBar`.
+  `Some`, an `egui::ProgressBar`. Uses `egui::CentralPanel`'s deprecated top-level `show`
+  (`#[expect(deprecated)]` — the non-deprecated replacement is hand-building a full-window
+  `Ui` via egui's own internal-ish `Ui::new`/`UiBuilder` dance, not worth the extra surface
+  for this deliberately simple splash) and clones the icon `Image` before handing it to
+  `ui.add` — it's captured by the outer `EguiGlow::run` closure (which must be `FnMut`, since
+  `run` can conceptually be invoked more than once), so moving it into the inner `show`
+  closure without cloning is a compile error (`Image` isn't `Copy`, but is cheap to `Clone`
+  — it just wraps a texture id/size, not pixel data).
 - `headed_window.rs`: new `paint_splash(progress: Option<f32>)`, calling the above plus the
   existing `Gui::paint`.
 

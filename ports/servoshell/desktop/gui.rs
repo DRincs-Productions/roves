@@ -476,13 +476,19 @@ impl Gui {
             .expect("Could not make RenderingContext current");
         let icon = egui::Image::from_texture(&self.splash_icon_texture).max_height(64.0);
         self.context.run(winit_window, |ctx| {
+            // `Panel::show` (the top-level entry point, as opposed to
+            // `show_inside` for nesting inside another container) is
+            // deprecated in this egui version in favor of hand-building a
+            // full-window `Ui` — not worth the extra internal-API surface
+            // for this deliberately simple splash.
+            #[expect(deprecated)]
             egui::CentralPanel::default()
                 .frame(egui::Frame::default().fill(egui::Color32::BLACK))
                 .show(ctx, |ui| {
                     ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
                         ui.add_space(ui.available_height() / 2.0 - 40.0);
                         ui.horizontal(|ui| {
-                            ui.add(icon);
+                            ui.add(icon.clone());
                             ui.colored_label(egui::Color32::WHITE, "Roves");
                         });
                         if let Some(progress) = progress {
