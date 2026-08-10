@@ -1427,6 +1427,28 @@ a real `./mach build` on Windows to confirm the `.exe`'s Explorer icon and the w
 icon both actually change** when `test-page/public/icon.{png,ico}` are present, and fall back
 correctly when they're removed.
 
+**Follow-up (2026-08-10) — fixed a real bug this "Needs a real build" note caught:** tested via
+`.github/workflows/test.yml`, which — unlike a normal in-place build — reconstructs Servo one
+directory level away from this repo's real layout: it downloads+patches pristine Servo into a
+nested `servo-src/` subdirectory, so `ports/servoshell/build.rs` ends up running from
+`servo-src/ports/servoshell/`, not `<repo root>/ports/servoshell/`. Its `../../test-page/...`
+paths (correct for this repo's real, flat layout — verified directly by hand from
+`ports/servoshell/`) resolved to `servo-src/test-page/...` instead of the real
+`<repo root>/test-page/...`, which doesn't exist — so `game_window_icon.exists()`/
+`game_exe_icon.exists()` were always `false` in that workflow specifically, always silently
+falling back to Roves' own icon. (The later `assemble test bundle` step's own `--content-dir
+../test-page/dist` happened to still work, since that step runs one directory shallower,
+directly inside `servo-src`, not from `servo-src/ports/servoshell`.) Root cause: `test-page/`
+was never part of `servo-src/` at all — the patch-apply loop only recreates *patch-tracked*
+files (see this entry's own "Files" note on `test-page/` being outside the patch set), so
+nothing ever put a copy of it there. **Fixed in `test.yml` itself** (not `build.rs`, whose
+paths are correct for how every real build actually lays out): the "download + patch Servo
+source" step now also copies `test-page/public/` and the already-built `test-page/dist/` into
+`servo-src/test-page/`, so that tree actually mirrors this repo's real layout the way patches
+already assume; "assemble test bundle"'s `--content-dir` updated from `../test-page/dist` to
+`test-page/dist` to match. Confirmed by re-tracing both steps' working directories and the
+resulting relative paths by hand; not yet confirmed by an actual CI run.
+
 ---
 
 ## 2026-08-10 — Never show white before the game starts: default clear color + paint-before-show
