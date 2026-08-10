@@ -78,6 +78,11 @@ pub(crate) struct ServoShellPreferences {
     pub tracing_filter: Option<String>,
     /// The initial requested inner size of the window.
     pub initial_window_size: Size2D<u32, DeviceIndependentPixel>,
+    /// A fixed native window title, overriding the default of always mirroring the
+    /// active page's own title — see `HeadedWindow::update_user_interface_state`.
+    /// `mach bundle` sets this from the game's own `manifest.json`/`package.json`
+    /// `name` when present; `None` otherwise (dev runs, or neither file has a name).
+    pub window_title_override: Option<String>,
     /// An override for the screen resolution. This is useful for testing behavior on different screen sizes,
     /// such as the screen of a mobile device.
     pub screen_size_override: Option<Size2D<u32, DeviceIndependentPixel>>,
@@ -124,6 +129,7 @@ impl Default for ServoShellPreferences {
             headless: false,
             homepage: "https://servo.org".into(),
             initial_window_size: Size2D::new(1024, 740),
+            window_title_override: None,
             no_native_titlebar: true,
             screen_size_override: None,
             simulate_touch_events: false,
@@ -578,6 +584,15 @@ struct CmdArgs {
     webdriver_port: Option<u16>,
 
     ///
+    ///  Override the native window's title — set once at startup and never changed
+    ///  afterward, even if the page's own `document.title` changes (the window title
+    ///  otherwise always mirrors the active page's title). `mach bundle` fills this in
+    ///  from the game's `manifest.json`/`package.json` `name`, when present — see
+    ///  CUSTOMIZATIONS.md.
+    #[bpaf(long, argument("TEXT"))]
+    window_title: Option<String>,
+
+    ///
     ///  Set the initial window size in logical (device independent) pixels.
     #[bpaf(argument::<String>("1024x740"), parse(parse_resolution_string), fallback(None))]
     window_size: Option<Size2D<u32, DeviceIndependentPixel>>,
@@ -729,6 +744,7 @@ fn parse_arguments_helper(args_without_binary: Args) -> ArgumentParsingResult {
         headless: cmd_args.headless,
         tracing_filter: cmd_args.tracing_filter,
         initial_window_size: cmd_args.window_size.unwrap_or(default_window_size),
+        window_title_override: cmd_args.window_title,
         screen_size_override: cmd_args.screen_size_override,
         simulate_touch_events: cmd_args.simulate_touch_events,
         webdriver_port: Cell::new(cmd_args.webdriver_port),

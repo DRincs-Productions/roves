@@ -39,6 +39,8 @@ use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::keyboard::{Key as LogicalKey, ModifiersState, NamedKey as WinitNamedKey};
 #[cfg(target_os = "linux")]
 use winit::platform::wayland::WindowAttributesExtWayland;
+#[cfg(target_os = "windows")]
+use winit::platform::windows::WindowExtWindows;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use winit::window::Icon;
 #[cfg(target_os = "macos")]
@@ -102,6 +104,10 @@ pub struct HeadedWindow {
     /// The last title set on this window. We need to store this value here, as `winit::Window::title`
     /// is not supported very many platforms.
     last_title: RefCell<String>,
+    /// A fixed title overriding the default of mirroring the active page's own title —
+    /// see `ServoShellPreferences::window_title_override` and
+    /// `update_user_interface_state`.
+    window_title_override: Option<String>,
     /// The current set of open dialogs.
     dialogs: RefCell<HashMap<WebViewId, Vec<Dialog>>>,
     /// The [`EmbedderControlId`] of the currently showing [`InputMethod`] interfaces,
@@ -162,7 +168,16 @@ impl HeadedWindow {
             // compile time — see CUSTOMIZATIONS.md. Not the boot splash's
             // icon, which is always Roves-branded regardless (`gui.rs`).
             let icon_bytes = include_bytes!(concat!(env!("OUT_DIR"), "/window_icon.png"));
-            winit_window.set_window_icon(Some(load_icon(icon_bytes)));
+            let icon = load_icon(icon_bytes);
+            // `set_window_icon` only sets `ICON_SMALL` (the title bar icon) —
+            // on Windows, the taskbar/Alt-Tab icon is `ICON_BIG`, a separate
+            // call (`WindowExtWindows::set_taskbar_icon`), or it silently
+            // falls back to the `.exe`'s own resource icon (`build.rs`'s
+            // `winresource` step) instead of this one. Set both explicitly so
+            // they're always the same icon, regardless of platform quirks.
+            #[cfg(target_os = "windows")]
+            winit_window.set_taskbar_icon(Some(icon.clone()));
+            winit_window.set_window_icon(Some(icon));
         }
 
         let window_handle = winit_window
@@ -235,6 +250,7 @@ impl HeadedWindow {
             pending_keyboard_events: Default::default(),
             rendering_context,
             last_title: RefCell::new(String::from(INITIAL_WINDOW_TITLE)),
+            window_title_override: servoshell_preferences.window_title_override.clone(),
             dialogs: Default::default(),
             visible_input_method: Default::default(),
             last_mouse_position: Default::default(),
@@ -856,15 +872,17 @@ impl PlatformWindow for HeadedWindow {
     }
 
     fn update_user_interface_state(&self, _: &RunningAppState, window: &ServoShellWindow) -> bool {
-        let title = window
-            .active_webview()
-            .and_then(|webview| {
-                webview
-                    .page_title()
-                    .filter(|title| !title.is_empty())
-                    .or_else(|| webview.url().map(|url| url.to_string()))
-            })
-            .unwrap_or_else(|| INITIAL_WINDOW_TITLE.to_string());
+        let title = self.window_title_override.clone().unwrap_or_else(|| {
+            window
+                .active_webview()
+                .and_then(|webview| {
+                    webview
+                        .page_title()
+                        .filter(|title| !title.is_empty())
+                        .or_else(|| webview.url().map(|url| url.to_string()))
+                })
+                .unwrap_or_else(|| INITIAL_WINDOW_TITLE.to_string())
+        });
         if title != *self.last_title.borrow() {
             self.winit_window.set_title(&title);
             *self.last_title.borrow_mut() = title;

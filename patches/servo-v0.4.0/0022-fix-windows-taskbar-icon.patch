@@ -1,0 +1,31 @@
+diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/desktop/headed_window.rs
+index e5954e1..7f5195a 100644
+--- a/ports/servoshell/desktop/headed_window.rs
++++ b/ports/servoshell/desktop/headed_window.rs
+@@ -39,6 +39,8 @@
+ use winit::keyboard::{Key as LogicalKey, ModifiersState, NamedKey as WinitNamedKey};
+ #[cfg(target_os = "linux")]
+ use winit::platform::wayland::WindowAttributesExtWayland;
++#[cfg(target_os = "windows")]
++use winit::platform::windows::WindowExtWindows;
+ #[cfg(any(target_os = "linux", target_os = "windows"))]
+ use winit::window::Icon;
+ #[cfg(target_os = "macos")]
+@@ -162,7 +164,16 @@
+             // compile time — see CUSTOMIZATIONS.md. Not the boot splash's
+             // icon, which is always Roves-branded regardless (`gui.rs`).
+             let icon_bytes = include_bytes!(concat!(env!("OUT_DIR"), "/window_icon.png"));
+-            winit_window.set_window_icon(Some(load_icon(icon_bytes)));
++            let icon = load_icon(icon_bytes);
++            // `set_window_icon` only sets `ICON_SMALL` (the title bar icon) —
++            // on Windows, the taskbar/Alt-Tab icon is `ICON_BIG`, a separate
++            // call (`WindowExtWindows::set_taskbar_icon`), or it silently
++            // falls back to the `.exe`'s own resource icon (`build.rs`'s
++            // `winresource` step) instead of this one. Set both explicitly so
++            // they're always the same icon, regardless of platform quirks.
++            #[cfg(target_os = "windows")]
++            winit_window.set_taskbar_icon(Some(icon.clone()));
++            winit_window.set_window_icon(Some(icon));
+         }
+ 
+         let window_handle = winit_window

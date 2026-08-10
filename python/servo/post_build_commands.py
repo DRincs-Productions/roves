@@ -151,6 +151,36 @@ def _place_bundle_content(
     subprocess.check_call(pack_args)
 
 
+def _resolve_window_title(content_dir: str) -> Optional[str]:
+    """Reads the game's own display name — `manifest.json`'s `name` (a standard web
+    app manifest field, and the file actually ships inside `content_dir`, e.g. `dist/`,
+    since a bundler copies `public/` files there verbatim), or, failing that,
+    `package.json`'s `name` one directory up from `content_dir` (the common
+    Vite/webpack convention: `package.json` lives next to the project, `content_dir`
+    is its built `dist/` one level below — a source file, so only available here at
+    bundle time, never inside the shipped `content_dir` itself). Used verbatim as the
+    window title, exactly as written — this doesn't prepend "Roves" or anything else;
+    that's the content author's own call to make in `name` (see e.g. `test-page/public/
+    manifest.json`'s `"name": "Roves test-page"`). Returns `None` if neither file
+    exists or has a usable `name`, leaving the window title exactly as it was before
+    this feature (the page's own `document.title`) — see CUSTOMIZATIONS.md.
+    """
+    for candidate in (
+        path.join(content_dir, "manifest.json"),
+        path.join(content_dir, "..", "package.json"),
+    ):
+        if not path.exists(candidate):
+            continue
+        try:
+            with open(candidate) as f:
+                name = json.load(f).get("name")
+        except (json.JSONDecodeError, OSError):
+            continue
+        if name:
+            return str(name)
+    return None
+
+
 def _write_launch_config(config_dir: str, info: BundleLaunchInfo) -> None:
     """Writes `launch.json` into `config_dir` (always a sibling of the real,
     single shipped binary — see the `_bundle_*` methods below). This is the
@@ -445,6 +475,9 @@ class PostBuildCommands(CommandBase):
         packer_binary = self._build_content_packer() if compress_enabled else None
 
         extra_args = ["--window-size", window_size] + list(params or [])
+        window_title = _resolve_window_title(content_dir) if content_dir else None
+        if window_title:
+            extra_args += ["--window-title", window_title]
         launch_info = BundleLaunchInfo(
             packed_rel_dir=path.dirname(html_file) if compress_enabled else None,
             html_file=html_file,

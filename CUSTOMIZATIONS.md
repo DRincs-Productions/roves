@@ -1582,3 +1582,101 @@ Fullscreen API via `running_app_state.rs`), so persisting there is complete, not
 coverage. **Needs a real build to confirm end-to-end**: enter fullscreen via a page's
 `requestFullscreen()`, close the app, relaunch, confirm it reopens fullscreen with no
 windowed flash; then exit fullscreen and relaunch again to confirm it reopens windowed.
+
+---
+
+## 2026-08-10 — Fix: Windows taskbar/Alt-Tab icon not actually using the custom icon
+
+**Files:** `ports/servoshell/desktop/headed_window.rs`.
+
+**Patch:** `patches/servo-v0.4.0/0022-fix-windows-taskbar-icon.patch`
+
+**Upstream behavior:** winit 0.30's cross-platform `Window::set_window_icon` only sets
+`WM_SETICON`'s `ICON_SMALL` — the title bar icon. The taskbar/Alt-Tab icon is `ICON_BIG`, set
+by a *separate*, Windows-only call (`WindowExtWindows::set_taskbar_icon`, in
+`winit::platform::windows`) — `ports/servoshell` only ever called the former. Confirmed by a
+real build: the title bar showed no icon at all, while the taskbar happened to show the
+*right* icon anyway — Windows falls back to the `.exe`'s own embedded resource icon
+(`build.rs`'s `winresource` step, itself already reading the game-supplied `icon.ico` — see
+that entry above) for `ICON_BIG` when nothing has explicitly set it, which is why this went
+unnoticed until specifically checking the title bar.
+
+**Change:** `HeadedWindow::new` now also calls `winit_window.set_taskbar_icon(Some(icon))` (a
+clone of the same `Icon` passed to `set_window_icon`), gated `#[cfg(target_os = "windows")]`
+(the extension trait doesn't exist on other platforms — Linux/macOS have no small/big icon
+split). Both calls now always agree, instead of one coming from the runtime icon and the
+other happening to come from the `.exe` resource fallback.
+
+**Why:** a real build showed the title bar icon missing entirely, which is what surfaced this
+— the taskbar looking right was accidental (a different icon source entirely), not evidence
+the runtime icon-setting code was correct.
+
+**Side effects to know about when upgrading:** if a future winit version merges `ICON_SMALL`/
+`ICON_BIG` back into one call (or renames `set_taskbar_icon`), this two-call pattern may
+become redundant or need updating — check `winit::platform::windows::WindowExtWindows`'s docs
+for the version in use.
+
+**Verification:** not compiled end-to-end in this environment (same `libudev-sys`/pkg-config
+gap as other entries above); `WindowExtWindows::set_taskbar_icon`'s signature and its
+`ICON_BIG`/`ICON_SMALL` split were confirmed directly against winit 0.30.13's own source
+(`platform_impl/windows/window.rs`, `platform/windows.rs`) in this workspace's registry cache,
+not assumed. **Confirmed real bug** (title bar icon missing) via an actual Windows build/run;
+the fix itself needs a further real build to confirm the title bar icon now actually appears.
+
+---
+
+## 2026-08-10 — Window title from the game's own `manifest.json`/`package.json` name
+
+**Files:** `python/servo/post_build_commands.py`, `ports/servoshell/prefs.rs`,
+`ports/servoshell/desktop/headed_window.rs`.
+
+**Patch:** `patches/servo-v0.4.0/0023-window-title-from-manifest-or-package-json.patch`
+
+**Upstream behavior:** the native window title always mirrored the active page's own
+`document.title` (`HeadedWindow::update_user_interface_state`, falling back to the URL, then
+to a hardcoded `"Roves"` if there's no webview at all) — there was no way to give a shipped
+game a fixed, native-feeling title independent of whatever its page's `<title>` happens to
+say (in `test-page`'s case, `<title>Servo test build</title>` — an internal diagnostic label,
+not a real product name).
+
+**Change:** scoped to `mach bundle` only (a plain `./mach run`/dev launch is unaffected —
+deliberate, see "Why" below):
+
+- `post_build_commands.py`'s new `_resolve_window_title(content_dir)` reads
+  `<content_dir>/manifest.json`'s `name` field (a standard web-app-manifest field, and — since
+  a bundler copies `public/` into the build output root — actually present inside
+  `content_dir`, e.g. `dist/`, once built) or, failing that, `<content_dir>/../package.json`'s
+  `name` (the common Vite/webpack layout: `package.json` next to the project, `content_dir`
+  its built `dist/` one level below — a source file, so only available here, at bundle time,
+  never inside the shipped `content_dir` itself). Used *verbatim* as the window title — this
+  doesn't prepend "Roves" or reformat it at all; that's the content author's own call (e.g.
+  `test-page/public/manifest.json` already had `"name": "Roves test-page"` from an unrelated
+  earlier commit, which is exactly why that specific string was expected here). `bundle()`
+  appends `["--window-title", <name>]` to `launch.json`'s `args` when a name was found;
+  nothing changes when neither file has one.
+- `prefs.rs`: new `--window-title TEXT` CLI flag → `ServoShellPreferences.window_title_override:
+  Option<String>`.
+- `headed_window.rs`: new `HeadedWindow.window_title_override` field (cloned from the
+  preference at construction). `update_user_interface_state` now uses it as a fixed title when
+  set, instead of ever computing one from the active webview's page title/URL — set once,
+  never changed afterward, even if the page's own `document.title` changes later.
+
+**Why:** asked directly, scoped to packaged builds only since `manifest.json`/`package.json`
+naming a real product only makes sense for an actual shipped game — a dev run (`./mach run
+some/path/index.html`) has no natural "content_dir" to read a manifest from in the first
+place, and showing the raw page title there (as today) is arguably more useful for debugging
+anyway.
+
+**Side effects to know about when upgrading:** if `content_dir`'s bundler doesn't copy
+`public/`-style files into the build root the way Vite does by default, `manifest.json` won't
+be found there and this silently falls through to the `package.json` candidate (or to no
+override at all) — not a bug, just worth knowing the first candidate path assumes that
+convention.
+
+**Verification:** `python3 -m py_compile python/servo/post_build_commands.py` — clean.
+Confirmed `test-page/public/manifest.json` (`name: "Roves test-page"`) actually ends up at
+`test-page/dist/manifest.json` after `npm run build`, since `test-page/vite.config.ts` doesn't
+override Vite's default `publicDir`. Not compiled end-to-end on the Rust side in this
+environment (same `libudev-sys` gap as other entries above). **Needs a real `mach bundle` +
+run to confirm end-to-end**: title bar should read exactly `Roves test-page` for this repo's
+own test bundle.

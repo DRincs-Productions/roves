@@ -1,0 +1,149 @@
+diff --git a/python/servo/post_build_commands.py b/python/servo/post_build_commands.py
+index e24db99..69329d6 100644
+--- a/python/servo/post_build_commands.py
++++ b/python/servo/post_build_commands.py
+@@ -151,6 +151,36 @@ def _place_bundle_content(
+     subprocess.check_call(pack_args)
+ 
+ 
++def _resolve_window_title(content_dir: str) -> Optional[str]:
++    """Reads the game's own display name — `manifest.json`'s `name` (a standard web
++    app manifest field, and the file actually ships inside `content_dir`, e.g. `dist/`,
++    since a bundler copies `public/` files there verbatim), or, failing that,
++    `package.json`'s `name` one directory up from `content_dir` (the common
++    Vite/webpack convention: `package.json` lives next to the project, `content_dir`
++    is its built `dist/` one level below — a source file, so only available here at
++    bundle time, never inside the shipped `content_dir` itself). Used verbatim as the
++    window title, exactly as written — this doesn't prepend "Roves" or anything else;
++    that's the content author's own call to make in `name` (see e.g. `test-page/public/
++    manifest.json`'s `"name": "Roves test-page"`). Returns `None` if neither file
++    exists or has a usable `name`, leaving the window title exactly as it was before
++    this feature (the page's own `document.title`) — see CUSTOMIZATIONS.md.
++    """
++    for candidate in (
++        path.join(content_dir, "manifest.json"),
++        path.join(content_dir, "..", "package.json"),
++    ):
++        if not path.exists(candidate):
++            continue
++        try:
++            with open(candidate) as f:
++                name = json.load(f).get("name")
++        except (json.JSONDecodeError, OSError):
++            continue
++        if name:
++            return str(name)
++    return None
++
++
+ def _write_launch_config(config_dir: str, info: BundleLaunchInfo) -> None:
+     """Writes `launch.json` into `config_dir` (always a sibling of the real,
+     single shipped binary — see the `_bundle_*` methods below). This is the
+@@ -445,6 +475,9 @@ class PostBuildCommands(CommandBase):
+         packer_binary = self._build_content_packer() if compress_enabled else None
+ 
+         extra_args = ["--window-size", window_size] + list(params or [])
++        window_title = _resolve_window_title(content_dir) if content_dir else None
++        if window_title:
++            extra_args += ["--window-title", window_title]
+         launch_info = BundleLaunchInfo(
+             packed_rel_dir=path.dirname(html_file) if compress_enabled else None,
+             html_file=html_file,
+diff --git a/ports/servoshell/prefs.rs b/ports/servoshell/prefs.rs
+index 72a10bb..2b69024 100644
+--- a/ports/servoshell/prefs.rs
++++ b/ports/servoshell/prefs.rs
+@@ -78,6 +78,11 @@
+     pub tracing_filter: Option<String>,
+     /// The initial requested inner size of the window.
+     pub initial_window_size: Size2D<u32, DeviceIndependentPixel>,
++    /// A fixed native window title, overriding the default of always mirroring the
++    /// active page's own title — see `HeadedWindow::update_user_interface_state`.
++    /// `mach bundle` sets this from the game's own `manifest.json`/`package.json`
++    /// `name` when present; `None` otherwise (dev runs, or neither file has a name).
++    pub window_title_override: Option<String>,
+     /// An override for the screen resolution. This is useful for testing behavior on different screen sizes,
+     /// such as the screen of a mobile device.
+     pub screen_size_override: Option<Size2D<u32, DeviceIndependentPixel>>,
+@@ -124,6 +129,7 @@
+             headless: false,
+             homepage: "https://servo.org".into(),
+             initial_window_size: Size2D::new(1024, 740),
++            window_title_override: None,
+             no_native_titlebar: true,
+             screen_size_override: None,
+             simulate_touch_events: false,
+@@ -578,6 +584,15 @@
+     webdriver_port: Option<u16>,
+ 
+     ///
++    ///  Override the native window's title — set once at startup and never changed
++    ///  afterward, even if the page's own `document.title` changes (the window title
++    ///  otherwise always mirrors the active page's title). `mach bundle` fills this in
++    ///  from the game's `manifest.json`/`package.json` `name`, when present — see
++    ///  CUSTOMIZATIONS.md.
++    #[bpaf(long, argument("TEXT"))]
++    window_title: Option<String>,
++
++    ///
+     ///  Set the initial window size in logical (device independent) pixels.
+     #[bpaf(argument::<String>("1024x740"), parse(parse_resolution_string), fallback(None))]
+     window_size: Option<Size2D<u32, DeviceIndependentPixel>>,
+@@ -729,6 +744,7 @@
+         headless: cmd_args.headless,
+         tracing_filter: cmd_args.tracing_filter,
+         initial_window_size: cmd_args.window_size.unwrap_or(default_window_size),
++        window_title_override: cmd_args.window_title,
+         screen_size_override: cmd_args.screen_size_override,
+         simulate_touch_events: cmd_args.simulate_touch_events,
+         webdriver_port: Cell::new(cmd_args.webdriver_port),
+diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/desktop/headed_window.rs
+index 7f5195a..74c1638 100644
+--- a/ports/servoshell/desktop/headed_window.rs
++++ b/ports/servoshell/desktop/headed_window.rs
+@@ -104,6 +104,10 @@
+     /// The last title set on this window. We need to store this value here, as `winit::Window::title`
+     /// is not supported very many platforms.
+     last_title: RefCell<String>,
++    /// A fixed title overriding the default of mirroring the active page's own title —
++    /// see `ServoShellPreferences::window_title_override` and
++    /// `update_user_interface_state`.
++    window_title_override: Option<String>,
+     /// The current set of open dialogs.
+     dialogs: RefCell<HashMap<WebViewId, Vec<Dialog>>>,
+     /// The [`EmbedderControlId`] of the currently showing [`InputMethod`] interfaces,
+@@ -246,6 +250,7 @@
+             pending_keyboard_events: Default::default(),
+             rendering_context,
+             last_title: RefCell::new(String::from(INITIAL_WINDOW_TITLE)),
++            window_title_override: servoshell_preferences.window_title_override.clone(),
+             dialogs: Default::default(),
+             visible_input_method: Default::default(),
+             last_mouse_position: Default::default(),
+@@ -867,15 +872,17 @@
+     }
+ 
+     fn update_user_interface_state(&self, _: &RunningAppState, window: &ServoShellWindow) -> bool {
+-        let title = window
+-            .active_webview()
+-            .and_then(|webview| {
+-                webview
+-                    .page_title()
+-                    .filter(|title| !title.is_empty())
+-                    .or_else(|| webview.url().map(|url| url.to_string()))
+-            })
+-            .unwrap_or_else(|| INITIAL_WINDOW_TITLE.to_string());
++        let title = self.window_title_override.clone().unwrap_or_else(|| {
++            window
++                .active_webview()
++                .and_then(|webview| {
++                    webview
++                        .page_title()
++                        .filter(|title| !title.is_empty())
++                        .or_else(|| webview.url().map(|url| url.to_string()))
++                })
++                .unwrap_or_else(|| INITIAL_WINDOW_TITLE.to_string())
++        });
+         if title != *self.last_title.borrow() {
+             self.winit_window.set_title(&title);
+             *self.last_title.borrow_mut() = title;
