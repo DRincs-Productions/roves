@@ -1299,6 +1299,23 @@ whatever was there before. Deliberately unstyled beyond that; styling is a follo
   whether extraction ran synchronously (headless) or finished on the background thread first
   (headed, `BootReady` fires only after `extract_boot_with_progress` returns). Building the
   handler any earlier would silently disable on-demand lazy extraction for the entire session.
+
+  A second, easy-to-miss instance of the same ordering hazard: `self.initial_url` — previously
+  computed once, eagerly, in `App::new` (via `get_default_url`, which only trusts a `file:`
+  URL derived from a path argument if `fs::metadata` confirms that path *already exists*,
+  `parser.rs`) — is now computed in `finish_init` instead, *after* any pending extraction has
+  actually finished. Leaving it in `App::new` (as originally written) reintroduces exactly the
+  bug `parser.rs`'s own "Accept absolute Windows paths" fix (see that entry above) was written
+  to prevent, just one layer up: on a genuine first launch (empty cache), `App::new` runs
+  *before* extraction has happened, so the boot html's absolute path doesn't exist on disk
+  yet — `get_default_url` doesn't trust it, falls through to parsing the raw path as a URL
+  directly, and on Windows that misparses the drive letter as the scheme. Net effect: first
+  launch after a cache wipe shows "Could not load the requested page: Unsupported scheme";
+  closing and relaunching works, because by then extraction has already happened once and the
+  file genuinely exists. `create_platform_window`'s `url` argument (still computed early, in
+  `init`) is unaffected by any of this — it's the same already-dead parameter `Gui::new` never
+  uses, so a placeholder (`"about:blank"`, `App::new`'s initial value for the field) is fine
+  there regardless of when the real URL is known.
 - `gui.rs`: new `Gui::update_splash(winit_window, progress: Option<f32>)`, painted via the
   existing `EguiGlow`/`Gui::paint` pipeline `Gui::update` already uses — a black
   `CentralPanel`, the boot icon (decoded once in `Gui::new` from `resources/servo_64.png` via
@@ -1352,10 +1369,11 @@ and reflects real extraction progress, then the real page loads.
 
 ## 2026-08-09 — Game-supplied icon (with Roves fallback) for the window/taskbar/exe
 
-**Files:** `ports/servoshell/build.rs`, `ports/servoshell/desktop/headed_window.rs`. Also
-`test-page/index.html` and two new fixtures, `test-page/public/icon.png`/`icon.ico` — not part
-of the patch (same as `test-page/public/`'s other fixtures, see the "Pack game content" entry
-above: plain test assets, not derived from any upstream file).
+**Files:** `ports/servoshell/build.rs`, `ports/servoshell/desktop/headed_window.rs`,
+`.gitattributes`. Also `test-page/index.html` and two new fixtures,
+`test-page/public/icon.png`/`icon.ico` — not part of the patch (same as `test-page/public/`'s
+other fixtures, see the "Pack game content" entry above: plain test assets, not derived from
+any upstream file).
 
 **Patch:** `patches/servo-v0.4.0/0019-game-supplied-icon-fallback.patch`
 
@@ -1377,7 +1395,12 @@ whichever of `test-page/public/icon.png` or `resources/servo_64.png` exists into
 of the hardcoded `resources/servo_64.png` path. Net effect: once a real game supplies its own
 `icon.png`/`icon.ico` in `test-page/public/`, the window, taskbar, and compiled executable all
 show it automatically; absent that, everything falls back to today's Roves-branded assets
-exactly as before.
+exactly as before. `.gitattributes` gained `*.ico binary` alongside the pre-existing
+`*.png`/`*.jpg` rules — `icon.ico` is this repo's first tracked `.ico` file, and without an
+explicit rule it falls under the blanket `* text=auto eol=lf` at the top of that file, which
+lets Git's own (content-sniffing) heuristic decide whether to normalize line endings in it;
+for a small binary file that's a real risk of silent corruption on a Windows checkout
+(`core.autocrlf`), not just a theoretical one.
 
 **Deliberately out of scope:** the boot splash's icon (see the entry above) is exempt from
 this fallback on purpose — always Roves-branded, regardless of what the game supplies. Linux's
@@ -1403,3 +1426,124 @@ change weren't compiler-verified end-to-end. `icon.ico`'s multi-size embedding (
 a real `./mach build` on Windows to confirm the `.exe`'s Explorer icon and the window/taskbar
 icon both actually change** when `test-page/public/icon.{png,ico}` are present, and fall back
 correctly when they're removed.
+
+---
+
+## 2026-08-10 — Never show white before the game starts: default clear color + paint-before-show
+
+**Files:** `components/config/prefs.rs`, `ports/servoshell/desktop/gui.rs`.
+
+**Patch:** `patches/servo-v0.4.0/0020-never-show-white-on-startup.patch`
+
+**Upstream behavior:** two independent gaps could still show a white (or otherwise
+undefined) frame before the boot splash entry above's coverage kicks in, or after it hands
+off to the real page:
+
+1. `Preferences::const_default()`'s `shell_background_color_rgba` — the `glClearColor` used
+   for *any* `WebView` that hasn't painted anything of its own yet, per `components/paint/
+   painter.rs`'s own comment ("clear the entire RenderingContext... so WebView actually
+   clears even before the first WebView is ready") — defaulted to opaque white
+   (`[1.0, 1.0, 1.0, 1.0]`). This is the classic "blank white tab" every browser has, and it's
+   exactly what showed through during the gap between the boot splash ending
+   (`AppEvent::BootReady`) and the real page's first paint — plus, independently, on *any*
+   launch with no pending boot extraction at all (a plain dev `--url` run, or a
+   `--content-compress=none` build), which never enters `AppState::Booting` in the first
+   place and so never got the boot-splash entry's coverage to begin with.
+2. `Gui::new` (`gui.rs`) called `winit_window.set_visible(true)` without ever painting
+   anything first — the window became visible with whatever undefined content its GL
+   surface happened to have (surfman/the driver don't clear it on creation), for however long
+   until winit delivered the first `RedrawRequested`. On some platforms/drivers that's a
+   visible flash of garbage or white, not black.
+
+**Change:**
+
+- `shell_background_color_rgba` now defaults to opaque black (`[0.0, 0.0, 0.0, 1.0]`).
+  Affects only the "nothing painted yet" state — once a page actually paints (including the
+  game's own page, whatever its CSS background is), that content fully covers this color, so
+  there's no visible effect once loading is done.
+- `Gui::new` now calls `update_splash(winit_window, None)` + `paint(winit_window)` — the same
+  boot-splash black screen the entry above added — *before* `set_visible(true)`, on every
+  code path, not just a packed-content boot extraction. This guarantees the very first thing
+  the OS ever displays for the window is the black splash frame, regardless of whether
+  `AppState::Booting` is ever entered at all.
+
+Combined, every startup path now goes: black splash frame (painted before the window is even
+visible) → real page, whose own "not yet painted" background is now black instead of white →
+the page's actual content. No code path shows white unless the game's own page explicitly
+paints something white itself.
+
+**Why:** asked directly — a white flash during startup on a black boot splash reads as
+broken/janky regardless of how brief; fixing the *rendering-level* default (the clear color
+every WebView uses before it has content) is far more robust than trying to synchronize
+against the page's own load lifecycle from the embedder side (there's no first-paint signal
+exposed to `ports/servoshell` today — the closest, `LoadStatus::Complete`
+(`notify_load_status_changed`, `running_app_state.rs:783`), is DOM-readiness, not
+"compositor has presented a frame" — see `components/metrics/lib.rs`'s `FirstPaint`, which
+terminates inside the constellation for the Performance API and isn't forwarded to the
+embedder at all). Changing the shared default clear color sidesteps needing that signal.
+
+**Side effects to know about when upgrading:** `components/servo/tests/
+performance_paint_timing.rs` already overrides this same pref for its own tests (to
+gray/blue) — unaffected by this default change, but worth knowing it's a precedent for
+per-test overrides if a future test relies on the *default* being white.
+
+**Verification:** not compiled end-to-end in this environment (same `libudev-sys`/pkg-config
+gap as the boot-splash entry above). `shell_background_color_rgba`'s new default and
+`Gui::new`'s reordering were both read back against the surrounding code to confirm no other
+call site assumes white (`components/paint/painter.rs`'s own doc comment for the pref, and
+`Gui::new`'s existing accesskit-before-visible ordering, which this change preserves —
+painting happens after accesskit init, still before `set_visible`).
+
+---
+
+## 2026-08-10 — Persist fullscreen state across launches
+
+**Files:** `ports/servoshell/prefs.rs`, `ports/servoshell/desktop/headed_window.rs`.
+
+**Patch:** `patches/servo-v0.4.0/0021-persist-fullscreen-across-launches.patch`
+
+**Upstream behavior:** `HeadedWindow`'s `fullscreen: Cell<bool>` (and the actual OS-level
+fullscreen state it tracks) was purely in-memory — always started `false`. A game closed
+while its page was in fullscreen (via the Fullscreen API — `requestFullscreen()`/
+`exitFullscreen()`, routed through `RunningAppState::notify_fullscreen_state_changed` →
+`PlatformWindow::set_fullscreen`, the only call site that ever changes this state; there's no
+native F11-style shortcut) always reopened windowed, then had to be told to go fullscreen
+again by the page itself.
+
+**Change:**
+
+- `ServoShellPreferences` gained two fields: `start_fullscreen: bool` and `config_dir:
+  Option<PathBuf>` (the latter just keeps the already-resolved `config_dir` local in
+  `parse_command_line_arguments` around for `HeadedWindow` to reuse, instead of re-deriving
+  it). `start_fullscreen` is read once at startup: `config_dir.join("fullscreen").exists()`.
+- `HeadedWindow::new` (`headed_window.rs`) requests the window *already* fullscreen at
+  creation time (`WindowAttributes::with_fullscreen`, resolving a monitor via
+  `ActiveEventLoop::primary_monitor`/`available_monitors` — the window doesn't exist yet, so
+  `winit_window.current_monitor()` isn't available the way `set_fullscreen` uses it) when
+  `start_fullscreen` is set, and seeds `fullscreen: Cell::new(start_fullscreen)` to match —
+  avoids a windowed-then-fullscreen transition on startup (and keeps that visible moment,
+  whatever it is, off-white too, per the entry above).
+- `set_fullscreen` (`headed_window.rs`) now calls a new `persist_fullscreen_state(config_dir,
+  state)` helper whenever the state actually changes — writes an empty marker file named
+  `fullscreen` under `config_dir` on entering fullscreen, removes it on leaving. Deliberately
+  a marker file's mere existence, not JSON, matching `support/content-packer/src/
+  extract.rs`'s own marker-file convention for simple booleans. `config_dir` being `None`
+  (couldn't be resolved) just skips persistence rather than failing.
+
+**Why:** asked directly — closing in fullscreen and reopening windowed is a jarring,
+unexpected transition; a game's window state should survive a relaunch the way a player
+left it.
+
+**Side effects to know about when upgrading:** the marker lives directly under `config_dir`
+(e.g. `~/.config/servo/default/fullscreen` on Linux by default) — the same directory
+`prefs.json` lives in (see `get_preferences`). If a future change starts wiping/migrating
+that directory's contents wholesale, this marker would be swept up too; worth a second
+thought if that ever happens.
+
+**Verification:** not compiled end-to-end in this environment (same `libudev-sys`/pkg-config
+gap noted above). Confirmed `set_fullscreen` (`headed_window.rs:937-953`) is genuinely the
+*only* place fullscreen state changes (no native keyboard shortcut, only the page's own
+Fullscreen API via `running_app_state.rs`), so persisting there is complete, not partial
+coverage. **Needs a real build to confirm end-to-end**: enter fullscreen via a page's
+`requestFullscreen()`, close the app, relaunch, confirm it reopens fullscreen with no
+windowed flash; then exit fullscreen and relaunch again to confirm it reopens windowed.

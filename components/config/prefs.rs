@@ -592,7 +592,11 @@ impl Preferences {
             network_local_directory_listing_enabled: true,
             network_use_webpki_roots: false,
             session_history_max_length: 20,
-            shell_background_color_rgba: [1.0, 1.0, 1.0, 1.0],
+            // Kiosk/embedded fork: opaque black instead of upstream's white — this is the
+            // `glClearColor` shown for any `WebView` that hasn't painted anything yet
+            // (including the very first frame of a real page still loading), and a white
+            // flash there reads as a hang/bug on a black boot splash. See CUSTOMIZATIONS.md.
+            shell_background_color_rgba: [0.0, 0.0, 0.0, 1.0],
             log_filter: String::new(),
             thread_pool_workers_max: 4,
             thread_pool_async_runtime_workers_max: 6,

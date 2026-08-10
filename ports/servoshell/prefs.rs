@@ -98,6 +98,15 @@ pub(crate) struct ServoShellPreferences {
     pub webdriver_port: Cell<Option<u16>>,
     /// Whether the CLI option to enable experimental prefs was present at startup.
     pub experimental_preferences_enabled: bool,
+    /// Whether the window should open already in fullscreen — persisted across launches
+    /// (a marker file under `config_dir`, written/removed by `HeadedWindow::set_fullscreen`)
+    /// so a game closed in fullscreen reopens that way, without a windowed-then-fullscreen
+    /// transition on startup. See CUSTOMIZATIONS.md.
+    pub start_fullscreen: bool,
+    /// Resolved once at startup (`default_config_dir`, possibly overridden by
+    /// `--config-dir`) and kept here so `HeadedWindow` can persist UI state (currently just
+    /// `start_fullscreen`) back to the same directory without re-deriving it.
+    pub config_dir: Option<PathBuf>,
     /// Log filter given in the `log_filter` spec as a String, if any.
     /// If a filter is passed, the logger should adjust accordingly.
     #[cfg(target_env = "ohos")]
@@ -131,6 +140,8 @@ impl Default for ServoShellPreferences {
             #[cfg(target_env = "ohos")]
             log_to_file: false,
             experimental_preferences_enabled: false,
+            start_fullscreen: false,
+            config_dir: None,
         }
     }
 }
@@ -679,6 +690,11 @@ fn parse_arguments_helper(args_without_binary: Args) -> ArgumentParsingResult {
                 fs::create_dir_all(config_dir).expect("Could not create config_dir");
             }
         });
+    // See `HeadedWindow::set_fullscreen` (`desktop/headed_window.rs`) for where this marker
+    // is written/removed as fullscreen is toggled during play.
+    let start_fullscreen = config_dir
+        .as_deref()
+        .is_some_and(|dir| dir.join("fullscreen").exists());
     let temporary_storage = cmd_args.temporary_storage;
     if let Some(ref time_profiler_trace_path) = cmd_args.profiler_trace_path {
         let mut path = PathBuf::from(time_profiler_trace_path);
@@ -721,6 +737,8 @@ fn parse_arguments_helper(args_without_binary: Args) -> ArgumentParsingResult {
         userscripts_directory: cmd_args.userscripts,
         user_stylesheets: cmd_args.user_stylesheet,
         experimental_preferences_enabled: cmd_args.enable_experimental_web_platform_features,
+        start_fullscreen,
+        config_dir: config_dir.clone(),
         #[cfg(target_env = "ohos")]
         log_filter: cmd_args.log_filter.or_else(|| {
             (!preferences.log_filter.is_empty()).then(|| preferences.log_filter.clone())

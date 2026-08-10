@@ -84,13 +84,6 @@ impl App {
         event_loop: &ServoShellEventLoop,
         pending_boot_extraction: Option<extract::ExtractOptions>,
     ) -> Self {
-        let initial_url = get_default_url(
-            servo_shell_preferences.url.as_deref(),
-            env::current_dir().unwrap(),
-            |path| fs::metadata(path).is_ok(),
-            &servo_shell_preferences,
-        );
-
         let t = Instant::now();
         App {
             opts,
@@ -98,7 +91,11 @@ impl App {
             servoshell_preferences: servo_shell_preferences,
             waker: event_loop.create_event_loop_waker(),
             event_loop_proxy: event_loop.event_loop_proxy(),
-            initial_url,
+            // Placeholder — recomputed in `finish_init`, once any pending boot
+            // extraction has actually finished. See that function's doc
+            // comment for why this can't be computed here, at construction
+            // time, for a packed-content launch.
+            initial_url: ServoUrl::parse("about:blank").expect("\"about:blank\" is a valid URL"),
             pending_extraction: pending_boot_extraction,
             t_start: t,
             t,
@@ -115,6 +112,10 @@ impl App {
     /// launches have no splash to show, so a pending extraction there just
     /// runs synchronously, exactly as before.
     pub fn init(&mut self, active_event_loop: Option<&ActiveEventLoop>) {
+        // `self.initial_url` is still just the `finish_init`-pending placeholder
+        // at this point — harmless here, since `create_platform_window`'s `url`
+        // param is only ever forwarded to `Gui::new`'s own dead `_initial_url`
+        // parameter (see CUSTOMIZATIONS.md), never actually used.
         let url = self.initial_url.as_url().clone();
         let platform_window = self.create_platform_window(url, active_event_loop);
 
@@ -167,6 +168,27 @@ impl App {
     /// constructs `RunningAppState`, and opens the real webview into
     /// `platform_window` (already created by `init`).
     fn finish_init(&mut self, platform_window: Rc<dyn PlatformWindow>, active_event_loop: Option<&ActiveEventLoop>) {
+        // Computed here rather than at `App::new` time: for a packed-content
+        // launch, `init` only ever calls `finish_init` once any pending boot
+        // extraction has actually finished (synchronously for headless, or
+        // via `AppEvent::BootReady` for headed — see `init`), so the target
+        // file genuinely exists on disk by now. Computing this any earlier
+        // (as used to happen, in `App::new`) races extraction on a true
+        // first launch: `get_default_url` only trusts a `file:` URL whose
+        // target already exists (`parser.rs`'s `exists(path)` check), so on
+        // a cache-miss first launch it would silently fall through to
+        // parsing the raw path as a URL directly — which, for a Windows
+        // absolute path, misparses the drive letter as the scheme (see
+        // `parser.rs`'s own comment on this) — surfacing as "Could not load
+        // the requested page: Unsupported scheme" until the *next* launch,
+        // once extraction has already happened once.
+        self.initial_url = get_default_url(
+            self.servoshell_preferences.url.as_deref(),
+            env::current_dir().unwrap(),
+            |path| fs::metadata(path).is_ok(),
+            &self.servoshell_preferences,
+        );
+
         let mut protocol_registry = ProtocolRegistry::default();
         let _ = protocol_registry.register(
             "urlinfo",

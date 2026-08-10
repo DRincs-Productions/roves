@@ -10,6 +10,8 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -71,6 +73,11 @@ pub struct HeadedWindow {
     /// It equals viewport size + (0, toolbar height).
     inner_size: Cell<PhysicalSize<u32>>,
     fullscreen: Cell<bool>,
+    /// Where `set_fullscreen` persists fullscreen state across launches (a marker file
+    /// named `fullscreen`, written when entering fullscreen and removed when leaving it —
+    /// see `prefs.rs`'s `start_fullscreen`). `None` disables persistence entirely (matches
+    /// `ServoShellPreferences::config_dir`, e.g. when the config dir couldn't be resolved).
+    config_dir: Option<PathBuf>,
     device_pixel_ratio_override: Option<f32>,
     xr_window_poses: RefCell<Vec<Rc<XRWindowPose>>>,
     modifiers_state: Cell<ModifiersState>,
@@ -126,6 +133,18 @@ impl HeadedWindow {
             // Must be invisible at startup; accesskit_winit setup needs to
             // happen before the window is shown for the first time.
             .with_visible(false);
+
+        // Reopen already in fullscreen if that's how the game was last left running (see
+        // `prefs.rs`'s `start_fullscreen`/`set_fullscreen`'s persistence below) — avoids a
+        // visible windowed-then-fullscreen transition on startup. See CUSTOMIZATIONS.md.
+        let window_attr = if servoshell_preferences.start_fullscreen {
+            let monitor = event_loop
+                .primary_monitor()
+                .or_else(|| event_loop.available_monitors().next());
+            window_attr.with_fullscreen(Some(winit::window::Fullscreen::Borderless(monitor)))
+        } else {
+            window_attr
+        };
 
         // Set a name so it can be pinned to taskbars in Linux.
         #[cfg(target_os = "linux")]
@@ -202,7 +221,8 @@ impl HeadedWindow {
             gui,
             winit_window,
             webview_relative_mouse_point: Cell::new(Point2D::zero()),
-            fullscreen: Cell::new(false),
+            fullscreen: Cell::new(servoshell_preferences.start_fullscreen),
+            config_dir: servoshell_preferences.config_dir.clone(),
             inner_size: Cell::new(inner_size),
             screen_size,
             device_pixel_ratio_override: servoshell_preferences.device_pixel_ratio_override,
@@ -926,6 +946,7 @@ impl PlatformWindow for HeadedWindow {
             } else {
                 None
             });
+            persist_fullscreen_state(self.config_dir.as_deref(), state);
         }
         self.fullscreen.set(state);
     }
@@ -1150,6 +1171,32 @@ impl PlatformWindow for HeadedWindow {
         self.gui
             .borrow_mut()
             .notify_accessibility_tree_update(tree_update);
+    }
+}
+
+/// Persists fullscreen state across launches as a marker file's mere existence — no JSON,
+/// matching `support/content-packer/src/extract.rs`'s own marker-file convention — so
+/// `prefs.rs`'s `start_fullscreen` can read it back with a plain `Path::exists()` check next
+/// launch. `config_dir` is `None` when it couldn't be resolved at all (see
+/// `ServoShellPreferences::config_dir`); persistence is simply skipped in that case, same
+/// failure philosophy as elsewhere in this codebase (missing state degrades to "off" rather
+/// than panicking).
+fn persist_fullscreen_state(config_dir: Option<&Path>, fullscreen: bool) {
+    let Some(config_dir) = config_dir else { return };
+    let marker = config_dir.join("fullscreen");
+    let result = if fullscreen {
+        fs::write(&marker, b"")
+    } else {
+        fs::remove_file(&marker).or_else(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                Ok(())
+            } else {
+                Err(error)
+            }
+        })
+    };
+    if let Err(error) = result {
+        log::warn!("persisting fullscreen state to {marker:?}: {error}");
     }
 }
 

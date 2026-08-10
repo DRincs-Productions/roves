@@ -1,0 +1,145 @@
+diff --git a/ports/servoshell/prefs.rs b/ports/servoshell/prefs.rs
+index 39df15e..72a10bb 100644
+--- a/ports/servoshell/prefs.rs
++++ b/ports/servoshell/prefs.rs
+@@ -98,6 +98,15 @@ pub(crate) struct ServoShellPreferences {
+     pub webdriver_port: Cell<Option<u16>>,
+     /// Whether the CLI option to enable experimental prefs was present at startup.
+     pub experimental_preferences_enabled: bool,
++    /// Whether the window should open already in fullscreen — persisted across launches
++    /// (a marker file under `config_dir`, written/removed by `HeadedWindow::set_fullscreen`)
++    /// so a game closed in fullscreen reopens that way, without a windowed-then-fullscreen
++    /// transition on startup. See CUSTOMIZATIONS.md.
++    pub start_fullscreen: bool,
++    /// Resolved once at startup (`default_config_dir`, possibly overridden by
++    /// `--config-dir`) and kept here so `HeadedWindow` can persist UI state (currently just
++    /// `start_fullscreen`) back to the same directory without re-deriving it.
++    pub config_dir: Option<PathBuf>,
+     /// Log filter given in the `log_filter` spec as a String, if any.
+     /// If a filter is passed, the logger should adjust accordingly.
+     #[cfg(target_env = "ohos")]
+@@ -131,6 +140,8 @@ impl Default for ServoShellPreferences {
+             #[cfg(target_env = "ohos")]
+             log_to_file: false,
+             experimental_preferences_enabled: false,
++            start_fullscreen: false,
++            config_dir: None,
+         }
+     }
+ }
+@@ -679,6 +690,11 @@ fn parse_arguments_helper(args_without_binary: Args) -> ArgumentParsingResult {
+                 fs::create_dir_all(config_dir).expect("Could not create config_dir");
+             }
+         });
++    // See `HeadedWindow::set_fullscreen` (`desktop/headed_window.rs`) for where this marker
++    // is written/removed as fullscreen is toggled during play.
++    let start_fullscreen = config_dir
++        .as_deref()
++        .is_some_and(|dir| dir.join("fullscreen").exists());
+     let temporary_storage = cmd_args.temporary_storage;
+     if let Some(ref time_profiler_trace_path) = cmd_args.profiler_trace_path {
+         let mut path = PathBuf::from(time_profiler_trace_path);
+@@ -721,6 +737,8 @@ fn parse_arguments_helper(args_without_binary: Args) -> ArgumentParsingResult {
+         userscripts_directory: cmd_args.userscripts,
+         user_stylesheets: cmd_args.user_stylesheet,
+         experimental_preferences_enabled: cmd_args.enable_experimental_web_platform_features,
++        start_fullscreen,
++        config_dir: config_dir.clone(),
+         #[cfg(target_env = "ohos")]
+         log_filter: cmd_args.log_filter.or_else(|| {
+             (!preferences.log_filter.is_empty()).then(|| preferences.log_filter.clone())
+diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/desktop/headed_window.rs
+index 38b7a11..e5954e1 100644
+--- a/ports/servoshell/desktop/headed_window.rs
++++ b/ports/servoshell/desktop/headed_window.rs
+@@ -10,6 +10,8 @@
+ use std::cell::{Cell, RefCell};
+ use std::collections::HashMap;
+ use std::env;
++use std::fs;
++use std::path::{Path, PathBuf};
+ use std::rc::Rc;
+ use std::time::Duration;
+ 
+@@ -71,6 +73,11 @@
+     /// It equals viewport size + (0, toolbar height).
+     inner_size: Cell<PhysicalSize<u32>>,
+     fullscreen: Cell<bool>,
++    /// Where `set_fullscreen` persists fullscreen state across launches (a marker file
++    /// named `fullscreen`, written when entering fullscreen and removed when leaving it —
++    /// see `prefs.rs`'s `start_fullscreen`). `None` disables persistence entirely (matches
++    /// `ServoShellPreferences::config_dir`, e.g. when the config dir couldn't be resolved).
++    config_dir: Option<PathBuf>,
+     device_pixel_ratio_override: Option<f32>,
+     xr_window_poses: RefCell<Vec<Rc<XRWindowPose>>>,
+     modifiers_state: Cell<ModifiersState>,
+@@ -127,6 +134,18 @@
+             // happen before the window is shown for the first time.
+             .with_visible(false);
+ 
++        // Reopen already in fullscreen if that's how the game was last left running (see
++        // `prefs.rs`'s `start_fullscreen`/`set_fullscreen`'s persistence below) — avoids a
++        // visible windowed-then-fullscreen transition on startup. See CUSTOMIZATIONS.md.
++        let window_attr = if servoshell_preferences.start_fullscreen {
++            let monitor = event_loop
++                .primary_monitor()
++                .or_else(|| event_loop.available_monitors().next());
++            window_attr.with_fullscreen(Some(winit::window::Fullscreen::Borderless(monitor)))
++        } else {
++            window_attr
++        };
++
+         // Set a name so it can be pinned to taskbars in Linux.
+         #[cfg(target_os = "linux")]
+         let window_attr = window_attr.with_name("org.roves.Roves", "Roves");
+@@ -202,7 +221,8 @@
+             gui,
+             winit_window,
+             webview_relative_mouse_point: Cell::new(Point2D::zero()),
+-            fullscreen: Cell::new(false),
++            fullscreen: Cell::new(servoshell_preferences.start_fullscreen),
++            config_dir: servoshell_preferences.config_dir.clone(),
+             inner_size: Cell::new(inner_size),
+             screen_size,
+             device_pixel_ratio_override: servoshell_preferences.device_pixel_ratio_override,
+@@ -926,6 +946,7 @@
+             } else {
+                 None
+             });
++            persist_fullscreen_state(self.config_dir.as_deref(), state);
+         }
+         self.fullscreen.set(state);
+     }
+@@ -1153,6 +1174,32 @@
+     }
+ }
+ 
++/// Persists fullscreen state across launches as a marker file's mere existence — no JSON,
++/// matching `support/content-packer/src/extract.rs`'s own marker-file convention — so
++/// `prefs.rs`'s `start_fullscreen` can read it back with a plain `Path::exists()` check next
++/// launch. `config_dir` is `None` when it couldn't be resolved at all (see
++/// `ServoShellPreferences::config_dir`); persistence is simply skipped in that case, same
++/// failure philosophy as elsewhere in this codebase (missing state degrades to "off" rather
++/// than panicking).
++fn persist_fullscreen_state(config_dir: Option<&Path>, fullscreen: bool) {
++    let Some(config_dir) = config_dir else { return };
++    let marker = config_dir.join("fullscreen");
++    let result = if fullscreen {
++        fs::write(&marker, b"")
++    } else {
++        fs::remove_file(&marker).or_else(|error| {
++            if error.kind() == std::io::ErrorKind::NotFound {
++                Ok(())
++            } else {
++                Err(error)
++            }
++        })
++    };
++    if let Err(error) = result {
++        log::warn!("persisting fullscreen state to {marker:?}: {error}");
++    }
++}
++
+ fn winit_phase_to_touch_event_type(phase: TouchPhase) -> TouchEventType {
+     match phase {
+         TouchPhase::Started => TouchEventType::Down,

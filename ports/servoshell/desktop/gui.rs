@@ -210,7 +210,6 @@ impl Gui {
         context
             .egui_winit
             .init_accesskit(event_loop, winit_window, event_loop_proxy);
-        winit_window.set_visible(true);
 
         context.egui_ctx.options_mut(|options| {
             // Disable the builtin egui handlers for the Ctrl+Plus, Ctrl+Minus and Ctrl+0
@@ -228,14 +227,30 @@ impl Gui {
             egui::TextureOptions::default(),
         );
 
-        Self {
+        let mut gui = Self {
             rendering_context,
             context,
             toolbar_height: Default::default(),
             status_text: None,
             pending_accesskit_updates: vec![],
             splash_icon_texture,
-        }
+        };
+
+        // Paint one black splash frame *before* the window is ever shown —
+        // on every code path, not just a packed-content boot extraction —
+        // so there is never a moment where the OS displays the window's
+        // undefined/default backing buffer (surfman/the GL driver don't
+        // clear it themselves; see CUSTOMIZATIONS.md). `AppState::Booting`
+        // repaints over this as extraction proceeds; `AppState::Running`
+        // (no pending extraction, or once `BootReady` fires) repaints over
+        // it with the real page — which itself clears to
+        // `shell_background_color_rgba` (black, see `components/config/
+        // prefs.rs`) until it has something of its own to paint.
+        gui.update_splash(winit_window, None);
+        gui.paint(winit_window);
+        winit_window.set_visible(true);
+
+        gui
     }
 
     pub(crate) fn has_keyboard_focus(&self) -> bool {
