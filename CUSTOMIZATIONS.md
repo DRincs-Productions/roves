@@ -1449,6 +1449,19 @@ already assume; "assemble test bundle"'s `--content-dir` updated from `../test-p
 `test-page/dist` to match. Confirmed by re-tracing both steps' working directories and the
 resulting relative paths by hand; not yet confirmed by an actual CI run.
 
+**Second follow-up (2026-08-10) — zip a named subfolder, not `release/`'s contents at the
+archive root:** unrelated to the icon bug above, but caught while re-checking the same
+workflow — both "zip bundle" steps (`test.yml`) zipped `release/`'s *contents* directly
+(`zip -r "../$ZIP" .` from inside `release/`; `Compress-Archive -Path release/*`), so
+extracting the downloaded archive dumped `play`/`play.exe` plus 8+ loose DLLs/support files
+straight into whatever folder you extracted into (e.g. `Downloads/`), not into one folder of
+their own. Both steps now `mv`/`Rename-Item` `release` to `servo-test-page` first, then zip
+*that folder* (`zip -r "$ZIP" servo-test-page`; `Compress-Archive -Path servo-test-page`) —
+`Compress-Archive`/`zip -r` both preserve the given folder itself as the archive's one
+top-level entry when the path doesn't end in a wildcard, which is what makes this work.
+`servo-test-page` names it after this workflow's content (`test-page/`); a real bundle would
+use the actual game's name instead. Not yet confirmed by an actual CI run.
+
 ---
 
 ## 2026-08-10 — Never show white before the game starts: default clear color + paint-before-show

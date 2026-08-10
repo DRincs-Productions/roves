@@ -254,11 +254,17 @@ jobs:
             echo "Run play.exe (Windows) / Roves.app (macOS) / play (Linux) — the only executable here; no separate engine binary or extractor tool is included." >> ../release/NOTE.txt
           fi
 
+      # Renamed to a named subfolder (after the content being bundled — "test-page"
+      # here; a real bundle would use the actual game's name) before zipping, rather
+      # than zipping `release/`'s contents directly at the archive root: extracting
+      # otherwise dumps play.exe/play and 8+ loose DLLs/support files straight into
+      # whatever folder you extract into (e.g. Downloads), instead of one folder.
       - name: zip bundle (Linux/macOS)
         if: matrix.os_name != 'windows'
         run: |
           ZIP="servoshell-test_${{ matrix.os_name }}.zip"
-          (cd release && zip -r "../$ZIP" .)
+          mv release servo-test-page
+          zip -r "$ZIP" servo-test-page
           echo "ZIP=$ZIP" >> "$GITHUB_ENV"
 
       - name: zip bundle (Windows)
@@ -266,7 +272,8 @@ jobs:
         shell: pwsh
         run: |
           $zip = "servoshell-test_windows.zip"
-          Compress-Archive -Path release/* -DestinationPath $zip
+          Rename-Item -Path release -NewName servo-test-page
+          Compress-Archive -Path servo-test-page -DestinationPath $zip
           echo "ZIP=$zip" >> $env:GITHUB_ENV
 
       - name: upload to "test" release
