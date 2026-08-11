@@ -2,6 +2,7 @@ import { exit } from "@drincs/roves-api/process";
 import { steam } from "@drincs/roves-api/steam";
 import { useState } from "react";
 import AudioButton from "./AudioButton.tsx";
+import ClearCacheButton from "./ClearCacheButton.tsx";
 import DiagnosticsPanel from "./DiagnosticsPanel.tsx";
 import FullscreenButton from "./FullscreenButton.tsx";
 import GamepadPanel from "./GamepadPanel.tsx";
@@ -31,7 +32,9 @@ type RenderTest = "none" | "pixi" | "three";
  *
  * The "quit" button below exercises `@drincs/roves-api/process`'s `exit()`
  * the same way — the real, destructive `roves:exit` command, guarded behind
- * a confirm() since it actually closes the window.
+ * a confirm() since it actually closes the window. ClearCacheButton is the
+ * same shape for `@drincs/roves-api/cache`'s `clearContentCache()`, which
+ * also closes the window (see that module's own doc comment for why).
  *
  * PixiJS / Three.js checks: the real game renders through PixiJS
  * (`@drincs/pixi-vn`); Three.js is a second, unrelated WebGL consumer included
@@ -147,6 +150,7 @@ export default function App() {
         <AudioButton />
         <StorageButton />
         <IndexedDbButton />
+        <ClearCacheButton />
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
           <button type="button" onClick={quitApp}>
             Quit (@drincs/roves-api/process exit())

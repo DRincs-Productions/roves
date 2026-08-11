@@ -12,10 +12,12 @@
 //! belongs generically here.
 
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use headers::{ContentType, HeaderMapExt};
+use roves_content_packer::extract;
 use servo::protocol_handler::{
     DoneChannel, FetchContext, NetworkError, ProtocolHandler, Request, ResourceFetchTiming,
     Response, ResponseBody,
@@ -29,11 +31,35 @@ pub struct RovesProtocolHandler {
     /// winit event loop to send this through in the first place (see
     /// `ServoShellEventLoop::event_loop_proxy`).
     close_proxy: Option<Arc<Mutex<EventLoopProxy<AppEvent>>>>,
+    /// The directory packed game content was (or would be) extracted into —
+    /// the same directory `FileProtocolHandler` serves from — if this launch
+    /// is a packed-content one at all. `None` for a dev `--url` launch, which
+    /// has no extraction cache to clear.
+    content_cache_dir: Option<PathBuf>,
 }
 
 impl RovesProtocolHandler {
-    pub fn new(close_proxy: Option<Arc<Mutex<EventLoopProxy<AppEvent>>>>) -> Self {
-        Self { close_proxy }
+    pub fn new(
+        close_proxy: Option<Arc<Mutex<EventLoopProxy<AppEvent>>>>,
+        content_cache_dir: Option<PathBuf>,
+    ) -> Self {
+        Self { close_proxy, content_cache_dir }
+    }
+
+    /// Sends `AppEvent::CloseAllWindows`, same as the `exit` command — used
+    /// after clearing the content cache, since that cache is the *live*
+    /// document root while the game runs (see `extract::clear_cache`'s
+    /// caller here): leaving the app open afterwards risks a broken load for
+    /// any asset not yet extracted this session.
+    fn close_all_windows(&self) -> Result<(), String> {
+        match &self.close_proxy {
+            Some(proxy) => proxy
+                .lock()
+                .unwrap()
+                .send_event(AppEvent::CloseAllWindows)
+                .map_err(|_| "Failed to reach the main event loop".to_owned()),
+            None => Err("No window to close (headless mode)".to_owned()),
+        }
     }
 }
 
@@ -60,12 +86,16 @@ impl ProtocolHandler for RovesProtocolHandler {
             // entries) that's equivalent to quitting the app: once no
             // windows remain, `App::pump_servo_event_loop` returns `false`
             // and the event loop exits on its own — see app.rs.
-            "exit" | "close_window" => match &self.close_proxy {
-                Some(proxy) => match proxy.lock().unwrap().send_event(AppEvent::CloseAllWindows) {
-                    Ok(()) => Ok("true"),
-                    Err(_) => Err("Failed to reach the main event loop".to_owned()),
-                },
-                None => Err("No window to close (headless mode)".to_owned()),
+            "exit" | "close_window" => self.close_all_windows().map(|()| "true"),
+            // Wipes the startup extraction cache — not save data, see
+            // `support/content-packer`'s doc comments — and then closes the
+            // app the same way `exit` does, since that cache is the live
+            // document root while running (see `close_all_windows`'s doc
+            // comment). The next launch re-extracts fresh from the shipped
+            // bundle.
+            "clear_content_cache" => match &self.content_cache_dir {
+                Some(dir) => extract::clear_cache(dir).and_then(|()| self.close_all_windows()).map(|()| "true"),
+                None => Err("No extraction cache to clear (not a packed-content launch)".to_owned()),
             },
             _ => {
                 return Box::pin(std::future::ready(Response::network_error(

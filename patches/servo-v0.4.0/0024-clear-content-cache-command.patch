@@ -1,0 +1,139 @@
+diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
+index 5c0b493..07dec39 100644
+--- a/ports/servoshell/desktop/app.rs
++++ b/ports/servoshell/desktop/app.rs
+@@ -4,7 +4,7 @@
+ 
+ //! Application entry point, runs the event loop.
+ 
+-use std::path::Path;
++use std::path::{Path, PathBuf};
+ use std::rc::Rc;
+ use std::sync::{Arc, Mutex};
+ use std::thread;
+@@ -215,9 +215,13 @@ impl App {
+             .event_loop_proxy
+             .clone()
+             .map(|proxy| Arc::new(Mutex::new(proxy)));
++        // Same directory `FileProtocolHandler` above resolves content into —
++        // `roves:clear_content_cache` needs it to know what to delete.
++        let content_cache_dir: Option<PathBuf> =
++            initial_file_path.as_deref().and_then(Path::parent).map(PathBuf::from);
+         let _ = protocol_registry.register(
+             "roves",
+-            protocols::roves::RovesProtocolHandler::new(close_proxy),
++            protocols::roves::RovesProtocolHandler::new(close_proxy, content_cache_dir),
+         );
+         // Only registered with `--features steam` (see ports/servoshell/Cargo.toml)
+         // — mirrors the parent project's Tauri `steam` feature. `SteamProtocolHandler::new()`
+diff --git a/ports/servoshell/desktop/protocols/roves.rs b/ports/servoshell/desktop/protocols/roves.rs
+index 5390165..dd51575 100644
+--- a/ports/servoshell/desktop/protocols/roves.rs
++++ b/ports/servoshell/desktop/protocols/roves.rs
+@@ -12,10 +12,12 @@
+ //! belongs generically here.
+ 
+ use std::future::Future;
++use std::path::PathBuf;
+ use std::pin::Pin;
+ use std::sync::{Arc, Mutex};
+ 
+ use headers::{ContentType, HeaderMapExt};
++use roves_content_packer::extract;
+ use servo::protocol_handler::{
+     DoneChannel, FetchContext, NetworkError, ProtocolHandler, Request, ResourceFetchTiming,
+     Response, ResponseBody,
+@@ -29,11 +31,35 @@ pub struct RovesProtocolHandler {
+     /// winit event loop to send this through in the first place (see
+     /// `ServoShellEventLoop::event_loop_proxy`).
+     close_proxy: Option<Arc<Mutex<EventLoopProxy<AppEvent>>>>,
++    /// The directory packed game content was (or would be) extracted into —
++    /// the same directory `FileProtocolHandler` serves from — if this launch
++    /// is a packed-content one at all. `None` for a dev `--url` launch, which
++    /// has no extraction cache to clear.
++    content_cache_dir: Option<PathBuf>,
+ }
+ 
+ impl RovesProtocolHandler {
+-    pub fn new(close_proxy: Option<Arc<Mutex<EventLoopProxy<AppEvent>>>>) -> Self {
+-        Self { close_proxy }
++    pub fn new(
++        close_proxy: Option<Arc<Mutex<EventLoopProxy<AppEvent>>>>,
++        content_cache_dir: Option<PathBuf>,
++    ) -> Self {
++        Self { close_proxy, content_cache_dir }
++    }
++
++    /// Sends `AppEvent::CloseAllWindows`, same as the `exit` command — used
++    /// after clearing the content cache, since that cache is the *live*
++    /// document root while the game runs (see `extract::clear_cache`'s
++    /// caller here): leaving the app open afterwards risks a broken load for
++    /// any asset not yet extracted this session.
++    fn close_all_windows(&self) -> Result<(), String> {
++        match &self.close_proxy {
++            Some(proxy) => proxy
++                .lock()
++                .unwrap()
++                .send_event(AppEvent::CloseAllWindows)
++                .map_err(|_| "Failed to reach the main event loop".to_owned()),
++            None => Err("No window to close (headless mode)".to_owned()),
++        }
+     }
+ }
+ 
+@@ -60,12 +86,16 @@ impl ProtocolHandler for RovesProtocolHandler {
+             // entries) that's equivalent to quitting the app: once no
+             // windows remain, `App::pump_servo_event_loop` returns `false`
+             // and the event loop exits on its own — see app.rs.
+-            "exit" | "close_window" => match &self.close_proxy {
+-                Some(proxy) => match proxy.lock().unwrap().send_event(AppEvent::CloseAllWindows) {
+-                    Ok(()) => Ok("true"),
+-                    Err(_) => Err("Failed to reach the main event loop".to_owned()),
+-                },
+-                None => Err("No window to close (headless mode)".to_owned()),
++            "exit" | "close_window" => self.close_all_windows().map(|()| "true"),
++            // Wipes the startup extraction cache — not save data, see
++            // `support/content-packer`'s doc comments — and then closes the
++            // app the same way `exit` does, since that cache is the live
++            // document root while running (see `close_all_windows`'s doc
++            // comment). The next launch re-extracts fresh from the shipped
++            // bundle.
++            "clear_content_cache" => match &self.content_cache_dir {
++                Some(dir) => extract::clear_cache(dir).and_then(|()| self.close_all_windows()).map(|()| "true"),
++                None => Err("No extraction cache to clear (not a packed-content launch)".to_owned()),
+             },
+             _ => {
+                 return Box::pin(std::future::ready(Response::network_error(
+diff --git a/support/content-packer/src/extract.rs b/support/content-packer/src/extract.rs
+index 0422f06..e77c713 100644
+--- a/support/content-packer/src/extract.rs
++++ b/support/content-packer/src/extract.rs
+@@ -229,6 +229,28 @@ pub fn extract_boot_with_progress(
+     extract_boot_impl(opts, Some(&mut on_progress))
+ }
+ 
++/// Returns whether `dir` is a destination directory previously created by
++/// [`prepare_dest`] (i.e. actually managed packed-content cache) — checked
++/// via [`CONTENT_SOURCE_MARKER`]'s presence, the same signal `FileProtocolHandler`
++/// uses to recognize one. Guards [`clear_cache`] against wiping an unrelated
++/// directory, e.g. a plain dev `--url` launch's own folder, which this crate
++/// never wrote to in the first place.
++pub fn is_managed_cache_dir(dir: &Path) -> bool {
++    dir.join(CONTENT_SOURCE_MARKER).is_file()
++}
++
++/// Deletes a previously-extracted destination directory in its entirety —
++/// the whole point being that the next launch's `prepare_dest` sees no
++/// `CONTENT_HASH_MARKER` and rebuilds it from scratch. Refuses (rather than
++/// deleting) a `dir` that isn't a recognized managed cache — see
++/// [`is_managed_cache_dir`].
++pub fn clear_cache(dir: &Path) -> Result<(), String> {
++    if !is_managed_cache_dir(dir) {
++        return Err(format!("{dir:?} is not a managed content cache directory"));
++    }
++    fs::remove_dir_all(dir).map_err(|e| format!("clearing {dir:?}: {e}"))
++}
++
+ /// Looks up `rel_path` (forward-slash, relative to `dest`) in `manifest` and
+ /// ensures whichever pack contains it has been extracted into `dest`.
+ /// Returns `Ok(false)` if `rel_path` isn't a packed file at all (the caller

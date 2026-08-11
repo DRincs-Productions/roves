@@ -1680,3 +1680,74 @@ override Vite's default `publicDir`. Not compiled end-to-end on the Rust side in
 environment (same `libudev-sys` gap as other entries above). **Needs a real `mach bundle` +
 run to confirm end-to-end**: title bar should read exactly `Roves test-page` for this repo's
 own test bundle.
+
+---
+
+## 2026-08-11 — `roves:clear_content_cache` command, so a game can wipe its own extraction cache
+
+**Files:** `ports/servoshell/desktop/protocols/roves.rs`, `ports/servoshell/desktop/app.rs`,
+`support/content-packer/src/extract.rs`. Plus, outside this `servo/` directory (not
+patch-tracked — see the "roves: protocol bridge" entry above for why): new module
+`roves-api/src/cache.ts` (and its `roves-api/tsup.config.ts` entry point), and a new
+"Clear extraction cache" button in `test-page` (`test-page/src/ClearCacheButton.tsx`, wired
+into `App.tsx`).
+
+**Patch:** `patches/servo-v0.4.0/0024-clear-content-cache-command.patch`
+
+**Upstream behavior:** no equivalent — extends the `roves:` bridge (see the 2026-08-06 entry
+above) with a second command, not a modification of existing upstream logic.
+
+**Change:** a game's packed content (see the "Pack game content into compressed archives"
+and "boot set" entries above) gets decompressed on first launch into a per-install directory
+under the OS cache dir, and stays there — nothing ever clears it automatically. Asked for a
+way for the game itself to force a fresh re-extraction (e.g. after shipping a content update
+under an unexpectedly unchanged `content_hash`, or just for a support/troubleshooting reset),
+*without* touching actual save data, which lives elsewhere entirely and this command never
+touches.
+
+- `support/content-packer/src/extract.rs`: new `is_managed_cache_dir(dir)` (checks for the
+  `.roves-content-source` marker `prepare_dest` always writes) and `clear_cache(dir)` (refuses,
+  rather than deletes, if that marker is missing, then `fs::remove_dir_all`s the whole
+  directory). The marker check matters here specifically because this is a generic "delete
+  this directory" operation reachable from web content — it must not be possible to point it
+  at some unrelated path and have it delete that instead.
+- `app.rs`: computes `content_cache_dir` the exact same way `FileProtocolHandler::new` derives
+  its own `cache_dir` (the initial `file:` URL's parent directory) and passes it to
+  `RovesProtocolHandler::new` alongside the existing `close_proxy`.
+- `roves.rs`: new `"clear_content_cache"` match arm — calls `extract::clear_cache`, and, only
+  if that succeeds, closes every window the same way `exit` does (factored the `exit` arm's
+  window-closing logic out into a shared `close_all_windows` helper both arms now call). `None`
+  `content_cache_dir` (a plain dev `--url` launch, not a packed-content one) answers with an
+  error instead of doing nothing silently.
+- `roves-api/src/cache.ts`: `clearContentCache()`, a thin `invoke("clear_content_cache")`
+  wrapper, new `cache` entry in `tsup.config.ts` (mirrors `process`/`steam`'s existing pattern).
+- `test-page/src/ClearCacheButton.tsx`: same shape as the existing quit button — a
+  `window.confirm()`-guarded destructive action — dropped into the button row next to
+  `IndexedDbButton`/the quit button in `App.tsx`.
+
+**Why closing the window is not optional:** the destination directory this clears is the
+*live* document root while the game is running (`FileProtocolHandler` serves the current
+page and every future on-demand pack extraction out of it — see the "lazy on-demand content
+extraction" entry above). Deleting it out from under a still-running page would silently break
+any asset not yet extracted this session. A relaunch-instead-of-close option was considered
+(and would need new code — nothing in this codebase currently spawns/replaces its own
+process) but deliberately left out of this first version to keep the change small; closing and
+letting the player start the game again is the safe default.
+
+**Verification:** `cargo check -p roves-content-packer` and `cargo check -p servoshell` both
+pass. `roves-api`'s `npm run build` (tsup) produces `dist/cache.{mjs,cjs,d.ts}` correctly.
+`test-page`'s `tsc && vite build` verified against a locally `npm pack`-built copy of
+`@drincs/roves-api` (the npm-published `0.1.0` doesn't have the `cache` module yet — see
+below). Not run end-to-end against a real native build in this environment (same
+`libudev-sys` gap as other entries above).
+
+**Follow-up needed before this is actually usable from `test-page`:** `test-page/package.json`
+depends on the *published* npm package, not the local workspace source (see the 2026-08-06
+entry's "Outside `servo/`" note) — bumped here to `"@drincs/roves-api": "^0.2.0"` to match
+`roves-api/package.json`'s version bump (`0.1.0` → `0.2.0`, done alongside this change, both
+plain local edits). But the npm registry itself still only has `0.1.0` (`core`/`process`/`steam`
+only, no `cache`) until someone actually publishes `0.2.0` — push a `v0.2.0`-style tag (see
+`roves-api/.github/workflows/npm-publish.yml`) to trigger that. Until then, `test-page`'s own
+`npm install`/`tsc` (including `.github/workflows/test.yml`'s CI) will fail to resolve
+`@drincs/roves-api/cache`. Deliberately left un-triggered here since pushing a release tag is
+a real publish action, not a local code change.

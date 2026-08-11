@@ -4,7 +4,7 @@
 
 //! Application entry point, runs the event loop.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -215,9 +215,13 @@ impl App {
             .event_loop_proxy
             .clone()
             .map(|proxy| Arc::new(Mutex::new(proxy)));
+        // Same directory `FileProtocolHandler` above resolves content into —
+        // `roves:clear_content_cache` needs it to know what to delete.
+        let content_cache_dir: Option<PathBuf> =
+            initial_file_path.as_deref().and_then(Path::parent).map(PathBuf::from);
         let _ = protocol_registry.register(
             "roves",
-            protocols::roves::RovesProtocolHandler::new(close_proxy),
+            protocols::roves::RovesProtocolHandler::new(close_proxy, content_cache_dir),
         );
         // Only registered with `--features steam` (see ports/servoshell/Cargo.toml)
         // — mirrors the parent project's Tauri `steam` feature. `SteamProtocolHandler::new()`

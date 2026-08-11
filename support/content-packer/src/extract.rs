@@ -229,6 +229,28 @@ pub fn extract_boot_with_progress(
     extract_boot_impl(opts, Some(&mut on_progress))
 }
 
+/// Returns whether `dir` is a destination directory previously created by
+/// [`prepare_dest`] (i.e. actually managed packed-content cache) — checked
+/// via [`CONTENT_SOURCE_MARKER`]'s presence, the same signal `FileProtocolHandler`
+/// uses to recognize one. Guards [`clear_cache`] against wiping an unrelated
+/// directory, e.g. a plain dev `--url` launch's own folder, which this crate
+/// never wrote to in the first place.
+pub fn is_managed_cache_dir(dir: &Path) -> bool {
+    dir.join(CONTENT_SOURCE_MARKER).is_file()
+}
+
+/// Deletes a previously-extracted destination directory in its entirety —
+/// the whole point being that the next launch's `prepare_dest` sees no
+/// `CONTENT_HASH_MARKER` and rebuilds it from scratch. Refuses (rather than
+/// deleting) a `dir` that isn't a recognized managed cache — see
+/// [`is_managed_cache_dir`].
+pub fn clear_cache(dir: &Path) -> Result<(), String> {
+    if !is_managed_cache_dir(dir) {
+        return Err(format!("{dir:?} is not a managed content cache directory"));
+    }
+    fs::remove_dir_all(dir).map_err(|e| format!("clearing {dir:?}: {e}"))
+}
+
 /// Looks up `rel_path` (forward-slash, relative to `dest`) in `manifest` and
 /// ensures whichever pack contains it has been extracted into `dest`.
 /// Returns `Ok(false)` if `rel_path` isn't a packed file at all (the caller
