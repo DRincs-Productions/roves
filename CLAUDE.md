@@ -68,6 +68,39 @@ tedious work this setup exists to avoid. A stale or incomplete `CUSTOMIZATIONS.m
 worse than an honest gap: if a change here isn't reflected there, fix it as soon as you
 notice, even for changes you didn't make yourself.
 
+## CRITICAL: keep `roves-action` in sync with CI/CD changes here
+
+Alongside this repo, on the same machine, there are sibling checkouts of other
+`DRincs-Productions` repos that depend on this engine's build/bundle surface — most
+importantly `../roves-action` (`DRincs-Productions/roves-action`, a separate git repo, not a
+submodule of this one). `roves-action` is a GitHub Action that runs `mach build` + `mach
+bundle` against a pinned checkout of *this* repo on behalf of any third-party game's CI —
+its own README says outright that it mirrors this repo's own
+`.github/workflows/test.yml`. Its `action.yml` inputs are a near 1:1 forwarding layer over
+`mach build`/`mach bundle`'s CLI flags (each tagged `[servo]` or `[roves]` in that file to
+say which side owns it).
+
+That mirroring is not automatic — it's a manual sync someone (you) has to maintain. **Any
+change here that touches this repo's CI/CD or build/bundle surface must be reflected in
+`roves-action` in the same turn**, not deferred. Concretely, this includes:
+
+- A new, removed, renamed, or redefaulted `mach build` or `mach bundle` flag (the command
+  lives in `python/servo/post_build_commands.py`; see the `## CRITICAL: keep
+  CUSTOMIZATIONS.md` section above — those same changes already need a `CUSTOMIZATIONS.md`
+  entry and patch).
+- A new `mach bundle` output format/target (e.g. the existing `--deb`, or anything added
+  after it) — `roves-action`'s `action.yml` needs a matching input, and its `README.md`
+  needs a matching example/row in its input tables.
+- Changes to what `.github/workflows/test.yml` actually *does* with those flags (build
+  matrix entries, packaging/zipping conventions, defaults) — if `test.yml` is the reference
+  implementation `roves-action` mirrors, drift here silently makes that mirror stale.
+
+If `../roves-action` isn't present as a sibling checkout when you're making a change like
+this, say so explicitly rather than silently skipping the sync — don't assume the update is
+someone else's problem. `roves-api` and `roves-wiki` (also sibling repos) are not part of
+this mirroring relationship and don't need this same treatment unless a change here directly
+affects what they document or consume.
+
 ## Upgrading to a newer Servo version (rough steps)
 
 1. Download the new tag's source zip: `https://github.com/servo/servo/archive/refs/tags/v<NEW_VERSION>.zip`.

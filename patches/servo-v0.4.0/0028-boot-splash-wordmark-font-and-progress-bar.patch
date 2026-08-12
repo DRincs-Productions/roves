@@ -1,0 +1,113 @@
+diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
+index aed855f..25acdd5 100644
+--- a/ports/servoshell/desktop/gui.rs
++++ b/ports/servoshell/desktop/gui.rs
+@@ -13,11 +13,9 @@ use dpi::PhysicalSize;
+ use egui::text::{CCursor, CCursorRange};
+ use egui::text_edit::TextEditState;
+ use egui::{
+-    Button, FontDefinitions, Id, Key, Label, LayerId, Modifiers, Order, PaintCallback, Panel, Vec2,
+-    WidgetInfo, WidgetType, pos2,
++    Button, FontData, FontDefinitions, FontFamily, Id, Key, Label, LayerId, Modifiers, Order,
++    PaintCallback, Panel, Vec2, WidgetInfo, WidgetType, pos2,
+ };
+-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
+-use egui::{FontData, FontFamily};
+ use egui_glow::{CallbackFn, EguiGlow};
+ use egui_winit::EventResponse;
+ use euclid::{Length, Point2D, Rect, Scale, Size2D};
+@@ -174,6 +172,28 @@ fn configure_fonts() -> FontDefinitions {
+     FontDefinitions::default()
+ }
+ 
++/// Registers the bundled Metal Mania display font (`resources/fonts/`, OFL-licensed — see
++/// `resources/fonts/MetalMania-OFL.txt`) under its own named family,
++/// `FontFamily::Name("metal_mania")`, used only for the "Roves" wordmark on the boot splash
++/// (see [`Gui::update_splash`]) — unlike `configure_fonts` above, this isn't a
++/// proportional-font *fallback* (nothing else in the UI should render in a display/
++/// blackletter font), so it gets its own family instead of being pushed onto
++/// `FontFamily::Proportional`'s fallback chain, and runs on every platform, not just
++/// where CJK system fonts get probed.
++fn add_wordmark_font(fonts: &mut FontDefinitions) {
++    const WORDMARK_FONT_NAME: &str = "Metal Mania";
++    fonts.font_data.insert(
++        WORDMARK_FONT_NAME.to_owned(),
++        Arc::new(FontData::from_static(include_bytes!(
++            "../../../resources/fonts/MetalMania-Regular.ttf"
++        ))),
++    );
++    fonts.families.insert(
++        FontFamily::Name(WORDMARK_FONT_NAME.into()),
++        vec![WORDMARK_FONT_NAME.to_owned()],
++    );
++}
++
+ impl Drop for Gui {
+     fn drop(&mut self) {
+         self.rendering_context
+@@ -204,7 +224,8 @@ impl Gui {
+             false,
+         );
+ 
+-        let font_definitions = configure_fonts();
++        let mut font_definitions = configure_fonts();
++        add_wordmark_font(&mut font_definitions);
+         context.egui_ctx.set_fonts(font_definitions);
+ 
+         context
+@@ -479,12 +500,14 @@ impl Gui {
+     }
+ 
+     /// Update the boot splash (see `AppState::Booting` in `app.rs`) — a
+-    /// minimal, deliberately unstyled black screen with the Roves icon and
+-    /// name, shown in place of the normal browser UI while a packed-content
++    /// minimal black screen with the Roves icon and wordmark (see
++    /// `resources/roves_wordmark.svg` for the same lockup as a standalone
++    /// asset), shown in place of the normal browser UI while a packed-content
+     /// launch's boot extraction still hasn't finished. `progress`, once
+-    /// `Some`, is shown as a progress bar; kept `None` for the splash's
+-    /// short appear-delay so a fast/no-op extraction never flashes one.
+-    /// Call [`Gui::paint`] afterward, same as [`Gui::update`].
++    /// `Some`, is shown as a squared-off white progress bar below the
++    /// wordmark; kept `None` for the splash's short appear-delay so a
++    /// fast/no-op extraction never flashes one. Call [`Gui::paint`]
++    /// afterward, same as [`Gui::update`].
+     pub(crate) fn update_splash(&mut self, winit_window: &Window, progress: Option<f32>) {
+         self.rendering_context
+             .make_current()
+@@ -501,14 +524,31 @@ impl Gui {
+                 .frame(egui::Frame::default().fill(egui::Color32::BLACK))
+                 .show(ctx, |ui| {
+                     ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+-                        ui.add_space(ui.available_height() / 2.0 - 40.0);
++                        // Fudge-factor half-height offset for the icon+wordmark row (~64px,
++                        // the icon's height dominates) + gap (20px) + progress bar (18px) —
++                        // see add_wordmark_font/WORDMARK_FONT_SIZE above for why the wordmark
++                        // itself doesn't push this past the icon's height.
++                        ui.add_space(ui.available_height() / 2.0 - 51.0);
+                         ui.horizontal(|ui| {
+                             ui.add(icon.clone());
+-                            ui.colored_label(egui::Color32::WHITE, "Roves");
++                            ui.label(
++                                egui::RichText::new("Roves")
++                                    .font(egui::FontId::new(
++                                        34.0,
++                                        egui::FontFamily::Name("Metal Mania".into()),
++                                    ))
++                                    .color(egui::Color32::WHITE),
++                            );
+                         });
+                         if let Some(progress) = progress {
+-                            ui.add_space(12.0);
+-                            ui.add(egui::ProgressBar::new(progress).desired_width(200.0));
++                            ui.add_space(20.0);
++                            ui.add(
++                                egui::ProgressBar::new(progress)
++                                    .desired_width(200.0)
++                                    .desired_height(18.0)
++                                    .fill(egui::Color32::WHITE)
++                                    .corner_radius(egui::CornerRadius::ZERO),
++                            );
+                         }
+                     });
+                 });

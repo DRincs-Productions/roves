@@ -12,6 +12,7 @@ import os
 import os.path as path
 import shutil
 import subprocess
+import uuid
 from subprocess import CompletedProcess
 from shutil import copy2
 from typing import Any, Optional, List, NamedTuple, cast
@@ -30,12 +31,14 @@ import servo.platform
 from servo.command_base import (
     BuildNotFound,
     CommandBase,
+    cd,
     check_call,
     is_linux,
     is_freebsd,
     is_macosx,
     is_windows,
 )
+from servo.package_commands import check_call_with_randomized_backoff
 from servo.platform.build_target import is_android
 from servo.util import delete
 
@@ -93,6 +96,25 @@ _DEBIAN_ARCH_BY_RUST_ARCH = {
     "aarch64": "arm64",
     "i686": "i386",
 }
+
+
+def _sanitize_msi_version(version: str) -> str:
+    """WiX's `Product/@Version` must be a dotted run of 1-4 integers, each
+    0-65535 — an MSI file-format constraint, not a WiX one — unlike
+    `--package-version` for `--deb`, which lands in a free-text Debian
+    control field and accepts anything. Strips a leading `v` (a common git
+    tag convention, e.g. `v1.2.3`) and raises rather than silently coercing
+    an incompatible value: mangling a version string a game's own CI might
+    rely on for update checks is worse than failing loudly at bundle time.
+    """
+    trimmed = version[1:] if version[:1].lower() == "v" and version[1:2].isdigit() else version
+    parts = trimmed.split(".")
+    if not (1 <= len(parts) <= 4) or not all(p.isdigit() and int(p) <= 65535 for p in parts):
+        raise ValueError(
+            f"--package-version {version!r} isn't a valid MSI version (1-4 dot-separated "
+            "integers, each 0-65535, e.g. 1.2.3) — required for --msi."
+        )
+    return trimmed
 
 
 def _place_bundle_content(
@@ -414,8 +436,20 @@ class PostBuildCommands(CommandBase):
         action="store_true",
         help="Linux only: build a .deb package instead of the default self-contained play.sh bundle",
     )
-    @CommandArgument("--deb-package-name", default="roves", help="Package name to use with --deb")
-    @CommandArgument("--deb-version", default="0.0.0", help="Package version to use with --deb")
+    @CommandArgument(
+        "--msi",
+        action="store_true",
+        help="Windows only: build an installable .msi package instead of the default self-contained "
+        "play.exe bundle",
+    )
+    @CommandArgument(
+        "--dmg",
+        action="store_true",
+        help="macOS only: wrap the default Roves.app bundle in an installable .dmg disk image instead "
+        "of shipping the .app on its own",
+    )
+    @CommandArgument("--package-name", default="roves", help="Package name to use with --deb/--msi/--dmg")
+    @CommandArgument("--package-version", default="0.0.0", help="Package version to use with --deb/--msi/--dmg")
     @CommandArgument("params", nargs="...", help="Extra command-line arguments to pass through to servoshell on launch")
     @CommandBase.common_command_arguments(binary_selection=True)
     def bundle(
@@ -431,8 +465,10 @@ class PostBuildCommands(CommandBase):
         content_exclude: Optional[List[str]] = None,
         content_boot_include: Optional[List[str]] = None,
         deb: bool = False,
-        deb_package_name: str = "roves",
-        deb_version: str = "0.0.0",
+        msi: bool = False,
+        dmg: bool = False,
+        package_name: str = "roves",
+        package_version: str = "0.0.0",
         params: Optional[List[str]] = None,
         **kwargs: Any,
     ) -> int | None:
@@ -441,21 +477,26 @@ class PostBuildCommands(CommandBase):
 
         * Windows: a single play.exe (built with the "windows" subsystem, so
           it never flashes a console — see ports/servoshell/main.rs for the
-          same attribute the underlying engine binary already carries).
+          same attribute the underlying engine binary already carries). With
+          --msi, an installable .msi package instead (see _wrap_windows_msi).
         * macOS: a minimal Roves.app bundle whose Contents/MacOS/Roves *is*
           the engine binary itself. Finder launches it directly, no
-          Terminal involved at all.
+          Terminal involved at all. With --dmg, that same .app wrapped in an
+          installable .dmg disk image instead (see _wrap_macos_dmg).
         * Linux: by default, a single `play` binary. With --deb, a proper
           .deb package instead (see _bundle_linux_deb for what it does and
           does not attempt).
 
-        Every platform ships exactly one executable — no separate launcher
-        process and no `roves-content-packer` binary alongside it. A small
-        `launch.json` sits next to the binary instead, read back by the
-        engine's own `ports/servoshell/desktop/bundle_launch.rs` at startup
-        to resolve its launch args (window size, content location) and, for
-        packed content, run the equivalent of `roves-content-packer extract`
-        in-process as a library call rather than a separate program.
+        Every platform's *portable* output ships exactly one executable — no
+        separate launcher process and no `roves-content-packer` binary
+        alongside it. A small `launch.json` sits next to the binary instead,
+        read back by the engine's own `ports/servoshell/desktop/
+        bundle_launch.rs` at startup to resolve its launch args (window
+        size, content location) and, for packed content, run the equivalent
+        of `roves-content-packer extract` in-process as a library call
+        rather than a separate program. An installer (--deb/--msi/--dmg)
+        wraps that exact same portable output — the portable staging files
+        themselves aren't left behind once the installer is built.
 
         By default (`--content-compress=auto`), `--content-dir` isn't copied
         into the bundle as loose files: it's packed into a handful of
@@ -470,6 +511,12 @@ class PostBuildCommands(CommandBase):
         """
         if deb and not is_linux():
             print("--deb is only supported on Linux.")
+            return 1
+        if msi and not is_windows():
+            print("--msi is only supported on Windows.")
+            return 1
+        if dmg and not is_macosx():
+            print("--dmg is only supported on macOS.")
             return 1
 
         binary_dir = path.dirname(servo_binary)
@@ -493,21 +540,32 @@ class PostBuildCommands(CommandBase):
             extra_args=extra_args,
         )
 
+        # --msi/--dmg wrap the exact same portable output the plain windows/macOS
+        # branches below produce — built into a throwaway staging directory first,
+        # so `_bundle_windows`/`_bundle_macos` and `_place_bundle_content` don't need
+        # to know or care whether their output ends up shipped as-is or wrapped into
+        # an installer afterward.
+        stage_dir = path.join(output_dir, "_stage") if (msi or dmg) else output_dir
+
         if is_windows():
-            self._bundle_windows(servo_binary, binary_dir, output_dir, launch_info)
-            bundle_root = output_dir
+            if msi:
+                os.makedirs(stage_dir)
+            self._bundle_windows(servo_binary, binary_dir, stage_dir, launch_info)
+            bundle_root = stage_dir
         elif is_macosx():
-            bundle_root = path.join(output_dir, "Roves.app", "Contents", "Resources")
+            if dmg:
+                os.makedirs(stage_dir)
+            bundle_root = path.join(stage_dir, "Roves.app", "Contents", "Resources")
             os.makedirs(bundle_root)
-            self._bundle_macos(servo_binary, binary_dir, output_dir, launch_info)
+            self._bundle_macos(servo_binary, binary_dir, stage_dir, launch_info)
         elif deb:
             self._bundle_linux_deb(
                 servo_binary,
                 binary_dir,
                 output_dir,
                 launch_info,
-                deb_package_name,
-                deb_version,
+                package_name,
+                package_version,
                 html_file,
                 content_dir,
                 content_compress,
@@ -536,6 +594,14 @@ class PostBuildCommands(CommandBase):
             content_boot_include,
             window_title,
         )
+
+        if msi:
+            self._wrap_windows_msi(stage_dir, output_dir, package_name, package_version)
+            delete(stage_dir)
+        elif dmg:
+            self._wrap_macos_dmg(stage_dir, output_dir, package_name, package_version)
+            delete(stage_dir)
+
         print(f"Bundle written to {output_dir}")
         return None
 
@@ -577,6 +643,65 @@ class PostBuildCommands(CommandBase):
             if f.lower().endswith(".dll"):
                 shutil.copy(path.join(binary_dir, f), output_dir)
         _write_launch_config(output_dir, launch_info)
+
+    def _wrap_windows_msi(self, stage_dir: str, output_dir: str, package_name: str, version: str) -> None:
+        """Wraps the portable Windows bundle already built into `stage_dir`
+        (by `_bundle_windows` + `_place_bundle_content`) into an installable
+        `.msi`, via WiX's `candle`/`light` — the same toolset upstream's own
+        `./mach package` uses for stock Servo (see package_commands.py and
+        support/windows/servoshell.wxs.mako), adapted here as a generic
+        recursive harvest of `stage_dir` instead of that template's
+        hardcoded servoshell.exe + resources/ layout, since a bundle's
+        actual contents (DLL set, whether/where packed content ended up)
+        vary per game and per --content-compress setting.
+        """
+        for tool in ("candle", "light"):
+            if not shutil.which(tool):
+                print(f"--msi requires the WiX Toolset ('{tool}' not found on PATH).")
+                raise BuildNotFound(f"{tool} not found")
+
+        msi_version = _sanitize_msi_version(version)
+        # Deterministic per-package-name, not per-build: WiX's MajorUpgrade
+        # mechanism (below, in the template) uses a stable UpgradeCode to
+        # recognize "this is a newer version of the same product" across
+        # separate `mach bundle` invocations — a fresh random one every
+        # build would make every install look like an unrelated product.
+        upgrade_code = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"roves.bundle.{package_name}"))
+
+        import mako.template
+
+        msi_build_dir = path.join(path.dirname(stage_dir), "_msi-build")
+        if path.exists(msi_build_dir):
+            delete(msi_build_dir)
+        os.makedirs(msi_build_dir)
+
+        template_path = path.join(self.context.topdir, "support", "windows", "roves-bundle.wxs.mako")
+        template = mako.template.Template(open(template_path).read())
+        wxs_path = path.join(msi_build_dir, "Bundle.wxs")
+        with open(wxs_path, "w") as f:
+            f.write(
+                template.render(
+                    package_name=package_name,
+                    upgrade_code=upgrade_code,
+                    msi_version=msi_version,
+                    stage_dir=stage_dir,
+                )
+            )
+
+        try:
+            with cd(msi_build_dir):
+                subprocess.check_call(["candle", "Bundle.wxs"])
+                subprocess.check_call(["light", "Bundle.wixobj"])
+        except subprocess.CalledProcessError as e:
+            print("WiX candle/light exited with return value %d" % e.returncode)
+            raise
+
+        msi_path = path.join(output_dir, f"{package_name}_{version}.msi")
+        if path.exists(msi_path):
+            os.remove(msi_path)
+        shutil.move(path.join(msi_build_dir, "Bundle.msi"), msi_path)
+        delete(msi_build_dir)
+        print(f"Packaged into {msi_path}")
 
     def _bundle_macos(
         self,
@@ -638,6 +763,37 @@ class PostBuildCommands(CommandBase):
         # a sibling of Contents/MacOS — `bundle_launch.rs` knows to look
         # there specifically on macOS.
         _write_launch_config(macos_dir, launch_info)
+
+    def _wrap_macos_dmg(self, stage_dir: str, output_dir: str, package_name: str, version: str) -> None:
+        """Wraps the Roves.app bundle already built into `stage_dir` (by
+        `_bundle_macos` + `_place_bundle_content`) into an installable
+        `.dmg` disk image via `hdiutil` — the same tool upstream's own
+        `./mach package` uses for stock Servo's `Servo.app` (see
+        package_commands.py's `package` command), adapted here to wrap our
+        content-bearing `Roves.app` instead. An `/Applications` symlink
+        sits alongside the `.app` inside the mounted volume so Finder's
+        usual drag-to-install gesture works.
+        """
+        if not shutil.which("hdiutil"):
+            print("--dmg requires `hdiutil`, which was not found on PATH.")
+            raise BuildNotFound("hdiutil not found")
+
+        os.symlink("/Applications", path.join(stage_dir, "Applications"))
+        dmg_path = path.join(output_dir, f"{package_name}-{version}.dmg")
+        if path.exists(dmg_path):
+            os.remove(dmg_path)
+        try:
+            # hdiutil gives "Resource busy" failures on GitHub Actions at
+            # times — see package_commands.py's own use of this same retry
+            # helper for the identical issue with stock Servo's .dmg.
+            check_call_with_randomized_backoff(
+                ["hdiutil", "create", "-volname", package_name, "-srcfolder", stage_dir, dmg_path],
+                retries=3,
+            )
+        except subprocess.CalledProcessError as e:
+            print("hdiutil exited with return value %d" % e.returncode)
+            raise
+        print(f"Packaged into {dmg_path}")
 
     def _bundle_linux(
         self,

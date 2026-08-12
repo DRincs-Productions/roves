@@ -1895,3 +1895,198 @@ completed in this environment for the `bundle_launch.rs` change specifically —
 `libudev-sys` gap noted in the entry above; reviewed by hand instead (a single-line call-site
 change, `resolve_dest(&content_dir, None, manifest.name.as_deref())`, using a binding —
 `manifest` — already in scope one line above it).
+
+---
+
+## 2026-08-12 — Installable packages on Windows/macOS too: `mach bundle --msi`/`--dmg`
+
+**Files:** `python/servo/post_build_commands.py`, new file
+`support/windows/roves-bundle.wxs.mako`, `../.github/workflows/test.yml`.
+
+**Patch:** `patches/servo-v0.4.0/0027-add-msi-dmg-installer-support.patch`
+
+**Upstream behavior:** no equivalent for `mach bundle` (a Roves-added command, see the
+2026-08-06 entry above) — `--deb` was the only installable-package option `mach bundle` had,
+and only on Linux. Windows and macOS only ever produced the portable `play.exe`/`Roves.app`.
+Separately, upstream's own *unrelated* `./mach package` command (`package_commands.py`) does
+build a WiX `.msi` (Windows) and a `.dmg` (macOS) — but for the bare stock `servoshell`
+binary, not wired to `mach bundle`'s content-dir-bundling/packed-content machinery at all.
+
+**Why now:** asked directly — this fork ships to end users as a real game distribution,
+where "download, double-click, play, no install" (the portable bundle) and "download an
+installer, install it like any other app" are both things a game's own release pipeline
+might want, per platform, exactly like Tauri's own bundler offers both an unpacked binary and
+platform installers (`msi`/`nsis` on Windows, `dmg`/`app` on macOS, `deb`/`rpm`/`appimage` on
+Linux) as separate targets — see `README.md`'s "Embedding" section on Roves' general posture
+of matching Tauri's shape where it makes sense. Only `msi` (Windows) and `dmg` (macOS) are
+added here, matching what's actually reusable today (see below); `nsis`/`rpm`/`appimage`
+aren't implemented and should follow the same shape if added later, not block on this entry.
+
+**Change:**
+
+- **`--msi` (Windows only, new):** wraps the same portable output `--content-dir`/
+  `_bundle_windows` already produce — built into a throwaway `_stage` subdirectory of
+  `--output` instead of `--output` directly — into an installable `.msi` via WiX's
+  `candle`/`light` (the same toolset `./mach package`'s own Windows installer uses). New
+  `_wrap_windows_msi` renders `support/windows/roves-bundle.wxs.mako`, a **generalized**
+  version of `support/windows/servoshell.wxs.mako`'s recursive directory-harvest technique
+  (`include_directory`): rather than that template's fixed "servoshell.exe + resources/"
+  shape, it walks whatever actually ended up in the staging directory — play.exe, its DLLs,
+  launch.json, and (only when content wasn't packed, or always for the packed-archive case)
+  whichever subfolder the html file's own directory put game content in — so it stays
+  correct regardless of a given game's `--content-dir`/`--content-compress` combination,
+  unlike hand-listing files the way the upstream template does. `Product/@UpgradeCode` is a
+  deterministic `uuid5` of `--package-name` (stable across builds of the *same* game, so WiX's
+  `MajorUpgrade` recognizes successive installs as upgrades rather than unrelated products);
+  `Product/@Version` must be a plain `a.b.c.d` numeric MSI version (new module-level
+  `_sanitize_msi_version`, which strips a leading `v` but otherwise raises — rather than
+  silently mangling — on anything that isn't, since `--deb-version`'s old free-text
+  tolerance doesn't carry over to a format MSI itself enforces). Requires `candle`/`light` on
+  `PATH`; raises `BuildNotFound` with a clear message if missing, same convention as `--deb`'s
+  `dpkg-deb` check.
+- **`--dmg` (macOS only, new):** wraps the `Roves.app` bundle `_bundle_macos` already
+  produces into an installable `.dmg` via `hdiutil`, same approach `./mach package` uses for
+  stock Servo's `Servo.app` (including reusing `package_commands.py`'s
+  `check_call_with_randomized_backoff` for the same "Resource busy" flakiness `hdiutil` has
+  on GitHub Actions) — new `_wrap_macos_dmg`, adding the usual `/Applications` symlink next to
+  the `.app` inside the mounted volume for Finder's drag-to-install gesture.
+- **`--deb-package-name`/`--deb-version` renamed to `--package-name`/`--package-version`**
+  (same defaults, `roves`/`0.0.0`): now shared across `--deb`/`--msi`/`--dmg` instead of three
+  separate per-format flag pairs, since all three are "give this package a name and a
+  version," not something specific to `.deb`. No compatibility shim for the old flag names —
+  no tagged Roves release exists yet that could depend on them, and `../roves-action` (which
+  mirrors this exact CLI, see `../CLAUDE.md`'s "keep roves-action in sync" section) is updated
+  in the same turn as this entry.
+- **`bundle()`'s internal flow:** both new formats stage into `<output>/_stage` (an ordinary
+  subdirectory, built via the *exact same* `_bundle_windows`/`_bundle_macos` +
+  `_place_bundle_content` calls the portable path already used, unchanged), then get wrapped
+  into the real installer file written into `--output` itself, after which `_stage` is
+  deleted — mirroring `--deb`'s existing `pkgroot`-then-delete shape, so `--output` ends up
+  containing only the final installer artifact either way, never a mix of staging files and
+  the installer.
+- **`../.github/workflows/test.yml`:** the matrix grew from 4 entries (windows, macos, linux,
+  linux-deb) to 6 — every platform now gets both its portable job and its installer job
+  (`windows`+`msi`, `macos`+`dmg`, `linux`+`deb`), via a new `package_mode` matrix axis, rather
+  than only Linux having an installable variant. Added a step putting WiX's `bin/` (present
+  but not on `PATH` by default on the `windows-latest` runner image, which ships WiX Toolset
+  v3 pre-installed per `actions/runner-images`) onto `PATH`, gated on `package_mode == 'msi'`.
+  Each OS's two zip artifacts are now named distinctly (`servoshell-test_<os>-<mode>.zip`) so
+  the portable and installer jobs' uploads don't clobber each other under the same rolling
+  "test" release.
+
+**Side effects to know about when upgrading:** none of this depends on Servo internals beyond
+what the 2026-08-06 `mach bundle` entry already doesn't — `get_binary_path()`/`self.target`,
+stable low-level `CommandBase` API. If a future Servo version changes what
+`copy_windows_dlls_to_build_directory` drops next to the Windows binary, the same DLL glob
+`_bundle_windows` already relies on (and `_wrap_windows_msi` harvests via its generic
+directory walk) needs rechecking — no new dependency introduced by this entry specifically.
+
+**Verification:** `python3 -c "import ast; ast.parse(...)"` on `post_build_commands.py`
+passes (syntax only — no Rust changed, so no `cargo check`/`cargo test` needed here).
+`roves-bundle.wxs.mako` was rendered directly with `mako.template.Template` against a
+synthetic staging directory (flat files + a nested subfolder, standing in for a real
+`play.exe`+DLLs+`launch.json`+packed-content layout) and the output parsed with
+`xml.etree.ElementTree` to confirm it's well-formed XML with the expected recursive
+`<Directory>`/`<Component>`/`<ComponentRef>` structure — this confirms the *template logic*
+is correct, not that WiX's own `candle`/`light` accept it, or that `hdiutil`/the deb path
+still work: none of `--msi`/`--dmg`/`--deb` (nor even the pre-existing portable paths) were
+exercised through a real `./mach build` + `./mach bundle` in this environment (no Windows/
+Rust toolchain available here) — treat the next real CI run of `../.github/workflows/test.yml`
+(once it's actually running somewhere — see its own header comment on why it's dormant today)
+as the real verification, and fix up anything that doesn't survive contact with real WiX/
+`hdiutil` before relying on this.
+
+---
+
+## 2026-08-12 — Boot splash redesign: Metal Mania wordmark, squared white progress bar
+
+**Files:** `ports/servoshell/desktop/gui.rs`. Also new files `resources/fonts/
+MetalMania-Regular.ttf`, `resources/fonts/MetalMania-OFL.txt`, and `resources/
+roves_wordmark.svg` — not part of the patch (same reasoning as `test-page/public/icon.png`/
+`icon.ico` in the "Game-supplied icon" entry above: plain binary assets, not derived from any
+upstream file, and a text-based unified diff can't represent new binary file content at all).
+Unlike that icon precedent, `MetalMania-Regular.ttf` *is* something `./mach build` needs to
+find on disk (`gui.rs`'s `include_bytes!`) — `../.github/workflows/test.yml`'s "download +
+patch Servo source" step now also copies `resources/fonts/` into the reconstructed tree, the
+same way it already mirrors `test-page/public`/`test-page/dist` in for the same reason.
+`roves_wordmark.svg` isn't referenced by any Rust code, so it doesn't need that treatment —
+it's a repo-only design asset.
+
+**Patch:** `patches/servo-v0.4.0/0028-boot-splash-wordmark-font-and-progress-bar.patch`
+
+**Upstream behavior:** no equivalent — refines the 2026-08-09 "Native boot splash" entry's
+`Gui::update_splash` (further up this file).
+
+**Asked directly:** the existing splash's "Roves" label rendered in egui's plain default
+font, and the progress bar was a stock `egui::ProgressBar` (rounded corners, default theme
+fill color) — visually generic, not an intentional design.
+
+**Change:**
+
+- **New asset, `resources/roves_wordmark.svg`:** a small, self-contained SVG — the existing
+  splash icon (`resources/servo_64.png`, embedded as a base64 `<image>`) beside the "Roves"
+  wordmark, set in **Metal Mania** (embedded as a base64 `@font-face` in an inline
+  `<style>`, so the file renders correctly anywhere without the font installed system-wide —
+  verified by rendering it with `cairosvg` both before and after installing the font locally:
+  without it, text fell back to a generic sans-serif; with it, or in any real `@font-face`-
+  respecting renderer/browser, which is what actually matters since the font travels with
+  the file, it renders in Metal Mania). This is a standalone design asset, not something
+  rendered live by the engine — see the next point for why.
+- **`resources/fonts/MetalMania-Regular.ttf` + `MetalMania-OFL.txt`:** the actual font file
+  (from Google Fonts, `fonts.gstatic.com/s/metalmania/v23/...`), bundled for the engine to
+  embed at compile time, plus its SIL Open Font License 1.1 text (`Copyright (c) 2012 by Open
+  Window ... Reserved Font Name "Metal Mania"`) — OFL permits embedding/redistribution
+  royalty-free; this is the first third-party font actually bundled into the binary (the
+  existing CJK fallback fonts `configure_fonts`/`load_cjk_fonts` load are read from the
+  *player's own OS* at runtime, never shipped).
+- **`gui.rs`, new `add_wordmark_font`:** registers `MetalMania-Regular.ttf`
+  (`include_bytes!` + `FontData::from_static`, no per-launch disk read) under its own egui
+  font family, `FontFamily::Name("Metal Mania")` — deliberately *not* pushed onto
+  `FontFamily::Proportional`'s fallback chain the way `load_cjk_fonts` does for CJK, since
+  this is a one-off display font for a single label, not something the rest of the UI should
+  ever fall back to. Called from `Gui::new` right after `configure_fonts()`, unconditionally
+  on every platform (unlike `configure_fonts` itself, which is platform-gated for CJK system-
+  font probing) — required promoting the `FontData`/`FontFamily` imports from
+  `#[cfg(any(windows, linux, freebsd))]`-gated to unconditional, since macOS now needs them
+  too.
+- **`update_splash`:** the "Roves" label now renders via `egui::RichText` with
+  `FontId::new(34.0, FontFamily::Name("Metal Mania"))` instead of a plain `colored_label`.
+  The gap between the icon+wordmark row and the progress bar grew from 12px to 20px (asked
+  for explicitly — the bar sits "a bit further below" the wordmark, not immediately
+  adjacent). The progress bar itself gained `.fill(Color32::WHITE)` (white, was the default
+  theme accent color) and `.corner_radius(CornerRadius::ZERO)` (squared-off, was egui's
+  default rounded-rect) plus an explicit `.desired_height(18.0)` for a consistent thin bar
+  regardless of theme defaults. The manual vertical-centering fudge factor (`available_height
+  / 2.0 - N`) was bumped from `40.0` to `51.0` to account for the larger gap — still an
+  estimate, not computed from actual measured widget sizes (egui only knows a widget's real
+  size after laying it out), same caveat the original value already carried.
+
+**Why not render `roves_wordmark.svg` itself in the running splash:** there is no SVG
+rasterization path anywhere in this engine or its dependencies (confirmed — no `resvg`/
+`usvg` or equivalent; `favicon.svg`/`icon.svg`'s existing uses are all for the *unrelated*
+game-icon-fallback feature, never rasterized at runtime either). Adding one just to redraw a
+static icon+text lockup egui can already compose natively (an `egui::Image` for the icon,
+`RichText` with a loaded font for the text — exactly what `update_splash` already did before
+this change, now with the right font) would be a disproportionate new dependency for no
+visual benefit: egui's own text rendering is already a vector/font rasterizer, not a bitmap
+fallback. The SVG asset exists for uses *outside* the running engine (marketing, the wiki,
+README embeds, etc.) where an actual SVG file is the right format.
+
+**Side effects to know about when upgrading:** none of this touches Servo internals beyond
+`egui`'s own stable, high-level widget API (`RichText`, `FontId`, `FontFamily`,
+`ProgressBar`) — should survive a version bump untouched unless a future egui major version
+renames `CornerRadius` (it was `Rounding` before egui ~0.32) or changes `FontData`'s
+construction API.
+
+**Verification:** `rustfmt --check --edition 2024 ports/servoshell/desktop/gui.rs` reports no
+diff anywhere in the changed regions (the one pre-existing diff it does report, at an
+unrelated `if let ... &&` chain further down the file, predates this change — confirms the
+edit is both syntactically valid and already correctly formatted, without needing a full
+build). A real `cargo check -p servoshell` still isn't completable in this environment — same
+`libudev-dev`/`pkg-config` gap noted in earlier entries (`pkg-config --exists libudev` fails
+here; only the runtime `libudev1` package, not `libudev-dev`, is installed), unrelated to
+this change specifically. `resources/roves_wordmark.svg` was validated as well-formed XML
+(`xml.etree.ElementTree`) and actually rendered to a PNG with `cairosvg` (see above) to
+confirm the layout/embedding works, not just that the markup parses. Treat the next real
+`./mach build` + manual run of this fork as the actual visual verification (exact pixel
+centering in particular, given the fudge-factor caveat above) before considering this done.

@@ -203,7 +203,9 @@ described there, that's covered in [CUSTOMIZATIONS.md] instead.
 - Restart your shell to make sure `cargo` is available
 - Install the other dependencies: `./mach bootstrap`
 - Build: `./mach build`
-- Package a runnable bundle: `./mach bundle`
+- Package a runnable bundle: `./mach bundle` (add `--dmg` to wrap it in an installable disk
+  image instead of the default self-contained `Roves.app` — see "Portable vs. installable
+  packages" below)
 
 ### Linux
 
@@ -218,7 +220,8 @@ described there, that's covered in [CUSTOMIZATIONS.md] instead.
 - Install the other dependencies: `./mach bootstrap`
 - Build: `./mach build`
 - Package a runnable bundle: `./mach bundle` (add `--deb` for an installable Debian/Ubuntu
-  package instead of the default self-contained `play` binary)
+  package instead of the default self-contained `play` binary — see "Portable vs. installable
+  packages" below)
 
 ### Windows
 
@@ -231,7 +234,43 @@ described there, that's covered in [CUSTOMIZATIONS.md] instead.
 - Restart your shell to make sure `cargo` is available
 - Install the other dependencies: `.\mach bootstrap`
 - Build: `.\mach build`
-- Package a runnable bundle: `.\mach bundle`
+- Package a runnable bundle: `.\mach bundle` (add `--msi` for an installable Windows package
+  instead of the default self-contained `play.exe` — see "Portable vs. installable packages"
+  below; requires the WiX Toolset's `candle`/`light` on `PATH`)
+
+## Portable vs. installable packages
+
+By default, on every platform, `./mach bundle` produces a **portable** bundle — something a
+player downloads, unzips, and runs directly, no install step, no admin/root privileges. Each
+platform also has an **installable** package alternative, matching the shape of what a
+bundler like [Tauri]'s own bundler offers (`msi`/`nsis` on Windows, `dmg`/`app` on macOS,
+`deb`/`rpm`/`appimage` on Linux) — Roves supports one format per platform today, the ones
+with existing, reusable packaging logic in this fork's Servo lineage (`./mach package`'s own
+WiX/`hdiutil` code, see [CUSTOMIZATIONS.md]):
+
+| Platform | Portable (default) | Installable |
+| --- | --- | --- |
+| Windows | `play.exe` + DLLs, flat | `--msi`: a real `.msi`, via WiX |
+| macOS | `Roves.app` | `--dmg`: that same `.app`, wrapped in a `.dmg` disk image |
+| Linux | `play` + `.so` deps, flat | `--deb`: a real, installable `.deb` |
+
+An installable package always *wraps* the exact same content the portable bundle would have
+had (same `--content-dir`, same packing settings) — it isn't a second, different build.
+`--package-name`/`--package-version` (defaults `roves`/`0.0.0`) name and version whichever
+one you asked for; nothing else about `./mach bundle`'s other flags changes based on
+portable-vs-installable. `nsis`/`rpm`/`appimage` aren't implemented yet — see
+[CUSTOMIZATIONS.md] if you're adding one.
+
+This repo's own smoke-test CI, [`.github/workflows/test.yml`], exercises both variants on
+every platform on every push (a `package_mode` matrix axis of `portable`/`msi`/`dmg`/`deb`,
+one job per platform per mode) — not a manual toggle, since its whole job is proving `mach
+bundle` still works in every mode it supports, not just the default. If you're building your
+own release pipeline around `mach bundle` (or `roves-action`, see below), pick whichever
+mode(s) you actually want to ship, the same way that workflow's per-mode `BUNDLE_ARGS` do.
+
+[`.github/workflows/test.yml`]: .github/workflows/test.yml
+
+[Tauri]: https://v2.tauri.app/distribute/
 
 ## Relationship to upstream Servo
 

@@ -67,20 +67,31 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Every platform gets both its portable output and its installable
+        # one — `mach bundle`'s own --deb/--msi/--dmg (see CUSTOMIZATIONS.md
+        # and README.md's "Getting started" per-OS sections for what each
+        # produces). This workflow exists to smoke-test that mach bundle
+        # actually still works, so it exercises every mode mach bundle
+        # supports on each OS, not just the portable default.
         include:
           - platform: 'windows-latest'
             os_name: 'windows'
+            package_mode: 'portable'
+          - platform: 'windows-latest'
+            os_name: 'windows'
+            package_mode: 'msi'
           - platform: 'macos-latest'
             os_name: 'macos'
+            package_mode: 'portable'
+          - platform: 'macos-latest'
+            os_name: 'macos'
+            package_mode: 'dmg'
           - platform: 'ubuntu-24.04'
             os_name: 'linux'
-          # Same OS/build as the 'linux' entry above, but packaged as a .deb
-          # (mach bundle --deb) instead of the default self-contained `play`
-          # binary — a separate zip entirely, not a variant of the plain
-          # Linux one (see mach bundle's own --deb handling for what it
-          # produces and doesn't attempt).
+            package_mode: 'portable'
           - platform: 'ubuntu-24.04'
-            os_name: 'linux-deb'
+            os_name: 'linux'
+            package_mode: 'deb'
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -162,6 +173,14 @@ jobs:
           cp -r ../test-page/public test-page/public
           cp -r ../test-page/dist test-page/dist
 
+          # Same reasoning, for resources/fonts/ (see CUSTOMIZATIONS.md's boot-splash
+          # wordmark entry): the bundled Metal Mania font is a new binary asset a text
+          # patch can't carry, but unlike test-page/'s fixtures, gui.rs's
+          # include_bytes!("../../../resources/fonts/MetalMania-Regular.ttf") needs it to
+          # genuinely exist on disk at that path for mach build to compile at all.
+          mkdir -p resources/fonts
+          cp -r ../resources/fonts/. resources/fonts/
+
       # IMPORTANT: invoke `./mach`, never `python3 ./mach`. `mach` is a polyglot
       # shell+python script (see its own top comment): run as a shell script, it
       # re-execs itself via `uv run --frozen python ...` so the pyproject.toml/
@@ -194,9 +213,19 @@ jobs:
           # `mach bundle --deb` (see the assemble step below) hard-depends on
           # `dpkg-deb` from it, so make that explicit rather than relying on
           # what happens to already be there.
-          if [ "${{ matrix.os_name }}" = "linux-deb" ]; then
+          if [ "${{ matrix.package_mode }}" = "deb" ]; then
             sudo apt-get update && sudo apt-get install -y --no-install-recommends dpkg-dev
           fi
+
+      # windows-latest ships WiX Toolset v3 preinstalled (see
+      # actions/runner-images), with $WIX pointing at its install root — but
+      # its bin/ (candle.exe/light.exe, which `mach bundle --msi` shells out
+      # to, see post_build_commands.py's _wrap_windows_msi) isn't on PATH
+      # by default.
+      - name: add WiX Toolset to PATH (--msi only)
+        if: matrix.package_mode == 'msi'
+        shell: pwsh
+        run: echo "$env:WIX\bin" >> $env:GITHUB_PATH
 
       # Debug build, not --release: this workflow exists to smoke-test behavior
       # (e.g. "are the tabs really gone?"), not to ship an optimized binary. Debug
@@ -235,10 +264,15 @@ jobs:
         shell: bash
         working-directory: servo-src
         run: |
-          BUNDLE_ARGS=(--content-dir test-page/dist --output ../release)
-          if [ "${{ matrix.os_name }}" = "linux-deb" ]; then
-            BUNDLE_ARGS+=(--deb --deb-package-name servoshell-test --deb-version "${SERVO_TAG}")
-          fi
+          BUNDLE_ARGS=(
+            --content-dir test-page/dist --output ../release
+            --package-name servoshell-test --package-version "${SERVO_TAG}"
+          )
+          case "${{ matrix.package_mode }}" in
+            deb) BUNDLE_ARGS+=(--deb) ;;
+            msi) BUNDLE_ARGS+=(--msi) ;;
+            dmg) BUNDLE_ARGS+=(--dmg) ;;
+          esac
           ./mach bundle "${BUNDLE_ARGS[@]}"
 
           cat > ../release/NOTE.txt << 'EOF'
@@ -246,13 +280,15 @@ jobs:
           playback). This build only exists to check window chrome/behavior —
           see the parent project's embedded.yml for the real release build.
           EOF
-          if [ "${{ matrix.os_name }}" = "macos" ]; then
+          if [ "${{ matrix.os_name }}" = "macos" ] && [ "${{ matrix.package_mode }}" = "portable" ]; then
             echo "Native arch of the macos-latest runner only (no universal binary, no x86_64 cross-build)." >> ../release/NOTE.txt
-          elif [ "${{ matrix.os_name }}" = "linux-deb" ]; then
-            echo "Install with: sudo dpkg -i *.deb — then launch via your app menu, or /usr/bin/servoshell-test." >> ../release/NOTE.txt
-          else
-            echo "Run play.exe (Windows) / Roves.app (macOS) / play (Linux) — the only executable here; no separate engine binary or extractor tool is included." >> ../release/NOTE.txt
           fi
+          case "${{ matrix.package_mode }}" in
+            deb) echo "Install with: sudo dpkg -i *.deb — then launch via your app menu, or /usr/bin/servoshell-test." >> ../release/NOTE.txt ;;
+            msi) echo "Run the .msi installer, then launch from the Start Menu or Program Files\\servoshell-test\\play.exe." >> ../release/NOTE.txt ;;
+            dmg) echo "Open the .dmg and drag Roves.app to Applications, as prompted." >> ../release/NOTE.txt ;;
+            portable) echo "Run play.exe (Windows) / Roves.app (macOS) / play (Linux) — the only executable here; no separate engine binary or extractor tool is included." >> ../release/NOTE.txt ;;
+          esac
 
       # Renamed to a named subfolder (after the content being bundled — "test-page"
       # here; a real bundle would use the actual game's name) before zipping, rather
@@ -262,7 +298,7 @@ jobs:
       - name: zip bundle (Linux/macOS)
         if: matrix.os_name != 'windows'
         run: |
-          ZIP="servoshell-test_${{ matrix.os_name }}.zip"
+          ZIP="servoshell-test_${{ matrix.os_name }}-${{ matrix.package_mode }}.zip"
           mv release servo-test-page
           zip -r "$ZIP" servo-test-page
           echo "ZIP=$ZIP" >> "$GITHUB_ENV"
@@ -271,7 +307,7 @@ jobs:
         if: matrix.os_name == 'windows'
         shell: pwsh
         run: |
-          $zip = "servoshell-test_windows.zip"
+          $zip = "servoshell-test_windows-${{ matrix.package_mode }}.zip"
           Rename-Item -Path release -NewName servo-test-page
           Compress-Archive -Path servo-test-page -DestinationPath $zip
           echo "ZIP=$zip" >> $env:GITHUB_ENV
