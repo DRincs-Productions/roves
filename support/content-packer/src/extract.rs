@@ -37,18 +37,52 @@ pub const CONTENT_SOURCE_MARKER: &str = ".roves-content-source";
 /// Picks a stable, per-install destination under the OS's cache directory
 /// (`~/.cache` on Linux, `Library/Caches` on macOS, `%LOCALAPPDATA%` on
 /// Windows — real disk, *not* a RAM-backed `tmpfs` like `/tmp` often is on
-/// Linux, which matters once a project's assets reach the multi-GB range).
-/// Keyed by a hash of the resolved `content_dir` path so repeat launches of
-/// the *same* install reuse the same destination (letting the marker-based
-/// skip-cache below actually help), while different installs/games on the
-/// same machine don't collide with each other. Nothing is ever written next
-/// to the bundle itself — see CUSTOMIZATIONS.md.
-fn default_dest(content_dir: &Path) -> PathBuf {
+/// Linux, which matters once a project's assets reach the multi-GB range):
+/// `<cache_dir>/<game_name>/cache/<hash8>/`. `game_name` (from
+/// `Manifest::name`, plumbed in by every caller of this function — see
+/// `resolve_dest`) makes the top-level folder recognizable as "this game's
+/// stuff" instead of an opaque `roves-content-<hash>`; it's sanitized via
+/// [`sanitize_path_segment`] and falls back to `"roves"` if absent (a dev/
+/// uncompressed build, or a manifest predating this field) or if nothing
+/// filesystem-safe survives sanitizing. The trailing hash — of the resolved
+/// `content_dir` path, *not* game name — is what actually keeps repeat
+/// launches of the *same* install pointed at the same destination (letting
+/// the marker-based skip-cache below help) while different installs/games
+/// that happen to share a display name still don't collide with each other.
+/// Nothing is ever written next to the bundle itself — see CUSTOMIZATIONS.md.
+fn default_dest(content_dir: &Path, game_name: Option<&str>) -> PathBuf {
     let mut hasher = Sha256::new();
     hasher.update(content_dir.to_string_lossy().as_bytes());
     let digest = hasher.finalize();
     let short: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
-    cache_dir().join(format!("roves-content-{short}"))
+    let game_dir = game_name.and_then(sanitize_path_segment).unwrap_or_else(|| "roves".to_string());
+    cache_dir().join(game_dir).join("cache").join(short)
+}
+
+/// Turns arbitrary manifest-supplied text (a game's display name) into a
+/// single path segment safe to use as a directory name on Linux, macOS, and
+/// Windows alike: strips path separators, the `:` a Windows drive letter
+/// uses (and that a `NAME:AlternateStream` could otherwise smuggle in),
+/// Windows' other reserved characters (`*?"<>|`), and control characters;
+/// trims leading/trailing whitespace and `.` (Windows also disallows a
+/// trailing dot or space, and a lone leading dot reads as a hidden file on
+/// Unix); and caps length well under every platform's per-segment limit.
+/// Returns `None` if nothing usable survives, so the caller can fall back to
+/// a sane default instead of creating an empty (or `.`/`..`-named) directory.
+fn sanitize_path_segment(name: &str) -> Option<String> {
+    let cleaned: String = name
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '-',
+            c if c.is_control() => '-',
+            c => c,
+        })
+        .collect();
+    let trimmed = cleaned.trim_matches(|c: char| c.is_whitespace() || c == '.');
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.chars().take(64).collect())
 }
 
 /// Resolves the OS's disk-backed user cache directory, matching each
@@ -85,16 +119,20 @@ pub fn load_manifest(content_dir: &Path) -> Result<Manifest, String> {
 }
 
 /// Resolves `content_dir` to its canonical form and picks the destination
-/// (`dest`, or [`default_dest`] if `None`) — the cheap, non-extracting half
-/// of [`prepare_dest`], split out so a caller can learn *where* boot content
-/// will end up (e.g. to build the `file:` URL it'll load once extraction
-/// finishes) without paying for the actual decompression yet. Does no I/O
-/// beyond `canonicalize`.
-pub fn resolve_dest(content_dir: &Path, dest: Option<PathBuf>) -> Result<(PathBuf, PathBuf), String> {
+/// (`dest`, or [`default_dest`] if `None`, using `game_name` — see that
+/// function) — the cheap, non-extracting half of [`prepare_dest`], split out
+/// so a caller can learn *where* boot content will end up (e.g. to build the
+/// `file:` URL it'll load once extraction finishes) without paying for the
+/// actual decompression yet. Does no I/O beyond `canonicalize`.
+pub fn resolve_dest(
+    content_dir: &Path,
+    dest: Option<PathBuf>,
+    game_name: Option<&str>,
+) -> Result<(PathBuf, PathBuf), String> {
     let content_dir = content_dir
         .canonicalize()
         .map_err(|e| format!("resolving {content_dir:?}: {e}"))?;
-    let dest = dest.unwrap_or_else(|| default_dest(&content_dir));
+    let dest = dest.unwrap_or_else(|| default_dest(&content_dir, game_name));
     Ok((content_dir, dest))
 }
 
@@ -103,13 +141,19 @@ pub fn resolve_dest(content_dir: &Path, dest: Option<PathBuf>) -> Result<(PathBu
 /// `.roves-content-hash`/`.roves-content-source`) if its recorded content
 /// hash doesn't match, or if `force` was passed. Safe to call repeatedly:
 /// a matching, non-forced call is a no-op past the manifest read.
+///
+/// Loads the manifest *before* resolving `dest` (rather than after, as it
+/// used to) so `Manifest::name` is available for [`default_dest`] to name
+/// the destination after — a `content_dir.join("manifest.json")` read
+/// either way, just reordered; nothing here depends on `content_dir` being
+/// canonicalized first.
 fn prepare_dest(
     content_dir: &Path,
     dest: Option<PathBuf>,
     force: bool,
 ) -> Result<(PathBuf, PathBuf, Manifest), String> {
-    let (content_dir, dest) = resolve_dest(content_dir, dest)?;
-    let manifest = load_manifest(&content_dir)?;
+    let manifest = load_manifest(content_dir)?;
+    let (content_dir, dest) = resolve_dest(content_dir, dest, manifest.name.as_deref())?;
 
     let hash_marker = dest.join(CONTENT_HASH_MARKER);
     let up_to_date = !force &&
@@ -273,4 +317,45 @@ pub fn ensure_file_available(
         .ok_or_else(|| format!("manifest inconsistency: {rel_path} points at unknown pack {pack_file}"))?;
     ensure_pack_extracted(content_dir, dest, pack)?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{default_dest, sanitize_path_segment};
+
+    #[test]
+    fn sanitize_path_segment_strips_unsafe_characters_and_trims() {
+        assert_eq!(sanitize_path_segment("Roves test-page").unwrap(), "Roves test-page");
+        assert_eq!(sanitize_path_segment("My:Game/Title*?\"<>|").unwrap(), "My-Game-Title------");
+        assert_eq!(sanitize_path_segment("  ..leading and trailing.. ").unwrap(), "leading and trailing");
+        assert_eq!(sanitize_path_segment(&"x".repeat(200)).unwrap().len(), 64);
+    }
+
+    #[test]
+    fn sanitize_path_segment_rejects_nothing_usable() {
+        assert!(sanitize_path_segment("").is_none());
+        assert!(sanitize_path_segment("   ").is_none());
+        assert!(sanitize_path_segment("...").is_none());
+        // Path separators/reserved characters become `-`, which (unlike
+        // whitespace/`.`) isn't trimmed — a filesystem-safe, if unhelpful,
+        // name, not "nothing usable".
+        assert_eq!(sanitize_path_segment("/\\:").unwrap(), "---");
+    }
+
+    #[test]
+    fn default_dest_nests_cache_and_hash_under_the_game_name() {
+        let content_dir = std::path::Path::new("/some/build/dist");
+        let named = default_dest(content_dir, Some("Roves test-page"));
+        let mut components = named.components().rev();
+        let hash = components.next().unwrap().as_os_str().to_str().unwrap().to_string();
+        assert_eq!(components.next().unwrap().as_os_str(), "cache");
+        assert_eq!(components.next().unwrap().as_os_str(), "Roves test-page");
+        assert_eq!(hash.len(), 16, "8 bytes, hex-encoded");
+
+        // Same content_dir, no name at all -> same hash, generic top-level folder.
+        let unnamed = default_dest(content_dir, None);
+        assert_eq!(unnamed.file_name().unwrap(), named.file_name().unwrap());
+        assert_eq!(unnamed.parent().unwrap().file_name().unwrap(), "cache");
+        assert_eq!(unnamed.parent().unwrap().parent().unwrap().file_name().unwrap(), "roves");
+    }
 }

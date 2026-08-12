@@ -123,7 +123,7 @@ fn resolve_packed_content_url(
     let manifest = extract::load_manifest(&content_dir)
         .inspect_err(|e| log::error!("loading packed-content manifest at {content_dir:?}: {e}"))
         .ok()?;
-    let (content_dir, dest) = extract::resolve_dest(&content_dir, None)
+    let (content_dir, dest) = extract::resolve_dest(&content_dir, None, manifest.name.as_deref())
         .inspect_err(|e| log::error!("resolving boot content destination: {e}"))
         .ok()?;
     let url = dest.join(&manifest.entry_html).to_string_lossy().into_owned();

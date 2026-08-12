@@ -105,6 +105,7 @@ def _place_bundle_content(
     max_pack_size: str,
     exclude: List[str],
     boot_include: List[str],
+    game_name: Optional[str],
 ) -> None:
     """Copy `content_dir` (e.g. a built `dist/`) into `bundle_root` at whatever
     relative location `html_file` expects to find it at (e.g. `html_file` of
@@ -119,6 +120,12 @@ def _place_bundle_content(
     `boot_include`) into its own archive(s): the generated launcher extracts
     only *that* eagerly at startup; everything else stays compressed until
     servoshell's own `file:` handler asks for it on demand.
+
+    `game_name` (the same value already resolved for the window title, see
+    `_resolve_window_title`) is written into the packed manifest via `--name`
+    so the engine's extraction cache directory is named after the game
+    instead of a bare content hash — see `Manifest::name`/`extract::
+    default_dest` and CUSTOMIZATIONS.md.
     """
     if not content_dir:
         return
@@ -148,6 +155,8 @@ def _place_bundle_content(
         pack_args += ["--exclude", pattern]
     for pattern in boot_include:
         pack_args += ["--boot-include", pattern]
+    if game_name:
+        pack_args += ["--name", game_name]
     subprocess.check_call(pack_args)
 
 
@@ -507,6 +516,7 @@ class PostBuildCommands(CommandBase):
                 content_max_pack_size,
                 content_exclude,
                 content_boot_include,
+                window_title,
             )
             print(f"Bundle written to {output_dir}")
             return None
@@ -524,6 +534,7 @@ class PostBuildCommands(CommandBase):
             content_max_pack_size,
             content_exclude,
             content_boot_include,
+            window_title,
         )
         print(f"Bundle written to {output_dir}")
         return None
@@ -663,6 +674,7 @@ class PostBuildCommands(CommandBase):
         max_pack_size: str,
         exclude: List[str],
         boot_include: List[str],
+        game_name: Optional[str],
     ) -> None:
         """Build a real, installable .deb: `dpkg -i` puts the engine + its
         content under /usr/lib/<package_name>/, with /usr/bin/<package_name>
@@ -706,6 +718,7 @@ class PostBuildCommands(CommandBase):
             max_pack_size,
             exclude,
             boot_include,
+            game_name,
         )
         _write_launch_config(lib_dir, launch_info)
 

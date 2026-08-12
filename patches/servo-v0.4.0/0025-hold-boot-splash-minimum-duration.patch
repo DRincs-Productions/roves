@@ -1,0 +1,273 @@
+diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
+index 07dec39..b38b50f 100644
+--- a/ports/servoshell/desktop/app.rs
++++ b/ports/servoshell/desktop/app.rs
+@@ -42,18 +42,40 @@ use crate::window::{PlatformWindow, ServoShellWindowId};
+ /// bar at all.
+ const SPLASH_PROGRESS_BAR_DELAY: Duration = Duration::from_millis(300);
+ 
++/// Minimum time every headed launch spends on the boot splash before the
++/// real page opens, regardless of whether there's any boot extraction to
++/// wait on. Without this, a launch with nothing to extract — a dev `--url`
++/// run, or (the common case after the very first launch) a packed-content
++/// launch whose destination is already cached from a previous run — skipped
++/// `AppState::Booting` entirely: the window's very first frame *is* the
++/// branded splash (see `Gui::new`), but the next frame immediately swapped
++/// in the real, still-loading `WebView`, whose own background is black too
++/// (see `shell_background_color_rgba`) until it has content to paint. Net
++/// effect: the Roves-branded splash flashed for a single frame, read by a
++/// user as "black screen, then the app" rather than as a splash. Holding
++/// the splash up for a fixed minimum makes it long enough to actually
++/// register on every launch, not just a slow first one.
++const MIN_SPLASH_DURATION: Duration = Duration::from_millis(500);
++
+ pub(crate) enum AppState {
+     Initializing,
+-    /// A headed, packed-content launch whose boot extraction hasn't finished
+-    /// yet — `window` is already created and showing the boot splash (see
+-    /// `HeadedWindow::paint_splash`) while a background thread (spawned from
++    /// A headed launch that hasn't finished starting up yet — `window` is
++    /// already created and showing the boot splash (see
++    /// `HeadedWindow::paint_splash`) while, if there's a pending
++    /// packed-content boot extraction, a background thread (spawned from
+     /// `App::init`) decompresses the boot set. `extraction_started` drives
+-    /// the progress bar's appear-after-a-delay behavior; `progress` is
+-    /// updated by incoming `AppEvent::BootProgress`.
++    /// both the progress bar's appear-after-a-delay behavior and
++    /// `MIN_SPLASH_DURATION`; `progress` is updated by incoming
++    /// `AppEvent::BootProgress`. `extraction_done` starts `true` when there
++    /// was no pending extraction to begin with (nothing to wait on but
++    /// `MIN_SPLASH_DURATION`), or flips to `true` once `AppEvent::BootReady`
++    /// arrives. `App::try_finish_booting` is what actually decides, from
++    /// these fields, when to hand off to `finish_init`.
+     Booting {
+         window: Rc<dyn PlatformWindow>,
+         extraction_started: Instant,
+         progress: f32,
++        extraction_done: bool,
+     },
+     Running(Rc<RunningAppState>),
+     ShuttingDown,
+@@ -104,13 +126,14 @@ impl App {
+     }
+ 
+     /// Initialize Application once event loop start running. Always creates
+-    /// the window immediately. If a boot extraction is still pending for a
+-    /// headed launch, defers the rest of startup (`finish_init`) until it
+-    /// completes — extraction runs on a background thread while a splash
+-    /// shows in the meantime (see `AppState::Booting`) instead of blocking
+-    /// window creation on it, as a plain synchronous call used to. Headless
+-    /// launches have no splash to show, so a pending extraction there just
+-    /// runs synchronously, exactly as before.
++    /// the window immediately. For a headed launch, always shows the boot
++    /// splash for at least `MIN_SPLASH_DURATION` before deferring the rest
++    /// of startup (`finish_init`) — if there's also a pending packed-content
++    /// boot extraction, that runs concurrently on a background thread and
++    /// must finish too (see `AppState::Booting`, `try_finish_booting`)
++    /// instead of blocking window creation on it, as a plain synchronous
++    /// call used to. Headless launches have no splash to show, so a pending
++    /// extraction there just runs synchronously, exactly as before.
+     pub fn init(&mut self, active_event_loop: Option<&ActiveEventLoop>) {
+         // `self.initial_url` is still just the `finish_init`-pending placeholder
+         // at this point — harmless here, since `create_platform_window`'s `url`
+@@ -119,14 +142,17 @@ impl App {
+         let url = self.initial_url.as_url().clone();
+         let platform_window = self.create_platform_window(url, active_event_loop);
+ 
+-        let Some(opts) = self.pending_extraction.take() else {
+-            self.finish_init(platform_window, active_event_loop);
+-            return;
+-        };
++        let opts = self.pending_extraction.take();
+ 
+         let Some(active_event_loop) = active_event_loop else {
+-            if let Err(error) = extract::extract_boot(&opts) {
+-                log::error!("extracting boot content: {error}");
++            // Headless: no splash to show either way, so just run any
++            // pending extraction synchronously and move straight on, same
++            // as before this function also started gating headed launches
++            // on `MIN_SPLASH_DURATION`.
++            if let Some(opts) = opts {
++                if let Err(error) = extract::extract_boot(&opts) {
++                    log::error!("extracting boot content: {error}");
++                }
+             }
+             self.finish_init(platform_window, None);
+             return;
+@@ -140,29 +166,67 @@ impl App {
+         }
+         active_event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + SPLASH_PROGRESS_BAR_DELAY));
+ 
+-        let proxy = self
+-            .event_loop_proxy
+-            .clone()
+-            .expect("Should always have event loop proxy in headed mode.");
+-        thread::spawn(move || {
+-            let result = extract::extract_boot_with_progress(&opts, |progress| {
+-                let _ = proxy.send_event(AppEvent::BootProgress(progress));
+-            });
+-            if let Err(error) = result {
+-                log::error!("extracting boot content: {error}");
+-            }
+-            // Sent even on failure: the page will simply fail to load (same
+-            // failure philosophy as elsewhere for missing/corrupt content)
+-            // rather than leaving the app stuck on the splash forever.
+-            let _ = proxy.send_event(AppEvent::BootReady);
+-        });
++        let extraction_done = match opts {
++            Some(opts) => {
++                let proxy = self
++                    .event_loop_proxy
++                    .clone()
++                    .expect("Should always have event loop proxy in headed mode.");
++                thread::spawn(move || {
++                    let result = extract::extract_boot_with_progress(&opts, |progress| {
++                        let _ = proxy.send_event(AppEvent::BootProgress(progress));
++                    });
++                    if let Err(error) = result {
++                        log::error!("extracting boot content: {error}");
++                    }
++                    // Sent even on failure: the page will simply fail to load
++                    // (same failure philosophy as elsewhere for missing/
++                    // corrupt content) rather than leaving the app stuck on
++                    // the splash forever.
++                    let _ = proxy.send_event(AppEvent::BootReady);
++                });
++                false
++            },
++            // Nothing to extract — the only thing `try_finish_booting` still
++            // needs to wait on is `MIN_SPLASH_DURATION` itself.
++            None => true,
++        };
+         self.state = AppState::Booting {
+             window: platform_window,
+             extraction_started: Instant::now(),
+             progress: 0.0,
++            extraction_done,
+         };
+     }
+ 
++    /// If `Booting`, check whether both extraction (if any was pending) and
++    /// `MIN_SPLASH_DURATION` have finished; if so, hand off to
++    /// `finish_init`. Otherwise (re)arm `control_flow` to wake up exactly
++    /// when the next thing that could change that outcome is next due — the
++    /// progress bar's appear delay, or `MIN_SPLASH_DURATION`, whichever
++    /// hasn't already passed. A no-op when not `Booting`, so every event
++    /// handler below can call this unconditionally.
++    fn try_finish_booting(&mut self, event_loop: &ActiveEventLoop) {
++        let AppState::Booting { window, extraction_started, extraction_done, .. } = &self.state
++        else {
++            return;
++        };
++        let elapsed = extraction_started.elapsed();
++        if !*extraction_done || elapsed < MIN_SPLASH_DURATION {
++            let next_wake = if elapsed < SPLASH_PROGRESS_BAR_DELAY {
++                SPLASH_PROGRESS_BAR_DELAY
++            } else {
++                MIN_SPLASH_DURATION
++            };
++            event_loop.set_control_flow(ControlFlow::WaitUntil(
++                Instant::now() + next_wake.saturating_sub(elapsed),
++            ));
++            return;
++        }
++        let window = window.clone();
++        self.finish_init(window, Some(event_loop));
++    }
++
+     /// The rest of startup, deferred behind boot extraction when there is
+     /// one (see `init`): builds the protocol registry/Servo instance,
+     /// constructs `RunningAppState`, and opens the real webview into
+@@ -317,18 +381,22 @@ impl ApplicationHandler<AppEvent> for App {
+         self.init(Some(event_loop));
+     }
+ 
+-    /// Only used while `Booting`, to force one redraw once the splash's
++    /// Only relevant while `Booting`: forces one redraw once the splash's
+     /// progress-bar delay (`SPLASH_PROGRESS_BAR_DELAY`) elapses even if no
+-    /// `AppEvent::BootProgress` tick has arrived yet — see `init`'s
+-    /// `ControlFlow::WaitUntil` and `window_event`'s Booting branch, which
+-    /// re-arms it until the bar is actually shown.
+-    fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
+-        if matches!(cause, StartCause::ResumeTimeReached { .. }) &&
+-            let AppState::Booting { window, .. } = &self.state &&
++    /// `AppEvent::BootProgress` tick has arrived yet, then defers to
++    /// `try_finish_booting` — which is also what wakes `Booting` up to
++    /// transition to `finish_init` purely on `MIN_SPLASH_DURATION` elapsing,
++    /// for a launch with no pending extraction to otherwise notify us.
++    fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
++        if !matches!(cause, StartCause::ResumeTimeReached { .. }) {
++            return;
++        }
++        if let AppState::Booting { window, .. } = &self.state &&
+             let Some(headed_window) = window.as_headed_window()
+         {
+             headed_window.winit_window().request_redraw();
+         }
++        self.try_finish_booting(event_loop);
+     }
+ 
+     fn window_event(
+@@ -346,19 +414,16 @@ impl ApplicationHandler<AppEvent> for App {
+         );
+         self.t = now;
+ 
+-        if let AppState::Booting { window, extraction_started, progress } = &self.state {
+-            let elapsed = extraction_started.elapsed();
+-            if let Some(headed_window) = window.as_headed_window() &&
++        if matches!(self.state, AppState::Booting { .. }) {
++            if let AppState::Booting { window, extraction_started, progress, .. } = &self.state &&
++                let Some(headed_window) = window.as_headed_window() &&
+                 headed_window.winit_window().id() == window_id &&
+                 matches!(window_event, WindowEvent::RedrawRequested | WindowEvent::Resized(_))
+             {
++                let elapsed = extraction_started.elapsed();
+                 headed_window.paint_splash((elapsed >= SPLASH_PROGRESS_BAR_DELAY).then_some(*progress));
+             }
+-            event_loop.set_control_flow(if elapsed >= SPLASH_PROGRESS_BAR_DELAY {
+-                ControlFlow::Wait
+-            } else {
+-                ControlFlow::WaitUntil(Instant::now() + (SPLASH_PROGRESS_BAR_DELAY - elapsed))
+-            });
++            self.try_finish_booting(event_loop);
+             return;
+         }
+ 
+@@ -380,26 +445,24 @@ impl ApplicationHandler<AppEvent> for App {
+     }
+ 
+     fn user_event(&mut self, event_loop: &ActiveEventLoop, app_event: AppEvent) {
+-        let boot_ready_window = if let AppState::Booting { window, progress, .. } = &mut self.state {
++        let mut redraw_window = None;
++        if let AppState::Booting { window, progress, extraction_done, .. } = &mut self.state {
+             match app_event {
+                 AppEvent::BootProgress(new_progress) => {
+                     *progress = new_progress;
+-                    if let Some(headed_window) = window.as_headed_window() {
+-                        headed_window.winit_window().request_redraw();
+-                    }
+-                    None
++                    redraw_window = Some(window.clone());
+                 },
+-                AppEvent::BootReady => Some(window.clone()),
+-                _ => None,
++                AppEvent::BootReady => *extraction_done = true,
++                _ => {},
+             }
+-        } else {
+-            None
+-        };
+-        if let Some(window) = boot_ready_window {
+-            self.finish_init(window, Some(event_loop));
+-            return;
++        }
++        if let Some(window) = redraw_window &&
++            let Some(headed_window) = window.as_headed_window()
++        {
++            headed_window.winit_window().request_redraw();
+         }
+         if matches!(self.state, AppState::Booting { .. }) {
++            self.try_finish_booting(event_loop);
+             return;
+         }
+ 

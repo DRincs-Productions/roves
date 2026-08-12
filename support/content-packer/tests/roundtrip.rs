@@ -41,6 +41,7 @@ fn pack_it(dist: &Path, out: &Path) {
         exclude: vec![],
         html_file: "index.html".to_string(),
         boot_include: vec![],
+        name: None,
     })
     .expect("pack should succeed");
 }
@@ -197,6 +198,7 @@ fn excluded_files_are_always_present_after_boot_extraction_and_never_in_the_file
         exclude: vec![glob::Pattern::new("save/**").unwrap()],
         html_file: "index.html".to_string(),
         boot_include: vec![],
+        name: None,
     })
     .unwrap();
 

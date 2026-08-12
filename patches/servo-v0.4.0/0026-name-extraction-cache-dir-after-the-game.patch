@@ -1,0 +1,337 @@
+diff --git a/ports/servoshell/desktop/bundle_launch.rs b/ports/servoshell/desktop/bundle_launch.rs
+index a825e76..71f0ec9 100644
+--- a/ports/servoshell/desktop/bundle_launch.rs
++++ b/ports/servoshell/desktop/bundle_launch.rs
+@@ -123,7 +123,7 @@ fn resolve_packed_content_url(
+     let manifest = extract::load_manifest(&content_dir)
+         .inspect_err(|e| log::error!("loading packed-content manifest at {content_dir:?}: {e}"))
+         .ok()?;
+-    let (content_dir, dest) = extract::resolve_dest(&content_dir, None)
++    let (content_dir, dest) = extract::resolve_dest(&content_dir, None, manifest.name.as_deref())
+         .inspect_err(|e| log::error!("resolving boot content destination: {e}"))
+         .ok()?;
+     let url = dest.join(&manifest.entry_html).to_string_lossy().into_owned();
+diff --git a/python/servo/post_build_commands.py b/python/servo/post_build_commands.py
+index 69329d6..9c28029 100644
+--- a/python/servo/post_build_commands.py
++++ b/python/servo/post_build_commands.py
+@@ -105,6 +105,7 @@ def _place_bundle_content(
+     max_pack_size: str,
+     exclude: List[str],
+     boot_include: List[str],
++    game_name: Optional[str],
+ ) -> None:
+     """Copy `content_dir` (e.g. a built `dist/`) into `bundle_root` at whatever
+     relative location `html_file` expects to find it at (e.g. `html_file` of
+@@ -119,6 +120,12 @@ def _place_bundle_content(
+     `boot_include`) into its own archive(s): the generated launcher extracts
+     only *that* eagerly at startup; everything else stays compressed until
+     servoshell's own `file:` handler asks for it on demand.
++
++    `game_name` (the same value already resolved for the window title, see
++    `_resolve_window_title`) is written into the packed manifest via `--name`
++    so the engine's extraction cache directory is named after the game
++    instead of a bare content hash — see `Manifest::name`/`extract::
++    default_dest` and CUSTOMIZATIONS.md.
+     """
+     if not content_dir:
+         return
+@@ -148,6 +155,8 @@ def _place_bundle_content(
+         pack_args += ["--exclude", pattern]
+     for pattern in boot_include:
+         pack_args += ["--boot-include", pattern]
++    if game_name:
++        pack_args += ["--name", game_name]
+     subprocess.check_call(pack_args)
+ 
+ 
+@@ -507,6 +516,7 @@ class PostBuildCommands(CommandBase):
+                 content_max_pack_size,
+                 content_exclude,
+                 content_boot_include,
++                window_title,
+             )
+             print(f"Bundle written to {output_dir}")
+             return None
+@@ -524,6 +534,7 @@ class PostBuildCommands(CommandBase):
+             content_max_pack_size,
+             content_exclude,
+             content_boot_include,
++            window_title,
+         )
+         print(f"Bundle written to {output_dir}")
+         return None
+@@ -663,6 +674,7 @@ class PostBuildCommands(CommandBase):
+         max_pack_size: str,
+         exclude: List[str],
+         boot_include: List[str],
++        game_name: Optional[str],
+     ) -> None:
+         """Build a real, installable .deb: `dpkg -i` puts the engine + its
+         content under /usr/lib/<package_name>/, with /usr/bin/<package_name>
+@@ -706,6 +718,7 @@ class PostBuildCommands(CommandBase):
+             max_pack_size,
+             exclude,
+             boot_include,
++            game_name,
+         )
+         _write_launch_config(lib_dir, launch_info)
+ 
+diff --git a/support/content-packer/src/extract.rs b/support/content-packer/src/extract.rs
+index e77c713..c71d087 100644
+--- a/support/content-packer/src/extract.rs
++++ b/support/content-packer/src/extract.rs
+@@ -37,18 +37,52 @@ pub const CONTENT_SOURCE_MARKER: &str = ".roves-content-source";
+ /// Picks a stable, per-install destination under the OS's cache directory
+ /// (`~/.cache` on Linux, `Library/Caches` on macOS, `%LOCALAPPDATA%` on
+ /// Windows — real disk, *not* a RAM-backed `tmpfs` like `/tmp` often is on
+-/// Linux, which matters once a project's assets reach the multi-GB range).
+-/// Keyed by a hash of the resolved `content_dir` path so repeat launches of
+-/// the *same* install reuse the same destination (letting the marker-based
+-/// skip-cache below actually help), while different installs/games on the
+-/// same machine don't collide with each other. Nothing is ever written next
+-/// to the bundle itself — see CUSTOMIZATIONS.md.
+-fn default_dest(content_dir: &Path) -> PathBuf {
++/// Linux, which matters once a project's assets reach the multi-GB range):
++/// `<cache_dir>/<game_name>/cache/<hash8>/`. `game_name` (from
++/// `Manifest::name`, plumbed in by every caller of this function — see
++/// `resolve_dest`) makes the top-level folder recognizable as "this game's
++/// stuff" instead of an opaque `roves-content-<hash>`; it's sanitized via
++/// [`sanitize_path_segment`] and falls back to `"roves"` if absent (a dev/
++/// uncompressed build, or a manifest predating this field) or if nothing
++/// filesystem-safe survives sanitizing. The trailing hash — of the resolved
++/// `content_dir` path, *not* game name — is what actually keeps repeat
++/// launches of the *same* install pointed at the same destination (letting
++/// the marker-based skip-cache below help) while different installs/games
++/// that happen to share a display name still don't collide with each other.
++/// Nothing is ever written next to the bundle itself — see CUSTOMIZATIONS.md.
++fn default_dest(content_dir: &Path, game_name: Option<&str>) -> PathBuf {
+     let mut hasher = Sha256::new();
+     hasher.update(content_dir.to_string_lossy().as_bytes());
+     let digest = hasher.finalize();
+     let short: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
+-    cache_dir().join(format!("roves-content-{short}"))
++    let game_dir = game_name.and_then(sanitize_path_segment).unwrap_or_else(|| "roves".to_string());
++    cache_dir().join(game_dir).join("cache").join(short)
++}
++
++/// Turns arbitrary manifest-supplied text (a game's display name) into a
++/// single path segment safe to use as a directory name on Linux, macOS, and
++/// Windows alike: strips path separators, the `:` a Windows drive letter
++/// uses (and that a `NAME:AlternateStream` could otherwise smuggle in),
++/// Windows' other reserved characters (`*?"<>|`), and control characters;
++/// trims leading/trailing whitespace and `.` (Windows also disallows a
++/// trailing dot or space, and a lone leading dot reads as a hidden file on
++/// Unix); and caps length well under every platform's per-segment limit.
++/// Returns `None` if nothing usable survives, so the caller can fall back to
++/// a sane default instead of creating an empty (or `.`/`..`-named) directory.
++fn sanitize_path_segment(name: &str) -> Option<String> {
++    let cleaned: String = name
++        .chars()
++        .map(|c| match c {
++            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '-',
++            c if c.is_control() => '-',
++            c => c,
++        })
++        .collect();
++    let trimmed = cleaned.trim_matches(|c: char| c.is_whitespace() || c == '.');
++    if trimmed.is_empty() {
++        return None;
++    }
++    Some(trimmed.chars().take(64).collect())
+ }
+ 
+ /// Resolves the OS's disk-backed user cache directory, matching each
+@@ -85,16 +119,20 @@ pub fn load_manifest(content_dir: &Path) -> Result<Manifest, String> {
+ }
+ 
+ /// Resolves `content_dir` to its canonical form and picks the destination
+-/// (`dest`, or [`default_dest`] if `None`) — the cheap, non-extracting half
+-/// of [`prepare_dest`], split out so a caller can learn *where* boot content
+-/// will end up (e.g. to build the `file:` URL it'll load once extraction
+-/// finishes) without paying for the actual decompression yet. Does no I/O
+-/// beyond `canonicalize`.
+-pub fn resolve_dest(content_dir: &Path, dest: Option<PathBuf>) -> Result<(PathBuf, PathBuf), String> {
++/// (`dest`, or [`default_dest`] if `None`, using `game_name` — see that
++/// function) — the cheap, non-extracting half of [`prepare_dest`], split out
++/// so a caller can learn *where* boot content will end up (e.g. to build the
++/// `file:` URL it'll load once extraction finishes) without paying for the
++/// actual decompression yet. Does no I/O beyond `canonicalize`.
++pub fn resolve_dest(
++    content_dir: &Path,
++    dest: Option<PathBuf>,
++    game_name: Option<&str>,
++) -> Result<(PathBuf, PathBuf), String> {
+     let content_dir = content_dir
+         .canonicalize()
+         .map_err(|e| format!("resolving {content_dir:?}: {e}"))?;
+-    let dest = dest.unwrap_or_else(|| default_dest(&content_dir));
++    let dest = dest.unwrap_or_else(|| default_dest(&content_dir, game_name));
+     Ok((content_dir, dest))
+ }
+ 
+@@ -103,13 +141,19 @@ pub fn resolve_dest(content_dir: &Path, dest: Option<PathBuf>) -> Result<(PathBu
+ /// `.roves-content-hash`/`.roves-content-source`) if its recorded content
+ /// hash doesn't match, or if `force` was passed. Safe to call repeatedly:
+ /// a matching, non-forced call is a no-op past the manifest read.
++///
++/// Loads the manifest *before* resolving `dest` (rather than after, as it
++/// used to) so `Manifest::name` is available for [`default_dest`] to name
++/// the destination after — a `content_dir.join("manifest.json")` read
++/// either way, just reordered; nothing here depends on `content_dir` being
++/// canonicalized first.
+ fn prepare_dest(
+     content_dir: &Path,
+     dest: Option<PathBuf>,
+     force: bool,
+ ) -> Result<(PathBuf, PathBuf, Manifest), String> {
+-    let (content_dir, dest) = resolve_dest(content_dir, dest)?;
+-    let manifest = load_manifest(&content_dir)?;
++    let manifest = load_manifest(content_dir)?;
++    let (content_dir, dest) = resolve_dest(content_dir, dest, manifest.name.as_deref())?;
+ 
+     let hash_marker = dest.join(CONTENT_HASH_MARKER);
+     let up_to_date = !force &&
+@@ -274,3 +318,44 @@ pub fn ensure_file_available(
+     ensure_pack_extracted(content_dir, dest, pack)?;
+     Ok(true)
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::{default_dest, sanitize_path_segment};
++
++    #[test]
++    fn sanitize_path_segment_strips_unsafe_characters_and_trims() {
++        assert_eq!(sanitize_path_segment("Roves test-page").unwrap(), "Roves test-page");
++        assert_eq!(sanitize_path_segment("My:Game/Title*?\"<>|").unwrap(), "My-Game-Title------");
++        assert_eq!(sanitize_path_segment("  ..leading and trailing.. ").unwrap(), "leading and trailing");
++        assert_eq!(sanitize_path_segment(&"x".repeat(200)).unwrap().len(), 64);
++    }
++
++    #[test]
++    fn sanitize_path_segment_rejects_nothing_usable() {
++        assert!(sanitize_path_segment("").is_none());
++        assert!(sanitize_path_segment("   ").is_none());
++        assert!(sanitize_path_segment("...").is_none());
++        // Path separators/reserved characters become `-`, which (unlike
++        // whitespace/`.`) isn't trimmed — a filesystem-safe, if unhelpful,
++        // name, not "nothing usable".
++        assert_eq!(sanitize_path_segment("/\\:").unwrap(), "---");
++    }
++
++    #[test]
++    fn default_dest_nests_cache_and_hash_under_the_game_name() {
++        let content_dir = std::path::Path::new("/some/build/dist");
++        let named = default_dest(content_dir, Some("Roves test-page"));
++        let mut components = named.components().rev();
++        let hash = components.next().unwrap().as_os_str().to_str().unwrap().to_string();
++        assert_eq!(components.next().unwrap().as_os_str(), "cache");
++        assert_eq!(components.next().unwrap().as_os_str(), "Roves test-page");
++        assert_eq!(hash.len(), 16, "8 bytes, hex-encoded");
++
++        // Same content_dir, no name at all -> same hash, generic top-level folder.
++        let unnamed = default_dest(content_dir, None);
++        assert_eq!(unnamed.file_name().unwrap(), named.file_name().unwrap());
++        assert_eq!(unnamed.parent().unwrap().file_name().unwrap(), "cache");
++        assert_eq!(unnamed.parent().unwrap().parent().unwrap().file_name().unwrap(), "roves");
++    }
++}
+diff --git a/support/content-packer/src/main.rs b/support/content-packer/src/main.rs
+index 284e8a8..ac06218 100644
+--- a/support/content-packer/src/main.rs
++++ b/support/content-packer/src/main.rs
+@@ -36,6 +36,7 @@ struct PackCli {
+     exclude: Vec<String>,
+     html_file: String,
+     boot_include: Vec<String>,
++    name: Option<String>,
+ }
+ 
+ #[derive(Debug, Clone)]
+@@ -77,7 +78,12 @@ fn pack_cli() -> impl Parser<PackCli> {
+             beyond the html file and what it directly references")
+         .argument::<String>("GLOB")
+         .many();
+-    bpaf::construct!(PackCli { input, output, level, max_pack_size, exclude, html_file, boot_include })
++    let name = bpaf::long("name")
++        .help("The game's own display name, written into manifest.json — used by `extract` to \
++            name the on-disk extraction cache directory after the game instead of a bare hash")
++        .argument::<String>("NAME")
++        .optional();
++    bpaf::construct!(PackCli { input, output, level, max_pack_size, exclude, html_file, boot_include, name })
+ }
+ 
+ fn extract_cli() -> impl Parser<ExtractCli> {
+@@ -146,6 +152,7 @@ fn run_pack(args: PackCli) -> Result<(), String> {
+         exclude,
+         html_file: args.html_file,
+         boot_include,
++        name: args.name,
+     };
+     pack::pack(&opts)
+ }
+diff --git a/support/content-packer/src/manifest.rs b/support/content-packer/src/manifest.rs
+index 3c74a04..3a3ecb0 100644
+--- a/support/content-packer/src/manifest.rs
++++ b/support/content-packer/src/manifest.rs
+@@ -39,6 +39,17 @@ pub struct Manifest {
+     /// final `file:` URL to open, without needing that filename threaded
+     /// through as a separate CLI argument.
+     pub entry_html: String,
++    /// The game's own display name, as passed via `--name` at pack time
++    /// (`mach bundle` resolves this from `manifest.json`'s/`package.json`'s
++    /// `name` — the same source used for the window title, see
++    /// `python/servo/post_build_commands.py`'s `_resolve_window_title`).
++    /// `None` for a dev/uncompressed build, or an older manifest predating
++    /// this field (`#[serde(default)]` so those still deserialize). Used by
++    /// `extract::default_dest` to name the on-disk extraction cache
++    /// directory after the game instead of a bare content hash — see
++    /// CUSTOMIZATIONS.md.
++    #[serde(default)]
++    pub name: Option<String>,
+ }
+ 
+ #[derive(Debug, Serialize, Deserialize)]
+diff --git a/support/content-packer/src/pack.rs b/support/content-packer/src/pack.rs
+index 8afd812..1afa6d0 100644
+--- a/support/content-packer/src/pack.rs
++++ b/support/content-packer/src/pack.rs
+@@ -32,6 +32,9 @@ pub struct PackOptions {
+     /// boot set beyond the html file and what it references directly — e.g.
+     /// a splash image shown before the page itself has rendered anything.
+     pub boot_include: Vec<glob::Pattern>,
++    /// The game's own display name, if known — written into the manifest
++    /// verbatim; see `Manifest::name`.
++    pub name: Option<String>,
+ }
+ 
+ struct FileEntry {
+@@ -147,6 +150,7 @@ pub fn pack(opts: &PackOptions) -> Result<(), String> {
+         excluded: excluded_rel,
+         files: file_locations,
+         entry_html: opts.html_file.clone(),
++        name: opts.name.clone(),
+     };
+     let manifest_path = opts.output.join("manifest.json");
+     let manifest_file =
+diff --git a/support/content-packer/tests/roundtrip.rs b/support/content-packer/tests/roundtrip.rs
+index ef517d9..4d28044 100644
+--- a/support/content-packer/tests/roundtrip.rs
++++ b/support/content-packer/tests/roundtrip.rs
+@@ -41,6 +41,7 @@ fn pack_it(dist: &Path, out: &Path) {
+         exclude: vec![],
+         html_file: "index.html".to_string(),
+         boot_include: vec![],
++        name: None,
+     })
+     .expect("pack should succeed");
+ }
+@@ -197,6 +198,7 @@ fn excluded_files_are_always_present_after_boot_extraction_and_never_in_the_file
+         exclude: vec![glob::Pattern::new("save/**").unwrap()],
+         html_file: "index.html".to_string(),
+         boot_include: vec![],
++        name: None,
+     })
+     .unwrap();
+ 

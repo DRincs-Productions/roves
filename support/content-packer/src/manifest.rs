@@ -39,6 +39,17 @@ pub struct Manifest {
     /// final `file:` URL to open, without needing that filename threaded
     /// through as a separate CLI argument.
     pub entry_html: String,
+    /// The game's own display name, as passed via `--name` at pack time
+    /// (`mach bundle` resolves this from `manifest.json`'s/`package.json`'s
+    /// `name` — the same source used for the window title, see
+    /// `python/servo/post_build_commands.py`'s `_resolve_window_title`).
+    /// `None` for a dev/uncompressed build, or an older manifest predating
+    /// this field (`#[serde(default)]` so those still deserialize). Used by
+    /// `extract::default_dest` to name the on-disk extraction cache
+    /// directory after the game instead of a bare content hash — see
+    /// CUSTOMIZATIONS.md.
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

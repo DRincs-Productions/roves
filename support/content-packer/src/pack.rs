@@ -32,6 +32,9 @@ pub struct PackOptions {
     /// boot set beyond the html file and what it references directly — e.g.
     /// a splash image shown before the page itself has rendered anything.
     pub boot_include: Vec<glob::Pattern>,
+    /// The game's own display name, if known — written into the manifest
+    /// verbatim; see `Manifest::name`.
+    pub name: Option<String>,
 }
 
 struct FileEntry {
@@ -147,6 +150,7 @@ pub fn pack(opts: &PackOptions) -> Result<(), String> {
         excluded: excluded_rel,
         files: file_locations,
         entry_html: opts.html_file.clone(),
+        name: opts.name.clone(),
     };
     let manifest_path = opts.output.join("manifest.json");
     let manifest_file =

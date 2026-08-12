@@ -36,6 +36,7 @@ struct PackCli {
     exclude: Vec<String>,
     html_file: String,
     boot_include: Vec<String>,
+    name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -77,7 +78,12 @@ fn pack_cli() -> impl Parser<PackCli> {
             beyond the html file and what it directly references")
         .argument::<String>("GLOB")
         .many();
-    bpaf::construct!(PackCli { input, output, level, max_pack_size, exclude, html_file, boot_include })
+    let name = bpaf::long("name")
+        .help("The game's own display name, written into manifest.json — used by `extract` to \
+            name the on-disk extraction cache directory after the game instead of a bare hash")
+        .argument::<String>("NAME")
+        .optional();
+    bpaf::construct!(PackCli { input, output, level, max_pack_size, exclude, html_file, boot_include, name })
 }
 
 fn extract_cli() -> impl Parser<ExtractCli> {
@@ -146,6 +152,7 @@ fn run_pack(args: PackCli) -> Result<(), String> {
         exclude,
         html_file: args.html_file,
         boot_include,
+        name: args.name,
     };
     pack::pack(&opts)
 }

@@ -1751,3 +1751,147 @@ only, no `cache`) until someone actually publishes `0.2.0` — push a `v0.2.0`-s
 `npm install`/`tsc` (including `.github/workflows/test.yml`'s CI) will fail to resolve
 `@drincs/roves-api/cache`. Deliberately left un-triggered here since pushing a release tag is
 a real publish action, not a local code change.
+
+---
+
+## 2026-08-12 — Hold the boot splash for a minimum duration on every launch
+
+**File:** `ports/servoshell/desktop/app.rs`.
+
+**Patch:** `patches/servo-v0.4.0/0025-hold-boot-splash-minimum-duration.patch`
+
+**Upstream behavior:** no equivalent — refines the boot-splash entry above (2026-08-09) and
+the never-show-white entry (2026-08-10).
+
+**Problem:** asked directly — on startup, a brief black screen showed before the real page,
+instead of the branded (icon + "Roves") splash. Root cause: `AppState::Booting` (the branded
+splash's only code path with any actual visible duration) was gated entirely on there being a
+pending packed-content boot extraction (`App::pending_extraction.is_some()`). A launch with
+nothing to extract — a dev `--url` run, or (the common case after the very first launch) a
+packed-content launch whose destination is already cached from a previous run — skipped
+`Booting` entirely. The window's very first frame *is* the branded splash (`Gui::new` already
+painted it, unconditionally, per the 2026-08-10 entry), but the very next frame immediately
+swapped in the real, still-loading `WebView` — whose own clear color is black too (that same
+entry's `shell_background_color_rgba` default) until it has content to paint. Net effect: the
+branded splash flashed for a single frame, too brief to register — read by a user as "black
+screen, then the app", not as a splash.
+
+**Change:** new `MIN_SPLASH_DURATION` (500ms). Every headed launch now always enters
+`AppState::Booting` and stays there for at least this long, regardless of whether there's a
+pending extraction — if there is one, it still also has to finish (unchanged); if there isn't,
+`MIN_SPLASH_DURATION` alone is what `finish_init` waits on.
+
+- `AppState::Booting` gained a new field, `extraction_done: bool` — `true` from the start if
+  `App::init` had no `pending_extraction` to begin with (nothing left to wait on but the
+  timer), or flips to `true` once `AppEvent::BootReady` arrives (unchanged trigger, same as
+  before this change).
+- `App::init`: no longer branches on `self.pending_extraction` to decide *whether* to enter
+  `Booting` for a headed launch — it always does now (headless is unaffected: no splash to
+  show either way, so a pending extraction there still just runs synchronously, exactly as
+  before). Only branches on it now to decide whether to also spawn the background extraction
+  thread.
+- New `App::try_finish_booting(event_loop)`: the one place that decides whether `Booting` is
+  actually done — `extraction_done && extraction_started.elapsed() >= MIN_SPLASH_DURATION` —
+  and, if not, re-arms `ControlFlow::WaitUntil` for whichever of `SPLASH_PROGRESS_BAR_DELAY`/
+  `MIN_SPLASH_DURATION` hasn't elapsed yet. A no-op when not `Booting`, so every event handler
+  can call it unconditionally instead of duplicating this decision. Replaces the old, simpler
+  "just call `finish_init` directly from the `BootReady` handler" — that alone is no longer
+  sufficient, since extraction finishing early (or not existing at all) must *not* skip the
+  remaining minimum-duration wait.
+- `new_events`/`window_event`/`user_event`'s `Booting` branches: still do their own thing
+  first (force a progress-bar-delay redraw; paint the splash; update `progress`/
+  `extraction_done`), then all defer to `try_finish_booting` instead of each having its own
+  copy of the finish-or-reschedule logic (`window_event`'s old inline version) or directly
+  calling `finish_init` (`user_event`'s old `BootReady` arm).
+
+**Why 500ms specifically:** long enough to reliably register as "a splash appeared" (vs. a
+single-frame flash, which is what the bug was), short enough that it doesn't read as an
+artificial delay on a fast dev relaunch. Not derived from any measurement — a reasonable
+starting point, adjustable if it feels off in practice.
+
+**Verification:** `cargo check -p roves-content-packer` unaffected (this entry doesn't touch
+that crate). `cargo check -p servoshell` could not be completed in this environment — same
+`libudev-sys`/pkg-config gap as prior entries, this time hit before rustc ever reached
+`servoshell`'s own source (a dependency lower in the graph fails first) — so this change was
+*not* type-checked by rustc here. Reviewed by hand instead: every borrow-splitting pattern used
+(cloning a `Rc<dyn PlatformWindow>` out of an `&mut self.state` match arm before calling back
+into `&mut self`; ending an immutable `if let ... = &self.state` borrow at its last use before
+a subsequent `&mut self` call) mirrors a pattern already present and compiling elsewhere in
+this same file (e.g. the pre-existing `user_event`'s `boot_ready_window` extraction). **Needs a
+real `./mach build`/`./mach run` to confirm end-to-end** — the splash should now visibly hold
+for ~500ms on every launch, including a plain `./mach run --url` dev launch and a relaunch of
+an already-extracted packed build, not just a genuine first-launch extraction.
+
+---
+
+## 2026-08-12 — Name the extraction cache directory after the game
+
+**Files:** `support/content-packer/src/manifest.rs`, `support/content-packer/src/pack.rs`,
+`support/content-packer/src/extract.rs`, `support/content-packer/src/main.rs`,
+`support/content-packer/tests/roundtrip.rs`, `ports/servoshell/desktop/bundle_launch.rs`,
+`python/servo/post_build_commands.py`.
+
+**Patch:** `patches/servo-v0.4.0/0026-name-extraction-cache-dir-after-the-game.patch`
+
+**Upstream behavior:** no equivalent — refines `extract::default_dest` (2026-08-09's
+"lazy on-demand content extraction" entry, further along above).
+
+**Problem:** asked directly — the on-disk extraction cache directory (see the appdata-cache
+entries above) was a bare `<cache_dir>/roves-content-<hash8>/`, opaque and indistinguishable
+from any other game's cache dir on the same machine at a glance.
+
+**Change:** `<cache_dir>/<game_name>/cache/<hash8>/` — a top-level folder named after the game,
+with the actual extracted content nested inside a `cache/<hash8>` subfolder (the hash — of the
+resolved `content_dir` path, unchanged in meaning from before — is still what actually keeps
+repeat launches of the *same* install pointed at the same destination while different
+installs/games that happen to share a display name don't collide).
+
+- `manifest.rs`: `Manifest` gained `name: Option<String>` (`#[serde(default)]`, so an older
+  manifest without this key still deserializes) — the game's display name, written verbatim
+  by `pack`. `None` for a dev/uncompressed build or an older manifest.
+- `pack.rs`: `PackOptions` gained a matching `name: Option<String>`, threaded straight into the
+  `Manifest` it writes.
+- `main.rs`: new `--name NAME` (optional) on the `pack` subcommand, wired to
+  `PackOptions::name`. `extract` is untouched — it never needs the name passed explicitly, see
+  below.
+- `extract.rs`: `default_dest` takes a new `game_name: Option<&str>` parameter and builds the
+  new nested path shape; falls back to the literal string `"roves"` if `game_name` is `None` or
+  sanitizes to nothing. New `sanitize_path_segment(name)` turns arbitrary manifest text into a
+  single filesystem-safe path segment — strips path separators/Windows-reserved characters
+  (`\/:*?"<>|`) and control characters to `-`, trims leading/trailing whitespace and `.`
+  (Windows disallows a trailing dot/space; a lone leading dot reads as hidden on Unix), and
+  caps length at 64 chars; returns `None` only if nothing survives (e.g. empty, or all
+  whitespace/dots), in which case the caller falls back to `"roves"` — a result of all-`-`
+  characters (e.g. sanitizing `"/\\\":"`) is still `Some`, since that's a valid, if unhelpful,
+  directory name, not "nothing usable". `resolve_dest` gained the same new `game_name`
+  parameter, forwarded straight to `default_dest`. `prepare_dest` now loads the manifest
+  *before* calling `resolve_dest` (previously after) so `Manifest::name` is available in time —
+  the same `content_dir.join("manifest.json")` read either way, just reordered; canonicalizing
+  `content_dir` first was never a real dependency of that read. Added unit tests for
+  `sanitize_path_segment` and `default_dest`'s new path shape (`#[cfg(test)] mod tests`,
+  matching `size.rs`'s existing convention).
+- `bundle_launch.rs`: `resolve_packed_content_url` already loaded the manifest before calling
+  `resolve_dest` (unlike `prepare_dest`, no reordering needed here) — just passes
+  `manifest.name.as_deref()` through now.
+- `post_build_commands.py`: `_place_bundle_content` gained a `game_name: Optional[str]`
+  parameter, passed as `--name` to the packer subprocess when set. Both call sites
+  (`bundle()`'s own, and `_bundle_linux_deb`'s, which also gained the same new parameter to
+  forward it along) pass the already-resolved `window_title` value (`_resolve_window_title`,
+  the 2026-08-10 window-title entry) — the exact same "game's display name" source, reused
+  rather than re-resolved separately.
+
+**Why reuse `window_title` instead of a fresh CLI flag/resolution:** `_resolve_window_title`
+already implements exactly the lookup this needed (`manifest.json`'s `name`, falling back to
+`package.json`'s), and by the time `_place_bundle_content` runs, `bundle()` has already called
+it. One resolution, two uses (window title, cache directory name), rather than two separate
+(and potentially divergent) name sources.
+
+**Verification:** `cargo test -p roves-content-packer` — all 6 pre-existing `roundtrip.rs`
+cases (both `PackOptions` literals there updated with `name: None`) plus the `size` unit test
+and the 4 new unit tests (`sanitize_path_segment`/`default_dest`) pass; a real, non-mocked run
+through `pack`/`load_manifest`/`prepare_dest`, not just a type-check. `python3 -m py_compile
+python/servo/post_build_commands.py` passes. `cargo check -p servoshell` could not be
+completed in this environment for the `bundle_launch.rs` change specifically — same
+`libudev-sys` gap noted in the entry above; reviewed by hand instead (a single-line call-site
+change, `resolve_dest(&content_dir, None, manifest.name.as_deref())`, using a binding —
+`manifest` — already in scope one line above it).
