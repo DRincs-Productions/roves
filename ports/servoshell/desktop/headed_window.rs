@@ -264,10 +264,10 @@ impl HeadedWindow {
     /// Paints the boot splash (see `AppState::Booting` in `app.rs`) instead
     /// of the normal browser UI — used while a packed-content launch's boot
     /// extraction is still running on a background thread, before there's a
-    /// `RunningAppState`/webview to draw. `progress`, once `Some`, is shown
-    /// as a progress bar (`None` before the splash's short appear-delay has
-    /// passed — see `SPLASH_PROGRESS_BAR_DELAY`).
-    pub(crate) fn paint_splash(&self, progress: Option<f32>) {
+    /// `RunningAppState`/webview to draw. `progress`, in `[0, 1]`, drives the
+    /// splash's progress bar (see `Gui::update_splash`) — always shown, even
+    /// at `0.0` before extraction has started.
+    pub(crate) fn paint_splash(&self, progress: f32) {
         let mut gui = self.gui.borrow_mut();
         gui.update_splash(&self.winit_window, progress);
         gui.paint(&self.winit_window);

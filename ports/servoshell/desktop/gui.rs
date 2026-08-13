@@ -194,6 +194,57 @@ fn add_wordmark_font(fonts: &mut FontDefinitions) {
     );
 }
 
+/// Boot splash sizing (`Gui::update_splash`). The wordmark font size is kept
+/// at the same icon-height-relative proportion (44/64 ≈ 0.69) as the
+/// reference lockup in `resources/roves_wordmark.svg`, scaled up from that
+/// asset's 64px icon to read clearly full-screen.
+const SPLASH_ICON_SIZE: f32 = 128.0;
+const SPLASH_WORDMARK_FONT_SIZE: f32 = 88.0;
+const SPLASH_PROGRESS_BAR_WIDTH: f32 = 260.0;
+const SPLASH_PROGRESS_BAR_HEIGHT: f32 = 6.0;
+
+/// Draws the boot splash's progress bar track and fill directly via
+/// `Ui::painter`, rather than `egui::ProgressBar` — that widget draws its
+/// track in `visuals.extreme_bg_color`, which under this app's light
+/// fallback theme (`Gui::new`'s `options.fallback_theme`) is pure white,
+/// identical to the fill color the splash also wants; at any progress the
+/// two were indistinguishable, so the "bar" just read as a static white
+/// rectangle rather than a loading indicator. This instead always draws a
+/// dim, translucent track (visible even at `progress == 0.0`, i.e. before
+/// extraction has actually started) with a brighter outline, and an opaque
+/// white fill on top sized to `progress`.
+fn draw_splash_progress_bar(ui: &mut egui::Ui, progress: f32) {
+    let progress = progress.clamp(0.0, 1.0);
+    let (outer_rect, _response) = ui.allocate_exact_size(
+        egui::vec2(SPLASH_PROGRESS_BAR_WIDTH, SPLASH_PROGRESS_BAR_HEIGHT),
+        egui::Sense::hover(),
+    );
+    if !ui.is_rect_visible(outer_rect) {
+        return;
+    }
+    let corner_radius = egui::CornerRadius::same(2);
+    let painter = ui.painter();
+    painter.rect_filled(
+        outer_rect,
+        corner_radius,
+        egui::Color32::from_white_alpha(28),
+    );
+    painter.rect_stroke(
+        outer_rect,
+        corner_radius,
+        egui::Stroke::new(1.0, egui::Color32::from_white_alpha(90)),
+        egui::StrokeKind::Outside,
+    );
+    if progress > 0.0 {
+        let filled_width = (outer_rect.width() * progress).max(SPLASH_PROGRESS_BAR_HEIGHT);
+        let fill_rect = egui::Rect::from_min_size(
+            outer_rect.min,
+            egui::vec2(filled_width, outer_rect.height()),
+        );
+        painter.rect_filled(fill_rect, corner_radius, egui::Color32::WHITE);
+    }
+}
+
 impl Drop for Gui {
     fn drop(&mut self) {
         self.rendering_context
@@ -267,7 +318,7 @@ impl Gui {
         // it with the real page — which itself clears to
         // `shell_background_color_rgba` (black, see `components/config/
         // prefs.rs`) until it has something of its own to paint.
-        gui.update_splash(winit_window, None);
+        gui.update_splash(winit_window, 0.0);
         gui.paint(winit_window);
         winit_window.set_visible(true);
 
@@ -503,17 +554,40 @@ impl Gui {
     /// minimal black screen with the Roves icon and wordmark (see
     /// `resources/roves_wordmark.svg` for the same lockup as a standalone
     /// asset), shown in place of the normal browser UI while a packed-content
-    /// launch's boot extraction still hasn't finished. `progress`, once
-    /// `Some`, is shown as a squared-off white progress bar below the
-    /// wordmark; kept `None` for the splash's short appear-delay so a
-    /// fast/no-op extraction never flashes one. Call [`Gui::paint`]
-    /// afterward, same as [`Gui::update`].
-    pub(crate) fn update_splash(&mut self, winit_window: &Window, progress: Option<f32>) {
+    /// launch's boot extraction still hasn't finished. `progress`, in
+    /// `[0, 1]`, drives a squared-off progress bar below the wordmark —
+    /// always drawn, even at `0.0` before extraction has actually started
+    /// (see [`draw_splash_progress_bar`]), so the splash never shows a bare
+    /// wordmark with no indication that something is loading. Call
+    /// [`Gui::paint`] afterward, same as [`Gui::update`].
+    pub(crate) fn update_splash(&mut self, winit_window: &Window, progress: f32) {
         self.rendering_context
             .make_current()
             .expect("Could not make RenderingContext current");
-        let icon = egui::Image::from_texture(&self.splash_icon_texture).max_height(64.0);
+        let icon =
+            egui::Image::from_texture(&self.splash_icon_texture).max_height(SPLASH_ICON_SIZE);
+        let wordmark_font = egui::FontId::new(
+            SPLASH_WORDMARK_FONT_SIZE,
+            egui::FontFamily::Name("Metal Mania".into()),
+        );
         self.context.run(winit_window, |ctx| {
+            // Measured (not guessed) so the icon+wordmark row below can be
+            // centered exactly, rather than trusting `top_down`'s
+            // `Align::Center` to center a nested `ui.horizontal` row on its
+            // own — same "estimate, verify against a real build" caveat as
+            // the vertical fudge factor further down applies here too, just
+            // resolved with an actual measurement instead of a guess, since
+            // one is cheaply available.
+            let wordmark_width = ctx.fonts_mut(|fonts| {
+                fonts
+                    .layout_no_wrap(
+                        "Roves".to_owned(),
+                        wordmark_font.clone(),
+                        egui::Color32::WHITE,
+                    )
+                    .size()
+                    .x
+            });
             // `Panel::show` (the top-level entry point, as opposed to
             // `show_inside` for nesting inside another container) is
             // deprecated in this egui version in favor of hand-building a
@@ -524,32 +598,22 @@ impl Gui {
                 .frame(egui::Frame::default().fill(egui::Color32::BLACK))
                 .show(ctx, |ui| {
                     ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                        // Fudge-factor half-height offset for the icon+wordmark row (~64px,
-                        // the icon's height dominates) + gap (20px) + progress bar (18px) —
-                        // see add_wordmark_font/WORDMARK_FONT_SIZE above for why the wordmark
-                        // itself doesn't push this past the icon's height.
-                        ui.add_space(ui.available_height() / 2.0 - 51.0);
+                        // Fudge-factor half-height offset for the icon+wordmark row (~128px,
+                        // the icon's height dominates) + gap (40px) + progress bar (6px).
+                        ui.add_space(ui.available_height() / 2.0 - 87.0);
+                        let lockup_width =
+                            SPLASH_ICON_SIZE + ui.spacing().item_spacing.x + wordmark_width;
                         ui.horizontal(|ui| {
+                            ui.add_space(((ui.available_width() - lockup_width) / 2.0).max(0.0));
                             ui.add(icon.clone());
                             ui.label(
                                 egui::RichText::new("Roves")
-                                    .font(egui::FontId::new(
-                                        34.0,
-                                        egui::FontFamily::Name("Metal Mania".into()),
-                                    ))
+                                    .font(wordmark_font.clone())
                                     .color(egui::Color32::WHITE),
                             );
                         });
-                        if let Some(progress) = progress {
-                            ui.add_space(20.0);
-                            ui.add(
-                                egui::ProgressBar::new(progress)
-                                    .desired_width(200.0)
-                                    .desired_height(18.0)
-                                    .fill(egui::Color32::WHITE)
-                                    .corner_radius(egui::CornerRadius::ZERO),
-                            );
-                        }
+                        ui.add_space(40.0);
+                        draw_splash_progress_bar(ui, progress);
                     });
                 });
         });

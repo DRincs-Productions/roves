@@ -35,13 +35,6 @@ use crate::running_app_state::RunningAppState;
 use crate::running_app_state::ServoshellGamepadDelegate;
 use crate::window::{PlatformWindow, ServoShellWindowId};
 
-/// How long the boot splash shows before its progress bar appears — see
-/// `AppState::Booting` and `Gui::update_splash`. Short enough to feel
-/// immediate on a slow first launch, long enough that a fast/no-op
-/// extraction (content already cached from a previous run) never shows a
-/// bar at all.
-const SPLASH_PROGRESS_BAR_DELAY: Duration = Duration::from_millis(300);
-
 /// Minimum time every headed launch spends on the boot splash before the
 /// real page opens, regardless of whether there's any boot extraction to
 /// wait on. Without this, a launch with nothing to extract — a dev `--url`
@@ -64,7 +57,6 @@ pub(crate) enum AppState {
     /// `HeadedWindow::paint_splash`) while, if there's a pending
     /// packed-content boot extraction, a background thread (spawned from
     /// `App::init`) decompresses the boot set. `extraction_started` drives
-    /// both the progress bar's appear-after-a-delay behavior and
     /// `MIN_SPLASH_DURATION`; `progress` is updated by incoming
     /// `AppEvent::BootProgress`. `extraction_done` starts `true` when there
     /// was no pending extraction to begin with (nothing to wait on but
@@ -159,12 +151,12 @@ impl App {
         };
 
         // Show the splash immediately, then make sure we wake up again once
-        // the progress bar's appear delay has passed even if no
-        // `BootProgress` tick arrives before then — see `new_events`.
+        // `MIN_SPLASH_DURATION` has passed even if no `BootProgress`/
+        // `BootReady` tick arrives before then — see `new_events`.
         if let Some(headed_window) = platform_window.as_headed_window() {
             headed_window.winit_window().request_redraw();
         }
-        active_event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + SPLASH_PROGRESS_BAR_DELAY));
+        active_event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + MIN_SPLASH_DURATION));
 
         let extraction_done = match opts {
             Some(opts) => {
@@ -202,10 +194,9 @@ impl App {
     /// If `Booting`, check whether both extraction (if any was pending) and
     /// `MIN_SPLASH_DURATION` have finished; if so, hand off to
     /// `finish_init`. Otherwise (re)arm `control_flow` to wake up exactly
-    /// when the next thing that could change that outcome is next due — the
-    /// progress bar's appear delay, or `MIN_SPLASH_DURATION`, whichever
-    /// hasn't already passed. A no-op when not `Booting`, so every event
-    /// handler below can call this unconditionally.
+    /// when `MIN_SPLASH_DURATION` will have elapsed. A no-op when not
+    /// `Booting`, so every event handler below can call this
+    /// unconditionally.
     fn try_finish_booting(&mut self, event_loop: &ActiveEventLoop) {
         let AppState::Booting { window, extraction_started, extraction_done, .. } = &self.state
         else {
@@ -213,13 +204,8 @@ impl App {
         };
         let elapsed = extraction_started.elapsed();
         if !*extraction_done || elapsed < MIN_SPLASH_DURATION {
-            let next_wake = if elapsed < SPLASH_PROGRESS_BAR_DELAY {
-                SPLASH_PROGRESS_BAR_DELAY
-            } else {
-                MIN_SPLASH_DURATION
-            };
             event_loop.set_control_flow(ControlFlow::WaitUntil(
-                Instant::now() + next_wake.saturating_sub(elapsed),
+                Instant::now() + MIN_SPLASH_DURATION.saturating_sub(elapsed),
             ));
             return;
         }
@@ -381,9 +367,9 @@ impl ApplicationHandler<AppEvent> for App {
         self.init(Some(event_loop));
     }
 
-    /// Only relevant while `Booting`: forces one redraw once the splash's
-    /// progress-bar delay (`SPLASH_PROGRESS_BAR_DELAY`) elapses even if no
-    /// `AppEvent::BootProgress` tick has arrived yet, then defers to
+    /// Only relevant while `Booting`: forces one redraw once
+    /// `MIN_SPLASH_DURATION` elapses even if no `AppEvent::BootProgress`/
+    /// `BootReady` tick has arrived yet, then defers to
     /// `try_finish_booting` — which is also what wakes `Booting` up to
     /// transition to `finish_init` purely on `MIN_SPLASH_DURATION` elapsing,
     /// for a launch with no pending extraction to otherwise notify us.
@@ -415,13 +401,12 @@ impl ApplicationHandler<AppEvent> for App {
         self.t = now;
 
         if matches!(self.state, AppState::Booting { .. }) {
-            if let AppState::Booting { window, extraction_started, progress, .. } = &self.state &&
+            if let AppState::Booting { window, progress, .. } = &self.state &&
                 let Some(headed_window) = window.as_headed_window() &&
                 headed_window.winit_window().id() == window_id &&
                 matches!(window_event, WindowEvent::RedrawRequested | WindowEvent::Resized(_))
             {
-                let elapsed = extraction_started.elapsed();
-                headed_window.paint_splash((elapsed >= SPLASH_PROGRESS_BAR_DELAY).then_some(*progress));
+                headed_window.paint_splash(*progress);
             }
             self.try_finish_booting(event_loop);
             return;

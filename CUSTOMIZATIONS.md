@@ -1996,6 +1996,28 @@ Rust toolchain available here) — treat the next real CI run of `../.github/wor
 as the real verification, and fix up anything that doesn't survive contact with real WiX/
 `hdiutil` before relying on this.
 
+**Correction (same day, after a real CI run) — `output_dir` wasn't made absolute:** exactly
+the kind of bug the caveat above was hedging against. A real `windows-latest` run of
+`--msi` failed in `light` with `LGHT0103: The system cannot find the file
+'../release\_stage\play.exe'` (and the same for every other file in the bundle). Root cause:
+`output_dir` (from `--output`, e.g. `../release` — relative to `mach bundle`'s own cwd) was
+never resolved to an absolute path, so `stage_dir`/`msi_build_dir` (both derived from it)
+stayed relative too. `_wrap_windows_msi` then `cd`s into `msi_build_dir` before invoking
+`candle`/`light` — and WiX resolves each `<File Source="...">` path (baked into the `.wxs`
+from that same relative `stage_dir`) relative to *its own* cwd at that point, not the cwd the
+path string was originally relative to. With cwd now one level deeper
+(`release/_msi-build` instead of `servo-src`), resolving the relative `../release/_stage/...`
+from there doubled the `release` segment (`release/release/_stage/...`), which doesn't exist.
+Fixed with a one-line change: `output_dir = path.abspath(output or path.join(binary_dir,
+"bundle"))` instead of using `output`/the joined path as-is — every path derived from it
+(`stage_dir`, `msi_build_dir`, the `.wxs`'s `Source=` attributes, the final `.msi`/`.dmg`
+path) is now absolute from the start, immune to whichever cwd `candle`/`light`/`hdiutil`
+actually run from. `--dmg`/`--deb` never `cd()` elsewhere mid-command, so they likely weren't
+actually broken by this — but the fix applies to `output_dir` itself, upstream of all three,
+so it's not a Windows/`--msi`-specific patch. Folded into the same
+`0027-add-msi-dmg-installer-support.patch` rather than a new one, since it corrects a bug
+in that same not-yet-released change, not a change to already-shipped behavior.
+
 ---
 
 ## 2026-08-12 — Boot splash redesign: Metal Mania wordmark, squared white progress bar
@@ -2090,3 +2112,201 @@ this change specifically. `resources/roves_wordmark.svg` was validated as well-f
 confirm the layout/embedding works, not just that the markup parses. Treat the next real
 `./mach build` + manual run of this fork as the actual visual verification (exact pixel
 centering in particular, given the fudge-factor caveat above) before considering this done.
+
+---
+
+## 2026-08-12 — Boot splash resize, manual centering, and readable progress bar
+
+**Files:** `ports/servoshell/desktop/gui.rs`, `ports/servoshell/desktop/app.rs`,
+`ports/servoshell/desktop/headed_window.rs`.
+
+**Patch:**
+`patches/servo-v0.4.0/0029-boot-splash-resize-recenter-and-progress-bar-redesign.patch`
+
+**Upstream behavior:** no equivalent — refines the 2026-08-09 "Native boot splash" and
+2026-08-12 "Boot splash redesign" entries' `Gui::update_splash` (further up this file).
+
+**Asked directly, from a screenshot of a real launch:** four things wrong with the splash
+from the previous entry — (1) the icon+wordmark row rendered pinned to the left edge instead
+of centered; (2) the icon (`resources/servo_64.png`) and "Roves" wordmark read as too small,
+with the wordmark not enough bigger than the icon; (3) the progress bar was too thick and, at
+any fill level, visually indistinguishable from an empty bar; (4) no bar was visible at all
+before extraction actually started.
+
+**Root causes, investigated before changing anything:**
+
+- **(3) is the real bug, not a perception issue.** `egui::ProgressBar` paints its track in
+  `visuals.extreme_bg_color`, and paints its fill in whatever `.fill()` is given. This app
+  sets `options.fallback_theme = egui::Theme::Light` (`Gui::new`) and doesn't otherwise force
+  a dark theme, so on a system reporting (or defaulting to) a light theme,
+  `extreme_bg_color` is `Color32::from_gray(255)` — pure white — which the previous entry's
+  `.fill(Color32::WHITE)` exactly matches. Track and fill were the same color at every
+  progress value, so the "bar" only ever read as a static white rectangle, never as a loading
+  indicator. Confirmed by reading `egui`'s vendored `progress_bar.rs`/`style.rs` sources
+  directly (this pinned version, 0.34.3, is present in the local Cargo registry cache), not
+  guessed.
+- **(4) was deliberate in the previous design** (`SPLASH_PROGRESS_BAR_DELAY`, "long enough
+  that a fast/no-op extraction never shows a bar at all") but is exactly what was asked to
+  change: the bar should be visible-but-empty from the very first frame.
+- **(1) could not be conclusively root-caused against real rendering** (no display in this
+  environment), but was investigated as far as static analysis allows: `ui.horizontal(...)`
+  nested inside `ui.with_layout(Layout::top_down(Align::Center), ...)` is the standard egui
+  idiom for centering a row and, per the egui source, *should* center correctly. Rather than
+  keep trusting that against contrary empirical evidence (the screenshot), the row is now
+  centered by explicit, *measured* horizontal padding instead — see below. This sidesteps the
+  question of whether the old approach was actually buggy or something else was going on,
+  since the new approach is correct either way.
+- **On the icon itself:** `resources/servo_64.png` (loaded by
+  `load_splash_icon_image`/`Gui::update_splash`) was checked pixel-by-pixel against
+  `icon.svg` (repo root) and is a 64px rasterization of it — a generic, Recraft-AI-generated
+  "three wolf heads in chains" clip-art image, not a Roves logo. No Roves-branded icon asset
+  (matching the colorful lockup mark referenced in chat) exists anywhere in this repo, its
+  three sibling checkouts (`roves-action`, `roves-api`, `roves-wiki`), or
+  `resources/roves_wordmark.svg`'s own embedded icon (byte-identical to `servo_64.png`, i.e.
+  the same wolf placeholder, not a different asset). **This entry does not change the icon
+  file** — swapping in real Roves branding needs that asset supplied first; asked about
+  separately in chat rather than guessed at here.
+
+**Change:**
+
+- **`gui.rs`, new constants:** `SPLASH_ICON_SIZE` (64.0 → 128.0) and
+  `SPLASH_WORDMARK_FONT_SIZE` (34.0 → 88.0), the latter kept at the same icon-height-relative
+  proportion (44/64 ≈ 0.69) as the reference lockup in `resources/roves_wordmark.svg`, just
+  scaled to the new icon size — satisfies "both bigger, wordmark a bit bigger relative to the
+  icon than before" without inventing a new ratio.
+- **Manual horizontal centering:** `update_splash` now measures the wordmark's actual pixel
+  width via `ctx.fonts_mut(|fonts| fonts.layout_no_wrap(...))` before building the row, then
+  inserts a leading `ui.add_space(...)` inside the `ui.horizontal` sized to
+  `(available_width - (icon_width + spacing + wordmark_width)) / 2`. This replaces reliance
+  on `top_down(Align::Center)` centering the nested row on its own with an exact, measured
+  centering that doesn't depend on that behavior at all — a stronger fix than re-guessing at
+  whatever `Align::Center` was or wasn't doing.
+- **New `draw_splash_progress_bar`:** replaces the `egui::ProgressBar` widget with a
+  hand-painted track (`Ui::painter().rect_filled` + `rect_stroke`, a dim translucent-white
+  fill with a brighter outline, `SPLASH_PROGRESS_BAR_HEIGHT = 6.0` thin, `CornerRadius::same(2)`
+  — still visibly rectangular, per feedback, just softened at the corners rather than the
+  previous hard square) and an opaque white fill rect sized to `progress`, drawn on top.
+  Always draws the track, even at `progress == 0.0`, so the bar reads as "a loading indicator
+  that's currently empty" rather than disappearing. Considered adding a crate for this
+  (offered in chat) but a hand-painted rect is a few lines against an API already in use
+  elsewhere in this file, with the same "not worth a new dependency for something this
+  simple" reasoning as the previous entry's SVG-rendering call — no new dependency added.
+- **`update_splash`'s signature, `progress: Option<f32> → f32`:** now that the bar is always
+  drawn, `None` (meaning "don't draw it yet") no longer has a use — the type change makes
+  that explicit instead of leaving a now-meaningless `Option` around. Propagated through
+  `HeadedWindow::paint_splash` (`headed_window.rs`) and its one call site
+  (`app.rs`'s `window_event`, now just `headed_window.paint_splash(*progress)`).
+- **`app.rs`, removed `SPLASH_PROGRESS_BAR_DELAY`:** existed solely to gate *when* the bar
+  started rendering (`(elapsed >= SPLASH_PROGRESS_BAR_DELAY).then_some(*progress)`); with the
+  bar now unconditional, that gate was dead weight. `try_finish_booting`'s and `init`'s
+  `ControlFlow::WaitUntil` re-arm logic — previously waking at whichever of
+  `SPLASH_PROGRESS_BAR_DELAY`/`MIN_SPLASH_DURATION` hadn't yet passed — now just targets
+  `MIN_SPLASH_DURATION` directly, since that's the only remaining thing `try_finish_booting`
+  waits on. Behavior is unchanged in the case that matters (the busy-poll-until-extraction-
+  done path once `MIN_SPLASH_DURATION` has already elapsed): both old and new code compute a
+  zero wait there, verified by re-deriving the arithmetic, not just inspection.
+
+**Side effects to know about when upgrading:** same as the previous entry — plain, stable
+`egui` widget/painter API (`Ui::painter`, `rect_filled`, `rect_stroke`, `Fonts::layout_no_wrap`),
+nothing touching Servo internals. `StrokeKind` (required by `rect_stroke` in this egui
+version) is worth re-checking if painter signatures change in a future egui major version.
+
+**Verification:** unlike every prior boot-splash entry, this one did *not* stop at
+`rustfmt --check` and static reading — `cargo check -p servoshell` was actually attempted
+(still blocked here on the documented `libudev-dev` gap, this time confirmed directly rather
+than assumed, and additionally on this sandbox being too resource-constrained to finish
+compiling `mozangle`'s bundled ANGLE via cargo check on the full workspace even with the
+`gamepad` feature disabled to dodge libudev — a build-script `cc`/C++ compile got OOM-killed).
+Given that, the actual new code (`draw_splash_progress_bar`, the measured-centering logic in
+`update_splash`, and the `EguiGlow::run`/`CentralPanel::show` interaction the previous entry's
+"deprecated `Panel::show`" comment alludes to) was instead verified by compiling it for real
+in an isolated throwaway crate pinned to the exact same `egui = "=0.34.3"` / `egui_glow =
+"=0.34.3"` (with the `winit` feature, matching `ports/servoshell/Cargo.toml`) versions this
+workspace resolves to — confirmed the `EguiGlow::run` closure parameter is actually
+`&mut egui::Ui` (not `&Context`, despite being named `ctx`), that `.show(ctx, ...)` only
+type-checks via `Ui`'s `Deref<Target = Context>` impl, and that the new font-measurement and
+painter calls compile against the real API. Additionally, `rustfmt --check --edition 2024`
+was run on all three changed files (clean on every changed region — the several pre-existing
+unrelated diffs it reports elsewhere in `app.rs`/`gui.rs`/`headed_window.rs`, all stale
+`if let ... &&`-chain formatting, predate this change and were deliberately left alone). Most
+importantly, `patches/servo-v0.4.0/0029-...patch` was verified end-to-end against a fresh
+pristine `v0.4.0` download: extracted clean, applied patches `0001` through `0028` in order
+(all applied without a reject, two with a harmless line-offset), confirmed the result was
+byte-identical to this repo's own `HEAD` for all three files, then applied `0029` on top and
+confirmed *that* result was byte-identical to the actual working tree — i.e. the patch is
+proven mechanically reproducible from pristine upstream, not just "looked correct." Still
+missing: an actual `./mach build` + manual run, same as every prior entry in this section —
+in particular this doesn't prove the *visual* result (exact centering, whether 128px/88pt
+reads as "much bigger" as intended) is right, only that it's what the code says it should be.
+
+---
+
+## 2026-08-13 — Regenerate Roves icon raster/format assets from `icon.svg`
+
+**Files:** `resources/servo_64.png`, `resources/servo_1024.png`, `resources/servo.ico`,
+`resources/servo.icns` — binary raster assets, not part of any patch (same reasoning as the
+`test-page/public/icon.png`/`icon.ico` and `resources/fonts/` entries above: a text-based
+unified diff can't represent new binary content). Also `.gitattributes` — see the last
+paragraph below. `resources/servo.svg` and `support/openharmony/.../servo_{64,1024}.png` are
+unaffected — the former was already byte-identical to `icon.svg` (confirmed via checksum),
+and the latter are plain-text path placeholders pointing back at
+`resources/servo_{64,1024}.png`, not actual copies, so they pick up this change automatically.
+
+**Upstream behavior:** n/a — `icon.svg` (repo root) and all of the assets above are already a
+Roves-specific replacement of upstream Servo's own icon (see the 2026-08-09 "Game-supplied
+icon" entry's `resources/servo_64.png`/`servo.ico`), added whole-cloth in a prior commit
+(`ca839e6`, "icon") that replaced the binaries directly without a documented generation
+pipeline.
+
+**Asked directly:** confirm the "Servo-branded, not any particular game's" icon used by the
+boot splash (`Gui::update_splash`, previous entries above) and the window/taskbar/exe-icon
+fallback (`headed_window.rs`/`build.rs`) is actually generated from `icon.svg`, and convert it
+to every extension/size those consumers need. Investigated first: `resources/servo_64.png`
+and `resources/servo_1024.png` were already pixel-identical rasterizations of `icon.svg` (not
+upstream Servo's own logo — confirmed by comparing color histograms and a fresh
+`cairosvg` render pixel-for-pixel), and `resources/servo.svg` was already byte-identical to
+`icon.svg`. What was actually incomplete: `resources/servo.icns` had only a single `ic09`
+(512×512) entry — no retina (`@2x`) variants and nothing below 512px, which macOS's Finder/
+Dock render poorly at smaller sizes (upscaling a 512px source, or falling back to a generic
+icon, depending on context) — and `resources/servo.ico` had 16/24/32/48/256px but was
+missing the 64px and 128px sizes Windows uses for some Explorer view modes.
+
+**Change:** rebuilt every derived asset from `icon.svg` through one pipeline (`cairosvg` to
+rasterize the vector, Pillow for resizing/`.ico` packing, the `icnsutil` Python package for
+`.icns` composition — all three already available in this environment, no new dependency):
+
+1. Rendered `icon.svg` once at 2048×2048 via `cairosvg.svg2png` as a master raster (this repo
+   has no SVG rasterization path at *runtime*, per the 2026-08-12 wordmark entry above, but
+   that's about the running engine specifically — offline asset generation is a different
+   question and unaffected by that constraint).
+2. `resources/servo_1024.png`/`servo_64.png`: downsized from the master with Pillow's
+   `Image.resize(..., Image.LANCZOS)` — content unchanged (still the same icon at the same
+   two sizes), but a fresh render rather than a prior possibly-recompressed copy.
+3. `resources/servo.ico`: regenerated via `Image.save(..., format="ICO", sizes=[16, 24, 32,
+   48, 64, 128, 256])`, each size resampled individually from the 2048px master rather than
+   letting the `.ico` encoder cascade-resize from a single frame — now has all 7 standard
+   Windows icon sizes instead of 5.
+4. `resources/servo.icns`: composed via `icnsutil compose` from a full Apple iconset (16, 32,
+   128, 256, 512, plus each size's `@2x` retina variant, i.e. 16 through 1024px) — 10 entries
+   (`icp4`, `ic11`, `icp5`, `ic12`, `ic07`, `ic13`, `ic08`, `ic14`, `ic09`, `ic10`) instead of
+   the previous single `ic09`.
+
+**Side effects to know about when upgrading:** none — these are pure design assets consumed
+via `include_bytes!`/file-copy (`build.rs`, `headed_window.rs`, `gui.rs`), not upstream Servo
+files, so there's nothing to reapply against a new tag; just re-run the same pipeline against
+`icon.svg` if that source ever changes.
+
+**Verification:** `PIL.Image.open` confirms `servo.ico` now reports all 7 requested sizes
+`{16,24,32,48,64,128,256}`; `icnsutil info` confirms `servo.icns`'s 10 entries with the
+expected type codes and pixel dimensions above; `file` confirms both are still recognized as
+valid MS Windows icon resource / Mac OS X icon files respectively, not just well-formed by
+their own tooling's say-so. `md5sum` reconfirmed `resources/servo.svg` is still byte-identical
+to `icon.svg` after this change (untouched, as intended). Not done: an actual visual check on
+Windows/macOS that Explorer/Finder pick the new sizes correctly — no such platform available
+here.
+
+**Also:** `.gitattributes` gained `*.icns binary`. `resources/servo.icns` was already tracked
+without one (unlike `.ico`, which got its own rule in the 2026-08-09 "Game-supplied icon"
+entry above for exactly this reason) — same silent-corruption-on-Windows-checkout risk from
+falling under the blanket `* text=auto eol=lf` rule, just not caught until this file was
+touched again.

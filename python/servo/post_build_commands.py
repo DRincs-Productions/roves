@@ -520,7 +520,13 @@ class PostBuildCommands(CommandBase):
             return 1
 
         binary_dir = path.dirname(servo_binary)
-        output_dir = output or path.join(binary_dir, "bundle")
+        # abspath, not the possibly-relative `output` as-is: `_wrap_windows_msi` below
+        # `cd`s into a separate build directory before invoking candle/light, and WiX
+        # resolves each <File Source="..."> path (baked into the .wxs from `stage_dir`,
+        # itself derived from `output_dir`) relative to *its own* cwd at that point — a
+        # relative `output_dir` resolves to the wrong place once the cwd changes out from
+        # under it (see CUSTOMIZATIONS.md's --msi/--dmg installer entry, "Correction").
+        output_dir = path.abspath(output or path.join(binary_dir, "bundle"))
         if path.exists(output_dir):
             delete(output_dir)
         os.makedirs(output_dir)
