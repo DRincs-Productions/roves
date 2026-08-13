@@ -55,6 +55,15 @@ pub fn main() {
         Some(bundled) => (bundled.args, bundled.pending_boot_extraction),
         None => (env::args().skip(1).collect(), None),
     };
+    // Startup milestones below: this app has no console on a double-clicked
+    // Windows build (`#![windows_subsystem = "windows"]`), so a launch that
+    // dies with no further output — a hang, or a hard native crash that
+    // bypasses `panic_hook.rs` entirely (a GPU/driver issue in window/GL
+    // context creation, a missing DLL, ...) — leaves nothing to go on
+    // besides "which of these was the last one logged". Not meant to stay
+    // this granular forever; remove once real-machine testing has actually
+    // localized this class of failure.
+    log::info!("resolved launch args: {args:?}");
     let (opts, preferences, servoshell_preferences) = match parse_command_line_arguments(&*args) {
         ArgumentParsingResult::ContentProcess(token) => return servo::run_content_process(token),
         ArgumentParsingResult::ChromeProcess(opts, preferences, servoshell_preferences) => {
@@ -67,6 +76,7 @@ pub fn main() {
             std::process::exit(1);
         },
     };
+    log::info!("parsed command line arguments");
 
     crate::init_tracing(servoshell_preferences.tracing_filter.as_deref());
 
@@ -75,6 +85,10 @@ pub fn main() {
         true => ServoShellEventLoop::headless(),
         false => ServoShellEventLoop::headed(),
     };
+    log::info!(
+        "created event loop, headless={}",
+        servoshell_preferences.headless
+    );
 
     {
         let mut app = App::new(
@@ -84,6 +98,7 @@ pub fn main() {
             &event_loop,
             pending_boot_extraction,
         );
+        log::info!("running event loop");
         event_loop.run_app(&mut app);
     }
 

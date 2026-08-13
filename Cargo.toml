@@ -6,8 +6,6 @@ members = [
     "ffi/capi",
     "ports/servoshell",
     "support/content-packer",
-    "tests/capi",
-    "tests/unit/*",
 ]
 default-members = ["ports/servoshell"]
 exclude = [".cargo", "support/crown"]

@@ -318,8 +318,15 @@ impl Gui {
         // it with the real page — which itself clears to
         // `shell_background_color_rgba` (black, see `components/config/
         // prefs.rs`) until it has something of its own to paint.
+        // Bracketed with logging (see the milestone-logging comment in
+        // `cli::main`) — this is the very first GL draw call/buffer swap
+        // this app makes, right after window/context creation, and
+        // therefore a plausible place for a silent native crash (GPU
+        // driver, ANGLE/GL context issue) that never reaches `panic_hook.rs`.
+        log::info!("painting first splash frame");
         gui.update_splash(winit_window, 0.0);
         gui.paint(winit_window);
+        log::info!("painted first splash frame");
         winit_window.set_visible(true);
 
         gui

@@ -2432,3 +2432,23 @@ reconfirmed byte-identical to this repo's own `HEAD`), and the result after appl
 byte-identical to the actual working tree. Not done, same caveat as every entry in this
 section: an actual `./mach build` + manual run on a real Windows machine, to confirm a
 genuinely broken launch now actually produces a readable `roves.log` instead of nothing.
+
+**Update, same day — milestone logging, after this alone still wasn't enough:** a real
+Windows portable-bundle test came back with exactly one line in `roves.log` — this module's
+own "Roves logging started" line — and nothing else, no matter what actually failed. That
+still leaves a huge unlogged span (window/GL context creation, boot extraction, Servo
+construction) where a hang or a hard native crash (GPU driver, ANGLE/GL context issue, a
+missing DLL) can happen without ever reaching `panic_hook.rs` — a native crash of that kind
+bypasses Rust's panic machinery entirely, so no amount of `.expect()`-to-`log::error!`
+plumbing in Rust code would have caught it. Added bracketing `log::info!` calls (paired
+before/after) at the remaining startup milestones most likely to hide such a crash:
+`cli::main` (resolved launch args, parsed CLI args, event loop created, entering
+`run_app`), `App::init` (immediately around `create_platform_window` — winit window + GL
+surface creation, the single most GPU/driver-crash-prone step in this whole path), and
+`App::finish_init` (immediately around `servo_builder.build()`). Also bracketed `Gui::new`'s
+first `update_splash`/`paint` call (`gui.rs`) — the actual first GL draw/buffer-swap this
+process makes, right after context creation, and therefore just as plausible a native-crash
+site as context creation itself. None of this is meant to be permanent — it's deliberately
+coarse-grained, commented as such, and should come back out once a real crash has actually
+been localized this way; it's the diagnostic equivalent of `println!`-debugging, not a
+lasting change to how this app logs.

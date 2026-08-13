@@ -132,7 +132,14 @@ impl App {
         // param is only ever forwarded to `Gui::new`'s own dead `_initial_url`
         // parameter (see CUSTOMIZATIONS.md), never actually used.
         let url = self.initial_url.as_url().clone();
+        // See the milestone-logging comment in `cli::main` — window/GL
+        // surface creation (winit + ANGLE/GL context setup) is the single
+        // most likely place for a silent, unloggable native crash on
+        // Windows, so this is bracketed specifically rather than just
+        // logged once before/after everything in `init`.
+        log::info!("creating platform window");
         let platform_window = self.create_platform_window(url, active_event_loop);
+        log::info!("created platform window");
 
         let opts = self.pending_extraction.take();
 
@@ -295,7 +302,9 @@ impl App {
                 &self.preferences,
             ));
 
+        log::info!("building Servo instance");
         let servo = servo_builder.build();
+        log::info!("built Servo instance");
         servo.setup_logging();
 
         let user_content_manager = Rc::new(UserContentManager::new(&servo));

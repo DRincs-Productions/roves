@@ -49,6 +49,35 @@ index 9596240..16ae5ae 100644
  euclid = { workspace = true }
  hitrace = { workspace = true, optional = true }
  http = { workspace = true }
+diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
+index d902f2b..1480efb 100644
+--- a/ports/servoshell/desktop/app.rs
++++ b/ports/servoshell/desktop/app.rs
+@@ -132,7 +132,14 @@ impl App {
+         // param is only ever forwarded to `Gui::new`'s own dead `_initial_url`
+         // parameter (see CUSTOMIZATIONS.md), never actually used.
+         let url = self.initial_url.as_url().clone();
++        // See the milestone-logging comment in `cli::main` — window/GL
++        // surface creation (winit + ANGLE/GL context setup) is the single
++        // most likely place for a silent, unloggable native crash on
++        // Windows, so this is bracketed specifically rather than just
++        // logged once before/after everything in `init`.
++        log::info!("creating platform window");
+         let platform_window = self.create_platform_window(url, active_event_loop);
++        log::info!("created platform window");
+ 
+         let opts = self.pending_extraction.take();
+ 
+@@ -295,7 +302,9 @@ impl App {
+                 &self.preferences,
+             ));
+ 
++        log::info!("building Servo instance");
+         let servo = servo_builder.build();
++        log::info!("built Servo instance");
+         servo.setup_logging();
+ 
+         let user_content_manager = Rc::new(UserContentManager::new(&servo));
 diff --git a/ports/servoshell/desktop/bundle_launch.rs b/ports/servoshell/desktop/bundle_launch.rs
 index 71f0ec9..47bdcca 100644
 --- a/ports/servoshell/desktop/bundle_launch.rs
@@ -134,7 +163,7 @@ index 71f0ec9..47bdcca 100644
      Some((url, opts))
  }
 diff --git a/ports/servoshell/desktop/cli.rs b/ports/servoshell/desktop/cli.rs
-index e3c568d..d76986a 100644
+index e3c568d..9ea19b5 100644
 --- a/ports/servoshell/desktop/cli.rs
 +++ b/ports/servoshell/desktop/cli.rs
 @@ -5,8 +5,9 @@
@@ -178,8 +207,38 @@ index e3c568d..d76986a 100644
      // TODO: once log-panics is released, can this be replaced by
      // log_panics::init()?
      panic::set_hook(Box::new(panic_hook::panic_hook));
-@@ -53,8 +77,13 @@ pub fn main() {
+@@ -31,6 +55,15 @@ pub fn main() {
+         Some(bundled) => (bundled.args, bundled.pending_boot_extraction),
+         None => (env::args().skip(1).collect(), None),
      };
++    // Startup milestones below: this app has no console on a double-clicked
++    // Windows build (`#![windows_subsystem = "windows"]`), so a launch that
++    // dies with no further output — a hang, or a hard native crash that
++    // bypasses `panic_hook.rs` entirely (a GPU/driver issue in window/GL
++    // context creation, a missing DLL, ...) — leaves nothing to go on
++    // besides "which of these was the last one logged". Not meant to stay
++    // this granular forever; remove once real-machine testing has actually
++    // localized this class of failure.
++    log::info!("resolved launch args: {args:?}");
+     let (opts, preferences, servoshell_preferences) = match parse_command_line_arguments(&*args) {
+         ArgumentParsingResult::ContentProcess(token) => return servo::run_content_process(token),
+         ArgumentParsingResult::ChromeProcess(opts, preferences, servoshell_preferences) => {
+@@ -43,6 +76,7 @@ pub fn main() {
+             std::process::exit(1);
+         },
+     };
++    log::info!("parsed command line arguments");
+ 
+     crate::init_tracing(servoshell_preferences.tracing_filter.as_deref());
+ 
+@@ -51,10 +85,20 @@ pub fn main() {
+         true => ServoShellEventLoop::headless(),
+         false => ServoShellEventLoop::headed(),
+     };
++    log::info!(
++        "created event loop, headless={}",
++        servoshell_preferences.headless
++    );
  
      {
 -        let mut app =
@@ -191,9 +250,30 @@ index e3c568d..d76986a 100644
 +            &event_loop,
 +            pending_boot_extraction,
 +        );
++        log::info!("running event loop");
          event_loop.run_app(&mut app);
      }
  
+diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
+index 429aefe..b426413 100644
+--- a/ports/servoshell/desktop/gui.rs
++++ b/ports/servoshell/desktop/gui.rs
+@@ -318,8 +318,15 @@ impl Gui {
+         // it with the real page — which itself clears to
+         // `shell_background_color_rgba` (black, see `components/config/
+         // prefs.rs`) until it has something of its own to paint.
++        // Bracketed with logging (see the milestone-logging comment in
++        // `cli::main`) — this is the very first GL draw call/buffer swap
++        // this app makes, right after window/context creation, and
++        // therefore a plausible place for a silent native crash (GPU
++        // driver, ANGLE/GL context issue) that never reaches `panic_hook.rs`.
++        log::info!("painting first splash frame");
+         gui.update_splash(winit_window, 0.0);
+         gui.paint(winit_window);
++        log::info!("painted first splash frame");
+         winit_window.set_visible(true);
+ 
+         gui
 diff --git a/ports/servoshell/desktop/logging.rs b/ports/servoshell/desktop/logging.rs
 new file mode 100644
 index 0000000..92368b2
