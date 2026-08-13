@@ -536,7 +536,50 @@ class PostBuildCommands(CommandBase):
         compress_enabled = bool(content_dir) and content_compress != "none"
         packer_binary = self._build_content_packer() if compress_enabled else None
 
-        extra_args = ["--window-size", window_size] + list(params or [])
+        # `params` (this command's `nargs="..."` catch-all — see its own
+        # `@CommandArgument` above) is meant for flags the *shipped game*
+        # should see at launch (forwarded verbatim into `launch.json`'s
+        # "args", read back by `bundle_launch.rs`). It is NOT meant for this
+        # `mach bundle` invocation's own flags — but if one of those (e.g.
+        # `--package-name`/`--package-version`, meant only for naming a
+        # --deb/--msi/--dmg output) ever ends up here anyway — seen in
+        # practice, cause not fully understood, filed as a real incident —
+        # blindly forwarding it into launch.json silently breaks every
+        # future launch of the resulting bundle: servoshell's own CLI
+        # parser rejects the unrecognized flag and exits immediately,
+        # before any window ever appears or anything gets logged (see
+        # CUSTOMIZATIONS.md's startup-file-logging entry, which is what
+        # actually surfaced this). Guard against that class of bug
+        # unconditionally, regardless of how a reserved flag got into
+        # `params` in the first place. `_BOOLEAN_ARGPARSE_ACTIONS` mirrors
+        # which of this command's own flags take no value (so skipping a
+        # leaked flag doesn't also eat the next, unrelated, legitimate
+        # passthrough token).
+        _BOOLEAN_ARGPARSE_ACTIONS = {"store_true", "store_false", "store_const", "count"}
+        takes_value_by_flag = {}
+        for flag_names, flag_kwargs in cast(List[Any], self.__class__.bundle._mach_command.arguments):
+            for flag_name in flag_names:
+                takes_value_by_flag[flag_name] = flag_kwargs.get("action") not in _BOOLEAN_ARGPARSE_ACTIONS
+
+        extra_args = ["--window-size", window_size]
+        skip_next_as_value = False
+        leaked_reserved_flags = []
+        for p in params or []:
+            if skip_next_as_value:
+                skip_next_as_value = False
+                continue
+            if p in takes_value_by_flag:
+                leaked_reserved_flags.append(p)
+                skip_next_as_value = takes_value_by_flag[p]
+                continue
+            extra_args.append(p)
+        if leaked_reserved_flags:
+            print(
+                f"warning: mach bundle's own flag(s) {leaked_reserved_flags} ended up in the "
+                "passthrough args meant for the shipped game (see post_build_commands.py's "
+                "`bundle` for why this is dangerous) — dropping them, along with the value "
+                "each one takes, rather than writing a broken launch.json."
+            )
         window_title = _resolve_window_title(content_dir) if content_dir else None
         if window_title:
             extra_args += ["--window-title", window_title]

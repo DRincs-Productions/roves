@@ -2452,3 +2452,58 @@ site as context creation itself. None of this is meant to be permanent — it's 
 coarse-grained, commented as such, and should come back out once a real crash has actually
 been localized this way; it's the diagnostic equivalent of `println!`-debugging, not a
 lasting change to how this app logs.
+
+**Update, same day — found and fixed the real bug the milestone logging was chasing:** the
+milestone logging above worked immediately — a real Windows portable-bundle run logged
+`resolved launch args: [..., "--package-name", "servoshell-test", "--package-version",
+"0.4.0", ...]` and then nothing further, meaning the crash was between that line and
+`parsed command line arguments`. `--package-name`/`--package-version` are `mach bundle`'s
+*own* flags (`python/servo/post_build_commands.py`, used only to name a `--deb`/`--msi`/
+`--dmg` output) — not anything `ports/servoshell/prefs.rs`'s CLI parser recognizes. Somehow
+(root mechanism not fully pinned down — extensive attempts to reproduce it by faithfully
+reconstructing `mach bundle`'s actual registered argparse arguments and re-running
+`parse_known_args` with the exact CI invocation kept coming back clean, i.e. **not**
+reproducing the leak; this remains an open question) they ended up forwarded into
+`launch.json`'s `"args"`, which `bundle_launch.rs` feeds straight into
+`prefs::parse_command_line_arguments`. That parser (`bpaf`) rejects unknown flags outright
+— confirmed directly: running the real, freshly-built Linux `servoshell` binary with these
+exact args reproduces `Error: --package-name is not expected in this context`, immediately,
+before anything else runs. Combined with `ArgumentParsingResult::ErrorParsing` in `cli::main`
+calling `std::process::exit(1)` with no logging on that path, and no console on a
+double-clicked Windows build, this is the exact, complete explanation for "play.exe does
+nothing."
+
+**Change:** `post_build_commands.py`'s `bundle`, right before building `extra_args`, now
+cross-checks every token in `params` against `self.__class__.bundle._mach_command.arguments`
+— the same metadata `mach`'s own dispatcher (`python/mach/mach/dispatcher.py`) uses to build
+the subcommand's parser — and drops any that match one of this command's *own* flag spellings
+(along with the value that flag takes, looked up via that same metadata's `action`, so a
+boolean flag like `--msi` doesn't wrongly eat the next legitimate passthrough token). Prints a
+`warning:` line naming exactly what got dropped, so this is loud instead of silently
+corrupting `launch.json` again in some future incident of the same shape. This is a defense
+against the *symptom* (a reserved flag ending up in `params`) rather than a fix for the
+underlying argparse mechanism, precisely because that mechanism wasn't fully pinned down —
+see above.
+
+**Not part of the `roves-action` sync** (see `CLAUDE.md`'s mirroring requirement): this
+changes internal handling of an existing flag, not `mach bundle`'s CLI surface itself — no
+flag was added, removed, or redefaulted, so `roves-action`'s `action.yml`/`README.md` need no
+matching update.
+
+**Patch:** `patches/servo-v0.4.0/0031-filter-mach-bundles-own-flags-out-of-game-launch-args.patch`
+
+**Verification:** the exact filtering logic (reserved-flag detection + value-skipping) was
+extracted and unit-tested standalone against four cases — the real observed leak (both
+`--package-name` and `--package-version` correctly stripped along with their values), a
+mix of a leaked boolean flag (`--msi`) and a legitimate passthrough flag+value (both handled
+correctly), and two no-op cases (nothing leaked) — all four produced the expected
+`extra_args`/`leaked_reserved_flags`. The file's own syntax was checked with `ast.parse`
+(this sandbox's Python 3.10 can't actually run `mach` itself — `python/mach`/`python/tidy`
+depend on Python 3.11+ stdlib additions (`contextlib.chdir`, `typing.LiteralString`) this
+environment doesn't have, confirmed while trying; not a gap introduced by this change).
+`patches/servo-v0.4.0/0031-...patch` was verified end-to-end the same way as every other
+patch in this file: applied cleanly on top of a pristine `v0.4.0` extraction with patches
+`0001`–`0030` already applied, producing a result byte-identical to the actual working tree.
+Not done: an actual `mach bundle` run (blocked by the Python version gap above) confirming
+the warning prints and `launch.json` ends up clean — the next real Windows/`mach`-capable
+build should confirm this closes out the original report.
