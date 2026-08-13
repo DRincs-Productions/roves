@@ -5,14 +5,38 @@
 use std::{env, panic};
 
 use crate::desktop::app::App;
-use crate::desktop::bundle_launch::resolve_bundled_launch_args;
+use crate::desktop::bundle_launch::{peek_game_name_for_logging, resolve_bundled_launch_args};
 use crate::desktop::event_loop::ServoShellEventLoop;
+use crate::desktop::logging;
 use crate::panic_hook;
 use crate::prefs::{ArgumentParsingResult, parse_command_line_arguments};
 
 pub fn main() {
     crate::crash_handler::install();
     crate::init_crypto();
+
+    // Installed before anything else that could fail — including the panic
+    // hook and `resolve_bundled_launch_args` below — so a failure that
+    // early is actually diagnosable instead of vanishing silently (this app
+    // is `#![windows_subsystem = "windows"]`, so there's no console to see
+    // stderr in even if something did print to it). See `logging.rs`.
+    //
+    // Gated on the same "real argv is empty" check `resolve_bundled_launch_args`
+    // itself uses (see `peek_game_name_for_logging`'s doc comment) — critically,
+    // this excludes Servo's own multiprocess content-process children, which
+    // re-exec *themselves* with `--content-process <token>` in argv. Each one
+    // installing its own truncating file logger would race every other
+    // process (including the main one) writing to that same file, each
+    // wiping out whatever the others had already logged. Content processes
+    // fall through to `Servo::setup_logging`'s content-process counterpart
+    // (`set_logger`) exactly as before this module existed — unchanged, not
+    // a regression, since the whole point of this early file logger is
+    // diagnosing a launch that never gets that far in the first place.
+    if env::args().nth(1).is_none() {
+        let log_dir =
+            roves_content_packer::extract::game_data_dir(peek_game_name_for_logging().as_deref());
+        logging::init(&log_dir);
+    }
 
     // TODO: once log-panics is released, can this be replaced by
     // log_panics::init()?
@@ -53,8 +77,13 @@ pub fn main() {
     };
 
     {
-        let mut app =
-            App::new(opts, preferences, servoshell_preferences, &event_loop, pending_boot_extraction);
+        let mut app = App::new(
+            opts,
+            preferences,
+            servoshell_preferences,
+            &event_loop,
+            pending_boot_extraction,
+        );
         event_loop.run_app(&mut app);
     }
 

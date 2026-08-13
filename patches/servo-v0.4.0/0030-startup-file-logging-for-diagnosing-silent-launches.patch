@@ -1,0 +1,387 @@
+diff --git a/components/servo/servo.rs b/components/servo/servo.rs
+index b8ef5ec..c02b44e 100644
+--- a/components/servo/servo.rs
++++ b/components/servo/servo.rs
+@@ -1074,8 +1074,18 @@ impl Servo {
+         let filter = max(env_logger.filter(), con_logger.filter());
+         let logger = BothLogger(env_logger, con_logger);
+ 
+-        log::set_boxed_logger(Box::new(logger)).expect("Failed to set logger.");
+-        log::set_max_level(filter);
++        // `log::set_boxed_logger` only ever succeeds once per process — an
++        // embedder that already installed its own logger before this ran
++        // (servoshell's does, deliberately, to capture startup output this
++        // call would otherwise be too late for — see
++        // `ports/servoshell/desktop/logging.rs`) wins, and this becomes a
++        // no-op instead of a hard failure: losing `FromEmbedderLogger`'s
++        // constellation-forwarding is an acceptable trade-off for an
++        // embedder that already has its own logging story, not a reason to
++        // panic the whole engine.
++        if log::set_boxed_logger(Box::new(logger)).is_ok() {
++            log::set_max_level(filter);
++        }
+     }
+ 
+     pub fn create_memory_report(&self, snd: GenericCallback<MemoryReportResult>) {
+@@ -1295,8 +1305,11 @@ fn set_logger(script_to_constellation_sender: ScriptToConstellationSender) {
+     let filter = max(env_logger.filter(), con_logger.filter());
+     let logger = BothLogger(env_logger, con_logger);
+ 
+-    log::set_boxed_logger(Box::new(logger)).expect("Failed to set logger.");
+-    log::set_max_level(filter);
++    // See the identical guard in `setup_logging` above for why this doesn't
++    // `.expect()` a fresh install to succeed.
++    if log::set_boxed_logger(Box::new(logger)).is_ok() {
++        log::set_max_level(filter);
++    }
+ }
+ 
+ /// Content process entry point.
+diff --git a/ports/servoshell/Cargo.toml b/ports/servoshell/Cargo.toml
+index 9596240..16ae5ae 100644
+--- a/ports/servoshell/Cargo.toml
++++ b/ports/servoshell/Cargo.toml
+@@ -72,6 +72,7 @@ bpaf = { workspace = true, features = ["derive"] }
+ cfg-if = { workspace = true }
+ crossbeam-channel = { workspace = true }
+ dpi = { workspace = true }
++env_logger = { workspace = true }
+ euclid = { workspace = true }
+ hitrace = { workspace = true, optional = true }
+ http = { workspace = true }
+diff --git a/ports/servoshell/desktop/bundle_launch.rs b/ports/servoshell/desktop/bundle_launch.rs
+index 71f0ec9..47bdcca 100644
+--- a/ports/servoshell/desktop/bundle_launch.rs
++++ b/ports/servoshell/desktop/bundle_launch.rs
+@@ -41,6 +41,36 @@ pub(crate) struct BundledLaunch {
+     pub(crate) pending_boot_extraction: Option<extract::ExtractOptions>,
+ }
+ 
++/// Cheaply figures out which game (if any) this is a bundled launch of,
++/// *before* anything else has run — specifically, before
++/// `resolve_bundled_launch_args` below, or logging (`desktop/logging.rs`)
++/// is even installed — so `cli::main` can pick the right per-game log
++/// directory (`extract::game_data_dir`) and have every log line from the
++/// rest of startup, including whatever `resolve_bundled_launch_args` itself
++/// logs, actually land somewhere instead of being silently dropped (no
++/// logger exists yet at that point otherwise). Deliberately does not log
++/// anything itself, for the same reason, and deliberately re-reads
++/// `launch.json`/`manifest.json` rather than sharing state with
++/// `resolve_bundled_launch_args` — the two run at genuinely different
++/// times (this one first), and duplicating a couple of small, fast file
++/// reads is simpler and safer than threading a shared result across that
++/// gap. Returns `None` for every case that isn't "a packed-content bundled
++/// launch with a named manifest" (no `launch.json`, a `url`-based bundle, a
++/// dev/explicit-argv invocation, or a manifest predating the `name` field)
++/// — callers should treat that the same as [`extract::game_data_dir`]'s own
++/// `None` fallback.
++pub(crate) fn peek_game_name_for_logging() -> Option<String> {
++    if env::args().nth(1).is_some() {
++        return None;
++    }
++    let exe_dir = env::current_exe().ok()?.parent()?.to_path_buf();
++    let text = std::fs::read_to_string(exe_dir.join(LAUNCH_CONFIG_FILE)).ok()?;
++    let config: serde_json::Value = serde_json::from_str(&text).ok()?;
++    let content_rel_dir = config.get("content_dir")?.as_str()?;
++    let content_dir = content_root(&exe_dir).join(content_rel_dir);
++    extract::load_manifest(&content_dir).ok()?.name
++}
++
+ /// Returns the args to launch with, or `None` to fall back to the process's
+ /// real `argv` unchanged.
+ ///
+@@ -71,7 +101,12 @@ pub(crate) fn resolve_bundled_launch_args() -> Option<BundledLaunch> {
+     let extra_args: Vec<String> = config
+         .get("args")
+         .and_then(|v| v.as_array())
+-        .map(|values| values.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
++        .map(|values| {
++            values
++                .iter()
++                .filter_map(|v| v.as_str().map(str::to_owned))
++                .collect()
++        })
+         .unwrap_or_default();
+ 
+     let (url, pending_boot_extraction) =
+@@ -85,7 +120,10 @@ pub(crate) fn resolve_bundled_launch_args() -> Option<BundledLaunch> {
+ 
+     let mut args = vec![url];
+     args.extend(extra_args);
+-    Some(BundledLaunch { args, pending_boot_extraction })
++    Some(BundledLaunch {
++        args,
++        pending_boot_extraction,
++    })
+ }
+ 
+ /// macOS app bundles keep the executable in `Contents/MacOS/` and bundled
+@@ -126,7 +164,14 @@ fn resolve_packed_content_url(
+     let (content_dir, dest) = extract::resolve_dest(&content_dir, None, manifest.name.as_deref())
+         .inspect_err(|e| log::error!("resolving boot content destination: {e}"))
+         .ok()?;
+-    let url = dest.join(&manifest.entry_html).to_string_lossy().into_owned();
+-    let opts = extract::ExtractOptions { content_dir, dest: Some(dest), force: false };
++    let url = dest
++        .join(&manifest.entry_html)
++        .to_string_lossy()
++        .into_owned();
++    let opts = extract::ExtractOptions {
++        content_dir,
++        dest: Some(dest),
++        force: false,
++    };
+     Some((url, opts))
+ }
+diff --git a/ports/servoshell/desktop/cli.rs b/ports/servoshell/desktop/cli.rs
+index e3c568d..d76986a 100644
+--- a/ports/servoshell/desktop/cli.rs
++++ b/ports/servoshell/desktop/cli.rs
+@@ -5,8 +5,9 @@
+ use std::{env, panic};
+ 
+ use crate::desktop::app::App;
+-use crate::desktop::bundle_launch::resolve_bundled_launch_args;
++use crate::desktop::bundle_launch::{peek_game_name_for_logging, resolve_bundled_launch_args};
+ use crate::desktop::event_loop::ServoShellEventLoop;
++use crate::desktop::logging;
+ use crate::panic_hook;
+ use crate::prefs::{ArgumentParsingResult, parse_command_line_arguments};
+ 
+@@ -14,6 +15,29 @@ pub fn main() {
+     crate::crash_handler::install();
+     crate::init_crypto();
+ 
++    // Installed before anything else that could fail — including the panic
++    // hook and `resolve_bundled_launch_args` below — so a failure that
++    // early is actually diagnosable instead of vanishing silently (this app
++    // is `#![windows_subsystem = "windows"]`, so there's no console to see
++    // stderr in even if something did print to it). See `logging.rs`.
++    //
++    // Gated on the same "real argv is empty" check `resolve_bundled_launch_args`
++    // itself uses (see `peek_game_name_for_logging`'s doc comment) — critically,
++    // this excludes Servo's own multiprocess content-process children, which
++    // re-exec *themselves* with `--content-process <token>` in argv. Each one
++    // installing its own truncating file logger would race every other
++    // process (including the main one) writing to that same file, each
++    // wiping out whatever the others had already logged. Content processes
++    // fall through to `Servo::setup_logging`'s content-process counterpart
++    // (`set_logger`) exactly as before this module existed — unchanged, not
++    // a regression, since the whole point of this early file logger is
++    // diagnosing a launch that never gets that far in the first place.
++    if env::args().nth(1).is_none() {
++        let log_dir =
++            roves_content_packer::extract::game_data_dir(peek_game_name_for_logging().as_deref());
++        logging::init(&log_dir);
++    }
++
+     // TODO: once log-panics is released, can this be replaced by
+     // log_panics::init()?
+     panic::set_hook(Box::new(panic_hook::panic_hook));
+@@ -53,8 +77,13 @@ pub fn main() {
+     };
+ 
+     {
+-        let mut app =
+-            App::new(opts, preferences, servoshell_preferences, &event_loop, pending_boot_extraction);
++        let mut app = App::new(
++            opts,
++            preferences,
++            servoshell_preferences,
++            &event_loop,
++            pending_boot_extraction,
++        );
+         event_loop.run_app(&mut app);
+     }
+ 
+diff --git a/ports/servoshell/desktop/logging.rs b/ports/servoshell/desktop/logging.rs
+new file mode 100644
+index 0000000..92368b2
+--- /dev/null
++++ b/ports/servoshell/desktop/logging.rs
+@@ -0,0 +1,75 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! Installs a single process-wide file logger as early in `cli::main` as
++//! possible — before `panic::set_hook`, before `resolve_bundled_launch_args`,
++//! before anything else that can fail silently. This exists because, until
++//! now, nothing installed a `log` backend at all until deep inside
++//! `App::finish_init` (`Servo::setup_logging`, called only once a `Servo`
++//! instance exists), so every `log::error!`/`warn!` call before that point —
++//! including inside `bundle_launch::resolve_bundled_launch_args` itself,
++//! exactly where a broken/missing packed-content bundle would report the
++//! problem — was silently discarded. Combined with `ports/servoshell/main.rs`
++//! setting `#![windows_subsystem = "windows"]` (no console unless launched
++//! from one), a double-clicked `play.exe` that failed early looked like
++//! nothing happened at all, with no way to tell why.
++//!
++//! `log::set_boxed_logger` only ever succeeds once per process — see
++//! `components/servo/servo.rs`'s `setup_logging`/`set_logger`, both patched
++//! (`patches/servo-v0.4.0/0030-...patch`) to no-op instead of panicking on
++//! the second call this now causes, since this module's logger always
++//! installs first. The trade-off: `FromEmbedderLogger`'s
++//! constellation-forwarding (an embedder-side crash/warning-UI hook) never
++//! runs — this fork has no such UI to forward to (see CUSTOMIZATIONS.md's
++//! earliest entries removing the toolbar/tabs entirely), so that's a
++//! deliberate no-op, not a silently swallowed feature.
++
++use std::fs::File;
++use std::path::Path;
++
++/// Filename of the on-disk log, truncated fresh on every launch (`File::create`)
++/// so it never grows unbounded across repeated runs — old runs' output isn't
++/// meant to be kept, just this run's.
++const LOG_FILE_NAME: &str = "roves.log";
++
++/// Installs the file logger, rooted at `log_dir` (see
++/// `roves_content_packer::extract::game_data_dir` — a sibling of the
++/// extraction cache, not inside the game's own content directory). Returns
++/// the log file's path on success, purely for callers that want to mention
++/// it in a startup message; installation failing (directory/file couldn't
++/// be created — e.g. a read-only install location) is not fatal and is not
++/// itself logged anywhere (nothing to log it *to*) — `Servo::setup_logging`
++/// simply ends up being the first successful `log::set_boxed_logger` call
++/// instead, same as before this module existed.
++///
++/// Captures everything: normal `env_logger`-style filtering, defaulting to
++/// `info` (not `env_logger`'s own default of `error`-only) since a private
++/// log file, unlike a terminal, isn't noisy for the user — override with
++/// `RUST_LOG` as usual. Because the game's own `console.log`/`warn`/`error`
++/// already route through `log::log!` (see `headed_window.rs`/
++/// `headless_window.rs`'s `show_console_message`), and every panic already
++/// routes through `log::error!` (`panic_hook.rs`), a single logger installed
++/// here is enough to capture Roves/Servo's own logging, the game's console
++/// output, and startup panics, all in one file.
++pub(crate) fn init(log_dir: &Path) -> Option<std::path::PathBuf> {
++    std::fs::create_dir_all(log_dir).ok()?;
++    let log_path = log_dir.join(LOG_FILE_NAME);
++    let file = File::create(&log_path).ok()?;
++
++    let env = env_logger::Env::default().default_filter_or("info");
++    let mut builder = env_logger::Builder::from_env(env);
++    builder.target(env_logger::Target::Pipe(Box::new(file)));
++    builder.format_timestamp_millis();
++    let logger = builder.build();
++    let filter = logger.filter();
++
++    log::set_boxed_logger(Box::new(logger)).ok()?;
++    log::set_max_level(filter);
++    // First line in every fresh log, so anyone who finds the file
++    // immediately knows what it is and where it's rooted — helpful given
++    // this whole module exists for the case where nothing else visibly
++    // happened.
++    log::info!("Roves logging started, writing to {log_path:?}");
++    Some(log_path)
++}
+diff --git a/ports/servoshell/desktop/mod.rs b/ports/servoshell/desktop/mod.rs
+index 483f7a9..287d27f 100644
+--- a/ports/servoshell/desktop/mod.rs
++++ b/ports/servoshell/desktop/mod.rs
+@@ -17,6 +17,7 @@ mod gui;
+ pub(crate) mod headed_window;
+ mod headless_window;
+ mod keyutils;
++mod logging;
+ mod protocols;
+ mod tracing;
+ #[cfg(feature = "webxr")]
+diff --git a/ports/servoshell/panic_hook.rs b/ports/servoshell/panic_hook.rs
+index 7fb10c2..56b87ec 100644
+--- a/ports/servoshell/panic_hook.rs
++++ b/ports/servoshell/panic_hook.rs
+@@ -22,20 +22,24 @@ pub(crate) fn panic_hook(info: &PanicHookInfo) {
+     };
+     let current_thread = thread::current();
+     let name = current_thread.name().unwrap_or("<unnamed>");
+-    let stderr = std::io::stderr();
+-    let mut stderr = stderr.lock();
+-    if let Some(location) = info.location() {
+-        let _ = writeln!(
+-            &mut stderr,
++    // Built once and used for both the stderr write below (invisible on a
++    // windowed build launched without a console — see `logging.rs`) and the
++    // `error!` call at the end, so whichever sink is actually reachable
++    // (the log file, in the common case this fork cares about) gets the
++    // same file:line/thread detail, not just the bare panic message.
++    let detail = match info.location() {
++        Some(location) => format!(
+             "{} (thread {}, at {}:{})",
+             msg,
+             name,
+             location.file(),
+             location.line()
+-        );
+-    } else {
+-        let _ = writeln!(&mut stderr, "{} (thread {})", msg, name);
+-    }
++        ),
++        None => format!("{} (thread {})", msg, name),
++    };
++    let stderr = std::io::stderr();
++    let mut stderr = stderr.lock();
++    let _ = writeln!(&mut stderr, "{detail}");
+     if env::var("RUST_BACKTRACE").is_ok() {
+         let _ = crate::backtrace::print(&mut stderr);
+     }
+@@ -49,5 +53,5 @@ pub(crate) fn panic_hook(info: &PanicHookInfo) {
+         raise_signal_or_exit_with_error(libc::SIGSEGV);
+     }
+ 
+-    error!("{}", msg);
++    error!("{detail}");
+ }
+diff --git a/support/content-packer/src/extract.rs b/support/content-packer/src/extract.rs
+index c71d087..6dce332 100644
+--- a/support/content-packer/src/extract.rs
++++ b/support/content-packer/src/extract.rs
+@@ -55,8 +55,20 @@ fn default_dest(content_dir: &Path, game_name: Option<&str>) -> PathBuf {
+     hasher.update(content_dir.to_string_lossy().as_bytes());
+     let digest = hasher.finalize();
+     let short: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
++    game_data_dir(game_name).join("cache").join(short)
++}
++
++/// The per-game top-level folder under the OS's cache directory that both
++/// [`default_dest`] (nested inside, at `<this>/cache/<hash8>/`) and
++/// servoshell's own startup log file (a sibling, at `<this>/roves.log` —
++/// see `ports/servoshell/desktop/logging.rs`) live under. Exposed on its
++/// own, rather than only reachable via `default_dest`, specifically so the
++/// log file can be placed next to the extraction cache instead of inside
++/// the game's own content directory — see [`sanitize_path_segment`] for the
++/// sanitizing/fallback this applies to `game_name`.
++pub fn game_data_dir(game_name: Option<&str>) -> PathBuf {
+     let game_dir = game_name.and_then(sanitize_path_segment).unwrap_or_else(|| "roves".to_string());
+-    cache_dir().join(game_dir).join("cache").join(short)
++    cache_dir().join(game_dir)
+ }
+ 
+ /// Turns arbitrary manifest-supplied text (a game's display name) into a
+@@ -321,7 +333,7 @@ pub fn ensure_file_available(
+ 
+ #[cfg(test)]
+ mod tests {
+-    use super::{default_dest, sanitize_path_segment};
++    use super::{default_dest, game_data_dir, sanitize_path_segment};
+ 
+     #[test]
+     fn sanitize_path_segment_strips_unsafe_characters_and_trims() {
+@@ -358,4 +370,17 @@ mod tests {
+         assert_eq!(unnamed.parent().unwrap().file_name().unwrap(), "cache");
+         assert_eq!(unnamed.parent().unwrap().parent().unwrap().file_name().unwrap(), "roves");
+     }
++
++    #[test]
++    fn game_data_dir_is_default_dests_cache_grandparent() {
++        // The whole point of exposing `game_data_dir` separately: a log file
++        // placed there (see `ports/servoshell/desktop/logging.rs`) must land
++        // as a sibling of `cache/`, not inside a specific install's
++        // `cache/<hash>/` — i.e. exactly two levels up from `default_dest`.
++        let content_dir = std::path::Path::new("/some/build/dist");
++        for name in [Some("Roves test-page"), None] {
++            let dest = default_dest(content_dir, name);
++            assert_eq!(dest.parent().unwrap().parent().unwrap(), game_data_dir(name));
++        }
++    }
+ }

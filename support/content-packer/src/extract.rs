@@ -55,8 +55,20 @@ fn default_dest(content_dir: &Path, game_name: Option<&str>) -> PathBuf {
     hasher.update(content_dir.to_string_lossy().as_bytes());
     let digest = hasher.finalize();
     let short: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
+    game_data_dir(game_name).join("cache").join(short)
+}
+
+/// The per-game top-level folder under the OS's cache directory that both
+/// [`default_dest`] (nested inside, at `<this>/cache/<hash8>/`) and
+/// servoshell's own startup log file (a sibling, at `<this>/roves.log` —
+/// see `ports/servoshell/desktop/logging.rs`) live under. Exposed on its
+/// own, rather than only reachable via `default_dest`, specifically so the
+/// log file can be placed next to the extraction cache instead of inside
+/// the game's own content directory — see [`sanitize_path_segment`] for the
+/// sanitizing/fallback this applies to `game_name`.
+pub fn game_data_dir(game_name: Option<&str>) -> PathBuf {
     let game_dir = game_name.and_then(sanitize_path_segment).unwrap_or_else(|| "roves".to_string());
-    cache_dir().join(game_dir).join("cache").join(short)
+    cache_dir().join(game_dir)
 }
 
 /// Turns arbitrary manifest-supplied text (a game's display name) into a
@@ -321,7 +333,7 @@ pub fn ensure_file_available(
 
 #[cfg(test)]
 mod tests {
-    use super::{default_dest, sanitize_path_segment};
+    use super::{default_dest, game_data_dir, sanitize_path_segment};
 
     #[test]
     fn sanitize_path_segment_strips_unsafe_characters_and_trims() {
@@ -357,5 +369,18 @@ mod tests {
         assert_eq!(unnamed.file_name().unwrap(), named.file_name().unwrap());
         assert_eq!(unnamed.parent().unwrap().file_name().unwrap(), "cache");
         assert_eq!(unnamed.parent().unwrap().parent().unwrap().file_name().unwrap(), "roves");
+    }
+
+    #[test]
+    fn game_data_dir_is_default_dests_cache_grandparent() {
+        // The whole point of exposing `game_data_dir` separately: a log file
+        // placed there (see `ports/servoshell/desktop/logging.rs`) must land
+        // as a sibling of `cache/`, not inside a specific install's
+        // `cache/<hash>/` — i.e. exactly two levels up from `default_dest`.
+        let content_dir = std::path::Path::new("/some/build/dist");
+        for name in [Some("Roves test-page"), None] {
+            let dest = default_dest(content_dir, name);
+            assert_eq!(dest.parent().unwrap().parent().unwrap(), game_data_dir(name));
+        }
     }
 }

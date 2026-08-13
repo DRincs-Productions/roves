@@ -41,6 +41,36 @@ pub(crate) struct BundledLaunch {
     pub(crate) pending_boot_extraction: Option<extract::ExtractOptions>,
 }
 
+/// Cheaply figures out which game (if any) this is a bundled launch of,
+/// *before* anything else has run — specifically, before
+/// `resolve_bundled_launch_args` below, or logging (`desktop/logging.rs`)
+/// is even installed — so `cli::main` can pick the right per-game log
+/// directory (`extract::game_data_dir`) and have every log line from the
+/// rest of startup, including whatever `resolve_bundled_launch_args` itself
+/// logs, actually land somewhere instead of being silently dropped (no
+/// logger exists yet at that point otherwise). Deliberately does not log
+/// anything itself, for the same reason, and deliberately re-reads
+/// `launch.json`/`manifest.json` rather than sharing state with
+/// `resolve_bundled_launch_args` — the two run at genuinely different
+/// times (this one first), and duplicating a couple of small, fast file
+/// reads is simpler and safer than threading a shared result across that
+/// gap. Returns `None` for every case that isn't "a packed-content bundled
+/// launch with a named manifest" (no `launch.json`, a `url`-based bundle, a
+/// dev/explicit-argv invocation, or a manifest predating the `name` field)
+/// — callers should treat that the same as [`extract::game_data_dir`]'s own
+/// `None` fallback.
+pub(crate) fn peek_game_name_for_logging() -> Option<String> {
+    if env::args().nth(1).is_some() {
+        return None;
+    }
+    let exe_dir = env::current_exe().ok()?.parent()?.to_path_buf();
+    let text = std::fs::read_to_string(exe_dir.join(LAUNCH_CONFIG_FILE)).ok()?;
+    let config: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let content_rel_dir = config.get("content_dir")?.as_str()?;
+    let content_dir = content_root(&exe_dir).join(content_rel_dir);
+    extract::load_manifest(&content_dir).ok()?.name
+}
+
 /// Returns the args to launch with, or `None` to fall back to the process's
 /// real `argv` unchanged.
 ///
@@ -71,7 +101,12 @@ pub(crate) fn resolve_bundled_launch_args() -> Option<BundledLaunch> {
     let extra_args: Vec<String> = config
         .get("args")
         .and_then(|v| v.as_array())
-        .map(|values| values.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
         .unwrap_or_default();
 
     let (url, pending_boot_extraction) =
@@ -85,7 +120,10 @@ pub(crate) fn resolve_bundled_launch_args() -> Option<BundledLaunch> {
 
     let mut args = vec![url];
     args.extend(extra_args);
-    Some(BundledLaunch { args, pending_boot_extraction })
+    Some(BundledLaunch {
+        args,
+        pending_boot_extraction,
+    })
 }
 
 /// macOS app bundles keep the executable in `Contents/MacOS/` and bundled
@@ -126,7 +164,14 @@ fn resolve_packed_content_url(
     let (content_dir, dest) = extract::resolve_dest(&content_dir, None, manifest.name.as_deref())
         .inspect_err(|e| log::error!("resolving boot content destination: {e}"))
         .ok()?;
-    let url = dest.join(&manifest.entry_html).to_string_lossy().into_owned();
-    let opts = extract::ExtractOptions { content_dir, dest: Some(dest), force: false };
+    let url = dest
+        .join(&manifest.entry_html)
+        .to_string_lossy()
+        .into_owned();
+    let opts = extract::ExtractOptions {
+        content_dir,
+        dest: Some(dest),
+        force: false,
+    };
     Some((url, opts))
 }

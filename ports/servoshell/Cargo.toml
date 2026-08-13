@@ -72,6 +72,7 @@ bpaf = { workspace = true, features = ["derive"] }
 cfg-if = { workspace = true }
 crossbeam-channel = { workspace = true }
 dpi = { workspace = true }
+env_logger = { workspace = true }
 euclid = { workspace = true }
 hitrace = { workspace = true, optional = true }
 http = { workspace = true }

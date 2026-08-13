@@ -1074,8 +1074,18 @@ impl Servo {
         let filter = max(env_logger.filter(), con_logger.filter());
         let logger = BothLogger(env_logger, con_logger);
 
-        log::set_boxed_logger(Box::new(logger)).expect("Failed to set logger.");
-        log::set_max_level(filter);
+        // `log::set_boxed_logger` only ever succeeds once per process — an
+        // embedder that already installed its own logger before this ran
+        // (servoshell's does, deliberately, to capture startup output this
+        // call would otherwise be too late for — see
+        // `ports/servoshell/desktop/logging.rs`) wins, and this becomes a
+        // no-op instead of a hard failure: losing `FromEmbedderLogger`'s
+        // constellation-forwarding is an acceptable trade-off for an
+        // embedder that already has its own logging story, not a reason to
+        // panic the whole engine.
+        if log::set_boxed_logger(Box::new(logger)).is_ok() {
+            log::set_max_level(filter);
+        }
     }
 
     pub fn create_memory_report(&self, snd: GenericCallback<MemoryReportResult>) {
@@ -1295,8 +1305,11 @@ fn set_logger(script_to_constellation_sender: ScriptToConstellationSender) {
     let filter = max(env_logger.filter(), con_logger.filter());
     let logger = BothLogger(env_logger, con_logger);
 
-    log::set_boxed_logger(Box::new(logger)).expect("Failed to set logger.");
-    log::set_max_level(filter);
+    // See the identical guard in `setup_logging` above for why this doesn't
+    // `.expect()` a fresh install to succeed.
+    if log::set_boxed_logger(Box::new(logger)).is_ok() {
+        log::set_max_level(filter);
+    }
 }
 
 /// Content process entry point.

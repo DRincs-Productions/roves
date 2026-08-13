@@ -22,20 +22,24 @@ pub(crate) fn panic_hook(info: &PanicHookInfo) {
     };
     let current_thread = thread::current();
     let name = current_thread.name().unwrap_or("<unnamed>");
-    let stderr = std::io::stderr();
-    let mut stderr = stderr.lock();
-    if let Some(location) = info.location() {
-        let _ = writeln!(
-            &mut stderr,
+    // Built once and used for both the stderr write below (invisible on a
+    // windowed build launched without a console — see `logging.rs`) and the
+    // `error!` call at the end, so whichever sink is actually reachable
+    // (the log file, in the common case this fork cares about) gets the
+    // same file:line/thread detail, not just the bare panic message.
+    let detail = match info.location() {
+        Some(location) => format!(
             "{} (thread {}, at {}:{})",
             msg,
             name,
             location.file(),
             location.line()
-        );
-    } else {
-        let _ = writeln!(&mut stderr, "{} (thread {})", msg, name);
-    }
+        ),
+        None => format!("{} (thread {})", msg, name),
+    };
+    let stderr = std::io::stderr();
+    let mut stderr = stderr.lock();
+    let _ = writeln!(&mut stderr, "{detail}");
     if env::var("RUST_BACKTRACE").is_ok() {
         let _ = crate::backtrace::print(&mut stderr);
     }
@@ -49,5 +53,5 @@ pub(crate) fn panic_hook(info: &PanicHookInfo) {
         raise_signal_or_exit_with_error(libc::SIGSEGV);
     }
 
-    error!("{}", msg);
+    error!("{detail}");
 }

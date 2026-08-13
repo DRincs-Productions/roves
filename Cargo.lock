@@ -9242,6 +9242,7 @@ dependencies = [
  "egui-winit",
  "egui_glow",
  "env_filter",
+ "env_logger",
  "euclid",
  "gilrs",
  "glow",
