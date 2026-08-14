@@ -2791,3 +2791,76 @@ working end-to-end on a real, unrestricted Windows machine.** Not done: an actua
 `mach bundle --diagnostic-script` run confirming `diagnose.bat`/`diagnose.sh` show up in a
 real bundle and behave as written — the next real Windows/`mach`-capable build (the same CI
 run testing the smoke-test entry above) should confirm this.
+
+**Update:** the smoke-test entry above's real CI run confirmed this works — Windows portable
+and `--msi` both ran `diagnose.bat` successfully once written, no separate fix needed.
+
+---
+
+## 2026-08-14 — macOS portable output renamed `Roves.app` → `play.app`, and a real Steam-dylib crash it exposed
+
+**File:** `python/servo/post_build_commands.py` (`_bundle_macos`, `_wrap_macos_dmg`,
+`bundle`'s docstring), `support/content-packer/src/main.rs` (one comment).
+
+**Why the rename:** requested directly — `Roves.app` as the *portable bundle's own file
+name* read as an odd, arbitrary choice next to Windows/Linux's neutral `play.exe`/`play`.
+Worth being explicit about the tension this creates, surfaced and confirmed before making
+this change: `README.md`'s own "Naming" section documents, as a *deliberate* decision from
+the 2026-08-07 Servo→Roves rename, that every player/OS-facing label — window title,
+taskbar/dock identity, the Linux `.desktop` entry, and (until now) the macOS `.app` bundle
+name — should say "Roves". Renaming the bundle to `play.app` walks back that one piece of
+it, trading "matches window-title/taskbar branding" for "matches the neutral `play`
+placeholder every other platform already uses." Confirmed this trade-off explicitly rather
+than assuming it — the answer was to proceed with `play.app` anyway. `README.md`'s Naming
+section is updated to describe the new, narrower scope of that "says Roves everywhere"
+claim (window title/taskbar/`.desktop`, not the portable binary/bundle name on any
+platform).
+
+**Change:** `_bundle_macos`: bundle folder `Roves.app` → `play.app`, the binary inside
+`Contents/MacOS/Roves` → `Contents/MacOS/play`, and `Info.plist`'s
+`CFBundleExecutable`/`CFBundleName` (must match the actual filename) → `"play"`.
+`CFBundleIdentifier` untouched — still deliberately `org.servo.servoshell.bundle`, per the
+existing comment above it explaining why that one needs its own separate decision.
+`_wrap_macos_dmg`'s docstring and `bundle`'s own docstring updated to match. Also fixed:
+`.github/workflows/test.yml`, `README.md`, `roves-action`'s `README.md`/`action.yml`, and
+`roves-wiki`'s docs pages — every place describing the macOS output by name.
+
+**A real bug this rename's own verification found:** re-deriving the patch for this change
+meant actually running the real CI-built macOS bundles (both `portable` and `dmg`) end to
+end for the first time (the smoke-test entry above only started doing this the same day) —
+and both crashed instantly:
+
+```text
+dyld[81813]: Library not loaded: @loader_path/libsteam_api.dylib
+  Referenced from: .../release/Roves.app/Contents/MacOS/Roves
+  Reason: tried: '.../release/Roves.app/Contents/MacOS/libsteam_api.dylib' (no such file)
+```
+
+`ports/servoshell/build.rs` links every macOS dylib to be found via
+`-rpath @executable_path/lib/`, and `_bundle_macos` accordingly copies every `.dylib` it
+finds into a `lib/` subdirectory next to the binary — correct for Servo's own dependencies,
+but `steamworks-sys` links `libsteam_api.dylib` with a hardcoded
+`@loader_path/libsteam_api.dylib` install name instead (Valve's own SDK convention, not
+something this fork's build script controls), and `@loader_path` for the main executable
+means "flat, directly next to the binary" — not `lib/`. Every macOS `--features steam`
+build has been broken this way since the feature was added; nothing had ever actually
+launched one before now (see the smoke-test entry above for why that gap existed at all).
+
+**Fix:** `_bundle_macos` now special-cases `libsteam_api.dylib` — copied flat into
+`Contents/MacOS/` alongside the binary, removed from the list that goes into `lib/`. Every
+other dylib is unaffected.
+
+**Not part of the `roves-action` sync:** neither change affects `mach build`/`mach bundle`'s
+CLI surface (no flag added/removed/renamed) — `action.yml`/README already just say
+`play.app` generically enough not to need updating for the rename, and the dylib fix is
+purely internal to what `_bundle_macos` copies where.
+
+**Patch:** `patches/servo-v0.4.0/0034-rename-macos-bundle-to-play-app-and-fix-steam-dylib.patch`
+
+**Verification:** `ast.parse`-checked `post_build_commands.py`'s syntax — clean. The patch
+was verified the same way as every other one in this file: applied cleanly on top of a
+pristine `v0.4.0` extraction with patches `0001`–`0033` already applied, producing a result
+byte-identical to the actual working tree for both changed files. The libsteam_api fix
+itself is confirmed by the failure this entry quotes above (the exact crash it's meant to
+fix) — not yet re-confirmed working with a fresh CI run at the time of writing this entry;
+that run is what will actually prove it (or not).

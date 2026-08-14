@@ -292,8 +292,8 @@ echo " Roves startup diagnostic"
 echo "==================================================="
 echo
 
-if [ -x "./Roves.app/Contents/MacOS/Roves" ]; then
-    BIN="./Roves.app/Contents/MacOS/Roves"
+if [ -x "./play.app/Contents/MacOS/play" ]; then
+    BIN="./play.app/Contents/MacOS/play"
 elif [ -x "./play" ]; then
     BIN="./play"
 else
@@ -367,8 +367,8 @@ def _write_diagnostic_script(dest_dir: str) -> None:
     Placed alongside `mach bundle`'s shared "stage" output (see `bundle`'s
     own `stage_dir`), not inside `_place_bundle_content`'s `bundle_root` —
     on macOS that distinction matters: `bundle_root` there is
-    `Roves.app/Contents/Resources`, invisible to a user browsing the
-    bundle folder, whereas `stage_dir` is the directory `Roves.app` itself
+    `play.app/Contents/Resources`, invisible to a user browsing the
+    bundle folder, whereas `stage_dir` is the directory `play.app` itself
     sits in. Because `--msi`/`--dmg` wrap this same `stage_dir` into their
     installer, the script ships inside those too — not just the portable
     output. Deliberately not written for `--deb`: a `.deb` install runs
@@ -603,7 +603,7 @@ class PostBuildCommands(CommandBase):
     @CommandArgument(
         "--dmg",
         action="store_true",
-        help="macOS only: wrap the default Roves.app bundle in an installable .dmg disk image instead "
+        help="macOS only: wrap the default play.app bundle in an installable .dmg disk image instead "
         "of shipping the .app on its own",
     )
     @CommandArgument("--package-name", default="roves", help="Package name to use with --deb/--msi/--dmg")
@@ -646,7 +646,7 @@ class PostBuildCommands(CommandBase):
           it never flashes a console — see ports/servoshell/main.rs for the
           same attribute the underlying engine binary already carries). With
           --msi, an installable .msi package instead (see _wrap_windows_msi).
-        * macOS: a minimal Roves.app bundle whose Contents/MacOS/Roves *is*
+        * macOS: a minimal play.app bundle whose Contents/MacOS/play *is*
           the engine binary itself. Finder launches it directly, no
           Terminal involved at all. With --dmg, that same .app wrapped in an
           installable .dmg disk image instead (see _wrap_macos_dmg).
@@ -771,7 +771,7 @@ class PostBuildCommands(CommandBase):
         elif is_macosx():
             if dmg:
                 os.makedirs(stage_dir)
-            bundle_root = path.join(stage_dir, "Roves.app", "Contents", "Resources")
+            bundle_root = path.join(stage_dir, "play.app", "Contents", "Resources")
             os.makedirs(bundle_root)
             self._bundle_macos(servo_binary, binary_dir, stage_dir, launch_info)
         elif deb:
@@ -813,8 +813,8 @@ class PostBuildCommands(CommandBase):
 
         if diagnostic_script:
             # `stage_dir`, not `bundle_root`: on macOS `bundle_root` is
-            # `Roves.app/Contents/Resources`, invisible to a user browsing
-            # the bundle — `stage_dir` is where `Roves.app` itself (or
+            # `play.app/Contents/Resources`, invisible to a user browsing
+            # the bundle — `stage_dir` is where `play.app` itself (or
             # play.exe/play) sits. See `_write_diagnostic_script`.
             _write_diagnostic_script(stage_dir)
 
@@ -933,21 +933,35 @@ class PostBuildCommands(CommandBase):
         output_dir: str,
         launch_info: BundleLaunchInfo,
     ) -> None:
-        """The engine binary itself becomes `Contents/MacOS/Roves` directly
+        """The engine binary itself becomes `Contents/MacOS/play` directly
         — no wrapper script. Finder (and `CFBundleExecutable` below) launch
         it as-is."""
-        contents_dir = path.join(output_dir, "Roves.app", "Contents")
+        contents_dir = path.join(output_dir, "play.app", "Contents")
         macos_dir = path.join(contents_dir, "MacOS")
         os.makedirs(macos_dir)
 
-        exe_path = path.join(macos_dir, "Roves")
+        exe_path = path.join(macos_dir, "play")
         shutil.copy(servo_binary, exe_path)
         os.chmod(exe_path, 0o755)
         # Linked with `-rpath @executable_path/lib/` (see
         # ports/servoshell/build.rs) — dylibs have to land in a `lib/`
         # subdirectory next to the binary, not flat next to it, or dyld
         # won't find them at runtime.
+        #
+        # `libsteam_api.dylib` is the one exception: steamworks-sys links it
+        # with a hardcoded `@loader_path/libsteam_api.dylib` install name
+        # (Valve's own SDK convention), not `@rpath/...` like every other
+        # dylib here — `@loader_path` for the main executable means "flat,
+        # next to the binary itself", not `lib/`. Confirmed the hard way: a
+        # real `--features steam` macOS bundle crashed on launch with
+        # `Library not loaded: @loader_path/libsteam_api.dylib` while every
+        # other dylib resolved fine, since this loop used to copy it into
+        # `lib/` along with everything else.
         dylibs = [f for f in os.listdir(binary_dir) if f.endswith(".dylib")]
+        steam_dylib = "libsteam_api.dylib"
+        if steam_dylib in dylibs:
+            dylibs.remove(steam_dylib)
+            shutil.copy(path.join(binary_dir, steam_dylib), macos_dir)
         if dylibs:
             lib_dir = path.join(macos_dir, "lib")
             os.makedirs(lib_dir)
@@ -965,11 +979,11 @@ class PostBuildCommands(CommandBase):
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key>
-    <string>Roves</string>
+    <string>play</string>
     <key>CFBundleIdentifier</key>
     <string>org.servo.servoshell.bundle</string>
     <key>CFBundleName</key>
-    <string>Roves</string>
+    <string>play</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -988,12 +1002,12 @@ class PostBuildCommands(CommandBase):
         _write_launch_config(macos_dir, launch_info)
 
     def _wrap_macos_dmg(self, stage_dir: str, output_dir: str, package_name: str, version: str) -> None:
-        """Wraps the Roves.app bundle already built into `stage_dir` (by
+        """Wraps the play.app bundle already built into `stage_dir` (by
         `_bundle_macos` + `_place_bundle_content`) into an installable
         `.dmg` disk image via `hdiutil` — the same tool upstream's own
         `./mach package` uses for stock Servo's `Servo.app` (see
         package_commands.py's `package` command), adapted here to wrap our
-        content-bearing `Roves.app` instead. An `/Applications` symlink
+        content-bearing `play.app` instead. An `/Applications` symlink
         sits alongside the `.app` inside the mounted volume so Finder's
         usual drag-to-install gesture works.
         """

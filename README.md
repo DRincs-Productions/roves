@@ -27,9 +27,11 @@ upstream is upgraded.
 ## Naming: "Roves" vs. "Servo" vs. `servoshell`
 
 Every label a player or the OS actually sees — the window title, the taskbar/dock app
-identity, the Linux `.desktop` menu entry, the macOS `.app` bundle name — says **Roves**,
-not Servo (see [CUSTOMIZATIONS.md] for the exact rename). What's still named after the
-upstream project:
+identity, the Linux `.desktop` menu entry — says **Roves**, not Servo (see
+[CUSTOMIZATIONS.md] for the exact rename). The one exception: the portable bundle's own
+binary/bundle name (`play.exe`/`play.app`/`play`) is a neutral placeholder, deliberately the
+same generic name on every platform rather than "Roves"-branded — see "Portable vs.
+installable packages" below. What's still named after the upstream project:
 
 - The underlying engine itself is genuinely still Servo — Roves doesn't fork Servo's
   rendering/DOM/script internals, just the shell around it (see "What this is" above) —
@@ -204,7 +206,7 @@ described there, that's covered in [CUSTOMIZATIONS.md] instead.
 - Install the other dependencies: `./mach bootstrap`
 - Build: `./mach build`
 - Package a runnable bundle: `./mach bundle` (add `--dmg` to wrap it in an installable disk
-  image instead of the default self-contained `Roves.app` — see "Portable vs. installable
+  image instead of the default self-contained `play.app` — see "Portable vs. installable
   packages" below)
 
 ### Linux
@@ -251,7 +253,7 @@ WiX/`hdiutil` code, see [CUSTOMIZATIONS.md]):
 | Platform | Portable (default) | Installable |
 | --- | --- | --- |
 | Windows | `play.exe` + DLLs, flat | `--msi`: a real `.msi`, via WiX |
-| macOS | `Roves.app` | `--dmg`: that same `.app`, wrapped in a `.dmg` disk image |
+| macOS | `play.app` | `--dmg`: that same `.app`, wrapped in a `.dmg` disk image |
 | Linux | `play` + `.so` deps, flat | `--deb`: a real, installable `.deb` |
 
 An installable package always *wraps* the exact same content the portable bundle would have

@@ -253,7 +253,7 @@ jobs:
         run: ./mach build --media-stack dummy --features steam
 
       # `mach bundle` (see ../CUSTOMIZATIONS.md) is what actually builds the
-      # single play.exe/Roves.app/play executable — this step's only job is
+      # single play.exe/play.app/play executable — this step's only job is
       # to hand it the diagnostic page built above (test-page/dist, copied
       # into servo-src by the "download + patch" step so this tree mirrors
       # this repo's real layout — a real run would point --content-dir at
@@ -287,8 +287,8 @@ jobs:
           case "${{ matrix.package_mode }}" in
             deb) echo "Install with: sudo dpkg -i *.deb — then launch via your app menu, or /usr/bin/servoshell-test." >> ../release/NOTE.txt ;;
             msi) echo "Run the .msi installer, then launch from the Start Menu or Program Files\\servoshell-test\\play.exe." >> ../release/NOTE.txt ;;
-            dmg) echo "Open the .dmg and drag Roves.app to Applications, as prompted." >> ../release/NOTE.txt ;;
-            portable) echo "Run play.exe (Windows) / Roves.app (macOS) / play (Linux) — the only executable here; no separate engine binary or extractor tool is included." >> ../release/NOTE.txt ;;
+            dmg) echo "Open the .dmg and drag play.app to Applications, as prompted." >> ../release/NOTE.txt ;;
+            portable) echo "Run play.exe (Windows) / play.app (macOS) / play (Linux) — the only executable here; no separate engine binary or extractor tool is included." >> ../release/NOTE.txt ;;
           esac
 
       # Every step above only ever confirmed `mach bundle` *succeeds* — never
@@ -325,7 +325,7 @@ jobs:
           else
             RUNNER=()
             if [ "${{ matrix.package_mode }}" = "dmg" ]; then
-              # --dmg wraps Roves.app into a real disk image and deletes the staged .app
+              # --dmg wraps play.app into a real disk image and deletes the staged .app
               # (see post_build_commands.py's bundle()) — has to be mounted to reach the
               # same binary a player would get from dragging it to Applications.
               DMG=$(ls release/*.dmg 2>/dev/null | head -1)
@@ -336,9 +336,9 @@ jobs:
               fi
               MOUNT_DIR=$(mktemp -d)
               hdiutil attach "$DMG" -nobrowse -mountpoint "$MOUNT_DIR"
-              BIN="$MOUNT_DIR/Roves.app/Contents/MacOS/Roves"
+              BIN="$MOUNT_DIR/play.app/Contents/MacOS/play"
             else
-              BIN="release/Roves.app/Contents/MacOS/Roves"
+              BIN="release/play.app/Contents/MacOS/play"
             fi
           fi
 

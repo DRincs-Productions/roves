@@ -9,7 +9,7 @@
 //!   own dedicated "boot" archive(s).
 //! - `extract`: extracts just the boot set (+ any excluded/loose files) back
 //!   to plain files — used at game launch time (see the generated
-//!   `play.sh`/`play.exe`/`Roves.app` launchers), so the release artifact
+//!   `play.sh`/`play.exe`/`play.app` launchers), so the release artifact
 //!   itself never contains the plain, browsable dist tree. Everything past
 //!   the boot set stays compressed until the engine's own `file:` handler
 //!   asks for it on demand — see `roves_content_packer::extract::ensure_file_available`,
