@@ -384,6 +384,20 @@ jobs:
           [ -n "${MOUNT_DIR:-}" ] && hdiutil detach "$MOUNT_DIR" 2>/dev/null
 
           if [ "$STILL_RUNNING" = false ]; then
+            # Also emitted as ::notice:: annotations, not just plain echo: annotations are
+            # readable from the public Checks API without a token (unlike step logs, which
+            # need repo-admin auth to download) — the only way to see this output at all
+            # without a GitHub token/gh CLI on hand. %25/%0D/%0A-escaped per the workflow
+            # command spec so embedded newlines don't break parsing.
+            gh_notice() {
+              local msg="$1"
+              msg="${msg//%/%25}"; msg="${msg//$'\r'/%0D}"; msg="${msg//$'\n'/%0A}"
+              echo "::notice::${msg}"
+            }
+            gh_notice "exit code: $EXIT_CODE"
+            gh_notice "stdout: $(cat smoke-stdout.log)"
+            gh_notice "stderr: $(cat smoke-stderr.log)"
+            gh_notice "roves.log: $([ -n "$LOG" ] && cat "$LOG" || echo '(none found)')"
             echo "::error::bundle exited on its own within 10s — treating as a launch failure"
             exit 1
           fi
