@@ -2584,5 +2584,173 @@ The change was pushed to trigger `.github/workflows/test.yml` for real (this rep
 dormant in-parent-project state `CLAUDE.md`'s workflow-location note describes), and the
 resulting Windows portable + `--msi`-mode bundles were downloaded from the rolling `test`
 release and actually run, exactly the way the previous entry's crash was first confirmed.
-See the commit this entry ships with for the outcome — not restated here since this file
-describes the change made, not a running log of every CI attempt.
+
+**Outcome:** confirmed fixed. The fresh Windows portable and `--msi`-mode bundles built by that
+CI run (same leaked `launch.json` as ever — `--package-name`, `--package-version` still
+present) were downloaded and actually launched: `roves.log` shows the parse failure, the
+logged retry, then a full successful boot (`parsed command line arguments` → `created event
+loop` → `creating platform window` → `built Servo instance` → the page's own content
+rendering), and the window stays open and responsive. Both `play.exe` copies (plain portable
+and the `--msi`-staged one) behave identically.
+
+---
+
+## 2026-08-14 — Fixing patch `0027` itself: a later, unrelated commit had silently truncated it
+
+**Not a source change — a `patches/` integrity bug, caught while verifying the entry above.**
+While re-deriving the exact byte-for-byte state `patches/servo-v0.4.0/0027-add-msi-dmg-
+installer-support.patch` should produce (the same single-file pristine-extraction-plus-patch-
+chain method every entry in this file already uses to verify a new patch), the chain came up
+short: the real working tree's `post_build_commands.py` has `_wrap_windows_msi`,
+`_wrap_macos_dmg`, `_sanitize_msi_version`, and the `--deb-package-name`/`--deb-version` →
+`--package-name`/`--package-version` rename — none of which `0027`'s patch file, as
+committed, actually contains. `git log` on that one patch file found two commits touching it:
+`b5d2283` ("Add Windows installer template for roves-bundle using WiX" — the commit that
+actually introduced this feature) and, much later, `9ad5b8d` ("Refactor boot splash screen:
+resize, recenter, and redesign progress bar" — a commit with no business touching the msi/dmg
+installer at all). `git diff b5d2283 9ad5b8d -- patches/servo-v0.4.0/0027-*.patch` confirms
+it: `9ad5b8d` shrank the patch from 437 lines to 160, losing everything except a small later
+`output_dir = path.abspath(...)` correction (referenced in the entry above this one). The
+actual source (`post_build_commands.py` itself) was never affected — only the patch file
+meant to reproduce it, almost certainly regenerated at the time with `git diff` against the
+wrong base (e.g. the previous commit instead of the pre-`0027` state) and overwriting the
+correct file instead of replacing just that one small hunk. This is exactly the silent-drift
+failure mode `CLAUDE.md`'s "keep patches up to date" section warns about, and exactly why:
+`.github/workflows/test.yml` downloads a pristine tag and applies every patch fresh on every
+run — a truncated `0027` would have quietly built a bundle *missing* `--msi`/`--dmg` support
+entirely the next time this project's Servo version gets bumped and this patch needs
+reapplying, with nothing else here to catch it in the meantime (the working tree itself looks
+completely correct; only the patch — the thing that matters for the *next* upgrade — was
+wrong).
+
+**Fix:** restored `patches/servo-v0.4.0/0027-add-msi-dmg-installer-support.patch` from
+`b5d2283`'s (correct, complete) version, then re-applied the later `path.abspath` correction
+on top by hand (a one-line change, easy to redo safely) and regenerated the patch from an
+actual before/after diff rather than editing the unified-diff text directly. Net effect: same
+437-ish lines as originally committed, plus the abspath fix folded in as part of the same
+patch instead of silently replacing it.
+
+**Verification:** rebuilt the full chain from a pristine `v0.4.0` extraction of just
+`python/servo/post_build_commands.py` — `0004`, `0013`, `0014`, `0015`, `0016`, `0017`,
+`0023`, `0026`, this corrected `0027`, `0031`, `0033` (the diagnostic-script entry below) — in
+order, and the result is now byte-identical to the real working tree. Before the fix, the same
+process reproducibly diverged (missing the msi/dmg methods entirely); after it, it matches.
+
+---
+
+## 2026-08-14 — CI actually launches the bundle it just built, instead of only building it
+
+**File:** `.github/workflows/test.yml`. No upstream location — this workflow doesn't exist
+upstream at all (see `CLAUDE.md`), so there's no `patches/` entry for it; it's edited directly
+in this repo like any other Roves-only file.
+
+**Why:** every job in this workflow, until now, only ever confirmed `mach bundle` *succeeds*.
+That gap is exactly how the `--package-name`/`--package-version` launch-args leak (see the two
+entries above) went unnoticed through *multiple* green runs of this same workflow: every real
+double-click of the resulting `play.exe` crashed instantly, while CI stayed green throughout,
+because nothing here had ever actually run the binary. A build succeeding and a build
+launching are different claims, and only the first one was being tested.
+
+**Change:** two new steps, inserted between "assemble test bundle" and the zip steps, run
+*after* every matrix entry's bundle is assembled (portable, `--msi`, `--dmg`, `--deb` alike —
+whichever binary the earlier "add-msi-dmg" bug above just confirmed still ships loose inside
+`release/` for every mode, not only portable):
+
+- **Linux/macOS** (one bash step, `if: matrix.os_name != 'windows'`): installs `xvfb` (Linux
+  only — macOS runners already have a real window server even without a physical display),
+  launches `release/play` or `release/Roves.app/Contents/MacOS/Roves` in the background,
+  waits 10 seconds, and checks the process is *still running* — the same "did a window
+  survive past argument parsing and GL/window setup" signal a human tester would look for.
+  Captures stdout/stderr to files and prints them regardless of outcome, then searches
+  `~/.cache` (or `~/Library/Caches` on macOS) for the newest `roves.log` and prints that too.
+  Fails the job (`exit 1`) if the process exited on its own within the 10 seconds.
+- **Windows** (one `pwsh` step): the same check via `Start-Process -PassThru` +
+  `-RedirectStandardOutput`/`-RedirectStandardError`, searching `%LOCALAPPDATA%` for the
+  newest `roves.log`.
+
+Deliberately not a pixel-perfect check — no screenshot, no window-content assertion, just "is
+the process still alive a few seconds in." That's intentional: it's exactly the granularity
+needed to catch a crash-before-a-window-ever-appears (this bug's exact shape) without needing
+a display-comparison harness, and it works identically whether or not the runner has a real
+display attached.
+
+**Not part of the `roves-action` sync:** CI-only tooling, not a `mach bundle` CLI surface
+change.
+
+**Verification:** `test.yml` is plain YAML + bash/pwsh, not part of the `patches/` mechanism
+(see "File" above) — nothing to apply-check here. The change was pushed alongside the
+diagnostic-script entry below and exercised for real by the resulting CI run; see that run's
+outcome for whether the new steps themselves behave as intended (a smoke test that never
+actually ran isn't verified by reading its own YAML).
+
+---
+
+## 2026-08-14 — Optional `diagnose.bat`/`diagnose.sh` shipped alongside the bundle
+
+**File:** `python/servo/post_build_commands.py` — new `_DIAGNOSE_BAT`/`_DIAGNOSE_SH` string
+constants and `_write_diagnostic_script` function (both module-level, next to
+`_write_launch_config`), a new `--diagnostic-script` flag on `bundle`, and one new call site
+in `bundle()` itself, right after `_place_bundle_content`.
+
+**Why:** the same "no console on a double-clicked Windows build" problem the file-logging
+entry above exists for has a second half: even with `roves.log` now capturing everything, a
+non-technical tester asked to "try launching it and tell me what happens" still has no way to
+*see* that log, or the process's exit code, without being walked through finding
+`%LOCALAPPDATA%` by hand. A script that launches the game from a console that stays open
+afterward — printing the exit code and the log's contents inline — turns "nothing happened"
+into something a tester can screenshot or copy-paste directly into a bug report.
+
+**Change:** `bundle`'s new `--diagnostic-script` flag (off by default — a real shipped release
+has no reason to carry engine-internal debug tooling players never asked for) writes
+`diagnose.bat` (Windows) or `diagnose.sh` (macOS/Linux, `chmod +x`'d) into `stage_dir` — the
+same directory `play.exe`/`play`/`Roves.app` itself sits in, and, critically, the directory
+that `--msi`/`--dmg` wrap wholesale into their installer (see the "single-executable-bundle"
+and "add-msi-dmg" entries) — so the script ships inside those installed outputs too, not just
+the plain portable one. Deliberately **not** written for `--deb`: a `.deb` install runs from
+`/usr/bin` via a normal terminal that already shows stdout/stderr directly, so the script would
+have nothing to add there. The script itself: runs the game binary directly (not backgrounded,
+not killed after a timeout — a real tester should be able to actually play/close it normally),
+then prints the exit code, a "this looks like a launch failure" callout if it was non-zero,
+and the contents of whatever `roves.log` is newest under the platform's cache root (found by
+`ls -t`/`Get-ChildItem | Sort LastWriteTime`, not a hardcoded path — robust to the game's own
+name, which is what that directory is named after). Ends with `pause` (Windows) so
+double-clicking doesn't instantly close the summary before anyone reads it.
+
+**`.github/workflows/test.yml`:** `assemble test bundle`'s `BUNDLE_ARGS` now always includes
+`--diagnostic-script`, so every CI-built test bundle exercises this path (and the new smoke-
+test entry above incidentally proves the script itself gets written and is executable, since
+it sits right next to the binary the smoke test launches).
+
+**`roves-action` sync:** `--diagnostic-script` is a new, real `mach bundle` CLI flag (unlike
+the CI-only smoke-test entry above), so per `CLAUDE.md`'s "keep `roves-action` in sync"
+section, synced in this same turn (the sibling checkout was present): a matching
+`diagnostic-script` input added to `action.yml` (same `[roves]`-tagged, `default: 'false'`
+pattern as `deb`/`msi`/`dmg`), forwarded into the `mach bundle` invocation right after the
+`deb`/`msi`/`dmg` block, and a matching row added to `README.md`'s input reference in the
+same position.
+
+**Patch:** `patches/servo-v0.4.0/0033-optional-diagnostic-launch-script.patch`
+
+**Verification:** `ast.parse`-checked `post_build_commands.py`'s syntax (clean; no
+`mach`-capable Python in this sandbox, same gap as earlier entries), and the patch was
+verified the same way every other one in this file is: applied cleanly on top of a pristine
+`v0.4.0` extraction with patches `0001`–`0031` already applied (see the "add-msi-dmg" fix
+entry above for the corrected `0027` this depends on), producing a result byte-identical to
+the actual working tree. `_DIAGNOSE_BAT`/`_DIAGNOSE_SH`'s literal string content was extracted
+via `ast.literal_eval` and hand-inspected against the intended behavior. Actually wrote and ran
+`diagnose.bat` against a real downloaded bundle (the fixed portable one from the entry above):
+its own logic — banner, `%LOCALAPPDATA%` log search, exit-code branch, final messaging — all
+executed correctly, but the bare `play.exe` line inside it failed to launch in this specific
+sandbox (`ERRORLEVEL 9009`, "not recognized") even though the exact same `play.exe`, in the
+exact same directory, launches fine when invoked directly (via `Start-Process`/a backgrounded
+shell command) — reproduced across three different invocation methods (a raw `cmd /c`, a
+PowerShell background job, and a plain `Start-Process` file-association launch mirroring a
+real double-click), ruling out a mistake in any one test harness. Given `cd /d "%~dp0"` then a
+bare sibling `.exe` is the single most standard, universally-supported batch pattern there is,
+this reads as a sandbox-specific restriction on spawning an arbitrary named executable from a
+`cmd.exe` child process specifically (as opposed to a directly-invoked `Start-Process`), not a
+defect in the script — but stated plainly rather than silently assumed: **not confirmed
+working end-to-end on a real, unrestricted Windows machine.** Not done: an actual
+`mach bundle --diagnostic-script` run confirming `diagnose.bat`/`diagnose.sh` show up in a
+real bundle and behave as written — the next real Windows/`mach`-capable build (the same CI
+run testing the smoke-test entry above) should confirm this.

@@ -264,9 +264,27 @@ portable-vs-installable. `nsis`/`rpm`/`appimage` aren't implemented yet — see
 This repo's own smoke-test CI, [`.github/workflows/test.yml`], exercises both variants on
 every platform on every push (a `package_mode` matrix axis of `portable`/`msi`/`dmg`/`deb`,
 one job per platform per mode) — not a manual toggle, since its whole job is proving `mach
-bundle` still works in every mode it supports, not just the default. If you're building your
+bundle` still works in every mode it supports, not just the default. It doesn't stop at a
+successful build either: after assembling each bundle, it actually launches the resulting
+binary for a few seconds and fails the job if the process doesn't stay up — a plain build
+success was once mistaken for "the bundle works," which cost real debugging time (see
+[CUSTOMIZATIONS.md]'s launch.json entries) before this check existed. If you're building your
 own release pipeline around `mach bundle` (or `roves-action`, see below), pick whichever
 mode(s) you actually want to ship, the same way that workflow's per-mode `BUNDLE_ARGS` do.
+
+### Diagnosing a launch that appears to do nothing
+
+`mach bundle --diagnostic-script` ships a `diagnose.bat` (Windows) / `diagnose.sh`
+(macOS/Linux) next to the game binary — in the installable packages too, not just the
+portable one (not `--deb`, where a terminal already shows the same output directly). Running
+it instead of the game launches the same binary from a console that stays open afterward,
+printing the exit code and the newest `roves.log`'s contents inline, so a tester who hits "I
+double-clicked it and nothing happened" can just run this and paste the result into a bug
+report. Off by default — a real release has no reason to carry debug tooling players never
+asked for. See the wiki's [Diagnosing a silent launch] page for the full story (`roves.log`'s
+location per platform, and a real incident this was built to catch).
+
+[Diagnosing a silent launch]: https://github.com/DRincs-Productions/roves-wiki/blob/main/content/docs/distribution/diagnosing-a-silent-launch.mdx
 
 [`.github/workflows/test.yml`]: .github/workflows/test.yml
 

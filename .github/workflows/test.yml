@@ -267,6 +267,7 @@ jobs:
           BUNDLE_ARGS=(
             --content-dir test-page/dist --output ../release
             --package-name servoshell-test --package-version "${SERVO_TAG}"
+            --diagnostic-script
           )
           case "${{ matrix.package_mode }}" in
             deb) BUNDLE_ARGS+=(--deb) ;;
@@ -289,6 +290,100 @@ jobs:
             dmg) echo "Open the .dmg and drag Roves.app to Applications, as prompted." >> ../release/NOTE.txt ;;
             portable) echo "Run play.exe (Windows) / Roves.app (macOS) / play (Linux) — the only executable here; no separate engine binary or extractor tool is included." >> ../release/NOTE.txt ;;
           esac
+
+      # Every step above only ever confirmed `mach bundle` *succeeds* — never
+      # that the bundle it produces actually *launches*. That gap is exactly
+      # how the `--package-name`/`--package-version` launch-args leak (see
+      # CUSTOMIZATIONS.md's "Bundled launches no longer die on a broken
+      # launch.json" entry) went unnoticed through multiple green runs of
+      # this same workflow: every real double-click of the resulting
+      # play.exe crashed instantly, while CI stayed green throughout. These
+      # two steps actually run the binary mach just built — for real, for a
+      # few seconds — and fail the job if it doesn't come up cleanly, the
+      # same check a human tester would do by hand. Deliberately not a
+      # pixel-perfect check (no screenshot, no window-content assertion) —
+      # just "does the process still exist a few seconds after launch, past
+      # argument parsing and window/GL creation", which is exactly the class
+      # of failure this exists to catch (a crash or exit before a window
+      # ever appears) without needing a display-comparison harness.
+      - name: smoke test — launch the bundle and check it doesn't crash (Linux/macOS)
+        if: matrix.os_name != 'windows'
+        shell: bash
+        run: |
+          if [ "${{ matrix.os_name }}" = "linux" ]; then
+            sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb
+            BIN="release/play"
+            RUNNER=(xvfb-run -a --server-args="-screen 0 1280x720x24")
+          else
+            BIN="release/Roves.app/Contents/MacOS/Roves"
+            RUNNER=()
+          fi
+          chmod +x "$BIN"
+          "${RUNNER[@]}" "$BIN" > smoke-stdout.log 2> smoke-stderr.log &
+          PID=$!
+          sleep 10
+          if kill -0 "$PID" 2>/dev/null; then
+            STILL_RUNNING=true
+            kill "$PID"
+            wait "$PID" 2>/dev/null || true
+          else
+            STILL_RUNNING=false
+            wait "$PID"
+            EXIT_CODE=$?
+          fi
+
+          echo "still running after 10s: $STILL_RUNNING"
+          [ "$STILL_RUNNING" = false ] && echo "exit code: $EXIT_CODE"
+          echo "--- stdout ---"; cat smoke-stdout.log
+          echo "--- stderr ---"; cat smoke-stderr.log
+
+          CACHE_ROOT="$HOME/.cache"
+          [ "${{ matrix.os_name }}" = "macos" ] && CACHE_ROOT="$HOME/Library/Caches"
+          LOG=$(find "$CACHE_ROOT" -iname roves.log -newer "$BIN" 2>/dev/null | head -1)
+          if [ -n "$LOG" ]; then
+            echo "--- roves.log ($LOG) ---"; cat "$LOG"
+          else
+            echo "no roves.log found under $CACHE_ROOT"
+          fi
+
+          if [ "$STILL_RUNNING" = false ]; then
+            echo "::error::bundle exited on its own within 10s — treating as a launch failure"
+            exit 1
+          fi
+
+      - name: smoke test — launch the bundle and check it doesn't crash (Windows)
+        if: matrix.os_name == 'windows'
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path release -Filter play.exe -Recurse | Select-Object -First 1
+          if (-not $exe) { Write-Error "no play.exe found under release/"; exit 1 }
+
+          $stdout = Join-Path $env:RUNNER_TEMP "smoke-stdout.log"
+          $stderr = Join-Path $env:RUNNER_TEMP "smoke-stderr.log"
+          $proc = Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName -PassThru `
+            -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          Start-Sleep -Seconds 10
+          $stillRunning = -not $proc.HasExited
+          if ($stillRunning) { Stop-Process -Id $proc.Id -Force }
+
+          Write-Host "still running after 10s: $stillRunning"
+          if (-not $stillRunning) { Write-Host "exit code: $($proc.ExitCode)" }
+          Write-Host "--- stdout ---"; Get-Content $stdout -ErrorAction SilentlyContinue
+          Write-Host "--- stderr ---"; Get-Content $stderr -ErrorAction SilentlyContinue
+
+          $log = Get-ChildItem -Path "$env:LOCALAPPDATA" -Filter roves.log -Recurse -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if ($log) {
+            Write-Host "--- roves.log ($($log.FullName)) ---"
+            Get-Content $log.FullName
+          } else {
+            Write-Host "no roves.log found under $env:LOCALAPPDATA"
+          }
+
+          if (-not $stillRunning) {
+            Write-Host "::error::bundle exited on its own within 10s — treating as a launch failure"
+            exit 1
+          }
 
       # Renamed to a named subfolder (after the content being bundled — "test-page"
       # here; a real bundle would use the actual game's name) before zipping, rather

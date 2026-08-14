@@ -1,0 +1,206 @@
+diff --git a/python/servo/post_build_commands.py b/python/servo/post_build_commands.py
+index 067b9db..b832137 100644
+--- a/python/servo/post_build_commands.py
++++ b/python/servo/post_build_commands.py
+@@ -231,6 +231,164 @@ def _write_launch_config(config_dir: str, info: BundleLaunchInfo) -> None:
+         json.dump(config, f)
+ 
+ 
++# See `_write_diagnostic_script` below for why these exist. Kept as plain,
++# readable script text (not templated/generated) so anyone can read exactly
++# what runs without needing to trace through this file — the whole point is
++# to be inspectable by a non-technical tester asked to run it.
++_DIAGNOSE_BAT = """@echo off
++setlocal enabledelayedexpansion
++cd /d "%~dp0"
++
++echo ===================================================
++echo  Roves startup diagnostic
++echo ===================================================
++echo.
++echo Launching play.exe ...
++echo (Close the game window normally when you're done, or press Ctrl+C here
++echo  to stop early.)
++echo.
++
++play.exe
++set EXITCODE=%ERRORLEVEL%
++
++echo.
++echo ===================================================
++echo  play.exe exited with code %EXITCODE%
++if %EXITCODE% NEQ 0 (
++    echo  ** This looks like a launch failure. **
++)
++echo ===================================================
++echo.
++echo Looking for the most recent roves.log under %LOCALAPPDATA% ...
++echo.
++
++set "FOUND="
++for /f "delims=" %%F in ('dir /b /s /o-d "%LOCALAPPDATA%\\roves.log" 2^>nul') do (
++    if not defined FOUND set "FOUND=%%F"
++)
++
++if defined FOUND (
++    echo Found: !FOUND!
++    echo.
++    echo --- log contents ---
++    type "!FOUND!"
++    echo ---------------------
++) else (
++    echo No roves.log found. If play.exe crashed before logging even
++    echo started, that itself is useful information to report.
++)
++
++echo.
++echo Copy everything above into a bug report for this game.
++echo.
++pause
++"""
++
++_DIAGNOSE_SH = """#!/bin/sh
++cd "$(dirname "$0")"
++
++echo "==================================================="
++echo " Roves startup diagnostic"
++echo "==================================================="
++echo
++
++if [ -x "./Roves.app/Contents/MacOS/Roves" ]; then
++    BIN="./Roves.app/Contents/MacOS/Roves"
++elif [ -x "./play" ]; then
++    BIN="./play"
++else
++    echo "Could not find the game binary next to this script."
++    exit 1
++fi
++
++echo "Launching $BIN ..."
++echo "(Close the game window normally when you're done, or press Ctrl+C"
++echo " here to stop early.)"
++echo
++
++"$BIN"
++EXIT_CODE=$?
++
++echo
++echo "==================================================="
++echo " $BIN exited with code $EXIT_CODE"
++if [ "$EXIT_CODE" -ne 0 ]; then
++    echo " ** This looks like a launch failure. **"
++fi
++echo "==================================================="
++echo
++
++if [ "$(uname)" = "Darwin" ]; then
++    CACHE_ROOT="$HOME/Library/Caches"
++else
++    CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}"
++fi
++
++echo "Looking for the most recent roves.log under $CACHE_ROOT ..."
++echo
++LOG=$(find "$CACHE_ROOT" -iname roves.log 2>/dev/null -exec ls -t {} + 2>/dev/null | head -1)
++
++if [ -n "$LOG" ]; then
++    echo "Found: $LOG"
++    echo
++    echo "--- log contents ---"
++    cat "$LOG"
++    echo "---------------------"
++else
++    echo "No roves.log found. If the game crashed before logging even"
++    echo "started, that itself is useful information to report."
++fi
++
++echo
++echo "Copy everything above into a bug report for this game."
++echo
++"""
++
++
++def _write_diagnostic_script(dest_dir: str) -> None:
++    """Writes a small, standalone launch-and-report script next to the
++    bundle's executable — `diagnose.bat` on Windows, `diagnose.sh` on
++    macOS/Linux — gated behind `bundle`'s own `--diagnostic-script` (off by
++    default: a real game's shipped release has no reason to carry
++    engine-internal debug tooling players never asked for; CI's own
++    `.github/workflows/test.yml` always passes it).
++
++    Exists for exactly the failure mode CUSTOMIZATIONS.md's `launch.json`
++    entries describe: a Windows build has no console
++    (`#![windows_subsystem = "windows"]`), so a launch that dies before a
++    window ever appears looks like literally nothing happened, with
++    nothing on-screen to report back. Running this script instead of the
++    game directly launches the exact same binary from a console/terminal
++    that stays open afterward, printing the exit code and `roves.log`'s
++    contents inline — something a non-technical tester can copy-paste into
++    a bug report without knowing what a log file even is, let alone where
++    to find one.
++
++    Placed alongside `mach bundle`'s shared "stage" output (see `bundle`'s
++    own `stage_dir`), not inside `_place_bundle_content`'s `bundle_root` —
++    on macOS that distinction matters: `bundle_root` there is
++    `Roves.app/Contents/Resources`, invisible to a user browsing the
++    bundle folder, whereas `stage_dir` is the directory `Roves.app` itself
++    sits in. Because `--msi`/`--dmg` wrap this same `stage_dir` into their
++    installer, the script ships inside those too — not just the portable
++    output. Deliberately not written for `--deb`: a `.deb` install runs
++    from `/usr/bin` via a normal terminal already showing stdout/stderr
++    directly, so this script would have nothing to add there.
++    """
++    if is_windows():
++        script_path = path.join(dest_dir, "diagnose.bat")
++        script = _DIAGNOSE_BAT
++        newline = "\r\n"
++    else:
++        script_path = path.join(dest_dir, "diagnose.sh")
++        script = _DIAGNOSE_SH
++        newline = "\n"
++    with open(script_path, "w", newline=newline) as f:
++        f.write(script)
++    if not is_windows():
++        os.chmod(script_path, 0o755)
++
++
+ @CommandProvider
+ class PostBuildCommands(CommandBase):
+     @Command("run", description="Run Servo", category="post-build")
+@@ -450,6 +608,14 @@ class PostBuildCommands(CommandBase):
+     )
+     @CommandArgument("--package-name", default="roves", help="Package name to use with --deb/--msi/--dmg")
+     @CommandArgument("--package-version", default="0.0.0", help="Package version to use with --deb/--msi/--dmg")
++    @CommandArgument(
++        "--diagnostic-script",
++        action="store_true",
++        help="Ship a diagnose.bat/diagnose.sh alongside the bundle (portable/--msi/--dmg only, not --deb) "
++        "that launches the game from a console and prints its exit code plus roves.log inline — for "
++        "testers to run when a build appears to do nothing. Off by default: a real release has no "
++        "reason to carry this debug tooling unasked.",
++    )
+     @CommandArgument("params", nargs="...", help="Extra command-line arguments to pass through to servoshell on launch")
+     @CommandBase.common_command_arguments(binary_selection=True)
+     def bundle(
+@@ -469,6 +635,7 @@ class PostBuildCommands(CommandBase):
+         dmg: bool = False,
+         package_name: str = "roves",
+         package_version: str = "0.0.0",
++        diagnostic_script: bool = False,
+         params: Optional[List[str]] = None,
+         **kwargs: Any,
+     ) -> int | None:
+@@ -644,6 +811,13 @@ class PostBuildCommands(CommandBase):
+             window_title,
+         )
+ 
++        if diagnostic_script:
++            # `stage_dir`, not `bundle_root`: on macOS `bundle_root` is
++            # `Roves.app/Contents/Resources`, invisible to a user browsing
++            # the bundle — `stage_dir` is where `Roves.app` itself (or
++            # play.exe/play) sits. See `_write_diagnostic_script`.
++            _write_diagnostic_script(stage_dir)
++
+         if msi:
+             self._wrap_windows_msi(stage_dir, output_dir, package_name, package_version)
+             delete(stage_dir)

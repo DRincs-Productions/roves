@@ -101,6 +101,33 @@ someone else's problem. `roves-api` and `roves-wiki` (also sibling repos) are no
 this mirroring relationship and don't need this same treatment unless a change here directly
 affects what they document or consume.
 
+## CRITICAL: every user-facing feature needs a README mention *and* a wiki page
+
+`CUSTOMIZATIONS.md`/`patches/` (above) capture *what changed relative to upstream Servo*, for
+the next version upgrade. That's a different audience from *someone using Roves right now* —
+a game developer bundling their game, or a player hitting a problem — who reads
+[`README.md`](./README.md) and the [`roves-wiki`](https://github.com/DRincs-Productions/roves-wiki)
+docs site instead, and neither of those updates automatically just because
+`CUSTOMIZATIONS.md` did.
+
+**Any time you add, change, or remove a user-facing feature — a new `mach bundle`/`mach
+build` flag, a new bundle output, a new CLI behavior, anything a game developer or player
+would need to know about — in the same turn:**
+
+1. Add at least a brief mention to `README.md` — even one sentence and a link out is enough;
+   it doesn't need to duplicate the wiki's full explanation, just enough that someone skimming
+   the README doesn't miss that the feature exists.
+2. Add or update the matching page (or section of an existing page) under `roves-wiki`'s
+   `content/docs/` — this is where the real explanation, rationale, and worked examples live.
+   `roves-wiki` is a sibling checkout (see the `roves-action` section above for what "sibling
+   checkout present" means in practice) — same rule applies: if it isn't present, say so
+   explicitly rather than silently skipping this.
+
+Do this unprompted, the same way `CUSTOMIZATIONS.md` gets updated unprompted — don't wait to
+be asked, and don't treat "I already wrote the `CUSTOMIZATIONS.md` entry" as covering this
+too. A change that's only documented in `CUSTOMIZATIONS.md` is invisible to everyone except
+the next person upgrading the Servo version; a real user has no reason to ever open that file.
+
 ## Upgrading to a newer Servo version (rough steps)
 
 1. Download the new tag's source zip: `https://github.com/servo/servo/archive/refs/tags/v<NEW_VERSION>.zip`.
