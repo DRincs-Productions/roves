@@ -312,20 +312,55 @@ jobs:
         run: |
           if [ "${{ matrix.os_name }}" = "linux" ]; then
             sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb
-            BIN="release/play"
             RUNNER=(xvfb-run -a --server-args="-screen 0 1280x720x24")
+            if [ "${{ matrix.package_mode }}" = "deb" ]; then
+              # A real .deb, unlike --msi/--dmg's "wrap the same portable output" — the
+              # binary only exists once actually installed (see post_build_commands.py's
+              # _bundle_linux_deb: /usr/lib/<package_name>/, /usr/bin/<package_name> symlink).
+              sudo dpkg -i release/*.deb
+              BIN="/usr/bin/servoshell-test"
+            else
+              BIN="release/play"
+            fi
           else
-            BIN="release/Roves.app/Contents/MacOS/Roves"
             RUNNER=()
+            if [ "${{ matrix.package_mode }}" = "dmg" ]; then
+              # --dmg wraps Roves.app into a real disk image and deletes the staged .app
+              # (see post_build_commands.py's bundle()) — has to be mounted to reach the
+              # same binary a player would get from dragging it to Applications.
+              DMG=$(ls release/*.dmg 2>/dev/null | head -1)
+              if [ -z "$DMG" ]; then
+                echo "::error::no .dmg found under release/ — contents:"
+                find release -maxdepth 3
+                exit 1
+              fi
+              MOUNT_DIR=$(mktemp -d)
+              hdiutil attach "$DMG" -nobrowse -mountpoint "$MOUNT_DIR"
+              BIN="$MOUNT_DIR/Roves.app/Contents/MacOS/Roves"
+            else
+              BIN="release/Roves.app/Contents/MacOS/Roves"
+            fi
           fi
-          chmod +x "$BIN"
+
+          if [ ! -e "$BIN" ]; then
+            echo "::error::expected binary not found at $BIN — contents of release/:"
+            find release -maxdepth 3
+            exit 1
+          fi
+          chmod +x "$BIN" || true
+
+          # `set -e` (this shell's default) would otherwise abort the whole step the
+          # instant the launched process has already exited — right when this step most
+          # needs to print diagnostics instead of silently vanishing into a bare "Process
+          # completed with exit code N".
+          set +e
           "${RUNNER[@]}" "$BIN" > smoke-stdout.log 2> smoke-stderr.log &
           PID=$!
           sleep 10
           if kill -0 "$PID" 2>/dev/null; then
             STILL_RUNNING=true
             kill "$PID"
-            wait "$PID" 2>/dev/null || true
+            wait "$PID" 2>/dev/null
           else
             STILL_RUNNING=false
             wait "$PID"
@@ -339,12 +374,14 @@ jobs:
 
           CACHE_ROOT="$HOME/.cache"
           [ "${{ matrix.os_name }}" = "macos" ] && CACHE_ROOT="$HOME/Library/Caches"
-          LOG=$(find "$CACHE_ROOT" -iname roves.log -newer "$BIN" 2>/dev/null | head -1)
+          LOG=$(find "$CACHE_ROOT" -iname roves.log 2>/dev/null -exec ls -t {} + 2>/dev/null | head -1)
           if [ -n "$LOG" ]; then
             echo "--- roves.log ($LOG) ---"; cat "$LOG"
           else
             echo "no roves.log found under $CACHE_ROOT"
           fi
+
+          [ -n "${MOUNT_DIR:-}" ] && hdiutil detach "$MOUNT_DIR" 2>/dev/null
 
           if [ "$STILL_RUNNING" = false ]; then
             echo "::error::bundle exited on its own within 10s — treating as a launch failure"
@@ -355,8 +392,38 @@ jobs:
         if: matrix.os_name == 'windows'
         shell: pwsh
         run: |
-          $exe = Get-ChildItem -Path release -Filter play.exe -Recurse | Select-Object -First 1
-          if (-not $exe) { Write-Error "no play.exe found under release/"; exit 1 }
+          if ("${{ matrix.package_mode }}" -eq "msi") {
+            # --msi wraps the portable output into a real installer and deletes the
+            # staged play.exe (see post_build_commands.py's bundle()) — release/ only has
+            # the .msi itself here, so testing "does the bundle launch" means actually
+            # installing it first, the same way a player running the installer would.
+            $msi = Get-ChildItem -Path release -Filter *.msi -Recurse | Select-Object -First 1
+            if (-not $msi) {
+              Write-Error "no .msi found under release/ — contents:"
+              Get-ChildItem -Path release -Recurse
+              exit 1
+            }
+            $installDir = Join-Path $env:RUNNER_TEMP "roves-install"
+            $msiLog = Join-Path $env:RUNNER_TEMP "msiexec.log"
+            $msiProc = Start-Process msiexec.exe -ArgumentList @(
+              "/i", $msi.FullName, "/quiet", "/qn", "/norestart",
+              "INSTALLDIR=$installDir", "/l*v", $msiLog
+            ) -Wait -PassThru
+            if ($msiProc.ExitCode -ne 0) {
+              Write-Error "msiexec install failed with exit code $($msiProc.ExitCode)"
+              Get-Content $msiLog -Tail 60 -ErrorAction SilentlyContinue
+              exit 1
+            }
+            $exe = Get-ChildItem -Path $installDir -Filter play.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $exe) {
+              Write-Error "no play.exe found under $installDir after a successful-looking install — contents:"
+              Get-ChildItem -Path $installDir -Recurse -ErrorAction SilentlyContinue
+              exit 1
+            }
+          } else {
+            $exe = Get-ChildItem -Path release -Filter play.exe -Recurse | Select-Object -First 1
+            if (-not $exe) { Write-Error "no play.exe found under release/"; exit 1 }
+          }
 
           $stdout = Join-Path $env:RUNNER_TEMP "smoke-stdout.log"
           $stderr = Join-Path $env:RUNNER_TEMP "smoke-stderr.log"

@@ -2683,6 +2683,43 @@ diagnostic-script entry below and exercised for real by the resulting CI run; se
 outcome for whether the new steps themselves behave as intended (a smoke test that never
 actually ran isn't verified by reading its own YAML).
 
+**Correction (same day, after that real CI run):** the first version of this step failed on
+4 of 6 matrix entries — worth recording in detail since each was a distinct bug, not one
+underlying cause:
+
+- **`set -e` was swallowing the diagnostics this step exists to produce.** GitHub Actions
+  bash steps run with `errexit`. In the "already exited" branch, `wait "$PID"` returns that
+  process's (non-zero, since it already exited) status as a bare statement — not inside an
+  `if`/`while` condition or an `&&`/`||` chain — which is exactly the case bash's `-e` treats
+  as fatal: the whole step aborted right there, before ever reaching the stdout/stderr dump,
+  the `roves.log` search, or this step's own `::error::` message. Every failure showed up as
+  a bare "Process completed with exit code N" with none of the diagnostics the step was
+  written to produce — undermining the entire point of adding it. Fixed with an explicit
+  `set +e` once the binary's existence is confirmed (kept `set -e` for the setup steps
+  before that, where a hard stop on unexpected failure is still correct).
+- **`--deb` doesn't produce a loose `release/play` at all.** Unlike `--msi`/`--dmg` (which
+  wrap the same portable output), `_bundle_linux_deb` builds a real Debian package —
+  `/usr/lib/<package_name>/`, `/usr/bin/<package_name>` symlink — that only exists once
+  actually installed. The step assumed the portable layout unconditionally; fixed by
+  `sudo dpkg -i release/*.deb` first, then testing `/usr/bin/servoshell-test` — the same
+  binary a player actually installing the `.deb` would end up running.
+- **`--msi`/`--dmg` *also* don't leave a loose binary in `release/`** — `bundle()` deletes
+  `stage_dir` (where the portable `play.exe`/`Roves.app` was built) right after wrapping it,
+  so `release/` ends up containing only the `.msi`/`.dmg` itself. This one is genuinely new
+  behavior compared to every earlier CI run: those were unknowingly building from the
+  truncated `0027` (see that fix entry above), which never actually defined `--msi`/`--dmg`/
+  `--package-name` as recognized flags at all — meaning every prior "msi"/"dmg" CI job was
+  silently producing a *plain portable build* (the unrecognized flags landing in `params`
+  and `launch.json`, exactly the leak this whole investigation started from) while reporting
+  success. With the corrected patch, `--msi`/`--dmg` now do what they were always supposed to,
+  and this step needed updating to match: the Windows step now runs `msiexec /i ... /quiet
+  INSTALLDIR=...` and looks for `play.exe` under the actual install directory; the macOS step
+  `hdiutil attach`s the `.dmg` and points `BIN` at the mounted volume's `Roves.app` (detached
+  again at the end, best-effort).
+
+Net effect: this step wasn't just fixed, it went from silently never having tested a working
+`--msi`/`--dmg` build to being the first thing that actually does.
+
 ---
 
 ## 2026-08-14 — Optional `diagnose.bat`/`diagnose.sh` shipped alongside the bundle
