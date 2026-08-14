@@ -1,8 +1,7 @@
 diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
-index b426413..e8fa7d1 100644
 --- a/ports/servoshell/desktop/gui.rs
 +++ b/ports/servoshell/desktop/gui.rs
-@@ -194,11 +194,11 @@ fn add_wordmark_font(fonts: &mut FontDefinitions) {
+@@ -194,11 +194,11 @@
      );
  }
  
@@ -19,7 +18,7 @@ index b426413..e8fa7d1 100644
  const SPLASH_WORDMARK_FONT_SIZE: f32 = 88.0;
  const SPLASH_PROGRESS_BAR_WIDTH: f32 = 260.0;
  const SPLASH_PROGRESS_BAR_HEIGHT: f32 = 6.0;
-@@ -571,30 +571,31 @@ impl Gui {
+@@ -571,21 +571,28 @@
          self.rendering_context
              .make_current()
              .expect("Could not make RenderingContext current");
@@ -29,26 +28,14 @@ index b426413..e8fa7d1 100644
              SPLASH_WORDMARK_FONT_SIZE,
              egui::FontFamily::Name("Metal Mania".into()),
          );
-+        // Measured (not guessed) — both so the icon+wordmark row below can be centered
-+        // exactly, rather than trusting `top_down`'s `Align::Center` to center a nested
-+        // `ui.horizontal` row on its own, and so the icon can be sized to actually match
-+        // the wordmark's rendered height instead of an independently guessed constant
-+        // (`SPLASH_ICON_SIZE` used to be hardcoded to 128px against an 88px font size —
-+        // a ratio borrowed from `resources/roves_wordmark.svg`'s lockup that doesn't
-+        // necessarily hold for Metal Mania's actual glyph metrics at this size). Done
-+        // before constructing `icon` below (which needs `&self.splash_icon_texture`,
-+        // i.e. `self` again) rather than inside `self.context.run`'s closure, since
-+        // `self.context.run` already holds `self.context` mutably at that point.
-+        let wordmark_size = self.context.egui_ctx.fonts_mut(|fonts| {
-+            fonts
-+                .layout_no_wrap(
-+                    "Roves".to_owned(),
-+                    wordmark_font.clone(),
-+                    egui::Color32::WHITE,
-+                )
-+                .size()
-+        });
-+        let icon = egui::Image::from_texture(&self.splash_icon_texture).max_height(wordmark_size.y);
++        // Cloned (cheap — `TextureHandle` is a small ref-counted handle) so the closure
++        // below doesn't need to borrow `self` at all: `self.context.run` already holds
++        // `self.context` mutably for the duration of the closure, and — separately, the
++        // actual reason this has to happen out here rather than being a borrow-checker
++        // nicety — `egui::Context::fonts_mut` (needed inside, to measure the wordmark)
++        // panics with "No fonts available until first call to Context::run()" if called
++        // any earlier than the closure itself; confirmed the hard way, on a real build.
++        let splash_icon_texture = self.splash_icon_texture.clone();
          self.context.run(winit_window, |ctx| {
 -            // Measured (not guessed) so the icon+wordmark row below can be
 -            // centered exactly, rather than trusting `top_down`'s
@@ -58,19 +45,29 @@ index b426413..e8fa7d1 100644
 -            // resolved with an actual measurement instead of a guess, since
 -            // one is cheaply available.
 -            let wordmark_width = ctx.fonts_mut(|fonts| {
--                fonts
--                    .layout_no_wrap(
--                        "Roves".to_owned(),
--                        wordmark_font.clone(),
--                        egui::Color32::WHITE,
--                    )
--                    .size()
++            // Measured (not guessed) — both so the icon+wordmark row below can be
++            // centered exactly, rather than trusting `top_down`'s `Align::Center` to
++            // center a nested `ui.horizontal` row on its own, and so the icon can be
++            // sized to actually match the wordmark's rendered height instead of an
++            // independently guessed constant (`SPLASH_ICON_SIZE` used to be hardcoded
++            // to 128px against an 88px font size — a ratio borrowed from
++            // `resources/roves_wordmark.svg`'s lockup that doesn't necessarily hold for
++            // Metal Mania's actual glyph metrics at this size).
++            let wordmark_size = ctx.fonts_mut(|fonts| {
+                 fonts
+                     .layout_no_wrap(
+                         "Roves".to_owned(),
+@@ -593,8 +600,8 @@
+                         egui::Color32::WHITE,
+                     )
+                     .size()
 -                    .x
--            });
+             });
++            let icon = egui::Image::from_texture(&splash_icon_texture).max_height(wordmark_size.y);
              // `Panel::show` (the top-level entry point, as opposed to
              // `show_inside` for nesting inside another container) is
              // deprecated in this egui version in favor of hand-building a
-@@ -605,11 +606,15 @@ impl Gui {
+@@ -605,11 +612,15 @@
                  .frame(egui::Frame::default().fill(egui::Color32::BLACK))
                  .show(ctx, |ui| {
                      ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {

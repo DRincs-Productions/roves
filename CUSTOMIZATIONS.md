@@ -2960,3 +2960,39 @@ applied, producing a result byte-identical to the actual working tree. Not done:
 `servoshell` dependency graph in reasonable time) or a real screenshot of the rebuilt splash
 confirming the icon now shows correctly and reads as proportionate — the next real
 Windows/`mach`-capable CI run is what will actually confirm both fixes.
+
+**Correction (same day, after that CI run): the sizing fix as first written crashed every
+platform on launch.** 5 of 6 matrix jobs (everything except `linux-deb`, which happens not to
+exercise this code path the same way) failed the smoke-test entry above's own check, with
+`roves.log`/stderr showing:
+
+```text
+No fonts available until first call to Context::run() (thread main, at .../egui-0.34.3/src/context.rs:1103)
+```
+
+— an `egui` internal panic (SIGSEGV/abort downstream of it, exit code 139). The measurement
+this entry moved to `self.context.egui_ctx.fonts_mut(...)`, called *before*
+`self.context.run(...)`, turns out to be exactly the one thing `egui::Context::fonts_mut`
+doesn't allow: fonts aren't initialized until the *first* `run()` call, ever, for that
+context — measuring anything font-related has to happen *inside* the closure passed to
+`run()`, not before it. The original code already knew this (its own width measurement was
+always inside the closure); moving it out to dodge the `self` double-borrow (constructing
+`icon`, which needs `&self.splash_icon_texture`, while `self.context.run(...)` already holds
+`self.context` mutably) was the wrong way to resolve that borrow-checker problem.
+
+**Fix:** resolved the *actual* borrow conflict instead — `self.splash_icon_texture.clone()`
+(cheap; `TextureHandle` is a small ref-counted handle, confirmed via its actual docs, not
+assumed) into a plain local variable *before* `self.context.run(...)`, which the closure can
+freely capture without touching `self` at all. Both the wordmark measurement and `icon`'s
+construction moved back inside the closure, using that cloned local instead of `self`
+directly. Net result: same measure-don't-guess sizing this entry originally set out to add,
+just with the measurement (and everything depending on it) happening at the only point
+`egui` actually allows it.
+
+**Patch:** regenerated `patches/servo-v0.4.0/0035-fix-boot-splash-icon-and-size-icon-to-match-wordmark.patch`
+in place (from pristine `v0.4.0` + `0001`–`0030`, not as a second patch stacked on the
+broken version — the broken version never should have shipped as-is, so there's no reason to
+preserve it as a separate reviewable step). Re-verified the same way: applies cleanly,
+byte-identical result. Still not done, same gap as above: an actual `mach build`/real launch
+— but this time backed by a concrete, specific egui-internals reason the previous "not yet
+confirmed" version was actually wrong, not just an unverified guess repeated twice.
