@@ -51,9 +51,9 @@ pub fn main() {
     // through to `App::new` unresolved — `resolve_bundled_launch_args`
     // never blocks on it; see `bundle_launch.rs` and `App::init`'s boot
     // splash handling.
-    let (args, pending_boot_extraction) = match resolve_bundled_launch_args() {
-        Some(bundled) => (bundled.args, bundled.pending_boot_extraction),
-        None => (env::args().skip(1).collect(), None),
+    let (args, pending_boot_extraction, is_bundled_launch) = match resolve_bundled_launch_args() {
+        Some(bundled) => (bundled.args, bundled.pending_boot_extraction, true),
+        None => (env::args().skip(1).collect(), None, false),
     };
     // Startup milestones below: this app has no console on a double-clicked
     // Windows build (`#![windows_subsystem = "windows"]`), so a launch that
@@ -71,6 +71,31 @@ pub fn main() {
         },
         ArgumentParsingResult::Exit => {
             std::process::exit(0);
+        },
+        // `launch.json`'s "args" (see `bundle_launch.rs`) are build-tool-
+        // generated config, not interactive user input — unlike a real CLI
+        // typo, there is no user present to see the parse error and correct
+        // it. A stray build-tool flag leaking in there (see
+        // CUSTOMIZATIONS.md's launch-args-sanitization entry for a real
+        // incident of exactly this) must never be able to silently kill
+        // every future launch of an otherwise-working bundle (no window, no
+        // console, on a double-clicked Windows build). Retry once with just
+        // the content URL, dropping every extra arg, instead of exiting —
+        // worst case is losing that launch.json's window-size/title/etc.
+        // customization, not "the game never starts". Real (non-bundled)
+        // invocations are unaffected: a developer's own CLI typo still
+        // hard-errors exactly as before.
+        ArgumentParsingResult::ErrorParsing if is_bundled_launch && args.len() > 1 => {
+            log::error!(
+                "bundled launch.json's args failed to parse ({args:?}); retrying with just the \
+                 content URL, dropping every extra arg"
+            );
+            match parse_command_line_arguments(&args[..1]) {
+                ArgumentParsingResult::ChromeProcess(opts, preferences, servoshell_preferences) => {
+                    (opts, preferences, servoshell_preferences)
+                },
+                _ => std::process::exit(1),
+            }
         },
         ArgumentParsingResult::ErrorParsing => {
             std::process::exit(1);

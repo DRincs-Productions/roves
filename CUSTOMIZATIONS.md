@@ -2507,3 +2507,82 @@ patch in this file: applied cleanly on top of a pristine `v0.4.0` extraction wit
 Not done: an actual `mach bundle` run (blocked by the Python version gap above) confirming
 the warning prints and `launch.json` ends up clean — the next real Windows/`mach`-capable
 build should confirm this closes out the original report.
+
+---
+
+## 2026-08-14 — Bundled launches no longer die on a broken `launch.json`, and why the previous fix didn't actually close this out
+
+**Update on the entry above:** the `mach bundle` run that entry's own "not done" note asked
+for actually happened — a real Windows portable bundle was built by `.github/workflows/
+test.yml` at the previous entry's commit (`6e3f1f5`, the one adding the `post_build_commands.py`
+reserved-flag filter) and run for real. It still crashed, identically to before: `Error:
+--package-name is not expected in this context`, no window, no `roves.log` line beyond
+nothing at all. `launch.json` in that exact build's bundle still literally contains
+`"--package-name", "servoshell-test", "--package-version", "0.4.0"` in its `"args"` array.
+**The previous fix does not work.** The same crash was independently confirmed on the
+`--msi`-mode bundle's `play.exe` too (its `launch.json` carries the same leaked flags plus
+`--msi`) — not specific to the plain portable path.
+
+**Root cause, still not fully pinned down — new evidence, same conclusion as before:** the
+exact `bundle()` reserved-flag filter from the previous entry was extracted verbatim, along
+with a byte-faithful reconstruction of `mach`'s own dispatcher (`python/mach/mach/
+dispatcher.py`'s `_run_command_handler`, the code that separates the `params` REMAINDER
+catch-all from every other registered flag) and the *complete* real argument list for
+`bundle` (every `@CommandArgument` on it, plus every flag `common_command_arguments(binary_
+selection=True)` adds — `--release`, `--dev`/`--debug`, `--prod`/`--production`, `--profile`,
+`--with-asan`, `--with-tsan`, `--bin`, `--nightly`/`-n`, `--coverage`, not just the packaging-
+specific ones). Fed the *exact* CI invocation (`--content-dir test-page/dist --output
+../release --package-name servoshell-test --package-version 0.4.0`) through this reconstruction
+in an isolated Python process (no `mach_bootstrap`, no venv): parsing comes back **completely
+clean** — `package_name`/`package_version` land correctly in `command_namespace`, `params`
+ends up empty, nothing for the filter to even do. This exactly reproduces the previous
+entry's own "extensive attempts... kept coming back clean" finding, now with the complete
+argument set rather than a partial one, closing off "an incomplete reconstruction was masking
+it" as an explanation. Also directly ruled out: `mach`'s own polyglot shell wrapper re-execing
+via `uv run --frozen python ${MACH_DIR}/mach "$@"` mangling argv before Python ever sees it —
+tested directly (a throwaway script printing `sys.argv`, invoked both directly and through
+`uv run --frozen python`, real `uv` binary, same argument list) — argv comes through
+byte-identical either way. So the leak genuinely only manifests inside the full `mach`
+process (global-argument parsing in `mach.run()`, command/provider registration, or something
+else full-app-only) — not reproducible against the isolated pieces, and not re-investigated
+further given the cost of standing up a complete local `mach` environment (blocked on this
+sandbox lacking a Visual Studio install `pyyaml`'s C extension needs to build via `uv run`,
+which is itself required before `mach` will even run) for what would be continued archaeology
+of an already twice-inconclusive investigation.
+
+**Change, this time targeting the actual user-visible failure instead of the upstream leak:**
+given the leak's precise mechanism has now resisted two independent investigations, and a
+post-hoc "filter known-reserved flags out of `params`" approach already failed once in
+practice despite looking correct in isolation, this entry stops trying to guarantee
+`launch.json` is always clean and instead makes a broken one non-fatal. `ports/servoshell/
+desktop/cli.rs`'s `main()`: `resolve_bundled_launch_args()`'s `Some`/`None` match now also
+threads through `is_bundled_launch: bool` (previously discarded). The `parse_command_line_
+arguments` match gains one new arm: `ArgumentParsingResult::ErrorParsing if is_bundled_launch
+&& args.len() > 1` — logs the failing `args` and the fact that a retry is happening, then
+calls `parse_command_line_arguments` a second time with just `&args[..1]` (the content URL
+alone, every extra arg dropped), and only exits(1) if even *that* somehow fails to parse.
+Real (non-bundled) invocations — a developer running the shipped binary from a terminal with
+their own typo'd flag — are completely unaffected: `is_bundled_launch` is `false` for those,
+so the existing `ArgumentParsingResult::ErrorParsing => std::process::exit(1)` arm still
+applies unchanged, still hard-erroring exactly as before. The distinction matters: a CLI typo
+has a user present to see and fix it; a corrupt/poisoned `launch.json` does not — the person
+who'll eventually see the failure is a player double-clicking `play.exe`, and "the game
+silently never starts, forever, until someone rebuilds it" is a strictly worse failure mode
+than "the game starts with default window size/title instead of whatever `launch.json` asked
+for."
+
+**Not part of the `roves-action` sync:** pure Rust-side behavior change to an existing
+internal failure path, not a `mach bundle` CLI surface change — nothing in `action.yml`/
+`roves-action`'s README describes this.
+
+**Patch:** `patches/servo-v0.4.0/0032-dont-exit-on-broken-bundled-launch-args.patch`
+
+**Verification:** applied cleanly on top of a pristine `v0.4.0` extraction with patches
+`0001`–`0031` already applied, producing a result byte-identical to the actual working tree.
+The change was pushed to trigger `.github/workflows/test.yml` for real (this repo is
+`DRincs-Productions/roves`, a genuine top-level GitHub repo with Actions enabled — not the
+dormant in-parent-project state `CLAUDE.md`'s workflow-location note describes), and the
+resulting Windows portable + `--msi`-mode bundles were downloaded from the rolling `test`
+release and actually run, exactly the way the previous entry's crash was first confirmed.
+See the commit this entry ships with for the outcome — not restated here since this file
+describes the change made, not a running log of every CI attempt.
