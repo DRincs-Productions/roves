@@ -194,11 +194,11 @@ fn add_wordmark_font(fonts: &mut FontDefinitions) {
     );
 }
 
-/// Boot splash sizing (`Gui::update_splash`). The wordmark font size is kept
-/// at the same icon-height-relative proportion (44/64 ≈ 0.69) as the
-/// reference lockup in `resources/roves_wordmark.svg`, scaled up from that
-/// asset's 64px icon to read clearly full-screen.
-const SPLASH_ICON_SIZE: f32 = 128.0;
+/// Boot splash sizing (`Gui::update_splash`). No separate icon-size constant
+/// here: the icon is sized to match the wordmark's own measured height at
+/// `SPLASH_WORDMARK_FONT_SIZE` (see `update_splash`), not an independently
+/// guessed proportion — the two are meant to read as one lockup, the same
+/// height, side by side.
 const SPLASH_WORDMARK_FONT_SIZE: f32 = 88.0;
 const SPLASH_PROGRESS_BAR_WIDTH: f32 = 260.0;
 const SPLASH_PROGRESS_BAR_HEIGHT: f32 = 6.0;
@@ -571,30 +571,31 @@ impl Gui {
         self.rendering_context
             .make_current()
             .expect("Could not make RenderingContext current");
-        let icon =
-            egui::Image::from_texture(&self.splash_icon_texture).max_height(SPLASH_ICON_SIZE);
         let wordmark_font = egui::FontId::new(
             SPLASH_WORDMARK_FONT_SIZE,
             egui::FontFamily::Name("Metal Mania".into()),
         );
+        // Measured (not guessed) — both so the icon+wordmark row below can be centered
+        // exactly, rather than trusting `top_down`'s `Align::Center` to center a nested
+        // `ui.horizontal` row on its own, and so the icon can be sized to actually match
+        // the wordmark's rendered height instead of an independently guessed constant
+        // (`SPLASH_ICON_SIZE` used to be hardcoded to 128px against an 88px font size —
+        // a ratio borrowed from `resources/roves_wordmark.svg`'s lockup that doesn't
+        // necessarily hold for Metal Mania's actual glyph metrics at this size). Done
+        // before constructing `icon` below (which needs `&self.splash_icon_texture`,
+        // i.e. `self` again) rather than inside `self.context.run`'s closure, since
+        // `self.context.run` already holds `self.context` mutably at that point.
+        let wordmark_size = self.context.egui_ctx.fonts_mut(|fonts| {
+            fonts
+                .layout_no_wrap(
+                    "Roves".to_owned(),
+                    wordmark_font.clone(),
+                    egui::Color32::WHITE,
+                )
+                .size()
+        });
+        let icon = egui::Image::from_texture(&self.splash_icon_texture).max_height(wordmark_size.y);
         self.context.run(winit_window, |ctx| {
-            // Measured (not guessed) so the icon+wordmark row below can be
-            // centered exactly, rather than trusting `top_down`'s
-            // `Align::Center` to center a nested `ui.horizontal` row on its
-            // own — same "estimate, verify against a real build" caveat as
-            // the vertical fudge factor further down applies here too, just
-            // resolved with an actual measurement instead of a guess, since
-            // one is cheaply available.
-            let wordmark_width = ctx.fonts_mut(|fonts| {
-                fonts
-                    .layout_no_wrap(
-                        "Roves".to_owned(),
-                        wordmark_font.clone(),
-                        egui::Color32::WHITE,
-                    )
-                    .size()
-                    .x
-            });
             // `Panel::show` (the top-level entry point, as opposed to
             // `show_inside` for nesting inside another container) is
             // deprecated in this egui version in favor of hand-building a
@@ -605,11 +606,15 @@ impl Gui {
                 .frame(egui::Frame::default().fill(egui::Color32::BLACK))
                 .show(ctx, |ui| {
                     ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                        // Fudge-factor half-height offset for the icon+wordmark row (~128px,
-                        // the icon's height dominates) + gap (40px) + progress bar (6px).
-                        ui.add_space(ui.available_height() / 2.0 - 87.0);
+                        // Half-height offset for the icon+wordmark row (now sized to
+                        // `wordmark_size.y`, not a hardcoded guess) + gap (40px) +
+                        // progress bar (`SPLASH_PROGRESS_BAR_HEIGHT`).
+                        ui.add_space(
+                            ui.available_height() / 2.0
+                                - (wordmark_size.y + 40.0 + SPLASH_PROGRESS_BAR_HEIGHT) / 2.0,
+                        );
                         let lockup_width =
-                            SPLASH_ICON_SIZE + ui.spacing().item_spacing.x + wordmark_width;
+                            wordmark_size.y + ui.spacing().item_spacing.x + wordmark_size.x;
                         ui.horizontal(|ui| {
                             ui.add_space(((ui.available_width() - lockup_width) / 2.0).max(0.0));
                             ui.add(icon.clone());

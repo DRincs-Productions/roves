@@ -2864,3 +2864,99 @@ byte-identical to the actual working tree for both changed files. The libsteam_a
 itself is confirmed by the failure this entry quotes above (the exact crash it's meant to
 fix) — not yet re-confirmed working with a fresh CI run at the time of writing this entry;
 that run is what will actually prove it (or not).
+
+**Outcome:** confirmed fixed. The follow-up CI run came back green on all 6 matrix jobs —
+including both macOS ones, which is the actual proof: the smoke-test step (this file's own
+entry above) now genuinely runs a `--features steam` macOS build for the first time, and it
+stayed up instead of crashing on the `libsteam_api.dylib` load failure this entry describes.
+
+---
+
+## 2026-08-14 — Boot splash was showing upstream Servo's own icon, not Roves' — CI never actually copied ours in
+
+**Files:** `.github/workflows/test.yml` (one new `cp`), `ports/servoshell/desktop/gui.rs`
+(`update_splash`, and the doc comment above `SPLASH_WORDMARK_FONT_SIZE`).
+
+**Reported directly:** a real, freshly-built (same-day) Windows portable bundle's boot splash
+showed a small green/teal/blue circular icon next to the "Roves" wordmark — not the
+wolf-and-chains mark this project's actual branding uses everywhere else (the wiki, `icon.svg`
+at this repo's root). Worth walking through how this got tracked down, since the actual
+cause turned out to be nothing like the first hypothesis:
+
+**First hypothesis (wrong): the committed icon file itself is stale/wrong.** Reading
+`resources/servo_64.png` (what `gui.rs`'s `load_splash_icon_image` embeds via
+`include_bytes!`) directly showed what looked, at a glance, like a dark, spiky, unfamiliar
+creature — nothing like the wolf-chain mark. Concluded from this that the file itself must
+still be some leftover upstream Servo asset, despite a 2026-08-13 entry above claiming it was
+already regenerated from `icon.svg` and pixel-verified.
+
+**Actually checking, rather than trusting a quick look:** upscaling `resources/servo_64.png`
+with *nearest-neighbor* (no smoothing, so fine detail survives) showed it clearly *is* the
+wolf-chain mark — the "unfamiliar creature" impression was just how illegible 209 individual
+vector paths' worth of fine detail (teeth, fur, chain links) becomes once flattened to 64
+pixels and viewed small. Same check against `resources/servo.ico`'s embedded 256px frame:
+also correctly the wolf-chain mark. The 2026-08-13 entry's claim was right after all — these
+*committed* files were never the problem.
+
+**So why did a real build show something else entirely?** Asked the user directly whether
+the screenshot came from a build made with current code (yes) — meaning the discrepancy was
+real, not stale local state, and the committed files being correct meant the *build process*
+had to be looking somewhere else. `.github/workflows/test.yml`'s "download + patch Servo
+source" step downloads a **pristine** upstream Servo zip and applies this repo's text
+patches on top — and, same as the `resources/fonts/` Metal Mania font before it, binary
+assets like `resources/servo_64.png`/`servo.ico` can't be carried by a text patch at all.
+Unlike `resources/fonts/`, which *does* get an explicit `cp` in that step, nobody had ever
+added the equivalent copy for the icon rasters. Checked what fills that gap: extracted
+`resources/servo_64.png` from the actual pristine `v0.4.0` zip this workflow downloads —
+upstream Servo ships its own file at that exact same path (unsurprising; this repo's file
+naming was never changed from Servo's own convention) — and it is, byte for byte, the exact
+green/teal/blue circular mark from the screenshot. `include_bytes!`/`build.rs`'s icon
+embedding happily compiled against *upstream's* file the whole time, silently baking in the
+wrong icon instead of failing to build at all — exactly the kind of silent divergence between
+the committed tree and what CI actually reconstructs that the `0027`-patch-truncation entry
+above already surfaced once this same day.
+
+**Fix:** one line added right after the existing `resources/fonts/` copy in `test.yml`:
+`cp ../resources/servo_64.png ../resources/servo_1024.png ../resources/servo.ico
+../resources/servo.icns resources/`. Of these, only `servo_64.png` (boot splash) and
+`servo.ico` (Windows `.exe` icon, via `build.rs`) are actually referenced by any code path
+today — `servo_1024.png` and `servo.icns` aren't wired up anywhere yet (the macOS `.app`'s
+`Info.plist` has no `CFBundleIconFile` at all, a separate, pre-existing gap not addressed
+here), but copying all four now means whichever of them *does* get wired up later won't
+silently hit this exact same bug again.
+
+**Separately, sizing:** also asked to make the icon and wordmark closer to the same visual
+size and vertically centered against each other. The old code hardcoded
+`SPLASH_ICON_SIZE = 128.0` against `SPLASH_WORDMARK_FONT_SIZE = 88.0` — a 128:88 (≈0.69)
+ratio carried over from `resources/roves_wordmark.svg`'s own icon:font-size lockup, which
+doesn't necessarily hold for how tall "Roves" actually renders in the Metal Mania font *at
+this specific size*, since font em-size and rendered glyph height aren't the same thing.
+`update_splash` now measures the wordmark's actual rendered size once (`egui::Context::
+fonts_mut`'s `layout_no_wrap(...).size()`, the same technique the existing width measurement
+already used, just also reading `.y` now) and sizes the icon to match that measured height
+directly, instead of trusting an independently-guessed constant — removing
+`SPLASH_ICON_SIZE` entirely. The half-height vertical-centering offset (previously a
+hardcoded `87.0` fudge factor tied to the old 128px assumption) is now computed from the same
+measurement too, so it stays correct regardless of exactly how tall the wordmark renders.
+
+**Not part of the `roves-action` sync:** neither change touches `mach build`/`mach bundle`'s
+CLI surface.
+
+**Patch:** `patches/servo-v0.4.0/0035-fix-boot-splash-icon-and-size-icon-to-match-wordmark.patch`
+(`gui.rs` only — the `test.yml` copy-step fix isn't part of the `patches/` mechanism, same
+reasoning as every other `test.yml`-only entry in this file).
+
+**Verification:** `rustfmt --edition 2024 --check` on `gui.rs` — clean except one pre-existing,
+unrelated diff at line 504 (confirmed pre-existing by checking the unmodified `HEAD` version
+of the file reports the identical diff). The new `self.context.egui_ctx.fonts_mut(...)` call
+(made before `self.context.run(...)`, rather than via the closure's `ctx` argument as the
+existing width measurement did, since `self.context.run` already holds `self.context`
+mutably) mirrors an identical pattern already used elsewhere in this same file
+(`self.context.egui_ctx.memory_mut(...)`, also called outside `.run()`) — not a novel,
+unverified API usage. The patch was verified the same way as every other one in this file:
+applied cleanly on top of a pristine `v0.4.0` extraction with patches `0001`–`0030` already
+applied, producing a result byte-identical to the actual working tree. Not done: an actual
+`cargo check`/`mach build` (this sandbox has no buildable local toolchain for the full
+`servoshell` dependency graph in reasonable time) or a real screenshot of the rebuilt splash
+confirming the icon now shows correctly and reads as proportionate — the next real
+Windows/`mach`-capable CI run is what will actually confirm both fixes.

@@ -181,6 +181,16 @@ jobs:
           mkdir -p resources/fonts
           cp -r ../resources/fonts/. resources/fonts/
 
+          # Same reasoning again, for the Roves-branded icon rasters (see
+          # CUSTOMIZATIONS.md's "boot splash still shows Servo's icon" entry): these are
+          # also new binary assets no text patch can carry, and without this copy step
+          # this tree still had *upstream Servo's own* resources/servo_64.png/servo.ico
+          # sitting at these exact paths (same filenames, real Servo ships its own icon
+          # there too) — gui.rs's include_bytes!/build.rs's icon embedding compiled fine
+          # either way, silently baking in the wrong (upstream) icon instead of failing
+          # loudly, which is exactly how this went unnoticed.
+          cp ../resources/servo_64.png ../resources/servo_1024.png ../resources/servo.ico ../resources/servo.icns resources/
+
       # IMPORTANT: invoke `./mach`, never `python3 ./mach`. `mach` is a polyglot
       # shell+python script (see its own top comment): run as a shell script, it
       # re-execs itself via `uv run --frozen python ...` so the pyproject.toml/
