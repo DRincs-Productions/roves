@@ -101,6 +101,21 @@ someone else's problem. `roves-api` and `roves-wiki` (also sibling repos) are no
 this mirroring relationship and don't need this same treatment unless a change here directly
 affects what they document or consume.
 
+## Ask whether a new `mach bundle` setting belongs in `roves-ui` too
+
+`../roves-ui` (a sibling checkout, "Roves Packmaster") is a GUI that wraps `mach bundle`'s
+own options as a settings screen a game developer clicks through instead of typing flags —
+see that project's own `CLAUDE.md` and `src/lib/settings.ts` for its current settings shape
+(portable platforms, installer formats, Steam, content compression).
+
+**Any time you add, remove, or change the meaning of a `mach bundle` flag or default (see
+the `CUSTOMIZATIONS.md`/patches section above — those same changes already need an entry
+there), ask explicitly whether it should also be reflected in `roves-ui`'s settings** —
+don't assume it does or doesn't; the answer depends on whether the new option is something
+a game developer using the GUI would plausibly want to control, which isn't always obvious
+from this side. If `../roves-ui` isn't present as a sibling checkout, say so explicitly
+rather than silently skipping the question.
+
 ## CRITICAL: every user-facing feature needs a README mention *and* a wiki page
 
 `CUSTOMIZATIONS.md`/`patches/` (above) capture *what changed relative to upstream Servo*, for
