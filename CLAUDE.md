@@ -217,6 +217,32 @@ at its `html_url`.
 - **No `--features steam`**: this is the plain default build, matching README.md's own
   documented build instructions verbatim — Steam integration stays opt-in for whoever builds
   their own game on top of this engine.
+- **`mach` needs `chmod +x` on Linux/macOS**: this repo's `mach` script is tracked in git as
+  mode `100644` (committed from Windows, where the exec bit is meaningless) — a fresh
+  Linux/macOS checkout needs it re-marked executable or `./mach bootstrap` fails immediately
+  with "Permission denied" (exit 126). `release.yml` does this explicitly; if this ever
+  regresses (e.g. a future commit re-adds `mach` without the bit), re-run `git update-index
+  --chmod=+x mach`.
+- **`mach` needs `tests/wpt/tests/tools/` to exist, even for `build`/`bundle`**: mach's own
+  command loader (`python/mach_bootstrap.py`'s `MACH_MODULES` list) unconditionally loads
+  `python/servo/testing_commands.py` on every invocation except `bootstrap` itself (which has
+  its own fast path in the `mach` script that skips this) — and that module imports WPT test
+  tooling (`tidy`, `wpt.manifestupdate`, etc.) that lives under `tests/wpt/`, the directory
+  this repo deliberately excludes from git (~1.3GB of WPT conformance tests, irrelevant here).
+  Without it, `mach build`/`mach bundle` crash immediately with `ModuleNotFoundError: No
+  module named 'localpaths'` — confirmed by reproducing this locally. This isn't specific to
+  CI: a plain `git clone` + `./mach build`, exactly as README.md's own "Getting started"
+  instructs, hits the same crash, and so would `roves-action` (which checks out this repo the
+  same direct way). `release.yml` works around this by sparse-checking-out just
+  `tests/wpt/tests/tools/` (~90MB — the WPT tooling code, not the multi-GB test content
+  itself) from the pinned upstream tag before running `mach build`. This is a workaround, not
+  a fix — the real fix would be making `python/wpt/__init__.py`, `manifestupdate.py`,
+  `run.py`, `update.py`, and `tidy/tidy.py`'s top-level WPT imports lazy so `mach build`/
+  `bundle` don't need `tests/wpt/` at all (a bigger, riskier change across several vendored
+  files, deliberately deferred — see the git history around when this comment was added for
+  the discussion). Whoever revisits this should consider doing that properly at some point,
+  since the workaround has to be repeated by every consumer building directly from a checkout
+  of this repo (this workflow, `roves-action`, any contributor following README.md).
 
 ## Upgrading to a newer Servo version (rough steps)
 

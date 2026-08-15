@@ -18,6 +18,7 @@ on:
 
 env:
   PACKAGE_NAME: 'roves'
+  SERVO_TAG: '0.4.0'
 
 jobs:
   # ── Create (or, on a retried tag, replace) the GitHub Release before the matrix starts ──
@@ -100,6 +101,40 @@ jobs:
       VERSION: ${{ needs.create-release.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+
+      # This repo's `mach` is tracked in git as mode 100644 (not executable) — it was
+      # committed from Windows, where the exec bit isn't meaningful. `./mach` runs anyway
+      # there, but a fresh Linux/macOS checkout needs this or `./mach bootstrap` below fails
+      # immediately with "Permission denied" (exit 126).
+      - name: make mach executable (Linux/macOS)
+        if: matrix.os_name != 'windows'
+        run: chmod +x mach
+
+      # mach's own command loader (python/mach_bootstrap.py's MACH_MODULES list) always
+      # loads python/servo/testing_commands.py, which imports WPT test tooling that lives
+      # under tests/wpt/ — a directory this repo deliberately excludes from git (~1.3GB of
+      # WPT conformance tests, irrelevant to this project — see this repo's own top-level
+      # comment). Without it, every mach command except `bootstrap` itself (which has a
+      # special-cased fast path in the `mach` script that skips loading this module) crashes
+      # immediately with "ModuleNotFoundError: No module named 'localpaths'", before doing
+      # anything else — confirmed by reproducing this locally. We don't need the actual WPT
+      # test content, only the small Python tooling package that makes those imports
+      # resolve (tests/wpt/tests/tools/, ~90MB — not the multi-GB test suite itself), so
+      # sparse-checkout just that, with blob filtering so nothing else downloads.
+      - name: fetch tests/wpt/tests/tools (mach's command loader needs it to exist)
+        shell: bash
+        run: |
+          rm -rf /tmp/wpt-tools-src
+          git init -q /tmp/wpt-tools-src
+          git -C /tmp/wpt-tools-src remote add origin https://github.com/servo/servo.git
+          git -C /tmp/wpt-tools-src config core.sparseCheckout true
+          git -C /tmp/wpt-tools-src sparse-checkout init --cone
+          git -C /tmp/wpt-tools-src sparse-checkout set tests/wpt/tests/tools
+          git -C /tmp/wpt-tools-src fetch --depth 1 --filter=blob:none origin "v${SERVO_TAG}"
+          git -C /tmp/wpt-tools-src checkout FETCH_HEAD
+          mkdir -p tests/wpt
+          cp -r /tmp/wpt-tools-src/tests/wpt/tests tests/wpt/tests
+          rm -rf /tmp/wpt-tools-src
 
       - name: setup python (gives a consistent `python3` across all 3 OSes)
         uses: actions/setup-python@v5
