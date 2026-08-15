@@ -3034,3 +3034,8 @@ line-504 diff as before). Not done: an actual rebuilt screenshot confirming the 
 reads as correctly-sized rather than over- or under-corrected — `0.784` came from measuring
 the actual shipped asset, not a guess, but "does it look right" is ultimately a visual
 judgment the next real build's screenshot should confirm.
+
+**Outcome:** CI came back green on all 6 matrix jobs. The visual "does it actually look
+right now" judgment call is still open — not re-confirmed by a real screenshot at the time
+of writing this, only that the build itself succeeds and the smoke-test entry's own launch
+check still passes with this change in place.
