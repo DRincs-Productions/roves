@@ -1,7 +1,7 @@
 diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
 --- a/ports/servoshell/desktop/gui.rs
 +++ b/ports/servoshell/desktop/gui.rs
-@@ -194,15 +194,27 @@
+@@ -194,15 +194,35 @@
      );
  }
  
@@ -31,10 +31,18 @@ diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
 +/// contexts where square, centered padding is the normal, correct look.
 +const SPLASH_ICON_CONTENT_HEIGHT_RATIO: f32 = 0.784;
 +
++/// Requested directly, after the content-padding compensation above still read as too
++/// small next to the wordmark in a real build: the icon should be a distinctly bigger,
++/// more prominent mark, not merely height-matched to the text — twice as tall. Applied
++/// on top of `SPLASH_ICON_CONTENT_HEIGHT_RATIO` (see `update_splash`), not instead of it —
++/// that compensation is a measured correction for the asset's own padding, this is a
++/// separate, deliberate design choice on top of the now-correctly-measured size.
++const SPLASH_ICON_SCALE: f32 = 2.0;
++
  /// Draws the boot splash's progress bar track and fill directly via
  /// `Ui::painter`, rather than `egui::ProgressBar` — that widget draws its
  /// track in `visuals.extreme_bg_color`, which under this app's light
-@@ -571,21 +583,28 @@
+@@ -571,21 +591,28 @@
          self.rendering_context
              .make_current()
              .expect("Could not make RenderingContext current");
@@ -73,7 +81,7 @@ diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
                  fonts
                      .layout_no_wrap(
                          "Roves".to_owned(),
-@@ -593,8 +612,16 @@
+@@ -593,8 +620,16 @@
                          egui::Color32::WHITE,
                      )
                      .size()
@@ -86,12 +94,12 @@ diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
 +            // height" as `wordmark_size.y` — the row's vertical centering, the lockup
 +            // width — needs this same compensated value instead, now that the two
 +            // aren't equal any more.
-+            let icon_size = wordmark_size.y / SPLASH_ICON_CONTENT_HEIGHT_RATIO;
++            let icon_size = wordmark_size.y / SPLASH_ICON_CONTENT_HEIGHT_RATIO * SPLASH_ICON_SCALE;
 +            let icon = egui::Image::from_texture(&splash_icon_texture).max_height(icon_size);
              // `Panel::show` (the top-level entry point, as opposed to
              // `show_inside` for nesting inside another container) is
              // deprecated in this egui version in favor of hand-building a
-@@ -605,11 +632,15 @@
+@@ -605,11 +640,15 @@
                  .frame(egui::Frame::default().fill(egui::Color32::BLACK))
                  .show(ctx, |ui| {
                      ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {

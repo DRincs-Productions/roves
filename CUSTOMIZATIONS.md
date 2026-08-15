@@ -3035,7 +3035,31 @@ reads as correctly-sized rather than over- or under-corrected — `0.784` came f
 the actual shipped asset, not a guess, but "does it look right" is ultimately a visual
 judgment the next real build's screenshot should confirm.
 
-**Outcome:** CI came back green on all 6 matrix jobs. The visual "does it actually look
-right now" judgment call is still open — not re-confirmed by a real screenshot at the time
-of writing this, only that the build itself succeeds and the smoke-test entry's own launch
-check still passes with this change in place.
+**Outcome:** CI came back green, and this time a real screenshot from that build *was*
+checked — the content-padding compensation was correct as far as it went, but the icon still
+read as too small next to the wordmark. Not a measurement bug this time: reported directly
+as a deliberate sizing preference, not tied to the padding math above.
+
+**Follow-up, same day: make the icon distinctly bigger, not just height-matched.** New
+`SPLASH_ICON_SCALE = 2.0` constant, applied on top of (not instead of)
+`SPLASH_ICON_CONTENT_HEIGHT_RATIO` — `update_splash`'s `icon_size` is now
+`wordmark_size.y / SPLASH_ICON_CONTENT_HEIGHT_RATIO * SPLASH_ICON_SCALE`. Kept as two
+separate constants deliberately: one is a measured correction for the asset's own
+transparent padding, the other is a plain design preference (the icon should visually
+dominate, not just match, the wordmark) — collapsing them into one number would lose which
+part is "derived from the actual asset" versus "somebody's aesthetic call," which matters if
+either one needs revisiting independently later (e.g. if the icon asset itself changes,
+only the ratio constant should need updating). Every downstream calculation already
+consumed `icon_size` rather than re-deriving icon height inline (see the previous entry's
+own refactor for exactly this reason), so this was a one-line change at the computation
+itself, nothing else in `update_splash` needed touching.
+
+**Patch:** regenerated `patches/servo-v0.4.0/0035-fix-boot-splash-icon-and-size-icon-to-match-wordmark.patch`
+in place again — same "one coherent icon-sizing change" reasoning as both prior corrections
+in this entry. Re-verified the same way: applies cleanly on `0001`–`0030`, byte-identical
+result.
+
+**Verification:** `rustfmt --edition 2024 --check` clean (same pre-existing, unrelated
+line-504 diff). Not done: another real screenshot confirming `2.0` is the right multiplier
+rather than an over- or under-shoot — this is a subjective sizing preference, not something
+a measurement can settle, so the next build is what actually confirms it.

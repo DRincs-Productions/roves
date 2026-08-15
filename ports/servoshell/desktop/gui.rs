@@ -215,6 +215,14 @@ const SPLASH_PROGRESS_BAR_HEIGHT: f32 = 6.0;
 /// contexts where square, centered padding is the normal, correct look.
 const SPLASH_ICON_CONTENT_HEIGHT_RATIO: f32 = 0.784;
 
+/// Requested directly, after the content-padding compensation above still read as too
+/// small next to the wordmark in a real build: the icon should be a distinctly bigger,
+/// more prominent mark, not merely height-matched to the text — twice as tall. Applied
+/// on top of `SPLASH_ICON_CONTENT_HEIGHT_RATIO` (see `update_splash`), not instead of it —
+/// that compensation is a measured correction for the asset's own padding, this is a
+/// separate, deliberate design choice on top of the now-correctly-measured size.
+const SPLASH_ICON_SCALE: f32 = 2.0;
+
 /// Draws the boot splash's progress bar track and fill directly via
 /// `Ui::painter`, rather than `egui::ProgressBar` — that widget draws its
 /// track in `visuals.extreme_bg_color`, which under this app's light
@@ -620,7 +628,7 @@ impl Gui {
             // height" as `wordmark_size.y` — the row's vertical centering, the lockup
             // width — needs this same compensated value instead, now that the two
             // aren't equal any more.
-            let icon_size = wordmark_size.y / SPLASH_ICON_CONTENT_HEIGHT_RATIO;
+            let icon_size = wordmark_size.y / SPLASH_ICON_CONTENT_HEIGHT_RATIO * SPLASH_ICON_SCALE;
             let icon = egui::Image::from_texture(&splash_icon_texture).max_height(icon_size);
             // `Panel::show` (the top-level entry point, as opposed to
             // `show_inside` for nesting inside another container) is
