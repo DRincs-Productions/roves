@@ -2996,3 +2996,41 @@ preserve it as a separate reviewable step). Re-verified the same way: applies cl
 byte-identical result. Still not done, same gap as above: an actual `mach build`/real launch
 — but this time backed by a concrete, specific egui-internals reason the previous "not yet
 confirmed" version was actually wrong, not just an unverified guess repeated twice.
+
+**Outcome:** confirmed fixed — this CI run came back green on all 6 matrix jobs, and (per the
+entry above's own "not done" gap) a real screenshot from a live Windows portable build
+confirmed the icon now shows the actual wolf-and-chains mark, not upstream Servo's.
+
+**Follow-up, same day (reported directly against that screenshot): the icon still read
+smaller than the wordmark, size-matching fix notwithstanding.** Measuring
+`resources/servo_64.png`'s own content (rendering `icon.svg` fresh and trimming to its
+non-transparent bounding box, the same `sharp` tooling used earlier in this file to
+regenerate these assets) explains why: the artwork is a wide oval badge that only fills
+about **78%** of its own square canvas's height, the rest being transparent top/bottom
+padding (confirmed at both 1024px and the actual shipped 64px, consistently). Sizing the
+*image* (padded canvas included) to match the wordmark's measured height, as the previous
+version of this entry did, was therefore always going to undersize the *visible badge* by
+that same ~22% — the fix worked exactly as measured, the measurement just wasn't accounting
+for padding baked into the asset itself.
+
+**Fix:** new constant `SPLASH_ICON_CONTENT_HEIGHT_RATIO = 0.784`, documented with where the
+number came from and why it's a splash-only correction rather than a re-crop of the shared
+icon assets (those also serve as the Windows `.exe`/taskbar icon via `build.rs`, and
+eventually the macOS `.app` icon — both contexts where square, centered padding is the
+*correct* look, not a bug). `update_splash` now divides the measured wordmark height by this
+ratio to get the icon's actual target height (`icon_size`), so the visible badge — not its
+padding — ends up matching the wordmark. Every other calculation that used to treat
+`wordmark_size.y` as a stand-in for "the icon's height" (the lockup's total width, the
+vertical-centering half-height offset) now uses `icon_size` instead, since the two are no
+longer equal by design.
+
+**Patch:** regenerated `patches/servo-v0.4.0/0035-fix-boot-splash-icon-and-size-icon-to-match-wordmark.patch`
+in place again, same reasoning as the previous correction in this entry — one coherent
+"boot splash icon sizing" change, not a stack of patches documenting every intermediate
+misstep. Re-verified the same way: applies cleanly on `0001`–`0030`, byte-identical result.
+
+**Verification:** `rustfmt --edition 2024 --check` clean (same one pre-existing, unrelated
+line-504 diff as before). Not done: an actual rebuilt screenshot confirming the new ratio
+reads as correctly-sized rather than over- or under-corrected — `0.784` came from measuring
+the actual shipped asset, not a guess, but "does it look right" is ultimately a visual
+judgment the next real build's screenshot should confirm.

@@ -203,6 +203,18 @@ const SPLASH_WORDMARK_FONT_SIZE: f32 = 88.0;
 const SPLASH_PROGRESS_BAR_WIDTH: f32 = 260.0;
 const SPLASH_PROGRESS_BAR_HEIGHT: f32 = 6.0;
 
+/// `resources/servo_64.png`'s own artwork — a wide, oval badge — doesn't fill its
+/// square canvas: confirmed directly (rendering `icon.svg` fresh and measuring its
+/// actual non-transparent bounding box) that the visible content is only ~78% of the
+/// canvas height, the rest being transparent top/bottom padding. Sizing the *image* to
+/// match the wordmark's height (see `update_splash`) therefore visibly undersizes the
+/// *badge* by that same margin — this compensates so the badge itself, not its padded
+/// canvas, ends up the intended height. Deliberately left as a splash-only correction
+/// rather than re-cropping the shared icon assets: those also serve as the Windows
+/// `.exe`/taskbar icon (`build.rs`) and (once wired up) the macOS `.app` icon, both
+/// contexts where square, centered padding is the normal, correct look.
+const SPLASH_ICON_CONTENT_HEIGHT_RATIO: f32 = 0.784;
+
 /// Draws the boot splash's progress bar track and fill directly via
 /// `Ui::painter`, rather than `egui::ProgressBar` — that widget draws its
 /// track in `visuals.extreme_bg_color`, which under this app's light
@@ -601,7 +613,15 @@ impl Gui {
                     )
                     .size()
             });
-            let icon = egui::Image::from_texture(&splash_icon_texture).max_height(wordmark_size.y);
+            // See `SPLASH_ICON_CONTENT_HEIGHT_RATIO`'s own doc comment: the icon's
+            // *texture* is sized taller than the wordmark so the visible badge inside
+            // its transparent padding ends up the intended height, not the padded
+            // canvas. Every other measurement below that used to treat "the icon's
+            // height" as `wordmark_size.y` — the row's vertical centering, the lockup
+            // width — needs this same compensated value instead, now that the two
+            // aren't equal any more.
+            let icon_size = wordmark_size.y / SPLASH_ICON_CONTENT_HEIGHT_RATIO;
+            let icon = egui::Image::from_texture(&splash_icon_texture).max_height(icon_size);
             // `Panel::show` (the top-level entry point, as opposed to
             // `show_inside` for nesting inside another container) is
             // deprecated in this egui version in favor of hand-building a
@@ -612,15 +632,15 @@ impl Gui {
                 .frame(egui::Frame::default().fill(egui::Color32::BLACK))
                 .show(ctx, |ui| {
                     ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                        // Half-height offset for the icon+wordmark row (now sized to
-                        // `wordmark_size.y`, not a hardcoded guess) + gap (40px) +
+                        // Half-height offset for the icon+wordmark row (`icon_size` now
+                        // dominates it, being taller than the wordmark) + gap (40px) +
                         // progress bar (`SPLASH_PROGRESS_BAR_HEIGHT`).
                         ui.add_space(
                             ui.available_height() / 2.0
-                                - (wordmark_size.y + 40.0 + SPLASH_PROGRESS_BAR_HEIGHT) / 2.0,
+                                - (icon_size + 40.0 + SPLASH_PROGRESS_BAR_HEIGHT) / 2.0,
                         );
                         let lockup_width =
-                            wordmark_size.y + ui.spacing().item_spacing.x + wordmark_size.x;
+                            icon_size + ui.spacing().item_spacing.x + wordmark_size.x;
                         ui.horizontal(|ui| {
                             ui.add_space(((ui.available_width() - lockup_width) / 2.0).max(0.0));
                             ui.add(icon.clone());
