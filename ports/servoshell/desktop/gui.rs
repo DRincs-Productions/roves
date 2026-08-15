@@ -629,7 +629,17 @@ impl Gui {
             // width — needs this same compensated value instead, now that the two
             // aren't equal any more.
             let icon_size = wordmark_size.y / SPLASH_ICON_CONTENT_HEIGHT_RATIO * SPLASH_ICON_SCALE;
-            let icon = egui::Image::from_texture(&splash_icon_texture).max_height(icon_size);
+            // `.max_height()` only ever *caps* a size, it never scales an image up past
+            // its own default/native size — confirmed directly against egui's own docs
+            // after a real build showed `icon_size` growing (per `SPLASH_ICON_SCALE`
+            // above) with zero visible effect on the rendered icon, while the layout
+            // math below (which does use `icon_size`) shifted everything else out of
+            // alignment to compensate for a size change that was never actually
+            // rendered. `fit_to_exact_size` forces the actual displayed size instead —
+            // `resources/servo_64.png`'s canvas is square, so `Vec2::splat` is correct
+            // here without distorting the (also square) source texture.
+            let icon = egui::Image::from_texture(&splash_icon_texture)
+                .fit_to_exact_size(egui::Vec2::splat(icon_size));
             // `Panel::show` (the top-level entry point, as opposed to
             // `show_inside` for nesting inside another container) is
             // deprecated in this egui version in favor of hand-building a

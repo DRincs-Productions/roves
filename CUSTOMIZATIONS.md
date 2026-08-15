@@ -3063,3 +3063,37 @@ result.
 line-504 diff). Not done: another real screenshot confirming `2.0` is the right multiplier
 rather than an over- or under-shoot — this is a subjective sizing preference, not something
 a measurement can settle, so the next build is what actually confirms it.
+
+**Outcome, and the actual root cause of every sizing attempt in this entry so far:** a real
+screenshot from that build showed the icon completely unchanged in size, *and* the
+wordmark shifted noticeably left of where it used to sit — a regression, not just "still too
+small." `egui::Image::max_height()` — used by every version of this fix so far — only ever
+caps a maximum; confirmed directly against egui's own docs that it does not scale an image
+up past its default/native size when that default is already smaller. `SPLASH_ICON_SCALE`
+growing `icon_size` therefore had zero effect on the actually-rendered icon, while the
+layout math downstream (lockup width, horizontal centering) *did* use the grown `icon_size`
+value — shifting the wordmark to compensate for a size change that was never actually
+visible, which is exactly the leftward misalignment reported. Every earlier "measure, don't
+guess" sizing change in this entry was computing the right number and then handing it to an
+API that silently ignored it whenever that number was a *increase* over the texture's
+default size.
+
+**Fix:** switched from `.max_height(icon_size)` to
+`.fit_to_exact_size(egui::Vec2::splat(icon_size))`, which actually forces the rendered size
+(confirmed against egui's docs: `fit_to_exact_size` "forces the image to occupy a specific
+size," unlike the max_-prefixed methods, which only cap). `Vec2::splat` (equal width and
+height) is correct here specifically because `resources/servo_64.png`'s canvas is square —
+this would need to account for aspect ratio if that ever changes. This one change fixes both
+complaints at once: the icon actually grows to `icon_size` now, and the layout math (already
+computing the right `lockup_width`/centering using `icon_size`) finally matches what's
+actually rendered.
+
+**Patch:** regenerated `patches/servo-v0.4.0/0035-fix-boot-splash-icon-and-size-icon-to-match-wordmark.patch`
+in place again. Re-verified the same way: applies cleanly on `0001`–`0030`, byte-identical
+result.
+
+**Verification:** `rustfmt --edition 2024 --check` clean (same pre-existing, unrelated
+line-504 diff). Not done: a real screenshot confirming the icon now actually renders at
+2x the wordmark's content-compensated height and the wordmark is back to center — this is
+the fourth iteration of this same entry to make that claim, so treat "not yet screenshotted"
+as the operative caveat until one actually lands.
