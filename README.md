@@ -190,10 +190,10 @@ protocol bridge" entry in [CUSTOMIZATIONS.md] for how the Rust side is wired up.
 ## Getting started
 
 Prebuilt, versioned engine shell builds (no game content bundled — see below) are published
-on the [Releases page](https://github.com/DRincs-Productions/roves/releases) for Windows,
-macOS, and Linux, both portable and installable, starting with `v0.1.0`. Grab one of those if
-you just want to try the shell; the rest of this section is for building from source instead
-(e.g. to bundle your own game's content, or to work on Roves itself).
+on the [Releases page](https://github.com/DRincs-Productions/roves/releases) as a portable
+zip for Windows, macOS, and Linux, starting with `v0.1.0`. Grab one of those if you just want
+to try the shell; the rest of this section is for building from source instead (e.g. to
+bundle your own game's content, or to work on Roves itself).
 
 These are the same build steps as upstream Servo — Roves is a source-level fork, not a
 different build system. For deeper background, see the Servo Book's own [Getting the Code]

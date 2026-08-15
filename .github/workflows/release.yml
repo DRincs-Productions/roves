@@ -26,13 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    outputs:
-      version: ${{ steps.version.outputs.version }}
     steps:
-      - name: derive version from tag (strip leading "v")
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
       - name: create the GitHub Release for this tag
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -54,18 +48,20 @@ jobs:
           installed via your distro's package manager (see README.md's Linux "Getting
           started" section).
 
-          | Platform | Portable | Installable |
-          | --- | --- | --- |
-          | Windows | `roves_windows-portable.zip` | `roves_windows-msi.zip` (wraps a `.msi`) |
-          | macOS | `roves_macos-portable.zip` | `roves_macos-dmg.zip` (wraps a `.dmg`) |
-          | Linux | `roves_linux-portable.zip` | `roves_linux-deb.zip` (wraps a `.deb`) |
+          Portable only for now — no `.msi`/`.dmg`/`.deb` installers in this release.
+
+          | Platform | Download |
+          | --- | --- |
+          | Windows | `roves_shell_windows.zip` |
+          | macOS | `roves_shell_macos.zip` |
+          | Linux | `roves_shell_linux.zip` |
           EOF
 
           gh release create "${{ github.ref_name }}" \
             --title "Roves ${{ github.ref_name }}" \
             --notes-file notes.md
 
-  # ── Build the real release bundle and publish it, once per platform/package mode ──────
+  # ── Build the real release bundle and publish it, once per platform ───────────────────
   build-and-publish:
     needs: create-release
     permissions:
@@ -73,32 +69,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Same platform/mode coverage as test.yml's own matrix (see that file and README.md's
-        # "Portable vs. installable packages" table) — every platform gets both its portable
-        # output and its installable one.
+        # Portable only for the engine shell release — no --msi/--dmg/--deb installers (see
+        # README.md's "Portable vs. installable packages" for what those add; not worth the
+        # extra CI surface for a shell-only build with no game content yet).
         include:
           - platform: 'windows-latest'
             os_name: 'windows'
-            package_mode: 'portable'
-          - platform: 'windows-latest'
-            os_name: 'windows'
-            package_mode: 'msi'
           - platform: 'macos-latest'
             os_name: 'macos'
-            package_mode: 'portable'
-          - platform: 'macos-latest'
-            os_name: 'macos'
-            package_mode: 'dmg'
           - platform: 'ubuntu-24.04'
             os_name: 'linux'
-            package_mode: 'portable'
-          - platform: 'ubuntu-24.04'
-            os_name: 'linux'
-            package_mode: 'deb'
 
     runs-on: ${{ matrix.platform }}
-    env:
-      VERSION: ${{ needs.create-release.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -189,16 +171,6 @@ jobs:
           else
             ./mach bootstrap --force --yes --skip-lints --skip-nextest
           fi
-          if [ "${{ matrix.package_mode }}" = "deb" ]; then
-            sudo apt-get update && sudo apt-get install -y --no-install-recommends dpkg-dev
-          fi
-
-      # windows-latest ships WiX Toolset v3 preinstalled, but its bin/ (candle.exe/light.exe,
-      # which `mach bundle --msi` shells out to) isn't on PATH by default.
-      - name: add WiX Toolset to PATH (--msi only)
-        if: matrix.package_mode == 'msi'
-        shell: pwsh
-        run: echo "$env:WIX\bin" >> $env:GITHUB_PATH
 
       # Real release build: optimized (--release), real GStreamer media stack (no
       # --media-stack dummy — see the GStreamer step above), default Cargo features only (no
@@ -210,20 +182,11 @@ jobs:
 
       # No --content-dir: this release ships the engine shell only, no bundled game content
       # (see this workflow's own top comment and the release notes in create-release above).
+      # Portable output only (no --deb/--msi/--dmg) -- --package-name/--package-version only
+      # affect those installer formats (see post_build_commands.py), so they're dropped too.
       - name: assemble bundle
         shell: bash
-        run: |
-          BUNDLE_ARGS=(
-            --release --output release
-            --package-name "$PACKAGE_NAME" --package-version "$VERSION"
-            --diagnostic-script
-          )
-          case "${{ matrix.package_mode }}" in
-            deb) BUNDLE_ARGS+=(--deb) ;;
-            msi) BUNDLE_ARGS+=(--msi) ;;
-            dmg) BUNDLE_ARGS+=(--dmg) ;;
-          esac
-          ./mach bundle "${BUNDLE_ARGS[@]}"
+        run: ./mach bundle --release --output release --diagnostic-script
 
       # Diagnostic only (macOS): the portable/dmg smoke test below has previously crashed
       # with "dyld: Library not loaded: @rpath/libgstplay-1.0.0.dylib" — meaning
@@ -257,27 +220,10 @@ jobs:
           if [ "${{ matrix.os_name }}" = "linux" ]; then
             sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb
             RUNNER=(xvfb-run -a --server-args="-screen 0 1280x720x24")
-            if [ "${{ matrix.package_mode }}" = "deb" ]; then
-              sudo dpkg -i release/*.deb
-              BIN="/usr/bin/${PACKAGE_NAME}"
-            else
-              BIN="release/play"
-            fi
+            BIN="release/play"
           else
             RUNNER=()
-            if [ "${{ matrix.package_mode }}" = "dmg" ]; then
-              DMG=$(ls release/*.dmg 2>/dev/null | head -1)
-              if [ -z "$DMG" ]; then
-                echo "::error::no .dmg found under release/ — contents:"
-                find release -maxdepth 3
-                exit 1
-              fi
-              MOUNT_DIR=$(mktemp -d)
-              hdiutil attach "$DMG" -nobrowse -mountpoint "$MOUNT_DIR"
-              BIN="$MOUNT_DIR/play.app/Contents/MacOS/play"
-            else
-              BIN="release/play.app/Contents/MacOS/play"
-            fi
+            BIN="release/play.app/Contents/MacOS/play"
           fi
 
           if [ ! -e "$BIN" ]; then
@@ -335,34 +281,8 @@ jobs:
         if: matrix.os_name == 'windows'
         shell: pwsh
         run: |
-          if ("${{ matrix.package_mode }}" -eq "msi") {
-            $msi = Get-ChildItem -Path release -Filter *.msi -Recurse | Select-Object -First 1
-            if (-not $msi) {
-              Write-Error "no .msi found under release/ — contents:"
-              Get-ChildItem -Path release -Recurse
-              exit 1
-            }
-            $installDir = Join-Path $env:RUNNER_TEMP "roves-install"
-            $msiLog = Join-Path $env:RUNNER_TEMP "msiexec.log"
-            $msiProc = Start-Process msiexec.exe -ArgumentList @(
-              "/i", $msi.FullName, "/quiet", "/qn", "/norestart",
-              "INSTALLDIR=$installDir", "/l*v", $msiLog
-            ) -Wait -PassThru
-            if ($msiProc.ExitCode -ne 0) {
-              Write-Error "msiexec install failed with exit code $($msiProc.ExitCode)"
-              Get-Content $msiLog -Tail 60 -ErrorAction SilentlyContinue
-              exit 1
-            }
-            $exe = Get-ChildItem -Path $installDir -Filter play.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-            if (-not $exe) {
-              Write-Error "no play.exe found under $installDir after a successful-looking install — contents:"
-              Get-ChildItem -Path $installDir -Recurse -ErrorAction SilentlyContinue
-              exit 1
-            }
-          } else {
-            $exe = Get-ChildItem -Path release -Filter play.exe -Recurse | Select-Object -First 1
-            if (-not $exe) { Write-Error "no play.exe found under release/"; exit 1 }
-          }
+          $exe = Get-ChildItem -Path release -Filter play.exe -Recurse | Select-Object -First 1
+          if (-not $exe) { Write-Error "no play.exe found under release/"; exit 1 }
 
           $stdout = Join-Path $env:RUNNER_TEMP "smoke-stdout.log"
           $stderr = Join-Path $env:RUNNER_TEMP "smoke-stderr.log"
@@ -396,7 +316,7 @@ jobs:
       - name: zip bundle (Linux/macOS)
         if: matrix.os_name != 'windows'
         run: |
-          ZIP="${PACKAGE_NAME}_${{ matrix.os_name }}-${{ matrix.package_mode }}.zip"
+          ZIP="roves_shell_${{ matrix.os_name }}.zip"
           mv release "$PACKAGE_NAME"
           zip -r "$ZIP" "$PACKAGE_NAME"
           echo "ZIP=$ZIP" >> "$GITHUB_ENV"
@@ -405,7 +325,7 @@ jobs:
         if: matrix.os_name == 'windows'
         shell: pwsh
         run: |
-          $zip = "${env:PACKAGE_NAME}_windows-${{ matrix.package_mode }}.zip"
+          $zip = "roves_shell_windows.zip"
           Rename-Item -Path release -NewName $env:PACKAGE_NAME
           Compress-Archive -Path $env:PACKAGE_NAME -DestinationPath $zip
           echo "ZIP=$zip" >> $env:GITHUB_ENV

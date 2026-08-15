@@ -150,9 +150,10 @@ distinct from `.github/workflows/test.yml`'s rolling "test" release (see that fi
 comment for why it exists separately). It triggers on pushing a tag matching `v*.*.*` (e.g.
 `v0.1.0`), builds directly from that tagged checkout of this repo — not a pristine-download-
 plus-`patches/` reconstruction the way `test.yml` does, since this repo already tracks the
-full patched source (see the top of this file) — and publishes portable + installable
-bundles for Windows/macOS/Linux to that Release. The first cut, `v0.1.0`, is the engine shell
-only: no bundled UI/game content (`roves-ui` content lands in a future release).
+full patched source (see the top of this file) — and publishes a portable bundle per platform
+(Windows/macOS/Linux, no `.msi`/`.dmg`/`.deb` installers) to that Release, named
+`roves_shell_<platform>.zip`. The first cut, `v0.1.0`, is the engine shell only: no bundled
+UI/game content (`roves-ui` content lands in a future release).
 
 ### To cut a release
 
@@ -161,11 +162,10 @@ only: no bundled UI/game content (`roves-ui` content lands in a future release).
    `release.yml`; nothing else needs to happen by hand.
 3. Watch the run: `https://github.com/DRincs-Productions/roves/actions/workflows/release.yml`.
 4. Once green, verify what actually got published at
-   `https://github.com/DRincs-Productions/roves/releases/tag/v0.1.0` — check all 6
-   platform/mode zips are attached (`windows-portable`, `windows-msi`, `macos-portable`,
-   `macos-dmg`, `linux-portable`, `linux-deb`) and the notes rendered as expected. Don't
-   consider the release done on "the workflow went green" alone — confirm the artifacts are
-   actually there.
+   `https://github.com/DRincs-Productions/roves/releases/tag/v0.1.0` — check all 3 zips are
+   attached (`roves_shell_windows.zip`, `roves_shell_macos.zip`, `roves_shell_linux.zip`) and
+   the notes rendered as expected. Don't consider the release done on "the workflow went
+   green" alone — confirm the artifacts are actually there.
 
 ### If a run fails: delete-and-republish loop
 
@@ -182,7 +182,7 @@ means tearing both down and starting clean, not just re-running the failed job:
    --delete vX.Y.Z`.
 3. Fix whatever caused the failure.
 4. Re-tag and re-push: `git tag vX.Y.Z && git push origin vX.Y.Z`.
-5. Repeat until every one of the 6 matrix jobs is green and the release page shows all 6
+5. Repeat until every one of the 3 matrix jobs is green and the release page shows all 3
    zips.
 
 ### Diagnosing a failure without `gh`/a token on hand
@@ -200,9 +200,13 @@ at its `html_url`.
 
 ### Design notes worth knowing before touching this workflow
 
-- **No `--content-dir`**: this first release is the engine shell only — see README.md's
-  "Portable vs. installable packages" section for what `--package-name`/`--package-version`
-  do, and revisit this once a future release adds real `roves-ui` content.
+- **No `--content-dir`**: this first release is the engine shell only — revisit this once a
+  future release adds real `roves-ui` content.
+- **Portable only, no `--deb`/`--msi`/`--dmg`**: `--package-name`/`--package-version` only
+  affect those installer formats (see `post_build_commands.py`), so they're dropped from
+  `mach bundle` here too — not worth the extra CI surface for a shell-only build. See
+  README.md's "Portable vs. installable packages" section if a future release adds them
+  back.
 - **Real GStreamer, not `--media-stack dummy`**: unlike `test.yml`, this release ships
   working audio/video. Linux and macOS get it for free (`mach bootstrap` already installs
   GStreamer non-interactively there — apt packages on Linux, `sudo installer -pkg` on macOS
