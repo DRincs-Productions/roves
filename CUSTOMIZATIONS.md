@@ -3097,3 +3097,34 @@ line-504 diff). Not done: a real screenshot confirming the icon now actually ren
 2x the wordmark's content-compensated height and the wordmark is back to center — this is
 the fourth iteration of this same entry to make that claim, so treat "not yet screenshotted"
 as the operative caveat until one actually lands.
+
+**Outcome — the fifth and, per an actual screenshot this time, correct one:** CI came back
+green, and a real screenshot from that build confirmed both fixes at once: the wolf-and-
+chains icon rendering correctly (this entry's original bug), roughly matching the
+wordmark's height and properly centered against it (`fit_to_exact_size` actually taking
+effect, unlike every `max_height`-based attempt before it). Two refinements followed,
+reported directly against that same screenshot:
+
+- **Too big.** With `fit_to_exact_size` finally making `SPLASH_ICON_SCALE` visible for the
+  first time, `2.0` (chosen back when it had no visible effect at all) read as too large.
+  Halved to `1.0`.
+- **Pixelated.** `resources/servo_64.png` — the same 64×64 asset `build.rs` embeds as the
+  Windows `.exe` icon — is fine at its native small size, but the splash now displays it
+  scaled well past 64px (to roughly match the wordmark's height, times
+  `SPLASH_ICON_SCALE`), and upscaling a 64px source that far is exactly what produced the
+  visible pixelation. Switched `load_splash_icon_image`/`splash_icon_texture` to embed
+  `resources/servo_1024.png` instead — already a real asset in this repo (see the earlier
+  "boot splash still shows Servo's icon" entry, which already added it to `test.yml`'s
+  icon-copy step for unrelated reasons, so no CI change needed here) — downscaling a
+  1024px source to whatever the splash actually needs stays crisp at any size this splash
+  will plausibly use.
+
+**Patch:** regenerated `patches/servo-v0.4.0/0035-fix-boot-splash-icon-and-size-icon-to-match-wordmark.patch`
+in place again. Re-verified the same way: applies cleanly on `0001`–`0030`, byte-identical
+result.
+
+**Verification:** `rustfmt --edition 2024 --check` clean (same pre-existing, unrelated
+line-504 diff). Not done: a fresh screenshot confirming `1.0` and the larger source read
+right — reasonable to expect so, given the previous screenshot already confirmed the
+underlying sizing mechanism works correctly at `2.0`/64px, but not independently confirmed
+at these exact new values yet.

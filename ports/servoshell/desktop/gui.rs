@@ -50,19 +50,23 @@ pub struct Gui {
     pending_accesskit_updates: Vec<accesskit::TreeUpdate>,
 
     /// Loaded once, in [`Gui::new`], for [`Gui::update_splash`]'s boot splash — always
-    /// `resources/servo_64.png` regardless of any game-supplied window/taskbar icon (see
+    /// `resources/servo_1024.png` regardless of any game-supplied window/taskbar icon (see
     /// `headed_window.rs`'s icon loading), since the splash is explicitly Roves-branded, not
-    /// the game's own branding.
+    /// the game's own branding. The 1024px asset, not the 64px one `build.rs`'s window icon
+    /// uses — the splash renders this at a size that can exceed 64px once scaled up to
+    /// visually match the wordmark (see `SPLASH_ICON_SCALE`), and upscaling a 64px source
+    /// that far looked visibly pixelated on a real build; downscaling a larger source never
+    /// has that problem.
     splash_icon_texture: egui::TextureHandle,
 }
 
-/// Decodes `resources/servo_64.png` into an `egui::ColorImage` for the boot
+/// Decodes `resources/servo_1024.png` into an `egui::ColorImage` for the boot
 /// splash's icon — see [`Gui::update_splash`]. Deliberately independent of
 /// `headed_window.rs`'s own (Linux/Windows-only) `load_icon`/winit `Icon`
 /// loading: this must work on macOS too, and egui wants a `ColorImage`, not
 /// a winit `Icon`.
 fn load_splash_icon_image() -> egui::ColorImage {
-    let bytes = include_bytes!("../../../resources/servo_64.png");
+    let bytes = include_bytes!("../../../resources/servo_1024.png");
     let image = image::load_from_memory(bytes)
         .expect("Failed to load boot splash icon")
         .to_rgba8();
@@ -217,11 +221,15 @@ const SPLASH_ICON_CONTENT_HEIGHT_RATIO: f32 = 0.784;
 
 /// Requested directly, after the content-padding compensation above still read as too
 /// small next to the wordmark in a real build: the icon should be a distinctly bigger,
-/// more prominent mark, not merely height-matched to the text — twice as tall. Applied
-/// on top of `SPLASH_ICON_CONTENT_HEIGHT_RATIO` (see `update_splash`), not instead of it —
-/// that compensation is a measured correction for the asset's own padding, this is a
-/// separate, deliberate design choice on top of the now-correctly-measured size.
-const SPLASH_ICON_SCALE: f32 = 2.0;
+/// more prominent mark, not merely height-matched to the text. Applied on top of
+/// `SPLASH_ICON_CONTENT_HEIGHT_RATIO` (see `update_splash`), not instead of it — that
+/// compensation is a measured correction for the asset's own padding, this is a separate,
+/// deliberate design choice on top of the now-correctly-measured size.
+///
+/// Was `2.0` — once `fit_to_exact_size` (see `update_splash`) made this scale actually
+/// take visible effect for the first time, `2.0` read as too big on a real build; halved
+/// to `1.0` (requested directly).
+const SPLASH_ICON_SCALE: f32 = 1.0;
 
 /// Draws the boot splash's progress bar track and fill directly via
 /// `Ui::painter`, rather than `egui::ProgressBar` — that widget draws its

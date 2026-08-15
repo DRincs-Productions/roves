@@ -1,7 +1,35 @@
 diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
 --- a/ports/servoshell/desktop/gui.rs
 +++ b/ports/servoshell/desktop/gui.rs
-@@ -194,15 +194,35 @@
+@@ -50,19 +50,23 @@
+     pending_accesskit_updates: Vec<accesskit::TreeUpdate>,
+ 
+     /// Loaded once, in [`Gui::new`], for [`Gui::update_splash`]'s boot splash — always
+-    /// `resources/servo_64.png` regardless of any game-supplied window/taskbar icon (see
++    /// `resources/servo_1024.png` regardless of any game-supplied window/taskbar icon (see
+     /// `headed_window.rs`'s icon loading), since the splash is explicitly Roves-branded, not
+-    /// the game's own branding.
++    /// the game's own branding. The 1024px asset, not the 64px one `build.rs`'s window icon
++    /// uses — the splash renders this at a size that can exceed 64px once scaled up to
++    /// visually match the wordmark (see `SPLASH_ICON_SCALE`), and upscaling a 64px source
++    /// that far looked visibly pixelated on a real build; downscaling a larger source never
++    /// has that problem.
+     splash_icon_texture: egui::TextureHandle,
+ }
+ 
+-/// Decodes `resources/servo_64.png` into an `egui::ColorImage` for the boot
++/// Decodes `resources/servo_1024.png` into an `egui::ColorImage` for the boot
+ /// splash's icon — see [`Gui::update_splash`]. Deliberately independent of
+ /// `headed_window.rs`'s own (Linux/Windows-only) `load_icon`/winit `Icon`
+ /// loading: this must work on macOS too, and egui wants a `ColorImage`, not
+ /// a winit `Icon`.
+ fn load_splash_icon_image() -> egui::ColorImage {
+-    let bytes = include_bytes!("../../../resources/servo_64.png");
++    let bytes = include_bytes!("../../../resources/servo_1024.png");
+     let image = image::load_from_memory(bytes)
+         .expect("Failed to load boot splash icon")
+         .to_rgba8();
+@@ -194,15 +198,39 @@
      );
  }
  
@@ -33,16 +61,20 @@ diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
 +
 +/// Requested directly, after the content-padding compensation above still read as too
 +/// small next to the wordmark in a real build: the icon should be a distinctly bigger,
-+/// more prominent mark, not merely height-matched to the text — twice as tall. Applied
-+/// on top of `SPLASH_ICON_CONTENT_HEIGHT_RATIO` (see `update_splash`), not instead of it —
-+/// that compensation is a measured correction for the asset's own padding, this is a
-+/// separate, deliberate design choice on top of the now-correctly-measured size.
-+const SPLASH_ICON_SCALE: f32 = 2.0;
++/// more prominent mark, not merely height-matched to the text. Applied on top of
++/// `SPLASH_ICON_CONTENT_HEIGHT_RATIO` (see `update_splash`), not instead of it — that
++/// compensation is a measured correction for the asset's own padding, this is a separate,
++/// deliberate design choice on top of the now-correctly-measured size.
++///
++/// Was `2.0` — once `fit_to_exact_size` (see `update_splash`) made this scale actually
++/// take visible effect for the first time, `2.0` read as too big on a real build; halved
++/// to `1.0` (requested directly).
++const SPLASH_ICON_SCALE: f32 = 1.0;
 +
  /// Draws the boot splash's progress bar track and fill directly via
  /// `Ui::painter`, rather than `egui::ProgressBar` — that widget draws its
  /// track in `visuals.extreme_bg_color`, which under this app's light
-@@ -571,21 +591,28 @@
+@@ -571,21 +599,28 @@
          self.rendering_context
              .make_current()
              .expect("Could not make RenderingContext current");
@@ -81,7 +113,7 @@ diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
                  fonts
                      .layout_no_wrap(
                          "Roves".to_owned(),
-@@ -593,8 +620,26 @@
+@@ -593,8 +628,26 @@
                          egui::Color32::WHITE,
                      )
                      .size()
@@ -109,7 +141,7 @@ diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
              // `Panel::show` (the top-level entry point, as opposed to
              // `show_inside` for nesting inside another container) is
              // deprecated in this egui version in favor of hand-building a
-@@ -605,11 +650,15 @@
+@@ -605,11 +658,15 @@
                  .frame(egui::Frame::default().fill(egui::Color32::BLACK))
                  .show(ctx, |ui| {
                      ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
