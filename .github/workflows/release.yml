@@ -1,0 +1,363 @@
+name: 'Release'
+
+# Builds and publishes a real, versioned Roves release — distinct from test.yml's rolling
+# "test" build (which reconstructs a tree from a pristine upstream download + patches/, purely
+# to smoke-test that the patch set itself still applies/works). This workflow builds directly
+# from the tagged ref of THIS repo, which already tracks the full patched Servo source (see
+# ../CLAUDE.md) — exactly what a real consumer (e.g. roves-action, pinning its `roves-ref`
+# input to one of these tags) would get.
+#
+# Triggered by pushing a tag matching v<major>.<minor>.<patch> (e.g. v0.1.0). See CLAUDE.md's
+# "Cutting a versioned release" section for the full procedure, including how to retry a
+# failed release by deleting and re-pushing the same tag.
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+env:
+  PACKAGE_NAME: 'roves'
+
+jobs:
+  # ── Create (or, on a retried tag, replace) the GitHub Release before the matrix starts ──
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: derive version from tag (strip leading "v")
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: create the GitHub Release for this tag
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # Self-healing for the retry procedure in CLAUDE.md: if this exact tag was deleted
+          # and re-pushed after a previous failed attempt, a stale Release object (with
+          # partial/no artifacts) may still exist even though the git tag itself is fresh.
+          # Start from a clean slate instead of "gh release create" erroring on "already exists".
+          gh release delete "${{ github.ref_name }}" --yes 2>/dev/null || true
+
+          cat > notes.md <<'EOF'
+          First Roves release: the engine shell only — no bundled UI/game content yet. See
+          [roves-ui](https://github.com/DRincs-Productions/roves-ui) for the GUI that will
+          package a real game on top of this in a future release.
+
+          Built with the real GStreamer media stack: bundled automatically with the
+          Windows/macOS artifacts below; the Linux artifacts expect GStreamer to already be
+          installed via your distro's package manager (see README.md's Linux "Getting
+          started" section).
+
+          | Platform | Portable | Installable |
+          | --- | --- | --- |
+          | Windows | `roves_windows-portable.zip` | `roves_windows-msi.zip` (wraps a `.msi`) |
+          | macOS | `roves_macos-portable.zip` | `roves_macos-dmg.zip` (wraps a `.dmg`) |
+          | Linux | `roves_linux-portable.zip` | `roves_linux-deb.zip` (wraps a `.deb`) |
+          EOF
+
+          gh release create "${{ github.ref_name }}" \
+            --title "Roves ${{ github.ref_name }}" \
+            --notes-file notes.md
+
+  # ── Build the real release bundle and publish it, once per platform/package mode ──────
+  build-and-publish:
+    needs: create-release
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        # Same platform/mode coverage as test.yml's own matrix (see that file and README.md's
+        # "Portable vs. installable packages" table) — every platform gets both its portable
+        # output and its installable one.
+        include:
+          - platform: 'windows-latest'
+            os_name: 'windows'
+            package_mode: 'portable'
+          - platform: 'windows-latest'
+            os_name: 'windows'
+            package_mode: 'msi'
+          - platform: 'macos-latest'
+            os_name: 'macos'
+            package_mode: 'portable'
+          - platform: 'macos-latest'
+            os_name: 'macos'
+            package_mode: 'dmg'
+          - platform: 'ubuntu-24.04'
+            os_name: 'linux'
+            package_mode: 'portable'
+          - platform: 'ubuntu-24.04'
+            os_name: 'linux'
+            package_mode: 'deb'
+
+    runs-on: ${{ matrix.platform }}
+    env:
+      VERSION: ${{ needs.create-release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: setup python (gives a consistent `python3` across all 3 OSes)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: setup uv (needed by ./mach, see README.md)
+        uses: astral-sh/setup-uv@v5
+
+      # rustup ships preinstalled on all 3 GitHub-hosted runner images and auto-detects the
+      # pinned toolchain from this repo's own rust-toolchain.toml the first time cargo/mach
+      # runs — this just forces that fetch early, with its own clear log output.
+      - name: prefetch pinned rust toolchain
+        shell: bash
+        run: rustup show
+
+      # Windows only: install the real GStreamer runtime+devel MSIs ourselves, directly via
+      # msiexec, to the exact path `./mach bootstrap`'s own installer would use (see
+      # python/servo/platform/windows.py's DEPENDENCIES_DIR — target/dependencies under this
+      # checkout). We bypass that installer's own `Start-Process -verb runAs` UAC elevation
+      # request, which hangs indefinitely on a non-interactive GH runner with no one to click
+      # through it (see test.yml's own comment for this exact, already-documented finding —
+      # that workflow sidesteps it entirely by building with `--media-stack dummy`; this one
+      # doesn't, so it has to solve the install differently). `--skip-platform` below then
+      # skips mach's own (would-be-hanging) attempt to install it again;
+      # `is_gstreamer_installed()` still finds GStreamer at this path independently of that
+      # skip, since that check runs as part of the build step itself, not `_platform_bootstrap`.
+      - name: install GStreamer (Windows, non-interactive)
+        if: matrix.os_name == 'windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $depsUrl = "https://github.com/servo/servo-build-deps/releases/download/msvc-deps"
+          $targetDir = Join-Path (Get-Location) "target\dependencies"
+          New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
+          foreach ($name in @("gstreamer-1.0-msvc-x86_64-1.22.8.msi", "gstreamer-1.0-devel-msvc-x86_64-1.22.8.msi")) {
+            $msi = Join-Path $env:RUNNER_TEMP $name
+            Invoke-WebRequest -Uri "$depsUrl/$name" -OutFile $msi
+            $proc = Start-Process msiexec.exe -ArgumentList @("/a", $msi, "TARGETDIR=$targetDir", "/qn") -Wait -PassThru
+            if ($proc.ExitCode -ne 0) { throw "msiexec failed for $name with exit code $($proc.ExitCode)" }
+          }
+
+      # Windows: --skip-platform (see the GStreamer step above for why). Linux/macOS: no
+      # --skip-platform — their own bootstrap paths install GStreamer non-interactively
+      # already (apt packages on Linux, `sudo installer` on macOS, both already covered by
+      # `--yes` here), so nothing extra is needed there for the real media stack to work.
+      - name: mach bootstrap (installs build dependencies)
+        shell: bash
+        run: |
+          if [ "${{ matrix.os_name }}" = "windows" ]; then
+            ./mach bootstrap --force --yes --skip-lints --skip-nextest --skip-platform
+          else
+            ./mach bootstrap --force --yes --skip-lints --skip-nextest
+          fi
+          if [ "${{ matrix.package_mode }}" = "deb" ]; then
+            sudo apt-get update && sudo apt-get install -y --no-install-recommends dpkg-dev
+          fi
+
+      # windows-latest ships WiX Toolset v3 preinstalled, but its bin/ (candle.exe/light.exe,
+      # which `mach bundle --msi` shells out to) isn't on PATH by default.
+      - name: add WiX Toolset to PATH (--msi only)
+        if: matrix.package_mode == 'msi'
+        shell: pwsh
+        run: echo "$env:WIX\bin" >> $env:GITHUB_PATH
+
+      # Real release build: optimized (--release), real GStreamer media stack (no
+      # --media-stack dummy — see the GStreamer step above), default Cargo features only (no
+      # --features steam; this is the plain engine shell, matching README.md's own default
+      # build instructions verbatim).
+      - name: mach build (release)
+        shell: bash
+        run: ./mach build --release
+
+      # No --content-dir: this release ships the engine shell only, no bundled game content
+      # (see this workflow's own top comment and the release notes in create-release above).
+      - name: assemble bundle
+        shell: bash
+        run: |
+          BUNDLE_ARGS=(
+            --release --output release
+            --package-name "$PACKAGE_NAME" --package-version "$VERSION"
+            --diagnostic-script
+          )
+          case "${{ matrix.package_mode }}" in
+            deb) BUNDLE_ARGS+=(--deb) ;;
+            msi) BUNDLE_ARGS+=(--msi) ;;
+            dmg) BUNDLE_ARGS+=(--dmg) ;;
+          esac
+          ./mach bundle "${BUNDLE_ARGS[@]}"
+
+      # Same launch-and-check smoke test as test.yml (see that file for the full reasoning:
+      # a plain build/bundle success once silently shipped a bundle that crashed on every
+      # real double-click). ::notice::/::error:: annotations, not just plain echo/Write-Host:
+      # they're readable from the public Checks API without a token — the only way to see
+      # this output at all without repo-admin auth on hand.
+      - name: smoke test — launch the bundle and check it doesn't crash (Linux/macOS)
+        if: matrix.os_name != 'windows'
+        shell: bash
+        run: |
+          if [ "${{ matrix.os_name }}" = "linux" ]; then
+            sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb
+            RUNNER=(xvfb-run -a --server-args="-screen 0 1280x720x24")
+            if [ "${{ matrix.package_mode }}" = "deb" ]; then
+              sudo dpkg -i release/*.deb
+              BIN="/usr/bin/${PACKAGE_NAME}"
+            else
+              BIN="release/play"
+            fi
+          else
+            RUNNER=()
+            if [ "${{ matrix.package_mode }}" = "dmg" ]; then
+              DMG=$(ls release/*.dmg 2>/dev/null | head -1)
+              if [ -z "$DMG" ]; then
+                echo "::error::no .dmg found under release/ — contents:"
+                find release -maxdepth 3
+                exit 1
+              fi
+              MOUNT_DIR=$(mktemp -d)
+              hdiutil attach "$DMG" -nobrowse -mountpoint "$MOUNT_DIR"
+              BIN="$MOUNT_DIR/play.app/Contents/MacOS/play"
+            else
+              BIN="release/play.app/Contents/MacOS/play"
+            fi
+          fi
+
+          if [ ! -e "$BIN" ]; then
+            echo "::error::expected binary not found at $BIN — contents of release/:"
+            find release -maxdepth 3
+            exit 1
+          fi
+          chmod +x "$BIN" || true
+
+          set +e
+          "${RUNNER[@]}" "$BIN" > smoke-stdout.log 2> smoke-stderr.log &
+          PID=$!
+          sleep 10
+          if kill -0 "$PID" 2>/dev/null; then
+            STILL_RUNNING=true
+            kill "$PID"
+            wait "$PID" 2>/dev/null
+          else
+            STILL_RUNNING=false
+            wait "$PID"
+            EXIT_CODE=$?
+          fi
+
+          echo "still running after 10s: $STILL_RUNNING"
+          [ "$STILL_RUNNING" = false ] && echo "exit code: $EXIT_CODE"
+          echo "--- stdout ---"; cat smoke-stdout.log
+          echo "--- stderr ---"; cat smoke-stderr.log
+
+          CACHE_ROOT="$HOME/.cache"
+          [ "${{ matrix.os_name }}" = "macos" ] && CACHE_ROOT="$HOME/Library/Caches"
+          LOG=$(find "$CACHE_ROOT" -iname roves.log 2>/dev/null -exec ls -t {} + 2>/dev/null | head -1)
+          if [ -n "$LOG" ]; then
+            echo "--- roves.log ($LOG) ---"; cat "$LOG"
+          else
+            echo "no roves.log found under $CACHE_ROOT"
+          fi
+
+          [ -n "${MOUNT_DIR:-}" ] && hdiutil detach "$MOUNT_DIR" 2>/dev/null
+
+          if [ "$STILL_RUNNING" = false ]; then
+            gh_notice() {
+              local msg="$1"
+              msg="${msg//%/%25}"; msg="${msg//$'\r'/%0D}"; msg="${msg//$'\n'/%0A}"
+              echo "::notice::${msg}"
+            }
+            gh_notice "exit code: $EXIT_CODE"
+            gh_notice "stdout: $(cat smoke-stdout.log)"
+            gh_notice "stderr: $(cat smoke-stderr.log)"
+            gh_notice "roves.log: $([ -n "$LOG" ] && cat "$LOG" || echo '(none found)')"
+            echo "::error::bundle exited on its own within 10s — treating as a launch failure"
+            exit 1
+          fi
+
+      - name: smoke test — launch the bundle and check it doesn't crash (Windows)
+        if: matrix.os_name == 'windows'
+        shell: pwsh
+        run: |
+          if ("${{ matrix.package_mode }}" -eq "msi") {
+            $msi = Get-ChildItem -Path release -Filter *.msi -Recurse | Select-Object -First 1
+            if (-not $msi) {
+              Write-Error "no .msi found under release/ — contents:"
+              Get-ChildItem -Path release -Recurse
+              exit 1
+            }
+            $installDir = Join-Path $env:RUNNER_TEMP "roves-install"
+            $msiLog = Join-Path $env:RUNNER_TEMP "msiexec.log"
+            $msiProc = Start-Process msiexec.exe -ArgumentList @(
+              "/i", $msi.FullName, "/quiet", "/qn", "/norestart",
+              "INSTALLDIR=$installDir", "/l*v", $msiLog
+            ) -Wait -PassThru
+            if ($msiProc.ExitCode -ne 0) {
+              Write-Error "msiexec install failed with exit code $($msiProc.ExitCode)"
+              Get-Content $msiLog -Tail 60 -ErrorAction SilentlyContinue
+              exit 1
+            }
+            $exe = Get-ChildItem -Path $installDir -Filter play.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $exe) {
+              Write-Error "no play.exe found under $installDir after a successful-looking install — contents:"
+              Get-ChildItem -Path $installDir -Recurse -ErrorAction SilentlyContinue
+              exit 1
+            }
+          } else {
+            $exe = Get-ChildItem -Path release -Filter play.exe -Recurse | Select-Object -First 1
+            if (-not $exe) { Write-Error "no play.exe found under release/"; exit 1 }
+          }
+
+          $stdout = Join-Path $env:RUNNER_TEMP "smoke-stdout.log"
+          $stderr = Join-Path $env:RUNNER_TEMP "smoke-stderr.log"
+          $proc = Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName -PassThru `
+            -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          Start-Sleep -Seconds 10
+          $stillRunning = -not $proc.HasExited
+          if ($stillRunning) { Stop-Process -Id $proc.Id -Force }
+
+          Write-Host "still running after 10s: $stillRunning"
+          if (-not $stillRunning) { Write-Host "exit code: $($proc.ExitCode)" }
+          Write-Host "--- stdout ---"; Get-Content $stdout -ErrorAction SilentlyContinue
+          Write-Host "--- stderr ---"; Get-Content $stderr -ErrorAction SilentlyContinue
+
+          $log = Get-ChildItem -Path "$env:LOCALAPPDATA" -Filter roves.log -Recurse -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if ($log) {
+            Write-Host "--- roves.log ($($log.FullName)) ---"
+            Get-Content $log.FullName
+          } else {
+            Write-Host "no roves.log found under $env:LOCALAPPDATA"
+          }
+
+          if (-not $stillRunning) {
+            Write-Host "::error::bundle exited on its own within 10s — treating as a launch failure"
+            exit 1
+          }
+
+      # Renamed to a named subfolder before zipping, rather than zipping release/'s contents
+      # directly at the archive root — same reasoning as test.yml.
+      - name: zip bundle (Linux/macOS)
+        if: matrix.os_name != 'windows'
+        run: |
+          ZIP="${PACKAGE_NAME}_${{ matrix.os_name }}-${{ matrix.package_mode }}.zip"
+          mv release "$PACKAGE_NAME"
+          zip -r "$ZIP" "$PACKAGE_NAME"
+          echo "ZIP=$ZIP" >> "$GITHUB_ENV"
+
+      - name: zip bundle (Windows)
+        if: matrix.os_name == 'windows'
+        shell: pwsh
+        run: |
+          $zip = "${env:PACKAGE_NAME}_windows-${{ matrix.package_mode }}.zip"
+          Rename-Item -Path release -NewName $env:PACKAGE_NAME
+          Compress-Archive -Path $env:PACKAGE_NAME -DestinationPath $zip
+          echo "ZIP=$zip" >> $env:GITHUB_ENV
+
+      - name: upload to the release
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "${{ github.ref_name }}" "$ZIP" --clobber

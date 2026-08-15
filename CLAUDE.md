@@ -143,6 +143,81 @@ be asked, and don't treat "I already wrote the `CUSTOMIZATIONS.md` entry" as cov
 too. A change that's only documented in `CUSTOMIZATIONS.md` is invisible to everyone except
 the next person upgrading the Servo version; a real user has no reason to ever open that file.
 
+## Cutting a versioned release (`v<major>.<minor>.<patch>` tags)
+
+`.github/workflows/release.yml` builds and publishes a real, versioned GitHub Release —
+distinct from `.github/workflows/test.yml`'s rolling "test" release (see that file's own
+comment for why it exists separately). It triggers on pushing a tag matching `v*.*.*` (e.g.
+`v0.1.0`), builds directly from that tagged checkout of this repo — not a pristine-download-
+plus-`patches/` reconstruction the way `test.yml` does, since this repo already tracks the
+full patched source (see the top of this file) — and publishes portable + installable
+bundles for Windows/macOS/Linux to that Release. The first cut, `v0.1.0`, is the engine shell
+only: no bundled UI/game content (`roves-ui` content lands in a future release).
+
+### To cut a release
+
+1. Decide the version (semver), e.g. `0.1.0`.
+2. Tag and push: `git tag v0.1.0 && git push origin v0.1.0` — this alone triggers
+   `release.yml`; nothing else needs to happen by hand.
+3. Watch the run: `https://github.com/DRincs-Productions/roves/actions/workflows/release.yml`.
+4. Once green, verify what actually got published at
+   `https://github.com/DRincs-Productions/roves/releases/tag/v0.1.0` — check all 6
+   platform/mode zips are attached (`windows-portable`, `windows-msi`, `macos-portable`,
+   `macos-dmg`, `linux-portable`, `linux-deb`) and the notes rendered as expected. Don't
+   consider the release done on "the workflow went green" alone — confirm the artifacts are
+   actually there.
+
+### If a run fails: delete-and-republish loop
+
+GitHub won't let a tag be re-pushed over itself, and `gh release create` (used by the
+workflow's own `create-release` job) errors on an existing release of that name — retrying
+means tearing both down and starting clean, not just re-running the failed job:
+
+1. Delete the GitHub Release for that tag, if one was already created — via the web UI
+   ("Delete this release") or `gh release delete vX.Y.Z --yes`. (`create-release` also
+   self-heals this automatically on the *next* push of the same tag — see its own `gh
+   release delete ... || true` step — so this is belt-and-braces, not strictly required
+   before re-pushing.)
+2. Delete the tag both locally and on the remote: `git tag -d vX.Y.Z && git push origin
+   --delete vX.Y.Z`.
+3. Fix whatever caused the failure.
+4. Re-tag and re-push: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+5. Repeat until every one of the 6 matrix jobs is green and the release page shows all 6
+   zips.
+
+### Diagnosing a failure without `gh`/a token on hand
+
+Raw step logs need repo-admin auth to download (the Actions API's job-logs endpoint 403s
+"Must have admin rights to Repository" for an anonymous/public request) — but `::notice::`/
+`::error::` **annotations** are readable anonymously via `GET /repos/DRincs-Productions/
+roves/check-runs/{job_id}/annotations`. That's why the smoke-test step re-emits stdout/
+stderr/`roves.log` as `::notice::` lines on a launch failure (mirroring `test.yml`'s own
+reasoning, see its comments). A failure inside `mach build`/`mach bootstrap` itself (a
+compile error, a GStreamer install failure) has no custom annotation, only the generic
+"Process completed with exit code N" one — diagnosing those needs either `gh run view --log`
+(if `gh`/a token is available) or someone with repo access checking the run's logs directly
+at its `html_url`.
+
+### Design notes worth knowing before touching this workflow
+
+- **No `--content-dir`**: this first release is the engine shell only — see README.md's
+  "Portable vs. installable packages" section for what `--package-name`/`--package-version`
+  do, and revisit this once a future release adds real `roves-ui` content.
+- **Real GStreamer, not `--media-stack dummy`**: unlike `test.yml`, this release ships
+  working audio/video. Linux and macOS get it for free (`mach bootstrap` already installs
+  GStreamer non-interactively there — apt packages on Linux, `sudo installer -pkg` on macOS
+  with `--yes`). **Windows needs a workaround**: `mach bootstrap`'s own GStreamer installer
+  wraps `msiexec` in `Start-Process -verb runAs` (a UAC elevation prompt) that hangs forever
+  on a non-interactive GH runner — see `test.yml`'s own comment on this exact, already-
+  documented finding (that workflow sidesteps it by using `--media-stack dummy` instead of
+  solving it). `release.yml` installs the same two MSIs itself, directly via `msiexec /a ...
+  TARGETDIR=... /qn` (no elevation prompt), to the exact path `python/servo/platform/
+  windows.py`'s `DEPENDENCIES_DIR` would use, then passes `--skip-platform` to `mach
+  bootstrap` so it doesn't redundantly (and hang-prone-ly) try to install it again.
+- **No `--features steam`**: this is the plain default build, matching README.md's own
+  documented build instructions verbatim — Steam integration stays opt-in for whoever builds
+  their own game on top of this engine.
+
 ## Upgrading to a newer Servo version (rough steps)
 
 1. Download the new tag's source zip: `https://github.com/servo/servo/archive/refs/tags/v<NEW_VERSION>.zip`.
