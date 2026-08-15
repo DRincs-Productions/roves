@@ -225,6 +225,26 @@ jobs:
           esac
           ./mach bundle "${BUNDLE_ARGS[@]}"
 
+      # Diagnostic only (macOS): the portable/dmg smoke test below has previously crashed
+      # with "dyld: Library not loaded: @rpath/libgstplay-1.0.0.dylib" — meaning
+      # python/servo/gstreamer.py's package_gstreamer_dylibs() didn't copy a library `play`
+      # links directly. Report exactly what actually landed in Contents/MacOS/lib/ as
+      # ::notice:: annotations (plain stdout isn't visible without repo-admin auth) so this
+      # can be diagnosed without needing another blind fix-and-retry cycle.
+      - name: diagnostic — list what actually got packaged into Contents/MacOS/lib (macOS)
+        if: matrix.os_name == 'macos'
+        shell: bash
+        run: |
+          gh_notice() {
+            local msg="$1"
+            msg="${msg//%/%25}"; msg="${msg//$'\r'/%0D}"; msg="${msg//$'\n'/%0A}"
+            echo "::notice::${msg}"
+          }
+          LIBDIR="release/play.app/Contents/MacOS/lib"
+          gh_notice "ls -la $LIBDIR: $(ls -la "$LIBDIR" 2>&1 || echo '(missing)')"
+          gh_notice "otool -L play: $(otool -L release/play.app/Contents/MacOS/play 2>&1 || echo '(otool failed)')"
+          gh_notice "gstreamer_root marker files: $(find "$LIBDIR" -maxdepth 1 -name '.gstreamer-*' 2>&1 || echo '(none)')"
+
       # Same launch-and-check smoke test as test.yml (see that file for the full reasoning:
       # a plain build/bundle success once silently shipped a bundle that crashed on every
       # real double-click). ::notice::/::error:: annotations, not just plain echo/Write-Host:
