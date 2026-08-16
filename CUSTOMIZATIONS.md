@@ -3180,7 +3180,11 @@ where.
 **Patch:** `patches/servo-v0.4.0/0036-fix-macos-bundle-missing-gstreamer-dylibs.patch`
 
 **Verification:** applied cleanly on top of `0001`–`0035` (`patch -p1 --dry-run`, no
-rejects). Not yet re-confirmed working end-to-end with a fresh CI run at the time of
-writing this entry — that run (retriggered per `CLAUDE.md`'s retry procedure) is what will
-actually prove it launches now instead of crashing on the exact `libgstplay` failure this
-entry quotes above.
+rejects).
+
+**Outcome:** confirmed fixed. The retriggered `v0.1.0` release run came back green on all 3
+jobs, including macOS — its smoke test now genuinely launches a real (non-dummy-media)
+bundle and stays up, instead of crashing on the `libgstplay` failure this entry describes.
+`roves_shell_macos.zip` published successfully alongside the Windows/Linux artifacts. The
+one-off diagnostic step added to `release.yml` to gather the `otool`/`ls` evidence above has
+been removed now that the fix is confirmed working.
