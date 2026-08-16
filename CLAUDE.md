@@ -166,6 +166,39 @@ UI/game content (`roves-ui` content lands in a future release).
    attached (`roves_shell_windows.zip`, `roves_shell_macos.zip`, `roves_shell_linux.zip`) and
    the notes rendered as expected. Don't consider the release done on "the workflow went
    green" alone — confirm the artifacts are actually there.
+5. Update the pinned shell version in `roves-action` and `roves-ui` (see the dedicated
+   section below) — **the same turn**, not a follow-up. A release isn't finished just
+   because the tag built; the sibling projects that consume this version are the whole
+   reason it needed cutting in the first place.
+
+### CRITICAL: after every release, sync the shell version in `roves-action` and `roves-ui`
+
+Two sibling checkouts (see the `roves-action` section near the top of this file for what
+"sibling checkout present" means in practice) each carry their own reference to *which*
+shell version they currently target — neither updates itself just because a new tag got
+pushed here:
+
+- **`roves-action`** (`../roves-action/action.yml`): the `roves-ref` input's `default` (and
+  the matching commented-out example in `README.md`) should point at the new tag, e.g.
+  `default: 'v0.1.1'`. This is a real behavior change — every consumer of this action that
+  doesn't override `roves-ref` explicitly will start building against the new tag on their
+  next CI run, so treat it with the same care as any other default-changing release: a real
+  commit, not a drive-by edit.
+- **`roves-ui`** (`../roves-ui/src/lib/shell-version.ts`): bump `TARGET_SHELL_VERSION` to
+  the new tag. This is what the in-app "a newer shell is available" banner
+  (`src/components/shell-update-banner.tsx`) compares the latest published GitHub release
+  against — leaving it stale means Packmaster nags its own maintainers' current release as
+  if it were out of date.
+
+`roves-api` (`../roves-api/src/version.ts`'s `COMPATIBLE_SHELL_VERSION`) is **not** part of
+this same per-release obligation — it's a static compatibility note for consumers, not
+something that drives build behavior or a live check, so bump it only when a shell change
+actually affects `roves-api`'s own compatibility (a `roves:`/`steam:` protocol change), not
+mechanically on every tag.
+
+If `../roves-action` or `../roves-ui` isn't present as a sibling checkout when cutting a
+release, say so explicitly rather than silently skipping this step — the same rule as every
+other cross-repo sync obligation in this file.
 
 ### If a run fails: delete-and-republish loop
 
