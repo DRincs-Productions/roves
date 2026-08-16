@@ -964,9 +964,22 @@ class PostBuildCommands(CommandBase):
             shutil.copy(path.join(binary_dir, steam_dylib), macos_dir)
         if dylibs:
             lib_dir = path.join(macos_dir, "lib")
-            os.makedirs(lib_dir)
+            os.makedirs(lib_dir, exist_ok=True)
             for f in dylibs:
                 shutil.copy(path.join(binary_dir, f), lib_dir)
+
+        # GStreamer's own dylibs (and its plugins) are copied by `mach build`'s post-build
+        # step into `<binary_dir>/lib/` (see gstreamer.py's `package_gstreamer_dylibs`), not
+        # flat into `binary_dir` itself -- the loop above only ever looks at loose *.dylib
+        # files directly in `binary_dir`, so it silently missed all of GStreamer's libraries.
+        # This went unnoticed until a real (non-`--media-stack dummy`) bundled macOS build
+        # was actually launched and crashed with `Library not loaded:
+        # @rpath/libgstplay-1.0.0.dylib` -- a plain `mach build`/`mach bundle` success never
+        # exercises this, since neither of them launches the result (see the smoke-test
+        # comment in .github/workflows/test.yml for the same class of gap, elsewhere).
+        gstreamer_lib_dir = path.join(binary_dir, "lib")
+        if os.path.isdir(gstreamer_lib_dir):
+            shutil.copytree(gstreamer_lib_dir, path.join(macos_dir, "lib"), dirs_exist_ok=True)
 
         # CFBundleIdentifier deliberately still says "servoshell", not
         # "roves" — the 2026-08-07 rename entry in CUSTOMIZATIONS.md already

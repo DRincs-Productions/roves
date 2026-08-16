@@ -3128,3 +3128,59 @@ line-504 diff). Not done: a fresh screenshot confirming `1.0` and the larger sou
 right — reasonable to expect so, given the previous screenshot already confirmed the
 underlying sizing mechanism works correctly at `2.0`/64px, but not independently confirmed
 at these exact new values yet.
+
+---
+
+## 2026-08-15 — macOS bundle was missing GStreamer's own dylibs, crashing every real (non-dummy-media) launch
+
+**File:** `python/servo/post_build_commands.py` (`_bundle_macos`).
+
+**Why:** found while cutting the first real, versioned release (`v0.1.0`, see
+`.github/workflows/release.yml` and `CLAUDE.md`'s "Cutting a versioned release" section) —
+the first time this fork's own CI ever built a macOS bundle with the *real* GStreamer media
+stack instead of `--media-stack dummy` (`test.yml` always uses `dummy`, so this class of bug
+had no way to surface there). Both the `portable` and `dmg` jobs crashed on launch:
+
+```text
+dyld[70524]: Library not loaded: @rpath/libgstplay-1.0.0.dylib
+  Referenced from: .../release/play.app/Contents/MacOS/play
+  Reason: tried: '.../release/play.app/Contents/MacOS/lib/libgstplay-1.0.0.dylib' (no such file), ...
+```
+
+A diagnostic step added to `release.yml` (`otool -L` on `play`, `ls` on
+`Contents/MacOS/lib/`) confirmed `play` links `libgstplay`/`libgstvideo`/`libgstbase`/
+`libgstreamer`/etc. directly via `@rpath`, and that `Contents/MacOS/lib/` didn't exist in
+the bundle at all.
+
+**Root cause:** `mach build`'s own post-build step (`build_commands.py`'s
+`run_post_build_tasks`) already copies GStreamer's dylibs on macOS via
+`gstreamer.py`'s `package_gstreamer_dylibs(built_binary, "<binary_dir>/lib/", target)` —
+into a `lib/` *subdirectory* of the build output, not flat alongside the binary. But
+`_bundle_macos` (the code `mach bundle` actually uses to assemble `play.app`) only ever
+did `[f for f in os.listdir(binary_dir) if f.endswith(".dylib")]` — a flat scan of
+`binary_dir` itself, which never looks one level down into `binary_dir/lib/`. So every
+GStreamer library silently never made it into the final bundle, on every macOS build with
+real media enabled, since the day `package_gstreamer_dylibs` started nesting its output in
+`lib/`. This had no way to be caught before now: a plain `mach build`/`mach bundle` success
+doesn't launch anything (the same class of gap the "CI actually launches the bundle"
+entry above describes), and `test.yml`'s own smoke test always ran with `--media-stack
+dummy`, which needs none of this.
+
+**Fix:** `_bundle_macos` now also copies `binary_dir/lib/` (if it exists — only present
+when the real GStreamer media stack was enabled) into `Contents/MacOS/lib/` via
+`shutil.copytree(..., dirs_exist_ok=True)`, merging with whatever the pre-existing loose-
+`.dylib` loop already placed there (e.g. Steam's dylib handling, unaffected). Also added
+`exist_ok=True` to that loop's own `os.makedirs` call, since both paths can now try to
+create the same `lib/` directory.
+
+**Not part of the `roves-action` sync:** doesn't touch `mach build`/`mach bundle`'s CLI
+surface (no flag added/removed/renamed) — purely internal to what `_bundle_macos` copies
+where.
+
+**Patch:** `patches/servo-v0.4.0/0036-fix-macos-bundle-missing-gstreamer-dylibs.patch`
+
+**Verification:** applied cleanly on top of `0001`–`0035` (`patch -p1 --dry-run`, no
+rejects). Not yet re-confirmed working end-to-end with a fresh CI run at the time of
+writing this entry — that run (retriggered per `CLAUDE.md`'s retry procedure) is what will
+actually prove it launches now instead of crashing on the exact `libgstplay` failure this
+entry quotes above.
