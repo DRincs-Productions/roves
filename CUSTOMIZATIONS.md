@@ -3188,3 +3188,56 @@ bundle and stays up, instead of crashing on the `libgstplay` failure this entry 
 `roves_shell_macos.zip` published successfully alongside the Windows/Linux artifacts. The
 one-off diagnostic step added to `release.yml` to gather the `otool`/`ls` evidence above has
 been removed now that the fix is confirmed working.
+
+## 2026-08-17 — Fix: `roves:clear_content_cache` pointed at loose bundle content on an uncompressed build, instead of reporting "not a packed-content launch"
+
+**Files:** `ports/servoshell/desktop/app.rs`.
+
+**Patch:** `patches/servo-v0.4.0/0037-fix-clear-content-cache-uncompressed-bundle.patch`
+
+**Reported as:** a real Packmaster-generated release, bundled with content compression
+turned off (`--content-compress=none`/Packmaster's own "Compressione" toggle unchecked),
+clicking the diagnostic "Clear extraction cache" button (`test-page`'s `ClearCacheButton.tsx`,
+via `@drincs/roves-api/cache`'s `clearContentCache()`) failed with `TypeError: Network
+error: "<bundle>\game" is not a managed content cache directory` — not the friendlier "No
+extraction cache to clear (not a packed-content launch)" message the 2026-08-11 entry's own
+`roves.rs` `None` arm already exists to produce for exactly this case.
+
+**Root cause:** the 2026-08-11 entry (`roves:clear_content_cache` command) computed
+`content_cache_dir` in `finish_init` as `initial_file_path`'s parent directory — "the exact
+same directory `FileProtocolHandler` resolves content into", per that entry's own words. That
+equivalence holds for a *packed* launch (the parent of the extracted boot HTML file's path
+genuinely is the managed cache directory `prepare_dest` created, marker file and all), but
+not for an *uncompressed* bundled launch: there, `bundle_launch.rs`'s `resolve_bundled_launch_args`
+takes the `"url"` branch (no `content_dir` in `launch.json`), so `initial_file_path`'s parent
+is just the bundle's own loose content folder — real, on-disk game content Packmaster placed
+there directly, never anything `extract::prepare_dest` wrote a `.roves-content-source` marker
+into. `is_managed_cache_dir` correctly refuses to delete it (see 2026-08-11 entry), but the
+resulting error is confusing: it reads like a filesystem/permissions problem, not "there's
+nothing to clear, compression was off for this build."
+
+**Fix:** added `App::packed_content_dest: Option<PathBuf>`, captured in `App::new` from
+`pending_boot_extraction.as_ref().and_then(|opts| opts.dest.clone())` — i.e. `Some` only when
+`bundle_launch.rs` actually resolved a packed-content launch (`content_dir` present in
+`launch.json`), regardless of whether the boot extraction it describes ends up actually
+running (a cache-hit skip inside `prepare_dest` doesn't change this: `pending_boot_extraction`
+is `Some` any time `content_dir` was in `launch.json` at all, whether or not extraction turns
+out to be needed). `finish_init` now passes `self.packed_content_dest.clone()` to
+`RovesProtocolHandler::new` instead of re-deriving a directory from `initial_file_path`. An
+uncompressed bundle now correctly gets `None` there, so `clear_content_cache` takes the
+existing `None` arm in `roves.rs` and reports "No extraction cache to clear (not a
+packed-content launch)" — accurate, and matches what that arm's own doc comment already
+claimed happened for "a plain dev `--url` launch," which a `--content-compress=none` bundled
+launch effectively also is from this command's point of view.
+
+**Not part of the `roves-action` sync:** doesn't touch `mach build`/`mach bundle`'s CLI
+surface (no flag added/removed/renamed) — purely internal to how an already-existing command
+picks its target directory.
+
+**Verification:** `cargo check -p servoshell` could not be run in this environment (no MSVC
+linker/Visual Studio Build Tools available on this machine) — reviewed by hand instead;
+`packed_content_dest`'s type and the `.and_then(|opts| opts.dest.clone())` call match
+`extract::ExtractOptions`'s `dest: Option<PathBuf>` field exactly, and `Path`'s existing
+import in `app.rs` is still used elsewhere (`load_userscripts`), so removing its one other use
+site doesn't orphan the import. Needs a real `mach build`/`mach bundle` + launch, with
+compression both on and off, to confirm end-to-end before considering this closed.

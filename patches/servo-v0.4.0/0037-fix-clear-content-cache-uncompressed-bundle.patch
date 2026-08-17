@@ -1,0 +1,50 @@
+diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
+index 1480efb..1bbd0a1 100644
+--- a/ports/servoshell/desktop/app.rs
++++ b/ports/servoshell/desktop/app.rs
+@@ -85,6 +85,17 @@ pub struct App {
+     /// first call to `init`. `None` for a dev run, a plain `--url` launch,
+     /// or a packed-content launch whose destination was already up to date.
+     pending_extraction: Option<extract::ExtractOptions>,
++    /// The managed extraction-cache directory a packed-content launch's boot
++    /// content lives (or will live) in — captured from `pending_extraction`
++    /// before `init` takes and consumes it, so `finish_init` still has it
++    /// available for `roves:clear_content_cache` (see `content_cache_dir`
++    /// below). `None` for anything that isn't a packed-content launch (a dev
++    /// run, or an uncompressed `--content-compress=none` bundle), so that
++    /// case correctly reports "not a packed-content launch" instead of
++    /// pointing `clear_content_cache` at the bundle's own loose content
++    /// folder — which is real, on-disk content, not a cache, and must never
++    /// be deleted.
++    packed_content_dest: Option<PathBuf>,
+     t_start: Instant,
+     t: Instant,
+     state: AppState,
+@@ -110,6 +121,7 @@ impl App {
+             // comment for why this can't be computed here, at construction
+             // time, for a packed-content launch.
+             initial_url: ServoUrl::parse("about:blank").expect("\"about:blank\" is a valid URL"),
++            packed_content_dest: pending_boot_extraction.as_ref().and_then(|opts| opts.dest.clone()),
+             pending_extraction: pending_boot_extraction,
+             t_start: t,
+             t,
+@@ -272,13 +284,14 @@ impl App {
+             .event_loop_proxy
+             .clone()
+             .map(|proxy| Arc::new(Mutex::new(proxy)));
+-        // Same directory `FileProtocolHandler` above resolves content into —
+-        // `roves:clear_content_cache` needs it to know what to delete.
+-        let content_cache_dir: Option<PathBuf> =
+-            initial_file_path.as_deref().and_then(Path::parent).map(PathBuf::from);
++        // `roves:clear_content_cache` needs to know what to delete —
++        // `self.packed_content_dest` (see its own doc comment), not
++        // `initial_file_path`'s parent: for an uncompressed bundle, that
++        // parent is the bundle's own loose content folder, not a cache Roves
++        // ever created, and must never be a candidate for deletion.
+         let _ = protocol_registry.register(
+             "roves",
+-            protocols::roves::RovesProtocolHandler::new(close_proxy, content_cache_dir),
++            protocols::roves::RovesProtocolHandler::new(close_proxy, self.packed_content_dest.clone()),
+         );
+         // Only registered with `--features steam` (see ports/servoshell/Cargo.toml)
+         // — mirrors the parent project's Tauri `steam` feature. `SteamProtocolHandler::new()`
