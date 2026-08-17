@@ -39,7 +39,7 @@ jobs:
           gh release delete "${{ github.ref_name }}" --yes 2>/dev/null || true
 
           cat > notes.md <<'EOF'
-          First Roves release: the engine shell only — no bundled UI/game content yet. See
+          Roves release: the engine shell only — no bundled UI/game content yet. See
           [roves-ui](https://github.com/DRincs-Productions/roves-ui) for the GUI that will
           package a real game on top of this in a future release.
 
@@ -50,11 +50,16 @@ jobs:
 
           Portable only for now — no `.msi`/`.dmg`/`.deb` installers in this release.
 
-          | Platform | Download |
-          | --- | --- |
-          | Windows | `roves_shell_windows.zip` |
-          | macOS | `roves_shell_macos.zip` |
-          | Linux | `roves_shell_linux.zip` |
+          Each platform is published twice: the plain default build, and a second build
+          compiled with `--features steam` (Steamworks achievements/stats/DLC/overlay/store,
+          see README.md's "Steam" section) — same engine otherwise, pick whichever your game
+          actually needs.
+
+          | Platform | Plain | Steam-enabled |
+          | --- | --- | --- |
+          | Windows | `roves_shell_windows.zip` | `roves_shell_windows_steam.zip` |
+          | macOS | `roves_shell_macos.zip` | `roves_shell_macos_steam.zip` |
+          | Linux | `roves_shell_linux.zip` | `roves_shell_linux_steam.zip` |
           EOF
 
           gh release create "${{ github.ref_name }}" \
@@ -72,13 +77,42 @@ jobs:
         # Portable only for the engine shell release — no --msi/--dmg/--deb installers (see
         # README.md's "Portable vs. installable packages" for what those add; not worth the
         # extra CI surface for a shell-only build with no game content yet).
+        #
+        # Each platform builds twice: plain (default Cargo features) and Steam-enabled
+        # (--features steam) — see the "mach build" step below. `asset_suffix`/`build_features`
+        # are plain matrix data (not computed inline via `${{ }}` ternaries scattered across
+        # steps) so every step downstream just reads them.
         include:
           - platform: 'windows-latest'
             os_name: 'windows'
+            steam: false
+            asset_suffix: ''
+            build_features: ''
+          - platform: 'windows-latest'
+            os_name: 'windows'
+            steam: true
+            asset_suffix: '_steam'
+            build_features: '--features steam'
           - platform: 'macos-latest'
             os_name: 'macos'
+            steam: false
+            asset_suffix: ''
+            build_features: ''
+          - platform: 'macos-latest'
+            os_name: 'macos'
+            steam: true
+            asset_suffix: '_steam'
+            build_features: '--features steam'
           - platform: 'ubuntu-24.04'
             os_name: 'linux'
+            steam: false
+            asset_suffix: ''
+            build_features: ''
+          - platform: 'ubuntu-24.04'
+            os_name: 'linux'
+            steam: true
+            asset_suffix: '_steam'
+            build_features: '--features steam'
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -173,12 +207,12 @@ jobs:
           fi
 
       # Real release build: optimized (--release), real GStreamer media stack (no
-      # --media-stack dummy — see the GStreamer step above), default Cargo features only (no
-      # --features steam; this is the plain engine shell, matching README.md's own default
-      # build instructions verbatim).
+      # --media-stack dummy — see the GStreamer step above). `matrix.build_features` is empty
+      # for the plain variant (matching README.md's own default build instructions verbatim)
+      # or `--features steam` for the Steam-enabled one — same build otherwise.
       - name: mach build (release)
         shell: bash
-        run: ./mach build --release
+        run: ./mach build --release ${{ matrix.build_features }}
 
       # No --content-dir: this release ships the engine shell only, no bundled game content
       # (see this workflow's own top comment and the release notes in create-release above).
@@ -296,7 +330,7 @@ jobs:
       - name: zip bundle (Linux/macOS)
         if: matrix.os_name != 'windows'
         run: |
-          ZIP="roves_shell_${{ matrix.os_name }}.zip"
+          ZIP="roves_shell_${{ matrix.os_name }}${{ matrix.asset_suffix }}.zip"
           mv release "$PACKAGE_NAME"
           zip -r "$ZIP" "$PACKAGE_NAME"
           echo "ZIP=$ZIP" >> "$GITHUB_ENV"
@@ -305,7 +339,7 @@ jobs:
         if: matrix.os_name == 'windows'
         shell: pwsh
         run: |
-          $zip = "roves_shell_windows.zip"
+          $zip = "roves_shell_windows${{ matrix.asset_suffix }}.zip"
           Rename-Item -Path release -NewName $env:PACKAGE_NAME
           Compress-Archive -Path $env:PACKAGE_NAME -DestinationPath $zip
           echo "ZIP=$zip" >> $env:GITHUB_ENV

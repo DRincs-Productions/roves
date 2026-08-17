@@ -251,9 +251,18 @@ at its `html_url`.
   TARGETDIR=... /qn` (no elevation prompt), to the exact path `python/servo/platform/
   windows.py`'s `DEPENDENCIES_DIR` would use, then passes `--skip-platform` to `mach
   bootstrap` so it doesn't redundantly (and hang-prone-ly) try to install it again.
-- **No `--features steam`**: this is the plain default build, matching README.md's own
-  documented build instructions verbatim — Steam integration stays opt-in for whoever builds
-  their own game on top of this engine.
+- **Every platform builds twice, plain and `--features steam`**: each of the 3 platforms
+  gets a second build compiled with `--features steam` and published as a second asset
+  (`roves_shell_<platform>_steam.zip`, alongside the existing plain `roves_shell_<platform>.zip`)
+  — see the matrix's `steam`/`asset_suffix`/`build_features` fields. `mach bundle` itself
+  needs no changes for this: Windows/Linux pick up the Steamworks redistributable
+  automatically (`build.rs`'s `copy_steam_lib` already places it flat next to the binary,
+  where the existing DLL/`.so`-copy step already looks), and macOS's `_bundle_macos` already
+  special-cases `libsteam_api.dylib` correctly (see `CUSTOMIZATIONS.md`'s 2026-08-14 entry).
+  This is what lets Roves Packmaster (`roves-ui`) offer a real Steam-enabled release without
+  ever compiling anything itself — see that project's own `CLAUDE.md`, "Why no Steam plugin
+  still" section (now stale as of whichever release first publishes the `_steam` assets;
+  revisit that section once Packmaster's own Steam wiring lands).
 - **`mach` needs `chmod +x` on Linux/macOS**: this repo's `mach` script is tracked in git as
   mode `100644` (committed from Windows, where the exec bit is meaningless) — a fresh
   Linux/macOS checkout needs it re-marked executable or `./mach bootstrap` fails immediately
