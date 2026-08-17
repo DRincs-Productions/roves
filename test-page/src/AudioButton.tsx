@@ -8,9 +8,16 @@ import { useState } from "react";
 export default function AudioButton() {
   const [status, setStatus] = useState("Not tested.");
 
-  const beep = () => {
+  const beep = async () => {
     try {
       const ctx = new AudioContext();
+      // A fresh AudioContext can start "suspended" even from a click handler —
+      // this is a real click (a user gesture), but nothing above actually
+      // resumes it, so oscillator.start() below would otherwise report success
+      // while producing no audible sound at all.
+      if (ctx.state === "suspended") {
+        await ctx.resume();
+      }
       const oscillator = ctx.createOscillator();
       const gain = ctx.createGain();
       oscillator.frequency.value = 440;
@@ -19,7 +26,7 @@ export default function AudioButton() {
       oscillator.start();
       oscillator.stop(ctx.currentTime + 0.2);
       oscillator.onended = () => void ctx.close();
-      setStatus("ok — played a 440Hz beep for 200ms");
+      setStatus(`ok — played a 440Hz beep for 200ms (context state: ${ctx.state})`);
     } catch (error) {
       setStatus(`FAILED — ${String(error)}`);
     }
