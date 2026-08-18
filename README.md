@@ -266,7 +266,7 @@ WiX/`hdiutil` code, see [CUSTOMIZATIONS.md]):
 
 | Platform | Portable (default) | Installable |
 | --- | --- | --- |
-| Windows | `play.exe` + DLLs, flat | `--msi`: a real `.msi`, via WiX |
+| Windows | `play.exe` + a few DLLs, GStreamer plugins in `lib/` | `--msi`: a real `.msi`, via WiX |
 | macOS | `play.app` | `--dmg`: that same `.app`, wrapped in a `.dmg` disk image |
 | Linux | `play` + `.so` deps, flat | `--deb`: a real, installable `.deb` |
 

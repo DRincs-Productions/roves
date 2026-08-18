@@ -3295,3 +3295,87 @@ the new check sits in the same boolean chain as the existing `is_macos_system_li
 `find_non_system_dependencies_with_otool` (the top-level binary scan and the transitive
 per-dependency scan inside the walking loop). Needs a real re-run of `release.yml`'s
 `macos, steam` job to confirm fixed end-to-end before re-tagging a release.
+
+## 2026-08-18 — Windows portable output: move GStreamer plugin DLLs into a `lib/` subfolder
+
+**Files:** `components/servo/servo.rs`, `python/servo/post_build_commands.py`.
+
+**Patch:** `patches/servo-v0.4.0/0039-windows-move-gstreamer-plugins-into-lib-subfolder.patch`
+
+**Reported as:** a real Packmaster-generated Windows release (`roves-packmaster/release/
+servo-test-page/`) had ~103 files sitting flat in the game's root folder — almost all of them
+DLLs a player has no reason to ever see. The only two files that actually matter to a player
+browsing that folder are `play.exe` and `diagnose.bat`; everything else is implementation
+detail that belonged in a subfolder from the start.
+
+**Root cause:** `copy_windows_dlls_to_build_directory` (`build_commands.py`, at `mach build`
+time) already copies every GStreamer DLL flat into `target/release/` — both the ~35 *plugin*
+element libraries (`windows_plugins()`, e.g. `gstplayback.dll`, `gstlibav.dll`) and their own
+private codec/runtime dependencies (`windows_dlls()`'s `GSTREAMER_WIN_DEPENDENCY_LIBS` —
+ffmpeg's `avcodec-59.dll` and friends, OpenSSL, glib, ...). `_bundle_windows` then blindly
+copied every `.dll` it found there straight into the bundle root, preserving that flatness
+into every published release.
+
+**Why this couldn't just move everything into a subfolder naively:** Windows' *implicit*
+DLL search (resolving `play.exe`'s own load-time dependencies, before any of our code runs)
+only ever checks `play.exe`'s own directory, system dirs, and `PATH` — never a subfolder,
+and there's no supported way to redirect that for a statically/implicitly linked dependency
+short of a delay-load trick or a separate launcher stub. The GStreamer *plugin* files are
+different: they're never linked by `play.exe` at all -- `components/servo/servo.rs`'s
+`media_platform::init` (Windows/macOS branch) loads each one by explicit path via
+`gstreamer::Plugin::load_file` (see `components/media/backends/gstreamer/lib.rs`'s
+`init_with_plugins`), which on Windows uses `LOAD_WITH_ALTERED_SEARCH_PATH` — a search order
+that checks *the plugin file's own directory* first (and does not fall back to `play.exe`'s
+directory at all). That's exactly the mechanism macOS's own `plugin_dir.push("lib")` (a few
+lines above, already existing) already relies on; Windows just wasn't using it.
+
+**Fix:**
+
+- `servo.rs`: Windows now pushes `"lib"` onto `plugin_dir` too, exactly like macOS already
+  did — one boolean condition change (`cfg!(any(target_os = "macos", windows))`).
+- `post_build_commands.py`'s `_bundle_windows`: every DLL in `windows_plugins()` (the plugin
+  files themselves) now goes *only* into a new `output_dir/lib/`. Every DLL in `windows_dlls()`
+  (GStreamer's own core shared libs, e.g. `gstreamer-1.0-0.dll`, plus the plugins' private
+  codec/runtime deps) goes into *both* `output_dir` (flat, since some of those core libs really
+  are real load-time dependencies of `play.exe` itself) *and* `lib/` (since
+  `LOAD_WITH_ALTERED_SEARCH_PATH` needs a plugin's own dependencies sitting right next to it,
+  not next to `play.exe`) — duplicating a handful of small DLLs is far cheaper than guessing
+  wrong about which ones `play.exe` needs flat. Anything not in either list (unexpected/future
+  DLLs this list doesn't know about) keeps its old flat-only placement, so nothing regresses
+  for a file this change doesn't recognize. Net result: the bundle root drops from ~103 files
+  to `play.exe`, `diagnose.bat`, `launch.json`, `manifest.json`, the packed `.pack` content
+  archives, and a `lib/` folder — everything a player would actually care about, front and
+  center.
+- The existing `--msi` WiX template (`support/windows/roves-bundle.wxs.mako`) needed no
+  changes: its harvesting is already fully recursive over whatever subfolders `stage_dir`
+  happens to contain, so `lib/` gets picked up automatically.
+- macOS and Linux are untouched by this entry. macOS already had this exact `lib/` split
+  (this fix is a direct port of that existing pattern to Windows). Linux's own flat `.so` dump
+  next to `play` has the same surface-level appearance but a different, not-yet-fully-
+  understood plugin-loading mechanism (Linux's `media_platform::init` never calls
+  `init_with_plugins` at all — see the `#[cfg(not(any(windows, target_os = "macos")))]` branch
+  a few lines below in `servo.rs` — so it isn't clear yet whether GStreamer's default registry
+  scan on Linux even uses these bundled `.so` files, or falls back to a system-wide install).
+  Left alone deliberately rather than guessed at; worth its own dedicated investigation later.
+
+**Not part of the `roves-action` sync:** doesn't touch `mach build`/`mach bundle`'s CLI
+surface (no flag added/removed/renamed, no new bundle output format) — the portable output's
+*internal* folder layout changed, but `mach bundle --output <dir>` still produces exactly one
+output folder per platform the same way it always has, which is all `roves-action`'s own
+`action.yml`/README ever describe.
+
+**Verification:** could not run `mach build`/`mach bundle` locally in this environment (see
+this file's own recurring note on missing MSVC/Python toolchain access here). Instead:
+confirmed against a real Packmaster-generated release folder's actual file listing (the exact
+~103 files this entry describes) that every plugin name in `windows_plugins()` and every
+dependency name in `windows_dlls()` is present and accounted for in that real listing, with
+nothing left over unclassified; confirmed `windows_dlls()`/`windows_plugins()` are the same
+already-authoritative lists `build_commands.py` uses to decide what to copy into
+`target/release/` in the first place (not a new, independently-guessed heuristic); confirmed
+via `git log -p`/reading `components/media/backends/gstreamer/lib.rs` that `Plugin::load_file`
+is the actual runtime loading mechanism (not GStreamer's default registry scan) for the
+Windows/macOS branch; and dry-ran `patch -p1` for the new patch file against a from-scratch
+pristine v0.4.0 checkout with patches `0001`–`0038` already applied in order, confirming it
+applies with zero fuzz. Still needs a real CI build + a real launch with sound/video to
+confirm every moved plugin actually loads correctly from `lib/` before this is considered
+fully closed.

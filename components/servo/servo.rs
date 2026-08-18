@@ -105,7 +105,13 @@ mod media_platform {
             let mut plugin_dir = std::env::current_exe().unwrap();
             plugin_dir.pop();
 
-            if cfg!(target_os = "macos") {
+            // Kiosk/embedded fork: on Windows too, plugin element libraries (and their own
+            // private codec/dependency libs) now live in a `lib/` subdirectory next to the
+            // binary rather than flat alongside it — see `python/servo/post_build_commands.py`'s
+            // `_bundle_windows`, which moved them there specifically so `Plugin::load_file`'s
+            // Windows `LOAD_WITH_ALTERED_SEARCH_PATH` semantics (search the *plugin's own*
+            // directory first) still resolve correctly.
+            if cfg!(any(target_os = "macos", windows)) {
                 plugin_dir.push("lib");
             }
 

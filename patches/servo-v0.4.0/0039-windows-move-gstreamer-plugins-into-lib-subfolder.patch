@@ -1,0 +1,82 @@
+diff --git a/components/servo/servo.rs b/components/servo/servo.rs
+index c02b44e..f7dedf8 100644
+--- a/components/servo/servo.rs
++++ b/components/servo/servo.rs
+@@ -105,7 +105,13 @@ mod media_platform {
+             let mut plugin_dir = std::env::current_exe().unwrap();
+             plugin_dir.pop();
+ 
+-            if cfg!(target_os = "macos") {
++            // Kiosk/embedded fork: on Windows too, plugin element libraries (and their own
++            // private codec/dependency libs) now live in a `lib/` subdirectory next to the
++            // binary rather than flat alongside it — see `python/servo/post_build_commands.py`'s
++            // `_bundle_windows`, which moved them there specifically so `Plugin::load_file`'s
++            // Windows `LOAD_WITH_ALTERED_SEARCH_PATH` semantics (search the *plugin's own*
++            // directory first) still resolve correctly.
++            if cfg!(any(target_os = "macos", windows)) {
+                 plugin_dir.push("lib");
+             }
+ 
+diff --git a/python/servo/post_build_commands.py b/python/servo/post_build_commands.py
+index b561f25..5e08cac 100644
+--- a/python/servo/post_build_commands.py
++++ b/python/servo/post_build_commands.py
+@@ -27,6 +27,7 @@ from mach.decorators import (
+ 
+ import servo.util
+ import servo.platform
++from servo.gstreamer import windows_dlls, windows_plugins
+ 
+ from servo.command_base import (
+     BuildNotFound,
+@@ -860,11 +861,48 @@ class PostBuildCommands(CommandBase):
+         `ports/servoshell/desktop/bundle_launch.rs` for how it resolves its
+         launch args and, for packed content, extracts it, entirely
+         in-process — no `roves-content-packer.exe` is shipped here either.
++
++        Most of the ~100 DLLs `copy_windows_dlls_to_build_directory` placed flat in
++        `binary_dir` are GStreamer *plugin* element libraries (`windows_plugins()`) —
++        loaded by explicit file path via `gstreamer::Plugin::load_file` (see
++        `components/servo/servo.rs`'s `media_platform::init`, which now points
++        `plugin_dir` at this same `lib/` on Windows too, mirroring the macOS case
++        below), never linked by `play.exe` itself at load time. GStreamer loads each
++        of those with Windows' `LOAD_WITH_ALTERED_SEARCH_PATH`, which searches the
++        *plugin's own* directory first instead of `play.exe`'s — so both the plugins
++        and their own private dependency libs (`windows_dlls()`'s
++        `GSTREAMER_WIN_DEPENDENCY_LIBS` — ffmpeg, vorbis/opus/theora, OpenSSL, glib
++        and friends) need to live in `lib/` too, not next to `play.exe`, for that
++        altered search to actually find them.
++
++        `windows_dlls()` also includes GStreamer's own *core* shared libs
++        (`GSTREAMER_BASE_LIBS`, e.g. `gstreamer-1.0-0.dll`) — some of those really are
++        real load-time dependencies of `play.exe` itself (`servo-media-gstreamer`
++        links them directly), so unlike the plugin-only files, every `windows_dlls()`
++        entry gets copied to *both* `output_dir` and `lib/` — duplicating a handful of
++        small DLLs is far cheaper than guessing wrong about which of them `play.exe`
++        needs flat.
+         """
+         shutil.copy(servo_binary, path.join(output_dir, "play.exe"))
++
++        plugin_files = set(windows_plugins())
++        dependency_files = set(windows_dlls())
++        lib_dir = path.join(output_dir, "lib")
++        os.makedirs(lib_dir, exist_ok=True)
++
+         for f in os.listdir(binary_dir):
+-            if f.lower().endswith(".dll"):
+-                shutil.copy(path.join(binary_dir, f), output_dir)
++            if not f.lower().endswith(".dll"):
++                continue
++            src = path.join(binary_dir, f)
++            is_plugin = f in plugin_files
++            if is_plugin or f in dependency_files:
++                shutil.copy(src, lib_dir)
++            # Anything not a plugin -- a real dependency lib, or an unrecognized DLL
++            # this list doesn't know about -- keeps its current flat placement too,
++            # so an unclassified file still behaves exactly like before this change.
++            if not is_plugin:
++                shutil.copy(src, output_dir)
++
+         _write_launch_config(output_dir, launch_info)
+ 
+     def _wrap_windows_msi(self, stage_dir: str, output_dir: str, package_name: str, version: str) -> None:
