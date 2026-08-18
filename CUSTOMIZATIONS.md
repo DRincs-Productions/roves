@@ -3379,3 +3379,44 @@ pristine v0.4.0 checkout with patches `0001`–`0038` already applied in order, 
 applies with zero fuzz. Still needs a real CI build + a real launch with sound/video to
 confirm every moved plugin actually loads correctly from `lib/` before this is considered
 fully closed.
+
+## 2026-08-18 — Fix: `mach bundle --bin` on Windows missed plugins when re-bundling an already-bundled shell
+
+**Files:** `python/servo/post_build_commands.py`.
+
+**Patch:** `patches/servo-v0.4.0/0040-windows-bundle-preexisting-lib-when-rebundling-a-prebuilt-shell.patch`
+
+**Reported as:** found while designing `roves-action`'s new `use-prebuilt-shell` mode (see
+that repo's own `CLAUDE.md`), which downloads a previously-published `roves_shell_<platform>
+.zip` and runs `mach bundle --bin <extracted play.exe>` against it to add game content —
+without ever running `mach build` itself. Not yet exercised by a real CI run at the time of
+this entry (that feature isn't merged in `roves-action` yet); caught by re-reading this same
+day's earlier `_bundle_windows` entry with this exact usage in mind, not by a failure report.
+
+**Root cause:** the 2026-08-18 "move GStreamer plugin DLLs into a `lib/` subfolder" entry
+just above changed `_bundle_windows` to scan `binary_dir` for flat `.dll` files and sort them
+into `output_dir` and/or `output_dir/lib/`. That's correct when `binary_dir` is a fresh
+`target/release/` build (still everything flat, per `build_commands.py`'s own
+`copy_windows_dlls_to_build_directory`) — but `--bin`/`--nightly` can instead point
+`servo_binary` at a binary living in an *already-bundled* directory (exactly what
+`roves-action`'s new mode does), where `binary_dir` already has its own `lib/` from a
+*previous* `mach bundle` run. The flat-only scan never looks one level down, so every plugin
+sitting in that pre-existing `lib/` would silently go missing from the new bundle.
+
+**Fix:** after the existing flat-DLL scan, also check for `binary_dir/lib/` and copy it
+wholesale into the new `lib/` if present (`shutil.copytree(..., dirs_exist_ok=True)`) — the
+exact same pattern `_bundle_macos`'s own `gstreamer_lib_dir` handling (a few lines below,
+pre-existing, added by the 2026-08-15 "macOS bundle was missing GStreamer's own dylibs"
+entry) already uses for the identical situation on macOS. `_bundle_macos` needed no changes
+at all here — it already handled this correctly, which is what made the gap on the Windows
+side, added only hours earlier in the same day, easy to spot by direct comparison.
+
+**Not part of the `roves-action` sync:** same reasoning as the entry above — no `mach build`/
+`mach bundle` CLI surface changed.
+
+**Verification:** could not run `mach build`/`mach bundle` locally (see this file's recurring
+note on missing toolchain access here). Dry-ran `patch -p1` against a from-scratch pristine
+v0.4.0 checkout with patches `0001`–`0039` already applied in order, confirming it applies
+with zero fuzz. Needs a real end-to-end run of `roves-action`'s `use-prebuilt-shell` mode (or
+any other real `--bin`-against-an-already-bundled-shell usage) to confirm the copied `lib/`
+plugins actually load correctly before this is considered fully closed.

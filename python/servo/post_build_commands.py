@@ -903,6 +903,19 @@ class PostBuildCommands(CommandBase):
             if not is_plugin:
                 shutil.copy(src, output_dir)
 
+        # `--bin`/`--nightly` can point `servo_binary` at an already-*bundled* shell
+        # (e.g. one extracted from a previously-published `roves_shell_<platform>.zip`
+        # release asset, re-bundled here just to add game content) rather than a fresh
+        # `target/release/` build -- `binary_dir` then already has its own `lib/`
+        # (plugins already split out, per this same function) instead of everything
+        # flat. The loop above only lists `binary_dir` itself, so it'd silently miss
+        # every plugin sitting one level down in that case -- copy that pre-existing
+        # `lib/` wholesale too, on top of whatever the flat scan above already found.
+        # Mirrors `_bundle_macos`'s own identical `gstreamer_lib_dir` handling below.
+        existing_lib_dir = path.join(binary_dir, "lib")
+        if path.isdir(existing_lib_dir):
+            shutil.copytree(existing_lib_dir, lib_dir, dirs_exist_ok=True)
+
         _write_launch_config(output_dir, launch_info)
 
     def _wrap_windows_msi(self, stage_dir: str, output_dir: str, package_name: str, version: str) -> None:
