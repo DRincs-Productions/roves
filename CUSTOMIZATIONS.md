@@ -3241,3 +3241,57 @@ linker/Visual Studio Build Tools available on this machine) — reviewed by hand
 import in `app.rs` is still used elsewhere (`load_userscripts`), so removing its one other use
 site doesn't orphan the import. Needs a real `mach build`/`mach bundle` + launch, with
 compression both on and off, to confirm end-to-end before considering this closed.
+
+## 2026-08-18 — Fix: macOS `--features steam` build crashed while packaging GStreamer dylibs
+
+**Files:** `python/servo/gstreamer.py`.
+
+**Patch:** `patches/servo-v0.4.0/0038-fix-macos-steam-gstreamer-dylib-packaging-crash.patch`
+
+**Reported as:** `release.yml`'s first-ever run building every platform twice (plain +
+`--features steam`, see the 2026-08-17 "Every platform builds twice" entry) had 5 of 6 jobs
+succeed — only `macos, steam` failed, at the `mach build (release)` step, after ~24 minutes
+(i.e. well into the build, not an early config error). The published `v0.2.0` tag/release
+were deleted per this file's own "delete-and-republish loop" procedure once this was
+confirmed a real bug, not the CI upload flake from the same day's other entry.
+
+**Root cause:** `package_gstreamer_dylibs` (called from `build_commands.py` whenever real
+media + `darwin` are both true — i.e. every non-`--media-stack dummy` macOS build)
+walks every non-system dependency line `otool -L` reports on the built binary, resolving
+each one to a real path and copying it. It only knows how to resolve two shapes: an absolute
+path, or an `@rpath/...` line (via `make_rpath_path_absolute`). `steamworks-sys` links
+`libsteam_api.dylib` with a hardcoded `@loader_path/libsteam_api.dylib` install name instead
+of `@rpath/...` (Valve's own SDK convention — already noted in the 2026-08-14 "macOS portable
+output renamed" entry, which special-cased this exact string at the *bundle* step). Nothing
+before now had ever exercised real GStreamer (`media-gstreamer`) and `--features steam`
+*together* on macOS: `test.yml`'s own steam build always uses `--media-stack dummy`, so
+`package_gstreamer_dylibs` never runs there at all, and `release.yml` never built with
+`--features steam` before this same day's "Every platform builds twice" entry. First real
+combination, first time this path got exercised — `make_rpath_path_absolute` returned the
+`@loader_path/...` string unresolved (its own early-return for anything not starting with
+`@rpath/`), and the code then tried to run `otool -L` and `shutil.copyfile` directly against
+that literal, non-existent path:
+```
+error: otool-classic: can't open file: @loader_path/libsteam_api.dylib (No such file or directory)
+ERROR: could not package required dylibs: [Errno 2] No such file or directory: '@loader_path/libsteam_api.dylib'
+```
+
+**Fix:** new `is_separately_packaged_dylib()` in `gstreamer.py`, checked alongside the
+existing system-library filter in `find_non_system_dependencies_with_otool` — skips
+`libsteam_api.dylib` by filename before it ever enters the dependency-walking set. This is
+the correct fix, not a workaround: that dylib is already placed correctly by two other,
+pre-existing mechanisms (`build.rs`'s `copy_steam_lib` at build time, `post_build_commands.py`'s
+`_bundle_macos` at bundle time), so this generic GStreamer-dependency walker had no business
+trying to resolve/copy it itself in the first place — it just happened to never have been
+asked to before.
+
+**Verification:** could not run `mach build` locally in this environment (no Python/MSVC
+toolchain available on this machine at all — see the 2026-08-17 `app.rs` entry's own
+verification note for the same limitation). Reviewed by hand: `os.path.basename(...) ==
+"libsteam_api.dylib"` correctly matches the exact dependency line `otool -L` reports
+(confirmed against the real failing log's own error text, which names that exact file), and
+the new check sits in the same boolean chain as the existing `is_macos_system_library`/
+`librustc-stable_rt` filters, so it's applied identically at both call sites of
+`find_non_system_dependencies_with_otool` (the top-level binary scan and the transitive
+per-dependency scan inside the walking loop). Needs a real re-run of `release.yml`'s
+`macos, steam` job to confirm fixed end-to-end before re-tagging a release.

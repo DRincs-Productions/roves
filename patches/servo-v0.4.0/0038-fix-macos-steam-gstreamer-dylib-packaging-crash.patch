@@ -1,0 +1,44 @@
+diff --git a/python/servo/gstreamer.py b/python/servo/gstreamer.py
+index 21850aa..c6688aa 100644
+--- a/python/servo/gstreamer.py
++++ b/python/servo/gstreamer.py
+@@ -141,6 +141,23 @@ def is_macos_system_library(library_path: str) -> bool:
+     return library_path.startswith("/System/Library") or library_path.startswith("/usr/lib") or ".asan." in library_path
+ 
+ 
++def is_separately_packaged_dylib(library_path: str) -> bool:
++    """Returns true for dependency lines from otool that this walker must not try to
++    resolve/copy itself, because something else already packages them correctly.
++
++    `libsteam_api.dylib` (only present with `--features steam`, see Cargo.toml) is the one
++    real case today: steamworks-sys links it with a hardcoded `@loader_path/...` install
++    name rather than `@rpath/...` like every other dylib here (Valve's own SDK convention —
++    see CUSTOMIZATIONS.md's "macOS portable output renamed" entry). `make_rpath_path_absolute`
++    below only knows how to resolve `@rpath/...`, so passing an `@loader_path/...` line
++    through unresolved to `otool`/`shutil.copyfile` fails outright (`can't open file:
++    @loader_path/libsteam_api.dylib`) -- this dylib is already placed correctly by
++    `build.rs`'s own `copy_steam_lib` (at build time) and `post_build_commands.py`'s
++    `_bundle_macos` (at bundle time), so this generic GStreamer-dependency walker has no
++    business trying to resolve it at all."""
++    return os.path.basename(library_path) == "libsteam_api.dylib"
++
++
+ def rewrite_dependencies_to_be_relative(binary: str, dependency_lines: Set[str], relative_path: str) -> None:
+     """Given a path to a binary (either an executable or a dylib), rewrite the
+     the given dependency lines to be found at the given relative path to
+@@ -187,8 +204,13 @@ def find_non_system_dependencies_with_otool(binary_path: str) -> Set[str]:
+         dependency = line.split(" ", 1)[0][1:]
+ 
+         # No need to do any processing for system libraries. They should be
+-        # present on all macOS systems.
+-        if not (is_macos_system_library(dependency) or "librustc-stable_rt" in dependency):
++        # present on all macOS systems. Also skip anything already packaged
++        # separately (see is_separately_packaged_dylib's own docstring).
++        if not (
++            is_macos_system_library(dependency)
++            or "librustc-stable_rt" in dependency
++            or is_separately_packaged_dylib(dependency)
++        ):
+             output.add(dependency)
+     return output
+ 
