@@ -116,7 +116,7 @@ a game developer using the GUI would plausibly want to control, which isn't alwa
 from this side. If `../roves-ui` isn't present as a sibling checkout, say so explicitly
 rather than silently skipping the question.
 
-## CRITICAL: every user-facing feature needs a README mention *and* a wiki page
+## CRITICAL: the wiki must always be kept up to date — for anything, not just features
 
 `CUSTOMIZATIONS.md`/`patches/` (above) capture *what changed relative to upstream Servo*, for
 the next version upgrade. That's a different audience from *someone using Roves right now* —
@@ -125,9 +125,18 @@ a game developer bundling their game, or a player hitting a problem — who read
 docs site instead, and neither of those updates automatically just because
 `CUSTOMIZATIONS.md` did.
 
-**Any time you add, change, or remove a user-facing feature — a new `mach bundle`/`mach
-build` flag, a new bundle output, a new CLI behavior, anything a game developer or player
-would need to know about — in the same turn:**
+**This isn't scoped to "new user-facing features" alone — read it as "for anything."** A new
+`mach bundle`/`mach build` flag or bundle output is the clearest case, but the same same-turn obligation
+applies to: a behavior change to something already documented (a
+default changing, a flag being renamed/removed, a fixed bug that makes an existing wiki page
+inaccurate), a new component or distribution path appearing (Packmaster, `roves-action`, or
+whatever comes next), or a restructuring of the wiki's own information architecture (tabs,
+categories, page moves) when the current structure stops fitting what actually exists. If
+you're unsure whether a change is "wiki-worthy," the safer default is to check the wiki
+anyway rather than assume it doesn't apply — a stale wiki page is actively worse than a
+missing one, since it reads as current and misleads whoever trusts it.
+
+**In the same turn as the change:**
 
 1. Add at least a brief mention to `README.md` — even one sentence and a link out is enough;
    it doesn't need to duplicate the wiki's full explanation, just enough that someone skimming
