@@ -503,6 +503,19 @@ jobs:
           }
 
           if (-not $stillRunning) {
+            # Also emitted as ::notice:: annotations, not just plain Write-Host: annotations
+            # are readable from the public Checks API without a token (unlike step logs,
+            # which need repo-admin auth to download) — same reasoning, and same gap this
+            # closes, as the Linux/macOS smoke-test step's own gh_notice() a few steps up.
+            function gh_notice($msg) {
+              $escaped = $msg -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
+              Write-Host "::notice::$escaped"
+            }
+            gh_notice "exit code: $($proc.ExitCode)"
+            gh_notice "stdout: $(Get-Content $stdout -ErrorAction SilentlyContinue | Out-String)"
+            gh_notice "stderr: $(Get-Content $stderr -ErrorAction SilentlyContinue | Out-String)"
+            $logText = if ($log) { Get-Content $log.FullName -Raw } else { '(none found)' }
+            gh_notice "roves.log: $logText"
             Write-Host "::error::bundle exited on its own within 10s — treating as a launch failure"
             exit 1
           }
