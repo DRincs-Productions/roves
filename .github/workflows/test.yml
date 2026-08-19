@@ -533,12 +533,27 @@ jobs:
           zip -r "$ZIP" servo-test-page
           echo "ZIP=$ZIP" >> "$GITHUB_ENV"
 
+      # Retries: the smoke test above just force-killed play.exe (a GUI process with dozens
+      # of loaded DLLs); Windows can take a moment to actually release its file handles on
+      # release/ afterward, so the very next Rename-Item can hit "the process cannot access
+      # the file because it is being used by another process" -- confirmed by a real run
+      # failing here right after a smoke test that otherwise passed cleanly.
       - name: zip bundle (Windows)
         if: matrix.os_name == 'windows'
         shell: pwsh
         run: |
           $zip = "servoshell-test_windows-${{ matrix.package_mode }}.zip"
-          Rename-Item -Path release -NewName servo-test-page
+          $maxAttempts = 5
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            try {
+              Rename-Item -Path release -NewName servo-test-page -ErrorAction Stop
+              break
+            } catch {
+              if ($attempt -eq $maxAttempts) { throw }
+              Write-Host "Rename-Item attempt $attempt failed ($($_.Exception.Message)), retrying in $($attempt * 2)s..."
+              Start-Sleep -Seconds ($attempt * 2)
+            }
+          }
           Compress-Archive -Path servo-test-page -DestinationPath $zip
           echo "ZIP=$zip" >> $env:GITHUB_ENV
 
