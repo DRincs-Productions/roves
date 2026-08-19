@@ -193,12 +193,31 @@ jobs:
             if ($proc.ExitCode -ne 0) { throw "msiexec failed for $name with exit code $($proc.ExitCode)" }
           }
 
+      # Linux only: apt-daily-upgrade.service (a background timer, unrelated to anything we
+      # ask for) can hold the dpkg lock for several minutes right after a fresh runner boots
+      # -- an apt-get issued into that window (mach bootstrap's own internal ones included)
+      # just sits there waiting for the lock instead of failing, silently consuming the whole
+      # job. Confirmed by real, reproduced hangs in test.yml (same pattern, mirrored
+      # workflow) -- see that file's own comment on this for the full story.
+      - name: stop background apt timers (Linux only, avoids a dpkg-lock hang)
+        if: matrix.os_name == 'linux'
+        shell: bash
+        run: |
+          sudo systemctl stop apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+          sudo systemctl kill --kill-who=all apt-daily.service apt-daily-upgrade.service 2>/dev/null || true
+
       # Windows: --skip-platform (see the GStreamer step above for why). Linux/macOS: no
       # --skip-platform — their own bootstrap paths install GStreamer non-interactively
       # already (apt packages on Linux, `sudo installer` on macOS, both already covered by
       # `--yes` here), so nothing extra is needed there for the real media stack to work.
       - name: mach bootstrap (installs build dependencies)
         shell: bash
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        # Backstop beyond the apt-timer fix above -- see test.yml's own comment on this same
+        # step for the real, reproduced hang this guards against. mach bootstrap itself is
+        # normally done in well under a minute.
+        timeout-minutes: 15
         run: |
           if [ "${{ matrix.os_name }}" = "windows" ]; then
             ./mach bootstrap --force --yes --skip-lints --skip-nextest --skip-platform

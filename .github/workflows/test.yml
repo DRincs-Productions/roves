@@ -216,6 +216,21 @@ jobs:
       # which is exactly the `ModuleNotFoundError: No module named 'packaging'`
       # this comment is here to keep from silently regressing.
       #
+      # Linux only: apt-daily-upgrade.service (a background timer, unrelated to anything we
+      # ask for) can hold the dpkg lock for several minutes right after a fresh runner boots
+      # -- any apt-get issued into that window (ours below, but also mach bootstrap's own
+      # internal ones) just sits there waiting for the lock instead of failing, silently
+      # consuming the whole job. Confirmed by two real, reproduced hangs: once inside our own
+      # dpkg-dev install, once inside mach bootstrap's own apt-get calls for an entirely
+      # different matrix entry -- i.e. this isn't specific to what *we* install, so the fix
+      # has to run before mach bootstrap too, not just before our own apt-get call.
+      - name: stop background apt timers (Linux only, avoids a dpkg-lock hang)
+        if: matrix.os_name == 'linux'
+        shell: bash
+        run: |
+          sudo systemctl stop apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+          sudo systemctl kill --kill-who=all apt-daily.service apt-daily-upgrade.service 2>/dev/null || true
+
       # Windows: --skip-platform (see the GStreamer step above for why). Linux/macOS: no
       # --skip-platform — their own bootstrap paths install GStreamer non-interactively
       # already (apt packages on Linux, `sudo installer` on macOS, both already covered by
@@ -223,6 +238,13 @@ jobs:
       - name: mach bootstrap (installs build dependencies)
         shell: bash
         working-directory: servo-src
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        # Backstop beyond the apt-timer fix above: caps how long a genuine hang here (this
+        # exact step, on this exact matrix entry, silently ran for a full hour before being
+        # investigated and cancelled by hand) can consume the job, regardless of the exact
+        # cause. mach bootstrap itself is normally done in well under a minute.
+        timeout-minutes: 15
         run: |
           if [ "${{ matrix.os_name }}" = "windows" ]; then
             ./mach bootstrap --force --yes --skip-lints --skip-nextest --skip-platform
@@ -232,14 +254,10 @@ jobs:
           # dpkg-dev ships preinstalled on the ubuntu-24.04 runner image, but `mach bundle
           # --deb` (see the assemble step below) hard-depends on dpkg-deb from it, so check
           # explicitly rather than silently relying on what happens to already be there --
-          # skipping apt-get entirely in the (expected) common case where it's already
-          # present avoids a real, reproduced hang: apt-daily-upgrade.service can hold the
-          # dpkg lock for several minutes right after a fresh runner boots, and an
-          # `apt-get install` issued into that window just sits there waiting for it.
+          # skipping apt-get entirely in the (expected) common case avoids needing the lock
+          # at all. `timeout` on both calls: a real hang now fails fast and loud instead of
+          # silently consuming the job for hours, regardless of the exact cause.
           if [ "${{ matrix.package_mode }}" = "deb" ] && ! command -v dpkg-deb >/dev/null; then
-            export DEBIAN_FRONTEND=noninteractive
-            sudo systemctl stop apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
-            sudo systemctl kill --kill-who=all apt-daily.service apt-daily-upgrade.service 2>/dev/null || true
             timeout 120 sudo apt-get update
             timeout 120 sudo apt-get install -y --no-install-recommends dpkg-dev
           fi
