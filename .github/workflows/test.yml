@@ -229,12 +229,19 @@ jobs:
           else
             ./mach bootstrap --force --yes --skip-lints --skip-nextest
           fi
-          # dpkg-dev ships preinstalled on the ubuntu-24.04 runner image, but
-          # `mach bundle --deb` (see the assemble step below) hard-depends on
-          # `dpkg-deb` from it, so make that explicit rather than relying on
-          # what happens to already be there.
-          if [ "${{ matrix.package_mode }}" = "deb" ]; then
-            sudo apt-get update && sudo apt-get install -y --no-install-recommends dpkg-dev
+          # dpkg-dev ships preinstalled on the ubuntu-24.04 runner image, but `mach bundle
+          # --deb` (see the assemble step below) hard-depends on dpkg-deb from it, so check
+          # explicitly rather than silently relying on what happens to already be there --
+          # skipping apt-get entirely in the (expected) common case where it's already
+          # present avoids a real, reproduced hang: apt-daily-upgrade.service can hold the
+          # dpkg lock for several minutes right after a fresh runner boots, and an
+          # `apt-get install` issued into that window just sits there waiting for it.
+          if [ "${{ matrix.package_mode }}" = "deb" ] && ! command -v dpkg-deb >/dev/null; then
+            export DEBIAN_FRONTEND=noninteractive
+            sudo systemctl stop apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+            sudo systemctl kill --kill-who=all apt-daily.service apt-daily-upgrade.service 2>/dev/null || true
+            timeout 120 sudo apt-get update
+            timeout 120 sudo apt-get install -y --no-install-recommends dpkg-dev
           fi
 
       # windows-latest ships WiX Toolset v3 preinstalled (see
