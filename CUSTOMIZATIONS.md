@@ -3457,11 +3457,12 @@ also dry-run-applies cleanly against a from-scratch pristine v0.4.0 checkout wit
 **Not part of the `roves-action`/`roves-ui` sync:** no `mach build`/`mach bundle` CLI surface
 changed — this only fixes `mach.bat` even being invocable from a path with a space in it.
 
-## 2026-08-19 — Windows portable output: shrink the flat root further, stop over-duplicating
+## 2026-08-19 — Windows portable output: attempted to shrink the root further, reverted
 
-**Files:** `python/servo/gstreamer.py`, `python/servo/post_build_commands.py`.
+**Files:** `python/servo/post_build_commands.py` (comment only — `gstreamer.py` ends up
+unchanged, see below).
 
-**Patch:** `patches/servo-v0.4.0/0042-windows-shrink-bundle-root-further-avoid-duplicate-dlls.patch`
+**Patch:** `patches/servo-v0.4.0/0042-windows-document-why-gstreamer-dll-duplication-is-required.patch`
 
 **Reported as:** the 2026-08-18 "move GStreamer plugin DLLs into a `lib/` subfolder" entry
 got the bundle root from ~103 files down to ~58 by moving out every *plugin* DLL — but it
@@ -3470,54 +3471,63 @@ private codec/runtime deps) into *both* `output_dir` and `lib/`, reasoning that 
 those really are load-time dependencies of `play.exe` itself" without pinning down exactly
 which ones. Asked to actually narrow that down instead of guessing conservatively.
 
-**Root cause:** only a genuine subset of `windows_dlls()` is ever a real load-time (implicit)
-dependency of `play.exe` itself — resolved via the OS's standard search order (checks
-`play.exe`'s own directory, never a subfolder). The rest is only ever needed inside `lib/`,
-as a private dependency of a *plugin* file GStreamer loads via
-`gstreamer::Plugin::load_file`'s `LOAD_WITH_ALTERED_SEARCH_PATH` (resolved relative to the
-plugin's own directory, i.e. `lib/`, not `play.exe`'s). Duplicating the whole 48-entry list
-into both places was the safe-but-wasteful choice made when that distinction wasn't pinned
-down yet.
+**What was tried:** curated a 20-entry subset of `windows_dlls()` believed to be `play.exe`'s
+own real load-time dependencies via `dumpbin /dependents` on a real, published `play.exe`
+(`v0.2.0`'s `roves_shell_windows.zip`), recursively, until the closure stopped growing — the
+same method `GSTREAMER_WIN_DEPENDENCY_LIBS`/`GSTREAMER_BASE_LIBS` themselves were curated
+with. Changed `_bundle_windows` to give a flat `output_dir` copy only to that 20-item subset,
+sending the other 28 `windows_dlls()` entries into `lib/` only. Reasoning at the time: a
+plugin's own dependencies resolve via `LOAD_WITH_ALTERED_SEARCH_PATH` relative to the
+plugin's own directory (`lib/`), so those 28 wouldn't need a `play.exe`-side copy at all.
 
-**Fix:** curated the exact subset via `dumpbin /dependents` on a real, published
-`play.exe` (`v0.2.0`'s `roves_shell_windows.zip`), recursively — first its own direct
-dependencies, then each of *those* dependencies' own, until the closure stopped growing (same
-method already used to curate `GSTREAMER_WIN_DEPENDENCY_LIBS`/`GSTREAMER_BASE_LIBS`
-themselves — see that list's own docstring). Landed on 20 entries (11 `GSTREAMER_BASE_LIBS`
-names + 9 raw `GSTREAMER_WIN_DEPENDENCY_LIBS` filenames) — `gstreamer.py`'s new
-`GSTREAMER_BASE_LIBS_NEEDED_BY_SERVO_DIRECTLY`/`GSTREAMER_WIN_DEPENDENCY_LIBS_NEEDED_BY_SERVO_DIRECTLY`/
-`windows_dlls_needed_flat()`. `_bundle_windows` now only gives a flat copy to a
-`windows_dlls()` entry when it's also in that 20-item set (or unrecognized by either list,
-unchanged from before) — the other 28 dependency DLLs go into `lib/` only. Net effect on a
-real bundle: root drops from the already-fixed ~58 down to ~28 (`play.exe`, `diagnose.bat`,
-`launch.json`, the 20 curated DLLs, `msvcp140.dll`/`vcruntime140.dll`/
-`api-ms-win-crt-runtime-l1-1-0.dll` — real `play.exe` dependencies from a completely
-different mechanism, `libEGL.dll`/`libGLESv2.dll` — ANGLE, loaded some other way this entry
-didn't need to touch).
+**Why that reasoning was wrong:** `LOAD_WITH_ALTERED_SEARCH_PATH` only changes how the
+*specified* module itself — the plugin file GStreamer explicitly hands to
+`gst_plugin_load_file` — gets found. It does **not** change how the OS loader later resolves
+*that plugin's own* import table (its static/implicit dependencies, e.g. `gstnice.dll`
+needing `nice-10.dll`) — those still go through the normal, process-wide DLL search order,
+which checks `play.exe`'s directory and system dirs, never `lib/`. So a dependency DLL that
+only exists in `lib/` (because this change removed its `output_dir` copy) is invisible to
+every plugin that needs it, even though the plugin file *itself* loads fine.
 
-**Why not lower still (the ~5-10 files originally hoped for):** the remaining ~28 are a hard
-floor without a bigger architecture change. Windows' implicit-import resolution for `play.exe`
-itself has no supported way to redirect into a subfolder short of a delay-load trick or a
-separate launcher-stub binary (`play.exe` becoming a thin stub that `SetDllDirectory`s/
-re-execs the real binary from `lib/`) — meaningfully riskier and a bigger scope than this
-entry, deliberately not attempted here. Flagged as a possible follow-up, not done.
+**Caught by:** the very next real CI run — `.github/workflows/test.yml` had just been changed
+(a CI-only change, no patch needed — see that file's own history/comments) to build with the
+real GStreamer media stack instead of `--media-stack dummy`, exercising this exact code path
+with real audio/video for the first time ever. The Windows job failed immediately with
+`Error initializing GStreamer: ErrorLoadingPlugins([...])`, and a matching explicit
+`stderr`/`roves.log` annotation added in that same test.yml change showed exactly why:
+`GStreamer-WARNING: Failed to load plugin '...\lib\gstnice.dll': The specified module could
+not be found` — and identically for `gstogg.dll`, `gstopengl.dll`, `gstopus.dll`,
+`gsttheora.dll`, `gstvorbis.dll`, `gstaudiofx.dll`, `gstisomp4.dll`, `gstmatroska.dll`. Ran
+`dumpbin /dependents` again, this time on those specific plugin files (using the same
+GStreamer 1.22.8 install pulled locally for the build attempt below) — every single missing
+dependency (`nice-10.dll`, `libogg-0.dll`, `graphene-1.0-0.dll`, `libpng16-16.dll`,
+`libjpeg-8.dll`, `opus-0.dll`, `theoradec-1.dll`, `theoraenc-1.dll`, `libvorbis-0.dll`,
+`libvorbisenc-2.dll`, `gstcontroller-1.0-0.dll`, `gstriff-1.0-0.dll`, `gstgl-1.0-0.dll`,
+`bz2.dll`) was exactly one of the 28 entries this change had removed from `output_dir`. Not a
+theoretical concern — a real, reproduced failure.
 
-**Verification:** actually empirical this time, not just static reasoning — first real local
-verification this vendoring setup has had (every prior Windows-DLL-layout entry in this file
-notes it *couldn't* run `mach build` locally). Downloaded the real published `v0.2.0`
-`roves_shell_windows.zip`, ran `dumpbin /dependents` on its `play.exe` and recursively on
-each dependency to derive the 20-item closure, then hand-reorganized a *copy* of that
-extracted bundle to match the new scheme and launched the real `play.exe` from it — confirmed
-via `%LOCALAPPDATA%\roves\roves.log` that an incomplete version of this (missing the
-duplication into `lib/` for the 20-item set) reproduces a real
-`ErrorLoadingPlugins`/`std::process::exit(1)` failure, and that accounting for it matches the
-mechanism this entry describes. Separately started a real `mach build --release` on this
-same machine to build a fresh binary (the `v0.2.0` asset predates the very `lib/` split this
-entry builds on) and test the *actual* patched bundling code end-to-end with real audio/video
-— blocked repeatedly by this local machine's own toolchain gaps (GStreamer dev libs, a
-missing/mismatched `lld-link`, missing `clang-cl`, an MSVC-STL/LLVM version mismatch), each
-worked around in turn; still in progress. Dry-run-applies cleanly against a from-scratch
-pristine v0.4.0 checkout with patches `0001`–`0041` already applied in order. **Not yet
-closed**: still needs that real build's bundle actually launched with real audio/video before
-this is considered fully confirmed, same open item the 2026-08-18 entry already carried
-forward.
+**Fix:** reverted `_bundle_windows` back to the 2026-08-18 entry's original behavior (every
+`windows_dlls()` entry duplicated into both `output_dir` and `lib/`, no exceptions) and
+removed the now-wrong `GSTREAMER_BASE_LIBS_NEEDED_BY_SERVO_DIRECTLY`/
+`GSTREAMER_WIN_DEPENDENCY_LIBS_NEEDED_BY_SERVO_DIRECTLY`/`windows_dlls_needed_flat()` from
+`gstreamer.py` entirely — net result, `gstreamer.py` is now byte-identical to before this
+whole attempt; only `post_build_commands.py`'s docstring keeps a permanent note of why this
+was tried and why it doesn't work, so nobody re-attempts the same narrowing without rediscovering this. The bundle root stays at the 2026-08-18 entry's ~58 files — see that
+entry's own "why this couldn't just move everything into a subfolder naively" for the
+already-identified, still-open, bigger option (a launcher-stub binary) if a future attempt
+wants to go lower than that.
+
+**Not part of the `roves-action`/`roves-ui` sync:** no `mach build`/`mach bundle` CLI surface
+changed at any point in this attempt-then-revert.
+
+**Verification:** the failure and the fix are both empirically confirmed against a real CI
+run, not just static reasoning — the first time this vendoring setup has had that for a
+Windows GStreamer/DLL-layout change (every prior entry on this topic notes it *couldn't* run
+`mach build` or a real launch). A parallel attempt to reproduce this locally (a real `mach
+build --release` on this same dev machine) got all the way through several genuine local
+toolchain gaps (missing GStreamer dev libs, a missing/mismatched `lld-link`, missing
+`clang-cl`, then an MSVC-STL/LLVM version mismatch compiling `mozjs_sys`) before being
+abandoned as a dead end unrelated to this change — CI ended up being both faster and more
+representative than continuing to fight this machine's own environment. Dry-run-applies
+cleanly against a from-scratch pristine v0.4.0 checkout with patches `0001`–`0041` already
+applied in order.

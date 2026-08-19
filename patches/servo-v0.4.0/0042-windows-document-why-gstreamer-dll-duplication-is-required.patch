@@ -1,0 +1,27 @@
+diff --git a/python/servo/post_build_commands.py b/python/servo/post_build_commands.py
+index e500991..2cffc51 100644
+--- a/python/servo/post_build_commands.py
++++ b/python/servo/post_build_commands.py
+@@ -879,9 +879,19 @@ class PostBuildCommands(CommandBase):
+         (`GSTREAMER_BASE_LIBS`, e.g. `gstreamer-1.0-0.dll`) — some of those really are
+         real load-time dependencies of `play.exe` itself (`servo-media-gstreamer`
+         links them directly), so unlike the plugin-only files, every `windows_dlls()`
+-        entry gets copied to *both* `output_dir` and `lib/` — duplicating a handful of
+-        small DLLs is far cheaper than guessing wrong about which of them `play.exe`
+-        needs flat.
++        entry gets copied to *both* `output_dir` and `lib/`.
++
++        A 2026-08-19 attempt to narrow that down to only the subset `play.exe` itself
++        actually needs (curated via `dumpbin /dependents`) turned out to be wrong and was
++        reverted: `LOAD_WITH_ALTERED_SEARCH_PATH` only changes how the *plugin file itself*
++        gets found — a plugin's own dependencies (e.g. `gstnice.dll` needing `nice-10.dll`)
++        still resolve through the OS's normal process-wide search order once the loader
++        processes that plugin's import table, which never includes `lib/` on its own.
++        Confirmed by a real Windows CI failure (`ErrorLoadingPlugins` for `gstnice`/`gstogg`/
++        `gstopengl`/etc., each missing exactly the dependency this had removed from
++        `output_dir`) — see CUSTOMIZATIONS.md's entry on this for the full story. Duplicating
++        a handful of small DLLs is far cheaper than guessing wrong about which of them
++        `play.exe` (or some plugin sitting in `lib/`) needs flat.
+         """
+         shutil.copy(servo_binary, path.join(output_dir, "play.exe"))
+ 

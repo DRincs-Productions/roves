@@ -123,53 +123,6 @@ def windows_dlls() -> list[str]:
     return GSTREAMER_WIN_DEPENDENCY_LIBS + [f"{lib}-1.0-0.dll" for lib in GSTREAMER_BASE_LIBS]
 
 
-# The subset of GSTREAMER_BASE_LIBS that `play.exe` ITSELF transitively needs at process-load
-# time -- confirmed via `dumpbin /dependents` on the compiled binary, then recursively on each
-# of *its* dependencies until the closure stopped growing (same curation method the two lists
-# above already use -- see CUSTOMIZATIONS.md's 2026-08-19 "Windows portable output: shrink the
-# flat root further" entry for the full derivation). Every other windows_dlls() entry is only
-# ever needed by a *plugin* (in lib/, resolved via that plugin's own altered search path), not
-# by play.exe's own implicit imports -- see windows_dlls_needed_flat() below.
-GSTREAMER_BASE_LIBS_NEEDED_BY_SERVO_DIRECTLY = [
-    "gstreamer",
-    "gstbase",
-    "gstapp",
-    "gstaudio",
-    "gstplay",
-    "gstvideo",
-    "gstsdp",
-    "gstrtp",
-    "gsttag",
-    "gstpbutils",
-    "gstwebrtc",
-]
-
-# Same idea as GSTREAMER_BASE_LIBS_NEEDED_BY_SERVO_DIRECTLY above, but for the raw (non-
-# gst-prefixed) GSTREAMER_WIN_DEPENDENCY_LIBS filenames.
-GSTREAMER_WIN_DEPENDENCY_LIBS_NEEDED_BY_SERVO_DIRECTLY = [
-    "glib-2.0-0.dll",
-    "gobject-2.0-0.dll",
-    "gio-2.0-0.dll",
-    "gmodule-2.0-0.dll",
-    "intl-8.dll",
-    "pcre2-8-0.dll",
-    "ffi-7.dll",
-    "orc-0.4-0.dll",
-    "z-1.dll",
-]
-
-
-def windows_dlls_needed_flat() -> list[str]:
-    """The subset of windows_dlls() that must ALSO be copied flat next to play.exe, not just
-    into lib/ -- because play.exe's own implicit imports resolve via the OS's standard DLL
-    search order (which never looks in a subdirectory), unlike a plugin's own dependencies
-    (resolved via that plugin's altered search path, i.e. relative to lib/ itself). Everything
-    else windows_dlls() returns is only ever needed inside lib/."""
-    return GSTREAMER_WIN_DEPENDENCY_LIBS_NEEDED_BY_SERVO_DIRECTLY + [
-        f"{lib}-1.0-0.dll" for lib in GSTREAMER_BASE_LIBS_NEEDED_BY_SERVO_DIRECTLY
-    ]
-
-
 def windows_plugins() -> list[str]:
     plugins = load_plugin_libraries_from_text_file("common.rs.in")
     plugins.extend(load_plugin_libraries_from_text_file("windows.rs.in"))

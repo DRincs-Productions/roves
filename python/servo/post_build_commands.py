@@ -27,7 +27,7 @@ from mach.decorators import (
 
 import servo.util
 import servo.platform
-from servo.gstreamer import windows_dlls, windows_dlls_needed_flat, windows_plugins
+from servo.gstreamer import windows_dlls, windows_plugins
 
 from servo.command_base import (
     BuildNotFound,
@@ -876,19 +876,27 @@ class PostBuildCommands(CommandBase):
         altered search to actually find them.
 
         `windows_dlls()` also includes GStreamer's own *core* shared libs
-        (`GSTREAMER_BASE_LIBS`, e.g. `gstreamer-1.0-0.dll`) — a curated subset of those
-        really are real load-time dependencies of `play.exe` itself
-        (`windows_dlls_needed_flat()`, confirmed via `dumpbin /dependents`; see
-        CUSTOMIZATIONS.md's 2026-08-19 entry for the derivation), so those get copied to
-        *both* `output_dir` and `lib/` — the rest of `windows_dlls()` is only ever needed
-        inside `lib/` (a plugin's own dependency, resolved via that plugin's altered
-        search path, never `play.exe`'s), so it goes there only.
+        (`GSTREAMER_BASE_LIBS`, e.g. `gstreamer-1.0-0.dll`) — some of those really are
+        real load-time dependencies of `play.exe` itself (`servo-media-gstreamer`
+        links them directly), so unlike the plugin-only files, every `windows_dlls()`
+        entry gets copied to *both* `output_dir` and `lib/`.
+
+        A 2026-08-19 attempt to narrow that down to only the subset `play.exe` itself
+        actually needs (curated via `dumpbin /dependents`) turned out to be wrong and was
+        reverted: `LOAD_WITH_ALTERED_SEARCH_PATH` only changes how the *plugin file itself*
+        gets found — a plugin's own dependencies (e.g. `gstnice.dll` needing `nice-10.dll`)
+        still resolve through the OS's normal process-wide search order once the loader
+        processes that plugin's import table, which never includes `lib/` on its own.
+        Confirmed by a real Windows CI failure (`ErrorLoadingPlugins` for `gstnice`/`gstogg`/
+        `gstopengl`/etc., each missing exactly the dependency this had removed from
+        `output_dir`) — see CUSTOMIZATIONS.md's entry on this for the full story. Duplicating
+        a handful of small DLLs is far cheaper than guessing wrong about which of them
+        `play.exe` (or some plugin sitting in `lib/`) needs flat.
         """
         shutil.copy(servo_binary, path.join(output_dir, "play.exe"))
 
         plugin_files = set(windows_plugins())
         dependency_files = set(windows_dlls())
-        needed_flat = set(windows_dlls_needed_flat())
         lib_dir = path.join(output_dir, "lib")
         os.makedirs(lib_dir, exist_ok=True)
 
@@ -897,14 +905,12 @@ class PostBuildCommands(CommandBase):
                 continue
             src = path.join(binary_dir, f)
             is_plugin = f in plugin_files
-            is_dependency = f in dependency_files
-            if is_plugin or is_dependency:
+            if is_plugin or f in dependency_files:
                 shutil.copy(src, lib_dir)
-            # Flat next to play.exe when: an unrecognized DLL neither list knows about
-            # (unchanged from before this), or a dependency lib play.exe itself actually
-            # needs at load time. A plugin, or a dependency lib only ever needed inside
-            # lib/, does NOT also get a flat copy.
-            if not is_plugin and (not is_dependency or f in needed_flat):
+            # Anything not a plugin -- a real dependency lib, or an unrecognized DLL
+            # this list doesn't know about -- keeps its current flat placement too,
+            # so an unclassified file still behaves exactly like before this change.
+            if not is_plugin:
                 shutil.copy(src, output_dir)
 
         # `--bin`/`--nightly` can point `servo_binary` at an already-*bundled* shell
