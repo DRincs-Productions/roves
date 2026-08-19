@@ -1,31 +1,18 @@
 name: 'Build Servo Test Binaries (from source, with local patches)'
 
-# Lives inside servo/ (this directory), not the parent pixi-vn-react-template repo's own
-# .github/workflows/ — see ../CLAUDE.md: this vendored Servo copy is meant to be fully
-# self-contained and eventually separable from the parent project, so anything Servo-
-# specific (patches, this CI) lives here, not scattered in the parent repo.
+# This workflow builds Servo *from source* — pristine upstream tag + our own patches/
+# applied on top — purely to smoke-test local customizations (see ../CUSTOMIZATIONS.md) on
+# real Windows/Linux/macOS machines, without needing to compile Servo (a very heavy,
+# hours-long build) on a dev machine. Every run overwrites the same "test" GitHub Release —
+# it is not versioned, not meant to be depended on, and is not the real distributable shell
+# (see release.yml for that).
 #
-# IMPORTANT / current status: GitHub Actions only auto-discovers workflows under
-# .github/workflows/ at an actual *repository root*. Today, this `servo/` directory is
-# just a subfolder of the parent repo (and is gitignored there — see ../CLAUDE.md), so
-# this workflow will NOT run anywhere until `servo/` itself is pushed as its own
-# top-level GitHub repository (e.g. the BlackRam-oss/servo fork created for this
-# purpose). Until then, this file just sits here ready for that day.
-#
-# This does NOT build the real "embedded" release (see the parent project's
-# .github/workflows/embedded.yml, which downloads the official prebuilt servoshell
-# binary). This workflow instead builds Servo *from source* — pristine upstream tag +
-# our own patches/ applied on top — purely to smoke-test local customizations (see
-# ../CUSTOMIZATIONS.md) on real Windows/Linux/macOS machines, without needing to compile
-# Servo (a very heavy, hours-long build) on a dev machine. Every run overwrites the same
-# "test" GitHub Release — it is not versioned, not meant to be depended on.
-#
-# Why build from a fresh download instead of just using the working tree directly: most
-# of this directory's pristine content (~1.3GB, almost entirely the WPT test suite) is
-# itself gitignored (see ../.gitignore) and so isn't guaranteed to exist wherever this
-# workflow runs. patches/servo-v<tag>/*.patch is the tracked source of truth for our
-# customizations; this workflow downloads the pristine tag fresh on every run and
-# applies them, so nothing bulky needs to be committed anywhere.
+# Why build from a fresh download instead of just using the working tree directly: most of
+# this repo's own pristine content (~1.3GB, almost entirely the WPT test suite) is itself
+# gitignored (see ../.gitignore) and so isn't guaranteed to exist wherever this workflow
+# runs. patches/servo-v<tag>/*.patch is the tracked source of truth for our customizations;
+# this workflow downloads the pristine tag fresh on every run and applies them, so nothing
+# bulky needs to be committed anywhere.
 
 on:
   push:
@@ -191,6 +178,34 @@ jobs:
           # loudly, which is exactly how this went unnoticed.
           cp ../resources/servo_64.png ../resources/servo_1024.png ../resources/servo.ico ../resources/servo.icns resources/
 
+      # Windows only: install the real GStreamer runtime+devel MSIs ourselves, directly via
+      # msiexec, to the exact path `./mach bootstrap`'s own installer would use (see
+      # python/servo/platform/windows.py's DEPENDENCIES_DIR — servo-src/target/dependencies
+      # here). We bypass that installer's own `Start-Process -verb runAs` UAC elevation
+      # request, which hangs indefinitely on a non-interactive GH runner with no one to click
+      # through it — this used to be sidestepped entirely by building with
+      # `--media-stack dummy` instead (no GStreamer needed at all), until this build started
+      # needing real audio/video too. Same approach release.yml already uses for its own
+      # real-GStreamer Windows build — see that workflow's own comment for the full
+      # reasoning. `--skip-platform` below then skips mach's own (would-be-hanging) attempt
+      # to install it again; `is_gstreamer_installed()` still finds it at this path
+      # independently of that skip, since that check runs as part of the build step itself.
+      - name: install GStreamer (Windows, non-interactive)
+        if: matrix.os_name == 'windows'
+        shell: pwsh
+        working-directory: servo-src
+        run: |
+          $ErrorActionPreference = "Stop"
+          $depsUrl = "https://github.com/servo/servo-build-deps/releases/download/msvc-deps"
+          $targetDir = Join-Path (Get-Location) "target\dependencies"
+          New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
+          foreach ($name in @("gstreamer-1.0-msvc-x86_64-1.22.8.msi", "gstreamer-1.0-devel-msvc-x86_64-1.22.8.msi")) {
+            $msi = Join-Path $env:RUNNER_TEMP $name
+            Invoke-WebRequest -Uri "$depsUrl/$name" -OutFile $msi
+            $proc = Start-Process msiexec.exe -ArgumentList @("/a", $msi, "TARGETDIR=$targetDir", "/qn") -Wait -PassThru
+            if ($proc.ExitCode -ne 0) { throw "msiexec failed for $name with exit code $($proc.ExitCode)" }
+          }
+
       # IMPORTANT: invoke `./mach`, never `python3 ./mach`. `mach` is a polyglot
       # shell+python script (see its own top comment): run as a shell script, it
       # re-execs itself via `uv run --frozen python ...` so the pyproject.toml/
@@ -201,15 +216,10 @@ jobs:
       # which is exactly the `ModuleNotFoundError: No module named 'packaging'`
       # this comment is here to keep from silently regressing.
       #
-      # Windows gets `--skip-platform`: servo's own Windows bootstrap
-      # (python/servo/platform/windows.py) shells out to choco *and* to the
-      # GStreamer MSI installer via `Start-Process -verb runAs` — a UAC
-      # elevation request. There's no interactive session on a GH runner to
-      # click through it, so that call just hangs for hours instead of
-      # failing. This is safe to skip entirely here: `media-gstreamer` isn't
-      # in servoshell's default Cargo features, so GStreamer isn't needed to
-      # build at all, and windows-latest already ships CMake/LLVM/Ninja (the
-      # only other things that step would have installed).
+      # Windows: --skip-platform (see the GStreamer step above for why). Linux/macOS: no
+      # --skip-platform — their own bootstrap paths install GStreamer non-interactively
+      # already (apt packages on Linux, `sudo installer` on macOS, both already covered by
+      # `--yes` here), so nothing extra is needed there for the real media stack to work.
       - name: mach bootstrap (installs build dependencies)
         shell: bash
         working-directory: servo-src
@@ -241,13 +251,15 @@ jobs:
       # (e.g. "are the tabs really gone?"), not to ship an optimized binary. Debug
       # compiles noticeably faster, which matters since this runs on every push.
       #
-      # --media-stack dummy: by default `./mach build` resolves to the real
-      # gstreamer media stack on every non-cross build and hard-fails if
-      # GStreamer isn't installed (`command_base.py`'s `is_media_enabled`/
-      # `run_cargo_build_like_command`) — independently of servoshell's own
-      # Cargo `media-gstreamer` feature not being in its default set. We don't
-      # need real media playback to check window chrome, and `dummy` sidesteps
-      # needing GStreamer installed (build- or run-time) on any platform here.
+      # Real GStreamer media stack, no --media-stack dummy: this used to build with
+      # `dummy` (no GStreamer needed at all, on any platform) since this workflow only
+      # existed to check window chrome, not real playback — but that also meant a real
+      # audio/video regression (e.g. a broken bundled-DLL/dylib layout) could go
+      # completely unnoticed through an all-green run, since the dummy backend never
+      # touches that code path at all. The Windows GStreamer install itself is handled
+      # non-interactively above, specifically so this doesn't hang; Linux/macOS already
+      # got real GStreamer for free from a plain `mach bootstrap`. The smoke-test step
+      # below now also explicitly checks roves.log for a GStreamer init failure.
       #
       # --features steam: `steam` is opt-in (not in servoshell's default Cargo
       # features, see ports/servoshell/Cargo.toml) and, until now, had never
@@ -260,7 +272,7 @@ jobs:
       - name: mach build (debug)
         shell: bash
         working-directory: servo-src
-        run: ./mach build --media-stack dummy --features steam
+        run: ./mach build --features steam
 
       # `mach bundle` (see ../CUSTOMIZATIONS.md) is what actually builds the
       # single play.exe/play.app/play executable — this step's only job is
@@ -287,9 +299,10 @@ jobs:
           ./mach bundle "${BUNDLE_ARGS[@]}"
 
           cat > ../release/NOTE.txt << 'EOF'
-          Debug test build, media stack "dummy" (no GStreamer, no video/audio
-          playback). This build only exists to check window chrome/behavior —
-          see the parent project's embedded.yml for the real release build.
+          Debug test build, real GStreamer media stack. This build only
+          exists to smoke-test window chrome/behavior/audio-video on every
+          push — see the parent project's embedded.yml for the real release
+          build.
           EOF
           if [ "${{ matrix.os_name }}" = "macos" ] && [ "${{ matrix.package_mode }}" = "portable" ]; then
             echo "Native arch of the macos-latest runner only (no universal binary, no x86_64 cross-build)." >> ../release/NOTE.txt
@@ -391,6 +404,15 @@ jobs:
             echo "no roves.log found under $CACHE_ROOT"
           fi
 
+          # Explicit GStreamer/audio check: media_platform::init (servo.rs) logs this exact
+          # line and exits before a window ever appears on a real init failure, so
+          # STILL_RUNNING=false already catches it — but calling it out by name here means
+          # a GStreamer regression reads as "GStreamer failed to initialize", not just a
+          # generic "bundle exited early", straight from the job summary/annotations.
+          if [ -n "$LOG" ] && grep -q "Error initializing GStreamer" "$LOG"; then
+            echo "::error::GStreamer failed to initialize — see roves.log above for the plugin/DLL error"
+          fi
+
           [ -n "${MOUNT_DIR:-}" ] && hdiutil detach "$MOUNT_DIR" 2>/dev/null
 
           if [ "$STILL_RUNNING" = false ]; then
@@ -469,6 +491,15 @@ jobs:
             Get-Content $log.FullName
           } else {
             Write-Host "no roves.log found under $env:LOCALAPPDATA"
+          }
+
+          # Explicit GStreamer/audio check: media_platform::init (servo.rs) logs this exact
+          # line and exits before a window ever appears on a real init failure, so
+          # $stillRunning=$false already catches it — but calling it out by name here means
+          # a GStreamer regression reads as "GStreamer failed to initialize", not just a
+          # generic "bundle exited early", straight from the job summary/annotations.
+          if ($log -and (Select-String -Path $log.FullName -Pattern "Error initializing GStreamer" -Quiet)) {
+            Write-Host "::error::GStreamer failed to initialize — see roves.log above for the plugin/DLL error"
           }
 
           if (-not $stillRunning) {
