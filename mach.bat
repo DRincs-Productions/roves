@@ -5,4 +5,4 @@ REM https://github.com/astral-sh/uv/issues/12906
 if "%PROCESSOR_ARCHITECTURE%"=="ARM64" ( set "UV_PYTHON=arm64" )
 
 set workdir=%~dp0
-uv run --frozen python %workdir%mach %*
+uv run --frozen python "%workdir%mach" %*

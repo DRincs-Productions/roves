@@ -3420,3 +3420,39 @@ v0.4.0 checkout with patches `0001`–`0039` already applied in order, confirmin
 with zero fuzz. Needs a real end-to-end run of `roves-action`'s `use-prebuilt-shell` mode (or
 any other real `--bin`-against-an-already-bundled-shell usage) to confirm the copied `lib/`
 plugins actually load correctly before this is considered fully closed.
+
+## 2026-08-19 — Fix: `mach.bat` broke on this exact checkout's own path (a space in it)
+
+**Files:** `mach.bat`.
+
+**Patch:** `patches/servo-v0.4.0/0041-fix-mach-bat-quoting-for-paths-with-spaces.patch`
+
+**Reported as:** hit directly while trying to run a real `mach build --release` on Windows
+from this checkout, at `C:\Users\<user>\3D Objects\roves` — a space in "3D Objects" is enough
+to trigger this, and that's this actual machine's real folder name, not a contrived
+reproduction. Likely to bite any Windows user whose checkout lives under a path with a space
+anywhere in it (a shared "OneDrive - Company Name" sync folder, "Program Files", a username
+with a space, etc.) — not specific to this one path.
+
+**Root cause:** `uv run --frozen python %workdir%mach %*` expands `%workdir%` unquoted. cmd.exe
+splits unquoted variable expansions on whitespace before handing arguments to the child
+process, so a space anywhere in the checkout path splits `%workdir%mach` into two separate
+argv entries at that space — `python` then tries to open the first fragment as the script
+file and fails with `can't open file 'C:\\Users\\<user>\\3D': [Errno 2] No such file or
+directory`, never reaching `mach` itself. `mach.ps1` has no such bug — PowerShell keeps
+`(Join-Path $workdir "mach")`'s result as a single argument regardless of embedded spaces
+when passed to a native command, so this is `mach.bat`-specific.
+
+**Fix:** quote the expanded path: `uv run --frozen python "%workdir%mach" %*`.
+
+**Verification:** confirmed the failure reproduces before the fix (`can't open file
+'C:\\Users\\...\\3D'`) and disappears after it, on this exact checkout path, by actually
+running `mach.bat` before and after — not just a patch dry-run. (`mach.bat --help` then hits
+an unrelated, pre-existing `argparse` error — `ValueError: action 'store_true' is not valid
+for positional arguments` — identically on `mach.ps1` too, confirming that part is a separate,
+already-existing issue unaffected by this fix, not something this change introduced.) Patch
+also dry-run-applies cleanly against a from-scratch pristine v0.4.0 checkout with patches
+`0001`–`0040` already applied in order.
+
+**Not part of the `roves-action`/`roves-ui` sync:** no `mach build`/`mach bundle` CLI surface
+changed — this only fixes `mach.bat` even being invocable from a path with a space in it.
