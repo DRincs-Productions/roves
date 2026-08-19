@@ -216,20 +216,32 @@ jobs:
       # which is exactly the `ModuleNotFoundError: No module named 'packaging'`
       # this comment is here to keep from silently regressing.
       #
-      # Linux only: apt-daily-upgrade.service (a background timer, unrelated to anything we
-      # ask for) can hold the dpkg lock for several minutes right after a fresh runner boots
-      # -- any apt-get issued into that window (ours below, but also mach bootstrap's own
-      # internal ones) just sits there waiting for the lock instead of failing, silently
-      # consuming the whole job. Confirmed by two real, reproduced hangs: once inside our own
-      # dpkg-dev install, once inside mach bootstrap's own apt-get calls for an entirely
-      # different matrix entry -- i.e. this isn't specific to what *we* install, so the fix
-      # has to run before mach bootstrap too, not just before our own apt-get call.
-      - name: stop background apt timers (Linux only, avoids a dpkg-lock hang)
+      # Linux only: apt-daily-upgrade.service/apt-daily.service/unattended-upgrades (all
+      # background, unrelated to anything we ask for) can hold the dpkg lock for a while
+      # right after a fresh runner boots -- any apt-get issued into that window (ours below,
+      # but also mach bootstrap's own internal ones) just sits there waiting for the lock
+      # instead of failing, silently consuming the whole job. Confirmed by multiple real,
+      # reproduced hangs, on different matrix entries and different apt-get calls -- i.e. not
+      # specific to what *we* install, so this needs to run before mach bootstrap too, and
+      # actually wait for the lock to clear rather than assume stopping the services is
+      # instant.
+      - name: stop background apt processes and wait for the dpkg lock (Linux only)
         if: matrix.os_name == 'linux'
         shell: bash
         run: |
           sudo systemctl stop apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
-          sudo systemctl kill --kill-who=all apt-daily.service apt-daily-upgrade.service 2>/dev/null || true
+          sudo systemctl kill --kill-who=all apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
+          sudo pkill -9 -f unattended-upgrade 2>/dev/null || true
+
+          for i in $(seq 1 60); do
+            if ! sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock >/dev/null 2>&1; then
+              echo "dpkg/apt lock free after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::warning::dpkg/apt lock still held after 60s -- proceeding anyway, holders:"
+          sudo fuser -v /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock 2>&1 || true
 
       # Windows: --skip-platform (see the GStreamer step above for why). Linux/macOS: no
       # --skip-platform — their own bootstrap paths install GStreamer non-interactively
