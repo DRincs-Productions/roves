@@ -40,7 +40,7 @@ jobs:
 
           cat > notes.md <<'EOF'
           Roves release: the engine shell only — no bundled UI/game content yet. See
-          [roves-ui](https://github.com/DRincs-Productions/roves-ui) for the GUI that will
+          [Roves Packmaster](https://github.com/DRincs-Productions/roves-packmaster) for the GUI that will
           package a real game on top of this in a future release.
 
           Built with the real GStreamer media stack: bundled automatically with the

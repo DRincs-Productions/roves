@@ -189,7 +189,7 @@ protocol bridge" entry in [CUSTOMIZATIONS.md] for how the Rust side is wired up.
 
 You don't need to build this yourself just to get Steam support: every platform's published
 release (see "Getting started" below) also ships a prebuilt `_steam`-suffixed shell variant,
-which [Roves Packmaster](https://github.com/DRincs-Productions/roves-ui) can download and
+which [Roves Packmaster](https://github.com/DRincs-Productions/roves-packmaster) can download and
 bundle your game into directly, App ID and all — no Rust/Python toolchain needed.
 
 ## Getting started
