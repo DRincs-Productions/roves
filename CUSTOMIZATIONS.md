@@ -3531,3 +3531,69 @@ abandoned as a dead end unrelated to this change — CI ended up being both fast
 representative than continuing to fight this machine's own environment. Dry-run-applies
 cleanly against a from-scratch pristine v0.4.0 checkout with patches `0001`–`0041` already
 applied in order.
+
+## 2026-08-20 — Windows: shrink the bundle root further, for real this time
+
+**Files:** `ports/servoshell/main.rs`, `ports/servoshell/Cargo.toml`, `python/servo/gstreamer.py`,
+`python/servo/post_build_commands.py`.
+
+**Patch:** `patches/servo-v0.4.0/0043-windows-setdlldirectory-shrink-bundle-root.patch`
+
+**Reported as:** even after the 2026-08-18/19 entries got the Windows portable root down to
+~58-69 files (engine DLLs at ~58, plus Packmaster's own packed-content files pushing a real
+generated bundle to ~69 before that got its own fix), that's still far more than hoped for —
+the real target was "under 20, ideally closer to 10." The 2026-08-19 revert entry's own "why
+this couldn't just move everything into a subfolder naively" section had already identified
+the actual fix for this, just deferred as a bigger, riskier change at the time.
+
+**Root cause, precisely:** `LOAD_WITH_ALTERED_SEARCH_PATH` (what GStreamer's own
+`gst_plugin_load_file` uses) only changes how *that one specified file* is found — it says
+nothing about how the OS loader resolves *that file's own* implicit imports once found. A
+plugin's dependencies are resolved through whatever the *process-wide* DLL search order
+happens to be at that moment, and by default that never includes `lib/`. The 2026-08-19
+revert worked around this by duplicating everything into both places instead of fixing the
+actual gap.
+
+**The real fix:** `ports/servoshell/main.rs` now calls `SetDllDirectoryW` on Windows, very
+early in `main()` (before anything else runs), pointing it at the `lib/` folder next to the
+running executable. Per its own documented behavior, this *adds* `lib/` to the front of the
+process-wide DLL search order without removing the application directory from it — purely
+additive, doesn't change how anything already flat next to the binary resolves. Needs
+`Win32_System_LibraryLoader` added to `windows-sys`'s feature list in
+`ports/servoshell/Cargo.toml`.
+
+Critically, this only helps *plugin* dependencies (resolved at runtime, after `main()` has
+already run) — it does nothing for `play.exe`'s *own* static/implicit imports, which the OS
+loader resolves as part of ordinary PE loading, before `main()` (and therefore before
+`SetDllDirectoryW`) ever executes. `python/servo/gstreamer.py`'s
+`GSTREAMER_BASE_LIBS_NEEDED_BY_SERVO_DIRECTLY`/
+`GSTREAMER_WIN_DEPENDENCY_LIBS_NEEDED_BY_SERVO_DIRECTLY`/`windows_dlls_needed_flat()` (the
+same 20-item set curated via `dumpbin /dependents` for the 2026-08-19 attempt — recovered
+from that commit's history, since the reasoning for exactly which files these are hadn't
+changed) are reinstated for exactly that reason: `_bundle_windows` gives a flat copy to a
+`windows_dlls()` entry only when it's in that set (or unrecognized by either list); every
+other plugin-only dependency now lives in `lib/` only, safely, because of the
+`SetDllDirectoryW` call. Net effect on a real bundle: root drops from ~58 (engine files
+alone) to ~28 — `play.exe`, `diagnose.bat`/`.sh`, `launch.json`, the 20 curated DLLs,
+`msvcp140.dll`/`vcruntime140.dll`/`api-ms-win-crt-runtime-l1-1-0.dll` (real `play.exe`
+dependencies from the MSVC CRT, unrelated to GStreamer), `libEGL.dll`/`libGLESv2.dll`
+(ANGLE) — plus `steam_appid.txt`/`steam_api64.dll` when Steam is enabled, both of which
+correctly stay flat (Valve's own convention; `steam_api64.dll` is itself a real load-time
+dependency of `play.exe`).
+
+**Why not lower still:** the remaining ~28 are a genuine floor with this approach — every one
+of them resolves before `main()` runs, so `SetDllDirectoryW` structurally can't reach them.
+Getting lower would mean either delay-loading them (a linker-level `/DELAYLOAD` change,
+resolving them on first *use* instead of at process start) or a thin launcher-stub binary
+that calls `SetDllDirectoryW` and re-execs the real engine binary from `lib/` — both
+meaningfully bigger and riskier than this entry, and both would need real local build
+verification to attempt safely, which this machine still can't do (see the 2026-08-19
+entry's own toolchain-gap list). Deliberately not attempted here; flagged as a possible
+follow-up if the ~28-file floor ever needs to come down further.
+
+**Verification:** the Rust change itself was compile-checked locally (`cargo check -p
+servoshell --bin servoshell`, with `RUSTFLAGS=-Clinker=link.exe` and a `PYTHON3` pointed at
+a `uv`-installed interpreter to work around this same machine's own toolchain gaps) —
+further verification (a real Windows CI run with real GStreamer, confirming both that
+nothing broke and that the file count actually dropped as expected) still pending as of this
+entry.

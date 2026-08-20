@@ -123,6 +123,57 @@ def windows_dlls() -> list[str]:
     return GSTREAMER_WIN_DEPENDENCY_LIBS + [f"{lib}-1.0-0.dll" for lib in GSTREAMER_BASE_LIBS]
 
 
+# The subset of GSTREAMER_BASE_LIBS that `play.exe` ITSELF transitively needs at process-load
+# time -- confirmed via `dumpbin /dependents` on the compiled binary, then recursively on each
+# of *its* dependencies until the closure stopped growing (same curation method the two lists
+# above already use -- see CUSTOMIZATIONS.md's 2026-08-19 "shrink the bundle root further, for
+# real this time" entry for the full derivation). This closure is resolved by the OS loader
+# *before* `main()` ever runs, as part of ordinary PE static-import resolution -- unlike a
+# plugin's own dependencies (see windows_dlls_needed_flat()'s own docstring), nothing in
+# `main.rs` gets a chance to influence it, so this subset has to stay flat next to play.exe
+# regardless of `SetDllDirectoryW`.
+GSTREAMER_BASE_LIBS_NEEDED_BY_SERVO_DIRECTLY = [
+    "gstreamer",
+    "gstbase",
+    "gstapp",
+    "gstaudio",
+    "gstplay",
+    "gstvideo",
+    "gstsdp",
+    "gstrtp",
+    "gsttag",
+    "gstpbutils",
+    "gstwebrtc",
+]
+
+# Same idea as GSTREAMER_BASE_LIBS_NEEDED_BY_SERVO_DIRECTLY above, but for the raw (non-
+# gst-prefixed) GSTREAMER_WIN_DEPENDENCY_LIBS filenames.
+GSTREAMER_WIN_DEPENDENCY_LIBS_NEEDED_BY_SERVO_DIRECTLY = [
+    "glib-2.0-0.dll",
+    "gobject-2.0-0.dll",
+    "gio-2.0-0.dll",
+    "gmodule-2.0-0.dll",
+    "intl-8.dll",
+    "pcre2-8-0.dll",
+    "ffi-7.dll",
+    "orc-0.4-0.dll",
+    "z-1.dll",
+]
+
+
+def windows_dlls_needed_flat() -> list[str]:
+    """The subset of windows_dlls() that must ALSO be copied flat next to play.exe, not just
+    into lib/ -- because this exact subset is resolved by the OS loader as part of play.exe's
+    own static PE imports, before `main()` (and therefore before `SetDllDirectoryW`, see
+    `ports/servoshell/main.rs`) ever runs. Everything else windows_dlls() returns is only ever
+    a *plugin's* own dependency (see `_bundle_windows`'s docstring), resolved at runtime, well
+    after `main()` has already extended the DLL search path to include lib/ -- so it's safe
+    for those to live in lib/ only."""
+    return GSTREAMER_WIN_DEPENDENCY_LIBS_NEEDED_BY_SERVO_DIRECTLY + [
+        f"{lib}-1.0-0.dll" for lib in GSTREAMER_BASE_LIBS_NEEDED_BY_SERVO_DIRECTLY
+    ]
+
+
 def windows_plugins() -> list[str]:
     plugins = load_plugin_libraries_from_text_file("common.rs.in")
     plugins.extend(load_plugin_libraries_from_text_file("windows.rs.in"))

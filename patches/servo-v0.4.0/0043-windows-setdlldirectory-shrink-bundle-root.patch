@@ -1,0 +1,219 @@
+diff --git a/ports/servoshell/Cargo.toml b/ports/servoshell/Cargo.toml
+index 16ae5ae..1115b19 100644
+--- a/ports/servoshell/Cargo.toml
++++ b/ports/servoshell/Cargo.toml
+@@ -142,7 +142,7 @@ signal-hook-registry = { workspace = true }
+ 
+ [target.'cfg(target_os = "windows")'.dependencies]
+ servo = { workspace = true, features = ["no-wgl"] }
+-windows-sys = { workspace = true, features = ["Win32_Graphics_Gdi", "Win32_System_Console"] }
++windows-sys = { workspace = true, features = ["Win32_Graphics_Gdi", "Win32_System_Console", "Win32_System_LibraryLoader"] }
+ 
+ [target.'cfg(target_os = "macos")'.dependencies]
+ objc2-app-kit = { workspace = true, features = [
+diff --git a/ports/servoshell/main.rs b/ports/servoshell/main.rs
+index a9016f8..fe3759b 100644
+--- a/ports/servoshell/main.rs
++++ b/ports/servoshell/main.rs
+@@ -20,10 +20,57 @@
+ // attach to the console of the parent process.
+ #![windows_subsystem = "windows"]
+ 
++#[cfg(target_os = "windows")]
++use std::os::windows::ffi::OsStrExt;
++
+ #[cfg(target_os = "windows")]
+ use windows_sys::Win32::System::Console;
++#[cfg(target_os = "windows")]
++use windows_sys::Win32::System::LibraryLoader::SetDllDirectoryW;
++
++// Windows only: adds `lib/` (next to this executable) to the process-wide DLL search path,
++// used by GStreamer's own plugin loading. A plugin file itself is found via `gst_plugin_
++// load_file`'s own `LOAD_WITH_ALTERED_SEARCH_PATH` (relative to that plugin's own
++// directory) regardless of this call -- but once found, the OS loader resolves *that
++// plugin's own* implicit imports (e.g. `gstnice.dll` needing `nice-10.dll`) through the
++// normal, process-wide search order, which by default never includes `lib/` at all. See
++// `python/servo/post_build_commands.py`'s `_bundle_windows`/CUSTOMIZATIONS.md's 2026-08-19
++// "attempted to shrink the root further, reverted" entry for the full story of finding this
++// out the hard way (duplicating every dependency DLL flat next to the binary, rather than
++// this) -- that entry's own "why not lower still" section flagged this exact fix as the
++// real way to go lower, deliberately deferred at the time. `SetDllDirectoryW` prepends its
++// argument to the search order without removing the application directory from it (per its
++// own documented behavior), so this is purely additive -- it doesn't change how anything
++// already flat next to the binary resolves.
++#[cfg(target_os = "windows")]
++fn add_lib_dir_to_dll_search_path() {
++    let Ok(exe_path) = std::env::current_exe() else {
++        return;
++    };
++    let Some(exe_dir) = exe_path.parent() else {
++        return;
++    };
++    let lib_dir = exe_dir.join("lib");
++    if !lib_dir.is_dir() {
++        // Not every build has a lib/ subfolder (e.g. a dev build run in-place) -- nothing
++        // to add in that case, and SetDllDirectoryW on a nonexistent path would otherwise
++        // just silently make that one entry a no-op anyway.
++        return;
++    }
++    let mut wide: Vec<u16> = lib_dir.as_os_str().encode_wide().collect();
++    wide.push(0);
++    // SAFETY: `wide` is a valid, null-terminated UTF-16 string kept alive for the duration
++    // of this call. `SetDllDirectoryW` only reads from it; it doesn't retain the pointer
++    // afterward (the OS copies the path internally).
++    unsafe {
++        SetDllDirectoryW(wide.as_ptr());
++    }
++}
+ 
+ fn main() {
++    #[cfg(target_os = "windows")]
++    add_lib_dir_to_dll_search_path();
++
+     #[cfg(target_os = "windows")]
+     // SAFETY: No safety related side effects or requirements.
+     unsafe {
+diff --git a/python/servo/gstreamer.py b/python/servo/gstreamer.py
+index c6688aa..36c87ca 100644
+--- a/python/servo/gstreamer.py
++++ b/python/servo/gstreamer.py
+@@ -123,6 +123,57 @@ def windows_dlls() -> list[str]:
+     return GSTREAMER_WIN_DEPENDENCY_LIBS + [f"{lib}-1.0-0.dll" for lib in GSTREAMER_BASE_LIBS]
+ 
+ 
++# The subset of GSTREAMER_BASE_LIBS that `play.exe` ITSELF transitively needs at process-load
++# time -- confirmed via `dumpbin /dependents` on the compiled binary, then recursively on each
++# of *its* dependencies until the closure stopped growing (same curation method the two lists
++# above already use -- see CUSTOMIZATIONS.md's 2026-08-19 "shrink the bundle root further, for
++# real this time" entry for the full derivation). This closure is resolved by the OS loader
++# *before* `main()` ever runs, as part of ordinary PE static-import resolution -- unlike a
++# plugin's own dependencies (see windows_dlls_needed_flat()'s own docstring), nothing in
++# `main.rs` gets a chance to influence it, so this subset has to stay flat next to play.exe
++# regardless of `SetDllDirectoryW`.
++GSTREAMER_BASE_LIBS_NEEDED_BY_SERVO_DIRECTLY = [
++    "gstreamer",
++    "gstbase",
++    "gstapp",
++    "gstaudio",
++    "gstplay",
++    "gstvideo",
++    "gstsdp",
++    "gstrtp",
++    "gsttag",
++    "gstpbutils",
++    "gstwebrtc",
++]
++
++# Same idea as GSTREAMER_BASE_LIBS_NEEDED_BY_SERVO_DIRECTLY above, but for the raw (non-
++# gst-prefixed) GSTREAMER_WIN_DEPENDENCY_LIBS filenames.
++GSTREAMER_WIN_DEPENDENCY_LIBS_NEEDED_BY_SERVO_DIRECTLY = [
++    "glib-2.0-0.dll",
++    "gobject-2.0-0.dll",
++    "gio-2.0-0.dll",
++    "gmodule-2.0-0.dll",
++    "intl-8.dll",
++    "pcre2-8-0.dll",
++    "ffi-7.dll",
++    "orc-0.4-0.dll",
++    "z-1.dll",
++]
++
++
++def windows_dlls_needed_flat() -> list[str]:
++    """The subset of windows_dlls() that must ALSO be copied flat next to play.exe, not just
++    into lib/ -- because this exact subset is resolved by the OS loader as part of play.exe's
++    own static PE imports, before `main()` (and therefore before `SetDllDirectoryW`, see
++    `ports/servoshell/main.rs`) ever runs. Everything else windows_dlls() returns is only ever
++    a *plugin's* own dependency (see `_bundle_windows`'s docstring), resolved at runtime, well
++    after `main()` has already extended the DLL search path to include lib/ -- so it's safe
++    for those to live in lib/ only."""
++    return GSTREAMER_WIN_DEPENDENCY_LIBS_NEEDED_BY_SERVO_DIRECTLY + [
++        f"{lib}-1.0-0.dll" for lib in GSTREAMER_BASE_LIBS_NEEDED_BY_SERVO_DIRECTLY
++    ]
++
++
+ def windows_plugins() -> list[str]:
+     plugins = load_plugin_libraries_from_text_file("common.rs.in")
+     plugins.extend(load_plugin_libraries_from_text_file("windows.rs.in"))
+diff --git a/python/servo/post_build_commands.py b/python/servo/post_build_commands.py
+index 2cffc51..f3da734 100644
+--- a/python/servo/post_build_commands.py
++++ b/python/servo/post_build_commands.py
+@@ -27,7 +27,7 @@ from mach.decorators import (
+ 
+ import servo.util
+ import servo.platform
+-from servo.gstreamer import windows_dlls, windows_plugins
++from servo.gstreamer import windows_dlls, windows_dlls_needed_flat, windows_plugins
+ 
+ from servo.command_base import (
+     BuildNotFound,
+@@ -876,27 +876,31 @@ class PostBuildCommands(CommandBase):
+         altered search to actually find them.
+ 
+         `windows_dlls()` also includes GStreamer's own *core* shared libs
+-        (`GSTREAMER_BASE_LIBS`, e.g. `gstreamer-1.0-0.dll`) — some of those really are
+-        real load-time dependencies of `play.exe` itself (`servo-media-gstreamer`
+-        links them directly), so unlike the plugin-only files, every `windows_dlls()`
+-        entry gets copied to *both* `output_dir` and `lib/`.
+-
+-        A 2026-08-19 attempt to narrow that down to only the subset `play.exe` itself
+-        actually needs (curated via `dumpbin /dependents`) turned out to be wrong and was
+-        reverted: `LOAD_WITH_ALTERED_SEARCH_PATH` only changes how the *plugin file itself*
+-        gets found — a plugin's own dependencies (e.g. `gstnice.dll` needing `nice-10.dll`)
+-        still resolve through the OS's normal process-wide search order once the loader
+-        processes that plugin's import table, which never includes `lib/` on its own.
+-        Confirmed by a real Windows CI failure (`ErrorLoadingPlugins` for `gstnice`/`gstogg`/
+-        `gstopengl`/etc., each missing exactly the dependency this had removed from
+-        `output_dir`) — see CUSTOMIZATIONS.md's entry on this for the full story. Duplicating
+-        a handful of small DLLs is far cheaper than guessing wrong about which of them
+-        `play.exe` (or some plugin sitting in `lib/`) needs flat.
++        (`GSTREAMER_BASE_LIBS`, e.g. `gstreamer-1.0-0.dll`) — a curated subset of those
++        really are real load-time dependencies of `play.exe` itself
++        (`windows_dlls_needed_flat()`, confirmed via `dumpbin /dependents`; see
++        CUSTOMIZATIONS.md's 2026-08-19 "shrink the bundle root further, for real this
++        time" entry for the full derivation), so those get copied to *both* `output_dir`
++        and `lib/` — the rest of `windows_dlls()` is only ever needed inside `lib/`.
++
++        A 2026-08-19 attempt at exactly this narrowing was tried once already and reverted
++        as wrong: `LOAD_WITH_ALTERED_SEARCH_PATH` (what GStreamer uses to find a plugin
++        *file* itself) only changes how that one file is found — a plugin's own
++        dependencies (e.g. `gstnice.dll` needing `nice-10.dll`) still resolved through the
++        OS's normal, process-wide search order, which never included `lib/`, causing a
++        real, reproduced `ErrorLoadingPlugins` failure. That gap is now closed at the
++        source: `ports/servoshell/main.rs` calls `SetDllDirectoryW` to add `lib/` to the
++        process-wide search path itself, early in `main()` — before any plugin ever gets
++        loaded, so this narrowing is safe now. (It couldn't have covered play.exe's own
++        static imports either way, which the OS resolves before `main()` runs at all —
++        that's exactly why `windows_dlls_needed_flat()`'s subset still needs a flat copy
++        regardless of the new call.)
+         """
+         shutil.copy(servo_binary, path.join(output_dir, "play.exe"))
+ 
+         plugin_files = set(windows_plugins())
+         dependency_files = set(windows_dlls())
++        needed_flat = set(windows_dlls_needed_flat())
+         lib_dir = path.join(output_dir, "lib")
+         os.makedirs(lib_dir, exist_ok=True)
+ 
+@@ -905,12 +909,15 @@ class PostBuildCommands(CommandBase):
+                 continue
+             src = path.join(binary_dir, f)
+             is_plugin = f in plugin_files
+-            if is_plugin or f in dependency_files:
++            is_dependency = f in dependency_files
++            if is_plugin or is_dependency:
+                 shutil.copy(src, lib_dir)
+-            # Anything not a plugin -- a real dependency lib, or an unrecognized DLL
+-            # this list doesn't know about -- keeps its current flat placement too,
+-            # so an unclassified file still behaves exactly like before this change.
+-            if not is_plugin:
++            # Flat next to play.exe when: an unrecognized DLL neither list knows about
++            # (unchanged from before this), or a dependency lib play.exe itself actually
++            # needs at load time (resolved before main()/SetDllDirectoryW ever run). A
++            # plugin, or a dependency lib only ever needed inside lib/, does NOT also
++            # get a flat copy.
++            if not is_plugin and (not is_dependency or f in needed_flat):
+                 shutil.copy(src, output_dir)
+ 
+         # `--bin`/`--nightly` can point `servo_binary` at an already-*bundled* shell

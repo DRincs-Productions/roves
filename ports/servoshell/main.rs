@@ -21,9 +21,56 @@
 #![windows_subsystem = "windows"]
 
 #[cfg(target_os = "windows")]
+use std::os::windows::ffi::OsStrExt;
+
+#[cfg(target_os = "windows")]
 use windows_sys::Win32::System::Console;
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::System::LibraryLoader::SetDllDirectoryW;
+
+// Windows only: adds `lib/` (next to this executable) to the process-wide DLL search path,
+// used by GStreamer's own plugin loading. A plugin file itself is found via `gst_plugin_
+// load_file`'s own `LOAD_WITH_ALTERED_SEARCH_PATH` (relative to that plugin's own
+// directory) regardless of this call -- but once found, the OS loader resolves *that
+// plugin's own* implicit imports (e.g. `gstnice.dll` needing `nice-10.dll`) through the
+// normal, process-wide search order, which by default never includes `lib/` at all. See
+// `python/servo/post_build_commands.py`'s `_bundle_windows`/CUSTOMIZATIONS.md's 2026-08-19
+// "attempted to shrink the root further, reverted" entry for the full story of finding this
+// out the hard way (duplicating every dependency DLL flat next to the binary, rather than
+// this) -- that entry's own "why not lower still" section flagged this exact fix as the
+// real way to go lower, deliberately deferred at the time. `SetDllDirectoryW` prepends its
+// argument to the search order without removing the application directory from it (per its
+// own documented behavior), so this is purely additive -- it doesn't change how anything
+// already flat next to the binary resolves.
+#[cfg(target_os = "windows")]
+fn add_lib_dir_to_dll_search_path() {
+    let Ok(exe_path) = std::env::current_exe() else {
+        return;
+    };
+    let Some(exe_dir) = exe_path.parent() else {
+        return;
+    };
+    let lib_dir = exe_dir.join("lib");
+    if !lib_dir.is_dir() {
+        // Not every build has a lib/ subfolder (e.g. a dev build run in-place) -- nothing
+        // to add in that case, and SetDllDirectoryW on a nonexistent path would otherwise
+        // just silently make that one entry a no-op anyway.
+        return;
+    }
+    let mut wide: Vec<u16> = lib_dir.as_os_str().encode_wide().collect();
+    wide.push(0);
+    // SAFETY: `wide` is a valid, null-terminated UTF-16 string kept alive for the duration
+    // of this call. `SetDllDirectoryW` only reads from it; it doesn't retain the pointer
+    // afterward (the OS copies the path internally).
+    unsafe {
+        SetDllDirectoryW(wide.as_ptr());
+    }
+}
 
 fn main() {
+    #[cfg(target_os = "windows")]
+    add_lib_dir_to_dll_search_path();
+
     #[cfg(target_os = "windows")]
     // SAFETY: No safety related side effects or requirements.
     unsafe {
