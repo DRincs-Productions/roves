@@ -3591,9 +3591,10 @@ verification to attempt safely, which this machine still can't do (see the 2026-
 entry's own toolchain-gap list). Deliberately not attempted here; flagged as a possible
 follow-up if the ~28-file floor ever needs to come down further.
 
-**Verification:** the Rust change itself was compile-checked locally (`cargo check -p
-servoshell --bin servoshell`, with `RUSTFLAGS=-Clinker=link.exe` and a `PYTHON3` pointed at
-a `uv`-installed interpreter to work around this same machine's own toolchain gaps) —
-further verification (a real Windows CI run with real GStreamer, confirming both that
-nothing broke and that the file count actually dropped as expected) still pending as of this
-entry.
+**Verification:** compile-checked locally first (`cargo check -p servoshell --bin
+servoshell`, with `RUSTFLAGS=-Clinker=link.exe` and a `PYTHON3` pointed at a `uv`-installed
+interpreter to work around this same machine's own toolchain gaps), then confirmed for real
+via `test.yml`'s next CI run — all 6 matrix jobs green (real GStreamer, all 3 platforms),
+and a fresh download of the published Windows test asset landed exactly 30 files in the
+bundle root (29 without this build's own extra `NOTE.txt`) — right in the ~28-30 range this
+entry predicted, with real audio/video confirmed still working.
