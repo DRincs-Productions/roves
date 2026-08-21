@@ -3668,3 +3668,63 @@ to iterate on speculatively.
 test tone alongside the original 200ms beep) — that part correctly did its job (isolating the
 symptom to a timing race) and remains useful for whoever picks this up next. Not part of the
 patch set, per this file's own `test-page/` notes.
+
+## 2026-08-21 — GStreamer audio sink: diagnostic logging for the WebAudio silence report
+
+**Files:** `components/media/backends/gstreamer/audio_sink.rs`
+
+**Patch:** `patches/servo-v0.4.0/0044-gstreamer-audio-sink-diagnostic-logging.patch`
+
+**Follow-up to the two entries directly above.** This machine's toolchain gap is now
+resolved: `mach bootstrap --force --yes` (winget-installed CMake/LLVM/Ninja/WiX, on top of
+the GStreamer MSVC devel SDK and MSVC linker already present from an earlier attempt) got far
+enough to compile `servo-media-gstreamer` directly (`cargo check -p servo-media-gstreamer`
+succeeds with `PATH`/`PKG_CONFIG_PATH` pointed at `target/dependencies/gstreamer/1.0/
+msvc_x86_64` and `PYTHON3` pointed at a `uv`-installed interpreter — same env shape as the
+2026-08-20 entry predicted would be needed). A full `mach build` (needed for the real DOM/
+script `AudioContext` path, not just this backend crate in isolation) still needs installing
+that toolchain properly system-wide first; not done in this session, deferred back to CI.
+
+**What direct local testing of this crate found, and why it changes the diagnosis:** wrote a
+throwaway example (`components/media/examples/examples/beep200ms.rs`, not committed) that
+reproduces `AudioButton.tsx`'s exact scenario against the real GStreamer backend — same
+`AudioContext`/oscillator/gain graph, and critically, closing the context only once
+`context.current_time()` (verified in `components/script/dom/audio/audioscheduledsourcenode.rs`
+and `render_thread.rs` to be *exactly* the clock `onended` actually fires from — it only
+advances once a block has actually been rendered and handed to the sink, via
+`AudioRenderThreadMsg::SinkNeedData`) reaches the scheduled stop time, the same condition the
+real `onended` callback waits for. Measured on this machine: `autoaudiosink` took ~76ms to
+actually reach `PLAYING` (device open cost, confirming that part of the original theory), but
+from there the render thread paced every subsequent block to genuine real-time consumption
+(confirmed by `push_data` timestamps tracking wall-clock, not racing ahead) — meaning
+`onended` didn't fire until **254ms**, well after all 200ms of scheduled audio had actually
+been generated and handed to the device. In other words: the backend, in isolation, does not
+tear down the pipeline before the sound has actually played — it just delays the start by the
+device's open cost. That contradicts total silence and falsifies the "duration race" theory
+above as a *complete* explanation, though the ~76ms open-cost measurement itself still stands.
+Also separately confirmed `gstreamer_plugin_lists/windows.rs.in` includes `gstwasapi` and the
+common list includes `gstautodetect` — `GStreamerBackend::init_with_plugins` (`components/
+media/backends/gstreamer/lib.rs`) hard-exits (`log::error!` + `process::exit(1)`) if any
+curated plugin fails to load, and the reporting user's `roves.log` shows a normal startup with
+no such error, so missing/failed plugin loading is also ruled out.
+
+**Given the backend checks out in isolation, the remaining candidates are outside what a
+standalone crate test can reach:** something in the DOM/script binding layer between JS
+`AudioContext`/`OscillatorNode` and this backend (untested — needs a full `mach build`), or
+something specific to the real bundled DLL layout (trimmed `lib/` subset vs. the full devel
+SDK used for the local test) or the reporting user's actual audio hardware/routing, neither of
+which a local isolated crate test can see.
+
+**This patch:** adds `log::info!`-based diagnostic logging (capped to the first 10
+`push_data` calls per sink instance, so a real long-playing sound doesn't spam `roves.log`) at
+the exact points the local test above instrumented with `eprintln!` — pipeline state
+transitions and `ASYNC_DONE` via a bus-watching thread, plus `play()`/`stop()`'s `set_state`
+results. Pure observability, no behavior change (same `set_state` calls as upstream). Default
+log level is `info` (`ports/servoshell/desktop/logging.rs`), so these lines land in
+`roves.log` on a real user's machine with no extra configuration needed. Intent: get this into
+the next `test` CI build (`test.yml` triggers on `patches/**` changes), have the reporting
+user download it and re-click the beep, and read the real timing off their actual hardware and
+the actual bundled DLL layout — closing exactly the two gaps the local test above couldn't
+reach. Remove this logging once the real root cause is found, same as the precedent set by
+`d6017c8`/`c38f3f6`'s macOS GStreamer packaging diagnostic (added, then removed once the fix
+it was chasing was confirmed).
