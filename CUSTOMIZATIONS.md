@@ -3599,11 +3599,13 @@ and a fresh download of the published Windows test asset landed exactly 30 files
 bundle root (29 without this build's own extra `NOTE.txt`) — right in the ~28-30 range this
 entry predicted, with real audio/video confirmed still working.
 
-## 2026-08-21 — GStreamer audio sink: wait for the real PLAYING transition
+## 2026-08-21 — GStreamer audio sink: attempted PLAYING-wait, reverted -- it deadlocked
 
 **Files:** `components/media/backends/gstreamer/audio_sink.rs`
 
-**Patch:** `patches/servo-v0.4.0/0044-gstreamer-audio-sink-wait-for-real-playing-state.patch`
+**Not part of the patch set** (see below) — this entry documents a fix that was tried and
+reverted the same day, so the next person investigating this symptom doesn't retry the same
+broken approach.
 
 **Reported as:** a real user built `test-page` with Packmaster (shell v0.2.2, real GStreamer,
 not `--media-stack dummy`) and reported the WebAudio "play test beep" button showed `ok —
@@ -3612,38 +3614,57 @@ audible. `roves.log` showed no errors (GStreamer/`media_platform::init` — see 
 logs nothing on success, only `log::error!` on failure), and the user's Windows output device/
 volume were confirmed correct. Added a second, longer (2s) test tone to the same button
 (`../test-page/src/AudioButton.tsx` — not part of the patch set, see this file's own
-`test-page/` notes) to isolate the variable: the 2s tone was audible, the 200s one wasn't.
-That isolated it to the tone's *duration*, not a broken pipeline.
+`test-page/` notes; this part of the change was kept, see its own note below) to isolate the
+variable: the 2s tone was audible, the 200ms one wasn't — pointing at a duration/timing race
+rather than a fundamentally broken pipeline.
 
-**Root cause:** `GStreamerAudioSink::play()` (`audio_sink.rs`) called
-`self.pipeline.set_state(gstreamer::State::Playing)` and treated any non-error `Result` as
-"the sink is now playing." GStreamer's own `set_state` can legitimately return success while
-the transition is still only *pending* (`GST_STATE_CHANGE_ASYNC`) — exactly what happens when
-a downstream element needs real setup time, like `autoaudiosink` (→ `wasapisink` on Windows)
+**Diagnosis (still believed correct):** `GStreamerAudioSink::play()` calls
+`self.pipeline.set_state(gstreamer::State::Playing)` and treats any non-error `Result` as "the
+sink is now playing." GStreamer's own `set_state` can legitimately return success while the
+transition is still only *pending* (`GST_STATE_CHANGE_ASYNC`) — exactly what happens when a
+downstream element needs real setup time, like `autoaudiosink` (→ `wasapisink` on Windows)
 opening the actual output device, which commonly takes a few hundred ms on a cold start. The
 WebAudio side has no idea any of this is happening: the oscillator's stop time is scheduled
 against the Web Audio graph's own internal clock, completely decoupled from whether the
-GStreamer pipeline has actually started emitting samples yet. A 200ms one-shot sound (a very
+GStreamer pipeline has actually started emitting samples yet. A short one-shot sound (a very
 common real case — UI clicks, footsteps, any short SFX, not just this diagnostic beep) can
 finish and trigger `ctx.close()` (which tears the pipeline down) before the device has even
 finished opening, producing total silence with no error anywhere in the chain to report it.
 
-**Fix:** after `set_state(Playing)` succeeds, `play()` now also calls
-`self.pipeline.state(gstreamer::ClockTime::from_seconds(5))` (`Element::state`, the blocking
-`gst_element_get_state` equivalent) and propagates its `Result` too, so `play()` doesn't
-return `Ok` until the pipeline has actually finished transitioning to `PLAYING` — real device
-open included. This only affects the real-time GStreamer sink; `render_thread.rs`'s
-`Sink::Offline` variant (`OfflineAudioContext`, no real device involved) is untouched. Same
-approach could apply to `player.rs`'s video/audio-element playback path if a similar
-race is ever reported there, but that hasn't been observed — left alone for now.
+**Attempted fix (reverted):** after `set_state(Playing)` succeeded, `play()` additionally
+called `self.pipeline.state(gstreamer::ClockTime::from_seconds(5))` (`Element::state`, the
+blocking `gst_element_get_state` equivalent) and propagated its `Result` too, intending to
+make `play()` not return `Ok` until the pipeline had actually finished transitioning to
+`PLAYING`.
 
-**Verification:** reviewed against the pinned `gstreamer` crate version (`0.25.1`, per
-`Cargo.lock`) — confirmed `Element::state`'s exact signature (`fn state(&self, timeout: impl
-Into<Option<ClockTime>>) -> (Result<StateChangeSuccess, StateChangeError>, State, State)`) and
-that `ClockTime::from_seconds` exists, directly from the crate's vendored source under
-`~/.cargo/registry/src/`. Full local compilation (`cargo check -p servo-media-gstreamer`)
-isn't possible on this machine — same pre-existing toolchain gap as the 2026-08-20 entry
-above (missing `pkg-config`/GStreamer dev libraries, needed by `gstreamer-sys`/`gobject-sys`'s
-build scripts, on top of the missing-linker gap that entry already worked around). Real
-verification (a full build with real GStreamer, and ideally the reporting user re-testing the
-original 200ms beep) still pending — flag this entry as unconfirmed until then.
+**Why it was wrong, confirmed by the same user re-testing a real build:** instead of fixing
+the silence, this made things strictly worse — still no audible sound, audio now starts late,
+and *the whole page freezes* for several seconds. Root cause of the regression: `play()` runs
+on the audio render thread (`render_thread.rs`'s `AudioRenderThread::event_loop`), the same
+single thread that also *services* `AudioRenderThreadMsg::SinkNeedData` — the message that
+must be processed to push the appsrc's first buffer, which is itself a precondition for the
+pipeline ever completing preroll and reaching `PLAYING`. Blocking that thread inside
+`Element::state()` waiting for `PLAYING` creates a direct deadlock: the condition being waited
+on can only be satisfied by the very thread that's blocked waiting for it. The observed
+symptoms match exactly: total freeze for the wait (nothing on the render thread progresses,
+including the WebAudio graph's own clock), then "late" audio only once the 5s timeout expires,
+`play()` returns an (ignored downstream) error, and the thread finally drains its backlog —
+by which point the originally-scheduled tone's timing is meaningless.
+
+**Status:** reverted `audio_sink.rs` back to the original unconditional
+`.map(|_| ())`/`.map_err(...)` on `set_state` alone; deleted the patch file this entry
+originally pointed at (`0044-gstreamer-audio-sink-wait-for-real-playing-state.patch` — never
+existed upstream, so nothing to reapply). The underlying silence bug is still real and still
+unfixed. A correct fix would need to signal "device actually open" without blocking the thread
+that must service `SinkNeedData` to get there — e.g. a GStreamer bus watch on a separate
+thread reacting to `ASYNC_DONE`, or restructuring so state-change waiting happens off the
+render thread entirely. Left unfixed rather than attempting another unverified change to this
+same file blind — this machine still can't compile `servo-media-gstreamer` locally (missing
+`pkg-config`/GStreamer dev libraries — same gap as the 2026-08-20 entry above), so anything
+here can currently only be verified by a real user rebuilding and testing, which is expensive
+to iterate on speculatively.
+
+**Kept, not reverted:** the `test-page/src/AudioButton.tsx` long-tone diagnostic button (2s
+test tone alongside the original 200ms beep) — that part correctly did its job (isolating the
+symptom to a timing race) and remains useful for whoever picks this up next. Not part of the
+patch set, per this file's own `test-page/` notes.
