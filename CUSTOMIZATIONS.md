@@ -3598,3 +3598,52 @@ via `test.yml`'s next CI run — all 6 matrix jobs green (real GStreamer, all 3 
 and a fresh download of the published Windows test asset landed exactly 30 files in the
 bundle root (29 without this build's own extra `NOTE.txt`) — right in the ~28-30 range this
 entry predicted, with real audio/video confirmed still working.
+
+## 2026-08-21 — GStreamer audio sink: wait for the real PLAYING transition
+
+**Files:** `components/media/backends/gstreamer/audio_sink.rs`
+
+**Patch:** `patches/servo-v0.4.0/0044-gstreamer-audio-sink-wait-for-real-playing-state.patch`
+
+**Reported as:** a real user built `test-page` with Packmaster (shell v0.2.2, real GStreamer,
+not `--media-stack dummy`) and reported the WebAudio "play test beep" button showed `ok —
+played a 440Hz beep for 200ms` (no exception, `context.state: running`) but nothing was
+audible. `roves.log` showed no errors (GStreamer/`media_platform::init` — see `servo.rs` —
+logs nothing on success, only `log::error!` on failure), and the user's Windows output device/
+volume were confirmed correct. Added a second, longer (2s) test tone to the same button
+(`../test-page/src/AudioButton.tsx` — not part of the patch set, see this file's own
+`test-page/` notes) to isolate the variable: the 2s tone was audible, the 200s one wasn't.
+That isolated it to the tone's *duration*, not a broken pipeline.
+
+**Root cause:** `GStreamerAudioSink::play()` (`audio_sink.rs`) called
+`self.pipeline.set_state(gstreamer::State::Playing)` and treated any non-error `Result` as
+"the sink is now playing." GStreamer's own `set_state` can legitimately return success while
+the transition is still only *pending* (`GST_STATE_CHANGE_ASYNC`) — exactly what happens when
+a downstream element needs real setup time, like `autoaudiosink` (→ `wasapisink` on Windows)
+opening the actual output device, which commonly takes a few hundred ms on a cold start. The
+WebAudio side has no idea any of this is happening: the oscillator's stop time is scheduled
+against the Web Audio graph's own internal clock, completely decoupled from whether the
+GStreamer pipeline has actually started emitting samples yet. A 200ms one-shot sound (a very
+common real case — UI clicks, footsteps, any short SFX, not just this diagnostic beep) can
+finish and trigger `ctx.close()` (which tears the pipeline down) before the device has even
+finished opening, producing total silence with no error anywhere in the chain to report it.
+
+**Fix:** after `set_state(Playing)` succeeds, `play()` now also calls
+`self.pipeline.state(gstreamer::ClockTime::from_seconds(5))` (`Element::state`, the blocking
+`gst_element_get_state` equivalent) and propagates its `Result` too, so `play()` doesn't
+return `Ok` until the pipeline has actually finished transitioning to `PLAYING` — real device
+open included. This only affects the real-time GStreamer sink; `render_thread.rs`'s
+`Sink::Offline` variant (`OfflineAudioContext`, no real device involved) is untouched. Same
+approach could apply to `player.rs`'s video/audio-element playback path if a similar
+race is ever reported there, but that hasn't been observed — left alone for now.
+
+**Verification:** reviewed against the pinned `gstreamer` crate version (`0.25.1`, per
+`Cargo.lock`) — confirmed `Element::state`'s exact signature (`fn state(&self, timeout: impl
+Into<Option<ClockTime>>) -> (Result<StateChangeSuccess, StateChangeError>, State, State)`) and
+that `ClockTime::from_seconds` exists, directly from the crate's vendored source under
+`~/.cargo/registry/src/`. Full local compilation (`cargo check -p servo-media-gstreamer`)
+isn't possible on this machine — same pre-existing toolchain gap as the 2026-08-20 entry
+above (missing `pkg-config`/GStreamer dev libraries, needed by `gstreamer-sys`/`gobject-sys`'s
+build scripts, on top of the missing-linker gap that entry already worked around). Real
+verification (a full build with real GStreamer, and ideally the reporting user re-testing the
+original 200ms beep) still pending — flag this entry as unconfirmed until then.
