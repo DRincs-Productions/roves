@@ -11,6 +11,7 @@ import IndexedDbButton from "./IndexedDbButton.tsx";
 import PixiPanel from "./PixiPanel.tsx";
 import StorageButton from "./StorageButton.tsx";
 import ThreePanel from "./ThreePanel.tsx";
+import ToneButton from "./ToneButton.tsx";
 
 type RenderTest = "none" | "pixi" | "three";
 
@@ -148,6 +149,7 @@ export default function App() {
       <div style={{ display: "flex", gap: "1.5rem", flexWrap: "wrap", justifyContent: "center" }}>
         <FullscreenButton />
         <AudioButton />
+        <ToneButton />
         <StorageButton />
         <IndexedDbButton />
         <ClearCacheButton />
