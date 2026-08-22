@@ -24,7 +24,7 @@ use winit::window::WindowId;
 
 use super::event_loop::AppEvent;
 use crate::desktop::event_loop::ServoShellEventLoop;
-use crate::desktop::headed_window::HeadedWindow;
+use crate::desktop::headed_window::{HeadedWindow, SPLASH_ANIMATION_TICK};
 use crate::desktop::headless_window::HeadlessWindow;
 use crate::desktop::protocols;
 use crate::desktop::tracing::trace_winit_event;
@@ -35,19 +35,20 @@ use crate::running_app_state::RunningAppState;
 use crate::running_app_state::ServoshellGamepadDelegate;
 use crate::window::{PlatformWindow, ServoShellWindowId};
 
-/// Minimum time every headed launch spends on the boot splash before the
-/// real page opens, regardless of whether there's any boot extraction to
-/// wait on. Without this, a launch with nothing to extract — a dev `--url`
-/// run, or (the common case after the very first launch) a packed-content
-/// launch whose destination is already cached from a previous run — skipped
+/// Minimum time every headed launch spends on the boot splash before
+/// `finish_init` runs (building Servo, opening the real `WebView`),
+/// regardless of whether there's any boot extraction to wait on. Without
+/// this, a launch with nothing to extract — a dev `--url` run, or (the
+/// common case after the very first launch) a packed-content launch whose
+/// destination is already cached from a previous run — skipped
 /// `AppState::Booting` entirely: the window's very first frame *is* the
 /// branded splash (see `Gui::new`), but the next frame immediately swapped
-/// in the real, still-loading `WebView`, whose own background is black too
-/// (see `shell_background_color_rgba`) until it has content to paint. Net
-/// effect: the Roves-branded splash flashed for a single frame, read by a
-/// user as "black screen, then the app" rather than as a splash. Holding
-/// the splash up for a fixed minimum makes it long enough to actually
-/// register on every launch, not just a slow first one.
+/// in the real, still-loading `WebView`. Holding the splash up for a fixed
+/// minimum makes it long enough to actually register on every launch, not
+/// just a slow first one. This is only half of what keeps the splash from
+/// flashing away too early, though — see `HeadedWindow::begin_page_load_splash`
+/// for the other half: once `finish_init` *does* open the real `WebView`, the
+/// splash stays up still further, until that page is actually ready.
 const MIN_SPLASH_DURATION: Duration = Duration::from_millis(500);
 
 pub(crate) enum AppState {
@@ -57,16 +58,19 @@ pub(crate) enum AppState {
     /// `HeadedWindow::paint_splash`) while, if there's a pending
     /// packed-content boot extraction, a background thread (spawned from
     /// `App::init`) decompresses the boot set. `extraction_started` drives
-    /// `MIN_SPLASH_DURATION`; `progress` is updated by incoming
-    /// `AppEvent::BootProgress`. `extraction_done` starts `true` when there
-    /// was no pending extraction to begin with (nothing to wait on but
-    /// `MIN_SPLASH_DURATION`), or flips to `true` once `AppEvent::BootReady`
-    /// arrives. `App::try_finish_booting` is what actually decides, from
-    /// these fields, when to hand off to `finish_init`.
+    /// both `MIN_SPLASH_DURATION` and the splash's animation clock (passed
+    /// to `paint_splash` as elapsed time — see that function's doc comment
+    /// for why it's no longer a completion fraction). `extraction_done`
+    /// starts `true` when there was no pending extraction to begin with
+    /// (nothing to wait on but `MIN_SPLASH_DURATION`), or flips to `true`
+    /// once `AppEvent::BootReady` arrives. `App::try_finish_booting` is what
+    /// actually decides, from these fields, when to hand off to
+    /// `finish_init` — which, for a headed launch, keeps the splash up
+    /// still further (see `MIN_SPLASH_DURATION`'s own doc comment) rather
+    /// than transitioning straight to `Running`.
     Booting {
         window: Rc<dyn PlatformWindow>,
         extraction_started: Instant,
-        progress: f32,
         extraction_done: bool,
     },
     Running(Rc<RunningAppState>),
@@ -169,13 +173,14 @@ impl App {
             return;
         };
 
-        // Show the splash immediately, then make sure we wake up again once
-        // `MIN_SPLASH_DURATION` has passed even if no `BootProgress`/
-        // `BootReady` tick arrives before then — see `new_events`.
+        // Show the splash immediately, then make sure we wake up again at the next
+        // animation tick even if no `BootProgress`/`BootReady` arrives before then — see
+        // `new_events`/`try_finish_booting`, which take over re-arming this on every
+        // subsequent tick.
         if let Some(headed_window) = platform_window.as_headed_window() {
             headed_window.winit_window().request_redraw();
         }
-        active_event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + MIN_SPLASH_DURATION));
+        active_event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + SPLASH_ANIMATION_TICK));
 
         let extraction_done = match opts {
             Some(opts) => {
@@ -205,16 +210,17 @@ impl App {
         self.state = AppState::Booting {
             window: platform_window,
             extraction_started: Instant::now(),
-            progress: 0.0,
             extraction_done,
         };
     }
 
     /// If `Booting`, check whether both extraction (if any was pending) and
     /// `MIN_SPLASH_DURATION` have finished; if so, hand off to
-    /// `finish_init`. Otherwise (re)arm `control_flow` to wake up exactly
-    /// when `MIN_SPLASH_DURATION` will have elapsed. A no-op when not
-    /// `Booting`, so every event handler below can call this
+    /// `finish_init`. Otherwise (re)arm `control_flow` to wake up at the next
+    /// `SPLASH_ANIMATION_TICK` (so the splash's indeterminate animation keeps
+    /// moving the whole time, not just once at the `MIN_SPLASH_DURATION`
+    /// mark), capped so it never overshoots that mark on the first tick. A
+    /// no-op when not `Booting`, so every event handler below can call this
     /// unconditionally.
     fn try_finish_booting(&mut self, event_loop: &ActiveEventLoop) {
         let AppState::Booting { window, extraction_started, extraction_done, .. } = &self.state
@@ -223,9 +229,17 @@ impl App {
         };
         let elapsed = extraction_started.elapsed();
         if !*extraction_done || elapsed < MIN_SPLASH_DURATION {
-            event_loop.set_control_flow(ControlFlow::WaitUntil(
-                Instant::now() + MIN_SPLASH_DURATION.saturating_sub(elapsed),
-            ));
+            // Once past `MIN_SPLASH_DURATION` itself, `saturating_sub` alone would
+            // return zero and busy-loop while still waiting on `extraction_done` — tick
+            // at the animation rate instead in that case, same as while still within
+            // `MIN_SPLASH_DURATION` but capped so the first tick doesn't overshoot it.
+            let remaining = MIN_SPLASH_DURATION.saturating_sub(elapsed);
+            let tick = if remaining.is_zero() {
+                SPLASH_ANIMATION_TICK
+            } else {
+                remaining.min(SPLASH_ANIMATION_TICK)
+            };
+            event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + tick));
             return;
         }
         let window = window.clone();
@@ -340,6 +354,13 @@ impl App {
             #[cfg(feature = "gamepad")]
             ServoshellGamepadDelegate::maybe_new().map(Rc::new),
         ));
+
+        // Keep the boot splash up (see its own doc comment) instead of immediately
+        // handing off to a page that hasn't painted anything of its own yet — a no-op
+        // for headless, which has no splash/window to begin with.
+        if let Some(headed_window) = platform_window.as_headed_window() {
+            headed_window.begin_page_load_splash();
+        }
         running_state.open_window(platform_window, self.initial_url.as_url().clone());
 
         self.state = AppState::Running(running_state);
@@ -389,22 +410,40 @@ impl ApplicationHandler<AppEvent> for App {
         self.init(Some(event_loop));
     }
 
-    /// Only relevant while `Booting`: forces one redraw once
-    /// `MIN_SPLASH_DURATION` elapses even if no `AppEvent::BootProgress`/
-    /// `BootReady` tick has arrived yet, then defers to
-    /// `try_finish_booting` — which is also what wakes `Booting` up to
-    /// transition to `finish_init` purely on `MIN_SPLASH_DURATION` elapsing,
-    /// for a launch with no pending extraction to otherwise notify us.
+    /// Drives the two periodic ticks the boot splash's animation relies on, neither of
+    /// which any real `WindowEvent`/`AppEvent` is guaranteed to otherwise deliver
+    /// promptly (or at all, during an otherwise-silent wait):
+    /// - While `Booting`: forces a redraw at each `SPLASH_ANIMATION_TICK` (see
+    ///   `try_finish_booting`, which arms this), then defers to `try_finish_booting`
+    ///   itself — also what transitions to `finish_init` once both extraction and
+    ///   `MIN_SPLASH_DURATION` are done.
+    /// - While `Running` with a window whose `page_load_splash_since` is still set (see
+    ///   `HeadedWindow::splash_animation_wake_deadline`, armed by `window_event`/
+    ///   `user_event`'s tail): forces that window's next redraw too, both to keep the
+    ///   splash animating and to promptly notice `LoadStatus::Complete` firing with no
+    ///   further page activity after it.
     fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
         if !matches!(cause, StartCause::ResumeTimeReached { .. }) {
             return;
         }
-        if let AppState::Booting { window, .. } = &self.state &&
-            let Some(headed_window) = window.as_headed_window()
-        {
-            headed_window.winit_window().request_redraw();
+        match &self.state {
+            AppState::Booting { window, .. } => {
+                if let Some(headed_window) = window.as_headed_window() {
+                    headed_window.winit_window().request_redraw();
+                }
+                self.try_finish_booting(event_loop);
+            },
+            AppState::Running(state) => {
+                for window in state.windows().values() {
+                    if let Some(headed_window) = window.platform_window().as_headed_window() &&
+                        headed_window.splash_animation_wake_deadline(state).is_some()
+                    {
+                        headed_window.winit_window().request_redraw();
+                    }
+                }
+            },
+            _ => {},
         }
-        self.try_finish_booting(event_loop);
     }
 
     fn window_event(
@@ -423,12 +462,12 @@ impl ApplicationHandler<AppEvent> for App {
         self.t = now;
 
         if matches!(self.state, AppState::Booting { .. }) {
-            if let AppState::Booting { window, progress, .. } = &self.state &&
+            if let AppState::Booting { window, extraction_started, .. } = &self.state &&
                 let Some(headed_window) = window.as_headed_window() &&
                 headed_window.winit_window().id() == window_id &&
                 matches!(window_event, WindowEvent::RedrawRequested | WindowEvent::Resized(_))
             {
-                headed_window.paint_splash(*progress);
+                headed_window.paint_splash(extraction_started.elapsed());
             }
             self.try_finish_booting(event_loop);
             return;
@@ -437,6 +476,9 @@ impl ApplicationHandler<AppEvent> for App {
         let AppState::Running(state) = &self.state else {
             return;
         };
+        // Cloned out of `self.state`'s borrow (cheap — `Rc` clone) so it's still usable
+        // below, after `self.pump_servo_event_loop` needs `&mut self`.
+        let state = state.clone();
 
         if let Some(window) = state.window(ServoShellWindowId::from(u64::from(window_id))) &&
             let Some(headed_window) = window.platform_window().as_headed_window()
@@ -447,16 +489,14 @@ impl ApplicationHandler<AppEvent> for App {
         if !self.pump_servo_event_loop(event_loop.into()) {
             event_loop.exit();
         }
-        // Block until the window gets an event
-        event_loop.set_control_flow(ControlFlow::Wait);
+        set_running_control_flow(event_loop, &state);
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, app_event: AppEvent) {
         let mut redraw_window = None;
-        if let AppState::Booting { window, progress, extraction_done, .. } = &mut self.state {
+        if let AppState::Booting { window, extraction_done, .. } = &mut self.state {
             match app_event {
-                AppEvent::BootProgress(new_progress) => {
-                    *progress = new_progress;
+                AppEvent::BootProgress(_) => {
                     redraw_window = Some(window.clone());
                 },
                 AppEvent::BootReady => *extraction_done = true,
@@ -476,6 +516,9 @@ impl ApplicationHandler<AppEvent> for App {
         let AppState::Running(state) = &self.state else {
             return;
         };
+        // Cloned out of `self.state`'s borrow (cheap — `Rc` clone) so it's still usable
+        // below, after `self.pump_servo_event_loop` needs `&mut self`.
+        let state = state.clone();
 
         if matches!(app_event, AppEvent::CloseAllWindows) {
             // See protocols/roves.rs and event_loop.rs's own doc comment on
@@ -498,9 +541,27 @@ impl ApplicationHandler<AppEvent> for App {
             event_loop.exit();
         }
 
-        // Block until the window gets an event
-        event_loop.set_control_flow(ControlFlow::Wait);
+        set_running_control_flow(event_loop, &state);
     }
+}
+
+/// Sets `control_flow` to keep the event loop ticking at `SPLASH_ANIMATION_TICK` if any
+/// window's boot splash is still covering its still-loading real page (see
+/// `HeadedWindow::splash_animation_wake_deadline`) — otherwise, fully idle
+/// (`ControlFlow::Wait`) until the next real event, same as before this splash-overlay
+/// mechanism existed. Shared by `window_event`/`user_event`'s `Running` tails.
+fn set_running_control_flow(event_loop: &ActiveEventLoop, state: &RunningAppState) {
+    let next_wake = state
+        .windows()
+        .values()
+        .filter_map(|window| {
+            window
+                .platform_window()
+                .as_headed_window()?
+                .splash_animation_wake_deadline(state)
+        })
+        .min();
+    event_loop.set_control_flow(next_wake.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
 }
 
 fn load_userscripts(userscripts_directory: Option<&Path>) -> std::io::Result<Vec<UserScript>> {

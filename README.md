@@ -115,7 +115,9 @@ See the "Pack game content into compressed archives" and "Split packed content i
 boot set + lazy, on-demand extraction" entries in [CUSTOMIZATIONS.md] for the full design
 (archive naming, the manifest format, the extraction cache, the `file:` handler, and why
 `tar`+`zstd`) and for what's deliberately out of scope today (per-file integrity hashes, real
-encryption, a native loading splash).
+encryption). A native, Roves-branded boot splash *is* shown throughout both extraction and
+your page's own initial load — see the "Native boot splash" and later boot-splash entries in
+[CUSTOMIZATIONS.md] for how it works.
 
 ## Supported platforms
 

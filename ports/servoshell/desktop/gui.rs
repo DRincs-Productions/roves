@@ -8,6 +8,7 @@ use std::fs;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use dpi::PhysicalSize;
 use egui::text::{CCursor, CCursorRange};
@@ -207,6 +208,13 @@ const SPLASH_WORDMARK_FONT_SIZE: f32 = 88.0;
 const SPLASH_PROGRESS_BAR_WIDTH: f32 = 260.0;
 const SPLASH_PROGRESS_BAR_HEIGHT: f32 = 6.0;
 
+/// How wide the sliding highlight in [`draw_splash_progress_bar`]'s indeterminate
+/// animation is, as a fraction of the bar's own width.
+const SPLASH_PROGRESS_INDICATOR_WIDTH_RATIO: f32 = 0.35;
+
+/// How long one full sweep (track start to end) of that same animation takes.
+const SPLASH_PROGRESS_ANIMATION_PERIOD: f32 = 1.4;
+
 /// `resources/servo_64.png`'s own artwork — a wide, oval badge — doesn't fill its
 /// square canvas: confirmed directly (rendering `icon.svg` fresh and measuring its
 /// actual non-transparent bounding box) that the visible content is only ~78% of the
@@ -231,18 +239,33 @@ const SPLASH_ICON_CONTENT_HEIGHT_RATIO: f32 = 0.784;
 /// to `1.0` (requested directly).
 const SPLASH_ICON_SCALE: f32 = 1.0;
 
-/// Draws the boot splash's progress bar track and fill directly via
-/// `Ui::painter`, rather than `egui::ProgressBar` — that widget draws its
-/// track in `visuals.extreme_bg_color`, which under this app's light
-/// fallback theme (`Gui::new`'s `options.fallback_theme`) is pure white,
-/// identical to the fill color the splash also wants; at any progress the
-/// two were indistinguishable, so the "bar" just read as a static white
-/// rectangle rather than a loading indicator. This instead always draws a
-/// dim, translucent track (visible even at `progress == 0.0`, i.e. before
-/// extraction has actually started) with a brighter outline, and an opaque
-/// white fill on top sized to `progress`.
-fn draw_splash_progress_bar(ui: &mut egui::Ui, progress: f32) {
-    let progress = progress.clamp(0.0, 1.0);
+/// Draws the boot splash's progress bar track and an indeterminate animated fill
+/// directly via `Ui::painter`, rather than `egui::ProgressBar` — that widget draws its
+/// track in `visuals.extreme_bg_color`, which under this app's light fallback theme
+/// (`Gui::new`'s `options.fallback_theme`) is pure white, identical to the fill color
+/// the splash also wants; the two were indistinguishable, so the "bar" just read as a
+/// static white rectangle rather than a loading indicator.
+///
+/// This used to instead be a *determinate* bar, filled to the real fraction of boot
+/// extraction completed. Dropped (asked directly, after it read as fake/broken on a real
+/// launch): `extract_boot_with_progress` only reports progress per whole boot pack
+/// (`support/content-packer/src/extract.rs`), and the boot set is deliberately just the
+/// page's own HTML plus whatever it directly references — "usually only one or two
+/// packs" per that function's own doc comment — so on the overwhelmingly common case (a
+/// cache hit from a previous launch, or any small boot set) the very first progress
+/// report already reads `1.0`, before a single visible frame at any other value ever
+/// gets painted. The bar was therefore, in practice, always full and never animated,
+/// which reads as broken rather than as "already done". Separately, this splash also
+/// now stays up through the page-load wait that follows extraction (see
+/// `headed_window.rs`'s `page_load_splash_since`), which has no fractional signal *at
+/// all* (`LoadStatus` is a 3-state enum, not a percentage). Given neither phase has a
+/// completion fraction worth trusting, this instead always draws a dim, translucent
+/// track with a brighter outline, and a fixed-width white highlight that sweeps back and
+/// forth across it — driven purely by `elapsed` (wall-clock time since the current wait
+/// began, see `HeadedWindow::paint_splash`), so it's continuously, honestly "doing
+/// something" for as long as the splash is up, instead of asserting a specific,
+/// frequently-wrong amount of completion.
+fn draw_splash_progress_bar(ui: &mut egui::Ui, elapsed: Duration) {
     let (outer_rect, _response) = ui.allocate_exact_size(
         egui::vec2(SPLASH_PROGRESS_BAR_WIDTH, SPLASH_PROGRESS_BAR_HEIGHT),
         egui::Sense::hover(),
@@ -263,14 +286,18 @@ fn draw_splash_progress_bar(ui: &mut egui::Ui, progress: f32) {
         egui::Stroke::new(1.0, egui::Color32::from_white_alpha(90)),
         egui::StrokeKind::Outside,
     );
-    if progress > 0.0 {
-        let filled_width = (outer_rect.width() * progress).max(SPLASH_PROGRESS_BAR_HEIGHT);
-        let fill_rect = egui::Rect::from_min_size(
-            outer_rect.min,
-            egui::vec2(filled_width, outer_rect.height()),
-        );
-        painter.rect_filled(fill_rect, corner_radius, egui::Color32::WHITE);
-    }
+
+    let indicator_width = outer_rect.width() * SPLASH_PROGRESS_INDICATOR_WIDTH_RATIO;
+    let travel = (outer_rect.width() - indicator_width).max(0.0);
+    // Triangle wave in [0, 1]: sweeps start-to-end over the first half of the period,
+    // then end-to-start over the second, so the highlight ping-pongs indefinitely.
+    let phase = (elapsed.as_secs_f32() / SPLASH_PROGRESS_ANIMATION_PERIOD).rem_euclid(2.0);
+    let ping_pong = if phase <= 1.0 { phase } else { 2.0 - phase };
+    let indicator_rect = egui::Rect::from_min_size(
+        outer_rect.min + egui::vec2(travel * ping_pong, 0.0),
+        egui::vec2(indicator_width, outer_rect.height()),
+    );
+    painter.rect_filled(indicator_rect, corner_radius, egui::Color32::WHITE);
 }
 
 impl Drop for Gui {
@@ -352,7 +379,7 @@ impl Gui {
         // therefore a plausible place for a silent native crash (GPU
         // driver, ANGLE/GL context issue) that never reaches `panic_hook.rs`.
         log::info!("painting first splash frame");
-        gui.update_splash(winit_window, 0.0);
+        gui.update_splash(winit_window, Duration::ZERO);
         gui.paint(winit_window);
         log::info!("painted first splash frame");
         winit_window.set_visible(true);
@@ -585,17 +612,17 @@ impl Gui {
         }
     }
 
-    /// Update the boot splash (see `AppState::Booting` in `app.rs`) — a
-    /// minimal black screen with the Roves icon and wordmark (see
-    /// `resources/roves_wordmark.svg` for the same lockup as a standalone
-    /// asset), shown in place of the normal browser UI while a packed-content
-    /// launch's boot extraction still hasn't finished. `progress`, in
-    /// `[0, 1]`, drives a squared-off progress bar below the wordmark —
-    /// always drawn, even at `0.0` before extraction has actually started
-    /// (see [`draw_splash_progress_bar`]), so the splash never shows a bare
-    /// wordmark with no indication that something is loading. Call
-    /// [`Gui::paint`] afterward, same as [`Gui::update`].
-    pub(crate) fn update_splash(&mut self, winit_window: &Window, progress: f32) {
+    /// Update the boot splash — a minimal black screen with the Roves icon and wordmark
+    /// (see `resources/roves_wordmark.svg` for the same lockup as a standalone asset),
+    /// shown in place of the normal browser UI both while a packed-content launch's boot
+    /// extraction still hasn't finished (`AppState::Booting` in `app.rs`) and while the
+    /// real page that follows it is still loading (`headed_window.rs`'s
+    /// `page_load_splash_since`). `elapsed` drives a squared-off, indeterminate
+    /// progress-bar animation below the wordmark (see [`draw_splash_progress_bar`] for
+    /// why it's indeterminate rather than a completion fraction) — always drawn, so the
+    /// splash never shows a bare wordmark with no indication that something is loading.
+    /// Call [`Gui::paint`] afterward, same as [`Gui::update`].
+    pub(crate) fn update_splash(&mut self, winit_window: &Window, elapsed: Duration) {
         self.rendering_context
             .make_current()
             .expect("Could not make RenderingContext current");
@@ -677,7 +704,7 @@ impl Gui {
                             );
                         });
                         ui.add_space(40.0);
-                        draw_splash_progress_bar(ui, progress);
+                        draw_splash_progress_bar(ui, elapsed);
                     });
                 });
         });

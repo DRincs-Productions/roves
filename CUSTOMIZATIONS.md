@@ -3758,3 +3758,116 @@ symptom, start from this entry instead of re-deriving the investigation from scr
 consider that the real fix, if one exists, is more likely a Servo/servo-media concurrency issue
 around rapid `AudioContext` creation/teardown than anything in this file specifically, since
 `audio_sink.rs` in isolation (see the throwaway example above) behaved correctly.
+
+---
+
+## 2026-08-22 — Boot splash: stay up through the page-load wait too, and stop faking progress
+
+**Files:** `ports/servoshell/desktop/app.rs`, `ports/servoshell/desktop/gui.rs`,
+`ports/servoshell/desktop/headed_window.rs`, `ports/servoshell/running_app_state.rs`.
+
+**Patch:** `patches/servo-v0.4.0/0044-boot-splash-cover-page-load-and-indeterminate-progress.patch`
+
+**Upstream behavior:** no equivalent — refines the 2026-08-09 "Native boot splash", 2026-08-10
+"Never show white before the game starts", and 2026-08-12 boot-splash entries (all further up
+this file).
+
+**Reported directly, from a real launch:** the Roves-branded splash appeared almost
+immediately, but was then followed by a plain black screen for a noticeable stretch before the
+game itself appeared — read as "splash, then a black screen, then the game", not as one
+continuous load. Separately, the splash's own progress bar looked fake: always fully filled,
+never visibly animating.
+
+**Root cause of the black screen:** the 2026-08-12 "hold the boot splash for a minimum
+duration" entry's `MIN_SPLASH_DURATION` only covers `App::finish_init` itself (building the
+Servo instance, opening the real `WebView`) — the moment `finish_init` returns, `AppState`
+became `Running` and the splash stopped being painted at all. Everything from there — the
+page's own HTML/JS parsing, asset loading, and first render — happens *after* that handoff,
+and for however long that takes, the real `WebView`'s own "nothing painted yet" clear color
+(opaque black, see the 2026-08-10 entry) is exactly what showed through. `MIN_SPLASH_DURATION`
+was never meant to, and doesn't, cover this phase at all — it only guarantees the splash was
+visible for *at least* half a second before `finish_init` runs, independent of how long the
+page takes to actually paint something afterward.
+
+**Root cause of the fake-looking progress bar:** `draw_splash_progress_bar` filled to the
+fraction reported by `extract_boot_with_progress` (`support/content-packer/src/extract.rs`),
+which only reports progress per *whole boot pack* — and the boot set is deliberately just the
+page's own HTML plus whatever it directly references, "usually only one or two packs" per that
+function's own doc comment. On the overwhelmingly common case (a cache hit from a previous
+launch, or any small boot set), the very first progress report already reads `1.0`, before a
+single frame at any other value ever gets painted — so in practice the bar was always full and
+never visibly moved, reading as broken rather than as "already done".
+
+**Change:**
+
+- **The splash now stays up through the page-load wait, not just through
+  `finish_init`.** `HeadedWindow` gained `page_load_splash_since: Cell<Option<Instant>>`, set
+  by a new `begin_page_load_splash()` — called from `finish_init` right before
+  `running_state.open_window(...)` opens the real `WebView`. While it's set,
+  `handle_winit_window_event`'s repaint branch keeps painting the boot splash instead of
+  compositing the real page, checked against a new `RunningAppState::is_initial_page_loaded()`
+  (backed by new `initial_webview_id`/`initial_load_complete` fields, set from
+  `notify_load_status_changed` the first time the *initial* `WebView` — tracked by id, set once
+  in `open_window` — reaches `LoadStatus::Complete`) and a new `MAX_PAGE_LOAD_SPLASH_DURATION`
+  (8s) safety timeout, so a page that never signals ready doesn't hang the splash forever
+  (matches this codebase's existing "never leave the user stuck on a splash forever"
+  philosophy — see the boot-extraction-failure handling in `bundle_launch.rs`). This is a
+  least-bad proxy, not a true first-paint signal: `LoadStatus::Complete` is DOM readiness
+  (`document.readyState == "complete"`), not "the compositor has presented a frame" — the
+  2026-08-10 entry already documented that no such signal is exposed to the embedder today.
+  Still a large, honest improvement over showing the real page the instant its `WebView`
+  exists.
+- **New `HeadedWindow::splash_animation_wake_deadline(&RunningAppState)`** returns the next
+  animation-tick deadline while the splash is covering the page, or `None` once it's done —
+  used by two new call sites so the winit event loop keeps ticking even during an otherwise
+  fully idle wait (needed both to animate the splash and to promptly notice
+  `LoadStatus::Complete` firing with no further page activity after it): `app.rs`'s
+  `new_events` now also handles `AppState::Running` (previously only `Booting`), and a new
+  free function `set_running_control_flow` (called from both `window_event`'s and
+  `user_event`'s `Running` tails, replacing their previous unconditional
+  `ControlFlow::Wait`) arms `ControlFlow::WaitUntil` instead whenever any window's splash is
+  still active.
+- **The progress bar is now indeterminate, not determinate, for the *entire* splash duration**
+  (both the extraction/`MIN_SPLASH_DURATION` wait and the new page-load wait) —
+  `draw_splash_progress_bar` (`gui.rs`) no longer takes a `[0, 1]` fraction; it takes `elapsed`
+  (wall-clock time since whichever wait is currently active) and draws a fixed-width white
+  highlight that ping-pongs back and forth across the track, driven purely by that elapsed
+  time. Honest, continuous motion instead of a specific (and, per the root-cause above,
+  frequently wrong) completion percentage. `Gui::update_splash`/`HeadedWindow::paint_splash`
+  were retyped from `progress: f32` to `elapsed: Duration` to match.
+- `AppEvent::BootProgress`'s payload (`extract_boot_with_progress`'s real per-pack fraction) is
+  no longer used to drive the bar's fill — the event itself, and the background-thread
+  extraction-progress plumbing that sends it, are both left as-is (still real, still
+  potentially useful signal for a genuinely large boot set); `user_event`'s handler for it now
+  just requests a redraw and ignores the value, rather than storing it.
+- `AppState::Booting`'s `progress: f32` field is removed — no longer needed, since
+  `paint_splash` now derives its animation clock directly from `extraction_started.elapsed()`.
+- Minor efficiency fix noticed while touching this: `try_finish_booting`'s previous
+  `WaitUntil` scheduling, once past `MIN_SPLASH_DURATION` but still waiting on
+  `extraction_done`, computed a zero-duration wait (`saturating_sub` bottoming out at zero),
+  which busy-loops the event loop at full tilt for however long a slow extraction takes. Now
+  ticks at the same fixed `SPLASH_ANIMATION_TICK` (~33ms, 30fps) used everywhere else in this
+  entry instead.
+
+**Why 8 seconds for `MAX_PAGE_LOAD_SPLASH_DURATION`:** long enough that essentially any real
+game's page reaches `document.readyState == "complete"` well before it fires, short enough
+that a genuinely broken/hung load doesn't leave the user staring at a Roves-branded splash that
+reads as frozen. Not asked directly — a judgment call in the same spirit as `MIN_SPLASH_DURATION`
+and the extraction-failure "don't hang forever" philosophy elsewhere in this file; revisit if a
+real launch shows it's too short (a large game whose page genuinely takes longer to reach DOM
+readiness) or too long (a broken load leaving the splash up noticeably before the timeout
+mercifully ends it).
+
+**Verification:** not compiled end-to-end in this environment — `cargo check -p servoshell`
+fails immediately on `lld-link.exe`/`link.exe` not being found (no MSVC Build Tools installed
+here), the same kind of environment gap earlier entries hit with `libudev-sys`/pkg-config on
+Linux. Reviewed carefully by hand instead: every new/changed call site's types, borrow
+lifetimes (in particular, `window_event`/`user_event` now clone `Rc<RunningAppState>` out of
+`self.state`'s borrow *before* calling `self.pump_servo_event_loop`, which needs `&mut self` —
+the original code got away without this because nothing after that point used `state`), and
+`egui`/`winit` API usage were checked against how they're used elsewhere in this same codebase.
+**Whoever builds this next should do a real `./mach build`/`./mach run` against a real bundled
+game and confirm, on an actual slow-ish load, that the splash now visibly persists (with a
+moving progress indicator) all the way through to the game's own first frame, with no black
+gap — and that a deliberately broken/never-resolving page still recovers after
+`MAX_PAGE_LOAD_SPLASH_DURATION` instead of hanging.**

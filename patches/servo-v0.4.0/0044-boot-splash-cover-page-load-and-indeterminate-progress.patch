@@ -1,0 +1,649 @@
+diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
+index 1bbd0a1..c158b16 100644
+--- a/ports/servoshell/desktop/app.rs
++++ b/ports/servoshell/desktop/app.rs
+@@ -24,7 +24,7 @@ use winit::window::WindowId;
+ 
+ use super::event_loop::AppEvent;
+ use crate::desktop::event_loop::ServoShellEventLoop;
+-use crate::desktop::headed_window::HeadedWindow;
++use crate::desktop::headed_window::{HeadedWindow, SPLASH_ANIMATION_TICK};
+ use crate::desktop::headless_window::HeadlessWindow;
+ use crate::desktop::protocols;
+ use crate::desktop::tracing::trace_winit_event;
+@@ -35,19 +35,20 @@ use crate::running_app_state::RunningAppState;
+ use crate::running_app_state::ServoshellGamepadDelegate;
+ use crate::window::{PlatformWindow, ServoShellWindowId};
+ 
+-/// Minimum time every headed launch spends on the boot splash before the
+-/// real page opens, regardless of whether there's any boot extraction to
+-/// wait on. Without this, a launch with nothing to extract — a dev `--url`
+-/// run, or (the common case after the very first launch) a packed-content
+-/// launch whose destination is already cached from a previous run — skipped
++/// Minimum time every headed launch spends on the boot splash before
++/// `finish_init` runs (building Servo, opening the real `WebView`),
++/// regardless of whether there's any boot extraction to wait on. Without
++/// this, a launch with nothing to extract — a dev `--url` run, or (the
++/// common case after the very first launch) a packed-content launch whose
++/// destination is already cached from a previous run — skipped
+ /// `AppState::Booting` entirely: the window's very first frame *is* the
+ /// branded splash (see `Gui::new`), but the next frame immediately swapped
+-/// in the real, still-loading `WebView`, whose own background is black too
+-/// (see `shell_background_color_rgba`) until it has content to paint. Net
+-/// effect: the Roves-branded splash flashed for a single frame, read by a
+-/// user as "black screen, then the app" rather than as a splash. Holding
+-/// the splash up for a fixed minimum makes it long enough to actually
+-/// register on every launch, not just a slow first one.
++/// in the real, still-loading `WebView`. Holding the splash up for a fixed
++/// minimum makes it long enough to actually register on every launch, not
++/// just a slow first one. This is only half of what keeps the splash from
++/// flashing away too early, though — see `HeadedWindow::begin_page_load_splash`
++/// for the other half: once `finish_init` *does* open the real `WebView`, the
++/// splash stays up still further, until that page is actually ready.
+ const MIN_SPLASH_DURATION: Duration = Duration::from_millis(500);
+ 
+ pub(crate) enum AppState {
+@@ -57,16 +58,19 @@ pub(crate) enum AppState {
+     /// `HeadedWindow::paint_splash`) while, if there's a pending
+     /// packed-content boot extraction, a background thread (spawned from
+     /// `App::init`) decompresses the boot set. `extraction_started` drives
+-    /// `MIN_SPLASH_DURATION`; `progress` is updated by incoming
+-    /// `AppEvent::BootProgress`. `extraction_done` starts `true` when there
+-    /// was no pending extraction to begin with (nothing to wait on but
+-    /// `MIN_SPLASH_DURATION`), or flips to `true` once `AppEvent::BootReady`
+-    /// arrives. `App::try_finish_booting` is what actually decides, from
+-    /// these fields, when to hand off to `finish_init`.
++    /// both `MIN_SPLASH_DURATION` and the splash's animation clock (passed
++    /// to `paint_splash` as elapsed time — see that function's doc comment
++    /// for why it's no longer a completion fraction). `extraction_done`
++    /// starts `true` when there was no pending extraction to begin with
++    /// (nothing to wait on but `MIN_SPLASH_DURATION`), or flips to `true`
++    /// once `AppEvent::BootReady` arrives. `App::try_finish_booting` is what
++    /// actually decides, from these fields, when to hand off to
++    /// `finish_init` — which, for a headed launch, keeps the splash up
++    /// still further (see `MIN_SPLASH_DURATION`'s own doc comment) rather
++    /// than transitioning straight to `Running`.
+     Booting {
+         window: Rc<dyn PlatformWindow>,
+         extraction_started: Instant,
+-        progress: f32,
+         extraction_done: bool,
+     },
+     Running(Rc<RunningAppState>),
+@@ -169,13 +173,14 @@ impl App {
+             return;
+         };
+ 
+-        // Show the splash immediately, then make sure we wake up again once
+-        // `MIN_SPLASH_DURATION` has passed even if no `BootProgress`/
+-        // `BootReady` tick arrives before then — see `new_events`.
++        // Show the splash immediately, then make sure we wake up again at the next
++        // animation tick even if no `BootProgress`/`BootReady` arrives before then — see
++        // `new_events`/`try_finish_booting`, which take over re-arming this on every
++        // subsequent tick.
+         if let Some(headed_window) = platform_window.as_headed_window() {
+             headed_window.winit_window().request_redraw();
+         }
+-        active_event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + MIN_SPLASH_DURATION));
++        active_event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + SPLASH_ANIMATION_TICK));
+ 
+         let extraction_done = match opts {
+             Some(opts) => {
+@@ -205,16 +210,17 @@ impl App {
+         self.state = AppState::Booting {
+             window: platform_window,
+             extraction_started: Instant::now(),
+-            progress: 0.0,
+             extraction_done,
+         };
+     }
+ 
+     /// If `Booting`, check whether both extraction (if any was pending) and
+     /// `MIN_SPLASH_DURATION` have finished; if so, hand off to
+-    /// `finish_init`. Otherwise (re)arm `control_flow` to wake up exactly
+-    /// when `MIN_SPLASH_DURATION` will have elapsed. A no-op when not
+-    /// `Booting`, so every event handler below can call this
++    /// `finish_init`. Otherwise (re)arm `control_flow` to wake up at the next
++    /// `SPLASH_ANIMATION_TICK` (so the splash's indeterminate animation keeps
++    /// moving the whole time, not just once at the `MIN_SPLASH_DURATION`
++    /// mark), capped so it never overshoots that mark on the first tick. A
++    /// no-op when not `Booting`, so every event handler below can call this
+     /// unconditionally.
+     fn try_finish_booting(&mut self, event_loop: &ActiveEventLoop) {
+         let AppState::Booting { window, extraction_started, extraction_done, .. } = &self.state
+@@ -223,9 +229,17 @@ impl App {
+         };
+         let elapsed = extraction_started.elapsed();
+         if !*extraction_done || elapsed < MIN_SPLASH_DURATION {
+-            event_loop.set_control_flow(ControlFlow::WaitUntil(
+-                Instant::now() + MIN_SPLASH_DURATION.saturating_sub(elapsed),
+-            ));
++            // Once past `MIN_SPLASH_DURATION` itself, `saturating_sub` alone would
++            // return zero and busy-loop while still waiting on `extraction_done` — tick
++            // at the animation rate instead in that case, same as while still within
++            // `MIN_SPLASH_DURATION` but capped so the first tick doesn't overshoot it.
++            let remaining = MIN_SPLASH_DURATION.saturating_sub(elapsed);
++            let tick = if remaining.is_zero() {
++                SPLASH_ANIMATION_TICK
++            } else {
++                remaining.min(SPLASH_ANIMATION_TICK)
++            };
++            event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + tick));
+             return;
+         }
+         let window = window.clone();
+@@ -340,6 +354,13 @@ impl App {
+             #[cfg(feature = "gamepad")]
+             ServoshellGamepadDelegate::maybe_new().map(Rc::new),
+         ));
++
++        // Keep the boot splash up (see its own doc comment) instead of immediately
++        // handing off to a page that hasn't painted anything of its own yet — a no-op
++        // for headless, which has no splash/window to begin with.
++        if let Some(headed_window) = platform_window.as_headed_window() {
++            headed_window.begin_page_load_splash();
++        }
+         running_state.open_window(platform_window, self.initial_url.as_url().clone());
+ 
+         self.state = AppState::Running(running_state);
+@@ -389,22 +410,40 @@ impl ApplicationHandler<AppEvent> for App {
+         self.init(Some(event_loop));
+     }
+ 
+-    /// Only relevant while `Booting`: forces one redraw once
+-    /// `MIN_SPLASH_DURATION` elapses even if no `AppEvent::BootProgress`/
+-    /// `BootReady` tick has arrived yet, then defers to
+-    /// `try_finish_booting` — which is also what wakes `Booting` up to
+-    /// transition to `finish_init` purely on `MIN_SPLASH_DURATION` elapsing,
+-    /// for a launch with no pending extraction to otherwise notify us.
++    /// Drives the two periodic ticks the boot splash's animation relies on, neither of
++    /// which any real `WindowEvent`/`AppEvent` is guaranteed to otherwise deliver
++    /// promptly (or at all, during an otherwise-silent wait):
++    /// - While `Booting`: forces a redraw at each `SPLASH_ANIMATION_TICK` (see
++    ///   `try_finish_booting`, which arms this), then defers to `try_finish_booting`
++    ///   itself — also what transitions to `finish_init` once both extraction and
++    ///   `MIN_SPLASH_DURATION` are done.
++    /// - While `Running` with a window whose `page_load_splash_since` is still set (see
++    ///   `HeadedWindow::splash_animation_wake_deadline`, armed by `window_event`/
++    ///   `user_event`'s tail): forces that window's next redraw too, both to keep the
++    ///   splash animating and to promptly notice `LoadStatus::Complete` firing with no
++    ///   further page activity after it.
+     fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
+         if !matches!(cause, StartCause::ResumeTimeReached { .. }) {
+             return;
+         }
+-        if let AppState::Booting { window, .. } = &self.state &&
+-            let Some(headed_window) = window.as_headed_window()
+-        {
+-            headed_window.winit_window().request_redraw();
++        match &self.state {
++            AppState::Booting { window, .. } => {
++                if let Some(headed_window) = window.as_headed_window() {
++                    headed_window.winit_window().request_redraw();
++                }
++                self.try_finish_booting(event_loop);
++            },
++            AppState::Running(state) => {
++                for window in state.windows().values() {
++                    if let Some(headed_window) = window.platform_window().as_headed_window() &&
++                        headed_window.splash_animation_wake_deadline(state).is_some()
++                    {
++                        headed_window.winit_window().request_redraw();
++                    }
++                }
++            },
++            _ => {},
+         }
+-        self.try_finish_booting(event_loop);
+     }
+ 
+     fn window_event(
+@@ -423,12 +462,12 @@ impl ApplicationHandler<AppEvent> for App {
+         self.t = now;
+ 
+         if matches!(self.state, AppState::Booting { .. }) {
+-            if let AppState::Booting { window, progress, .. } = &self.state &&
++            if let AppState::Booting { window, extraction_started, .. } = &self.state &&
+                 let Some(headed_window) = window.as_headed_window() &&
+                 headed_window.winit_window().id() == window_id &&
+                 matches!(window_event, WindowEvent::RedrawRequested | WindowEvent::Resized(_))
+             {
+-                headed_window.paint_splash(*progress);
++                headed_window.paint_splash(extraction_started.elapsed());
+             }
+             self.try_finish_booting(event_loop);
+             return;
+@@ -437,6 +476,9 @@ impl ApplicationHandler<AppEvent> for App {
+         let AppState::Running(state) = &self.state else {
+             return;
+         };
++        // Cloned out of `self.state`'s borrow (cheap — `Rc` clone) so it's still usable
++        // below, after `self.pump_servo_event_loop` needs `&mut self`.
++        let state = state.clone();
+ 
+         if let Some(window) = state.window(ServoShellWindowId::from(u64::from(window_id))) &&
+             let Some(headed_window) = window.platform_window().as_headed_window()
+@@ -447,16 +489,14 @@ impl ApplicationHandler<AppEvent> for App {
+         if !self.pump_servo_event_loop(event_loop.into()) {
+             event_loop.exit();
+         }
+-        // Block until the window gets an event
+-        event_loop.set_control_flow(ControlFlow::Wait);
++        set_running_control_flow(event_loop, &state);
+     }
+ 
+     fn user_event(&mut self, event_loop: &ActiveEventLoop, app_event: AppEvent) {
+         let mut redraw_window = None;
+-        if let AppState::Booting { window, progress, extraction_done, .. } = &mut self.state {
++        if let AppState::Booting { window, extraction_done, .. } = &mut self.state {
+             match app_event {
+-                AppEvent::BootProgress(new_progress) => {
+-                    *progress = new_progress;
++                AppEvent::BootProgress(_) => {
+                     redraw_window = Some(window.clone());
+                 },
+                 AppEvent::BootReady => *extraction_done = true,
+@@ -476,6 +516,9 @@ impl ApplicationHandler<AppEvent> for App {
+         let AppState::Running(state) = &self.state else {
+             return;
+         };
++        // Cloned out of `self.state`'s borrow (cheap — `Rc` clone) so it's still usable
++        // below, after `self.pump_servo_event_loop` needs `&mut self`.
++        let state = state.clone();
+ 
+         if matches!(app_event, AppEvent::CloseAllWindows) {
+             // See protocols/roves.rs and event_loop.rs's own doc comment on
+@@ -498,11 +541,29 @@ impl ApplicationHandler<AppEvent> for App {
+             event_loop.exit();
+         }
+ 
+-        // Block until the window gets an event
+-        event_loop.set_control_flow(ControlFlow::Wait);
++        set_running_control_flow(event_loop, &state);
+     }
+ }
+ 
++/// Sets `control_flow` to keep the event loop ticking at `SPLASH_ANIMATION_TICK` if any
++/// window's boot splash is still covering its still-loading real page (see
++/// `HeadedWindow::splash_animation_wake_deadline`) — otherwise, fully idle
++/// (`ControlFlow::Wait`) until the next real event, same as before this splash-overlay
++/// mechanism existed. Shared by `window_event`/`user_event`'s `Running` tails.
++fn set_running_control_flow(event_loop: &ActiveEventLoop, state: &RunningAppState) {
++    let next_wake = state
++        .windows()
++        .values()
++        .filter_map(|window| {
++            window
++                .platform_window()
++                .as_headed_window()?
++                .splash_animation_wake_deadline(state)
++        })
++        .min();
++    event_loop.set_control_flow(next_wake.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
++}
++
+ fn load_userscripts(userscripts_directory: Option<&Path>) -> std::io::Result<Vec<UserScript>> {
+     let mut userscripts = Vec::new();
+     if let Some(userscripts_directory) = &userscripts_directory {
+diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
+index 6719d64..c06a356 100644
+--- a/ports/servoshell/desktop/gui.rs
++++ b/ports/servoshell/desktop/gui.rs
+@@ -8,6 +8,7 @@ use std::fs;
+ use std::path::Path;
+ use std::rc::Rc;
+ use std::sync::Arc;
++use std::time::Duration;
+ 
+ use dpi::PhysicalSize;
+ use egui::text::{CCursor, CCursorRange};
+@@ -207,6 +208,13 @@ const SPLASH_WORDMARK_FONT_SIZE: f32 = 88.0;
+ const SPLASH_PROGRESS_BAR_WIDTH: f32 = 260.0;
+ const SPLASH_PROGRESS_BAR_HEIGHT: f32 = 6.0;
+ 
++/// How wide the sliding highlight in [`draw_splash_progress_bar`]'s indeterminate
++/// animation is, as a fraction of the bar's own width.
++const SPLASH_PROGRESS_INDICATOR_WIDTH_RATIO: f32 = 0.35;
++
++/// How long one full sweep (track start to end) of that same animation takes.
++const SPLASH_PROGRESS_ANIMATION_PERIOD: f32 = 1.4;
++
+ /// `resources/servo_64.png`'s own artwork — a wide, oval badge — doesn't fill its
+ /// square canvas: confirmed directly (rendering `icon.svg` fresh and measuring its
+ /// actual non-transparent bounding box) that the visible content is only ~78% of the
+@@ -231,18 +239,33 @@ const SPLASH_ICON_CONTENT_HEIGHT_RATIO: f32 = 0.784;
+ /// to `1.0` (requested directly).
+ const SPLASH_ICON_SCALE: f32 = 1.0;
+ 
+-/// Draws the boot splash's progress bar track and fill directly via
+-/// `Ui::painter`, rather than `egui::ProgressBar` — that widget draws its
+-/// track in `visuals.extreme_bg_color`, which under this app's light
+-/// fallback theme (`Gui::new`'s `options.fallback_theme`) is pure white,
+-/// identical to the fill color the splash also wants; at any progress the
+-/// two were indistinguishable, so the "bar" just read as a static white
+-/// rectangle rather than a loading indicator. This instead always draws a
+-/// dim, translucent track (visible even at `progress == 0.0`, i.e. before
+-/// extraction has actually started) with a brighter outline, and an opaque
+-/// white fill on top sized to `progress`.
+-fn draw_splash_progress_bar(ui: &mut egui::Ui, progress: f32) {
+-    let progress = progress.clamp(0.0, 1.0);
++/// Draws the boot splash's progress bar track and an indeterminate animated fill
++/// directly via `Ui::painter`, rather than `egui::ProgressBar` — that widget draws its
++/// track in `visuals.extreme_bg_color`, which under this app's light fallback theme
++/// (`Gui::new`'s `options.fallback_theme`) is pure white, identical to the fill color
++/// the splash also wants; the two were indistinguishable, so the "bar" just read as a
++/// static white rectangle rather than a loading indicator.
++///
++/// This used to instead be a *determinate* bar, filled to the real fraction of boot
++/// extraction completed. Dropped (asked directly, after it read as fake/broken on a real
++/// launch): `extract_boot_with_progress` only reports progress per whole boot pack
++/// (`support/content-packer/src/extract.rs`), and the boot set is deliberately just the
++/// page's own HTML plus whatever it directly references — "usually only one or two
++/// packs" per that function's own doc comment — so on the overwhelmingly common case (a
++/// cache hit from a previous launch, or any small boot set) the very first progress
++/// report already reads `1.0`, before a single visible frame at any other value ever
++/// gets painted. The bar was therefore, in practice, always full and never animated,
++/// which reads as broken rather than as "already done". Separately, this splash also
++/// now stays up through the page-load wait that follows extraction (see
++/// `headed_window.rs`'s `page_load_splash_since`), which has no fractional signal *at
++/// all* (`LoadStatus` is a 3-state enum, not a percentage). Given neither phase has a
++/// completion fraction worth trusting, this instead always draws a dim, translucent
++/// track with a brighter outline, and a fixed-width white highlight that sweeps back and
++/// forth across it — driven purely by `elapsed` (wall-clock time since the current wait
++/// began, see `HeadedWindow::paint_splash`), so it's continuously, honestly "doing
++/// something" for as long as the splash is up, instead of asserting a specific,
++/// frequently-wrong amount of completion.
++fn draw_splash_progress_bar(ui: &mut egui::Ui, elapsed: Duration) {
+     let (outer_rect, _response) = ui.allocate_exact_size(
+         egui::vec2(SPLASH_PROGRESS_BAR_WIDTH, SPLASH_PROGRESS_BAR_HEIGHT),
+         egui::Sense::hover(),
+@@ -263,14 +286,18 @@ fn draw_splash_progress_bar(ui: &mut egui::Ui, progress: f32) {
+         egui::Stroke::new(1.0, egui::Color32::from_white_alpha(90)),
+         egui::StrokeKind::Outside,
+     );
+-    if progress > 0.0 {
+-        let filled_width = (outer_rect.width() * progress).max(SPLASH_PROGRESS_BAR_HEIGHT);
+-        let fill_rect = egui::Rect::from_min_size(
+-            outer_rect.min,
+-            egui::vec2(filled_width, outer_rect.height()),
+-        );
+-        painter.rect_filled(fill_rect, corner_radius, egui::Color32::WHITE);
+-    }
++
++    let indicator_width = outer_rect.width() * SPLASH_PROGRESS_INDICATOR_WIDTH_RATIO;
++    let travel = (outer_rect.width() - indicator_width).max(0.0);
++    // Triangle wave in [0, 1]: sweeps start-to-end over the first half of the period,
++    // then end-to-start over the second, so the highlight ping-pongs indefinitely.
++    let phase = (elapsed.as_secs_f32() / SPLASH_PROGRESS_ANIMATION_PERIOD).rem_euclid(2.0);
++    let ping_pong = if phase <= 1.0 { phase } else { 2.0 - phase };
++    let indicator_rect = egui::Rect::from_min_size(
++        outer_rect.min + egui::vec2(travel * ping_pong, 0.0),
++        egui::vec2(indicator_width, outer_rect.height()),
++    );
++    painter.rect_filled(indicator_rect, corner_radius, egui::Color32::WHITE);
+ }
+ 
+ impl Drop for Gui {
+@@ -352,7 +379,7 @@ impl Gui {
+         // therefore a plausible place for a silent native crash (GPU
+         // driver, ANGLE/GL context issue) that never reaches `panic_hook.rs`.
+         log::info!("painting first splash frame");
+-        gui.update_splash(winit_window, 0.0);
++        gui.update_splash(winit_window, Duration::ZERO);
+         gui.paint(winit_window);
+         log::info!("painted first splash frame");
+         winit_window.set_visible(true);
+@@ -585,17 +612,17 @@ impl Gui {
+         }
+     }
+ 
+-    /// Update the boot splash (see `AppState::Booting` in `app.rs`) — a
+-    /// minimal black screen with the Roves icon and wordmark (see
+-    /// `resources/roves_wordmark.svg` for the same lockup as a standalone
+-    /// asset), shown in place of the normal browser UI while a packed-content
+-    /// launch's boot extraction still hasn't finished. `progress`, in
+-    /// `[0, 1]`, drives a squared-off progress bar below the wordmark —
+-    /// always drawn, even at `0.0` before extraction has actually started
+-    /// (see [`draw_splash_progress_bar`]), so the splash never shows a bare
+-    /// wordmark with no indication that something is loading. Call
+-    /// [`Gui::paint`] afterward, same as [`Gui::update`].
+-    pub(crate) fn update_splash(&mut self, winit_window: &Window, progress: f32) {
++    /// Update the boot splash — a minimal black screen with the Roves icon and wordmark
++    /// (see `resources/roves_wordmark.svg` for the same lockup as a standalone asset),
++    /// shown in place of the normal browser UI both while a packed-content launch's boot
++    /// extraction still hasn't finished (`AppState::Booting` in `app.rs`) and while the
++    /// real page that follows it is still loading (`headed_window.rs`'s
++    /// `page_load_splash_since`). `elapsed` drives a squared-off, indeterminate
++    /// progress-bar animation below the wordmark (see [`draw_splash_progress_bar`] for
++    /// why it's indeterminate rather than a completion fraction) — always drawn, so the
++    /// splash never shows a bare wordmark with no indication that something is loading.
++    /// Call [`Gui::paint`] afterward, same as [`Gui::update`].
++    pub(crate) fn update_splash(&mut self, winit_window: &Window, elapsed: Duration) {
+         self.rendering_context
+             .make_current()
+             .expect("Could not make RenderingContext current");
+@@ -677,7 +704,7 @@ impl Gui {
+                             );
+                         });
+                         ui.add_space(40.0);
+-                        draw_splash_progress_bar(ui, progress);
++                        draw_splash_progress_bar(ui, elapsed);
+                     });
+                 });
+         });
+diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/desktop/headed_window.rs
+index def2e9a..1e5bc80 100644
+--- a/ports/servoshell/desktop/headed_window.rs
++++ b/ports/servoshell/desktop/headed_window.rs
+@@ -13,7 +13,7 @@ use std::env;
+ use std::fs;
+ use std::path::{Path, PathBuf};
+ use std::rc::Rc;
+-use std::time::Duration;
++use std::time::{Duration, Instant};
+ 
+ use euclid::{Angle, Length, Point2D, Rect, Rotation3D, Scale, Size2D, UnknownUnit, Vector3D};
+ use keyboard_types::ShortcutMatcher;
+@@ -65,6 +65,23 @@ use crate::window::{
+ 
+ pub(crate) const INITIAL_WINDOW_TITLE: &str = "Roves";
+ 
++/// How often the boot splash's indeterminate progress-bar animation (`gui.rs`'s
++/// `draw_splash_progress_bar`) advances, whether it's holding for `app.rs`'s
++/// `MIN_SPLASH_DURATION`/waiting on boot extraction, or covering a still-loading real
++/// page (see `page_load_splash_since`, `splash_animation_wake_deadline`, and
++/// `App::try_finish_booting`). ~30fps: smooth enough to read as animated, without waking
++/// the event loop needlessly often during what's meant to be a brief, incidental wait.
++pub(crate) const SPLASH_ANIMATION_TICK: Duration = Duration::from_millis(33);
++
++/// How long the boot splash keeps covering the real page after `App::finish_init` opens
++/// it (see `page_load_splash_since`), if the initial page's `LoadStatus::Complete` never
++/// arrives -- a broken load, or a page that's still loading subresources it doesn't
++/// consider blocking. Matches this codebase's existing "never leave the user stuck on a
++/// splash forever" philosophy (see `bundle_launch.rs`'s boot-extraction-failure
++/// handling) -- past this, showing the real page, even mid-load, beats an indefinite
++/// Roves-branded hang.
++const MAX_PAGE_LOAD_SPLASH_DURATION: Duration = Duration::from_secs(8);
++
+ pub struct HeadedWindow {
+     /// The egui interface that is responsible for showing the user interface elements of
+     /// this headed `Window`.
+@@ -115,6 +132,17 @@ pub struct HeadedWindow {
+     visible_input_method: Cell<Option<EmbedderControlId>>,
+     /// The position of the mouse cursor after the most recent `MouseMove` event.
+     last_mouse_position: Cell<Option<Point2D<f32, DeviceIndependentPixel>>>,
++    /// Set by `App::finish_init` (see `app.rs`) the moment the real `WebView` opens, and
++    /// cleared once its initial page reaches `LoadStatus::Complete` or
++    /// `MAX_PAGE_LOAD_SPLASH_DURATION` elapses, whichever comes first -- see
++    /// `begin_page_load_splash`, `splash_animation_wake_deadline`, and
++    /// `RunningAppState::is_initial_page_loaded`. While set, `handle_winit_window_event`
++    /// keeps painting the boot splash instead of compositing the real page: the page's
++    /// own "nothing painted yet" clear color is black (see CUSTOMIZATIONS.md's boot-
++    /// splash entries), and without this, that black frame is exactly what showed
++    /// through for however long the page took to paint anything of its own -- read by a
++    /// user as "splash, then a black screen, then the game".
++    page_load_splash_since: Cell<Option<Instant>>,
+ }
+ 
+ impl HeadedWindow {
+@@ -254,6 +282,7 @@ impl HeadedWindow {
+             dialogs: Default::default(),
+             visible_input_method: Default::default(),
+             last_mouse_position: Default::default(),
++            page_load_splash_since: Cell::new(None),
+         })
+     }
+ 
+@@ -261,18 +290,44 @@ impl HeadedWindow {
+         &self.winit_window
+     }
+ 
+-    /// Paints the boot splash (see `AppState::Booting` in `app.rs`) instead
+-    /// of the normal browser UI — used while a packed-content launch's boot
+-    /// extraction is still running on a background thread, before there's a
+-    /// `RunningAppState`/webview to draw. `progress`, in `[0, 1]`, drives the
+-    /// splash's progress bar (see `Gui::update_splash`) — always shown, even
+-    /// at `0.0` before extraction has started.
+-    pub(crate) fn paint_splash(&self, progress: f32) {
++    /// Paints the boot splash instead of the normal browser UI — used both while a
++    /// packed-content launch's boot extraction is still running on a background thread
++    /// (`AppState::Booting` in `app.rs`, before there's a `RunningAppState`/webview to
++    /// draw at all), and afterward, while `page_load_splash_since` is set, covering the
++    /// real (still-loading) page. `elapsed` — time since whichever of those two waits
++    /// began — drives the splash's indeterminate progress-bar animation (see
++    /// `Gui::update_splash`/`draw_splash_progress_bar`); it isn't a completion fraction,
++    /// since neither wait has one worth showing (a boot extraction is almost always one
++    /// or two packs and finishes near-instantly once it starts; a page load has no
++    /// fractional signal at all) — see `draw_splash_progress_bar`'s own doc comment.
++    pub(crate) fn paint_splash(&self, elapsed: Duration) {
+         let mut gui = self.gui.borrow_mut();
+-        gui.update_splash(&self.winit_window, progress);
++        gui.update_splash(&self.winit_window, elapsed);
+         gui.paint(&self.winit_window);
+     }
+ 
++    /// Called once by `App::finish_init`, right as the real `WebView` opens, to keep the
++    /// boot splash up (see `page_load_splash_since`) instead of immediately handing off
++    /// to a page that hasn't painted anything of its own yet.
++    pub(crate) fn begin_page_load_splash(&self) {
++        self.page_load_splash_since.set(Some(Instant::now()));
++    }
++
++    /// `Some(deadline)` while the boot splash is still covering this window's real
++    /// (still-loading) page (see `page_load_splash_since`), so `App::window_event`/
++    /// `new_events` can keep the winit event loop ticking at `SPLASH_ANIMATION_TICK`
++    /// instead of going fully idle. Without this, once the last real `WindowEvent`/
++    /// repaint request had been handled, nothing would wake the loop up again to
++    /// animate the splash during a long, otherwise-silent load, or to promptly notice
++    /// `LoadStatus::Complete` firing with no further page activity after it.
++    pub(crate) fn splash_animation_wake_deadline(&self, state: &RunningAppState) -> Option<Instant> {
++        let since = self.page_load_splash_since.get()?;
++        if state.is_initial_page_loaded() || since.elapsed() >= MAX_PAGE_LOAD_SPLASH_DURATION {
++            return None;
++        }
++        Some(Instant::now() + SPLASH_ANIMATION_TICK)
++    }
++
+     fn handle_keyboard_input(
+         &self,
+         state: Rc<RunningAppState>,
+@@ -582,11 +637,23 @@ impl HeadedWindow {
+         }
+ 
+         // If requested to redraw or resized, repaint as soon as possible, so that new buffer
+-        // contents are available to the window manager.
++        // contents are available to the window manager. While `page_load_splash_since` is
++        // still set (see its own doc comment), keep painting the boot splash over the real
++        // page instead of compositing it, until the page reports itself ready or we give up
++        // waiting.
+         if event == WindowEvent::RedrawRequested || resized {
+-            let mut gui = self.gui.borrow_mut();
+-            gui.update(&state, &window, self);
+-            gui.paint(&self.winit_window);
++            let still_loading = self.page_load_splash_since.get().filter(|since| {
++                !state.is_initial_page_loaded() && since.elapsed() < MAX_PAGE_LOAD_SPLASH_DURATION
++            });
++            match still_loading {
++                Some(since) => self.paint_splash(since.elapsed()),
++                None => {
++                    self.page_load_splash_since.set(None);
++                    let mut gui = self.gui.borrow_mut();
++                    gui.update(&state, &window, self);
++                    gui.paint(&self.winit_window);
++                },
++            }
+         }
+ 
+         if let WindowEvent::CursorMoved { position, .. } = event {
+diff --git a/ports/servoshell/running_app_state.rs b/ports/servoshell/running_app_state.rs
+index 2ed5727..ee7045a 100644
+--- a/ports/servoshell/running_app_state.rs
++++ b/ports/servoshell/running_app_state.rs
+@@ -219,6 +219,16 @@ pub(crate) struct RunningAppState {
+     /// [`WebView::set_accessibility_active()`], in [`Self::set_accessibility_active()`] and
+     /// and [`ServoShellWindow::create_toplevel_webview()`].
+     accessibility_active: Cell<bool>,
++
++    /// The id of the first (and, outside multi-window/tab flows, only) [`WebView`] this
++    /// instance ever opens — set once, in [`Self::open_window`], and never cleared. Used
++    /// by [`Self::is_initial_page_loaded`] to know which `WebView`'s `LoadStatus::Complete`
++    /// actually marks "the game's own page is ready", as opposed to some later tab/popup.
++    initial_webview_id: Cell<Option<WebViewId>>,
++
++    /// Set by [`Self::notify_load_status_changed`] the first time `initial_webview_id`'s
++    /// `WebView` reaches `LoadStatus::Complete`. See [`Self::is_initial_page_loaded`].
++    initial_load_complete: Cell<bool>,
+ }
+ 
+ impl RunningAppState {
+@@ -269,6 +279,8 @@ impl RunningAppState {
+             user_content_manager,
+             experimental_preferences_enabled,
+             accessibility_active: Cell::new(false),
++            initial_webview_id: Cell::new(None),
++            initial_load_complete: Cell::new(false),
+         }
+     }
+ 
+@@ -283,6 +295,12 @@ impl RunningAppState {
+             .insert(window.id(), window.clone());
+         window.create_and_activate_toplevel_webview(self.clone(), initial_url);
+ 
++        if self.initial_webview_id.get().is_none() &&
++            let Some(webview) = window.active_webview()
++        {
++            self.initial_webview_id.set(Some(webview.id()));
++        }
++
+         // If the window already has platform focus, mark it as focused in our application state.
+         if platform_window.has_platform_focus() {
+             self.focus_window(window.clone());
+@@ -297,6 +315,18 @@ impl RunningAppState {
+         self.windows.borrow()
+     }
+ 
++    /// Whether the very first `WebView` this instance ever opened (`open_window`'s
++    /// initial navigation — practically always the game's own page) has reached
++    /// `LoadStatus::Complete`. Used by the boot splash (`headed_window.rs`'s
++    /// `page_load_splash_since`) as the least-bad available proxy for "the real page is
++    /// ready to be shown" — see `notify_load_status_changed` above. Not a true first-
++    /// *paint* signal (no such thing is exposed to the embedder today — see
++    /// CUSTOMIZATIONS.md's boot-splash entries), just DOM readiness, but far closer than
++    /// showing the page the instant its `WebView` is created.
++    pub(crate) fn is_initial_page_loaded(&self) -> bool {
++        self.initial_load_complete.get()
++    }
++
+     pub(crate) fn focused_window(&self) -> Option<Rc<ServoShellWindow>> {
+         self.focused_window.borrow().clone()
+     }
+@@ -784,6 +814,9 @@ impl WebViewDelegate for RunningAppState {
+         self.window_for_webview(&webview).set_needs_update();
+ 
+         if status == LoadStatus::Complete {
++            if self.initial_webview_id.get() == Some(webview.id()) {
++                self.initial_load_complete.set(true);
++            }
+             if let Some(sender) = self
+                 .webdriver_senders
+                 .borrow_mut()

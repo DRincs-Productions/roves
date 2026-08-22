@@ -219,6 +219,16 @@ pub(crate) struct RunningAppState {
     /// [`WebView::set_accessibility_active()`], in [`Self::set_accessibility_active()`] and
     /// and [`ServoShellWindow::create_toplevel_webview()`].
     accessibility_active: Cell<bool>,
+
+    /// The id of the first (and, outside multi-window/tab flows, only) [`WebView`] this
+    /// instance ever opens — set once, in [`Self::open_window`], and never cleared. Used
+    /// by [`Self::is_initial_page_loaded`] to know which `WebView`'s `LoadStatus::Complete`
+    /// actually marks "the game's own page is ready", as opposed to some later tab/popup.
+    initial_webview_id: Cell<Option<WebViewId>>,
+
+    /// Set by [`Self::notify_load_status_changed`] the first time `initial_webview_id`'s
+    /// `WebView` reaches `LoadStatus::Complete`. See [`Self::is_initial_page_loaded`].
+    initial_load_complete: Cell<bool>,
 }
 
 impl RunningAppState {
@@ -269,6 +279,8 @@ impl RunningAppState {
             user_content_manager,
             experimental_preferences_enabled,
             accessibility_active: Cell::new(false),
+            initial_webview_id: Cell::new(None),
+            initial_load_complete: Cell::new(false),
         }
     }
 
@@ -283,6 +295,12 @@ impl RunningAppState {
             .insert(window.id(), window.clone());
         window.create_and_activate_toplevel_webview(self.clone(), initial_url);
 
+        if self.initial_webview_id.get().is_none() &&
+            let Some(webview) = window.active_webview()
+        {
+            self.initial_webview_id.set(Some(webview.id()));
+        }
+
         // If the window already has platform focus, mark it as focused in our application state.
         if platform_window.has_platform_focus() {
             self.focus_window(window.clone());
@@ -295,6 +313,18 @@ impl RunningAppState {
         &'a self,
     ) -> Ref<'a, HashMap<ServoShellWindowId, Rc<ServoShellWindow>>> {
         self.windows.borrow()
+    }
+
+    /// Whether the very first `WebView` this instance ever opened (`open_window`'s
+    /// initial navigation — practically always the game's own page) has reached
+    /// `LoadStatus::Complete`. Used by the boot splash (`headed_window.rs`'s
+    /// `page_load_splash_since`) as the least-bad available proxy for "the real page is
+    /// ready to be shown" — see `notify_load_status_changed` above. Not a true first-
+    /// *paint* signal (no such thing is exposed to the embedder today — see
+    /// CUSTOMIZATIONS.md's boot-splash entries), just DOM readiness, but far closer than
+    /// showing the page the instant its `WebView` is created.
+    pub(crate) fn is_initial_page_loaded(&self) -> bool {
+        self.initial_load_complete.get()
     }
 
     pub(crate) fn focused_window(&self) -> Option<Rc<ServoShellWindow>> {
@@ -784,6 +814,9 @@ impl WebViewDelegate for RunningAppState {
         self.window_for_webview(&webview).set_needs_update();
 
         if status == LoadStatus::Complete {
+            if self.initial_webview_id.get() == Some(webview.id()) {
+                self.initial_load_complete.set(true);
+            }
             if let Some(sender) = self
                 .webdriver_senders
                 .borrow_mut()

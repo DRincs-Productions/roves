@@ -13,7 +13,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use euclid::{Angle, Length, Point2D, Rect, Rotation3D, Scale, Size2D, UnknownUnit, Vector3D};
 use keyboard_types::ShortcutMatcher;
@@ -65,6 +65,23 @@ use crate::window::{
 
 pub(crate) const INITIAL_WINDOW_TITLE: &str = "Roves";
 
+/// How often the boot splash's indeterminate progress-bar animation (`gui.rs`'s
+/// `draw_splash_progress_bar`) advances, whether it's holding for `app.rs`'s
+/// `MIN_SPLASH_DURATION`/waiting on boot extraction, or covering a still-loading real
+/// page (see `page_load_splash_since`, `splash_animation_wake_deadline`, and
+/// `App::try_finish_booting`). ~30fps: smooth enough to read as animated, without waking
+/// the event loop needlessly often during what's meant to be a brief, incidental wait.
+pub(crate) const SPLASH_ANIMATION_TICK: Duration = Duration::from_millis(33);
+
+/// How long the boot splash keeps covering the real page after `App::finish_init` opens
+/// it (see `page_load_splash_since`), if the initial page's `LoadStatus::Complete` never
+/// arrives -- a broken load, or a page that's still loading subresources it doesn't
+/// consider blocking. Matches this codebase's existing "never leave the user stuck on a
+/// splash forever" philosophy (see `bundle_launch.rs`'s boot-extraction-failure
+/// handling) -- past this, showing the real page, even mid-load, beats an indefinite
+/// Roves-branded hang.
+const MAX_PAGE_LOAD_SPLASH_DURATION: Duration = Duration::from_secs(8);
+
 pub struct HeadedWindow {
     /// The egui interface that is responsible for showing the user interface elements of
     /// this headed `Window`.
@@ -115,6 +132,17 @@ pub struct HeadedWindow {
     visible_input_method: Cell<Option<EmbedderControlId>>,
     /// The position of the mouse cursor after the most recent `MouseMove` event.
     last_mouse_position: Cell<Option<Point2D<f32, DeviceIndependentPixel>>>,
+    /// Set by `App::finish_init` (see `app.rs`) the moment the real `WebView` opens, and
+    /// cleared once its initial page reaches `LoadStatus::Complete` or
+    /// `MAX_PAGE_LOAD_SPLASH_DURATION` elapses, whichever comes first -- see
+    /// `begin_page_load_splash`, `splash_animation_wake_deadline`, and
+    /// `RunningAppState::is_initial_page_loaded`. While set, `handle_winit_window_event`
+    /// keeps painting the boot splash instead of compositing the real page: the page's
+    /// own "nothing painted yet" clear color is black (see CUSTOMIZATIONS.md's boot-
+    /// splash entries), and without this, that black frame is exactly what showed
+    /// through for however long the page took to paint anything of its own -- read by a
+    /// user as "splash, then a black screen, then the game".
+    page_load_splash_since: Cell<Option<Instant>>,
 }
 
 impl HeadedWindow {
@@ -254,6 +282,7 @@ impl HeadedWindow {
             dialogs: Default::default(),
             visible_input_method: Default::default(),
             last_mouse_position: Default::default(),
+            page_load_splash_since: Cell::new(None),
         })
     }
 
@@ -261,16 +290,42 @@ impl HeadedWindow {
         &self.winit_window
     }
 
-    /// Paints the boot splash (see `AppState::Booting` in `app.rs`) instead
-    /// of the normal browser UI — used while a packed-content launch's boot
-    /// extraction is still running on a background thread, before there's a
-    /// `RunningAppState`/webview to draw. `progress`, in `[0, 1]`, drives the
-    /// splash's progress bar (see `Gui::update_splash`) — always shown, even
-    /// at `0.0` before extraction has started.
-    pub(crate) fn paint_splash(&self, progress: f32) {
+    /// Paints the boot splash instead of the normal browser UI — used both while a
+    /// packed-content launch's boot extraction is still running on a background thread
+    /// (`AppState::Booting` in `app.rs`, before there's a `RunningAppState`/webview to
+    /// draw at all), and afterward, while `page_load_splash_since` is set, covering the
+    /// real (still-loading) page. `elapsed` — time since whichever of those two waits
+    /// began — drives the splash's indeterminate progress-bar animation (see
+    /// `Gui::update_splash`/`draw_splash_progress_bar`); it isn't a completion fraction,
+    /// since neither wait has one worth showing (a boot extraction is almost always one
+    /// or two packs and finishes near-instantly once it starts; a page load has no
+    /// fractional signal at all) — see `draw_splash_progress_bar`'s own doc comment.
+    pub(crate) fn paint_splash(&self, elapsed: Duration) {
         let mut gui = self.gui.borrow_mut();
-        gui.update_splash(&self.winit_window, progress);
+        gui.update_splash(&self.winit_window, elapsed);
         gui.paint(&self.winit_window);
+    }
+
+    /// Called once by `App::finish_init`, right as the real `WebView` opens, to keep the
+    /// boot splash up (see `page_load_splash_since`) instead of immediately handing off
+    /// to a page that hasn't painted anything of its own yet.
+    pub(crate) fn begin_page_load_splash(&self) {
+        self.page_load_splash_since.set(Some(Instant::now()));
+    }
+
+    /// `Some(deadline)` while the boot splash is still covering this window's real
+    /// (still-loading) page (see `page_load_splash_since`), so `App::window_event`/
+    /// `new_events` can keep the winit event loop ticking at `SPLASH_ANIMATION_TICK`
+    /// instead of going fully idle. Without this, once the last real `WindowEvent`/
+    /// repaint request had been handled, nothing would wake the loop up again to
+    /// animate the splash during a long, otherwise-silent load, or to promptly notice
+    /// `LoadStatus::Complete` firing with no further page activity after it.
+    pub(crate) fn splash_animation_wake_deadline(&self, state: &RunningAppState) -> Option<Instant> {
+        let since = self.page_load_splash_since.get()?;
+        if state.is_initial_page_loaded() || since.elapsed() >= MAX_PAGE_LOAD_SPLASH_DURATION {
+            return None;
+        }
+        Some(Instant::now() + SPLASH_ANIMATION_TICK)
     }
 
     fn handle_keyboard_input(
@@ -582,11 +637,23 @@ impl HeadedWindow {
         }
 
         // If requested to redraw or resized, repaint as soon as possible, so that new buffer
-        // contents are available to the window manager.
+        // contents are available to the window manager. While `page_load_splash_since` is
+        // still set (see its own doc comment), keep painting the boot splash over the real
+        // page instead of compositing it, until the page reports itself ready or we give up
+        // waiting.
         if event == WindowEvent::RedrawRequested || resized {
-            let mut gui = self.gui.borrow_mut();
-            gui.update(&state, &window, self);
-            gui.paint(&self.winit_window);
+            let still_loading = self.page_load_splash_since.get().filter(|since| {
+                !state.is_initial_page_loaded() && since.elapsed() < MAX_PAGE_LOAD_SPLASH_DURATION
+            });
+            match still_loading {
+                Some(since) => self.paint_splash(since.elapsed()),
+                None => {
+                    self.page_load_splash_since.set(None);
+                    let mut gui = self.gui.borrow_mut();
+                    gui.update(&state, &window, self);
+                    gui.paint(&self.winit_window);
+                },
+            }
         }
 
         if let WindowEvent::CursorMoved { position, .. } = event {
