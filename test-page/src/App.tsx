@@ -1,7 +1,6 @@
 import { exit } from "@drincs/roves-api/process";
 import { steam } from "@drincs/roves-api/steam";
 import { useState } from "react";
-import AudioButton from "./AudioButton.tsx";
 import ClearCacheButton from "./ClearCacheButton.tsx";
 import DiagnosticsPanel from "./DiagnosticsPanel.tsx";
 import FullscreenButton from "./FullscreenButton.tsx";
@@ -148,7 +147,6 @@ export default function App() {
 
       <div style={{ display: "flex", gap: "1.5rem", flexWrap: "wrap", justifyContent: "center" }}>
         <FullscreenButton />
-        <AudioButton />
         <ToneButton />
         <StorageButton />
         <IndexedDbButton />

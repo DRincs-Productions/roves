@@ -2,14 +2,15 @@ import { useState } from "react";
 import * as Tone from "tone";
 
 /**
- * Tone.js smoke test, alongside AudioButton.tsx's raw WebAudio one -- Tone.js
- * wraps the same underlying AudioContext/OscillatorNode this fork's own
- * GStreamer backend implements (see CUSTOMIZATIONS.md's "GStreamer audio
- * sink" diagnostic entries), but it's what a real game is actually likely to
- * use (synths, players, effects chains), so a report against raw WebAudio
- * alone doesn't necessarily generalize to it. Same short/long split as
- * AudioButton.tsx, for the same reason: isolate a device-open/timing race
- * from a fundamentally broken pipeline.
+ * Audio smoke test via Tone.js -- what a real game is actually likely to use
+ * (synths, players, effects chains) rather than raw
+ * AudioContext/OscillatorNode calls. See CUSTOMIZATIONS.md's "GStreamer
+ * audio sink" diagnostic entries: an earlier raw-WebAudio version of this
+ * test (creating and closing a fresh AudioContext per click) produced no/
+ * erratic audio on at least one real machine, while Tone.js's single reused
+ * context (Tone.getContext()) played correctly -- so this is the version
+ * kept. Short/long split lets a future report tell a duration-specific issue
+ * apart from a fundamentally broken pipeline.
  */
 export default function ToneButton() {
   const [shortStatus, setShortStatus] = useState("Not tested.");
@@ -17,9 +18,9 @@ export default function ToneButton() {
 
   const playNote = async (durationSeconds: number, report: (status: string) => void) => {
     try {
-      // Tone.start() resumes the underlying AudioContext -- same "must be a
-      // real user gesture, but doesn't resume itself" caveat as
-      // AudioButton.tsx's ctx.resume() call.
+      // Tone.start() resumes the underlying AudioContext -- still needs a
+      // real user gesture to actually take effect, same as the WebAudio
+      // autoplay policy in general.
       await Tone.start();
       const synth = new Tone.Synth().toDestination();
       const start = Tone.now();

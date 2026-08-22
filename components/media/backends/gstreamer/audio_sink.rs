@@ -27,13 +27,6 @@ pub struct GStreamerAudioSink {
     sample_rate: Cell<f32>,
     audio_info: RefCell<Option<gstreamer_audio::AudioInfo>>,
     sample_offset: Cell<u64>,
-    // Roves: temporary diagnostic-only counter, see CUSTOMIZATIONS.md's
-    // "GStreamer audio sink: diagnostic logging for the WebAudio silence
-    // report" entry. Caps how many push_data() calls get logged per sink so
-    // a long real playback (music, etc.) doesn't spam roves.log -- only the
-    // first few pushes (which is all a short one-shot sound like a UI click
-    // needs) are interesting here.
-    diag_push_log_count: Cell<u32>,
 }
 
 impl GStreamerAudioSink {
@@ -58,7 +51,6 @@ impl GStreamerAudioSink {
             sample_rate: Cell::new(DEFAULT_SAMPLE_RATE),
             audio_info: RefCell::new(None),
             sample_offset: Cell::new(0),
-            diag_push_log_count: Cell::new(0),
         })
     }
 }
@@ -139,47 +131,6 @@ impl AudioSink for GStreamerAudioSink {
         gstreamer::Element::link_many([&appsrc, &resample, &convert, &sink])
             .map_err(|error| AudioSinkError::Backend(error.to_string()))?;
 
-        // Roves: temporary diagnostic-only bus watch, see CUSTOMIZATIONS.md's
-        // "GStreamer audio sink: diagnostic logging for the WebAudio silence
-        // report" entry. Logs pipeline state transitions and ASYNC_DONE so a
-        // real user's roves.log shows exactly when (if ever) this sink
-        // actually reaches PLAYING relative to when the WebAudio graph
-        // considers a short sound "ended". No behavior change.
-        let bus = self.pipeline.bus().unwrap();
-        Builder::new()
-            .name("GstAudioSinkDiagBus".to_owned())
-            .spawn(move || {
-                use gstreamer::MessageView;
-                loop {
-                    let Some(msg) = bus.timed_pop(gstreamer::ClockTime::from_mseconds(200)) else {
-                        continue;
-                    };
-                    match msg.view() {
-                        MessageView::StateChanged(sc)
-                            if sc.src().map(|s| s.type_().name()) == Some("GstPipeline") =>
-                        {
-                            log::info!(
-                                "[audio diag] pipeline state {:?} -> {:?} (pending {:?})",
-                                sc.old(),
-                                sc.current(),
-                                sc.pending()
-                            );
-                        },
-                        MessageView::AsyncDone(_) => {
-                            log::info!("[audio diag] ASYNC_DONE (sink pipeline truly ready now)")
-                        },
-                        MessageView::Error(e) => log::info!(
-                            "[audio diag] pipeline ERROR {:?}: {}",
-                            e.src().map(|s| s.path_string()),
-                            e.error()
-                        ),
-                        MessageView::Eos(_) => break,
-                        _ => {},
-                    }
-                }
-            })
-            .unwrap();
-
         Ok(())
     }
 
@@ -218,20 +169,15 @@ impl AudioSink for GStreamerAudioSink {
     }
 
     fn play(&self) -> Result<(), AudioSinkError> {
-        // Roves: temporary diagnostic-only logging, see CUSTOMIZATIONS.md's
-        // "GStreamer audio sink: diagnostic logging for the WebAudio silence
-        // report" entry. No behavior change -- same set_state call as before.
-        let result = self.pipeline.set_state(gstreamer::State::Playing);
-        log::info!("[audio diag] play(): set_state(Playing) returned {:?}", result);
-        result
+        self.pipeline
+            .set_state(gstreamer::State::Playing)
             .map(|_| ())
             .map_err(|_| AudioSinkError::StateChangeFailed)
     }
 
     fn stop(&self) -> Result<(), AudioSinkError> {
-        let result = self.pipeline.set_state(gstreamer::State::Paused);
-        log::info!("[audio diag] stop(): set_state(Paused) returned {:?}", result);
-        result
+        self.pipeline
+            .set_state(gstreamer::State::Paused)
             .map(|_| ())
             .map_err(|_| AudioSinkError::StateChangeFailed)
     }
@@ -291,21 +237,8 @@ impl AudioSink for GStreamerAudioSink {
             self.sample_offset.set(sample_offset);
         }
 
-        let result = self.appsrc.push_buffer(buffer);
-        // Roves: temporary diagnostic-only logging (capped, see the
-        // diag_push_log_count field's own doc comment), see
-        // CUSTOMIZATIONS.md's "GStreamer audio sink: diagnostic logging for
-        // the WebAudio silence report" entry. No behavior change.
-        let n = self.diag_push_log_count.get();
-        if n < 10 {
-            self.diag_push_log_count.set(n + 1);
-            log::info!(
-                "[audio diag] push_data(): sample_offset={} result={:?}",
-                self.sample_offset.get(),
-                result
-            );
-        }
-        result
+        self.appsrc
+            .push_buffer(buffer)
             .map(|_| ())
             .map_err(|_| AudioSinkError::BufferPushFailed)
     }

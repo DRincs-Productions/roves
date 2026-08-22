@@ -3725,6 +3725,36 @@ log level is `info` (`ports/servoshell/desktop/logging.rs`), so these lines land
 the next `test` CI build (`test.yml` triggers on `patches/**` changes), have the reporting
 user download it and re-click the beep, and read the real timing off their actual hardware and
 the actual bundled DLL layout — closing exactly the two gaps the local test above couldn't
-reach. Remove this logging once the real root cause is found, same as the precedent set by
-`d6017c8`/`c38f3f6`'s macOS GStreamer packaging diagnostic (added, then removed once the fix
-it was chasing was confirmed).
+reach.
+
+**Resolution, and why this patch is reverted:** three rounds of real-machine testing via this
+logging turned up something odder than a fixed timing race: on the reporting user's machine,
+`AudioButton.tsx`'s pattern of `new AudioContext()` + `ctx.close()` on every click produced
+wildly inconsistent completion times per click (48ms to over 20 real seconds, for tones
+programmed at 200ms/2000ms), and at least one context per session never received its scheduled
+stop at all — its `stop()` only fired at page teardown, alongside window-close cleanup. That
+pattern didn't reproduce with `../test-page/src/ToneButton.tsx` (Tone.js), confirmed audible by
+the same user on the same machine. Tone.js keeps a single, lazily-created global
+`AudioContext` reused across calls (`Tone.getContext()`/`Tone.start()` in the `tone` package,
+verified by reading its source — it does *not* eagerly construct a real context on import,
+ruling out one early theory) rather than constructing and tearing down a fresh context per
+sound the way `AudioButton.tsx` did. That difference — persistent/reused context vs.
+create-and-close-per-sound — is the one clear variable that changed between "doesn't work" and
+"works" in this investigation, though the precise mechanism (why the per-click pattern
+specifically starves/hangs a render thread on this machine) was never root-caused at the
+GStreamer/DOM level; it would need either a full local `mach build` with DOM-layer
+instrumentation, or the same test reproduced on other hardware, neither done here.
+
+Practical upshot: this fork's own diagnostic page now only tests audio through Tone.js (see
+`../test-page/src/ToneButton.tsx`'s own commit), matching how a real game is likely to produce
+sound anyway (a library with a managed persistent context) rather than raw
+`AudioContext`/`OscillatorNode` calls per one-shot effect. Since the observed problem is
+specific to a usage pattern this fork's own diagnostics no longer exercise, and reproducing it
+further would need real hardware this session doesn't have future access to, the diagnostic
+logging added here is reverted — `audio_sink.rs` is back to byte-identical with pristine
+upstream, and `0044-gstreamer-audio-sink-diagnostic-logging.patch` is deleted. If a future
+report surfaces the same "raw AudioContext per one-shot sound produces no/erratic audio"
+symptom, start from this entry instead of re-deriving the investigation from scratch — and
+consider that the real fix, if one exists, is more likely a Servo/servo-media concurrency issue
+around rapid `AudioContext` creation/teardown than anything in this file specifically, since
+`audio_sink.rs` in isolation (see the throwaway example above) behaved correctly.
