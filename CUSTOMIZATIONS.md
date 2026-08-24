@@ -3871,3 +3871,110 @@ game and confirm, on an actual slow-ish load, that the splash now visibly persis
 moving progress indicator) all the way through to the game's own first frame, with no black
 gap — and that a deliberately broken/never-resolving page still recovers after
 `MAX_PAGE_LOAD_SPLASH_DURATION` instead of hanging.**
+
+## 2026-08-24 — Fix: root-absolute asset references (a bundler's default) resolved against the OS filesystem root instead of the game's content root
+
+**Files:** `ports/servoshell/desktop/protocols/file.rs`.
+
+**Patch:** `patches/servo-v0.4.0/0045-rebase-root-absolute-file-paths-to-content-root.patch`
+
+**Upstream behavior:** unchanged for anything that already resolves — this only adds a
+fallback for what would otherwise be a hard failure. `FileProtocolHandler` itself has no
+upstream equivalent at all (see the "Split packed content..." entry above for its origin).
+
+**Reported directly, from a real launch of a real game (`pixi-vn-react-template`, via
+`roves-action`'s new end-to-end test — see that repo's own `test.yml`):** a plain black
+window, no content ever rendered. `roves.log` showed the actual cause once someone looked:
+
+```text
+ERROR script::script_module] Fetching module script failed Opening file failed
+ERROR script::dom::html::htmlscriptelement] Fetching classic script failed Opening file failed (file:///C:/registerSW.js)
+```
+
+**Root cause:** `--content-dir dist/`'s own `index.html` references its scripts
+root-relative (`/assets/index-XXXX.js`, `/registerSW.js`) — Vite's default `base: '/'`, and
+every other major bundler's default too, since normally that content is served over http(s)
+from an actual domain root. Roves opens that `index.html` via a bare `file:` URL instead
+(never an http(s) server) — per the URL spec, a root-relative reference resolved against a
+`file:` document becomes `file:///assets/index-XXXX.js`, i.e. `C:\assets\...` on Windows or
+`/assets/...` on Linux/macOS: the real OS filesystem root, not the game's own content
+directory. Exactly what any browser does for a `file://` document opened directly instead of
+served — not a bug in the URL resolution itself, just a mismatch nobody hits until a real
+bundler's default output meets a `file:`-loaded engine. `FileProtocolHandler` (added by the
+"Split packed content..." entry above) had no logic to notice or correct for this at all —
+it just tried the literal, already-wrong path and reported `NetworkError::ResourceLoadError`
+("Opening file failed") like the stock handler would for any other missing file.
+
+**Change:** `FileProtocolHandler` gained `initial_dir` (the directory containing the
+document Roves was launched with — set unconditionally, independent of `packed`, so this
+also covers `--content-compress none` and a raw dev `--url` launch, not just packed
+content) and `rebase_to_content_root`, consulted only as a fallback once the literal path
+already failed to resolve: strips any `Component::Prefix`/`Component::RootDir` off the
+failed path and re-joins the remainder onto `initial_dir`, then retries (`ensure_available`
+included, so a rebased path under packed content still triggers on-demand extraction
+correctly). A request that already resolves for real — including the vanishingly unlikely
+case of a genuine OS-root file happening to share a game asset's name — is left untouched.
+
+**Verification:** compiled clean — `./mach build` (debug, MSVC toolchain sourced manually
+via `vcvars64.bat` + LLVM's `lld-link.exe` added to `PATH`, since this environment doesn't
+have either on `PATH` by default) got all the way through compiling `servoshell` itself with
+zero errors, only failing at the final link step on an unrelated, pre-existing symbol
+mismatch in mozjs's bundled ICU C++ code (`undefined symbol: __std_find_first_of_trivial_pos_1`
+/ `__std_search_1`, referenced from `uloc.cpp`/`NumberFormatterSkeleton.cpp`) — an MSVC
+STL/toolset version mismatch on this machine specifically, nothing touched by this change.
+**Whoever builds this next should confirm a real launch of `pixi-vn-react-template` (or any
+other Vite-default-output game) now actually renders**, and that `roves-action`'s own
+`test.yml` (which is what surfaced this in the first place) stays green.
+
+## 2026-08-24 — Add a visible error screen for a content-load failure, instead of a silent black window
+
+**Files:** `ports/servoshell/desktop/logging.rs`, `ports/servoshell/desktop/gui.rs`,
+`ports/servoshell/desktop/headed_window.rs`.
+
+**Patch:** `patches/servo-v0.4.0/0046-visible-error-screen-on-content-load-failure.patch`
+
+**Upstream behavior:** upstream Servo has a `FromEmbedderLogger` mechanism intended to
+forward crash/warning-class log records to an embedder-side UI — already disabled here (see
+the 2026-08-13 "Startup file logging, so a silently-failing `play.exe` is diagnosable" entry,
+patch `0030-...`) because this fork has no toolbar/warning UI to forward to at all. This
+entry adds a narrow, purpose-built replacement for exactly one failure class, rather than
+re-enabling that general mechanism.
+
+**Motivation:** the fix above (patch 0045) closes the most common cause, but any *other*
+reason a critical `<script>` fails to fetch (a genuinely missing file, a real bug in a
+future bundler's output, disk corruption, ...) would still read as a silent black window —
+`LoadStatus::Complete` still fires normally (navigation itself completes fine even though the
+page's own JS never ran), so the boot splash comes down the same as any successful load,
+revealing WebRender's plain black default background with no indication anything went wrong.
+Raised directly during review of patch 0045: "Roves should communicate the error somehow,"
+not just leave it discoverable only by someone who knows to go look at `roves.log`.
+
+**Change:**
+
+- **`logging.rs`** now wraps `env_logger`'s own `Logger` in a small `RovesLogger` that
+  additionally watches every log record for the exact two upstream call sites that mean "the
+  page's own script failed to load" — `script::script_module`'s `Fetching module script
+  failed` and `script::dom::html::htmlscriptelement`'s `Fetching classic script failed` — and,
+  the first time either fires, records the message in a new process-wide
+  `CONTENT_LOAD_ERROR` slot (`pub(crate) fn content_load_error()` to read it back).
+  Deliberately narrow: an ordinary page 404-ing a non-critical image shouldn't take over the
+  whole window, but a `<script>` the page itself needed to run failing is exactly the
+  "renders nothing, looks hung" case worth surfacing. Everything else about logging (file
+  destination, level filtering, formatting) is unchanged — this only adds a side effect.
+- **`gui.rs`** gained `Gui::update_content_load_error`, a new static screen (reusing the boot
+  splash's icon/black-panel styling for visual continuity, no progress bar since nothing is
+  still in flight) showing "This game's content failed to load", the recorded message, and a
+  pointer to `roves.log`.
+- **`headed_window.rs`**'s `handle_winit_window_event` repaint branch now checks
+  `logging::content_load_error()` at the exact point that used to unconditionally hand off
+  from the boot splash to the real page (once `is_initial_page_loaded()` is true) — if an
+  error was recorded, it paints the new error screen instead (via new
+  `HeadedWindow::paint_content_load_error`) and keeps doing so on every subsequent repaint,
+  deliberately sticky for the rest of the session: the script already failed once, there's
+  nothing to retry.
+
+**Verification:** same as patch 0045 above — compiled clean through `servoshell` itself,
+blocked only by this machine's own unrelated MSVC/ICU link error. **Whoever builds this next
+should deliberately break a bundled game's content (e.g. delete/rename one referenced script
+after bundling) and confirm the error screen appears instead of a black window, with a
+sensible message.**

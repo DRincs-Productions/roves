@@ -1,0 +1,202 @@
+diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
+index c06a356..a691666 100644
+--- a/ports/servoshell/desktop/gui.rs
++++ b/ports/servoshell/desktop/gui.rs
+@@ -710,6 +710,57 @@ impl Gui {
+         });
+     }
+ 
++    /// Shown instead of the normal page once the initial load finished but a
++    /// content-load error was recorded along the way (see
++    /// `logging::content_load_error`, `headed_window.rs`'s `paint_content_load_error`)
++    /// — the page's own script never actually ran, so there's nothing of its own left to
++    /// composite. Without this, that failure mode reads as a silent black window:
++    /// `LoadStatus::Complete` still fires normally (navigation itself did complete), so
++    /// the boot splash comes down the same as any successful load, revealing
++    /// WebRender's plain black default background since nothing the page would have
++    /// painted ever ran. Reuses the splash's icon and black-panel styling for visual
++    /// continuity, but is a distinct, static screen — no progress bar, since there is
++    /// nothing left in flight to animate. Call [`Gui::paint`] afterward, same as
++    /// [`Gui::update`]/[`Gui::update_splash`].
++    pub(crate) fn update_content_load_error(&mut self, winit_window: &Window, message: &str) {
++        self.rendering_context
++            .make_current()
++            .expect("Could not make RenderingContext current");
++        let splash_icon_texture = self.splash_icon_texture.clone();
++        let message = message.to_owned();
++        self.context.run(winit_window, |ctx| {
++            let icon = egui::Image::from_texture(&splash_icon_texture)
++                .fit_to_exact_size(egui::Vec2::splat(64.0));
++            #[expect(deprecated)]
++            egui::CentralPanel::default()
++                .frame(egui::Frame::default().fill(egui::Color32::BLACK))
++                .show(ctx, |ui| {
++                    ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
++                        ui.add_space(ui.available_height() / 3.0);
++                        ui.add(icon);
++                        ui.add_space(24.0);
++                        ui.label(
++                            egui::RichText::new("This game's content failed to load")
++                                .size(20.0)
++                                .color(egui::Color32::WHITE),
++                        );
++                        ui.add_space(12.0);
++                        ui.label(
++                            egui::RichText::new(&message)
++                                .size(14.0)
++                                .color(egui::Color32::from_rgb(255, 140, 140)),
++                        );
++                        ui.add_space(12.0);
++                        ui.label(
++                            egui::RichText::new("See roves.log for details.")
++                                .size(13.0)
++                                .color(egui::Color32::GRAY),
++                        );
++                    });
++                });
++        });
++    }
++
+     /// Paint the GUI, as of the last update.
+     pub(crate) fn paint(&mut self, window: &Window) {
+         self.rendering_context
+diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/desktop/headed_window.rs
+index 1e5bc80..65149f3 100644
+--- a/ports/servoshell/desktop/headed_window.rs
++++ b/ports/servoshell/desktop/headed_window.rs
+@@ -56,6 +56,7 @@ use crate::desktop::dialog::Dialog;
+ use crate::desktop::event_loop::AppEvent;
+ use crate::desktop::gui::Gui;
+ use crate::desktop::keyutils::CMD_OR_CONTROL;
++use crate::desktop::logging;
+ use crate::prefs::ServoShellPreferences;
+ use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
+ use crate::window::{
+@@ -306,6 +307,20 @@ impl HeadedWindow {
+         gui.paint(&self.winit_window);
+     }
+ 
++    /// Paints a visible error message instead of handing off to the (in this case
++    /// broken) real page — used once the initial page has finished loading but a
++    /// content-load error was recorded along the way (see `logging::content_load_error`)
++    /// meaning the page's own script never actually ran. Without this, that case reads
++    /// as a silent black window: `LoadStatus::Complete` still fires normally (navigation
++    /// itself did complete), so the boot splash comes down same as any successful load,
++    /// revealing WebRender's plain black default background since nothing the page
++    /// would have painted ever ran.
++    pub(crate) fn paint_content_load_error(&self, message: &str) {
++        let mut gui = self.gui.borrow_mut();
++        gui.update_content_load_error(&self.winit_window, message);
++        gui.paint(&self.winit_window);
++    }
++
+     /// Called once by `App::finish_init`, right as the real `WebView` opens, to keep the
+     /// boot splash up (see `page_load_splash_since`) instead of immediately handing off
+     /// to a page that hasn't painted anything of its own yet.
+@@ -649,9 +664,14 @@ impl HeadedWindow {
+                 Some(since) => self.paint_splash(since.elapsed()),
+                 None => {
+                     self.page_load_splash_since.set(None);
+-                    let mut gui = self.gui.borrow_mut();
+-                    gui.update(&state, &window, self);
+-                    gui.paint(&self.winit_window);
++                    match logging::content_load_error() {
++                        Some(message) => self.paint_content_load_error(&message),
++                        None => {
++                            let mut gui = self.gui.borrow_mut();
++                            gui.update(&state, &window, self);
++                            gui.paint(&self.winit_window);
++                        },
++                    }
+                 },
+             }
+         }
+diff --git a/ports/servoshell/desktop/logging.rs b/ports/servoshell/desktop/logging.rs
+index 92368b2..1d9f6b4 100644
+--- a/ports/servoshell/desktop/logging.rs
++++ b/ports/servoshell/desktop/logging.rs
+@@ -27,12 +27,76 @@
+ 
+ use std::fs::File;
+ use std::path::Path;
++use std::sync::{Mutex, OnceLock};
+ 
+ /// Filename of the on-disk log, truncated fresh on every launch (`File::create`)
+ /// so it never grows unbounded across repeated runs — old runs' output isn't
+ /// meant to be kept, just this run's.
+ const LOG_FILE_NAME: &str = "roves.log";
+ 
++/// Set the first time the game's own top-level document fails to fetch a `<script>` it
++/// needs to actually run (a classic or module script) — checked every repaint by
++/// `headed_window.rs`, once the page reports itself loaded, so a black canvas (nothing
++/// ever painted, because the page's own JS never ran) shows a visible message instead of
++/// silently doing nothing. Sticky for the rest of the session once set, deliberately: the
++/// script already failed once, there's nothing to retry.
++static CONTENT_LOAD_ERROR: OnceLock<Mutex<Option<String>>> = OnceLock::new();
++
++/// The message set by [`CONTENT_LOAD_ERROR`], if a content-load error was ever seen —
++/// see `headed_window.rs`'s `handle_winit_window_event`.
++pub(crate) fn content_load_error() -> Option<String> {
++    CONTENT_LOAD_ERROR.get()?.lock().unwrap().clone()
++}
++
++/// Matches the exact two upstream Servo log call sites that mean "the page's own script
++/// failed to load" — `script::script_module`'s `Fetching module script failed` and
++/// `script::dom::html::htmlscriptelement`'s `Fetching classic script failed` (see
++/// `components/script/script_module.rs`/`components/script/dom/htmlscriptelement.rs`).
++/// Deliberately narrow: an ordinary page can 404 an image or a non-critical fetch without
++/// the whole app being broken, but a `<script>` the page itself needed to run failing is
++/// exactly the "renders nothing, looks like it hung" failure mode this exists to surface.
++fn note_potential_content_load_error(record: &log::Record) {
++    if record.level() != log::Level::Error {
++        return;
++    }
++    if !matches!(
++        record.target(),
++        "script::script_module" | "script::dom::html::htmlscriptelement"
++    ) {
++        return;
++    }
++    let slot = CONTENT_LOAD_ERROR.get_or_init(|| Mutex::new(None));
++    let mut slot = slot.lock().unwrap();
++    if slot.is_none() {
++        *slot = Some(record.args().to_string());
++    }
++}
++
++/// Wraps `env_logger`'s own [`env_logger::Logger`] to additionally watch for the narrow
++/// class of Servo-internal error logs handled by [`note_potential_content_load_error`] —
++/// everything else about logging (destination, level filtering, formatting) is
++/// unchanged, `env_logger`'s `Logger` still does all of it; this only adds a side effect
++/// on top, purely so `headed_window.rs` has something to poll without needing its own
++/// hook into Servo's script-loading internals.
++struct RovesLogger {
++    inner: env_logger::Logger,
++}
++
++impl log::Log for RovesLogger {
++    fn enabled(&self, metadata: &log::Metadata) -> bool {
++        self.inner.enabled(metadata)
++    }
++
++    fn log(&self, record: &log::Record) {
++        note_potential_content_load_error(record);
++        self.inner.log(record);
++    }
++
++    fn flush(&self) {
++        self.inner.flush();
++    }
++}
++
+ /// Installs the file logger, rooted at `log_dir` (see
+ /// `roves_content_packer::extract::game_data_dir` — a sibling of the
+ /// extraction cache, not inside the game's own content directory). Returns
+@@ -63,6 +127,7 @@ pub(crate) fn init(log_dir: &Path) -> Option<std::path::PathBuf> {
+     builder.format_timestamp_millis();
+     let logger = builder.build();
+     let filter = logger.filter();
++    let logger = RovesLogger { inner: logger };
+ 
+     log::set_boxed_logger(Box::new(logger)).ok()?;
+     log::set_max_level(filter);

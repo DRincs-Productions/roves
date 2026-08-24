@@ -25,7 +25,7 @@
 use std::fs::File;
 use std::future::{Future, ready};
 use std::io::{BufReader, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Mutex;
 
@@ -55,21 +55,28 @@ struct PackedContent {
 }
 
 pub struct FileProtocolHandler {
+    /// The directory containing the document Roves was launched with — the effective
+    /// content "root" a root-absolute reference gets rebased onto when it doesn't
+    /// resolve for real (see `rebase_to_content_root`). Independent of `packed`: this is
+    /// set for every launch that has an initial path at all, packed content or not.
+    initial_dir: Option<PathBuf>,
     packed: Option<PackedContent>,
 }
 
 impl FileProtocolHandler {
     /// `initial_file_path`: the local path the engine was told to open —
-    /// i.e. the resolved initial `file:` URL's path. Used only to look for a
-    /// `.roves-content-source` marker possibly sitting next to it (written
-    /// by `roves-content-packer extract`, see CUSTOMIZATIONS.md). Any other
-    /// `file://` document (e.g. one opened via raw CLI args for local
-    /// dev/testing, or a build with `--content-compress=none`) simply won't
-    /// have that marker, and this handler behaves exactly like the stock one
-    /// for it.
+    /// i.e. the resolved initial `file:` URL's path. Its directory doubles as
+    /// this session's content root (`initial_dir`, `rebase_to_content_root`)
+    /// and as where to look for a `.roves-content-source` marker (written by
+    /// `roves-content-packer extract`, see CUSTOMIZATIONS.md) — present only
+    /// for a packed-content launch; absent for one opened via raw CLI args
+    /// for local dev/testing, or a build with `--content-compress=none`, in
+    /// which case `packed` alone (not `initial_dir`) behaves exactly like
+    /// the stock handler.
     pub fn new(initial_file_path: Option<&Path>) -> Self {
-        let packed = initial_file_path.and_then(|p| p.parent()).and_then(Self::resolve_packed_content);
-        Self { packed }
+        let initial_dir = initial_file_path.and_then(|p| p.parent()).map(Path::to_path_buf);
+        let packed = initial_dir.as_deref().and_then(Self::resolve_packed_content);
+        Self { initial_dir, packed }
     }
 
     fn resolve_packed_content(cache_dir: &Path) -> Option<PackedContent> {
@@ -119,6 +126,30 @@ impl FileProtocolHandler {
             log::warn!("on-demand extraction of {rel_path:?} failed: {e}");
         }
     }
+
+    /// If `file_path` doesn't exist as given, tries it again as though it had been
+    /// requested root-relative to this session's own content root (`initial_dir`)
+    /// instead of the real OS filesystem root. Per the URL spec, `<script src="/foo.js">`
+    /// on a document loaded from a bare `file:` URL (rather than served over http(s)
+    /// from an actual domain root) resolves to `file:///foo.js` — `C:\foo.js` on Windows,
+    /// `/foo.js` on Linux/macOS — exactly what any browser does for a `file://`
+    /// document, and exactly the footgun this exists to route around: virtually every
+    /// bundler (Vite, webpack, ...) emits root-absolute asset references by default, and
+    /// a game's content root is never actually the OS filesystem root. Only ever
+    /// consulted as a fallback, after the literal path already failed to resolve — a
+    /// request that already resolves for real (a genuine OS-root file, vanishingly
+    /// unlikely to collide with a game's own asset name) is left untouched.
+    fn rebase_to_content_root(&self, file_path: &Path) -> Option<PathBuf> {
+        let root = self.initial_dir.as_deref()?;
+        let relative: PathBuf = file_path
+            .components()
+            .filter(|c| !matches!(c, Component::Prefix(_) | Component::RootDir))
+            .collect();
+        if relative.as_os_str().is_empty() {
+            return None;
+        }
+        Some(root.join(relative))
+    }
 }
 
 impl ProtocolHandler for FileProtocolHandler {
@@ -134,8 +165,16 @@ impl ProtocolHandler for FileProtocolHandler {
             return Box::pin(ready(Response::network_error(NetworkError::InvalidMethod)));
         }
 
-        let response = if let Ok(file_path) = url.to_file_path() {
+        let response = if let Ok(mut file_path) = url.to_file_path() {
             self.ensure_available(&file_path);
+            if !file_path.exists() &&
+                let Some(rebased) = self.rebase_to_content_root(&file_path)
+            {
+                self.ensure_available(&rebased);
+                if rebased.exists() {
+                    file_path = rebased;
+                }
+            }
 
             if file_path.is_dir() {
                 return Box::pin(ready(Response::network_error(NetworkError::ResourceLoadError(

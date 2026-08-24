@@ -56,6 +56,7 @@ use crate::desktop::dialog::Dialog;
 use crate::desktop::event_loop::AppEvent;
 use crate::desktop::gui::Gui;
 use crate::desktop::keyutils::CMD_OR_CONTROL;
+use crate::desktop::logging;
 use crate::prefs::ServoShellPreferences;
 use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
 use crate::window::{
@@ -303,6 +304,20 @@ impl HeadedWindow {
     pub(crate) fn paint_splash(&self, elapsed: Duration) {
         let mut gui = self.gui.borrow_mut();
         gui.update_splash(&self.winit_window, elapsed);
+        gui.paint(&self.winit_window);
+    }
+
+    /// Paints a visible error message instead of handing off to the (in this case
+    /// broken) real page — used once the initial page has finished loading but a
+    /// content-load error was recorded along the way (see `logging::content_load_error`)
+    /// meaning the page's own script never actually ran. Without this, that case reads
+    /// as a silent black window: `LoadStatus::Complete` still fires normally (navigation
+    /// itself did complete), so the boot splash comes down same as any successful load,
+    /// revealing WebRender's plain black default background since nothing the page
+    /// would have painted ever ran.
+    pub(crate) fn paint_content_load_error(&self, message: &str) {
+        let mut gui = self.gui.borrow_mut();
+        gui.update_content_load_error(&self.winit_window, message);
         gui.paint(&self.winit_window);
     }
 
@@ -649,9 +664,14 @@ impl HeadedWindow {
                 Some(since) => self.paint_splash(since.elapsed()),
                 None => {
                     self.page_load_splash_since.set(None);
-                    let mut gui = self.gui.borrow_mut();
-                    gui.update(&state, &window, self);
-                    gui.paint(&self.winit_window);
+                    match logging::content_load_error() {
+                        Some(message) => self.paint_content_load_error(&message),
+                        None => {
+                            let mut gui = self.gui.borrow_mut();
+                            gui.update(&state, &window, self);
+                            gui.paint(&self.winit_window);
+                        },
+                    }
                 },
             }
         }

@@ -94,22 +94,13 @@ to keep it lazy.
 
 Tune or disable all of this with flags on `./mach bundle`:
 
-```sh
-# Compression level (zstd; low favors speed, the default) and the per-archive size cap:
-./mach bundle --content-dir dist/ --content-compression-level 3 --content-max-pack-size 250M
-
-# Leave a subfolder (e.g. local save data your game itself writes into `dist/`) as
-# plain, uncompressed files instead of packing it — repeatable:
-./mach bundle --content-dir dist/ --content-exclude "saves/**"
-
-# Add a file to the eager boot set beyond the html file and what it directly
-# references — e.g. a splash image — repeatable:
-./mach bundle --content-dir dist/ --content-boot-include "splash.png"
-
-# Opt back into the old behavior — content-dir copied in as-is, no packing, no launch-time
-# extraction, no on-demand decompression:
-./mach bundle --content-dir dist/ --content-compress none
-```
+| Flag | Description | Default |
+| --- | --- | --- |
+| `--content-compress <auto\|none>` | Pack `--content-dir` into tar+zstd archives (`auto`), or copy it in as loose, uncompressed files with none of the above (`none`). | `auto` |
+| `--content-compression-level <N>` | zstd compression level used by `--content-compress=auto`. Low favors speed. | `1` |
+| `--content-max-pack-size <SIZE>` | Max size per content archive (e.g. `500M`, `1G`) before splitting into further parts. | `500M` |
+| `--content-exclude <GLOB>` | Leave files matching this glob (relative to `--content-dir`) loose/uncompressed instead of packing them — e.g. a save-data or user-config subfolder that shouldn't sit inside a read-only archive. Repeatable. | unset |
+| `--content-boot-include <GLOB>` | Force files matching this glob (relative to `--content-dir`) into the eager boot set, beyond the html file and whatever it directly references — e.g. a splash image. Repeatable. | unset |
 
 See the "Pack game content into compressed archives" and "Split packed content into an eager
 boot set + lazy, on-demand extraction" entries in [CUSTOMIZATIONS.md] for the full design

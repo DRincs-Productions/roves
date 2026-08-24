@@ -27,11 +27,75 @@
 
 use std::fs::File;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 
 /// Filename of the on-disk log, truncated fresh on every launch (`File::create`)
 /// so it never grows unbounded across repeated runs — old runs' output isn't
 /// meant to be kept, just this run's.
 const LOG_FILE_NAME: &str = "roves.log";
+
+/// Set the first time the game's own top-level document fails to fetch a `<script>` it
+/// needs to actually run (a classic or module script) — checked every repaint by
+/// `headed_window.rs`, once the page reports itself loaded, so a black canvas (nothing
+/// ever painted, because the page's own JS never ran) shows a visible message instead of
+/// silently doing nothing. Sticky for the rest of the session once set, deliberately: the
+/// script already failed once, there's nothing to retry.
+static CONTENT_LOAD_ERROR: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+/// The message set by [`CONTENT_LOAD_ERROR`], if a content-load error was ever seen —
+/// see `headed_window.rs`'s `handle_winit_window_event`.
+pub(crate) fn content_load_error() -> Option<String> {
+    CONTENT_LOAD_ERROR.get()?.lock().unwrap().clone()
+}
+
+/// Matches the exact two upstream Servo log call sites that mean "the page's own script
+/// failed to load" — `script::script_module`'s `Fetching module script failed` and
+/// `script::dom::html::htmlscriptelement`'s `Fetching classic script failed` (see
+/// `components/script/script_module.rs`/`components/script/dom/htmlscriptelement.rs`).
+/// Deliberately narrow: an ordinary page can 404 an image or a non-critical fetch without
+/// the whole app being broken, but a `<script>` the page itself needed to run failing is
+/// exactly the "renders nothing, looks like it hung" failure mode this exists to surface.
+fn note_potential_content_load_error(record: &log::Record) {
+    if record.level() != log::Level::Error {
+        return;
+    }
+    if !matches!(
+        record.target(),
+        "script::script_module" | "script::dom::html::htmlscriptelement"
+    ) {
+        return;
+    }
+    let slot = CONTENT_LOAD_ERROR.get_or_init(|| Mutex::new(None));
+    let mut slot = slot.lock().unwrap();
+    if slot.is_none() {
+        *slot = Some(record.args().to_string());
+    }
+}
+
+/// Wraps `env_logger`'s own [`env_logger::Logger`] to additionally watch for the narrow
+/// class of Servo-internal error logs handled by [`note_potential_content_load_error`] —
+/// everything else about logging (destination, level filtering, formatting) is
+/// unchanged, `env_logger`'s `Logger` still does all of it; this only adds a side effect
+/// on top, purely so `headed_window.rs` has something to poll without needing its own
+/// hook into Servo's script-loading internals.
+struct RovesLogger {
+    inner: env_logger::Logger,
+}
+
+impl log::Log for RovesLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        self.inner.enabled(metadata)
+    }
+
+    fn log(&self, record: &log::Record) {
+        note_potential_content_load_error(record);
+        self.inner.log(record);
+    }
+
+    fn flush(&self) {
+        self.inner.flush();
+    }
+}
 
 /// Installs the file logger, rooted at `log_dir` (see
 /// `roves_content_packer::extract::game_data_dir` — a sibling of the
@@ -63,6 +127,7 @@ pub(crate) fn init(log_dir: &Path) -> Option<std::path::PathBuf> {
     builder.format_timestamp_millis();
     let logger = builder.build();
     let filter = logger.filter();
+    let logger = RovesLogger { inner: logger };
 
     log::set_boxed_logger(Box::new(logger)).ok()?;
     log::set_max_level(filter);

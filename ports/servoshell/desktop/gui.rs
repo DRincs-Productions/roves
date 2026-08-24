@@ -710,6 +710,57 @@ impl Gui {
         });
     }
 
+    /// Shown instead of the normal page once the initial load finished but a
+    /// content-load error was recorded along the way (see
+    /// `logging::content_load_error`, `headed_window.rs`'s `paint_content_load_error`)
+    /// — the page's own script never actually ran, so there's nothing of its own left to
+    /// composite. Without this, that failure mode reads as a silent black window:
+    /// `LoadStatus::Complete` still fires normally (navigation itself did complete), so
+    /// the boot splash comes down the same as any successful load, revealing
+    /// WebRender's plain black default background since nothing the page would have
+    /// painted ever ran. Reuses the splash's icon and black-panel styling for visual
+    /// continuity, but is a distinct, static screen — no progress bar, since there is
+    /// nothing left in flight to animate. Call [`Gui::paint`] afterward, same as
+    /// [`Gui::update`]/[`Gui::update_splash`].
+    pub(crate) fn update_content_load_error(&mut self, winit_window: &Window, message: &str) {
+        self.rendering_context
+            .make_current()
+            .expect("Could not make RenderingContext current");
+        let splash_icon_texture = self.splash_icon_texture.clone();
+        let message = message.to_owned();
+        self.context.run(winit_window, |ctx| {
+            let icon = egui::Image::from_texture(&splash_icon_texture)
+                .fit_to_exact_size(egui::Vec2::splat(64.0));
+            #[expect(deprecated)]
+            egui::CentralPanel::default()
+                .frame(egui::Frame::default().fill(egui::Color32::BLACK))
+                .show(ctx, |ui| {
+                    ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                        ui.add_space(ui.available_height() / 3.0);
+                        ui.add(icon);
+                        ui.add_space(24.0);
+                        ui.label(
+                            egui::RichText::new("This game's content failed to load")
+                                .size(20.0)
+                                .color(egui::Color32::WHITE),
+                        );
+                        ui.add_space(12.0);
+                        ui.label(
+                            egui::RichText::new(&message)
+                                .size(14.0)
+                                .color(egui::Color32::from_rgb(255, 140, 140)),
+                        );
+                        ui.add_space(12.0);
+                        ui.label(
+                            egui::RichText::new("See roves.log for details.")
+                                .size(13.0)
+                                .color(egui::Color32::GRAY),
+                        );
+                    });
+                });
+        });
+    }
+
     /// Paint the GUI, as of the last update.
     pub(crate) fn paint(&mut self, window: &Window) {
         self.rendering_context
