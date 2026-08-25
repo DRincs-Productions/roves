@@ -81,6 +81,15 @@ impl ProtocolHandler for RovesProtocolHandler {
         let command = request.current_url().path().to_owned();
 
         let result: Result<&'static str, String> = match command.as_str() {
+            // The generic "is this page actually running inside Roves"
+            // check — see `@drincs/roves-api/core`'s `isAvailable()`. Always
+            // `true` here: reaching this match arm at all means a `roves:`
+            // fetch resolved, which only happens when this protocol handler
+            // is registered, i.e. only inside Roves. A regular browser (or
+            // any other embedder that never registered `roves:`) fails the
+            // `fetch()` itself before ever reaching Rust code, which is
+            // exactly what `core.invoke`'s caller sees as "unavailable".
+            "is_available" => Ok("true"),
             // Closes every open window. In this fork's usual single-window
             // kiosk setup (see ../../CUSTOMIZATIONS.md's toolbar/tab removal
             // entries) that's equivalent to quitting the app: once no

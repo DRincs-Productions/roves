@@ -3978,3 +3978,90 @@ blocked only by this machine's own unrelated MSVC/ICU link error. **Whoever buil
 should deliberately break a bundled game's content (e.g. delete/rename one referenced script
 after bundling) and confirm the error screen appears instead of a black window, with a
 sensible message.**
+
+---
+
+## 2026-08-25 — Save-game storage API
+
+**Files:**
+- `ports/servoshell/desktop/protocols/saves.rs` (new file)
+- `ports/servoshell/desktop/protocols/mod.rs`, `ports/servoshell/desktop/protocols/roves.rs`,
+  `ports/servoshell/desktop/app.rs` (wiring)
+- `ports/servoshell/Cargo.toml` (new `base64` dependency)
+- `python/servo/post_build_commands.py` (`INSTALLED_MARKER`)
+
+**Patch:** `patches/servo-v0.4.0/0047-save-game-storage-api.patch`
+
+**What:** a new `saves:` custom protocol (mirroring `roves:`/`steam:`'s existing "large,
+separate surface gets its own scheme" pattern — see those entries above), exposing an async,
+origin-scoped key/value store to web content, shaped like IndexedDB in spirit but backed by
+real files. Commands: `is_available`, `write`/`read` (a save's bytes, base64-encoded over the
+query string — same transport idiom `roves:`/`steam:` already use for everything, chosen over
+a `fetch()` request body specifically to avoid `net_traits::request::RequestBody`'s IPC
+chunk-channel plumbing, which would have needed real hardware to iterate on safely and this
+machine's own broken linker made impossible to test end-to-end), `delete`, `list`, `clear`.
+`@drincs/roves-api/saves` (new module, `roves-api/src/saves.ts`) is the JS-facing wrapper —
+see that package's own README.md.
+
+**Where saves land** (`saves.rs`'s `resolve_saves_dir`) depends on how *this exact binary*
+was shipped, which nothing previously exposed a way to detect at runtime:
+- **Portable** (plain `mach bundle` output): a `saves/` folder next to the binary — on macOS
+  specifically, next to the `.app` bundle itself (walking up past `Contents/MacOS/`), not
+  inside it, since writing inside a bundle that's conventionally treated as a read-only,
+  signed artifact (and sometimes literally is, mounted from a `.dmg`) is the wrong default.
+- **Installed** (`--msi`/`--dmg`/`--deb`): under `roves_content_packer::extract::game_data_dir`
+  (the OS cache dir, a sibling of the content-extraction cache and `roves.log`).
+- New `INSTALLED_MARKER = ".roves-installed"` (`post_build_commands.py`) is the signal: an
+  empty file written into the installer's staging directory — right next to wherever the
+  binary itself ends up (`stage_dir` on Windows, `Contents/MacOS/` inside `play.app` on
+  macOS, `pkg_root/usr/lib/<package_name>/` for `.deb`) — only when one of those three flags
+  is set. `resolve_saves_dir` checks for this marker next to `std::env::current_exe()`; its
+  absence means portable. If the portable location genuinely isn't writable (e.g. a zip
+  extracted into `Program Files` without admin rights), falls back to the installed-style
+  cache location rather than failing outright.
+- `game_data_dir`'s own `game_name` argument is threaded from `App::packed_content_dest`'s
+  grandparent directory (`app.rs`'s new registration code) — `None` for a launch with no
+  packed-content boot extraction at all (a dev `--url` run, or a `--content-compress=none`
+  bundle), which falls back to the generic, ungamed `game_data_dir(None)` bucket. Not ideal
+  for two different loose-content games installed side by side on the same machine, but no
+  worse than `roves.log`'s own existing, already-accepted limitation
+  (`bundle_launch.rs`'s `peek_game_name_for_logging`) — not a new gap introduced here.
+
+**Steam Cloud sync:** when compiled with `--features steam` and a Steam client is running,
+every `write`/`delete` also mirrors to `ISteamRemoteStorage` (via the `steamworks` crate's
+`Client::remote_storage().file(key)`, `.write()`/`.delete()`) under the same key as the local
+file. A **separate** `Client::init()` call from `protocols/steam.rs`'s own — deliberate:
+`steamworks::Client` is a cheap handle onto the already-running Steam client process, not a
+second connection, and keeping the two protocol handlers independent avoids `app.rs` having
+to thread a shared handle through a registration order that has no other dependency between
+them today. Local disk stays the source of truth for reads — no conflict resolution to get
+wrong — except a `read` for a key with no local file present but an existing Cloud copy pulls
+that copy down first (`steam_try_pull`), so a fresh install on a second machine still sees
+existing cloud saves. `list`/`clear` are local-only (don't enumerate Cloud-only files that
+have never been read/pulled locally on this machine) — a known, documented gap, not an
+oversight; see this file's own note in the wiki write-up for the same caveat surfaced to game
+developers.
+
+**Why:** requested as a first-class save-data story for games running under Roves — until
+now nothing existed beyond ad-hoc use of the engine's own (upstream, unmodified) IndexedDB
+implementation (`components/storage/`), which CUSTOMIZATIONS.md's `dom_indexeddb_enabled`
+entry already flagged as a stop-gap, not the intended long-term path, once a real save API
+existed. Also fills a real, adjacent gap: there was no runtime-detectable "is this page
+actually running inside Roves" signal at all — `roves:is_available` (new command on the
+existing `roves:` protocol, exposed as `@drincs/roves-api/core`'s `isAvailable()`) is a small,
+independent addition alongside this feature, not specific to saves, but added here since it's
+exactly what a game should check before calling into `saves` (or any other Roves-only API) at
+all.
+
+**Verification:** compiled clean through `servoshell` itself, including with `--features
+steam` (exercising every `steamworks` API call this patch adds — `remote_storage()`,
+`.file()`, `.write()`/`.read()`/`.delete()`/`.exists()`), blocked only by this same machine's
+own unrelated MSVC/ICU link error (see patch 0045's entry). **None of the runtime behavior
+described above — install-type detection, the portable/installed path split, or actual Steam
+Cloud read/write/pull-on-miss — has been exercised on a real, linked binary.** Whoever builds
+this next should: launch a portable build and confirm `saves/` appears next to it; build with
+`--msi`/`--dmg`/`--deb`, confirm `.roves-installed` ends up next to the installed binary, and
+that saves instead land under the OS cache dir; and, with `--features steam` and a real Steam
+client running, confirm a save written on one machine actually appears under that app's Steam
+Cloud files (Steamworks' own `steamctl`/the Steam client's own "Manage Game" → cloud-save UI),
+and that reading an unfetched key on a second machine pulls it down correctly.

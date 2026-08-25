@@ -1,0 +1,378 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
+//! Save-game storage exposed to web content through a `saves:` custom
+//! protocol, fetchable from ordinary page JS (`fetch('saves:read?key=slot1')`)
+//! — mirrors `protocols/roves.rs`/`protocols/steam.rs`'s "large, separate
+//! surface gets its own scheme" convention. Shaped like an async,
+//! origin-scoped key/value store on purpose (the same reasoning a game
+//! already using IndexedDB would recognize), but backed by real files on
+//! disk rather than the engine's own (upstream) IndexedDB implementation —
+//! see CUSTOMIZATIONS.md's "Save-game storage API" entry for why a
+//! dedicated store, not IndexedDB itself, was the right choice here.
+//!
+//! Where a save actually lands depends on how this exact binary was shipped
+//! — see [`resolve_saves_dir`]:
+//! - **Portable** (the default `mach bundle` output, no installer): a
+//!   `saves/` folder next to the binary — inside the same folder a player
+//!   sees when they extract the zip, so copying that folder elsewhere
+//!   carries saves along with it.
+//! - **Installed** (`--msi`/`--dmg`/`--deb`): under the OS's cache directory
+//!   (`roves_content_packer::extract::game_data_dir`), a sibling of the
+//!   content-extraction cache and `roves.log` — not next to the binary,
+//!   which for an installed game commonly sits somewhere a player either
+//!   shouldn't write to (`Program Files`) or wouldn't think to look
+//!   (`/usr/lib/<package>`).
+//! - **Console**: not implemented yet — every command answers "unavailable"
+//!   rather than guessing at a location no console port exists to validate
+//!   against.
+//!
+//! When compiled with `--features steam` and a Steam client is running,
+//! every write/delete is also mirrored to Steam Cloud
+//! (`ISteamRemoteStorage`, via the `steamworks` crate's `remote_storage()`)
+//! under the same key — local disk stays the source of truth for reads (no
+//! conflict resolution to get wrong), except that a `read` for a key with no
+//! local file present but a Cloud copy pulls that copy down first, so a
+//! fresh install on a second machine still sees existing cloud saves.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use headers::{ContentType, HeaderMapExt};
+use serde_json::Value;
+use servo::protocol_handler::{
+    DoneChannel, FetchContext, NetworkError, ProtocolHandler, Request, ResourceFetchTiming,
+    Response, ResponseBody,
+};
+
+#[cfg(feature = "steam")]
+use std::io::{Read, Write};
+
+/// Written by `mach bundle --msi`/`--dmg`/`--deb` (see
+/// `python/servo/post_build_commands.py`'s own `INSTALLED_MARKER`) into the
+/// same directory the engine binary itself ends up in once installed — the
+/// only signal this binary has for telling "I was installed" apart from "I'm
+/// running portably", since those three flags otherwise wrap the exact same
+/// portable output byte-for-byte.
+const INSTALLED_MARKER: &str = ".roves-installed";
+
+/// Sub-folder name under whichever root [`resolve_saves_dir`] picks.
+const SAVES_SUBDIR: &str = "saves";
+
+pub struct SavesProtocolHandler {
+    /// `None` when no save location could be resolved at all (no
+    /// `current_exe()`, or creating the directory failed — e.g. a read-only
+    /// portable install with no fallback available) — every command then
+    /// answers "unavailable" instead of panicking or silently no-opping.
+    saves_dir: Option<PathBuf>,
+    #[cfg(feature = "steam")]
+    steam_client: Option<steamworks::Client>,
+}
+
+impl SavesProtocolHandler {
+    /// `game_data_dir_hint`: the resolved `game_data_dir(game_name)` for
+    /// this launch, if known — the same directory `roves.log` and the
+    /// content-extraction cache live under (see `app.rs`'s registration
+    /// site for exactly how this is derived from `App::packed_content_dest`).
+    /// `None` for a launch with no packed-content boot extraction at all
+    /// (a dev `--url` run, or a `--content-compress=none` bundle) — the
+    /// *installed* case then falls back to the generic, ungamed
+    /// `game_data_dir(None)` bucket, the same fallback `roves.log`'s own
+    /// resolution already accepts (see `bundle_launch.rs`'s
+    /// `peek_game_name_for_logging`) — not ideal for two different loose
+    /// games installed on the same machine, but no worse than the existing
+    /// logging behavior, and the *portable* case (next to the binary) is
+    /// entirely unaffected either way.
+    pub fn new(game_data_dir_hint: Option<PathBuf>) -> Self {
+        let saves_dir = resolve_saves_dir(game_data_dir_hint);
+        if let Some(dir) = &saves_dir {
+            if let Err(e) = fs::create_dir_all(dir) {
+                log::warn!("could not create saves directory {dir:?}: {e}");
+                return Self {
+                    saves_dir: None,
+                    #[cfg(feature = "steam")]
+                    steam_client: None,
+                };
+            }
+        }
+        Self {
+            saves_dir,
+            #[cfg(feature = "steam")]
+            steam_client: init_steam_for_saves(),
+        }
+    }
+}
+
+/// Tries to init a Steam client purely for save-sync purposes. This is a
+/// **separate** `Client::init()` call from `protocols/steam.rs`'s own —
+/// deliberately: `steamworks::Client` is cheap to initialize a second time
+/// (it's a thin handle onto the already-running Steam client process, not a
+/// second connection), and keeping the two protocol handlers independent
+/// avoids `app.rs` having to thread a shared handle through registration
+/// order that today has no dependency between the two at all. Degrades to
+/// `None` exactly like `steam.rs` does — never a hard error.
+#[cfg(feature = "steam")]
+fn init_steam_for_saves() -> Option<steamworks::Client> {
+    match steamworks::Client::init() {
+        Ok(client) => Some(client),
+        Err(error) => {
+            log::info!("[Saves] Steam Cloud sync unavailable: {error}");
+            None
+        },
+    }
+}
+
+/// Picks this session's save root — see this module's own doc comment for
+/// the portable/installed split. Falls back from portable to installed
+/// (never the reverse) if the portable location genuinely isn't writable —
+/// e.g. a zip extracted into `Program Files` without admin rights — rather
+/// than failing outright, since the *intent* ("give me a good place to
+/// write player data") is the same either way.
+fn resolve_saves_dir(game_data_dir_hint: Option<PathBuf>) -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let exe_dir = exe.parent()?.to_path_buf();
+
+    let installed = exe_dir.join(INSTALLED_MARKER).is_file();
+    if !installed {
+        let portable_dir = bundle_root(&exe_dir).join(SAVES_SUBDIR);
+        if fs::create_dir_all(&portable_dir).is_ok() {
+            return Some(portable_dir);
+        }
+        log::warn!(
+            "portable saves dir {portable_dir:?} isn't writable — falling back to the OS cache dir"
+        );
+    }
+
+    let game_data_dir = game_data_dir_hint.unwrap_or_else(|| roves_content_packer::extract::game_data_dir(None));
+    Some(game_data_dir.join(SAVES_SUBDIR))
+}
+
+/// The folder a player would recognize as "the game's own folder" — on
+/// every platform but macOS this is just `exe_dir` itself. On macOS the
+/// binary lives nested inside `<Name>.app/Contents/MacOS/`; treating that
+/// internal directory as the "portable game folder" would mean writing
+/// saves *inside* the `.app` bundle, which is both bad practice (bundles
+/// are conventionally treated as read-only, signed artifacts) and, for a
+/// bundle mounted read-only from a `.dmg`, not even possible — so this
+/// walks up to the `.app` itself and uses *its* parent instead, the folder
+/// a player would actually see the game "living in" (Desktop, a
+/// Downloads/extracted folder, wherever they put it).
+fn bundle_root(exe_dir: &Path) -> PathBuf {
+    if cfg!(target_os = "macos") {
+        let app_bundle = exe_dir
+            .ancestors()
+            .find(|p| p.extension().and_then(|e| e.to_str()) == Some("app"));
+        if let Some(app_bundle) = app_bundle
+            && let Some(parent) = app_bundle.parent()
+        {
+            return parent.to_path_buf();
+        }
+    }
+    exe_dir.to_path_buf()
+}
+
+/// Turns an arbitrary save key (a game-chosen string, e.g. `"slot-1"` or
+/// `"autosave"`) into a safe, single-path-segment filename — rejects
+/// anything that could otherwise escape `saves_dir` (`..`, a path
+/// separator, a Windows drive-letter colon) rather than trying to sanitize
+/// it piecemeal, since a save key has no reason to ever need those
+/// characters in the first place.
+fn sanitize_key(key: &str) -> Option<String> {
+    if key.is_empty()
+        || key.len() > 200
+        || key == "."
+        || key == ".."
+        || key.contains(['/', '\\', ':', '\0'])
+    {
+        return None;
+    }
+    Some(format!("{key}.save"))
+}
+
+impl ProtocolHandler for SavesProtocolHandler {
+    fn is_fetchable(&self) -> bool {
+        true
+    }
+
+    fn is_secure(&self) -> bool {
+        true
+    }
+
+    fn load(
+        &self,
+        request: &mut Request,
+        _done_chan: &mut DoneChannel,
+        _context: &FetchContext,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
+        let url = request.current_url();
+        let query: std::collections::HashMap<String, String> =
+            url.as_url().query_pairs().into_owned().collect();
+        let command = url.path().to_owned();
+
+        let body = handle_command(self, &command, &query);
+
+        Box::pin(std::future::ready(match body {
+            Some(body) => json_response(request, body),
+            None => Response::network_error(NetworkError::ResourceLoadError(format!(
+                "Unknown saves: command '{command}'"
+            ))),
+        }))
+    }
+}
+
+fn handle_command(
+    handler: &SavesProtocolHandler,
+    command: &str,
+    query: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let Some(saves_dir) = &handler.saves_dir else {
+        // No usable save location at all (see `SavesProtocolHandler::new`'s
+        // doc comment) — every command degrades the same way Steam's own
+        // "not available" answers do, rather than erroring per-call.
+        return match command {
+            "is_available" => Some(Value::Bool(false).to_string()),
+            "list" => Some(Value::Array(vec![]).to_string()),
+            "read" => Some(Value::Null.to_string()),
+            "write" | "delete" | "clear" => Some(Value::Bool(false).to_string()),
+            _ => None,
+        };
+    };
+
+    let value = match command {
+        "is_available" => Value::Bool(true),
+
+        "write" => {
+            let key = sanitize_key(query.get("key")?)?;
+            let data = base64_decode(query.get("data")?)?;
+            let path = saves_dir.join(&key);
+            let ok = fs::write(&path, &data).is_ok();
+            if ok {
+                #[cfg(feature = "steam")]
+                steam_sync_write(handler, &key, &data);
+            }
+            Value::Bool(ok)
+        },
+
+        "read" => {
+            let key = sanitize_key(query.get("key")?)?;
+            let path = saves_dir.join(&key);
+            match fs::read(&path) {
+                Ok(bytes) => Value::String(base64_encode(&bytes)),
+                Err(_) => {
+                    // Not on disk yet — a fresh install on a second machine
+                    // wouldn't have this file locally even though Steam
+                    // Cloud might, so try pulling it down before giving up.
+                    #[cfg(feature = "steam")]
+                    if let Some(bytes) = steam_try_pull(handler, &key, &path) {
+                        return Some(Value::String(base64_encode(&bytes)).to_string());
+                    }
+                    Value::Null
+                },
+            }
+        },
+
+        "delete" => {
+            let key = sanitize_key(query.get("key")?)?;
+            let path = saves_dir.join(&key);
+            let ok = match fs::remove_file(&path) {
+                Ok(()) => true,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+                Err(_) => false,
+            };
+            if ok {
+                #[cfg(feature = "steam")]
+                steam_sync_delete(handler, &key);
+            }
+            Value::Bool(ok)
+        },
+
+        "list" => {
+            let mut keys = vec![];
+            if let Ok(entries) = fs::read_dir(saves_dir) {
+                for entry in entries.flatten() {
+                    if let Some(name) = entry.file_name().to_str()
+                        && let Some(key) = name.strip_suffix(".save")
+                    {
+                        keys.push(Value::String(key.to_owned()));
+                    }
+                }
+            }
+            Value::Array(keys)
+        },
+
+        "clear" => {
+            let mut ok = true;
+            if let Ok(entries) = fs::read_dir(saves_dir) {
+                for entry in entries.flatten() {
+                    if let Some(name) = entry.file_name().to_str()
+                        && let Some(key) = name.strip_suffix(".save")
+                    {
+                        if fs::remove_file(entry.path()).is_err() {
+                            ok = false;
+                        }
+                        #[cfg(feature = "steam")]
+                        steam_sync_delete(handler, &format!("{key}.save"));
+                    }
+                }
+            }
+            Value::Bool(ok)
+        },
+
+        _ => return None,
+    };
+    Some(value.to_string())
+}
+
+#[cfg(feature = "steam")]
+fn steam_sync_write(handler: &SavesProtocolHandler, key: &str, data: &[u8]) {
+    let Some(client) = &handler.steam_client else { return };
+    let mut writer = client.remote_storage().file(key).write();
+    if let Err(e) = writer.write_all(data) {
+        log::warn!("[Saves] Steam Cloud write for {key:?} failed: {e}");
+    }
+}
+
+#[cfg(feature = "steam")]
+fn steam_sync_delete(handler: &SavesProtocolHandler, key: &str) {
+    let Some(client) = &handler.steam_client else { return };
+    client.remote_storage().file(key).delete();
+}
+
+/// Pulls a Cloud-only save down to `local_path` the first time it's read on
+/// a machine that doesn't have it locally yet — see this module's own doc
+/// comment on why reads otherwise never consult Steam Cloud at all.
+#[cfg(feature = "steam")]
+fn steam_try_pull(handler: &SavesProtocolHandler, key: &str, local_path: &Path) -> Option<Vec<u8>> {
+    let client = handler.steam_client.as_ref()?;
+    let file = client.remote_storage().file(key);
+    if !file.exists() {
+        return None;
+    }
+    let mut buf = Vec::new();
+    file.read().read_to_end(&mut buf).ok()?;
+    if let Err(e) = fs::write(local_path, &buf) {
+        log::warn!("[Saves] pulled {key:?} from Steam Cloud but couldn't cache it locally: {e}");
+    }
+    Some(buf)
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+fn base64_decode(text: &str) -> Option<Vec<u8>> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.decode(text).ok()
+}
+
+fn json_response(request: &Request, body: String) -> Response {
+    let mut response = Response::new(
+        request.current_url(),
+        ResourceFetchTiming::new(request.timing_type()),
+    );
+    response.headers.typed_insert(ContentType::json());
+    *response.body.lock() = ResponseBody::Done(body.into_bytes());
+    response
+}

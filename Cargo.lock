@@ -9192,6 +9192,7 @@ dependencies = [
  "accesskit",
  "android_logger",
  "backtrace",
+ "base64",
  "bpaf",
  "cc",
  "cfg-if",

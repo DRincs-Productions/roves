@@ -5,6 +5,7 @@
 pub(crate) mod file;
 pub(crate) mod resource;
 pub(crate) mod roves;
+pub(crate) mod saves;
 pub(crate) mod servo;
 #[cfg(feature = "steam")]
 pub(crate) mod steam;

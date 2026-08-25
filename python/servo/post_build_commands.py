@@ -47,6 +47,18 @@ from python.servo.command_base import BuildType
 
 ANDROID_APP_NAME = "org.servo.servoshell"
 
+# Written next to the engine binary itself (same directory `std::env::current_exe()`'s
+# `.parent()` resolves to at runtime -- see `ports/servoshell/desktop/protocols/saves.rs`)
+# whenever bundle() wraps the portable output into an installer (--msi/--dmg/--deb).
+# Its only purpose is letting the *running* binary tell "I was installed" apart from "I'm
+# running portably" -- something no other signal (env var, cfg flag) previously exposed,
+# since --msi/--dmg/--deb otherwise wrap the exact same portable output byte-for-byte. The
+# save-game API is the first, and so far only, consumer: an installed game's saves live
+# under the OS cache dir (see `roves_content_packer::extract::game_data_dir`), a portable
+# one's live in a `saves/` folder next to the binary -- see CUSTOMIZATIONS.md's "Save-game
+# storage API" entry for the full design.
+INSTALLED_MARKER = ".roves-installed"
+
 
 def _packer_binary_name() -> str:
     return "roves-content-packer.exe" if is_windows() else "roves-content-packer"
@@ -819,6 +831,13 @@ class PostBuildCommands(CommandBase):
             # play.exe/play) sits. See `_write_diagnostic_script`.
             _write_diagnostic_script(stage_dir)
 
+        if msi or dmg:
+            # Same directory the engine binary itself sits in -- Contents/MacOS/ on
+            # macOS (where `_bundle_macos` placed `play`), `stage_dir` itself
+            # everywhere else -- see `INSTALLED_MARKER`'s own doc comment.
+            exe_dir = path.join(stage_dir, "play.app", "Contents", "MacOS") if is_macosx() else stage_dir
+            open(path.join(exe_dir, INSTALLED_MARKER), "w").close()
+
         if msi:
             self._wrap_windows_msi(stage_dir, output_dir, package_name, package_version)
             delete(stage_dir)
@@ -1179,6 +1198,11 @@ class PostBuildCommands(CommandBase):
         binary_name = path.basename(servo_binary)
         shutil.copy(servo_binary, path.join(lib_dir, binary_name))
         os.chmod(path.join(lib_dir, binary_name), 0o755)
+        # See `INSTALLED_MARKER`'s own doc comment -- `lib_dir` is where `dpkg -i`
+        # actually installs the binary to (`/usr/bin/<package_name>` is just a symlink
+        # to it), so it's where `std::env::current_exe()`'s `.parent()` resolves to
+        # at runtime.
+        open(path.join(lib_dir, INSTALLED_MARKER), "w").close()
         for f in os.listdir(binary_dir):
             if ".so" in f:
                 shutil.copy(path.join(binary_dir, f), lib_dir)

@@ -307,6 +307,19 @@ impl App {
             "roves",
             protocols::roves::RovesProtocolHandler::new(close_proxy, self.packed_content_dest.clone()),
         );
+        // `@drincs/roves-api`'s `saves` module talks to this — see
+        // protocols/saves.rs. `game_data_dir` is `packed_content_dest`'s own
+        // grandparent (`game_data_dir(name)/cache/<hash>` — see
+        // `support/content-packer/src/extract.rs`'s `default_dest`): reusing
+        // that avoids re-resolving the game's name a second time here.
+        let game_data_dir = self
+            .packed_content_dest
+            .as_deref()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .map(Path::to_path_buf);
+        let _ =
+            protocol_registry.register("saves", protocols::saves::SavesProtocolHandler::new(game_data_dir));
         // Only registered with `--features steam` (see ports/servoshell/Cargo.toml)
         // — mirrors the parent project's Tauri `steam` feature. `SteamProtocolHandler::new()`
         // tries to init Steam once here; it degrades to "unavailable" answers rather

@@ -122,6 +122,7 @@ servo-base = { workspace = true }
 surfman = { workspace = true, features = ["sm-angle-default"] }
 
 [target.'cfg(not(any(target_os = "android", target_env = "ohos")))'.dependencies]
+base64 = { workspace = true }
 dirs = { workspace = true }
 egui = { workspace = true }
 egui-file-dialog = { workspace = true }
