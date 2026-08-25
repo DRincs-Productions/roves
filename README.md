@@ -131,16 +131,15 @@ roadmap but not yet functional.
 
 ## Embedding
 
-Your web content has no way to know on its own that it's running inside Roves rather than
-a regular browser (or, for that matter, Tauri) — Roves doesn't inject any global marker
-into the page. Whoever builds your frontend needs to bake that signal in itself, at build
-time, however it prefers to (an env var read by the bundler, a build flag, etc.). The
-parent pixi-vn-react-template project this fork ships with does exactly that: it sets an
-`EMBEDDED_TARGET=roves` environment variable when building the frontend for Roves (see its
-`.github/workflows/embedded.yml`), and Vite bakes that into a `__EMBEDDED_TARGET__` constant
-the frontend code checks against (`__EMBEDDED_TARGET__ === "roves"`, see e.g. its
-`src/lib/hooks/quit-hooks.ts`) — this is a convention of that project, not something Roves
-itself provides or requires.
+Your web content has no *build-time* way to know it's running inside Roves rather than a
+regular browser (or, for that matter, Tauri) — Roves doesn't inject any global marker into
+the page. A build-time signal is still an option if you want one (the parent
+pixi-vn-react-template project this fork ships with sets an `EMBEDDED_TARGET=roves`
+environment variable when building for Roves — see its `.github/workflows/embedded.yml` and
+`src/lib/hooks/quit-hooks.ts` — a convention of that project, not something Roves itself
+provides). For a genuine *runtime* check instead, use `@drincs/roves-api/core`'s
+`isAvailable()` (see below) — `false` in a plain browser, `true` only when actually running
+under Roves, no build step required.
 
 ### Talking to native APIs
 
@@ -149,15 +148,17 @@ in. Instead, Roves lets native code register custom URL schemes (`ProtocolHandle
 `ports/servoshell/desktop/protocols/`) that respond to ordinary `fetch()` calls from page
 JS. One is shipped today:
 
-- **`roves:`** (`protocols/roves.rs`) — a small, generic "control this app" surface
-  (window/process lifecycle; currently just `exit`/`close_window`).
+- **`roves:`** (`protocols/roves.rs`) — a small, generic "control this app" surface: window/
+  process lifecycle (`exit`/`close_window`) and `is_available` (see below).
 
 [**`@drincs/roves-api`**](../roves-api) is the JS package wrapping it, deliberately shaped
 to feel familiar if you already know `@tauri-apps/api` (though it's a real, independent
 implementation, not a shim over Tauri's runtime):
 
-- `@drincs/roves-api/core` — the generic `invoke(cmd, args)`, talking to `roves:`.
+- `@drincs/roves-api/core` — the generic `invoke(cmd, args)`, talking to `roves:`, plus
+  `isAvailable()` — a genuine runtime "is this page running inside Roves" check.
 - `@drincs/roves-api/process` — `exit()`, built on `core`.
+- `@drincs/roves-api/saves` — save-game storage; see "Save data" below.
 
 See the "Roves' own general-purpose `invoke()` bridge" entry in [CUSTOMIZATIONS.md] for how
 the Rust side is wired up.
@@ -184,6 +185,19 @@ You don't need to build this yourself just to get Steam support: every platform'
 release (see "Getting started" below) also ships a prebuilt `_steam`-suffixed shell variant,
 which [Roves Packmaster](https://github.com/DRincs-Productions/roves-packmaster) can download and
 bundle your game into directly, App ID and all — no Rust/Python toolchain needed.
+
+### Save data
+
+[**`@drincs/roves-api/saves`**](../roves-api) is an async, origin-scoped key/value store for
+player save data (shaped like IndexedDB, backed by real files), talking to its own dedicated
+`saves:` protocol (`protocols/saves.rs`). Roves picks the on-disk location for you — a
+`saves/` folder next to the game when it's running portably, the OS cache directory when
+installed via `--msi`/`--dmg`/`--deb` (distinguished at runtime by a marker file the installer
+build writes, since nothing else tells those two cases apart) — and, when built with
+`--features steam` and a Steam client is running, transparently mirrors every write/delete to
+Steam Cloud. See the "Save-game storage API" entry in [CUSTOMIZATIONS.md] for the full design,
+and the [wiki](https://github.com/DRincs-Productions/roves-wiki) for player/game-dev-facing
+docs.
 
 ## Getting started
 
