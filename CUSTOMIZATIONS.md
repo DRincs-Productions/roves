@@ -4103,3 +4103,72 @@ against the actual failing game/build that surfaced this** (that reproduction li
 whoever reported it, not on this machine). Whoever builds this next should re-run that exact
 game's bundle and confirm the loading screen now reaches the main menu, with no more "Blocked
 as mixed content" lines in `roves.log`.
+
+---
+
+## 2026-08-26 — Runtime + post-build game icon (replaces the `test-page/` compile-time hack)
+
+**Files:**
+- `ports/servoshell/build.rs`
+- `ports/servoshell/desktop/headed_window.rs`
+- `python/servo/post_build_commands.py` (`mach bundle --icon-png`/`--icon-ico`)
+
+**Patch:** `patches/servo-v0.4.0/0049-runtime-post-build-game-icon.patch`
+
+**Upstream/prior behavior:** `build.rs` looked for `test-page/public/icon.png`/`icon.ico`
+*inside the engine checkout* at compile time, falling back to Roves' own
+`resources/servo_64.png`/`servo.ico` only if that file didn't exist. `test-page/` is this
+repo's own permanent, checked-in test fixture (see its own CUSTOMIZATIONS.md entries) — it
+always exists in a full checkout, so the "fallback" branch never actually fired for a normal
+build. `roves-action`'s `icon-png`/`icon-ico` inputs worked around this, in `advanced-mode`
+only, by copying the consumer's file into that exact path before `mach build` compiled it in.
+
+**Why this was a real, shipped bug, not just an edge case:** `.github/workflows/release.yml`
+builds the *officially published* shell exactly this way — a plain compile, no icon override
+— so every published Roves release has always shipped with `test-page`'s icon baked in
+instead of Roves' own branding. Confirmed on a real game bundled through `roves-action`'s
+base mode (which downloads that exact published shell): its `play.exe` showed `test-page`'s
+icon, not Roves', despite the game never asking for `test-page`'s icon at all.
+
+**Change:**
+- **`build.rs`** now always uses `resources/servo_64.png`/`servo.ico` at compile time — no
+  `test-page/` lookup, no per-game icon concept at compile time at all any more.
+- **`headed_window.rs`** gained `runtime_window_icon_bytes()`: at every launch (Windows/Linux
+  only — see below), checks for an `icon.png` next to the running binary
+  (`std::env::current_exe().parent()`) *before* falling back to the compiled-in default from
+  `build.rs`. This is the actual fix for base mode: a prebuilt shell is never compiled
+  per-game, so only a runtime check can show a game's own icon without a custom compile.
+- **`post_build_commands.py`**'s `bundle()` gained `--icon-png <path>` (copies the file next
+  to the bundled binary as `icon.png` — Windows/Linux `stage_dir`/`output_dir`, macOS
+  unsupported for now, `.deb`'s `lib_dir`, also referenced from the generated `.desktop`
+  entry's new `Icon=` line) and `--icon-ico <path>` (Windows only: patches the already-staged
+  `play.exe`'s own icon resource in place via `rcedit`, downloaded once and cached under
+  `target/dependencies/rcedit/` — see new `_ensure_rcedit`/`_patch_windows_exe_icon`). Both
+  apply identically whether the binary being bundled was just compiled (`advanced-mode`) or
+  extracted from a prebuilt shell (base mode) — the whole point, since base mode is what
+  every real `roves-action`/Packmaster consumer actually uses.
+- **macOS is a known, deliberate gap, not an oversight**: its Dock/app icon comes from the
+  `.app` bundle's own `Info.plist`/`.icns`, a completely different mechanism this repo has
+  never had any code for (confirmed: no `.icns`/`CFBundleIconFile` reference anywhere in this
+  tree before this patch either) — scoped out rather than attempting a blind, untested icns
+  generation/embedding feature with no way to verify it on this (non-macOS) machine. `mach
+  bundle --icon-png` on macOS prints a warning and ignores the input rather than silently
+  doing nothing or failing the run.
+
+**Why not fix this purely in `roves-action`:** the old workaround only worked in
+`advanced-mode` (a real compile) — base mode downloads an *already-built* shell, so there was
+never a file for `roves-action` to copy anything into before compilation, because no
+compilation happens. The fix had to move the icon mechanism from compile-time to
+runtime/post-build, which only the engine itself can do.
+
+**Verification:** `post_build_commands.py`'s changes syntax-checked (`ast.parse`, via WSL
+Python since this machine's own `python3` is a non-functional Windows Store alias) — **not
+run**, no real `mach bundle` invocation attempted (would need a real build first, blocked by
+this machine's own unrelated linker gap — see patch 0045's entry). The Rust side compiled
+clean through `servoshell` itself. **None of the following has been exercised for real**:
+`runtime_window_icon_bytes()` actually finding and loading a real `icon.png`; `--icon-png`
+actually landing at the right path for each of Windows/Linux-portable/`.deb`; `rcedit`
+actually downloading and successfully patching a real `play.exe`'s icon (this machine has
+never invoked `rcedit` at all); the `.desktop` entry's new `Icon=` line actually showing the
+right icon in a real Linux app launcher. Whoever builds this next should verify all of the
+above against a real game, on Windows and Linux at minimum.

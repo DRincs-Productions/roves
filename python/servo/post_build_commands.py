@@ -12,6 +12,7 @@ import os
 import os.path as path
 import shutil
 import subprocess
+import urllib.request
 import uuid
 from subprocess import CompletedProcess
 from shutil import copy2
@@ -58,6 +59,39 @@ ANDROID_APP_NAME = "org.servo.servoshell"
 # one's live in a `saves/` folder next to the binary -- see CUSTOMIZATIONS.md's "Save-game
 # storage API" entry for the full design.
 INSTALLED_MARKER = ".roves-installed"
+
+# Pinned by exact tag+asset so this download is reproducible -- bump deliberately (a real
+# commit, not a drive-by edit) if rcedit ever cuts a new release worth picking up.
+_RCEDIT_URL = "https://github.com/electron/rcedit/releases/download/v2.0.0/rcedit-x64.exe"
+
+
+def _ensure_rcedit() -> str:
+    """Downloads (once; cached under `target/dependencies/rcedit/`) `rcedit-x64.exe` --
+    a small, MIT-licensed CLI tool from the Electron project
+    (https://github.com/electron/rcedit) that patches an *already-linked* Windows `.exe`'s
+    icon (and version-info) resources in place, no recompile needed. This is exactly the
+    tool Electron itself, and most Electron-based app builders, use to solve the same
+    problem `--icon-ico` exists for here: letting a downloaded prebuilt shell (or a freshly
+    built one -- `mach bundle` uses this either way) carry a different icon per game,
+    without a custom compile. See CUSTOMIZATIONS.md's "Runtime + post-build game icon" entry.
+    """
+    dest_dir = path.join(servo.util.get_target_dir(), "dependencies", "rcedit")
+    dest = path.join(dest_dir, "rcedit-x64.exe")
+    if not path.exists(dest):
+        os.makedirs(dest_dir, exist_ok=True)
+        print(f"Downloading rcedit from {_RCEDIT_URL}")
+        urllib.request.urlretrieve(_RCEDIT_URL, dest)
+    return dest
+
+
+def _patch_windows_exe_icon(exe_path: str, icon_ico: str) -> None:
+    """Patches `exe_path`'s own icon resource to `icon_ico`, in place, via rcedit -- see
+    `_ensure_rcedit`'s own doc comment. Called after the binary is already staged as
+    `play.exe` (works identically whether that binary was just compiled by `mach build` or
+    extracted from a prebuilt shell release asset), and before any `--msi` wrapping, so the
+    icon change is included in both the portable and installer outputs."""
+    rcedit = _ensure_rcedit()
+    subprocess.check_call([rcedit, exe_path, "--set-icon", icon_ico])
 
 
 def _packer_binary_name() -> str:
@@ -629,6 +663,23 @@ class PostBuildCommands(CommandBase):
         "testers to run when a build appears to do nothing. Off by default: a real release has no "
         "reason to carry this debug tooling unasked.",
     )
+    @CommandArgument(
+        "--icon-png",
+        default=None,
+        help="Path to a window/taskbar icon (PNG). Copied next to the bundled binary as `icon.png` — "
+        "read at every launch (see ports/servoshell/desktop/headed_window.rs's "
+        "runtime_window_icon_bytes), not baked in at compile time, so this works identically for a "
+        "prebuilt shell (never compiled per-game) or a freshly built one. Windows/Linux only — macOS's "
+        "own Dock/app icon has no equivalent runtime override yet, see CUSTOMIZATIONS.md.",
+    )
+    @CommandArgument(
+        "--icon-ico",
+        default=None,
+        help="Windows only: path to a Windows .exe icon (multi-size .ico). Patches the bundled play.exe's "
+        "own icon resource in place, after bundling, via rcedit (downloaded/cached automatically — see "
+        "_ensure_rcedit) — the .exe's icon is embedded at link time, so unlike --icon-png this can't be a "
+        "plain runtime file, but doesn't need a recompile either.",
+    )
     @CommandArgument("params", nargs="...", help="Extra command-line arguments to pass through to servoshell on launch")
     @CommandBase.common_command_arguments(binary_selection=True)
     def bundle(
@@ -649,6 +700,8 @@ class PostBuildCommands(CommandBase):
         package_name: str = "roves",
         package_version: str = "0.0.0",
         diagnostic_script: bool = False,
+        icon_png: Optional[str] = None,
+        icon_ico: Optional[str] = None,
         params: Optional[List[str]] = None,
         **kwargs: Any,
     ) -> int | None:
@@ -776,11 +829,27 @@ class PostBuildCommands(CommandBase):
         # an installer afterward.
         stage_dir = path.join(output_dir, "_stage") if (msi or dmg) else output_dir
 
+        if icon_ico and not is_windows():
+            print("--icon-ico only has an effect on Windows -- ignoring.")
+            icon_ico = None
+        if icon_png and is_macosx():
+            print(
+                "--icon-png has no effect on macOS yet -- its own Dock/app icon has no runtime "
+                "override, see CUSTOMIZATIONS.md's \"Runtime + post-build game icon\" entry. Ignoring."
+            )
+            icon_png = None
+
         if is_windows():
             if msi:
                 os.makedirs(stage_dir)
             self._bundle_windows(servo_binary, binary_dir, stage_dir, launch_info)
             bundle_root = stage_dir
+            # Before any --msi wrapping, so the icon change is included in both the
+            # portable and installer outputs -- see _patch_windows_exe_icon's own comment.
+            if icon_ico:
+                _patch_windows_exe_icon(path.join(stage_dir, "play.exe"), icon_ico)
+            if icon_png:
+                shutil.copy(icon_png, path.join(stage_dir, "icon.png"))
         elif is_macosx():
             if dmg:
                 os.makedirs(stage_dir)
@@ -804,12 +873,15 @@ class PostBuildCommands(CommandBase):
                 content_exclude,
                 content_boot_include,
                 window_title,
+                icon_png,
             )
             print(f"Bundle written to {output_dir}")
             return None
         else:
             self._bundle_linux(servo_binary, binary_dir, output_dir, launch_info)
             bundle_root = output_dir
+            if icon_png:
+                shutil.copy(icon_png, path.join(output_dir, "icon.png"))
 
         _place_bundle_content(
             bundle_root,
@@ -1168,6 +1240,7 @@ class PostBuildCommands(CommandBase):
         exclude: List[str],
         boot_include: List[str],
         game_name: Optional[str],
+        icon_png: Optional[str] = None,
     ) -> None:
         """Build a real, installable .deb: `dpkg -i` puts the engine + its
         content under /usr/lib/<package_name>/, with /usr/bin/<package_name>
@@ -1203,6 +1276,8 @@ class PostBuildCommands(CommandBase):
         # to it), so it's where `std::env::current_exe()`'s `.parent()` resolves to
         # at runtime.
         open(path.join(lib_dir, INSTALLED_MARKER), "w").close()
+        if icon_png:
+            shutil.copy(icon_png, path.join(lib_dir, "icon.png"))
         for f in os.listdir(binary_dir):
             if ".so" in f:
                 shutil.copy(path.join(binary_dir, f), lib_dir)
@@ -1227,13 +1302,14 @@ class PostBuildCommands(CommandBase):
         # resolves through it to the real path on Linux automatically.
         os.symlink(path.join("/usr", "lib", package_name, binary_name), path.join(bin_dir, package_name))
 
+        icon_line = f"Icon={path.join(lib_dir, 'icon.png')}\n" if icon_png else ""
         desktop_entry = f"""[Desktop Entry]
 Type=Application
 Name={package_name}
 Exec=/usr/bin/{package_name}
 Terminal=false
 Categories=Network;WebBrowser;
-"""
+{icon_line}"""
         with open(path.join(applications_dir, f"{package_name}.desktop"), "w") as f:
             f.write(desktop_entry)
 

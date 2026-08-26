@@ -192,11 +192,20 @@ impl HeadedWindow {
 
         #[cfg(any(target_os = "linux", target_os = "windows"))]
         {
-            // `build.rs` copies whichever of the game's own `icon.png` or
-            // Roves' own `resources/servo_64.png` exists into `OUT_DIR` at
-            // compile time — see CUSTOMIZATIONS.md. Not the boot splash's
-            // icon, which is always Roves-branded regardless (`gui.rs`).
-            let icon_bytes = include_bytes!(concat!(env!("OUT_DIR"), "/window_icon.png"));
+            // A game-supplied `icon.png` next to the running binary (copied there by
+            // `mach bundle --icon-png`, see `python/servo/post_build_commands.py`) takes
+            // priority over the compile-time default `build.rs` bakes into `OUT_DIR` — see
+            // `runtime_window_icon_bytes`'s own doc comment for why this matters (a
+            // *prebuilt* shell, the one every roves-action base-mode/Packmaster consumer
+            // downloads, is never compiled per-game). Falls back to the compiled-in bytes
+            // (whichever of the game's own `icon.png` or Roves' own `resources/servo_64.png`
+            // existed at compile time — see CUSTOMIZATIONS.md) when no runtime file is
+            // present, e.g. an advanced-mode build or one predating this fallback. Not the
+            // boot splash's icon, which is always Roves-branded regardless (`gui.rs`).
+            let runtime_icon_bytes = runtime_window_icon_bytes();
+            let icon_bytes: &[u8] = runtime_icon_bytes.as_deref().unwrap_or_else(|| {
+                include_bytes!(concat!(env!("OUT_DIR"), "/window_icon.png"))
+            });
             let icon = load_icon(icon_bytes);
             // `set_window_icon` only sets `ICON_SMALL` (the title bar icon) —
             // on Windows, the taskbar/Alt-Tab icon is `ICON_BIG`, a separate
@@ -1312,6 +1321,21 @@ fn winit_phase_to_touch_event_type(phase: TouchPhase) -> TouchEventType {
         TouchPhase::Ended => TouchEventType::Up,
         TouchPhase::Cancelled => TouchEventType::Cancel,
     }
+}
+
+/// A game-supplied window icon, if `mach bundle --icon-png` copied one next to this exact
+/// binary (see `python/servo/post_build_commands.py`) — checked at every launch, not baked
+/// in at compile time, specifically so a *prebuilt* shell (downloaded, never compiled
+/// per-game — every `roves-action` base-mode consumer, and Packmaster) can still show a
+/// game's own branding instead of whatever `build.rs` happened to bake in when that shell
+/// itself was built (Roves' own icon, absent a `--icon-png` passed to that build). `None`
+/// when no such file exists, or `current_exe()` itself fails — never a hard error, since the
+/// compile-time default is always a safe fallback.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn runtime_window_icon_bytes() -> Option<Vec<u8>> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    std::fs::read(dir.join("icon.png")).ok()
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]

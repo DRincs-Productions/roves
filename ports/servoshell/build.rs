@@ -87,18 +87,19 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("cargo:rustc-cfg=servo_do_not_use_in_production");
     }
 
-    // The window/taskbar icon (`headed_window.rs`'s `include_bytes!`) and — on
-    // Windows, below — the compiled `.exe`'s own icon resource both prefer a
-    // game-supplied icon over Roves' own branding, so a shipped game looks
-    // like itself rather than the shell it happens to be built on. Falls back
-    // to the Roves-branded resource if the game hasn't supplied one — see
-    // CUSTOMIZATIONS.md. The boot splash's icon is deliberately exempt from
-    // this fallback (always Roves-branded, see `gui.rs`'s `update_splash`).
-    let game_window_icon = Path::new("../../test-page/public/icon.png");
-    let fallback_window_icon = Path::new("../../resources/servo_64.png");
-    println!("cargo:rerun-if-changed={}", game_window_icon.display());
-    println!("cargo:rerun-if-changed={}", fallback_window_icon.display());
-    let window_icon_src = if game_window_icon.exists() { game_window_icon } else { fallback_window_icon };
+    // Always Roves' own branding at compile time — a per-game icon is no longer a
+    // compile-time concern at all (see CUSTOMIZATIONS.md's "Runtime + post-build game icon"
+    // entry): `headed_window.rs`'s `runtime_window_icon_bytes` checks for an `icon.png`
+    // next to the running binary first (copied there by `mach bundle --icon-png`, working
+    // identically for a prebuilt shell or a freshly compiled one), only falling back to
+    // this compiled-in default when no such file exists. This used to prefer a game-supplied
+    // `test-page/public/icon.png` if present — but that file is a permanent, checked-in test
+    // fixture of *this* repo, not a per-build signal, so it silently won every single build
+    // that never explicitly overrode it, including the officially published release shell —
+    // confirmed by a real game shipped through it showing test-page's icon instead of Roves'
+    // own. The Windows `.exe`'s own resource icon (below) has the exact same story, fixed
+    // the exact same way (`mach bundle --icon-ico`, patched in post-build via `rcedit`).
+    let window_icon_src = Path::new("../../resources/servo_64.png");
     std::fs::copy(window_icon_src, out.join("window_icon.png"))
         .expect("failed to copy window icon into OUT_DIR");
 
@@ -117,13 +118,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     if target_os == "windows" {
         #[cfg(windows)]
         {
-            let game_exe_icon = Path::new("../../test-page/public/icon.ico");
-            println!("cargo:rerun-if-changed={}", game_exe_icon.display());
-            let exe_icon = if game_exe_icon.exists() {
-                game_exe_icon
-            } else {
-                Path::new("../../resources/servo.ico")
-            };
+            // Always Roves' own `.ico` at compile time — see the window-icon comment
+            // above for why a game-supplied icon is no longer read from `test-page/` here
+            // at all; `mach bundle --icon-ico` patches this in afterward via `rcedit`.
+            let exe_icon = Path::new("../../resources/servo.ico");
 
             let mut res = winresource::WindowsResource::new();
             res.set_icon(exe_icon.to_str().expect("icon path is not valid UTF-8"));
