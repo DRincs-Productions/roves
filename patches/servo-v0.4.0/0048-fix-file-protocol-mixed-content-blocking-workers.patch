@@ -1,0 +1,30 @@
+diff --git a/ports/servoshell/desktop/protocols/file.rs b/ports/servoshell/desktop/protocols/file.rs
+index ab0182f..4685c23 100644
+--- a/ports/servoshell/desktop/protocols/file.rs
++++ b/ports/servoshell/desktop/protocols/file.rs
+@@ -153,6 +153,25 @@ impl FileProtocolHandler {
+ }
+ 
+ impl ProtocolHandler for FileProtocolHandler {
++    // Both default to `false` on `ProtocolHandler` (see components/net/protocols/mod.rs) --
++    // fine for a protocol handler nobody's meant to treat as the app's own trusted origin,
++    // but this one *is* that origin: every Roves game is a `file:` document, and the engine
++    // registers this handler in place of Servo's own built-in `file:` support specifically
++    // so it's the one deciding this. Leaving both at their default `false` silently broke
++    // real games: `is_secure() == false` fails Worker/`blob:` mixed-content checks (a page
++    // loaded via `file:` was refusing to spawn its own Worker scripts, "Blocked as mixed
++    // content", hanging any code waiting on a message back from one -- confirmed via a real
++    // game whose loading screen never advanced past "loading" for exactly this reason), and
++    // `is_fetchable() == false` would equally break a game's own `fetch()` calls for its own
++    // bundled JSON/data assets.
++    fn is_fetchable(&self) -> bool {
++        true
++    }
++
++    fn is_secure(&self) -> bool {
++        true
++    }
++
+     fn load<'a>(
+         &'a self,
+         request: &'a mut Request,

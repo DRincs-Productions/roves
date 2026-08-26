@@ -4065,3 +4065,41 @@ that saves instead land under the OS cache dir; and, with `--features steam` and
 client running, confirm a save written on one machine actually appears under that app's Steam
 Cloud files (Steamworks' own `steamctl`/the Steam client's own "Manage Game" → cloud-save UI),
 and that reading an unfetched key on a second machine pulls it down correctly.
+
+---
+
+## 2026-08-26 — Fix `file:` protocol handler blocking Workers as mixed content
+
+**File:** `ports/servoshell/desktop/protocols/file.rs`, `impl ProtocolHandler for
+FileProtocolHandler`.
+
+**Patch:** `patches/servo-v0.4.0/0048-fix-file-protocol-mixed-content-blocking-workers.patch`
+
+**Upstream/prior behavior:** `ProtocolHandler`'s own trait (`components/net/protocols/mod.rs`)
+defaults both `is_fetchable()` and `is_secure()` to `false` — the latter's doc comment says
+outright "this only works for bypassing mixed content checks right now". `FileProtocolHandler`
+never overrode either, despite `roves.rs`/`steam.rs`/`saves.rs` (this fork's *other* three
+custom protocol handlers) all overriding both to `true` since the day each was added.
+
+**Change:** added both overrides, `true` in each case, to `FileProtocolHandler`.
+
+**Why:** confirmed via a real game (built with the `pixi-vn-react-template`, shipped through
+`roves-action`'s base mode) whose loading screen never advanced past "loading" — `roves.log`
+showed `ERROR script::dom::workers::workerglobalscope] error loading script blob:.../...
+(Blocked as mixed content)` for two separate Worker scripts, and nothing past that point ever
+ran, since whatever the page's own code was waiting to hear back from those workers never
+arrived. A Roves game's `file:` document *is* the app's own single, fully-trusted origin —
+nothing else is ever loaded alongside it — so treating it as insecure/non-fetchable was never
+intentional, just an oversight from the day `FileProtocolHandler` was first added (patch
+0015): the other three handlers got both overrides from the start because their authors
+happened to write `is_secure`/`is_fetchable` themselves; this one just copies stock Servo's own
+upstream `file:` handling almost verbatim (see this file's own module doc comment) and
+inherited the trait's defaults along with it, silently, without anyone noticing until a real
+game exercised Workers.
+
+**Verification:** compiled clean through `servoshell` itself, blocked only by this same
+machine's own unrelated MSVC/ICU link error (see patch 0045's entry) — **not yet re-tested
+against the actual failing game/build that surfaced this** (that reproduction lives on
+whoever reported it, not on this machine). Whoever builds this next should re-run that exact
+game's bundle and confirm the loading screen now reaches the main menu, with no more "Blocked
+as mixed content" lines in `roves.log`.
