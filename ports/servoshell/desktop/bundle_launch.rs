@@ -19,13 +19,30 @@
 //!   "args": ["--window-size", "1280x720"]
 //! }
 //! ```
+//!
+//! The resolved positional URL a bundled launch actually opens is a
+//! `game://content/<entry_html>` URL (see `protocols::game`'s own doc
+//! comment for why), not a raw `file:` path onto `content_dir`/`url` above —
+//! `game_content` on [`BundledLaunch`] carries the real on-disk location
+//! that URL resolves against, alongside it.
 
 use std::env;
 use std::path::{Path, PathBuf};
 
 use roves_content_packer::extract;
 
+use crate::desktop::protocols::game::CONTENT_HOST;
+
 const LAUNCH_CONFIG_FILE: &str = "launch.json";
+
+/// Builds a `game://<CONTENT_HOST>/<entry_html>` URL, percent-encoding `entry_html`
+/// correctly via `Url::join` rather than hand-formatting a string — `entry_html` comes
+/// from `manifest.json`/a `launch.json` path and isn't guaranteed to be bare ASCII (see
+/// `parser.rs`'s own comment on `Url::from_file_path` existing for exactly this reason).
+fn game_content_url(entry_html: &str) -> Option<String> {
+    let base = url::Url::parse(&format!("game://{CONTENT_HOST}/")).ok()?;
+    Some(base.join(entry_html).ok()?.to_string())
+}
 
 /// Result of [`resolve_bundled_launch_args`]: the args to launch with,
 /// exactly as if they'd been passed on the command line (a positional URL
@@ -39,6 +56,13 @@ const LAUNCH_CONFIG_FILE: &str = "launch.json";
 pub(crate) struct BundledLaunch {
     pub(crate) args: Vec<String>,
     pub(crate) pending_boot_extraction: Option<extract::ExtractOptions>,
+    /// Where the bundle's content actually lives on disk, and its entry HTML file's
+    /// path relative to that — what `protocols::game::GameProtocolHandler` resolves
+    /// `game://content/<path>` requests against (see that module's own doc comment for
+    /// why bundled content is served this way instead of a raw `file:` path). `None`
+    /// only if the launch config couldn't be resolved at all (`resolve_bundled_launch_args`
+    /// already returns `None` outright in that case) — every real bundled launch has one.
+    pub(crate) game_content: Option<(PathBuf, String)>,
 }
 
 /// Cheaply figures out which game (if any) this is a bundled launch of,
@@ -109,13 +133,20 @@ pub(crate) fn resolve_bundled_launch_args() -> Option<BundledLaunch> {
         })
         .unwrap_or_default();
 
-    let (url, pending_boot_extraction) =
+    let (url, pending_boot_extraction, game_content) =
         if let Some(content_rel_dir) = config.get("content_dir").and_then(|v| v.as_str()) {
-            let (url, opts) = resolve_packed_content_url(&exe_dir, content_rel_dir)?;
-            (url, Some(opts))
+            let (url, opts, game_content) = resolve_packed_content_url(&exe_dir, content_rel_dir)?;
+            (url, Some(opts), Some(game_content))
         } else {
             let rel_url = config.get("url").and_then(|v| v.as_str())?;
-            (exe_dir.join(rel_url).to_string_lossy().into_owned(), None)
+            // Same "content root = the entry html's own parent directory" assumption
+            // `desktop/protocols/file.rs`'s `initial_dir` already makes for this exact
+            // (uncompressed, `--content-compress=none`) case — not a new limitation.
+            let html_path = exe_dir.join(rel_url);
+            let content_root = html_path.parent()?.to_path_buf();
+            let entry_html = html_path.file_name()?.to_string_lossy().into_owned();
+            let url = game_content_url(&entry_html)?;
+            (url, None, Some((content_root, entry_html)))
         };
 
     let mut args = vec![url];
@@ -123,6 +154,7 @@ pub(crate) fn resolve_bundled_launch_args() -> Option<BundledLaunch> {
     Some(BundledLaunch {
         args,
         pending_boot_extraction,
+        game_content,
     })
 }
 
@@ -156,7 +188,7 @@ fn content_root(exe_dir: &Path) -> PathBuf {
 fn resolve_packed_content_url(
     exe_dir: &Path,
     content_rel_dir: &str,
-) -> Option<(String, extract::ExtractOptions)> {
+) -> Option<(String, extract::ExtractOptions, (PathBuf, String))> {
     let content_dir = content_root(exe_dir).join(content_rel_dir);
     let manifest = extract::load_manifest(&content_dir)
         .inspect_err(|e| log::error!("loading packed-content manifest at {content_dir:?}: {e}"))
@@ -164,14 +196,12 @@ fn resolve_packed_content_url(
     let (content_dir, dest) = extract::resolve_dest(&content_dir, None, manifest.name.as_deref())
         .inspect_err(|e| log::error!("resolving boot content destination: {e}"))
         .ok()?;
-    let url = dest
-        .join(&manifest.entry_html)
-        .to_string_lossy()
-        .into_owned();
+    let url = game_content_url(&manifest.entry_html)?;
+    let game_content = (dest.clone(), manifest.entry_html.clone());
     let opts = extract::ExtractOptions {
         content_dir,
         dest: Some(dest),
         force: false,
     };
-    Some((url, opts))
+    Some((url, opts, game_content))
 }

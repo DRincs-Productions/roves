@@ -51,10 +51,16 @@ pub fn main() {
     // through to `App::new` unresolved — `resolve_bundled_launch_args`
     // never blocks on it; see `bundle_launch.rs` and `App::init`'s boot
     // splash handling.
-    let (args, pending_boot_extraction, is_bundled_launch) = match resolve_bundled_launch_args() {
-        Some(bundled) => (bundled.args, bundled.pending_boot_extraction, true),
-        None => (env::args().skip(1).collect(), None, false),
-    };
+    let (args, pending_boot_extraction, game_content, is_bundled_launch) =
+        match resolve_bundled_launch_args() {
+            Some(bundled) => (
+                bundled.args,
+                bundled.pending_boot_extraction,
+                bundled.game_content,
+                true,
+            ),
+            None => (env::args().skip(1).collect(), None, None, false),
+        };
     // Startup milestones below: this app has no console on a double-clicked
     // Windows build (`#![windows_subsystem = "windows"]`), so a launch that
     // dies with no further output — a hang, or a hard native crash that
@@ -122,6 +128,7 @@ pub fn main() {
             servoshell_preferences,
             &event_loop,
             pending_boot_extraction,
+            game_content,
         );
         log::info!("running event loop");
         event_loop.run_app(&mut app);

@@ -86,6 +86,16 @@ pub fn get_default_url(
             ("file", None, Ok(ref path)) if exists(path) => {
                 new_url = cmdline_url;
             },
+            // Kiosk/embedded fork: a bundled launch's positional URL is a
+            // `game://content/...` one (see `desktop/protocols/game.rs`'s own doc
+            // comment) — no `to_file_path()`/`exists()` check makes sense for it (it
+            // isn't a real filesystem path at all), and it's never user-typed input to
+            // begin with — always built by this same binary's own `bundle_launch.rs`
+            // from a `launch.json` it trusts — so accept it outright, same as the
+            // `file:` arm above accepts an already-verified-to-exist path outright.
+            ("game", Some(_), _) => {
+                new_url = cmdline_url;
+            },
             (scheme, None, Err(_)) if is_localhost(scheme) || is_domain_like(scheme) => {
                 new_url = ServoUrl::parse(&format!("http://{}:{}", scheme, &url.path())).ok();
             },

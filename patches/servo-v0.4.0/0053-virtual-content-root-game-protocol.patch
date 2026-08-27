@@ -1,0 +1,791 @@
+diff --git a/components/script/dom/window/history.rs b/components/script/dom/window/history.rs
+index bf4c610..3da2f45 100644
+--- a/components/script/dom/window/history.rs
++++ b/components/script/dom/window/history.rs
+@@ -309,7 +309,19 @@ impl History {
+         }
+ 
+         // Step 3. If targetURL's scheme is an HTTP(S) scheme, then return true.
+-        if target_url.scheme() == "http" || target_url.scheme() == "https" {
++        //
++        // Kiosk/embedded fork: `game:` (this fork's virtual content-root scheme bundled
++        // game content is served under — see desktop/protocols/game.rs) is treated the
++        // same as HTTP(S) here, not left to fall through to Step 5's stricter
++        // same-path-and-query rule below. `game://` URLs have real host+path structure
++        // exactly like http(s) does (Step 2 above already required host/port/scheme to
++        // match) — unlike `file:`'s Step 4 carve-out, whose "path" is a raw OS path, not
++        // a meaningful route. Without this, a client-side history router's own
++        // `pushState("/about")` call — exactly what this scheme exists to make work at
++        // all, see CUSTOMIZATIONS.md's "Virtual content root (game: protocol)" entry —
++        // would throw `SecurityError` on every in-app navigation.
++        if target_url.scheme() == "http" || target_url.scheme() == "https" || target_url.scheme() == "game"
++        {
+             return true;
+         }
+ 
+diff --git a/components/servo/lib.rs b/components/servo/lib.rs
+index 1918c69..da013dc 100644
+--- a/components/servo/lib.rs
++++ b/components/servo/lib.rs
+@@ -114,7 +114,7 @@ pub mod protocol_handler {
+     pub use net::protocols::{ProtocolHandler, ProtocolRegistry};
+     pub use net_traits::filemanager_thread::RelativePos;
+     pub use net_traits::http_status::HttpStatus;
+-    pub use net_traits::request::Request;
++    pub use net_traits::request::{Destination, Request};
+     pub use net_traits::response::{Response, ResponseBody};
+     pub use net_traits::{NetworkError, ResourceFetchTiming};
+ 
+diff --git a/components/url/origin.rs b/components/url/origin.rs
+index 3daca27..144f44f 100644
+--- a/components/url/origin.rs
++++ b/components/url/origin.rs
+@@ -17,6 +17,14 @@ use uuid::Uuid;
+ /// like the other opaque-origin constructors in this file.
+ const FILE_ORIGIN_ID: Uuid = Uuid::nil();
+ 
++/// Fixed id shared by every `game://` opaque origin — same reasoning as
++/// `FILE_ORIGIN_ID`, see `ImmutableOrigin::new_opaque_for_game_content`'s doc
++/// comment. Distinct from `FILE_ORIGIN_ID` (a `game://` document and a
++/// `file://` document are never meant to compare as same-origin with each
++/// other, only with themselves) — any fixed, non-nil value works; `1` is
++/// arbitrary.
++const GAME_ORIGIN_ID: Uuid = Uuid::from_u128(1);
++
+ /// The origin of an URL
+ #[derive(Clone, Debug, Deserialize, Eq, Hash, MallocSizeOf, PartialEq, Serialize)]
+ pub enum ImmutableOrigin {
+@@ -55,6 +63,9 @@ impl ImmutableOrigin {
+         if url.scheme() == "file" {
+             return Self::new_opaque_for_file();
+         }
++        if url.scheme() == "game" {
++            return Self::new_opaque_for_game_content();
++        }
+ 
+         match url.origin() {
+             Origin::Opaque(_) => ImmutableOrigin::new_opaque(),
+@@ -76,6 +87,7 @@ impl ImmutableOrigin {
+             id: Uuid::new_v4(),
+             is_for_data_worker_from_secure_context: false,
+             is_file_origin: false,
++            is_game_content_origin: false,
+         })
+     }
+ 
+@@ -85,6 +97,7 @@ impl ImmutableOrigin {
+             id: Uuid::new_v4(),
+             is_for_data_worker_from_secure_context: true,
+             is_file_origin: false,
++            is_game_content_origin: false,
+         })
+     }
+ 
+@@ -114,6 +127,26 @@ impl ImmutableOrigin {
+             id: FILE_ORIGIN_ID,
+             is_for_data_worker_from_secure_context: false,
+             is_file_origin: true,
++            is_game_content_origin: false,
++        })
++    }
++
++    /// Same reasoning and same fork-specific carve-out as `new_opaque_for_file` above —
++    /// see that method's doc comment — for `game://`, the virtual-root scheme bundled
++    /// game content is served under instead of a raw `file://` path (see
++    /// `ports/servoshell/desktop/protocols/game.rs` and CUSTOMIZATIONS.md's "Virtual
++    /// content root (game: protocol)" entry). A tuple origin was considered instead of
++    /// reusing this opaque-with-a-fixed-id pattern (unlike `file://`, `game://` URLs do
++    /// have a real, meaningful host component), but would have meant auditing every other
++    /// origin-consuming code path in this engine that currently assumes a tuple origin
++    /// only ever comes from `http(s)`/`ws(s)` — far larger a change than this fork's actual
++    /// need (one first-party trusted local content origin, same as `file://` already is).
++    pub fn new_opaque_for_game_content() -> ImmutableOrigin {
++        ImmutableOrigin::Opaque(OpaqueOrigin {
++            id: GAME_ORIGIN_ID,
++            is_for_data_worker_from_secure_context: false,
++            is_file_origin: false,
++            is_game_content_origin: true,
+         })
+     }
+ 
+@@ -161,6 +194,16 @@ impl ImmutableOrigin {
+         )
+     }
+ 
++    pub fn is_game_content_origin(&self) -> bool {
++        matches!(
++            self,
++            ImmutableOrigin::Opaque(OpaqueOrigin {
++                is_game_content_origin: true,
++                ..
++            })
++        )
++    }
++
+     /// Kiosk/embedded fork: whether this origin is allowed to use Storage-Standard
+     /// storage (`localStorage`/`sessionStorage`/`indexedDB`) despite `file://` documents
+     /// being opaque origins (see `new_opaque_for_file`'s doc comment above).
+@@ -181,7 +224,7 @@ impl ImmutableOrigin {
+     /// out a `file://` exception, for the same reason): this only lifts the storage
+     /// restriction, so everything else stays spec-strict.
+     pub fn can_access_storage(&self) -> bool {
+-        self.is_tuple() || self.is_file_origin()
++        self.is_tuple() || self.is_file_origin() || self.is_game_content_origin()
+     }
+ 
+     pub fn is_for_data_worker_from_secure_context(&self) -> bool {
+@@ -204,7 +247,7 @@ impl ImmutableOrigin {
+             //
+             // They're not tuple origins in our implementation (which is the more correct choice),
+             // so we have to return here instead of Step 6.
+-            if opaque_origin.is_file_origin {
++            if opaque_origin.is_file_origin || opaque_origin.is_game_content_origin {
+                 return true;
+             }
+             return false;
+@@ -260,6 +303,9 @@ pub struct OpaqueOrigin {
+     ///
+     /// See <https://github.com/whatwg/html/issues/3099>.
+     is_file_origin: bool,
++    /// Same idea as `is_file_origin`, for this fork's `game://` virtual-content-root
++    /// scheme — see `ImmutableOrigin::new_opaque_for_game_content`'s doc comment.
++    is_game_content_origin: bool,
+ }
+ 
+ malloc_size_of_is_0!(OpaqueOrigin);
+diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
+index c08b29a..4f7e692 100644
+--- a/ports/servoshell/desktop/app.rs
++++ b/ports/servoshell/desktop/app.rs
+@@ -100,6 +100,12 @@ pub struct App {
+     /// folder — which is real, on-disk content, not a cache, and must never
+     /// be deleted.
+     packed_content_dest: Option<PathBuf>,
++    /// Where the bundle's content lives on disk, and its entry HTML file relative to
++    /// that — `None` for a dev/`--url` launch, `Some` for any real bundled launch
++    /// (packed or not). See `bundle_launch.rs`'s `BundledLaunch::game_content` and
++    /// `protocols::game`'s own doc comment for why bundled content is served via
++    /// `game://content/...` instead of a raw `file:` path.
++    game_content: Option<(PathBuf, String)>,
+     t_start: Instant,
+     t: Instant,
+     state: AppState,
+@@ -112,6 +118,7 @@ impl App {
+         servo_shell_preferences: ServoShellPreferences,
+         event_loop: &ServoShellEventLoop,
+         pending_boot_extraction: Option<extract::ExtractOptions>,
++        game_content: Option<(PathBuf, String)>,
+     ) -> Self {
+         let t = Instant::now();
+         App {
+@@ -127,6 +134,7 @@ impl App {
+             initial_url: ServoUrl::parse("about:blank").expect("\"about:blank\" is a valid URL"),
+             packed_content_dest: pending_boot_extraction.as_ref().and_then(|opts| opts.dest.clone()),
+             pending_extraction: pending_boot_extraction,
++            game_content,
+             t_start: t,
+             t,
+             state: AppState::Initializing,
+@@ -291,6 +299,16 @@ impl App {
+             "file",
+             protocols::file::FileProtocolHandler::new(initial_file_path.as_deref()),
+         );
++        // Only registered for a real bundled launch (`self.game_content` is `None` for
++        // a dev `--url`/drag-drop run, which keeps using `file:` above directly) — see
++        // `protocols::game`'s own doc comment for why bundled content is served this
++        // way instead.
++        if let Some((content_root, entry_html)) = self.game_content.clone() {
++            let _ = protocol_registry.register(
++                "game",
++                protocols::game::GameProtocolHandler::new(content_root, entry_html),
++            );
++        }
+         // `@drincs/roves-api`'s `core`/`process` modules talk to this — see
+         // protocols/roves.rs. `None` in headless mode (no window, no winit
+         // event loop to send AppEvent::CloseAllWindows through).
+diff --git a/ports/servoshell/desktop/bundle_launch.rs b/ports/servoshell/desktop/bundle_launch.rs
+index 47bdcca..369fe21 100644
+--- a/ports/servoshell/desktop/bundle_launch.rs
++++ b/ports/servoshell/desktop/bundle_launch.rs
+@@ -19,14 +19,31 @@
+ //!   "args": ["--window-size", "1280x720"]
+ //! }
+ //! ```
++//!
++//! The resolved positional URL a bundled launch actually opens is a
++//! `game://content/<entry_html>` URL (see `protocols::game`'s own doc
++//! comment for why), not a raw `file:` path onto `content_dir`/`url` above —
++//! `game_content` on [`BundledLaunch`] carries the real on-disk location
++//! that URL resolves against, alongside it.
+ 
+ use std::env;
+ use std::path::{Path, PathBuf};
+ 
+ use roves_content_packer::extract;
+ 
++use crate::desktop::protocols::game::CONTENT_HOST;
++
+ const LAUNCH_CONFIG_FILE: &str = "launch.json";
+ 
++/// Builds a `game://<CONTENT_HOST>/<entry_html>` URL, percent-encoding `entry_html`
++/// correctly via `Url::join` rather than hand-formatting a string — `entry_html` comes
++/// from `manifest.json`/a `launch.json` path and isn't guaranteed to be bare ASCII (see
++/// `parser.rs`'s own comment on `Url::from_file_path` existing for exactly this reason).
++fn game_content_url(entry_html: &str) -> Option<String> {
++    let base = url::Url::parse(&format!("game://{CONTENT_HOST}/")).ok()?;
++    Some(base.join(entry_html).ok()?.to_string())
++}
++
+ /// Result of [`resolve_bundled_launch_args`]: the args to launch with,
+ /// exactly as if they'd been passed on the command line (a positional URL
+ /// followed by flags), plus — for a packed-content build — the boot
+@@ -39,6 +56,13 @@ const LAUNCH_CONFIG_FILE: &str = "launch.json";
+ pub(crate) struct BundledLaunch {
+     pub(crate) args: Vec<String>,
+     pub(crate) pending_boot_extraction: Option<extract::ExtractOptions>,
++    /// Where the bundle's content actually lives on disk, and its entry HTML file's
++    /// path relative to that — what `protocols::game::GameProtocolHandler` resolves
++    /// `game://content/<path>` requests against (see that module's own doc comment for
++    /// why bundled content is served this way instead of a raw `file:` path). `None`
++    /// only if the launch config couldn't be resolved at all (`resolve_bundled_launch_args`
++    /// already returns `None` outright in that case) — every real bundled launch has one.
++    pub(crate) game_content: Option<(PathBuf, String)>,
+ }
+ 
+ /// Cheaply figures out which game (if any) this is a bundled launch of,
+@@ -109,13 +133,20 @@ pub(crate) fn resolve_bundled_launch_args() -> Option<BundledLaunch> {
+         })
+         .unwrap_or_default();
+ 
+-    let (url, pending_boot_extraction) =
++    let (url, pending_boot_extraction, game_content) =
+         if let Some(content_rel_dir) = config.get("content_dir").and_then(|v| v.as_str()) {
+-            let (url, opts) = resolve_packed_content_url(&exe_dir, content_rel_dir)?;
+-            (url, Some(opts))
++            let (url, opts, game_content) = resolve_packed_content_url(&exe_dir, content_rel_dir)?;
++            (url, Some(opts), Some(game_content))
+         } else {
+             let rel_url = config.get("url").and_then(|v| v.as_str())?;
+-            (exe_dir.join(rel_url).to_string_lossy().into_owned(), None)
++            // Same "content root = the entry html's own parent directory" assumption
++            // `desktop/protocols/file.rs`'s `initial_dir` already makes for this exact
++            // (uncompressed, `--content-compress=none`) case — not a new limitation.
++            let html_path = exe_dir.join(rel_url);
++            let content_root = html_path.parent()?.to_path_buf();
++            let entry_html = html_path.file_name()?.to_string_lossy().into_owned();
++            let url = game_content_url(&entry_html)?;
++            (url, None, Some((content_root, entry_html)))
+         };
+ 
+     let mut args = vec![url];
+@@ -123,6 +154,7 @@ pub(crate) fn resolve_bundled_launch_args() -> Option<BundledLaunch> {
+     Some(BundledLaunch {
+         args,
+         pending_boot_extraction,
++        game_content,
+     })
+ }
+ 
+@@ -156,7 +188,7 @@ fn content_root(exe_dir: &Path) -> PathBuf {
+ fn resolve_packed_content_url(
+     exe_dir: &Path,
+     content_rel_dir: &str,
+-) -> Option<(String, extract::ExtractOptions)> {
++) -> Option<(String, extract::ExtractOptions, (PathBuf, String))> {
+     let content_dir = content_root(exe_dir).join(content_rel_dir);
+     let manifest = extract::load_manifest(&content_dir)
+         .inspect_err(|e| log::error!("loading packed-content manifest at {content_dir:?}: {e}"))
+@@ -164,14 +196,12 @@ fn resolve_packed_content_url(
+     let (content_dir, dest) = extract::resolve_dest(&content_dir, None, manifest.name.as_deref())
+         .inspect_err(|e| log::error!("resolving boot content destination: {e}"))
+         .ok()?;
+-    let url = dest
+-        .join(&manifest.entry_html)
+-        .to_string_lossy()
+-        .into_owned();
++    let url = game_content_url(&manifest.entry_html)?;
++    let game_content = (dest.clone(), manifest.entry_html.clone());
+     let opts = extract::ExtractOptions {
+         content_dir,
+         dest: Some(dest),
+         force: false,
+     };
+-    Some((url, opts))
++    Some((url, opts, game_content))
+ }
+diff --git a/ports/servoshell/desktop/cli.rs b/ports/servoshell/desktop/cli.rs
+index e7da915..4375a3a 100644
+--- a/ports/servoshell/desktop/cli.rs
++++ b/ports/servoshell/desktop/cli.rs
+@@ -51,10 +51,16 @@ pub fn main() {
+     // through to `App::new` unresolved — `resolve_bundled_launch_args`
+     // never blocks on it; see `bundle_launch.rs` and `App::init`'s boot
+     // splash handling.
+-    let (args, pending_boot_extraction, is_bundled_launch) = match resolve_bundled_launch_args() {
+-        Some(bundled) => (bundled.args, bundled.pending_boot_extraction, true),
+-        None => (env::args().skip(1).collect(), None, false),
+-    };
++    let (args, pending_boot_extraction, game_content, is_bundled_launch) =
++        match resolve_bundled_launch_args() {
++            Some(bundled) => (
++                bundled.args,
++                bundled.pending_boot_extraction,
++                bundled.game_content,
++                true,
++            ),
++            None => (env::args().skip(1).collect(), None, None, false),
++        };
+     // Startup milestones below: this app has no console on a double-clicked
+     // Windows build (`#![windows_subsystem = "windows"]`), so a launch that
+     // dies with no further output — a hang, or a hard native crash that
+@@ -122,6 +128,7 @@ pub fn main() {
+             servoshell_preferences,
+             &event_loop,
+             pending_boot_extraction,
++            game_content,
+         );
+         log::info!("running event loop");
+         event_loop.run_app(&mut app);
+diff --git a/ports/servoshell/desktop/protocols/file.rs b/ports/servoshell/desktop/protocols/file.rs
+index 4685c23..f8d65a0 100644
+--- a/ports/servoshell/desktop/protocols/file.rs
++++ b/ports/servoshell/desktop/protocols/file.rs
+@@ -27,12 +27,9 @@ use std::future::{Future, ready};
+ use std::io::{BufReader, Seek, SeekFrom};
+ use std::path::{Component, Path, PathBuf};
+ use std::pin::Pin;
+-use std::sync::Mutex;
+ 
+ use headers::{ContentLength, ContentRange, ContentType, HeaderMapExt, Range};
+ use http::Method;
+-use roves_content_packer::extract::CONTENT_SOURCE_MARKER;
+-use roves_content_packer::manifest::Manifest;
+ use servo::protocol_handler::{
+     DoneChannel, FetchContext, FILE_CHUNK_SIZE, NetworkError, ProtocolHandler, Request,
+     ResourceFetchTiming, Response, ResponseBody, get_range_request_bounds, partial_content,
+@@ -40,19 +37,7 @@ use servo::protocol_handler::{
+ };
+ use tokio::sync::mpsc::unbounded_channel;
+ 
+-struct PackedContent {
+-    /// Where `manifest.json` + `.pack` files live (read-only, shipped as-is).
+-    content_dir: PathBuf,
+-    /// Where boot files were already extracted, and where lazy ones land —
+-    /// the directory the initial `file:` URL's path lives in.
+-    cache_dir: PathBuf,
+-    manifest: Manifest,
+-    /// Serializes on-demand extraction: two near-simultaneous loads for
+-    /// files in the same not-yet-extracted pack must not both start
+-    /// unpacking it at once. Extraction is rare/one-time per pack per
+-    /// session, so coarse (one lock for all packs, not per-pack) is fine.
+-    extracting: Mutex<()>,
+-}
++use super::packed_content::PackedContent;
+ 
+ pub struct FileProtocolHandler {
+     /// The directory containing the document Roves was launched with — the effective
+@@ -75,55 +60,15 @@ impl FileProtocolHandler {
+     /// the stock handler.
+     pub fn new(initial_file_path: Option<&Path>) -> Self {
+         let initial_dir = initial_file_path.and_then(|p| p.parent()).map(Path::to_path_buf);
+-        let packed = initial_dir.as_deref().and_then(Self::resolve_packed_content);
++        let packed = initial_dir.as_deref().and_then(PackedContent::resolve);
+         Self { initial_dir, packed }
+     }
+ 
+-    fn resolve_packed_content(cache_dir: &Path) -> Option<PackedContent> {
+-        let marker = cache_dir.join(CONTENT_SOURCE_MARKER);
+-        let content_dir = std::fs::read_to_string(&marker).ok()?;
+-        let content_dir = PathBuf::from(content_dir.trim());
+-        let manifest = roves_content_packer::extract::load_manifest(&content_dir).ok()?;
+-        Some(PackedContent {
+-            content_dir,
+-            cache_dir: cache_dir.to_path_buf(),
+-            manifest,
+-            extracting: Mutex::new(()),
+-        })
+-    }
+-
+-    /// If `file_path` doesn't exist yet and falls under managed packed
+-    /// content, extracts whichever pack contains it — a synchronous,
+-    /// blocking call, same as the plain file I/O below it; this only ever
+-    /// happens the first time a given pack's contents are touched, including
+-    /// across relaunches (see `ensure_pack_extracted`'s own marker file).
++    /// See `PackedContent::ensure_available` — a no-op when this launch has no
++    /// managed packed content at all (a dev `--url` run, or `--content-compress=none`).
+     fn ensure_available(&self, file_path: &Path) {
+-        let Some(packed) = &self.packed else { return };
+-        if file_path.exists() {
+-            return;
+-        }
+-        let Ok(rel) = file_path.strip_prefix(&packed.cache_dir) else {
+-            return;
+-        };
+-        let rel_path = rel
+-            .components()
+-            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+-            .collect::<Vec<_>>()
+-            .join("/");
+-
+-        let _guard = packed.extracting.lock().unwrap();
+-        // Re-check now that we hold the lock: another load() may have just
+-        // finished extracting the exact pack this path lives in.
+-        if file_path.exists() {
+-            return;
+-        }
+-        if let Err(e) = roves_content_packer::extract::ensure_file_available(
+-            &packed.content_dir,
+-            &packed.cache_dir,
+-            &packed.manifest,
+-            &rel_path,
+-        ) {
+-            log::warn!("on-demand extraction of {rel_path:?} failed: {e}");
++        if let Some(packed) = &self.packed {
++            packed.ensure_available(file_path);
+         }
+     }
+ 
+diff --git a/ports/servoshell/desktop/protocols/game.rs b/ports/servoshell/desktop/protocols/game.rs
+new file mode 100644
+index 0000000..285eade
+--- /dev/null
++++ b/ports/servoshell/desktop/protocols/game.rs
+@@ -0,0 +1,214 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! `game:` protocol handler — serves bundled game content under a fixed
++//! virtual origin (`game://content/...`) instead of the raw absolute
++//! `file:` path `file.rs` opens a game's `index.html` from.
++//!
++//! **Why this exists, when `file.rs` already serves the exact same files:**
++//! a `file://` document's `window.location.pathname` is the real OS path
++//! (e.g. `/C:/Users/.../dist/index.html`), not a root-relative one — so any
++//! client-side history router (React Router, TanStack Router, Vue Router in
++//! "history" mode, ...) can never match its own routes against it, and
++//! falls back to its own "not found" page immediately. Root-absolute asset
++//! references (`<script src="/assets/foo.js">`) have the exact same
++//! underlying problem, which `file.rs`'s `rebase_to_content_root` works
++//! around for that one case — but a router's own `location.pathname` isn't
++//! an asset reference `rebase_to_content_root` ever sees; there is no
++//! request to rebase.
++//!
++//! `game://content/index.html` sidesteps this at the root: it's a real,
++//! distinct origin (see `ImmutableOrigin::new_opaque_for_game_content`),
++//! with its own authority ("content") standing in for what an actual HTTP
++//! deployment's domain would be — so `location.pathname` at boot is simply
++//! `/index.html`, and `pushState("/about")` (any router's own client-side
++//! navigation) stays same-origin and same-scheme, so the History API
++//! allows it. This is the same idea Tauri itself uses (`tauri://localhost/`
++//! / `https://tauri.localhost/`) to avoid this exact class of problem,
++//! rather than something novel to this fork.
++//!
++//! A **direct navigation** to a sub-route (a hard reload while on
++//! `game://content/about`, or `location.href = "/about"`) has no
++//! `about.html` file to serve — same as any static host serving a
++//! history-mode SPA needs a fallback rule (nginx's `try_files`, Vite's own
++//! dev-server `historyApiFallback`, ...). `load` below serves the bundle's
++//! entry HTML for exactly this case (`Destination::Document`, no matching
++//! file) — deliberately gated to real navigations only, so a genuinely
++//! missing *asset* (an actual 404) still surfaces as an error instead of
++//! silently becoming HTML.
++//!
++//! Registered only for the fixed authority `content` — `mach bundle`/
++//! Packmaster/`roves-action` are the only things that ever construct a
++//! `game:` URL (see `bundle_launch.rs`), always with that exact host, so
++//! anything else reaching this handler is a bug elsewhere, not a real
++//! request. `file.rs`'s own on-demand packed-content extraction
++//! (`packed_content::PackedContent`) is reused as-is — this handler serves
++//! the same on-disk content, just addressed differently.
++
++use std::fs::File;
++use std::future::{Future, ready};
++use std::io::{BufReader, Seek, SeekFrom};
++use std::path::{Component, Path, PathBuf};
++use std::pin::Pin;
++
++use headers::{ContentLength, ContentRange, ContentType, HeaderMapExt, Range};
++use http::Method;
++use servo::protocol_handler::{
++    Destination, DoneChannel, FetchContext, FILE_CHUNK_SIZE, NetworkError, ProtocolHandler,
++    Request, ResourceFetchTiming, Response, ResponseBody, get_range_request_bounds,
++    partial_content, range_not_satisfiable_error,
++};
++use tokio::sync::mpsc::unbounded_channel;
++
++use super::packed_content::PackedContent;
++
++/// The only authority this handler ever serves — see this module's own doc comment.
++/// `pub(crate)` so `bundle_launch.rs` can build the exact same `game://<CONTENT_HOST>/...`
++/// URLs this handler expects, from one shared source of truth instead of two copies of
++/// the literal that could silently drift apart.
++pub(crate) const CONTENT_HOST: &str = "content";
++
++pub struct GameProtocolHandler {
++    /// Where the bundled content actually lives on disk — what a `game://content/<path>`
++    /// request's `<path>` resolves against.
++    content_root: PathBuf,
++    /// The bundle's entry HTML file, relative to `content_root` (e.g. `"index.html"`) —
++    /// see this module's own doc comment on the SPA-fallback behavior this is for.
++    entry_html: String,
++    packed: Option<PackedContent>,
++}
++
++impl GameProtocolHandler {
++    pub fn new(content_root: PathBuf, entry_html: String) -> Self {
++        let packed = PackedContent::resolve(&content_root);
++        Self { content_root, entry_html, packed }
++    }
++
++    /// See `PackedContent::ensure_available` — a no-op when this launch has no
++    /// managed packed content at all (`--content-compress=none`).
++    fn ensure_available(&self, file_path: &Path) {
++        if let Some(packed) = &self.packed {
++            packed.ensure_available(file_path);
++        }
++    }
++
++    /// `game://content/foo/bar.js` → `<content_root>/foo/bar.js`. Filters out any
++    /// `..`/root/prefix component defensively (a URL's path is already dot-segment-
++    /// normalized by the `url` crate for a URL with an authority, which every
++    /// `game:` URL this handler ever sees has — but there's no reason to trust that
++    /// invariant here when a cheap, explicit filter closes off path traversal
++    /// entirely regardless).
++    fn resolve_path(&self, url_path: &str) -> PathBuf {
++        let relative: PathBuf = Path::new(url_path)
++            .components()
++            .filter(|c| matches!(c, Component::Normal(_)))
++            .collect();
++        self.content_root.join(relative)
++    }
++}
++
++impl ProtocolHandler for GameProtocolHandler {
++    // Trusted first-party content origin, same reasoning as `file.rs`'s own overrides —
++    // see that file's own comment.
++    fn is_fetchable(&self) -> bool {
++        true
++    }
++
++    fn is_secure(&self) -> bool {
++        true
++    }
++
++    fn load<'a>(
++        &'a self,
++        request: &'a mut Request,
++        done_chan: &mut DoneChannel,
++        context: &FetchContext,
++    ) -> Pin<Box<dyn Future<Output = Response> + Send + 'a>> {
++        let url = request.current_url();
++
++        if request.method != Method::GET {
++            return Box::pin(ready(Response::network_error(NetworkError::InvalidMethod)));
++        }
++
++        if url.host_str() != Some(CONTENT_HOST) {
++            return Box::pin(ready(Response::network_error(NetworkError::ResourceLoadError(
++                format!("game: only serves the \"{CONTENT_HOST}\" host"),
++            ))));
++        }
++
++        let mut file_path = self.resolve_path(url.path());
++        self.ensure_available(&file_path);
++
++        // SPA fallback: a real navigation (not an asset subresource) to a path with
++        // no matching file falls back to the bundle's own entry HTML — see this
++        // module's own doc comment for why. An asset request that genuinely doesn't
++        // exist stays a real error below, not silently a page of HTML.
++        if (!file_path.exists() || file_path.is_dir()) && request.destination == Destination::Document
++        {
++            file_path = self.content_root.join(&self.entry_html);
++            self.ensure_available(&file_path);
++        }
++
++        if file_path.is_dir() {
++            return Box::pin(ready(Response::network_error(NetworkError::ResourceLoadError(
++                "Directory listing is not supported".to_owned(),
++            ))));
++        }
++
++        let response = if let Ok(file) = File::open(&file_path) {
++            let file_size = file.metadata().ok().map(|metadata| metadata.len());
++
++            let mut response = Response::new(url, ResourceFetchTiming::new(request.timing_type()));
++
++            let range_header = request.headers.typed_get::<Range>();
++            let is_range_request = range_header.is_some();
++            let Ok(range) = get_range_request_bounds(range_header, file_size.unwrap_or(0))
++                .get_final(file_size)
++            else {
++                range_not_satisfiable_error(&mut response);
++                return Box::pin(ready(response));
++            };
++            let mut reader = BufReader::with_capacity(FILE_CHUNK_SIZE, file);
++            if reader.seek(SeekFrom::Start(range.start as u64)).is_err() {
++                return Box::pin(ready(Response::network_error(NetworkError::InvalidMethod)));
++            }
++
++            if is_range_request {
++                partial_content(&mut response);
++            }
++
++            let end_byte = range.end.map(|e| e as u64).or(file_size);
++            if let Some(end_byte) = end_byte {
++                let start_byte = range.start as u64;
++                response.headers.typed_insert(ContentLength(end_byte - start_byte));
++                if is_range_request {
++                    if let Ok(content_range) = ContentRange::bytes(start_byte..end_byte, file_size) {
++                        response.headers.typed_insert(content_range);
++                    }
++                }
++            }
++
++            let mime = mime_guess::from_path(&file_path).first_or_octet_stream();
++            response.headers.typed_insert(ContentType::from(mime));
++
++            let (mut done_sender, done_receiver) = unbounded_channel();
++            *done_chan = Some((done_sender.clone(), done_receiver));
++            *response.body.lock() = ResponseBody::Receiving(vec![]);
++
++            context.filemanager.fetch_file_in_chunks(
++                &mut done_sender,
++                reader,
++                response.body.clone(),
++                context.cancellation_listener.clone(),
++                range,
++            );
++
++            response
++        } else {
++            Response::network_error(NetworkError::ResourceLoadError("Opening file failed".to_owned()))
++        };
++
++        Box::pin(ready(response))
++    }
++}
+diff --git a/ports/servoshell/desktop/protocols/mod.rs b/ports/servoshell/desktop/protocols/mod.rs
+index d5c2df3..3599609 100644
+--- a/ports/servoshell/desktop/protocols/mod.rs
++++ b/ports/servoshell/desktop/protocols/mod.rs
+@@ -3,6 +3,8 @@
+  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+ 
+ pub(crate) mod file;
++pub(crate) mod game;
++pub(crate) mod packed_content;
+ pub(crate) mod resource;
+ pub(crate) mod roves;
+ pub(crate) mod saves;
+diff --git a/ports/servoshell/desktop/protocols/packed_content.rs b/ports/servoshell/desktop/protocols/packed_content.rs
+new file mode 100644
+index 0000000..d3ef16a
+--- /dev/null
++++ b/ports/servoshell/desktop/protocols/packed_content.rs
+@@ -0,0 +1,84 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! On-demand pack extraction, shared between `file.rs` and `game.rs` — both
++//! protocol handlers serve the exact same bundled content, just under
++//! different URL schemes (a raw `file:` path vs. `game:`'s virtual root; see
++//! `game.rs`'s own module doc comment for why the latter exists), so the
++//! logic for "extract whichever `.pack` archive a not-yet-extracted file
++//! lives in, the first time it's touched" only needs to exist once. Extracted
++//! out of `file.rs` when `game.rs` was added rather than duplicated — see
++//! CUSTOMIZATIONS.md's "Virtual content root (game: protocol)" entry.
++
++use std::path::{Path, PathBuf};
++use std::sync::Mutex;
++
++use roves_content_packer::manifest::Manifest;
++
++pub struct PackedContent {
++    /// Where `manifest.json` + `.pack` files live (read-only, shipped as-is).
++    pub content_dir: PathBuf,
++    /// Where boot files were already extracted, and where lazy ones land —
++    /// the directory the initial `file:` URL's path lives in.
++    pub cache_dir: PathBuf,
++    pub manifest: Manifest,
++    /// Serializes on-demand extraction: two near-simultaneous loads for
++    /// files in the same not-yet-extracted pack must not both start
++    /// unpacking it at once. Extraction is rare/one-time per pack per
++    /// session, so coarse (one lock for all packs, not per-pack) is fine.
++    extracting: Mutex<()>,
++}
++
++impl PackedContent {
++    /// `cache_dir`: the directory a `.roves-content-source` marker (written by
++    /// `roves-content-packer extract`, see CUSTOMIZATIONS.md) is looked for in —
++    /// present only for a packed-content launch; absent for one opened via raw CLI
++    /// args for local dev/testing, or a build with `--content-compress=none`.
++    pub fn resolve(cache_dir: &Path) -> Option<Self> {
++        let marker = cache_dir.join(roves_content_packer::extract::CONTENT_SOURCE_MARKER);
++        let content_dir = std::fs::read_to_string(&marker).ok()?;
++        let content_dir = PathBuf::from(content_dir.trim());
++        let manifest = roves_content_packer::extract::load_manifest(&content_dir).ok()?;
++        Some(Self {
++            content_dir,
++            cache_dir: cache_dir.to_path_buf(),
++            manifest,
++            extracting: Mutex::new(()),
++        })
++    }
++
++    /// If `file_path` doesn't exist yet and falls under this managed packed
++    /// content, extracts whichever pack contains it — a synchronous,
++    /// blocking call, same as the plain file I/O around it; this only ever
++    /// happens the first time a given pack's contents are touched, including
++    /// across relaunches (see `ensure_file_available`'s own marker file).
++    pub fn ensure_available(&self, file_path: &Path) {
++        if file_path.exists() {
++            return;
++        }
++        let Ok(rel) = file_path.strip_prefix(&self.cache_dir) else {
++            return;
++        };
++        let rel_path = rel
++            .components()
++            .map(|c| c.as_os_str().to_string_lossy().into_owned())
++            .collect::<Vec<_>>()
++            .join("/");
++
++        let _guard = self.extracting.lock().unwrap();
++        // Re-check now that we hold the lock: another load() may have just
++        // finished extracting the exact pack this path lives in.
++        if file_path.exists() {
++            return;
++        }
++        if let Err(e) = roves_content_packer::extract::ensure_file_available(
++            &self.content_dir,
++            &self.cache_dir,
++            &self.manifest,
++            &rel_path,
++        ) {
++            log::warn!("on-demand extraction of {rel_path:?} failed: {e}");
++        }
++    }
++}
+diff --git a/ports/servoshell/parser.rs b/ports/servoshell/parser.rs
+index 09c81e4..637c05a 100644
+--- a/ports/servoshell/parser.rs
++++ b/ports/servoshell/parser.rs
+@@ -86,6 +86,16 @@ pub fn get_default_url(
+             ("file", None, Ok(ref path)) if exists(path) => {
+                 new_url = cmdline_url;
+             },
++            // Kiosk/embedded fork: a bundled launch's positional URL is a
++            // `game://content/...` one (see `desktop/protocols/game.rs`'s own doc
++            // comment) — no `to_file_path()`/`exists()` check makes sense for it (it
++            // isn't a real filesystem path at all), and it's never user-typed input to
++            // begin with — always built by this same binary's own `bundle_launch.rs`
++            // from a `launch.json` it trusts — so accept it outright, same as the
++            // `file:` arm above accepts an already-verified-to-exist path outright.
++            ("game", Some(_), _) => {
++                new_url = cmdline_url;
++            },
+             (scheme, None, Err(_)) if is_localhost(scheme) || is_domain_like(scheme) => {
+                 new_url = ServoUrl::parse(&format!("http://{}:{}", scheme, &url.path())).ok();
+             },

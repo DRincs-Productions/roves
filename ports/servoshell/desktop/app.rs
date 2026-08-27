@@ -100,6 +100,12 @@ pub struct App {
     /// folder — which is real, on-disk content, not a cache, and must never
     /// be deleted.
     packed_content_dest: Option<PathBuf>,
+    /// Where the bundle's content lives on disk, and its entry HTML file relative to
+    /// that — `None` for a dev/`--url` launch, `Some` for any real bundled launch
+    /// (packed or not). See `bundle_launch.rs`'s `BundledLaunch::game_content` and
+    /// `protocols::game`'s own doc comment for why bundled content is served via
+    /// `game://content/...` instead of a raw `file:` path.
+    game_content: Option<(PathBuf, String)>,
     t_start: Instant,
     t: Instant,
     state: AppState,
@@ -112,6 +118,7 @@ impl App {
         servo_shell_preferences: ServoShellPreferences,
         event_loop: &ServoShellEventLoop,
         pending_boot_extraction: Option<extract::ExtractOptions>,
+        game_content: Option<(PathBuf, String)>,
     ) -> Self {
         let t = Instant::now();
         App {
@@ -127,6 +134,7 @@ impl App {
             initial_url: ServoUrl::parse("about:blank").expect("\"about:blank\" is a valid URL"),
             packed_content_dest: pending_boot_extraction.as_ref().and_then(|opts| opts.dest.clone()),
             pending_extraction: pending_boot_extraction,
+            game_content,
             t_start: t,
             t,
             state: AppState::Initializing,
@@ -291,6 +299,16 @@ impl App {
             "file",
             protocols::file::FileProtocolHandler::new(initial_file_path.as_deref()),
         );
+        // Only registered for a real bundled launch (`self.game_content` is `None` for
+        // a dev `--url`/drag-drop run, which keeps using `file:` above directly) — see
+        // `protocols::game`'s own doc comment for why bundled content is served this
+        // way instead.
+        if let Some((content_root, entry_html)) = self.game_content.clone() {
+            let _ = protocol_registry.register(
+                "game",
+                protocols::game::GameProtocolHandler::new(content_root, entry_html),
+            );
+        }
         // `@drincs/roves-api`'s `core`/`process` modules talk to this — see
         // protocols/roves.rs. `None` in headless mode (no window, no winit
         // event loop to send AppEvent::CloseAllWindows through).

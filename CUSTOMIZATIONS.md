@@ -4312,3 +4312,123 @@ invocation attempted, same linker-gap caveat as every other Python-side change t
 `selected` dead-code warning). Whoever builds this next should verify a `--content-dir`
 containing only a `favicon.ico` (no `icon.ico`) actually patches the bundled `play.exe`'s
 icon resource.
+
+---
+
+## 2026-08-27 — Virtual content root (`game:` protocol)
+
+**Files:**
+- `components/url/origin.rs` (new `game://` opaque-origin support, mirroring `file://`'s)
+- `components/servo/lib.rs` (`protocol_handler` facade gains a `Destination` re-export)
+- `ports/servoshell/desktop/protocols/mod.rs` (new module declarations)
+- `ports/servoshell/desktop/protocols/packed_content.rs` (new file — see below)
+- `ports/servoshell/desktop/protocols/file.rs` (refactored to use the new shared module)
+- `ports/servoshell/desktop/protocols/game.rs` (new file — the handler itself)
+- `ports/servoshell/parser.rs` (`get_default_url` accepts a `game:` URL)
+- `ports/servoshell/desktop/bundle_launch.rs` (constructs `game://content/...` URLs)
+- `ports/servoshell/desktop/cli.rs`, `ports/servoshell/desktop/app.rs` (wiring)
+- `components/script/dom/window/history.rs` (`pushState`/`replaceState` same-origin rule)
+
+**Patch:** `patches/servo-v0.4.0/0053-virtual-content-root-game-protocol.patch`
+
+**Why:** confirmed via a real game (`pixi-vn-react-template`, whose loading-screen hang was
+already fixed by patches 0050/0051/0052) that once it actually renders, it immediately shows
+its own client-side router's ("TanStack Router", default browser `history`) built-in "Not
+Found" page instead of the real app. Root cause: a bundled launch opens a raw
+`file:///C:/Users/.../dist/index.html` URL — `window.location.pathname` at boot is the real,
+absolute OS path, not a root-relative one, so no router's own route table (`/`, `/settings`,
+...) can ever match against it. This isn't fixable by rebasing asset *references* the way
+patch 0045 already does for `<script src="/...">` — a router reads `location.pathname`
+directly, there is no request to rebase.
+
+**The fix, in one line:** serve bundled content under a fixed virtual origin instead of a raw
+`file:` path — `game://content/index.html` instead of the real disk path — the same idea
+Tauri itself already uses (`tauri://localhost/` / `https://tauri.localhost/`) to avoid this
+exact class of problem, not something novel to this fork. `window.location.pathname` at boot
+is then simply `/index.html`, matching what every router already expects, and
+`pushState("/about")` stays same-origin (same scheme + same fixed host, "content"), so the
+History API allows it.
+
+**What changed, piece by piece:**
+
+- **`ImmutableOrigin::new_opaque_for_game_content`** (`origin.rs`): a `game://` document gets
+  a fixed, shared opaque origin (`GAME_ORIGIN_ID`, distinct from `file://`'s own
+  `FILE_ORIGIN_ID`) — same reasoning as `new_opaque_for_file`, duplicated rather than merged
+  into one generalized concept (see that new constructor's own doc comment for why: this
+  fork's own stated preference for small, targeted, non-abstracted changes over premature
+  refactors). `is_potentially_trustworthy()` and `can_access_storage()` both extended
+  identically to `is_file_origin`'s existing carve-outs, so mixed-content checks and
+  `localStorage`/`indexedDB` work the same under `game://` as they already do under `file://`.
+  A **tuple** origin (`game`, `content`, 0) was considered instead — `game://` URLs, unlike
+  `file://`, do have a real, meaningful host — but would have meant auditing every other
+  origin-consuming code path in this engine that currently assumes a tuple origin only ever
+  comes from `http(s)`/`ws(s)`; reusing the already-proven opaque-with-a-fixed-id pattern is
+  the smaller, lower-risk change for the one thing this fork actually needs (a second
+  first-party trusted local content origin, structurally identical to what `file://` already
+  is here).
+- **`protocols/packed_content.rs`** (new): `file.rs`'s on-demand pack-extraction logic
+  (`PackedContent`, `ensure_available`) extracted out verbatim — `game.rs` needs the exact
+  same behavior (both handlers serve the same on-disk bundled content, just addressed
+  differently), and duplicating a mutex-guarded extraction routine across two files is a real
+  maintenance hazard (a bug fixed in one copy, forgotten in the other) a real engineer
+  wouldn't accept either. `file.rs` itself now just delegates to it — no behavior change
+  there, confirmed by diffing its own `load()` logic, which is untouched.
+- **`protocols/game.rs`** (new): `GameProtocolHandler` — resolves `game://content/<path>`
+  against a `content_root` given at construction, reusing `PackedContent` for lazy
+  extraction. Rejects any host other than the fixed `"content"` outright (nothing but this
+  engine's own `bundle_launch.rs` ever constructs a `game:` URL, so anything else reaching
+  this handler is a bug elsewhere). **SPA fallback**: a `Destination::Document` request (a
+  real navigation — a hard reload on `/about`, or `location.href = "/about"`; deliberately
+  *not* triggered by a router's own in-app `pushState`, which makes no network request at
+  all) whose path doesn't resolve to a real file serves the bundle's entry HTML instead of a
+  404 — the same rule any static host serving a history-mode SPA needs (nginx's own
+  `try_files`, Vite dev server's `historyApiFallback`, ...). Deliberately gated to
+  `Destination::Document` only: a genuinely missing *asset* (an image, a script) still
+  surfaces as a real error, not silently becomes a page of HTML.
+- **`history.rs`'s `can_have_url_rewritten`**: the actual spec algorithm `pushState`/
+  `replaceState` call (throws `SecurityError` on failure) — Step 3 already special-cases
+  `http`/`https` to allow rewriting to *any* same-origin path/query freely; Step 4's `file:`
+  carve-out is far narrower (only allows rewrites that leave the *path* completely
+  unchanged, since a `file:` URL's "path" is a real OS path, not a route); anything else
+  (Step 5) requires path *and* query to stay identical. Without adding `game` to Step 3, a
+  router's own `pushState("/about")` call — the entire point of this feature — would throw
+  `SecurityError` on every in-app navigation, even after every other piece above was
+  correct. `game://` URLs have real host+path structure exactly like `http(s)` does (Step 2
+  already requires host/port/scheme to match), so treating it identically to `http(s)` here
+  is the closest-to-spec-intent choice, not a meaningful spec violation.
+- **`bundle_launch.rs`**: `resolve_bundled_launch_args` now constructs a
+  `game://content/<entry_html>` URL (via `Url::join`, for correct percent-encoding — not a
+  hand-formatted string) instead of a real absolute `file:` path, for *any* bundled launch —
+  packed (`content_dir` in `launch.json`) or loose (`url` only, `--content-compress=none`).
+  `BundledLaunch` gained `game_content: Option<(PathBuf, String)>` (the real on-disk content
+  root + entry-html-relative-path `GameProtocolHandler` needs) threaded through `cli.rs` →
+  `App::new` → `app.rs`'s new `game://` registration, alongside the existing
+  `pending_boot_extraction` threading. The loose-bundle case's content root is still assumed
+  to be the entry HTML's own parent directory — the exact same pre-existing assumption
+  `file.rs`'s `initial_dir` already made; not a new limitation introduced here.
+- **`parser.rs`'s `get_default_url`**: gained a `("game", Some(_), _)` match arm — the
+  existing match only ever accepted a `file:` URL whose target already exists on disk, or a
+  bare domain-like string rewritten to `http://`; a `game://content/...` string (which isn't
+  a real filesystem path, and always internally constructed, never user-typed) needed its own
+  arm to not be silently discarded back to the homepage/blank-page fallback.
+- **What *wasn't* changed**: plain `--url`/drag-and-drop dev-time launches keep using
+  `file:` exactly as before — only the `launch.json`-driven path (what every real
+  `mach bundle`/Packmaster/`roves-action` consumer actually ships) moved to `game:`. Two
+  other `scheme() == "file"` checks found while auditing for this (`location.rs`/
+  `htmlhyperlinkelementutils.rs`'s `.port` setters, both narrow "a URL that cannot have a
+  port" quirks with no bearing on routing) were deliberately left alone — not this fork's
+  concern, and touching them would be scope creep with no real benefit.
+
+**Verification:** `cargo check -p servoshell` (broadest scope checked yet for a single patch
+this session, since this touches `components/url`, `components/servo`, `components/script`,
+and `ports/servoshell` together) — see this session's own build log for the result at the
+time this entry was written. **Nothing here has been exercised on a real, linked, running
+binary** — same standing caveat as every other change this session (this machine's own
+unrelated MSVC/ICU link error, see patch 0045's entry). Whoever builds this next should, at
+minimum: launch a bundle built from a template using a client-side history router (e.g.
+`pixi-vn-react-template`'s own TanStack Router) and confirm the app actually renders instead
+of its own "Not Found" page; click through in-app navigation and confirm the URL bar's
+notional path changes without a `SecurityError` in the console; hard-navigate/reload a
+sub-route directly and confirm the SPA-fallback serves the entry HTML instead of a real 404;
+and confirm `localStorage`/`indexedDB` still round-trip correctly under `game://` (same
+manual check `test-page`'s `StorageButton`/`IndexedDbButton` already do under `file://`).

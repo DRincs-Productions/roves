@@ -27,12 +27,9 @@ use std::future::{Future, ready};
 use std::io::{BufReader, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
-use std::sync::Mutex;
 
 use headers::{ContentLength, ContentRange, ContentType, HeaderMapExt, Range};
 use http::Method;
-use roves_content_packer::extract::CONTENT_SOURCE_MARKER;
-use roves_content_packer::manifest::Manifest;
 use servo::protocol_handler::{
     DoneChannel, FetchContext, FILE_CHUNK_SIZE, NetworkError, ProtocolHandler, Request,
     ResourceFetchTiming, Response, ResponseBody, get_range_request_bounds, partial_content,
@@ -40,19 +37,7 @@ use servo::protocol_handler::{
 };
 use tokio::sync::mpsc::unbounded_channel;
 
-struct PackedContent {
-    /// Where `manifest.json` + `.pack` files live (read-only, shipped as-is).
-    content_dir: PathBuf,
-    /// Where boot files were already extracted, and where lazy ones land —
-    /// the directory the initial `file:` URL's path lives in.
-    cache_dir: PathBuf,
-    manifest: Manifest,
-    /// Serializes on-demand extraction: two near-simultaneous loads for
-    /// files in the same not-yet-extracted pack must not both start
-    /// unpacking it at once. Extraction is rare/one-time per pack per
-    /// session, so coarse (one lock for all packs, not per-pack) is fine.
-    extracting: Mutex<()>,
-}
+use super::packed_content::PackedContent;
 
 pub struct FileProtocolHandler {
     /// The directory containing the document Roves was launched with — the effective
@@ -75,55 +60,15 @@ impl FileProtocolHandler {
     /// the stock handler.
     pub fn new(initial_file_path: Option<&Path>) -> Self {
         let initial_dir = initial_file_path.and_then(|p| p.parent()).map(Path::to_path_buf);
-        let packed = initial_dir.as_deref().and_then(Self::resolve_packed_content);
+        let packed = initial_dir.as_deref().and_then(PackedContent::resolve);
         Self { initial_dir, packed }
     }
 
-    fn resolve_packed_content(cache_dir: &Path) -> Option<PackedContent> {
-        let marker = cache_dir.join(CONTENT_SOURCE_MARKER);
-        let content_dir = std::fs::read_to_string(&marker).ok()?;
-        let content_dir = PathBuf::from(content_dir.trim());
-        let manifest = roves_content_packer::extract::load_manifest(&content_dir).ok()?;
-        Some(PackedContent {
-            content_dir,
-            cache_dir: cache_dir.to_path_buf(),
-            manifest,
-            extracting: Mutex::new(()),
-        })
-    }
-
-    /// If `file_path` doesn't exist yet and falls under managed packed
-    /// content, extracts whichever pack contains it — a synchronous,
-    /// blocking call, same as the plain file I/O below it; this only ever
-    /// happens the first time a given pack's contents are touched, including
-    /// across relaunches (see `ensure_pack_extracted`'s own marker file).
+    /// See `PackedContent::ensure_available` — a no-op when this launch has no
+    /// managed packed content at all (a dev `--url` run, or `--content-compress=none`).
     fn ensure_available(&self, file_path: &Path) {
-        let Some(packed) = &self.packed else { return };
-        if file_path.exists() {
-            return;
-        }
-        let Ok(rel) = file_path.strip_prefix(&packed.cache_dir) else {
-            return;
-        };
-        let rel_path = rel
-            .components()
-            .map(|c| c.as_os_str().to_string_lossy().into_owned())
-            .collect::<Vec<_>>()
-            .join("/");
-
-        let _guard = packed.extracting.lock().unwrap();
-        // Re-check now that we hold the lock: another load() may have just
-        // finished extracting the exact pack this path lives in.
-        if file_path.exists() {
-            return;
-        }
-        if let Err(e) = roves_content_packer::extract::ensure_file_available(
-            &packed.content_dir,
-            &packed.cache_dir,
-            &packed.manifest,
-            &rel_path,
-        ) {
-            log::warn!("on-demand extraction of {rel_path:?} failed: {e}");
+        if let Some(packed) = &self.packed {
+            packed.ensure_available(file_path);
         }
     }
 

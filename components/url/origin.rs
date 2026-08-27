@@ -17,6 +17,14 @@ use uuid::Uuid;
 /// like the other opaque-origin constructors in this file.
 const FILE_ORIGIN_ID: Uuid = Uuid::nil();
 
+/// Fixed id shared by every `game://` opaque origin — same reasoning as
+/// `FILE_ORIGIN_ID`, see `ImmutableOrigin::new_opaque_for_game_content`'s doc
+/// comment. Distinct from `FILE_ORIGIN_ID` (a `game://` document and a
+/// `file://` document are never meant to compare as same-origin with each
+/// other, only with themselves) — any fixed, non-nil value works; `1` is
+/// arbitrary.
+const GAME_ORIGIN_ID: Uuid = Uuid::from_u128(1);
+
 /// The origin of an URL
 #[derive(Clone, Debug, Deserialize, Eq, Hash, MallocSizeOf, PartialEq, Serialize)]
 pub enum ImmutableOrigin {
@@ -55,6 +63,9 @@ impl ImmutableOrigin {
         if url.scheme() == "file" {
             return Self::new_opaque_for_file();
         }
+        if url.scheme() == "game" {
+            return Self::new_opaque_for_game_content();
+        }
 
         match url.origin() {
             Origin::Opaque(_) => ImmutableOrigin::new_opaque(),
@@ -76,6 +87,7 @@ impl ImmutableOrigin {
             id: Uuid::new_v4(),
             is_for_data_worker_from_secure_context: false,
             is_file_origin: false,
+            is_game_content_origin: false,
         })
     }
 
@@ -85,6 +97,7 @@ impl ImmutableOrigin {
             id: Uuid::new_v4(),
             is_for_data_worker_from_secure_context: true,
             is_file_origin: false,
+            is_game_content_origin: false,
         })
     }
 
@@ -114,6 +127,26 @@ impl ImmutableOrigin {
             id: FILE_ORIGIN_ID,
             is_for_data_worker_from_secure_context: false,
             is_file_origin: true,
+            is_game_content_origin: false,
+        })
+    }
+
+    /// Same reasoning and same fork-specific carve-out as `new_opaque_for_file` above —
+    /// see that method's doc comment — for `game://`, the virtual-root scheme bundled
+    /// game content is served under instead of a raw `file://` path (see
+    /// `ports/servoshell/desktop/protocols/game.rs` and CUSTOMIZATIONS.md's "Virtual
+    /// content root (game: protocol)" entry). A tuple origin was considered instead of
+    /// reusing this opaque-with-a-fixed-id pattern (unlike `file://`, `game://` URLs do
+    /// have a real, meaningful host component), but would have meant auditing every other
+    /// origin-consuming code path in this engine that currently assumes a tuple origin
+    /// only ever comes from `http(s)`/`ws(s)` — far larger a change than this fork's actual
+    /// need (one first-party trusted local content origin, same as `file://` already is).
+    pub fn new_opaque_for_game_content() -> ImmutableOrigin {
+        ImmutableOrigin::Opaque(OpaqueOrigin {
+            id: GAME_ORIGIN_ID,
+            is_for_data_worker_from_secure_context: false,
+            is_file_origin: false,
+            is_game_content_origin: true,
         })
     }
 
@@ -161,6 +194,16 @@ impl ImmutableOrigin {
         )
     }
 
+    pub fn is_game_content_origin(&self) -> bool {
+        matches!(
+            self,
+            ImmutableOrigin::Opaque(OpaqueOrigin {
+                is_game_content_origin: true,
+                ..
+            })
+        )
+    }
+
     /// Kiosk/embedded fork: whether this origin is allowed to use Storage-Standard
     /// storage (`localStorage`/`sessionStorage`/`indexedDB`) despite `file://` documents
     /// being opaque origins (see `new_opaque_for_file`'s doc comment above).
@@ -181,7 +224,7 @@ impl ImmutableOrigin {
     /// out a `file://` exception, for the same reason): this only lifts the storage
     /// restriction, so everything else stays spec-strict.
     pub fn can_access_storage(&self) -> bool {
-        self.is_tuple() || self.is_file_origin()
+        self.is_tuple() || self.is_file_origin() || self.is_game_content_origin()
     }
 
     pub fn is_for_data_worker_from_secure_context(&self) -> bool {
@@ -204,7 +247,7 @@ impl ImmutableOrigin {
             //
             // They're not tuple origins in our implementation (which is the more correct choice),
             // so we have to return here instead of Step 6.
-            if opaque_origin.is_file_origin {
+            if opaque_origin.is_file_origin || opaque_origin.is_game_content_origin {
                 return true;
             }
             return false;
@@ -260,6 +303,9 @@ pub struct OpaqueOrigin {
     ///
     /// See <https://github.com/whatwg/html/issues/3099>.
     is_file_origin: bool,
+    /// Same idea as `is_file_origin`, for this fork's `game://` virtual-content-root
+    /// scheme — see `ImmutableOrigin::new_opaque_for_game_content`'s doc comment.
+    is_game_content_origin: bool,
 }
 
 malloc_size_of_is_0!(OpaqueOrigin);

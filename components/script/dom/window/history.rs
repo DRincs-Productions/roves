@@ -309,7 +309,19 @@ impl History {
         }
 
         // Step 3. If targetURL's scheme is an HTTP(S) scheme, then return true.
-        if target_url.scheme() == "http" || target_url.scheme() == "https" {
+        //
+        // Kiosk/embedded fork: `game:` (this fork's virtual content-root scheme bundled
+        // game content is served under — see desktop/protocols/game.rs) is treated the
+        // same as HTTP(S) here, not left to fall through to Step 5's stricter
+        // same-path-and-query rule below. `game://` URLs have real host+path structure
+        // exactly like http(s) does (Step 2 above already required host/port/scheme to
+        // match) — unlike `file:`'s Step 4 carve-out, whose "path" is a raw OS path, not
+        // a meaningful route. Without this, a client-side history router's own
+        // `pushState("/about")` call — exactly what this scheme exists to make work at
+        // all, see CUSTOMIZATIONS.md's "Virtual content root (game: protocol)" entry —
+        // would throw `SecurityError` on every in-app navigation.
+        if target_url.scheme() == "http" || target_url.scheme() == "https" || target_url.scheme() == "game"
+        {
             return true;
         }
 
