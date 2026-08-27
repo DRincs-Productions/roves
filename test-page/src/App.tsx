@@ -8,6 +8,7 @@ import GamepadPanel from "./GamepadPanel.tsx";
 import GpuInfoPanel from "./GpuInfoPanel.tsx";
 import IndexedDbButton from "./IndexedDbButton.tsx";
 import PixiPanel from "./PixiPanel.tsx";
+import SavesButton from "./SavesButton.tsx";
 import StorageButton from "./StorageButton.tsx";
 import ThreePanel from "./ThreePanel.tsx";
 import ToneButton from "./ToneButton.tsx";
@@ -43,9 +44,11 @@ type RenderTest = "none" | "pixi" | "three";
  * both now also reporting fps alongside the render check.
  *
  * The rest (GpuInfoPanel, GamepadPanel, FullscreenButton, AudioButton,
- * StorageButton) round out the page into game-platform diagnostics rather
- * than just "does WebGL work": which GPU/renderer string is actually behind
- * WebGL, gamepad input, fullscreen, audio, and save-data persistence.
+ * StorageButton, SavesButton) round out the page into game-platform
+ * diagnostics rather than just "does WebGL work": which GPU/renderer string
+ * is actually behind WebGL, gamepad input, fullscreen, audio, and save-data
+ * persistence — both the browser-native kind (StorageButton/IndexedDbButton)
+ * and Roves' own `saves:` API (SavesButton).
  *
  * DiagnosticsPanel bundles all of the above (plus resolution/memory/fps/UA)
  * into one copy-pasteable JSON report, mirroring the parent project's own
@@ -150,6 +153,7 @@ export default function App() {
         <ToneButton />
         <StorageButton />
         <IndexedDbButton />
+        <SavesButton />
         <ClearCacheButton />
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
           <button type="button" onClick={quitApp}>

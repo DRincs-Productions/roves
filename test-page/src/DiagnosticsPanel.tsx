@@ -1,3 +1,4 @@
+import { saves } from "@drincs/roves-api/saves";
 import { steam } from "@drincs/roves-api/steam";
 import { VERSION as PIXI_VERSION } from "pixi.js";
 import { version as REACT_VERSION } from "react";
@@ -168,11 +169,17 @@ async function probeCapabilities() {
     }
   })();
 
-  // The real `@drincs/roves-api/steam` wrapper — see CUSTOMIZATIONS.md's
-  // "steam: protocol bridge" entry for why this degrades to `false` instead
-  // of throwing when the `steam` Cargo feature wasn't compiled in, or Steam
-  // just isn't running (`steam.isAvailable()` already swallows that itself).
-  const [indexedDbOk, steamAvailable] = await Promise.all([testIndexedDb(), steam.isAvailable()]);
+  // The real `@drincs/roves-api/steam`/`@drincs/roves-api/saves` wrappers —
+  // see CUSTOMIZATIONS.md's "steam: protocol bridge"/"Save-game storage API"
+  // entries for why both degrade to `false` instead of throwing when
+  // unavailable (`isAvailable()` already swallows that itself on each). Only
+  // `isAvailable()` here, not a full round-trip — see SavesButton.tsx for the
+  // real write/read/list/delete check.
+  const [indexedDbOk, steamAvailable, savesAvailable] = await Promise.all([
+    testIndexedDb(),
+    steam.isAvailable(),
+    saves.isAvailable(),
+  ]);
 
   return {
     audio: typeof AudioContext !== "undefined",
@@ -182,6 +189,7 @@ async function probeCapabilities() {
     localStorage: localStorageOk,
     indexedDb: indexedDbOk,
     steamAvailable,
+    savesAvailable,
   };
 }
 
