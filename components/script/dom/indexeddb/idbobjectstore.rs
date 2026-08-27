@@ -322,7 +322,7 @@ impl IDBObjectStore {
         self.key_path.is_some()
     }
 
-    fn verify_not_deleted(&self) -> ErrorResult {
+    pub(crate) fn verify_not_deleted(&self) -> ErrorResult {
         let db = self.transaction.Db();
         if !db.object_store_exists(&self.name.borrow()) {
             return Err(Error::InvalidState(None));
@@ -331,7 +331,7 @@ impl IDBObjectStore {
     }
 
     /// Checks if the transaction is active, throwing a "TransactionInactiveError" DOMException if not.
-    fn check_transaction_active(&self) -> Fallible<()> {
+    pub(crate) fn check_transaction_active(&self) -> Fallible<()> {
         // Let transaction be this object store handle's transaction.
         let transaction = &self.transaction;
 

@@ -34,7 +34,7 @@ use crate::dom::domexception::DOMException;
 use crate::dom::event::{Event, EventBubbles, EventCancelable};
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
-use crate::dom::indexeddb::idbcursor::{IterationParam, iterate_cursor};
+use crate::dom::indexeddb::idbcursor::{IterationParam, ObjectStoreOrIndex, iterate_cursor, records_for_index_cursor};
 use crate::dom::indexeddb::idbcursorwithvalue::IDBCursorWithValue;
 use crate::dom::indexeddb::idbobjectstore::IDBObjectStore;
 use crate::dom::indexeddb::idbtransaction::IDBTransaction;
@@ -215,6 +215,18 @@ impl RequestListener {
                     let param = self.iteration_param.as_ref().expect(
                         "iteration_param must be provided by IDBRequest::execute_async for Iterate",
                     );
+                    // For an index-sourced cursor, `records` came back keyed by the object
+                    // store's own primary key (the storage backend has no concept of
+                    // indexes) -- re-derive each record's real index key client-side before
+                    // handing off to `iterate_cursor`, which already correctly implements
+                    // the index-vs-store iteration rules once records are shaped right. See
+                    // `records_for_index_cursor`'s own doc comment.
+                    let records = match param.cursor.root().source() {
+                        ObjectStoreOrIndex::Index(index) => {
+                            records_for_index_cursor(cx, &global, &index.as_rooted(), records)
+                        },
+                        ObjectStoreOrIndex::ObjectStore(_) => records,
+                    };
                     let cursor = match iterate_cursor(&global, cx, param, records) {
                         Ok(cursor) => cursor,
                         Err(e) => {

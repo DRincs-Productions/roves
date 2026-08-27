@@ -4,15 +4,25 @@
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::gc::MutableHandleValue;
+use js::rust::HandleValue;
 use script_bindings::codegen::GenericBindings::IDBIndexBinding::IDBIndexMethods;
 use script_bindings::conversions::SafeToJSValConvertible;
+use script_bindings::error::Fallible;
 use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
 use script_bindings::str::DOMString;
+use storage_traits::indexeddb::{AsyncOperation, AsyncReadOnlyOperation, IndexedDBKeyRange};
 
-use crate::dom::bindings::root::DomRoot;
+use crate::dom::bindings::codegen::Bindings::IDBCursorBinding::IDBCursorDirection;
+use crate::dom::bindings::refcounted::Trusted;
+use crate::dom::bindings::reflector::DomGlobal;
+use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::idbobjectstore::KeyPath;
+use crate::dom::indexeddb::idbcursor::{IDBCursor, IterationParam, ObjectStoreOrIndex};
+use crate::dom::indexeddb::idbcursorwithvalue::IDBCursorWithValue;
 use crate::dom::indexeddb::idbobjectstore::IDBObjectStore;
+use crate::dom::indexeddb::idbrequest::IDBRequest;
+use crate::indexeddb::convert_value_to_key_range;
 
 #[dom_struct]
 pub(crate) struct IDBIndex {
@@ -63,9 +73,112 @@ impl IDBIndex {
             cx,
         )
     }
+
+    pub(crate) fn key_path(&self) -> &KeyPath {
+        &self.key_path
+    }
+
+    /// <https://www.w3.org/TR/IndexedDB-3/#dom-idbindex-opencursor>
+    /// <https://www.w3.org/TR/IndexedDB-3/#dom-idbindex-openkeycursor>
+    fn open_cursor(
+        &self,
+        cx: &mut JSContext,
+        query: HandleValue,
+        direction: IDBCursorDirection,
+        key_only: bool,
+    ) -> Fallible<DomRoot<IDBRequest>> {
+        // Step 1-2. Let transaction be this index handle's transaction. Let index be this
+        // index handle's index.
+        // Step 3. If index or index's object store has been deleted, throw an
+        // "InvalidStateError" DOMException.
+        self.object_store.verify_not_deleted()?;
+
+        // Step 4. If transaction is not active, throw a "TransactionInactiveError" DOMException.
+        self.object_store.check_transaction_active()?;
+
+        // Step 5. Let range be the result of running the steps to convert a value to a key range
+        // with query. Rethrow any exceptions.
+        let range = convert_value_to_key_range(cx, query, Some(false))?;
+
+        // Step 6. Let cursor be a new cursor ... The source of cursor is this index. The range
+        // of cursor is range.
+        let cursor = if key_only {
+            IDBCursor::new(
+                cx,
+                &self.global(),
+                &self.object_store.transaction(),
+                direction,
+                false,
+                ObjectStoreOrIndex::Index(Dom::from_ref(self)),
+                range.clone(),
+                key_only,
+            )
+        } else {
+            DomRoot::upcast(IDBCursorWithValue::new(
+                cx,
+                &self.global(),
+                &self.object_store.transaction(),
+                direction,
+                false,
+                ObjectStoreOrIndex::Index(Dom::from_ref(self)),
+                range.clone(),
+                key_only,
+            ))
+        };
+
+        // Step 7. Run the steps to asynchronously execute a request ... using the steps to
+        // iterate a cursor as operation.
+        //
+        // The storage backend has no concept of indexes (see idbcursor.rs's
+        // `records_for_index_cursor`, which handles the actual index-key re-derivation once
+        // the response comes back) — this fetches *every* record in the underlying object
+        // store, unfiltered, rather than passing `range` (an index-key range, meaningless to
+        // a backend that only knows primary keys) down as the query. `range` is still on the
+        // cursor itself (above), which is what actually filters — against each record's real
+        // index key, once it's been re-derived client-side.
+        let iteration_param = IterationParam {
+            cursor: Trusted::new(&cursor),
+            key: None,
+            primary_key: None,
+            count: None,
+        };
+
+        IDBRequest::execute_async(
+            cx,
+            &self.object_store,
+            |callback| {
+                AsyncOperation::ReadOnly(AsyncReadOnlyOperation::Iterate {
+                    callback,
+                    key_range: IndexedDBKeyRange::default(),
+                })
+            },
+            None,
+            Some(iteration_param),
+        )
+        .inspect(|request| cursor.set_request(request))
+    }
 }
 
 impl IDBIndexMethods<crate::DomTypeHolder> for IDBIndex {
+    /// <https://www.w3.org/TR/IndexedDB-3/#dom-idbindex-opencursor>
+    fn OpenCursor(
+        &self,
+        cx: &mut JSContext,
+        query: HandleValue,
+        direction: IDBCursorDirection,
+    ) -> Fallible<DomRoot<IDBRequest>> {
+        self.open_cursor(cx, query, direction, false)
+    }
+
+    /// <https://www.w3.org/TR/IndexedDB-3/#dom-idbindex-openkeycursor>
+    fn OpenKeyCursor(
+        &self,
+        cx: &mut JSContext,
+        query: HandleValue,
+        direction: IDBCursorDirection,
+    ) -> Fallible<DomRoot<IDBRequest>> {
+        self.open_cursor(cx, query, direction, true)
+    }
     /// <https://www.w3.org/TR/IndexedDB/#dom-idbindex-objectstore>
     fn ObjectStore(&self) -> DomRoot<IDBObjectStore> {
         self.object_store.clone()

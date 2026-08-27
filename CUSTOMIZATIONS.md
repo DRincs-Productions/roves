@@ -4421,14 +4421,101 @@ History API allows it.
 
 **Verification:** `cargo check -p servoshell` (broadest scope checked yet for a single patch
 this session, since this touches `components/url`, `components/servo`, `components/script`,
-and `ports/servoshell` together) — see this session's own build log for the result at the
-time this entry was written. **Nothing here has been exercised on a real, linked, running
-binary** — same standing caveat as every other change this session (this machine's own
-unrelated MSVC/ICU link error, see patch 0045's entry). Whoever builds this next should, at
-minimum: launch a bundle built from a template using a client-side history router (e.g.
-`pixi-vn-react-template`'s own TanStack Router) and confirm the app actually renders instead
-of its own "Not Found" page; click through in-app navigation and confirm the URL bar's
-notional path changes without a `SecurityError` in the console; hard-navigate/reload a
-sub-route directly and confirm the SPA-fallback serves the entry HTML instead of a real 404;
-and confirm `localStorage`/`indexedDB` still round-trip correctly under `game://` (same
-manual check `test-page`'s `StorageButton`/`IndexedDbButton` already do under `file://`).
+and `ports/servoshell` together) compiled clean. **Confirmed on a real, linked, running
+binary** — shipped as engine v0.4.2, tested via `pixi-vn-react-template` through
+`roves-action`'s "test" release: `resolved launch args: ["game://content/index.html", ...]`
+in `roves.log`, the app actually rendered (main menu, audio, PixiJS assets all loading
+correctly from a remote CDN) instead of TanStack Router's own "Not Found" page — the exact
+symptom this patch targets. Not yet separately confirmed: hard-navigate/reload directly to a
+sub-route (exercises the SPA fallback specifically, not exercised by this particular game's
+own normal flow) — a lower-priority gap than the original bug, since Roves has no address bar
+for a player to type a sub-route URL into in the first place.
+
+---
+
+## 2026-08-27 — `IDBIndex` cursor support (client-side)
+
+**Files:**
+- `components/script_bindings/webidls/IDBIndex.webidl` (uncomments `openCursor`/`openKeyCursor`)
+- `components/script_bindings/codegen/Bindings.conf` (adds both to `IDBIndex`'s `cx` list)
+- `components/script/dom/indexeddb/idbindex.rs` (new `open_cursor`/`OpenCursor`/`OpenKeyCursor`)
+- `components/script/dom/indexeddb/idbcursor.rs` (new `records_for_index_cursor`, `source()`
+  accessor, drops the now-inaccurate `#[expect(unused)]` on `ObjectStoreOrIndex`)
+- `components/script/dom/indexeddb/idbrequest.rs` (calls the above before `iterate_cursor`)
+- `components/script/dom/indexeddb/idbobjectstore.rs` (widens `verify_not_deleted`/
+  `check_transaction_active` to `pub(crate)` so `IDBIndex` can reuse them)
+
+**Patch:** `patches/servo-v0.4.0/0054-idbindex-cursor-support-client-side.patch`
+
+**Why:** discovered via the same real game/build that surfaced the `game:` protocol bug above
+— once that fix let `pixi-vn-react-template` actually render, its narration-history feature
+(`@drincs/pixi-vn`) crashed with `s.index(...).openCursor is not a function`. `IDBIndex.webidl`
+had `openCursor`/`openKeyCursor` (and `get`/`getKey`/`getAll`/`getAllKeys`/`count`/
+`getAllRecords`) commented out — never exposed to JS at all in this Servo version, upstream,
+not something this fork broke. `IDBObjectStore` already has working cursors; `IDBIndex` didn't
+expose any query surface beyond its four basic property getters.
+
+**Why only `openCursor`/`openKeyCursor`, not `get`/`getKey`/`getAll`/`getAllKeys`/`count` too:**
+those were the two methods actually crashing the real game — the others remain commented out
+in the `.webidl`, a known, narrower follow-up gap, not silently forgotten.
+
+**The real complication — the storage backend has no concept of indexes at all:**
+`IDBRequest::execute_async`'s message to the storage thread carries only the *object store's*
+name and a `key_range` (confirmed by reading `components/storage/indexeddb/engines/sqlite.rs`'s
+`Iterate` handler directly — `Self::get_all_records(&connection, object_store, key_range)`, no
+index parameter anywhere). `idbcursor.rs`'s `ObjectStoreOrIndex::Index` variant already existed
+and `iterate_cursor`'s own next/prev/nextunique/prevunique logic was already fully
+spec-compliant for an index source (per its own top-of-function note) — but nothing ever
+*constructed* an index-sourced cursor, so that logic was dead code in practice (hence the
+`#[expect(unused)]` this patch removes) — a Servo-side extension of the cursor DOM model that
+never got connected all the way down to a real backend.
+
+**Two ways to close that gap were considered** (see the session's own design discussion): (1)
+extend the storage protocol/backend to genuinely query by index, or (2) keep the backend
+exactly as-is and re-derive each record's real index key **client-side**, feeding
+`iterate_cursor`'s already-correct logic. **(2) was chosen** — deliberately, not for lack of
+understanding (1)'s design: extending `storage_traits`/the SQLite backend is real
+database-layer work this fork can't verify end-to-end on this machine (no working link), while
+(2) reuses machinery that's already proven correct and keeps the change entirely within
+`components/script`.
+
+**How the client-side re-derivation works** (`records_for_index_cursor`): `IDBIndex::open_cursor`
+sends the *exact same* `Iterate` operation `IDBObjectStore::open_cursor` does, but with an
+**unbounded** key range (`IndexedDBKeyRange::default()`) regardless of what the caller actually
+requested — fetching every record in the underlying object store, unfiltered, since the backend
+has no way to filter by an index key it doesn't know exists. The caller's *real* requested range
+lives on the `IDBCursor` object itself instead (`cursor.range`), used later. Once the raw records
+come back, `idbrequest.rs` checks whether the cursor's source is `Index` and, if so, calls
+`records_for_index_cursor`: for each record, deserializes its stored value, runs the *existing*
+`extract_key` (same key-path-evaluation code `IDBObjectStore::put` already uses when writing)
+against this index's key path, and reshapes the record so `key` = the extracted index key and
+`primary_key` = the original object store key. Records that don't have a valid value at that key
+path are dropped (per spec, such a record was never part of the index). Only *then* does
+`iterate_cursor` run — completely unmodified, its existing index-branch logic (position
+tracking, `nextunique`/`prevunique`, range-in-check against the now-correct index key) just
+works.
+
+**Known, deliberate gap: multi-entry indexes.** `extract_key`'s own `multiEntry` branch is
+`unimplemented!()` — a genuine upstream Servo gap, not something safe to paper over inside this
+patch. A multi-entry index (an array-valued key path meant to expand into one record per
+element) is extracted with `multi_entry: Some(false)` regardless of the index's own flag —
+correct key *type* (arrays are valid IndexedDB keys on their own), but not multi-entry's
+per-element expansion/uniqueness semantics. Every non-multi-entry index (the common case, and
+what actually crashed the real game) is unaffected.
+
+**A genuine codegen mystery, resolved (documented so it isn't re-litigated on the next
+patch):** WebIDL codegen doesn't infer per-method whether a Rust implementation needs `cx:
+&mut JSContext` from the method's own type signature — it's an explicit, manually-maintained
+per-interface allowlist in `Bindings.conf` (`'IDBIndex': {'cx': [...]}`). `IDBObjectStore`'s
+equivalent list already had `OpenCursor`/`OpenKeyCursor`; `IDBIndex`'s never did, since nothing
+had ever implemented them there before. Uncommenting the `.webidl` alone produces a working
+*compile* with a 3-parameter trait method (no `cx`) — an easy trap, since the resulting error
+(`E0050`, wrong parameter count) doesn't point at `Bindings.conf` at all.
+
+**Verification:** `cargo check -p servoshell` compiled clean, zero new warnings. **Not yet
+exercised on a real, linked, running binary** — this fix landed after the `game:` protocol fix
+was already confirmed working via a real build (see that entry above), but this specific
+follow-up crash hasn't had its own round-trip test yet. Whoever builds this next should verify
+`pixi-vn-react-template`'s narration-history feature (or any other `IDBIndex.openCursor()`/
+`openKeyCursor()` caller) no longer crashes, and that iteration order/results are correct for a
+non-multi-entry index (the multi-entry case is a known, accepted gap — see above).

@@ -26,10 +26,9 @@ use crate::dom::indexeddb::idbindex::IDBIndex;
 use crate::dom::indexeddb::idbobjectstore::IDBObjectStore;
 use crate::dom::indexeddb::idbrequest::IDBRequest;
 use crate::dom::indexeddb::idbtransaction::IDBTransaction;
-use crate::indexeddb::key_type_to_jsval;
+use crate::indexeddb::{ExtractionResult, extract_key, key_type_to_jsval};
 
 #[derive(JSTraceable, MallocSizeOf)]
-#[expect(unused)]
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 pub(crate) enum ObjectStoreOrIndex {
     ObjectStore(Dom<IDBObjectStore>),
@@ -157,6 +156,10 @@ impl IDBCursor {
 
     pub(crate) fn set_request(&self, request: &IDBRequest) {
         self.request.set(Some(request));
+    }
+
+    pub(crate) fn source(&self) -> &ObjectStoreOrIndex {
+        &self.source
     }
 
     pub(crate) fn value(&self, mut out: MutableHandleValue) {
@@ -549,4 +552,49 @@ pub(crate) fn iterate_cursor(
 
     // Step 15. Return cursor.
     Ok(Some(cursor))
+}
+
+/// For an index-sourced cursor, the storage backend has no concept of indexes (see
+/// CUSTOMIZATIONS.md's "IDBIndex cursor support (client-side)" entry) — `records` come
+/// back keyed by the *object store's own* primary key for every record, unfiltered. This
+/// re-derives each record's real index key from its own stored value using the index's
+/// key path, client-side, reshaping into what `iterate_cursor` above already correctly
+/// expects for an index source (`record.key` = index key, `record.primary_key` = object
+/// store primary key) — it just needed records shaped this way; the actual next/prev/
+/// unique iteration logic above was already fully spec-compliant for both sources.
+///
+/// A record whose key path doesn't resolve to a valid key (per spec, the extraction
+/// steps returning "invalid" or "failure") isn't part of the index at all and is
+/// dropped, matching how the index would never have contained it in a real backend.
+///
+/// Multi-entry indexes (an array-valued key path expanding to one record per element)
+/// are a known, narrower gap: `extract_key`'s own `multiEntry` branch is unimplemented
+/// upstream (`unimplemented!()`), not something this patch could safely paper over, so a
+/// multi-entry index's array key path is extracted as a single literal array key instead
+/// of expanding per-element — correct key *type* (arrays are valid IndexedDB keys), just
+/// not multi-entry's per-element semantics. Every non-multi-entry index (the common case)
+/// is unaffected.
+pub(crate) fn records_for_index_cursor(
+    cx: &mut JSContext,
+    global: &GlobalScope,
+    index: &IDBIndex,
+    records: Vec<IndexedDBRecord>,
+) -> Vec<IndexedDBRecord> {
+    let key_path = index.key_path();
+    records
+        .into_iter()
+        .filter_map(|record| {
+            rooted!(&in(cx) let mut value = UndefinedValue());
+            let data = postcard::from_bytes(&record.value).ok()?;
+            structuredclone::read(cx, global, data, value.handle_mut()).ok()?;
+            match extract_key(cx, value.handle(), key_path, Some(false)).ok()? {
+                ExtractionResult::Key(key) => Some(IndexedDBRecord {
+                    key,
+                    primary_key: record.key,
+                    value: record.value,
+                }),
+                ExtractionResult::Invalid | ExtractionResult::Failure => None,
+            }
+        })
+        .collect()
 }

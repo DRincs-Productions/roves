@@ -1,0 +1,304 @@
+diff --git a/components/script/dom/indexeddb/idbcursor.rs b/components/script/dom/indexeddb/idbcursor.rs
+index aa124de..1fcc415 100644
+--- a/components/script/dom/indexeddb/idbcursor.rs
++++ b/components/script/dom/indexeddb/idbcursor.rs
+@@ -26,10 +26,9 @@ use crate::dom::indexeddb::idbindex::IDBIndex;
+ use crate::dom::indexeddb::idbobjectstore::IDBObjectStore;
+ use crate::dom::indexeddb::idbrequest::IDBRequest;
+ use crate::dom::indexeddb::idbtransaction::IDBTransaction;
+-use crate::indexeddb::key_type_to_jsval;
++use crate::indexeddb::{ExtractionResult, extract_key, key_type_to_jsval};
+ 
+ #[derive(JSTraceable, MallocSizeOf)]
+-#[expect(unused)]
+ #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
+ pub(crate) enum ObjectStoreOrIndex {
+     ObjectStore(Dom<IDBObjectStore>),
+@@ -159,6 +158,10 @@ impl IDBCursor {
+         self.request.set(Some(request));
+     }
+ 
++    pub(crate) fn source(&self) -> &ObjectStoreOrIndex {
++        &self.source
++    }
++
+     pub(crate) fn value(&self, mut out: MutableHandleValue) {
+         out.set(self.value.get());
+     }
+@@ -550,3 +553,48 @@ pub(crate) fn iterate_cursor(
+     // Step 15. Return cursor.
+     Ok(Some(cursor))
+ }
++
++/// For an index-sourced cursor, the storage backend has no concept of indexes (see
++/// CUSTOMIZATIONS.md's "IDBIndex cursor support (client-side)" entry) — `records` come
++/// back keyed by the *object store's own* primary key for every record, unfiltered. This
++/// re-derives each record's real index key from its own stored value using the index's
++/// key path, client-side, reshaping into what `iterate_cursor` above already correctly
++/// expects for an index source (`record.key` = index key, `record.primary_key` = object
++/// store primary key) — it just needed records shaped this way; the actual next/prev/
++/// unique iteration logic above was already fully spec-compliant for both sources.
++///
++/// A record whose key path doesn't resolve to a valid key (per spec, the extraction
++/// steps returning "invalid" or "failure") isn't part of the index at all and is
++/// dropped, matching how the index would never have contained it in a real backend.
++///
++/// Multi-entry indexes (an array-valued key path expanding to one record per element)
++/// are a known, narrower gap: `extract_key`'s own `multiEntry` branch is unimplemented
++/// upstream (`unimplemented!()`), not something this patch could safely paper over, so a
++/// multi-entry index's array key path is extracted as a single literal array key instead
++/// of expanding per-element — correct key *type* (arrays are valid IndexedDB keys), just
++/// not multi-entry's per-element semantics. Every non-multi-entry index (the common case)
++/// is unaffected.
++pub(crate) fn records_for_index_cursor(
++    cx: &mut JSContext,
++    global: &GlobalScope,
++    index: &IDBIndex,
++    records: Vec<IndexedDBRecord>,
++) -> Vec<IndexedDBRecord> {
++    let key_path = index.key_path();
++    records
++        .into_iter()
++        .filter_map(|record| {
++            rooted!(&in(cx) let mut value = UndefinedValue());
++            let data = postcard::from_bytes(&record.value).ok()?;
++            structuredclone::read(cx, global, data, value.handle_mut()).ok()?;
++            match extract_key(cx, value.handle(), key_path, Some(false)).ok()? {
++                ExtractionResult::Key(key) => Some(IndexedDBRecord {
++                    key,
++                    primary_key: record.key,
++                    value: record.value,
++                }),
++                ExtractionResult::Invalid | ExtractionResult::Failure => None,
++            }
++        })
++        .collect()
++}
+diff --git a/components/script/dom/indexeddb/idbindex.rs b/components/script/dom/indexeddb/idbindex.rs
+index dc5073c..c2fccfe 100644
+--- a/components/script/dom/indexeddb/idbindex.rs
++++ b/components/script/dom/indexeddb/idbindex.rs
+@@ -4,15 +4,25 @@
+ use dom_struct::dom_struct;
+ use js::context::JSContext;
+ use js::gc::MutableHandleValue;
++use js::rust::HandleValue;
+ use script_bindings::codegen::GenericBindings::IDBIndexBinding::IDBIndexMethods;
+ use script_bindings::conversions::SafeToJSValConvertible;
++use script_bindings::error::Fallible;
+ use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
+ use script_bindings::str::DOMString;
++use storage_traits::indexeddb::{AsyncOperation, AsyncReadOnlyOperation, IndexedDBKeyRange};
+ 
+-use crate::dom::bindings::root::DomRoot;
++use crate::dom::bindings::codegen::Bindings::IDBCursorBinding::IDBCursorDirection;
++use crate::dom::bindings::refcounted::Trusted;
++use crate::dom::bindings::reflector::DomGlobal;
++use crate::dom::bindings::root::{Dom, DomRoot};
+ use crate::dom::globalscope::GlobalScope;
+ use crate::dom::idbobjectstore::KeyPath;
++use crate::dom::indexeddb::idbcursor::{IDBCursor, IterationParam, ObjectStoreOrIndex};
++use crate::dom::indexeddb::idbcursorwithvalue::IDBCursorWithValue;
+ use crate::dom::indexeddb::idbobjectstore::IDBObjectStore;
++use crate::dom::indexeddb::idbrequest::IDBRequest;
++use crate::indexeddb::convert_value_to_key_range;
+ 
+ #[dom_struct]
+ pub(crate) struct IDBIndex {
+@@ -63,9 +73,112 @@ impl IDBIndex {
+             cx,
+         )
+     }
++
++    pub(crate) fn key_path(&self) -> &KeyPath {
++        &self.key_path
++    }
++
++    /// <https://www.w3.org/TR/IndexedDB-3/#dom-idbindex-opencursor>
++    /// <https://www.w3.org/TR/IndexedDB-3/#dom-idbindex-openkeycursor>
++    fn open_cursor(
++        &self,
++        cx: &mut JSContext,
++        query: HandleValue,
++        direction: IDBCursorDirection,
++        key_only: bool,
++    ) -> Fallible<DomRoot<IDBRequest>> {
++        // Step 1-2. Let transaction be this index handle's transaction. Let index be this
++        // index handle's index.
++        // Step 3. If index or index's object store has been deleted, throw an
++        // "InvalidStateError" DOMException.
++        self.object_store.verify_not_deleted()?;
++
++        // Step 4. If transaction is not active, throw a "TransactionInactiveError" DOMException.
++        self.object_store.check_transaction_active()?;
++
++        // Step 5. Let range be the result of running the steps to convert a value to a key range
++        // with query. Rethrow any exceptions.
++        let range = convert_value_to_key_range(cx, query, Some(false))?;
++
++        // Step 6. Let cursor be a new cursor ... The source of cursor is this index. The range
++        // of cursor is range.
++        let cursor = if key_only {
++            IDBCursor::new(
++                cx,
++                &self.global(),
++                &self.object_store.transaction(),
++                direction,
++                false,
++                ObjectStoreOrIndex::Index(Dom::from_ref(self)),
++                range.clone(),
++                key_only,
++            )
++        } else {
++            DomRoot::upcast(IDBCursorWithValue::new(
++                cx,
++                &self.global(),
++                &self.object_store.transaction(),
++                direction,
++                false,
++                ObjectStoreOrIndex::Index(Dom::from_ref(self)),
++                range.clone(),
++                key_only,
++            ))
++        };
++
++        // Step 7. Run the steps to asynchronously execute a request ... using the steps to
++        // iterate a cursor as operation.
++        //
++        // The storage backend has no concept of indexes (see idbcursor.rs's
++        // `records_for_index_cursor`, which handles the actual index-key re-derivation once
++        // the response comes back) — this fetches *every* record in the underlying object
++        // store, unfiltered, rather than passing `range` (an index-key range, meaningless to
++        // a backend that only knows primary keys) down as the query. `range` is still on the
++        // cursor itself (above), which is what actually filters — against each record's real
++        // index key, once it's been re-derived client-side.
++        let iteration_param = IterationParam {
++            cursor: Trusted::new(&cursor),
++            key: None,
++            primary_key: None,
++            count: None,
++        };
++
++        IDBRequest::execute_async(
++            cx,
++            &self.object_store,
++            |callback| {
++                AsyncOperation::ReadOnly(AsyncReadOnlyOperation::Iterate {
++                    callback,
++                    key_range: IndexedDBKeyRange::default(),
++                })
++            },
++            None,
++            Some(iteration_param),
++        )
++        .inspect(|request| cursor.set_request(request))
++    }
+ }
+ 
+ impl IDBIndexMethods<crate::DomTypeHolder> for IDBIndex {
++    /// <https://www.w3.org/TR/IndexedDB-3/#dom-idbindex-opencursor>
++    fn OpenCursor(
++        &self,
++        cx: &mut JSContext,
++        query: HandleValue,
++        direction: IDBCursorDirection,
++    ) -> Fallible<DomRoot<IDBRequest>> {
++        self.open_cursor(cx, query, direction, false)
++    }
++
++    /// <https://www.w3.org/TR/IndexedDB-3/#dom-idbindex-openkeycursor>
++    fn OpenKeyCursor(
++        &self,
++        cx: &mut JSContext,
++        query: HandleValue,
++        direction: IDBCursorDirection,
++    ) -> Fallible<DomRoot<IDBRequest>> {
++        self.open_cursor(cx, query, direction, true)
++    }
+     /// <https://www.w3.org/TR/IndexedDB/#dom-idbindex-objectstore>
+     fn ObjectStore(&self) -> DomRoot<IDBObjectStore> {
+         self.object_store.clone()
+diff --git a/components/script/dom/indexeddb/idbobjectstore.rs b/components/script/dom/indexeddb/idbobjectstore.rs
+index cdbb82e..37d38b1 100644
+--- a/components/script/dom/indexeddb/idbobjectstore.rs
++++ b/components/script/dom/indexeddb/idbobjectstore.rs
+@@ -322,7 +322,7 @@ impl IDBObjectStore {
+         self.key_path.is_some()
+     }
+ 
+-    fn verify_not_deleted(&self) -> ErrorResult {
++    pub(crate) fn verify_not_deleted(&self) -> ErrorResult {
+         let db = self.transaction.Db();
+         if !db.object_store_exists(&self.name.borrow()) {
+             return Err(Error::InvalidState(None));
+@@ -331,7 +331,7 @@ impl IDBObjectStore {
+     }
+ 
+     /// Checks if the transaction is active, throwing a "TransactionInactiveError" DOMException if not.
+-    fn check_transaction_active(&self) -> Fallible<()> {
++    pub(crate) fn check_transaction_active(&self) -> Fallible<()> {
+         // Let transaction be this object store handle's transaction.
+         let transaction = &self.transaction;
+ 
+diff --git a/components/script/dom/indexeddb/idbrequest.rs b/components/script/dom/indexeddb/idbrequest.rs
+index 7882332..ffcabe3 100644
+--- a/components/script/dom/indexeddb/idbrequest.rs
++++ b/components/script/dom/indexeddb/idbrequest.rs
+@@ -34,7 +34,7 @@ use crate::dom::domexception::DOMException;
+ use crate::dom::event::{Event, EventBubbles, EventCancelable};
+ use crate::dom::eventtarget::EventTarget;
+ use crate::dom::globalscope::GlobalScope;
+-use crate::dom::indexeddb::idbcursor::{IterationParam, iterate_cursor};
++use crate::dom::indexeddb::idbcursor::{IterationParam, ObjectStoreOrIndex, iterate_cursor, records_for_index_cursor};
+ use crate::dom::indexeddb::idbcursorwithvalue::IDBCursorWithValue;
+ use crate::dom::indexeddb::idbobjectstore::IDBObjectStore;
+ use crate::dom::indexeddb::idbtransaction::IDBTransaction;
+@@ -215,6 +215,18 @@ impl RequestListener {
+                     let param = self.iteration_param.as_ref().expect(
+                         "iteration_param must be provided by IDBRequest::execute_async for Iterate",
+                     );
++                    // For an index-sourced cursor, `records` came back keyed by the object
++                    // store's own primary key (the storage backend has no concept of
++                    // indexes) -- re-derive each record's real index key client-side before
++                    // handing off to `iterate_cursor`, which already correctly implements
++                    // the index-vs-store iteration rules once records are shaped right. See
++                    // `records_for_index_cursor`'s own doc comment.
++                    let records = match param.cursor.root().source() {
++                        ObjectStoreOrIndex::Index(index) => {
++                            records_for_index_cursor(cx, &global, &index.as_rooted(), records)
++                        },
++                        ObjectStoreOrIndex::ObjectStore(_) => records,
++                    };
+                     let cursor = match iterate_cursor(&global, cx, param, records) {
+                         Ok(cursor) => cursor,
+                         Err(e) => {
+diff --git a/components/script_bindings/codegen/Bindings.conf b/components/script_bindings/codegen/Bindings.conf
+index 02daaf2..3337579 100644
+--- a/components/script_bindings/codegen/Bindings.conf
++++ b/components/script_bindings/codegen/Bindings.conf
+@@ -896,7 +896,7 @@ DOMInterfaces = {
+ },
+ 
+ 'IDBIndex': {
+-    'cx': ['KeyPath'],
++    'cx': ['KeyPath', 'OpenCursor', 'OpenKeyCursor'],
+ },
+ 
+ 'IDBKeyRange': {
+diff --git a/components/script_bindings/webidls/IDBIndex.webidl b/components/script_bindings/webidls/IDBIndex.webidl
+index 834bd0a..7c5f3fa 100644
+--- a/components/script_bindings/webidls/IDBIndex.webidl
++++ b/components/script_bindings/webidls/IDBIndex.webidl
+@@ -24,8 +24,8 @@ interface IDBIndex {
+   // [NewObject] IDBRequest getAllRecords(optional IDBGetAllOptions options = {});
+   // [NewObject] IDBRequest count(optional any query);
+ 
+-  // [NewObject] IDBRequest openCursor(optional any query,
+-  //                                   optional IDBCursorDirection direction = "next");
+-  // [NewObject] IDBRequest openKeyCursor(optional any query,
+-  //                                      optional IDBCursorDirection direction = "next");
++  [NewObject, Throws] IDBRequest openCursor(optional any query,
++                                             optional IDBCursorDirection direction = "next");
++  [NewObject, Throws] IDBRequest openKeyCursor(optional any query,
++                                                optional IDBCursorDirection direction = "next");
+ };
