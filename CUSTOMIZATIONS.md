@@ -4172,3 +4172,78 @@ actually downloading and successfully patching a real `play.exe`'s icon (this ma
 never invoked `rcedit` at all); the `.desktop` entry's new `Icon=` line actually showing the
 right icon in a real Linux app launcher. Whoever builds this next should verify all of the
 above against a real game, on Windows and Linux at minimum.
+
+---
+
+## 2026-08-27 — Fix: `blob:` Worker scripts still blocked as mixed content after patch 0048
+
+**File:** `components/net/fetch/methods.rs`, `should_request_be_blocked_as_mixed_content`,
+`should_response_be_blocked_as_mixed_content` (new helper `is_request_url_potentially_
+trustworthy` added alongside them).
+
+**Patch:** `patches/servo-v0.4.0/0050-fix-blob-worker-mixed-content-false-block.patch`
+
+**This is a follow-up to patch 0048, which did not actually fix the problem it targeted.**
+0048's own "Verification" section flagged this explicitly: it wasn't re-tested against the
+real failing build. A fresh `roves.log` from that same `pixi-vn-react-template` build (now
+running the released engine v0.4.0, with 0048 in it) showed the *identical* `error loading
+script blob:null/... (Blocked as mixed content)` lines, at two different Worker scripts, in
+the same place the loading screen hangs — proving `FileProtocolHandler::is_secure()`/
+`is_fetchable()` alone didn't resolve it.
+
+**Root cause (the actual one):** mixed-content blocking runs in two steps —
+`do_settings_prohibit_mixed_security_contexts` first asks "is the *requesting* origin (the
+page that spawned the Worker) itself potentially trustworthy?", and only if yes does it go
+on to check "is the *target* URL (the Worker's own script URL) also potentially
+trustworthy?". Patch 0045 (`ImmutableOrigin::new_opaque_for_file`) already made this fork's
+`file://` origin answer "yes" to the first question — correctly, that's the whole point of
+that patch. But that flips mixed-content checking **on** for `file://` pages for the first
+time (before 0045, `file://` was never trustworthy, so `do_settings_prohibit_mixed_security_
+contexts` always short-circuited to "not prohibited" and this second check never ran at
+all — which is why nobody had hit this before). The second question is answered by
+`is_url_potentially_trustworthy`, which for a `blob:` URL falls through to
+`ImmutableOrigin::new`/`url::Url::origin()` — a *generic*, text-based re-derivation that
+cannot recover an opaque creator origin, because opaque origins serialize to the literal
+string `"null"` (visible directly in the failing log: `blob:null/<uuid>`) and re-parsing
+`"null"` as a URL always fails, falling back to a brand-new, unrelated (and therefore
+untrustworthy) opaque origin. So *any* Worker spawned via a `blob:` URL from this fork's
+`file://` page fails the second check even though the page itself passed the first — a
+real, pre-existing Servo-wide gap in `is_url_potentially_trustworthy` that stayed invisible
+until 0045 made an opaque origin trustworthy for the first time. (Bundlers like Vite/webpack
+ship Web/module workers as `new Worker(URL.createObjectURL(workerScriptBlob))`, so this
+class of app hits it directly.)
+
+**Change:** added `is_request_url_potentially_trustworthy(request, protocol_registry)`,
+used in place of the raw `is_url_potentially_trustworthy(protocol_registry,
+&request.current_url())` call in both functions above. For a `blob:` URL specifically, it
+consults `request.current_url_with_blob_claim().origin()` instead — the same real, tracked
+creator-origin lookup (`BlobToken::origin`, set from `BlobResolver::origin` at the point the
+blob was claimed, see `components/shared/net/blob_url_store.rs`) that `BlobProtocolHander`
+itself already relies on to authorize the fetch in the first place. Every other scheme's
+behavior is completely unchanged — this only replaces the *derivation* of a blob: URL's
+origin with the one the engine already tracks correctly elsewhere, it doesn't change how
+trustworthiness is decided once an origin is known.
+
+**Why not fix `is_url_potentially_trustworthy` itself:** that function only takes a raw
+`&ServoUrl`, with no access to the owning `Request` (and therefore no way to reach its blob
+claim/token) — widening its signature would touch every one of its several other call sites
+in this file for no benefit, since none of the others deal with `blob:` requests carrying a
+live claim. Scoping the fix to a new, blob-aware wrapper used only at the two call sites that
+actually gate `NetworkError::MixedContent` is the smaller, more targeted change.
+
+**`should_upgrade_mixed_content_request` was deliberately left untouched:** it has the same
+theoretical blob: false-positive, but its only effect is scheme-swapping `http`→`https` or
+`ws`→`wss` on the request; for a `blob:` scheme this swap is already a no-op (see the match
+arm's `_ => None`), so a wrong "should upgrade" verdict there causes no observable behavior
+change. Not worth the risk of touching a third call site for zero effect.
+
+**Verification:** `cargo check -p servo-net` (this machine's usual environment gap — MSVC
+`vcvars64.bat` + `LLVM\bin` on `PATH` for `lld-link.exe` — plus a *new* one hit for the first
+time on this exact crate: `stylo`'s own `build.rs` shells out to a `python.exe` on `PATH`,
+which resolves to the non-functional Windows Store alias by default; fixed for this check by
+also prepending this repo's own `.venv\Scripts` on `PATH`, which has a real interpreter)
+compiled clean, zero warnings, in isolation. **Not yet re-tested against the actual failing
+game/build** — same caveat 0048's own entry carried, now doubly important since 0048 alone
+was already shown, by real testing, not to be sufficient. Whoever builds this next should
+re-run `pixi-vn-react-template`'s bundle and confirm both that the loading screen now reaches
+the main menu *and* that `roves.log` has no more "Blocked as mixed content" lines at all.

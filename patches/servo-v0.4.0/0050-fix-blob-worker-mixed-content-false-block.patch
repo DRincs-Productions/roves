@@ -1,0 +1,68 @@
+diff --git a/components/net/fetch/methods.rs b/components/net/fetch/methods.rs
+index 1994ee6..12744ab 100644
+--- a/components/net/fetch/methods.rs
++++ b/components/net/fetch/methods.rs
+@@ -1213,6 +1213,30 @@ pub fn should_request_be_blocked_due_to_a_bad_port(url: &ServoUrl) -> bool {
+     false
+ }
+ 
++/// Roves fork: a `blob:` URL can't recover its creator's origin by re-parsing the URL
++/// text — opaque origins (including this fork's own `file://` origin, see
++/// `ImmutableOrigin::new_opaque_for_file`) serialize as the literal string `"null"`, so
++/// `parse_blob_url`'s own text-based fallback always yields a *fresh*, unrelated opaque
++/// origin for a blob created by an opaque origin (see that function's own FIXME about not
++/// considering "blob URL entries"). That's harmless as long as mixed-content checking
++/// never engages for a non-trustworthy creating origin in the first place — which is why
++/// this went unnoticed before `file://` origins were made potentially-trustworthy — but
++/// once the creating origin genuinely is trustworthy, this check needs the blob's real,
++/// tracked creator origin (`UrlWithBlobClaim::origin`, the exact lookup `BlobProtocolHander`
++/// already uses to authorize the fetch itself), not a re-derived one. Without this, every
++/// `blob:` Worker script this engine spawns (how bundlers like Vite/webpack ship Web
++/// Workers) is wrongly blocked as mixed content.
++fn is_request_url_potentially_trustworthy(
++    request: &Request,
++    protocol_registry: &ProtocolRegistry,
++) -> bool {
++    let url_with_blob_claim = request.current_url_with_blob_claim();
++    if url_with_blob_claim.url().scheme() == "blob" {
++        return url_with_blob_claim.origin().is_potentially_trustworthy();
++    }
++    is_url_potentially_trustworthy(protocol_registry, &url_with_blob_claim.url())
++}
++
+ /// <https://w3c.github.io/webappsec-mixed-content/#should-block-fetch>
+ pub fn should_request_be_blocked_as_mixed_content(
+     request: &Request,
+@@ -1228,7 +1252,7 @@ pub fn should_request_be_blocked_as_mixed_content(
+     }
+ 
+     // 1.2. request’s URL is a potentially trustworthy URL.
+-    if is_url_potentially_trustworthy(protocol_registry, &request.current_url()) {
++    if is_request_url_potentially_trustworthy(request, protocol_registry) {
+         return false;
+     }
+ 
+@@ -1260,11 +1284,18 @@ pub fn should_response_be_blocked_as_mixed_content(
+     }
+ 
+     // 1.2. response’s url is a potentially trustworthy URL.
+-    if response
+-        .actual_response()
+-        .url()
+-        .is_some_and(|response_url| is_url_potentially_trustworthy(protocol_registry, response_url))
+-    {
++    // Roves fork: for a `blob:` response, `response.url()` is just the request's own
++    // blob: URL echoed back — reuse the same blob-claim-aware check as the request side
++    // (see `is_request_url_potentially_trustworthy`'s doc comment) instead of naively
++    // re-deriving an origin from the URL text, which always fails for an opaque creator.
++    let response_url_is_trustworthy = response.actual_response().url().is_some_and(|response_url| {
++        if response_url.scheme() == "blob" {
++            is_request_url_potentially_trustworthy(request, protocol_registry)
++        } else {
++            is_url_potentially_trustworthy(protocol_registry, response_url)
++        }
++    });
++    if response_url_is_trustworthy {
+         return false;
+     }
+ 
