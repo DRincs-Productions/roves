@@ -1,0 +1,19 @@
+diff --git a/python/servo/post_build_commands.py b/python/servo/post_build_commands.py
+index 147537f..18d0b31 100644
+--- a/python/servo/post_build_commands.py
++++ b/python/servo/post_build_commands.py
+@@ -843,6 +843,14 @@ class PostBuildCommands(CommandBase):
+             candidate = path.join(content_dir, "icon.ico")
+             if path.isfile(candidate):
+                 icon_ico = candidate
++            else:
++                # icon.ico is rare -- favicon.ico is what virtually every bundler actually
++                # emits (confirmed: pixi-vn-react-template has this, not icon.ico), and is
++                # itself already a valid multi-size .ico rcedit can patch in directly, so
++                # it's worth trying before giving up and keeping Roves' own default icon.
++                candidate = path.join(content_dir, "favicon.ico")
++                if path.isfile(candidate):
++                    icon_ico = candidate
+ 
+         if icon_ico and not is_windows():
+             print("--icon-ico only has an effect on Windows -- ignoring.")

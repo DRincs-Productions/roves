@@ -4277,3 +4277,38 @@ invocation attempted, same linker-gap caveat as every other Python-side change t
 (see patch 0045's entry). Whoever builds this next should verify a `--content-dir` containing
 an `icon.png` (no explicit `--icon-png`) actually produces a bundle with that icon, on
 Windows and Linux at minimum, and that an explicit `--icon-png` still overrides it.
+
+---
+
+## 2026-08-27 — Icon auto-detect: fall back to `favicon.ico` when `icon.ico` is absent
+
+**File:** `python/servo/post_build_commands.py`, `bundle()` (extends the previous entry's
+auto-detect block).
+
+**Patch:** `patches/servo-v0.4.0/0052-icon-ico-fallback-to-favicon-ico.patch`
+
+**Why:** confirmed via a real game (`pixi-vn-react-template`, through `roves-action`'s "test"
+release): its `dist/icon.png` was correctly auto-detected (verified present in the actual
+downloaded bundle, right next to `play.exe`), but its `.exe` file's own icon stayed Roves'
+default — because that template's `public/` has `favicon.ico`, not `icon.ico`, and the
+previous entry's auto-detect only ever looked for the latter. `favicon.ico` is what virtually
+every bundler actually emits by default (Vite's own starter templates included); `icon.ico`
+specifically is comparatively rare. Since `favicon.ico` is already a real, valid (often
+multi-size) `.ico` file, there's no format reason not to let `rcedit` patch it in directly.
+
+**Change:** if `icon.ico` isn't found in `--content-dir` (and no explicit `--icon-ico` was
+given), also try `favicon.ico` there before falling back to Roves' own branding. Same-name
+`icon.png`/`icon.ico` detection (previous entry) still tried first — this is one more
+fallback step, not a replacement.
+
+**Same change made identically in `roves-ui`** (`src-tauri/src/bundle.rs`'s `apply_icon`) —
+both sides must keep mirroring `mach bundle`'s icon behavior, same as every other entry in
+this icon feature's history.
+
+**Verification:** syntax-checked (`ast.parse`, via WSL Python) and patch-applies-cleanly
+verified against the post-0051 committed tree. **Not run** — no real `mach bundle`
+invocation attempted, same linker-gap caveat as every other Python-side change this session.
+`roves-ui`'s Rust side compiled clean (`cargo check`, only the same pre-existing unrelated
+`selected` dead-code warning). Whoever builds this next should verify a `--content-dir`
+containing only a `favicon.ico` (no `icon.ico`) actually patches the bundled `play.exe`'s
+icon resource.
