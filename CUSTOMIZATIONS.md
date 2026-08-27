@@ -4247,3 +4247,33 @@ game/build** — same caveat 0048's own entry carried, now doubly important sinc
 was already shown, by real testing, not to be sufficient. Whoever builds this next should
 re-run `pixi-vn-react-template`'s bundle and confirm both that the loading screen now reaches
 the main menu *and* that `roves.log` has no more "Blocked as mixed content" lines at all.
+
+---
+
+## 2026-08-27 — Auto-detect `icon.png`/`icon.ico` in `--content-dir` when neither icon flag is given
+
+**File:** `python/servo/post_build_commands.py`, `bundle()`.
+
+**Patch:** `patches/servo-v0.4.0/0051-icon-auto-detect-from-content-dir.patch`
+
+**Change:** before `bundle()`'s existing `--icon-png`/`--icon-ico` handling (patch 0049) runs,
+if neither flag was passed and `--content-dir` was, look for `icon.png`/`icon.ico` sitting
+directly in that content directory and use it as the default. An explicitly passed
+`--icon-png`/`--icon-ico` still always wins — this only fills in when neither was given.
+
+**Why:** many web bundlers (confirmed: `pixi-vn-react-template`'s own `dist/`) already emit
+an `icon.png` at the content root for their own PWA manifest. Without this, a game with one
+still shipped with Roves' own default branding unless the game dev *also* remembered to pass
+`--icon-png` pointing at the exact same file — redundant, easy to forget, and silently wrong
+by default even though the right image was sitting right there the whole time.
+
+**Same change made identically in `roves-ui`** (`src-tauri/src/bundle.rs`'s `apply_icon`) —
+see that project's own commit/CLAUDE.md; both sides mirror `mach bundle`'s icon behavior on
+purpose (see patch 0049's own entry), so this default had to land in both to stay consistent.
+
+**Verification:** syntax-checked (`ast.parse`, via WSL Python) and patch-applies-cleanly
+verified against the post-0050 committed tree. **Not run** — no real `mach bundle`
+invocation attempted, same linker-gap caveat as every other Python-side change this session
+(see patch 0045's entry). Whoever builds this next should verify a `--content-dir` containing
+an `icon.png` (no explicit `--icon-png`) actually produces a bundle with that icon, on
+Windows and Linux at minimum, and that an explicit `--icon-png` still overrides it.

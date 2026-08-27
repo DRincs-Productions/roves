@@ -39,6 +39,19 @@ actual repository root. Today `servo/` is just a gitignored subfolder of the par
 not its own pushed repository — so this workflow is dormant until `servo/` is pushed as a
 real top-level GitHub repo. See the note at the top of that file.
 
+**Watch out: the `v0.4.0` git tag no longer points at the pristine Servo import.** The very
+first commit in this history (message `v0.4.0`, hash starting `dd340af`) is the true,
+unmodified baseline every patch is meant to be diffed against — but the *tag* `v0.4.0` was
+later reused for this project's own 4th versioned engine release (see "Cutting a versioned
+release" below), a pure version-number coincidence between Servo's baseline and this repo's
+independent release numbering, and now points at whatever commit that release was cut from
+instead. `git diff v0.4.0 -- <file>` therefore silently gives a **wrong** (too-small) diff
+for any file touched by an earlier patch — it happened to still work once, for a file no
+prior patch had touched, which is how this went unnoticed. When generating or re-verifying a
+patch, either diff against the `dd340af` commit hash directly (not the `v0.4.0` tag), or —
+for a *new* patch's own isolated diff — just use a plain `git diff -- <file>` (working tree
+vs. `HEAD`), which is unaffected by this and is what patches 0050+ were generated with.
+
 ## CRITICAL: keep CUSTOMIZATIONS.md *and* patches/ up to date
 
 **Every time you change a file under this `servo/` directory, in the same turn:**

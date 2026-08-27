@@ -1,0 +1,26 @@
+diff --git a/python/servo/post_build_commands.py b/python/servo/post_build_commands.py
+index 289911e..147537f 100644
+--- a/python/servo/post_build_commands.py
++++ b/python/servo/post_build_commands.py
+@@ -829,6 +829,21 @@ class PostBuildCommands(CommandBase):
+         # an installer afterward.
+         stage_dir = path.join(output_dir, "_stage") if (msi or dmg) else output_dir
+ 
++        # No --icon-png/--icon-ico given? Auto-detect one from --content-dir itself before
++        # falling back to Roves' own branding -- many bundlers already emit an `icon.png`
++        # there for their own PWA manifest (confirmed: pixi-vn-react-template's own `dist/`
++        # has exactly this), so a game that already has one gets its own icon for free,
++        # with zero extra configuration. Only ever a *default*: an explicitly passed
++        # --icon-png/--icon-ico always wins, same as before.
++        if not icon_png and content_dir:
++            candidate = path.join(content_dir, "icon.png")
++            if path.isfile(candidate):
++                icon_png = candidate
++        if not icon_ico and content_dir:
++            candidate = path.join(content_dir, "icon.ico")
++            if path.isfile(candidate):
++                icon_ico = candidate
++
+         if icon_ico and not is_windows():
+             print("--icon-ico only has an effect on Windows -- ignoring.")
+             icon_ico = None
