@@ -114,19 +114,19 @@ someone else's problem. `roves-api` and `roves-wiki` (also sibling repos) are no
 this mirroring relationship and don't need this same treatment unless a change here directly
 affects what they document or consume.
 
-## Ask whether a new `mach bundle` setting belongs in `roves-ui` too
+## Ask whether a new `mach bundle` setting belongs in `roves-packmaster` too
 
-`../roves-ui` (a sibling checkout, "Roves Packmaster") is a GUI that wraps `mach bundle`'s
+`../roves-packmaster` (a sibling checkout, "Roves Packmaster") is a GUI that wraps `mach bundle`'s
 own options as a settings screen a game developer clicks through instead of typing flags —
 see that project's own `CLAUDE.md` and `src/lib/settings.ts` for its current settings shape
 (portable platforms, installer formats, Steam, content compression).
 
 **Any time you add, remove, or change the meaning of a `mach bundle` flag or default (see
 the `CUSTOMIZATIONS.md`/patches section above — those same changes already need an entry
-there), ask explicitly whether it should also be reflected in `roves-ui`'s settings** —
+there), ask explicitly whether it should also be reflected in `roves-packmaster`'s settings** —
 don't assume it does or doesn't; the answer depends on whether the new option is something
 a game developer using the GUI would plausibly want to control, which isn't always obvious
-from this side. If `../roves-ui` isn't present as a sibling checkout, say so explicitly
+from this side. If `../roves-packmaster` isn't present as a sibling checkout, say so explicitly
 rather than silently skipping the question.
 
 ## CRITICAL: the wiki must always be kept up to date — for anything, not just features
@@ -175,7 +175,7 @@ plus-`patches/` reconstruction the way `test.yml` does, since this repo already 
 full patched source (see the top of this file) — and publishes a portable bundle per platform
 (Windows/macOS/Linux, no `.msi`/`.dmg`/`.deb` installers) to that Release, named
 `roves_shell_<platform>.zip`. The first cut, `v0.1.0`, is the engine shell only: no bundled
-UI/game content (`roves-ui` content lands in a future release).
+UI/game content (`roves-packmaster` content lands in a future release).
 
 ### To cut a release
 
@@ -188,12 +188,12 @@ UI/game content (`roves-ui` content lands in a future release).
    attached (`roves_shell_windows.zip`, `roves_shell_macos.zip`, `roves_shell_linux.zip`) and
    the notes rendered as expected. Don't consider the release done on "the workflow went
    green" alone — confirm the artifacts are actually there.
-5. Update the pinned shell version in `roves-action` and `roves-ui` (see the dedicated
+5. Update the pinned shell version in `roves-action` and `roves-packmaster` (see the dedicated
    section below) — **the same turn**, not a follow-up. A release isn't finished just
    because the tag built; the sibling projects that consume this version are the whole
    reason it needed cutting in the first place.
 
-### CRITICAL: after every release, sync the shell version in `roves-action` and `roves-ui`
+### CRITICAL: after every release, sync the shell version in `roves-action` and `roves-packmaster`
 
 Two sibling checkouts (see the `roves-action` section near the top of this file for what
 "sibling checkout present" means in practice) each carry their own reference to *which*
@@ -206,7 +206,7 @@ pushed here:
   doesn't override `roves-ref` explicitly will start building against the new tag on their
   next CI run, so treat it with the same care as any other default-changing release: a real
   commit, not a drive-by edit.
-- **`roves-ui`** (`../roves-ui/src/lib/shell-version.ts`): bump `TARGET_SHELL_VERSION` to
+- **`roves-packmaster`** (`../roves-packmaster/src/lib/shell-version.ts`): bump `TARGET_SHELL_VERSION` to
   the new tag. This is what the in-app "a newer shell is available" banner
   (`src/components/shell-update-banner.tsx`) compares the latest published GitHub release
   against — leaving it stale means Packmaster nags its own maintainers' current release as
@@ -218,7 +218,7 @@ something that drives build behavior or a live check, so bump it only when a she
 actually affects `roves-api`'s own compatibility (a `roves:`/`steam:` protocol change), not
 mechanically on every tag.
 
-If `../roves-action` or `../roves-ui` isn't present as a sibling checkout when cutting a
+If `../roves-action` or `../roves-packmaster` isn't present as a sibling checkout when cutting a
 release, say so explicitly rather than silently skipping this step — the same rule as every
 other cross-repo sync obligation in this file.
 
@@ -256,7 +256,7 @@ at its `html_url`.
 ### Design notes worth knowing before touching this workflow
 
 - **No `--content-dir`**: this first release is the engine shell only — revisit this once a
-  future release adds real `roves-ui` content.
+  future release adds real `roves-packmaster` content.
 - **Portable only, no `--deb`/`--msi`/`--dmg`**: `--package-name`/`--package-version` only
   affect those installer formats (see `post_build_commands.py`), so they're dropped from
   `mach bundle` here too — not worth the extra CI surface for a shell-only build. See
@@ -281,7 +281,7 @@ at its `html_url`.
   automatically (`build.rs`'s `copy_steam_lib` already places it flat next to the binary,
   where the existing DLL/`.so`-copy step already looks), and macOS's `_bundle_macos` already
   special-cases `libsteam_api.dylib` correctly (see `CUSTOMIZATIONS.md`'s 2026-08-14 entry).
-  This is what lets Roves Packmaster (`roves-ui`) offer a real Steam-enabled release without
+  This is what lets Roves Packmaster (`roves-packmaster`) offer a real Steam-enabled release without
   ever compiling anything itself — see that project's own `CLAUDE.md`, "Why no Steam plugin
   still" section (now stale as of whichever release first publishes the `_steam` assets;
   revisit that section once Packmaster's own Steam wiring lands).

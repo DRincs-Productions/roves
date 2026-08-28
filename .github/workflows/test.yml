@@ -597,7 +597,7 @@ jobs:
       # Retries: every matrix job uploads to the same "test" release concurrently, and
       # `gh release upload --clobber` (delete-then-reupload) occasionally hits a transient
       # conflict from another job's own delete/upload landing at the same moment -- confirmed
-      # by real roves-ui CI runs (same pattern, mirrored workflow) failing here on unrelated,
+      # by real roves-packmaster CI runs (same pattern, mirrored workflow) failing here on unrelated,
       # upload-unrelated commits, always on a subset of platforms, never all of them, and
       # never at the build step itself.
       - name: upload to "test" release

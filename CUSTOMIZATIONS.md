@@ -3454,7 +3454,7 @@ already-existing issue unaffected by this fix, not something this change introdu
 also dry-run-applies cleanly against a from-scratch pristine v0.4.0 checkout with patches
 `0001`–`0040` already applied in order.
 
-**Not part of the `roves-action`/`roves-ui` sync:** no `mach build`/`mach bundle` CLI surface
+**Not part of the `roves-action`/`roves-packmaster` sync:** no `mach build`/`mach bundle` CLI surface
 changed — this only fixes `mach.bat` even being invocable from a path with a space in it.
 
 ## 2026-08-19 — Windows portable output: attempted to shrink the root further, reverted
@@ -3517,7 +3517,7 @@ entry's own "why this couldn't just move everything into a subfolder naively" fo
 already-identified, still-open, bigger option (a launcher-stub binary) if a future attempt
 wants to go lower than that.
 
-**Not part of the `roves-action`/`roves-ui` sync:** no `mach build`/`mach bundle` CLI surface
+**Not part of the `roves-action`/`roves-packmaster` sync:** no `mach build`/`mach bundle` CLI surface
 changed at any point in this attempt-then-revert.
 
 **Verification:** the failure and the fix are both empirically confirmed against a real CI
@@ -4267,7 +4267,7 @@ still shipped with Roves' own default branding unless the game dev *also* rememb
 `--icon-png` pointing at the exact same file — redundant, easy to forget, and silently wrong
 by default even though the right image was sitting right there the whole time.
 
-**Same change made identically in `roves-ui`** (`src-tauri/src/bundle.rs`'s `apply_icon`) —
+**Same change made identically in `roves-packmaster`** (`src-tauri/src/bundle.rs`'s `apply_icon`) —
 see that project's own commit/CLAUDE.md; both sides mirror `mach bundle`'s icon behavior on
 purpose (see patch 0049's own entry), so this default had to land in both to stay consistent.
 
@@ -4301,14 +4301,14 @@ given), also try `favicon.ico` there before falling back to Roves' own branding.
 `icon.png`/`icon.ico` detection (previous entry) still tried first — this is one more
 fallback step, not a replacement.
 
-**Same change made identically in `roves-ui`** (`src-tauri/src/bundle.rs`'s `apply_icon`) —
+**Same change made identically in `roves-packmaster`** (`src-tauri/src/bundle.rs`'s `apply_icon`) —
 both sides must keep mirroring `mach bundle`'s icon behavior, same as every other entry in
 this icon feature's history.
 
 **Verification:** syntax-checked (`ast.parse`, via WSL Python) and patch-applies-cleanly
 verified against the post-0051 committed tree. **Not run** — no real `mach bundle`
 invocation attempted, same linker-gap caveat as every other Python-side change this session.
-`roves-ui`'s Rust side compiled clean (`cargo check`, only the same pre-existing unrelated
+`roves-packmaster`'s Rust side compiled clean (`cargo check`, only the same pre-existing unrelated
 `selected` dead-code warning). Whoever builds this next should verify a `--content-dir`
 containing only a `favicon.ico` (no `icon.ico`) actually patches the bundled `play.exe`'s
 icon resource.

@@ -407,7 +407,7 @@ jobs:
       # Retries: every matrix job (6 now, plain+steam per platform) uploads to the same
       # release concurrently, and `gh release upload --clobber` (delete-then-reupload)
       # occasionally hits a transient conflict from another job's own delete/upload landing
-      # at the same moment -- confirmed by real roves-ui CI runs (same pattern, mirrored
+      # at the same moment -- confirmed by real roves-packmaster CI runs (same pattern, mirrored
       # workflow) failing here on unrelated, upload-unrelated commits, always on a subset of
       # jobs, never all of them, and never at the build step itself.
       - name: upload to the release
