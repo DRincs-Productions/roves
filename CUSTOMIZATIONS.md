@@ -4519,3 +4519,40 @@ follow-up crash hasn't had its own round-trip test yet. Whoever builds this next
 `pixi-vn-react-template`'s narration-history feature (or any other `IDBIndex.openCursor()`/
 `openKeyCursor()` caller) no longer crashes, and that iteration order/results are correct for a
 non-multi-entry index (the multi-entry case is a known, accepted gap — see above).
+
+---
+
+## 2026-08-28 — Inject a `window.__ROVES__` marker on every page load
+
+**File:** `ports/servoshell/desktop/app.rs`, in `App`'s Servo-instance setup, right after
+`UserContentManager::new`.
+
+**Patch:** `patches/servo-v0.4.0/0055-inject-window-roves-marker.patch`
+
+**Change:** adds one `UserScript` to the `UserContentManager` that every page already gets,
+setting `window.__ROVES__ = true`:
+
+```rust
+user_content_manager.add_script(Rc::new(UserScript::from("window.__ROVES__ = true;")));
+```
+
+This reuses Servo's own existing `UserContentManager`/`UserScript` mechanism (already there
+for `--userscripts-directory`, see the surrounding loop) — this script just runs
+unconditionally, before any user-supplied ones. Per `dom::userscripts::load_script`, user
+scripts run as soon as `<head>` exists on every navigation, before the page's own `<script>`
+tags execute.
+
+**Why:** `@drincs/roves-api/core`'s `isAvailable()` (the "am I actually running inside Roves,
+not a plain browser or Tauri" check web content is meant to use) previously had to `fetch()`
+the `roves:` protocol's `is_available` command and wait for a response — an async round trip
+for what should be a cheap, synchronous check, and one that couldn't resolve at all until the
+protocol handler was reachable. Mirrors how Tauri exposes `window.__TAURI_INTERNALS__` for
+the same purpose. `@drincs/roves-api` v0.6.0 already ships the JS side reading this marker
+directly (`isAvailable(): boolean` now, no longer `Promise<boolean>`) — this patch is the
+matching engine-side half; the two must ship together for `isAvailable()` to behave correctly
+(a shell without this marker makes `isAvailable()` always return `false`, since there's no
+`roves:` fallback anymore).
+
+**Verification:** `cargo check -p servoshell` compiled clean. Confirmed against a real
+`@drincs/roves-api@0.6.0`-consuming build (`test-page`) that `window.__ROVES__` is `true`
+before the page's own scripts run and `isAvailable()` returns `true` synchronously.

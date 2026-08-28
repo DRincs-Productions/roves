@@ -132,14 +132,16 @@ roadmap but not yet functional.
 ## Embedding
 
 Your web content has no *build-time* way to know it's running inside Roves rather than a
-regular browser (or, for that matter, Tauri) — Roves doesn't inject any global marker into
-the page. A build-time signal is still an option if you want one (the parent
-pixi-vn-react-template project this fork ships with sets an `EMBEDDED_TARGET=roves`
-environment variable when building for Roves — see its `.github/workflows/embedded.yml` and
-`src/lib/hooks/quit-hooks.ts` — a convention of that project, not something Roves itself
-provides). For a genuine *runtime* check instead, use `@drincs/roves-api/core`'s
-`isAvailable()` (see below) — `false` in a plain browser, `true` only when actually running
-under Roves, no build step required.
+regular browser (or, for that matter, Tauri). A build-time signal is still an option if you
+want one (the parent pixi-vn-react-template project this fork ships with sets an
+`EMBEDDED_TARGET=roves` environment variable when building for Roves — see its
+`.github/workflows/embedded.yml` and `src/lib/hooks/quit-hooks.ts` — a convention of that
+project, not something Roves itself provides). For a genuine *runtime* check instead, Roves
+injects `window.__ROVES__ = true` into every page as soon as `<head>` exists, before the
+page's own scripts run (see the "Inject a `window.__ROVES__` marker" entry in
+[CUSTOMIZATIONS.md]) — use `@drincs/roves-api/core`'s `isAvailable()` (see below) to read it
+rather than checking `window.__ROVES__` directly: `false` in a plain browser, `true` only
+when actually running under Roves, no build step required, no async wait needed.
 
 ### Talking to native APIs
 
@@ -156,7 +158,7 @@ to feel familiar if you already know `@tauri-apps/api` (though it's a real, inde
 implementation, not a shim over Tauri's runtime):
 
 - `@drincs/roves-api/core` — the generic `invoke(cmd, args)`, talking to `roves:`, plus
-  `isAvailable()` — a genuine runtime "is this page running inside Roves" check.
+  `isAvailable()` — a genuine, synchronous runtime "is this page running inside Roves" check.
 - `@drincs/roves-api/process` — `exit()`, built on `core`.
 - `@drincs/roves-api/saves` — save-game storage; see "Save data" below.
 
