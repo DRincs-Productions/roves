@@ -366,6 +366,11 @@ impl App {
         servo.setup_logging();
 
         let user_content_manager = Rc::new(UserContentManager::new(&servo));
+        // Lets page JS detect it's running inside Roves synchronously, no `fetch()` round
+        // trip needed — `@drincs/roves-api/core`'s `isAvailable()` reads this. Runs on every
+        // navigation as soon as `<head>` exists (see `dom::userscripts::load_script`), before
+        // the page's own scripts.
+        user_content_manager.add_script(Rc::new(UserScript::from("window.__ROVES__ = true;")));
         for script in load_userscripts(self.servoshell_preferences.userscripts_directory.as_deref())
             .expect("Loading userscripts failed")
         {
