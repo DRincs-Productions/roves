@@ -165,6 +165,28 @@ implementation, not a shim over Tauri's runtime):
 See the "Roves' own general-purpose `invoke()` bridge" entry in [CUSTOMIZATIONS.md] for how
 the Rust side is wired up.
 
+### Content root & client-side routing
+
+Your bundled content is served from a fixed virtual origin, `game://content/`, not the raw
+`file://<absolute path>/index.html` you might expect — and the app boots by requesting the
+*root* (`game://content/`), not `game://content/index.html` directly. Both exist for the same
+reason: under a real `file://` path, `location.pathname` is the actual OS path and never
+matches `/`, so any client-side history router (React Router, TanStack Router, Vue Router in
+"history" mode, ...) falls back to its own "not found" page immediately, at boot and on every
+`pushState` navigation. `game://content/` sidesteps this the same way Tauri's own
+`tauri://localhost/` does — a real, root-relative origin your router's own routes match
+against, so History API navigation "just works". A direct navigation/reload on a sub-route
+(no matching file on disk) falls back to serving your bundle's own entry HTML, the same way a
+static host's SPA fallback (nginx's `try_files`, Vite's `historyApiFallback`) does. See the
+"Virtual content root (`game:` protocol)" entry in [CUSTOMIZATIONS.md] for the full design.
+
+A custom, non-`http(s)` scheme like `game:` isn't always transparent to every JS library —
+some hardcode `http`/`https` in their own URL handling. PixiJS is one: its `Assets.init()`
+needs an explicit `basePath` (`` `${location.protocol}//${location.host}/` ``), or a
+root-absolute asset reference (`/foo.png`) fails to load. See the
+[wiki](https://github.com/DRincs-Productions/roves-wiki) for this and other framework-specific
+gotchas.
+
 ### Steam
 
 Steam support is opt-in at build time: passing `--features steam` (e.g.
