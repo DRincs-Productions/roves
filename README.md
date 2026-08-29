@@ -181,11 +181,12 @@ static host's SPA fallback (nginx's `try_files`, Vite's `historyApiFallback`) do
 "Virtual content root (`game:` protocol)" entry in [CUSTOMIZATIONS.md] for the full design.
 
 A custom, non-`http(s)` scheme like `game:` isn't always transparent to every JS library —
-some hardcode `http`/`https` in their own URL handling. PixiJS is one: its `Assets.init()`
-needs an explicit `basePath` (`` `${location.protocol}//${location.host}/` ``), or a
-root-absolute asset reference (`/foo.png`) fails to load. See the
-[wiki](https://github.com/DRincs-Productions/roves-wiki) for this and other framework-specific
-gotchas.
+some hardcode `http`/`https` in their own URL handling. PixiJS is one: it needs both
+`resolver.rootPath` (set *before* `Assets.init()`) and `basePath` set to
+`` `${location.protocol}//${location.host}/` ``, or a root-absolute asset reference
+(`/foo.png`) fails to load. See the
+[wiki](https://github.com/DRincs-Productions/roves-wiki) for the exact snippet, why `basePath`
+alone isn't enough, and other framework-specific gotchas.
 
 ### Steam
 
