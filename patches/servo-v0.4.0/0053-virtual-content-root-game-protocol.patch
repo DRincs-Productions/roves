@@ -4,7 +4,7 @@ index bf4c610..3da2f45 100644
 +++ b/components/script/dom/window/history.rs
 @@ -309,7 +309,19 @@ impl History {
          }
- 
+
          // Step 3. If targetURL's scheme is an HTTP(S) scheme, then return true.
 -        if target_url.scheme() == "http" || target_url.scheme() == "https" {
 +        //
@@ -22,7 +22,7 @@ index bf4c610..3da2f45 100644
 +        {
              return true;
          }
- 
+
 diff --git a/components/servo/lib.rs b/components/servo/lib.rs
 index 1918c69..da013dc 100644
 --- a/components/servo/lib.rs
@@ -35,7 +35,7 @@ index 1918c69..da013dc 100644
 +    pub use net_traits::request::{Destination, Request};
      pub use net_traits::response::{Response, ResponseBody};
      pub use net_traits::{NetworkError, ResourceFetchTiming};
- 
+
 diff --git a/components/url/origin.rs b/components/url/origin.rs
 index 3daca27..144f44f 100644
 --- a/components/url/origin.rs
@@ -43,7 +43,7 @@ index 3daca27..144f44f 100644
 @@ -17,6 +17,14 @@ use uuid::Uuid;
  /// like the other opaque-origin constructors in this file.
  const FILE_ORIGIN_ID: Uuid = Uuid::nil();
- 
+
 +/// Fixed id shared by every `game://` opaque origin — same reasoning as
 +/// `FILE_ORIGIN_ID`, see `ImmutableOrigin::new_opaque_for_game_content`'s doc
 +/// comment. Distinct from `FILE_ORIGIN_ID` (a `game://` document and a
@@ -62,7 +62,7 @@ index 3daca27..144f44f 100644
 +        if url.scheme() == "game" {
 +            return Self::new_opaque_for_game_content();
 +        }
- 
+
          match url.origin() {
              Origin::Opaque(_) => ImmutableOrigin::new_opaque(),
 @@ -76,6 +87,7 @@ impl ImmutableOrigin {
@@ -72,7 +72,7 @@ index 3daca27..144f44f 100644
 +            is_game_content_origin: false,
          })
      }
- 
+
 @@ -85,6 +97,7 @@ impl ImmutableOrigin {
              id: Uuid::new_v4(),
              is_for_data_worker_from_secure_context: true,
@@ -80,7 +80,7 @@ index 3daca27..144f44f 100644
 +            is_game_content_origin: false,
          })
      }
- 
+
 @@ -114,6 +127,26 @@ impl ImmutableOrigin {
              id: FILE_ORIGIN_ID,
              is_for_data_worker_from_secure_context: false,
@@ -107,11 +107,11 @@ index 3daca27..144f44f 100644
 +            is_game_content_origin: true,
          })
      }
- 
+
 @@ -161,6 +194,16 @@ impl ImmutableOrigin {
          )
      }
- 
+
 +    pub fn is_game_content_origin(&self) -> bool {
 +        matches!(
 +            self,
@@ -132,7 +132,7 @@ index 3daca27..144f44f 100644
 -        self.is_tuple() || self.is_file_origin()
 +        self.is_tuple() || self.is_file_origin() || self.is_game_content_origin()
      }
- 
+
      pub fn is_for_data_worker_from_secure_context(&self) -> bool {
 @@ -204,7 +247,7 @@ impl ImmutableOrigin {
              //
@@ -151,7 +151,7 @@ index 3daca27..144f44f 100644
 +    /// scheme — see `ImmutableOrigin::new_opaque_for_game_content`'s doc comment.
 +    is_game_content_origin: bool,
  }
- 
+
  malloc_size_of_is_0!(OpaqueOrigin);
 diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
 index c08b29a..4f7e692 100644
@@ -204,42 +204,52 @@ index c08b29a..4f7e692 100644
          // protocols/roves.rs. `None` in headless mode (no window, no winit
          // event loop to send AppEvent::CloseAllWindows through).
 diff --git a/ports/servoshell/desktop/bundle_launch.rs b/ports/servoshell/desktop/bundle_launch.rs
-index 47bdcca..369fe21 100644
+index 47bdcca..5693b5e 100644
 --- a/ports/servoshell/desktop/bundle_launch.rs
 +++ b/ports/servoshell/desktop/bundle_launch.rs
-@@ -19,14 +19,31 @@
+@@ -19,14 +19,41 @@
  //!   "args": ["--window-size", "1280x720"]
  //! }
  //! ```
 +//!
-+//! The resolved positional URL a bundled launch actually opens is a
-+//! `game://content/<entry_html>` URL (see `protocols::game`'s own doc
-+//! comment for why), not a raw `file:` path onto `content_dir`/`url` above —
++//! The resolved positional URL a bundled launch actually opens is the fixed
++//! `game://content/` virtual root (see [`game_content_url`] and
++//! `protocols::game`'s own doc comment for why the root, not `<entry_html>`
++//! itself), not a raw `file:` path onto `content_dir`/`url` above —
 +//! `game_content` on [`BundledLaunch`] carries the real on-disk location
 +//! that URL resolves against, alongside it.
- 
+
  use std::env;
  use std::path::{Path, PathBuf};
- 
+
  use roves_content_packer::extract;
- 
+
 +use crate::desktop::protocols::game::CONTENT_HOST;
 +
  const LAUNCH_CONFIG_FILE: &str = "launch.json";
- 
-+/// Builds a `game://<CONTENT_HOST>/<entry_html>` URL, percent-encoding `entry_html`
-+/// correctly via `Url::join` rather than hand-formatting a string — `entry_html` comes
-+/// from `manifest.json`/a `launch.json` path and isn't guaranteed to be bare ASCII (see
-+/// `parser.rs`'s own comment on `Url::from_file_path` existing for exactly this reason).
-+fn game_content_url(entry_html: &str) -> Option<String> {
-+    let base = url::Url::parse(&format!("game://{CONTENT_HOST}/")).ok()?;
-+    Some(base.join(entry_html).ok()?.to_string())
+
++/// The boot URL every bundled launch opens: `game://<CONTENT_HOST>/`, the virtual root —
++/// deliberately *not* `game://<CONTENT_HOST>/<entry_html>`. `GameProtocolHandler::load`'s
++/// own SPA fallback (see `protocols/game.rs`'s doc comment) already serves the bundle's
++/// entry HTML for any document-destination request with no matching file, root included
++/// (`content_root` itself has no matching *file*, so the fallback fires) — so requesting
++/// the root gets the exact same bytes while leaving `location.pathname` as `/`, not
++/// `/index.html`. That distinction matters: a client-side history router (React Router,
++/// TanStack Router, ...) matches its own root route against `/`, never against a literal
++/// `/index.html`, so booting at the latter left every such router unable to match anything
++/// and falling back to its own "not found" page before a single in-app navigation ever
++/// happened — confirmed the hard way: a root-level loader (data preloading, asset
++/// prefetch, ...) still runs even when no *leaf* route matches, so a bundled launch could
++/// look like it was working (network requests firing, assets downloading) while the actual
++/// visible page was nothing but the router's unstyled "Not Found" fallback the entire time.
++fn game_content_url() -> String {
++    format!("game://{CONTENT_HOST}/")
 +}
 +
  /// Result of [`resolve_bundled_launch_args`]: the args to launch with,
  /// exactly as if they'd been passed on the command line (a positional URL
  /// followed by flags), plus — for a packed-content build — the boot
-@@ -39,6 +56,13 @@ const LAUNCH_CONFIG_FILE: &str = "launch.json";
+@@ -39,6 +66,13 @@ const LAUNCH_CONFIG_FILE: &str = "launch.json";
  pub(crate) struct BundledLaunch {
      pub(crate) args: Vec<String>,
      pub(crate) pending_boot_extraction: Option<extract::ExtractOptions>,
@@ -251,12 +261,12 @@ index 47bdcca..369fe21 100644
 +    /// already returns `None` outright in that case) — every real bundled launch has one.
 +    pub(crate) game_content: Option<(PathBuf, String)>,
  }
- 
+
  /// Cheaply figures out which game (if any) this is a bundled launch of,
-@@ -109,13 +133,20 @@ pub(crate) fn resolve_bundled_launch_args() -> Option<BundledLaunch> {
+@@ -109,13 +143,20 @@ pub(crate) fn resolve_bundled_launch_args() -> Option<BundledLaunch> {
          })
          .unwrap_or_default();
- 
+
 -    let (url, pending_boot_extraction) =
 +    let (url, pending_boot_extraction, game_content) =
          if let Some(content_rel_dir) = config.get("content_dir").and_then(|v| v.as_str()) {
@@ -273,20 +283,20 @@ index 47bdcca..369fe21 100644
 +            let html_path = exe_dir.join(rel_url);
 +            let content_root = html_path.parent()?.to_path_buf();
 +            let entry_html = html_path.file_name()?.to_string_lossy().into_owned();
-+            let url = game_content_url(&entry_html)?;
++            let url = game_content_url();
 +            (url, None, Some((content_root, entry_html)))
          };
- 
+
      let mut args = vec![url];
-@@ -123,6 +154,7 @@ pub(crate) fn resolve_bundled_launch_args() -> Option<BundledLaunch> {
+@@ -123,6 +164,7 @@ pub(crate) fn resolve_bundled_launch_args() -> Option<BundledLaunch> {
      Some(BundledLaunch {
          args,
          pending_boot_extraction,
 +        game_content,
      })
  }
- 
-@@ -156,7 +188,7 @@ fn content_root(exe_dir: &Path) -> PathBuf {
+
+@@ -156,7 +198,7 @@ fn content_root(exe_dir: &Path) -> PathBuf {
  fn resolve_packed_content_url(
      exe_dir: &Path,
      content_rel_dir: &str,
@@ -295,7 +305,7 @@ index 47bdcca..369fe21 100644
      let content_dir = content_root(exe_dir).join(content_rel_dir);
      let manifest = extract::load_manifest(&content_dir)
          .inspect_err(|e| log::error!("loading packed-content manifest at {content_dir:?}: {e}"))
-@@ -164,14 +196,12 @@ fn resolve_packed_content_url(
+@@ -164,14 +206,12 @@ fn resolve_packed_content_url(
      let (content_dir, dest) = extract::resolve_dest(&content_dir, None, manifest.name.as_deref())
          .inspect_err(|e| log::error!("resolving boot content destination: {e}"))
          .ok()?;
@@ -303,7 +313,7 @@ index 47bdcca..369fe21 100644
 -        .join(&manifest.entry_html)
 -        .to_string_lossy()
 -        .into_owned();
-+    let url = game_content_url(&manifest.entry_html)?;
++    let url = game_content_url();
 +    let game_content = (dest.clone(), manifest.entry_html.clone());
      let opts = extract::ExtractOptions {
          content_dir,
@@ -355,7 +365,7 @@ index 4685c23..f8d65a0 100644
  use std::path::{Component, Path, PathBuf};
  use std::pin::Pin;
 -use std::sync::Mutex;
- 
+
  use headers::{ContentLength, ContentRange, ContentType, HeaderMapExt, Range};
  use http::Method;
 -use roves_content_packer::extract::CONTENT_SOURCE_MARKER;
@@ -366,7 +376,7 @@ index 4685c23..f8d65a0 100644
 @@ -40,19 +37,7 @@ use servo::protocol_handler::{
  };
  use tokio::sync::mpsc::unbounded_channel;
- 
+
 -struct PackedContent {
 -    /// Where `manifest.json` + `.pack` files live (read-only, shipped as-is).
 -    content_dir: PathBuf,
@@ -381,7 +391,7 @@ index 4685c23..f8d65a0 100644
 -    extracting: Mutex<()>,
 -}
 +use super::packed_content::PackedContent;
- 
+
  pub struct FileProtocolHandler {
      /// The directory containing the document Roves was launched with — the effective
 @@ -75,55 +60,15 @@ impl FileProtocolHandler {
@@ -392,7 +402,7 @@ index 4685c23..f8d65a0 100644
 +        let packed = initial_dir.as_deref().and_then(PackedContent::resolve);
          Self { initial_dir, packed }
      }
- 
+
 -    fn resolve_packed_content(cache_dir: &Path) -> Option<PackedContent> {
 -        let marker = cache_dir.join(CONTENT_SOURCE_MARKER);
 -        let content_dir = std::fs::read_to_string(&marker).ok()?;
@@ -444,13 +454,13 @@ index 4685c23..f8d65a0 100644
 +            packed.ensure_available(file_path);
          }
      }
- 
+
 diff --git a/ports/servoshell/desktop/protocols/game.rs b/ports/servoshell/desktop/protocols/game.rs
 new file mode 100644
-index 0000000..285eade
+index 0000000..63bc62e
 --- /dev/null
 +++ b/ports/servoshell/desktop/protocols/game.rs
-@@ -0,0 +1,214 @@
+@@ -0,0 +1,229 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
@@ -471,15 +481,30 @@ index 0000000..285eade
 +//! an asset reference `rebase_to_content_root` ever sees; there is no
 +//! request to rebase.
 +//!
-+//! `game://content/index.html` sidesteps this at the root: it's a real,
-+//! distinct origin (see `ImmutableOrigin::new_opaque_for_game_content`),
-+//! with its own authority ("content") standing in for what an actual HTTP
-+//! deployment's domain would be — so `location.pathname` at boot is simply
-+//! `/index.html`, and `pushState("/about")` (any router's own client-side
-+//! navigation) stays same-origin and same-scheme, so the History API
-+//! allows it. This is the same idea Tauri itself uses (`tauri://localhost/`
-+//! / `https://tauri.localhost/`) to avoid this exact class of problem,
-+//! rather than something novel to this fork.
++//! `game://content/` sidesteps this at the root: it's a real, distinct
++//! origin (see `ImmutableOrigin::new_opaque_for_game_content`), with its own
++//! authority ("content") standing in for what an actual HTTP deployment's
++//! domain would be — so `location.pathname` at boot is simply `/`, and
++//! `pushState("/about")` (any router's own client-side navigation) stays
++//! same-origin and same-scheme, so the History API allows it. This is the
++//! same idea Tauri itself uses (`tauri://localhost/` / `https://
++//! tauri.localhost/`) to avoid this exact class of problem, rather than
++//! something novel to this fork.
++//!
++//! **Boot deliberately requests the root, not `/index.html` itself**
++//! (`bundle_launch.rs`'s `game_content_url`) — a client-side router matches
++//! its own root route against `/`, not against a literal `/index.html`,
++//! same as it would never match a hard-coded `/about.html`. The bundle's
++//! entry HTML is still what actually gets served for that request, via the
++//! exact same `Destination::Document`-no-matching-file fallback described
++//! below (`content_root` itself is a directory, so it "doesn't match" too)
++//! — booting at `/index.html` instead served identical bytes but left every
++//! such router unable to match anything at boot, immediately falling back
++//! to its own "not found" page. That failure was easy to miss from logs
++//! alone: a *root-level* route loader (data preloading, asset prefetch)
++//! still runs even when no *leaf* route matches, so network requests kept
++//! firing normally while the actual visible page was nothing but the
++//! router's own unstyled "Not Found" fallback the whole time.
 +//!
 +//! A **direct navigation** to a sub-route (a hard reload while on
 +//! `game://content/about`, or `location.href = "/about"`) has no
@@ -671,7 +696,7 @@ index d5c2df3..3599609 100644
 +++ b/ports/servoshell/desktop/protocols/mod.rs
 @@ -3,6 +3,8 @@
   * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
- 
+
  pub(crate) mod file;
 +pub(crate) mod game;
 +pub(crate) mod packed_content;

@@ -20,9 +20,10 @@
 //! }
 //! ```
 //!
-//! The resolved positional URL a bundled launch actually opens is a
-//! `game://content/<entry_html>` URL (see `protocols::game`'s own doc
-//! comment for why), not a raw `file:` path onto `content_dir`/`url` above —
+//! The resolved positional URL a bundled launch actually opens is the fixed
+//! `game://content/` virtual root (see [`game_content_url`] and
+//! `protocols::game`'s own doc comment for why the root, not `<entry_html>`
+//! itself), not a raw `file:` path onto `content_dir`/`url` above —
 //! `game_content` on [`BundledLaunch`] carries the real on-disk location
 //! that URL resolves against, alongside it.
 
@@ -35,13 +36,22 @@ use crate::desktop::protocols::game::CONTENT_HOST;
 
 const LAUNCH_CONFIG_FILE: &str = "launch.json";
 
-/// Builds a `game://<CONTENT_HOST>/<entry_html>` URL, percent-encoding `entry_html`
-/// correctly via `Url::join` rather than hand-formatting a string — `entry_html` comes
-/// from `manifest.json`/a `launch.json` path and isn't guaranteed to be bare ASCII (see
-/// `parser.rs`'s own comment on `Url::from_file_path` existing for exactly this reason).
-fn game_content_url(entry_html: &str) -> Option<String> {
-    let base = url::Url::parse(&format!("game://{CONTENT_HOST}/")).ok()?;
-    Some(base.join(entry_html).ok()?.to_string())
+/// The boot URL every bundled launch opens: `game://<CONTENT_HOST>/`, the virtual root —
+/// deliberately *not* `game://<CONTENT_HOST>/<entry_html>`. `GameProtocolHandler::load`'s
+/// own SPA fallback (see `protocols/game.rs`'s doc comment) already serves the bundle's
+/// entry HTML for any document-destination request with no matching file, root included
+/// (`content_root` itself has no matching *file*, so the fallback fires) — so requesting
+/// the root gets the exact same bytes while leaving `location.pathname` as `/`, not
+/// `/index.html`. That distinction matters: a client-side history router (React Router,
+/// TanStack Router, ...) matches its own root route against `/`, never against a literal
+/// `/index.html`, so booting at the latter left every such router unable to match anything
+/// and falling back to its own "not found" page before a single in-app navigation ever
+/// happened — confirmed the hard way: a root-level loader (data preloading, asset
+/// prefetch, ...) still runs even when no *leaf* route matches, so a bundled launch could
+/// look like it was working (network requests firing, assets downloading) while the actual
+/// visible page was nothing but the router's unstyled "Not Found" fallback the entire time.
+fn game_content_url() -> String {
+    format!("game://{CONTENT_HOST}/")
 }
 
 /// Result of [`resolve_bundled_launch_args`]: the args to launch with,
@@ -145,7 +155,7 @@ pub(crate) fn resolve_bundled_launch_args() -> Option<BundledLaunch> {
             let html_path = exe_dir.join(rel_url);
             let content_root = html_path.parent()?.to_path_buf();
             let entry_html = html_path.file_name()?.to_string_lossy().into_owned();
-            let url = game_content_url(&entry_html)?;
+            let url = game_content_url();
             (url, None, Some((content_root, entry_html)))
         };
 
@@ -196,7 +206,7 @@ fn resolve_packed_content_url(
     let (content_dir, dest) = extract::resolve_dest(&content_dir, None, manifest.name.as_deref())
         .inspect_err(|e| log::error!("resolving boot content destination: {e}"))
         .ok()?;
-    let url = game_content_url(&manifest.entry_html)?;
+    let url = game_content_url();
     let game_content = (dest.clone(), manifest.entry_html.clone());
     let opts = extract::ExtractOptions {
         content_dir,

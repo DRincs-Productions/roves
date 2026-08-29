@@ -4342,12 +4342,32 @@ patch 0045 already does for `<script src="/...">` — a router reads `location.p
 directly, there is no request to rebase.
 
 **The fix, in one line:** serve bundled content under a fixed virtual origin instead of a raw
-`file:` path — `game://content/index.html` instead of the real disk path — the same idea
-Tauri itself already uses (`tauri://localhost/` / `https://tauri.localhost/`) to avoid this
-exact class of problem, not something novel to this fork. `window.location.pathname` at boot
-is then simply `/index.html`, matching what every router already expects, and
-`pushState("/about")` stays same-origin (same scheme + same fixed host, "content"), so the
-History API allows it.
+`file:` path — `game://content/` (the virtual root, not `game://content/index.html`) instead
+of the real disk path — the same idea Tauri itself already uses (`tauri://localhost/` /
+`https://tauri.localhost/`) to avoid this exact class of problem, not something novel to this
+fork. `window.location.pathname` at boot is then simply `/`, matching what every router
+already expects, and `pushState("/about")` stays same-origin (same scheme + same fixed host,
+"content"), so the History API allows it.
+
+**2026-08-29 correction — boot was still opening `/index.html`, not `/`:** the first cut of
+this patch built the boot URL as `game://content/<entry_html>` (i.e.
+`game://content/index.html`), reasoning that `GameProtocolHandler`'s own SPA fallback would
+serve the entry HTML's bytes either way. It does — but `window.location.pathname` at boot was
+then literally `/index.html`, and a router matches its root route against `/`, never against
+a hard-coded `/index.html` (the same reason it would never match a hard-coded `/about.html`).
+So the original bug's *symptom* survived the *fix* unchanged: every bundled launch still
+opened straight onto the router's own "Not Found" page, just one level of indirection removed
+from the original diagnosis. This was missed by the initial verification below because a
+*root-level* route loader (data preloading, asset prefetching, `Game.onLoadingLabel`'s
+background bundle load, ...) still runs even when no *leaf* route matches — so `roves.log`
+showed exactly the network activity (main menu image, audio) a working app would produce,
+while the actual visible page — confirmed by an actual screenshot of a running build, not just
+log-reading — was nothing but unstyled "Not Found" text top-left of an otherwise empty canvas,
+the entire time. Fixed by having `bundle_launch.rs`'s `game_content_url` build `game://content/`
+outright instead of joining `entry_html` onto it — `GameProtocolHandler::load`'s existing SPA
+fallback already serves the entry HTML for that request regardless (`content_root` itself is a
+directory, so "no matching file" is just as true for `/` as it was for a made-up sub-route),
+so this only changes what `location.pathname` reads as, not what bytes get served.
 
 **What changed, piece by piece:**
 
@@ -4396,10 +4416,13 @@ History API allows it.
   correct. `game://` URLs have real host+path structure exactly like `http(s)` does (Step 2
   already requires host/port/scheme to match), so treating it identically to `http(s)` here
   is the closest-to-spec-intent choice, not a meaningful spec violation.
-- **`bundle_launch.rs`**: `resolve_bundled_launch_args` now constructs a
-  `game://content/<entry_html>` URL (via `Url::join`, for correct percent-encoding — not a
-  hand-formatted string) instead of a real absolute `file:` path, for *any* bundled launch —
-  packed (`content_dir` in `launch.json`) or loose (`url` only, `--content-compress=none`).
+- **`bundle_launch.rs`**: `resolve_bundled_launch_args` now constructs the fixed
+  `game://content/` virtual-root URL (via `game_content_url`) instead of a real absolute
+  `file:` path, for *any* bundled launch — packed (`content_dir` in `launch.json`) or loose
+  (`url` only, `--content-compress=none`). Deliberately the bare root, not
+  `game://content/<entry_html>` — see the 2026-08-29 correction above for why joining
+  `entry_html` onto the boot URL silently defeated the router-matching fix this patch exists
+  for.
   `BundledLaunch` gained `game_content: Option<(PathBuf, String)>` (the real on-disk content
   root + entry-html-relative-path `GameProtocolHandler` needs) threaded through `cli.rs` →
   `App::new` → `app.rs`'s new `game://` registration, alongside the existing
@@ -4421,15 +4444,22 @@ History API allows it.
 
 **Verification:** `cargo check -p servoshell` (broadest scope checked yet for a single patch
 this session, since this touches `components/url`, `components/servo`, `components/script`,
-and `ports/servoshell` together) compiled clean. **Confirmed on a real, linked, running
-binary** — shipped as engine v0.4.2, tested via `pixi-vn-react-template` through
-`roves-action`'s "test" release: `resolved launch args: ["game://content/index.html", ...]`
-in `roves.log`, the app actually rendered (main menu, audio, PixiJS assets all loading
-correctly from a remote CDN) instead of TanStack Router's own "Not Found" page — the exact
-symptom this patch targets. Not yet separately confirmed: hard-navigate/reload directly to a
-sub-route (exercises the SPA fallback specifically, not exercised by this particular game's
-own normal flow) — a lower-priority gap than the original bug, since Roves has no address bar
-for a player to type a sub-route URL into in the first place.
+and `ports/servoshell` together) compiled clean, both for the original cut of this patch and
+again after the 2026-08-29 correction above. **The original cut's "confirmed on a real,
+running binary" claim (shipped as engine v0.4.2) turned out to be a false negative**: it was
+based on reading `roves.log` (launch args, network requests all present and successful) but
+never actually looking at the rendered window — and, per the correction above, the window was
+showing nothing but "Not Found" the whole time despite that log activity. **Re-confirmed
+2026-08-29, this time by screenshotting an actual running build** (a locally-built
+`play.exe`, launched fresh against `pixi-vn-react-template`'s own compiled output) after
+applying the root-URL correction: the game rendered past boot into real gameplay instead of
+the router's "Not Found" fallback. Lesson for future verification of anything UI-visible in
+this fork: reading `roves.log` proves the *engine* did what was asked; it does not prove the
+*page* rendered anything sensible — screenshot or otherwise directly observe the window before
+calling a rendering-affecting fix confirmed. Not yet separately confirmed: hard-navigate/
+reload directly to a sub-route (exercises the SPA fallback specifically, not exercised by this
+particular game's own normal flow) — a lower-priority gap than the original bug, since Roves
+has no address bar for a player to type a sub-route URL into in the first place.
 
 ---
 

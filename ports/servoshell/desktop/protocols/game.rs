@@ -18,15 +18,30 @@
 //! an asset reference `rebase_to_content_root` ever sees; there is no
 //! request to rebase.
 //!
-//! `game://content/index.html` sidesteps this at the root: it's a real,
-//! distinct origin (see `ImmutableOrigin::new_opaque_for_game_content`),
-//! with its own authority ("content") standing in for what an actual HTTP
-//! deployment's domain would be — so `location.pathname` at boot is simply
-//! `/index.html`, and `pushState("/about")` (any router's own client-side
-//! navigation) stays same-origin and same-scheme, so the History API
-//! allows it. This is the same idea Tauri itself uses (`tauri://localhost/`
-//! / `https://tauri.localhost/`) to avoid this exact class of problem,
-//! rather than something novel to this fork.
+//! `game://content/` sidesteps this at the root: it's a real, distinct
+//! origin (see `ImmutableOrigin::new_opaque_for_game_content`), with its own
+//! authority ("content") standing in for what an actual HTTP deployment's
+//! domain would be — so `location.pathname` at boot is simply `/`, and
+//! `pushState("/about")` (any router's own client-side navigation) stays
+//! same-origin and same-scheme, so the History API allows it. This is the
+//! same idea Tauri itself uses (`tauri://localhost/` / `https://
+//! tauri.localhost/`) to avoid this exact class of problem, rather than
+//! something novel to this fork.
+//!
+//! **Boot deliberately requests the root, not `/index.html` itself**
+//! (`bundle_launch.rs`'s `game_content_url`) — a client-side router matches
+//! its own root route against `/`, not against a literal `/index.html`,
+//! same as it would never match a hard-coded `/about.html`. The bundle's
+//! entry HTML is still what actually gets served for that request, via the
+//! exact same `Destination::Document`-no-matching-file fallback described
+//! below (`content_root` itself is a directory, so it "doesn't match" too)
+//! — booting at `/index.html` instead served identical bytes but left every
+//! such router unable to match anything at boot, immediately falling back
+//! to its own "not found" page. That failure was easy to miss from logs
+//! alone: a *root-level* route loader (data preloading, asset prefetch)
+//! still runs even when no *leaf* route matches, so network requests kept
+//! firing normally while the actual visible page was nothing but the
+//! router's own unstyled "Not Found" fallback the whole time.
 //!
 //! A **direct navigation** to a sub-route (a hard reload while on
 //! `game://content/about`, or `location.href = "/about"`) has no
