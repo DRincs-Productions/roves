@@ -233,7 +233,7 @@ fn handle_command(
         return match command {
             "is_available" => Some(Value::Bool(false).to_string()),
             "list" => Some(Value::Array(vec![]).to_string()),
-            "read" => Some(Value::Null.to_string()),
+            "read" | "most_recent" => Some(Value::Null.to_string()),
             "write" | "delete" | "clear" => Some(Value::Bool(false).to_string()),
             _ => None,
         };
@@ -299,6 +299,55 @@ fn handle_command(
                 }
             }
             Value::Array(keys)
+        },
+
+        // Picks the most recently modified save key — local disk and, when Steam is
+        // compiled in and running, Steam Cloud's own per-file timestamp — without reading
+        // (or downloading) that save's content. `list`/`clear` are local-only (see this
+        // module's own doc comment on Steam Cloud sync), but a file's Cloud timestamp is
+        // metadata Steamworks already tracks per file regardless of whether it's ever been
+        // pulled down locally, so this one command *can* see a save made on another
+        // machine before anything triggers a local download of it.
+        "most_recent" => {
+            let mut best: Option<(String, i64)> = None;
+
+            if let Ok(entries) = fs::read_dir(saves_dir) {
+                for entry in entries.flatten() {
+                    if let Some(name) = entry.file_name().to_str()
+                        && let Some(key) = name.strip_suffix(".save")
+                        && let Ok(metadata) = entry.metadata()
+                        && let Ok(modified) = metadata.modified()
+                        && let Ok(since_epoch) = modified.duration_since(std::time::UNIX_EPOCH)
+                    {
+                        let modified_ms = since_epoch.as_millis() as i64;
+                        if best.as_ref().map_or(true, |(_, ms)| modified_ms > *ms) {
+                            best = Some((key.to_owned(), modified_ms));
+                        }
+                    }
+                }
+            }
+
+            #[cfg(feature = "steam")]
+            if let Some(client) = &handler.steam_client {
+                for info in client.remote_storage().files() {
+                    if let Some(key) = info.name.strip_suffix(".save") {
+                        let modified_ms = client.remote_storage().file(&info.name).timestamp() * 1000;
+                        if best.as_ref().map_or(true, |(_, ms)| modified_ms > *ms) {
+                            best = Some((key.to_owned(), modified_ms));
+                        }
+                    }
+                }
+            }
+
+            match best {
+                Some((key, modified_ms)) => {
+                    let mut result = serde_json::Map::new();
+                    result.insert("key".to_owned(), Value::String(key));
+                    result.insert("modifiedMs".to_owned(), Value::Number(modified_ms.into()));
+                    Value::Object(result)
+                },
+                None => Value::Null,
+            }
         },
 
         "clear" => {

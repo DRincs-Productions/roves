@@ -197,8 +197,9 @@ player save data (shaped like IndexedDB, backed by real files), talking to its o
 installed via `--msi`/`--dmg`/`--deb` (distinguished at runtime by a marker file the installer
 build writes, since nothing else tells those two cases apart) — and, when built with
 `--features steam` and a Steam client is running, transparently mirrors every write/delete to
-Steam Cloud. See the "Save-game storage API" entry in [CUSTOMIZATIONS.md] for the full design,
-and the [wiki](https://github.com/DRincs-Productions/roves-wiki) for player/game-dev-facing
+Steam Cloud — and `getMostRecent()` can tell which save is newest, Cloud-only saves included,
+without downloading anything. See the "Save-game storage API" entry in [CUSTOMIZATIONS.md] for
+the full design, and the [wiki](https://github.com/DRincs-Productions/roves-wiki) for player/game-dev-facing
 docs.
 
 ## Getting started

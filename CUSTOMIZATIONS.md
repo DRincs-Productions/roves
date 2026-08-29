@@ -4586,3 +4586,48 @@ matching engine-side half; the two must ship together for `isAvailable()` to beh
 **Verification:** `cargo check -p servoshell` compiled clean. Confirmed against a real
 `@drincs/roves-api@0.6.0`-consuming build (`test-page`) that `window.__ROVES__` is `true`
 before the page's own scripts run and `isAvailable()` returns `true` synchronously.
+
+## 2026-08-29 — `saves:` protocol: `most_recent` command
+
+**File:** `ports/servoshell/desktop/protocols/saves.rs`.
+
+**Patch:** `patches/servo-v0.4.0/0056-saves-most-recent-command.patch`
+
+**Change:** a new `most_recent` command, returning `{ "key": string, "modifiedMs": number }` or
+`null` — the most recently modified save key, without reading (or downloading) that save's
+own content:
+
+```rust
+if best.as_ref().map_or(true, |(_, ms)| modified_ms > *ms) {
+    best = Some((key.to_owned(), modified_ms));
+}
+```
+
+Local candidates come from each `.save` file's own filesystem mtime (`entry.metadata()?.modified()`),
+already read as part of the same `fs::read_dir` scan `list`/`clear` already do — no extra I/O
+per file. When compiled with `--features steam` and a client is running, Steam Cloud files are
+also considered via `RemoteStorage::files()` (names only, no content) and each candidate's own
+`SteamFile::timestamp()` (a second cheap per-file Steamworks call, still no content read) — the
+two candidate sets are merged by picking whichever has the higher timestamp.
+
+**Why:** `@drincs/roves-api/saves`'s `getMostRecent()` (the "which save should Continue load"
+question) previously had no cheap way to answer this — the only option was `list()` (local-only,
+see this file's own doc comment) followed by a full `read`/`readJSON` of *every* key just to
+compare their own `date` field, downloading and JSON-parsing every save's content (screenshots
+included) just to find the winner. Worse, `list()`'s local-only nature meant a save made on
+another machine and never yet pulled down locally couldn't be found *at all* — an explicit
+`read()` of its exact key is the only thing that triggers a Cloud pull, and that key would never
+have been known to check in the first place. Steam Cloud's own per-file timestamp is metadata
+Steamworks tracks regardless of whether a file has ever been read/pulled locally, so this
+command can surface that a newer save exists on another machine — the caller can then do a
+single, targeted `readJSON` for just the winning key, instead of one per save.
+
+**Caveat:** local mtime and Steam Cloud's own timestamp are two different clocks (the local
+filesystem's vs. Steam's own upload bookkeeping) with no guaranteed sub-second alignment — for
+the "which save is newest" comparison this is a non-issue in practice (real saves are seconds to
+hours apart), but don't rely on `modifiedMs` for anything requiring tighter precision than that.
+
+**Verification:** unable to run `cargo check -p servoshell` in this environment (missing
+`libclang`, needed by an unrelated `bindgen`-based build dependency — a sandbox limitation, not
+a code issue). Not yet verified against a real Steam client either — same open item as patch
+0047's own Steam Cloud sync path (see that entry's own caveat).
