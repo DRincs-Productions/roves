@@ -21,6 +21,7 @@ use pixels::RasterImage;
 use script::layout_dom::ServoLayoutNode;
 use servo_base::id::PainterId;
 use servo_url::{ImmutableOrigin, ServoUrl};
+use style::color::AbsoluteColor;
 use style::context::SharedStyleContext;
 use style::dom::OpaqueNode;
 use style::values::computed::color::Color;
@@ -118,12 +119,14 @@ pub(crate) struct ImageResolver {
     /// size determined by layout. This will be shared with the script thread.
     pub pending_rasterization_images: Mutex<Vec<PendingRasterizationImage>>,
 
-    /// A list of `SVGSVGElement`s encountered during layout that are not
-    /// serialized yet. This is needed to support inline SVGs as they are treated
-    /// as replaced elements and the layout is responsible for triggering the
-    /// network load for the corresponding serialized data: urls (similar to
-    /// background images).
-    pub pending_svg_elements_for_serialization: Mutex<Vec<UntrustedNodeAddress>>,
+    /// A list of `SVGSVGElement`s encountered during layout that are not serialized yet, or
+    /// whose cached serialization no longer matches their current computed `color` (see
+    /// `SVGElementData::resolved_color`). This is needed to support inline SVGs as they are
+    /// treated as replaced elements and the layout is responsible for triggering the network
+    /// load for the corresponding serialized data: urls (similar to background images). Each
+    /// entry carries the computed `color` layout resolved this element to, so script can bake
+    /// it into the serialized markup for `currentColor` to resolve against.
+    pub pending_svg_elements_for_serialization: Mutex<Vec<(UntrustedNodeAddress, AbsoluteColor)>>,
 
     /// A shared reference to script's map of DOM nodes with animated images. This is used
     /// to manage image animations in script and inform the script about newly animating
@@ -271,10 +274,14 @@ impl ImageResolver {
         result
     }
 
-    pub(crate) fn queue_svg_element_for_serialization(&self, element: ServoLayoutNode<'_>) {
+    pub(crate) fn queue_svg_element_for_serialization(
+        &self,
+        element: ServoLayoutNode<'_>,
+        resolved_color: AbsoluteColor,
+    ) {
         self.pending_svg_elements_for_serialization
             .lock()
-            .push(element.opaque().into())
+            .push((element.opaque().into(), resolved_color))
     }
 
     pub(crate) fn resolve_image<'a>(

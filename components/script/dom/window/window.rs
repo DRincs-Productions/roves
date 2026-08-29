@@ -86,6 +86,7 @@ use servo_geometry::DeviceIndependentIntRect;
 use servo_url::{ImmutableOrigin, MutableOrigin, ServoUrl};
 use storage_traits::StorageThreads;
 use storage_traits::webstorage_thread::WebStorageType;
+use style::color::AbsoluteColor;
 use style::error_reporting::{ContextualParseError, ParseErrorReporter};
 use style::properties::PropertyId;
 use style::properties::style_structs::Font;
@@ -3535,7 +3536,7 @@ impl Window {
         cx: &mut JSContext,
         pending_images: Vec<PendingImage>,
         pending_rasterization_images: Vec<PendingRasterizationImage>,
-        pending_svg_element_for_serialization: Vec<UntrustedNodeAddress>,
+        pending_svg_element_for_serialization: Vec<(UntrustedNodeAddress, AbsoluteColor)>,
     ) {
         let pipeline_id = self.pipeline_id();
         let image_cache = self.image_cache();
@@ -3597,10 +3598,10 @@ impl Window {
             }
         }
 
-        for node in pending_svg_element_for_serialization.into_iter() {
+        for (node, resolved_color) in pending_svg_element_for_serialization.into_iter() {
             let node = unsafe { from_untrusted_node_address(node) };
             let svg = node.downcast::<SVGSVGElement>().unwrap();
-            svg.serialize_and_cache_subtree(cx);
+            svg.serialize_and_cache_subtree(cx, resolved_color);
             node.dirty(NodeDamage::Other);
         }
     }

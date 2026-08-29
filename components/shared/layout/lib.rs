@@ -58,6 +58,7 @@ use servo_url::{ImmutableOrigin, ServoUrl};
 use style::Atom;
 use style::animation::DocumentAnimationSet;
 use style::attr::{AttrValue, parse_integer, parse_unsigned_integer};
+use style::color::AbsoluteColor;
 use style::context::QuirksMode;
 use style::data::ElementDataWrapper;
 use style::device::Device;
@@ -163,6 +164,15 @@ pub struct SVGElementData<'dom> {
     pub height: Option<&'dom AttrValue>,
     pub svg_id: String,
     pub view_box: Option<&'dom AttrValue>,
+    /// The resolved `color` value baked into `source`'s serialized markup, as of the last
+    /// time it was (re)serialized — `None` if never serialized yet. Inline SVG content isn't
+    /// kept cascade-aware after serialization (see servo#10646: it's a static, cached `data:`
+    /// url, not live DOM), so a `stroke`/`fill: currentColor` won't otherwise pick up a
+    /// restyle that changes this element's computed `color` (e.g. a `.dark` class toggling on
+    /// an ancestor) the way it would for ordinary text. Comparing this against the current
+    /// computed `color` each layout pass is what notices that case and re-queues the element
+    /// for serialization instead of reusing the stale, wrong-color cached image.
+    pub resolved_color: Option<AbsoluteColor>,
 }
 
 impl SVGElementData<'_> {
@@ -623,10 +633,11 @@ pub struct ReflowResult {
     pub pending_images: Vec<PendingImage>,
     /// The list of vector images that were encountered that still need to be rasterized.
     pub pending_rasterization_images: Vec<PendingRasterizationImage>,
-    /// The list of `SVGSVGElement`s encountered in the DOM that need to be serialized.
-    /// This is needed to support inline SVGs as the serialization needs to happen on
-    /// the script thread.
-    pub pending_svg_elements_for_serialization: Vec<UntrustedNodeAddress>,
+    /// The list of `SVGSVGElement`s encountered in the DOM that need to be (re)serialized,
+    /// each paired with the computed `color` layout resolved it to (see
+    /// `SVGElementData::resolved_color`). This is needed to support inline SVGs as the
+    /// serialization needs to happen on the script thread.
+    pub pending_svg_elements_for_serialization: Vec<(UntrustedNodeAddress, AbsoluteColor)>,
     /// The list of iframes in this layout and their sizes, used in order
     /// to communicate them with the Constellation and also the `Window`
     /// element of their content pages. Returning None if incremental reflow

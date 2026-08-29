@@ -269,18 +269,36 @@ impl ReplacedContents {
             ratio,
         };
 
+        let resolved_color = parent_style.get_inherited_text().clone_color();
+
         let svg_source = match svg_data.source {
             None => {
                 // The SVGSVGElement is not yet serialized, so we add it to a list
                 // and hand it over to script to peform the serialization.
                 context
                     .image_resolver
-                    .queue_svg_element_for_serialization(node);
+                    .queue_svg_element_for_serialization(node, resolved_color);
                 None
             },
             // If `svg_source_result` is `Err()`, it means that the previous attempt
             // had errored, then don't attempt to serialize again.
-            Some(svg_source_result) => svg_source_result.ok(),
+            Some(Err(())) => None,
+            Some(Ok(url)) => {
+                // Inline SVG content is serialized once into a static `data:` url and isn't
+                // kept cascade-aware afterward -- see `SVGElementData::resolved_color`'s own
+                // doc comment -- so a `stroke`/`fill: currentColor` won't otherwise notice a
+                // computed `color` change on this element (e.g. a theme class toggling on a
+                // distant ancestor after first paint). Catch that here, the same way "not
+                // serialized yet" is handled above, and re-queue -- reusing the stale image
+                // for this pass is fine, since the next layout pass picks up the refreshed
+                // one once script finishes re-serializing it.
+                if svg_data.resolved_color != Some(resolved_color) {
+                    context
+                        .image_resolver
+                        .queue_svg_element_for_serialization(node, resolved_color);
+                }
+                Some(url)
+            },
         };
 
         let cached_image = svg_source.and_then(|svg_source| {

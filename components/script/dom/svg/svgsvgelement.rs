@@ -12,10 +12,11 @@ use layout_api::SVGElementData;
 use script_bindings::cell::DomRefCell;
 use servo_url::ServoUrl;
 use style::attr::AttrValue;
+use style::color::AbsoluteColor;
 use style::parser::ParserContext;
 use style::stylesheets::Origin;
 use style::values::specified::LengthPercentage;
-use style_traits::ParsingMode;
+use style_traits::{ParsingMode, ToCss};
 use uuid::Uuid;
 use xml5ever::serialize::TraversalScope;
 
@@ -43,6 +44,14 @@ pub(crate) struct SVGSVGElement {
     // on each layout and must be invalidated when the subtree changes.
     #[no_trace]
     cached_serialized_data_url: DomRefCell<Option<Result<ServoUrl, ()>>>,
+    // The computed `color` value baked into `cached_serialized_data_url`'s markup (as a
+    // `color` attribute on the root, for `currentColor` to resolve against -- see
+    // `serialize_and_cache_subtree`), as of the last time it was (re)computed. Compared
+    // against this element's current computed `color` on every layout pass (see
+    // `SVGElementData::resolved_color`) so a `stroke`/`fill: currentColor` notices a restyle
+    // this cached, non-cascade-aware serialization would otherwise never see.
+    #[no_trace]
+    cached_resolved_color: DomRefCell<Option<AbsoluteColor>>,
 }
 
 impl SVGSVGElement {
@@ -55,6 +64,7 @@ impl SVGSVGElement {
             svggraphicselement: SVGGraphicsElement::new_inherited(local_name, prefix, document),
             uuid: Uuid::new_v4().to_string(),
             cached_serialized_data_url: Default::default(),
+            cached_resolved_color: Default::default(),
         }
     }
 
@@ -74,7 +84,11 @@ impl SVGSVGElement {
         )
     }
 
-    pub(crate) fn serialize_and_cache_subtree(&self, cx: &mut js::context::JSContext) {
+    pub(crate) fn serialize_and_cache_subtree(
+        &self,
+        cx: &mut js::context::JSContext,
+        resolved_color: AbsoluteColor,
+    ) {
         let cloned_nodes = self.process_use_elements(cx);
 
         let serialize_result = self
@@ -85,14 +99,29 @@ impl SVGSVGElement {
 
         let Ok(xml_source) = serialize_result else {
             *self.cached_serialized_data_url.borrow_mut() = Some(Err(()));
+            *self.cached_resolved_color.borrow_mut() = None;
             return;
         };
 
+        // Inline SVG content is handed off to `resvg`/`usvg` as a standalone document (see
+        // this module's own doc comment) -- it has no notion of this page's own CSS cascade,
+        // so a `stroke`/`fill: currentColor` in the source markup would otherwise always
+        // resolve to the CSS-initial black. `usvg` does, however, correctly resolve
+        // `currentColor` against a `color` presentation attribute on an ancestor within the
+        // SVG document itself (real SVG/CSS-inheritance semantics, just scoped to that
+        // document) -- so baking this element's own *actual* computed `color` onto the
+        // serialized root as a `color="..."` attribute is enough to make `currentColor`
+        // resolve correctly without needing real cross-document cascade-awareness.
         let xml_source: String = xml_source.into();
+        let xml_source = inject_root_color_attribute(&xml_source, &resolved_color.to_css_string());
+
         let base64_encoded_source = base64::engine::general_purpose::STANDARD.encode(xml_source);
         let data_url = format!("data:image/svg+xml;base64,{}", base64_encoded_source);
         match ServoUrl::parse(&data_url) {
-            Ok(url) => *self.cached_serialized_data_url.borrow_mut() = Some(Ok(url)),
+            Ok(url) => {
+                *self.cached_serialized_data_url.borrow_mut() = Some(Ok(url));
+                *self.cached_resolved_color.borrow_mut() = Some(resolved_color);
+            },
             Err(error) => error!("Unable to parse serialized SVG data url: {error}"),
         };
     }
@@ -170,8 +199,51 @@ impl SVGSVGElement {
         }
 
         *self.cached_serialized_data_url.borrow_mut() = None;
+        *self.cached_resolved_color.borrow_mut() = None;
         self.upcast::<Node>().dirty(NodeDamage::Other);
     }
+}
+
+/// Inserts a `color="<css_color>"` attribute into a serialized XML document's root opening
+/// tag, so `currentColor` resolves against it inside that document -- see
+/// `SVGSVGElement::serialize_and_cache_subtree`'s own doc comment for why. Scans for the end
+/// of the opening tag (the first `>` outside of a quoted attribute value) rather than
+/// assuming a fixed prefix, since the root element's attribute order/count varies.
+///
+/// `css_color` is trusted to be a plain CSS color-function serialization (from
+/// `AbsoluteColor::to_css_string()` -- digits/letters/`,`/`%`/whitespace/parens only, never
+/// `<`, `&`, or a quote character), so it's inserted as-is with no escaping.
+fn inject_root_color_attribute(xml_source: &str, css_color: &str) -> String {
+    let bytes = xml_source.as_bytes();
+    let mut quote: Option<u8> = None;
+    for (index, &byte) in bytes.iter().enumerate() {
+        match quote {
+            Some(quote_byte) if byte == quote_byte => quote = None,
+            Some(_) => {},
+            None if byte == b'"' || byte == b'\'' => quote = Some(byte),
+            None if byte == b'>' => {
+                // A self-closing root (no children) ends in "/>" -- insert before the "/"
+                // rather than between it and ">", which would otherwise produce
+                // `<svg .../ color="...">` (a malformed, no-longer-self-closing tag).
+                let insert_at = if index > 0 && bytes[index - 1] == b'/' {
+                    index - 1
+                } else {
+                    index
+                };
+                let mut result = String::with_capacity(xml_source.len() + css_color.len() + 10);
+                result.push_str(&xml_source[..insert_at]);
+                result.push_str(" color=\"");
+                result.push_str(css_color);
+                result.push('"');
+                result.push_str(&xml_source[insert_at..]);
+                return result;
+            },
+            None => {},
+        }
+    }
+    // No opening tag found -- shouldn't happen for a real serialized element, but return the
+    // source unchanged rather than risk producing malformed XML.
+    xml_source.to_owned()
 }
 
 impl<'dom> LayoutDom<'dom, SVGSVGElement> {
@@ -188,6 +260,9 @@ impl<'dom> LayoutDom<'dom, SVGSVGElement> {
                     .cached_serialized_data_url
                     .borrow_for_layout()
                     .clone()
+            },
+            resolved_color: unsafe {
+                *self.unsafe_get().cached_resolved_color.borrow_for_layout()
             },
             width,
             height,

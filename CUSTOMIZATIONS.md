@@ -4631,3 +4631,69 @@ hours apart), but don't rely on `modifiedMs` for anything requiring tighter prec
 `libclang`, needed by an unrelated `bindgen`-based build dependency — a sandbox limitation, not
 a code issue). Not yet verified against a real Steam client either — same open item as patch
 0047's own Steam Cloud sync path (see that entry's own caveat).
+
+## 2026-08-29 — Inline SVG `currentColor` stuck on stale restyle
+
+**Files:** `components/shared/layout/lib.rs`, `components/layout/context.rs`,
+`components/layout/replaced.rs`, `components/script/dom/window/window.rs`,
+`components/script/dom/svg/svgsvgelement.rs`.
+
+**Patch:** `patches/servo-v0.4.0/0057-svg-currentcolor-restyle-invalidation.patch`
+
+**Change:** an inline `<svg>` element's `stroke`/`fill: currentColor` now gets re-baked (and the
+cached rasterization re-triggered) when this element's own computed `color` changes, not only
+when its attributes or children do.
+
+Root cause (upstream Servo behavior, not introduced by this fork — tracked as
+[servo/servo#10646](https://github.com/servo/servo/issues/10646)): inline SVG content isn't
+laid out/painted in a cascade-aware way at all (`components/layout/stylesheets/servo.css`
+disables styling of `<svg>` descendants entirely). Instead, `SVGSVGElement::
+serialize_and_cache_subtree` serializes the element's raw XML **once** into a base64
+`data:image/svg+xml` url and hands that off to `resvg`/`usvg` — a standalone SVG
+parser/rasterizer with no knowledge of the host document's CSS. A literal `stroke="currentColor"`
+in that markup therefore always resolved `currentColor` to the CSS-initial value (black),
+regardless of what this element's real, cascaded `color` actually was — and because the only
+existing invalidation hooks were `attribute_mutated`/`children_changed`/`unbind_from_tree`, even
+a *dynamic* `color` change (e.g. a `.dark` class added to `<html>` in a React `useEffect`,
+which runs after first paint) never re-triggered serialization at all: the icon stayed
+permanently baked at whatever `color` was in effect on the very first layout, while ordinary
+text sitting right next to it correctly repainted with the new color on every subsequent
+restyle.
+
+This patch doesn't attempt real cascade-aware SVG layout (the actual fix tracked by #10646 —
+a much larger undertaking). Instead: `components/layout/replaced.rs`'s `svg_kind_size` now also
+computes this element's current resolved `color` (`get_inherited_text().clone_color()`) on every
+layout pass and compares it against `SVGElementData::resolved_color` — the `color` baked into
+the *currently cached* serialization, threaded back from script the same way `source` already
+is. A mismatch re-queues the element for serialization via the existing `pending_svg_elements_
+for_serialization` mechanism (widened to also carry the resolved `AbsoluteColor`, not just the
+node address), exactly like "not serialized yet" already does — the stale image keeps being used
+for the current layout pass, and the next one picks up the refreshed, correctly-colored image
+once script finishes re-serializing it. `SVGSVGElement::serialize_and_cache_subtree` bakes the
+color in by inserting a `color="<css color>"` presentation attribute onto the serialized root's
+opening tag (`inject_root_color_attribute`, a small quote-aware string splice run on the already-
+serialized XML) — `usvg` does correctly resolve `currentColor` against a `color` attribute
+*within* the SVG document itself, so this doesn't require the document to be cascade-aware, only
+this one value to be threaded through at bake time.
+
+**Why:** discovered via `pixi-vn-react-template`'s main menu — its `Load`/`Settings` buttons
+(shadcn/ui, `variant="outline"`) render `lucide-react` icons (`stroke="currentColor"`) that
+render correctly under a real browser but stayed permanently black under Roves, even though the
+adjacent button *text* (ordinary CSS `color`, not `currentColor` on an SVG) correctly went white
+once the app's theme provider added `.dark` to `<html>` — a `useEffect`, so after first paint.
+Confirmed via pixel sampling this wasn't an app-code or asset-loading bug: the icon's resolved
+paint color never changed from the pre-`.dark`, light-mode `--foreground` (near-black), while
+everything else on the page correctly reflected the dark theme.
+
+**Caveat:** this fixes a *dynamic* `color` change after the SVG's first serialization — it does
+not, and cannot, make inline SVG genuinely cascade-aware. Anything beyond `currentColor` on the
+root itself (e.g. `currentColor` used differently per descendant based on the *descendant's own*
+computed style, were that ever meaningful for an un-styled SVG subtree) is still out of scope,
+as is any other CSS property real cascade-aware SVG support would eventually need (filters,
+`mask`, per-element `opacity` transitions, ...) — see #10646 for the actual tracked fix.
+
+**Verification:** not yet compiled or run — this environment was asked to push straight to CI
+(`.github/workflows/test.yml`) rather than run a local `mach build`, given how long a full Servo
+rebuild takes. Verify the CI build actually compiles cleanly, then re-test the exact repro above
+(`pixi-vn-react-template`'s main menu, `Load`/`Settings` buttons, dark theme) against the
+resulting binary before considering this closed.
