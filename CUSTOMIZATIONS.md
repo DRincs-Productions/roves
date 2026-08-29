@@ -4697,3 +4697,55 @@ as is any other CSS property real cascade-aware SVG support would eventually nee
 rebuild takes. Verify the CI build actually compiles cleanly, then re-test the exact repro above
 (`pixi-vn-react-template`'s main menu, `Load`/`Settings` buttons, dark theme) against the
 resulting binary before considering this closed.
+
+## 2026-08-29 — Regenerated icon assets from an updated `icon.svg`
+
+**Files:** `icon.svg`, `resources/servo.svg`, `resources/servo_64.png`,
+`resources/servo_1024.png`, `resources/servo.ico`, `resources/servo.icns` — binary raster
+assets (all but the two `.svg` files) not part of any patch, same reasoning as the 2026-08-13
+entry below: a text-based unified diff can't represent new binary content.
+
+**Change:** `icon.svg` was edited directly by the user (the wolf-and-chains mark's own
+artwork). Regenerated every derived asset from it through the same one pipeline the
+2026-08-13 entry below established (rasterize the vector, then resize/pack every other
+format from that one master), so nothing referencing the icon silently keeps showing the
+*previous* version of the artwork: `resources/servo.svg` (a byte-identical copy — confirmed
+via checksum), `resources/servo_1024.png` (boot splash) and `resources/servo_64.png`
+(compile-time window/taskbar icon default, `build.rs`'s `window_icon_src`) rasterized from a
+2048×2048 master render, `resources/servo.ico` (16/24/32/48/64/128/256, matching the existing
+asset's own size set) via `sharp-ico`, and `resources/servo.icns` (`ic07`/`ic08`/`ic09`/`ic10`/
+`ic11`/`ic12`/`ic13`/`ic14` — 1x and 2x slots from 16pt to 512pt, each a directly-embedded PNG
+buffer — modern ICNS readers, including macOS itself, accept PNG-encoded entries for these
+type codes, so this doesn't need legacy raw-bitmap packing) via a small inline packer, since
+no `.icns`-writing package was available in this environment (see below).
+
+Every other `.svg` in this repo was checked and left alone — none of them are derived from
+`icon.svg`'s own artwork: `resources/roves_wordmark.svg` is a separate text-based lockup (the
+"Roves" wordmark shown next to this icon in the boot splash, not the icon itself),
+`resources/resource_protocol/servo-color-{positive,negative}-no-container.svg` are upstream
+Servo's own wordmark logo (a wide 284×63 text lockup, used for `resource:`-served error/about
+pages — never Roves-branded), `test-page/public/favicon.svg` is a deliberately unrelated
+placeholder for a different feature (see the 2026-08-09 "Game-supplied icon" entry above —
+literally documented there as unrelated to this mark), and `roves-ui`/`pixi-vn-react-template`'s
+own `.svg` files belong to Packmaster's and the game template's own, entirely separate branding.
+
+**Tooling note (differs from the 2026-08-13 entry's own pipeline):** that entry used
+`cairosvg`/Pillow/`icnsutil` (Python); none of the three were available in this session's
+Python environment (only Pillow, used here only to sanity-check the regenerated `.ico`'s
+sizes, not to produce anything). Used `sharp`/`sharp-ico` instead (both already present as
+transitive `node_modules` of `pixi-vn-react-template`/`roves-wiki` — not installed as a new
+dependency of this repo) for SVG rasterization and `.ico` packing, and a ~20-line inline
+Node script (not committed — a one-off, not a maintained tool) for `.icns`, since no
+`.icns`-writing npm package was available either. Functionally equivalent output to the
+previous pipeline; if a *real* generation script ever gets committed for this (neither
+pipeline has one today — every regeneration so far, this one included, has been ad hoc), it
+should standardize on one toolchain rather than switching per-session.
+
+**Verification:** `resources/servo.svg` confirmed byte-identical to `icon.svg` via `md5sum`.
+`resources/servo.ico` confirmed via Pillow to report all 7 expected sizes
+`{16,24,32,48,64,128,256}`. `resources/servo.icns` confirmed recognized as a valid "Mac OS X
+icon" file. `resources/servo_1024.png` visually confirmed to render the intended
+wolf-and-chains artwork correctly (not blank/corrupt). Not done: an actual `mach build`/real
+launch showing the *new* artwork in the boot splash/window icon/taskbar — no local Servo build
+in this environment (same constraint as the SVG `currentColor` entry above); the next real CI
+build is what would confirm this end-to-end.
