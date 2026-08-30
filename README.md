@@ -158,7 +158,9 @@ to feel familiar if you already know `@tauri-apps/api` (though it's a real, inde
 implementation, not a shim over Tauri's runtime):
 
 - `@drincs/roves-api/core` — the generic `invoke(cmd, args)`, talking to `roves:`, plus
-  `isAvailable()` — a genuine, synchronous runtime "is this page running inside Roves" check.
+  `isAvailable()` — a genuine, synchronous runtime "is this page running inside Roves" check —
+  and `systemInfo()`, host OS/engine diagnostics (OS type/version, bitness, architecture, the
+  running Servo build's own version) for bug reports and graphics-compatibility triage.
 - `@drincs/roves-api/process` — `exit()`, built on `core`.
 - `@drincs/roves-api/saves` — save-game storage; see "Save data" below.
 
