@@ -236,6 +236,13 @@ game needs. Grab one of those if you just want to try the shell; the rest of thi
 for building from source instead (e.g. to bundle your own game's content, or to work on
 Roves itself).
 
+If you're iterating on your own game's content, though, you likely don't need any of this at
+all: the [Roves VS Code extension](https://marketplace.visualstudio.com/items?itemName=DRincs-Productions.roves-run)
+([source](https://github.com/DRincs-Productions/roves-vscode)) downloads a prebuilt shell for
+you and runs your already-built `dist/` folder directly from your editor, with no toolchain
+install and nothing added to your project — see the
+[wiki](https://github.com/DRincs-Productions/roves-wiki) for details.
+
 These are the same build steps as upstream Servo — Roves is a source-level fork, not a
 different build system. For deeper background, see the Servo Book's own [Getting the Code]
 and [Building Servo] pages; where this fork's behavior actually differs from what's
