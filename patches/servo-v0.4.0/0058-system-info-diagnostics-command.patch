@@ -1,0 +1,55 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index de03ec2..c1399c4 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -242,6 +242,7 @@ swapper = "0.1"
+ syn = { version = "2", default-features = false, features = ["clone-impls", "derive", "parsing"] }
+ synstructure = "0.13"
+ sys-locale = "0.3"
++sysinfo = { version = "0.38" }
+ taffy = { version = "0.11.0", default-features = false, features = ["calc", "detailed_layout_info", "grid", "std"] }
+ tempfile = "3"
+ tendril = { version = "0.5", features = ["encoding_rs"] }
+diff --git a/ports/servoshell/Cargo.toml b/ports/servoshell/Cargo.toml
+index 216e44d..1e701d5 100644
+--- a/ports/servoshell/Cargo.toml
++++ b/ports/servoshell/Cargo.toml
+@@ -136,6 +136,7 @@ serde_json = { workspace = true }
+ servo-allocator = { workspace = true }
+ steamworks = { version = "0.13", optional = true }
+ surfman = { workspace = true, features = ["sm-raw-window-handle-06", "sm-x11"] }
++sysinfo = { workspace = true }
+ winit = { workspace = true }
+ 
+ [target.'cfg(any(all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))'.dependencies]
+diff --git a/ports/servoshell/desktop/protocols/roves.rs b/ports/servoshell/desktop/protocols/roves.rs
+index d5661cc..05ebfac 100644
+--- a/ports/servoshell/desktop/protocols/roves.rs
++++ b/ports/servoshell/desktop/protocols/roves.rs
+@@ -90,6 +90,26 @@ impl ProtocolHandler for RovesProtocolHandler {
+             // `fetch()` itself before ever reaching Rust code, which is
+             // exactly what `core.invoke`'s caller sees as "unavailable".
+             "is_available" => Ok("true"),
++            // Host/engine diagnostics for bug reports and graphics-compatibility triage --
++            // see `@drincs/roves-api/core`'s `systemInfo()`. Field names deliberately mirror
++            // `@tauri-apps/plugin-os`'s (`type()`/`version()`/`arch()`) and the `os_info`
++            // crate's (`os_type`/`version`/`bitness`/`architecture`) conventions, so code
++            // that already knows either of those feels at home here too -- `engine_version`
++            // is the one addition neither has an equivalent for, since neither wraps an
++            // engine a page could plausibly want the *version of*, the way Roves' own
++            // `servoshell::VERSION` matters for graphics/compatibility debugging the same way
++            // a "webview version" would elsewhere.
++            "system_info" => return Box::pin(std::future::ready(json_response(
++                request,
++                serde_json::json!({
++                    "os_type": sysinfo::System::distribution_id(),
++                    "os_version": sysinfo::System::os_version(),
++                    "bitness": if cfg!(target_pointer_width = "64") { "64-bit" } else { "32-bit" },
++                    "architecture": std::env::consts::ARCH,
++                    "engine_version": crate::VERSION,
++                })
++                .to_string(),
++            ))),
+             // Closes every open window. In this fork's usual single-window
+             // kiosk setup (see ../../CUSTOMIZATIONS.md's toolbar/tab removal
+             // entries) that's equivalent to quitting the app: once no

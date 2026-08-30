@@ -4871,3 +4871,60 @@ wolf-and-chains artwork correctly (not blank/corrupt). Not done: an actual `mach
 launch showing the *new* artwork in the boot splash/window icon/taskbar — no local Servo build
 in this environment (same constraint as the SVG `currentColor` entry above); the next real CI
 build is what would confirm this end-to-end.
+
+## 2026-08-30 — `system_info` diagnostics command on the `roves:` protocol
+
+**Files:** `Cargo.toml` (workspace root), `ports/servoshell/Cargo.toml`,
+`ports/servoshell/desktop/protocols/roves.rs`. Plus, outside this `servo/` directory (not
+patch-tracked — see the README.md/examples/ precedent above): `roves-api/src/core.ts`, adding
+a `SystemInfo` interface + `systemInfo()` function.
+
+**Patch:** `patches/servo-v0.4.0/0058-system-info-diagnostics-command.patch`
+
+**Upstream behavior:** no equivalent — this is new functionality, not a modification of
+existing upstream logic.
+
+**Change:** added a new `system_info` command to `RovesProtocolHandler` (see the 2026-08-06
+"Roves' own general-purpose `invoke()` bridge" entry above for how this protocol works),
+returning a JSON object with host OS and engine diagnostics: `os_type` and `os_version` (via
+the `sysinfo` crate's `System::distribution_id()`/`System::os_version()` associated
+functions — no `System` instance needed for these two), `bitness` (derived from
+`cfg!(target_pointer_width = "64")`, not from `sysinfo`, since that crate doesn't expose
+process/OS bitness directly), `architecture` (`std::env::consts::ARCH`), and `engine_version`
+(this fork's own `servoshell::VERSION` constant — the running Servo build's actual version,
+not a generic "webview version" the way Tauri/Electron would report one, since here the
+engine itself is the thing worth naming for graphics/compatibility debugging). Added
+`sysinfo = { version = "0.38" }` to the workspace's shared dependency table (it was already
+present as a transitive dependency in `Cargo.lock` at that version, pulled in indirectly by
+something else in the tree, so this adds no new dependency to the build) and wired it into
+`ports/servoshell/Cargo.toml`'s existing desktop-only dependency block (alongside
+`steamworks`/`surfman`, which live under the same `cfg(not(any(target_os = "android",
+target_env = "ohos")))` block since neither Android nor OpenHarmony route through this
+protocol handler the same way).
+
+Outside `servo/`: `roves-api/src/core.ts` gained a `SystemInfo` interface and a `systemInfo()`
+function (`invoke<SystemInfo>("system_info")`), following the same `core.invoke()` pattern as
+`isAvailable()`/`exit()` above it in that file. Field names deliberately mirror
+`@tauri-apps/plugin-os`'s (`type()`/`version()`/`arch()`) and the `os_info` crate's
+(`os_type`/`version`/`bitness`/`architecture`) own conventions, so code already familiar with
+either feels at home; `engine_version` is the one field neither has an equivalent for.
+
+**Why:** requested for bug-report and graphics-compatibility triage — knowing the host OS,
+its version, process bitness/architecture, and specifically *which build of the Servo fork*
+is running (rather than a generic "webview version") narrows down graphics/rendering
+discrepancies reported by game developers or players far faster than asking them to describe
+their machine by hand.
+
+**Not done (left as a judgment call, not an oversight):** a `graphics_backend` field (which
+compositor/GPU backend Servo picked at runtime) was considered but not added — there wasn't
+an existing, already-computed value to surface cheaply (unlike `os_type`/`architecture`,
+which `sysinfo`/`std::env::consts` hand over for free); wiring one up would mean reaching into
+`surfman`/`webrender`'s own backend-selection state, a larger change than this pass, deferred
+until it's actually needed for a concrete debugging case.
+
+**Verification:** `roves-api`'s own `tsup` build (`npm run build`) confirmed the new
+`SystemInfo`/`systemInfo()` TypeScript compiles and emits `.d.ts` output cleanly. The Rust
+side was **not** locally compiled — this environment has no working C/C++ toolchain reachable
+outside `mach`'s own env setup (see the SVG `currentColor` entry above for the same
+constraint) — so this is pending confirmation from the next CI run/real launch before being
+treated as fully verified end-to-end.

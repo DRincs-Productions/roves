@@ -90,6 +90,26 @@ impl ProtocolHandler for RovesProtocolHandler {
             // `fetch()` itself before ever reaching Rust code, which is
             // exactly what `core.invoke`'s caller sees as "unavailable".
             "is_available" => Ok("true"),
+            // Host/engine diagnostics for bug reports and graphics-compatibility triage --
+            // see `@drincs/roves-api/core`'s `systemInfo()`. Field names deliberately mirror
+            // `@tauri-apps/plugin-os`'s (`type()`/`version()`/`arch()`) and the `os_info`
+            // crate's (`os_type`/`version`/`bitness`/`architecture`) conventions, so code
+            // that already knows either of those feels at home here too -- `engine_version`
+            // is the one addition neither has an equivalent for, since neither wraps an
+            // engine a page could plausibly want the *version of*, the way Roves' own
+            // `servoshell::VERSION` matters for graphics/compatibility debugging the same way
+            // a "webview version" would elsewhere.
+            "system_info" => return Box::pin(std::future::ready(json_response(
+                request,
+                serde_json::json!({
+                    "os_type": sysinfo::System::distribution_id(),
+                    "os_version": sysinfo::System::os_version(),
+                    "bitness": if cfg!(target_pointer_width = "64") { "64-bit" } else { "32-bit" },
+                    "architecture": std::env::consts::ARCH,
+                    "engine_version": crate::VERSION,
+                })
+                .to_string(),
+            ))),
             // Closes every open window. In this fork's usual single-window
             // kiosk setup (see ../../CUSTOMIZATIONS.md's toolbar/tab removal
             // entries) that's equivalent to quitting the app: once no

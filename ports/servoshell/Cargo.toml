@@ -136,6 +136,7 @@ serde_json = { workspace = true }
 servo-allocator = { workspace = true }
 steamworks = { version = "0.13", optional = true }
 surfman = { workspace = true, features = ["sm-raw-window-handle-06", "sm-x11"] }
+sysinfo = { workspace = true }
 winit = { workspace = true }
 
 [target.'cfg(any(all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))'.dependencies]
