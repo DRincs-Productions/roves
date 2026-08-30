@@ -245,6 +245,11 @@ you and runs your already-built `dist/` folder directly from your editor, with n
 install and nothing added to your project — see the
 [wiki](https://github.com/DRincs-Productions/roves-wiki) for details.
 
+An AI coding agent working in this repo (or any project that uses Roves) can also load
+[`.claude/skills/roves`](./.claude/skills/roves/SKILL.md) — a Claude Code skill covering what
+Roves is and how to test a game with it, wire up the VS Code extension, or add a
+`roves-action` GitHub Actions workflow, without re-deriving any of that from scratch.
+
 These are the same build steps as upstream Servo — Roves is a source-level fork, not a
 different build system. For deeper background, see the Servo Book's own [Getting the Code]
 and [Building Servo] pages; where this fork's behavior actually differs from what's
