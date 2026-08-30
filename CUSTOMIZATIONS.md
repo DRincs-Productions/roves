@@ -4698,6 +4698,63 @@ rebuild takes. Verify the CI build actually compiles cleanly, then re-test the e
 (`pixi-vn-react-template`'s main menu, `Load`/`Settings` buttons, dark theme) against the
 resulting binary before considering this closed.
 
+**Correction (2026-08-30, after a real published release confirmed the fix above did nothing):**
+downloaded the actual `v0.4.6` release (built from the commit containing everything above,
+CI green on all 6 platform jobs) and re-ran the exact repro — the icon was still black. CI
+passing only ever proved the engine still *compiles and doesn't crash*, never that this
+specific visual bug was actually fixed; nothing in `test.yml` checks rendered pixel colors.
+
+**Root cause of the original fix's own failure:** `components/layout/replaced.rs`'s
+`svg_kind_size` (added above) is only ever reached when box-tree construction actually
+reconstructs this element — which only happens when `components/layout/traversal.rs`'s
+`box_damage_action` sees `LayoutDamage::DescendantHasBoxDamage`/`BoxDamage` bits on it
+(`BoxDamageAction::TryRebuild`/`RebuildAncestor`). Confirmed directly against the vendored
+`stylo` crate: the `color` longhand is declared `servo_restyle_damage = "repaint"`
+(`stylo-0.19.0/properties/longhands.toml`), so a `color`-only restyle produces *only*
+`RestyleDamage::REPAINT` — never any bit `LayoutDamage`'s box-rebuild range overlaps. The
+one hook that could escalate a repaint into box-rebuild damage
+(`TElement::compute_layout_damage`, `components/script/layout_dom/
+servo_dangerous_style_element.rs`) is itself gated on the base damage already containing
+`RELAYOUT` (`stylo-0.19.0/servo/restyle_damage.rs`), which a `color` change never has either.
+Net effect: `svg_kind_size`'s own color-mismatch check — sound on its own — simply never got
+a chance to run a second time after the SVG's first (pre-theme-toggle, wrong-color)
+serialization, for exactly the restyle shape (a `color`-only change from a class toggled onto
+a distant ancestor) this whole patch exists to handle. `usvg`/`resvg`'s own `currentColor`
+resolution against the `color` presentation attribute (`inject_root_color_attribute`) was
+independently confirmed correct and not the problem
+(`usvg-0.47.0/src/parser/style.rs`/`svgtree/mod.rs`).
+
+**Files (additional):** `components/layout/traversal.rs`.
+
+**Change:** `RecalcStyle::process_preorder` (Servo's own patch-tracked style-traversal code,
+unlike the external `stylo` crate whose damage classification is the actual root cause above)
+now calls a new `escalate_damage_for_stale_svg_color` right after `recalc_style_at` computes
+each element's fresh style. If the element is an inline `<svg>` root (`NodeExt::as_svg`) and
+its freshly computed `color` doesn't match `SVGElementData::resolved_color` (the color already
+baked into its cached serialization), it force-inserts
+`RestyleDamage::from(LayoutDamage::DescendantHasBoxDamage)` into that element's own damage —
+the identical bit `Element::restyle(NodeDamage::ContentOrHeritage)` already uses for "this
+box's own content changed, rebuild it and its ancestors, not descendants"
+(`components/script/dom/element/element.rs`), which is exactly the right shape here: an SVG
+replaced element has no real box-tree descendants of its own to rebuild. This guarantees
+`box_damage_action` sees `TryRebuild` and re-runs `svg_kind_size` in the same pass,
+independent of whatever damage `stylo` itself classified the restyle as. Required widening
+`RecalcStyle`'s own trait bounds (`E::ConcreteNode: NodeExt<'dom>`) to reach `as_svg()` from
+inside the traversal — verified this is the only real instantiation of `RecalcStyle` anywhere
+in the tree (`components/layout/layout_impl.rs`), so the extra bound can't break some other,
+differently-typed caller.
+
+**Patch:** regenerated `patches/servo-v0.4.0/0057-svg-currentcolor-restyle-invalidation.patch`
+in place — one coherent "fix inline SVG `currentColor`" change, not a patch documenting its own
+first, non-functional attempt as a separate reviewable step (same reasoning the 2026-08-14 boot
+splash icon entry above used for its own multi-round corrections).
+
+**Verification:** not yet compiled locally, same constraint as above — pushed straight to CI
+again. This time, *don't* consider the bug closed on green CI alone (that's exactly what went
+wrong last time) — re-download the resulting binary and re-check the actual repro
+(`pixi-vn-react-template`'s `Load`/`Settings` icons under the dark theme) before calling this
+done.
+
 ## 2026-08-29 — Regenerated icon assets from an updated `icon.svg`
 
 **Files:** `icon.svg`, `resources/servo.svg`, `resources/servo_64.png`,

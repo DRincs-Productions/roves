@@ -91,6 +91,78 @@ index 65f5f06..2d7eddd 100644
          };
  
          let cached_image = svg_source.and_then(|svg_source| {
+diff --git a/components/layout/traversal.rs b/components/layout/traversal.rs
+index 1e8c15f..13586ab 100644
+--- a/components/layout/traversal.rs
++++ b/components/layout/traversal.rs
+@@ -19,6 +19,49 @@ use crate::context::LayoutContext;
+ use crate::dom::{DOMLayoutData, NodeExt};
+ use crate::layout_root::LayoutRoot;
+ 
++/// If `node` is an inline `<svg>` root whose cached serialization was baked with a
++/// different `color` than it now computes to, force box-tree-rebuild damage on it.
++///
++/// Why this is needed at all: inline SVG content is rendered by serializing it once to a
++/// `data:` url and rasterizing that with `resvg`/`usvg` (see `SVGSVGElement::
++/// serialize_and_cache_subtree`'s own doc comment) — it isn't laid out/painted in a
++/// cascade-aware way (`components/layout/stylesheets/servo.css` disables styling `<svg>`
++/// descendants entirely, tracked upstream as servo/servo#10646), so a `stroke`/
++/// `fill: currentColor` needs that serialization baked with this element's own *current*
++/// computed `color` -- see `SVGElementData::resolved_color`'s own doc comment and
++/// `components/layout/replaced.rs`'s `svg_kind_size`, which does that comparison and
++/// re-queues serialization on a mismatch.
++///
++/// The problem `svg_kind_size` alone can't solve: it only runs when box-tree construction
++/// actually reaches this element, which only happens on `BoxDamageAction::TryRebuild`/
++/// `RebuildAncestor` (`box_damage_action`, below) -- and a `color`-only restyle produces
++/// only `RestyleDamage::REPAINT` in `stylo` (the external crate this fork's `patches/` don't
++/// cover), which never sets those bits. Without this check, an SVG's `currentColor` would
++/// permanently miss any restyle that doesn't *also* change some layout-affecting property
++/// (this was reproduced directly: a `.dark` class toggled onto `<html>` after first paint —
++/// common for anything doing client-side theme switching -- correctly repainted ordinary
++/// text `color` but left `currentColor`-using SVG strokes/fills stuck at whatever computed
++/// on the very first, pre-theme-toggle layout pass forever). This is Servo's own
++/// patch-tracked code (unlike `stylo`), so it's the right place to force that escalation
++/// rather than trying to patch `stylo`'s damage classification itself.
++fn escalate_damage_for_stale_svg_color<'dom, N: NodeExt<'dom>>(
++    node: &N,
++    element_data: &mut ElementData,
++) {
++    let Some(svg_data) = node.as_svg() else {
++        return;
++    };
++    let Some(styles) = element_data.styles.get_primary() else {
++        return;
++    };
++    let current_color = styles.get_inherited_text().clone_color();
++    if svg_data.resolved_color != Some(current_color) {
++        element_data
++            .damage
++            .insert(RestyleDamage::from(LayoutDamage::DescendantHasBoxDamage));
++    }
++}
++
+ pub struct RecalcStyle<'a> {
+     context: &'a LayoutContext<'a>,
+ }
+@@ -36,7 +79,7 @@ impl<'a> RecalcStyle<'a> {
+ impl<'dom, E> DomTraversal<E> for RecalcStyle<'_>
+ where
+     E: DangerousStyleElement<'dom> + TElement,
+-    E::ConcreteNode: 'dom + DangerousStyleNode<'dom>,
++    E::ConcreteNode: 'dom + DangerousStyleNode<'dom> + NodeExt<'dom>,
+ {
+     fn process_preorder<F>(
+         &self,
+@@ -68,6 +111,8 @@ where
+             &mut element_data,
+             note_child,
+         );
++
++        escalate_damage_for_stale_svg_color(&node, &mut element_data);
+     }
+ 
+     #[inline]
 diff --git a/components/script/dom/svg/svgsvgelement.rs b/components/script/dom/svg/svgsvgelement.rs
 index 299db17..94b9dd1 100644
 --- a/components/script/dom/svg/svgsvgelement.rs
