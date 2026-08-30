@@ -4808,10 +4808,17 @@ particular color space.
 **Patch:** regenerated `patches/servo-v0.4.0/0057-svg-currentcolor-restyle-invalidation.patch`
 in place again — same "one coherent fix" reasoning as both prior corrections in this entry.
 
-**Verification:** same local-compile constraint as above, pushed to CI again. This is the
-third round of "green CI, then check a real screenshot" for this bug — treat it as such:
-don't close this out on CI alone, re-check `pixi-vn-react-template`'s `Load`/`Settings` icons
-under the dark theme against the actual resulting binary.
+**Verification:** same local-compile constraint as above, pushed to CI again (green, all 6
+platforms) and cut as a real release, `v0.4.8`. **Confirmed fixed this time** — downloaded the
+actual `v0.4.8` release asset, ran the exact repro (`pixi-vn-react-template`'s main menu,
+dark theme) fresh after a full machine restart (an unrelated GPU/driver issue from an earlier
+round of testing had been giving false "still broken" readings even on the unmodified
+`v0.4.6` binary — see the correction above), and both `Load` and `Settings` icons render
+white, matching the surrounding text. `roves.log` no longer contains any
+`Failed to parse color value` lines. This closes out what turned out to be three separate,
+independently-necessary fixes stacked in this one patch: (1) baking the resolved `color` into
+the serialized SVG at all, (2) re-triggering that bake when the color changes after a
+repaint-only restyle, and (3) serializing that color in a syntax `usvg` can actually parse.
 
 ## 2026-08-29 — Regenerated icon assets from an updated `icon.svg`
 
