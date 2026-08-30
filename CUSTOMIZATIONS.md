@@ -4726,32 +4726,56 @@ independently confirmed correct and not the problem
 
 **Files (additional):** `components/layout/traversal.rs`.
 
-**Change:** `RecalcStyle::process_preorder` (Servo's own patch-tracked style-traversal code,
-unlike the external `stylo` crate whose damage classification is the actual root cause above)
-now calls a new `escalate_damage_for_stale_svg_color` right after `recalc_style_at` computes
-each element's fresh style. If the element is an inline `<svg>` root (`NodeExt::as_svg`) and
-its freshly computed `color` doesn't match `SVGElementData::resolved_color` (the color already
-baked into its cached serialization), it force-inserts
-`RestyleDamage::from(LayoutDamage::DescendantHasBoxDamage)` into that element's own damage —
-the identical bit `Element::restyle(NodeDamage::ContentOrHeritage)` already uses for "this
-box's own content changed, rebuild it and its ancestors, not descendants"
-(`components/script/dom/element/element.rs`), which is exactly the right shape here: an SVG
-replaced element has no real box-tree descendants of its own to rebuild. This guarantees
-`box_damage_action` sees `TryRebuild` and re-runs `svg_kind_size` in the same pass,
-independent of whatever damage `stylo` itself classified the restyle as. Required widening
-`RecalcStyle`'s own trait bounds (`E::ConcreteNode: NodeExt<'dom>`) to reach `as_svg()` from
-inside the traversal — verified this is the only real instantiation of `RecalcStyle` anywhere
-in the tree (`components/layout/layout_impl.rs`), so the extra bound can't break some other,
-differently-typed caller.
+**First attempt at a fix (this section originally described it; superseded below, kept for the
+record): hooking into `RecalcStyle::process_preorder` — didn't compile.** The idea was sound
+(escalate damage right after `recalc_style_at` computes fresh style) but reaching
+`NodeExt::as_svg()` from there needed widening `RecalcStyle`'s own generic trait bounds to
+`E::ConcreteNode: NodeExt<'dom>`. That bound is never satisfiable: `process_preorder` operates
+on `E::ConcreteNode`, which resolves to `ServoDangerousStyleNode` (`components/script/
+layout_dom/servo_dangerous_style_node.rs`) — a distinct type from `ServoLayoutNode`, the only
+type `NodeExt` is actually implemented for (`components/layout/dom.rs`). Pushed anyway without
+local verification (no working C/C++ toolchain in that environment for even `cargo check` —
+`glslopt`'s build script needs `clang-cl.exe`/a linker neither this nor the release environment
+prior had wired into `PATH`) — CI failed `mach build` on all 6 matrix jobs, a genuine compile
+error, not flaky infra.
+
+**Actual fix:** `compute_damage_and_rebuild_box_tree_below_dirty_root`
+(`components/layout/traversal.rs`) — unlike `RecalcStyle::process_preorder`, this function is
+**not** generic; it already takes a concrete `node: ServoLayoutNode<'dom>` and already borrows
+`element_data` (via `element.element_data_mut()`) to read the freshly-computed style right
+where it extracts this element's own `RestyleDamage` into a `LayoutDamage` value — no new trait
+bounds needed at all. A new `svg_color_is_stale(node, &element_data)` helper does the same
+comparison the first attempt did (`NodeExt::as_svg()`'s `resolved_color` vs
+`get_inherited_text().clone_color()`), and on a mismatch the computed `LayoutDamage` gets
+`DescendantHasBoxDamage` inserted directly — the identical bit
+`Element::restyle(NodeDamage::ContentOrHeritage)` already uses for "this box's own content
+changed, rebuild it and its ancestors, not descendants" (`components/script/dom/element/
+element.rs`), which is exactly the right shape here: an SVG replaced element has no real
+box-tree descendants of its own to rebuild. This function runs for every element carrying any
+restyle damage at all (including plain `REPAINT`, which is why `box_damage_action` has its own
+repaint-only fallthrough path) — including a `color`-only restyle propagated down from an
+inherited-property change on a distant ancestor — so it reaches our stale-color SVG on exactly
+the restyle this whole patch exists to handle, independent of whatever damage `stylo` itself
+classified that restyle as.
 
 **Patch:** regenerated `patches/servo-v0.4.0/0057-svg-currentcolor-restyle-invalidation.patch`
 in place — one coherent "fix inline SVG `currentColor`" change, not a patch documenting its own
 first, non-functional attempt as a separate reviewable step (same reasoning the 2026-08-14 boot
 splash icon entry above used for its own multi-round corrections).
 
-**Verification:** not yet compiled locally, same constraint as above — pushed straight to CI
-again. This time, *don't* consider the bug closed on green CI alone (that's exactly what went
-wrong last time) — re-download the resulting binary and re-check the actual repro
+**Verification:** still not compiled locally — this environment does have a Rust toolchain
+(`rustc`/`cargo`, and a prior `target/debug` from some earlier build), but no working
+C/C++ toolchain reachable from a plain shell (`clang-cl.exe`/`link.exe`/`lld-link.exe` all
+missing from `PATH` despite Visual Studio 2022 being installed — `mach`'s own environment
+setup for it isn't active outside `mach`'s own invocation, and this repo has native
+dependencies, like `glslopt`, with their own build scripts that need it even just to
+`cargo check`), so this is a real environment gap, not a shortcut taken carelessly the second
+time either. Manually re-derived every type in the new call chain against this file's own
+existing, already-working code (`ServoLayoutNode`/`LayoutElement`/`ElementData` are all used
+identically a few lines away in the same function) rather than guessing blind the way the
+superseded generic-bounds attempt above effectively did. Pushed to CI again — same rule as
+last time: a green build only proves it compiles and doesn't crash, *not* that the icon is
+actually fixed — re-download the resulting binary and re-check the actual repro
 (`pixi-vn-react-template`'s `Load`/`Settings` icons under the dark theme) before calling this
 done.
 

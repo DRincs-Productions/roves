@@ -19,49 +19,6 @@ use crate::context::LayoutContext;
 use crate::dom::{DOMLayoutData, NodeExt};
 use crate::layout_root::LayoutRoot;
 
-/// If `node` is an inline `<svg>` root whose cached serialization was baked with a
-/// different `color` than it now computes to, force box-tree-rebuild damage on it.
-///
-/// Why this is needed at all: inline SVG content is rendered by serializing it once to a
-/// `data:` url and rasterizing that with `resvg`/`usvg` (see `SVGSVGElement::
-/// serialize_and_cache_subtree`'s own doc comment) — it isn't laid out/painted in a
-/// cascade-aware way (`components/layout/stylesheets/servo.css` disables styling `<svg>`
-/// descendants entirely, tracked upstream as servo/servo#10646), so a `stroke`/
-/// `fill: currentColor` needs that serialization baked with this element's own *current*
-/// computed `color` -- see `SVGElementData::resolved_color`'s own doc comment and
-/// `components/layout/replaced.rs`'s `svg_kind_size`, which does that comparison and
-/// re-queues serialization on a mismatch.
-///
-/// The problem `svg_kind_size` alone can't solve: it only runs when box-tree construction
-/// actually reaches this element, which only happens on `BoxDamageAction::TryRebuild`/
-/// `RebuildAncestor` (`box_damage_action`, below) -- and a `color`-only restyle produces
-/// only `RestyleDamage::REPAINT` in `stylo` (the external crate this fork's `patches/` don't
-/// cover), which never sets those bits. Without this check, an SVG's `currentColor` would
-/// permanently miss any restyle that doesn't *also* change some layout-affecting property
-/// (this was reproduced directly: a `.dark` class toggled onto `<html>` after first paint —
-/// common for anything doing client-side theme switching -- correctly repainted ordinary
-/// text `color` but left `currentColor`-using SVG strokes/fills stuck at whatever computed
-/// on the very first, pre-theme-toggle layout pass forever). This is Servo's own
-/// patch-tracked code (unlike `stylo`), so it's the right place to force that escalation
-/// rather than trying to patch `stylo`'s damage classification itself.
-fn escalate_damage_for_stale_svg_color<'dom, N: NodeExt<'dom>>(
-    node: &N,
-    element_data: &mut ElementData,
-) {
-    let Some(svg_data) = node.as_svg() else {
-        return;
-    };
-    let Some(styles) = element_data.styles.get_primary() else {
-        return;
-    };
-    let current_color = styles.get_inherited_text().clone_color();
-    if svg_data.resolved_color != Some(current_color) {
-        element_data
-            .damage
-            .insert(RestyleDamage::from(LayoutDamage::DescendantHasBoxDamage));
-    }
-}
-
 pub struct RecalcStyle<'a> {
     context: &'a LayoutContext<'a>,
 }
@@ -79,7 +36,7 @@ impl<'a> RecalcStyle<'a> {
 impl<'dom, E> DomTraversal<E> for RecalcStyle<'_>
 where
     E: DangerousStyleElement<'dom> + TElement,
-    E::ConcreteNode: 'dom + DangerousStyleNode<'dom> + NodeExt<'dom>,
+    E::ConcreteNode: 'dom + DangerousStyleNode<'dom>,
 {
     fn process_preorder<F>(
         &self,
@@ -111,8 +68,6 @@ where
             &mut element_data,
             note_child,
         );
-
-        escalate_damage_for_stale_svg_color(&node, &mut element_data);
     }
 
     #[inline]
@@ -223,6 +178,43 @@ pub(crate) fn compute_damage_and_rebuild_box_tree_above_dirty_root<'dom>(
     damage_for_parent
 }
 
+/// Whether `node` is an inline `<svg>` root whose cached serialization was baked with a
+/// different `color` than its current computed style says it should have.
+///
+/// Why this check exists at all: inline SVG content is rendered by serializing it once to a
+/// `data:` url and rasterizing that with `resvg`/`usvg` (see `SVGSVGElement::
+/// serialize_and_cache_subtree`'s own doc comment) — it isn't laid out/painted in a
+/// cascade-aware way (`components/layout/stylesheets/servo.css` disables styling `<svg>`
+/// descendants entirely, tracked upstream as servo/servo#10646), so a `stroke`/
+/// `fill: currentColor` needs that serialization baked with this element's own *current*
+/// computed `color` — see `SVGElementData::resolved_color`'s own doc comment and
+/// `components/layout/replaced.rs`'s `svg_kind_size`, which does this same comparison and
+/// re-queues serialization on a mismatch.
+///
+/// The problem `svg_kind_size` alone can't solve: it only runs when box-tree construction
+/// actually reaches this element, which needs `LayoutDamage::DescendantHasBoxDamage`/
+/// `BoxDamage` bits already set on it — and a `color`-only restyle produces only `stylo`'s
+/// `RestyleDamage::REPAINT` (the `color` longhand is declared `servo_restyle_damage =
+/// "repaint"` in the vendored `stylo` crate, which this fork's `patches/` don't cover),
+/// which never sets those bits. Without this check, an SVG's `currentColor` permanently
+/// misses any restyle that doesn't *also* change some layout-affecting property — reproduced
+/// directly: a `.dark` class toggled onto `<html>` after first paint (common for anything
+/// doing client-side theme switching) correctly repainted ordinary text `color` but left
+/// `currentColor`-using SVG strokes/fills stuck at whatever computed on the very first,
+/// pre-theme-toggle layout pass, forever. The caller below (Servo's own patch-tracked
+/// damage-computation code, unlike the external `stylo` crate that's the actual root cause)
+/// uses this to force that escalation itself, rather than trying to patch `stylo`'s damage
+/// classification.
+fn svg_color_is_stale(node: ServoLayoutNode<'_>, element_data: &ElementData) -> bool {
+    let Some(svg_data) = node.as_svg() else {
+        return false;
+    };
+    let Some(styles) = element_data.styles.get_primary() else {
+        return false;
+    };
+    svg_data.resolved_color != Some(styles.get_inherited_text().clone_color())
+}
+
 pub(crate) fn compute_damage_and_rebuild_box_tree_below_dirty_root<'dom>(
     layout_context: &LayoutContext,
     node: ServoLayoutNode<'dom>,
@@ -237,10 +229,11 @@ pub(crate) fn compute_damage_and_rebuild_box_tree_below_dirty_root<'dom>(
 
     let (element_damage, is_display_none) = {
         let mut element_data = element.element_data_mut();
-        (
-            LayoutDamage::from(std::mem::take(&mut element_data.damage)),
-            element_data.styles.is_display_none(),
-        )
+        let mut element_damage = LayoutDamage::from(std::mem::take(&mut element_data.damage));
+        if svg_color_is_stale(node, &element_data) {
+            element_damage.insert(LayoutDamage::DescendantHasBoxDamage);
+        }
+        (element_damage, element_data.styles.is_display_none())
     };
 
     let has_dirty_descendants;
