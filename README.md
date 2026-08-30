@@ -133,10 +133,10 @@ roadmap but not yet functional.
 
 Your web content has no *build-time* way to know it's running inside Roves rather than a
 regular browser (or, for that matter, Tauri). A build-time signal is still an option if you
-want one (the parent pixi-vn-react-template project this fork ships with sets an
-`EMBEDDED_TARGET=roves` environment variable when building for Roves — see its
-`.github/workflows/embedded.yml` and `src/lib/hooks/quit-hooks.ts` — a convention of that
-project, not something Roves itself provides). For a genuine *runtime* check instead, Roves
+want one (the parent pixi-vn-react-template project this fork ships with exposes a
+`process.env.ROVES_BUILD` value, set by whoever builds specifically for Roves — see its
+`vite.config.ts` — a convention of that project, not something Roves itself provides). For a
+genuine *runtime* check instead, Roves
 injects `window.__ROVES__ = true` into every page as soon as `<head>` exists, before the
 page's own scripts run (see the "Inject a `window.__ROVES__` marker" entry in
 [CUSTOMIZATIONS.md]) — use `@drincs/roves-api/core`'s `isAvailable()` (see below) to read it
