@@ -4763,7 +4763,7 @@ in place — one coherent "fix inline SVG `currentColor`" change, not a patch do
 first, non-functional attempt as a separate reviewable step (same reasoning the 2026-08-14 boot
 splash icon entry above used for its own multi-round corrections).
 
-**Verification:** still not compiled locally — this environment does have a Rust toolchain
+**Verification:** not compiled locally — this environment does have a Rust toolchain
 (`rustc`/`cargo`, and a prior `target/debug` from some earlier build), but no working
 C/C++ toolchain reachable from a plain shell (`clang-cl.exe`/`link.exe`/`lld-link.exe` all
 missing from `PATH` despite Visual Studio 2022 being installed — `mach`'s own environment
@@ -4773,11 +4773,45 @@ dependencies, like `glslopt`, with their own build scripts that need it even jus
 time either. Manually re-derived every type in the new call chain against this file's own
 existing, already-working code (`ServoLayoutNode`/`LayoutElement`/`ElementData` are all used
 identically a few lines away in the same function) rather than guessing blind the way the
-superseded generic-bounds attempt above effectively did. Pushed to CI again — same rule as
-last time: a green build only proves it compiles and doesn't crash, *not* that the icon is
-actually fixed — re-download the resulting binary and re-check the actual repro
-(`pixi-vn-react-template`'s `Load`/`Settings` icons under the dark theme) before calling this
-done.
+superseded generic-bounds attempt above effectively did. This round *did* compile and boot
+(CI green, all 6 platforms) — but a real screenshot from the resulting `v0.4.7` release still
+showed the icon black. Not a regression from this change specifically: re-tested the
+*unmodified* `v0.4.6` binary side by side and it now failed identically (previously
+confirmed working) — a local GPU/driver issue on the testing machine (a full restart fixed
+it), unrelated to any of this patch's code. Re-tested `v0.4.7` after the restart: the rest of
+the page rendered correctly again, but the icon was still black — a real, second miss.
+
+**Second correction, same day: the actual remaining blocker was the baked color's own CSS
+syntax, not the escalation logic.** `roves.log` had the answer the whole time, just not read
+closely enough until now: `usvg::parser::svgtree] Failed to parse color value:
+'oklch(0.985 0 0)'` (and `oklab(...)`), repeated for every resolved color this session baked
+via `color="..."`. This app's own CSS defines its theme variables with `oklch(...)`
+(`--foreground: oklch(0.985 0 0)`, etc.) — `AbsoluteColor` preserves whatever color space a
+value was originally specified in rather than normalizing to sRGB, so `clone_color()` here
+returns an oklch-space color, and `to_css_string()` faithfully serializes that back out as
+`oklch(...)`. `usvg`'s own CSS color parser doesn't understand CSS Color 4 functions
+(`oklch()`/`oklab()`/`lab()`/`lch()`) — only legacy syntax (`rgb()`/`rgba()`/hex/named). A
+color it can't parse is silently treated as unset, so `currentColor` kept falling back to its
+own default (black) even though a syntactically-present `color` attribute was right there in
+the markup — the escalation logic (this entry's main fix) had been re-baking the *correct*
+color the whole time, just spelled in a dialect the consumer couldn't read.
+
+**Fix:** `SVGSVGElement::serialize_and_cache_subtree` now calls
+`resolved_color.into_srgb_legacy().to_css_string()` instead of a plain `to_css_string()` —
+`AbsoluteColor::into_srgb_legacy()` (already public stylo API, no crate patch needed) converts
+to the sRGB color space and forces the legacy `rgb()`/`rgba()` serialization flag, guaranteeing
+a syntax `usvg` has always supported. `cached_resolved_color` still stores the *original*
+(oklch-space) value, since `AbsoluteColor` is `Copy` and the comparison in
+`svg_color_is_stale`/`svg_kind_size` only needs self-consistency across calls, not any
+particular color space.
+
+**Patch:** regenerated `patches/servo-v0.4.0/0057-svg-currentcolor-restyle-invalidation.patch`
+in place again — same "one coherent fix" reasoning as both prior corrections in this entry.
+
+**Verification:** same local-compile constraint as above, pushed to CI again. This is the
+third round of "green CI, then check a real screenshot" for this bug — treat it as such:
+don't close this out on CI alone, re-check `pixi-vn-react-template`'s `Load`/`Settings` icons
+under the dark theme against the actual resulting binary.
 
 ## 2026-08-29 — Regenerated icon assets from an updated `icon.svg`
 

@@ -156,7 +156,7 @@ index 1e8c15f..775d6c8 100644
  
      let has_dirty_descendants;
 diff --git a/components/script/dom/svg/svgsvgelement.rs b/components/script/dom/svg/svgsvgelement.rs
-index 299db17..94b9dd1 100644
+index 299db17..91225a6 100644
 --- a/components/script/dom/svg/svgsvgelement.rs
 +++ b/components/script/dom/svg/svgsvgelement.rs
 @@ -12,10 +12,11 @@ use layout_api::SVGElementData;
@@ -208,7 +208,7 @@ index 299db17..94b9dd1 100644
          let cloned_nodes = self.process_use_elements(cx);
  
          let serialize_result = self
-@@ -85,14 +99,29 @@ impl SVGSVGElement {
+@@ -85,14 +99,41 @@ impl SVGSVGElement {
  
          let Ok(xml_source) = serialize_result else {
              *self.cached_serialized_data_url.borrow_mut() = Some(Err(()));
@@ -225,8 +225,20 @@ index 299db17..94b9dd1 100644
 +        // document) -- so baking this element's own *actual* computed `color` onto the
 +        // serialized root as a `color="..."` attribute is enough to make `currentColor`
 +        // resolve correctly without needing real cross-document cascade-awareness.
++        //
++        // `resolved_color` is serialized via `into_srgb_legacy()` (forcing plain
++        // `rgb(...)`/`rgba(...)` syntax), not a plain `to_css_string()` -- confirmed directly
++        // (`usvg::parser::svgtree` logs "Failed to parse color value" for it) that `usvg`'s
++        // CSS color parser doesn't understand modern CSS Color 4 functions like `oklch()`/
++        // `oklab()`, which is exactly what `to_css_string()` produces for a color whose
++        // *authored* CSS used those functions (as this app's own `oklch(...)` custom
++        // properties do) -- `AbsoluteColor` preserves the color space it was specified in,
++        // it doesn't normalize to sRGB on its own. A color usvg can't parse is silently
++        // treated as unset, so `currentColor` fell back to its own default (black) even
++        // though a `color` attribute was present in the markup.
          let xml_source: String = xml_source.into();
-+        let xml_source = inject_root_color_attribute(&xml_source, &resolved_color.to_css_string());
++        let legacy_srgb_css = resolved_color.into_srgb_legacy().to_css_string();
++        let xml_source = inject_root_color_attribute(&xml_source, &legacy_srgb_css);
 +
          let base64_encoded_source = base64::engine::general_purpose::STANDARD.encode(xml_source);
          let data_url = format!("data:image/svg+xml;base64,{}", base64_encoded_source);
@@ -239,7 +251,7 @@ index 299db17..94b9dd1 100644
              Err(error) => error!("Unable to parse serialized SVG data url: {error}"),
          };
      }
-@@ -170,10 +199,53 @@ impl SVGSVGElement {
+@@ -170,10 +211,53 @@ impl SVGSVGElement {
          }
  
          *self.cached_serialized_data_url.borrow_mut() = None;
@@ -293,7 +305,7 @@ index 299db17..94b9dd1 100644
  impl<'dom> LayoutDom<'dom, SVGSVGElement> {
      #[expect(unsafe_code)]
      pub(crate) fn data(self) -> SVGElementData<'dom> {
-@@ -189,6 +261,9 @@ impl<'dom> LayoutDom<'dom, SVGSVGElement> {
+@@ -189,6 +273,9 @@ impl<'dom> LayoutDom<'dom, SVGSVGElement> {
                      .borrow_for_layout()
                      .clone()
              },

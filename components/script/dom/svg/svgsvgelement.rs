@@ -112,8 +112,20 @@ impl SVGSVGElement {
         // document) -- so baking this element's own *actual* computed `color` onto the
         // serialized root as a `color="..."` attribute is enough to make `currentColor`
         // resolve correctly without needing real cross-document cascade-awareness.
+        //
+        // `resolved_color` is serialized via `into_srgb_legacy()` (forcing plain
+        // `rgb(...)`/`rgba(...)` syntax), not a plain `to_css_string()` -- confirmed directly
+        // (`usvg::parser::svgtree` logs "Failed to parse color value" for it) that `usvg`'s
+        // CSS color parser doesn't understand modern CSS Color 4 functions like `oklch()`/
+        // `oklab()`, which is exactly what `to_css_string()` produces for a color whose
+        // *authored* CSS used those functions (as this app's own `oklch(...)` custom
+        // properties do) -- `AbsoluteColor` preserves the color space it was specified in,
+        // it doesn't normalize to sRGB on its own. A color usvg can't parse is silently
+        // treated as unset, so `currentColor` fell back to its own default (black) even
+        // though a `color` attribute was present in the markup.
         let xml_source: String = xml_source.into();
-        let xml_source = inject_root_color_attribute(&xml_source, &resolved_color.to_css_string());
+        let legacy_srgb_css = resolved_color.into_srgb_legacy().to_css_string();
+        let xml_source = inject_root_color_attribute(&xml_source, &legacy_srgb_css);
 
         let base64_encoded_source = base64::engine::general_purpose::STANDARD.encode(xml_source);
         let data_url = format!("data:image/svg+xml;base64,{}", base64_encoded_source);
