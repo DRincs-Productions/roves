@@ -4978,6 +4978,11 @@ a minimal test page calling `new OffscreenCanvas(w, h).getContext('2d')`, settin
 `actualBoundingBoxAscent`/`actualBoundingBoxDescent`/`width` values **regardless of the
 requested font size or the canvas's own dimensions** (tested 0×0 through 2048×64), while the
 exact same font/text measured on a regular `<canvas>` element gave correct, expected values
-every time. Not yet verified: the fix itself, pending the next CI build + a live screenshot
-of `PIXI.Text` rendering correctly (this fork has no local Rust build environment — see the
-SVG `currentColor` entry above for the same recurring constraint).
+every time.
+
+**Confirmed fixed (2026-08-31):** built via CI, downloaded the resulting test binary, and
+verified with a live screenshot — the same `PIXI.Text` (`fontFamily: "Arial"`, `fontSize: 60`,
+`stroke`, `dropShadow`) that previously rendered as severely corrupted/mirrored-looking text
+now renders correctly, right-side up, in both a minimal isolated repro and the real game
+(`pixi-vn-react-template`'s own `second_part` narration label, the scene the bug was
+originally reported in).
