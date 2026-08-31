@@ -4986,3 +4986,132 @@ verified with a live screenshot — the same `PIXI.Text` (`fontFamily: "Arial"`,
 now renders correctly, right-side up, in both a minimal isolated repro and the real game
 (`pixi-vn-react-template`'s own `second_part` narration label, the scene the bug was
 originally reported in).
+
+## 2026-08-31 — `mach bundle --android`: pack `--content-dir` into the APK, apply `manifest.webmanifest`'s `orientation`
+
+**Files:** `python/servo/post_build_commands.py`,
+`support/android/apk/servoapp/src/main/AndroidManifest.xml`,
+`support/android/apk/servoapp/build.gradle.kts`,
+`support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt`.
+
+**Patch:** `patches/servo-v0.4.0/0060-android-content-bundling-and-orientation.patch`
+
+**Upstream behavior:** upstream Servo already ships a complete, unmodified Android port —
+JNI bridge (`ports/servoshell/egl/android/`), a real Gradle project
+(`support/android/apk/`), and full `--android` target handling in
+`python/servo/platform/build_target.py`/`build_commands.py`/`package_commands.py` — none of
+which this fork had touched before now (see the `.github/workflows/android.yml` entry
+below/`.github/workflows/` itself, not patch-tracked, for the CI side of this). But none of it
+had any notion of "a game's own web content": `mach bundle` (this fork's own packaging
+command, patch 0004) had no `--android` branch at all, `AndroidManifest.xml`'s `MainActivity`
+had no `android:screenOrientation` (defaulting to `unspecified` — the OS/sensor decides,
+rotates freely), and a normal (non-`ACTION_VIEW`) launch never called `loadUri` at all before
+native init, so the app had nothing to display beyond Servo's own built-in UI shell.
+
+**Change:** `bundle()` gained an early `is_android(self.target)` branch (before any of the
+desktop-only launch.json/icon/per-OS logic) dispatching to a new `_bundle_android` method:
+copies `--content-dir` straight into `servoapp/src/main/assets/www/` (an installed APK's
+assets are baked in at package time — there's no desktop-style "drop loose/packed files next
+to an already-built binary" equivalent for Android), then re-invokes Gradle's
+`:servoapp:assemble<Arch>Debug` task (mirroring `package_commands.py`'s own arch-string
+mapping) with an extra `-PservoScreenOrientation=<value>` project property, and copies the
+resulting `.apk` into `--output`. `_resolve_android_orientation` reads
+`manifest.webmanifest`'s (or plain `manifest.json`'s) standard `orientation` field and
+translates the 6 directional PWA values into their Android `android:screenOrientation`
+equivalents (`landscape` → `sensorLandscape`, `landscape-primary` → `landscape`,
+`landscape-secondary` → `reverseLandscape`, and the portrait equivalents) — `any`/`natural`/
+missing/unrecognized all fall back to `unspecified`, so content with no manifest or no
+`orientation` field behaves exactly as before. `build.gradle.kts`'s `defaultConfig` sets
+`manifestPlaceholders["screenOrientation"]` from a `servoScreenOrientation` Gradle project
+property (defaulting to `"unspecified"` when unset, e.g. the plain engine-shell CI build
+below), which `AndroidManifest.xml`'s `MainActivity` now references via
+`android:screenOrientation="${screenOrientation}"`. `MainActivity.kt`'s `onCreate` now calls
+`servoView.loadUri("file:///android_asset/www/index.html")` in the `else` branch of the
+existing `Intent.ACTION_VIEW` check (previously that branch did nothing at all) — the exact
+path the freshly-copied assets land at, mirroring the existing `ACTION_VIEW` call one line
+above it rather than introducing a new code pattern.
+
+Getting `bundle()` to actually see `--android` at all needed one more, non-obvious fix: its
+`@CommandBase.common_command_arguments(...)` decorator was `binary_selection=True` only, which
+neither registers `--android`/`--target` as valid flags nor ever calls
+`self.configure_build_target(...)` — so `self.target` stayed the host desktop target
+regardless of any `--android` passed on the command line, and argparse would have rejected an
+unregistered `--android` outright besides. Adding `build_configuration=True` alongside it
+fixes both: it registers `--android`/`--target` (plus a handful of build-only flags --
+`--features`, `--media-stack`, etc. -- that are meaningless for `bundle` and silently absorbed
+by its existing `**kwargs`), and, critically, makes `command_base.py`'s own
+`configuration_decorator` call `self.configure_build_target(kwargs)` *before*
+`binary_selection`'s `self.get_binary_path(...)` a few lines later in that same wrapper — both
+inside one closure, in the right order. This is deliberately *not* the
+`@CommandBase.allow_target_configuration` decorator `run`/`package` use for the same purpose:
+that decorator wraps *around* the `common_command_arguments`-decorated function, so its own
+`configure_build_target` call would run *after* `binary_selection` had already resolved
+`servo_binary` against the still-unconfigured host target — i.e. it would have silently kept
+resolving the desktop binary path even with `--android` passed. See `bundle()`'s decorator
+comment for the full reasoning.
+
+**Why:** requested to make the just-added Android CI build (see the entry below) actually
+capable of shipping a real game rather than only Servo's own bare browser-chrome UI, with
+`orientation` singled out as the first, most important manifest field to honor — a mobile game
+that's designed landscape-only but launches with the OS free to rotate it into portrait (or
+vice-versa) is a broken first impression, not a cosmetic gap. App name/icon/`theme_color` from
+the same manifest are a deliberate, explicit follow-up — not attempted in this pass.
+
+**Not done (left as a judgment call, not an oversight):** no release/signed build path for
+Android — `mach bundle --android` only ever produces a debug build (the Android Gradle
+Plugin's own auto-generated debug key), matching the plain-shell CI build; a signed release
+`.apk`/`.aab` would need its own keystore-secret plumbing, deliberately out of scope until an
+actual distribution need for one shows up. Also not done: any way to swap a bundled game's
+content without a full Gradle rebuild — unlike desktop's "one prebuilt shell + loose/packed
+files dropped next to it," an installed APK's assets are fixed at package time, so (unlike
+every desktop platform) `mach bundle --android` is inherently a per-game rebuild, not a
+content-swap onto a prebuilt shell.
+
+**Verification:** `python/servo/post_build_commands.py` parses cleanly (`ast.parse`) and the
+new patch applies cleanly with `patch -p1` to a fresh pristine `v0.4.0` extraction (see
+`.github/workflows/android.yml`'s own patch-application step for the same mechanism in CI).
+The actual Gradle/Kotlin/JNI path (does the APK actually build, does the orientation
+placeholder actually resolve, does the bundled `index.html` actually load) is **not** locally
+verified — Android cross builds only run on Linux/macOS hosts (this environment is Windows),
+and there is no local Android SDK/NDK/Gradle toolchain here regardless. Pending a real
+`mach bundle --android --content-dir <dist>` run on Linux/macOS before this is treated as
+confirmed working end-to-end.
+
+## 2026-08-31 — Android: CI build (debug `.apk` on every commit to `main`)
+
+**Files:** none under this directory's patch-tracked Servo source — this is a new top-level
+CI workflow, `.github/workflows/android.yml`, alongside the existing `test.yml`/`release.yml`
+(same reasoning as those two for why workflow files themselves aren't patch-tracked: they're
+this fork's own meta files, not modifications to anything that originates in upstream Servo).
+`README.md`'s "Supported platforms" table also gained an Android row.
+
+**Patch:** none — see above.
+
+**Upstream behavior:** n/a — CI infrastructure, not an engine behavior change.
+
+**Change:** `android.yml` builds on every push to `main` (`workflow_dispatch` too), using the
+same pristine-tag-plus-patches reconstruction `test.yml` uses (not `release.yml`'s "build the
+tracked tree directly" approach — this only exists to smoke-test that the patches still apply
+and still build, on every commit, the same purpose `test.yml` serves for desktop). Installs a
+JDK, the Android SDK (`platforms;android-37`/`build-tools;36.0.0`, matching
+`servoapp/build.gradle.kts`'s `compileSdk`/`buildToolsVersion`), and NDK r28 (resolved
+dynamically via `sdkmanager --list` rather than a hardcoded exact patch version, since
+`python/servo/platform/build_target.py`'s `AndroidTarget` hard-requires major version 28
+specifically but doesn't care which r28.x) on `ubuntu-latest` (Android cross builds are
+Linux/macOS-only, enforced by that same file). Runs a plain `./mach build --android`, which
+upstream's own `build_commands.py` auto-dispatches into `mach package --android` (a Gradle
+assemble task) once `libservoshell.so` cross-compiles, since `AndroidTarget.needs_packaging()`
+is `True` — no `mach bundle` involvement yet at this point (see the entry above, added the
+same day, once `--content-dir`/orientation support existed). Uploads the resulting debug
+`.apk` as a plain workflow artifact — not a GitHub Release (see `test.yml`/`release.yml` for
+those), per how this was requested.
+
+**Why:** first step toward Android as a real Roves distribution target, requested explicitly
+scoped to "just the shell" for this pass — no `roves-action`/`roves-wiki` sync yet (both
+normally required in the same turn as a CI/build-surface change — see `CLAUDE.md` — explicitly
+deferred here per that request), and no `mach bundle` content wiring at the time this was
+written (see the entry above for that, added later the same day).
+
+**Verification:** not locally testable — Android cross builds are Linux/macOS-only host
+(this environment is Windows) and there is no local Android SDK/NDK/Gradle toolchain here
+regardless. Pending confirmation from the first real run of `android.yml` on GitHub Actions.

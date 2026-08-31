@@ -136,6 +136,15 @@ class MainActivity : AppCompatActivity(), Servo.Client {
 
         if (Intent.ACTION_VIEW == intent.action) {
             servoView.loadUri(intent.data.toString())
+        } else {
+            // No incoming URL to load (a normal launcher-icon tap, not an Android "open with"
+            // intent) -- load whatever `mach bundle --android --content-dir` packed into the
+            // APK's own assets (see post_build_commands.py's `_bundle_android`), if anything
+            // was bundled at all. A plain engine-shell build with no bundled content (e.g.
+            // .github/workflows/android.yml's per-commit build) has no assets/www/index.html,
+            // so this 404s inside Servo itself -- same as any other missing local file, no
+            // special-casing needed here.
+            servoView.loadUri("file:///android_asset/www/index.html")
         }
         setupUrlField()
     }

@@ -39,6 +39,47 @@ esattamente il "quale renderer/GPU viene effettivamente riportato" che mancava. 
 fare: controllare i log di Servo/ANGLE al lancio, e soprattutto **verificarlo su una build
 reale** su ciascuna piattaforma della matrice CI (Windows/macOS/Linux) — non ancora fatto.
 
+## 3. Android: leggere tutto `manifest.webmanifest` (non solo `orientation`), override via parametro, e riflettere tutto in `roves-action`/Roves Packmaster (`roves-ui`)
+
+**Stato:** noto, non ancora iniziato — richiesto esplicitamente come lavoro successivo al primo
+giro di bundling Android (vedi `CUSTOMIZATIONS.md`, voce "`mach bundle --android`: pack
+`--content-dir`...", 2026-08-31), che oggi legge solo il campo `orientation`.
+
+Da fare, in ordine indicativo di dipendenza:
+
+- **Copertura completa del web app manifest**, non solo `orientation`: `name`/`short_name`
+  (etichetta app), `icons` (icona app — vedi punto icona sotto), `theme_color`/
+  `background_color` (colore status bar/splash), `display`, `lang`, ecc. — ogni campo dello
+  standard [Web App Manifest](https://developer.mozilla.org/en-US/docs/Web/Manifest) che ha un
+  equivalente Android sensato. Considerare anche che `manifest.webmanifest` non è l'unico nome
+  file in uso in pratica (`manifest.json` è già gestito da `_resolve_window_title`/
+  `_resolve_android_orientation`; verificare se altre convenzioni — es. `site.webmanifest` di
+  alcuni tool — vanno aggiunte all'elenco dei candidati).
+- **Default-da-manifest con override esplicito**: se `manifest.webmanifest` (o equivalente)
+  esiste nel `--content-dir`, i valori vengono presi automaticamente da lì; ognuno deve poter
+  essere sovrascritto passando il parametro corrispondente a `mach bundle` esplicitamente
+  (stesso pattern già in uso per `--icon-png`/`--icon-ico` su desktop: un flag esplicito vince
+  sempre sull'auto-detect).
+- **Icona**: non reinventare un percorso Android-specifico — riusare la stessa logica di
+  auto-detect già esistente per desktop (`icon.png`/`icon.ico`/fallback `favicon.ico` da
+  `--content-dir`, patch `0051`/`0052` in `CUSTOMIZATIONS.md`) invece di leggere `icons[]` dal
+  manifest in modo indipendente, cioè "quella che viene già usata per Windows ecc." — così un
+  solo meccanismo di risoluzione icona serve tutte le piattaforme.
+- **`roves-action`** (`DRincs-Productions/roves-action`): una volta che `mach bundle --android`
+  supporta questi parametri, `action.yml` deve esporli come input (mirroring — vedi
+  `CLAUDE.md`, sezione "keep `roves-action` in sync"). Non toccato in questo giro perché il
+  lavoro Android è stato scoperto esplicitamente alla sola cartella dell'engine.
+- **Roves Packmaster** (cartella sibling `roves-ui`, package.json name `roves-packmaster` —
+  stesso progetto descritto in `CLAUDE.md`, solo nome di cartella diverso): aggiungere una
+  nuova sezione "Mobile" (per ora solo Android), parallela all'esistente sezione Desktop/
+  `PortableSettings` in `src/lib/settings.ts` — una card abilitabile/disabilitabile come quella
+  desktop. Dentro la card, un accordion con le impostazioni avanzate mobile. Se
+  `manifest.webmanifest` è presente nel content dir del progetto, mostrare uno switch "prendi
+  le info da webmanifest": **on di default quando il manifest esiste**; quando è on, tutti i
+  campi avanzati mobile vanno disabilitati (grigi/non editabili), dato che i valori arrivano
+  dal manifest; quando è off, i campi tornano editabili manualmente (equivalente UI
+  dell'override via parametro di `mach bundle` sopra).
+
 ## Note
 
 - Punto risolto nella sessione del 2026-08-06: stato di navigazione browser morto

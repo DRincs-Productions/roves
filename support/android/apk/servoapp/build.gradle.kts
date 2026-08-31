@@ -17,6 +17,16 @@ android {
         targetSdk = 34
         versionCode = generatedVersionCode
         versionName = "0.4.0"
+
+        // Read from `manifest.webmanifest`'s `orientation` field (see
+        // python/servo/post_build_commands.py's `_resolve_android_orientation`, invoked by
+        // `mach bundle --android --content-dir`) and passed here as a Gradle project
+        // property so it can end up in AndroidManifest.xml's `android:screenOrientation`
+        // placeholder on MainActivity. Defaults to "unspecified" (today's un-overridden
+        // behavior, i.e. the OS/sensor decides) for a build with no bundled content, e.g.
+        // the plain engine-shell build `.github/workflows/android.yml` produces.
+        manifestPlaceholders["screenOrientation"] =
+            (project.findProperty("servoScreenOrientation") as String?) ?: "unspecified"
     }
 
     compileOptions {

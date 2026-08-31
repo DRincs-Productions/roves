@@ -1,0 +1,194 @@
+name: 'Build Android APK (debug, from source, with local patches)'
+
+# Early Android smoke build: on every push to main, cross-compile the engine for Android and
+# package it into a debug .apk, uploaded as a plain workflow artifact (not a GitHub Release —
+# see test.yml/release.yml for those). This builds the plain engine shell via `./mach build
+# --android` -- no --content-dir, so no bundled game content -- it's the same "engine shell
+# only, no bundled content" scope release.yml's first desktop release started with. A game's
+# own content goes through `mach bundle --android --content-dir <dist>` instead (see
+# CUSTOMIZATIONS.md's "mach bundle --android" entry and post_build_commands.py's
+# `_bundle_android`), not wired into this workflow. See CUSTOMIZATIONS.md for why nothing
+# needed patching to get *this* far: upstream Servo already ships a complete Android port
+# (JNI bridge in ports/servoshell/egl/android/, a real Gradle project under
+# support/android/apk/, and full `--android` handling in
+# python/servo/platform/build_target.py / build_commands.py / package_commands.py) that
+# Roves' own desktop-focused customizations never touched or disabled. `./mach build
+# --android` alone is enough: build_commands.py auto-dispatches into `mach package --android`
+# (a Gradle assemble task) once the native libservoshell.so cross-compiles, since
+# AndroidTarget.needs_packaging() is true.
+#
+# Same source-reconstruction pattern as test.yml: pristine upstream Servo source for the
+# pinned tag, plus every patch under patches/servo-v<tag>/ applied on top — see that
+# workflow's own top comment for why (this repo's own pristine content is mostly gitignored).
+# Unlike test.yml this isn't scoped to `paths:` — every push to main gets a build, per how
+# this workflow was requested.
+#
+# Debug build only: unsigned beyond the Android Gradle Plugin's own auto-generated debug
+# key (servoapp/build.gradle.kts's `release` build type is the one that looks for a real
+# signing key — `debug` needs none). Not a distributable release, just a per-commit
+# build/smoke check — see release.yml if a signed, versioned Android release is ever needed.
+#
+# Android cross builds only run on Linux/macOs hosts (enforced by
+# python/servo/platform/build_target.py's AndroidTarget) — ubuntu-latest here.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+env:
+  SERVO_TAG: '0.4.0'
+  # support/android/apk/servoapp/build.gradle.kts's `android {}` block.
+  ANDROID_COMPILE_SDK: '37'
+  ANDROID_BUILD_TOOLS: '36.0.0'
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: setup python (gives a consistent `python3` across runners, see ./mach)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: setup uv (needed by ./mach, see README.md)
+        uses: astral-sh/setup-uv@v5
+
+      - name: setup JDK (Gradle/AGP toolchain for support/android/apk)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      # python/servo/platform/build_target.py's AndroidTarget.configure_build_environment
+      # hard-requires NDK r28 specifically (it reads source.properties and rejects anything
+      # else) — resolved dynamically here (rather than a hardcoded exact patch version like
+      # `28.0.13004108`) so this doesn't silently go stale if Google ships a later r28.x and
+      # retires the first one from the sdkmanager repo.
+      - name: install Android SDK components + NDK r28
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-${ANDROID_COMPILE_SDK}" "build-tools;${ANDROID_BUILD_TOOLS}"
+
+          NDK_PKG=$(sdkmanager --list 2>/dev/null | grep -oE 'ndk;28\.[0-9]+\.[0-9]+' | sort -V | tail -1)
+          if [ -z "$NDK_PKG" ]; then
+            echo "::error::no NDK r28.x package advertised by sdkmanager --list -- Servo currently only supports NDK r28, see build_target.py"
+            exit 1
+          fi
+          echo "Installing $NDK_PKG"
+          sdkmanager "$NDK_PKG"
+
+          SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          NDK_VERSION="${NDK_PKG#ndk;}"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$SDK_ROOT/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+
+      # rustup ships preinstalled on the ubuntu-latest runner image. We don't install a
+      # toolchain explicitly: rustup auto-detects and fetches whatever rust-toolchain.toml in
+      # the downloaded Servo source pins, the first time cargo/mach runs inside that directory
+      # (`mach build --android` also does its own `rustup target add
+      # aarch64-linux-android` the same way, see command_base.py). This just forces the
+      # toolchain fetch early, with its own clear log output.
+      - name: prefetch pinned rust toolchain
+        shell: bash
+        run: |
+          curl -fsSL -o /tmp/rust-toolchain.toml "https://raw.githubusercontent.com/servo/servo/v${SERVO_TAG}/rust-toolchain.toml"
+          mkdir -p /tmp/toolchain-probe && cp /tmp/rust-toolchain.toml /tmp/toolchain-probe/
+          cd /tmp/toolchain-probe && rustup show
+
+      # Downloads the *full* pristine tag source (unlike a plain `git clone` of this repo,
+      # which gitignores tests/wpt/ — see CUSTOMIZATIONS.md's "mach needs tests/wpt/tests/
+      # tools/" note), so mach's own command loader finds everything it needs without a
+      # separate sparse-checkout step (release.yml needs one; this reconstruction doesn't).
+      - name: download + patch Servo source
+        shell: bash
+        run: |
+          curl -fsSL -o servo-src.zip "https://github.com/servo/servo/archive/refs/tags/v${SERVO_TAG}.zip"
+          python3 -c "import zipfile; zipfile.ZipFile('servo-src.zip').extractall('servo-src-tmp')"
+          mv "servo-src-tmp/servo-${SERVO_TAG}" servo-src
+          rm -rf servo-src-tmp servo-src.zip
+
+          shopt -s nullglob
+          patches=(patches/servo-v${SERVO_TAG}/*.patch)
+          if [ ${#patches[@]} -eq 0 ]; then
+            echo "::error::No patches found in patches/servo-v${SERVO_TAG}/ — nothing to test."
+            exit 1
+          fi
+          cd servo-src
+          chmod +x mach
+          for p in "${patches[@]}"; do
+            echo "Applying $(basename "$p")..."
+            patch -p1 < "../$p"
+          done
+
+          # Same reasoning as test.yml's own copy of these: new binary assets no text patch
+          # can carry, but gui.rs's/build.rs's include_bytes!() need them to genuinely exist
+          # on disk to compile at all.
+          mkdir -p resources/fonts
+          cp -r ../resources/fonts/. resources/fonts/
+          cp ../resources/servo_64.png ../resources/servo_1024.png ../resources/servo.ico ../resources/servo.icns resources/
+
+      # Same dpkg-lock race as test.yml's own copy of this step — confirmed to affect
+      # `mach bootstrap`'s own internal apt-get calls too, not just ones we issue ourselves.
+      - name: stop background apt processes and wait for the dpkg lock
+        shell: bash
+        run: |
+          sudo systemctl stop apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+          sudo systemctl kill --kill-who=all apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
+          sudo pkill -9 -f unattended-upgrade 2>/dev/null || true
+
+          for i in $(seq 1 60); do
+            if ! sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock >/dev/null 2>&1; then
+              echo "dpkg/apt lock free after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::warning::dpkg/apt lock still held after 60s -- proceeding anyway"
+
+      # No --skip-platform: Linux's own bootstrap path installs GStreamer non-interactively
+      # already (apt packages, covered by --yes) — see test.yml for why that only matters on
+      # Windows. Moot for the Android build itself anyway: cross builds default to the
+      # `dummy` media stack (see command_base.py's is_media_enabled), so `mach build
+      # --android` below never touches GStreamer at all.
+      - name: mach bootstrap (installs build dependencies)
+        shell: bash
+        working-directory: servo-src
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        timeout-minutes: 15
+        run: ./mach bootstrap --force --yes --skip-lints --skip-nextest
+
+      # Debug profile (no --release): this is a per-commit smoke/artifact build, not a
+      # distributable release — see release.yml if that's ever needed. This single command
+      # both cross-compiles libservoshell.so for aarch64-linux-android (the default target,
+      # see AndroidTarget.DEFAULT_TRIPLE) *and* packages it into a debug .apk via Gradle —
+      # see build_commands.py's `needs_packaging()` dispatch into `mach package --android`.
+      - name: mach build --android (also auto-packages the APK via Gradle)
+        shell: bash
+        working-directory: servo-src
+        run: ./mach build --android
+
+      - name: locate built APK
+        id: apk
+        shell: bash
+        working-directory: servo-src
+        run: |
+          APK=$(find support/android/apk -iname '*.apk' -path '*Debug*' | head -1)
+          if [ -z "$APK" ]; then
+            echo "::error::no debug .apk found under support/android/apk/**/build/outputs/apk -- contents:"
+            find support/android/apk -iname '*.apk'
+            exit 1
+          fi
+          echo "path=$APK" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: roves_shell_android_debug
+          path: servo-src/${{ steps.apk.outputs.path }}

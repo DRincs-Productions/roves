@@ -7,6 +7,7 @@
 # option. This file may not be copied, modified, or distributed
 # except according to those terms.
 
+import glob
 import json
 import os
 import os.path as path
@@ -40,7 +41,7 @@ from servo.command_base import (
     is_macosx,
     is_windows,
 )
-from servo.package_commands import check_call_with_randomized_backoff
+from servo.package_commands import check_call_with_randomized_backoff, copy_packaged_resources
 from servo.platform.build_target import is_android
 from servo.util import delete
 
@@ -257,6 +258,45 @@ def _resolve_window_title(content_dir: str) -> Optional[str]:
         if name:
             return str(name)
     return None
+
+
+# Maps the standard PWA `orientation` manifest field to Android's own
+# `android:screenOrientation` values -- see `_resolve_android_orientation` below. Only the
+# 8 orientation-lock values are handled; "any"/"natural" both map to "unspecified" (today's
+# un-overridden behavior) since neither has a single obvious Android equivalent.
+_ANDROID_ORIENTATION_MAP = {
+    "landscape": "sensorLandscape",
+    "landscape-primary": "landscape",
+    "landscape-secondary": "reverseLandscape",
+    "portrait": "sensorPortrait",
+    "portrait-primary": "portrait",
+    "portrait-secondary": "reversePortrait",
+}
+
+
+def _resolve_android_orientation(content_dir: str) -> str:
+    """Reads the game's own screen-orientation preference from its web app manifest --
+    `manifest.webmanifest` (the filename most bundlers emit by default, e.g. vite-plugin-pwa)
+    or plain `manifest.json` -- and translates the standard `orientation` field into the
+    Android `android:screenOrientation` value `_bundle_android` passes to Gradle as a project
+    property (see servoapp/build.gradle.kts's `manifestPlaceholders` and AndroidManifest.xml's
+    MainActivity). Falls back to "unspecified" -- today's un-overridden behavior, the OS/
+    sensor decides -- when no manifest exists, it has no `orientation` field, or the value
+    isn't one of the 8 standard PWA orientation strings (`_ANDROID_ORIENTATION_MAP`): this is
+    a strict opt-in, never a regression for content that doesn't set one.
+    """
+    for candidate in ("manifest.webmanifest", "manifest.json"):
+        manifest_path = path.join(content_dir, candidate)
+        if not path.exists(manifest_path):
+            continue
+        try:
+            with open(manifest_path, encoding="utf8") as f:
+                orientation = json.load(f).get("orientation")
+        except (json.JSONDecodeError, OSError):
+            continue
+        if orientation in _ANDROID_ORIENTATION_MAP:
+            return _ANDROID_ORIENTATION_MAP[orientation]
+    return "unspecified"
 
 
 def _write_launch_config(config_dir: str, info: BundleLaunchInfo) -> None:
@@ -681,7 +721,20 @@ class PostBuildCommands(CommandBase):
         "plain runtime file, but doesn't need a recompile either.",
     )
     @CommandArgument("params", nargs="...", help="Extra command-line arguments to pass through to servoshell on launch")
-    @CommandBase.common_command_arguments(binary_selection=True)
+    # build_configuration=True (not just binary_selection): registers --android/--target (see
+    # command_base.py's common_command_arguments) and, crucially, makes this same decorator
+    # call `self.configure_build_target(kwargs)` *before* binary_selection's own
+    # `self.get_binary_path(...)` runs a few lines later in that same wrapper -- both happen
+    # inside command_base.py's single `configuration_decorator` closure, in that order, so
+    # `--android` correctly resolves `servo_binary` to the cross-compiled
+    # target/aarch64-linux-android/.../libservoshell.so instead of the host's own desktop
+    # binary. (A separate `@CommandBase.allow_target_configuration` decorator, as `run`/
+    # `package` use, would run its `configure_build_target` call too late here -- *after*
+    # binary_selection's own wrapper has already resolved `servo_binary` against the
+    # unconfigured host target.) The extra desktop-build-only flags this also pulls in
+    # (--features, --media-stack, etc.) are inert no-ops for `bundle`, silently absorbed by
+    # its own **kwargs -- see `bundle`'s signature below.
+    @CommandBase.common_command_arguments(binary_selection=True, build_configuration=True)
     def bundle(
         self,
         servo_binary: str,
@@ -719,6 +772,12 @@ class PostBuildCommands(CommandBase):
         * Linux: by default, a single `play` binary. With --deb, a proper
           .deb package instead (see _bundle_linux_deb for what it does and
           does not attempt).
+        * Android (--android): a debug .apk, built via a real Gradle
+          invocation (not a single-binary copy like the desktop platforms
+          above) — see `_bundle_android`. `--content-dir` is copied into the
+          APK's own assets instead of being packed/extracted at runtime, and
+          only `manifest.webmanifest`'s `orientation` field is read back
+          (into `android:screenOrientation`) so far.
 
         Every platform's *portable* output ships exactly one executable — no
         separate launcher process and no `roves-content-packer` binary
@@ -763,6 +822,14 @@ class PostBuildCommands(CommandBase):
         if path.exists(output_dir):
             delete(output_dir)
         os.makedirs(output_dir)
+
+        # Android has no equivalent to "one prebuilt binary + loose/packed files sitting
+        # next to it" (an installed APK's assets are baked in at package time, there's
+        # nothing to drop content next to after the fact) -- so none of the rest of this
+        # function (launch.json, icon patching, per-desktop-OS bundling) applies. See
+        # `_bundle_android`'s own doc comment for what it does instead.
+        if is_android(self.target):
+            return self._bundle_android(servo_binary, content_dir, output_dir)
 
         content_exclude = content_exclude or []
         content_boot_include = content_boot_include or []
@@ -959,6 +1026,75 @@ class PostBuildCommands(CommandBase):
         )
         target_dir = servo.util.get_target_dir()
         return path.join(target_dir, "release", _packer_binary_name())
+
+    def _bundle_android(self, servo_binary: str, content_dir: Optional[str], output_dir: str) -> int | None:
+        """`mach bundle --android`'s entire packaging path: unlike desktop (see `bundle`'s own
+        doc comment above), an installed APK's assets are baked in at package time -- there's
+        no equivalent to shipping one prebuilt shell binary and dropping/packing content next
+        to it afterward. So `--content-dir` is copied straight into the Gradle project's own
+        asset folder (read back at launch by MainActivity.kt's default
+        `loadUri("file:///android_asset/www/index.html")`) and the APK is rebuilt from there
+        -- a real Gradle invocation, not a file copy -- before lifting the result into
+        `--output`.
+
+        Only `manifest.webmanifest`'s `orientation` field is wired through today (see
+        `_resolve_android_orientation`), passed to Gradle as the `servoScreenOrientation`
+        project property that `servoapp/build.gradle.kts` turns into a manifestPlaceholder.
+        App name/icon/theme-color from the same manifest are a deliberate follow-up, not
+        attempted here -- see CUSTOMIZATIONS.md.
+
+        Debug build only, same as the plain-shell CI build in
+        `.github/workflows/android.yml`: this doesn't yet expose a way to sign a release
+        build, since `mach bundle` has no equivalent of desktop's
+        --package-name/--package-version signing inputs for Android.
+        """
+        apk_project_dir = path.join(self.get_top_dir(), "support", "android", "apk")
+        assets_dir = path.join(apk_project_dir, "servoapp", "src", "main", "assets", "www")
+        if path.exists(assets_dir):
+            delete(assets_dir)
+        if content_dir:
+            shutil.copytree(content_dir, assets_dir)
+        else:
+            os.makedirs(assets_dir)
+
+        orientation = _resolve_android_orientation(content_dir) if content_dir else "unspecified"
+
+        # Mirrors package_commands.py's own `package --android` arch-string mapping -- not
+        # reused directly since that command has no way to take the extra
+        # -PservoScreenOrientation property below.
+        target_triple = self.target.triple()
+        arch_string = {
+            "aarch64-linux-android": "Arm64",
+            "armv7-linux-androideabi": "Armv7",
+            "i686-linux-android": "x86",
+            "x86_64-linux-android": "x64",
+        }.get(target_triple, "Arm64")
+        variant = f"{arch_string}Debug"
+
+        env = cast(dict[str, str], self.build_env())
+        env["SERVO_TARGET_DIR"] = path.dirname(servo_binary)
+
+        dir_to_resources = path.join(self.get_top_dir(), "target", target_triple, "resources")
+        if path.exists(dir_to_resources):
+            delete(dir_to_resources)
+        copy_packaged_resources(self.get_top_dir(), dir_to_resources)
+
+        argv = ["./gradlew", "--no-daemon", f":servoapp:assemble{variant}", f"-PservoScreenOrientation={orientation}"]
+        try:
+            with cd(apk_project_dir):
+                subprocess.check_call(argv, env=env)
+        except subprocess.CalledProcessError as e:
+            print("Packaging Android exited with return value %d" % e.returncode)
+            return e.returncode
+
+        built_apks = glob.glob(path.join(apk_project_dir, "servoapp", "build", "outputs", "apk", variant, "*.apk"))
+        if not built_apks:
+            print(f"No .apk found under servoapp/build/outputs/apk/{variant}/ after a successful-looking Gradle build.")
+            return 1
+        shutil.copy(built_apks[0], output_dir)
+
+        print(f"Bundle written to {output_dir}")
+        return None
 
     def _bundle_windows(
         self,

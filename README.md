@@ -117,6 +117,7 @@ your page's own initial load — see the "Native boot splash" and later boot-spl
 | **Windows** (x64) | ✅ Implemented | native (Rust std) |
 | **macOS** (Apple Silicon and Intel) | ✅ Implemented | native (Rust std) |
 | **Linux** (x64) | ✅ Implemented | native (Rust std) |
+| Android | 🚧 In development (debug `.apk` only, no CI/`roves-action` integration yet) | JNI |
 | Nintendo Switch | 🚧 In development | `nx` |
 | Nintendo 3DS | 🚧 In development | `ctru-rs` |
 | PlayStation Portable (PSP) | 🚧 In development | `rust-psp` |
@@ -126,8 +127,14 @@ your page's own initial load — see the "Native boot splash" and later boot-spl
 | Xbox One | 🚧 In development | — (official SDK, NDA-gated; no public Rust crate) |
 | Xbox Series X\|S | 🚧 In development | — (official SDK, NDA-gated; no public Rust crate) |
 
-Desktop targets (Windows, macOS, Linux) are supported today. All console targets are on the
-roadmap but not yet functional.
+Desktop targets (Windows, macOS, Linux) are supported today. Android builds from source via
+`mach build --android` (a plain engine-shell debug `.apk` is also built on every commit to
+`main`, see `.github/workflows/android.yml`) and `mach bundle --android --content-dir <dist>`
+now packs a game's own web content into that APK too, reading `manifest.webmanifest`'s
+`orientation` field to lock the app's screen orientation — but it's still early: no signed/
+release build path, no way to update bundled content short of a full rebuild, and no
+`roves-action`/VS Code extension/Packmaster integration yet, so treat it as source-build-only
+for now. All console targets are on the roadmap but not yet functional.
 
 ## Embedding
 
