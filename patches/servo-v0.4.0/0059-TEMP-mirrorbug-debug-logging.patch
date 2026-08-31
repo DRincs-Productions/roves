@@ -1,5 +1,5 @@
 diff --git a/components/script/dom/webgl/webglrenderingcontext.rs b/components/script/dom/webgl/webglrenderingcontext.rs
-index 863b382..095e8c4 100644
+index 863b382..c1ed753 100644
 --- a/components/script/dom/webgl/webglrenderingcontext.rs
 +++ b/components/script/dom/webgl/webglrenderingcontext.rs
 @@ -722,6 +722,42 @@ impl WebGLRenderingContext {
@@ -45,12 +45,17 @@ index 863b382..095e8c4 100644
                  TexPixels::new(
                      snapshot.shared_memory(),
                      size,
-@@ -752,6 +788,42 @@ impl WebGLRenderingContext {
+@@ -751,6 +787,46 @@ impl WebGLRenderingContext {
+ 
                  let (alpha_treatment, y_axis_treatment) =
                      self.get_current_unpack_state(snapshot.alpha_mode().alpha());
- 
++                let y_axis_treatment = match y_axis_treatment {
++                    YAxisTreatment::AsIs => YAxisTreatment::Flipped,
++                    YAxisTreatment::Flipped => YAxisTreatment::AsIs,
++                };
++
 +                log::warn!(
-+                    "MIRRORBUG HTMLCanvasElement source: size={:?} format={:?} alpha_treatment={:?} y_axis_treatment={:?} alpha_mode={:?}",
++                    "MIRRORBUG HTMLCanvasElement source (INVERTED): size={:?} format={:?} alpha_treatment={:?} y_axis_treatment={:?} alpha_mode={:?}",
 +                    size,
 +                    format,
 +                    alpha_treatment,
@@ -84,11 +89,10 @@ index 863b382..095e8c4 100644
 +                        samples.join(" | ")
 +                    );
 +                }
-+
+ 
                  TexPixels::new(
                      snapshot.shared_memory(),
-                     size,
-@@ -874,6 +946,16 @@ impl WebGLRenderingContext {
+@@ -874,6 +950,16 @@ impl WebGLRenderingContext {
  
          match source {
              TexSource::Pixels(pixels) => {
@@ -105,7 +109,7 @@ index 863b382..095e8c4 100644
                  // TODO(emilio): convert colorspace if requested.
                  self.send_command(WebGLCommand::TexImage2D {
                      target: target.as_gl_constant(),
-@@ -957,6 +1039,20 @@ impl WebGLRenderingContext {
+@@ -957,6 +1043,20 @@ impl WebGLRenderingContext {
              .extension_manager
              .effective_type(data_type.as_gl_constant());
  

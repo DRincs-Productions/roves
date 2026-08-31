@@ -787,9 +787,13 @@ impl WebGLRenderingContext {
 
                 let (alpha_treatment, y_axis_treatment) =
                     self.get_current_unpack_state(snapshot.alpha_mode().alpha());
+                let y_axis_treatment = match y_axis_treatment {
+                    YAxisTreatment::AsIs => YAxisTreatment::Flipped,
+                    YAxisTreatment::Flipped => YAxisTreatment::AsIs,
+                };
 
                 log::warn!(
-                    "MIRRORBUG HTMLCanvasElement source: size={:?} format={:?} alpha_treatment={:?} y_axis_treatment={:?} alpha_mode={:?}",
+                    "MIRRORBUG HTMLCanvasElement source (INVERTED): size={:?} format={:?} alpha_treatment={:?} y_axis_treatment={:?} alpha_mode={:?}",
                     size,
                     format,
                     alpha_treatment,
