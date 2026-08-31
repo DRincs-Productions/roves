@@ -779,36 +779,6 @@ impl WebGLRenderingContext {
                 let (alpha_treatment, y_axis_treatment) =
                     self.get_current_unpack_state(snapshot.alpha_mode().alpha());
 
-                if size.width >= 512 {
-                    let owned = snapshot.to_owned();
-                    let bytes = owned.as_raw_bytes();
-                    let w = size.width as usize;
-                    let h = size.height as usize;
-                    let sample_x = w.min(20);
-                    let mut samples = Vec::new();
-                    for row_index in 0..8 {
-                        let y = row_index * (h.saturating_sub(1)) / 7;
-                        let offset = (y * w + sample_x) * 4;
-                        if offset + 4 <= bytes.len() {
-                            samples.push(format!(
-                                "y={} rgba=({},{},{},{})",
-                                y,
-                                bytes[offset],
-                                bytes[offset + 1],
-                                bytes[offset + 2],
-                                bytes[offset + 3]
-                            ));
-                        }
-                    }
-                    log::warn!(
-                        "MIRRORBUG2 script-thread HTMLCanvasElement pre-send pixel column at x={}, size={:?}, y_axis_treatment={:?}: {}",
-                        sample_x,
-                        size,
-                        y_axis_treatment,
-                        samples.join(" | ")
-                    );
-                }
-
                 TexPixels::new(
                     snapshot.shared_memory(),
                     size,

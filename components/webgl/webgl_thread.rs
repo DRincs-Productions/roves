@@ -1710,34 +1710,6 @@ impl WebGLImpl {
                     Cow::Borrowed(data),
                 );
 
-                if size.width >= 512 {
-                    let w = size.width as usize;
-                    let h = size.height as usize;
-                    let sample_x = w.min(20);
-                    let mut samples = Vec::new();
-                    for row_index in 0..8 {
-                        let y = row_index * (h.saturating_sub(1)) / 7;
-                        let offset = (y * w + sample_x) * 4;
-                        if offset + 4 <= pixels.len() {
-                            samples.push(format!(
-                                "y={} rgba=({},{},{},{})",
-                                y,
-                                pixels[offset],
-                                pixels[offset + 1],
-                                pixels[offset + 2],
-                                pixels[offset + 3]
-                            ));
-                        }
-                    }
-                    log::warn!(
-                        "MIRRORBUG2 webgl_thread TexImage2D pre-upload pixel column at x={}, size={:?}, y_axis_treatment={:?}: {}",
-                        sample_x,
-                        size,
-                        y_axis_treatment,
-                        samples.join(" | ")
-                    );
-                }
-
                 unsafe {
                     gl.pixel_store_i32(gl::UNPACK_ALIGNMENT, unpacking_alignment as i32);
                     gl.tex_image_2d(
