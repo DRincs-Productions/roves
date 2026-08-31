@@ -752,6 +752,15 @@ impl WebGLRenderingContext {
                 let (alpha_treatment, y_axis_treatment) =
                     self.get_current_unpack_state(snapshot.alpha_mode().alpha());
 
+                log::warn!(
+                    "MIRRORBUG HTMLCanvasElement source: size={:?} format={:?} alpha_treatment={:?} y_axis_treatment={:?} alpha_mode={:?}",
+                    size,
+                    format,
+                    alpha_treatment,
+                    y_axis_treatment,
+                    snapshot.alpha_mode(),
+                );
+
                 TexPixels::new(
                     snapshot.shared_memory(),
                     size,
@@ -874,6 +883,16 @@ impl WebGLRenderingContext {
 
         match source {
             TexSource::Pixels(pixels) => {
+                log::warn!(
+                    "MIRRORBUG tex_image_2d: target={:?} level={} size={:?} internal_format={:?} format={:?} y_axis_treatment={:?} alpha_treatment={:?}",
+                    target,
+                    level,
+                    size,
+                    internal_format,
+                    format,
+                    pixels.y_axis_treatment,
+                    pixels.alpha_treatment,
+                );
                 // TODO(emilio): convert colorspace if requested.
                 self.send_command(WebGLCommand::TexImage2D {
                     target: target.as_gl_constant(),
@@ -956,6 +975,20 @@ impl WebGLRenderingContext {
         let effective_data_type = self
             .extension_manager
             .effective_type(data_type.as_gl_constant());
+
+        log::warn!(
+            "MIRRORBUG tex_sub_image_2d: target={:?} level={} xoffset={} yoffset={} tex_size=({},{}) upload_size={:?} format={:?} y_axis_treatment={:?} alpha_treatment={:?}",
+            target,
+            level,
+            xoffset,
+            yoffset,
+            image_info.width(),
+            image_info.height(),
+            pixels.size(),
+            format,
+            pixels.y_axis_treatment,
+            pixels.alpha_treatment,
+        );
 
         // TODO(emilio): convert colorspace if requested.
         self.send_command(WebGLCommand::TexSubImage2D {
