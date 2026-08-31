@@ -373,7 +373,7 @@ impl CanvasRenderingContext2DMethods<crate::DomTypeHolder> for CanvasRenderingCo
     /// <https://html.spec.whatwg.org/multipage/#dom-context-2d-font>
     fn SetFont(&self, value: DOMString) {
         self.canvas_state
-            .set_font(self.canvas.canvas().as_deref(), value)
+            .set_font(self.canvas.canvas().as_deref(), &self.global(), value)
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-context-2d-textalign>

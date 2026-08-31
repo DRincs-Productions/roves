@@ -57,6 +57,8 @@ use crate::dom::bindings::codegen::Bindings::CanvasRenderingContext2DBinding::{
     CanvasTextAlign, CanvasTextBaseline, ImageDataMethods,
 };
 use crate::dom::bindings::codegen::Bindings::DOMMatrixBinding::DOMMatrix2DInit;
+use crate::dom::bindings::codegen::Bindings::DocumentBinding::DocumentMethods;
+use crate::dom::bindings::codegen::Bindings::WindowBinding::WindowMethods;
 use crate::dom::bindings::codegen::UnionTypes::StringOrCanvasGradientOrCanvasPattern;
 use crate::dom::bindings::error::{Error, ErrorResult, Fallible};
 use crate::dom::bindings::inheritance::Castable;
@@ -78,6 +80,7 @@ use crate::dom::node::{Node, NodeTraits};
 use crate::dom::offscreencanvas::OffscreenCanvas;
 use crate::dom::paintworkletglobalscope::PaintWorkletGlobalScope;
 use crate::dom::textmetrics::TextMetrics;
+use crate::dom::window::Window;
 
 const HANGING_BASELINE_DEFAULT: f64 = 0.8;
 const IDEOGRAPHIC_BASELINE_DEFAULT: f64 = 0.5;
@@ -1480,7 +1483,7 @@ impl CanvasState {
         }
 
         if self.state.borrow().font_style.is_none() {
-            self.set_font(canvas, CanvasContextState::DEFAULT_FONT_STYLE.into())
+            self.set_font(canvas, global_scope, CanvasContextState::DEFAULT_FONT_STYLE.into())
         }
         // This may be `None` if if this is offscreen canvas, in which case just use
         // the initial values for the text style.
@@ -1524,7 +1527,7 @@ impl CanvasState {
         }
 
         if self.state.borrow().font_style.is_none() {
-            self.set_font(canvas, CanvasContextState::DEFAULT_FONT_STYLE.into())
+            self.set_font(canvas, global_scope, CanvasContextState::DEFAULT_FONT_STYLE.into())
         }
         // This may be `None` if if this is offscreen canvas, in which case just use
         // the initial values for the text style.
@@ -1569,7 +1572,7 @@ impl CanvasState {
         // > Step 3: Let font be the current font of target, as given by that object's font
         // > attribute.
         if self.state.borrow().font_style.is_none() {
-            self.set_font(canvas, CanvasContextState::DEFAULT_FONT_STYLE.into());
+            self.set_font(canvas, global, CanvasContextState::DEFAULT_FONT_STYLE.into());
         }
 
         let Some(font_context) = global.font_context() else {
@@ -1644,16 +1647,41 @@ impl CanvasState {
     }
 
     // https://html.spec.whatwg.org/multipage/#dom-context-2d-font
-    pub(super) fn set_font(&self, canvas: Option<&HTMLCanvasElement>, value: DOMString) {
-        let canvas = match canvas {
-            Some(element) => element,
-            None => return, // offscreen canvas doesn't have a placeholder canvas
+    pub(super) fn set_font(
+        &self,
+        canvas: Option<&HTMLCanvasElement>,
+        global: &GlobalScope,
+        value: DOMString,
+    ) {
+        // `resolved_font_style_query` resolves relative/inherited font values against a
+        // live DOM node's computed style. A `<canvas>` element has one to use directly;
+        // an `OffscreenCanvas` that wasn't obtained via `HTMLCanvasElement
+        // .transferControlToOffscreen()` has no such "placeholder canvas" at all. Rather
+        // than silently discarding the requested font in that case (leaving the context
+        // stuck on the CSS initial "10px sans-serif" forever, regardless of what's set),
+        // fall back to the owning document's root element so canvas.font is still honored
+        // against that document's own default computed style.
+        let resolved_font_style = match canvas {
+            Some(element) => {
+                let node = element.upcast::<Node>();
+                element
+                    .owner_window()
+                    .resolved_font_style_query(node, String::from(value))
+            },
+            None => {
+                // A Worker-owned OffscreenCanvas has no Document/layout tree to resolve
+                // font values against at all; nothing sensible to fall back to.
+                let Some(window) = global.downcast::<Window>() else {
+                    return;
+                };
+                let Some(root_element) = window.Document().GetDocumentElement() else {
+                    return;
+                };
+                let node = root_element.upcast::<Node>();
+                window.resolved_font_style_query(node, String::from(value))
+            },
         };
-        let node = canvas.upcast::<Node>();
-        let window = canvas.owner_window();
-
-        let Some(resolved_font_style) = window.resolved_font_style_query(node, String::from(value))
-        else {
+        let Some(resolved_font_style) = resolved_font_style else {
             // This will happen when there is a syntax error.
             return;
         };

@@ -4928,3 +4928,56 @@ side was **not** locally compiled — this environment has no working C/C++ tool
 outside `mach`'s own env setup (see the SVG `currentColor` entry above for the same
 constraint) — so this is pending confirmation from the next CI run/real launch before being
 treated as fully verified end-to-end.
+
+**Follow-up (2026-08-31) — confirmed working end-to-end:** downloaded the resulting CI test
+build and called `roves:system_info` from a real page, confirmed via `roves.log`:
+`{"os_type":"windows","os_version":"11 (26200)","bitness":"64-bit","architecture":"x86_64","engine_version":"Servo 0.4.0-<sha>"}`.
+
+## 2026-08-31 — Fix `OffscreenCanvas` 2D context silently discarding `font`
+
+**Files:** `components/script/dom/canvas/2d/canvas_state.rs`,
+`components/script/dom/canvas/2d/canvasrenderingcontext2d.rs`.
+
+**Patch:** `patches/servo-v0.4.0/0059-offscreencanvas-font-resolution.patch`
+
+**Upstream bug, not a Roves customization:** `CanvasState::set_font` resolves relative/
+inherited `font` values (`ctx.font = "..."`) against a live DOM node's computed style via
+`Window::resolved_font_style_query`. It required an actual `HTMLCanvasElement` to do this —
+but an `OffscreenCanvas` constructed directly (`new OffscreenCanvas(w, h)`, not obtained via
+`HTMLCanvasElement.transferControlToOffscreen()`) has no such "placeholder canvas" at all, so
+`set_font` had a bare `None => return` guard that silently discarded the request entirely,
+leaving the context's font permanently stuck on the CSS initial `"10px sans-serif"` —
+regardless of what was actually requested, for the lifetime of that context.
+
+**Why this matters for games:** this isn't an obscure edge case — `OffscreenCanvas` is exactly
+what libraries reach for to do font-metrics probing/text rasterization off the main canvas,
+specifically because it's cheaper to create than a full `<canvas>` element. PixiJS's own
+`CanvasTextMetrics` (used by every `PIXI.Text`) does exactly this. The practical symptom
+looked nothing like a font bug at first glance: `PIXI.Text` objects rendered with severely
+wrong-looking glyphs (initially misread as a WebGL texture orientation/mirroring bug — see
+this file's own mirrored-text investigation history) because PixiJS's internal
+`ascent`/`descent` measurement (via `TextMetrics.actualBoundingBoxAscent/Descent` on an
+`OffscreenCanvas`) came back based on the wrong, never-updated ~10px default font instead of
+the real requested size, so PixiJS allocated a drastically undersized text canvas and
+mis-positioned the baseline — most of each glyph ended up drawn off-canvas/clipped, and the
+small remaining visible sliver was what looked like corrupted/mirrored text.
+
+**The fix:** `set_font` now falls back to the owning document's root element
+(`window.Document().GetDocumentElement()`) when there's no canvas element to resolve
+against, instead of giving up — reusing the exact same, already-correct
+`resolved_font_style_query` path unchanged, just anchoring it to a different (but always
+present, for any `OffscreenCanvas` owned by a `Window`) reference node. A `None` fallback is
+kept only for the genuine edge case of an `OffscreenCanvas` owned by a `Worker` global scope
+with no `Document`/layout tree to resolve against at all (`global.downcast::<Window>()`
+returns `None` there) — in that case there's no sensible default to fall back to, so the
+existing (already broken, but rarer) no-op behavior is preserved rather than guessed at.
+
+**Verification:** confirmed the root cause directly and in isolation before writing this fix —
+a minimal test page calling `new OffscreenCanvas(w, h).getContext('2d')`, setting
+`ctx.font = '...'`, and calling `measureText()` returned identical, wrong
+`actualBoundingBoxAscent`/`actualBoundingBoxDescent`/`width` values **regardless of the
+requested font size or the canvas's own dimensions** (tested 0×0 through 2048×64), while the
+exact same font/text measured on a regular `<canvas>` element gave correct, expected values
+every time. Not yet verified: the fix itself, pending the next CI build + a live screenshot
+of `PIXI.Text` rendering correctly (this fork has no local Rust build environment — see the
+SVG `currentColor` entry above for the same recurring constraint).
