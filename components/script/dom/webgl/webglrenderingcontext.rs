@@ -722,42 +722,6 @@ impl WebGLRenderingContext {
                 let (alpha_treatment, y_axis_treatment) =
                     self.get_current_unpack_state(snapshot.alpha_mode().alpha());
 
-                log::warn!(
-                    "MIRRORBUG HTMLImageElement source: size={:?} format={:?} alpha_treatment={:?} y_axis_treatment={:?} alpha_mode={:?}",
-                    size,
-                    format,
-                    alpha_treatment,
-                    y_axis_treatment,
-                    snapshot.alpha_mode(),
-                );
-                {
-                    let owned = snapshot.to_owned();
-                    let bytes = owned.as_raw_bytes();
-                    let w = size.width as usize;
-                    let h = size.height as usize;
-                    let sample_x = w / 2;
-                    let mut samples = Vec::new();
-                    for row_index in 0..8 {
-                        let y = row_index * (h.saturating_sub(1)) / 7;
-                        let offset = (y * w + sample_x) * 4;
-                        if offset + 4 <= bytes.len() {
-                            samples.push(format!(
-                                "y={} rgba=({},{},{},{})",
-                                y,
-                                bytes[offset],
-                                bytes[offset + 1],
-                                bytes[offset + 2],
-                                bytes[offset + 3]
-                            ));
-                        }
-                    }
-                    log::warn!(
-                        "MIRRORBUG HTMLImageElement pixel column at x={}: {}",
-                        sample_x,
-                        samples.join(" | ")
-                    );
-                }
-
                 TexPixels::new(
                     snapshot.shared_memory(),
                     size,
@@ -787,46 +751,6 @@ impl WebGLRenderingContext {
 
                 let (alpha_treatment, y_axis_treatment) =
                     self.get_current_unpack_state(snapshot.alpha_mode().alpha());
-                let y_axis_treatment = match y_axis_treatment {
-                    YAxisTreatment::AsIs => YAxisTreatment::Flipped,
-                    YAxisTreatment::Flipped => YAxisTreatment::AsIs,
-                };
-
-                log::warn!(
-                    "MIRRORBUG HTMLCanvasElement source (INVERTED): size={:?} format={:?} alpha_treatment={:?} y_axis_treatment={:?} alpha_mode={:?}",
-                    size,
-                    format,
-                    alpha_treatment,
-                    y_axis_treatment,
-                    snapshot.alpha_mode(),
-                );
-                {
-                    let owned = snapshot.to_owned();
-                    let bytes = owned.as_raw_bytes();
-                    let w = size.width as usize;
-                    let h = size.height as usize;
-                    let sample_x = w.min(20);
-                    let mut samples = Vec::new();
-                    for row_index in 0..8 {
-                        let y = row_index * (h.saturating_sub(1)) / 7;
-                        let offset = (y * w + sample_x) * 4;
-                        if offset + 4 <= bytes.len() {
-                            samples.push(format!(
-                                "y={} rgba=({},{},{},{})",
-                                y,
-                                bytes[offset],
-                                bytes[offset + 1],
-                                bytes[offset + 2],
-                                bytes[offset + 3]
-                            ));
-                        }
-                    }
-                    log::warn!(
-                        "MIRRORBUG HTMLCanvasElement pixel column at x={}: {}",
-                        sample_x,
-                        samples.join(" | ")
-                    );
-                }
 
                 TexPixels::new(
                     snapshot.shared_memory(),
@@ -950,16 +874,6 @@ impl WebGLRenderingContext {
 
         match source {
             TexSource::Pixels(pixels) => {
-                log::warn!(
-                    "MIRRORBUG tex_image_2d: target={:?} level={} size={:?} internal_format={:?} format={:?} y_axis_treatment={:?} alpha_treatment={:?}",
-                    target,
-                    level,
-                    size,
-                    internal_format,
-                    format,
-                    pixels.y_axis_treatment,
-                    pixels.alpha_treatment,
-                );
                 // TODO(emilio): convert colorspace if requested.
                 self.send_command(WebGLCommand::TexImage2D {
                     target: target.as_gl_constant(),
@@ -1042,20 +956,6 @@ impl WebGLRenderingContext {
         let effective_data_type = self
             .extension_manager
             .effective_type(data_type.as_gl_constant());
-
-        log::warn!(
-            "MIRRORBUG tex_sub_image_2d: target={:?} level={} xoffset={} yoffset={} tex_size=({},{}) upload_size={:?} format={:?} y_axis_treatment={:?} alpha_treatment={:?}",
-            target,
-            level,
-            xoffset,
-            yoffset,
-            image_info.width(),
-            image_info.height(),
-            pixels.size(),
-            format,
-            pixels.y_axis_treatment,
-            pixels.alpha_treatment,
-        );
 
         // TODO(emilio): convert colorspace if requested.
         self.send_command(WebGLCommand::TexSubImage2D {

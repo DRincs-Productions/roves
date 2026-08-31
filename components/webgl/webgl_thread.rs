@@ -2900,13 +2900,6 @@ fn prepare_pixels(
     }
 
     if y_axis_treatment == YAxisTreatment::Flipped {
-        log::warn!(
-            "MIRRORBUG flip_pixels_y invoked: size={:?} internal_format={:?} data_type={:?} unpacking_alignment={}",
-            size,
-            internal_format,
-            data_type,
-            unpacking_alignment,
-        );
         // FINISHME: Consider doing premultiply and flip in a single mutable Vec.
         pixels = flip_pixels_y(
             internal_format,
@@ -2917,13 +2910,6 @@ fn prepare_pixels(
             pixels.into_owned(),
         )
         .into();
-    } else {
-        log::warn!(
-            "MIRRORBUG flip_pixels_y SKIPPED (AsIs): size={:?} internal_format={:?} data_type={:?}",
-            size,
-            internal_format,
-            data_type,
-        );
     }
 
     pixels
