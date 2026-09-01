@@ -39,6 +39,82 @@ esattamente il "quale renderer/GPU viene effettivamente riportato" che mancava. 
 fare: controllare i log di Servo/ANGLE al lancio, e soprattutto **verificarlo su una build
 reale** su ciascuna piattaforma della matrice CI (Windows/macOS/Linux) — non ancora fatto.
 
+## 3. Android: leggere tutto `manifest.webmanifest` (non solo `orientation`), override via parametro, e riflettere tutto in `roves-action`/Roves Packmaster (`roves-ui`)
+
+**Stato: fatto (2026-09-01/02, branch `android` su tutti e tre i repo).** Copertura completa
+del manifest (`name`/`short_name`/`orientation`, non più solo `orientation`) + override
+espliciti lato engine (vedi `CUSTOMIZATIONS.md`, voce "`mach bundle --android`: full manifest
+coverage..."); `roves-action` espone `android-app-name`/`android-orientation`/
+`android-theme-color`; Roves Packmaster (`roves-ui`) ha sia la UI (card Mobile, switch
+webmanifest, campi disabilitati che mostrano i valori reali del manifest) sia un vero backend
+(`src-tauri/src/android.rs`) che genera davvero un `.apk` — non più solo placeholder. Non
+verificato con una build reale (vedi punto 4 sotto e il commit stesso per il disclaimer).
+`theme_color`/status bar **non** implementato: rimosso dalla UI su richiesta esplicita ("la
+status bar non deve esserci"), quindi non è più nel design finale, non solo rimandato.
+
+Da fare, in ordine indicativo di dipendenza:
+
+- **Copertura completa del web app manifest**, non solo `orientation`: `name`/`short_name`
+  (etichetta app), `icons` (icona app — vedi punto icona sotto), `theme_color`/
+  `background_color` (colore status bar/splash), `display`, `lang`, ecc. — ogni campo dello
+  standard [Web App Manifest](https://developer.mozilla.org/en-US/docs/Web/Manifest) che ha un
+  equivalente Android sensato. Considerare anche che `manifest.webmanifest` non è l'unico nome
+  file in uso in pratica (`manifest.json` è già gestito da `_resolve_window_title`/
+  `_resolve_android_orientation`; verificare se altre convenzioni — es. `site.webmanifest` di
+  alcuni tool — vanno aggiunte all'elenco dei candidati).
+- **Default-da-manifest con override esplicito**: se `manifest.webmanifest` (o equivalente)
+  esiste nel `--content-dir`, i valori vengono presi automaticamente da lì; ognuno deve poter
+  essere sovrascritto passando il parametro corrispondente a `mach bundle` esplicitamente
+  (stesso pattern già in uso per `--icon-png`/`--icon-ico` su desktop: un flag esplicito vince
+  sempre sull'auto-detect).
+- **Icona**: non reinventare un percorso Android-specifico — riusare la stessa logica di
+  auto-detect già esistente per desktop (`icon.png`/`icon.ico`/fallback `favicon.ico` da
+  `--content-dir`, patch `0051`/`0052` in `CUSTOMIZATIONS.md`) invece di leggere `icons[]` dal
+  manifest in modo indipendente, cioè "quella che viene già usata per Windows ecc." — così un
+  solo meccanismo di risoluzione icona serve tutte le piattaforme.
+- **`roves-action`** (`DRincs-Productions/roves-action`): una volta che `mach bundle --android`
+  supporta questi parametri, `action.yml` deve esporli come input (mirroring — vedi
+  `CLAUDE.md`, sezione "keep `roves-action` in sync"). Non toccato in questo giro perché il
+  lavoro Android è stato scoperto esplicitamente alla sola cartella dell'engine.
+- **Roves Packmaster** (cartella sibling `roves-ui`, package.json name `roves-packmaster` —
+  stesso progetto descritto in `CLAUDE.md`, solo nome di cartella diverso): aggiungere una
+  nuova sezione "Mobile" (per ora solo Android), parallela all'esistente sezione Desktop/
+  `PortableSettings` in `src/lib/settings.ts` — una card abilitabile/disabilitabile come quella
+  desktop. Dentro la card, un accordion con le impostazioni avanzate mobile. Se
+  `manifest.webmanifest` è presente nel content dir del progetto, mostrare uno switch "prendi
+  le info da webmanifest": **on di default quando il manifest esiste**; quando è on, tutti i
+  campi avanzati mobile vanno disabilitati (grigi/non editabili), dato che i valori arrivano
+  dal manifest; quando è off, i campi tornano editabili manualmente (equivalente UI
+  dell'override via parametro di `mach bundle` sopra).
+
+## 4. Bundling Android su Windows: `ndk-build` invocato senza fallback `.cmd`
+
+**Stato:** noto, non ancora iniziato — scoperto il 2026-09-02 lavorando al backend Android di
+Roves Packmaster (`roves-ui/src-tauri/src/android.rs`).
+
+`support/android/apk/servoview/build.gradle.kts` (upstream Servo, non una customizzazione di
+questo fork) invoca l'NDK con `getNdkDir() + "/ndk-build"` — letteralmente senza estensione,
+mai `ndk-build.cmd` — per il task che copia `libservoshell.so`/`libc++_shared.so` nella
+cartella `jniLibs/` dell'APK (vedi il commento in cima a `jni/Android.mk`/quel file Gradle).
+Su Windows l'NDK fornisce solo `ndk-build.cmd` (uno script batch), non un file chiamato
+`ndk-build` senza estensione — e Java/Gradle (`ProcessBuilder`/`Exec` task) non fa la
+risoluzione delle estensioni via `PATHEXT` come farebbe `cmd.exe`. Quindi, **così com'è
+scritto oggi, questo step Gradle probabilmente fallisce su Windows a prescindere da chi lo
+invoca** (`mach build/bundle --android` da Windows — già comunque bloccato più a monte da
+`python/servo/platform/build_target.py`'s restrizione Linux/macOS-only sulla cross-compilazione
+Rust — o Roves Packmaster, che invece *potrebbe* girare su Windows dato che non compila Rust,
+ma è stato scoperto proprio per questo e quindi bloccato esplicitamente lì,
+`check_android_availability()` in `android.rs`).
+
+**Non verificato di persona** (nessun ambiente Windows con NDK reale disponibile in questa
+sessione per confermarlo empiricamente) — dedotto leggendo il codice Kotlin e il comportamento
+noto di `ProcessBuilder` su Windows, non testato.
+
+Se si vuole risolvere: modificare quella riga Gradle per scegliere `ndk-build.cmd` quando
+`org.gradle.internal.os.OperatingSystem.current().isWindows` — è una modifica a un file
+vendorizzato, quindi serve la solita voce in `CUSTOMIZATIONS.md` + patch rigenerata (vedi
+`CLAUDE.md`). Finché non è risolto, Roves Packmaster resta Linux/macOS-only per Android.
+
 ## Note
 
 - Punto risolto nella sessione del 2026-08-06: stato di navigazione browser morto

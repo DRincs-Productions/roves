@@ -1,0 +1,463 @@
+diff --git a/python/servo/post_build_commands.py b/python/servo/post_build_commands.py
+index 5ae49b7..f7d63ca 100644
+--- a/python/servo/post_build_commands.py
++++ b/python/servo/post_build_commands.py
+@@ -260,9 +260,39 @@ def _resolve_window_title(content_dir: str) -> Optional[str]:
+     return None
+ 
+ 
+-# Maps the standard PWA `orientation` manifest field to Android's own
+-# `android:screenOrientation` values -- see `_resolve_android_orientation` below. Only the
+-# 8 orientation-lock values are handled; "any"/"natural" both map to "unspecified" (today's
++# Filenames tried, in order, by `_read_web_manifest` below. `manifest.webmanifest` is what
++# most bundlers emit by default (e.g. vite-plugin-pwa); `manifest.json` is also what
++# `_resolve_window_title` above already reads for the desktop window title; `site.webmanifest`
++# is what some favicon-generator tools (e.g. realfavicongenerator.net) emit instead.
++_WEB_MANIFEST_CANDIDATES = ("manifest.webmanifest", "manifest.json", "site.webmanifest")
++
++
++def _read_web_manifest(content_dir: str) -> dict[str, Any]:
++    """Reads and parses the game's own web app manifest (see `_WEB_MANIFEST_CANDIDATES`),
++    returning `{}` if none of the candidate filenames exist or parse as a JSON object. Used by
++    `_bundle_android` to default the Android app label/orientation/status-bar color when
++    `--content-dir` has one — see `bundle`'s own `--android-app-name`/`--android-orientation`/
++    `--android-theme-color` flags for the explicit-override side of that: each one always
++    wins over its manifest counterpart when given, this is only ever a default.
++    """
++    for candidate in _WEB_MANIFEST_CANDIDATES:
++        manifest_path = path.join(content_dir, candidate)
++        if not path.isfile(manifest_path):
++            continue
++        try:
++            with open(manifest_path, encoding="utf8") as f:
++                data = json.load(f)
++        except (json.JSONDecodeError, OSError):
++            continue
++        if isinstance(data, dict):
++            return cast(dict[str, Any], data)
++    return {}
++
++
++# Maps the standard PWA `orientation` manifest field (and `bundle`'s own --android-orientation,
++# which accepts the same vocabulary) to Android's own `android:screenOrientation` values. Only
++# the 6 directional orientation-lock values are handled; "any"/"natural" (also valid PWA/
++# --android-orientation values) and anything else fall back to "unspecified" (today's
+ # un-overridden behavior) since neither has a single obvious Android equivalent.
+ _ANDROID_ORIENTATION_MAP = {
+     "landscape": "sensorLandscape",
+@@ -274,31 +304,6 @@ _ANDROID_ORIENTATION_MAP = {
+ }
+ 
+ 
+-def _resolve_android_orientation(content_dir: str) -> str:
+-    """Reads the game's own screen-orientation preference from its web app manifest --
+-    `manifest.webmanifest` (the filename most bundlers emit by default, e.g. vite-plugin-pwa)
+-    or plain `manifest.json` -- and translates the standard `orientation` field into the
+-    Android `android:screenOrientation` value `_bundle_android` passes to Gradle as a project
+-    property (see servoapp/build.gradle.kts's `manifestPlaceholders` and AndroidManifest.xml's
+-    MainActivity). Falls back to "unspecified" -- today's un-overridden behavior, the OS/
+-    sensor decides -- when no manifest exists, it has no `orientation` field, or the value
+-    isn't one of the 8 standard PWA orientation strings (`_ANDROID_ORIENTATION_MAP`): this is
+-    a strict opt-in, never a regression for content that doesn't set one.
+-    """
+-    for candidate in ("manifest.webmanifest", "manifest.json"):
+-        manifest_path = path.join(content_dir, candidate)
+-        if not path.exists(manifest_path):
+-            continue
+-        try:
+-            with open(manifest_path, encoding="utf8") as f:
+-                orientation = json.load(f).get("orientation")
+-        except (json.JSONDecodeError, OSError):
+-            continue
+-        if orientation in _ANDROID_ORIENTATION_MAP:
+-            return _ANDROID_ORIENTATION_MAP[orientation]
+-    return "unspecified"
+-
+-
+ def _write_launch_config(config_dir: str, info: BundleLaunchInfo) -> None:
+     """Writes `launch.json` into `config_dir` (always a sibling of the real,
+     single shipped binary — see the `_bundle_*` methods below). This is the
+@@ -720,6 +725,29 @@ class PostBuildCommands(CommandBase):
+         "_ensure_rcedit) — the .exe's icon is embedded at link time, so unlike --icon-png this can't be a "
+         "plain runtime file, but doesn't need a recompile either.",
+     )
++    @CommandArgument(
++        "--android-app-name",
++        default=None,
++        help="Android only: override the app's launcher label. Defaults to --content-dir's own "
++        "manifest.webmanifest/manifest.json/site.webmanifest `short_name` (falling back to `name`), or "
++        "Roves' own default label if neither the manifest nor this flag provide one.",
++    )
++    @CommandArgument(
++        "--android-orientation",
++        default=None,
++        choices=["any", "natural", *_ANDROID_ORIENTATION_MAP.keys()],
++        help="Android only: override the app's locked screen orientation (standard web app manifest "
++        "`orientation` vocabulary — translated to the matching `android:screenOrientation`, see "
++        "_ANDROID_ORIENTATION_MAP). Defaults to --content-dir's own manifest `orientation` field, or "
++        "unlocked (`unspecified`, the OS/sensor decides) if neither the manifest nor this flag set one.",
++    )
++    @CommandArgument(
++        "--android-theme-color",
++        default=None,
++        help="Android only: override the status bar color (any value Android's Color.parseColor "
++        "accepts, e.g. `#ffffff`). Defaults to --content-dir's own manifest `theme_color` field, or "
++        "leaves the status bar at its normal theme color if neither the manifest nor this flag set one.",
++    )
+     @CommandArgument("params", nargs="...", help="Extra command-line arguments to pass through to servoshell on launch")
+     # build_configuration=True (not just binary_selection): registers --android/--target (see
+     # command_base.py's common_command_arguments) and, crucially, makes this same decorator
+@@ -755,6 +783,9 @@ class PostBuildCommands(CommandBase):
+         diagnostic_script: bool = False,
+         icon_png: Optional[str] = None,
+         icon_ico: Optional[str] = None,
++        android_app_name: Optional[str] = None,
++        android_orientation: Optional[str] = None,
++        android_theme_color: Optional[str] = None,
+         params: Optional[List[str]] = None,
+         **kwargs: Any,
+     ) -> int | None:
+@@ -775,9 +806,14 @@ class PostBuildCommands(CommandBase):
+         * Android (--android): a debug .apk, built via a real Gradle
+           invocation (not a single-binary copy like the desktop platforms
+           above) — see `_bundle_android`. `--content-dir` is copied into the
+-          APK's own assets instead of being packed/extracted at runtime, and
+-          only `manifest.webmanifest`'s `orientation` field is read back
+-          (into `android:screenOrientation`) so far.
++          APK's own assets instead of being packed/extracted at runtime.
++          The game's own web app manifest (`manifest.webmanifest`/
++          `manifest.json`/`site.webmanifest`, see `_read_web_manifest`)
++          defaults the app label, locked orientation, and status bar color
++          — each overridable via --android-app-name/--android-orientation/
++          --android-theme-color. The launcher icon reuses the same
++          --icon-png/auto-detected icon every other platform gets, not a
++          separate manifest `icons`-array reading.
+ 
+         Every platform's *portable* output ships exactly one executable — no
+         separate launcher process and no `roves-content-packer` binary
+@@ -823,13 +859,49 @@ class PostBuildCommands(CommandBase):
+             delete(output_dir)
+         os.makedirs(output_dir)
+ 
++        # No --icon-png/--icon-ico given? Auto-detect one from --content-dir itself before
++        # falling back to Roves' own branding -- many bundlers already emit an `icon.png`
++        # there for their own PWA manifest (confirmed: pixi-vn-react-template's own `dist/`
++        # has exactly this), so a game that already has one gets its own icon for free,
++        # with zero extra configuration. Only ever a *default*: an explicitly passed
++        # --icon-png/--icon-ico always wins, same as before. Shared with `_bundle_android`
++        # below (the whole point being "one icon-resolution mechanism serves every
++        # platform," not a separate Android-specific one) -- resolved here, before the
++        # is_android branch, rather than inside `_bundle_android` itself.
++        if not icon_png and content_dir:
++            candidate = path.join(content_dir, "icon.png")
++            if path.isfile(candidate):
++                icon_png = candidate
++        if not icon_ico and content_dir:
++            candidate = path.join(content_dir, "icon.ico")
++            if path.isfile(candidate):
++                icon_ico = candidate
++            else:
++                # icon.ico is rare -- favicon.ico is what virtually every bundler actually
++                # emits (confirmed: pixi-vn-react-template has this, not icon.ico), and is
++                # itself already a valid multi-size .ico rcedit can patch in directly, so
++                # it's worth trying before giving up and keeping Roves' own default icon.
++                candidate = path.join(content_dir, "favicon.ico")
++                if path.isfile(candidate):
++                    icon_ico = candidate
++
+         # Android has no equivalent to "one prebuilt binary + loose/packed files sitting
+         # next to it" (an installed APK's assets are baked in at package time, there's
+         # nothing to drop content next to after the fact) -- so none of the rest of this
+-        # function (launch.json, icon patching, per-desktop-OS bundling) applies. See
+-        # `_bundle_android`'s own doc comment for what it does instead.
++        # function (launch.json, --icon-ico/is_macosx handling below, per-desktop-OS
++        # bundling) applies. See `_bundle_android`'s own doc comment for what it does
++        # instead -- `icon_png` (just resolved above) is the one piece of desktop state
++        # it does share.
+         if is_android(self.target):
+-            return self._bundle_android(servo_binary, content_dir, output_dir)
++            return self._bundle_android(
++                servo_binary,
++                content_dir,
++                output_dir,
++                android_app_name=android_app_name,
++                android_orientation=android_orientation,
++                android_theme_color=android_theme_color,
++                icon_png=icon_png,
++            )
+ 
+         content_exclude = content_exclude or []
+         content_boot_include = content_boot_include or []
+@@ -896,29 +968,6 @@ class PostBuildCommands(CommandBase):
+         # an installer afterward.
+         stage_dir = path.join(output_dir, "_stage") if (msi or dmg) else output_dir
+ 
+-        # No --icon-png/--icon-ico given? Auto-detect one from --content-dir itself before
+-        # falling back to Roves' own branding -- many bundlers already emit an `icon.png`
+-        # there for their own PWA manifest (confirmed: pixi-vn-react-template's own `dist/`
+-        # has exactly this), so a game that already has one gets its own icon for free,
+-        # with zero extra configuration. Only ever a *default*: an explicitly passed
+-        # --icon-png/--icon-ico always wins, same as before.
+-        if not icon_png and content_dir:
+-            candidate = path.join(content_dir, "icon.png")
+-            if path.isfile(candidate):
+-                icon_png = candidate
+-        if not icon_ico and content_dir:
+-            candidate = path.join(content_dir, "icon.ico")
+-            if path.isfile(candidate):
+-                icon_ico = candidate
+-            else:
+-                # icon.ico is rare -- favicon.ico is what virtually every bundler actually
+-                # emits (confirmed: pixi-vn-react-template has this, not icon.ico), and is
+-                # itself already a valid multi-size .ico rcedit can patch in directly, so
+-                # it's worth trying before giving up and keeping Roves' own default icon.
+-                candidate = path.join(content_dir, "favicon.ico")
+-                if path.isfile(candidate):
+-                    icon_ico = candidate
+-
+         if icon_ico and not is_windows():
+             print("--icon-ico only has an effect on Windows -- ignoring.")
+             icon_ico = None
+@@ -1027,42 +1076,82 @@ class PostBuildCommands(CommandBase):
+         target_dir = servo.util.get_target_dir()
+         return path.join(target_dir, "release", _packer_binary_name())
+ 
+-    def _bundle_android(self, servo_binary: str, content_dir: Optional[str], output_dir: str) -> int | None:
++    def _bundle_android(
++        self,
++        servo_binary: str,
++        content_dir: Optional[str],
++        output_dir: str,
++        android_app_name: Optional[str] = None,
++        android_orientation: Optional[str] = None,
++        android_theme_color: Optional[str] = None,
++        icon_png: Optional[str] = None,
++    ) -> int | None:
+         """`mach bundle --android`'s entire packaging path: unlike desktop (see `bundle`'s own
+-        doc comment above), an installed APK's assets are baked in at package time -- there's
+-        no equivalent to shipping one prebuilt shell binary and dropping/packing content next
+-        to it afterward. So `--content-dir` is copied straight into the Gradle project's own
+-        asset folder (read back at launch by MainActivity.kt's default
+-        `loadUri("file:///android_asset/www/index.html")`) and the APK is rebuilt from there
+-        -- a real Gradle invocation, not a file copy -- before lifting the result into
+-        `--output`.
+-
+-        Only `manifest.webmanifest`'s `orientation` field is wired through today (see
+-        `_resolve_android_orientation`), passed to Gradle as the `servoScreenOrientation`
+-        project property that `servoapp/build.gradle.kts` turns into a manifestPlaceholder.
+-        App name/icon/theme-color from the same manifest are a deliberate follow-up, not
+-        attempted here -- see CUSTOMIZATIONS.md.
++        doc comment above), an installed APK's assets/label/icon are baked in at package time
++        -- there's no equivalent to shipping one prebuilt shell binary and dropping/packing
++        content next to it afterward. So this builds from a throwaway copy of
++        `support/android/apk/` (never the tracked source tree directly -- see the "Correction"
++        note in CUSTOMIZATIONS.md for why: an earlier version of this method copied
++        `--content-dir` straight into the tracked Gradle project, which silently persisted a
++        specific game's content/icon across later, unrelated `mach build`/`bundle` runs on the
++        same checkout), copies `--content-dir` into that copy's own asset folder (read back at
++        launch by MainActivity.kt's default `loadUri("file:///android_asset/www/index.html")`),
++        optionally drops in `icon_png` as the launcher icon, and invokes Gradle from there --
++        a real build, not a file copy -- before lifting the resulting `.apk` into `--output`.
++
++        `manifest.webmanifest`/`manifest.json`/`site.webmanifest` (see `_read_web_manifest`)
++        defaults the app's label (`name`/-`short_name`), locked screen orientation
++        (`orientation`), and status bar color (`theme_color`) -- each overridable via `bundle`'s
++        own `--android-app-name`/`--android-orientation`/`--android-theme-color` flags, which
++        always win when given. `icon_png` is resolved by `bundle` itself, the same
++        --icon-png/auto-detect-from-content-dir logic every other platform uses -- there's no
++        separate, Android-specific reading of the manifest's own `icons` array, deliberately:
++        one icon-resolution mechanism for every platform, not one per platform.
+ 
+         Debug build only, same as the plain-shell CI build in
+         `.github/workflows/android.yml`: this doesn't yet expose a way to sign a release
+         build, since `mach bundle` has no equivalent of desktop's
+         --package-name/--package-version signing inputs for Android.
+         """
+-        apk_project_dir = path.join(self.get_top_dir(), "support", "android", "apk")
+-        assets_dir = path.join(apk_project_dir, "servoapp", "src", "main", "assets", "www")
+-        if path.exists(assets_dir):
+-            delete(assets_dir)
++        manifest = _read_web_manifest(content_dir) if content_dir else {}
++
++        orientation = _ANDROID_ORIENTATION_MAP.get(android_orientation or manifest.get("orientation"), "unspecified")
++        app_name = android_app_name or manifest.get("short_name") or manifest.get("name") or "@string/app_name"
++        theme_color = android_theme_color or manifest.get("theme_color") or ""
++
++        target_triple = self.target.triple()
++
++        # A scratch copy, not `support/android/apk/` itself -- see this method's own doc
++        # comment above for why. `target/<triple>/android-bundle` mirrors where every other
++        # per-target intermediate already lives (e.g. `dir_to_resources` below), so a repeat
++        # `mach bundle --android` for a different game starts from a clean copy every time
++        # rather than accumulating the previous game's files.
++        apk_project_src = path.join(self.get_top_dir(), "support", "android", "apk")
++        build_root = path.join(self.get_top_dir(), "target", target_triple, "android-bundle")
++        if path.exists(build_root):
++            delete(build_root)
++        shutil.copytree(apk_project_src, build_root)
++
++        assets_dir = path.join(build_root, "servoapp", "src", "main", "assets", "www")
+         if content_dir:
+             shutil.copytree(content_dir, assets_dir)
+         else:
+             os.makedirs(assets_dir)
+ 
+-        orientation = _resolve_android_orientation(content_dir) if content_dir else "unspecified"
++        if icon_png:
++            # `AndroidManifest.xml` references `@mipmap/servo` -- a resource *name*, resolved
++            # against whatever file sits at res/mipmap/servo.* regardless of format,
++            # independent of extension. The tracked source ships `servo.webp`; replacing it
++            # instead of adding `servo.png` alongside avoids a duplicate-resource-name build
++            # error from having both under the same name in the same density bucket.
++            mipmap_dir = path.join(build_root, "servoapp", "src", "main", "res", "mipmap")
++            for existing_icon in glob.glob(path.join(mipmap_dir, "servo.*")):
++                os.remove(existing_icon)
++            shutil.copy(icon_png, path.join(mipmap_dir, "servo.png"))
+ 
+         # Mirrors package_commands.py's own `package --android` arch-string mapping -- not
+-        # reused directly since that command has no way to take the extra
+-        # -PservoScreenOrientation property below.
+-        target_triple = self.target.triple()
++        # reused directly since that command has no way to take the extra -Pservo* properties
++        # below.
+         arch_string = {
+             "aarch64-linux-android": "Arm64",
+             "armv7-linux-androideabi": "Armv7",
+@@ -1074,20 +1163,29 @@ class PostBuildCommands(CommandBase):
+         env = cast(dict[str, str], self.build_env())
+         env["SERVO_TARGET_DIR"] = path.dirname(servo_binary)
+ 
++        # An absolute, top_dir-relative path -- unaffected by `build_root` being a scratch
++        # copy rather than `apk_project_src` itself.
+         dir_to_resources = path.join(self.get_top_dir(), "target", target_triple, "resources")
+         if path.exists(dir_to_resources):
+             delete(dir_to_resources)
+         copy_packaged_resources(self.get_top_dir(), dir_to_resources)
+ 
+-        argv = ["./gradlew", "--no-daemon", f":servoapp:assemble{variant}", f"-PservoScreenOrientation={orientation}"]
++        argv = [
++            "./gradlew",
++            "--no-daemon",
++            f":servoapp:assemble{variant}",
++            f"-PservoScreenOrientation={orientation}",
++            f"-PservoAppName={app_name}",
++            f"-PservoThemeColor={theme_color}",
++        ]
+         try:
+-            with cd(apk_project_dir):
++            with cd(build_root):
+                 subprocess.check_call(argv, env=env)
+         except subprocess.CalledProcessError as e:
+             print("Packaging Android exited with return value %d" % e.returncode)
+             return e.returncode
+ 
+-        built_apks = glob.glob(path.join(apk_project_dir, "servoapp", "build", "outputs", "apk", variant, "*.apk"))
++        built_apks = glob.glob(path.join(build_root, "servoapp", "build", "outputs", "apk", variant, "*.apk"))
+         if not built_apks:
+             print(f"No .apk found under servoapp/build/outputs/apk/{variant}/ after a successful-looking Gradle build.")
+             return 1
+diff --git a/support/android/apk/servoapp/build.gradle.kts b/support/android/apk/servoapp/build.gradle.kts
+index 7025edc..5be2d4f 100644
+--- a/support/android/apk/servoapp/build.gradle.kts
++++ b/support/android/apk/servoapp/build.gradle.kts
+@@ -18,15 +18,30 @@ android {
+         versionCode = generatedVersionCode
+         versionName = "0.4.0"
+ 
+-        // Read from `manifest.webmanifest`'s `orientation` field (see
+-        // python/servo/post_build_commands.py's `_resolve_android_orientation`, invoked by
+-        // `mach bundle --android --content-dir`) and passed here as a Gradle project
+-        // property so it can end up in AndroidManifest.xml's `android:screenOrientation`
+-        // placeholder on MainActivity. Defaults to "unspecified" (today's un-overridden
+-        // behavior, i.e. the OS/sensor decides) for a build with no bundled content, e.g.
+-        // the plain engine-shell build `.github/workflows/android.yml` produces.
++        // Sourced from the game's own web app manifest (`manifest.webmanifest`/
++        // `manifest.json`/`site.webmanifest`) by `mach bundle --android --content-dir` --
++        // see python/servo/post_build_commands.py's `_bundle_android`/`_read_web_manifest` --
++        // or from that command's own --android-orientation/--android-app-name/
++        // --android-theme-color overrides, passed here as Gradle project properties. Both
++        // default to values that reproduce today's un-overridden behavior for a build with
++        // no bundled content, e.g. the plain engine-shell build
++        // `.github/workflows/android.yml` produces: "unspecified" leaves the screen
++        // orientation up to the OS/sensor, and "@string/app_name" is itself a resource
++        // reference -- once substituted into AndroidManifest.xml's `android:label`, Android
++        // resolves it exactly like the un-placeholdered `@string/app_name` this replaced.
+         manifestPlaceholders["screenOrientation"] =
+             (project.findProperty("servoScreenOrientation") as String?) ?: "unspecified"
++        manifestPlaceholders["appName"] =
++            (project.findProperty("servoAppName") as String?) ?: "@string/app_name"
++
++        // Not a manifest placeholder like the two above: `android:statusBarColor` lives in a
++        // *theme* (res/values/styles.xml), which manifestPlaceholders can't reach (those only
++        // substitute inside AndroidManifest.xml itself). Instead this generates a new string
++        // resource MainActivity.kt reads and applies to the status bar at runtime via
++        // `Window.setStatusBarColor` -- see that file. Empty string (not a color) by default,
++        // so "no theme_color set" means "don't touch the status bar" rather than forcing some
++        // placeholder color.
++        resValue("string", "servoThemeColor", (project.findProperty("servoThemeColor") as String?) ?: "")
+     }
+ 
+     compileOptions {
+@@ -34,6 +49,13 @@ android {
+         targetCompatibility = JavaVersion.VERSION_1_8
+     }
+ 
++    // AGP 8+ requires this explicit opt-in for defaultConfig's `resValue` (used above for
++    // `servoThemeColor`) -- off by default since AGP stopped generating it unconditionally
++    // for build-time-cost reasons.
++    buildFeatures {
++        resValues = true
++    }
++
+     val signingKeyInfo = getSigningKeyInfo()
+ 
+     if (signingKeyInfo != null) {
+diff --git a/support/android/apk/servoapp/src/main/AndroidManifest.xml b/support/android/apk/servoapp/src/main/AndroidManifest.xml
+index 80c2797..a905043 100644
+--- a/support/android/apk/servoapp/src/main/AndroidManifest.xml
++++ b/support/android/apk/servoapp/src/main/AndroidManifest.xml
+@@ -10,7 +10,7 @@
+     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+ 
+-    <application android:label="@string/app_name" android:icon="@mipmap/servo">
++    <application android:label="${appName}" android:icon="@mipmap/servo">
+         <activity android:name=".MainActivity"
+             android:configChanges="density|keyboardHidden|navigation|orientation|screenSize|uiMode"
+             android:screenOrientation="${screenOrientation}"
+diff --git a/support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt b/support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt
+index 18e8727..8da28ce 100644
+--- a/support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt
++++ b/support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt
+@@ -8,6 +8,7 @@ package org.servo.servoshell
+ import android.app.AlertDialog
+ import android.content.Intent
+ import android.content.SharedPreferences
++import android.graphics.Color
+ import android.os.Bundle
+ import android.system.ErrnoException
+ import android.system.Os
+@@ -62,6 +63,23 @@ class MainActivity : AppCompatActivity(), Servo.Client {
+         super.onCreate(savedInstanceState)
+         setContentView(R.layout.activity_main)
+ 
++        // `servoThemeColor` is a Gradle `resValue` (see servoapp/build.gradle.kts), sourced
++        // from the bundled game's own manifest `theme_color` (or `mach bundle`'s own
++        // --android-theme-color override) -- empty string by default, meaning "no theme_color
++        // was set, leave the status bar at its normal theme color" rather than forcing some
++        // placeholder color. `Color.parseColor` only understands `#rrggbb`/`#aarrggbb` and a
++        // handful of named colors (not arbitrary CSS like `rgb(...)`), so an unparseable value
++        // is caught and ignored rather than crashing the app on launch.
++        val themeColor = getString(R.string.servoThemeColor)
++        if (themeColor.isNotBlank()) {
++            try {
++                @Suppress("DEPRECATION")
++                window.statusBarColor = Color.parseColor(themeColor)
++            } catch (e: IllegalArgumentException) {
++                Log.w("MainActivity", "Ignoring unparseable --android-theme-color/theme_color '$themeColor'", e)
++            }
++        }
++
+         servoView = findViewById(R.id.servoview)
+         urlField = findViewById(R.id.urlfield)
+         progressBar = findViewById(R.id.progressbar)

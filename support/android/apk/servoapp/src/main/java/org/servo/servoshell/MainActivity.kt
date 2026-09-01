@@ -8,6 +8,7 @@ package org.servo.servoshell
 import android.app.AlertDialog
 import android.content.Intent
 import android.content.SharedPreferences
+import android.graphics.Color
 import android.os.Bundle
 import android.system.ErrnoException
 import android.system.Os
@@ -61,6 +62,23 @@ class MainActivity : AppCompatActivity(), Servo.Client {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+
+        // `servoThemeColor` is a Gradle `resValue` (see servoapp/build.gradle.kts), sourced
+        // from the bundled game's own manifest `theme_color` (or `mach bundle`'s own
+        // --android-theme-color override) -- empty string by default, meaning "no theme_color
+        // was set, leave the status bar at its normal theme color" rather than forcing some
+        // placeholder color. `Color.parseColor` only understands `#rrggbb`/`#aarrggbb` and a
+        // handful of named colors (not arbitrary CSS like `rgb(...)`), so an unparseable value
+        // is caught and ignored rather than crashing the app on launch.
+        val themeColor = getString(R.string.servoThemeColor)
+        if (themeColor.isNotBlank()) {
+            try {
+                @Suppress("DEPRECATION")
+                window.statusBarColor = Color.parseColor(themeColor)
+            } catch (e: IllegalArgumentException) {
+                Log.w("MainActivity", "Ignoring unparseable --android-theme-color/theme_color '$themeColor'", e)
+            }
+        }
 
         servoView = findViewById(R.id.servoview)
         urlField = findViewById(R.id.urlfield)
@@ -136,6 +154,15 @@ class MainActivity : AppCompatActivity(), Servo.Client {
 
         if (Intent.ACTION_VIEW == intent.action) {
             servoView.loadUri(intent.data.toString())
+        } else {
+            // No incoming URL to load (a normal launcher-icon tap, not an Android "open with"
+            // intent) -- load whatever `mach bundle --android --content-dir` packed into the
+            // APK's own assets (see post_build_commands.py's `_bundle_android`), if anything
+            // was bundled at all. A plain engine-shell build with no bundled content (e.g.
+            // .github/workflows/android.yml's per-commit build) has no assets/www/index.html,
+            // so this 404s inside Servo itself -- same as any other missing local file, no
+            // special-casing needed here.
+            servoView.loadUri("file:///android_asset/www/index.html")
         }
         setupUrlField()
     }
