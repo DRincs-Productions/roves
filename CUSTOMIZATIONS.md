@@ -5115,3 +5115,98 @@ written (see the entry above for that, added later the same day).
 **Verification:** not locally testable — Android cross builds are Linux/macOS-only host
 (this environment is Windows) and there is no local Android SDK/NDK/Gradle toolchain here
 regardless. Pending confirmation from the first real run of `android.yml` on GitHub Actions.
+
+## 2026-09-01 — `mach bundle --android`: full manifest coverage (app name, icon, theme color), explicit overrides, build from a scratch copy instead of tracked source
+
+**Files:** `python/servo/post_build_commands.py`,
+`support/android/apk/servoapp/src/main/AndroidManifest.xml`,
+`support/android/apk/servoapp/build.gradle.kts`,
+`support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt`.
+
+**Patch:** `patches/servo-v0.4.0/0061-android-manifest-full-coverage-and-scratch-build.patch`
+
+**Correction (of the 2026-08-31 "`mach bundle --android`" entry above):** that entry's
+`_bundle_android` copied `--content-dir` straight into the *tracked*
+`support/android/apk/servoapp/src/main/assets/www/`, and this entry's icon support would have
+done the same to `res/mipmap/servo.webp`. Every other `bundle()` output lands under
+`--output`/`target/`, never mutating tracked source — this was the one exception, and it had a
+real, concrete bug: a specific game's bundled content/icon would silently persist in the
+working tree across later, unrelated `mach build --android`/`mach bundle --android` runs on
+the same checkout (e.g. the plain engine-shell CI build in `.github/workflows/android.yml`
+picking up a leftover game icon from whoever last ran `mach bundle --android` there). Fixed by
+copying `support/android/apk/` into `target/<triple>/android-bundle/` (a scratch build
+directory, deleted and recreated on every invocation, alongside `_bundle_android`'s
+pre-existing `target/<triple>/resources` output) and building from that copy instead — the
+tracked source tree is never touched by a bundle run at all now.
+
+**Upstream behavior:** n/a for the manifest-field/override additions (continues yesterday's
+entry, no further upstream Android functionality touched). The scratch-copy fix has no
+upstream equivalent either — `mach package --android` (untouched, plain upstream) has always
+built in place inside `support/android/apk/`, same as before; only this fork's own
+`_bundle_android` (which layers a game's own content on top) needed the copy-first fix.
+
+**Change:**
+
+- `_read_web_manifest(content_dir)` replaces last entry's `_resolve_android_orientation`:
+  reads and parses the game's manifest once (trying `manifest.webmanifest`, `manifest.json`,
+  then `site.webmanifest` — the third is new, added per explicit request to consider
+  alternate filenames real tools emit, e.g. realfavicongenerator.net's default output name),
+  returning `{}` if none exist/parse as a JSON object. `_bundle_android` now resolves three
+  fields off that one dict, each with an explicit-override flag that always wins:
+  - `orientation` → `--android-orientation` (same PWA vocabulary as the manifest field itself,
+    translated via the pre-existing `_ANDROID_ORIENTATION_MAP`) → Gradle property
+    `servoScreenOrientation` → `AndroidManifest.xml`'s `android:screenOrientation` placeholder
+    (unchanged from yesterday's entry, just re-plumbed through the shared manifest dict).
+  - `short_name` (falling back to `name`) → `--android-app-name` → Gradle property
+    `servoAppName` → a new `AndroidManifest.xml` `android:label="${appName}"` placeholder on
+    `<application>` (previously the static `android:label="@string/app_name"`).
+    `build.gradle.kts` defaults the placeholder to the literal string `"@string/app_name"`
+    when neither the manifest nor the flag set one — since manifest placeholders are plain
+    text substitution into the merged manifest, this reproduces the exact original
+    `@string/app_name` resource reference for an unbundled/no-override build, not a
+    regression.
+  - `theme_color` → `--android-theme-color` → Gradle property `servoThemeColor`. Unlike the
+    two above, this one can't go through a manifest placeholder: `android:statusBarColor`
+    lives in a *theme* (`res/values/styles.xml`), which manifest placeholders can't reach
+    (those only substitute inside `AndroidManifest.xml` itself). Instead, `build.gradle.kts`
+    turns it into a new string resource via `resValue("string", "servoThemeColor", ...)`
+    (defaulting to `""`), and `MainActivity.kt`'s `onCreate` reads it and calls
+    `Window.setStatusBarColor` at runtime when it's non-blank — `Color.parseColor` failures
+    (e.g. a CSS `rgb(...)` value it doesn't understand) are caught and logged, not fatal.
+    `buildFeatures { resValues = true }` was added since AGP 8+ requires this explicit opt-in
+    for `resValue` (off by default for build-time-cost reasons).
+- Icon: **not** read from the manifest's own `icons` array at all, per explicit instruction —
+  "one icon-resolution mechanism serves every platform, not one per platform." `bundle()`'s
+  existing `--icon-png`/auto-detect-from-`--content-dir` logic (previously computed *after*
+  the `is_android` early-return, so never reached it) moved to run *before* that branch, and
+  its result is now passed into `_bundle_android`, which replaces
+  `res/mipmap/servo.webp` — deleting it first, since `AndroidManifest.xml`'s
+  `android:icon="@mipmap/servo"` resolves by resource *name*, and having both `servo.webp`
+  and a new `servo.png` in the same density bucket is a duplicate-resource-name build error,
+  not an override — with the resolved PNG (as `servo.png`).
+
+**Why:** direct continuation of the 2026-08-31 entry's own explicitly-deferred follow-up
+("App name/icon/theme-color from the same manifest are a deliberate follow-up, not attempted
+here") — requested the next day, together with corresponding `roves-action`/Roves Packmaster
+(`roves-ui`) work tracked separately (see `TODO.md` #3, which this entry closes the
+engine-side portion of).
+
+**Not done (left as a judgment call, not an oversight):** `display`, `background_color`, and
+`lang` from the same manifest still aren't read — `display`/`background_color` have weaker,
+more involved Android equivalents (a real splash-screen background needs Android 12+'s
+SplashScreen API, a bigger change than a manifest placeholder or resValue; a "fullscreen"
+`display` value has no single obvious `Activity` flag equivalent worth guessing at), and
+`lang` has no clear game-shell-relevant Android equivalent at all (Android's own locale
+handling is a system-wide setting, not a per-app manifest attribute an app can just adopt).
+`TODO.md` #3 tracks these as still-open if a concrete need for one shows up.
+
+**Verification:** `post_build_commands.py` parses cleanly (`ast.parse`), and the new patch
+applies cleanly with `patch -p1` on top of a fresh pristine `v0.4.0` extraction with patches
+0001-0060 already applied (confirmed byte-for-byte identical to this working tree afterward
+for all 4 touched files — same method as the 2026-08-31 entry's own verification). The actual
+Gradle/Kotlin path (does `resValue`/the new manifest placeholder actually resolve, does the
+status bar color actually apply, does the icon actually get picked up by a real build) is
+**not** locally verified, same constraint as every Android entry so far: Android cross builds
+are Linux/macOS-only host (this environment is Windows), no local Android SDK/NDK/Gradle
+toolchain here regardless. Pending a real `mach bundle --android --content-dir <dist>` run on
+Linux/macOS.
