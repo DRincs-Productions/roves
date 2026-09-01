@@ -30,6 +30,15 @@ name: 'Build Android APK (debug, from source, with local patches)'
 #
 # Android cross builds only run on Linux/macOs hosts (enforced by
 # python/servo/platform/build_target.py's AndroidTarget) — ubuntu-latest here.
+#
+# Also publishes two assets to the rolling "test" GitHub Release (same one test.yml uses for
+# desktop) that Roves Packmaster's own Android backend (roves-ui/src-tauri/src/android.rs)
+# downloads: `roves_android_native_arm64.zip` (the raw compiled `libservoshell.so`, since
+# Packmaster never compiles Rust itself) and `roves_android_project.zip` (a snapshot of
+# `support/android/apk/`, so Packmaster doesn't need its own git-fetch logic for it). This is
+# the only place either asset is published today — Android isn't part of a real, tagged
+# release yet (see README.md's "Supported platforms" table), so there's nothing versioned to
+# pin Packmaster's own download to.
 
 on:
   push:
@@ -41,9 +50,35 @@ env:
   # support/android/apk/servoapp/build.gradle.kts's `android {}` block.
   ANDROID_COMPILE_SDK: '37'
   ANDROID_BUILD_TOOLS: '36.0.0'
+  TEST_RELEASE_TAG: 'test'
 
 jobs:
+  # Mirrors test.yml's own job of the same name -- see that workflow's own comment. Both
+  # workflows publish to the same rolling "test" release, so either one creates it first,
+  # whichever runs first after the release doesn't exist yet (e.g. right after someone
+  # deletes it to retry a failed run).
+  ensure-test-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: ensure release "test" exists
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release view "$TEST_RELEASE_TAG" 2>/dev/null || \
+          gh release create "$TEST_RELEASE_TAG" \
+            --title "Servo customization test build" \
+            --notes "Rolling test build from source (Servo v${SERVO_TAG} + patches/). Overwritten on every push touching patches/ or android.yml. Not a real release — see release.yml for that." \
+            --prerelease \
+            2>/dev/null || \
+          gh release view "$TEST_RELEASE_TAG" > /dev/null
+
   build-apk:
+    needs: ensure-test-release
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -192,3 +227,55 @@ jobs:
         with:
           name: roves_shell_android_debug
           path: servo-src/${{ steps.apk.outputs.path }}
+
+      # Packmaster's own Android backend (roves-ui/src-tauri/src/android.rs) never compiles
+      # Rust or runs `mach` itself -- it downloads this raw .so (built here, where the NDK/
+      # Rust toolchain already exist) and drives Gradle/ndk-build locally to package it with a
+      # game's own content. aarch64 (the default `mach build --android` target above) covers
+      # virtually every real Android device; no other ABI is published yet.
+      - name: package native library for Packmaster
+        id: native
+        shell: bash
+        working-directory: servo-src
+        run: |
+          SO=$(find target/aarch64-linux-android -maxdepth 2 -name 'libservoshell.so' | head -1)
+          if [ -z "$SO" ]; then
+            echo "::error::no libservoshell.so found under target/aarch64-linux-android -- contents:"
+            find target/aarch64-linux-android -maxdepth 3
+            exit 1
+          fi
+          zip -j ../roves_android_native_arm64.zip "$SO"
+          echo "path=roves_android_native_arm64.zip" >> "$GITHUB_OUTPUT"
+
+      # The Gradle project itself (support/android/apk/) barely ever changes on its own --
+      # published fresh every run anyway (not conditioned on patches/ changing, matching this
+      # workflow's own on.push scope) so Packmaster always gets an exact match for whichever
+      # patches/engine behavior it's also targeting via the native .so above.
+      - name: package Android project for Packmaster
+        id: project
+        shell: bash
+        working-directory: servo-src
+        run: |
+          zip -rq ../roves_android_project.zip support/android/apk
+          echo "path=roves_android_project.zip" >> "$GITHUB_OUTPUT"
+
+      # Retries: see test.yml's own identical step/comment -- every matrix job (there, 6; here
+      # just this one, but android.yml's own build-apk job can still race a concurrent test.yml
+      # run uploading to the same "test" release at the same time).
+      - name: upload to "test" release
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          for asset in roves_android_native_arm64.zip roves_android_project.zip; do
+            for attempt in 1 2 3; do
+              gh release upload "$TEST_RELEASE_TAG" "$asset" --clobber && break
+              echo "upload attempt $attempt for $asset failed, retrying in $((attempt * 10))s..." >&2
+              sleep $((attempt * 10))
+              if [ "$attempt" = "3" ]; then
+                echo "::error::failed to upload $asset after 3 attempts"
+                exit 1
+              fi
+            done
+          done
