@@ -97,8 +97,31 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: setup Android SDK
-        uses: android-actions/setup-android@v3
+      # `android-actions/setup-android@v3` used to be here — dropped after a real, reproduced
+      # failure (2026-09-01, this exact job): it just points at whatever cmdline-tools happens
+      # to already be preinstalled on the `ubuntu-latest` image, and that bundled sdkmanager
+      # crashed immediately (4s, before any network activity) once JAVA_HOME pointed at the
+      # JDK 21 the step above installs — a known class of issue with older cmdline-tools
+      # releases under newer JDKs. Installing a known-fresh cmdline-tools ourselves (same
+      # build Roves Packmaster's own `android.rs` downloads, for the same reason: don't trust
+      # whatever happens to be preinstalled) sidesteps it entirely and doesn't depend on a
+      # third-party action's own choices at all.
+      - name: install Android SDK cmdline-tools
+        shell: bash
+        run: |
+          mkdir -p "$HOME/android-sdk/cmdline-tools"
+          curl -fsSL -o /tmp/cmdline-tools.zip \
+            "https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip"
+          unzip -q /tmp/cmdline-tools.zip -d /tmp/cmdline-tools-extract
+          rm /tmp/cmdline-tools.zip
+          # sdkmanager insists on sitting inside a version-named folder one level below
+          # cmdline-tools/ (here, "latest") or it refuses to run at all -- the zip's own top
+          # level folder is just "cmdline-tools", not "cmdline-tools/latest".
+          mv /tmp/cmdline-tools-extract/cmdline-tools "$HOME/android-sdk/cmdline-tools/latest"
+          echo "ANDROID_SDK_ROOT=$HOME/android-sdk" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$HOME/android-sdk" >> "$GITHUB_ENV"
+          echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$HOME/android-sdk/platform-tools" >> "$GITHUB_PATH"
 
       # python/servo/platform/build_target.py's AndroidTarget.configure_build_environment
       # hard-requires NDK r28 specifically (it reads source.properties and rejects anything
@@ -108,21 +131,19 @@ jobs:
       - name: install Android SDK components + NDK r28
         shell: bash
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platform-tools" "platforms;android-${ANDROID_COMPILE_SDK}" "build-tools;${ANDROID_BUILD_TOOLS}"
+          yes | sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --licenses >/dev/null || true
+          sdkmanager --sdk_root="$ANDROID_SDK_ROOT" "platform-tools" "platforms;android-${ANDROID_COMPILE_SDK}" "build-tools;${ANDROID_BUILD_TOOLS}"
 
-          NDK_PKG=$(sdkmanager --list 2>/dev/null | grep -oE 'ndk;28\.[0-9]+\.[0-9]+' | sort -V | tail -1)
+          NDK_PKG=$(sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --list 2>/dev/null | grep -oE 'ndk;28\.[0-9]+\.[0-9]+' | sort -V | tail -1)
           if [ -z "$NDK_PKG" ]; then
             echo "::error::no NDK r28.x package advertised by sdkmanager --list -- Servo currently only supports NDK r28, see build_target.py"
             exit 1
           fi
           echo "Installing $NDK_PKG"
-          sdkmanager "$NDK_PKG"
+          sdkmanager --sdk_root="$ANDROID_SDK_ROOT" "$NDK_PKG"
 
-          SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
           NDK_VERSION="${NDK_PKG#ndk;}"
-          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
-          echo "ANDROID_NDK_ROOT=$SDK_ROOT/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
 
       # rustup ships preinstalled on the ubuntu-latest runner image. We don't install a
       # toolchain explicitly: rustup auto-detects and fetches whatever rust-toolchain.toml in
