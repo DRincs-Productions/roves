@@ -41,9 +41,16 @@ reale** su ciascuna piattaforma della matrice CI (Windows/macOS/Linux) — non a
 
 ## 3. Android: leggere tutto `manifest.webmanifest` (non solo `orientation`), override via parametro, e riflettere tutto in `roves-action`/Roves Packmaster (`roves-ui`)
 
-**Stato:** noto, non ancora iniziato — richiesto esplicitamente come lavoro successivo al primo
-giro di bundling Android (vedi `CUSTOMIZATIONS.md`, voce "`mach bundle --android`: pack
-`--content-dir`...", 2026-08-31), che oggi legge solo il campo `orientation`.
+**Stato: fatto (2026-09-01/02, branch `android` su tutti e tre i repo).** Copertura completa
+del manifest (`name`/`short_name`/`orientation`, non più solo `orientation`) + override
+espliciti lato engine (vedi `CUSTOMIZATIONS.md`, voce "`mach bundle --android`: full manifest
+coverage..."); `roves-action` espone `android-app-name`/`android-orientation`/
+`android-theme-color`; Roves Packmaster (`roves-ui`) ha sia la UI (card Mobile, switch
+webmanifest, campi disabilitati che mostrano i valori reali del manifest) sia un vero backend
+(`src-tauri/src/android.rs`) che genera davvero un `.apk` — non più solo placeholder. Non
+verificato con una build reale (vedi punto 4 sotto e il commit stesso per il disclaimer).
+`theme_color`/status bar **non** implementato: rimosso dalla UI su richiesta esplicita ("la
+status bar non deve esserci"), quindi non è più nel design finale, non solo rimandato.
 
 Da fare, in ordine indicativo di dipendenza:
 
@@ -79,6 +86,34 @@ Da fare, in ordine indicativo di dipendenza:
   campi avanzati mobile vanno disabilitati (grigi/non editabili), dato che i valori arrivano
   dal manifest; quando è off, i campi tornano editabili manualmente (equivalente UI
   dell'override via parametro di `mach bundle` sopra).
+
+## 4. Bundling Android su Windows: `ndk-build` invocato senza fallback `.cmd`
+
+**Stato:** noto, non ancora iniziato — scoperto il 2026-09-02 lavorando al backend Android di
+Roves Packmaster (`roves-ui/src-tauri/src/android.rs`).
+
+`support/android/apk/servoview/build.gradle.kts` (upstream Servo, non una customizzazione di
+questo fork) invoca l'NDK con `getNdkDir() + "/ndk-build"` — letteralmente senza estensione,
+mai `ndk-build.cmd` — per il task che copia `libservoshell.so`/`libc++_shared.so` nella
+cartella `jniLibs/` dell'APK (vedi il commento in cima a `jni/Android.mk`/quel file Gradle).
+Su Windows l'NDK fornisce solo `ndk-build.cmd` (uno script batch), non un file chiamato
+`ndk-build` senza estensione — e Java/Gradle (`ProcessBuilder`/`Exec` task) non fa la
+risoluzione delle estensioni via `PATHEXT` come farebbe `cmd.exe`. Quindi, **così com'è
+scritto oggi, questo step Gradle probabilmente fallisce su Windows a prescindere da chi lo
+invoca** (`mach build/bundle --android` da Windows — già comunque bloccato più a monte da
+`python/servo/platform/build_target.py`'s restrizione Linux/macOS-only sulla cross-compilazione
+Rust — o Roves Packmaster, che invece *potrebbe* girare su Windows dato che non compila Rust,
+ma è stato scoperto proprio per questo e quindi bloccato esplicitamente lì,
+`check_android_availability()` in `android.rs`).
+
+**Non verificato di persona** (nessun ambiente Windows con NDK reale disponibile in questa
+sessione per confermarlo empiricamente) — dedotto leggendo il codice Kotlin e il comportamento
+noto di `ProcessBuilder` su Windows, non testato.
+
+Se si vuole risolvere: modificare quella riga Gradle per scegliere `ndk-build.cmd` quando
+`org.gradle.internal.os.OperatingSystem.current().isWindows` — è una modifica a un file
+vendorizzato, quindi serve la solita voce in `CUSTOMIZATIONS.md` + patch rigenerata (vedi
+`CLAUDE.md`). Finché non è risolto, Roves Packmaster resta Linux/macOS-only per Android.
 
 ## Note
 
