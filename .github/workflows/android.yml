@@ -201,6 +201,13 @@ jobs:
           fi
           cd servo-src
           chmod +x mach
+          # Same reasoning as `mach` itself (see CLAUDE.md's own "mach needs chmod +x on
+          # Linux/macOS" note): extracted from a zip, not a git checkout, so the executable
+          # bit tracked in Servo's own git history is lost -- `mach build --android`'s
+          # auto-package step shells out to this directly (package_commands.py's
+          # `subprocess.check_call(["./gradlew", ...])`), which needs it set or fails with a
+          # plain PermissionError before Gradle ever runs.
+          chmod +x support/android/apk/gradlew
           for p in "${patches[@]}"; do
             echo "Applying $(basename "$p")..."
             patch -p1 < "../$p"
