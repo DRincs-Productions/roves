@@ -115,6 +115,37 @@ Se si vuole risolvere: modificare quella riga Gradle per scegliere `ndk-build.cm
 vendorizzato, quindi serve la solita voce in `CUSTOMIZATIONS.md` + patch rigenerata (vedi
 `CLAUDE.md`). Finché non è risolto, Roves Packmaster resta Linux/macOS-only per Android.
 
+## 5. Firma dell'APK Android (release signing)
+
+**Stato:** noto, non ancora iniziato.
+
+Oggi `mach bundle --android` (e di conseguenza sia `roves-action` che il backend Android di
+Roves Packmaster, che si appoggiano allo stesso `.apk`) produce solo un **APK di debug**,
+firmato automaticamente da Gradle con il keystore di debug standard (`~/.android/debug.keystore`,
+la stessa chiave nota/pubblica su ogni macchina) — installabile via `adb install`/sideload per
+test, ma non distribuibile: né su un Play Store (che richiede una firma di release con una
+chiave privata dell'autore), né su store alternativi che verificano comunque la firma. Serve un
+percorso di **release build firmata**: generare (o far fornire dall'utente) un keystore reale,
+passare le sue credenziali al task Gradle `assembleRelease`/`bundleRelease` invece di
+`assembleDebug`, e decidere come gestire in sicurezza la chiave privata (non deve mai finire in
+un repo git né in un log CI in chiaro). Da coordinare con `roves-action` (nuovi input
+`android-keystore-*`, verosimilmente via GitHub Secrets) e con Roves Packmaster (dove l'utente
+non ha accesso a GitHub Secrets — probabile UI per generare/importare un keystore locale, vedi
+`roves-ui/TODO.md`).
+
+## 6. Bundling/generazione dell'APK Android anche su Windows
+
+**Stato:** noto, non ancora iniziato — bloccato dal punto 4 sopra.
+
+Obiettivo: rendere disponibile su Windows sia `mach build/bundle --android` da sorgente sia il
+backend Android di Roves Packmaster (`check_android_availability()` in `roves-ui/src-tauri/src/
+android.rs` lo blocca esplicitamente oggi). Il blocco principale è il punto 4 sopra
+(`ndk-build` invocato da Gradle senza fallback `.cmd` su Windows); per il solo percorso
+`mach build/bundle` da sorgente resta anche la restrizione Linux/macOS-only sulla
+cross-compilazione Rust in `python/servo/platform/build_target.py`, indipendente dal problema
+Gradle e todo separato. Per Roves Packmaster (che non compila Rust) risolvere il punto 4 dovrebbe
+bastare a togliere il blocco.
+
 ## Note
 
 - Punto risolto nella sessione del 2026-08-06: stato di navigazione browser morto
