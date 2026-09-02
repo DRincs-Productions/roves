@@ -128,19 +128,28 @@ jobs:
       # else) — resolved dynamically here (rather than a hardcoded exact patch version like
       # `28.0.13004108`) so this doesn't silently go stale if Google ships a later r28.x and
       # retires the first one from the sdkmanager repo.
+      #
+      # --channel=3 (canary -- the widest channel, superset of stable/beta/dev): confirmed via
+      # a real, reproduced failure (2026-09-01) that `platforms;android-37` isn't visible on
+      # sdkmanager's default (stable) channel at all -- Android 17/API 37 is still in preview
+      # ("Cinnamon Bun Preview" in Android Studio's own SDK Manager UI as of this writing) even
+      # though servoapp/build.gradle.kts already targets `compileSdk = 37`. Applies to every
+      # install in this step (not just the platform), since a superset channel is always safe
+      # to request and this keeps the whole step working the same way once 37 graduates to
+      # stable and stops needing it.
       - name: install Android SDK components + NDK r28
         shell: bash
         run: |
-          yes | sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --licenses >/dev/null || true
-          sdkmanager --sdk_root="$ANDROID_SDK_ROOT" "platform-tools" "platforms;android-${ANDROID_COMPILE_SDK}" "build-tools;${ANDROID_BUILD_TOOLS}"
+          yes | sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --channel=3 --licenses >/dev/null || true
+          sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --channel=3 "platform-tools" "platforms;android-${ANDROID_COMPILE_SDK}" "build-tools;${ANDROID_BUILD_TOOLS}"
 
-          NDK_PKG=$(sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --list 2>/dev/null | grep -oE 'ndk;28\.[0-9]+\.[0-9]+' | sort -V | tail -1)
+          NDK_PKG=$(sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --channel=3 --list 2>/dev/null | grep -oE 'ndk;28\.[0-9]+\.[0-9]+' | sort -V | tail -1)
           if [ -z "$NDK_PKG" ]; then
             echo "::error::no NDK r28.x package advertised by sdkmanager --list -- Servo currently only supports NDK r28, see build_target.py"
             exit 1
           fi
           echo "Installing $NDK_PKG"
-          sdkmanager --sdk_root="$ANDROID_SDK_ROOT" "$NDK_PKG"
+          sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --channel=3 "$NDK_PKG"
 
           NDK_VERSION="${NDK_PKG#ndk;}"
           echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
