@@ -307,20 +307,24 @@ jobs:
       # published fresh every run anyway (not conditioned on patches/ changing, matching this
       # workflow's own on.push scope) so Packmaster always gets an exact match for whichever
       # patches/engine behavior it's also targeting via the native .so above.
-      # Excludes every module's own `build/` output and Gradle's per-project `.gradle/` cache
-      # -- both only exist here because this step runs *after* `mach build --android` already
-      # invoked Gradle once (see above), and both are pure, regeneratable build output, not
-      # part of the actual project. Confirmed via a real, reproduced failure (2026-09-02):
-      # without this exclusion the zip exceeded GitHub's 2GB release-asset limit outright
-      # ("size must be less than 2147483648"), since Gradle's own build/ dirs (compiled
-      # classes, merged resources, intermediate APKs) dwarf the ~300KB actual source tree.
+      #
+      # Deletes every module's own `build/` output and Gradle's `.gradle/` caches before
+      # zipping -- both only exist here because this step runs *after* `mach build --android`
+      # already invoked Gradle once (see above), and both are pure, regeneratable build
+      # output, not part of the actual project. Confirmed via two real, reproduced failures
+      # (2026-09-02): first the zip exceeded GitHub's 2GB release-asset limit outright
+      # ("size must be less than 2147483648"); switching to `zip -x` glob excludes instead of
+      # deleting first "fixed" the size limit but still produced a 461MB zip (INFO-ZIP's `-x`
+      # patterns apparently didn't actually match these nested paths the way expected) for
+      # what should be a ~300KB source tree. Deleting the directories outright side-steps
+      # zip's own pattern-matching entirely -- there's nothing left to accidentally include.
       - name: package Android project for Packmaster
         id: project
         shell: bash
         working-directory: servo-src
         run: |
-          zip -rq ../roves_android_project.zip support/android/apk \
-            -x 'support/android/apk/*/build/*' -x 'support/android/apk/.gradle/*'
+          find support/android/apk -type d \( -name build -o -name .gradle \) -prune -exec rm -rf {} +
+          zip -rq ../roves_android_project.zip support/android/apk
           echo "path=roves_android_project.zip" >> "$GITHUB_OUTPUT"
           du -sh ../roves_android_project.zip
 
