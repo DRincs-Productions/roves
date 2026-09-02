@@ -302,13 +302,22 @@ jobs:
       # published fresh every run anyway (not conditioned on patches/ changing, matching this
       # workflow's own on.push scope) so Packmaster always gets an exact match for whichever
       # patches/engine behavior it's also targeting via the native .so above.
+      # Excludes every module's own `build/` output and Gradle's per-project `.gradle/` cache
+      # -- both only exist here because this step runs *after* `mach build --android` already
+      # invoked Gradle once (see above), and both are pure, regeneratable build output, not
+      # part of the actual project. Confirmed via a real, reproduced failure (2026-09-02):
+      # without this exclusion the zip exceeded GitHub's 2GB release-asset limit outright
+      # ("size must be less than 2147483648"), since Gradle's own build/ dirs (compiled
+      # classes, merged resources, intermediate APKs) dwarf the ~300KB actual source tree.
       - name: package Android project for Packmaster
         id: project
         shell: bash
         working-directory: servo-src
         run: |
-          zip -rq ../roves_android_project.zip support/android/apk
+          zip -rq ../roves_android_project.zip support/android/apk \
+            -x 'support/android/apk/*/build/*' -x 'support/android/apk/.gradle/*'
           echo "path=roves_android_project.zip" >> "$GITHUB_OUTPUT"
+          du -sh ../roves_android_project.zip
 
       # Retries: see test.yml's own identical step/comment -- every matrix job (there, 6; here
       # just this one, but android.yml's own build-apk job can still race a concurrent test.yml
