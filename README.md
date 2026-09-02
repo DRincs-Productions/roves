@@ -117,7 +117,7 @@ your page's own initial load — see the "Native boot splash" and later boot-spl
 | **Windows** (x64) | ✅ Implemented | native (Rust std) |
 | **macOS** (Apple Silicon and Intel) | ✅ Implemented | native (Rust std) |
 | **Linux** (x64) | ✅ Implemented | native (Rust std) |
-| Android | 🚧 In development (debug `.apk` only, no CI/`roves-action` integration yet) | JNI |
+| Android | 🚧 Early/experimental (debug `.apk` only) | JNI |
 | Nintendo Switch | 🚧 In development | `nx` |
 | Nintendo 3DS | 🚧 In development | `ctru-rs` |
 | PlayStation Portable (PSP) | 🚧 In development | `rust-psp` |
@@ -130,11 +130,19 @@ your page's own initial load — see the "Native boot splash" and later boot-spl
 Desktop targets (Windows, macOS, Linux) are supported today. Android builds from source via
 `mach build --android` (a plain engine-shell debug `.apk` is also built on every commit to
 `main`, see `.github/workflows/android.yml`) and `mach bundle --android --content-dir <dist>`
-now packs a game's own web content into that APK too, reading `manifest.webmanifest`'s
-`orientation` field to lock the app's screen orientation — but it's still early: no signed/
-release build path, no way to update bundled content short of a full rebuild, and no
-`roves-action`/VS Code extension/Packmaster integration yet, so treat it as source-build-only
-for now. All console targets are on the roadmap but not yet functional.
+packs a game's own web content into that APK too, reading `manifest.webmanifest`'s `name`/
+`short_name`/`orientation` fields (with `--android-app-name`/`--android-orientation`/
+`--android-theme-color` overrides) to configure the app's launcher label, screen orientation,
+and status bar color. Both
+[`roves-action`](https://github.com/DRincs-Productions/roves-action) (`android: true` and the
+matching `android-*` inputs) and
+[Roves Packmaster](https://github.com/DRincs-Productions/roves-packmaster) (a "Mobile" section
+in its UI that self-bootstraps a JRE/Android SDK/NDK — no Rust/Cargo/Android Studio needed) can
+now build a real Android release without a source checkout. It's still early: debug `.apk`
+only, no signed/release build path, no way to update bundled content short of a full rebuild,
+and Packmaster's Android build isn't available when Packmaster itself runs on Windows (Gradle's
+NDK invocation has no `.cmd` fallback there yet). All console targets are on the roadmap but
+not yet functional.
 
 ## Embedding
 
