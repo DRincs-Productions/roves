@@ -243,12 +243,17 @@ jobs:
       # Windows. Moot for the Android build itself anyway: cross builds default to the
       # `dummy` media stack (see command_base.py's is_media_enabled), so `mach build
       # --android` below never touches GStreamer at all.
+      # timeout-minutes: 30, not test.yml's own 15 -- confirmed via a real, reproduced timeout
+      # (2026-09-02) that this was genuinely still making progress (apt actively unpacking
+      # hundreds of packages, not stuck) when 15 minutes ran out. Same backstop reasoning as
+      # test.yml's own comment either way: caps a genuine hang regardless of cause, just with
+      # more headroom for legitimate apt slowness under runner load.
       - name: mach bootstrap (installs build dependencies)
         shell: bash
         working-directory: servo-src
         env:
           DEBIAN_FRONTEND: noninteractive
-        timeout-minutes: 15
+        timeout-minutes: 30
         run: ./mach bootstrap --force --yes --skip-lints --skip-nextest
 
       # Debug profile (no --release): this is a per-commit smoke/artifact build, not a
