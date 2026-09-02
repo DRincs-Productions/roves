@@ -129,19 +129,33 @@ jobs:
       # `28.0.13004108`) so this doesn't silently go stale if Google ships a later r28.x and
       # retires the first one from the sdkmanager repo.
       #
-      # --channel=3 (canary -- the widest channel, superset of stable/beta/dev): confirmed via
-      # a real, reproduced failure (2026-09-01) that `platforms;android-37` isn't visible on
-      # sdkmanager's default (stable) channel at all -- Android 17/API 37 is still in preview
-      # ("Cinnamon Bun Preview" in Android Studio's own SDK Manager UI as of this writing) even
-      # though servoapp/build.gradle.kts already targets `compileSdk = 37`. Applies to every
-      # install in this step (not just the platform), since a superset channel is always safe
-      # to request and this keeps the whole step working the same way once 37 graduates to
-      # stable and stops needing it.
+      # --channel=3 (canary -- the widest channel, superset of stable/beta/dev): Android 17/
+      # API 37 is still in preview ("Cinnamon Bun Preview" in Android Studio's own SDK Manager
+      # UI as of this writing) even though servoapp/build.gradle.kts already targets
+      # `compileSdk = 37`. Applies to every install in this step, since a superset channel is
+      # always safe to request.
+      #
+      # The platform package itself also isn't installable as a plain `platforms;android-37`
+      # -- confirmed against the real repository manifest (dl.google.com/android/repository/
+      # repository2-3.xml) that, mid-preview, Google publishes it under decimal sub-versions
+      # instead (`platforms;android-37.0`/`37.1`/`37.2` as of this writing, likely more later)
+      # with no bare `-37` alias yet. Resolved dynamically here for the same reason as the NDK
+      # version just below -- pick the newest non-prerelease (`-beta`/`-rc`) match instead of
+      # hardcoding one exact sub-version that will itself be superseded.
       - name: install Android SDK components + NDK r28
         shell: bash
         run: |
           yes | sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --channel=3 --licenses >/dev/null || true
-          sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --channel=3 "platform-tools" "platforms;android-${ANDROID_COMPILE_SDK}" "build-tools;${ANDROID_BUILD_TOOLS}"
+
+          PLATFORM_PKG=$(sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --channel=3 --list 2>/dev/null \
+            | grep -oE "platforms;android-${ANDROID_COMPILE_SDK}(\.[0-9]+)?(-ext[0-9]+)?" \
+            | grep -v -- '-beta\|-rc' | sort -V | tail -1)
+          if [ -z "$PLATFORM_PKG" ]; then
+            echo "::error::no platforms;android-${ANDROID_COMPILE_SDK}* package advertised by sdkmanager --list"
+            exit 1
+          fi
+          echo "Installing $PLATFORM_PKG"
+          sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --channel=3 "platform-tools" "$PLATFORM_PKG" "build-tools;${ANDROID_BUILD_TOOLS}"
 
           NDK_PKG=$(sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --channel=3 --list 2>/dev/null | grep -oE 'ndk;28\.[0-9]+\.[0-9]+' | sort -V | tail -1)
           if [ -z "$NDK_PKG" ]; then
