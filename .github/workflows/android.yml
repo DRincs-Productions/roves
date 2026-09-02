@@ -315,15 +315,23 @@ jobs:
       # (2026-09-02): first the zip exceeded GitHub's 2GB release-asset limit outright
       # ("size must be less than 2147483648"); switching to `zip -x` glob excludes instead of
       # deleting first "fixed" the size limit but still produced a 461MB zip (INFO-ZIP's `-x`
-      # patterns apparently didn't actually match these nested paths the way expected) for
-      # what should be a ~300KB source tree. Deleting the directories outright side-steps
-      # zip's own pattern-matching entirely -- there's nothing left to accidentally include.
+      # patterns apparently didn't actually match these nested paths the way expected). Deleting
+      # `build`/`.gradle` outright side-stepped zip's own pattern-matching, but the zip was
+      # STILL ~460MB after that -- the real bulk turned out to be `obj/local/<abi>/
+      # libservoshell.so`, a 1.8GB *uncompressed* copy of the native lib that classic `ndk-build`
+      # (used by servoview's build.gradle.kts only to copy the prebuilt .so, not to compile
+      # anything) writes to its own default intermediate output dir. That Gradle script only
+      # redirects `NDK_LIBS_OUT` (the final .so destination, already outside this tree); it never
+      # sets `NDK_OUT`, so `obj/` defaults to sitting right under the module root, same level as
+      # `jni/` -- outside both `build/` and `.gradle/`, so neither exclusion ever touched it.
+      # Confirmed by downloading the actual uploaded zip and listing entries by size. Deleting
+      # `obj` here now gets this down to the real ~300KB source tree.
       - name: package Android project for Packmaster
         id: project
         shell: bash
         working-directory: servo-src
         run: |
-          find support/android/apk -type d \( -name build -o -name .gradle \) -prune -exec rm -rf {} +
+          find support/android/apk -type d \( -name build -o -name .gradle -o -name obj \) -prune -exec rm -rf {} +
           zip -rq ../roves_android_project.zip support/android/apk
           echo "path=roves_android_project.zip" >> "$GITHUB_OUTPUT"
           du -sh ../roves_android_project.zip
