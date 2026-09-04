@@ -14,12 +14,12 @@ use js::jsval::UndefinedValue;
 use js::rust::{HandleObject as SafeHandleObject, HandleValue as SafeHandleValue};
 use js::typedarray::Uint8;
 use malloc_size_of::{MallocSizeOf, MallocSizeOfOps};
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto_and_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
 
 use crate::dom::bindings::buffer_source::create_buffer_source;
 use crate::dom::bindings::codegen::Bindings::CompressionStreamBinding::CompressionFormat;
 use crate::dom::bindings::codegen::Bindings::DecompressionStreamBinding::DecompressionStreamMethods;
-use crate::dom::bindings::conversions::SafeToJSValConvertible;
+use crate::dom::bindings::conversions::ToJSValConvertible;
 use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::stream::compressionstream::{BROTLI_BUFFER_SIZE, convert_chunk_to_vec};
@@ -64,11 +64,11 @@ impl DecompressionStream {
         transform: &TransformStream,
         format: CompressionFormat,
     ) -> DomRoot<DecompressionStream> {
-        reflect_dom_object_with_proto_and_cx(
+        reflect_dom_object_with_proto(
+            cx,
             Box::new(DecompressionStream::new_inherited(transform, format)),
             global,
             proto,
-            cx,
         )
     }
 }
@@ -94,11 +94,14 @@ impl DecompressionStreamMethods<crate::DomTypeHolder> for DecompressionStream {
         // decompress and enqueue a chunk algorithm with this and chunk.
         // Step 4. Let flushAlgorithm be an algorithm which takes no argument and runs the
         // decompress flush and enqueue algorithm with this.
-        let transformer_type = TransformerType::Decompressor(decompression_stream.clone());
 
         // Step 6. Set up this’s transform with transformAlgorithm set to transformAlgorithm and
         // flushAlgorithm set to flushAlgorithm.
-        transform.set_up(cx, global, transformer_type)?;
+        transform.set_up(
+            cx,
+            global,
+            TransformerType::Decompressor(decompression_stream.as_traced()),
+        )?;
 
         Ok(decompression_stream)
     }
@@ -130,16 +133,18 @@ pub(crate) fn decompress_and_enqueue_a_chunk(
     // Step 2. Let buffer be the result of decompressing chunk with ds’s format and context. If
     // this results in an error, then throw a TypeError.
     // NOTE: In our implementation, the enum type of context already indicates the format.
-    let mut decompression_context = ds.context.borrow_mut();
-    let buffer = decompression_context
-        .decompress(&chunk)
-        .map_err(|_| Error::Type(c"Failed to decompress a chunk of compressed input".into()))?;
+    let buffer = {
+        let mut decompression_context = ds.context.borrow_mut();
+        let buffer = decompression_context
+            .decompress(&chunk)
+            .map_err(|_| Error::Type(c"Failed to decompress a chunk of compressed input".into()))?;
 
-    // Step 3. If buffer is empty, return.
-    if buffer.is_empty() {
-        return Ok(());
-    }
-
+        // Step 3. If buffer is empty, return.
+        if buffer.is_empty() {
+            return Ok(());
+        }
+        buffer
+    };
     // Step 4. Let arrays be the result of splitting buffer into one or more non-empty pieces and
     // converting them into Uint8Arrays.
     // Step 5. For each Uint8Array array of arrays, enqueue array in ds’s transform.
@@ -153,7 +158,7 @@ pub(crate) fn decompress_and_enqueue_a_chunk(
 
     // Step 6. If the end of the compressed input has been reached, and ds’s context has not fully
     // consumed chunk, then throw a TypeError.
-    if decompression_context.is_ended {
+    if ds.context.borrow().is_ended {
         return Err(Error::Type(
             c"The end of the compressed input has been reached".to_owned(),
         ));
@@ -172,11 +177,12 @@ pub(crate) fn decompress_flush_and_enqueue(
     // Step 1. Let buffer be the result of decompressing an empty input with ds’s format and
     // context, with the finish flag.
     // NOTE: In our implementation, the enum type of context already indicates the format.
-    let mut decompression_context = ds.context.borrow_mut();
-    let buffer = decompression_context
-        .finalize()
-        .map_err(|_| Error::Type(c"Failed to finalize the decompression stream".into()))?;
-
+    let buffer = {
+        let mut decompression_context = ds.context.borrow_mut();
+        decompression_context
+            .finalize()
+            .map_err(|_| Error::Type(c"Failed to finalize the decompression stream".into()))?
+    };
     // Step 2. If buffer is empty, return.
     if !buffer.is_empty() {
         // Step 2.1. Let arrays be the result of splitting buffer into one or more non-empty pieces
@@ -201,7 +207,7 @@ pub(crate) fn decompress_flush_and_enqueue(
     // indicates the end has not been reached. Otherwise, the end has been reached. This test has
     // to been done before calling `try_finish`, so we execute it in Step 1, and store the result
     // in `is_ended`.
-    if !decompression_context.is_ended {
+    if !ds.context.borrow().is_ended {
         return Err(Error::Type(
             c"The end of the compressed input has not been reached".to_owned(),
         ));

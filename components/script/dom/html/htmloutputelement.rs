@@ -22,7 +22,6 @@ use crate::dom::node::{Node, NodeTraits};
 use crate::dom::nodelist::NodeList;
 use crate::dom::validation::Validatable;
 use crate::dom::validitystate::ValidityState;
-use crate::script_runtime::CanGc;
 
 #[dom_struct]
 pub(crate) struct HTMLOutputElement {
@@ -179,7 +178,7 @@ impl FormControl for HTMLOutputElement {
         self.form_owner.get()
     }
 
-    fn set_form_owner(&self, form: Option<&HTMLFormElement>) {
+    fn set_form_owner(&self, _cx: &mut JSContext, form: Option<&HTMLFormElement>) {
         self.form_owner.set(form);
     }
 

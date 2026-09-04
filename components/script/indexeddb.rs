@@ -86,7 +86,10 @@ pub fn key_type_to_jsval(
             // entries in value.
             let mut array_buffer = ArrayBuffer::from(buffer.get())
                 .expect("ArrayBuffer::create should create an ArrayBuffer object");
-            array_buffer.as_mut_slice().copy_from_slice(b);
+            array_buffer
+                .as_mut_slice_safe(cx.no_gc())
+                .expect("Can't be detached")
+                .copy_from_slice(b);
 
             // Step 3.5. Return buffer.
             result.set(ObjectValue(buffer.get()));
@@ -316,7 +319,8 @@ pub fn convert_value_to_key(
                     let array_buffer_view =
                         ArrayBufferView::from(*object).map_err(|()| Error::JSFailed)?;
                     array_buffer_view.to_vec()
-                };
+                }
+                .expect("Already checked for detached buffers");
                 // 3.3. Return a new key with type binary and value bytes.
                 return Ok(ConversionResult::Valid(IndexedDBKeyType::Binary(bytes)));
             }
@@ -399,7 +403,7 @@ pub fn convert_value_to_key_range(
     if input.is_object() {
         rooted!(&in(cx) let object = input.to_object());
         unsafe {
-            if let Ok(obj) = root_from_object::<IDBKeyRange>(object.get(), cx.raw_cx()) {
+            if let Ok(obj) = root_from_object::<IDBKeyRange>(cx, object.get()) {
                 let obj = obj.inner().clone();
                 return Ok(obj);
             }

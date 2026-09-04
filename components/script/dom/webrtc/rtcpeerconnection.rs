@@ -11,7 +11,7 @@ use js::realm::CurrentRealm;
 use js::rust::HandleObject;
 use rustc_hash::FxHashMap;
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::reflect_dom_object_with_proto_and_cx;
+use script_bindings::reflector::reflect_weak_referenceable_dom_object_with_proto;
 use servo_media::ServoMedia;
 use servo_media::streams::MediaStreamType;
 use servo_media::streams::registry::MediaStreamId;
@@ -53,7 +53,6 @@ use crate::dom::rtcsessiondescription::RTCSessionDescription;
 use crate::dom::rtctrackevent::RTCTrackEvent;
 use crate::dom::window::Window;
 use crate::realms::enter_auto_realm;
-use crate::script_runtime::CanGc;
 use crate::task_source::SendableTaskSource;
 
 #[dom_struct]
@@ -184,11 +183,11 @@ impl RTCPeerConnection {
         proto: Option<HandleObject>,
         config: &RTCConfiguration,
     ) -> DomRoot<RTCPeerConnection> {
-        let this = reflect_dom_object_with_proto_and_cx(
-            Box::new(RTCPeerConnection::new_inherited()),
+        let this = reflect_weak_referenceable_dom_object_with_proto(
+            cx,
+            Rc::new(RTCPeerConnection::new_inherited()),
             window,
             proto,
-            cx,
         );
         let signaller = this.make_signaller();
         *this.controller.borrow_mut() = Some(ServoMedia::get().create_webrtc(signaller));
@@ -293,12 +292,12 @@ impl RTCPeerConnection {
         match event {
             DataChannelEvent::NewChannel => {
                 let channel = RTCDataChannel::new(
+                    cx,
                     &self.global(),
                     self,
                     USVString::from("".to_owned()),
                     &RTCDataChannelInit::empty(),
                     Some(channel_id),
-                    CanGc::from_cx(cx),
                 );
 
                 let event = RTCDataChannelEvent::new(
@@ -779,26 +778,21 @@ impl RTCPeerConnectionMethods<crate::DomTypeHolder> for RTCPeerConnection {
     /// <https://www.w3.org/TR/webrtc/#dom-peerconnection-createdatachannel>
     fn CreateDataChannel(
         &self,
+        cx: &mut JSContext,
         label: USVString,
         init: &RTCDataChannelInit,
     ) -> DomRoot<RTCDataChannel> {
-        RTCDataChannel::new(
-            &self.global(),
-            self,
-            label,
-            init,
-            None,
-            CanGc::deprecated_note(),
-        )
+        RTCDataChannel::new(cx, &self.global(), self, label, init, None)
     }
 
     /// <https://w3c.github.io/webrtc-pc/#dom-rtcpeerconnection-addtransceiver>
     fn AddTransceiver(
         &self,
+        cx: &mut JSContext,
         _track_or_kind: MediaStreamTrackOrString,
         init: &RTCRtpTransceiverInit,
     ) -> DomRoot<RTCRtpTransceiver> {
-        RTCRtpTransceiver::new(&self.global(), init.direction, CanGc::deprecated_note())
+        RTCRtpTransceiver::new(cx, &self.global(), init.direction)
     }
 }
 

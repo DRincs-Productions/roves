@@ -5,6 +5,7 @@
 use std::cell::RefCell;
 use std::cmp::{Ordering, PartialOrd};
 use std::iter;
+use std::rc::Rc;
 
 use app_units::Au;
 use dom_struct::dom_struct;
@@ -14,7 +15,7 @@ use js::jsapi::JSTracer;
 use js::rust::HandleObject;
 use script_bindings::cell::DomRefCell;
 use script_bindings::dom::UnrootedDom;
-use script_bindings::reflector::reflect_dom_object_with_proto_and_cx;
+use script_bindings::reflector::reflect_weak_referenceable_dom_object_with_proto;
 use style_traits::CSSPixel;
 
 use crate::dom::abstractrange::{AbstractRange, BoundaryPoint, bp_position};
@@ -124,8 +125,9 @@ impl Range {
         end_container: &Node,
         end_offset: u32,
     ) -> DomRoot<Range> {
-        let range = reflect_dom_object_with_proto_and_cx(
-            Box::new(Range::new_inherited(
+        let range = reflect_weak_referenceable_dom_object_with_proto(
+            cx,
+            Rc::new(Range::new_inherited(
                 start_container,
                 start_offset,
                 end_container,
@@ -133,26 +135,37 @@ impl Range {
             )),
             document.window(),
             proto,
-            cx,
         );
-        start_container.ranges().push(WeakRef::new(&range));
+        start_container
+            .ensure_weak_ranges()
+            .push(WeakRef::new(&range));
         if start_container != end_container {
-            end_container.ranges().push(WeakRef::new(&range));
+            end_container
+                .ensure_weak_ranges()
+                .push(WeakRef::new(&range));
         }
         range
+    }
+
+    /// <https://dom.spec.whatwg.org/#concept-range-root>
+    ///
+    /// > The root of a live range is the root of its start node.
+    pub(crate) fn root(&self) -> DomRoot<Node> {
+        self.start_container().GetRootNode(&Default::default())
     }
 
     /// <https://dom.spec.whatwg.org/#contained>
     pub(crate) fn contains(&self, node: &Node) -> bool {
         // > A node node is contained in a live range range if node’s root is range’s root,
         // > and (node, 0) is after range’s start, and (node, node’s length) is before range’s end.
-        matches!(
-            (
-                bp_position(node, 0, &self.start_container(), self.start_offset()),
-                bp_position(node, node.len(), &self.end_container(), self.end_offset()),
-            ),
-            (Some(Ordering::Greater), Some(Ordering::Less))
-        )
+        node.GetRootNode(&Default::default()) == self.root() &&
+            matches!(
+                (
+                    bp_position(node, 0, &self.start_container(), self.start_offset()),
+                    bp_position(node, node.len(), &self.end_container(), self.end_offset()),
+                ),
+                (Ordering::Greater, Ordering::Less)
+            )
     }
 
     /// <https://dom.spec.whatwg.org/#partially-contained>
@@ -219,12 +232,12 @@ impl Range {
         }
         if self.start().node() != node {
             if self.start().node() == self.end().node() {
-                node.ranges().push(WeakRef::new(self));
+                node.ensure_weak_ranges().push(WeakRef::new(self));
             } else if self.end().node() == node {
-                self.start_container().ranges().remove(self);
+                self.start_container().ensure_weak_ranges().remove(self);
             } else {
-                node.ranges()
-                    .push(self.start_container().ranges().remove(self));
+                node.ensure_weak_ranges()
+                    .push(self.start_container().ensure_weak_ranges().remove(self));
             }
         }
         self.start().set(node, offset);
@@ -237,12 +250,12 @@ impl Range {
         }
         if self.end().node() != node {
             if self.end().node() == self.start().node() {
-                node.ranges().push(WeakRef::new(self));
+                node.ensure_weak_ranges().push(WeakRef::new(self));
             } else if self.start().node() == node {
-                self.end_container().ranges().remove(self);
+                self.end_container().ensure_weak_ranges().remove(self);
             } else {
-                node.ranges()
-                    .push(self.end_container().ranges().remove(self));
+                node.ensure_weak_ranges()
+                    .push(self.end_container().ensure_weak_ranges().remove(self));
             }
         }
         self.end().set(node, offset);
@@ -250,39 +263,33 @@ impl Range {
 
     /// <https://dom.spec.whatwg.org/#dom-range-comparepointnode-offset>
     fn compare_point(&self, node: &Node, offset: u32) -> Fallible<Ordering> {
-        let start_node = self.start_container();
-        let start_node_root = start_node
-            .inclusive_ancestors(ShadowIncluding::No)
-            .last()
-            .unwrap();
-        let node_root = node
-            .inclusive_ancestors(ShadowIncluding::No)
-            .last()
-            .unwrap();
-        if start_node_root != node_root {
-            // Step 1.
+        // Step 1. If node’s root is not this’s root, then throw a "WrongDocumentError"
+        // DOMException.
+        if node.GetRootNode(&Default::default()) != self.root() {
             return Err(Error::WrongDocument(None));
         }
+        // Step 2. If node is a doctype, then throw an "InvalidNodeTypeError"
+        // DOMException.
         if node.is_doctype() {
-            // Step 2.
             return Err(Error::InvalidNodeType(None));
         }
+        // Step 3. If offset is greater than node’s length, then throw an "IndexSizeError"
+        // DOMException.
         if offset > node.len() {
-            // Step 3.
             return Err(Error::IndexSize(None));
         }
-        if let Ordering::Less = bp_position(node, offset, &start_node, self.start_offset()).unwrap()
-        {
-            // Step 4.
+        // Step 4. If (node, offset) is before start, then return −1.
+        let start_node = self.start_container();
+        if let Ordering::Less = bp_position(node, offset, &start_node, self.start_offset()) {
             return Ok(Ordering::Less);
         }
+        // Step 5. If (node, offset) is after end, then return 1.
         if let Ordering::Greater =
-            bp_position(node, offset, &self.end_container(), self.end_offset()).unwrap()
+            bp_position(node, offset, &self.end_container(), self.end_offset())
         {
-            // Step 5.
             return Ok(Ordering::Greater);
         }
-        // Step 6.
+        // Step 6. Return 0.
         Ok(Ordering::Equal)
     }
 
@@ -303,18 +310,21 @@ impl Range {
         self.associated_selections
             .borrow()
             .iter()
-            .for_each(|s| s.queue_selectionchange_task());
+            .for_each(|selection| {
+                selection.queue_selectionchange_task();
+                selection.set_visible_selection_dirty();
+            });
     }
 
     fn abstract_range(&self) -> &AbstractRange {
         &self.abstract_range
     }
 
-    fn start(&self) -> &BoundaryPoint {
+    pub(crate) fn start(&self) -> &BoundaryPoint {
         self.abstract_range().start()
     }
 
-    fn end(&self) -> &BoundaryPoint {
+    pub(crate) fn end(&self) -> &BoundaryPoint {
         self.abstract_range().end()
     }
 
@@ -343,61 +353,69 @@ impl Range {
         self.abstract_range().Collapsed()
     }
 
-    fn client_rects(&self) -> impl Iterator<Item = Rect<Au, CSSPixel>> {
+    fn client_rects<'a>(&self, no_gc: &'a NoGC) -> impl Iterator<Item = Rect<Au, CSSPixel>> + 'a {
         // FIXME: For text nodes that are only partially selected, this should return the client
         // rect of the selected part, not the whole text node.
         let start = self.start_container();
         let end = self.end_container();
         let document = start.owner_doc();
-        let end_clone = end.clone();
+        let end_clone = UnrootedDom::from_dom(Dom::from_ref(&*end), no_gc);
         start
-            .following_nodes(document.upcast::<Node>(), ShadowIncluding::No)
-            .take_while(move |node| node != &end)
+            .following_nodes_unrooted(no_gc, document.upcast::<Node>(), ShadowIncluding::No)
+            .take_while(move |node| *node != *end)
             .chain(iter::once(end_clone))
             .flat_map(move |node| node.border_boxes())
     }
 
     /// <https://dom.spec.whatwg.org/#concept-range-bp-set>
-    #[expect(clippy::neg_cmp_op_on_partial_ord)]
     fn set_the_start_or_end(
         &self,
         node: &Node,
         offset: u32,
         start_or_end: StartOrEnd,
     ) -> ErrorResult {
-        // Step 1. If node is a doctype, then throw an "InvalidNodeTypeError" DOMException.
+        // Step 1. If node is a doctype, then throw an "InvalidNodeTypeError"
+        // DOMException.
         if node.is_doctype() {
             return Err(Error::InvalidNodeType(None));
         }
 
-        // Step 2. If offset is greater than node’s length, then throw an "IndexSizeError" DOMException.
+        // Step 2. If offset is greater than node’s length, then throw an "IndexSizeError"
+        // DOMException.
         if offset > node.len() {
             return Err(Error::IndexSize(None));
         }
 
         // Step 3. Let bp be the boundary point (node, offset).
         // NOTE: We don't need this part.
-
         match start_or_end {
             // If these steps were invoked as "set the start"
             StartOrEnd::Start => {
-                // Step 4.1  If range’s root is not equal to node’s root, or if bp is after the range’s end,
-                // set range’s end to bp.
-                // Step 4.2 Set range’s start to bp.
-                self.set_start(node, offset);
-                if !(self.start() <= self.end()) {
+                // Step 4.1. If range’s root is not equal to node’s root, or if bp is after
+                // the range’s end, set range’s end to bp.
+                if self.root() != node.GetRootNode(&Default::default()) ||
+                    bp_position(node, offset, &self.end_container(), self.end_offset()) ==
+                        Ordering::Greater
+                {
                     self.set_end(node, offset);
                 }
+
+                // Step 4.2. Set range’s start to bp.
+                self.set_start(node, offset);
             },
             // If these steps were invoked as "set the end"
             StartOrEnd::End => {
-                // Step 4.1 If range’s root is not equal to node’s root, or if bp is before the range’s start,
-                // set range’s start to bp.
-                // Step 4.2 Set range’s end to bp.
-                self.set_end(node, offset);
-                if !(self.end() >= self.start()) {
+                // Step 4.1. If range’s root is not equal to node’s root, or if bp is
+                // before the range’s start, set range’s start to bp.
+                if self.root() != node.GetRootNode(&Default::default()) ||
+                    bp_position(node, offset, &self.start_container(), self.start_offset()) ==
+                        Ordering::Less
+                {
                     self.set_start(node, offset);
                 }
+
+                // Step 4.2. Set range’s end to bp.
+                self.set_end(node, offset);
             },
         }
 
@@ -513,35 +531,46 @@ impl RangeMethods<crate::DomTypeHolder> for Range {
     }
 
     /// <https://dom.spec.whatwg.org/#dom-range-compareboundarypoints>
-    fn CompareBoundaryPoints(&self, how: u16, other: &Range) -> Fallible<i16> {
+    fn CompareBoundaryPoints(&self, how: u16, source_range: &Range) -> Fallible<i16> {
+        // Step 1. If how is not one of
+        //    * START_TO_START,
+        //    * START_TO_END,
+        //    * END_TO_END, and
+        //    * END_TO_START,
+        // then throw a "NotSupportedError" DOMException.
         if how > RangeConstants::END_TO_START {
-            // Step 1.
             return Err(Error::NotSupported(None));
         }
-        let this_root = self
-            .start_container()
-            .inclusive_ancestors(ShadowIncluding::No)
-            .last()
-            .unwrap();
-        let other_root = other
-            .start_container()
-            .inclusive_ancestors(ShadowIncluding::No)
-            .last()
-            .unwrap();
-        if this_root != other_root {
-            // Step 2.
+        // Step 2. If this’s root is not sourceRange’s root, then throw a
+        // "WrongDocumentError" DOMException.
+        if self.root() != source_range.root() {
             return Err(Error::WrongDocument(None));
         }
-        // Step 3.
-        let (this_point, other_point) = match how {
-            RangeConstants::START_TO_START => (self.start(), other.start()),
-            RangeConstants::START_TO_END => (self.end(), other.start()),
-            RangeConstants::END_TO_END => (self.end(), other.end()),
-            RangeConstants::END_TO_START => (self.start(), other.end()),
+        // Step 3. Let thisPoint and sourcePoint be null.
+        // Step 4.  Switch on how:
+        //  ↪ START_TO_START:
+        //     Set thisPoint to this’s start and sourcePoint to sourceRange’s start.
+        //  ↪ START_TO_END:
+        //     Set thisPoint to this’s end and sourcePoint to sourceRange’s start.
+        //  ↪ END_TO_END:
+        //     Set thisPoint to this’s end and sourcePoint to sourceRange’s end.
+        //  ↪ END_TO_START:
+        //     Set thisPoint to this’s start and sourcePoint to sourceRange’s end.
+        let (this_point, source_point) = match how {
+            RangeConstants::START_TO_START => (self.start(), source_range.start()),
+            RangeConstants::START_TO_END => (self.end(), source_range.start()),
+            RangeConstants::END_TO_END => (self.end(), source_range.end()),
+            RangeConstants::END_TO_START => (self.start(), source_range.end()),
             _ => unreachable!(),
         };
-        // step 4.
-        match this_point.partial_cmp(other_point).unwrap() {
+        // Step 5. Switch on the position of thisPoint relative to sourcePoint:
+        //  ↪ before
+        //      Return −1.
+        //  ↪ equal
+        //      Return 0.
+        //  ↪ after
+        //      Return 1.
+        match this_point.partial_cmp(source_point).unwrap() {
             Ordering::Less => Ok(-1),
             Ordering::Equal => Ok(0),
             Ordering::Greater => Ok(1),
@@ -569,7 +598,8 @@ impl RangeMethods<crate::DomTypeHolder> for Range {
             Ok(Ordering::Equal) => Ok(true),
             Ok(Ordering::Greater) => Ok(false),
             Err(Error::WrongDocument(None)) => {
-                // Step 2.
+                // Step 2.  If node’s root is not this’s root, then return false.
+                // Note: This is the only step that differs from `Self::compare_point`.
                 Ok(false)
             },
             Err(error) => Err(error),
@@ -587,35 +617,24 @@ impl RangeMethods<crate::DomTypeHolder> for Range {
 
     /// <https://dom.spec.whatwg.org/#dom-range-intersectsnode>
     fn IntersectsNode(&self, node: &Node) -> bool {
-        let start_node = self.start_container();
-        let start_node_root = self
-            .start_container()
-            .inclusive_ancestors(ShadowIncluding::No)
-            .last()
-            .unwrap();
-        let node_root = node
-            .inclusive_ancestors(ShadowIncluding::No)
-            .last()
-            .unwrap();
-        if start_node_root != node_root {
-            // Step 1.
+        // Step 1. If node’s root is not this’s root, then return false.
+        if self.root() != node.GetRootNode(&Default::default()) {
             return false;
         }
-        let parent = match node.GetParentNode() {
-            Some(parent) => parent,
-            None => {
-                // Step 3.
-                return true;
-            },
+        // Step 2. Let parent be node’s parent.
+        let Some(parent) = node.GetParentNode() else {
+            // Step 3. If parent is null, then return true.
+            return true;
         };
-        // Step 4.
+        // Step 4. Let offset be node’s index.
         let offset = node.index();
-        // Step 5.
-        Ordering::Greater ==
-            bp_position(&parent, offset + 1, &start_node, self.start_offset()).unwrap() &&
+        // Step 5. If (parent, offset) is before end and (parent, offset + 1) is after
+        // start, then return true.
+        // Step 6. Return false.
+        let start_node = self.start_container();
+        Ordering::Greater == bp_position(&parent, offset + 1, &start_node, self.start_offset()) &&
             Ordering::Less ==
                 bp_position(&parent, offset, &self.end_container(), self.end_offset())
-                    .unwrap()
     }
 
     /// <https://dom.spec.whatwg.org/#dom-range-clonecontents>
@@ -907,7 +926,7 @@ impl RangeMethods<crate::DomTypeHolder> for Range {
             },
             _ => {
                 // Steps 4-5.
-                let child = start_node.ChildNodes(cx).Item(start_offset);
+                let child = start_node.ChildNodes(cx).Item(cx, start_offset);
                 (child, DomRoot::from_ref(&*start_node))
             },
         };
@@ -1228,8 +1247,9 @@ impl RangeMethods<crate::DomTypeHolder> for Range {
         let start = self.start_container();
         let window = start.owner_window();
 
-        let client_rects = self
-            .client_rects()
+        let client_rects: Vec<_> = self.client_rects(cx.no_gc()).collect();
+        let client_rects = client_rects
+            .iter()
             .map(|rect| {
                 DOMRect::new(
                     cx,
@@ -1250,7 +1270,7 @@ impl RangeMethods<crate::DomTypeHolder> for Range {
         let window = self.start_container().owner_window();
 
         // Step 1. Let list be the result of invoking getClientRects() on the same range this method was invoked on.
-        let list = self.client_rects();
+        let list = self.client_rects(cx.no_gc());
 
         // Step 2. If list is empty return a DOMRect object whose x, y, width and height members are zero.
         // Step 3. If all rectangles in list have zero width or height, return the first rectangle in list.
@@ -1325,7 +1345,11 @@ impl WeakRangeVec {
             }
         });
 
-        parent.ranges().cell.borrow_mut().extend(ranges.drain(..));
+        parent
+            .ensure_weak_ranges()
+            .cell
+            .borrow_mut()
+            .extend(ranges.drain(..));
     }
 
     /// Used for steps 6.1-2. when normalizing a node.
@@ -1352,7 +1376,11 @@ impl WeakRangeVec {
             }
         });
 
-        sibling.ranges().cell.borrow_mut().extend(ranges.drain(..));
+        sibling
+            .ensure_weak_ranges()
+            .cell
+            .borrow_mut()
+            .extend(ranges.drain(..));
     }
 
     /// Used for steps 6.3-4. when normalizing a node.
@@ -1364,9 +1392,6 @@ impl WeakRangeVec {
         child: &Node,
         new_offset: u32,
     ) {
-        let child_ranges = child.ranges();
-        let mut child_ranges = child_ranges.cell.borrow_mut();
-
         self.cell.borrow_mut().update(|entry| {
             let range = entry.root().unwrap();
 
@@ -1383,12 +1408,20 @@ impl WeakRangeVec {
             let push_to_child = !already_in_child && (move_start || move_end);
 
             if remove_from_node {
-                let ref_ = entry.remove();
+                let weak_range = entry.remove();
                 if push_to_child {
-                    child_ranges.push(ref_);
+                    child
+                        .ensure_weak_ranges()
+                        .cell
+                        .borrow_mut()
+                        .push(weak_range);
                 }
             } else if push_to_child {
-                child_ranges.push(WeakRef::new(&range));
+                child
+                    .ensure_weak_ranges()
+                    .cell
+                    .borrow_mut()
+                    .push(WeakRef::new(&range));
             }
 
             if move_start {
@@ -1428,9 +1461,6 @@ impl WeakRangeVec {
         offset: u32,
         sibling: &Node,
     ) {
-        let sibling_ranges = sibling.ranges();
-        let mut sibling_ranges = sibling_ranges.cell.borrow_mut();
-
         self.cell.borrow_mut().update(|entry| {
             let range = entry.root().unwrap();
             let start_offset = range.start_offset();
@@ -1450,12 +1480,20 @@ impl WeakRangeVec {
             let push_to_sibling = !already_in_sibling && (move_start || move_end);
 
             if remove_from_node {
-                let ref_ = entry.remove();
+                let weak_range = entry.remove();
                 if push_to_sibling {
-                    sibling_ranges.push(ref_);
+                    sibling
+                        .ensure_weak_ranges()
+                        .cell
+                        .borrow_mut()
+                        .push(weak_range);
                 }
             } else if push_to_sibling {
-                sibling_ranges.push(WeakRef::new(&range));
+                sibling
+                    .ensure_weak_ranges()
+                    .cell
+                    .borrow_mut()
+                    .push(WeakRef::new(&range));
             }
 
             if move_start {

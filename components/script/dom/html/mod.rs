@@ -2,14 +2,16 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+pub(crate) mod documentmetadata;
+pub(crate) use self::documentmetadata::*;
+pub(crate) mod form_controls;
+pub(crate) use self::form_controls::*;
 pub(crate) mod htmlanchorelement;
 pub(crate) mod htmlareaelement;
 pub(crate) mod htmlaudioelement;
-pub(crate) mod htmlbaseelement;
 pub(crate) mod htmlbodyelement;
 pub(crate) mod htmlbrelement;
 pub(crate) mod htmlbuttonelement;
-#[expect(dead_code)]
 pub(crate) mod htmlcanvaselement;
 pub(crate) mod htmlcollection;
 pub(crate) mod htmldataelement;
@@ -35,17 +37,13 @@ pub(crate) mod htmlhtmlelement;
 pub(crate) mod htmlhyperlinkelementutils;
 pub(crate) mod htmliframeelement;
 pub(crate) mod htmlimageelement;
-pub(crate) mod input_element;
-pub(crate) use self::input_element as htmlinputelement;
 pub(crate) mod htmllabelelement;
 pub(crate) mod htmllegendelement;
 pub(crate) mod htmllielement;
-pub(crate) mod htmllinkelement;
 pub(crate) mod htmlmapelement;
 pub(crate) mod htmlmarqueeelement;
 pub(crate) mod htmlmediaelement;
 pub(crate) mod htmlmenuelement;
-pub(crate) mod htmlmetaelement;
 pub(crate) mod htmlmeterelement;
 pub(crate) mod htmlmodelement;
 pub(crate) mod htmlobjectelement;
@@ -65,7 +63,6 @@ pub(crate) mod htmlselectelement;
 pub(crate) mod htmlslotelement;
 pub(crate) mod htmlsourceelement;
 pub(crate) mod htmlspanelement;
-pub(crate) mod htmlstyleelement;
 pub(crate) mod htmltablecaptionelement;
 pub(crate) mod htmltablecellelement;
 pub(crate) mod htmltablecolelement;
@@ -75,7 +72,6 @@ pub(crate) mod htmltablesectionelement;
 pub(crate) mod htmltemplateelement;
 pub(crate) mod htmltextareaelement;
 pub(crate) mod htmltimeelement;
-pub(crate) mod htmltitleelement;
 pub(crate) mod htmltrackelement;
 pub(crate) mod htmlulistelement;
 pub(crate) mod htmlunknownelement;

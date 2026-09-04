@@ -6,7 +6,6 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use ipc_channel::ipc;
 use js::context::JSContext;
 use js::jsapi::ExceptionStackBehavior;
 use js::jsval::UndefinedValue;
@@ -25,6 +24,7 @@ use net_traits::{
 use rustc_hash::FxHashMap;
 use script_bindings::cformat;
 use serde::{Deserialize, Serialize};
+use servo_base::generic_channel::GenericCallback;
 use servo_base::id::WebViewId;
 use servo_url::ServoUrl;
 use timers::TimerEventRequest;
@@ -60,7 +60,6 @@ use crate::network_listener::{
     self, FetchResponseListener, NetworkListener, ResourceTimingListener, submit_timing_data,
 };
 use crate::realms::enter_auto_realm;
-use crate::script_runtime::CanGc;
 
 /// Fetch canceller object. By default initialized to having a
 /// request associated with it, which can be aborted or terminated.
@@ -169,10 +168,10 @@ fn request_init_from_request(request: NetTraitsRequest, global: &GlobalScope) ->
     .parser_metadata(request.parser_metadata)
     .initiator(request.initiator)
     .client(global.request_client(None))
-    .insecure_requests_policy(request.insecure_requests_policy)
-    .has_trustworthy_ancestor_origin(request.has_trustworthy_ancestor_origin)
     .response_tainting(request.response_tainting);
     builder.id = request.id;
+    builder.reload_navigation = request.reload_navigation;
+    builder.history_navigation = request.history_navigation;
     builder
 }
 
@@ -420,11 +419,7 @@ pub(crate) fn FetchLater(
     // Step 14. Add the following abort steps to requestObject’s signal: Set deferredRecord’s invoke state to "aborted".
     signal.add(&AbortAlgorithm::FetchLater(deferred_record_id));
     // Step 15. Return a new FetchLaterResult whose activated getter steps are to return activated.
-    Ok(FetchLaterResult::new(
-        window,
-        deferred_record_id,
-        CanGc::from_cx(cx),
-    ))
+    Ok(FetchLaterResult::new(cx, window, deferred_record_id))
 }
 
 /// <https://fetch.spec.whatwg.org/#deferred-fetch-record-invoke-state>
@@ -567,23 +562,20 @@ impl FetchResponseListener for FetchContext {
             // given response, "immutable", and relevantRealm.
             Ok(metadata) => match metadata {
                 FetchMetadata::Unfiltered(m) => {
-                    fill_headers_with_metadata(cx, self.response_object.root(), m);
-                    self.response_object
-                        .root()
-                        .set_type(cx, DOMResponseType::Default);
+                    let r = self.response_object.root();
+                    fill_headers_with_metadata(cx, &r, m);
+                    r.set_type(cx, DOMResponseType::Default);
                 },
                 FetchMetadata::Filtered { filtered, .. } => match filtered {
                     FilteredMetadata::Basic(m) => {
-                        fill_headers_with_metadata(cx, self.response_object.root(), m);
-                        self.response_object
-                            .root()
-                            .set_type(cx, DOMResponseType::Basic);
+                        let r = self.response_object.root();
+                        fill_headers_with_metadata(cx, &r, m);
+                        r.set_type(cx, DOMResponseType::Basic);
                     },
                     FilteredMetadata::Cors(m) => {
-                        fill_headers_with_metadata(cx, self.response_object.root(), m);
-                        self.response_object
-                            .root()
-                            .set_type(cx, DOMResponseType::Cors);
+                        let r = self.response_object.root();
+                        fill_headers_with_metadata(cx, &r, m);
+                        r.set_type(cx, DOMResponseType::Cors);
                     },
                     FilteredMetadata::Opaque => {
                         self.response_object
@@ -707,7 +699,7 @@ impl ResourceTimingListener for FetchLaterListener {
     }
 }
 
-fn fill_headers_with_metadata(cx: &mut JSContext, r: DomRoot<Response>, m: Metadata) {
+fn fill_headers_with_metadata(cx: &mut JSContext, r: &Response, m: Metadata) {
     r.set_headers(cx, m.headers);
     r.set_status(&m.status);
     r.set_final_url(m.final_url);
@@ -726,7 +718,7 @@ pub(crate) fn load_whole_resource(
     csp_violations_processor: &dyn CspViolationsProcessor,
     cx: &mut JSContext,
 ) -> Result<(Metadata, Vec<u8>, bool), NetworkError> {
-    let (action_sender, action_receiver) = ipc::channel().unwrap();
+    let (action_sender, action_receiver) = GenericCallback::new_blocking().unwrap();
     let url = request.url.url();
     core_resource_thread
         .send(CoreResourceMsg::Fetch(
@@ -761,6 +753,9 @@ pub(crate) fn load_whole_resource(
             FetchResponseMsg::ProcessCspViolations(_, violations) => {
                 csp_violations_processor.process_csp_violations(cx, violations);
             },
+            FetchResponseMsg::ProcessContentLength(_request_id, size) => {
+                buf.reserve(size - buf.len())
+            },
         }
     }
 }
@@ -771,16 +766,14 @@ pub(crate) trait RequestWithGlobalScope {
 
 impl RequestWithGlobalScope for RequestBuilder {
     fn with_global_scope(self, global: &GlobalScope) -> Self {
-        self.insecure_requests_policy(global.insecure_requests_policy())
-            .has_trustworthy_ancestor_origin(global.has_trustworthy_ancestor_or_current_origin())
-            .policy_container(global.policy_container())
-            .client(global.request_client(None))
+        self.client(global.request_client(None))
             .pipeline_id(Some(global.pipeline_id()))
-            .origin(global.origin().immutable().clone())
     }
 }
 
 /// <https://html.spec.whatwg.org/multipage/#create-a-potential-cors-request>
+/// This function is temporary, since it does not ensure that blob URLs are claimed
+/// appropriately. All callers must migrate to create_a_potential_cors_request_with_claim.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn create_a_potential_cors_request(
     webview_id: Option<WebViewId>,
@@ -790,26 +783,42 @@ pub(crate) fn create_a_potential_cors_request(
     same_origin_fallback: Option<bool>,
     referrer: Referrer,
 ) -> RequestBuilder {
-    RequestBuilder::new(
+    create_a_potential_cors_request_with_claim(
         webview_id,
         UrlWithBlobClaim::from_url_without_having_claimed_blob(url),
+        destination,
+        cors_setting,
+        same_origin_fallback,
         referrer,
     )
-    // Step 1. Let mode be "no-cors" if corsAttributeState is No CORS, and "cors" otherwise.
-    .mode(match cors_setting {
-        Some(_) => RequestMode::CorsMode,
-        // Step 2. If same-origin fallback flag is set and mode is "no-cors", set mode to "same-origin".
-        None if same_origin_fallback == Some(true) => RequestMode::SameOrigin,
-        None => RequestMode::NoCors,
-    })
-    .credentials_mode(match cors_setting {
-        // Step 4. If corsAttributeState is Anonymous, set credentialsMode to "same-origin".
-        Some(CorsSettings::Anonymous) => CredentialsMode::CredentialsSameOrigin,
-        // Step 3. Let credentialsMode be "include".
-        _ => CredentialsMode::Include,
-    })
-    // Step 5. Return a new request whose URL is url, destination is destination,
-    // mode is mode, credentials mode is credentialsMode, and whose use-URL-credentials flag is set.
-    .destination(destination)
-    .use_url_credentials(true)
+}
+
+/// <https://html.spec.whatwg.org/multipage/#create-a-potential-cors-request>
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_a_potential_cors_request_with_claim(
+    webview_id: Option<WebViewId>,
+    url: UrlWithBlobClaim,
+    destination: Destination,
+    cors_setting: Option<CorsSettings>,
+    same_origin_fallback: Option<bool>,
+    referrer: Referrer,
+) -> RequestBuilder {
+    RequestBuilder::new(webview_id, url, referrer)
+        // Step 1. Let mode be "no-cors" if corsAttributeState is No CORS, and "cors" otherwise.
+        .mode(match cors_setting {
+            Some(_) => RequestMode::CorsMode,
+            // Step 2. If same-origin fallback flag is set and mode is "no-cors", set mode to "same-origin".
+            None if same_origin_fallback == Some(true) => RequestMode::SameOrigin,
+            None => RequestMode::NoCors,
+        })
+        .credentials_mode(match cors_setting {
+            // Step 4. If corsAttributeState is Anonymous, set credentialsMode to "same-origin".
+            Some(CorsSettings::Anonymous) => CredentialsMode::CredentialsSameOrigin,
+            // Step 3. Let credentialsMode be "include".
+            _ => CredentialsMode::Include,
+        })
+        // Step 5. Return a new request whose URL is url, destination is destination,
+        // mode is mode, credentials mode is credentialsMode, and whose use-URL-credentials flag is set.
+        .destination(destination)
+        .use_url_credentials(true)
 }

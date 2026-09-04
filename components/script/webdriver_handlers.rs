@@ -14,7 +14,7 @@ use embedder_traits::{
 };
 use euclid::default::{Point2D, Rect, Size2D};
 use hyper_serde::Serde;
-use js::context::JSContext;
+use js::context::{JSContext, NoGC};
 use js::conversions::{FromJSValConvertible, jsstr_to_string};
 use js::jsapi::{HandleValueArray, JSITER_OWNONLY, JSType, PropertyDescriptor};
 use js::jsval::UndefinedValue;
@@ -73,6 +73,8 @@ use crate::dom::domrect::DOMRect;
 use crate::dom::element::Element;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
+use crate::dom::html::form_controls::htmlinputelement::HTMLInputElement;
+use crate::dom::html::form_controls::input_type::InputType;
 use crate::dom::html::htmlbodyelement::HTMLBodyElement;
 use crate::dom::html::htmldatalistelement::HTMLDataListElement;
 use crate::dom::html::htmlelement::HTMLElement;
@@ -82,8 +84,6 @@ use crate::dom::html::htmloptgroupelement::HTMLOptGroupElement;
 use crate::dom::html::htmloptionelement::HTMLOptionElement;
 use crate::dom::html::htmlselectelement::HTMLSelectElement;
 use crate::dom::html::htmltextareaelement::HTMLTextAreaElement;
-use crate::dom::html::input_element::HTMLInputElement;
-use crate::dom::input_element::input_type::InputType;
 use crate::dom::iterators::ShadowIncluding;
 use crate::dom::node::{Node, NodeTraits};
 use crate::dom::nodelist::NodeList;
@@ -284,13 +284,14 @@ pub(crate) fn find_node_by_unique_id_in_document(
 }
 
 /// <https://w3c.github.io/webdriver/#dfn-link-text-selector>
-fn matching_links(
-    links: &NodeList,
+fn matching_links<'a>(
+    cx: &'a NoGC,
+    links: &'a NodeList,
     link_text: String,
     partial: bool,
-) -> impl Iterator<Item = String> + '_ {
+) -> impl Iterator<Item = String> + 'a {
     links
-        .iter()
+        .iter(cx)
         .filter(move |node| {
             let content = node
                 .downcast::<HTMLElement>()
@@ -319,7 +320,7 @@ fn all_matching_links(
     root_node
         .query_selector_all(cx, DOMString::from("a"))
         .map_err(|_| ErrorStatus::InvalidSelector)
-        .map(|nodes| matching_links(&nodes, link_text, partial).collect())
+        .map(|nodes| matching_links(cx, &nodes, link_text, partial).collect())
 }
 
 #[expect(unsafe_code)]
@@ -410,7 +411,7 @@ fn jsval_to_webdriver_inner(
             _ => unreachable!(),
         });
 
-        if let Ok(element) = unsafe { root_from_object::<Element>(*object, cx.raw_cx()) } {
+        if let Ok(element) = unsafe { root_from_object::<Element>(cx, *object) } {
             // If the element is stale, return error with error code stale element reference.
             if is_stale(&element) {
                 Err(JavaScriptEvaluationError::SerializationError(
@@ -423,9 +424,7 @@ fn jsval_to_webdriver_inner(
                         .unique_id(element.owner_window().pipeline_id()),
                 ))
             }
-        } else if let Ok(shadow_root) =
-            unsafe { root_from_object::<ShadowRoot>(*object, cx.raw_cx()) }
-        {
+        } else if let Ok(shadow_root) = unsafe { root_from_object::<ShadowRoot>(cx, *object) } {
             // If the shadow root is detached, return error with error code detached shadow root.
             if is_detached(&shadow_root) {
                 Err(JavaScriptEvaluationError::SerializationError(
@@ -438,7 +437,7 @@ fn jsval_to_webdriver_inner(
                         .unique_id(shadow_root.owner_window().pipeline_id()),
                 ))
             }
-        } else if let Ok(window) = unsafe { root_from_object::<Window>(*object, cx.raw_cx()) } {
+        } else if let Ok(window) = unsafe { root_from_object::<Window>(cx, *object) } {
             let window_proxy = window.window_proxy();
             if window_proxy.is_browsing_context_discarded() {
                 Err(JavaScriptEvaluationError::SerializationError(
@@ -799,7 +798,7 @@ pub(crate) fn handle_find_elements_css_selector(
                     .map_err(|_| ErrorStatus::InvalidSelector)
                     .map(|nodes| {
                         nodes
-                            .iter()
+                            .iter(cx)
                             .map(|x| x.upcast::<Node>().unique_id(pipeline))
                             .collect()
                     }),
@@ -947,7 +946,7 @@ pub(crate) fn handle_find_element_elements_css_selector(
                     .map_err(|_| ErrorStatus::InvalidSelector)
                     .map(|nodes| {
                         nodes
-                            .iter()
+                            .iter(cx)
                             .map(|x| x.upcast::<Node>().unique_id(pipeline))
                             .collect()
                     })
@@ -1038,7 +1037,7 @@ pub(crate) fn handle_find_shadow_elements_css_selector(
                     .map_err(|_| ErrorStatus::InvalidSelector)
                     .map(|nodes| {
                         nodes
-                            .iter()
+                            .iter(cx)
                             .map(|x| x.upcast::<Node>().unique_id(pipeline))
                             .collect()
                     })
@@ -1086,7 +1085,7 @@ pub(crate) fn handle_find_shadow_elements_tag_name(
                     .query_selector_all(cx, DOMString::from(selector))
                     .map(|nodes| {
                         nodes
-                            .iter()
+                            .iter(cx)
                             .map(|x| x.upcast::<Node>().unique_id(pipeline))
                             .collect()
                     })
@@ -1141,8 +1140,8 @@ pub(crate) fn handle_get_element_shadow_root(
 
 impl Element {
     /// <https://w3c.github.io/webdriver/#dfn-keyboard-interactable>
-    fn is_keyboard_interactable(&self) -> bool {
-        self.is_focusable_area() || self.is::<HTMLBodyElement>() || self.is_document_element()
+    fn is_keyboard_interactable(&self, no_gc: &NoGC) -> bool {
+        self.is_focusable_area(no_gc) || self.is::<HTMLBodyElement>() || self.is_document_element()
     }
 }
 
@@ -1271,7 +1270,7 @@ pub(crate) fn handle_will_send_keys(
 
         // Step 7.6. If element is not keyboard-interactable,
         // return ErrorStatus::ElementNotInteractable.
-        if !element.is_keyboard_interactable() {
+        if !element.is_keyboard_interactable(cx.no_gc()) {
             let _ = reply.send(Err(ErrorStatus::ElementNotInteractable));
             return;
         }
@@ -1879,7 +1878,7 @@ pub(crate) fn handle_element_clear(
 
                 // Step 10. If element is not keyboard-interactable or not pointer-interactable,
                 // return error with error code element not interactable.
-                if !element.is_keyboard_interactable() {
+                if !element.is_keyboard_interactable(cx.no_gc()) {
                     return Err(ErrorStatus::ElementNotInteractable);
                 }
 
@@ -2040,7 +2039,7 @@ pub(crate) fn handle_element_click(
 fn is_element_in_view(element: &Element, paint_tree: &[DomRoot<Element>]) -> bool {
     // An element is in view if it is a member of its own pointer-interactable paint tree,
     // given the pretense that its pointer events are not disabled.
-    if !paint_tree.contains(&DomRoot::from_ref(element)) {
+    if !paint_tree.iter().any(|e| &**e == element) {
         return false;
     }
     use style::computed_values::pointer_events::T as PointerEvents;

@@ -102,25 +102,14 @@ macro_rules! make_url_getter(
     );
 );
 
-macro_rules! make_url_setter_inner(
-    ( $self:ident, $value:ident, $htmlname:tt, $cx:expr ) => (
-        use $crate::dom::bindings::inheritance::Castable;
-        use $crate::dom::element::Element;
-        let element = $self.upcast::<Element>();
-        element.set_url_attribute($cx, &html5ever::local_name!($htmlname), $value)
-    );
-);
-
 #[macro_export]
 macro_rules! make_url_setter(
     ( $attr:ident, $htmlname:tt ) => (
         fn $attr(&self, cx: &mut js::context::JSContext, value: USVString) {
-            make_url_setter_inner!(self, value, $htmlname, cx);
-        }
-    );
-    ( $cx:ident, $attr:ident, $htmlname:tt ) => (
-        fn $attr(&self, $cx: &mut js::context::JSContext, value: USVString) {
-            make_url_setter_inner!(self, value, $htmlname, $cx);
+            use $crate::dom::bindings::inheritance::Castable;
+            use $crate::dom::element::Element;
+            let element = self.upcast::<Element>();
+            element.set_url_attribute(cx, &html5ever::local_name!($htmlname), value)
         }
     );
 );
@@ -149,13 +138,13 @@ macro_rules! make_form_action_getter(
 #[macro_export]
 macro_rules! make_labels_getter(
     ( $attr:ident, $memo:ident ) => (
-        fn $attr(&self) -> DomRoot<NodeList> {
+        fn $attr(&self, cx: &mut js::context::JSContext) -> DomRoot<NodeList> {
             use $crate::dom::html::htmlelement::HTMLElement;
             use $crate::dom::nodelist::NodeList;
             self.$memo.or_init(|| NodeList::new_labels_list(
+                cx,
                 self.upcast::<Node>().owner_doc().window(),
-                self.upcast::<HTMLElement>(),
-                CanGc::deprecated_note()
+                self.upcast::<HTMLElement>()
                 )
             )
         }
@@ -269,37 +258,17 @@ macro_rules! make_enumerated_getter(
     );
 );
 
-macro_rules! make_setter_inner(
-    ( $self:ident, $value:ident, $htmlname:tt, $cx:expr ) => (
-        use $crate::dom::bindings::inheritance::Castable;
-        use $crate::dom::element::Element;
-        let element = $self.upcast::<Element>();
-        element.set_string_attribute($cx, &html5ever::local_name!($htmlname), $value)
-    );
-);
-
 // concat_idents! doesn't work for function name positions, so
 // we have to specify both the content name and the HTML name here
 #[macro_export]
 macro_rules! make_setter(
     ( $attr:ident, $htmlname:tt ) => (
         fn $attr(&self, cx: &mut js::context::JSContext, value: DOMString) {
-            make_setter_inner!(self, value, $htmlname, cx);
+            use $crate::dom::bindings::inheritance::Castable;
+            use $crate::dom::element::Element;
+            let element = self.upcast::<Element>();
+            element.set_string_attribute(cx, &html5ever::local_name!($htmlname), value)
         }
-    );
-    ( $cx:ident, $attr:ident, $htmlname:tt ) => (
-        fn $attr(&self, $cx: &mut js::context::JSContext, value: DOMString) {
-            make_setter_inner!(self, value, $htmlname, $cx);
-        }
-    );
-);
-
-macro_rules! make_bool_setter_inner(
-    ( $self:ident, $value:ident, $htmlname:tt, $cx:expr ) => (
-        use $crate::dom::bindings::inheritance::Castable;
-        use $crate::dom::element::Element;
-        let element = $self.upcast::<Element>();
-        element.set_bool_attribute($cx, &html5ever::local_name!($htmlname), $value)
     );
 );
 
@@ -307,12 +276,10 @@ macro_rules! make_bool_setter_inner(
 macro_rules! make_bool_setter(
     ( $attr:ident, $htmlname:tt ) => (
         fn $attr(&self, cx: &mut js::context::JSContext, value: bool) {
-            make_bool_setter_inner!(self, value, $htmlname, cx);
-        }
-    );
-    ( $cx:ident, $attr:ident, $htmlname:tt ) => (
-        fn $attr(&self, $cx: &mut js::context::JSContext, value: bool) {
-            make_bool_setter_inner!(self, value, $htmlname, $cx);
+            use $crate::dom::bindings::inheritance::Castable;
+            use $crate::dom::element::Element;
+            let element = self.upcast::<Element>();
+            element.set_bool_attribute(cx, &html5ever::local_name!($htmlname), value)
         }
     );
 );
@@ -378,25 +345,14 @@ macro_rules! make_limited_uint_setter(
     );
 );
 
-macro_rules! make_atomic_setter_inner(
-    ( $self:ident, $value:ident, $htmlname:tt, $cx:expr ) => (
-        use $crate::dom::bindings::inheritance::Castable;
-        use $crate::dom::element::Element;
-        let element = $self.upcast::<Element>();
-        element.set_atomic_attribute($cx, &html5ever::local_name!($htmlname), $value)
-    );
-);
-
 #[macro_export]
 macro_rules! make_atomic_setter(
     ( $attr:ident, $htmlname:tt ) => (
         fn $attr(&self, cx: &mut js::context::JSContext, value: DOMString) {
-            make_atomic_setter_inner!(self, value, $htmlname, cx);
-        }
-    );
-    ( $cx:ident, $attr:ident, $htmlname:tt ) => (
-        fn $attr(&self, $cx: &mut js::context::JSContext, value: DOMString) {
-            make_atomic_setter_inner!(self, value, $htmlname, $cx);
+            use $crate::dom::bindings::inheritance::Castable;
+            use $crate::dom::element::Element;
+            let element = self.upcast::<Element>();
+            element.set_atomic_attribute(cx, &html5ever::local_name!($htmlname), value)
         }
     );
 );

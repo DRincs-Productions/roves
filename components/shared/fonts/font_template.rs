@@ -14,9 +14,7 @@ use serde::{Deserialize, Serialize};
 use style::computed_values::font_optical_sizing::T as FontOpticalSizing;
 use style::computed_values::font_stretch::T as FontStretch;
 use style::computed_values::font_style::T as FontStyle;
-use style::font_face::{
-    ComputedFontStretchRange, ComputedFontStyleDescriptor, ComputedFontWeightRange,
-};
+use style::font_face::{ComputedFontStretchRange, ComputedFontStyleRange, ComputedFontWeightRange};
 use style::properties::generated::font_face::Descriptors as FontFaceRuleDescriptors;
 use style::values::computed::font::FontWeight;
 use webrender_api::FontVariation;
@@ -48,7 +46,7 @@ impl Deref for FontTemplateRef {
 pub struct FontTemplateDescriptor {
     pub weight: ComputedFontWeightRange,
     pub stretch: ComputedFontStretchRange,
-    pub style: (FontStyle, FontStyle),
+    pub style: ComputedFontStyleRange,
     #[ignore_malloc_size_of = "MallocSizeOf does not yet support RangeInclusive"]
     pub unicode_range: Option<Vec<RangeInclusive<u32>>>,
 }
@@ -59,17 +57,13 @@ impl Default for FontTemplateDescriptor {
     }
 }
 
-/// FontTemplateDescriptor contains floats, which are not Eq because of NaN. However,
-/// we know they will never be NaN, so we can manually implement Eq.
-impl Eq for FontTemplateDescriptor {}
-
 impl FontTemplateDescriptor {
     #[inline]
     pub fn new(weight: FontWeight, stretch: FontStretch, style: FontStyle) -> Self {
         Self {
             weight: ComputedFontWeightRange(weight, weight),
             stretch: ComputedFontStretchRange(stretch, stretch),
-            style: (style, style),
+            style: ComputedFontStyleRange(style, style),
             unicode_range: None,
         }
     }
@@ -131,14 +125,9 @@ impl FontTemplateDescriptor {
         if let Some(ref weight) = css_font_template_descriptors.weight {
             self.weight = weight.clone();
         }
-        self.style = match css_font_template_descriptors.style {
-            Some(ComputedFontStyleDescriptor::Italic) => (FontStyle::ITALIC, FontStyle::ITALIC),
-            Some(ComputedFontStyleDescriptor::Oblique(angle_1, angle_2)) => (
-                FontStyle::oblique(angle_1.to_float()),
-                FontStyle::oblique(angle_2.to_float()),
-            ),
-            None => self.style,
-        };
+        if let Some(ref style) = css_font_template_descriptors.style {
+            self.style = style.clone();
+        }
         if let Some(ref stretch) = css_font_template_descriptors.stretch {
             self.stretch = stretch.clone();
         }
@@ -437,8 +426,8 @@ impl FontMatchDistanceMethod<ComputedFontWeightRange> for FontWeight {
     }
 }
 
-impl FontMatchDistanceMethod<(Self, Self)> for FontStyle {
-    fn match_distance(&self, range: &(Self, Self)) -> f32 {
+impl FontMatchDistanceMethod<ComputedFontStyleRange> for FontStyle {
+    fn match_distance(&self, range: &ComputedFontStyleRange) -> f32 {
         // style distance ==> [0,500]
         let min_style = range.0;
         if *self == min_style {

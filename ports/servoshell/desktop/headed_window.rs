@@ -997,8 +997,8 @@ impl PlatformWindow for HeadedWindow {
         let inner_size = self.winit_window.inner_size();
         let outer_size = self.winit_window.outer_size();
         let decoration_size: DeviceIntSize = Size2D::new(
-            outer_size.height - inner_size.height,
             outer_size.width - inner_size.width,
+            outer_size.height - inner_size.height,
         )
         .cast();
 
@@ -1019,6 +1019,13 @@ impl PlatformWindow for HeadedWindow {
                 new_inner_size.height,
             ))
             .map(|resulting_size| {
+                // `Some` means that winit applied the resize synchronously, in which case it may
+                // not emit a subsequent `WindowEvent::Resized`.
+                if self.inner_size.get() != resulting_size {
+                    self.inner_size.set(resulting_size);
+                    self.window_rendering_context.resize(resulting_size);
+                }
+
                 DeviceIntSize::new(
                     resulting_size.width as i32 + decoration_size.width,
                     resulting_size.height as i32 + decoration_size.height,

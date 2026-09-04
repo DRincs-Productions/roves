@@ -8,7 +8,7 @@ use std::ptr::{self, NonNull};
 
 use dom_struct::dom_struct;
 use js::context::JSContext;
-use js::conversions::latin1_to_string;
+use js::conversions::{ToJSValConvertible, latin1_to_string};
 use js::jsapi::{JS_DeprecatedStringHasLatin1Chars, JSObject, JSType};
 use js::jsval::UndefinedValue;
 use js::rust::wrappers2::{JS_GetTwoByteStringCharsAndLength, JS_IsExceptionPending, ToPrimitive};
@@ -17,8 +17,7 @@ use js::rust::{
     MutableHandleValue as SafeMutableHandleValue, ToString,
 };
 use js::typedarray::Uint8;
-use script_bindings::conversions::SafeToJSValConvertible;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto_and_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
 
 use crate::dom::bindings::buffer_source::create_buffer_source;
 use crate::dom::bindings::codegen::Bindings::TextEncoderStreamBinding::TextEncoderStreamMethods;
@@ -333,20 +332,19 @@ impl TextEncoderStream {
         //      and runs the encode and enqueue a chunk algorithm with this and chunk.
         // Step 3. Let flushAlgorithm be an algorithm which runs the encode and flush
         //      algorithm with this.
-        let transformer_type = TransformerType::Encoder(encoder);
 
         // Step 4. Let transformStream be a new TransformStream.
         let transform = TransformStream::new_with_proto(cx, global, None);
         // Step 5. Set up transformStream with transformAlgorithm set to transformAlgorithm
         //      and flushAlgorithm set to flushAlgorithm.
-        transform.set_up(cx, global, transformer_type)?;
+        transform.set_up(cx, global, TransformerType::Encoder(encoder))?;
 
         // Step 6. Set this’s transform to transformStream.
-        Ok(reflect_dom_object_with_proto_and_cx(
+        Ok(reflect_dom_object_with_proto(
+            cx,
             Box::new(TextEncoderStream::new_inherited(&transform)),
             global,
             proto,
-            cx,
         ))
     }
 }

@@ -6,7 +6,7 @@
 //! (usually from the ScriptThread, and more specifically from DOM objects)
 
 use arrayvec::ArrayVec;
-use pixels::SharedSnapshot;
+use pixels::{SharedSnapshot, SnapshotPixelFormat};
 use serde::{Deserialize, Serialize};
 use servo_base::Epoch;
 use servo_base::generic_channel::{
@@ -21,8 +21,9 @@ use wgpu_core::binding_model::{
     BindGroupDescriptor, BindGroupLayoutDescriptor, PipelineLayoutDescriptor,
 };
 use wgpu_core::command::{
-    PassTimestampWrites, RenderBundleDescriptor, RenderBundleEncoder, RenderPassColorAttachment,
-    RenderPassDepthStencilAttachment, TexelCopyBufferInfo, TexelCopyTextureInfo,
+    PassTimestampWrites, RenderBundleDescriptor, RenderBundleEncoderDescriptor,
+    RenderPassColorAttachment, RenderPassDepthStencilAttachment, TexelCopyBufferInfo,
+    TexelCopyTextureInfo,
 };
 use wgpu_core::device::HostMap;
 pub use wgpu_core::id::markers::{
@@ -30,9 +31,9 @@ pub use wgpu_core::id::markers::{
 };
 use wgpu_core::id::{
     AdapterId, BindGroupId, BindGroupLayoutId, BufferId, CommandBufferId, CommandEncoderId,
-    ComputePassEncoderId, ComputePipelineId, DeviceId, PipelineLayoutId, QuerySetId, QueueId,
-    RenderBundleId, RenderPassEncoderId, RenderPipelineId, SamplerId, ShaderModuleId, TextureId,
-    TextureViewId,
+    ComputePassEncoderId, ComputePipelineId, DeviceId, ExternalTextureId, PipelineLayoutId,
+    QuerySetId, QueueId, RenderBundleEncoderId, RenderBundleId, RenderPassEncoderId,
+    RenderPipelineId, SamplerId, ShaderModuleId, TextureId, TextureViewId,
 };
 pub use wgpu_core::id::{
     ComputePassEncoderId as ComputePassId, RenderPassEncoderId as RenderPassId,
@@ -49,10 +50,10 @@ use wgpu_types::{
 };
 
 use crate::{
-    ContextConfiguration, Error, ErrorFilter, Mapping, PRESENTATION_BUFFER_COUNT, RenderCommand,
-    ShaderCompilationInfo, WebGPUAdapter, WebGPUAdapterResponse, WebGPUComputePipelineResponse,
-    WebGPUContextId, WebGPUDeviceResponse, WebGPUPoppedErrorScopeResponse,
-    WebGPURenderPipelineResponse,
+    ContextConfiguration, Error, ErrorFilter, Mapping, PRESENTATION_BUFFER_COUNT,
+    RenderBundleCommand, RenderCommand, ShaderCompilationInfo, WebGPUAdapter,
+    WebGPUAdapterResponse, WebGPUComputePipelineResponse, WebGPUContextId, WebGPUDeviceResponse,
+    WebGPUPoppedErrorScopeResponse, WebGPURenderPipelineResponse,
 };
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -248,7 +249,7 @@ pub enum WebGPURequest {
     DropRenderPass(RenderPassEncoderId),
     Exit(GenericOneshotSender<()>),
     RenderBundleEncoderFinish {
-        render_bundle_encoder: RenderBundleEncoder,
+        render_bundle_encoder_id: RenderBundleEncoderId,
         descriptor: RenderBundleDescriptor<'static>,
         render_bundle_id: RenderBundleId,
         device_id: DeviceId,
@@ -403,4 +404,42 @@ pub enum WebGPURequest {
         destination: BufferId,
         destination_offset: u64,
     },
+    /// Create planar texture and view to be imported as external texture
+    CreatePlanarTexture {
+        device_id: DeviceId,
+        size: Size2D<u32>,
+        format: SnapshotPixelFormat,
+        texture_id: TextureId,
+        /// aka plane
+        texture_view_id: TextureViewId,
+    },
+    UpdatePlanarTexture {
+        device_id: DeviceId,
+        queue_id: QueueId,
+        texture_id: TextureId,
+        snapshot: SharedSnapshot,
+    },
+    DropPlanarTexture(TextureId, TextureViewId),
+    /// Import plane as external texture, if plane not provided it creates invalid external texture
+    ImportExternalTexture {
+        device_id: DeviceId,
+        external_texture_id: ExternalTextureId,
+        label: String,
+        size: Size2D<u32>,
+        plane0: Option<TextureViewId>,
+    },
+    DestroyExternalTexture(ExternalTextureId),
+    DropExternalTexture(ExternalTextureId),
+    DestroyQuerySet(QuerySetId),
+    CreateRenderBundleEncoder {
+        device_id: DeviceId,
+        render_bundle_encoder_id: RenderBundleEncoderId,
+        desc: RenderBundleEncoderDescriptor<'static>,
+    },
+    RenderBundleEncoderCommand {
+        render_bundle_encoder_id: RenderBundleEncoderId,
+        render_command: RenderBundleCommand,
+        device_id: DeviceId,
+    },
+    DropRenderBundleEncoder(RenderBundleEncoderId),
 }

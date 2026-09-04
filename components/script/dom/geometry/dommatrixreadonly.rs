@@ -9,6 +9,7 @@ use cssparser::{Parser, ParserInput};
 use dom_struct::dom_struct;
 use euclid::Angle;
 use euclid::default::{Transform2D, Transform3D};
+use js::context::NoGC;
 use js::conversions::jsstr_to_string;
 use js::jsapi::JSObject;
 use js::jsval;
@@ -17,7 +18,7 @@ use js::typedarray::{Float32Array, Float64Array, HeapFloat32Array, HeapFloat64Ar
 use rustc_hash::FxHashMap;
 use script_bindings::cell::{DomRefCell, Ref};
 use script_bindings::cformat;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
+use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto_and_cx};
 use script_bindings::trace::RootedTraceableBox;
 use servo_base::id::{DomMatrixId, DomMatrixIndex};
 use servo_constellation_traits::DomMatrix;
@@ -45,7 +46,6 @@ use crate::dom::dommatrix::DOMMatrix;
 use crate::dom::dompoint::DOMPoint;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::window::Window;
-use crate::script_runtime::CanGc;
 
 #[dom_struct]
 #[expect(non_snake_case)]
@@ -59,24 +59,24 @@ pub(crate) struct DOMMatrixReadOnly {
 #[expect(non_snake_case)]
 impl DOMMatrixReadOnly {
     pub(crate) fn new(
+        cx: &mut js::context::JSContext,
         global: &GlobalScope,
         is2D: bool,
         matrix: Transform3D<f64>,
-        cx: &mut js::context::JSContext,
     ) -> DomRoot<Self> {
-        Self::new_with_proto(global, None, is2D, matrix, cx)
+        Self::new_with_proto(cx, global, None, is2D, matrix)
     }
 
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
     fn new_with_proto(
+        cx: &mut js::context::JSContext,
         global: &GlobalScope,
         proto: Option<HandleObject>,
         is2D: bool,
         matrix: Transform3D<f64>,
-        cx: &mut js::context::JSContext,
     ) -> DomRoot<Self> {
         let dommatrix = Self::new_inherited(is2D, matrix);
-        reflect_dom_object_with_proto(Box::new(dommatrix), global, proto, CanGc::from_cx(cx))
+        reflect_dom_object_with_proto_and_cx(Box::new(dommatrix), global, proto, cx)
     }
 
     pub(crate) fn new_inherited(is2D: bool, matrix: Transform3D<f64>) -> Self {
@@ -484,11 +484,11 @@ impl DOMMatrixReadOnlyMethods<crate::DomTypeHolder> for DOMMatrixReadOnly {
     ) -> Fallible<DomRoot<Self>> {
         if init.is_none() {
             return Ok(Self::new_with_proto(
+                cx,
                 global,
                 proto,
                 true,
                 Transform3D::identity(),
-                cx,
             ));
         }
         match init.unwrap() {
@@ -499,14 +499,14 @@ impl DOMMatrixReadOnlyMethods<crate::DomTypeHolder> for DOMMatrixReadOnly {
                     ));
                 }
                 if s.is_empty() {
-                    return Ok(Self::new(global, true, Transform3D::identity(), cx));
+                    return Ok(Self::new(cx, global, true, Transform3D::identity()));
                 }
                 transform_to_matrix(&s.str())
-                    .map(|(is2D, matrix)| Self::new_with_proto(global, proto, is2D, matrix, cx))
+                    .map(|(is2D, matrix)| Self::new_with_proto(cx, global, proto, is2D, matrix))
             },
             StringOrUnrestrictedDoubleSequence::UnrestrictedDoubleSequence(ref entries) => {
                 entries_to_matrix(&entries[..])
-                    .map(|(is2D, matrix)| Self::new_with_proto(global, proto, is2D, matrix, cx))
+                    .map(|(is2D, matrix)| Self::new_with_proto(cx, global, proto, is2D, matrix))
             },
         }
     }
@@ -517,7 +517,7 @@ impl DOMMatrixReadOnlyMethods<crate::DomTypeHolder> for DOMMatrixReadOnly {
         global: &GlobalScope,
         other: &DOMMatrixInit,
     ) -> Fallible<DomRoot<Self>> {
-        dommatrixinit_to_matrix(other).map(|(is2D, matrix)| Self::new(global, is2D, matrix, cx))
+        dommatrixinit_to_matrix(other).map(|(is2D, matrix)| Self::new(cx, global, is2D, matrix))
     }
 
     /// <https://drafts.fxtf.org/geometry-1/#dom-dommatrixreadonly-fromfloat32array>
@@ -526,7 +526,12 @@ impl DOMMatrixReadOnlyMethods<crate::DomTypeHolder> for DOMMatrixReadOnly {
         global: &GlobalScope,
         array: CustomAutoRooterGuard<Float32Array>,
     ) -> Fallible<DomRoot<DOMMatrixReadOnly>> {
-        let vec: Vec<f64> = array.to_vec().iter().map(|&x| x as f64).collect();
+        let vec: Vec<f64> = array
+            .to_vec()
+            .unwrap_or_default()
+            .iter()
+            .map(|&x| x as f64)
+            .collect();
         DOMMatrixReadOnly::Constructor(
             cx,
             global,
@@ -541,7 +546,7 @@ impl DOMMatrixReadOnlyMethods<crate::DomTypeHolder> for DOMMatrixReadOnly {
         global: &GlobalScope,
         array: CustomAutoRooterGuard<Float64Array>,
     ) -> Fallible<DomRoot<DOMMatrixReadOnly>> {
-        let vec: Vec<f64> = array.to_vec();
+        let vec: Vec<f64> = array.to_vec().unwrap_or_default();
         DOMMatrixReadOnly::Constructor(
             cx,
             global,
@@ -801,7 +806,7 @@ impl DOMMatrixReadOnlyMethods<crate::DomTypeHolder> for DOMMatrixReadOnly {
             -1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
         );
         let matrix = flip.then(&self.matrix.borrow());
-        DOMMatrix::new(&self.global(), is2D, matrix, cx)
+        DOMMatrix::new(cx, &self.global(), is2D, matrix)
     }
 
     /// <https://drafts.fxtf.org/geometry-1/#dom-dommatrixreadonly-flipy>
@@ -811,7 +816,7 @@ impl DOMMatrixReadOnlyMethods<crate::DomTypeHolder> for DOMMatrixReadOnly {
             1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
         );
         let matrix = flip.then(&self.matrix.borrow());
-        DOMMatrix::new(&self.global(), is2D, matrix, cx)
+        DOMMatrix::new(cx, &self.global(), is2D, matrix)
     }
 
     /// <https://drafts.fxtf.org/geometry-1/#dom-dommatrixreadonly-inverse>
@@ -988,7 +993,7 @@ impl Serializable for DOMMatrixReadOnly {
     type Index = DomMatrixIndex;
     type Data = DomMatrix;
 
-    fn serialize(&self) -> Result<(DomMatrixId, Self::Data), ()> {
+    fn serialize(&self, _no_gc: &NoGC) -> Result<(DomMatrixId, Self::Data), ()> {
         let serialized = if self.is2D() {
             DomMatrix {
                 matrix: Transform3D::new(
@@ -1030,6 +1035,7 @@ impl Serializable for DOMMatrixReadOnly {
     {
         if serialized.is_2d {
             Ok(Self::new(
+                cx,
                 owner,
                 true,
                 Transform3D::new(
@@ -1050,10 +1056,9 @@ impl Serializable for DOMMatrixReadOnly {
                     0.0,
                     1.0,
                 ),
-                cx,
             ))
         } else {
-            Ok(Self::new(owner, false, serialized.matrix, cx))
+            Ok(Self::new(cx, owner, false, serialized.matrix))
         }
     }
 

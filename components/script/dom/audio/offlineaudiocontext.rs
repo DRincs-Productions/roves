@@ -12,7 +12,7 @@ use js::context::JSContext;
 use js::realm::CurrentRealm;
 use js::rust::HandleObject;
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::reflect_dom_object_with_proto_and_cx;
+use script_bindings::reflector::reflect_dom_object_with_proto;
 use servo_base::id::PipelineId;
 use servo_media::audio::context::OfflineAudioContextOptions as ServoMediaOfflineAudioContextOptions;
 
@@ -89,11 +89,11 @@ impl OfflineAudioContext {
         let pipeline_id = window.pipeline_id();
         let context =
             OfflineAudioContext::new_inherited(channel_count, length, sample_rate, pipeline_id)?;
-        Ok(reflect_dom_object_with_proto_and_cx(
+        Ok(reflect_dom_object_with_proto(
+            cx,
             Box::new(context),
             window,
             proto,
-            cx,
         ))
     }
 }
@@ -145,7 +145,7 @@ impl OfflineAudioContextMethods<crate::DomTypeHolder> for OfflineAudioContext {
         }
         self.rendering_started.set(true);
 
-        *self.pending_rendering_promise.borrow_mut() = Some(promise.clone());
+        *self.pending_rendering_promise.safe_borrow_mut(cx.no_gc()) = Some(promise.clone());
 
         let processed_audio = Arc::new(Mutex::new(Vec::new()));
         let processed_audio_ = processed_audio.clone();
@@ -192,10 +192,14 @@ impl OfflineAudioContextMethods<crate::DomTypeHolder> for OfflineAudioContext {
                         *this.context.SampleRate(),
                         Some(processed_audio.as_slice()),
                     );
-                    (*this.pending_rendering_promise.borrow_mut())
-                        .take()
-                        .unwrap()
-                        .resolve_native(cx, &buffer);
+                    let promise = {
+                        (*this
+                            .pending_rendering_promise
+                            .safe_borrow_mut(cx.no_gc()))
+                            .take()
+                            .unwrap()
+                    };
+                    promise.resolve_native(cx, &buffer);
                     let global = &this.global();
                     let window = global.as_window();
                     let event = OfflineAudioCompletionEvent::new(cx, window,

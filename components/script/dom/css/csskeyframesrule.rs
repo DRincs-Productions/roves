@@ -24,6 +24,7 @@ use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{DomRoot, MutNullableDom};
 use crate::dom::bindings::str::DOMString;
+use crate::dom::cssgroupingrule::CSSGroupingRule;
 use crate::dom::window::Window;
 
 #[dom_struct]
@@ -37,11 +38,12 @@ pub(crate) struct CSSKeyframesRule {
 
 impl CSSKeyframesRule {
     fn new_inherited(
+        parent_rule: Option<&CSSGroupingRule>,
         parent_stylesheet: &CSSStyleSheet,
         keyframesrule: Arc<Locked<KeyframesRule>>,
     ) -> CSSKeyframesRule {
         CSSKeyframesRule {
-            css_rule: CSSRule::new_inherited(parent_stylesheet),
+            css_rule: CSSRule::new_inherited(parent_rule, parent_stylesheet),
             keyframes_rule: RefCell::new(keyframesrule),
             rule_list: MutNullableDom::new(None),
         }
@@ -50,11 +52,13 @@ impl CSSKeyframesRule {
     pub(crate) fn new(
         cx: &mut JSContext,
         window: &Window,
+        parent_rule: Option<&CSSGroupingRule>,
         parent_stylesheet: &CSSStyleSheet,
         keyframesrule: Arc<Locked<KeyframesRule>>,
     ) -> DomRoot<CSSKeyframesRule> {
         reflect_dom_object_with_cx(
             Box::new(CSSKeyframesRule::new_inherited(
+                parent_rule,
                 parent_stylesheet,
                 keyframesrule,
             )),
@@ -69,6 +73,7 @@ impl CSSKeyframesRule {
             CSSRuleList::new(
                 cx,
                 self.global().as_window(),
+                None,
                 parent_stylesheet,
                 RulesSource::Keyframes(self.keyframes_rule.borrow().clone()),
             )
@@ -115,7 +120,7 @@ impl CSSKeyframesRuleMethods<crate::DomTypeHolder> for CSSKeyframesRule {
     }
 
     /// <https://drafts.csswg.org/css-animations/#dom-csskeyframesrule-appendrule>
-    fn AppendRule(&self, cx: &mut JSContext, rule: DOMString) {
+    fn AppendRule(&self, rule: DOMString) {
         let style_stylesheet = self.css_rule.parent_stylesheet().style_stylesheet();
         let rule = rule.str();
         let rule = {
@@ -128,7 +133,7 @@ impl CSSKeyframesRuleMethods<crate::DomTypeHolder> for CSSKeyframesRule {
         };
 
         if let Ok(rule) = rule {
-            self.css_rule.parent_stylesheet().will_modify(cx);
+            self.css_rule.parent_stylesheet().will_modify();
             {
                 let mut guard = self.css_rule.shared_lock().write();
                 self.keyframes_rule
@@ -178,11 +183,11 @@ impl CSSKeyframesRuleMethods<crate::DomTypeHolder> for CSSKeyframesRule {
     }
 
     /// <https://drafts.csswg.org/css-animations/#dom-csskeyframesrule-name>
-    fn SetName(&self, cx: &mut JSContext, value: DOMString) -> ErrorResult {
+    fn SetName(&self, value: DOMString) -> ErrorResult {
         // Spec deviation: https://github.com/w3c/csswg-drafts/issues/801
         // Setting this property to a CSS-wide keyword or `none` does not throw,
         // it stores a value that serializes as a quoted string.
-        self.css_rule.parent_stylesheet().will_modify(cx);
+        self.css_rule.parent_stylesheet().will_modify();
         let name = KeyframesName::from_ident(&value.str());
         let mut guard = self.css_rule.shared_lock().write();
         self.keyframes_rule.borrow().write_with(&mut guard).name = name;

@@ -6,6 +6,7 @@
 
 mod font;
 mod font_context;
+pub mod font_feature_values;
 mod font_store;
 mod glyph;
 #[expect(unsafe_code)]
@@ -27,7 +28,7 @@ pub use font_context::{
 pub use font_store::FontTemplates;
 pub use fonts_traits::*;
 pub(crate) use glyph::*;
-pub use glyph::{GlyphInfo, ShapedText, ShapedTextSlice, ShapedTextSlicer};
+pub use glyph::{GlyphInfo, ShapedText, ShapedTextSlice, ShapedTextSliceType, ShapedTextSlicer};
 use icu_locid::subtags::Language;
 pub use platform::font_list::fallback_font_families;
 pub(crate) use shapers::*;

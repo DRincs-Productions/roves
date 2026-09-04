@@ -15,7 +15,7 @@ use js::rust::CustomAutoRooterGuard;
 use js::typedarray::{ArrayBuffer, ArrayBufferView, CreateWith};
 use script_bindings::cell::DomRefCell;
 use script_bindings::match_domstring_ascii;
-use script_bindings::reflector::reflect_dom_object;
+use script_bindings::reflector::reflect_dom_object_with_cx;
 use script_bindings::weakref::WeakRef;
 use servo_constellation_traits::BlobImpl;
 use servo_media::webrtc::{
@@ -40,7 +40,6 @@ use crate::dom::messageevent::MessageEvent;
 use crate::dom::rtcerror::RTCError;
 use crate::dom::rtcerrorevent::RTCErrorEvent;
 use crate::dom::rtcpeerconnection::RTCPeerConnection;
-use crate::script_runtime::CanGc;
 
 #[derive(JSTraceable, MallocSizeOf)]
 struct DroppableRTCDataChannel {
@@ -122,14 +121,14 @@ impl RTCDataChannel {
     }
 
     pub(crate) fn new(
+        cx: &mut JSContext,
         global: &GlobalScope,
         peer_connection: &RTCPeerConnection,
         label: USVString,
         options: &RTCDataChannelInit,
         servo_media_id: Option<DataChannelId>,
-        can_gc: CanGc,
     ) -> DomRoot<RTCDataChannel> {
-        let rtc_data_channel = reflect_dom_object(
+        let rtc_data_channel = reflect_dom_object_with_cx(
             Box::new(RTCDataChannel::new_inherited(
                 peer_connection,
                 label,
@@ -137,7 +136,7 @@ impl RTCDataChannel {
                 servo_media_id,
             )),
             global,
-            can_gc,
+            cx,
         );
 
         peer_connection
@@ -268,8 +267,12 @@ impl RTCDataChannel {
             SendSource::Blob(blob) => {
                 DataChannelMessage::Binary(blob.get_bytes().unwrap_or(vec![]))
             },
-            SendSource::ArrayBuffer(array) => DataChannelMessage::Binary(array.to_vec()),
-            SendSource::ArrayBufferView(array) => DataChannelMessage::Binary(array.to_vec()),
+            SendSource::ArrayBuffer(array) => {
+                DataChannelMessage::Binary(array.to_vec().unwrap_or_default())
+            },
+            SendSource::ArrayBufferView(array) => {
+                DataChannelMessage::Binary(array.to_vec().unwrap_or_default())
+            },
         };
 
         let controller = self.peer_connection.get_webrtc_controller().borrow();

@@ -15,6 +15,7 @@ use script_bindings::codegen::GenericBindings::NodeBinding::NodeMethods;
 use style::selector_parser::PseudoElement;
 use stylo_dom::ElementState;
 
+use crate::dom::FlatTreeParent;
 use crate::dom::activation::Activatable;
 use crate::dom::bindings::codegen::Bindings::HTMLButtonElementBinding::HTMLButtonElementMethods;
 use crate::dom::bindings::codegen::Bindings::NodeBinding::GetRootNodeOptions;
@@ -40,7 +41,6 @@ use crate::dom::nodelist::NodeList;
 use crate::dom::types::HTMLInputElement;
 use crate::dom::validation::{Validatable, is_barred_by_datalist_ancestor};
 use crate::dom::validitystate::{ValidationFlags, ValidityState};
-use crate::script_runtime::CanGc;
 
 #[derive(Clone, Copy, JSTraceable, MallocSizeOf, PartialEq)]
 enum ButtonType {
@@ -119,13 +119,13 @@ impl HTMLButtonElementMethods<crate::DomTypeHolder> for HTMLButtonElement {
     }
 
     // https://html.spec.whatwg.org/multipage/#dom-button-command
-    make_setter!(cx, SetCommand, "command");
+    make_setter!(SetCommand, "command");
 
     // https://html.spec.whatwg.org/multipage/#dom-fe-disabled
     make_bool_getter!(Disabled, "disabled");
 
     // https://html.spec.whatwg.org/multipage/#dom-fe-disabled
-    make_bool_setter!(cx, SetDisabled, "disabled");
+    make_bool_setter!(SetDisabled, "disabled");
 
     /// <https://html.spec.whatwg.org/multipage/#dom-fae-form>
     fn GetForm(&self) -> Option<DomRoot<HTMLFormElement>> {
@@ -142,13 +142,13 @@ impl HTMLButtonElementMethods<crate::DomTypeHolder> for HTMLButtonElement {
     }
 
     // https://html.spec.whatwg.org/multipage/#dom-button-type
-    make_setter!(cx, SetType, "type");
+    make_setter!(SetType, "type");
 
     // https://html.spec.whatwg.org/multipage/#dom-fs-formaction
     make_form_action_getter!(FormAction, "formaction");
 
     // https://html.spec.whatwg.org/multipage/#dom-fs-formaction
-    make_setter!(cx, SetFormAction, "formaction");
+    make_setter!(SetFormAction, "formaction");
 
     // https://html.spec.whatwg.org/multipage/#dom-fs-formenctype
     make_enumerated_getter!(
@@ -159,7 +159,7 @@ impl HTMLButtonElementMethods<crate::DomTypeHolder> for HTMLButtonElement {
     );
 
     // https://html.spec.whatwg.org/multipage/#dom-fs-formenctype
-    make_setter!(cx, SetFormEnctype, "formenctype");
+    make_setter!(SetFormEnctype, "formenctype");
 
     // https://html.spec.whatwg.org/multipage/#dom-fs-formmethod
     make_enumerated_getter!(
@@ -170,31 +170,31 @@ impl HTMLButtonElementMethods<crate::DomTypeHolder> for HTMLButtonElement {
     );
 
     // https://html.spec.whatwg.org/multipage/#dom-fs-formmethod
-    make_setter!(cx, SetFormMethod, "formmethod");
+    make_setter!(SetFormMethod, "formmethod");
 
     // https://html.spec.whatwg.org/multipage/#dom-fs-formtarget
     make_getter!(FormTarget, "formtarget");
 
     // https://html.spec.whatwg.org/multipage/#dom-fs-formtarget
-    make_setter!(cx, SetFormTarget, "formtarget");
+    make_setter!(SetFormTarget, "formtarget");
 
     // https://html.spec.whatwg.org/multipage/#attr-fs-formnovalidate
     make_bool_getter!(FormNoValidate, "formnovalidate");
 
     // https://html.spec.whatwg.org/multipage/#attr-fs-formnovalidate
-    make_bool_setter!(cx, SetFormNoValidate, "formnovalidate");
+    make_bool_setter!(SetFormNoValidate, "formnovalidate");
 
     // https://html.spec.whatwg.org/multipage/#dom-fe-name
     make_getter!(Name, "name");
 
     // https://html.spec.whatwg.org/multipage/#dom-fe-name
-    make_atomic_setter!(cx, SetName, "name");
+    make_atomic_setter!(SetName, "name");
 
     // https://html.spec.whatwg.org/multipage/#dom-button-value
     make_getter!(Value, "value");
 
     // https://html.spec.whatwg.org/multipage/#dom-button-value
-    make_setter!(cx, SetValue, "value");
+    make_setter!(SetValue, "value");
 
     // https://html.spec.whatwg.org/multipage/#dom-lfe-labels
     make_labels_getter!(Labels, labels_node_list);
@@ -320,10 +320,7 @@ impl HTMLButtonElement {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#determine-if-command-is-valid>
-    fn determine_if_command_is_valid_for_target(
-        command: CommandState,
-        target: DomRoot<Element>,
-    ) -> bool {
+    fn determine_if_command_is_valid_for_target(command: CommandState, target: &Element) -> bool {
         // Step 1. If command is in the Unknown state, then return false.
         if command == CommandState::Unknown {
             return false;
@@ -438,7 +435,7 @@ impl FormControl for HTMLButtonElement {
         self.form_owner.get()
     }
 
-    fn set_form_owner(&self, form: Option<&HTMLFormElement>) {
+    fn set_form_owner(&self, _cx: &mut JSContext, form: Option<&HTMLFormElement>) {
         self.form_owner.set(form);
     }
 
@@ -524,7 +521,8 @@ impl Activatable for HTMLButtonElement {
         // Adhoc, this step is needed so that file inputs button activates the input.
         if let Some(pseudo_element) = self.upcast::<Node>().implemented_pseudo_element() {
             if pseudo_element == PseudoElement::FileSelectorButton {
-                let Some(parent) = self.upcast::<Node>().parent_in_flat_tree() else {
+                let FlatTreeParent::Parent(parent) = self.upcast::<Node>().parent_in_flat_tree()
+                else {
                     return;
                 };
 
@@ -544,7 +542,7 @@ impl Activatable for HTMLButtonElement {
             // Steps 5.1 Let command be element's command attribute.
             let command = self.command_state();
             // Step 5.2 If the result of determining if a command is valid for a target given command and target is false, then return.
-            if !Self::determine_if_command_is_valid_for_target(command, target.clone()) {
+            if !Self::determine_if_command_is_valid_for_target(command, &target) {
                 return;
             }
             // Step 5.3 Let continue be the result of firing an event named command at target, using
@@ -558,7 +556,7 @@ impl Activatable for HTMLButtonElement {
                 atom!("command"),
                 EventBubbles::DoesNotBubble,
                 EventCancelable::Cancelable,
-                Some(DomRoot::from_ref(self.upcast())),
+                Some(self.upcast()),
                 self.upcast::<Element>()
                     .get_string_attribute(&local_name!("command")),
             );

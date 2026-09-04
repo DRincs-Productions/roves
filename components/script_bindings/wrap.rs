@@ -11,8 +11,8 @@ use js::glue::SetProxyReservedSlot;
 use js::jsapi::{JS_SetReservedSlot, JSAutoRealm, JSClass, JSObject};
 use js::jsval::{PrivateValue, UndefinedValue};
 use js::rust::wrappers2::{
-    JS_CopyOwnPropertiesAndPrivateFields, JS_InitializePropertiesFromCompatibleNativeObject,
-    JS_NewObjectWithGivenProto, JS_WrapObject, NewProxyObject,
+    JS_InitializePropertiesFromCompatibleNativeObject, JS_NewObjectWithGivenProto, JS_WrapObject,
+    NewProxyObject,
 };
 use js::rust::{Handle, get_context_realm, get_object_class, get_object_realm};
 
@@ -22,7 +22,6 @@ use crate::import::module::JS_GetReservedSlot;
 use crate::proxyhandler::ensure_expando_object;
 use crate::root::{DomRoot, MaybeUnreflectedDom, Root};
 use crate::utils::DOM_PROTO_UNFORGEABLE_HOLDER_SLOT;
-use crate::weakref::DOM_WEAK_SLOT;
 use crate::{DomObject, DomTypes, MutDomObject};
 
 type ProtoObjectFn = fn(&mut js::context::JSContext, HandleObject, MutableHandleObject);
@@ -31,13 +30,11 @@ type ProtoObjectFn = fn(&mut js::context::JSContext, HandleObject, MutableHandle
 pub(crate) struct WrapConfig {
     pub(crate) is_maybe_cross_origin_object: bool,
     pub(crate) is_proxy: bool,
-    pub(crate) weak_referenceable: bool,
     pub(crate) proxy_handler: Option<*const c_void>,
     pub(crate) prototype_id: PrototypeList::ID,
     pub(crate) class: Option<&'static JSClass>,
     // this function has to be more general because we do not have the correct type for globalscope.
     pub(crate) proto_object_fn: ProtoObjectFn,
-    pub(crate) is_global: bool,
     pub(crate) has_legacy_unforgeable_members: bool,
 }
 
@@ -46,12 +43,10 @@ pub(crate) unsafe fn wrap<T: MutDomObject, D: DomTypes>(
     cx: &mut JSContext,
     scope: &D::GlobalScope,
     given_proto: Option<js::rust::Handle<*mut JSObject>>,
-    object: Box<T>,
+    raw: Root<MaybeUnreflectedDom<T>>,
     config: WrapConfig,
 ) -> DomRoot<T> {
     unsafe {
-        let raw = Root::new(MaybeUnreflectedDom::from_box(object));
-
         let scope = scope.reflector().get_jsobject();
         assert!(!scope.get().is_null());
         assert!(((*get_object_class(scope.get())).flags & JSCLASS_IS_GLOBAL) != 0);
@@ -114,11 +109,6 @@ pub(crate) unsafe fn wrap<T: MutDomObject, D: DomTypes>(
             );
         };
 
-        if config.weak_referenceable {
-            let val = PrivateValue(ptr::null());
-            JS_SetReservedSlot(obj.get(), DOM_WEAK_SLOT, &val);
-        }
-
         let root = raw.reflect_with(obj.get());
         root.reflector().set_proto_id(config.prototype_id as u16);
 
@@ -129,11 +119,7 @@ pub(crate) unsafe fn wrap<T: MutDomObject, D: DomTypes>(
                 ensure_expando_object(cx, obj.handle(), expando.handle_mut());
             }
 
-            let copy_fn = if config.is_global {
-                JS_CopyOwnPropertiesAndPrivateFields
-            } else {
-                JS_InitializePropertiesFromCompatibleNativeObject
-            };
+            let copy_fn = JS_InitializePropertiesFromCompatibleNativeObject;
 
             let mut slot = UndefinedValue();
             JS_GetReservedSlot(

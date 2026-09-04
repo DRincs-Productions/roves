@@ -1482,15 +1482,12 @@ impl ReadableByteStreamController {
         underlying_source.in_memory()
     }
 
-    pub(crate) fn get_in_memory_bytes(&self) -> Option<Vec<u8>> {
+    pub(crate) fn get_in_memory_bytes(&self, cx: &mut JSContext) -> Option<Vec<u8>> {
         let underlying_source = self.underlying_source.get()?;
         if !underlying_source.in_memory() {
             return None;
         }
 
-        // TODO: https://github.com/servo/servo/issues/45963
-        #[expect(unsafe_code)]
-        let mut cx = unsafe { script_bindings::script_runtime::temp_cx() };
         self.queue.borrow().iter().try_fold(
             Vec::with_capacity(self.queue_total_size.get() as usize),
             |mut bytes, entry| {
@@ -1498,7 +1495,7 @@ impl ReadableByteStreamController {
                 entry
                     .buffer
                     .copy_data_to(
-                        &mut cx,
+                        cx,
                         &mut chunk,
                         entry.byte_offset,
                         entry.byte_offset + entry.byte_length,
@@ -1528,7 +1525,7 @@ impl ReadableByteStreamController {
         let reader = self.stream.get().unwrap().get_default_reader();
 
         // Step 3
-        reader.process_read_requests(cx, DomRoot::from_ref(self))
+        reader.process_read_requests(cx, self)
     }
 
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamcontrollerfillreadrequestfromqueue>
@@ -1706,7 +1703,7 @@ impl ReadableByteStreamController {
         &self,
         cx: &mut JSContext,
         global: &GlobalScope,
-        stream: DomRoot<ReadableStream>,
+        stream: &ReadableStream,
     ) -> Fallible<()> {
         // Assert: stream.[[controller]] is undefined.
         stream.assert_no_controller();
@@ -1718,7 +1715,7 @@ impl ReadableByteStreamController {
         }
 
         // Set controller.[[stream]] to stream.
-        self.stream.set(Some(&stream));
+        self.stream.set(Some(stream));
 
         // Set controller.[[pullAgain]] and controller.[[pulling]] to false.
         self.pull_again.set(false);
@@ -1973,7 +1970,7 @@ impl ReadableByteStreamControllerMethods<crate::DomTypeHolder> for ReadableByteS
         cx: &mut JSContext,
         chunk: js::gc::CustomAutoRooterGuard<js::typedarray::ArrayBufferView>,
     ) -> Fallible<()> {
-        let chunk = HeapBufferSource::<ArrayBufferViewU8>::from_view(chunk);
+        let chunk = HeapBufferSource::<ArrayBufferViewU8>::from_view(cx, chunk);
 
         // If chunk.[[ByteLength]] is 0, throw a TypeError exception.
         if chunk.byte_length() == 0 {

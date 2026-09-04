@@ -13,7 +13,7 @@ use std::sync::LazyLock;
 use std::{fmt, slice, str};
 
 use html5ever::{LocalName, Namespace};
-use js::context::{JSContext, RawJSContext};
+use js::context::JSContext;
 use js::conversions::{ToJSValConvertible, jsstr_to_string};
 use js::gc::{HandleValue, MutableHandleValue};
 use js::jsapi::{Heap, JS_GetLatin1StringCharsAndLength, JSString};
@@ -22,7 +22,7 @@ use js::rust::{Runtime, Trace};
 use malloc_size_of::MallocSizeOfOps;
 use num_traits::{ToPrimitive, Zero};
 use regex::Regex;
-use servo_base::text::{Utf8CodeUnitLength, Utf16CodeUnitLength};
+use servo_base::text::{Utf8CodeUnits, Utf16CodeUnits};
 use style::Atom;
 use style::str::HTML_SPACE_CHARACTERS;
 use zeroize::Zeroize;
@@ -411,20 +411,20 @@ impl DOMString {
 
     /// The length of this string in UTF-8 code units, each one being one byte in size.
     /// This method is the same as [`DOMString::len`], but the result is wrapped in a
-    /// `Utf8CodeUnitLength` to be used in code that mixes different kinds of offsets.
+    /// `Utf8CodeUnits` to be used in code that mixes different kinds of offsets.
     ///
     /// Note: This is different than the number of Unicode characters (or code points). A
     /// character may require multiple UTF-8 code units.
-    pub fn len_utf8(&self) -> Utf8CodeUnitLength {
-        Utf8CodeUnitLength(self.len())
+    pub fn len_utf8(&self) -> Utf8CodeUnits {
+        Utf8CodeUnits(self.len())
     }
 
     /// The length of this string in UTF-16 code units, each one being one two bytes in size.
     ///
     /// Note: This is different than the number of Unicode characters (or code points). A
     /// character may require multiple UTF-16 code units.
-    pub fn len_utf16(&self) -> Utf16CodeUnitLength {
-        Utf16CodeUnitLength(self.str().chars().map(char::len_utf16).sum())
+    pub fn len_utf16(&self) -> Utf16CodeUnits {
+        Utf16CodeUnits(self.str().chars().map(char::len_utf16).sum())
     }
 
     pub fn make_ascii_lowercase(&mut self) {
@@ -767,12 +767,10 @@ impl Extend<char> for DOMString {
 }
 
 impl ToJSValConvertible for DOMString {
-    unsafe fn to_jsval(&self, cx: *mut RawJSContext, mut rval: MutableHandleValue) {
+    fn safe_to_jsval(&self, cx: &mut JSContext, mut rval: MutableHandleValue) {
         let val = self.0.borrow();
         match *val {
-            DOMStringType::Rust(ref s) => unsafe {
-                s.to_jsval(cx, rval);
-            },
+            DOMStringType::Rust(ref s) => s.safe_to_jsval(cx, rval),
             DOMStringType::JSString(ref rooted_traceable_box) => unsafe {
                 rval.set(StringValue(&*rooted_traceable_box.get()));
             },
@@ -785,7 +783,7 @@ impl ToJSValConvertible for DOMString {
 
                 String::from_utf8(v)
                     .expect("Error in constructin test string")
-                    .to_jsval(cx, rval);
+                    .safe_to_jsval(cx, rval);
             },
         };
     }

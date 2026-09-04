@@ -64,6 +64,7 @@ pub type Target<'a> = &'a mut (dyn FetchTaskTarget + Send);
 #[derive(Clone, Deserialize, Serialize)]
 pub enum Data {
     Payload(Vec<u8>),
+    ContentLength(usize),
     Done,
     Cancelled,
     Error(NetworkError),
@@ -467,11 +468,15 @@ pub async fn main_fetch(
                 .unwrap();
         }
     } else {
+        let insecure_requests_policy = request
+            .client
+            .as_ref()
+            .map(|client| client.insecure_requests_policy);
         trace!(
             "not upgrading {} targeting {:?} with {:?}",
             request.current_url(),
             request.destination,
-            request.insecure_requests_policy
+            insecure_requests_policy
         );
     }
     if let Some(csp_request) = csp_request.as_ref() {
@@ -896,6 +901,9 @@ async fn wait_for_response(
         let mut devtools_body = context.devtools_chan.as_ref().map(|_| Vec::new());
         loop {
             match ch.1.recv().await {
+                Some(Data::ContentLength(length)) => {
+                    target.process_response_length_hint(request, length);
+                },
                 Some(Data::Payload(vec)) => {
                     if let Some(body) = devtools_body.as_mut() {
                         body.extend(&vec);
@@ -918,7 +926,8 @@ async fn wait_for_response(
                     response.aborted.store(true, Ordering::Release);
                     break;
                 },
-                _ => {
+
+                None => {
                     panic!("fetch worker should always send Done before terminating");
                 },
             }
@@ -1401,19 +1410,25 @@ pub enum MixedSecurityProhibited {
 
 /// <https://w3c.github.io/webappsec-mixed-content/#categorize-settings-object>
 fn do_settings_prohibit_mixed_security_contexts(request: &Request) -> MixedSecurityProhibited {
-    if let Origin::Origin(ref origin) = request.origin {
-        // Step 1. If settings’ origin is a potentially trustworthy origin,
-        // then return "Prohibits Mixed Security Contexts".
-        // NOTE: Workers created from a data: url are secure if they were created from secure contexts
-        if origin.is_potentially_trustworthy() || origin.is_for_data_worker_from_secure_context() {
-            return MixedSecurityProhibited::Prohibited;
-        }
+    let Some(ref client) = request.client else {
+        return MixedSecurityProhibited::NotProhibited;
+    };
+
+    let Origin::Origin(ref origin) = client.origin else {
+        unreachable!("Settings' origin is never a \"client\"");
+    };
+
+    // Step 1. If settings’ origin is a potentially trustworthy origin,
+    // then return "Prohibits Mixed Security Contexts".
+    // NOTE: Workers created from a data: url are secure if they were created from secure contexts
+    if origin.is_potentially_trustworthy() || origin.is_for_data_worker_from_secure_context() {
+        return MixedSecurityProhibited::Prohibited;
     }
 
     // Step 2.2. For each navigable navigable in document’s ancestor navigables:
     // Step 2.2.1. If navigable’s active document's origin is a potentially trustworthy origin,
     // then return "Prohibits Mixed Security Contexts".
-    if request.has_trustworthy_ancestor_origin {
+    if client.has_trustworthy_ancestor_origin {
         return MixedSecurityProhibited::Prohibited;
     }
 

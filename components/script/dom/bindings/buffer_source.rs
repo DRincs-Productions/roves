@@ -13,7 +13,7 @@ use std::ptr;
 #[cfg(feature = "webgpu")]
 use std::sync::Arc;
 
-use js::context::JSContext;
+use js::context::{JSContext, NoGC};
 use js::jsapi::{
     GetArrayBufferByteLength, Heap, IsArrayBufferObject, IsDetachedArrayBufferObject,
     JS_GetArrayBufferViewByteLength, JS_GetArrayBufferViewByteOffset, JS_GetArrayBufferViewType,
@@ -43,10 +43,9 @@ use js::typedarray::{
     TypedArrayElementCreator,
 };
 
+use crate::dom::bindings::codegen::UnionTypes::ArrayBufferViewOrArrayBuffer;
 use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::trace::RootedTraceableBox;
-#[cfg(feature = "webgpu")]
-use crate::dom::globalscope::GlobalScope;
 
 pub(crate) type RootedTypedArray<T> = RootedTraceableBox<TypedArray<T, Box<Heap<*mut JSObject>>>>;
 
@@ -78,6 +77,79 @@ impl Clone for BufferSource {
     }
 }
 
+pub(crate) enum ArrayBufferViewOrArrayBufferRef<'a> {
+    ArrayBufferView(&'a RootedTypedArray<ArrayBufferViewU8>),
+    ArrayBuffer(&'a RootedTypedArray<ArrayBufferU8>),
+}
+
+impl<'a> From<&'a RootedTypedArray<ArrayBufferViewU8>> for ArrayBufferViewOrArrayBufferRef<'a> {
+    fn from(view: &'a RootedTypedArray<ArrayBufferViewU8>) -> Self {
+        ArrayBufferViewOrArrayBufferRef::ArrayBufferView(view)
+    }
+}
+
+impl<'a> From<&'a RootedTypedArray<ArrayBufferU8>> for ArrayBufferViewOrArrayBufferRef<'a> {
+    fn from(buffer: &'a RootedTypedArray<ArrayBufferU8>) -> Self {
+        ArrayBufferViewOrArrayBufferRef::ArrayBuffer(buffer)
+    }
+}
+
+impl<'a> From<&'a ArrayBufferViewOrArrayBuffer> for ArrayBufferViewOrArrayBufferRef<'a> {
+    fn from(view_or_buffer: &'a ArrayBufferViewOrArrayBuffer) -> Self {
+        match view_or_buffer {
+            ArrayBufferViewOrArrayBuffer::ArrayBufferView(view) => {
+                ArrayBufferViewOrArrayBufferRef::ArrayBufferView(view)
+            },
+            ArrayBufferViewOrArrayBuffer::ArrayBuffer(buffer) => {
+                ArrayBufferViewOrArrayBufferRef::ArrayBuffer(buffer)
+            },
+        }
+    }
+}
+
+/// <https://webidl.spec.whatwg.org/#dfn-get-buffer-source-copy>
+///
+/// Spec steps and how they're covered:
+///
+/// - **Convert to JS value**: Handled by WebIDL bindings before this function
+///   receives the typed `ArrayBufferViewOrArrayBuffer` union.
+///
+/// - **ArrayBufferView offset/length**: `view.to_vec()` (mozjs) calls
+///   `GetArrayBufferViewLengthAndData`, which respects the view's
+///   `[[ByteOffset]]` and `[[ByteLength]]` — only the viewed bytes are copied.
+///
+/// - **ArrayBuffer**: `buffer.to_vec()` (mozjs) calls
+///   `GetArrayBufferLengthAndData`, copying the entire buffer contents.
+///
+/// - **Detached buffer**: When a buffer is detached, SpiderMonkey's
+///   `GetArrayBuffer(LengthAndData|ViewLengthAndData)` returns a null pointer
+///   and zero length. `to_vec()` thus produces an empty `Vec<u8>`.
+///
+/// - **SharedArrayBuffer**: Not applicable — `ArrayBufferViewOrArrayBuffer`
+///   does not include a SharedArrayBuffer variant.
+pub(crate) fn get_buffer_source_copy(source: ArrayBufferViewOrArrayBufferRef<'_>) -> Vec<u8> {
+    match source {
+        ArrayBufferViewOrArrayBufferRef::ArrayBufferView(view) => view.to_vec(),
+        ArrayBufferViewOrArrayBufferRef::ArrayBuffer(buffer) => buffer.to_vec(),
+    }
+    .unwrap_or(vec![])
+}
+
+/// Returns a slice referencing the bytes in the buffer source, without copying.
+///
+/// Use this instead of [`get_buffer_source_copy`] when the data is consumed
+/// synchronously — it avoids the allocation of a `Vec<u8>`.
+pub(crate) fn get_buffer_source_slice<'a>(
+    source: &'a ArrayBufferViewOrArrayBuffer,
+    no_gc: &'a NoGC,
+) -> &'a [u8] {
+    match source {
+        ArrayBufferViewOrArrayBuffer::ArrayBufferView(view) => view.as_slice_safe(no_gc),
+        ArrayBufferViewOrArrayBuffer::ArrayBuffer(buffer) => buffer.as_slice_safe(no_gc),
+    }
+    .unwrap_or(&[])
+}
+
 pub(crate) fn create_heap_buffer_source_with_length<T>(
     cx: &mut JSContext,
     len: u32,
@@ -94,7 +166,7 @@ where
     }
 
     Ok(RootedTraceableBox::new(HeapBufferSource::<T>::new(
-        BufferSource::ArrayBufferView(Heap::boxed(*array.handle())),
+        array.handle(),
     )))
 }
 
@@ -139,20 +211,28 @@ impl<T> HeapBufferSource<T>
 where
     T: TypedArrayElement,
 {
-    #[cfg_attr(crown, expect(crown::unrooted_must_root))]
-    pub(crate) fn new(buffer_source: BufferSource) -> HeapBufferSource<T> {
+    /// Create a buffer source from a rooted ArrayBuffer or ArrayBufferView.
+    pub(crate) fn new(object: Handle<*mut JSObject>) -> HeapBufferSource<T> {
+        let object = object.get();
+        assert!(!object.is_null());
+
         HeapBufferSource {
-            buffer_source,
+            buffer_source: if unsafe { IsArrayBufferObject(object) } {
+                BufferSource::ArrayBuffer(Heap::boxed(object))
+            } else {
+                assert!(unsafe { JS_IsArrayBufferViewObject(object) });
+                BufferSource::ArrayBufferView(Heap::boxed(object))
+            },
             phantom: PhantomData,
         }
     }
 
     pub(crate) fn from_view(
+        cx: &mut JSContext,
         chunk: CustomAutoRooterGuard<TypedArray<T, *mut JSObject>>,
     ) -> RootedTraceableBox<HeapBufferSource<T>> {
-        RootedTraceableBox::new(HeapBufferSource::<T>::new(BufferSource::ArrayBufferView(
-            Heap::boxed(unsafe { *chunk.underlying_object() }),
-        )))
+        rooted!(&in(cx) let object = unsafe { *chunk.underlying_object() });
+        RootedTraceableBox::new(HeapBufferSource::<T>::new(object.handle()))
     }
 
     pub(crate) fn default() -> Self {
@@ -206,7 +286,7 @@ where
                          JS_GetArrayBufferViewBuffer(cx, Handle::from_raw(buffer.handle()), &mut is_shared));
 
                 RootedTraceableBox::new(HeapBufferSource::<ArrayBufferU8>::new(
-                    BufferSource::ArrayBuffer(Heap::boxed(*view_buffer.handle())),
+                    view_buffer.handle(),
                 ))
             },
             BufferSource::ArrayBuffer(_) => {
@@ -371,6 +451,8 @@ where
             },
         };
 
+        rooted!(&in(cx) let result = result);
+
         if result.is_null() {
             // Normalize SpiderMonkey failure: consume pending exception and
             // map it to a DOM Error.
@@ -385,9 +467,7 @@ where
             Err(Error::Type(c"can't clone array buffer".to_owned()))
         } else {
             Ok(RootedTraceableBox::new(
-                HeapBufferSource::<ArrayBufferU8>::new(BufferSource::ArrayBuffer(Heap::boxed(
-                    result,
-                ))),
+                HeapBufferSource::<ArrayBufferU8>::new(result.handle()),
             ))
         }
     }
@@ -449,9 +529,12 @@ where
         let data = if let Ok(array) =
             array as Result<CustomAutoRooterGuard<'_, TypedArray<T, *mut JSObject>>, &mut ()>
         {
-            let data = array.to_vec();
-            let _ = self.detach_buffer(cx);
-            Ok(data)
+            if let Some(data) = array.to_vec() {
+                let _ = self.detach_buffer(cx);
+                Ok(data)
+            } else {
+                Err(())
+            }
         } else {
             Err(())
         };
@@ -469,7 +552,7 @@ where
         cx: &mut JSContext,
         dest: &mut [T::Element],
         source_start: usize,
-        length: usize,
+        source_end: usize,
     ) -> Result<(), ()> {
         assert!(self.is_initialized());
         typedarray!(&in(cx) let array: TypedArray = match &self.buffer_source {
@@ -483,10 +566,8 @@ where
         else {
             return Err(());
         };
-        unsafe {
-            let slice = (*array).as_slice();
-            dest.copy_from_slice(&slice[source_start..length]);
-        }
+        let slice = (*array).as_slice_safe(cx.no_gc()).unwrap_or(&[]);
+        dest.copy_from_slice(&slice[source_start..source_end]);
         Ok(())
     }
 
@@ -509,11 +590,10 @@ where
         else {
             return Err(());
         };
-        unsafe {
-            let slice = (*array).as_mut_slice();
-            let (_, dest) = slice.split_at_mut(dest_start);
-            dest[0..length].copy_from_slice(&source.as_slice()[0..length])
-        }
+        let slice = (*array).as_mut_slice_safe(cx.no_gc()).unwrap_or(&mut []);
+        let (_, dest) = slice.split_at_mut(dest_start);
+        let source = source.as_slice_safe(cx.no_gc()).unwrap_or(&[]);
+        dest[0..length].copy_from_slice(&source[0..length]);
         Ok(())
     }
 
@@ -676,10 +756,14 @@ where
             // Return a new ArrayBuffer object, created in the current Realm,
             // whose [[ArrayBufferData]] internal slot value is arrayBufferData and
             // whose [[ArrayBufferByteLength]] internal slot value is arrayBufferByteLength.
+            rooted!(&in(cx) let result = unsafe {
+                NewArrayBufferWithContents(cx, buffer_length, buffer_data)
+            });
+            if result.is_null() {
+                return Err(Error::JSFailed);
+            }
             Ok(RootedTraceableBox::new(
-                HeapBufferSource::<ArrayBufferU8>::new(BufferSource::ArrayBuffer(Heap::boxed(
-                    unsafe { NewArrayBufferWithContents(cx, buffer_length, buffer_data) },
-                ))),
+                HeapBufferSource::<ArrayBufferU8>::new(result.handle()),
             ))
         }
     }
@@ -773,16 +857,22 @@ pub(crate) fn create_buffer_source_with_constructor(
 ) -> Fallible<RootedTraceableBox<HeapBufferSource<ArrayBufferViewU8>>> {
     match &buffer_source.buffer_source {
         BufferSource::ArrayBuffer(heap) => match constructor {
-            Constructor::DataView => Ok(RootedTraceableBox::new(HeapBufferSource::new(
-                BufferSource::ArrayBufferView(Heap::boxed(unsafe {
+            Constructor::DataView => {
+                rooted!(&in(cx) let view = unsafe {
                     JS_NewDataView(
                         cx,
                         Handle::from_raw(heap.handle()),
                         byte_offset,
                         byte_length,
                     )
-                })),
-            ))),
+                });
+                if view.is_null() {
+                    return Err(Error::JSFailed);
+                }
+                Ok(RootedTraceableBox::new(HeapBufferSource::new(
+                    view.handle(),
+                )))
+            },
             Constructor::Name(name_type) => construct_typed_array(
                 cx,
                 name_type,
@@ -807,7 +897,7 @@ fn construct_typed_array(
 ) -> Fallible<RootedTraceableBox<HeapBufferSource<ArrayBufferViewU8>>> {
     match &buffer_source.buffer_source {
         BufferSource::ArrayBuffer(heap) => {
-            let array_view = unsafe {
+            rooted!(&in(cx) let array_view = unsafe {
                 match name_type {
                     Type::Int8 => JS_NewInt8ArrayWithBuffer(
                         cx,
@@ -885,10 +975,13 @@ fn construct_typed_array(
                         unreachable!("Invalid TypedArray type")
                     },
                 }
-            };
+            });
+            if array_view.is_null() {
+                return Err(Error::JSFailed);
+            }
 
             Ok(RootedTraceableBox::new(HeapBufferSource::new(
-                BufferSource::ArrayBufferView(Heap::boxed(array_view)),
+                array_view.handle(),
             )))
         },
         BufferSource::ArrayBufferView(_) => {
@@ -901,7 +994,7 @@ pub(crate) fn create_array_buffer_with_size(
     cx: &mut JSContext,
     size: usize,
 ) -> Fallible<RootedTraceableBox<HeapBufferSource<ArrayBufferU8>>> {
-    let result = unsafe { NewArrayBuffer(cx, size) };
+    rooted!(&in(cx) let result = unsafe { NewArrayBuffer(cx, size) });
     if result.is_null() {
         rooted!(&in(cx) let mut rval = UndefinedValue());
         unsafe {
@@ -912,7 +1005,7 @@ pub(crate) fn create_array_buffer_with_size(
         Err(Error::Type(c"can't create array buffer".to_owned()))
     } else {
         Ok(RootedTraceableBox::new(
-            HeapBufferSource::<ArrayBufferU8>::new(BufferSource::ArrayBuffer(Heap::boxed(result))),
+            HeapBufferSource::<ArrayBufferU8>::new(result.handle()),
         ))
     }
 }
@@ -956,8 +1049,19 @@ impl DataBlock {
         Arc::get_mut(&mut self.data).unwrap()
     }
 
-    pub(crate) fn clear_views(&mut self) {
-        self.data_views.clear()
+    #[cfg_attr(
+        crown,
+        expect(
+            crown::unrooted_must_root,
+            reason = "Underlying content is rooted when GC can happen"
+        )
+    )]
+    pub(crate) fn clear_views(&mut self, cx: &mut JSContext) {
+        // we need to pop one by one so we can root one by one for detach
+        while let Some(DataView { buffer, .. }) = self.data_views.pop() {
+            rooted!(&in(cx) let b = unsafe { buffer.underlying_object().get() });
+            assert!(unsafe { DetachArrayBuffer(cx, b.handle()) })
+        }
     }
 
     /// Returns error if requested range is already mapped
@@ -1012,6 +1116,8 @@ impl DataBlock {
     }
 }
 
+/// DataView are created from `NewExternalArrayBuffer`,
+/// so SM will detach the underlying buffer when the DataView is GCed.
 #[cfg(feature = "webgpu")]
 #[derive(JSTraceable, MallocSizeOf)]
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
@@ -1027,17 +1133,6 @@ impl DataView {
     pub(crate) fn array_buffer(&self) -> RootedTraceableBox<HeapArrayBuffer> {
         RootedTraceableBox::new(unsafe {
             HeapArrayBuffer::from(self.buffer.underlying_object().get()).unwrap()
-        })
-    }
-}
-
-#[cfg(feature = "webgpu")]
-impl Drop for DataView {
-    #[expect(unsafe_code)]
-    fn drop(&mut self) {
-        let cx = GlobalScope::get_cx();
-        assert!(unsafe {
-            js::jsapi::DetachArrayBuffer(*cx, self.buffer.underlying_object().handle())
         })
     }
 }

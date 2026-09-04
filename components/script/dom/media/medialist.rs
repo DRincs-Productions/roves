@@ -76,13 +76,13 @@ impl MediaList {
         // FIXME(emilio): This looks somewhat fishy, since we use the context
         // only to parse the media query list, CssRuleType::Media doesn't make
         // much sense.
-        let context = parser_context_for_document(
+        let mut context = parser_context_for_document(
             &document,
             CssRuleType::Media,
             ParsingMode::DEFAULT,
             &url_data,
         );
-        StyleMediaList::parse(&context, &mut parser)
+        StyleMediaList::parse(&mut context, &mut parser)
     }
 
     /// <https://drafts.csswg.org/cssom/#parse-a-media-query>
@@ -121,7 +121,7 @@ impl MediaList {
         // matter right now...
         //
         // Also, ParsingMode::all() is wrong, and should be DEFAULT.
-        let context = ParserContext::new(
+        let mut context = ParserContext::new(
             Origin::Author,
             &url_data,
             Some(CssRuleType::Style),
@@ -134,7 +134,7 @@ impl MediaList {
         );
         let mut parser_input = ParserInput::new(media_query);
         let mut parser = Parser::new(&mut parser_input);
-        let media_list = StyleMediaList::parse(&context, &mut parser);
+        let media_list = StyleMediaList::parse(&mut context, &mut parser);
         media_list.evaluate(
             document.window().layout().device(),
             quirks_mode,
@@ -156,8 +156,8 @@ impl MediaListMethods<crate::DomTypeHolder> for MediaList {
     }
 
     /// <https://drafts.csswg.org/cssom/#dom-medialist-mediatext>
-    fn SetMediaText(&self, cx: &mut JSContext, value: DOMString) {
-        self.parent_stylesheet.will_modify(cx);
+    fn SetMediaText(&self, value: DOMString) {
+        self.parent_stylesheet.will_modify();
         let global = self.global();
         let mut guard = self.shared_lock().write();
         let media_queries_borrowed = self.media_queries.borrow();
@@ -193,7 +193,7 @@ impl MediaListMethods<crate::DomTypeHolder> for MediaList {
     }
 
     /// <https://drafts.csswg.org/cssom/#dom-medialist-appendmedium>
-    fn AppendMedium(&self, cx: &mut JSContext, medium: DOMString) {
+    fn AppendMedium(&self, medium: DOMString) {
         // Step 1
         let global = self.global();
         let medium = medium.str();
@@ -218,7 +218,7 @@ impl MediaListMethods<crate::DomTypeHolder> for MediaList {
             }
         }
         // Step 4
-        self.parent_stylesheet.will_modify(cx);
+        self.parent_stylesheet.will_modify();
         let mut guard = self.shared_lock().write();
         self.media_queries
             .borrow()
@@ -229,7 +229,7 @@ impl MediaListMethods<crate::DomTypeHolder> for MediaList {
     }
 
     /// <https://drafts.csswg.org/cssom/#dom-medialist-deletemedium>
-    fn DeleteMedium(&self, cx: &mut JSContext, medium: DOMString) {
+    fn DeleteMedium(&self, medium: DOMString) {
         // Step 1
         let global = self.global();
         let medium = medium.str();
@@ -239,7 +239,7 @@ impl MediaListMethods<crate::DomTypeHolder> for MediaList {
             return;
         }
         // Step 3
-        self.parent_stylesheet.will_modify(cx);
+        self.parent_stylesheet.will_modify();
         let m_serialized = m.unwrap().to_css_string();
         let mut guard = self.shared_lock().write();
         let media_queries_borrowed = self.media_queries.borrow();

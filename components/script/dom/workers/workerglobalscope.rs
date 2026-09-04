@@ -16,6 +16,7 @@ use encoding_rs::UTF_8;
 use fonts::FontContext;
 use headers::{HeaderMapExt, ReferrerPolicy as ReferrerPolicyHeader};
 use js::context::JSContext;
+use js::conversions::ToJSValConvertible;
 use js::jsapi::{Heap, JSContext as RawJSContext, Value};
 use js::realm::CurrentRealm;
 use js::rust::{HandleValue, MutableHandleValue, ParentRuntime};
@@ -28,7 +29,7 @@ use net_traits::request::{
 use net_traits::{FetchMetadata, Metadata, NetworkError, ReferrerPolicy, ResourceFetchTiming};
 use profile_traits::mem::{ProcessReports, perform_memory_report};
 use script_bindings::cell::{DomRefCell, Ref};
-use script_bindings::conversions::{SafeToJSValConvertible, root_from_handlevalue};
+use script_bindings::conversions::root_from_handlevalue;
 use script_bindings::reflector::DomObject;
 use script_bindings::root::rooted_heap_handle;
 use script_bindings::trace::CustomTraceable;
@@ -58,7 +59,7 @@ use crate::dom::bindings::error::{Error, ErrorResult, Fallible};
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::reflector::DomGlobal;
-use crate::dom::bindings::root::{DomRoot, MutNullableDom};
+use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
 use crate::dom::bindings::str::{DOMString, USVString};
 use crate::dom::bindings::trace::RootedTraceableBox;
 use crate::dom::bindings::utils::define_all_exposed_interfaces;
@@ -75,6 +76,7 @@ use crate::dom::performance::performanceresourcetiming::InitiatorType;
 use crate::dom::promise::Promise;
 use crate::dom::reporting::reportingendpoint::{ReportingEndpoint, SendReportsToEndpoints};
 use crate::dom::reporting::reportingobserver::ReportingObserver;
+use crate::dom::serviceworker::cachestorage::CacheStorage;
 use crate::dom::sharedworkerglobalscope::SharedWorkerGlobalScope;
 use crate::dom::trustedtypes::trustedscripturl::TrustedScriptURL;
 use crate::dom::trustedtypes::trustedtypepolicyfactory::TrustedTypePolicyFactory;
@@ -86,11 +88,11 @@ use crate::dom::workerlocation::WorkerLocation;
 use crate::dom::workernavigator::WorkerNavigator;
 use crate::fetch::{CspViolationsProcessor, Fetch, RequestWithGlobalScope, load_whole_resource};
 use crate::messaging::{CommonScriptMsg, ScriptEventLoopReceiver, ScriptEventLoopSender};
-use crate::microtask::{Microtask, MicrotaskQueue, UserMicrotask};
+use crate::microtask::{MicrotaskQueue, MicrotaskRunnable, UserMicrotask};
 use crate::network_listener::{FetchResponseListener, ResourceTimingListener, submit_timing};
 use crate::realms::enter_auto_realm;
 use crate::script_module::ScriptFetchOptions;
-use crate::script_runtime::{CanGc, IntroductionType, Runtime, get_reports};
+use crate::script_runtime::{IntroductionType, Runtime, get_reports};
 use crate::task::TaskCanceller;
 use crate::task_manager::TaskManager;
 use crate::timers::{IsInterval, OneshotTimers, TimerCallback};
@@ -251,6 +253,10 @@ impl FetchResponseListener for ScriptFetchContext {
             worker_scope.report_csp_violations(violations);
         }
     }
+
+    fn process_content_length(&mut self, _request_id: RequestId, size: usize) {
+        self.body_bytes.reserve(size - self.body_bytes.len());
+    }
 }
 
 impl ResourceTimingListener for ScriptFetchContext {
@@ -320,7 +326,7 @@ pub(crate) struct WorkerGlobalScope {
     insecure_requests_policy: InsecureRequestsPolicy,
 
     /// <https://w3c.github.io/reporting/#windoworworkerglobalscope-registered-reporting-observer-list>
-    reporting_observer_list: DomRefCell<Vec<DomRoot<ReportingObserver>>>,
+    reporting_observer_list: DomRefCell<Vec<Dom<ReportingObserver>>>,
 
     /// <https://w3c.github.io/reporting/#windoworworkerglobalscope-reports>
     report_list: DomRefCell<Vec<Report>>,
@@ -338,6 +344,9 @@ pub(crate) struct WorkerGlobalScope {
 
     #[no_trace]
     pipeline_id: PipelineId,
+
+    /// <https://w3c.github.io/ServiceWorker/#global-caches-attribute>
+    caches: MutNullableDom<CacheStorage>,
 
     /// A [`TaskManager`] for this [`WorkerGlobalScope`].
     #[conditional_malloc_size_of]
@@ -387,6 +396,7 @@ impl WorkerGlobalScope {
                 init.unminify_js,
                 font_context,
             ),
+            caches: Default::default(),
             microtask_queue: runtime.microtask_queue.clone(),
             worker_id: init.worker_id,
             worker_name,
@@ -426,19 +436,16 @@ impl WorkerGlobalScope {
             .get_or_init(|| OneshotTimers::new(self.upcast()))
     }
 
-    pub(crate) fn enqueue_microtask(&self, cx: &mut JSContext, job: Microtask) {
-        self.microtask_queue.enqueue(job, cx.into());
+    pub(crate) fn enqueue_microtask(&self, cx: &JSContext, job: Box<dyn MicrotaskRunnable>) {
+        self.microtask_queue.enqueue(cx, job);
     }
 
     /// Perform a microtask checkpoint.
     pub(crate) fn perform_a_microtask_checkpoint(&self, cx: &mut JSContext) {
         // Only perform the checkpoint if we're not shutting down.
         if !self.is_closing() {
-            self.microtask_queue.checkpoint(
-                cx,
-                |_| Some(DomRoot::from_ref(&self.globalscope)),
-                vec![DomRoot::from_ref(&self.globalscope)],
-            );
+            self.microtask_queue
+                .checkpoint(cx, vec![DomRoot::from_ref(&self.globalscope)]);
         }
     }
 
@@ -515,10 +522,10 @@ impl WorkerGlobalScope {
             .set_referrer_policy(referrer_policy);
     }
 
-    pub(crate) fn append_reporting_observer(&self, reporting_observer: DomRoot<ReportingObserver>) {
+    pub(crate) fn append_reporting_observer(&self, reporting_observer: &ReportingObserver) {
         self.reporting_observer_list
             .borrow_mut()
-            .push(reporting_observer);
+            .push(Dom::from_ref(reporting_observer));
     }
 
     pub(crate) fn remove_reporting_observer(&self, reporting_observer: &ReportingObserver) {
@@ -533,7 +540,11 @@ impl WorkerGlobalScope {
     }
 
     pub(crate) fn registered_reporting_observers(&self) -> Vec<DomRoot<ReportingObserver>> {
-        self.reporting_observer_list.borrow().clone()
+        self.reporting_observer_list
+            .borrow()
+            .iter()
+            .map(|observer| DomRoot::from_ref(&**observer))
+            .collect()
     }
 
     pub(crate) fn append_report(&self, report: Report) {
@@ -699,18 +710,13 @@ impl WorkerGlobalScopeMethods<crate::DomTypeHolder> for WorkerGlobalScope {
 
     /// <https://w3c.github.io/IndexedDB/#factory-interface>
     fn IndexedDB(&self, cx: &mut JSContext) -> DomRoot<IDBFactory> {
-        self.upcast::<GlobalScope>().get_indexeddb(cx)
+        self.upcast::<GlobalScope>().ensure_indexeddb_factory(cx)
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-workerglobalscope-location>
-    fn Location(&self) -> DomRoot<WorkerLocation> {
-        self.location.or_init(|| {
-            WorkerLocation::new(
-                self,
-                self.worker_url.borrow().clone(),
-                CanGc::deprecated_note(),
-            )
-        })
+    fn Location(&self, cx: &mut JSContext) -> DomRoot<WorkerLocation> {
+        self.location
+            .or_init(|| WorkerLocation::new(cx, self, self.worker_url.borrow().clone()))
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-workerglobalscope-importscripts>
@@ -857,9 +863,8 @@ impl WorkerGlobalScopeMethods<crate::DomTypeHolder> for WorkerGlobalScope {
     );
 
     /// <https://html.spec.whatwg.org/multipage/#dom-worker-navigator>
-    fn Navigator(&self) -> DomRoot<WorkerNavigator> {
-        self.navigator
-            .or_init(|| WorkerNavigator::new(self, CanGc::deprecated_note()))
+    fn Navigator(&self, cx: &mut JSContext) -> DomRoot<WorkerNavigator> {
+        self.navigator.or_init(|| WorkerNavigator::new(cx, self))
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dfn-Crypto>
@@ -941,6 +946,12 @@ impl WorkerGlobalScopeMethods<crate::DomTypeHolder> for WorkerGlobalScope {
         )
     }
 
+    /// <https://w3c.github.io/ServiceWorker/#global-caches-attribute>
+    fn Caches(&self, cx: &mut JSContext) -> DomRoot<CacheStorage> {
+        self.caches
+            .or_init(|| CacheStorage::new(cx, self.upcast::<GlobalScope>()))
+    }
+
     /// <https://html.spec.whatwg.org/multipage/#dom-windowtimers-clearinterval>
     fn ClearInterval(&self, handle: i32) {
         self.ClearTimeout(handle);
@@ -950,9 +961,9 @@ impl WorkerGlobalScopeMethods<crate::DomTypeHolder> for WorkerGlobalScope {
     fn QueueMicrotask(&self, cx: &mut JSContext, callback: Rc<VoidFunction>) {
         self.enqueue_microtask(
             cx,
-            Microtask::User(UserMicrotask {
+            Box::new(UserMicrotask {
                 callback,
-                pipeline: self.pipeline_id(),
+                global: Dom::from_ref(&self.globalscope),
             }),
         );
     }
@@ -1001,14 +1012,10 @@ impl WorkerGlobalScopeMethods<crate::DomTypeHolder> for WorkerGlobalScope {
     }
 
     /// <https://w3c.github.io/hr-time/#the-performance-attribute>
-    fn Performance(&self) -> DomRoot<Performance> {
+    fn Performance(&self, cx: &mut JSContext) -> DomRoot<Performance> {
         self.performance.or_init(|| {
             let global_scope = self.upcast::<GlobalScope>();
-            Performance::new(
-                global_scope,
-                self.navigation_start,
-                CanGc::deprecated_note(),
-            )
+            Performance::new(cx, global_scope, self.navigation_start)
         })
     }
 
@@ -1088,8 +1095,13 @@ impl WorkerGlobalScope {
         self.upcast::<GlobalScope>()
             .task_manager()
             .cancel_all_tasks_and_ignore_future_tasks();
-        if let Some(factory) = self.upcast::<GlobalScope>().get_existing_indexeddb() {
-            factory.abort_pending_upgrades();
+
+        // From <https://w3c.github.io/IndexedDB/#database-connection>
+        // > The connection can be closed through several means. If the execution context where
+        // > the connection was created is destroyed (for example due to the user navigating away
+        // > from that page), the connection is closed.
+        if let Some(factory) = self.upcast::<GlobalScope>().indexeddb_factory() {
+            factory.abort_pending_upgrades_and_close_databases();
         }
     }
 
@@ -1137,9 +1149,9 @@ impl WorkerGlobalScope {
 unsafe extern "C" fn interrupt_callback(cx: *mut RawJSContext) -> bool {
     // SAFETY: it is safe to construct a JSContext from engine hook.
     let mut cx = unsafe { JSContext::from_ptr(std::ptr::NonNull::new(cx).unwrap()) };
-    let realm = CurrentRealm::assert(&mut cx);
+    let mut realm = CurrentRealm::assert(&mut cx);
 
-    let global = GlobalScope::from_current_realm(&realm);
+    let global = GlobalScope::from_current_realm(&mut realm);
 
     // If we are running the debugger script, just exit immediately.
     let Some(worker) = global.downcast::<WorkerGlobalScope>() else {

@@ -6,21 +6,24 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use dom_struct::dom_struct;
+use fonts::FontFaceRuleWithOrigin;
 use js::context::JSContext;
 use js::gc::Handle;
 use js::jsapi::Value;
 use js::realm::CurrentRealm;
 use js::rust::HandleObject;
+use layout_api::{QueryMsg, ReflowGoal};
 use script_bindings::cell::DomRefCell;
 use script_bindings::codegen::GenericBindings::FontFaceBinding::{
     FontFaceLoadStatus, FontFaceMethods,
 };
 use script_bindings::like::Setlike;
-use script_bindings::reflector::reflect_dom_object_with_proto_and_cx;
+use script_bindings::reflector::reflect_dom_object_with_proto;
 
 use crate::dom::bindings::codegen::Bindings::FontFaceSetBinding::FontFaceSetMethods;
 use crate::dom::bindings::codegen::Bindings::WindowBinding::WindowMethods;
-use crate::dom::bindings::refcounted::TrustedPromise;
+use crate::dom::bindings::error::{Error, Fallible};
+use crate::dom::bindings::refcounted::{Trusted, TrustedPromise};
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::bindings::str::DOMString;
@@ -46,10 +49,10 @@ pub(crate) struct FontFaceSet {
 }
 
 impl FontFaceSet {
-    fn new_inherited(cx: &mut JSContext, global: &GlobalScope) -> Self {
+    fn new_inherited(promise: Rc<Promise>) -> Self {
         FontFaceSet {
             target: EventTarget::new_inherited(),
-            promise: Promise::new(cx, global).into(),
+            promise: promise.into(),
             set_entries: Default::default(),
         }
     }
@@ -59,11 +62,12 @@ impl FontFaceSet {
         global: &GlobalScope,
         proto: Option<HandleObject>,
     ) -> DomRoot<Self> {
-        reflect_dom_object_with_proto_and_cx(
-            Box::new(FontFaceSet::new_inherited(cx, global)),
+        let promise = Promise::new(cx, global);
+        reflect_dom_object_with_proto(
+            cx,
+            Box::new(FontFaceSet::new_inherited(promise)),
             global,
             proto,
-            cx,
         )
     }
 
@@ -83,7 +87,7 @@ impl FontFaceSet {
                 window
                     .font_context()
                     .add_template_to_font_context(family_name, template);
-                window.Document().dirty_all_nodes();
+                window.Document().dirty_all_nodes(cx.no_gc());
             },
             _ => {},
         }
@@ -137,24 +141,76 @@ impl FontFaceSet {
         // Step 4. Queue a task to fire a font load event named loading at font face set.
         // TODO: Implement support for font loading events.
     }
+
+    /// Runs the CSS cascade to ensure that new `@font-face` rules have
+    /// an entry in this set.
+    fn flush_author_font_set(&self, cx: &mut JSContext) {
+        // FIXME: Use a new sort of ReflowGoal that only runs the CSS cascade without
+        //        building a new box tree or running any sort of layout really.
+        //        We query for the box area here, but we're not interested in the result.
+        // FIXME: Figure out what to do for worker scopes.
+        if let Some(window) = DomRoot::downcast::<Window>(self.global()) {
+            let document = window.Document();
+            if document.stylesheets_changed_since_last_reflow() {
+                window.reflow(cx, ReflowGoal::LayoutQuery(QueryMsg::BoxArea));
+            }
+        }
+    }
+
+    /// Marks the entries corresponding to removed `@font-face` rules as not [css-connected].
+    ///
+    /// [css-connected]: https://drafts.csswg.org/css-font-loading/#css-connected
+    pub(crate) fn notify_font_face_rules_removed(
+        &self,
+        removed_font_face_rules: &[FontFaceRuleWithOrigin],
+    ) {
+        let entries = self.set_entries.borrow_mut();
+        for removed_font_face_rule in removed_font_face_rules {
+            let Some(matching_font_face_object) = entries
+                .iter()
+                .find(|entry| entry.is_connected_to_font_face_rule(removed_font_face_rule))
+            else {
+                if cfg!(debug_assertions) {
+                    unreachable!("Removed @font-face that was not previously present");
+                }
+                log::warn!("Removed @font-face that was not previously present");
+                continue;
+            };
+
+            // https://drafts.csswg.org/css-font-loading/#font-face-css-connection:
+            // > If a @font-face rule is removed from the document, its corresponding FontFace object is no longer CSS-connected.
+            // > The connection is not restorable by any means.
+            matching_font_face_object.disconnect_from_css();
+        }
+    }
 }
 
 impl FontFaceSetMethods<crate::DomTypeHolder> for FontFaceSet {
     /// <https://drafts.csswg.org/css-font-loading/#dom-fontfaceset-ready>
-    fn Ready(&self) -> Rc<Promise> {
+    fn Ready(&self, cx: &mut JSContext) -> Rc<Promise> {
+        if self.promise.borrow().is_fulfilled() {
+            // There may be pending style changes that cause new web fonts to start loading,
+            // re-initializing document.fonts.ready.
+            self.flush_author_font_set(cx);
+        }
         self.promise.borrow().clone()
     }
 
     /// <https://drafts.csswg.org/css-font-loading/#dom-fontfaceset-add>
-    fn Add(&self, cx: &mut JSContext, font_face: &FontFace) -> DomRoot<FontFaceSet> {
+    fn Add(&self, cx: &mut JSContext, font_face: &FontFace) -> Fallible<DomRoot<FontFaceSet>> {
         // Step 1. If font is already in the FontFaceSet’s set entries,
         // skip to the last step of this algorithm immediately.
         if self.contains_face(font_face) {
-            return DomRoot::from_ref(self);
+            return Ok(DomRoot::from_ref(self));
         }
 
-        // TODO: Step 2. If font is CSS-connected, throw an InvalidModificationError
+        // Step 2. If font is CSS-connected, throw an InvalidModificationError
         // exception and exit this algorithm immediately.
+        if font_face.is_css_connected() {
+            return Err(Error::InvalidModification(Some(
+                "Cannot add CSS-connected FontFace to FontFaceSet".to_owned(),
+            )));
+        }
 
         // Step 3. Add the font argument to the FontFaceSet’s set entries.
         self.set_entries.borrow_mut().push(Dom::from_ref(font_face));
@@ -166,12 +222,15 @@ impl FontFaceSetMethods<crate::DomTypeHolder> for FontFaceSet {
         self.handle_font_face_status_changed(cx, font_face);
 
         // Step 5. Return the FontFaceSet.
-        DomRoot::from_ref(self)
+        Ok(DomRoot::from_ref(self))
     }
 
     /// <https://drafts.csswg.org/css-font-loading/#dom-fontfaceset-delete>
     fn Delete(&self, to_delete: &FontFace) -> bool {
-        // TODO Step 1. If font is CSS-connected, return false and exit this algorithm immediately.
+        // Step 1. If font is CSS-connected, return false and exit this algorithm immediately.
+        if to_delete.is_css_connected() {
+            return false;
+        }
 
         // Step 2. Let deleted be the result of removing font from the FontFaceSet’s set entries.
         // TODO: Step 3. If font is present in the FontFaceSet’s [[LoadedFonts]], or [[FailedFonts]] lists, remove it.
@@ -182,7 +241,9 @@ impl FontFaceSetMethods<crate::DomTypeHolder> for FontFaceSet {
     }
 
     /// <https://drafts.csswg.org/css-font-loading/#dom-fontfaceset-clear>
-    fn Clear(&self) {
+    fn Clear(&self, cx: &mut JSContext) {
+        self.flush_author_font_set(cx);
+
         // Step 1. Remove all non-CSS-connected items from the FontFaceSet’s set entries,
         // its [[LoadedFonts]] list, and its [[FailedFonts]] list.
         self.set_entries.borrow_mut().clear();
@@ -217,14 +278,14 @@ impl FontFaceSetMethods<crate::DomTypeHolder> for FontFaceSet {
         }
 
         // Step 4. Queue a task to run the following steps synchronously:
-        let trusted_ready_promise = TrustedPromise::new(self.promise.borrow().clone());
+        let trusted_this = Trusted::new(self);
         let trusted_load_promise = TrustedPromise::new(load_promise.clone());
         self.global()
             .task_manager()
             .font_loading_task_source()
             .queue(task!(resolve_font_face_set_load_task: move |cx| {
-                let ready_promise = trusted_ready_promise.root();
                 let load_promise = trusted_load_promise.root();
+                let this = trusted_this.root();
 
                 // Step 4.1. For all of the font faces in the font face list, call their load()
                 // method.
@@ -237,7 +298,7 @@ impl FontFaceSetMethods<crate::DomTypeHolder> for FontFaceSet {
                 // be correct, but any code that waits on the promise will have
                 // conservatively consistent behavior. This is important for preventing
                 // intermittent results in WPT tests.
-                let global = ready_promise.global();
+                let global = this.global();
                 let handler = PromiseNativeHandler::new(
                     cx,
                     &global,
@@ -247,6 +308,7 @@ impl FontFaceSetMethods<crate::DomTypeHolder> for FontFaceSet {
                     None,
                 );
 
+                let ready_promise = this.Ready(cx);
                 let mut realm = enter_auto_realm(cx, &*global);
                 ready_promise.append_native_handler(&mut realm.current_realm(), &handler);
             }));
@@ -256,8 +318,8 @@ impl FontFaceSetMethods<crate::DomTypeHolder> for FontFaceSet {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#customstateset>
-    fn Size(&self) -> u32 {
-        self.set_entries.borrow().len() as u32
+    fn Size(&self, cx: &mut JSContext) -> u32 {
+        self.size(cx)
     }
 }
 
@@ -265,7 +327,8 @@ impl Setlike for FontFaceSet {
     type Key = DomRoot<FontFace>;
 
     #[inline(always)]
-    fn get_index(&self, index: u32) -> Option<Self::Key> {
+    fn get_index(&self, cx: &mut JSContext, index: u32) -> Option<Self::Key> {
+        self.flush_author_font_set(cx);
         self.set_entries
             .borrow()
             .get(index as usize)
@@ -273,27 +336,31 @@ impl Setlike for FontFaceSet {
     }
 
     #[inline(always)]
-    fn size(&self) -> u32 {
+    fn size(&self, cx: &mut JSContext) -> u32 {
+        self.flush_author_font_set(cx);
         self.set_entries.borrow().len() as u32
     }
 
     #[inline(always)]
-    fn add(&self, face: Self::Key) {
+    fn add(&self, _cx: &mut JSContext, face: Self::Key) {
         self.set_entries.borrow_mut().push(face.as_traced());
     }
 
     #[inline(always)]
-    fn has(&self, target: Self::Key) -> bool {
+    fn has(&self, cx: &mut JSContext, target: Self::Key) -> bool {
+        self.flush_author_font_set(cx);
         self.contains_face(&target)
     }
 
     #[inline(always)]
-    fn clear(&self) {
+    fn clear(&self, cx: &mut JSContext) {
+        self.flush_author_font_set(cx);
         self.set_entries.borrow_mut().clear();
     }
 
     #[inline(always)]
-    fn delete(&self, to_delete: Self::Key) -> bool {
+    fn delete(&self, cx: &mut JSContext, to_delete: Self::Key) -> bool {
+        self.flush_author_font_set(cx);
         self.delete_face(&to_delete)
     }
 }

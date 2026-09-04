@@ -85,7 +85,7 @@ pub(crate) trait StylesheetOwner {
     fn load_finished(&self, successful: bool) -> Option<bool>;
 
     /// Sets origin_clean flag.
-    fn set_origin_clean(&self, origin_clean: bool);
+    fn set_origin_clean(&self, cx: &mut JSContext, origin_clean: bool);
 }
 
 pub(crate) enum StylesheetContextSource {
@@ -300,13 +300,9 @@ impl StylesheetContext {
                 //
                 // Note that even in the failure case, we should create an empty stylesheet.
                 // That's why `set_stylesheet` also removes the previous stylesheet
-                link.set_stylesheet(cx, stylesheet);
+                link.set_stylesheet(stylesheet);
             },
             StylesheetContextSource::Import(import_rule) => {
-                // Layout knows about this stylesheet, because Stylo added it to the Stylist,
-                // but Layout doesn't know about any new web fonts that it contains.
-                document.load_web_fonts_from_stylesheet(cx, &stylesheet);
-
                 let mut guard = document.style_shared_author_lock().write();
                 import_rule.write_with(&mut guard).stylesheet = ImportSheet::Sheet(stylesheet);
             },
@@ -317,7 +313,7 @@ impl StylesheetContext {
         } else {
             document.invalidate_stylesheets();
         }
-        owner.set_origin_clean(self.origin_clean);
+        owner.set_origin_clean(cx, self.origin_clean);
 
         // Remaining steps are a combination of
         // https://html.spec.whatwg.org/multipage/#link-type-stylesheet%3Aprocess-the-linked-resource
@@ -448,6 +444,10 @@ impl FetchResponseListener for StylesheetContext {
     ) {
         let global = &self.resource_timing_global();
         global.report_csp_violations(cx, violations, None, None);
+    }
+
+    fn process_content_length(&mut self, _request_id: RequestId, size: usize) {
+        self.data.reserve(size - self.data.len());
     }
 }
 

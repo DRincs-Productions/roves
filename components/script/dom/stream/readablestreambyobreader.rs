@@ -17,14 +17,14 @@ use js::rust::{HandleObject as SafeHandleObject, HandleValue as SafeHandleValue}
 use js::typedarray::{ArrayBufferView, ArrayBufferViewU8};
 use script_bindings::cell::DomRefCell;
 use script_bindings::reflector::{
-    Reflector, reflect_dom_object_with_cx, reflect_dom_object_with_proto_and_cx,
+    Reflector, reflect_dom_object_with_cx, reflect_dom_object_with_proto,
 };
 use script_bindings::root::Dom;
 
 use super::byteteereadintorequest::ByteTeeReadIntoRequest;
 use super::readablebytestreamcontroller::ReadableByteStreamController;
 use super::readablestreamgenericreader::ReadableStreamGenericReader;
-use crate::dom::bindings::buffer_source::{BufferSource, HeapBufferSource};
+use crate::dom::bindings::buffer_source::HeapBufferSource;
 use crate::dom::bindings::codegen::Bindings::ReadableStreamBYOBReaderBinding::{
     ReadableStreamBYOBReaderMethods, ReadableStreamBYOBReaderReadOptions,
 };
@@ -66,12 +66,15 @@ impl ReadIntoRequest {
             },
             ReadIntoRequest::ByteTee {
                 byte_tee_read_into_request,
-            } => byte_tee_read_into_request.enqueue_chunk_steps(
-                cx,
-                RootedTraceableBox::new(HeapBufferSource::<ArrayBufferViewU8>::new(
-                    BufferSource::ArrayBufferView(Heap::boxed(chunk.get().to_object())),
-                )),
-            ),
+            } => {
+                rooted!(&in(cx) let chunk_object = chunk.get().to_object());
+                byte_tee_read_into_request.enqueue_chunk_steps(
+                    cx,
+                    RootedTraceableBox::new(HeapBufferSource::<ArrayBufferViewU8>::new(
+                        chunk_object.handle(),
+                    )),
+                )
+            },
         }
     }
 
@@ -103,16 +106,17 @@ impl ReadIntoRequest {
             ReadIntoRequest::ByteTee {
                 byte_tee_read_into_request,
             } => match chunk {
-                Some(chunk) => byte_tee_read_into_request
-                    .close_steps(
-                        cx,
-                        Some(RootedTraceableBox::new(
-                            HeapBufferSource::<ArrayBufferViewU8>::new(
-                                BufferSource::ArrayBufferView(Heap::boxed(chunk.get().to_object())),
-                            ),
-                        )),
-                    )
-                    .expect("close steps should not fail"),
+                Some(chunk) => {
+                    rooted!(&in(cx) let chunk_object = chunk.get().to_object());
+                    byte_tee_read_into_request
+                        .close_steps(
+                            cx,
+                            Some(RootedTraceableBox::new(
+                                HeapBufferSource::<ArrayBufferViewU8>::new(chunk_object.handle()),
+                            )),
+                        )
+                        .expect("close steps should not fail")
+                },
                 None => byte_tee_read_into_request
                     .close_steps(cx, None)
                     .expect("close steps should not fail"),
@@ -198,20 +202,21 @@ impl ReadableStreamBYOBReader {
         global: &GlobalScope,
         proto: Option<SafeHandleObject>,
     ) -> DomRoot<ReadableStreamBYOBReader> {
-        reflect_dom_object_with_proto_and_cx(
-            Box::new(ReadableStreamBYOBReader::new_inherited(cx, global)),
+        let closed_promise = Promise::new(cx, global);
+        reflect_dom_object_with_proto(
+            cx,
+            Box::new(ReadableStreamBYOBReader::new_inherited(closed_promise)),
             global,
             proto,
-            cx,
         )
     }
 
-    fn new_inherited(cx: &mut JSContext, global: &GlobalScope) -> ReadableStreamBYOBReader {
+    fn new_inherited(promise: Rc<Promise>) -> ReadableStreamBYOBReader {
         ReadableStreamBYOBReader {
             reflector_: Reflector::new(),
             stream: MutNullableDom::new(None),
             read_into_requests: DomRefCell::new(Default::default()),
-            closed_promise: DomRefCell::new(Promise::new(cx, global)),
+            closed_promise: DomRefCell::new(promise),
         }
     }
 
@@ -219,7 +224,8 @@ impl ReadableStreamBYOBReader {
         cx: &mut JSContext,
         global: &GlobalScope,
     ) -> DomRoot<ReadableStreamBYOBReader> {
-        reflect_dom_object_with_cx(Box::new(Self::new_inherited(cx, global)), global, cx)
+        let closed_promise = Promise::new(cx, global);
+        reflect_dom_object_with_cx(Box::new(Self::new_inherited(closed_promise)), global, cx)
     }
 
     /// <https://streams.spec.whatwg.org/#set-up-readable-stream-byob-reader>
@@ -419,7 +425,7 @@ impl ReadableStreamBYOBReaderMethods<crate::DomTypeHolder> for ReadableStreamBYO
         view: CustomAutoRooterGuard<ArrayBufferView>,
         options: &ReadableStreamBYOBReaderReadOptions,
     ) -> Rc<Promise> {
-        let view = HeapBufferSource::<ArrayBufferViewU8>::from_view(view);
+        let view = HeapBufferSource::<ArrayBufferViewU8>::from_view(cx, view);
         let min = options.min;
         // Let promise be a new promise.
         let promise = Promise::new(cx, &self.global());

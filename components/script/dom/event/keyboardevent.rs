@@ -10,7 +10,7 @@ use js::context::JSContext;
 use js::rust::HandleObject;
 use keyboard_types::{Code, Key, Modifiers, NamedKey};
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::reflect_dom_object_with_proto_and_cx;
+use script_bindings::reflector::reflect_dom_object_with_proto;
 use style::Atom;
 
 use crate::dom::bindings::codegen::Bindings::KeyboardEventBinding;
@@ -68,12 +68,7 @@ impl KeyboardEvent {
         window: &Window,
         proto: Option<HandleObject>,
     ) -> DomRoot<KeyboardEvent> {
-        reflect_dom_object_with_proto_and_cx(
-            Box::new(KeyboardEvent::new_inherited()),
-            window,
-            proto,
-            cx,
-        )
+        reflect_dom_object_with_proto(cx, Box::new(KeyboardEvent::new_inherited()), window, proto)
     }
 
     pub(crate) fn new_with_platform_keyboard_event(
@@ -133,9 +128,9 @@ impl KeyboardEvent {
             location,
             repeat,
         );
-        *event.typed_key.borrow_mut() = key;
-        *event.code.borrow_mut() = code;
-        *event.original_code.borrow_mut() = original_code;
+        *event.typed_key.safe_borrow_mut(cx.no_gc()) = key;
+        *event.code.safe_borrow_mut(cx.no_gc()) = code;
+        *event.original_code.safe_borrow_mut(cx.no_gc()) = original_code;
         event.modifiers.set(modifiers);
         event.is_composing.set(is_composing);
         event.char_code.set(char_code);
@@ -218,7 +213,7 @@ impl KeyboardEventMethods<crate::DomTypeHolder> for KeyboardEvent {
             init.charCode,
             init.keyCode,
         );
-        *event.key.borrow_mut() = init.key.clone();
+        *event.key.safe_borrow_mut(cx.no_gc()) = init.key.clone();
         Ok(event)
     }
 

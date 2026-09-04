@@ -110,9 +110,9 @@ impl HTMLCanvasElement {
         document: &Document,
         proto: Option<HandleObject>,
     ) -> DomRoot<HTMLCanvasElement> {
-        Node::reflect_node_with_proto(
+        Node::reflect_weak_referenceable_node_with_proto(
             cx,
-            Box::new(HTMLCanvasElement::new_inherited(
+            Rc::new(HTMLCanvasElement::new_inherited(
                 local_name, prefix, document,
             )),
             document,
@@ -335,15 +335,6 @@ impl HTMLCanvasElement {
                 self.set_rendering_context(|| RenderingContext::WebGPU(Dom::from_ref(&*context)));
                 context
             })
-    }
-
-    /// Gets the base WebGLRenderingContext for WebGL or WebGL 2, if exists.
-    pub(crate) fn get_base_webgl_context(&self) -> Option<DomRoot<WebGLRenderingContext>> {
-        match *self.context_mode.borrow() {
-            Some(RenderingContext::WebGL(ref context)) => Some(DomRoot::from_ref(context)),
-            Some(RenderingContext::WebGL2(ref context)) => Some(context.base_context()),
-            _ => None,
-        }
     }
 
     #[expect(unsafe_code)]

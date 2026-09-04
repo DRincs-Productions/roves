@@ -1,7 +1,6 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
-use std::borrow::Borrow;
 
 use dom_struct::dom_struct;
 use html5ever::{LocalName, Prefix, local_name, ns};
@@ -109,7 +108,7 @@ impl HTMLDialogElement {
             EventCancelable::Cancelable,
             DOMString::from("closed"),
             DOMString::from("open"),
-            source.borrow().clone(),
+            source.as_deref(),
         );
         let event = event.upcast::<Event>();
         if !event.fire(cx, self.upcast::<EventTarget>()) {
@@ -189,7 +188,7 @@ impl HTMLDialogElement {
             EventCancelable::NotCancelable,
             DOMString::from("open"),
             DOMString::from("closed"),
-            source.borrow().clone(),
+            source.as_deref(),
         );
         let event = event.upcast::<Event>();
         event.fire(cx, self.upcast::<EventTarget>());
@@ -271,9 +270,7 @@ impl HTMLDialogElement {
         let old_state = old_state.to_string();
         let new_state = new_state.to_string();
 
-        let trusted_source = source
-            .as_ref()
-            .map(|el| Trusted::new(el.upcast::<EventTarget>()));
+        let trusted_source = source.map(|el| Trusted::new(&*el));
 
         self.owner_global()
             .task_manager()
@@ -281,9 +278,7 @@ impl HTMLDialogElement {
             .queue(task!(fire_toggle_event: move |cx| {
                 let this = this.root();
 
-                let source = trusted_source.as_ref().map(|s| {
-                    DomRoot::from_ref(s.root().downcast::<Element>().unwrap())
-                });
+                let source = trusted_source.map(|s| s.root());
 
                 // Step 2.1. Fire an event named toggle at element, using ToggleEvent, with the oldState attribute initialized to oldState, the newState attribute initialized to newState, and the source attribute initialized to source.
                 let event = ToggleEvent::new(
@@ -294,7 +289,7 @@ impl HTMLDialogElement {
                     EventCancelable::NotCancelable,
                     DOMString::from(old_state),
                     DOMString::from(new_state),
-                    source,
+                    source.as_deref(),
                 );
                 let event = event.upcast::<Event>();
                 event.fire(cx, this.upcast::<EventTarget>());
@@ -309,28 +304,28 @@ impl HTMLDialogElement {
         // TODO: Step 1. If the allow focus steps given subject's node document return false, then return.
 
         // Step 2. Let control be null.
-        let mut control = None;
+        rooted!(&in(cx) let mut control = None);
 
         // Step 3. If subject has the autofocus attribute, then set control to subject.
         if self.upcast::<HTMLElement>().Autofocus() {
-            control = self.upcast::<Node>().get_the_focusable_area();
+            control.set(self.upcast::<Node>().get_the_focusable_area(cx));
         }
 
         // Step 4. If control is null, then set control to the focus delegate of subject.
         if control.is_none() {
-            control = self.upcast::<Node>().focus_delegate();
+            control.set(self.upcast::<Node>().focus_delegate(cx));
         }
 
         // Step 5. If control is null, then set control to subject.
         if control.is_none() {
-            control = self.upcast::<Node>().get_the_focusable_area();
+            control.set(self.upcast::<Node>().get_the_focusable_area(cx));
         }
 
         // Step 6. Run the focusing steps for control.
         // FIXME: Use the focusing step once they support a focusable area as an argument
-        if let Some(control) = control {
+        if control.is_some() {
             let document = self.owner_document();
-            document.focus_handler().focus(cx, control);
+            document.focus_handler().focus(cx, &control.take().unwrap());
         }
 
         // TODO: Step 7. Let topDocument be control's node navigable's top-level traversable's active document.

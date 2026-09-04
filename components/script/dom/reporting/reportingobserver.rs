@@ -2,16 +2,17 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use std::cell::RefCell;
+use std::cell::Cell;
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::rust::HandleObject;
+use script_bindings::callback::OwnerWindow;
 use script_bindings::cell::DomRefCell;
 use script_bindings::match_domstring_ascii;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto_and_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
 use script_bindings::str::DOMString;
 use servo_url::ServoUrl;
 
@@ -36,7 +37,7 @@ pub(crate) struct ReportingObserver {
 
     #[conditional_malloc_size_of]
     callback: Rc<ReportingObserverCallback>,
-    buffered: RefCell<bool>,
+    buffered: Cell<bool>,
     types: DomRefCell<Vec<DOMString>>,
     report_queue: DomRefCell<Vec<Report>>,
 }
@@ -49,7 +50,7 @@ impl ReportingObserver {
         Self {
             reflector_: Reflector::new(),
             callback,
-            buffered: RefCell::new(options.buffered),
+            buffered: Cell::new(options.buffered),
             types: DomRefCell::new(options.types.clone().unwrap_or_default()),
             report_queue: Default::default(),
         }
@@ -62,11 +63,11 @@ impl ReportingObserver {
         global: &GlobalScope,
         proto: Option<HandleObject>,
     ) -> DomRoot<Self> {
-        reflect_dom_object_with_proto_and_cx(
+        reflect_dom_object_with_proto(
+            cx,
             Box::new(Self::new_inherited(callback, options)),
             global,
             proto,
-            cx,
         )
     }
 
@@ -255,11 +256,11 @@ impl ReportingObserverMethods<crate::DomTypeHolder> for ReportingObserver {
         // Step 2. Append this to the global’s registered reporting observer list.
         global.append_reporting_observer(self);
         // Step 3. If this’s buffered option is false, return.
-        if !*self.buffered.borrow() {
+        if !self.buffered.get() {
             return;
         }
         // Step 4. Set this’s buffered option to false.
-        *self.buffered.borrow_mut() = false;
+        self.buffered.set(false);
         // Step 5.For each report in global’s report buffer, queue a task to
         // execute § 4.3 Add report to observer with report and this.
         for report in global.buffered_reports() {
@@ -291,10 +292,10 @@ impl ReportingObserverMethods<crate::DomTypeHolder> for ReportingObserver {
 impl GlobalScope {
     fn append_reporting_observer(&self, reporting_observer: &ReportingObserver) {
         if let Some(window) = self.downcast::<Window>() {
-            return window.append_reporting_observer(DomRoot::from_ref(reporting_observer));
+            return window.append_reporting_observer(reporting_observer);
         }
         if let Some(worker) = self.downcast::<WorkerGlobalScope>() {
-            return worker.append_reporting_observer(DomRoot::from_ref(reporting_observer));
+            return worker.append_reporting_observer(reporting_observer);
         }
         unreachable!();
     }
@@ -339,3 +340,5 @@ impl GlobalScope {
         unreachable!();
     }
 }
+
+impl OwnerWindow<crate::DomTypeHolder> for ReportingObserver {}

@@ -11,8 +11,8 @@ use std::{mem, ptr};
 
 use dom_struct::dom_struct;
 use html5ever::{LocalName, Namespace, Prefix, ns};
-use js::context::{JSContext, NoGC};
-use js::conversions::FromJSValConvertible;
+use js::context::JSContext;
+use js::conversions::{FromJSValConvertible, ToJSValConvertible};
 use js::glue::UnwrapObjectStatic;
 use js::jsapi::{HandleValueArray, Heap, IsCallable, IsConstructor, JSObject};
 use js::jsval::{BooleanValue, JSVal, NullValue, ObjectValue, UndefinedValue};
@@ -21,8 +21,7 @@ use js::rust::wrappers2::{Construct1, JS_GetProperty, SameValue};
 use js::rust::{HandleObject, MutableHandleValue};
 use rustc_hash::FxBuildHasher;
 use script_bindings::cell::DomRefCell;
-use script_bindings::conversions::SafeToJSValConvertible;
-use script_bindings::reflector::{DomObject, Reflector, reflect_dom_object_with_proto_and_cx};
+use script_bindings::reflector::{DomObject, Reflector, reflect_dom_object_with_proto};
 use script_bindings::settings_stack::{run_a_callback, run_a_script};
 use style::attr::AttrValue;
 
@@ -41,7 +40,7 @@ use crate::dom::bindings::error::{
 };
 use crate::dom::bindings::inheritance::{Castable, DocumentFragmentTypeId, NodeTypeId};
 use crate::dom::bindings::reflector::DomGlobal;
-use crate::dom::bindings::root::{AsHandleValue, Dom, DomRoot};
+use crate::dom::bindings::root::{AsHandleValue, Dom, DomRoot, UnrootedDom};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::document::Document;
 use crate::dom::domexception::{DOMErrorName, DOMException};
@@ -54,7 +53,7 @@ use crate::dom::node::{Node, NodeTraits};
 use crate::dom::promise::Promise;
 use crate::dom::shadowroot::ShadowRoot;
 use crate::dom::window::Window;
-use crate::microtask::Microtask;
+use crate::microtask::CustomElementReactionMicrotask;
 use crate::realms::enter_auto_realm;
 use crate::script_thread::ScriptThread;
 
@@ -88,6 +87,9 @@ pub(crate) struct CustomElementRegistry {
     /// <https://html.spec.whatwg.org/multipage/#is-scoped>
     is_scoped: Cell<bool>,
 
+    /// <https://html.spec.whatwg.org/multipage/#scoped-document-set>
+    scoped_document_set: DomRefCell<Vec<Dom<Document>>>,
+
     #[conditional_malloc_size_of]
     /// <https://html.spec.whatwg.org/multipage/#custom-element-definition-set>
     definitions:
@@ -102,6 +104,7 @@ impl CustomElementRegistry {
             when_defined: DomRefCell::new(HashMapTracedValues::new_fx()),
             element_definition_is_running: Cell::new(false),
             is_scoped: Cell::new(false),
+            scoped_document_set: DomRefCell::new(Vec::new()),
             definitions: DomRefCell::new(HashMapTracedValues::new_fx()),
         }
     }
@@ -115,11 +118,11 @@ impl CustomElementRegistry {
         window: &Window,
         proto: Option<HandleObject>,
     ) -> DomRoot<CustomElementRegistry> {
-        reflect_dom_object_with_proto_and_cx(
+        reflect_dom_object_with_proto(
+            cx,
             Box::new(CustomElementRegistry::new_inherited(window)),
             window,
             proto,
-            cx,
         )
     }
 
@@ -134,24 +137,9 @@ impl CustomElementRegistry {
         self.when_defined.borrow_mut().0.clear()
     }
 
-    /// <https://html.spec.whatwg.org/multipage/#look-up-a-custom-element-definition>
-    pub(crate) fn lookup_definition(
-        &self,
-        local_name: &LocalName,
-        is: Option<&LocalName>,
-    ) -> Option<Rc<CustomElementDefinition>> {
-        self.definitions
-            .borrow()
-            .0
-            .values()
-            .find(|definition| {
-                // Step 4-5
-                definition.local_name == *local_name &&
-                    (definition.name == *local_name || Some(&definition.name) == is)
-            })
-            .cloned()
-    }
-
+    /// <https://html.spec.whatwg.org/multipage/#htmlconstructor>
+    /// Step 5. Let definition be the item in registry's custom element
+    /// definition set with constructor equal to NewTarget.
     pub(crate) fn lookup_definition_by_constructor(
         &self,
         constructor: HandleObject,
@@ -187,6 +175,40 @@ impl CustomElementRegistry {
             // Step 4. Return null.
             _ => None,
         }
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#look-up-a-custom-element-definition>
+    pub(crate) fn lookup_custom_element_definition(
+        registry: Option<&CustomElementRegistry>,
+        namespace: &Namespace,
+        local_name: &LocalName,
+        is: Option<&LocalName>,
+    ) -> Option<Rc<CustomElementDefinition>> {
+        // Step 1. If registry is null, then return null.
+        let registry = registry?;
+
+        // Step 2. If namespace is not the HTML namespace, then return null.
+        if *namespace != ns!(html) {
+            return None;
+        }
+
+        // Step 3. If registry's custom element definition set contains an item
+        // with name and local name both equal to localName, then return that
+        // item.
+        // Step 4. If registry's custom element definition set contains an item
+        // with name equal to is and local name equal to localName, then return
+        // that item.
+        // Step 5. Return null.
+        registry
+            .definitions
+            .borrow()
+            .0
+            .values()
+            .find(|definition| {
+                definition.local_name == *local_name &&
+                    (definition.name == *local_name || Some(&definition.name) == is)
+            })
+            .cloned()
     }
 
     /// <https://dom.spec.whatwg.org/#is-a-global-custom-element-registry>
@@ -261,6 +283,56 @@ impl CustomElementRegistry {
             get_callback(cx, prototype, c"formStateRestoreCallback")?;
 
         Ok(())
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#upgrade-particular-elements-within-a-document>
+    fn upgrade_particular_elements_within_a_document(
+        &self,
+        cx: &JSContext,
+        document: &Document,
+        definition: &Rc<CustomElementDefinition>,
+        local_name: &LocalName,
+        name: &LocalName,
+    ) {
+        // Step 1. Let upgradeCandidates be all elements that are shadow-including
+        // descendants of document, whose custom element registry is registry, whose
+        // namespace is the HTML namespace, and whose local name is localName,
+        // in shadow-including tree order. Additionally, if name is not localName,
+        // only include elements whose is value is equal to name.
+        for candidate in document
+            .upcast::<Node>()
+            .traverse_preorder_non_rooting(cx, ShadowIncluding::Yes)
+            .filter_map(UnrootedDom::downcast::<Element>)
+        {
+            // Note: If the registry is scoped, only include elements whose custom
+            // element registry is explicitly set to this registry. Otherwise,
+            // include elements with no explicit registry (they inherit the
+            // document's global registry) as well.
+            let registry_matches = if self.is_scoped.get() {
+                candidate
+                    .custom_element_registry()
+                    .is_some_and(|registry| *registry == *self)
+            } else {
+                candidate
+                    .custom_element_registry()
+                    .is_none_or(|registry| *registry == *self)
+            };
+            if *candidate.local_name() == *local_name &&
+                *candidate.namespace() == ns!(html) &&
+                registry_matches &&
+                (*name == *local_name || candidate.get_is().as_ref() == Some(name))
+            {
+                // Step 2. For each element element of upgradeCandidates: enqueue a
+                // custom element upgrade reaction given element and definition.
+                ScriptThread::enqueue_upgrade_reaction(cx, &candidate, definition.clone());
+            }
+        }
+    }
+
+    pub(crate) fn add_scoped_document(&self, document: &Document) {
+        self.scoped_document_set
+            .borrow_mut()
+            .push(Dom::from_ref(document));
     }
 }
 
@@ -528,30 +600,30 @@ impl CustomElementRegistryMethods<crate::DomTypeHolder> for CustomElementRegistr
             .borrow_mut()
             .insert(name.clone(), definition.clone());
 
-        // TODO Step 17: If this's is scoped is true, then for each document of
+        // Step 17: If this's is scoped is true, then for each document of
         // this's scoped document set: upgrade particular elements within a
         // document given this, document, definition, and localName.
         if self.is_scoped.get() {
-            // TODO: Need implementation for scoped document set.
+            for document in self.scoped_document_set.borrow().iter() {
+                self.upgrade_particular_elements_within_a_document(
+                    cx,
+                    document,
+                    &definition,
+                    &local_name,
+                    &local_name,
+                );
+            }
         } else {
             // Step 18: Otherwise, upgrade particular elements within a document given
             // this, this's relevant global object's associated Document, definition,
             // localName, and name.
-            let document = self.window.Document();
-
-            for candidate in document
-                .upcast::<Node>()
-                .traverse_preorder(ShadowIncluding::Yes)
-                .filter_map(DomRoot::downcast::<Element>)
-            {
-                let is = candidate.get_is();
-                if *candidate.local_name() == local_name &&
-                    *candidate.namespace() == ns!(html) &&
-                    (extends.is_none() || is.as_ref() == Some(&name))
-                {
-                    ScriptThread::enqueue_upgrade_reaction(&candidate, definition.clone());
-                }
-            }
+            self.upgrade_particular_elements_within_a_document(
+                cx,
+                &self.window.Document(),
+                &definition,
+                &local_name,
+                &name,
+            );
         }
 
         // Step 19: If this's when-defined promise map[name] exists:
@@ -623,10 +695,10 @@ impl CustomElementRegistryMethods<crate::DomTypeHolder> for CustomElementRegistr
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-customelementregistry-upgrade>
-    fn Upgrade(&self, no_gc: &NoGC, node: &Node) {
+    fn Upgrade(&self, cx: &JSContext, node: &Node) {
         // Step 1. For each shadow-including inclusive descendant candidate of
         // root, in shadow-including tree order:
-        for node in node.traverse_preorder_non_rooting(no_gc, ShadowIncluding::Yes) {
+        for node in node.traverse_preorder_non_rooting(cx, ShadowIncluding::Yes) {
             // Step 1.1. If candidate is not an Element node, then continue.
             let Some(element) = node.downcast::<Element>() else {
                 continue;
@@ -640,12 +712,12 @@ impl CustomElementRegistryMethods<crate::DomTypeHolder> for CustomElementRegistr
                 continue;
             }
             // Step 1.3. Try to upgrade candidate.
-            try_upgrade_element(element);
+            try_upgrade_element(cx, element);
         }
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-customelementregistry-initialize>
-    fn Initialize(&self, root: &Node) -> ErrorResult {
+    fn Initialize(&self, cx: &JSContext, root: &Node) -> ErrorResult {
         // Step 1. If this's is scoped is false and either root is a Document node
         // or root's node document's custom element registry is not this, then
         // throw a "NotSupportedError" DOMException.
@@ -691,9 +763,11 @@ impl CustomElementRegistryMethods<crate::DomTypeHolder> for CustomElementRegistr
 
                 // Step 4.2.2. If this's is scoped is true, then append
                 // inclusiveDescendant's node document to this's scoped document set.
-                // TODO: scoped_document_set needs to be added to CustomElementRegistry.
                 if self.is_scoped.get() {
-                    // TODO: self.scoped_document_set.borrow_mut().push(...)
+                    let document = element.upcast::<Node>().owner_doc();
+                    self.scoped_document_set
+                        .borrow_mut()
+                        .push(Dom::from_ref(&document));
                 }
             // Step 4.3. If inclusiveDescendant's custom element registry is not this, then continue.
             } else if element
@@ -704,7 +778,7 @@ impl CustomElementRegistryMethods<crate::DomTypeHolder> for CustomElementRegistr
             }
 
             // Step 4.4. Try to upgrade inclusiveDescendant.
-            try_upgrade_element(element);
+            try_upgrade_element(cx, element);
         }
         Ok(())
     }
@@ -1086,19 +1160,32 @@ fn run_upgrade_constructor(
 }
 
 /// <https://html.spec.whatwg.org/multipage/#concept-try-upgrade>
-pub(crate) fn try_upgrade_element(element: &Element) {
-    // Step 1. Let definition be the result of looking up a custom element definition given element's node document,
-    // element's namespace, element's local name, and element's is value.
-    let document = element.owner_document();
-    let namespace = element.namespace();
-    let local_name = element.local_name();
-    let is = element.get_is();
-    if let Some(definition) =
-        document.lookup_custom_element_definition(namespace, local_name, is.as_ref())
-    {
-        // Step 2. If definition is not null, then enqueue a custom element upgrade reaction given
-        // element and definition.
-        ScriptThread::enqueue_upgrade_reaction(element, definition);
+pub(crate) fn try_upgrade_element(cx: &JSContext, element: &Element) {
+    // Step 1. Let definition be the result of looking up a custom element
+    // definition given element's custom element registry, element's namespace,
+    // element's local name, and element's is value.
+    let lookup_registry = {
+        // TODO: Remove this fallback when Node::adopt is aligned according to specs.
+        //       Currently elements carry stale global registry from another document.
+        let registry = element.custom_element_registry();
+        if registry
+            .as_ref()
+            .is_some_and(|registry| registry.is_scoped())
+        {
+            registry
+        } else {
+            element.owner_document().custom_element_registry()
+        }
+    };
+    if let Some(definition) = CustomElementRegistry::lookup_custom_element_definition(
+        lookup_registry.as_deref(),
+        element.namespace(),
+        element.local_name(),
+        element.get_is().as_ref(),
+    ) {
+        // Step 2. If definition is not null, then enqueue a custom element
+        // upgrade reaction given element and definition.
+        ScriptThread::enqueue_upgrade_reaction(cx, element, definition);
     }
 }
 
@@ -1210,7 +1297,7 @@ impl CustomElementReactionStack {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#enqueue-an-element-on-the-appropriate-element-queue>
-    pub(crate) fn enqueue_element(&self, element: &Element) {
+    pub(crate) fn enqueue_element(&self, cx: &JSContext, element: &Element) {
         if let Some(current_queue) = self.stack.borrow().last() {
             // Step 2
             current_queue.append_element(element);
@@ -1228,7 +1315,7 @@ impl CustomElementReactionStack {
                 .set(BackupElementQueueFlag::Processing);
 
             // Step 4
-            ScriptThread::enqueue_microtask(Microtask::CustomElementReaction);
+            ScriptThread::enqueue_microtask(cx, Box::new(CustomElementReactionMicrotask::new()));
         }
     }
 
@@ -1363,7 +1450,7 @@ impl CustomElementReactionStack {
                         element.push_callback_reaction(connected_callback, Box::new([]));
                     }
 
-                    self.enqueue_element(element);
+                    self.enqueue_element(cx, element);
                     return;
                 }
 
@@ -1382,12 +1469,13 @@ impl CustomElementReactionStack {
         element.push_callback_reaction(callback, args.into_boxed_slice());
 
         // Step 7. Enqueue an element on the appropriate element queue given element.
-        self.enqueue_element(element);
+        self.enqueue_element(cx, element);
     }
 
     /// <https://html.spec.whatwg.org/multipage/#enqueue-a-custom-element-upgrade-reaction>
     pub(crate) fn enqueue_upgrade_reaction(
         &self,
+        cx: &JSContext,
         element: &Element,
         definition: Rc<CustomElementDefinition>,
     ) {
@@ -1396,7 +1484,7 @@ impl CustomElementReactionStack {
         element.push_upgrade_reaction(definition);
 
         // Step 2. Enqueue an element on the appropriate element queue given element.
-        self.enqueue_element(element);
+        self.enqueue_element(cx, element);
     }
 }
 

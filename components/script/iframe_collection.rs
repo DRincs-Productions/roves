@@ -5,9 +5,9 @@
 use std::default::Default;
 
 use embedder_traits::ViewportDetails;
+use js::context::JSContext;
 use layout_api::IFrameSizes;
 use paint_api::PinchZoomInfos;
-use script_bindings::script_runtime::CanGc;
 use servo_base::id::BrowsingContextId;
 use servo_constellation_traits::{IFrameSizeMsg, ScriptToConstellationMessage, WindowSizeType};
 
@@ -101,15 +101,15 @@ impl IFrameCollection {
 
     /// Set the size of an `<iframe>` in the collection given its `BrowsingContextId` and
     /// the new size. Returns the old size.
-    pub(crate) fn set_viewport_details(
+    fn set_viewport_details(
         &mut self,
         browsing_context_id: BrowsingContextId,
         new_size: ViewportDetails,
     ) -> Option<ViewportDetails> {
+        // Top-level document destruction can destroy an entire tree of frames, which
+        // means that the the `<iframe>` we are targeting at this moment might not exist.
         self.get_mut(browsing_context_id)
-            .expect("Tried to set a size for an unknown <iframe>")
-            .size
-            .replace(new_size)
+            .and_then(|iframe| iframe.size.replace(new_size))
     }
 
     /// Update the recorded iframe sizes of the contents of layout. Return a
@@ -117,6 +117,7 @@ impl IFrameCollection {
     /// message is only sent when the size actually changes.
     pub(crate) fn handle_new_iframe_sizes_after_layout(
         &mut self,
+        cx: &mut JSContext,
         window: &Window,
         new_iframe_sizes: IFrameSizes,
     ) {
@@ -137,15 +138,14 @@ impl IFrameCollection {
                         viewport_details,
                         WindowSizeType::Resize,
                     );
+
                     // Additionally, update the `VisualViewport` of the `Iframe`. This allows us
                     // to process the resize for `VisualViewport` in the corrent timing. Note that
                     // `VisualViewport` for iframes would practically follow layout viewport.
                     script_thread.handle_update_pinch_zoom_infos(
+                        cx,
                         iframe_size.pipeline_id,
                         PinchZoomInfos::new_from_viewport_size(viewport_details.size),
-                        // Theoritically it wouldn't do GC since it is impossible to initialize
-                        // the `VisualViewport` interface here.
-                        CanGc::deprecated_note(),
                     )
                 });
 

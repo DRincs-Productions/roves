@@ -8,7 +8,7 @@ use js::jsapi::Heap;
 use js::jsval::{JSVal, NullValue};
 use js::rust::{HandleObject, MutableHandleValue};
 use script_bindings::codegen::GenericBindings::PerformanceBinding::PerformanceMarkOptions;
-use script_bindings::reflector::reflect_dom_object_with_proto_and_cx;
+use script_bindings::reflector::reflect_dom_object_with_proto;
 use servo_base::cross_process_instant::CrossProcessInstant;
 use time::Duration;
 
@@ -60,11 +60,11 @@ impl PerformanceMark {
         start_time: CrossProcessInstant,
         duration: Duration,
     ) -> DomRoot<PerformanceMark> {
-        reflect_dom_object_with_proto_and_cx(
+        reflect_dom_object_with_proto(
+            cx,
             Box::new(PerformanceMark::new_inherited(name, start_time, duration)),
             global,
             proto,
-            cx,
         )
     }
 }
@@ -103,7 +103,7 @@ impl PerformanceMarkMethods<crate::DomTypeHolder> for PerformanceMark {
                     return Err(Error::Type(c"startTime must not be negative".to_owned()));
                 }
                 // Step 5.1.2. Otherwise, set entry’s startTime to the value of markOptions’s startTime.
-                global.performance().time_origin() +
+                global.performance(cx).time_origin() +
                     Duration::microseconds(start_time.mul_add(1000.0, 0.0) as i64)
             },
             // Step 5.2. Otherwise, set it to the value that would be returned by the Performance object’s now() method.

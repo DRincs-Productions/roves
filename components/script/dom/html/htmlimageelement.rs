@@ -14,10 +14,8 @@ use dom_struct::dom_struct;
 use euclid::default::Point2D;
 use html5ever::{LocalName, Prefix, QualName, local_name, ns};
 use js::context::JSContext;
-use js::realm::AutoRealm;
 use js::rust::HandleObject;
 use mime::{self, Mime};
-use net_traits::http_status::HttpStatus;
 use net_traits::image_cache::{
     Image, ImageCache, ImageCacheResult, ImageLoadListener, ImageOrMetadataAvailable,
     ImageResponse, PendingImageId,
@@ -30,7 +28,7 @@ use num_traits::ToPrimitive;
 use pixels::{CorsStatus, ImageMetadata, Snapshot};
 use regex::Regex;
 use rustc_hash::FxHashSet;
-use script_bindings::cell::{DomRefCell, RefMut};
+use script_bindings::cell::DomRefCell;
 use servo_url::ServoUrl;
 use servo_url::origin::MutableOrigin;
 use style::attr::{AttrValue, LengthOrPercentageOrAuto, parse_unsigned_integer};
@@ -52,7 +50,7 @@ use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::refcounted::{Trusted, TrustedPromise};
 use crate::dom::bindings::reflector::DomGlobal;
-use crate::dom::bindings::root::{DomRoot, LayoutDom, MutNullableDom};
+use crate::dom::bindings::root::{Dom, DomRoot, LayoutDom, MutNullableDom, ToLayoutOptional};
 use crate::dom::bindings::str::{DOMString, USVString};
 use crate::dom::csp::{GlobalCspReporting, Violation};
 use crate::dom::document::Document;
@@ -80,7 +78,7 @@ use crate::dom::performance::performanceresourcetiming::InitiatorType;
 use crate::dom::promise::Promise;
 use crate::dom::window::Window;
 use crate::fetch::{RequestWithGlobalScope, create_a_potential_cors_request};
-use crate::microtask::{Microtask, MicrotaskRunnable};
+use crate::microtask::MicrotaskRunnable;
 use crate::network_listener::{self, FetchResponseListener, ResourceTimingListener};
 use crate::realms::enter_auto_realm;
 use crate::script_thread::ScriptThread;
@@ -275,24 +273,13 @@ impl FetchResponseListener for ImageContext {
             }
         }
 
-        let status = metadata
-            .as_ref()
-            .map(|m| m.status.clone())
-            .unwrap_or_else(HttpStatus::new_error);
-
-        self.status = {
-            if status.is_error() {
-                Err(NetworkError::ResourceLoadError(
-                    "No http status code received".to_owned(),
-                ))
-            } else if status.is_success() {
-                Ok(())
-            } else {
-                Err(NetworkError::ResourceLoadError(format!(
-                    "HTTP error code {}",
-                    status.code()
-                )))
-            }
+        // The HTTP status code is ignored here. Ok NetworkError is treated
+        // as real error
+        self.status = match metadata.as_ref().map(|m| m.status.clone()) {
+            None => Err(NetworkError::ResourceLoadError(
+                "No http status code received".to_owned(),
+            )),
+            Some(_) => Ok(()),
         };
     }
 
@@ -336,6 +323,13 @@ impl FetchResponseListener for ImageContext {
             .upcast::<Element>()
             .compute_source_position(elem.line_number as u32);
         global.report_csp_violations(cx, violations, None, Some(source_position));
+    }
+
+    fn process_content_length(&mut self, request_id: RequestId, size: usize) {
+        self.image_cache.notify_pending_response(
+            self.id,
+            FetchResponseMsg::ProcessContentLength(request_id, size),
+        );
     }
 }
 
@@ -890,18 +884,21 @@ impl HTMLImageElement {
 
     fn init_image_request(
         &self,
-        request: &mut RefMut<'_, ImageRequest>,
+        request: &DomRefCell<ImageRequest>,
         url: &ServoUrl,
         src: &USVString,
         cx: &mut js::context::JSContext,
     ) {
-        request.parsed_url = Some(url.clone());
-        request.source_url = Some(src.clone());
-        request.image = None;
-        request.metadata = None;
+        {
+            let mut request = request.borrow_mut();
+            request.parsed_url = Some(url.clone());
+            request.source_url = Some(src.clone());
+            request.image = None;
+            request.metadata = None;
+        }
         let document = self.owner_document();
-        LoadBlocker::terminate(&request.blocker, cx);
-        *request.blocker.borrow_mut() =
+        LoadBlocker::terminate(&request.borrow().blocker, cx);
+        *request.borrow_mut().blocker.borrow_mut() =
             Some(LoadBlocker::new(&document, LoadType::Image(url.clone())));
     }
 
@@ -932,18 +929,19 @@ impl HTMLImageElement {
                 self.abort_request(State::Unavailable, ImageRequestPhase::Pending, cx);
 
                 // Step 17. Set image request to a new image request whose current URL is urlString.
+                let (current_request_url, current_request_state) = {
+                    let current_request = self.current_request.borrow();
+                    (current_request.parsed_url.clone(), current_request.state)
+                };
 
-                let mut current_request = self.current_request.borrow_mut();
-                let mut pending_request = self.pending_request.borrow_mut();
-
-                match (current_request.parsed_url.as_ref(), current_request.state) {
+                match (current_request_url, current_request_state) {
                     (Some(parsed_url), State::PartiallyAvailable) => {
                         // Step 15. If urlString is the same as the current request's current URL
                         // and the current request's state is partially available, then abort the
                         // image request for the pending request, queue an element task on the DOM
                         // manipulation task source given the img element to restart the animation
                         // if restart animation is set, and return.
-                        if *parsed_url == *image_url {
+                        if parsed_url == *image_url {
                             // TODO: queue a task to restart animation, if restart-animation is set
                             return;
                         }
@@ -953,24 +951,26 @@ impl HTMLImageElement {
                         // request to image request.
                         self.image_request.set(ImageRequestPhase::Pending);
                         self.init_image_request(
-                            &mut pending_request,
+                            &self.pending_request,
                             image_url,
                             selected_source,
                             cx,
                         );
-                        pending_request.current_pixel_density = Some(selected_pixel_density);
+                        self.pending_request.borrow_mut().current_pixel_density =
+                            Some(selected_pixel_density);
                     },
                     (_, State::Broken) | (_, State::Unavailable) => {
                         // Step 18. If the current request's state is unavailable or broken, then
                         // set the current request to image request. Otherwise, set the pending
                         // request to image request.
                         self.init_image_request(
-                            &mut current_request,
+                            &self.current_request,
                             image_url,
                             selected_source,
                             cx,
                         );
-                        current_request.current_pixel_density = Some(selected_pixel_density);
+                        self.current_request.borrow_mut().current_pixel_density =
+                            Some(selected_pixel_density);
                         self.reject_image_decode_promises();
                     },
                     (_, _) => {
@@ -979,12 +979,13 @@ impl HTMLImageElement {
                         // request to image request.
                         self.image_request.set(ImageRequestPhase::Pending);
                         self.init_image_request(
-                            &mut pending_request,
+                            &self.pending_request,
                             image_url,
                             selected_source,
                             cx,
                         );
-                        pending_request.current_pixel_density = Some(selected_pixel_density);
+                        self.pending_request.borrow_mut().current_pixel_density =
+                            Some(selected_pixel_density);
                     },
                 }
             },
@@ -1208,22 +1209,22 @@ impl HTMLImageElement {
         // Step 8. Queue a microtask to perform the rest of this algorithm, allowing the task that
         // invoked this algorithm to continue.
         let task = ImageElementMicrotask::UpdateImageData {
-            elem: DomRoot::from_ref(self),
+            elem: Dom::from_ref(self),
             generation: self.generation.get(),
         };
 
-        ScriptThread::await_stable_state(Microtask::ImageElement(task));
+        ScriptThread::await_stable_state(cx, Box::new(task));
     }
 
     /// <https://html.spec.whatwg.org/multipage/#img-environment-changes>
-    pub(crate) fn react_to_environment_changes(&self) {
+    pub(crate) fn react_to_environment_changes(&self, cx: &JSContext) {
         // Step 1. Await a stable state.
         let task = ImageElementMicrotask::EnvironmentChanges {
-            elem: DomRoot::from_ref(self),
+            elem: Dom::from_ref(self),
             generation: self.generation.get(),
         };
 
-        ScriptThread::await_stable_state(Microtask::ImageElement(task));
+        ScriptThread::await_stable_state(cx, Box::new(task));
     }
 
     /// <https://html.spec.whatwg.org/multipage/#img-environment-changes>
@@ -1286,12 +1287,7 @@ impl HTMLImageElement {
 
         // Step 13. Set the element's pending request to image request.
         self.image_request.set(ImageRequestPhase::Pending);
-        self.init_image_request(
-            &mut self.pending_request.borrow_mut(),
-            &image_url,
-            &selected_source,
-            cx,
-        );
+        self.init_image_request(&self.pending_request, &image_url, &selected_source, cx);
 
         // Step 15. If the list of available images contains an entry for key, then set image
         // request's image data to that of the entry. Continue to the next step.
@@ -1623,15 +1619,15 @@ impl HTMLImageElement {
 #[derive(JSTraceable, MallocSizeOf)]
 pub(crate) enum ImageElementMicrotask {
     UpdateImageData {
-        elem: DomRoot<HTMLImageElement>,
+        elem: Dom<HTMLImageElement>,
         generation: u32,
     },
     EnvironmentChanges {
-        elem: DomRoot<HTMLImageElement>,
+        elem: Dom<HTMLImageElement>,
         generation: u32,
     },
     Decode {
-        elem: DomRoot<HTMLImageElement>,
+        elem: Dom<HTMLImageElement>,
         #[conditional_malloc_size_of]
         promise: Rc<Promise>,
     },
@@ -1639,6 +1635,12 @@ pub(crate) enum ImageElementMicrotask {
 
 impl MicrotaskRunnable for ImageElementMicrotask {
     fn handler(&self, cx: &mut js::context::JSContext) {
+        let mut realm = match self {
+            &ImageElementMicrotask::UpdateImageData { ref elem, .. } |
+            &ImageElementMicrotask::EnvironmentChanges { ref elem, .. } |
+            &ImageElementMicrotask::Decode { ref elem, .. } => enter_auto_realm(cx, &**elem),
+        };
+        let cx = &mut realm;
         match *self {
             ImageElementMicrotask::UpdateImageData {
                 ref elem,
@@ -1665,14 +1667,6 @@ impl MicrotaskRunnable for ImageElementMicrotask {
             },
         }
     }
-
-    fn enter_realm<'cx>(&self, cx: &'cx mut js::context::JSContext) -> AutoRealm<'cx> {
-        match self {
-            &ImageElementMicrotask::UpdateImageData { ref elem, .. } |
-            &ImageElementMicrotask::EnvironmentChanges { ref elem, .. } |
-            &ImageElementMicrotask::Decode { ref elem, .. } => enter_auto_realm(cx, &**elem),
-        }
-    }
 }
 
 impl<'dom> LayoutDom<'dom, HTMLImageElement> {
@@ -1686,7 +1680,7 @@ impl<'dom> LayoutDom<'dom, HTMLImageElement> {
         unsafe {
             self.unsafe_get()
                 .dimension_attribute_source
-                .get_inner_as_layout()
+                .to_layout()
                 .expect("dimension attribute source should be always non-null")
         }
     }
@@ -1934,11 +1928,11 @@ impl HTMLImageElementMethods<crate::DomTypeHolder> for HTMLImageElement {
 
         // Step 2. Queue a microtask to perform the following steps:
         let task = ImageElementMicrotask::Decode {
-            elem: DomRoot::from_ref(self),
+            elem: Dom::from_ref(self),
             promise: promise.clone(),
         };
 
-        ScriptThread::await_stable_state(Microtask::ImageElement(task));
+        ScriptThread::await_stable_state(cx, Box::new(task));
 
         // Step 3. Return promise.
         promise
@@ -2076,34 +2070,34 @@ impl VirtualMethods for HTMLImageElement {
             return;
         }
 
-        let area_elements = self.areas();
-        let elements = match area_elements {
-            Some(x) => x,
-            None => return,
+        let Some(area_elements) = self.areas() else {
+            return;
         };
 
         // Fetch click coordinates
-        let mouse_event = match event.downcast::<MouseEvent>() {
-            Some(x) => x,
-            None => return,
+        let Some(mouse_event) = event.downcast::<MouseEvent>() else {
+            return;
         };
 
-        let point = Point2D::new(
+        let click_location = Point2D::new(
             mouse_event.ClientX().to_f32().unwrap(),
             mouse_event.ClientY().to_f32().unwrap(),
         );
-        let bcr = self.upcast::<Element>().GetBoundingClientRect(cx);
-        let bcr_p = Point2D::new(bcr.X() as f32, bcr.Y() as f32);
+        let bounding_rectangle = self.upcast::<Element>().GetBoundingClientRect(cx);
+        let image_extents =
+            Point2D::new(bounding_rectangle.X() as f32, bounding_rectangle.Y() as f32);
 
         // Walk HTMLAreaElements
-        for element in elements {
-            let shape = element.get_shape_from_coords();
-            let shp = match shape {
-                Some(x) => x.absolute_coords(bcr_p),
+        for area_element in area_elements {
+            if !area_element.is_instance_activatable() {
+                continue;
+            }
+            let activatable_area = match area_element.get_shape_from_coords() {
+                Some(shape) => shape.absolute_coords(image_extents),
                 None => return,
             };
-            if shp.hit_test(&point) {
-                element.activation_behavior(cx, event, self.upcast());
+            if activatable_area.hit_test(&click_location) {
+                area_element.activation_behavior(cx, event, self.upcast());
                 return;
             }
         }
@@ -2123,7 +2117,7 @@ impl VirtualMethods for HTMLImageElement {
 
         // Step 1. If insertedNode's parent is a picture element, then, count this as a relevant
         // mutation for insertedNode.
-        if parent.is::<HTMLPictureElement>() && std::ptr::eq(&*parent, context.parent) {
+        if parent.is::<HTMLPictureElement>() && *parent == *context.parent {
             self.update_the_image_data(cx);
         }
     }
@@ -2161,7 +2155,7 @@ impl FormControl for HTMLImageElement {
         self.form_owner.get()
     }
 
-    fn set_form_owner(&self, form: Option<&HTMLFormElement>) {
+    fn set_form_owner(&self, _cx: &mut JSContext, form: Option<&HTMLFormElement>) {
         self.form_owner.set(form);
     }
 

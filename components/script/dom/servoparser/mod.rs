@@ -33,7 +33,7 @@ use profile_traits::time::{
 };
 use profile_traits::time_profile;
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::{Reflector, reflect_dom_object};
+use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
 use script_bindings::script_runtime::temp_cx;
 use script_traits::DocumentActivity;
 use servo_base::id::{PipelineId, WebViewId};
@@ -65,7 +65,7 @@ use crate::dom::bindings::str::{DOMString, USVString};
 use crate::dom::characterdata::CharacterData;
 use crate::dom::comment::Comment;
 use crate::dom::csp::{Violation, parse_csp_list_from_metadata};
-use crate::dom::customelementregistry::CustomElementReactionStack;
+use crate::dom::customelementregistry::{CustomElementReactionStack, CustomElementRegistry};
 use crate::dom::document::{Document, DocumentSource, HasBrowsingContext, IsHTMLDocument};
 use crate::dom::documentfragment::DocumentFragment;
 use crate::dom::documenttype::DocumentType;
@@ -93,7 +93,7 @@ use crate::dom::types::{HTMLElement, HTMLMediaElement, HTMLOptionElement};
 use crate::navigation::determine_the_origin;
 use crate::network_listener::FetchResponseListener;
 use crate::realms::enter_auto_realm;
-use crate::script_runtime::{CanGc, IntroductionType};
+use crate::script_runtime::IntroductionType;
 use crate::script_thread::ScriptThread;
 
 mod async_html;
@@ -182,10 +182,6 @@ impl ElementAttribute {
 }
 
 impl ServoParser {
-    pub(crate) fn parser_is_not_active(&self) -> bool {
-        self.can_write()
-    }
-
     /// <https://html.spec.whatwg.org/multipage/#parse-html-from-a-string>
     pub(crate) fn parse_html_document(
         cx: &mut JSContext,
@@ -202,6 +198,7 @@ impl ServoParser {
 
         // Step 2. Create an HTML parser parser, associated with document.
         let parser = ServoParser::new(
+            cx,
             document,
             if pref!(dom_servoparser_async_html_tokenizer_enabled) {
                 Tokenizer::AsyncHtml(self::async_html::Tokenizer::new(document, url, None))
@@ -216,7 +213,6 @@ impl ServoParser {
             ParserKind::Normal,
             encoding_hint_from_content_type,
             encoding_of_container_document,
-            CanGc::from_cx(cx),
         );
 
         // Step 3. Place html into the input stream for parser. The encoding confidence is irrelevant.
@@ -296,6 +292,7 @@ impl ServoParser {
         };
 
         let parser = ServoParser::new(
+            cx,
             &document,
             Tokenizer::Html(self::html::Tokenizer::new(
                 &document,
@@ -306,7 +303,6 @@ impl ServoParser {
             ParserKind::Normal,
             None,
             None,
-            CanGc::from_cx(cx),
         );
         parser.parse_complete_string_chunk(cx, String::from(input));
 
@@ -317,8 +313,9 @@ impl ServoParser {
         }
     }
 
-    pub(crate) fn parse_html_script_input(document: &Document, url: ServoUrl) {
+    pub(crate) fn parse_html_script_input(cx: &mut JSContext, document: &Document, url: ServoUrl) {
         let parser = ServoParser::new(
+            cx,
             document,
             if pref!(dom_servoparser_async_html_tokenizer_enabled) {
                 Tokenizer::AsyncHtml(self::async_html::Tokenizer::new(document, url, None))
@@ -333,7 +330,6 @@ impl ServoParser {
             ParserKind::ScriptCreated,
             None,
             None,
-            CanGc::deprecated_note(),
         );
         document.set_current_parser(Some(&parser));
     }
@@ -346,12 +342,12 @@ impl ServoParser {
         encoding_hint_from_content_type: Option<&'static Encoding>,
     ) {
         let parser = ServoParser::new(
+            cx,
             document,
             Tokenizer::Xml(self::xml::Tokenizer::new(document, url)),
             ParserKind::Normal,
             encoding_hint_from_content_type,
             None,
-            CanGc::from_cx(cx),
         );
 
         // Set as the document's current parser and initialize with `input`, if given.
@@ -548,14 +544,14 @@ impl ServoParser {
 
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
     fn new(
+        cx: &mut JSContext,
         document: &Document,
         tokenizer: Tokenizer,
         kind: ParserKind,
         encoding_hint_from_content_type: Option<&'static Encoding>,
         encoding_of_container_document: Option<&'static Encoding>,
-        can_gc: CanGc,
     ) -> DomRoot<Self> {
-        reflect_dom_object(
+        reflect_dom_object_with_cx(
             Box::new(ServoParser::new_inherited(
                 document,
                 tokenizer,
@@ -564,7 +560,7 @@ impl ServoParser {
                 encoding_of_container_document,
             )),
             document.window(),
-            can_gc,
+            cx,
         )
     }
 
@@ -1263,7 +1259,7 @@ impl ParserContext {
         let performance_entry = PerformanceNavigationTiming::new(cx, &document.global(), document);
         self.pushed_entry_index = document
             .global()
-            .performance()
+            .performance(cx)
             .queue_entry(performance_entry.upcast::<PerformanceEntry>());
     }
 }
@@ -1562,7 +1558,7 @@ impl FetchResponseListener for ParserContext {
                 PerformanceNavigationTiming::new(cx, &document.global(), document);
             document
                 .global()
-                .performance()
+                .performance(cx)
                 .update_entry(pushed_index, performance_entry.upcast::<PerformanceEntry>());
         }
     }
@@ -1944,7 +1940,6 @@ impl TreeSink for Sink {
                 cx,
                 attr.name,
                 DOMString::from(String::from(attr.value)),
-                None,
             );
         }
     }
@@ -2083,7 +2078,12 @@ fn create_element_for_token(
 
     // Step 7. Let definition be the result of looking up a custom element definition
     // given registry, namespace, localName, and is.
-    let definition = document.lookup_custom_element_definition(&name.ns, &name.local, is.as_ref());
+    let definition = CustomElementRegistry::lookup_custom_element_definition(
+        document.custom_element_registry().as_deref(),
+        &name.ns,
+        &name.local,
+        is.as_ref(),
+    );
 
     // Step 8. Let willExecuteScript be true if definition is non-null and the parser was
     // not created as part of the HTML fragment parsing algorithm; otherwise false.
@@ -2115,7 +2115,7 @@ fn create_element_for_token(
 
     // Step 11. Append each attribute in the given token to element.
     for attr in attrs {
-        element.set_attribute_from_parser(cx, attr.name, attr.value, None);
+        element.set_attribute_from_parser(cx, attr.name, attr.value);
     }
 
     // Record if the tokenizer saw duplicate attributes on this element,

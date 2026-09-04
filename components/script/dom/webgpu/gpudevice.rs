@@ -12,8 +12,7 @@ use js::jsapi::{HandleObject, Heap, JSObject};
 use js::realm::CurrentRealm;
 use script_bindings::cell::DomRefCell;
 use script_bindings::cformat;
-use script_bindings::reflector::reflect_dom_object_with_cx;
-use script_bindings::script_runtime::CanGc;
+use script_bindings::reflector::reflect_weak_referenceable_dom_object;
 use webgpu_traits::{
     PopError, WebGPU, WebGPUComputePipeline, WebGPUComputePipelineResponse, WebGPUDevice,
     WebGPUPoppedErrorScopeResponse, WebGPUQueue, WebGPURenderPipeline,
@@ -33,10 +32,10 @@ use crate::dom::bindings::codegen::Bindings::EventBinding::EventInit;
 use crate::dom::bindings::codegen::Bindings::WebGPUBinding::{
     GPUAdapterMethods, GPUBindGroupDescriptor, GPUBindGroupLayoutDescriptor, GPUBufferDescriptor,
     GPUCommandEncoderDescriptor, GPUComputePipelineDescriptor, GPUDeviceLostReason,
-    GPUDeviceMethods, GPUErrorFilter, GPUPipelineErrorReason, GPUPipelineLayoutDescriptor,
-    GPUQuerySetDescriptor, GPURenderBundleEncoderDescriptor, GPURenderPipelineDescriptor,
-    GPUSamplerDescriptor, GPUShaderModuleDescriptor, GPUTextureDescriptor, GPUTextureFormat,
-    GPUUncapturedErrorEventInit, GPUVertexStepMode,
+    GPUDeviceMethods, GPUErrorFilter, GPUExternalTextureDescriptor, GPUPipelineErrorReason,
+    GPUPipelineLayoutDescriptor, GPUQuerySetDescriptor, GPURenderBundleEncoderDescriptor,
+    GPURenderPipelineDescriptor, GPUSamplerDescriptor, GPUShaderModuleDescriptor,
+    GPUTextureDescriptor, GPUTextureFormat, GPUUncapturedErrorEventInit, GPUVertexStepMode,
 };
 use crate::dom::bindings::codegen::UnionTypes::GPUPipelineLayoutOrGPUAutoLayoutMode;
 use crate::dom::bindings::error::{Error, Fallible};
@@ -58,6 +57,7 @@ use crate::dom::webgpu::gpubindgrouplayout::GPUBindGroupLayout;
 use crate::dom::webgpu::gpubuffer::GPUBuffer;
 use crate::dom::webgpu::gpucommandencoder::GPUCommandEncoder;
 use crate::dom::webgpu::gpucomputepipeline::GPUComputePipeline;
+use crate::dom::webgpu::gpuexternaltexture::GPUExternalTexture;
 use crate::dom::webgpu::gpupipelinelayout::GPUPipelineLayout;
 use crate::dom::webgpu::gpuqueue::GPUQueue;
 use crate::dom::webgpu::gpurenderbundleencoder::GPURenderBundleEncoder;
@@ -167,8 +167,9 @@ impl GPUDevice {
         let features = GPUSupportedFeatures::Constructor(cx, global, None, features).unwrap();
         let adapter_info = GPUAdapterInfo::clone_from(cx, global, &adapter.Info());
         let lost_promise = Promise::new(cx, global);
-        let device = reflect_dom_object_with_cx(
-            Box::new(GPUDevice::new_inherited(
+        let device = reflect_weak_referenceable_dom_object(
+            cx,
+            Rc::new(GPUDevice::new_inherited(
                 channel,
                 adapter,
                 &features,
@@ -180,7 +181,6 @@ impl GPUDevice {
                 lost_promise,
             )),
             global,
-            cx,
         );
         queue.set_device(cx, &device);
         device.extensions.set(*extensions);
@@ -289,23 +289,29 @@ impl GPUDevice {
                         .vertex
                         .buffers
                         .iter()
-                        .map(|buffer| wgpu_pipe::VertexBufferLayout {
-                            array_stride: buffer.arrayStride,
-                            step_mode: match buffer.stepMode {
-                                GPUVertexStepMode::Vertex => wgpu_types::VertexStepMode::Vertex,
-                                GPUVertexStepMode::Instance => wgpu_types::VertexStepMode::Instance,
-                            },
-                            attributes: Cow::Owned(
-                                buffer
-                                    .attributes
-                                    .iter()
-                                    .map(|att| wgpu_types::VertexAttribute {
-                                        format: att.format.convert(),
-                                        offset: att.offset,
-                                        shader_location: att.shaderLocation,
-                                    })
-                                    .collect::<Vec<_>>(),
-                            ),
+                        // FIXME: webidl has `sequence<GPUVertexBufferLayout?> buffers`
+                        // but we get no option here so it must be eaten by codegen
+                        .map(|buffer| {
+                            Some(wgpu_pipe::VertexBufferLayout {
+                                array_stride: buffer.arrayStride,
+                                step_mode: match buffer.stepMode {
+                                    GPUVertexStepMode::Vertex => wgpu_types::VertexStepMode::Vertex,
+                                    GPUVertexStepMode::Instance => {
+                                        wgpu_types::VertexStepMode::Instance
+                                    },
+                                },
+                                attributes: Cow::Owned(
+                                    buffer
+                                        .attributes
+                                        .iter()
+                                        .map(|att| wgpu_types::VertexAttribute {
+                                            format: att.format.convert(),
+                                            offset: att.offset,
+                                            shader_location: att.shaderLocation,
+                                        })
+                                        .collect::<Vec<_>>(),
+                                ),
+                            })
                         })
                         .collect::<Vec<_>>(),
                 ),
@@ -399,7 +405,7 @@ impl GPUDevice {
                 let this = this.root();
 
                 let lost_promise = &(*this.lost_promise.borrow());
-                let lost = GPUDeviceLostInfo::new(&this.global(), msg.into(), reason, CanGc::deprecated_note());
+                let lost = GPUDeviceLostInfo::new(cx, &this.global(), msg.into(), reason);
                 lost_promise.resolve_native(cx, &*lost);
             }),
         );
@@ -596,6 +602,15 @@ impl GPUDeviceMethods<crate::DomTypeHolder> for GPUDevice {
         descriptor: &GPUQuerySetDescriptor,
     ) -> Fallible<DomRoot<GPUQuerySet>> {
         GPUQuerySet::create(cx, self, descriptor)
+    }
+
+    /// <https://www.w3.org/TR/webgpu/#dom-gpudevice-importexternaltexture>
+    fn ImportExternalTexture(
+        &self,
+        cx: &mut JSContext,
+        descriptor: &GPUExternalTextureDescriptor,
+    ) -> Fallible<DomRoot<GPUExternalTexture>> {
+        GPUExternalTexture::create(cx, self, descriptor)
     }
 
     /// <https://gpuweb.github.io/gpuweb/#dom-gpudevice-pusherrorscope>

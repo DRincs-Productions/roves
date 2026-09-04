@@ -3,16 +3,14 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use dom_struct::dom_struct;
-use js::context::JSContext;
+use js::context::{JSContext, NoGC};
 use js::gc::HandleObject;
 use rustc_hash::FxHashMap;
 use script_bindings::codegen::GenericBindings::QuotaExceededErrorBinding::{
     QuotaExceededErrorMethods, QuotaExceededErrorOptions,
 };
 use script_bindings::num::Finite;
-use script_bindings::reflector::{
-    reflect_dom_object_with_cx, reflect_dom_object_with_proto_and_cx,
-};
+use script_bindings::reflector::{reflect_dom_object_with_cx, reflect_dom_object_with_proto};
 use script_bindings::root::DomRoot;
 use script_bindings::str::DOMString;
 use servo_base::id::{QuotaExceededErrorId, QuotaExceededErrorIndex};
@@ -96,7 +94,8 @@ impl QuotaExceededErrorMethods<crate::DomTypeHolder> for QuotaExceededError {
         {
             return Err(Error::Range(c"requested is less than quota".to_owned()));
         }
-        Ok(reflect_dom_object_with_proto_and_cx(
+        Ok(reflect_dom_object_with_proto(
+            cx,
             Box::new(QuotaExceededError::new_inherited(
                 message,
                 options.quota,
@@ -104,7 +103,6 @@ impl QuotaExceededErrorMethods<crate::DomTypeHolder> for QuotaExceededError {
             )),
             global,
             proto,
-            cx,
         ))
     }
 
@@ -126,8 +124,8 @@ impl Serializable for QuotaExceededError {
     type Data = SerializableQuotaExceededError;
 
     /// <https://webidl.spec.whatwg.org/#quotaexceedederror>
-    fn serialize(&self) -> Result<(QuotaExceededErrorId, Self::Data), ()> {
-        let (_, dom_exception) = self.dom_exception.serialize()?;
+    fn serialize(&self, no_gc: &NoGC) -> Result<(QuotaExceededErrorId, Self::Data), ()> {
+        let (_, dom_exception) = self.dom_exception.serialize(no_gc)?;
         let serialized = SerializableQuotaExceededError {
             dom_exception,
             quota: self.quota.as_deref().copied(),

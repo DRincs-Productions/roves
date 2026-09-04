@@ -5,11 +5,11 @@
 use std::cell::Cell;
 
 use dom_struct::dom_struct;
-use js::context::JSContext;
+use js::context::{JSContext, NoGC};
 use js::rust::HandleObject;
 use rustc_hash::FxHashMap;
 use script_bindings::reflector::{
-    Reflector, reflect_dom_object_with_cx, reflect_dom_object_with_proto_and_cx,
+    Reflector, reflect_dom_object_with_cx, reflect_dom_object_with_proto,
 };
 use servo_base::id::{DomRectId, DomRectIndex};
 use servo_constellation_traits::DomRect;
@@ -52,11 +52,11 @@ impl DOMRectReadOnly {
         width: f64,
         height: f64,
     ) -> DomRoot<DOMRectReadOnly> {
-        reflect_dom_object_with_proto_and_cx(
+        reflect_dom_object_with_proto(
+            cx,
             Box::new(DOMRectReadOnly::new_inherited(x, y, width, height)),
             global,
             proto,
-            cx,
         )
     }
 
@@ -66,11 +66,11 @@ impl DOMRectReadOnly {
         proto: Option<HandleObject>,
         dictionary: &DOMRectInit,
     ) -> DomRoot<DOMRectReadOnly> {
-        reflect_dom_object_with_proto_and_cx(
+        reflect_dom_object_with_proto(
+            cx,
             Box::new(create_a_domrectreadonly_from_the_dictionary(dictionary)),
             global,
             proto,
-            cx,
         )
     }
 
@@ -205,7 +205,7 @@ impl Serializable for DOMRectReadOnly {
     type Index = DomRectIndex;
     type Data = DomRect;
 
-    fn serialize(&self) -> Result<(DomRectId, Self::Data), ()> {
+    fn serialize(&self, _no_gc: &NoGC) -> Result<(DomRectId, Self::Data), ()> {
         let serialized = DomRect {
             x: self.X(),
             y: self.Y(),

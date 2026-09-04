@@ -54,8 +54,20 @@ pub fn set(preferences: Preferences) {
     stylo_static_prefs::set_pref!("layout.columns.enabled", preferences.layout_columns_enabled);
     stylo_static_prefs::set_pref!("layout.grid.enabled", preferences.layout_grid_enabled);
     stylo_static_prefs::set_pref!(
+        "layout.css.alpha-color-function.enabled",
+        preferences.layout_css_alpha_color_function_enabled
+    );
+    stylo_static_prefs::set_pref!(
         "layout.css.attr.enabled",
         preferences.layout_css_attr_enabled
+    );
+    stylo_static_prefs::set_pref!(
+        "layout.css.ellipse-corners.enabled",
+        preferences.layout_css_ellipse_corners_enabled
+    );
+    stylo_static_prefs::set_pref!(
+        "layout.css.progress-function.enabled",
+        preferences.layout_css_progress_function_enabled
     );
     stylo_static_prefs::set_pref!(
         "layout.writing-mode.enabled",
@@ -224,8 +236,6 @@ pub struct Preferences {
     pub dom_webrtc_enabled: bool,
     // feature: WebRTC Transceiver | #41396 | Web/API/RTCRtpTransceiver
     pub dom_webrtc_transceiver_enabled: bool,
-    // feature: WebVTT | #22312 | Web/API/WebVTT_API
-    pub dom_webvtt_enabled: bool,
     pub dom_webxr_enabled: bool,
     pub dom_webxr_test: bool,
     pub dom_webxr_first_person_observer_view: bool,
@@ -279,6 +289,11 @@ pub struct Preferences {
     pub js_mem_gc_high_frequency_high_limit_mb: i64,
     pub js_mem_gc_high_frequency_low_limit_mb: i64,
     pub js_mem_gc_high_frequency_time_limit_ms: i64,
+    /// Whether or not incremental garbage collection is turned on. This is currently
+    /// turned off by default as pre-barriers are not implemented yet. If turned on, it
+    /// will likely lead to memory corruption.
+    ///
+    /// See <https://github.com/servo/servo/issues/7621>.
     pub js_mem_gc_incremental_enabled: bool,
     pub js_mem_gc_incremental_slice_ms: i64,
     pub js_mem_gc_low_frequency_heap_growth: i64,
@@ -300,7 +315,10 @@ pub struct Preferences {
     // feature: CSS Grid | #34479 | Web/CSS/Guides/Grid_layout
     pub layout_grid_enabled: bool,
     pub layout_container_queries_enabled: bool,
+    pub layout_css_alpha_color_function_enabled: bool,
     pub layout_css_attr_enabled: bool,
+    pub layout_css_ellipse_corners_enabled: bool,
+    pub layout_css_progress_function_enabled: bool,
     pub layout_style_sharing_cache_enabled: bool,
     pub layout_threads: i64,
     /// The minimum number of parallelizable jobs required before turning on parallelism
@@ -360,6 +378,8 @@ pub struct Preferences {
     /// default), then `rustls-platform-verifier` will be used, except on Android where
     /// `rust-webpki` is always used.
     pub network_use_webpki_roots: bool,
+    /// The maximum content size we will forward for preallocation, defaults to 5MB
+    pub network_max_content_length: u64,
     /// The length of the session history, in navigations, for each `WebView. Back-forward
     /// cache entries that are more than `session_history_max_length` steps in the future or
     /// `session_history_max_length` steps in the past will be discarded. Navigating forward
@@ -404,11 +424,7 @@ impl Preferences {
             dom_adoptedstylesheet_enabled: false,
             dom_allow_preloading_module_descendants: false,
             dom_allow_scripts_to_close_windows: false,
-            // Roves: on by default (upstream: false) — part of upstream's own
-            // EXPERIMENTAL_PREFS bundle (ports/servoshell/prefs.rs), always on here instead
-            // of opt-in via --enable-experimental-web-platform-features. See
-            // CUSTOMIZATIONS.md's "default-on experimental web platform features" entry.
-            dom_async_clipboard_enabled: true,
+            dom_async_clipboard_enabled: false,
             dom_bluetooth_enabled: false,
             dom_bluetooth_testing_enabled: false,
             dom_canvas_capture_enabled: false,
@@ -423,40 +439,27 @@ impl Preferences {
             dom_document_dblclick_dist: 1,
             dom_document_dblclick_timeout: 300,
             dom_entries_api_enabled: false,
-            // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the entry above.
-            dom_exec_command_enabled: true,
-            // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the entry above.
-            dom_fontface_enabled: true,
+            dom_exec_command_enabled: false,
+            dom_fontface_enabled: false,
             dom_fullscreen_test: false,
             dom_gamepad_enabled: true,
             dom_geolocation_enabled: false,
             dom_wakelock_enabled: false,
-            // Roves: on by default (upstream: false) — part of the EXPERIMENTAL_PREFS
-            // bundle *and* needed for file:// storage access, see the entry above.
-            dom_indexeddb_enabled: true,
-            // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the entry above.
-            dom_intersection_observer_enabled: true,
+            dom_indexeddb_enabled: false,
+            dom_intersection_observer_enabled: false,
             dom_microdata_testing_enabled: false,
             dom_uievent_which_enabled: true,
             dom_mutation_observer_enabled: true,
-            // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the entry above.
-            dom_navigator_protocol_handlers_enabled: true,
-            // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the entry above.
-            dom_notification_enabled: true,
+            dom_navigator_protocol_handlers_enabled: false,
+            dom_notification_enabled: false,
             dom_parallel_css_parsing_enabled: true,
-            // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the entry above.
-            dom_offscreen_canvas_enabled: true,
-            // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the entry above.
-            dom_permissions_enabled: true,
+            dom_offscreen_canvas_enabled: false,
+            dom_permissions_enabled: false,
             dom_permissions_testing_allowed_in_nonsecure_contexts: false,
             dom_resize_observer_enabled: true,
-            // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the entry above.
-            dom_sanitizer_enabled: true,
+            dom_sanitizer_enabled: false,
             dom_script_asynch: true,
-            // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the entry above. Its
-            // own origin check (components/storage/client_storage.rs) uses
-            // `can_access_storage()` too, same as localStorage/indexedDB above.
-            dom_storage_manager_api_enabled: true,
+            dom_storage_manager_api_enabled: false,
             dom_serviceworker_enabled: false,
             dom_serviceworker_timeout_seconds: 60,
             dom_sharedworker_enabled: true,
@@ -481,19 +484,11 @@ impl Preferences {
                 cfg!(target_env = "ohos"),
             dom_transient_activation_duration_ms: 5000,
             dom_web_animations_enabled: false,
-            // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the entry above. Also
-            // the WebGL version both PixiJS and Three.js probe for first (see
-            // ../test-page/src/GpuInfoPanel.tsx) — off by default meant this fork's own
-            // diagnostics page could never see a real WebGL2 context.
-            dom_webgl2_enabled: true,
-            // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the entry above. The
-            // `webgpu` Cargo feature is already compiled in by default
-            // (ports/servoshell/Cargo.toml) — this was the matching DOM-exposure pref.
-            dom_webgpu_enabled: true,
+            dom_webgl2_enabled: false,
+            dom_webgpu_enabled: false,
             dom_webgpu_wgpu_backend: String::new(),
             dom_webrtc_enabled: false,
             dom_webrtc_transceiver_enabled: false,
-            dom_webvtt_enabled: false,
             dom_webxr_enabled: true,
             dom_webxr_first_person_observer_view: false,
             dom_webxr_glwindow_cubemap: false,
@@ -541,7 +536,7 @@ impl Preferences {
             js_mem_gc_high_frequency_high_limit_mb: 500,
             js_mem_gc_high_frequency_low_limit_mb: 100,
             js_mem_gc_high_frequency_time_limit_ms: 1000,
-            js_mem_gc_incremental_enabled: true,
+            js_mem_gc_incremental_enabled: false,
             js_mem_gc_incremental_slice_ms: 10,
             js_mem_gc_low_frequency_heap_growth: 150,
             js_mem_gc_per_zone_enabled: false,
@@ -562,9 +557,19 @@ impl Preferences {
             // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the
             // dom_async_clipboard_enabled entry above.
             layout_container_queries_enabled: true,
+            // Roves: on by default — new in EXPERIMENTAL_PREFS as of Servo v0.5.0 (wasn't in
+            // v0.4.0's bundle this fork originally defaulted on) — same CSS-styling-capability
+            // reasoning as the other layout_css_*/layout_columns/layout_grid entries here.
+            layout_css_alpha_color_function_enabled: true,
             // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the
             // dom_async_clipboard_enabled entry above.
             layout_css_attr_enabled: true,
+            // Roves: on by default — new in EXPERIMENTAL_PREFS as of Servo v0.5.0, see the
+            // layout_css_alpha_color_function_enabled entry above.
+            layout_css_ellipse_corners_enabled: true,
+            // Roves: on by default — new in EXPERIMENTAL_PREFS as of Servo v0.5.0, see the
+            // layout_css_alpha_color_function_enabled entry above.
+            layout_css_progress_function_enabled: true,
             // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the
             // dom_async_clipboard_enabled entry above.
             layout_grid_enabled: true,
@@ -574,9 +579,7 @@ impl Preferences {
             layout_parallelism_job_count_minimum: 4,
             layout_parallelism_job_size_minimum: 16,
             layout_unimplemented: false,
-            // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the
-            // dom_async_clipboard_enabled entry above.
-            layout_variable_fonts_enabled: true,
+            layout_variable_fonts_enabled: false,
             layout_writing_mode_enabled: false,
             media_glvideo_enabled: false,
             media_testing_enabled: false,
@@ -591,12 +594,9 @@ impl Preferences {
             network_http_cache_size: 5000,
             network_local_directory_listing_enabled: true,
             network_use_webpki_roots: false,
+            network_max_content_length: 5 * 1024 * 1024,
             session_history_max_length: 20,
-            // Kiosk/embedded fork: opaque black instead of upstream's white — this is the
-            // `glClearColor` shown for any `WebView` that hasn't painted anything yet
-            // (including the very first frame of a real page still loading), and a white
-            // flash there reads as a hang/bug on a black boot splash. See CUSTOMIZATIONS.md.
-            shell_background_color_rgba: [0.0, 0.0, 0.0, 1.0],
+            shell_background_color_rgba: [1.0, 1.0, 1.0, 1.0],
             log_filter: String::new(),
             thread_pool_workers_max: 4,
             thread_pool_async_runtime_workers_max: 6,

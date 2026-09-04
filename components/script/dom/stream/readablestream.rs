@@ -7,9 +7,6 @@ use std::collections::VecDeque;
 use std::ptr::{self};
 use std::rc::Rc;
 
-use servo_base::generic_channel::GenericSharedMemory;
-use servo_base::id::{MessagePortId, MessagePortIndex};
-use servo_constellation_traits::MessagePortImpl;
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::conversions::{FromJSValConvertible, ToJSValConvertible};
@@ -22,6 +19,9 @@ use js::rust::{
 };
 use js::typedarray::{ArrayBufferViewU8, Uint8};
 use rustc_hash::FxHashMap;
+use servo_base::generic_channel::GenericSharedMemory;
+use servo_base::id::{MessagePortId, MessagePortIndex};
+use servo_constellation_traits::MessagePortImpl;
 
 use crate::dom::bindings::codegen::Bindings::QueuingStrategyBinding::QueuingStrategy;
 use crate::dom::bindings::codegen::Bindings::ReadableStreamBinding::{
@@ -45,7 +45,7 @@ use crate::dom::bindings::codegen::GenericBindings::WritableStreamDefaultWriterB
 use crate::dom::stream::writablestream::WritableStream;
 use crate::dom::bindings::codegen::UnionTypes::ReadableStreamDefaultReaderOrReadableStreamBYOBReader as ReadableStreamReader;
 use crate::dom::bindings::reflector::DomGlobal;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto_and_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
 use crate::dom::bindings::root::{DomRoot, MutNullableDom, Dom};
 use crate::dom::bindings::trace::RootedTraceableBox;
 use crate::dom::stream::byteteeunderlyingsource::{ByteTeeCancelAlgorithm, ByteTeePullAlgorithm, ByteTeeUnderlyingSource};
@@ -68,8 +68,8 @@ use crate::dom::promisenativehandler::{Callback, PromiseNativeHandler};
 use crate::dom::bindings::transferable::Transferable;
 use crate::dom::bindings::structuredclone::StructuredData;
 
-use crate::dom::bindings::buffer_source::{BufferSource, HeapBufferSource, create_buffer_source};
 use super::readablestreambyobreader::ReadIntoRequest;
+use crate::dom::bindings::buffer_source::{HeapBufferSource, create_buffer_source};
 
 /// State Machine for `PipeTo`.
 #[derive(Clone, Debug, Default, MallocSizeOf, PartialEq)]
@@ -809,6 +809,8 @@ pub(crate) enum ReaderType {
     Default(MutNullableDom<ReadableStreamDefaultReader>),
 }
 
+impl js::gc::Rootable for ReaderType {}
+
 impl Eq for ReaderType {}
 impl PartialEq for ReaderType {
     fn eq(&self, other: &Self) -> bool {
@@ -854,7 +856,7 @@ pub(crate) fn create_readable_stream(
     // Perform ? SetUpReadableStreamDefaultController(stream, controller, startAlgorithm,
     // pullAlgorithm, cancelAlgorithm, highWaterMark, sizeAlgorithm).
     controller
-        .setup(cx, stream.clone())
+        .setup(cx, &stream)
         .expect("Setup of default controller cannot fail");
 
     // Return stream.
@@ -876,7 +878,7 @@ fn readable_byte_stream_tee(
 
     // Perform ? SetUpReadableByteStreamController(stream, controller, startAlgorithm, pullAlgorithm, cancelAlgorithm, 0, undefined).
     controller
-        .setup(cx, global, tee_stream.clone())
+        .setup(cx, global, &tee_stream)
         .expect("Setup of byte stream controller cannot fail");
 
     // Return stream.
@@ -925,12 +927,7 @@ impl ReadableStream {
         global: &GlobalScope,
         proto: Option<SafeHandleObject>,
     ) -> DomRoot<ReadableStream> {
-        reflect_dom_object_with_proto_and_cx(
-            Box::new(ReadableStream::new_inherited()),
-            global,
-            proto,
-            cx,
-        )
+        reflect_dom_object_with_proto(cx, Box::new(ReadableStream::new_inherited()), global, proto)
     }
 
     /// Used as part of
@@ -1018,7 +1015,7 @@ impl ReadableStream {
         let strategy_size = extract_size_algorithm(cx, &QueuingStrategy::empty());
         let controller =
             ReadableStreamDefaultController::new(cx, global, source, 1.0, strategy_size);
-        controller.setup(cx, stream.clone())?;
+        controller.setup(cx, &stream)?;
         Ok(stream)
     }
 
@@ -1031,7 +1028,7 @@ impl ReadableStream {
         assert!(source.is_native());
         let stream = ReadableStream::new_with_proto(cx, global, None);
         let controller = ReadableByteStreamController::new(cx, source, 0.0, global);
-        controller.setup(cx, global, stream.clone())?;
+        controller.setup(cx, global, &stream)?;
         Ok(stream)
     }
 
@@ -1157,7 +1154,7 @@ impl ReadableStream {
                     .expect("failed to create buffer source for native byte chunk.");
 
                 let chunk = RootedTraceableBox::new(HeapBufferSource::<ArrayBufferViewU8>::new(
-                    BufferSource::ArrayBufferView(Heap::boxed(*chunk_object.handle())),
+                    chunk_object.handle(),
                 ));
                 controller
                     .enqueue(cx, chunk)
@@ -1265,7 +1262,7 @@ impl ReadableStream {
 
     /// Return bytes for synchronous use, if the stream has all data in memory.
     /// Useful for native source integration only.
-    pub(crate) fn get_in_memory_bytes(&self) -> Option<GenericSharedMemory> {
+    pub(crate) fn get_in_memory_bytes(&self, cx: &mut JSContext) -> Option<GenericSharedMemory> {
         match self.controller.borrow().as_ref() {
             Some(ControllerType::Default(controller)) => controller
                 .get()
@@ -1275,7 +1272,7 @@ impl ReadableStream {
             Some(ControllerType::Byte(controller)) => controller
                 .get()
                 .expect("Stream should have controller.")
-                .get_in_memory_bytes()
+                .get_in_memory_bytes(cx)
                 .map(GenericSharedMemory::from_vec),
             _ => unreachable!("Getting in-memory bytes for a stream without a controller"),
         }
@@ -2018,7 +2015,7 @@ impl ReadableStream {
         global: &GlobalScope,
         underlying_source_dict: JsUnderlyingSource,
         underlying_source_handle: SafeHandleObject,
-        stream: DomRoot<ReadableStream>,
+        stream: &ReadableStream,
         strategy_hwm: f64,
     ) -> Fallible<()> {
         // Let pullAlgorithm be an algorithm that returns a promise resolved with undefined.
@@ -2094,7 +2091,7 @@ impl ReadableStream {
 
         // Perform ! SetUpReadableStreamDefaultController
         controller
-            .setup(cx, DomRoot::from_ref(self))
+            .setup(cx, self)
             .expect("Setting up controller for transfer cannot fail.");
     }
 }
@@ -2148,7 +2145,7 @@ impl ReadableStreamMethods<crate::DomTypeHolder> for ReadableStream {
                 global,
                 underlying_source_dict,
                 underlying_source_obj.handle(),
-                stream.clone(),
+                &stream,
                 strategy_hwm,
             )?;
         } else {
@@ -2171,7 +2168,7 @@ impl ReadableStreamMethods<crate::DomTypeHolder> for ReadableStream {
             controller.set_underlying_source_this_object(underlying_source_obj.handle());
 
             // Perform ? SetUpReadableStreamDefaultControllerFromUnderlyingSource
-            controller.setup(cx, stream.clone())?;
+            controller.setup(cx, &stream)?;
         };
 
         Ok(stream)

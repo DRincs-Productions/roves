@@ -125,7 +125,7 @@ use log::{debug, error, info, trace, warn};
 use media::WindowGLContext;
 use net::image_cache::ImageCacheFactoryImpl;
 use net_traits::pub_domains::registered_domain_name;
-use net_traits::{self, AsyncRuntime, ResourceThreads, exit_fetch_thread, start_fetch_thread};
+use net_traits::{self, AsyncRuntime, FetchThread, ResourceThreads};
 use paint_api::{
     PaintMessage, PaintProxy, PinchZoomInfos, PipelineExitSource, SendableFrameTree,
     WebRenderExternalImageIdManager,
@@ -170,6 +170,7 @@ use servo_constellation_traits::{
 };
 use servo_url::{Host, ImmutableOrigin, ServoUrl};
 use storage_traits::StorageThreads;
+use storage_traits::cache_storage::CacheStorageThreadMessage;
 use storage_traits::client_storage::ClientStorageThreadMessage;
 use storage_traits::indexeddb::{IndexedDBThreadMsg, SyncOperation};
 use storage_traits::webstorage_thread::{WebStorageThreadMsg, WebStorageType};
@@ -772,11 +773,6 @@ where
 
     /// The main event loop for the constellation.
     fn run(&mut self) {
-        // Start a fetch thread.
-        // In single-process mode this will be the global fetch thread;
-        // in multi-process mode this will be used only by the canvas paint thread.
-        let join_handle = start_fetch_thread();
-
         while !self.shutting_down || !self.pipelines.is_empty() {
             // Randomly close a pipeline if --random-pipeline-closure-probability is set
             // This is for testing the hardening of the constellation.
@@ -790,11 +786,8 @@ where
             StyleThreadPool::shutdown();
         }
 
-        // Shut down the fetch thread started above.
-        exit_fetch_thread();
-        join_handle
-            .join()
-            .expect("Failed to join on the fetch thread in the constellation");
+        // Shut down the `FetchThread` if it has been started at any time.
+        FetchThread::exit();
 
         // Note: the last thing the constellation does, is asking the embedder to
         // shut down. This helps ensure we've shut down all our internal threads before
@@ -2773,6 +2766,10 @@ where
             generic_channel::channel().expect("Failed to create generic channel!");
         let (private_client_storage_generic_sender, private_client_storage_generic_receiver) =
             generic_channel::channel().expect("Failed to create generic channel!");
+        let (private_cache_storage_generic_sender, private_cache_storage_generic_receiver) =
+            generic_channel::channel().expect("Failed to create generic channel!");
+        let (public_cache_storage_generic_sender, public_cache_storage_generic_receiver) =
+            generic_channel::channel().expect("Failed to create generic channel!");
         let (public_indexeddb_ipc_sender, public_indexeddb_ipc_receiver) =
             generic_channel::channel().expect("Failed to create generic channel!");
         let (private_indexeddb_ipc_sender, private_indexeddb_ipc_receiver) =
@@ -2811,6 +2808,21 @@ where
             ClientStorageThreadMessage::Exit(private_client_storage_generic_sender),
         ) {
             warn!("Exit private client storage thread failed ({})", e);
+        }
+
+        debug!("Exiting public cache storage thread.");
+        if let Err(e) = generic_channel::GenericSend::send(
+            &self.public_storage_threads,
+            CacheStorageThreadMessage::Exit(public_cache_storage_generic_sender),
+        ) {
+            warn!("Exit public cache storage thread failed ({})", e);
+        }
+        debug!("Exiting private cache storage thread.");
+        if let Err(e) = generic_channel::GenericSend::send(
+            &self.private_storage_threads,
+            CacheStorageThreadMessage::Exit(private_cache_storage_generic_sender),
+        ) {
+            warn!("Exit private cache storage thread failed ({})", e);
         }
 
         debug!("Exiting public indexeddb resource threads.");
@@ -2922,6 +2934,12 @@ where
         }
         if let Err(e) = private_client_storage_generic_receiver.recv() {
             warn!("Exit private client storage thread failed ({:?})", e);
+        }
+        if let Err(e) = private_cache_storage_generic_receiver.recv() {
+            warn!("Exit private cache storage thread failed ({:?})", e);
+        }
+        if let Err(e) = public_cache_storage_generic_receiver.recv() {
+            warn!("Exit public cache storage thread failed ({:?})", e);
         }
         if let Err(e) = public_indexeddb_ipc_receiver.recv() {
             warn!("Exit public indexeddb thread failed ({:?})", e);
@@ -4193,11 +4211,17 @@ where
     ) {
         let new_pipeline_id = match new_reloader {
             NeedsToReload::No(pipeline_id) => pipeline_id,
-            NeedsToReload::Yes(pipeline_id, load_data) => {
+            NeedsToReload::Yes(pipeline_id, mut load_data) => {
                 debug!(
                     "{}: Reloading document {}",
                     browsing_context_id, pipeline_id,
                 );
+
+                // <https://html.spec.whatwg.org/multipage/#process-a-navigate-fetch>
+                // Step 7. If entry's document state's reload pending is true, then set request's reload-navigation flag.
+                // Step 8. Otherwise, if entry's document state's ever populated is true, then set request's history-navigation flag.
+                load_data.history_navigation = true;
+                load_data.reload_navigation = false;
 
                 let (
                     webview_id,
@@ -5910,8 +5934,8 @@ where
                 metric_value,
                 first_reflow,
             ),
-            PaintMetricEvent::LargestContentfulPaint(metric_value, area, url) => (
-                ProgressiveWebMetricType::LargestContentfulPaint { area, url },
+            PaintMetricEvent::LargestContentfulPaint(metric_value, area, url, id) => (
+                ProgressiveWebMetricType::LargestContentfulPaint { area, url, id },
                 metric_value,
                 false, // LCP doesn't care about first reflow
             ),

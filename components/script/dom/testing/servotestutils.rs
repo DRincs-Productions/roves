@@ -12,12 +12,13 @@ use script_bindings::codegen::GenericBindings::WindowBinding::WindowMethods;
 use script_bindings::domstring::DOMString;
 use script_bindings::reflector::Reflector;
 use script_bindings::root::DomRoot;
-use script_bindings::script_runtime::CanGc;
+use servo_base::Epoch;
 use time::Duration;
 
 use crate::dom::bindings::codegen::Bindings::ServoTestUtilsBinding::ServoTestUtilsMethods;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::layoutresult::LayoutResult;
+use crate::dom::types::AccessibilityUpdateResult;
 
 #[dom_struct]
 pub(crate) struct ServoTestUtils {
@@ -57,12 +58,12 @@ impl ServoTestUtilsMethods<crate::DomTypeHolder> for ServoTestUtils {
         }
 
         LayoutResult::new(
+            cx,
             global,
             phases,
             statistics.rebuilt_fragment_count,
             statistics.restyle_fragment_count,
             statistics.only_descendants_changed_count,
-            CanGc::from_cx(cx),
         )
     }
 
@@ -76,9 +77,27 @@ impl ServoTestUtilsMethods<crate::DomTypeHolder> for ServoTestUtils {
         panic!("explicit panic from script")
     }
 
-    fn ForceAccessibilityUpdate(cx: &mut JSContext, global: &GlobalScope) {
+    fn EnsureAccessibilityActive(global: &GlobalScope) {
+        let window = global.as_window();
+        window
+            .layout()
+            .set_accessibility_active(true, Epoch::default());
+    }
+
+    fn ForceAccessibilityUpdate(
+        cx: &mut JSContext,
+        global: &GlobalScope,
+    ) -> DomRoot<AccessibilityUpdateResult> {
         let window = global.as_window();
         window.layout().set_needs_accessibility_update();
-        let _ = window.Document().update_the_rendering(cx);
+        let (_, statistics) = window.Document().update_the_rendering(cx);
+
+        AccessibilityUpdateResult::new(
+            cx,
+            global,
+            statistics.nodes_updated_from_dom,
+            statistics.nodes_updated_from_tree,
+            statistics.nodes_in_tree_update,
+        )
     }
 }

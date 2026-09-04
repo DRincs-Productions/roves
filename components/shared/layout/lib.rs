@@ -28,8 +28,8 @@ use background_hang_monitor_api::BackgroundHangMonitorRegister;
 use bitflags::bitflags;
 use embedder_traits::{Cursor, ScriptToEmbedderChan, Theme, UntrustedNodeAddress, ViewportDetails};
 use euclid::{Point2D, Rect};
-use fonts::{FontContext, TextByteRange, WebFontDocumentContext};
-pub use layout_damage::LayoutDamage;
+use fonts::{FontContext, TextByteRange, WebFontDocumentContext, WebFontSetDifference};
+pub use layout_damage::{AccessibilityDamage, LayoutDamage};
 pub use layout_dom::{
     DangerousStyleElementOf, DangerousStyleNodeOf, LayoutDomTypeBundle, LayoutElementOf,
     LayoutNodeOf,
@@ -42,6 +42,7 @@ use malloc_size_of_derive::MallocSizeOf;
 use net_traits::image_cache::{ImageCache, ImageCacheFactory, PendingImageId};
 use net_traits::request::InternalRequest;
 use paint_api::CrossProcessPaintApi;
+use paint_api::largest_contentful_paint_candidate::LCPCandidate;
 use parking_lot::RwLock;
 use pixels::{RasterImage, Repeat};
 use profile_traits::mem::Report;
@@ -74,6 +75,7 @@ use style::stylist::Stylist;
 use style::thread_state::{self, ThreadState};
 use style::values::computed::Overflow;
 use style_traits::CSSPixel;
+use uuid::Uuid;
 use webrender_api::units::{DeviceIntSize, LayoutPoint, LayoutVector2D};
 use webrender_api::{ExternalScrollId, ImageKey};
 
@@ -113,6 +115,7 @@ pub enum LayoutNodeType {
 pub enum LayoutElementType {
     Element,
     HTMLBodyElement,
+    HTMLButtonElement,
     HTMLBRElement,
     HTMLCanvasElement,
     HTMLHtmlElement,
@@ -162,7 +165,7 @@ pub struct SVGElementData<'dom> {
     pub source: Option<Result<ServoUrl, ()>>,
     pub width: Option<&'dom AttrValue>,
     pub height: Option<&'dom AttrValue>,
-    pub svg_id: String,
+    pub svg_id: Uuid,
     pub view_box: Option<&'dom AttrValue>,
     /// The resolved `color` value baked into `source`'s serialized markup, as of the last
     /// time it was (re)serialized — `None` if never serialized yet. Inline SVG content isn't
@@ -197,7 +200,7 @@ impl SVGElementData<'_> {
 }
 
 /// The address of a node known to be valid. These are sent from script to layout.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct TrustedNodeAddress(pub *const c_void);
 
 #[expect(unsafe_code)]
@@ -292,22 +295,14 @@ pub trait Layout {
     /// if the [`ViewportDetails`] actually changed or `false` otherwise.
     fn set_viewport_details(&mut self, viewport_details: ViewportDetails) -> bool;
 
-    /// Load all fonts from the given stylesheet, returning the number of fonts that
-    /// need to be loaded.
-    fn load_web_fonts_from_stylesheet(
-        &self,
-        stylesheet: &ServoArc<Stylesheet>,
-        font_context: &WebFontDocumentContext,
-    );
-
-    /// Add a stylesheet to this Layout. This will add it to the Layout's `Stylist` as well as
-    /// loading all web fonts defined in the stylesheet. The second stylesheet is the insertion
-    /// point (if it exists, the sheet needs to be inserted before it).
+    /// Add a stylesheet to this Layout's `Stylist`.
+    ///
+    /// The second stylesheet is the insertion point (if it exists, the sheet needs to be
+    /// inserted before it).
     fn add_stylesheet(
         &mut self,
         stylesheet: ServoArc<Stylesheet>,
-        before_stylsheet: Option<ServoArc<Stylesheet>>,
-        font_context: &WebFontDocumentContext,
+        before_stylesheet: Option<ServoArc<Stylesheet>>,
     );
 
     /// Inform the layout that its ScriptThread is about to exit.
@@ -624,7 +619,7 @@ impl RestyleReason {
 }
 
 /// Information derived from a layout pass that needs to be returned to the script thread.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct ReflowResult {
     /// The phases that were run during this reflow.
     pub reflow_phases_run: ReflowPhasesRun,
@@ -644,6 +639,12 @@ pub struct ReflowResult {
     /// finished before reaching this stage of the layout. I.e., no update
     /// required.
     pub iframe_sizes: Option<IFrameSizes>,
+    /// Enumerates web fonts that were added or removed as part of restyling.
+    pub changed_web_fonts: WebFontSetDifference,
+    /// The LCP candidate during this layout pass, if any.
+    pub lcp_candidate: Option<LCPCandidate>,
+    /// The UntrustedNodeAddress for the LCP candidate if any.
+    pub lcp_node_address: Option<UntrustedNodeAddress>,
 }
 
 bitflags! {
@@ -679,6 +680,14 @@ pub struct ReflowStatistics {
     /// A count of the number of fragments that are reused, but may have had some descendant
     /// fragment change.
     pub only_descendants_changed_count: u32,
+    /// A count of the number of accessibility nodes which were checked for changes based on their
+    /// corresponding DOM nodes (whether the check resulted in changes or not).
+    pub nodes_updated_from_dom: u32,
+    /// A count of the number of accessibility nodes which were checked for changes based on data
+    /// already in the accessibility tree (whether the check resulted in changes or not).
+    pub nodes_updated_from_tree: u32,
+    /// A count of the number of accessibility nodes actually serialized to the TreeUpdate.
+    pub nodes_in_tree_update: u32,
 }
 
 /// Information needed for a script-initiated reflow that requires a restyle
@@ -720,6 +729,8 @@ pub struct ReflowRequest {
     pub highlighted_dom_node: Option<OpaqueNode>,
     /// The current font context.
     pub document_context: WebFontDocumentContext,
+    /// Damage to the accessibility tree from DOM mutations.
+    pub accessibility_damage: Option<Vec<(TrustedNodeAddress, AccessibilityDamage)>>,
     /// Nodes which were removed from the DOM tree since the last reflow, which were rooted in
     /// [`AccessibilityData`]. Only set if [`pref::expensive_accessibility_test_assertions_enabled`]
     /// is set.

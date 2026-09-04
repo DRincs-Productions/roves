@@ -6,12 +6,13 @@ use std::cell::Cell;
 use std::str::FromStr;
 
 use dom_struct::dom_struct;
+use js::context::NoGC;
+use js::conversions::ToJSValConvertible;
 use js::jsapi::{Heap, JSObject, Value};
 use js::rust::MutableHandleObject;
 use malloc_size_of::MallocSizeOf;
 use rustc_hash::FxHashMap;
 use script_bindings::cell::{DomRefCell, Ref};
-use script_bindings::conversions::SafeToJSValConvertible;
 use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
 use servo_base::id::{CryptoKeyId, CryptoKeyIndex};
 use servo_constellation_traits::{SerializableCryptoKey, SerializableCryptoKeyHandle};
@@ -49,6 +50,10 @@ pub(crate) enum Handle {
     Ed25519PublicKey(ed25519_dalek::VerifyingKey),
     X25519PrivateKey(x25519_dalek::StaticSecret),
     X25519PublicKey(x25519_dalek::PublicKey),
+    Ed448PrivateKey(ed448_goldilocks::SigningKey),
+    Ed448PublicKey(ed448_goldilocks::VerifyingKey),
+    X448PrivateKey(x448::StaticSecret),
+    X448PublicKey(x448::PublicKey),
     Aes128Key(aes::cipher::common::Key<aes::Aes128>),
     Aes192Key(aes::cipher::common::Key<aes::Aes192>),
     Aes256Key(aes::cipher::common::Key<aes::Aes256>),
@@ -68,6 +73,7 @@ pub(crate) enum Handle {
     MlDsa65PublicKey(ml_dsa::VerifyingKey<ml_dsa::MlDsa65>),
     MlDsa87PublicKey(ml_dsa::VerifyingKey<ml_dsa::MlDsa87>),
     ChaCha20Poly1305Key(chacha20poly1305::Key),
+    KmacKey(Zeroizing<Vec<u8>>),
     Argon2Password(Zeroizing<Vec<u8>>),
 }
 
@@ -224,7 +230,7 @@ impl Serializable for CryptoKey {
     type Data = SerializableCryptoKey;
 
     /// <https://w3c.github.io/webcrypto/#cryptokey-interface-serializable>
-    fn serialize(&self) -> Result<(CryptoKeyId, Self::Data), ()> {
+    fn serialize(&self, _no_gc: &NoGC) -> Result<(CryptoKeyId, Self::Data), ()> {
         // Step 1. Set serialized.[[Type]] to the [[type]] internal slot of value.
         // Step 2. Set serialized.[[Extractable]] to the [[extractable]] internal slot of value.
         // Step 3. Set serialized.[[Algorithm]] to the sub-serialization of the [[algorithm]]
@@ -311,6 +317,10 @@ impl MallocSizeOf for Handle {
             Handle::Ed25519PublicKey(bytes) => bytes.size_of(ops),
             Handle::X25519PrivateKey(private_key) => private_key.size_of(ops),
             Handle::X25519PublicKey(public_key) => public_key.size_of(ops),
+            Handle::Ed448PrivateKey(private_key) => private_key.size_of(ops),
+            Handle::Ed448PublicKey(public_key) => public_key.size_of(ops),
+            Handle::X448PrivateKey(private_key) => private_key.size_of(ops),
+            Handle::X448PublicKey(public_key) => public_key.size_of(ops),
             Handle::Aes128Key(key) => key.size_of(ops),
             Handle::Aes192Key(key) => key.size_of(ops),
             Handle::Aes256Key(key) => key.size_of(ops),
@@ -330,6 +340,7 @@ impl MallocSizeOf for Handle {
             Handle::MlDsa65PublicKey(public_key) => public_key.size_of(ops),
             Handle::MlDsa87PublicKey(public_key) => public_key.size_of(ops),
             Handle::ChaCha20Poly1305Key(key) => key.size_of(ops),
+            Handle::KmacKey(key) => key.size_of(ops),
             Handle::Argon2Password(password) => password.size_of(ops),
         }
     }
@@ -379,6 +390,25 @@ impl TryFrom<SerializableCryptoKeyHandle> for Handle {
             SerializableCryptoKeyHandle::X25519PublicKey(public_key) => {
                 Ok(Handle::X25519PublicKey((*public_key).into()))
             },
+            SerializableCryptoKeyHandle::Ed448PrivateKey(private_key) => {
+                Ok(Handle::Ed448PrivateKey(
+                    ed448_goldilocks::SigningKey::try_from(private_key).map_err(|_| ())?,
+                ))
+            },
+            SerializableCryptoKeyHandle::Ed448PublicKey(public_key) => Ok(Handle::Ed448PublicKey(
+                ed448_goldilocks::VerifyingKey::from_bytes(
+                    public_key.as_slice().try_into().map_err(|_| ())?,
+                )
+                .map_err(|_| ())?,
+            )),
+            SerializableCryptoKeyHandle::X448PrivateKey(private_key) => {
+                Ok(Handle::X448PrivateKey(x448::StaticSecret::from(
+                    <[u8; 56]>::try_from(private_key.as_slice()).map_err(|_| ())?,
+                )))
+            },
+            SerializableCryptoKeyHandle::X448PublicKey(public_key) => Ok(Handle::X448PublicKey(
+                x448::PublicKey::from_bytes_unchecked(public_key).ok_or(())?,
+            )),
             SerializableCryptoKeyHandle::Aes128Key(key) => Ok(Handle::Aes128Key(
                 aes::cipher::common::Key::<aes::Aes128>::try_from(key).map_err(|_| ())?,
             )),
@@ -456,6 +486,7 @@ impl TryFrom<SerializableCryptoKeyHandle> for Handle {
             SerializableCryptoKeyHandle::ChaCha20Poly1305Key(key) => Ok(
                 Handle::ChaCha20Poly1305Key(chacha20poly1305::Key::try_from(key).map_err(|_| ())?),
             ),
+            SerializableCryptoKeyHandle::KmacKey(key) => Ok(Handle::KmacKey(key.clone().into())),
             SerializableCryptoKeyHandle::Argon2Password(password) => {
                 Ok(Handle::Argon2Password(password.clone().into()))
             },
@@ -514,6 +545,18 @@ impl TryFrom<&Handle> for SerializableCryptoKeyHandle {
             Handle::X25519PublicKey(public_key) => Ok(
                 SerializableCryptoKeyHandle::X25519PublicKey(public_key.to_bytes()),
             ),
+            Handle::Ed448PrivateKey(private_key) => Ok(
+                SerializableCryptoKeyHandle::Ed448PrivateKey(private_key.as_bytes().to_vec()),
+            ),
+            Handle::Ed448PublicKey(public_key) => Ok(SerializableCryptoKeyHandle::Ed448PublicKey(
+                public_key.as_bytes().to_vec(),
+            )),
+            Handle::X448PrivateKey(private_key) => Ok(SerializableCryptoKeyHandle::X448PrivateKey(
+                private_key.as_bytes().to_vec(),
+            )),
+            Handle::X448PublicKey(public_key) => Ok(SerializableCryptoKeyHandle::X448PublicKey(
+                public_key.as_bytes().to_vec(),
+            )),
             Handle::Aes128Key(key) => Ok(SerializableCryptoKeyHandle::Aes128Key(key.to_vec())),
             Handle::Aes192Key(key) => Ok(SerializableCryptoKeyHandle::Aes192Key(key.to_vec())),
             Handle::Aes256Key(key) => Ok(SerializableCryptoKeyHandle::Aes256Key(key.to_vec())),
@@ -597,6 +640,7 @@ impl TryFrom<&Handle> for SerializableCryptoKeyHandle {
             Handle::ChaCha20Poly1305Key(key) => Ok(
                 SerializableCryptoKeyHandle::ChaCha20Poly1305Key(key.as_slice().to_vec()),
             ),
+            Handle::KmacKey(key) => Ok(SerializableCryptoKeyHandle::KmacKey(key.to_vec())),
             Handle::Argon2Password(password) => Ok(SerializableCryptoKeyHandle::Argon2Password(
                 password.to_vec(),
             )),

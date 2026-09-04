@@ -6,6 +6,7 @@
 
 use std::cell::RefCell;
 use std::os::raw::{c_char, c_int, c_void};
+use std::path::PathBuf;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
@@ -97,13 +98,28 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_version<'local>(
 pub extern "C" fn Java_org_servo_servoview_JNIServo_init<'local>(
     mut env: EnvUnowned<'local>,
     _: JClass<'local>,
-    _activity: JObject<'local>,
-    opts: JObject<'local>,
+    context: JObject<'local>,
+    args: JString<'local>,
+    url: JString<'local>,
+    size: JObject<'local>,
+    density: jfloat,
+    logStr: JString<'local>,
+    log: jboolean,
+    experimental_mode: jboolean,
     callbacks_obj: JObject<'local>,
     surface: JObject<'local>,
 ) {
     env.with_env(|env| -> jni::errors::Result<_> {
-        let (init_opts, log, log_str, _gst_debug_str) = get_options(env, &opts, &surface)?;
+        let (init_opts, log_str) = get_options(
+            env,
+            args,
+            url,
+            size,
+            density,
+            logStr,
+            experimental_mode,
+            &surface,
+        )?;
 
         if log {
             // Note: Android debug logs are stripped from a release build.
@@ -137,7 +153,16 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_init<'local>(
                     .with_max_level(log::LevelFilter::Debug)
                     .with_filter(filter_builder.build())
                     .with_tag("servoshell"),
-            )
+            );
+
+            // In production mode we don't redirect stdout / stderr, so any
+            // panic messages would be lost without this hook.
+            std::panic::set_hook(Box::new(|info| {
+                let current_thread = std::thread::current();
+                let thread_name = current_thread.name().unwrap_or("<unnamed>");
+                error!("Panic in Rust code (thread: {thread_name}):");
+                error!("{info}");
+            }));
         }
 
         info!("init");
@@ -161,6 +186,10 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_init<'local>(
         let host = Rc::new(HostCallbacks::new(jvm));
 
         crate::init_crypto();
+
+        if let Err(error) = set_default_config_dir(env, &context) {
+            error!("Failed to determine Android config directory: {error:?}");
+        }
 
         let (opts, mut preferences, servoshell_preferences) =
             match parse_command_line_arguments(init_opts.args.as_slice()) {
@@ -236,10 +265,10 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_setExperimentalMode<'local>(
 pub extern "C" fn Java_org_servo_servoview_JNIServo_resize<'local>(
     mut env: EnvUnowned<'local>,
     _: JClass<'local>,
-    coordinates: JObject<'local>,
+    size: JObject<'local>,
 ) {
     env.with_env(|env| -> jni::errors::Result<_> {
-        let viewport_rect = jni_coordinate_to_rust_viewport_rect(env, &coordinates)?;
+        let viewport_rect = jni_coordinate_to_rust_viewport_rect(env, &size)?;
         debug!("resize {viewport_rect:#?}");
         call(env, |s| s.resize(viewport_rect));
         Ok(())
@@ -586,11 +615,11 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_resumePainting<'local>(
     mut env: EnvUnowned<'local>,
     _: JClass<'local>,
     surface: JObject<'local>,
-    coordinates: JObject<'local>,
+    size: JObject<'local>,
 ) {
     env.with_env(|env| -> jni::errors::Result<_> {
         debug!("resumePainting");
-        let viewport_rect = jni_coordinate_to_rust_viewport_rect(env, &coordinates)?;
+        let viewport_rect = jni_coordinate_to_rust_viewport_rect(env, &size)?;
         let (_, window_handle) = display_and_window_handle(env, &surface);
 
         call(env, |s| {
@@ -888,59 +917,66 @@ fn new_string_as_jvalue<'local>(
 
 fn jni_coordinate_to_rust_viewport_rect<'local>(
     env: &mut Env<'local>,
-    obj: &JObject<'local>,
+    size: &JObject<'local>,
 ) -> Result<Rect<i32, DevicePixel>, Error> {
-    let x = env.get_field(obj, jni_str!("x"), jni_sig!("I"))?.i()?;
-    let y = env.get_field(obj, jni_str!("y"), jni_sig!("I"))?.i()?;
+    let width = env
+        .call_method(size, jni_str!("getWidth"), jni_sig!("()I"), &[])?
+        .i()?;
+    let height = env
+        .call_method(size, jni_str!("getHeight"), jni_sig!("()I"), &[])?
+        .i()?;
 
-    let width = env.get_field(obj, jni_str!("width"), jni_sig!("I"))?.i()?;
-    let height = env.get_field(obj, jni_str!("height"), jni_sig!("I"))?.i()?;
-
-    Ok(Rect::new(Point2D::new(x, y), Size2D::new(width, height)))
+    Ok(Rect::new(Point2D::origin(), Size2D::new(width, height)))
 }
 
-fn get_field_as_string<'local>(
+fn set_default_config_dir<'local>(
     env: &mut Env<'local>,
-    obj: &JObject<'local>,
-    field: &JNIStr,
-) -> Result<String, Error> {
-    let string_value = env
-        .get_field(obj, field, jni_sig!("Ljava/lang/String;"))?
+    context: &JObject<'local>,
+) -> Result<(), Error> {
+    let files_dir = env
+        .call_method(
+            context,
+            jni_str!("getFilesDir"),
+            jni_sig!("()Ljava/io/File;"),
+            &[],
+        )?
         .l()?;
-    JString::cast_local(env, string_value)?.try_to_string(env)
+    let path = env
+        .call_method(
+            &files_dir,
+            jni_str!("getAbsolutePath"),
+            jni_sig!("()Ljava/lang/String;"),
+            &[],
+        )?
+        .l()?;
+    let path = JString::cast_local(env, path)?.try_to_string(env)?;
+
+    let config_dir = PathBuf::from(path).join("servo");
+    if let Err(error) = std::fs::create_dir_all(&config_dir) {
+        error!("Failed to create config directory at {config_dir:?}: {error:?}");
+    }
+    debug!("Default config dir: {config_dir:?}");
+    let _ = crate::prefs::DEFAULT_CONFIG_DIR
+        .set(config_dir)
+        .inspect_err(|path| warn!("Default config dir was already set to {path:?}"));
+    Ok(())
 }
 
 fn get_options<'local>(
     env: &mut Env<'local>,
-    opts: &JObject<'local>,
+    args: JString<'local>,
+    url: JString<'local>,
+    size: JObject<'local>,
+    density: jfloat,
+    logStr: JString<'local>,
+    experimental_mode: jboolean,
     surface: &JObject<'local>,
-) -> Result<(InitOptions, bool, Option<String>, Option<String>), Error> {
-    let args = get_field_as_string(env, opts, jni_str!("args")).ok();
-    let url = get_field_as_string(env, opts, jni_str!("url")).ok();
-    let log_str = get_field_as_string(env, opts, jni_str!("logStr")).ok();
-    let gst_debug_str = get_field_as_string(env, opts, jni_str!("gstDebugStr")).ok();
+) -> Result<(InitOptions, Option<String>), Error> {
+    let args = JString::cast_local(env, args)?.try_to_string(env).ok();
+    let url = JString::cast_local(env, url)?.try_to_string(env).ok();
+    let log_str = JString::cast_local(env, logStr)?.try_to_string(env).ok();
 
-    let experimental_mode = env
-        .get_field(opts, jni_str!("experimentalMode"), jni_sig!("Z"))?
-        .z()?;
-
-    let density = env
-        .get_field(opts, jni_str!("density"), jni_sig!("F"))?
-        .f()?;
-
-    let log = env
-        .get_field(opts, jni_str!("enableLogs"), jni_sig!("Z"))?
-        .z()?;
-
-    let coordinates = env
-        .get_field(
-            opts,
-            jni_str!("coordinates"),
-            jni_sig!("Lorg/servo/servoview/JNIServo$ServoCoordinates;"),
-        )?
-        .l()?;
-
-    let viewport_rect = jni_coordinate_to_rust_viewport_rect(env, &coordinates)?;
+    let viewport_rect = jni_coordinate_to_rust_viewport_rect(env, &size)?;
 
     let mut args: Vec<String> = args
         .and_then(|args| {
@@ -967,7 +1003,7 @@ fn get_options<'local>(
         display_handle,
     };
 
-    Ok((opts, log, log_str, gst_debug_str))
+    Ok((opts, log_str))
 }
 
 fn display_and_window_handle(

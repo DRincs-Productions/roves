@@ -10,7 +10,7 @@ use js::context::JSContext;
 use js::rust::HandleObject;
 use keyboard_types::Modifiers;
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::reflect_dom_object_with_proto_and_cx;
+use script_bindings::reflector::reflect_dom_object_with_proto;
 use style::Atom;
 use style_traits::CSSPixel;
 
@@ -19,7 +19,7 @@ use crate::dom::bindings::codegen::Bindings::PointerEventBinding::{
     PointerEventInit, PointerEventMethods,
 };
 use crate::dom::bindings::num::Finite;
-use crate::dom::bindings::root::DomRoot;
+use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::event::{EventBubbles, EventCancelable};
 use crate::dom::eventtarget::EventTarget;
@@ -48,12 +48,12 @@ pub(crate) struct PointerEvent {
     azimuth_angle: Cell<f64>,
     pointer_type: DomRefCell<DOMString>,
     is_primary: Cell<bool>,
-    coalesced_events: DomRefCell<Vec<DomRoot<PointerEvent>>>,
-    predicted_events: DomRefCell<Vec<DomRoot<PointerEvent>>>,
+    coalesced_events: DomRefCell<Vec<Dom<PointerEvent>>>,
+    predicted_events: DomRefCell<Vec<Dom<PointerEvent>>>,
 }
 
 impl PointerEvent {
-    pub(crate) fn new_inherited() -> PointerEvent {
+    fn new_inherited() -> PointerEvent {
         PointerEvent {
             mouseevent: MouseEvent::new_inherited(),
             pointer_id: Cell::new(0),
@@ -73,21 +73,12 @@ impl PointerEvent {
         }
     }
 
-    pub(crate) fn new_uninitialized(cx: &mut JSContext, window: &Window) -> DomRoot<PointerEvent> {
-        Self::new_uninitialized_with_proto(cx, window, None)
-    }
-
     fn new_uninitialized_with_proto(
         cx: &mut JSContext,
         window: &Window,
         proto: Option<HandleObject>,
     ) -> DomRoot<PointerEvent> {
-        reflect_dom_object_with_proto_and_cx(
-            Box::new(PointerEvent::new_inherited()),
-            window,
-            proto,
-            cx,
-        )
+        reflect_dom_object_with_proto(cx, Box::new(PointerEvent::new_inherited()), window, proto)
     }
 
     #[expect(clippy::too_many_arguments)]
@@ -217,8 +208,14 @@ impl PointerEvent {
         ev.azimuth_angle.set(azimuth_angle);
         *ev.pointer_type.borrow_mut() = pointer_type;
         ev.is_primary.set(is_primary);
-        *ev.coalesced_events.borrow_mut() = coalesced_events;
-        *ev.predicted_events.borrow_mut() = predicted_events;
+        *ev.coalesced_events.borrow_mut() = coalesced_events
+            .into_iter()
+            .map(|event| event.as_traced())
+            .collect();
+        *ev.predicted_events.borrow_mut() = predicted_events
+            .into_iter()
+            .map(|event| event.as_traced())
+            .collect();
         ev
     }
 }
@@ -335,12 +332,20 @@ impl PointerEventMethods<crate::DomTypeHolder> for PointerEvent {
 
     /// <https://w3c.github.io/pointerevents/#dom-pointerevent-getcoalescedevents>
     fn GetCoalescedEvents(&self) -> Vec<DomRoot<PointerEvent>> {
-        self.coalesced_events.borrow().clone()
+        self.coalesced_events
+            .borrow()
+            .iter()
+            .map(|event| event.as_rooted())
+            .collect()
     }
 
     /// <https://w3c.github.io/pointerevents/#dom-pointerevent-getpredictedevents>
     fn GetPredictedEvents(&self) -> Vec<DomRoot<PointerEvent>> {
-        self.predicted_events.borrow().clone()
+        self.predicted_events
+            .borrow()
+            .iter()
+            .map(|event| event.as_rooted())
+            .collect()
     }
 
     /// <https://dom.spec.whatwg.org/#dom-event-istrusted>

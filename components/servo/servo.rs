@@ -32,7 +32,7 @@ use net::embedder::NetToEmbedderMsg;
 use net::image_cache::ImageCacheFactoryImpl;
 use net::protocols::ProtocolRegistry;
 use net::resource_thread::new_resource_threads;
-use net_traits::{ResourceThreads, exit_fetch_thread, start_fetch_thread};
+use net_traits::{FetchThread, ResourceThreads};
 use paint::{InitialPaintState, Paint};
 pub use paint_api::rendering_context::RenderingContext;
 use paint_api::{CrossProcessPaintApi, PaintMessage, PaintProxy};
@@ -77,6 +77,8 @@ use servo_wakelock::DefaultWakeLockDelegate;
 use storage::new_storage_threads;
 use storage_traits::StorageThreads;
 use style::global_style_data::StyleThreadPool;
+#[cfg(feature = "webxr")]
+use webxr::WebXrRegistry;
 
 use crate::clipboard_delegate::StringRequest;
 #[cfg(feature = "gamepad")]
@@ -973,8 +975,6 @@ impl Servo {
             mem_profiler_chan: mem_profiler_chan.clone(),
             shutdown_state: shutdown_state.clone(),
             event_loop_waker: event_loop_waker.clone(),
-            #[cfg(feature = "webxr")]
-            webxr_registry: builder.webxr_registry,
         });
 
         let protocols = Arc::new(protocols);
@@ -1151,6 +1151,12 @@ impl Servo {
             .pending_handled_input_events
             .borrow_mut()
             .push(residue_event);
+    }
+
+    #[cfg(feature = "webxr")]
+    /// Registers a [`WebXrRegistry`]
+    pub fn register_webxr_registry(&self, registry: Box<dyn WebXrRegistry>) {
+        self.0.paint.borrow().register_webxr_registry(registry);
     }
 }
 
@@ -1343,9 +1349,6 @@ pub fn run_content_process(token: String) {
         UnprivilegedContent::ScriptEventLoop(new_event_loop_info) => {
             media_platform::init();
 
-            // Start the fetch thread for this content process.
-            let fetch_thread_join_handle = start_fetch_thread();
-
             set_logger(
                 new_event_loop_info
                     .initial_script_state
@@ -1381,11 +1384,8 @@ pub fn run_content_process(token: String) {
 
             StyleThreadPool::shutdown();
 
-            // Shut down the fetch thread started above.
-            exit_fetch_thread();
-            fetch_thread_join_handle
-                .join()
-                .expect("Failed to join on the fetch thread in the constellation");
+            // Shut down the `FetchThread` if it had been started in the course of execution.
+            FetchThread::exit();
         },
         UnprivilegedContent::ServiceWorker(content) => {
             content.start::<ServiceWorkerManager>();
@@ -1433,19 +1433,12 @@ impl EventLoopWaker for DefaultEventLoopWaker {
     fn wake(&self) {}
 }
 
-#[cfg(feature = "webxr")]
-struct DefaultWebXrRegistry;
-#[cfg(feature = "webxr")]
-impl webxr::WebXrRegistry for DefaultWebXrRegistry {}
-
 /// Builder for [`Servo`].
 pub struct ServoBuilder {
     opts: Option<Box<Opts>>,
     preferences: Option<Box<Preferences>>,
     event_loop_waker: Box<dyn EventLoopWaker>,
     protocol_registry: ProtocolRegistry,
-    #[cfg(feature = "webxr")]
-    webxr_registry: Box<dyn webxr::WebXrRegistry>,
 }
 
 impl Default for ServoBuilder {
@@ -1455,8 +1448,6 @@ impl Default for ServoBuilder {
             preferences: Default::default(),
             event_loop_waker: Box::new(DefaultEventLoopWaker),
             protocol_registry: Default::default(),
-            #[cfg(feature = "webxr")]
-            webxr_registry: Box::new(DefaultWebXrRegistry),
         }
     }
 }
@@ -1483,12 +1474,6 @@ impl ServoBuilder {
 
     pub fn protocol_registry(mut self, protocol_registry: ProtocolRegistry) -> Self {
         self.protocol_registry = protocol_registry;
-        self
-    }
-
-    #[cfg(feature = "webxr")]
-    pub fn webxr_registry(mut self, webxr_registry: Box<dyn webxr::WebXrRegistry>) -> Self {
-        self.webxr_registry = webxr_registry;
         self
     }
 }

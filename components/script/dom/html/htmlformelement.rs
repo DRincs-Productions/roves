@@ -19,6 +19,7 @@ use rand::random;
 use rustc_hash::FxBuildHasher;
 use script_bindings::cell::DomRefCell;
 use script_bindings::codegen::GenericBindings::DocumentFragmentBinding::DocumentFragmentMethods;
+use script_bindings::dom::UnrootedDom;
 use script_bindings::match_domstring_ascii;
 use script_bindings::reflector::DomObject;
 use servo_constellation_traits::{LoadData, LoadOrigin, NavigationHistoryBehavior};
@@ -61,6 +62,8 @@ use crate::dom::eventtarget::EventTarget;
 use crate::dom::file::File;
 use crate::dom::formdata::FormData;
 use crate::dom::formdataevent::FormDataEvent;
+use crate::dom::html::form_controls::htmlinputelement::HTMLInputElement;
+use crate::dom::html::form_controls::input_type::InputType;
 use crate::dom::html::htmlbuttonelement::HTMLButtonElement;
 use crate::dom::html::htmlcollection::CollectionFilter;
 use crate::dom::html::htmldatalistelement::HTMLDataListElement;
@@ -73,8 +76,6 @@ use crate::dom::html::htmlobjectelement::HTMLObjectElement;
 use crate::dom::html::htmloutputelement::HTMLOutputElement;
 use crate::dom::html::htmlselectelement::HTMLSelectElement;
 use crate::dom::html::htmltextareaelement::HTMLTextAreaElement;
-use crate::dom::html::input_element::HTMLInputElement;
-use crate::dom::input_element::input_type::InputType;
 use crate::dom::node::virtualmethods::VirtualMethods;
 use crate::dom::node::{Node, NodeFlags, NodeTraits, UnbindContext, VecPreOrderInsertionHelper};
 use crate::dom::nodelist::{NodeList, RadioListMode};
@@ -84,7 +85,6 @@ use crate::dom::types::{DocumentFragment, HTMLIFrameElement};
 use crate::dom::window::Window;
 use crate::links::{LinkRelations, get_element_target, valid_navigable_target_name_or_keyword};
 use crate::navigation::navigate;
-use crate::script_runtime::CanGc;
 use crate::script_thread::ScriptThread;
 
 /// <https://html.spec.whatwg.org/multipage/#the-form-element>
@@ -187,18 +187,19 @@ impl HTMLFormElement {
         false
     }
 
-    pub(crate) fn nth_for_radio_list(
+    pub(crate) fn nth_for_radio_list<'a>(
         &self,
+        no_gc: &'a NoGC,
         index: u32,
         mode: RadioListMode,
         name: &Atom,
-    ) -> Option<DomRoot<Node>> {
+    ) -> Option<UnrootedDom<'a, Node>> {
         self.controls
             .borrow()
             .iter()
             .filter(|n| HTMLFormElement::filter_for_radio_list(mode, n, name))
             .nth(index as usize)
-            .map(|n| DomRoot::from_ref(n.upcast::<Node>()))
+            .map(|n| UnrootedDom::upcast(UnrootedDom::from_dom(n.clone(), no_gc)))
     }
 
     pub(crate) fn count_for_radio_list(&self, mode: RadioListMode, name: &Atom) -> u32 {
@@ -368,8 +369,9 @@ impl HTMLFormElementMethods<crate::DomTypeHolder> for HTMLFormElement {
     /// <https://html.spec.whatwg.org/multipage/#dom-form-elements>
     fn Elements(&self, cx: &mut JSContext) -> DomRoot<HTMLFormControlsCollection> {
         #[derive(JSTraceable, MallocSizeOf)]
+        #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
         struct ElementsFilter {
-            form: DomRoot<HTMLFormElement>,
+            form: Dom<HTMLFormElement>,
         }
         impl CollectionFilter for ElementsFilter {
             fn filter<'a>(&self, elem: &'a Element, _root: &'a Node) -> bool {
@@ -418,18 +420,21 @@ impl HTMLFormElementMethods<crate::DomTypeHolder> for HTMLFormElement {
                     _ => return false,
                 };
 
-                match form_owner {
-                    Some(form_owner) => form_owner == self.form,
-                    None => false,
-                }
+                form_owner
+                    .as_deref()
+                    .is_some_and(|form_owner| self.form == form_owner)
             }
         }
         DomRoot::from_ref(self.elements.init_once(|| {
-            let filter = Box::new(ElementsFilter {
-                form: DomRoot::from_ref(self),
-            });
             let window = self.owner_window();
-            HTMLFormControlsCollection::new(cx, &window, self, filter)
+            HTMLFormControlsCollection::new(
+                cx,
+                &window,
+                self,
+                Box::new(ElementsFilter {
+                    form: Dom::from_ref(self),
+                }),
+            )
         }))
     }
 
@@ -480,7 +485,7 @@ impl HTMLFormElementMethods<crate::DomTypeHolder> for HTMLFormElement {
 
         // Step 5
         // candidates_length is 1, so we can unwrap item 0
-        let element_node = candidates.upcast::<NodeList>().Item(0).unwrap();
+        let element_node = candidates.upcast::<NodeList>().Item(cx, 0).unwrap();
         past_names_map.insert(
             name,
             (
@@ -775,7 +780,7 @@ impl HTMLFormElement {
                 atom!("submit"),
                 true,
                 true,
-                submitter_button.map(DomRoot::from_ref),
+                submitter_button,
             );
             let event = event.upcast::<Event>();
             event.fire(cx, self.upcast::<EventTarget>());
@@ -1023,7 +1028,7 @@ impl HTMLFormElement {
         let request_body = bytes
             .extract(cx, &global, false)
             .expect("Couldn't extract body.")
-            .into_net_request_body()
+            .into_net_request_body(cx)
             .0;
         load_data.data = Some(request_body);
 
@@ -1282,9 +1287,7 @@ impl HTMLFormElement {
                         let custom = child.downcast::<HTMLElement>().unwrap();
                         if custom.is_form_associated_custom_element() {
                             // https://html.spec.whatwg.org/multipage/#face-entry-construction
-                            let internals = custom
-                                .upcast::<Element>()
-                                .ensure_element_internals(CanGc::from_cx(cx));
+                            let internals = custom.upcast::<Element>().ensure_element_internals(cx);
                             internals.perform_entry_construction(&mut data_set);
                             // Otherwise no form value has been set so there is nothing to do.
                         }
@@ -1345,7 +1348,7 @@ impl HTMLFormElement {
         let window = self.owner_window();
 
         // Step 6
-        let form_data = FormData::new(Some(ret), &window.global(), CanGc::from_cx(cx));
+        let form_data = FormData::new(cx, Some(ret), &window.global());
 
         // Step 7
         let event = FormDataEvent::new(
@@ -1412,7 +1415,7 @@ impl HTMLFormElement {
             // In that case we can't use insert_pre_order, because the position of a element not in
             // the tree can't be compared to anything in the DOM tree.
             let control_element = control.to_element();
-            if control_element.upcast::<Node>().has_parent() {
+            if control_element.upcast::<Node>().is_in_a_document_tree() {
                 controls.insert_pre_order(control_element, root);
             } else {
                 controls.push(Dom::from_ref(control_element));
@@ -1484,13 +1487,54 @@ impl Element {
     }
 }
 
-#[derive(Clone, JSTraceable, MallocSizeOf)]
+#[derive(JSTraceable, MallocSizeOf)]
+#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
+pub(crate) enum FormDatumValueUnrooted {
+    File(Dom<File>),
+    String(DOMString),
+}
+
+#[derive(JSTraceable, MallocSizeOf)]
+#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
+pub(crate) struct FormDatumUnrooted {
+    pub(crate) ty: DOMString,
+    pub(crate) name: DOMString,
+    pub(crate) value: FormDatumValueUnrooted,
+}
+
+impl FormDatumUnrooted {
+    pub(crate) fn root(&self) -> FormDatum {
+        FormDatum {
+            ty: self.ty.clone(),
+            name: self.name.clone(),
+            value: match &self.value {
+                FormDatumValueUnrooted::File(file) => FormDatumValue::File(file.as_rooted()),
+                FormDatumValueUnrooted::String(s) => FormDatumValue::String(s.clone()),
+            },
+        }
+    }
+}
+
+impl From<FormDatum> for FormDatumUnrooted {
+    fn from(value: FormDatum) -> Self {
+        Self {
+            ty: value.ty,
+            name: value.name,
+            value: match value.value {
+                FormDatumValue::File(file) => FormDatumValueUnrooted::File(file.as_traced()),
+                FormDatumValue::String(s) => FormDatumValueUnrooted::String(s),
+            },
+        }
+    }
+}
+
+#[derive(JSTraceable, MallocSizeOf)]
 pub(crate) enum FormDatumValue {
     File(DomRoot<File>),
     String(DOMString),
 }
 
-#[derive(Clone, JSTraceable, MallocSizeOf)]
+#[derive(JSTraceable, MallocSizeOf)]
 pub(crate) struct FormDatum {
     pub(crate) ty: DOMString,
     pub(crate) name: DOMString,
@@ -1531,19 +1575,28 @@ pub(crate) enum FormSubmitterElement<'a> {
 }
 
 impl FormSubmitterElement<'_> {
+    /// <https://html.spec.whatwg.org/multipage/#concept-fs-action>
     fn action(&self) -> DOMString {
         match *self {
             FormSubmitterElement::Form(form) => form.Action(),
-            FormSubmitterElement::Input(input_element) => input_element.get_form_attribute(
-                &local_name!("formaction"),
-                |i| i.FormAction(),
-                |f| f.Action(),
-            ),
-            FormSubmitterElement::Button(button_element) => button_element.get_form_attribute(
-                &local_name!("formaction"),
-                |i| i.FormAction(),
-                |f| f.Action(),
-            ),
+            FormSubmitterElement::Input(input_element) => input_element
+                .to_element()
+                .get_nullable_string_attribute(&local_name!("formaction"))
+                .unwrap_or_else(|| {
+                    input_element
+                        .form_owner()
+                        .map(|form| form.Action())
+                        .unwrap_or_default()
+                }),
+            FormSubmitterElement::Button(button_element) => button_element
+                .to_element()
+                .get_nullable_string_attribute(&local_name!("formaction"))
+                .unwrap_or_else(|| {
+                    button_element
+                        .form_owner()
+                        .map(|form| form.Action())
+                        .unwrap_or_default()
+                }),
         }
     }
 
@@ -1648,7 +1701,7 @@ impl FormSubmitterElement<'_> {
 
 pub(crate) trait FormControl: DomObject<ReflectorType = ()> + NodeTraits {
     fn form_owner(&self) -> Option<DomRoot<HTMLFormElement>>;
-    fn set_form_owner(&self, form: Option<&HTMLFormElement>);
+    fn set_form_owner(&self, cx: &mut JSContext, form: Option<&HTMLFormElement>);
     fn to_html_element(&self) -> &HTMLElement;
 
     fn to_element(&self) -> &Element {
@@ -1668,7 +1721,7 @@ pub(crate) trait FormControl: DomObject<ReflectorType = ()> + NodeTraits {
         let node = elem.upcast::<Node>();
         node.set_flag(NodeFlags::PARSER_ASSOCIATED_FORM_OWNER, true);
         form.add_control(cx, self);
-        self.set_form_owner(Some(form));
+        self.set_form_owner(cx, Some(form));
     }
 
     /// <https://html.spec.whatwg.org/multipage/#reset-the-form-owner>
@@ -1729,7 +1782,7 @@ pub(crate) trait FormControl: DomObject<ReflectorType = ()> + NodeTraits {
                     None,
                 )
             }
-            self.set_form_owner(new_owner.as_deref());
+            self.set_form_owner(cx, new_owner.as_deref());
         }
     }
 

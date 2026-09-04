@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use atomic_refcell::AtomicRefCell;
 use base64::Engine as _;
 use cssparser::{Parser, ParserInput};
 use dom_struct::dom_struct;
@@ -9,7 +10,6 @@ use html5ever::{LocalName, Prefix, local_name, ns};
 use js::context::JSContext;
 use js::rust::HandleObject;
 use layout_api::SVGElementData;
-use script_bindings::cell::DomRefCell;
 use servo_url::ServoUrl;
 use style::attr::AttrValue;
 use style::color::AbsoluteColor;
@@ -38,12 +38,13 @@ use crate::dom::svg::svggraphicselement::SVGGraphicsElement;
 #[dom_struct]
 pub(crate) struct SVGSVGElement {
     svggraphicselement: SVGGraphicsElement,
-    uuid: String,
+    #[no_trace]
+    uuid: Uuid,
     // The XML source of subtree rooted at this SVG element, serialized into
     // a base64 encoded `data:` url. This is cached to avoid recomputation
     // on each layout and must be invalidated when the subtree changes.
     #[no_trace]
-    cached_serialized_data_url: DomRefCell<Option<Result<ServoUrl, ()>>>,
+    cached_serialized_data_url: AtomicRefCell<Option<Result<ServoUrl, ()>>>,
     // The computed `color` value baked into `cached_serialized_data_url`'s markup (as a
     // `color` attribute on the root, for `currentColor` to resolve against -- see
     // `serialize_and_cache_subtree`), as of the last time it was (re)computed. Compared
@@ -51,7 +52,7 @@ pub(crate) struct SVGSVGElement {
     // `SVGElementData::resolved_color`) so a `stroke`/`fill: currentColor` notices a restyle
     // this cached, non-cascade-aware serialization would otherwise never see.
     #[no_trace]
-    cached_resolved_color: DomRefCell<Option<AbsoluteColor>>,
+    cached_resolved_color: AtomicRefCell<Option<AbsoluteColor>>,
 }
 
 impl SVGSVGElement {
@@ -62,7 +63,7 @@ impl SVGSVGElement {
     ) -> SVGSVGElement {
         SVGSVGElement {
             svggraphicselement: SVGGraphicsElement::new_inherited(local_name, prefix, document),
-            uuid: Uuid::new_v4().to_string(),
+            uuid: Uuid::new_v4(),
             cached_serialized_data_url: Default::default(),
             cached_resolved_color: Default::default(),
         }
@@ -89,15 +90,28 @@ impl SVGSVGElement {
         cx: &mut js::context::JSContext,
         resolved_color: AbsoluteColor,
     ) {
-        let cloned_nodes = self.process_use_elements(cx);
-
-        let serialize_result = self
+        let document_fragment = self.owner_document().CreateDocumentFragment(cx);
+        let cloned_node = Node::clone(
+            cx,
+            self.upcast(),
+            None,
+            CloneChildrenFlag::CloneChildren,
+            None,
+        );
+        if document_fragment
             .upcast::<Node>()
-            .xml_serialize(TraversalScope::IncludeNode);
+            .AppendChild(cx, &cloned_node)
+            .is_err()
+        {
+            error!("Unable to clone SVG tree");
+            *self.cached_serialized_data_url.borrow_mut() = Some(Err(()));
+            *self.cached_resolved_color.borrow_mut() = None;
+            return;
+        }
 
-        self.cleanup_cloned_nodes(cx, &cloned_nodes);
+        self.process_use_elements(cx, &cloned_node);
 
-        let Ok(xml_source) = serialize_result else {
+        let Ok(xml_source) = cloned_node.xml_serialize(TraversalScope::IncludeNode) else {
             *self.cached_serialized_data_url.borrow_mut() = Some(Err(()));
             *self.cached_resolved_color.borrow_mut() = None;
             return;
@@ -128,7 +142,7 @@ impl SVGSVGElement {
         let xml_source = inject_root_color_attribute(&xml_source, &legacy_srgb_css);
 
         let base64_encoded_source = base64::engine::general_purpose::STANDARD.encode(xml_source);
-        let data_url = format!("data:image/svg+xml;base64,{}", base64_encoded_source);
+        let data_url = format!("data:image/svg+xml;base64,{base64_encoded_source}");
         match ServoUrl::parse(&data_url) {
             Ok(url) => {
                 *self.cached_serialized_data_url.borrow_mut() = Some(Ok(url));
@@ -138,40 +152,49 @@ impl SVGSVGElement {
         };
     }
 
-    fn process_use_elements(&self, cx: &mut JSContext) -> Vec<DomRoot<Node>> {
-        let mut cloned_nodes = Vec::new();
-        let root_node = self.upcast::<Node>();
-
+    fn process_use_elements(&self, cx: &mut JSContext, root_node: &Node) {
         for node in root_node.traverse_preorder(ShadowIncluding::No) {
             if let Some(element) = node.downcast::<Element>() &&
-                element.local_name() == &local_name!("use") &&
-                let Some(cloned) = self.process_single_use_element(cx, element)
+                element.local_name() == &local_name!("use")
             {
-                cloned_nodes.push(cloned);
+                self.process_single_use_element(cx, element, root_node)
             }
         }
-
-        cloned_nodes
     }
 
     fn process_single_use_element(
         &self,
         cx: &mut JSContext,
         use_element: &Element,
-    ) -> Option<DomRoot<Node>> {
+        root_node: &Node,
+    ) {
         let href = use_element.get_string_attribute(&local_name!("href"));
-        let href_view = href.str();
-        let id_str = href_view.strip_prefix("#")?;
-        let id = DOMString::from(id_str);
+        let Some(id_string) = href.str().strip_prefix("#").map(DOMString::from) else {
+            return;
+        };
+
         let document = self.upcast::<Node>().owner_doc();
-        let referenced_element = document.GetElementById(cx, id)?;
+        let Some(referenced_element) = document.GetElementById(cx, id_string) else {
+            return;
+        };
         let referenced_node = referenced_element.upcast::<Node>();
-        let has_svg_ancestor = referenced_node
-            .inclusive_ancestors(ShadowIncluding::No)
-            .any(|ancestor| ancestor.is::<SVGSVGElement>());
-        if !has_svg_ancestor {
-            return None;
-        }
+
+        // Don't use this node if it doesn't have an `<svg>` ancestor.
+        if !referenced_node
+            .inclusive_ancestors_unrooted(cx.no_gc(), ShadowIncluding::No)
+            .any(|ancestor| ancestor.is::<SVGSVGElement>())
+        {
+            return;
+        };
+
+        // Don't use this node if it already exists within the same `<svg>` element.
+        if referenced_node
+            .inclusive_ancestors_unrooted(cx.no_gc(), ShadowIncluding::No)
+            .any(|ancestor| *ancestor == self.upcast())
+        {
+            return;
+        };
+
         let cloned_node = Node::clone(
             cx,
             referenced_node,
@@ -179,21 +202,7 @@ impl SVGSVGElement {
             CloneChildrenFlag::CloneChildren,
             None,
         );
-        let root_node = self.upcast::<Node>();
         let _ = root_node.AppendChild(cx, &cloned_node);
-
-        Some(cloned_node)
-    }
-
-    fn cleanup_cloned_nodes(&self, cx: &mut JSContext, cloned_nodes: &[DomRoot<Node>]) {
-        if cloned_nodes.is_empty() {
-            return;
-        }
-        let root_node = self.upcast::<Node>();
-
-        for cloned_node in cloned_nodes {
-            let _ = root_node.RemoveChild(cx, cloned_node);
-        }
     }
 
     fn invalidate_cached_serialized_subtree_and_rasterization_result(&self) {
@@ -259,27 +268,23 @@ fn inject_root_color_attribute(xml_source: &str, css_color: &str) -> String {
 }
 
 impl<'dom> LayoutDom<'dom, SVGSVGElement> {
-    #[expect(unsafe_code)]
     pub(crate) fn data(self) -> SVGElementData<'dom> {
-        let svg_id = self.unsafe_get().uuid.clone();
+        let svg_id = self.unsafe_get().uuid;
         let element = self.upcast::<Element>();
         let width = element.get_attr_for_layout(&ns!(), &local_name!("width"));
         let height = element.get_attr_for_layout(&ns!(), &local_name!("height"));
         let view_box = element.get_attr_for_layout(&ns!(), &local_name!("viewBox"));
         SVGElementData {
-            source: unsafe {
-                self.unsafe_get()
-                    .cached_serialized_data_url
-                    .borrow_for_layout()
-                    .clone()
-            },
-            resolved_color: unsafe {
-                *self.unsafe_get().cached_resolved_color.borrow_for_layout()
-            },
+            source: self
+                .unsafe_get()
+                .cached_serialized_data_url
+                .borrow()
+                .clone(),
             width,
             height,
             view_box,
             svg_id,
+            resolved_color: self.unsafe_get().cached_resolved_color.borrow().clone(),
         }
     }
 }

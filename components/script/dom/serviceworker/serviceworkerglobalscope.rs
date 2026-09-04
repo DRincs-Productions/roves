@@ -37,6 +37,7 @@ use crate::dom::bindings::codegen::Bindings::ClientBinding::FrameType;
 use crate::dom::bindings::codegen::Bindings::ServiceWorkerGlobalScopeBinding;
 use crate::dom::bindings::codegen::Bindings::ServiceWorkerGlobalScopeBinding::ServiceWorkerGlobalScopeMethods;
 use crate::dom::bindings::codegen::Bindings::WorkerBinding::WorkerType;
+use crate::dom::bindings::codegen::UnionTypes::ClientOrServiceWorkerOrMessagePort;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::bindings::str::DOMString;
@@ -50,7 +51,7 @@ use crate::dom::dedicatedworkerglobalscope::AutoWorkerReset;
 use crate::dom::event::Event;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::extendableevent::ExtendableEvent;
-use crate::dom::extendablemessageevent::{ExtendableMessageEvent, MessageSource};
+use crate::dom::extendablemessageevent::ExtendableMessageEvent;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::globalscope::script_execution::{ErrorReporting, RethrowErrors};
 #[cfg(feature = "webgpu")]
@@ -61,7 +62,7 @@ use crate::fetch::{CspViolationsProcessor, load_whole_resource};
 use crate::messaging::{CommonScriptMsg, ScriptEventLoopSender};
 use crate::realms::enter_auto_realm;
 use crate::script_module::ScriptFetchOptions;
-use crate::script_runtime::{CanGc, IntroductionType, Runtime, ThreadSafeJSContext};
+use crate::script_runtime::{IntroductionType, Runtime, ThreadSafeJSContext};
 use crate::task_queue::{QueuedTask, QueuedTaskConversion, TaskQueue};
 use crate::task_source::TaskSourceName;
 
@@ -435,7 +436,6 @@ impl ServiceWorkerGlobalScope {
                 .use_url_credentials(true)
                 .pipeline_id(Some(pipeline_id))
                 .referrer_policy(referrer_policy)
-                .insecure_requests_policy(worker_scope.insecure_requests_policy())
                 // TODO: Use policy container from ScopeThings
                 .policy_container(global_scope.policy_container())
                 .origin(origin);
@@ -537,12 +537,12 @@ impl ServiceWorkerGlobalScope {
 
                 rooted!(&in(cx) let mut message = UndefinedValue());
                 let client = Client::new(
+                    cx,
                     scope.upcast(),
                     self.swmanager_sender.clone(),
                     self.scope_url.clone(),
                     FrameType::None,
                     self.worker_id,
-                    CanGc::from_cx(cx),
                 );
                 if let Ok(ports) =
                     structuredclone::read(cx, scope.upcast(), *msg.data, message.handle_mut())
@@ -552,7 +552,7 @@ impl ServiceWorkerGlobalScope {
                         target,
                         scope.upcast(),
                         message.handle(),
-                        Some(MessageSource::Client(client)),
+                        Some(&ClientOrServiceWorkerOrMessagePort::Client(client)),
                         ports,
                     );
                 } else {
@@ -588,9 +588,9 @@ impl ServiceWorkerGlobalScope {
 unsafe extern "C" fn interrupt_callback(cx: *mut RawJSContext) -> bool {
     // SAFETY: it is safe to construct a JSContext from engine hook.
     let mut cx = unsafe { JSContext::from_ptr(std::ptr::NonNull::new(cx).unwrap()) };
-    let realm = CurrentRealm::assert(&mut cx);
+    let mut realm = CurrentRealm::assert(&mut cx);
 
-    let global = GlobalScope::from_current_realm(&realm);
+    let global = GlobalScope::from_current_realm(&mut realm);
     let worker =
         DomRoot::downcast::<WorkerGlobalScope>(global).expect("global is not a worker scope");
     assert!(worker.is::<ServiceWorkerGlobalScope>());

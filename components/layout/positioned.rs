@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::mem;
+use std::ops::Range;
 use std::sync::Arc;
 
 use app_units::Au;
@@ -172,12 +173,18 @@ impl PositioningContext {
         offset: &PhysicalVec<Au>,
         index: PositioningContextLength,
     ) {
-        self.absolutes
-            .iter_mut()
-            .skip(index.0)
-            .for_each(|hoisted_box| {
-                hoisted_box.adjust_static_position_with_offset(offset);
-            })
+        self.adjust_static_position_of_hoisted_fragments_in_range(offset, &(index..self.len()))
+    }
+
+    /// See documentation for [PositioningContext::adjust_static_position_of_hoisted_fragments].
+    pub(crate) fn adjust_static_position_of_hoisted_fragments_in_range(
+        &mut self,
+        offset: &PhysicalVec<Au>,
+        range: &Range<PositioningContextLength>,
+    ) {
+        for hoisted_box in &mut self.absolutes[range.start.0..range.end.0] {
+            hoisted_box.adjust_static_position_with_offset(offset);
+        }
     }
 
     /// Given `fragment_layout_fn`, a closure which lays out a fragment in a provided
@@ -461,10 +468,12 @@ impl HoistedAbsolutelyPositionedBox {
     ) -> Fragment {
         // The static position rect was calculated assuming that the containing block would be
         // established by the content box of some ancestor, but the actual containing block is
-        // established by the padding box. So we need to add the padding of that ancestor.
-        let mut static_position_rect = self
-            .static_position_rect()
-            .outer_rect(-containing_block_padding);
+        // established by the padding box. So we need to translate the rect by the padding of
+        // that ancestor.
+        let mut static_position_rect = self.static_position_rect().translate(PhysicalVec::new(
+            containing_block_padding.left,
+            containing_block_padding.top,
+        ));
         static_position_rect.size = static_position_rect.size.max(PhysicalSize::zero());
         let fully_adjusted_static_position_rect =
             static_position_rect.to_logical(&containing_block.into());

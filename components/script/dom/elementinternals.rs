@@ -8,7 +8,7 @@ use dom_struct::dom_struct;
 use html5ever::local_name;
 use js::context::JSContext;
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::{Reflector, reflect_dom_object};
+use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
 
 use crate::dom::bindings::codegen::Bindings::ElementInternalsBinding::{
     ElementInternalsMethods, ValidityStateFlags,
@@ -16,24 +16,26 @@ use crate::dom::bindings::codegen::Bindings::ElementInternalsBinding::{
 use crate::dom::bindings::codegen::UnionTypes::FileOrUSVStringOrFormData;
 use crate::dom::bindings::error::{Error, ErrorResult, Fallible};
 use crate::dom::bindings::inheritance::Castable;
-use crate::dom::bindings::root::{Dom, DomRoot, LayoutDom, MutNullableDom};
+use crate::dom::bindings::root::{Dom, DomRoot, LayoutDom, MutNullableDom, ToLayoutOptional};
 use crate::dom::bindings::str::{DOMString, USVString};
 use crate::dom::customstateset::CustomStateSet;
 use crate::dom::element::Element;
 use crate::dom::file::File;
 use crate::dom::html::htmlelement::HTMLElement;
-use crate::dom::html::htmlformelement::{FormDatum, FormDatumValue, HTMLFormElement};
+use crate::dom::html::htmlformelement::{
+    FormDatum, FormDatumUnrooted, FormDatumValue, HTMLFormElement,
+};
 use crate::dom::node::{Node, NodeTraits};
 use crate::dom::nodelist::NodeList;
 use crate::dom::shadowroot::ShadowRoot;
 use crate::dom::validation::{Validatable, is_barred_by_datalist_ancestor};
 use crate::dom::validitystate::{ValidationFlags, ValidityState};
-use crate::script_runtime::CanGc;
 
-#[derive(Clone, JSTraceable, MallocSizeOf)]
+#[derive(JSTraceable, MallocSizeOf)]
+#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 enum SubmissionValue {
-    File(DomRoot<File>),
-    FormData(Vec<FormDatum>),
+    File(Dom<File>),
+    FormData(Vec<FormDatumUnrooted>),
     USVString(USVString),
     None,
 }
@@ -43,14 +45,18 @@ impl From<Option<&FileOrUSVStringOrFormData>> for SubmissionValue {
         match value {
             None => SubmissionValue::None,
             Some(FileOrUSVStringOrFormData::File(file)) => {
-                SubmissionValue::File(DomRoot::from_ref(file))
+                SubmissionValue::File(Dom::from_ref(file))
             },
             Some(FileOrUSVStringOrFormData::USVString(usv_string)) => {
                 SubmissionValue::USVString(usv_string.clone())
             },
-            Some(FileOrUSVStringOrFormData::FormData(form_data)) => {
-                SubmissionValue::FormData(form_data.datums())
-            },
+            Some(FileOrUSVStringOrFormData::FormData(form_data)) => SubmissionValue::FormData(
+                form_data
+                    .datums()
+                    .into_iter()
+                    .map(|data| data.into())
+                    .collect(),
+            ),
         }
     }
 }
@@ -94,12 +100,12 @@ impl ElementInternals {
         }
     }
 
-    pub(crate) fn new(element: &HTMLElement, can_gc: CanGc) -> DomRoot<ElementInternals> {
+    pub(crate) fn new(cx: &mut JSContext, element: &HTMLElement) -> DomRoot<ElementInternals> {
         let global = element.owner_window();
-        reflect_dom_object(
+        reflect_dom_object_with_cx(
             Box::new(ElementInternals::new_inherited(element)),
             &*global,
-            can_gc,
+            cx,
         )
     }
 
@@ -113,14 +119,6 @@ impl ElementInternals {
 
     fn set_custom_validity_error_message(&self, message: DOMString) {
         *self.custom_validity_error_message.borrow_mut() = message;
-    }
-
-    fn set_submission_value(&self, value: SubmissionValue) {
-        *self.submission_value.borrow_mut() = value;
-    }
-
-    fn set_state(&self, value: SubmissionValue) {
-        *self.state.borrow_mut() = value;
     }
 
     pub(crate) fn set_form_owner(&self, form: Option<&HTMLFormElement>) {
@@ -155,7 +153,7 @@ impl ElementInternals {
         }
 
         if let SubmissionValue::FormData(datums) = &*self.submission_value.borrow() {
-            entry_list.extend(datums.iter().cloned());
+            entry_list.extend(datums.iter().map(|data| data.root()));
             return;
         }
         let name = self
@@ -196,7 +194,7 @@ impl ElementInternals {
     pub(crate) fn custom_states_for_layout<'a>(&'a self) -> Option<LayoutDom<'a, CustomStateSet>> {
         #[expect(unsafe_code)]
         unsafe {
-            self.states.get_inner_as_layout()
+            self.states.to_layout()
         }
     }
 }
@@ -232,13 +230,13 @@ impl ElementInternalsMethods<crate::DomTypeHolder> for ElementInternals {
         }
 
         // Step 3: Set target element's submission value
-        self.set_submission_value(value.as_ref().into());
+        *self.submission_value.borrow_mut() = value.as_ref().into();
 
         match maybe_state {
             // Step 4: If the state argument of the function is omitted, set element's state to its submission value
-            None => self.set_state(value.as_ref().into()),
+            None => *self.state.borrow_mut() = value.as_ref().into(),
             // Steps 5-6: Otherwise, set element's state to state
-            Some(state) => self.set_state(state.as_ref().into()),
+            Some(state) => *self.state.borrow_mut() = state.as_ref().into(),
         }
         Ok(())
     }
@@ -339,7 +337,7 @@ impl ElementInternalsMethods<crate::DomTypeHolder> for ElementInternals {
     }
 
     /// <https://html.spec.whatwg.org/multipage#dom-elementinternals-labels>
-    fn GetLabels(&self, can_gc: CanGc) -> Fallible<DomRoot<NodeList>> {
+    fn GetLabels(&self, cx: &mut JSContext) -> Fallible<DomRoot<NodeList>> {
         if !self.is_target_form_associated() {
             return Err(Error::NotSupported(Some(
                 "The target element is not a form-associated custom element".to_owned(),
@@ -347,9 +345,9 @@ impl ElementInternalsMethods<crate::DomTypeHolder> for ElementInternals {
         }
         Ok(self.labels_node_list.or_init(|| {
             NodeList::new_labels_list(
+                cx,
                 self.target_element.upcast::<Node>().owner_doc().window(),
                 &self.target_element,
-                can_gc,
             )
         }))
     }
@@ -395,12 +393,12 @@ impl ElementInternalsMethods<crate::DomTypeHolder> for ElementInternals {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-elementinternals-states>
-    fn States(&self, can_gc: CanGc) -> DomRoot<CustomStateSet> {
+    fn States(&self, cx: &mut JSContext) -> DomRoot<CustomStateSet> {
         self.states.or_init(|| {
             CustomStateSet::new(
+                cx,
                 &self.target_element.owner_window(),
                 &self.target_element,
-                can_gc,
             )
         })
     }

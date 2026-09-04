@@ -7,14 +7,14 @@ use std::vec::Vec;
 
 use dom_struct::dom_struct;
 use euclid::default::{Rect, Size2D};
-use js::context::JSContext;
+use js::context::{JSContext, NoGC};
 use js::gc::CustomAutoRooterGuard;
 use js::jsapi::JSObject;
 use js::rust::HandleObject;
 use js::typedarray::{ClampedU8, HeapUint8ClampedArray, TypedArray, Uint8ClampedArray};
 use pixels::{Snapshot, SnapshotAlphaMode, SnapshotPixelFormat};
 use rustc_hash::FxHashMap;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto_and_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
 use script_bindings::trace::RootedTraceableBox;
 use servo_base::generic_channel::GenericSharedMemory;
 use servo_base::id::{ImageDataId, ImageDataIndex};
@@ -101,7 +101,7 @@ impl ImageData {
                 return Err(Error::InvalidState(None));
             }
             // 3. Initialize the data attribute of imageData to source.
-            HeapBufferSource::<ClampedU8>::from_view(source)
+            HeapBufferSource::<ClampedU8>::from_view(cx, source)
         } else {
             // 2. Otherwise (source was not given):
             match settings.pixelFormat {
@@ -139,7 +139,8 @@ impl ImageData {
             // 8. Otherwise, initialize the colorSpace attribute of imageData to "srgb".
             .unwrap_or(PredefinedColorSpace::Srgb);
 
-        Ok(reflect_dom_object_with_proto_and_cx(
+        Ok(reflect_dom_object_with_proto(
+            cx,
             Box::new(ImageData {
                 reflector_: Reflector::new(),
                 width,
@@ -150,7 +151,6 @@ impl ImageData {
             }),
             global,
             proto,
-            cx,
         ))
     }
 
@@ -164,7 +164,7 @@ impl ImageData {
 
     /// Nothing must change the array on the JS side while the slice is live.
     #[expect(unsafe_code)]
-    pub(crate) unsafe fn as_slice(&self) -> &[u8] {
+    pub(crate) unsafe fn as_slice(&self, no_gc: &NoGC) -> &[u8] {
         assert!(self.data.is_initialized());
         let internal_data = self
             .data
@@ -176,51 +176,55 @@ impl ImageData {
         // because the array may be manipulated from JS while the reference
         // is live.
         unsafe {
-            let ptr: *const [u8] = internal_data.as_slice() as *const _;
+            let ptr: *const [u8] = internal_data.as_slice_safe(no_gc).unwrap_or(&[]) as *const _;
             &*ptr
         }
     }
 
     /// Nothing must change the array on the JS side while the slice is live.
     #[expect(unsafe_code)]
-    pub(crate) unsafe fn get_rect(&self, rect: Rect<u32>) -> Cow<'_, [u8]> {
-        pixels::rgba8_get_rect(unsafe { self.as_slice() }, self.get_size().to_u32(), rect)
+    pub(crate) unsafe fn get_rect(&self, no_gc: &NoGC, rect: Rect<u32>) -> Cow<'_, [u8]> {
+        pixels::rgba8_get_rect(
+            unsafe { self.as_slice(no_gc) },
+            self.get_size().to_u32(),
+            rect,
+        )
     }
 
     #[expect(unsafe_code)]
-    pub(crate) fn get_snapshot_rect(&self, rect: Rect<u32>) -> Snapshot {
+    pub(crate) fn get_snapshot_rect(&self, no_gc: &NoGC, rect: Rect<u32>) -> Snapshot {
         Snapshot::from_vec(
             rect.size,
             SnapshotPixelFormat::RGBA,
             SnapshotAlphaMode::Transparent {
                 premultiplied: false,
             },
-            unsafe { self.get_rect(rect).into_owned() },
+            unsafe { self.get_rect(no_gc, rect).into_owned() },
         )
     }
 
     #[expect(unsafe_code)]
-    pub(crate) fn get_snapshot(&self) -> Snapshot {
+    pub(crate) fn get_snapshot(&self, no_gc: &NoGC) -> Snapshot {
         Snapshot::from_vec(
             self.get_size(),
             SnapshotPixelFormat::RGBA,
             SnapshotAlphaMode::Transparent {
                 premultiplied: false,
             },
-            unsafe { self.as_slice().to_vec() },
+            unsafe { self.as_slice(no_gc).to_vec() },
         )
     }
 
     #[expect(unsafe_code)]
-    pub(crate) fn to_shared_memory(&self) -> GenericSharedMemory {
+    pub(crate) fn to_shared_memory(&self, no_gc: &NoGC) -> GenericSharedMemory {
         // This is safe because we copy the slice content
-        GenericSharedMemory::from_bytes(unsafe { self.as_slice() })
+        GenericSharedMemory::from_bytes(unsafe { self.as_slice(no_gc) })
     }
 
     #[expect(unsafe_code)]
-    pub(crate) fn to_vec(&self) -> Vec<u8> {
+    pub(crate) fn to_vec(&self, no_gc: &NoGC) -> Vec<u8> {
         // This is safe because we copy the slice content
-        unsafe { self.as_slice() }.to_vec()
+        unsafe { self.as_slice(no_gc) }.to_vec()
     }
 }
 
@@ -229,9 +233,9 @@ impl Serializable for ImageData {
     type Data = SerializableImageData;
 
     /// <https://html.spec.whatwg.org/multipage/#the-imagedata-interface:serializable-objects>
-    fn serialize(&self) -> Result<(ImageDataId, Self::Data), ()> {
+    fn serialize(&self, no_gc: &NoGC) -> Result<(ImageDataId, Self::Data), ()> {
         // Step 1 Set serialized.[[Data]] to the sub-serialization of the value of value's data attribute.
-        let data = self.to_vec();
+        let data = self.to_vec(no_gc);
 
         // Step 2 Set serialized.[[Width]] to the value of value's width attribute.
         // Step 3 Set serialized.[[Height]] to the value of value's height attribute.

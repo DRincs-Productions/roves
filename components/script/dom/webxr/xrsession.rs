@@ -8,7 +8,7 @@ use std::f64::consts::{FRAC_PI_2, PI};
 use std::rc::Rc;
 use std::{mem, ptr};
 
-use script_bindings::reflector::reflect_dom_object_with_cx;
+use script_bindings::reflector::reflect_weak_referenceable_dom_object;
 use servo_base::cross_process_instant::CrossProcessInstant;
 use dom_struct::dom_struct;
 use js::context::JSContext;
@@ -165,15 +165,15 @@ impl XRSession {
         };
         let render_state = XRRenderState::new(cx, window, 0.1, 1000.0, ivfov, None, Vec::new());
         let input_sources = XRInputSourceArray::new(cx, window);
-        let ret = reflect_dom_object_with_cx(
-            Box::new(XRSession::new_inherited(
+        let ret = reflect_weak_referenceable_dom_object(
+            cx,
+            Rc::new(XRSession::new_inherited(
                 session,
                 &render_state,
                 &input_sources,
                 mode,
             )),
             window,
-            cx,
         );
         ret.attach_event_handler();
         ret.setup_raf_loop(frame_receiver);
@@ -280,15 +280,16 @@ impl XRSession {
                 // Step 3-4
                 self.global()
                     .as_window()
-                    .Navigator()
+                    .Navigator(cx)
                     .Xr(cx)
                     .end_session(self);
                 // Step 5: We currently do not have any such promises
                 // Step 6 is happening n the XR session
                 // https://immersive-web.github.io/webxr/#dom-xrsession-end step 3
-                for promise in self.end_promises.borrow_mut().drain(..) {
+                for promise in self.end_promises.borrow().iter() {
                     promise.resolve_native(cx, &());
                 }
+                self.end_promises.safe_borrow_mut(cx.no_gc()).clear();
                 // Step 7
                 let event = XRSessionEvent::new(
                     cx,
@@ -469,7 +470,10 @@ impl XRSession {
             mem::swap(&mut *self.raf_callback_list.borrow_mut(), &mut current);
         }
 
-        let time = self.global().performance().to_dom_high_res_time_stamp(time);
+        let time = self
+            .global()
+            .performance(cx)
+            .to_dom_high_res_time_stamp(time);
         let frame = XRFrame::new(cx, self.global().as_window(), self, frame);
 
         // Step 8-9
@@ -913,7 +917,7 @@ impl XRSessionMethods<crate::DomTypeHolder> for XRSession {
         self.ended.set(true);
         self.global()
             .as_window()
-            .Navigator()
+            .Navigator(cx)
             .Xr(cx)
             .end_session(self);
         self.session.borrow_mut().end_session();

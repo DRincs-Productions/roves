@@ -14,16 +14,16 @@ use devtools_traits::DevtoolScriptControlMsg;
 use dom_struct::dom_struct;
 use fonts::FontContext;
 use js::context::JSContext;
+use js::conversions::ToJSValConvertible;
 use js::jsval::UndefinedValue;
 use net_traits::blob_url_store::UrlWithBlobClaim;
 use net_traits::image_cache::ImageCache;
-use net_traits::policy_container::{PolicyContainer, RequestPolicyContainer};
+use net_traits::policy_container::PolicyContainer;
 use net_traits::request::{
     CredentialsMode, Destination, InsecureRequestsPolicy, Origin, PreloadedResources, Referrer,
     RequestClient,
 };
 use script_bindings::cell::DomRefCell;
-use script_bindings::conversions::SafeToJSValConvertible;
 use script_bindings::interfaces::HasOrigin;
 use servo_base::generic_channel::{GenericReceiver, RoutedReceiver};
 use servo_base::id::{BrowsingContextId, ScriptEventLoopId, WebViewId};
@@ -57,9 +57,9 @@ use crate::dom::types::DebuggerGlobalScope;
 use crate::dom::webgpu::identityhub::IdentityHub;
 use crate::dom::workerglobalscope::WorkerGlobalScope;
 use crate::messaging::{CommonScriptMsg, ScriptEventLoopReceiver, ScriptEventLoopSender};
-use crate::script_module::{ModuleFetchClient, fetch_a_module_worker_script_graph};
+use crate::script_module::fetch_a_module_worker_script_graph;
+use crate::script_runtime::Runtime;
 use crate::script_runtime::ScriptThreadEventCategory::WorkerEvent;
-use crate::script_runtime::{CanGc, Runtime};
 use crate::task_queue::{QueuedTask, QueuedTaskConversion, TaskQueue};
 use crate::task_source::TaskSourceName;
 
@@ -415,12 +415,11 @@ impl SharedWorkerGlobalScope {
 
                 let request_client = RequestClient {
                     preloaded_resources: PreloadedResources::default(),
-                    policy_container: RequestPolicyContainer::PolicyContainer(
-                        policy_container.clone(),
-                    ),
+                    policy_container: policy_container.clone(),
                     origin: Origin::Origin(origin.clone()),
                     is_nested_browsing_context,
                     insecure_requests_policy,
+                    has_trustworthy_ancestor_origin: current_global_ancestor_trustworthy,
                 };
 
                 let event_loop_sender = ScriptEventLoopSender::SharedWorker(own_sender.clone());
@@ -521,15 +520,6 @@ impl SharedWorkerGlobalScope {
                 // It is intentionally unused because its Drop unregisters the worker.
                 let _registration_cleanup = SharedWorkerRegistrationCleanup { registration_id };
 
-                let fetch_client = ModuleFetchClient {
-                    insecure_requests_policy,
-                    has_trustworthy_ancestor_origin: current_global_ancestor_trustworthy,
-                    policy_container,
-                    client: request_client,
-                    pipeline_id,
-                    origin,
-                };
-
                 // Step 11. Let destination be "sharedworker" if is shared is true, and
                 // "worker" otherwise.
                 // Step 12. Obtain script by switching on options["type"]:
@@ -538,7 +528,7 @@ impl SharedWorkerGlobalScope {
                         fetch_a_classic_worker_script(
                             scope,
                             worker_url,
-                            fetch_client,
+                            request_client,
                             Destination::SharedWorker,
                             Some(webview_id),
                             referrer,
@@ -549,8 +539,8 @@ impl SharedWorkerGlobalScope {
                         fetch_a_module_worker_script_graph(
                             cx,
                             global_scope,
-                            worker_url.url(),
-                            fetch_client,
+                            worker_url,
+                            request_client,
                             Destination::SharedWorker,
                             referrer,
                             credentials,
@@ -659,10 +649,10 @@ impl SharedWorkerGlobalScope {
     ) -> DomRoot<MessagePort> {
         // Let inside port be a new MessagePort object in inside settings's realm.
         let inside_port = MessagePort::new_transferred(
+            cx,
             self.upcast::<GlobalScope>(),
             *port_impl.message_port_id(),
             port_impl.entangled_port_id(),
-            CanGc::from_cx(cx),
         );
         self.upcast::<GlobalScope>()
             .track_message_port(&inside_port, Some(port_impl));

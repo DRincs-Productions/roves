@@ -1,8 +1,8 @@
 import java.util.regex.Pattern
 
 plugins {
-    id("com.android.application")
-    id("org.jetbrains.kotlin.plugin.compose")
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.compose)
 }
 
 android {
@@ -13,10 +13,10 @@ android {
 
     defaultConfig {
         applicationId = "org.servo.servoshell"
-        minSdk = 33
+        minSdk = libs.versions.android.sdk.min.get().toInt()
         targetSdk = 34
         versionCode = generatedVersionCode
-        versionName = "0.4.0"
+        versionName = "0.5.0"
 
         // Sourced from the game's own web app manifest (`manifest.webmanifest`/
         // `manifest.json`/`site.webmanifest`) by `mach bundle --android --content-dir` --
@@ -44,16 +44,16 @@ android {
         resValue("string", "servoThemeColor", (project.findProperty("servoThemeColor") as String?) ?: "")
     }
 
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_1_8
-        targetCompatibility = JavaVersion.VERSION_1_8
-    }
-
     // AGP 8+ requires this explicit opt-in for defaultConfig's `resValue` (used above for
     // `servoThemeColor`) -- off by default since AGP stopped generating it unconditionally
     // for build-time-cost reasons.
     buildFeatures {
         resValues = true
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_1_8
+        targetCompatibility = JavaVersion.VERSION_1_8
     }
 
     val signingKeyInfo = getSigningKeyInfo()
@@ -176,9 +176,8 @@ dependencies {
     } else {
         implementation(project(":servoview"))
     }
-    implementation("androidx.appcompat:appcompat:1.6.1")
-    implementation("com.google.android.material:material:1.13.0")
-    implementation("androidx.compose.material3:material3:1.4.0")
-    implementation("androidx.constraintlayout:constraintlayout:2.1.3")
-    implementation("androidx.preference:preference-ktx:1.2.0")
+    implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.material3.compose)
+    implementation(libs.androidx.material3.compose.adaptive)
+    implementation(libs.androidx.preference)
 }

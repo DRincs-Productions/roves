@@ -4,8 +4,7 @@
 
 //! Methods for layout of node
 
-use std::borrow::Cow;
-
+use atomic_refcell::AtomicRef;
 use layout_api::{
     GenericLayoutData, HTMLCanvasData, HTMLMediaData, LayoutElementType, LayoutNodeType,
     SVGElementData, SharedSelection,
@@ -16,21 +15,22 @@ use script_bindings::codegen::InheritTypes::{
     ElementTypeId, HTMLElementTypeId, SVGElementTypeId, SVGGraphicsElementTypeId,
 };
 use servo_base::id::{BrowsingContextId, PipelineId};
+use servo_base::text::{RangeAny, Utf32CodeUnits};
 use servo_url::ServoUrl;
 use style::dom::OpaqueNode;
 use style::selector_parser::PseudoElement;
 
 use crate::dom::bindings::inheritance::{CharacterDataTypeId, NodeTypeId};
-use crate::dom::bindings::root::{LayoutDom, ToLayout};
+use crate::dom::bindings::root::{LayoutDom, ToLayout, ToLayoutOptional};
 use crate::dom::document::Document;
 use crate::dom::element::Element;
+use crate::dom::html::form_controls::htmlinputelement::HTMLInputElement;
 use crate::dom::html::htmlcanvaselement::HTMLCanvasElement;
 use crate::dom::html::htmliframeelement::HTMLIFrameElement;
 use crate::dom::html::htmlimageelement::HTMLImageElement;
 use crate::dom::html::htmlslotelement::HTMLSlotElement;
 use crate::dom::html::htmltextareaelement::HTMLTextAreaElement;
 use crate::dom::html::htmlvideoelement::HTMLVideoElement;
-use crate::dom::html::input_element::HTMLInputElement;
 use crate::dom::shadowroot::ShadowRoot;
 use crate::dom::svg::svgsvgelement::SVGSVGElement;
 use crate::dom::text::Text;
@@ -40,7 +40,7 @@ impl<'dom> LayoutDom<'dom, Node> {
     #[inline]
     #[expect(unsafe_code)]
     pub(crate) fn parent_node_ref(self) -> Option<LayoutDom<'dom, Node>> {
-        unsafe { self.unsafe_get().parent_node().get_inner_as_layout() }
+        unsafe { self.unsafe_get().parent_node().to_layout() }
     }
 
     #[inline]
@@ -86,36 +86,31 @@ impl<'dom> LayoutDom<'dom, Node> {
     #[inline]
     #[expect(unsafe_code)]
     pub(crate) fn first_child_ref(self) -> Option<LayoutDom<'dom, Node>> {
-        unsafe { self.unsafe_get().first_child().get_inner_as_layout() }
+        unsafe { self.unsafe_get().first_child().to_layout() }
     }
 
     #[inline]
     #[expect(unsafe_code)]
     pub(crate) fn last_child_ref(self) -> Option<LayoutDom<'dom, Node>> {
-        unsafe { self.unsafe_get().last_child().get_inner_as_layout() }
+        unsafe { self.unsafe_get().last_child().to_layout() }
     }
 
     #[inline]
     #[expect(unsafe_code)]
     pub(crate) fn prev_sibling_ref(self) -> Option<LayoutDom<'dom, Node>> {
-        unsafe { self.unsafe_get().prev_sibling().get_inner_as_layout() }
+        unsafe { self.unsafe_get().prev_sibling().to_layout() }
     }
 
     #[inline]
     #[expect(unsafe_code)]
     pub(crate) fn next_sibling_ref(self) -> Option<LayoutDom<'dom, Node>> {
-        unsafe { self.unsafe_get().next_sibling().get_inner_as_layout() }
+        unsafe { self.unsafe_get().next_sibling().to_layout() }
     }
 
     #[inline]
     #[expect(unsafe_code)]
     pub(crate) fn owner_doc_for_layout(self) -> LayoutDom<'dom, Document> {
-        unsafe {
-            self.unsafe_get()
-                .get_owner_doc()
-                .get_inner_as_layout()
-                .unwrap()
-        }
+        unsafe { self.unsafe_get().get_owner_doc().to_layout().unwrap() }
     }
 
     #[inline]
@@ -244,12 +239,39 @@ impl<'dom> LayoutDom<'dom, Node> {
         self.is_single_line_text_inner_editor() || is_single_line_text_inner_placeholder
     }
 
-    pub(crate) fn text_content(self) -> Cow<'dom, str> {
+    pub(crate) fn text_content(self) -> AtomicRef<'dom, str> {
         self.downcast::<Text>()
             .expect("Called LayoutDom::text_content on non-Text node!")
             .upcast()
             .data_for_layout()
-            .into()
+    }
+
+    #[expect(unsafe_code)]
+    pub(crate) fn document_selection_in_text_node(&self) -> Option<RangeAny<Utf32CodeUnits>> {
+        let unsafe_self = self.unsafe_get();
+        if !unsafe_self.get_flag(NodeFlags::OVERLAPS_DOCUMENT_SELECTION) {
+            return None;
+        }
+
+        let text_node = self.downcast::<Text>()?;
+        let text = text_node.upcast().data_for_layout();
+        let range = self
+            .owner_doc_for_layout()
+            .selection_for_layout()?
+            .range_for_layout()?
+            .unsafe_get();
+
+        let range_start = range.start();
+        let range_end = range.end();
+
+        // Text nodes are always the same node when projected into the flat tree, so
+        // it is fine to do the following check against the original unprojected nodes.
+        let is_start_node = unsafe { range_start.node().to_layout() } == *self;
+        let is_end_node = unsafe { range_end.node().to_layout() } == *self;
+
+        let start = is_start_node.then(|| range_start.offset().to_utf32_code_units_in(&text));
+        let end = is_end_node.then(|| range_end.offset().to_utf32_code_units_in(&text));
+        Some(RangeAny { start, end })
     }
 
     /// Get the selection for the given node. This only works for text nodes that are in
@@ -350,6 +372,10 @@ impl<'dom> LayoutDom<'dom, Node> {
                 .is_some_and(|shadow_root| shadow_root.is_user_agent_widget())
         })
     }
+
+    pub(crate) fn children_count(&self) -> u32 {
+        self.unsafe_get().children_count()
+    }
 }
 
 pub(crate) struct NodeTypeIdWrapper(pub(crate) NodeTypeId);
@@ -373,6 +399,9 @@ impl From<ElementTypeIdWrapper> for LayoutElementType {
         match element_type.0 {
             ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLBodyElement) => {
                 LayoutElementType::HTMLBodyElement
+            },
+            ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLButtonElement) => {
+                LayoutElementType::HTMLButtonElement
             },
             ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLBRElement) => {
                 LayoutElementType::HTMLBRElement

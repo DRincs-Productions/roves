@@ -16,7 +16,7 @@ use js::rust::wrappers2::JS_SetPendingException;
 use js::rust::{HandleObject, HandleValue, MutableHandleValue};
 use script_bindings::cell::DomRefCell;
 use script_bindings::inheritance::Castable;
-use script_bindings::reflector::reflect_dom_object_with_proto_and_cx;
+use script_bindings::reflector::reflect_weak_referenceable_dom_object_with_proto;
 use script_bindings::weakref::WeakRef;
 
 use crate::dom::bindings::codegen::Bindings::AbortSignalBinding::AbortSignalMethods;
@@ -108,11 +108,11 @@ impl AbortSignal {
         global: &GlobalScope,
         proto: Option<HandleObject>,
     ) -> DomRoot<AbortSignal> {
-        reflect_dom_object_with_proto_and_cx(
-            Box::new(AbortSignal::new_inherited()),
+        reflect_weak_referenceable_dom_object_with_proto(
+            cx,
+            Rc::new(AbortSignal::new_inherited()),
             global,
             proto,
-            cx,
         )
     }
 
@@ -256,12 +256,12 @@ impl AbortSignal {
                 // Step 4.1.1. Append signal to resultSignal’s source signals.
                 result_signal
                     .source_signals
-                    .borrow_mut()
+                    .safe_borrow_mut(cx.no_gc())
                     .insert(WeakRef::new(signal));
                 // Step 4.1.2. Append resultSignal to signal’s dependent signals.
                 signal
                     .dependent_signals
-                    .borrow_mut()
+                    .safe_borrow_mut(cx.no_gc())
                     .insert(WeakRef::new(&*result_signal));
             } else {
                 // Step 4.2. Otherwise, for each sourceSignal of signal’s source signals:
@@ -272,12 +272,12 @@ impl AbortSignal {
                         // Step 4.2.2. Append sourceSignal to resultSignal’s source signals.
                         result_signal
                             .source_signals
-                            .borrow_mut()
+                            .safe_borrow_mut(cx.no_gc())
                             .insert(WeakRef::new(&*source_signal));
                         // Step 4.2.3. Append resultSignal to sourceSignal’s dependent signals.
                         source_signal
                             .dependent_signals
-                            .borrow_mut()
+                            .safe_borrow_mut(cx.no_gc())
                             .insert(WeakRef::new(&*result_signal));
                     }
                 }

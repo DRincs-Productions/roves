@@ -20,6 +20,7 @@ name = "script_bindings"
 path = "lib.rs"
 
 [dependencies]
+atomic_refcell = { workspace = true }
 bitflags = { workspace = true }
 crossbeam-channel = { workspace = true }
 deny_public_fields = { workspace = true }
@@ -56,6 +57,14 @@ zeroize = { workspace = true, features = ["zeroize_derive"] }
 phf_codegen = { workspace = true }
 phf_shared = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "dom_partial_eq"
+path = "benches/dom_partial_eq.rs"
+harness = false
 
 [features]
 bluetooth = []

@@ -6,11 +6,10 @@ use std::cell::Cell;
 
 use dom_struct::dom_struct;
 use js::context::JSContext;
-use profile_traits::generic_channel::channel;
 use script_bindings::cell::DomRefCell;
 use script_bindings::reflector::reflect_dom_object_with_cx;
 use servo_base::generic_channel::{GenericSend, GenericSender};
-use storage_traits::indexeddb::{IndexedDBThreadMsg, KeyPath, SyncOperation};
+use storage_traits::indexeddb::{AsyncSchemaOperation, IndexedDBThreadMsg, KeyPath, SyncOperation};
 use stylo_atoms::Atom;
 use uuid::Uuid;
 
@@ -177,6 +176,23 @@ impl IDBDatabase {
             new_version,
         );
     }
+
+    /// <https://w3c.github.io/IndexedDB/#close-a-database-connection>
+    pub(crate) fn close_a_database_connection(&self, _forced: bool) {
+        // Step 1: Set connection’s close pending flag to true.
+        self.close_pending.set(true);
+
+        // Note: rest of the steps run in the storage backend.
+        // TODO: `_forced` either needs to be used here or passed to the backend.
+        let operation = SyncOperation::CloseDatabase(
+            self.global().origin().immutable().clone(),
+            self.id,
+            self.name.to_string(),
+        );
+        let _ = self
+            .get_idb_thread()
+            .send(IndexedDBThreadMsg::Sync(operation));
+    }
 }
 
 impl IDBDatabaseMethods<crate::DomTypeHolder> for IDBDatabase {
@@ -243,7 +259,7 @@ impl IDBDatabaseMethods<crate::DomTypeHolder> for IDBDatabase {
         // https://w3c.github.io/IndexedDB/#transaction-concept
         // A transaction optionally has a cleanup event loop which is an event loop.
         self.global()
-            .get_indexeddb(cx)
+            .ensure_indexeddb_factory(cx)
             .register_indexeddb_transaction(&transaction);
 
         // Step 9. Return an IDBTransaction object representing transaction.
@@ -325,35 +341,28 @@ impl IDBDatabaseMethods<crate::DomTypeHolder> for IDBDatabase {
             &transaction,
         );
 
-        let (sender, receiver) = channel(self.global().time_profiler_chan().clone()).unwrap();
-
         let key_paths = key_path.map(|p| match p {
             StringOrStringSequence::String(s) => KeyPath::String(s.to_string()),
             StringOrStringSequence::StringSequence(s) => {
                 KeyPath::Sequence(s.iter().map(|s| s.to_string()).collect())
             },
         });
-        let operation = SyncOperation::CreateObjectStore(
-            sender,
-            self.global().origin().immutable().clone(),
-            self.name.to_string(),
-            name.to_string(),
-            key_paths,
+
+        let operation = AsyncSchemaOperation::CreateObjectStore {
+            callback: transaction.create_abort_callback(),
+            key_path: key_paths,
             auto_increment,
-        );
+        };
 
         self.get_idb_thread()
-            .send(IndexedDBThreadMsg::Sync(operation))
+            .send(IndexedDBThreadMsg::AsyncSchemaOperation {
+                origin: self.global().origin().immutable().clone(),
+                database_name: self.name.to_string(),
+                store_name: name.to_string(),
+                operation,
+                transaction_serial_number: transaction.get_serial_number(),
+            })
             .unwrap();
-
-        if receiver
-            .recv()
-            .expect("Could not receive object store creation status")
-            .is_err()
-        {
-            warn!("Object store creation failed in idb thread");
-            return Err(Error::InvalidState(None));
-        };
 
         self.object_store_names.borrow_mut().push(name);
         transaction.register_object_store_handle(&object_store.get_name(), &object_store);
@@ -390,27 +399,19 @@ impl IDBDatabaseMethods<crate::DomTypeHolder> for IDBDatabase {
         // FIXME:(arihant2math) Remove from index set ...
 
         // Step 7
-        let (sender, receiver) = channel(self.global().time_profiler_chan().clone()).unwrap();
-
-        let operation = SyncOperation::DeleteObjectStore(
-            sender,
-            self.global().origin().immutable().clone(),
-            self.name.to_string(),
-            String::from(name),
-        );
-
+        let operation = AsyncSchemaOperation::DeleteObjectStore {
+            callback: transaction.create_abort_callback(),
+        };
         self.get_idb_thread()
-            .send(IndexedDBThreadMsg::Sync(operation))
+            .send(IndexedDBThreadMsg::AsyncSchemaOperation {
+                origin: self.global().origin().immutable().clone(),
+                database_name: self.name.to_string(),
+                store_name: name.to_string(),
+                operation,
+                transaction_serial_number: transaction.get_serial_number(),
+            })
             .unwrap();
 
-        if receiver
-            .recv()
-            .expect("Could not receive object store deletion status")
-            .is_err()
-        {
-            warn!("Object store deletion failed in idb thread");
-            return Err(Error::InvalidState(None));
-        };
         Ok(())
     }
 
@@ -431,21 +432,8 @@ impl IDBDatabaseMethods<crate::DomTypeHolder> for IDBDatabase {
 
     /// <https://w3c.github.io/IndexedDB/#dom-idbdatabase-close>
     fn Close(&self) {
-        // Step 1: Run close a database connection with this connection.
-
-        // <https://w3c.github.io/IndexedDB/#close-a-database-connection>
-        // Step 1: Set connection’s close pending flag to true.
-        self.close_pending.set(true);
-
-        // Note: rest of algo runs in-parallel.
-        let operation = SyncOperation::CloseDatabase(
-            self.global().origin().immutable().clone(),
-            self.id,
-            self.name.to_string(),
-        );
-        let _ = self
-            .get_idb_thread()
-            .send(IndexedDBThreadMsg::Sync(operation));
+        // Step 1. Run close a database connection with this connection.
+        self.close_a_database_connection(false);
     }
 
     // https://www.w3.org/TR/IndexedDB-3/#dom-idbdatabase-onabort

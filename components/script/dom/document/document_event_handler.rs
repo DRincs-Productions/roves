@@ -312,13 +312,17 @@ impl DocumentEventHandler {
         let cx = &mut realm.current_realm();
 
         // Reset the mouse and wheel event indices.
-        *self.mouse_move_event_index.borrow_mut() = None;
-        *self.wheel_event_index.borrow_mut() = None;
-        let pending_input_events = mem::take(&mut *self.pending_input_events.borrow_mut());
-        let mut coalesced_mouse_move_event_ids =
-            mem::take(&mut *self.coalesced_mouse_move_event_ids.borrow_mut());
+        *self.mouse_move_event_index.safe_borrow_mut(cx.no_gc()) = None;
+        *self.wheel_event_index.safe_borrow_mut(cx.no_gc()) = None;
+        let pending_input_events =
+            mem::take(&mut *self.pending_input_events.safe_borrow_mut(cx.no_gc()));
+        let mut coalesced_mouse_move_event_ids = mem::take(
+            &mut *self
+                .coalesced_mouse_move_event_ids
+                .safe_borrow_mut(cx.no_gc()),
+        );
         let mut coalesced_wheel_event_ids =
-            mem::take(&mut *self.coalesced_wheel_event_ids.borrow_mut());
+            mem::take(&mut *self.coalesced_wheel_event_ids.safe_borrow_mut(cx.no_gc()));
 
         let mut input_event_outcomes = Vec::with_capacity(
             pending_input_events.len() +
@@ -473,7 +477,7 @@ impl DocumentEventHandler {
 
                 self.handle_mouse_enter_leave_event(
                     cx,
-                    DomRoot::from_ref(current_hover_target),
+                    current_hover_target,
                     None,
                     FireMouseEventType::Leave,
                     &hit_test_result,
@@ -504,8 +508,8 @@ impl DocumentEventHandler {
     fn handle_mouse_enter_leave_event(
         &self,
         cx: &mut JSContext,
-        event_target: DomRoot<Node>,
-        related_target: Option<DomRoot<Node>>,
+        event_target: &Node,
+        related_target: Option<&Node>,
         event_type: FireMouseEventType,
         hit_test_result: &HitTestResult,
         input_event: &ConstellationInputEvent,
@@ -518,26 +522,21 @@ impl DocumentEventHandler {
         let common_ancestor = match related_target.as_ref() {
             Some(related_target) => event_target
                 .common_ancestor_in_flat_tree(related_target)
-                .unwrap_or_else(|| DomRoot::from_ref(&*event_target)),
-            None => DomRoot::from_ref(&*event_target),
+                .unwrap_or_else(|| DomRoot::from_ref(event_target)),
+            None => DomRoot::from_ref(event_target),
         };
 
         // We need to create a target chain in case the event target shares
         // its boundaries with its ancestors.
-        let mut targets = vec![];
-        let mut current = Some(event_target);
-        while let Some(node) = current {
-            if node == common_ancestor {
-                break;
-            }
-            current = node.parent_in_flat_tree();
-            targets.push(node);
-        }
+        let mut targets: Vec<_> = event_target
+            .inclusive_ancestors_in_flat_tree()
+            .take_while(|node| *node != common_ancestor)
+            .collect();
 
         // The order for dispatching mouseenter/pointerenter events starts from the topmost
         // common ancestor of the event target and the related target.
         if event_type == FireMouseEventType::Enter {
-            targets = targets.into_iter().rev().collect();
+            targets.reverse();
         }
 
         let pointer_event_name = match event_type {
@@ -657,8 +656,8 @@ impl DocumentEventHandler {
                         .fire(cx, old_target.upcast());
 
                     if !old_target_is_ancestor_of_new_target {
-                        let event_target = DomRoot::from_ref(old_target.upcast::<Node>());
-                        let moving_into = Some(DomRoot::from_ref(new_target.upcast::<Node>()));
+                        let event_target = old_target.upcast::<Node>();
+                        let moving_into = Some(new_target.upcast::<Node>());
                         self.handle_mouse_enter_leave_event(
                             cx,
                             event_target,
@@ -703,8 +702,9 @@ impl DocumentEventHandler {
                     .dispatch(cx, new_target.upcast(), false);
 
                 let moving_from = old_hover_target
-                    .map(|old_target| DomRoot::from_ref(old_target.upcast::<Node>()));
-                let event_target = DomRoot::from_ref(new_target.upcast::<Node>());
+                    .as_ref()
+                    .map(|old_target| old_target.upcast::<Node>());
+                let event_target = new_target.upcast::<Node>();
                 self.handle_mouse_enter_leave_event(
                     cx,
                     event_target,
@@ -923,7 +923,7 @@ impl DocumentEventHandler {
         // the value 1
         if event.action == MouseButtonAction::Down {
             self.click_counting_info
-                .borrow_mut()
+                .safe_borrow_mut(cx.no_gc())
                 .reset_click_count_if_necessary(event.button, hit_test_result.point_in_frame);
         }
 
@@ -999,7 +999,7 @@ impl DocumentEventHandler {
                     // See documentation for [`Node::find_click_focusable_area`].
                     document
                         .focus_handler()
-                        .focus(cx, node.find_click_focusable_area());
+                        .focus(cx, &node.find_click_focusable_area(cx));
                 }
 
                 // Step 9. If mbutton is the secondary mouse button, then
@@ -1069,7 +1069,7 @@ impl DocumentEventHandler {
                 // do not trigger "click" and "dblclick" events, so we increment
                 // even when those events are not fired.
                 self.click_counting_info
-                    .borrow_mut()
+                    .safe_borrow_mut(cx.no_gc())
                     .increment_click_count(event.button, hit_test_result.point_in_frame);
 
                 self.maybe_trigger_click_for_mouse_button_down_event(
@@ -1389,7 +1389,7 @@ impl DocumentEventHandler {
             TouchEventType::Down => {
                 // Add a new touch point
                 self.active_touch_points
-                    .borrow_mut()
+                    .safe_borrow_mut(cx.no_gc())
                     .push(Dom::from_ref(&*pointer_touch));
                 self.set_active_element(&element);
                 (current_target, pointer_touch)
@@ -1400,7 +1400,7 @@ impl DocumentEventHandler {
                 // > The target of this event must be the same Element on which the touch
                 // > point started when it was first placed on the surface, even if the touch point
                 // > has since moved outside the interactive area of the target element.
-                let mut active_touch_points = self.active_touch_points.borrow_mut();
+                let active_touch_points = self.active_touch_points.borrow();
                 let Some(index) = active_touch_points
                     .iter()
                     .position(|point| point.Identifier() == identifier)
@@ -1410,6 +1410,7 @@ impl DocumentEventHandler {
                 };
                 // This is the original target that was selected during `touchstart` event handling.
                 let original_target = active_touch_points[index].Target();
+                drop(active_touch_points);
 
                 let touch_with_touchstart_target = Touch::new(
                     cx,
@@ -1424,6 +1425,7 @@ impl DocumentEventHandler {
                     page_y,
                 );
 
+                let mut active_touch_points = self.active_touch_points.safe_borrow_mut(cx.no_gc());
                 // Update or remove the stored touch
                 match event.event_type {
                     TouchEventType::Move => {
@@ -1570,7 +1572,7 @@ impl DocumentEventHandler {
         let document = self.window.Document();
         let composition_event = match event {
             ImeEvent::Dismissed => {
-                document.focus_handler().focus(cx, FocusableArea::Viewport);
+                document.focus_handler().focus(cx, &FocusableArea::Viewport);
                 return Default::default();
             },
             ImeEvent::Composition(composition_event) => composition_event,
@@ -1735,7 +1737,7 @@ impl DocumentEventHandler {
 
                 // Step 3.1. Let gamepad be a new Gamepad representing the gamepad.
                 // Step 3.2. Let navigator be gamepad's relevant global object's Navigator object.
-                let navigator = window.Navigator();
+                let navigator = window.Navigator(cx);
                 let selected_index = navigator.select_gamepad_index();
                 let gamepad = Gamepad::new(
                     cx,
@@ -1780,7 +1782,7 @@ impl DocumentEventHandler {
             .gamepad_task_source()
             .queue(task!(gamepad_disconnected: move |cx| {
                 let window = trusted_window.root();
-                let navigator = window.Navigator();
+                let navigator = window.Navigator(cx);
 
                 if let Some(gamepad) = navigator.get_gamepad(index) {
                     // Step 2.1. Set gamepad.[[connected]] to false.
@@ -1820,24 +1822,29 @@ impl DocumentEventHandler {
             .upcast::<GlobalScope>()
             .task_manager()
             .gamepad_task_source()
-            .queue(task!(update_gamepad_state: move || {
+            .queue(task!(update_gamepad_state: move |cx| {
                 let window = trusted_window.root();
                 let document = window.Document();
-                document.event_handler().update_gamepad_state(index, update_type);
+                document.event_handler().update_gamepad_state(cx, index, update_type);
             }));
     }
 
     /// <https://w3c.github.io/gamepad/#dfn-update-gamepad-state>
     #[cfg(feature = "gamepad")]
-    fn update_gamepad_state(&self, gamepad_index: usize, update_type: GamepadUpdateType) {
+    fn update_gamepad_state(
+        &self,
+        cx: &mut JSContext,
+        gamepad_index: usize,
+        update_type: GamepadUpdateType,
+    ) {
         use script_bindings::codegen::GenericBindings::PerformanceBinding::PerformanceMethods;
         // Step 1. Let now be the current high resolution time given
         //         gamepad's relevant global object.
-        let now = *self.window.Performance().Now();
+        let now = *self.window.Performance(cx).Now();
 
         // Step 6. Let navigator be gamepad's relevant global object's
         //         Navigator object.
-        let navigator = self.window.Navigator();
+        let navigator = self.window.Navigator(cx);
 
         if let Some(gamepad) = navigator.get_gamepad(gamepad_index) {
             // Step 2. Set gamepad.[[timestamp]] to now.
@@ -2230,7 +2237,7 @@ impl DocumentEventHandler {
                 document.viewport_scrolling_box(ScrollContainerQueryFlags::Inclusive)
             });
 
-        while !scrolling_box.can_keyboard_scroll_in_axis(scroll_axis) {
+        while !scrolling_box.can_keyboard_scroll_in_axis(cx.no_gc(), scroll_axis) {
             // Always fall back to trying to scroll the entire document.
             if scrolling_box.is_viewport() {
                 break;
@@ -2253,14 +2260,16 @@ impl DocumentEventHandler {
                     KeyboardScroll::End => Vector2D::new(
                         0.0,
                         -current_scroll_offset.y + scrolling_box.content_size().height -
-                            scrolling_box.size().height,
+                            scrolling_box.size(cx.no_gc()).height,
                     ),
-                    KeyboardScroll::PageDown => {
-                        Vector2D::new(0.0, scrolling_box.size().height - 2.0 * LINE_HEIGHT)
-                    },
-                    KeyboardScroll::PageUp => {
-                        Vector2D::new(0.0, 2.0 * LINE_HEIGHT - scrolling_box.size().height)
-                    },
+                    KeyboardScroll::PageDown => Vector2D::new(
+                        0.0,
+                        scrolling_box.size(cx.no_gc()).height - 2.0 * LINE_HEIGHT,
+                    ),
+                    KeyboardScroll::PageUp => Vector2D::new(
+                        0.0,
+                        2.0 * LINE_HEIGHT - scrolling_box.size(cx.no_gc()).height,
+                    ),
                     KeyboardScroll::Up => Vector2D::new(0.0, -LINE_HEIGHT),
                     KeyboardScroll::Down => Vector2D::new(0.0, LINE_HEIGHT),
                     KeyboardScroll::Left => Vector2D::new(-LINE_WIDTH, 0.0),
@@ -2282,7 +2291,7 @@ impl DocumentEventHandler {
 
         // If this is the viewport and we cannot scroll, try to ask a parent viewport to scroll,
         // if we are inside an `<iframe>`.
-        if !scrolling_box.can_keyboard_scroll_in_axis(scroll_axis) {
+        if !scrolling_box.can_keyboard_scroll_in_axis(cx.no_gc(), scroll_axis) {
             assert!(scrolling_box.is_viewport());
 
             let window_proxy = document.window().window_proxy();
@@ -2359,13 +2368,10 @@ impl DocumentEventHandler {
         input_event: &ConstellationInputEvent,
         hit_test_result: &HitTestResult,
     ) {
-        // Collect ancestors from target to root
-        let mut targets: Vec<DomRoot<Node>> = vec![];
-        let mut current: Option<DomRoot<Node>> = Some(DomRoot::from_ref(target_element.upcast()));
-        while let Some(node) = current {
-            targets.push(DomRoot::from_ref(&*node));
-            current = node.parent_in_flat_tree();
-        }
+        let mut targets: Vec<_> = target_element
+            .upcast::<Node>()
+            .inclusive_ancestors_in_flat_tree()
+            .collect();
 
         // Reverse to dispatch from topmost ancestor to target
         if event_name == "pointerenter" {
@@ -2523,14 +2529,6 @@ impl DocumentEventHandler {
             .remove(&pointer_id);
     }
 
-    /// Get the pending pointer capture target override for a pointer.
-    pub(crate) fn get_pending_pointer_capture(&self, pointer_id: i32) -> Option<DomRoot<Element>> {
-        self.pending_pointer_capture
-            .borrow()
-            .get(&pointer_id)
-            .map(|el| DomRoot::from_ref(&**el))
-    }
-
     /// Check if an element has pointer capture for a given pointer ID.
     /// <https://w3c.github.io/pointerevents/#dom-element-haspointercapture>
     pub(crate) fn has_pointer_capture(&self, pointer_id: i32, element: &Element) -> bool {
@@ -2584,9 +2582,11 @@ impl DocumentEventHandler {
             );
             // Clear both pending and current capture
             self.pending_pointer_capture
-                .borrow_mut()
+                .safe_borrow_mut(cx.no_gc())
                 .remove(&pointer_id);
-            self.pointer_capture_target.borrow_mut().remove(&pointer_id);
+            self.pointer_capture_target
+                .safe_borrow_mut(cx.no_gc())
+                .remove(&pointer_id);
             return true;
         }
         false
@@ -2818,9 +2818,11 @@ impl DocumentEventHandler {
             }
         }
         self.pending_pointer_capture
-            .borrow_mut()
+            .safe_borrow_mut(cx.no_gc())
             .remove(&pointer_id);
-        self.pointer_capture_target.borrow_mut().remove(&pointer_id);
+        self.pointer_capture_target
+            .safe_borrow_mut(cx.no_gc())
+            .remove(&pointer_id);
     }
 
     /// Process pending pointer capture before dispatching a pointer event.
@@ -2878,11 +2880,11 @@ impl DocumentEventHandler {
                         pending_el,
                     );
                     self.pointer_capture_target
-                        .borrow_mut()
+                        .safe_borrow_mut(cx.no_gc())
                         .insert(pointer_id, Dom::from_ref(pending_el));
                 } else {
                     self.pending_pointer_capture
-                        .borrow_mut()
+                        .safe_borrow_mut(cx.no_gc())
                         .remove(&pointer_id);
                 }
             },
@@ -2915,13 +2917,15 @@ impl DocumentEventHandler {
                         pending_el,
                     );
                     self.pointer_capture_target
-                        .borrow_mut()
+                        .safe_borrow_mut(cx.no_gc())
                         .insert(pointer_id, Dom::from_ref(pending_el));
                 } else {
                     self.pending_pointer_capture
-                        .borrow_mut()
+                        .safe_borrow_mut(cx.no_gc())
                         .remove(&pointer_id);
-                    self.pointer_capture_target.borrow_mut().remove(&pointer_id);
+                    self.pointer_capture_target
+                        .safe_borrow_mut(cx.no_gc())
+                        .remove(&pointer_id);
                 }
             },
             (None, Some(current_el)) | (Some(_), Some(current_el)) if !pending_connected => {
@@ -2945,10 +2949,12 @@ impl DocumentEventHandler {
                         &hover_target,
                     );
                 }
-                self.pointer_capture_target.borrow_mut().remove(&pointer_id);
+                self.pointer_capture_target
+                    .safe_borrow_mut(cx.no_gc())
+                    .remove(&pointer_id);
                 if !pending_connected {
                     self.pending_pointer_capture
-                        .borrow_mut()
+                        .safe_borrow_mut(cx.no_gc())
                         .remove(&pointer_id);
                 }
             },

@@ -163,7 +163,7 @@ impl AudioBuffer {
             self.length as usize,
             self.sample_rate,
         );
-        for (i, channel) in self.js_channels.borrow_mut().iter().enumerate() {
+        for (i, channel) in self.js_channels.borrow().iter().enumerate() {
             // Step 1.
             if !channel.is_initialized() {
                 return None;
@@ -183,7 +183,7 @@ impl AudioBuffer {
         if self.shared_channels.borrow().is_none() {
             let channels = self.acquire_contents(cx);
             if channels.is_some() {
-                *self.shared_channels.borrow_mut() = channels;
+                *self.shared_channels.safe_borrow_mut(cx.no_gc()) = channels;
             }
         }
         self.shared_channels.borrow()

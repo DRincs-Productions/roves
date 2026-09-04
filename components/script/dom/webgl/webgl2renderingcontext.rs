@@ -10,13 +10,13 @@ use std::{cmp, ptr};
 use bitflags::bitflags;
 use dom_struct::dom_struct;
 use euclid::default::{Point2D, Rect, Size2D};
-use js::context::JSContext;
+use js::context::{JSContext, NoGC};
+use js::conversions::ToJSValConvertible;
 use js::jsapi::{JSObject, Type};
 use js::jsval::{BooleanValue, DoubleValue, Int32Value, NullValue, ObjectValue, UInt32Value};
 use js::rust::{CustomAutoRooterGuard, HandleObject, MutableHandleObject, MutableHandleValue};
 use js::typedarray::{ArrayBufferView, CreateWith, Float32, Int32Array, Uint32, Uint32Array};
 use pixels::{Alpha, Snapshot};
-use script_bindings::conversions::SafeToJSValConvertible;
 use script_bindings::interfaces::WebGL2RenderingContextHelpers;
 use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
 use servo_base::generic_channel::{self, GenericSharedMemory};
@@ -465,10 +465,10 @@ impl WebGL2RenderingContext {
         })
     }
 
-    #[expect(unsafe_code)]
     #[expect(clippy::too_many_arguments)]
     fn read_pixels_into(
         &self,
+        no_gc: &NoGC,
         x: i32,
         y: i32,
         width: i32,
@@ -526,7 +526,7 @@ impl WebGL2RenderingContext {
             Err(error) => return self.base.webgl_error(error),
         };
         let dst_end = dst_byte_offset + skipped_bytes + size;
-        let dst_pixels = unsafe { dst.as_mut_slice() };
+        let dst_pixels = dst.as_mut_slice_safe(no_gc).unwrap_or(&mut []);
         if dst_pixels.len() < dst_end {
             return self.base.webgl_error(InvalidOperation);
         }
@@ -588,7 +588,7 @@ impl WebGL2RenderingContext {
         uniform_location: &WebGLUniformLocation,
     ) -> WebGLResult<Vec<u32>> {
         let vec = match vec {
-            Uint32ArrayOrUnsignedLongSequence::Uint32Array(v) => v.to_vec(),
+            Uint32ArrayOrUnsignedLongSequence::Uint32Array(v) => v.to_vec().unwrap_or_default(),
             Uint32ArrayOrUnsignedLongSequence::UnsignedLongSequence(v) => v,
         };
         self.base
@@ -1458,7 +1458,8 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
         let usage = handle_potential_webgl_error!(self.base, self.buffer_usage(usage), return);
         let bound_buffer =
             handle_potential_webgl_error!(self.base, self.bound_buffer(cx, target), return);
-        self.base.buffer_data(target, data, usage, bound_buffer)
+        self.base
+            .buffer_data(cx.no_gc(), target, data, usage, bound_buffer)
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.5>
@@ -1470,7 +1471,6 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/2.0/#4.7.3>
-    #[expect(unsafe_code)]
     fn BufferData__(
         &self,
         cx: &mut JSContext,
@@ -1510,7 +1510,8 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
         }
 
         let data_end = byte_offset + copy_bytes;
-        let data: &[u8] = unsafe { &data.as_slice()[byte_offset..data_end] };
+        let data = data.as_slice_safe(cx.no_gc()).unwrap_or(&[]);
+        let data = &data[byte_offset..data_end];
         handle_potential_webgl_error!(self.base, bound_buffer.buffer_data(target, data, usage));
     }
 
@@ -1525,11 +1526,10 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
         let bound_buffer =
             handle_potential_webgl_error!(self.base, self.bound_buffer(cx, target), return);
         self.base
-            .buffer_sub_data(target, offset, data, bound_buffer)
+            .buffer_sub_data(cx.no_gc(), target, offset, data, bound_buffer)
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/2.0/#4.7.3>
-    #[expect(unsafe_code)]
     fn BufferSubData_(
         &self,
         cx: &mut JSContext,
@@ -1577,7 +1577,8 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
             receiver,
         ));
         let src_end = src_byte_offset + copy_bytes;
-        let data: &[u8] = unsafe { &src_data.as_slice()[src_byte_offset..src_end] };
+        let data = src_data.as_slice_safe(cx.no_gc()).unwrap_or(&[]);
+        let data = &data[src_byte_offset..src_end];
         let buffer = GenericSharedMemory::from_bytes(data);
         sender.send(buffer).unwrap();
     }
@@ -1640,7 +1641,6 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/2.0/#4.7.3>
-    #[expect(unsafe_code)]
     fn GetBufferSubData(
         &self,
         cx: &mut JSContext,
@@ -1692,15 +1692,14 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
         ));
         let data = receiver.recv().unwrap();
         let dst_end = dst_byte_offset + copy_bytes;
-        unsafe {
-            dst_buffer.as_mut_slice()[dst_byte_offset..dst_end].copy_from_slice(&data);
-        }
+        let dst_buffer = dst_buffer.as_mut_slice_safe(cx.no_gc()).unwrap_or(&mut []);
+        dst_buffer[dst_byte_offset..dst_end].copy_from_slice(&data);
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/2.0/#4.7.6>
-    #[expect(unsafe_code)]
     fn CompressedTexImage2D(
         &self,
+        no_gc: &NoGC,
         target: u32,
         level: i32,
         internal_format: u32,
@@ -1711,7 +1710,7 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
         src_offset: u32,
         src_length_override: u32,
     ) {
-        let mut data = unsafe { pixels.as_slice() };
+        let mut data = pixels.as_slice_safe(no_gc).unwrap_or(&[]);
         let start = src_offset as usize;
         let end = (src_offset + src_length_override) as usize;
         if start > data.len() || end > data.len() {
@@ -1733,9 +1732,9 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.8>
-    #[expect(unsafe_code)]
     fn CompressedTexSubImage2D(
         &self,
+        no_gc: &NoGC,
         target: u32,
         level: i32,
         xoffset: i32,
@@ -1747,7 +1746,7 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
         src_offset: u32,
         src_length_override: u32,
     ) {
-        let mut data = unsafe { pixels.as_slice() };
+        let mut data = pixels.as_slice_safe(no_gc).unwrap_or(&[]);
         let start = src_offset as usize;
         let end = (src_offset + src_length_override) as usize;
         if start > data.len() || end > data.len() {
@@ -2226,6 +2225,7 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.12>
     fn ReadPixels(
         &self,
+        no_gc: &NoGC,
         x: i32,
         y: i32,
         width: i32,
@@ -2237,12 +2237,13 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
         let pixels =
             handle_potential_webgl_error!(self.base, pixels.as_mut().ok_or(InvalidValue), return);
 
-        self.read_pixels_into(x, y, width, height, format, pixel_type, pixels, 0)
+        self.read_pixels_into(no_gc, x, y, width, height, format, pixel_type, pixels, 0)
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/2.0/#4.7.10>
     fn ReadPixels_(
         &self,
+        _no_gc: &NoGC,
         x: i32,
         y: i32,
         width: i32,
@@ -2334,6 +2335,7 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
     /// <https://www.khronos.org/registry/webgl/specs/latest/2.0/#4.7.10>
     fn ReadPixels__(
         &self,
+        no_gc: &NoGC,
         x: i32,
         y: i32,
         width: i32,
@@ -2344,6 +2346,7 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
         dst_elem_offset: u32,
     ) {
         self.read_pixels_into(
+            no_gc,
             x,
             y,
             width,
@@ -3067,7 +3070,7 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
     /// <https://www.khronos.org/registry/webgl/specs/latest/2.0/#4.7.8>
     fn VertexAttribI4iv(&self, cx: &mut JSContext, index: u32, v: Int32ArrayOrLongSequence) {
         let values = match v {
-            Int32ArrayOrLongSequence::Int32Array(v) => v.to_vec(),
+            Int32ArrayOrLongSequence::Int32Array(v) => v.to_vec().unwrap_or_default(),
             Int32ArrayOrLongSequence::LongSequence(v) => v,
         };
         if values.len() < 4 {
@@ -3089,7 +3092,7 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
         v: Uint32ArrayOrUnsignedLongSequence,
     ) {
         let values = match v {
-            Uint32ArrayOrUnsignedLongSequence::Uint32Array(v) => v.to_vec(),
+            Uint32ArrayOrUnsignedLongSequence::Uint32Array(v) => v.to_vec().unwrap_or_default(),
             Uint32ArrayOrUnsignedLongSequence::UnsignedLongSequence(v) => v,
         };
         if values.len() < 4 {
@@ -3145,9 +3148,9 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
     ///
     /// Allocates and initializes the specified mipmap level of a three-dimensional or
     /// two-dimensional array texture.
-    #[expect(unsafe_code)]
     fn TexImage3D(
         &self,
+        no_gc: &NoGC,
         target: u32,
         level: i32,
         internal_format: i32,
@@ -3235,7 +3238,9 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
 
         // If srcData is null, a buffer of sufficient size initialized to 0 is passed.
         let buff = match *src_data {
-            Some(ref data) => GenericSharedMemory::from_bytes(unsafe { data.as_slice() }),
+            Some(ref data) => {
+                GenericSharedMemory::from_bytes(data.as_slice_safe(no_gc).unwrap_or(&[]))
+            },
             None => GenericSharedMemory::from_byte(0, expected_byte_len as usize),
         };
         if buff.len() < expected_byte_len as usize {
@@ -3283,6 +3288,7 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.8>
     fn TexImage2D(
         &self,
+        no_gc: &NoGC,
         target: u32,
         level: i32,
         internal_format: i32,
@@ -3294,6 +3300,7 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
         pixels: CustomAutoRooterGuard<Option<ArrayBufferView>>,
     ) -> Fallible<()> {
         self.base.TexImage2D(
+            no_gc,
             target,
             level,
             internal_format,
@@ -3309,6 +3316,7 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.8>
     fn TexImage2D_(
         &self,
+        no_gc: &NoGC,
         target: u32,
         level: i32,
         internal_format: i32,
@@ -3316,13 +3324,21 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
         data_type: u32,
         source: TexImageSource,
     ) -> ErrorResult {
-        self.base
-            .TexImage2D_(target, level, internal_format, format, data_type, source)
+        self.base.TexImage2D_(
+            no_gc,
+            target,
+            level,
+            internal_format,
+            format,
+            data_type,
+            source,
+        )
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/2.0/#4.7.6>
     fn TexImage2D__(
         &self,
+        _no_gc: &NoGC,
         target: u32,
         level: i32,
         internalformat: i32,
@@ -3401,6 +3417,7 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
     /// <https://www.khronos.org/registry/webgl/specs/latest/2.0/#4.7.6>
     fn TexImage2D___(
         &self,
+        no_gc: &NoGC,
         target: u32,
         level: i32,
         internalformat: i32,
@@ -3445,7 +3462,7 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
 
         let unpacking_alignment = self.base.texture_unpacking_alignment();
 
-        let pixels = match self.base.get_image_pixels(source)? {
+        let pixels = match self.base.get_image_pixels(no_gc, source)? {
             Some(pixels) => pixels,
             None => return Ok(()),
         };
@@ -3467,9 +3484,9 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/2.0/#4.7.6>
-    #[expect(unsafe_code)]
     fn TexImage2D____(
         &self,
+        no_gc: &NoGC,
         target: u32,
         level: i32,
         internalformat: i32,
@@ -3528,8 +3545,8 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
             return Ok(());
         }
 
-        let buff =
-            GenericSharedMemory::from_bytes(unsafe { &src_data.as_slice()[src_byte_offset..] });
+        let src_data_slice = src_data.as_slice_safe(no_gc).unwrap_or(&[]);
+        let buff = GenericSharedMemory::from_bytes(&src_data_slice[src_byte_offset..]);
 
         let expected_byte_length = match self.base.validate_tex_image_2d_data(
             width,
@@ -3577,6 +3594,7 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.8>
     fn TexSubImage2D(
         &self,
+        no_gc: &NoGC,
         target: u32,
         level: i32,
         xoffset: i32,
@@ -3588,13 +3606,14 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
         pixels: CustomAutoRooterGuard<Option<ArrayBufferView>>,
     ) -> Fallible<()> {
         self.base.TexSubImage2D(
-            target, level, xoffset, yoffset, width, height, format, data_type, pixels,
+            no_gc, target, level, xoffset, yoffset, width, height, format, data_type, pixels,
         )
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.8>
     fn TexSubImage2D_(
         &self,
+        no_gc: &NoGC,
         target: u32,
         level: i32,
         xoffset: i32,
@@ -3603,8 +3622,9 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
         data_type: u32,
         source: TexImageSource,
     ) -> ErrorResult {
-        self.base
-            .TexSubImage2D_(target, level, xoffset, yoffset, format, data_type, source)
+        self.base.TexSubImage2D_(
+            no_gc, target, level, xoffset, yoffset, format, data_type, source,
+        )
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.8>
@@ -4765,7 +4785,9 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
         src_offset: u32,
     ) {
         let array = match values {
-            Float32ArrayOrUnrestrictedFloatSequence::Float32Array(v) => v.to_vec(),
+            Float32ArrayOrUnrestrictedFloatSequence::Float32Array(v) => {
+                v.to_vec().unwrap_or_default()
+            },
             Float32ArrayOrUnrestrictedFloatSequence::UnrestrictedFloatSequence(v) => v,
         };
         self.clear_buffer::<f32>(
@@ -4787,7 +4809,7 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
         src_offset: u32,
     ) {
         let array = match values {
-            Int32ArrayOrLongSequence::Int32Array(v) => v.to_vec(),
+            Int32ArrayOrLongSequence::Int32Array(v) => v.to_vec().unwrap_or_default(),
             Int32ArrayOrLongSequence::LongSequence(v) => v,
         };
         self.clear_buffer::<i32>(
@@ -4809,7 +4831,7 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
         src_offset: u32,
     ) {
         let array = match values {
-            Uint32ArrayOrUnsignedLongSequence::Uint32Array(v) => v.to_vec(),
+            Uint32ArrayOrUnsignedLongSequence::Uint32Array(v) => v.to_vec().unwrap_or_default(),
             Uint32ArrayOrUnsignedLongSequence::UnsignedLongSequence(v) => v,
         };
         self.clear_buffer::<u32>(

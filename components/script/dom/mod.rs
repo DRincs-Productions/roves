@@ -205,6 +205,7 @@
 #[macro_use]
 pub(crate) mod macros;
 
+#[expect(unused)]
 pub(crate) mod types {
     include!(concat!(env!("OUT_DIR"), "/InterfaceTypes.rs"));
 }
@@ -240,7 +241,6 @@ pub(crate) mod datatransfer;
 pub(crate) use self::datatransfer::*;
 pub(crate) mod debugger;
 pub(crate) use self::debugger::*;
-#[expect(dead_code)]
 pub(crate) mod document;
 pub(crate) use self::document::*;
 pub(crate) mod domexception;
@@ -262,6 +262,8 @@ pub(crate) mod fetch;
 pub(crate) use self::fetch::*;
 pub(crate) mod file;
 pub(crate) use self::file::*;
+pub(crate) mod filesystem;
+pub(crate) use self::filesystem::*;
 pub(crate) mod form;
 pub(crate) use self::form::*;
 pub(crate) mod fullscreen;
@@ -289,7 +291,6 @@ pub(crate) mod mutationobserver;
 pub(crate) use self::mutationobserver::*;
 pub(crate) mod navigator;
 pub(crate) use self::navigator::*;
-#[expect(dead_code)]
 pub(crate) mod node;
 pub(crate) use self::node::*;
 pub(crate) mod notification;
@@ -316,7 +317,6 @@ pub(crate) mod selection;
 pub(crate) mod serviceworker;
 pub(crate) use self::serviceworker::*;
 pub(crate) mod servointernals;
-#[expect(dead_code)]
 pub(crate) mod servoparser;
 pub(crate) mod shadowroot;
 pub(crate) mod storage;
@@ -329,7 +329,6 @@ pub(crate) use self::svg::*;
 mod testing;
 #[cfg(feature = "testbinding")]
 pub(crate) use self::testing::*;
-pub(crate) mod textcontrol;
 pub(crate) mod timeranges;
 pub(crate) mod touch;
 pub(crate) use self::touch::*;

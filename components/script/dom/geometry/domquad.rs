@@ -3,10 +3,10 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use dom_struct::dom_struct;
-use js::context::JSContext;
+use js::context::{JSContext, NoGC};
 use js::rust::HandleObject;
 use rustc_hash::FxHashMap;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto_and_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
 use servo_base::id::{DomQuadId, DomQuadIndex};
 use servo_constellation_traits::{DomPoint, DomQuad};
 
@@ -63,11 +63,11 @@ impl DOMQuad {
         p3: &DOMPoint,
         p4: &DOMPoint,
     ) -> DomRoot<DOMQuad> {
-        reflect_dom_object_with_proto_and_cx(
+        reflect_dom_object_with_proto(
+            cx,
             Box::new(DOMQuad::new_inherited(p1, p2, p3, p4)),
             global,
             proto,
-            cx,
         )
     }
 }
@@ -199,8 +199,8 @@ impl Serializable for DOMQuad {
     type Index = DomQuadIndex;
     type Data = DomQuad;
 
-    fn serialize(&self) -> Result<(DomQuadId, Self::Data), ()> {
-        let make_point = |src: DomRoot<DOMPoint>| -> DomPoint {
+    fn serialize(&self, _no_gc: &NoGC) -> Result<(DomQuadId, Self::Data), ()> {
+        let make_point = |src: &DOMPoint| -> DomPoint {
             DomPoint {
                 x: src.X(),
                 y: src.Y(),
@@ -209,10 +209,10 @@ impl Serializable for DOMQuad {
             }
         };
         let serialized = DomQuad {
-            p1: make_point(self.P1()),
-            p2: make_point(self.P2()),
-            p3: make_point(self.P3()),
-            p4: make_point(self.P4()),
+            p1: make_point(&self.p1),
+            p2: make_point(&self.p2),
+            p3: make_point(&self.p3),
+            p4: make_point(&self.p4),
         };
         Ok((DomQuadId::new(), serialized))
     }

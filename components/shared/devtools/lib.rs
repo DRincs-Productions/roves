@@ -140,6 +140,9 @@ pub enum ScriptToDevtoolsControlMsg {
     /// Get frame information from script
     CreateFrameActor(GenericSender<String>, PipelineId, FrameInfo),
 
+    /// Get object information from script
+    CreateObjectActor(GenericSender<String>, DebuggerValue),
+
     /// Get environment information from script
     CreateEnvironmentActor(
         GenericSender<String>,
@@ -179,10 +182,6 @@ pub struct FunctionPreview {
     pub parameter_names: Vec<String>,
     pub is_async: Option<bool>,
     pub is_generator: Option<bool>,
-}
-
-fn debugger_value_uuid() -> String {
-    Uuid::new_v4().to_string()
 }
 
 struct DebuggerNumberVisitor;
@@ -235,8 +234,7 @@ pub enum DebuggerValue {
     NumberValue(#[serde(deserialize_with = "deserialize_debugger_number")] f64),
     StringValue(String),
     ObjectValue {
-        #[serde(default = "debugger_value_uuid")]
-        uuid: String,
+        actor: Option<String>,
         class: String,
         own_property_length: Option<u32>,
         preview: Option<Box<ObjectPreview>>,
@@ -485,9 +483,15 @@ pub enum DevtoolScriptControlMsg {
     Interrupt,
     Resume(Option<String>, Option<String>),
     ListFrames(PipelineId, u32, u32, GenericSender<Vec<String>>),
-    GetEnvironment(String, GenericSender<String>),
+    GetEnvironment(GetEnvironmentRequest, GenericSender<String>),
     Blackbox(u32, BlackboxCoverage),
     Unblackbox(u32, BlackboxCoverage),
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub enum GetEnvironmentRequest {
+    Global(PipelineId),
+    Frame(String),
 }
 
 #[derive(Debug, Deserialize, Serialize)]

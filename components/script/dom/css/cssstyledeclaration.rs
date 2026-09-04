@@ -77,7 +77,8 @@ impl CSSStyleOwner {
             CSSStyleOwner::Element(ref element) => {
                 let document = element.owner_document();
                 let shared_lock = document.style_shared_author_lock();
-                let mut attribute_pdb = element.style_attribute().borrow_mut().take();
+                let mut attribute_pdb =
+                    element.style_attribute().safe_borrow_mut(cx.no_gc()).take();
 
                 // When there are mutation observers, the old PDB and the new PDB need to
                 // co-exist so that both attribute values can be serialized and sent to
@@ -112,7 +113,7 @@ impl CSSStyleOwner {
                 // declaration block is empty (see
                 // https://github.com/whatwg/html/issues/2306).
                 if !changed {
-                    *element.style_attribute().borrow_mut() = Some(attribute_pdb);
+                    *element.style_attribute().safe_borrow_mut(cx.no_gc()) = Some(attribute_pdb);
                     return result;
                 }
 
@@ -124,7 +125,7 @@ impl CSSStyleOwner {
                 result
             },
             CSSStyleOwner::CSSRule(ref rule, ref pdb) => {
-                rule.parent_stylesheet().will_modify(cx);
+                rule.parent_stylesheet().will_modify();
                 let result = {
                     let mut guard = rule.shared_lock().write();
                     f(&mut *pdb.borrow().write_with(&mut guard), &mut changed)

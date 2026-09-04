@@ -1,0 +1,64 @@
+name: 'SCRATCH: v0.5.0 migration compile check'
+
+# Temporary, throwaway workflow for validating the servo-v0.5.0-migration branch only.
+# Unlike test.yml (which reconstructs a source tree from a pristine download + patches/),
+# this builds directly from what's checked out on this branch -- the branch content IS
+# the already-migrated source, there's nothing to reconstruct. Delete this file once the
+# migration either lands (patches/ regenerated, test.yml bumped to SERVO_TAG=0.5.0) or is
+# abandoned.
+
+on:
+  push:
+    branches: ['servo-v0.5.0-migration']
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: setup python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: setup uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: prefetch pinned rust toolchain
+        shell: bash
+        run: rustup show
+
+      # See CLAUDE.md's "mach needs tests/wpt/tests/tools/ to exist" note -- mach's own
+      # command loader unconditionally imports WPT test tooling even for build/bootstrap.
+      - name: sparse-checkout WPT tooling only
+        shell: bash
+        run: |
+          mkdir -p tests/wpt/tests
+          curl -fsSL "https://github.com/servo/servo/archive/refs/tags/v0.5.0.tar.gz" | \
+            tar -xz --strip-components=3 -C tests/wpt/tests "servo-0.5.0/tests/wpt/tests/tools"
+
+      - name: stop background apt processes and wait for the dpkg lock
+        shell: bash
+        run: |
+          sudo systemctl stop apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+          sudo systemctl kill --kill-who=all apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
+          sudo pkill -9 -f unattended-upgrade 2>/dev/null || true
+          for i in $(seq 1 60); do
+            if ! sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 1
+          done
+
+      - name: mach bootstrap
+        shell: bash
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        timeout-minutes: 30
+        run: ./mach bootstrap --force --yes --skip-lints --skip-nextest
+
+      - name: mach build (debug)
+        shell: bash
+        run: ./mach build --features steam

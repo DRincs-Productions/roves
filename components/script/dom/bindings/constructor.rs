@@ -6,12 +6,12 @@ use std::ptr;
 
 use html5ever::interface::QualName;
 use html5ever::{LocalName, local_name, ns};
+use js::conversions::ToJSValConvertible;
 use js::glue::{UnwrapObjectDynamic, UnwrapObjectStatic};
 use js::jsapi::{CallArgs, JSObject};
 use js::realm::AutoRealm;
 use js::rust::wrappers2::{JS_SetPrototype, JS_WrapObject};
 use js::rust::{HandleObject, MutableHandleObject, MutableHandleValue};
-use script_bindings::conversions::SafeToJSValConvertible;
 use script_bindings::interface::get_desired_proto;
 use script_bindings::reflector::DomObject;
 
@@ -196,9 +196,12 @@ fn html_constructor(
             // Step 11 is performed in the generated caller code.
 
             // Step 12
-            let mut construction_stack = definition.construction_stack.borrow_mut();
-            construction_stack.pop();
-            construction_stack.push(ConstructionStackEntry::AlreadyConstructedMarker);
+            {
+                let mut construction_stack =
+                    definition.construction_stack.safe_borrow_mut(cx.no_gc());
+                construction_stack.pop();
+                construction_stack.push(ConstructionStackEntry::AlreadyConstructedMarker);
+            }
 
             // Step 13
             if !check_type(&element) {

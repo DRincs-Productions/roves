@@ -286,7 +286,7 @@ impl IDBFactory {
                 // set request’s result to result,
                 // set request’s done flag,
                 // and fire an event named success at request.
-                request.dispatch_success(cx, connection);
+                request.dispatch_success(cx, &connection);
             },
             ConnectionMsg::Upgrade {
                 name,
@@ -491,10 +491,10 @@ impl IDBFactory {
         Ok(())
     }
 
-    pub(crate) fn abort_pending_upgrades(&self) {
+    pub(crate) fn abort_pending_upgrades_and_close_databases(&self) {
         let global = self.global();
-        let pending = self.connections.borrow();
-        let pending_upgrades = pending
+        let connections = self.connections.borrow();
+        let pending_upgrades = connections
             .iter()
             .map(|(key, val)| {
                 let ids: HashSet<Uuid> = val.iter().map(|(k, _v)| *k).collect();
@@ -518,6 +518,14 @@ impl IDBFactory {
             .is_err()
         {
             error!("Failed to send SyncOperation::AbortPendingUpgrade");
+        }
+
+        for (_, requests) in connections.iter() {
+            for (_, request) in requests.iter() {
+                if let Some(database) = request.pending_connection() {
+                    database.close_a_database_connection(true /* forced */);
+                }
+            }
         }
     }
 

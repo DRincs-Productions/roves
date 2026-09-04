@@ -352,17 +352,17 @@ impl App {
             .protocol_registry(protocol_registry)
             .event_loop_waker(self.waker.clone());
 
-        #[cfg(feature = "webxr")]
-        let servo_builder =
-            servo_builder.webxr_registry(super::webxr::XrDiscoveryWebXrRegistry::new_boxed(
-                platform_window.clone(),
-                active_event_loop,
-                &self.preferences,
-            ));
-
         log::info!("building Servo instance");
         let servo = servo_builder.build();
         log::info!("built Servo instance");
+
+        #[cfg(feature = "webxr")]
+        servo.register_webxr_registry(super::webxr::XrDiscoveryWebXrRegistry::new_boxed(
+            platform_window.clone(),
+            active_event_loop,
+            &self.preferences,
+        ));
+
         servo.setup_logging();
 
         let user_content_manager = Rc::new(UserContentManager::new(&servo));
@@ -388,7 +388,10 @@ impl App {
             user_content_manager,
             self.preferences.clone(),
             #[cfg(feature = "gamepad")]
-            ServoshellGamepadDelegate::maybe_new().map(Rc::new),
+            self.event_loop_proxy
+                .clone()
+                .map(ServoshellGamepadDelegate::new)
+                .map(Rc::new),
         ));
 
         // Keep the boot splash up (see its own doc comment) instead of immediately
@@ -556,21 +559,32 @@ impl ApplicationHandler<AppEvent> for App {
         // below, after `self.pump_servo_event_loop` needs `&mut self`.
         let state = state.clone();
 
-        if matches!(app_event, AppEvent::CloseAllWindows) {
-            // See protocols/roves.rs and event_loop.rs's own doc comment on
-            // this variant: this is the only way a `ProtocolHandler` (which
-            // must be `Send + Sync`, and runs off the main thread) can ask
-            // the main thread to close windows, since `ServoShellWindow`
-            // itself is `Rc`-based and can't be touched from there directly.
-            for window in state.windows().values() {
-                window.schedule_close();
-            }
-        } else if let Some(window) = app_event
-            .window_id()
-            .and_then(|window_id| state.window(ServoShellWindowId::from(u64::from(window_id)))) &&
-            let Some(headed_window) = window.platform_window().as_headed_window()
-        {
-            headed_window.handle_winit_app_event(state.clone(), app_event);
+        match app_event {
+            AppEvent::Waker => (),
+            AppEvent::CloseAllWindows => {
+                // See protocols/roves.rs and event_loop.rs's own doc comment on
+                // this variant: this is the only way a `ProtocolHandler` (which
+                // must be `Send + Sync`, and runs off the main thread) can ask
+                // the main thread to close windows, since `ServoShellWindow`
+                // itself is `Rc`-based and can't be touched from there directly.
+                for window in state.windows().values() {
+                    window.schedule_close();
+                }
+            },
+            AppEvent::Accessibility(ref event) => {
+                if let Some(window) =
+                    state.window(ServoShellWindowId::from(u64::from(event.window_id))) &&
+                    let Some(headed_window) = window.platform_window().as_headed_window()
+                {
+                    headed_window.handle_winit_app_event(state.clone(), app_event);
+                }
+            },
+            AppEvent::Gamepad(event, gamepad_name, gamepad_index) => {
+                state.handle_gamepad_events(event, gamepad_name, gamepad_index);
+            },
+            // Already acted on above, while `self.state` was still `Booting` -- a no-op
+            // here since `self.state` is `Running` by this point (checked above).
+            AppEvent::BootProgress(_) | AppEvent::BootReady => {},
         }
 
         if !self.pump_servo_event_loop(event_loop.into()) {

@@ -25,7 +25,7 @@ use net_traits::{FetchMetadata, FetchResponseMsg, NetworkError, ResourceFetchTim
 use pixels::RasterImage;
 use rustc_hash::FxHashSet;
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::reflect_dom_object_with_proto_and_cx;
+use script_bindings::reflector::reflect_dom_object_with_proto;
 use servo_url::{ImmutableOrigin, ServoUrl};
 use uuid::Uuid;
 
@@ -58,7 +58,6 @@ use crate::dom::serviceworkerglobalscope::ServiceWorkerGlobalScope;
 use crate::dom::serviceworkerregistration::ServiceWorkerRegistration;
 use crate::fetch::{RequestWithGlobalScope, create_a_potential_cors_request};
 use crate::network_listener::{self, FetchResponseListener, ResourceTimingListener};
-use crate::script_runtime::CanGc;
 // TODO: Service Worker API (persistent notification)
 // https://notifications.spec.whatwg.org/#service-worker-api
 
@@ -131,7 +130,8 @@ impl Notification {
         fallback_timestamp: u64,
         proto: Option<HandleObject>,
     ) -> DomRoot<Self> {
-        let notification = reflect_dom_object_with_proto_and_cx(
+        let notification = reflect_dom_object_with_proto(
+            cx,
             Box::new(Notification::new_inherited(
                 global,
                 title,
@@ -142,7 +142,6 @@ impl Notification {
             )),
             global,
             proto,
-            cx,
         );
 
         notification.data.set(options.data.get());
@@ -708,7 +707,7 @@ fn request_notification_permission(
     let descriptor = PermissionDescriptor {
         name: PermissionName::Notifications,
     };
-    let status = PermissionStatus::new(global, &descriptor, CanGc::from_cx(cx));
+    let status = PermissionStatus::new(cx, global, &descriptor);
 
     // The implementation of `request_notification_permission` seemed to be synchronous
     Permissions::permission_request(cx, promise, &descriptor, &status);
@@ -818,6 +817,13 @@ impl FetchResponseListener for ResourceFetchListener {
     ) {
         let global = &self.resource_timing_global();
         global.report_csp_violations(cx, violations, None, None);
+    }
+
+    fn process_content_length(&mut self, request_id: RequestId, size: usize) {
+        self.image_cache.notify_pending_response(
+            self.pending_image_id,
+            FetchResponseMsg::ProcessContentLength(request_id, size),
+        );
     }
 }
 

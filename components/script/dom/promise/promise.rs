@@ -18,14 +18,14 @@ use std::rc::Rc;
 
 use dom_struct::dom_struct;
 use js::context::JSContext;
-use js::conversions::{ConversionResult, FromJSValConvertibleRc};
+use js::conversions::{ConversionResult, FromJSValConvertibleRc, ToJSValConvertible};
 use js::jsapi::{
     CallArgs, GetFunctionNativeReserved, Heap, JS_GetFunctionObject, JSContext as RawJSContext,
     JSObject, PromiseState, PromiseUserInputEventHandlingState, RemoveRawValueRoot,
     SetFunctionNativeReserved,
 };
 use js::jsval::{Int32Value, JSVal, NullValue, ObjectValue, UndefinedValue};
-use js::realm::{AutoRealm, CurrentRealm};
+use js::realm::CurrentRealm;
 use js::rust::wrappers2::{
     AddPromiseReactions, AddRawValueRoot, CallOriginalPromiseReject, CallOriginalPromiseResolve,
     GetPromiseIsHandled, GetPromiseState, IsPromiseObject, JS_ClearPendingException,
@@ -33,7 +33,6 @@ use js::rust::wrappers2::{
     SetAnyPromiseIsHandled, SetPromiseUserInputEventHandlingState,
 };
 use js::rust::{HandleObject, HandleValue, MutableHandleObject, Runtime};
-use script_bindings::conversions::SafeToJSValConvertible;
 use script_bindings::reflector::{DomObject, MutDomObject, Reflector};
 use script_bindings::settings_stack::run_a_script;
 
@@ -41,10 +40,10 @@ use crate::DomTypeHolder;
 use crate::dom::bindings::conversions::root_from_object;
 use crate::dom::bindings::error::{Error, ErrorToJsval};
 use crate::dom::bindings::reflector::DomGlobal;
-use crate::dom::bindings::root::{AsHandleValue, DomRoot};
+use crate::dom::bindings::root::{AsHandleValue, Dom};
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::promisenativehandler::{Callback, PromiseNativeHandler};
-use crate::microtask::{Microtask, MicrotaskRunnable};
+use crate::microtask::MicrotaskRunnable;
 use crate::realms::enter_auto_realm;
 use crate::script_thread::ScriptThread;
 
@@ -133,8 +132,6 @@ impl Promise {
     }
 
     #[expect(unsafe_code)]
-    // The apparently-unused CanGc parameter reflects the fact that the JS API calls
-    // like JS_NewFunction can trigger a GC.
     fn create_js_promise(cx: &mut JSContext, mut obj: MutableHandleObject) {
         unsafe {
             let do_nothing_func = JS_NewFunction(
@@ -162,7 +159,7 @@ impl Promise {
     pub(crate) fn new_resolved(
         cx: &mut JSContext,
         global: &GlobalScope,
-        value: impl SafeToJSValConvertible,
+        value: impl ToJSValConvertible,
     ) -> Rc<Promise> {
         let mut realm = enter_auto_realm(cx, global);
         let cx = &mut realm.current_realm();
@@ -177,7 +174,7 @@ impl Promise {
     pub(crate) fn new_rejected(
         cx: &mut JSContext,
         global: &GlobalScope,
-        value: impl SafeToJSValConvertible,
+        value: impl ToJSValConvertible,
     ) -> Rc<Promise> {
         let mut realm = enter_auto_realm(cx, global);
         let cx = &mut realm.current_realm();
@@ -190,7 +187,7 @@ impl Promise {
 
     pub(crate) fn resolve_native<T>(&self, cx: &mut JSContext, val: &T)
     where
-        T: SafeToJSValConvertible,
+        T: ToJSValConvertible,
     {
         let mut realm = enter_auto_realm(cx, self);
         let cx = &mut realm.current_realm();
@@ -210,7 +207,7 @@ impl Promise {
 
     pub(crate) fn reject_native<T>(&self, cx: &mut JSContext, val: &T)
     where
-        T: SafeToJSValConvertible,
+        T: ToJSValConvertible,
     {
         let mut realm = enter_auto_realm(cx, self);
         let cx = &mut realm.current_realm();
@@ -269,7 +266,8 @@ impl Promise {
         cx: &mut CurrentRealm,
         handler: &PromiseNativeHandler,
     ) {
-        run_a_script::<DomTypeHolder, _, _>(cx, &GlobalScope::from_current_realm(cx), |cx| {
+        let global = GlobalScope::from_current_realm(cx);
+        run_a_script::<DomTypeHolder, _, _>(cx, &global, |cx| {
             rooted!(&in(cx) let resolve_func =
                 create_native_handler_function(cx,
                                                handler.reflector().get_jsobject(),
@@ -340,10 +338,9 @@ unsafe extern "C" fn native_handler_callback(
     rooted!(&in(cx) let native_handler_value = native_handler_value);
     assert!(native_handler_value.get().is_object());
 
-    let handler = unsafe {
-        root_from_object::<PromiseNativeHandler>(native_handler_value.to_object(), cx.raw_cx())
-    }
-    .expect("unexpected value for native handler in promise native handler callback");
+    let handler =
+        unsafe { root_from_object::<PromiseNativeHandler>(cx, native_handler_value.to_object()) }
+            .expect("unexpected value for native handler in promise native handler callback");
 
     let native_handler_task_value =
         unsafe { *GetFunctionNativeReserved(args.callee(), SLOT_NATIVEHANDLER_TASK) };
@@ -384,16 +381,6 @@ fn create_native_handler_function(
 }
 
 impl FromJSValConvertibleRc for Promise {
-    #[expect(unsafe_code)]
-    unsafe fn from_jsval(
-        _cx: *mut RawJSContext,
-        value: HandleValue,
-    ) -> Result<ConversionResult<Rc<Promise>>, ()> {
-        // TODO https://github.com/servo/mozjs/issues/749
-        let mut cx = unsafe { script_bindings::script_runtime::temp_cx() };
-        Self::safe_from_jsval(&mut cx, value)
-    }
-
     fn safe_from_jsval(
         cx: &mut JSContext,
         value: HandleValue,
@@ -402,8 +389,8 @@ impl FromJSValConvertibleRc for Promise {
             return Ok(ConversionResult::Failure(c"null not allowed".into()));
         }
 
-        let realm = CurrentRealm::assert(cx);
-        let global_scope = GlobalScope::from_current_realm(&realm);
+        let mut realm = CurrentRealm::assert(cx);
+        let global_scope = GlobalScope::from_current_realm(&mut realm);
 
         let promise = Promise::new_resolved(cx, &global_scope, value);
         Ok(ConversionResult::Success(promise))
@@ -436,7 +423,7 @@ struct WaitForAllFulfillmentHandler {
 
     /// A count of fulfilled promises.
     #[conditional_malloc_size_of]
-    fulfilled_count: Rc<RefCell<usize>>,
+    fulfilled_count: Rc<Cell<usize>>,
 }
 
 impl Callback for WaitForAllFulfillmentHandler {
@@ -449,10 +436,11 @@ impl Callback for WaitForAllFulfillmentHandler {
             result[self.promise_index].set(v.get());
 
             // Set fulfilledCount to fulfilledCount + 1.
-            let mut fulfilled_count = self.fulfilled_count.borrow_mut();
-            *fulfilled_count += 1;
+            let mut fulfilled_count = self.fulfilled_count.get();
+            fulfilled_count += 1;
+            self.fulfilled_count.set(fulfilled_count);
 
-            *fulfilled_count == result.len()
+            fulfilled_count == result.len()
         };
 
         // If fulfilledCount equals total, then perform successSteps given result.
@@ -497,8 +485,9 @@ impl Callback for WaitForAllRejectionHandler {
 /// The microtask for performing successSteps given « » in
 /// <https://webidl.spec.whatwg.org/#wait-for-all>.
 #[derive(JSTraceable, MallocSizeOf)]
+#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 pub(crate) struct WaitForAllSuccessStepsMicrotask {
-    global: DomRoot<GlobalScope>,
+    global: Dom<GlobalScope>,
 
     #[ignore_malloc_size_of = "Closure is hard"]
     #[no_trace]
@@ -507,11 +496,8 @@ pub(crate) struct WaitForAllSuccessStepsMicrotask {
 
 impl MicrotaskRunnable for WaitForAllSuccessStepsMicrotask {
     fn handler(&self, cx: &mut JSContext) {
-        (self.success_steps)(cx, vec![]);
-    }
-
-    fn enter_realm<'cx>(&self, cx: &'cx mut JSContext) -> AutoRealm<'cx> {
-        enter_auto_realm(cx, &*self.global)
+        let mut realm = enter_auto_realm(cx, &*self.global);
+        (self.success_steps)(&mut realm, vec![]);
     }
 }
 
@@ -525,7 +511,7 @@ fn wait_for_all(
     failure_steps: WaitForAllFailureSteps,
 ) {
     // Let fulfilledCount be 0.
-    let fulfilled_count: Rc<RefCell<usize>> = Default::default();
+    let fulfilled_count: Rc<Cell<usize>> = Default::default();
 
     // Let rejected be false.
     // Note: done below when constructing a rejection handler.
@@ -548,8 +534,8 @@ fn wait_for_all(
         // Queue a microtask to perform successSteps given « ».
         global.enqueue_microtask(
             cx,
-            Microtask::WaitForAllSuccessSteps(WaitForAllSuccessStepsMicrotask {
-                global: DomRoot::from_ref(global),
+            Box::new(WaitForAllSuccessStepsMicrotask {
+                global: Dom::from_ref(global),
                 success_steps,
             }),
         );

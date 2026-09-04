@@ -24,9 +24,9 @@ use js::jsid::StringId;
 use js::jsval::{JSVal, UndefinedValue};
 use js::rust::wrappers2::{
     CallJitGetterOp, CallJitMethodOp, CallJitSetterOp, CallOriginalPromiseReject,
-    JS_ClearPendingException, JS_DefineProperty, JS_ForwardGetPropertyTo, JS_GetPendingException,
-    JS_GetProperty, JS_GetPrototype, JS_HasOwnProperty, JS_HasProperty, JS_HasPropertyById,
-    JS_IsExceptionPending, JS_SetPendingException, JS_SetProperty,
+    JS_ClearPendingException, JS_DefineProperty, JS_ForwardGetPropertyTo, JS_FreezeObject,
+    JS_GetPendingException, JS_GetProperty, JS_GetPrototype, JS_HasOwnProperty, JS_HasProperty,
+    JS_HasPropertyById, JS_IsExceptionPending, JS_SetPendingException, JS_SetProperty,
 };
 use js::rust::{
     HandleId, HandleObject, HandleValue, MutableHandleValue, Runtime, ToString, get_object_class,
@@ -520,7 +520,7 @@ unsafe fn generic_call<D: DomTypes, const EXCEPTION_TO_REJECTION: bool>(
     if !thisobj.get().is_null_or_undefined() && !thisobj.get().is_object() {
         // `thisobj` is not a platform object, so the security check is not
         // invoked in this case
-        throw_invalid_this(cx.into(), proto_id);
+        throw_invalid_this(cx, proto_id);
         return if EXCEPTION_TO_REJECTION {
             exception_to_promise(cx, args.rval())
         } else {
@@ -535,7 +535,7 @@ unsafe fn generic_call<D: DomTypes, const EXCEPTION_TO_REJECTION: bool>(
     });
     let depth = (*info).__bindgen_anon_3.depth as usize;
     let proto_check = PrototypeCheck::Depth { depth, proto_id };
-    let this = match private_from_proto_check(obj.get(), cx.raw_cx_no_gc(), proto_check) {
+    let this = match private_from_proto_check(cx, obj.get(), proto_check) {
         Ok(val) => val,
         Err(()) => {
             // [this_implements_operation == false]
@@ -554,7 +554,7 @@ unsafe fn generic_call<D: DomTypes, const EXCEPTION_TO_REJECTION: bool>(
                 *vp = UndefinedValue();
                 return true;
             } else {
-                throw_invalid_this(cx.into(), proto_id);
+                throw_invalid_this(cx, proto_id);
                 return if EXCEPTION_TO_REJECTION {
                     exception_to_promise(cx, args.rval())
                 } else {
@@ -867,4 +867,16 @@ unsafe fn latin1_bytes_from_id(cx: *mut RawJSContext, id: jsid) -> Result<&'stat
     let ptr = JS_GetLatin1StringCharsAndLength(cx, ptr::null(), string, &mut length);
     assert!(!ptr.is_null());
     Ok(slice::from_raw_parts(ptr, length))
+}
+
+/// Returns a JSVal representing the frozen JavaScript array
+pub fn to_frozen_array<T: ToJSValConvertible>(
+    cx: &mut JSContext,
+    convertibles: &[T],
+    mut rval: MutableHandleValue,
+) {
+    convertibles.safe_to_jsval(cx, rval.reborrow());
+
+    rooted!(&in(cx) let obj = rval.to_object());
+    unsafe { JS_FreezeObject(cx, obj.handle()) };
 }

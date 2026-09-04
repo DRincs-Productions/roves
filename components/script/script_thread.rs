@@ -46,11 +46,12 @@ use embedder_traits::{
     Theme, ViewportDetails, WebDriverScriptCommand,
 };
 use encoding_rs::Encoding;
-use fonts::{FontContext, SystemFontServiceProxy};
+use fonts::{FontContext, SystemFontServiceProxy, WebFontLoadEvent};
 use headers::{HeaderMapExt, LastModified, ReferrerPolicy as ReferrerPolicyHeader};
 use http::header::REFRESH;
 use hyper_serde::Serde;
 use ipc_channel::router::ROUTER;
+use js::context::{JSContext, NoGC};
 use js::glue::GetWindowProxyClass;
 use js::jsapi::{GCReason, JSContext as UnsafeJSContext};
 use js::jsval::UndefinedValue;
@@ -73,7 +74,6 @@ use profile_traits::time::ProfilerCategory;
 use profile_traits::time_profile;
 use rustc_hash::{FxHashMap, FxHashSet};
 use script_bindings::cell::DomRefCell;
-use script_bindings::script_runtime::JSContext;
 use script_traits::{
     ConstellationInputEvent, DiscardBrowsingContext, DocumentActivity, InitialScriptState,
     NewPipelineInfo, Painter, ProgressiveWebMetricType, ScriptThreadMessage,
@@ -150,16 +150,17 @@ use crate::messaging::{
     CommonScriptMsg, MainThreadScriptMsg, MixedMessage, ScriptEventLoopSender,
     ScriptThreadReceivers, ScriptThreadSenders,
 };
-use crate::microtask::{Microtask, MicrotaskQueue};
+use crate::microtask::{MicrotaskQueue, MicrotaskRunnable};
 use crate::mime::{APPLICATION, CHARSET, MimeExt, TEXT, XML};
 use crate::navigation::{InProgressLoad, NavigationListener};
 use crate::network_listener::{FetchResponseListener, submit_timing};
 use crate::realms::enter_auto_realm;
 use crate::script_mutation_observers::ScriptMutationObservers;
 use crate::script_runtime::{
-    CanGc, IntroductionType, Runtime, ScriptThreadEventCategory, ThreadSafeJSContext, get_reports,
+    IntroductionType, Runtime, ScriptThreadEventCategory, ThreadSafeJSContext, get_reports,
 };
 use crate::script_window_proxies::ScriptWindowProxies;
+use crate::svg_font::SvgFontResolver;
 use crate::task_queue::TaskQueue;
 use crate::webdriver_handlers::jsval_to_webdriver;
 use crate::{devtools, webdriver_handlers};
@@ -523,6 +524,7 @@ impl ScriptThreadFactory for ScriptThread {
     }
 }
 
+#[servo_tracing::instrument_all(skip_all)]
 impl ScriptThread {
     pub(crate) fn runtime_handle() -> ParentRuntime {
         with_optional_script_thread(|script_thread| {
@@ -604,11 +606,9 @@ impl ScriptThread {
     }
 
     // https://html.spec.whatwg.org/multipage/#await-a-stable-state
-    pub(crate) fn await_stable_state(task: Microtask) {
+    pub(crate) fn await_stable_state(cx: &JSContext, task: Box<dyn MicrotaskRunnable>) {
         with_script_thread(|script_thread| {
-            script_thread
-                .microtask_queue
-                .enqueue(task, script_thread.get_cx());
+            script_thread.microtask_queue.enqueue(cx, task);
         });
     }
 
@@ -849,13 +849,14 @@ impl ScriptThread {
     }
 
     pub(crate) fn enqueue_upgrade_reaction(
+        cx: &js::context::JSContext,
         element: &Element,
         definition: Rc<CustomElementDefinition>,
     ) {
         with_script_thread(|script_thread| {
             script_thread
                 .custom_element_reaction_stack
-                .enqueue_upgrade_reaction(element, definition);
+                .enqueue_upgrade_reaction(cx, element, definition);
         })
     }
 
@@ -1050,11 +1051,6 @@ impl ScriptThread {
         )
     }
 
-    #[expect(unsafe_code)]
-    pub(crate) fn get_cx(&self) -> JSContext {
-        unsafe { JSContext::from_ptr(js::rust::Runtime::get().unwrap().as_ptr()) }
-    }
-
     /// Check if we are closing.
     fn can_continue_running_inner(&self) -> bool {
         if self.closing.load(Ordering::SeqCst) {
@@ -1238,7 +1234,7 @@ impl ScriptThread {
             if resized {
                 // https://html.spec.whatwg.org/multipage/#img-environment-changes
                 // As per the spec, this can be run at any time.
-                document.react_to_environment_changes();
+                document.react_to_environment_changes(cx);
             }
 
             let mut realm = enter_auto_realm(cx, &*document);
@@ -1293,6 +1289,14 @@ impl ScriptThread {
 
             // TODO: Mark paint timing from https://w3c.github.io/paint-timing.
 
+            // See <https://github.com/whatwg/html/issues/12704>.
+            // Unspecified, but necessary: Any of the previous callbacks may have put the
+            // document into a render-blocked state. If that's the case, then abort the
+            // rendering process now.
+            if document.is_render_blocked() {
+                continue;
+            }
+
             // > Step 22: For each doc of docs, update the rendering or user interface of
             // > doc and its node navigable to reflect the current state.
             if document.update_the_rendering(cx).0.needs_frame() {
@@ -1323,13 +1327,14 @@ impl ScriptThread {
     /// responsible for scheduling animation ticks.
     fn maybe_schedule_rendering_opportunity_after_ipc_message(
         &self,
+        no_gc: &NoGC,
         built_any_display_lists: bool,
     ) {
         let needs_rendering_update = self
             .documents
             .borrow()
             .iter()
-            .any(|(_, document)| document.needs_rendering_update());
+            .any(|(_, document)| document.needs_rendering_update(no_gc));
         let running_animations = self.documents.borrow().iter().any(|(_, document)| {
             document.is_fully_active() &&
                 !document.window().throttled() &&
@@ -1559,13 +1564,15 @@ impl ScriptThread {
         // TODO(43149): Remove when document replacement is implemented
         {
             // https://html.spec.whatwg.org/multipage/#the-end step 6
-            let mut docs = self.docs_with_no_blocking_loads.borrow_mut();
-            for document in docs.iter() {
-                let mut realm = enter_auto_realm(cx, &**document);
-                let cx = &mut realm.current_realm();
-                document.maybe_queue_document_completion(cx);
+            {
+                let docs = self.docs_with_no_blocking_loads.borrow();
+                for document in docs.iter() {
+                    let mut realm = enter_auto_realm(cx, &**document);
+                    let cx = &mut realm.current_realm();
+                    document.maybe_queue_document_completion(cx);
+                }
             }
-            docs.clear();
+            self.docs_with_no_blocking_loads.borrow_mut().clear();
         }
 
         let built_any_display_lists =
@@ -1575,7 +1582,10 @@ impl ScriptThread {
         self.maybe_resolve_pending_screenshot_readiness_requests(cx);
 
         // This must happen last to detect if any change above makes a rendering update necessary.
-        self.maybe_schedule_rendering_opportunity_after_ipc_message(built_any_display_lists);
+        self.maybe_schedule_rendering_opportunity_after_ipc_message(
+            cx.no_gc(),
+            built_any_display_lists,
+        );
 
         true
     }
@@ -1894,8 +1904,13 @@ impl ScriptThread {
             ScriptThreadMessage::WebDriverScriptCommand(pipeline_id, msg) => {
                 self.handle_webdriver_msg(pipeline_id, msg, cx)
             },
-            ScriptThreadMessage::WebFontLoaded(pipeline_id) => {
-                self.handle_web_font_loaded(pipeline_id)
+            ScriptThreadMessage::WebFontLoadFinished(pipeline_id, event) => {
+                // If the font load did not succeed then this message only serves to bump the script thread
+                // so it attempts to resolve the document.fonts.ready promise. This happens as a result
+                // of processing this message, so there's nothing more to do.
+                if event == WebFontLoadEvent::LoadedSuccessfully {
+                    self.handle_web_font_loaded(cx.no_gc(), pipeline_id)
+                }
             },
             ScriptThreadMessage::DispatchIFrameLoadEvent {
                 target: browsing_context_id,
@@ -2011,7 +2026,7 @@ impl ScriptThread {
                     .remove(&user_content_manager_id);
             },
             ScriptThreadMessage::UpdatePinchZoomInfos(id, pinch_zoom_infos) => {
-                self.handle_update_pinch_zoom_infos(id, pinch_zoom_infos, CanGc::from_cx(cx));
+                self.handle_update_pinch_zoom_infos(cx, id, pinch_zoom_infos);
             },
             ScriptThreadMessage::SetAccessibilityActive(pipeline_id, active, epoch) => {
                 self.set_accessibility_active(pipeline_id, active, epoch);
@@ -2172,7 +2187,7 @@ impl ScriptThread {
                 )
             },
             DevtoolScriptControlMsg::GetStyleSheets(id, reply) => {
-                devtools::handle_get_stylesheets(&documents, id, reply);
+                devtools::handle_get_stylesheets(cx, &documents, id, reply);
             },
             DevtoolScriptControlMsg::GetStyleSheetText(id, index, reply) => {
                 devtools::handle_get_stylesheet_text(cx, &documents, id, index, reply);
@@ -2315,9 +2330,9 @@ impl ScriptThread {
                 self.debugger_global
                     .fire_list_frames(cx, pipeline_id, start, count, result_sender);
             },
-            DevtoolScriptControlMsg::GetEnvironment(frame_actor_id, result_sender) => {
+            DevtoolScriptControlMsg::GetEnvironment(request, result_sender) => {
                 self.debugger_global
-                    .fire_get_environment(cx, frame_actor_id, result_sender);
+                    .fire_get_environment(cx, request, result_sender);
             },
             DevtoolScriptControlMsg::Resume(resume_limit_type, frame_actor_id) => {
                 self.debugger_global
@@ -2930,22 +2945,21 @@ impl ScriptThread {
                 .get(browsing_context_id)
                 .map(|iframe| iframe.element.as_rooted())
         });
-        let focusable_area = iframe_element
-            .map(|iframe_element| {
-                let kind = iframe_element.upcast::<Element>().focusable_area_kind();
-                FocusableArea::IFrameViewport {
-                    iframe_element,
-                    kind,
-                }
-            })
-            .unwrap_or(FocusableArea::Viewport);
 
-        focus_handler.focus_update_steps(
-            cx,
-            focusable_area.focus_chain(),
-            focus_handler.current_focus_chain(),
-            &focusable_area,
+        rooted!(&in(cx) let focusable_area = iframe_element
+            .map(|iframe_element| FocusableArea::IFrameViewport {
+                iframe_element: iframe_element.as_traced(),
+                kind: iframe_element
+                    .upcast::<Element>()
+                    .focusable_area_kind(cx.no_gc()),
+            })
+            .unwrap_or(FocusableArea::Viewport)
         );
+
+        rooted!(&in(cx) let new_focus_chain = focusable_area.focus_chain());
+        rooted!(&in(cx) let old_focus_chain = focus_handler.current_focus_chain());
+
+        focus_handler.focus_update_steps(cx, new_focus_chain, old_focus_chain, &focusable_area);
     }
 
     fn handle_focus_document(
@@ -2995,10 +3009,13 @@ impl ScriptThread {
             return;
         }
 
+        rooted!(&in(cx) let new_focus_chain = vec![]);
+        rooted!(&in(cx) let old_focus_chain = focus_handler.current_focus_chain());
+
         focus_handler.focus_update_steps(
             cx,
-            vec![],
-            focus_handler.current_focus_chain(),
+            new_focus_chain,
+            old_focus_chain,
             &FocusableArea::Viewport,
         );
     }
@@ -3037,7 +3054,7 @@ impl ScriptThread {
                         CreatorBrowsingContextInfo::from(last.as_deref(), None),
                     );
                     self.window_proxies
-                        .insert(browsing_context_id, window_proxy.clone());
+                        .insert(browsing_context_id, &window_proxy);
                     last = Some(window_proxy);
                 }
 
@@ -3331,14 +3348,19 @@ impl ScriptThread {
     }
 
     /// Handles a Web font being loaded. Does nothing if the page no longer exists.
-    fn handle_web_font_loaded(&self, pipeline_id: PipelineId) {
+    fn handle_web_font_loaded(&self, no_gc: &NoGC, pipeline_id: PipelineId) {
         let Some(document) = self.documents.borrow().find_document(pipeline_id) else {
             warn!("Web font loaded in closed pipeline {}.", pipeline_id);
             return;
         };
 
         // TODO: This should only dirty nodes that are waiting for a web font to finish loading!
-        document.dirty_all_nodes();
+        document.dirty_all_nodes(no_gc);
+
+        document
+            .window()
+            .font_context()
+            .decrement_count_of_loading_fonts_by_one();
     }
 
     /// Handles a worklet being loaded by triggering a relayout of the page. Does nothing if the
@@ -3444,10 +3466,15 @@ impl ScriptThread {
             self.resource_threads.clone(),
         ));
 
+        let font_resolver = Arc::new(SvgFontResolver {
+            context: font_context.clone(),
+        });
+
         let image_cache = self.image_cache_factory.create(
             incomplete.webview_id,
             incomplete.pipeline_id,
             &self.paint_api,
+            font_resolver,
         );
 
         let (user_contents, user_stylesheets) = incomplete
@@ -3947,6 +3974,7 @@ impl ScriptThread {
                 self.handle_csp_violations(cx, pipeline_id, request_id, violations)
             },
             FetchResponseMsg::ProcessRequestBody(..) => {},
+            FetchResponseMsg::ProcessContentLength(_request_id, _size) => {},
         }
     }
 
@@ -4296,18 +4324,16 @@ impl ScriptThread {
         action: MediaSessionActionType,
     ) {
         if let Some(window) = self.documents.borrow().find_window(pipeline_id) {
-            let media_session = window.Navigator().MediaSession();
+            let media_session = window.Navigator(cx).MediaSession(cx);
             media_session.handle_action(cx, action);
         } else {
             warn!("No MediaSession for this pipeline ID");
         };
     }
 
-    pub(crate) fn enqueue_microtask(job: Microtask) {
+    pub(crate) fn enqueue_microtask(cx: &js::context::JSContext, job: Box<dyn MicrotaskRunnable>) {
         with_script_thread(|script_thread| {
-            script_thread
-                .microtask_queue
-                .enqueue(job, script_thread.get_cx());
+            script_thread.microtask_queue.enqueue(cx, job);
         });
     }
 
@@ -4321,11 +4347,7 @@ impl ScriptThread {
                 .map(|(_id, document)| DomRoot::from_ref(document.window().upcast()))
                 .collect();
 
-            self.microtask_queue.checkpoint(
-                cx,
-                |id| self.documents.borrow().find_global(id),
-                globals,
-            )
+            self.microtask_queue.checkpoint(cx, globals)
         }
     }
 
@@ -4423,16 +4445,16 @@ impl ScriptThread {
 
     pub(crate) fn handle_update_pinch_zoom_infos(
         &self,
+        cx: &mut JSContext,
         pipeline_id: PipelineId,
         pinch_zoom_infos: PinchZoomInfos,
-        can_gc: CanGc,
     ) {
         let Some(window) = self.documents.borrow().find_window(pipeline_id) else {
             warn!("Visual viewport update for closed pipeline {pipeline_id}.");
             return;
         };
 
-        window.maybe_update_visual_viewport(pinch_zoom_infos, can_gc);
+        window.maybe_update_visual_viewport(cx, pinch_zoom_infos);
     }
 
     pub(crate) fn devtools_want_updates_for_node(pipeline: PipelineId, node: &Node) -> bool {

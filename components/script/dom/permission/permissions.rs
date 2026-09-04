@@ -12,7 +12,7 @@ use js::jsapi::JSObject;
 use js::jsval::{ObjectValue, UndefinedValue};
 use js::realm::CurrentRealm;
 use script_bindings::inheritance::Castable;
-use script_bindings::reflector::{Reflector, reflect_dom_object};
+use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
 use servo_base::generic_channel;
 use servo_config::pref;
 
@@ -33,7 +33,6 @@ use crate::dom::globalscope::GlobalScope;
 use crate::dom::permissionstatus::PermissionStatus;
 use crate::dom::promise::Promise;
 use crate::dom::window::Window;
-use crate::script_runtime::CanGc;
 
 pub(crate) trait PermissionAlgorithm {
     type Descriptor;
@@ -41,7 +40,7 @@ pub(crate) trait PermissionAlgorithm {
     type Status;
     fn create_descriptor(
         cx: &mut JSContext,
-        permission_descriptor_obj: *mut JSObject,
+        permission_descriptor_obj: js::gc::HandleValue,
     ) -> Result<Self::Descriptor, Error>;
     fn permission_query(
         cx: &mut JSContext,
@@ -77,8 +76,8 @@ impl Permissions {
         }
     }
 
-    pub(crate) fn new(global: &GlobalScope, can_gc: CanGc) -> DomRoot<Permissions> {
-        reflect_dom_object(Box::new(Permissions::new_inherited()), global, can_gc)
+    pub(crate) fn new(cx: &mut JSContext, global: &GlobalScope) -> DomRoot<Permissions> {
+        reflect_dom_object_with_cx(Box::new(Permissions::new_inherited()), global, cx)
     }
 
     // https://w3c.github.io/permissions/#dom-permissions-query
@@ -91,6 +90,11 @@ impl Permissions {
         permission_desc: *mut JSObject,
         promise: Option<Rc<Promise>>,
     ) -> Rc<Promise> {
+        rooted!(&in(cx) let mut permission_desc_value = UndefinedValue());
+        permission_desc_value
+            .handle_mut()
+            .set(ObjectValue(permission_desc));
+
         // (Query, Request) Step 3.
         let p = match promise {
             Some(promise) => promise,
@@ -98,7 +102,7 @@ impl Permissions {
         };
 
         // (Query, Request, Revoke) Step 1.
-        let root_desc = match Permissions::create_descriptor(cx, permission_desc) {
+        let root_desc = match Permissions::create_descriptor(cx, permission_desc_value.handle()) {
             Ok(descriptor) => descriptor,
             Err(error) => {
                 p.reject_error(cx, error);
@@ -107,19 +111,20 @@ impl Permissions {
         };
 
         // (Query, Request) Step 5.
-        let status = PermissionStatus::new(&self.global(), &root_desc, CanGc::from_cx(cx));
+        let status = PermissionStatus::new(cx, &self.global(), &root_desc);
 
         // (Query, Request, Revoke) Step 2.
         match root_desc.name {
             #[cfg(feature = "bluetooth")]
             PermissionName::Bluetooth => {
-                let bluetooth_desc = match Bluetooth::create_descriptor(cx, permission_desc) {
-                    Ok(descriptor) => descriptor,
-                    Err(error) => {
-                        p.reject_error(cx, error);
-                        return p;
-                    },
-                };
+                let bluetooth_desc =
+                    match Bluetooth::create_descriptor(cx, permission_desc_value.handle()) {
+                        Ok(descriptor) => descriptor,
+                        Err(error) => {
+                            p.reject_error(cx, error);
+                            return p;
+                        },
+                    };
 
                 // (Query, Request) Step 5.
                 let result = BluetoothPermissionResult::new(cx, &self.global(), &status);
@@ -191,6 +196,7 @@ impl Permissions {
     }
 }
 
+// Currently these methods use Raw *mut JSObject which is potentially dangerous. We root this object immediately in `self.manipulate`.
 impl PermissionsMethods<crate::DomTypeHolder> for Permissions {
     /// <https://w3c.github.io/permissions/#dom-permissions-query>
     fn Query(&self, cx: &mut CurrentRealm, permission_desc: *mut JSObject) -> Rc<Promise> {
@@ -214,13 +220,9 @@ impl PermissionAlgorithm for Permissions {
 
     fn create_descriptor(
         cx: &mut JSContext,
-        permission_descriptor_obj: *mut JSObject,
+        property: js::gc::HandleValue,
     ) -> Result<PermissionDescriptor, Error> {
-        rooted!(&in(cx) let mut property = UndefinedValue());
-        property
-            .handle_mut()
-            .set(ObjectValue(permission_descriptor_obj));
-        match PermissionDescriptor::new(cx, property.handle()) {
+        match PermissionDescriptor::new(cx, property) {
             Ok(ConversionResult::Success(descriptor)) => Ok(descriptor),
             Ok(ConversionResult::Failure(error)) => Err(Error::Type(error.into_owned())),
             Err(_) => Err(Error::JSFailed),

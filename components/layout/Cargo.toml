@@ -21,6 +21,7 @@ tracing = ["dep:tracing"]
 [dependencies]
 accesskit = { workspace = true }
 app_units = { workspace = true }
+arrayvec = { workspace = true }
 atomic_refcell = { workspace = true }
 bitflags = { workspace = true }
 data-url = { workspace = true }
@@ -68,6 +69,7 @@ unicode-bidi = { workspace = true }
 unicode-script = { workspace = true }
 unicode_categories = { workspace = true }
 url = { workspace = true }
+uuid = { workspace = true }
 web_atoms = { workspace = true }
 webrender_api = { workspace = true }
 

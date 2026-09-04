@@ -13,7 +13,7 @@ use js::realm::CurrentRealm;
 use js::rust::{HandleObject, HandleValue as SafeHandleValue, MutableHandleValue};
 use script_bindings::cell::DomRefCell;
 use script_bindings::record::Record;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto_and_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
 use servo_constellation_traits::BlobImpl;
 
 use crate::dom::bindings::codegen::Bindings::ClipboardBinding::{
@@ -127,12 +127,7 @@ impl ClipboardItem {
         window: &Window,
         proto: Option<HandleObject>,
     ) -> DomRoot<ClipboardItem> {
-        reflect_dom_object_with_proto_and_cx(
-            Box::new(ClipboardItem::new_inherited()),
-            window,
-            proto,
-            cx,
-        )
+        reflect_dom_object_with_proto(cx, Box::new(ClipboardItem::new_inherited()), window, proto)
     }
 }
 
@@ -157,7 +152,9 @@ impl ClipboardItemMethods<crate::DomTypeHolder> for ClipboardItem {
         let clipboard_item = ClipboardItem::new(cx, global, proto);
 
         // Step 4 Set this's clipboard item's presentation style to options["presentationStyle"].
-        *clipboard_item.presentation_style.borrow_mut() = options.presentationStyle;
+        *clipboard_item
+            .presentation_style
+            .safe_borrow_mut(cx.no_gc()) = options.presentationStyle;
 
         // Step 6 For each (key, value) in items:
         for (key, value) in items.deref() {
@@ -203,7 +200,7 @@ impl ClipboardItemMethods<crate::DomTypeHolder> for ClipboardItem {
             // Step 6.10 Append representation to this's clipboard item's list of representations.
             clipboard_item
                 .representations
-                .borrow_mut()
+                .safe_borrow_mut(cx.no_gc())
                 .push(representation);
         }
 

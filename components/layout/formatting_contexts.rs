@@ -124,7 +124,9 @@ impl IndependentFormattingContext {
             Display::None | Display::Contents => {
                 unreachable!("Should never try to rebuild IndependentFormattingContext with no box")
             },
-            Display::GeneratingBox(display) => display.used_value_for_contents(&contents),
+            Display::GeneratingBox(display) => {
+                display.used_value_for_contents(&contents, node_and_style_info)
+            },
         };
 
         // This ensures that the `FragmentFlags` of this `BaseFragmentInfo` reflect the
@@ -187,9 +189,10 @@ impl IndependentFormattingContext {
 
                 // Some replaced elements can have inner widgets, e.g. `<video controls>`.
                 let node = node_and_style_info.node;
-                let widget = (node.pseudo_element_chain().is_empty() &&
-                    node.is_root_of_user_agent_widget())
-                .then(|| {
+                let should_make_widget = node.pseudo_element_chain().is_empty() &&
+                    node.is_root_of_user_agent_widget() &&
+                    !contents.is_content_replacement;
+                let widget = should_make_widget.then(|| {
                     let widget_info = node_and_style_info
                         .with_pseudo_element(context, PseudoElement::ServoAnonymousBox)
                         .expect("Should always be able to construct info for anonymous boxes.");
@@ -466,6 +469,8 @@ impl IndependentFormattingContext {
                 layout_context,
                 positioning_context,
                 containing_block_for_children,
+                lazy_block_size,
+                Some(&self.base),
             ),
             IndependentFormattingContextContents::Flex(fc) => fc.layout(
                 layout_context,

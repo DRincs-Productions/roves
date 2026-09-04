@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use dom_struct::dom_struct;
@@ -22,6 +23,7 @@ use net_traits::{
 };
 use pixels::{Snapshot, SnapshotAlphaMode, SnapshotPixelFormat};
 use script_bindings::cell::DomRefCell;
+use script_bindings::error::Fallible;
 use servo_media::player::video::VideoFrame;
 use servo_url::ServoUrl;
 use style::attr::{AttrValue, LengthOrPercentageOrAuto};
@@ -62,6 +64,10 @@ pub(crate) struct HTMLVideoElement {
     #[ignore_malloc_size_of = "VideoFrame"]
     #[no_trace]
     last_frame: DomRefCell<Option<VideoFrame>>,
+    #[cfg(feature = "webgpu")]
+    #[conditional_malloc_size_of]
+    /// Planar texture for WebGPU
+    planar_texture: DomRefCell<Option<Rc<crate::dom::gpuexternaltexture::PlanarTexture>>>,
 }
 
 impl HTMLVideoElement {
@@ -77,6 +83,8 @@ impl HTMLVideoElement {
             generation_id: Cell::new(0),
             load_blocker: Default::default(),
             last_frame: Default::default(),
+            #[cfg(feature = "webgpu")]
+            planar_texture: DomRefCell::new(None),
         }
     }
 
@@ -87,9 +95,9 @@ impl HTMLVideoElement {
         document: &Document,
         proto: Option<HandleObject>,
     ) -> DomRoot<HTMLVideoElement> {
-        Node::reflect_node_with_proto(
+        Node::reflect_weak_referenceable_node_with_proto(
             cx,
-            Box::new(HTMLVideoElement::new_inherited(
+            Rc::new(HTMLVideoElement::new_inherited(
                 local_name, prefix, document,
             )),
             document,
@@ -146,6 +154,54 @@ impl HTMLVideoElement {
                 }
             },
             None => None,
+        }
+    }
+
+    #[cfg(feature = "webgpu")]
+    pub(crate) fn planar_video_for_webgpu(
+        &self,
+        device: &crate::dom::types::GPUDevice,
+    ) -> Fallible<(
+        Size2D<u32>,
+        Option<Rc<crate::dom::gpuexternaltexture::PlanarTexture>>,
+    )> {
+        use crate::dom::gpuexternaltexture::PlanarTexture;
+        // 1. If source is not origin-clean, throw a SecurityError and return.
+        if !self.origin_is_clean() {
+            return Err(script_bindings::error::Error::Security(Some(
+                "Source is not origin-clean".to_string(),
+            )));
+        }
+        // 2. Let usability be ? check the usability of the image argument(source).
+        if !self.is_usable() {
+            // 3. If usability is not good:
+            // Generate a validation error.
+            // Return an invalidated GPUExternalTexture.
+            Ok((Size2D::zero(), None))
+        } else {
+            // 4. Let data be the result of converting the current image contents of source into the color space descriptor.colorSpace with unpremultiplied alpha.
+            let mut planar_texture = self.planar_texture.borrow_mut();
+            match planar_texture.as_ref() {
+                Some(planar_texture) => {
+                    if planar_texture.is_expired() &&
+                        let Some(snapshot) = self.get_current_frame_data()
+                    {
+                        planar_texture.update(snapshot);
+                    }
+                },
+                None => {
+                    *planar_texture = self.get_current_frame_data().map(|snapshot| {
+                        Rc::new(PlanarTexture::new(device.channel(), device, snapshot))
+                    });
+                },
+            };
+            Ok((
+                planar_texture
+                    .as_ref()
+                    .map(|pt| pt.size())
+                    .unwrap_or_default(),
+                planar_texture.as_ref().cloned(),
+            ))
         }
     }
 
@@ -488,6 +544,13 @@ impl FetchResponseListener for PosterFrameFetchContext {
     ) {
         let global = &self.resource_timing_global();
         global.report_csp_violations(cx, violations, None, None);
+    }
+
+    fn process_content_length(&mut self, request_id: RequestId, size: usize) {
+        self.image_cache.notify_pending_response(
+            self.id,
+            FetchResponseMsg::ProcessContentLength(request_id, size),
+        );
     }
 }
 

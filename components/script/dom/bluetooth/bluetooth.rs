@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use js::gc::HandleValue;
 use script_bindings::reflector::{DomObject, reflect_dom_object_with_cx};
 use servo_base::generic_channel::{GenericCallback, GenericSender};
 use servo_bluetooth_traits::{BluetoothError, BluetoothRequest, GATTType};
@@ -14,6 +15,7 @@ use script_bindings::cformat;
 use js::context::JSContext;
 use crate::conversions::Convert;
 use script_bindings::cell::{Ref, DomRefCell};
+use crate::dom::bindings::buffer_source::get_buffer_source_copy;
 use crate::dom::bindings::codegen::Bindings::BluetoothBinding::BluetoothDataFilterInit;
 use crate::dom::bindings::codegen::Bindings::BluetoothBinding::{BluetoothMethods, RequestDeviceOptions};
 use crate::dom::bindings::codegen::Bindings::BluetoothBinding::BluetoothLEScanFilterInit;
@@ -21,7 +23,7 @@ use crate::dom::bindings::codegen::Bindings::BluetoothPermissionResultBinding::B
 use crate::dom::bindings::codegen::Bindings::BluetoothRemoteGATTServerBinding::BluetoothRemoteGATTServer_Binding::
 BluetoothRemoteGATTServerMethods;
 use crate::dom::bindings::codegen::Bindings::PermissionStatusBinding::{PermissionName, PermissionState};
-use crate::dom::bindings::codegen::UnionTypes::{ArrayBufferViewOrArrayBuffer, StringOrUnsignedLong};
+use crate::dom::bindings::codegen::UnionTypes::StringOrUnsignedLong;
 use crate::dom::bindings::error::Error::{self, Network, Security, Type};
 use crate::dom::bindings::error::Fallible;
 use crate::dom::bindings::refcounted::{Trusted, TrustedPromise};
@@ -38,8 +40,6 @@ use crate::dom::promise::Promise;
 use crate::task::TaskOnce;
 use dom_struct::dom_struct;
 use js::conversions::ConversionResult;
-use js::jsapi::JSObject;
-use js::jsval::{ObjectValue, UndefinedValue};
 use profile_traits::{generic_channel};
 use std::collections::HashMap;
 use std::ffi::CStr;
@@ -494,18 +494,16 @@ fn canonicalize_bluetooth_data_filter_init(
     bdfi: &BluetoothDataFilterInit,
 ) -> Fallible<(Vec<u8>, Vec<u8>)> {
     // Step 1.
-    let data_prefix = match bdfi.dataPrefix {
-        Some(ArrayBufferViewOrArrayBuffer::ArrayBufferView(ref avb)) => avb.to_vec(),
-        Some(ArrayBufferViewOrArrayBuffer::ArrayBuffer(ref ab)) => ab.to_vec(),
+    let data_prefix = match &bdfi.dataPrefix {
+        Some(buffer_source) => get_buffer_source_copy(buffer_source.into()),
         None => vec![],
     };
 
     // Step 2.
     // If no mask present, mask will be a sequence of 0xFF bytes the same length as dataPrefix.
     // Masking dataPrefix with this, leaves dataPrefix untouched.
-    let mask = match bdfi.mask {
-        Some(ArrayBufferViewOrArrayBuffer::ArrayBufferView(ref avb)) => avb.to_vec(),
-        Some(ArrayBufferViewOrArrayBuffer::ArrayBuffer(ref ab)) => ab.to_vec(),
+    let mask = match &bdfi.mask {
+        Some(buffer_source) => get_buffer_source_copy(buffer_source.into()),
         None => vec![0xFF; data_prefix.len()],
     };
 
@@ -581,9 +579,11 @@ impl AsyncBluetoothListener for Bluetooth {
             // https://webbluetoothcg.github.io/web-bluetooth/#request-bluetooth-devices
             // Step 11, 13 - 14.
             BluetoothResponse::RequestDevice(device) => {
-                let mut device_instance_map = self.device_instance_map.borrow_mut();
-                if let Some(existing_device) = device_instance_map.get(&device.id) {
-                    return promise.resolve_native(cx, &**existing_device);
+                {
+                    let device_instance_map = self.device_instance_map.borrow();
+                    if let Some(existing_device) = device_instance_map.get(&device.id) {
+                        return promise.resolve_native(cx, &**existing_device);
+                    }
                 }
                 let bt_device = BluetoothDevice::new(
                     cx,
@@ -592,7 +592,9 @@ impl AsyncBluetoothListener for Bluetooth {
                     device.name.map(DOMString::from),
                     self,
                 );
-                device_instance_map.insert(device.id.clone(), Dom::from_ref(&bt_device));
+                self.device_instance_map
+                    .borrow_mut()
+                    .insert(device.id.clone(), Dom::from_ref(&bt_device));
 
                 self.global()
                     .as_window()
@@ -621,13 +623,9 @@ impl PermissionAlgorithm for Bluetooth {
 
     fn create_descriptor(
         cx: &mut JSContext,
-        permission_descriptor_obj: *mut JSObject,
+        permission_descriptor_obj: HandleValue,
     ) -> Result<BluetoothPermissionDescriptor, Error> {
-        rooted!(&in(cx) let mut property = UndefinedValue());
-        property
-            .handle_mut()
-            .set(ObjectValue(permission_descriptor_obj));
-        match BluetoothPermissionDescriptor::new(cx, property.handle()) {
+        match BluetoothPermissionDescriptor::new(cx, permission_descriptor_obj) {
             Ok(ConversionResult::Success(descriptor)) => Ok(descriptor),
             Ok(ConversionResult::Failure(error)) => Err(Error::Type(error.into_owned())),
             Err(_) => Err(Error::Type(BT_DESC_CONVERSION_ERROR.into())),

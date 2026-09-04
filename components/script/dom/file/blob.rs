@@ -7,22 +7,24 @@ use std::rc::Rc;
 
 use dom_struct::dom_struct;
 use encoding_rs::UTF_8;
-use js::context::JSContext;
+use js::context::{JSContext, NoGC};
 use js::jsapi::JSObject;
 use js::realm::CurrentRealm;
 use js::rust::HandleObject;
 use js::typedarray::{ArrayBufferU8, Uint8};
 use net_traits::filemanager_thread::RelativePos;
 use rustc_hash::FxHashMap;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto_and_cx};
+use script_bindings::reflector::{Reflector, reflect_weak_referenceable_dom_object_with_proto};
 use servo_base::id::{BlobId, BlobIndex};
 use servo_constellation_traits::{BlobData, BlobImpl};
 use uuid::Uuid;
 
-use crate::dom::bindings::buffer_source::create_buffer_source;
+use crate::dom::bindings::buffer_source::{create_buffer_source, get_buffer_source_slice};
 use crate::dom::bindings::codegen::Bindings::BlobBinding;
 use crate::dom::bindings::codegen::Bindings::BlobBinding::BlobMethods;
-use crate::dom::bindings::codegen::UnionTypes::ArrayBufferOrArrayBufferViewOrBlobOrString;
+use crate::dom::bindings::codegen::UnionTypes::{
+    ArrayBufferOrArrayBufferViewOrBlobOrString, ArrayBufferViewOrArrayBuffer,
+};
 use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::DomRoot;
@@ -57,11 +59,11 @@ impl Blob {
         proto: Option<HandleObject>,
         blob_impl: BlobImpl,
     ) -> DomRoot<Blob> {
-        let dom_blob = reflect_dom_object_with_proto_and_cx(
-            Box::new(Blob::new_inherited(&blob_impl)),
+        let dom_blob = reflect_weak_referenceable_dom_object_with_proto(
+            cx,
+            Rc::new(Blob::new_inherited(&blob_impl)),
             global,
             proto,
-            cx,
         );
         global.track_blob(&dom_blob, blob_impl);
         dom_blob
@@ -101,7 +103,7 @@ impl Serializable for Blob {
     type Data = BlobImpl;
 
     /// <https://w3c.github.io/FileAPI/#ref-for-serialization-steps>
-    fn serialize(&self) -> Result<(BlobId, BlobImpl), ()> {
+    fn serialize(&self, _no_gc: &NoGC) -> Result<(BlobId, BlobImpl), ()> {
         let blob_id = self.blob_id;
 
         // 1. Get a clone of the blob impl.
@@ -198,15 +200,15 @@ fn convert_line_endings_to_native(s: &[u8]) -> Vec<u8> {
 }
 
 /// <https://w3c.github.io/FileAPI/#process-blob-parts>
-#[expect(unsafe_code)]
 pub(crate) fn process_blob_parts(
-    mut blobparts: Vec<ArrayBufferOrArrayBufferViewOrBlobOrString>,
+    no_gc: &NoGC,
+    blobparts: Vec<ArrayBufferOrArrayBufferViewOrBlobOrString>,
     endings: BlobBinding::EndingType,
 ) -> Result<Vec<u8>, ()> {
     // Step 1. Let bytes be an empty sequence of bytes.
     let mut bytes = vec![];
     // Step 2. For each blobpart in blobparts:
-    for blobpart in &mut blobparts {
+    for blobpart in blobparts {
         match blobpart {
             // Step 2.1. If blobpart is a USVString, run the following substeps:
             ArrayBufferOrArrayBufferViewOrBlobOrString::String(s) => {
@@ -225,13 +227,13 @@ pub(crate) fn process_blob_parts(
             // Step 2.2. If element is a BufferSource,
             // get a copy of the bytes held by the buffer source,
             // and append those bytes to bytes.
-            ArrayBufferOrArrayBufferViewOrBlobOrString::ArrayBuffer(a) => unsafe {
-                let array_bytes = a.as_slice();
-                bytes.extend(array_bytes);
+            ArrayBufferOrArrayBufferViewOrBlobOrString::ArrayBuffer(a) => {
+                let array_buffer = ArrayBufferViewOrArrayBuffer::ArrayBuffer(a);
+                bytes.extend_from_slice(get_buffer_source_slice(&array_buffer, no_gc));
             },
-            ArrayBufferOrArrayBufferViewOrBlobOrString::ArrayBufferView(a) => unsafe {
-                let view_bytes = a.as_slice();
-                bytes.extend(view_bytes);
+            ArrayBufferOrArrayBufferViewOrBlobOrString::ArrayBufferView(a) => {
+                let array_view = ArrayBufferViewOrArrayBuffer::ArrayBufferView(a);
+                bytes.extend_from_slice(get_buffer_source_slice(&array_view, no_gc));
             },
             // Step 2.3. If element is a Blob, append the bytes it represents to bytes.
             ArrayBufferOrArrayBufferViewOrBlobOrString::Blob(b) => {
@@ -257,9 +259,11 @@ impl BlobMethods<crate::DomTypeHolder> for Blob {
     ) -> Fallible<DomRoot<Blob>> {
         let bytes: Vec<u8> = match blobParts {
             None => Vec::new(),
-            Some(blobparts) => match process_blob_parts(blobparts, blobPropertyBag.endings) {
-                Ok(bytes) => bytes,
-                Err(_) => return Err(Error::InvalidCharacter(None)),
+            Some(blobparts) => {
+                match process_blob_parts(cx.no_gc(), blobparts, blobPropertyBag.endings) {
+                    Ok(bytes) => bytes,
+                    Err(_) => return Err(Error::InvalidCharacter(None)),
+                }
             },
         };
 

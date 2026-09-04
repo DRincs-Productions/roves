@@ -17,14 +17,14 @@ use js::jsval::UndefinedValue;
 use js::rust::{HandleObject as SafeHandleObject, HandleValue as SafeHandleValue};
 use js::typedarray::Uint8;
 use malloc_size_of::{MallocSizeOf, MallocSizeOfOps};
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto_and_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
 
-use crate::dom::bindings::buffer_source::create_buffer_source;
+use crate::dom::bindings::buffer_source::{create_buffer_source, get_buffer_source_copy};
 use crate::dom::bindings::codegen::Bindings::CompressionStreamBinding::{
     CompressionFormat, CompressionStreamMethods,
 };
 use crate::dom::bindings::codegen::UnionTypes::ArrayBufferViewOrArrayBuffer;
-use crate::dom::bindings::conversions::{FromJSValConvertible, SafeToJSValConvertible};
+use crate::dom::bindings::conversions::{FromJSValConvertible, ToJSValConvertible};
 use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::stream::transformstreamdefaultcontroller::TransformerType;
@@ -69,11 +69,11 @@ impl CompressionStream {
         transform: &TransformStream,
         format: CompressionFormat,
     ) -> DomRoot<CompressionStream> {
-        reflect_dom_object_with_proto_and_cx(
+        reflect_dom_object_with_proto(
+            cx,
             Box::new(CompressionStream::new_inherited(transform, format)),
             global,
             proto,
-            cx,
         )
     }
 }
@@ -99,11 +99,14 @@ impl CompressionStreamMethods<crate::DomTypeHolder> for CompressionStream {
         // compress and enqueue a chunk algorithm with this and chunk.
         // Step 4. Let flushAlgorithm be an algorithm which takes no argument and runs the compress
         // flush and enqueue algorithm with this.
-        let transformer_type = TransformerType::Compressor(compression_stream.clone());
 
         // Step 6. Set up this’s transform with transformAlgorithm set to transformAlgorithm and
         // flushAlgorithm set to flushAlgorithm.
-        transform.set_up(cx, global, transformer_type)?;
+        transform.set_up(
+            cx,
+            global,
+            TransformerType::Compressor(compression_stream.as_traced()),
+        )?;
 
         Ok(compression_stream)
     }
@@ -134,15 +137,18 @@ pub(crate) fn compress_and_enqueue_a_chunk(
 
     // Step 2. Let buffer be the result of compressing chunk with cs’s format and context.
     // NOTE: In our implementation, the enum type of context already indicates the format.
-    let mut compression_context = cs.context.borrow_mut();
-    let buffer = compression_context
-        .compress(&chunk)
-        .map_err(|_| Error::Operation(Some("Failed to compress a chunk of input".into())))?;
+    let buffer = {
+        let mut compression_context = cs.context.borrow_mut();
+        let buffer = compression_context
+            .compress(&chunk)
+            .map_err(|_| Error::Operation(Some("Failed to compress a chunk of input".into())))?;
 
-    // Step 3. If buffer is empty, return.
-    if buffer.is_empty() {
-        return Ok(());
-    }
+        // Step 3. If buffer is empty, return.
+        if buffer.is_empty() {
+            return Ok(());
+        }
+        buffer
+    };
 
     // Step 4. Let arrays be the result of splitting buffer into one or more non-empty pieces and
     // converting them into Uint8Arrays.
@@ -168,15 +174,18 @@ pub(crate) fn compress_flush_and_enqueue(
     // Step 1. Let buffer be the result of compressing an empty input with cs’s format and context,
     // with the finish flag.
     // NOTE: In our implementation, the enum type of context already indicates the format.
-    let mut compression_context = cs.context.borrow_mut();
-    let buffer = compression_context
-        .finalize()
-        .map_err(|_| Error::Operation(Some("Failed to finalize the compression stream".into())))?;
+    let buffer = {
+        let mut compression_context = cs.context.borrow_mut();
+        let buffer = compression_context.finalize().map_err(|_| {
+            Error::Operation(Some("Failed to finalize the compression stream".into()))
+        })?;
 
-    // Step 2. If buffer is empty, return.
-    if buffer.is_empty() {
-        return Ok(());
-    }
+        // Step 2. If buffer is empty, return.
+        if buffer.is_empty() {
+            return Ok(());
+        }
+        buffer
+    };
 
     // Step 3. Let arrays be the result of splitting buffer into one or more non-empty pieces and
     // converting them into Uint8Arrays.
@@ -315,8 +324,5 @@ pub(crate) fn convert_chunk_to_vec(
     let buffer_source = conversion_result.get_success_value().ok_or_else(|| {
         Error::Type(c"Unable to convert chunk into ArrayBuffer or ArrayBufferView".to_owned())
     })?;
-    match buffer_source {
-        ArrayBufferViewOrArrayBuffer::ArrayBufferView(view) => Ok(view.to_vec()),
-        ArrayBufferViewOrArrayBuffer::ArrayBuffer(buffer) => Ok(buffer.to_vec()),
-    }
+    Ok(get_buffer_source_copy(buffer_source.into()))
 }
