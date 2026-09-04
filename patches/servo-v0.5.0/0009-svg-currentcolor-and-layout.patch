@@ -1,0 +1,375 @@
+diff --git a/components/layout/context.rs b/components/layout/context.rs
+index 22b255c32..2c3f86997 100644
+--- a/components/layout/context.rs
++++ b/components/layout/context.rs
+@@ -21,6 +21,7 @@ use pixels::RasterImage;
+ use script::layout_dom::ServoLayoutNode;
+ use servo_base::id::PainterId;
+ use servo_url::{ImmutableOrigin, ServoUrl};
++use style::color::AbsoluteColor;
+ use style::context::SharedStyleContext;
+ use style::dom::OpaqueNode;
+ use style::values::computed::color::Color;
+@@ -119,12 +120,14 @@ pub(crate) struct ImageResolver {
+     /// size determined by layout. This will be shared with the script thread.
+     pub pending_rasterization_images: Mutex<Vec<PendingRasterizationImage>>,
+ 
+-    /// A list of `SVGSVGElement`s encountered during layout that are not
+-    /// serialized yet. This is needed to support inline SVGs as they are treated
+-    /// as replaced elements and the layout is responsible for triggering the
+-    /// network load for the corresponding serialized data: urls (similar to
+-    /// background images).
+-    pub pending_svg_elements_for_serialization: Mutex<Vec<UntrustedNodeAddress>>,
++    /// A list of `SVGSVGElement`s encountered during layout that are not serialized yet, or
++    /// whose cached serialization no longer matches their current computed `color` (see
++    /// `SVGElementData::resolved_color`). This is needed to support inline SVGs as they are
++    /// treated as replaced elements and the layout is responsible for triggering the network
++    /// load for the corresponding serialized data: urls (similar to background images). Each
++    /// entry carries the computed `color` layout resolved this element to, so script can bake
++    /// it into the serialized markup for `currentColor` to resolve against.
++    pub pending_svg_elements_for_serialization: Mutex<Vec<(UntrustedNodeAddress, AbsoluteColor)>>,
+ 
+     /// A shared reference to script's map of DOM nodes with animated images. This is used
+     /// to manage image animations in script and inform the script about newly animating
+@@ -272,10 +275,14 @@ impl ImageResolver {
+         result
+     }
+ 
+-    pub(crate) fn queue_svg_element_for_serialization(&self, element: ServoLayoutNode<'_>) {
++    pub(crate) fn queue_svg_element_for_serialization(
++        &self,
++        element: ServoLayoutNode<'_>,
++        resolved_color: AbsoluteColor,
++    ) {
+         self.pending_svg_elements_for_serialization
+             .lock()
+-            .push(element.opaque().into())
++            .push((element.opaque().into(), resolved_color))
+     }
+ 
+     pub(crate) fn resolve_image<'a>(
+diff --git a/components/layout/replaced.rs b/components/layout/replaced.rs
+index 97f215706..a34939eb5 100644
+--- a/components/layout/replaced.rs
++++ b/components/layout/replaced.rs
+@@ -283,18 +283,36 @@ impl ReplacedContents {
+             ratio,
+         };
+ 
++        let resolved_color = parent_style.get_inherited_text().clone_color();
++
+         let svg_source = match svg_data.source {
+             None => {
+                 // The SVGSVGElement is not yet serialized, so we add it to a list
+                 // and hand it over to script to peform the serialization.
+                 context
+                     .image_resolver
+-                    .queue_svg_element_for_serialization(node);
++                    .queue_svg_element_for_serialization(node, resolved_color);
+                 None
+             },
+             // If `svg_source_result` is `Err()`, it means that the previous attempt
+             // had errored, then don't attempt to serialize again.
+-            Some(svg_source_result) => svg_source_result.ok(),
++            Some(Err(())) => None,
++            Some(Ok(url)) => {
++                // Inline SVG content is serialized once into a static `data:` url and isn't
++                // kept cascade-aware afterward -- see `SVGElementData::resolved_color`'s own
++                // doc comment -- so a `stroke`/`fill: currentColor` won't otherwise notice a
++                // computed `color` change on this element (e.g. a theme class toggling on a
++                // distant ancestor after first paint). Catch that here, the same way "not
++                // serialized yet" is handled above, and re-queue -- reusing the stale image
++                // for this pass is fine, since the next layout pass picks up the refreshed
++                // one once script finishes re-serializing it.
++                if svg_data.resolved_color != Some(resolved_color) {
++                    context
++                        .image_resolver
++                        .queue_svg_element_for_serialization(node, resolved_color);
++                }
++                Some(url)
++            },
+         };
+ 
+         let cached_image = svg_source.and_then(|svg_source| {
+diff --git a/components/layout/traversal.rs b/components/layout/traversal.rs
+index d3c328f97..032f1d134 100644
+--- a/components/layout/traversal.rs
++++ b/components/layout/traversal.rs
+@@ -9,6 +9,7 @@ use layout_api::{
+ };
+ use script::layout_dom::ServoLayoutNode;
+ use style::context::{SharedStyleContext, StyleContext};
++use style::data::ElementData;
+ use style::dom::{NodeInfo, TElement, TNode};
+ use style::selector_parser::RestyleDamage;
+ use style::traversal::{DomTraversal, PerLevelTraversalData, recalc_style_at};
+@@ -173,6 +174,43 @@ pub(crate) fn compute_damage_and_rebuild_box_tree_above_dirty_root<'dom>(
+     damage_for_parent
+ }
+ 
++/// Whether `node` is an inline `<svg>` root whose cached serialization was baked with a
++/// different `color` than its current computed style says it should have.
++///
++/// Why this check exists at all: inline SVG content is rendered by serializing it once to a
++/// `data:` url and rasterizing that with `resvg`/`usvg` (see `SVGSVGElement::
++/// serialize_and_cache_subtree`'s own doc comment) — it isn't laid out/painted in a
++/// cascade-aware way (`components/layout/stylesheets/servo.css` disables styling `<svg>`
++/// descendants entirely, tracked upstream as servo/servo#10646), so a `stroke`/
++/// `fill: currentColor` needs that serialization baked with this element's own *current*
++/// computed `color` — see `SVGElementData::resolved_color`'s own doc comment and
++/// `components/layout/replaced.rs`'s `svg_kind_size`, which does this same comparison and
++/// re-queues serialization on a mismatch.
++///
++/// The problem `svg_kind_size` alone can't solve: it only runs when box-tree construction
++/// actually reaches this element, which needs `LayoutDamage::DescendantHasBoxDamage`/
++/// `BoxDamage` bits already set on it — and a `color`-only restyle produces only `stylo`'s
++/// `RestyleDamage::REPAINT` (the `color` longhand is declared `servo_restyle_damage =
++/// "repaint"` in the vendored `stylo` crate, which this fork's `patches/` don't cover),
++/// which never sets those bits. Without this check, an SVG's `currentColor` permanently
++/// misses any restyle that doesn't *also* change some layout-affecting property — reproduced
++/// directly: a `.dark` class toggled onto `<html>` after first paint (common for anything
++/// doing client-side theme switching) correctly repainted ordinary text `color` but left
++/// `currentColor`-using SVG strokes/fills stuck at whatever computed on the very first,
++/// pre-theme-toggle layout pass, forever. The caller below (Servo's own patch-tracked
++/// damage-computation code, unlike the external `stylo` crate that's the actual root cause)
++/// uses this to force that escalation itself, rather than trying to patch `stylo`'s damage
++/// classification.
++fn svg_color_is_stale(node: ServoLayoutNode<'_>, element_data: &ElementData) -> bool {
++    let Some(svg_data) = node.as_svg() else {
++        return false;
++    };
++    let Some(styles) = element_data.styles.get_primary() else {
++        return false;
++    };
++    svg_data.resolved_color != Some(styles.get_inherited_text().clone_color())
++}
++
+ pub(crate) fn compute_damage_and_rebuild_box_tree_below_dirty_root<'dom>(
+     layout_context: &LayoutContext,
+     node: ServoLayoutNode<'dom>,
+@@ -187,10 +225,11 @@ pub(crate) fn compute_damage_and_rebuild_box_tree_below_dirty_root<'dom>(
+ 
+     let (element_damage, is_display_none) = {
+         let mut element_data = element.element_data_mut();
+-        (
+-            LayoutDamage::from(std::mem::take(&mut element_data.damage)),
+-            element_data.styles.is_display_none(),
+-        )
++        let mut element_damage = LayoutDamage::from(std::mem::take(&mut element_data.damage));
++        if svg_color_is_stale(node, &element_data) {
++            element_damage.insert(LayoutDamage::DescendantHasBoxDamage);
++        }
++        (element_damage, element_data.styles.is_display_none())
+     };
+ 
+     let has_dirty_descendants;
+diff --git a/components/script/dom/svg/svgsvgelement.rs b/components/script/dom/svg/svgsvgelement.rs
+index d3ce15857..a2bda973a 100644
+--- a/components/script/dom/svg/svgsvgelement.rs
++++ b/components/script/dom/svg/svgsvgelement.rs
+@@ -12,10 +12,11 @@ use js::rust::HandleObject;
+ use layout_api::SVGElementData;
+ use servo_url::ServoUrl;
+ use style::attr::AttrValue;
++use style::color::AbsoluteColor;
+ use style::parser::ParserContext;
+ use style::stylesheets::Origin;
+ use style::values::specified::LengthPercentage;
+-use style_traits::ParsingMode;
++use style_traits::{ParsingMode, ToCss};
+ use uuid::Uuid;
+ use xml5ever::serialize::TraversalScope;
+ 
+@@ -44,6 +45,14 @@ pub(crate) struct SVGSVGElement {
+     // on each layout and must be invalidated when the subtree changes.
+     #[no_trace]
+     cached_serialized_data_url: AtomicRefCell<Option<Result<ServoUrl, ()>>>,
++    // The computed `color` value baked into `cached_serialized_data_url`'s markup (as a
++    // `color` attribute on the root, for `currentColor` to resolve against -- see
++    // `serialize_and_cache_subtree`), as of the last time it was (re)computed. Compared
++    // against this element's current computed `color` on every layout pass (see
++    // `SVGElementData::resolved_color`) so a `stroke`/`fill: currentColor` notices a restyle
++    // this cached, non-cascade-aware serialization would otherwise never see.
++    #[no_trace]
++    cached_resolved_color: AtomicRefCell<Option<AbsoluteColor>>,
+ }
+ 
+ impl SVGSVGElement {
+@@ -56,6 +65,7 @@ impl SVGSVGElement {
+             svggraphicselement: SVGGraphicsElement::new_inherited(local_name, prefix, document),
+             uuid: Uuid::new_v4(),
+             cached_serialized_data_url: Default::default(),
++            cached_resolved_color: Default::default(),
+         }
+     }
+ 
+@@ -75,7 +85,11 @@ impl SVGSVGElement {
+         )
+     }
+ 
+-    pub(crate) fn serialize_and_cache_subtree(&self, cx: &mut js::context::JSContext) {
++    pub(crate) fn serialize_and_cache_subtree(
++        &self,
++        cx: &mut js::context::JSContext,
++        resolved_color: AbsoluteColor,
++    ) {
+         let document_fragment = self.owner_document().CreateDocumentFragment(cx);
+         let cloned_node = Node::clone(
+             cx,
+@@ -91,6 +105,7 @@ impl SVGSVGElement {
+         {
+             error!("Unable to clone SVG tree");
+             *self.cached_serialized_data_url.borrow_mut() = Some(Err(()));
++            *self.cached_resolved_color.borrow_mut() = None;
+             return;
+         }
+ 
+@@ -98,14 +113,41 @@ impl SVGSVGElement {
+ 
+         let Ok(xml_source) = cloned_node.xml_serialize(TraversalScope::IncludeNode) else {
+             *self.cached_serialized_data_url.borrow_mut() = Some(Err(()));
++            *self.cached_resolved_color.borrow_mut() = None;
+             return;
+         };
+ 
++        // Inline SVG content is handed off to `resvg`/`usvg` as a standalone document (see
++        // this module's own doc comment) -- it has no notion of this page's own CSS cascade,
++        // so a `stroke`/`fill: currentColor` in the source markup would otherwise always
++        // resolve to the CSS-initial black. `usvg` does, however, correctly resolve
++        // `currentColor` against a `color` presentation attribute on an ancestor within the
++        // SVG document itself (real SVG/CSS-inheritance semantics, just scoped to that
++        // document) -- so baking this element's own *actual* computed `color` onto the
++        // serialized root as a `color="..."` attribute is enough to make `currentColor`
++        // resolve correctly without needing real cross-document cascade-awareness.
++        //
++        // `resolved_color` is serialized via `into_srgb_legacy()` (forcing plain
++        // `rgb(...)`/`rgba(...)` syntax), not a plain `to_css_string()` -- confirmed directly
++        // (`usvg::parser::svgtree` logs "Failed to parse color value" for it) that `usvg`'s
++        // CSS color parser doesn't understand modern CSS Color 4 functions like `oklch()`/
++        // `oklab()`, which is exactly what `to_css_string()` produces for a color whose
++        // *authored* CSS used those functions (as this app's own `oklch(...)` custom
++        // properties do) -- `AbsoluteColor` preserves the color space it was specified in,
++        // it doesn't normalize to sRGB on its own. A color usvg can't parse is silently
++        // treated as unset, so `currentColor` fell back to its own default (black) even
++        // though a `color` attribute was present in the markup.
+         let xml_source: String = xml_source.into();
++        let legacy_srgb_css = resolved_color.into_srgb_legacy().to_css_string();
++        let xml_source = inject_root_color_attribute(&xml_source, &legacy_srgb_css);
++
+         let base64_encoded_source = base64::engine::general_purpose::STANDARD.encode(xml_source);
+         let data_url = format!("data:image/svg+xml;base64,{base64_encoded_source}");
+         match ServoUrl::parse(&data_url) {
+-            Ok(url) => *self.cached_serialized_data_url.borrow_mut() = Some(Ok(url)),
++            Ok(url) => {
++                *self.cached_serialized_data_url.borrow_mut() = Some(Ok(url));
++                *self.cached_resolved_color.borrow_mut() = Some(resolved_color);
++            },
+             Err(error) => error!("Unable to parse serialized SVG data url: {error}"),
+         };
+     }
+@@ -178,10 +220,53 @@ impl SVGSVGElement {
+         }
+ 
+         *self.cached_serialized_data_url.borrow_mut() = None;
++        *self.cached_resolved_color.borrow_mut() = None;
+         self.upcast::<Node>().dirty(NodeDamage::Other);
+     }
+ }
+ 
++/// Inserts a `color="<css_color>"` attribute into a serialized XML document's root opening
++/// tag, so `currentColor` resolves against it inside that document -- see
++/// `SVGSVGElement::serialize_and_cache_subtree`'s own doc comment for why. Scans for the end
++/// of the opening tag (the first `>` outside of a quoted attribute value) rather than
++/// assuming a fixed prefix, since the root element's attribute order/count varies.
++///
++/// `css_color` is trusted to be a plain CSS color-function serialization (from
++/// `AbsoluteColor::to_css_string()` -- digits/letters/`,`/`%`/whitespace/parens only, never
++/// `<`, `&`, or a quote character), so it's inserted as-is with no escaping.
++fn inject_root_color_attribute(xml_source: &str, css_color: &str) -> String {
++    let bytes = xml_source.as_bytes();
++    let mut quote: Option<u8> = None;
++    for (index, &byte) in bytes.iter().enumerate() {
++        match quote {
++            Some(quote_byte) if byte == quote_byte => quote = None,
++            Some(_) => {},
++            None if byte == b'"' || byte == b'\'' => quote = Some(byte),
++            None if byte == b'>' => {
++                // A self-closing root (no children) ends in "/>" -- insert before the "/"
++                // rather than between it and ">", which would otherwise produce
++                // `<svg .../ color="...">` (a malformed, no-longer-self-closing tag).
++                let insert_at = if index > 0 && bytes[index - 1] == b'/' {
++                    index - 1
++                } else {
++                    index
++                };
++                let mut result = String::with_capacity(xml_source.len() + css_color.len() + 10);
++                result.push_str(&xml_source[..insert_at]);
++                result.push_str(" color=\"");
++                result.push_str(css_color);
++                result.push('"');
++                result.push_str(&xml_source[insert_at..]);
++                return result;
++            },
++            None => {},
++        }
++    }
++    // No opening tag found -- shouldn't happen for a real serialized element, but return the
++    // source unchanged rather than risk producing malformed XML.
++    xml_source.to_owned()
++}
++
+ impl<'dom> LayoutDom<'dom, SVGSVGElement> {
+     pub(crate) fn data(self) -> SVGElementData<'dom> {
+         let svg_id = self.unsafe_get().uuid;
+@@ -199,6 +284,7 @@ impl<'dom> LayoutDom<'dom, SVGSVGElement> {
+             height,
+             view_box,
+             svg_id,
++            resolved_color: self.unsafe_get().cached_resolved_color.borrow().clone(),
+         }
+     }
+ }
+diff --git a/components/shared/layout/lib.rs b/components/shared/layout/lib.rs
+index e82d369e5..7002f706b 100644
+--- a/components/shared/layout/lib.rs
++++ b/components/shared/layout/lib.rs
+@@ -59,6 +59,7 @@ use servo_url::{ImmutableOrigin, ServoUrl};
+ use style::Atom;
+ use style::animation::DocumentAnimationSet;
+ use style::attr::{AttrValue, parse_integer, parse_unsigned_integer};
++use style::color::AbsoluteColor;
+ use style::context::QuirksMode;
+ use style::data::ElementDataWrapper;
+ use style::device::Device;
+@@ -166,6 +167,15 @@ pub struct SVGElementData<'dom> {
+     pub height: Option<&'dom AttrValue>,
+     pub svg_id: Uuid,
+     pub view_box: Option<&'dom AttrValue>,
++    /// The resolved `color` value baked into `source`'s serialized markup, as of the last
++    /// time it was (re)serialized — `None` if never serialized yet. Inline SVG content isn't
++    /// kept cascade-aware after serialization (see servo#10646: it's a static, cached `data:`
++    /// url, not live DOM), so a `stroke`/`fill: currentColor` won't otherwise pick up a
++    /// restyle that changes this element's computed `color` (e.g. a `.dark` class toggling on
++    /// an ancestor) the way it would for ordinary text. Comparing this against the current
++    /// computed `color` each layout pass is what notices that case and re-queues the element
++    /// for serialization instead of reusing the stale, wrong-color cached image.
++    pub resolved_color: Option<AbsoluteColor>,
+ }
+ 
+ impl SVGElementData<'_> {
+@@ -618,10 +628,11 @@ pub struct ReflowResult {
+     pub pending_images: Vec<PendingImage>,
+     /// The list of vector images that were encountered that still need to be rasterized.
+     pub pending_rasterization_images: Vec<PendingRasterizationImage>,
+-    /// The list of `SVGSVGElement`s encountered in the DOM that need to be serialized.
+-    /// This is needed to support inline SVGs as the serialization needs to happen on
+-    /// the script thread.
+-    pub pending_svg_elements_for_serialization: Vec<UntrustedNodeAddress>,
++    /// The list of `SVGSVGElement`s encountered in the DOM that need to be (re)serialized,
++    /// each paired with the computed `color` layout resolved it to (see
++    /// `SVGElementData::resolved_color`). This is needed to support inline SVGs as the
++    /// serialization needs to happen on the script thread.
++    pub pending_svg_elements_for_serialization: Vec<(UntrustedNodeAddress, AbsoluteColor)>,
+     /// The list of iframes in this layout and their sizes, used in order
+     /// to communicate them with the Constellation and also the `Window`
+     /// element of their content pages. Returning None if incremental reflow

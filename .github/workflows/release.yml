@@ -18,7 +18,7 @@ on:
 
 env:
   PACKAGE_NAME: 'roves'
-  SERVO_TAG: '0.4.0'
+  SERVO_TAG: '0.5.0'
 
 jobs:
   # ── Create (or, on a retried tag, replace) the GitHub Release before the matrix starts ──

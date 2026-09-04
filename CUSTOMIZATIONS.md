@@ -1,16 +1,136 @@
 # Customizations over upstream Servo
 
-Baseline: Servo `v0.4.0` (<https://github.com/servo/servo/archive/refs/tags/v0.4.0.zip>).
+Baseline: Servo `v0.5.0` (<https://github.com/servo/servo/archive/refs/tags/v0.5.0.zip>) — see
+the 2026-09-04 migration entry below for the upgrade from the previous `v0.4.0` baseline, and
+for why the entries below it still say `patches/servo-v0.4.0/...`: those are the historical
+record of *why* and *when* each change was made, not stale documentation to fix — only the
+`Patch:` file each one names has moved (see the migration entry's mapping table).
 
 This file lists every deviation from that pristine upstream source, in the order they were
 made. See `CLAUDE.md` for why this file exists and the protocol for keeping it current —
 short version: **add an entry here in the same turn you change a file under `servo/`.**
 
 Each entry: file path, upstream location the change replaces, what changed, why, and the
-matching patch file under `patches/servo-v0.4.0/` that makes the change mechanically
+matching patch file under `patches/servo-v<tag>/` that makes the change mechanically
 reproducible (see `CLAUDE.md` — `.github/workflows/servo-test-build.yml` applies those
 patches to a fresh pristine download on every run once it's actually running somewhere, so
 they must stay in sync with reality).
+
+---
+
+## 2026-09-04 — Migrate baseline from Servo v0.4.0 to v0.5.0
+
+**Files:** effectively the whole tree — see the mapping table below for exactly which files
+landed in which new patch.
+
+**Patch:** all of `patches/servo-v0.5.0/` (new). `patches/servo-v0.4.0/` is left in place as a
+historical record of the v0.4.0-era patch boundaries, but is no longer applied by anything —
+`test.yml`/`android.yml`/`release.yml` all now read `SERVO_TAG=0.5.0`.
+
+**Why re-derive instead of replaying the old 61 patches:** replaying `patches/servo-v0.4.0/`
+in sequence against a fresh v0.5.0 checkout cascades — once one patch fails to apply (upstream
+moved the code it targets), every later patch touching the same file fails too, even when its
+own hunk would've applied fine on its own. Used a per-file 3-way merge instead
+(`git merge-file`, base = pristine v0.4.0, ours = this repo's fully-patched HEAD, theirs =
+pristine v0.5.0), which reconciles upstream's evolution against our full accumulated
+customization set for a file in one step, regardless of how many old patches touched it. Of
+68 originally-patched files: 38 merged with zero conflicts (including
+`python/servo/post_build_commands.py`, despite it being touched by ~15 different old
+patches), 18 are ours outright (no upstream counterpart to merge against), 1 was a rename
+(`org.servo.Servo.desktop` → `org.roves.Roves.desktop`) already reflected identically on both
+sides, and 12 had genuine conflicts (upstream and our own patches touching the exact same
+region) resolved by hand — most notably the Android app's full View-XML-to-Jetpack-Compose UI
+rewrite (`MainActivity.kt`), `IDBIndex` gaining `SetName`/an internal representation change
+that had to be reconciled with our own client-side cursor support, and `app.rs`'s
+Servo-builder/webxr-registration reordering merged into this fork's own much larger
+boot-splash/packed-content rewrite of the same function.
+
+**New patch numbering — consolidated by subsystem, not preserved 1:1:** the old 61 patches
+split by *logical change*, which meant many of them touched the same few files
+(`post_build_commands.py`, `app.rs`, `headed_window.rs`, `gui.rs`) repeatedly and
+cumulatively — exactly what made sequential replay so fragile. The new 14 patches split by
+*subsystem/directory* instead: a file only ever appears in one patch, so a future upgrade only
+ever needs the per-file 3-way merge above, never a sequential replay. Mapping from old patch
+numbers (prefix only, see `patches/servo-v0.4.0/` for exact filenames) to new:
+
+Built by re-checking, for each of the 61 old patches, exactly which files its own diff
+touched (`grep "^diff --git" patches/servo-v0.4.0/*.patch`) and which new group each of those
+files landed in — not a rough guess, an exhaustive cross-reference:
+
+| New patch | Old patch #s (v0.4.0) | Covers |
+| --- | --- | --- |
+| `0001-desktop-shell-core` | 0001,0003,0005,0006,0010,0011,0012,0013,0015,0016,0017,0018,0019,0020,0021,0022,0023,0024,0025,0026,0028,0029,0030,0032,0035,0037,0043,0044,0046,0047,0049,0053,0055,0058 | `ports/servoshell/desktop/{app,bundle_launch,cli,dialog,event_loop,gui,headed_window,logging,mod,tracing,webxr}.rs`, `ports/servoshell/{build,main,panic_hook,parser,prefs,Cargo.toml}`, Windows exe manifest |
+| `0002-desktop-protocols` | 0005,0006,0015,0024,0045,0047,0048,0053,0056,0058 | `ports/servoshell/desktop/protocols/*.rs` |
+| `0003-content-packer` | 0014,0015,0017,0018,0024,0026,0030,0034 | `support/content-packer/*` (new crate) |
+| `0004-android` | 0060,0061 | `support/android/apk/**` (Gradle, manifest, `MainActivity.kt`) |
+| `0005-windows-packaging` | 0027,0041 | `mach.bat`, `support/windows/roves-bundle.wxs.mako` |
+| `0006-media-gstreamer` | 0038,0043 | `python/servo/gstreamer.py` |
+| `0007-build-tooling` | 0002,0004,0013,0014,0015,0017,0023,0026,0027,0031,0033,0034,0036,0039,0040,0042,0043,0047,0049,0051,0052,0060,0061 | `python/servo/{build_commands,post_build_commands}.py` |
+| `0008-indexeddb` | 0054 | `components/script/dom/indexeddb/*`, `IDBIndex.webidl`, codegen `Bindings.conf` |
+| `0009-svg-currentcolor-and-layout` | 0057 | `svgsvgelement.rs`, `components/layout/{context,replaced,traversal}.rs`, `components/shared/layout/lib.rs` |
+| `0010-canvas-offscreencanvas-font` | 0059 | `canvas_state.rs`, `canvasrenderingcontext2d.rs` |
+| `0011-storage-and-origin` | 0007,0008,0009,0020,0050,0053,0057 | `origin.rs`, `client_storage.rs`, `globalscope.rs`, `window/{history,window}.rs`, `components/config/prefs.rs`, `net/fetch/methods.rs` |
+| `0012-servo-core` | 0015,0030,0039,0053 | `components/servo/{lib,servo}.rs` |
+| `0013-resources-and-branding` | 0013,0019 | `.gitattributes`, the `.desktop` rename (text-diffable part only — see below) |
+| `0014-root-workspace` | 0014,0058 | root `Cargo.toml` (workspace members, `sysinfo` dependency) |
+
+(Several old patches appear against multiple new ones — e.g. `0015` touched files across
+`servo/`, `servoshell/`, `protocols/`, `post_build_commands.py`, and `content-packer/` all in
+one patch, so it shows up in five rows above. That fan-out is exactly why file-level, not
+change-level, grouping was chosen this time: a file only ever needs reconciling once, no
+matter how many old logical changes had accumulated in it.)
+
+**Two real bugs the migration itself surfaced** (both already fixed on `main`/whichever branch
+carries this, see the branch's own commit history for the exact fix commits — noted here so a
+*future* upgrade doesn't have to rediscover the same failure modes):
+
+1. **A clean 3-way merge can still silently drop an import your own code still needs.** The
+   auto-merge for `components/layout/traversal.rs` dropped `use style::data::ElementData;`
+   without any conflict — upstream removed it because *its own* code in that file stopped
+   needing it, and our side never touched that particular line, so the removal applied
+   cleanly. But our `svg_color_is_stale` function (added by the old `0057` patch, now folded
+   into `0009-svg-currentcolor-and-layout`) still needs that exact type, in a different hunk
+   the merge tool has no way to connect to the import line. Caught by an actual `cargo build`
+   failure (`error[E0425]: cannot find type 'ElementData' in this scope`), not by anything
+   inspectable from the diff alone — **a per-file 3-way merge reduces how much manual
+   patch-reapplication is needed, it doesn't replace an actual build as the real
+   correctness check.**
+2. **`cp -r` on Windows loses non-Windows file properties `git diff`/`patch` still care
+   about.** Doing the file-tree swap with a plain recursive copy (there's no `rsync` on this
+   Windows machine) lost the executable bit on ~39 files (git tracks it; NTFS has no concept
+   of it) and dereferenced 3 OpenHarmony icon "symlinks" (git tracks them as
+   `120000`/symlink-type blobs whose content is just the relative target path; a Windows
+   `cp` instead copies the *referenced file's actual bytes* as a plain `100644` file) — both
+   invisible until diffed against pristine with `git diff`, which reports them as a mode/type
+   change respectively, not as content changes `cargo build` would ever catch. Fixed via
+   `git update-index --chmod=+x` for the former and `git checkout <pre-migration-ref> --`
+   for the latter (git already had the correct, small text-placeholder content on file from
+   before the migration touched it).
+
+**Binary/text-placeholder assets — still not part of any patch, same as every prior entry
+below that says so:** a unified diff can't carry new binary content, so these have never gone
+through the patch mechanism at all, migration or not — carry them over by hand (`cp`, same as
+`test.yml`'s/`android.yml`'s own copy steps already do) whenever they don't already exist
+byte-for-byte in the new checkout:
+
+- `resources/fonts/{MetalMania-OFL.txt,MetalMania-Regular.ttf}` — boot-splash wordmark font.
+- `resources/{servo_64.png,servo_1024.png,servo.ico,servo.icns,servo.svg}` — the
+  Roves-branded icon, replacing upstream's own file at each of these exact paths.
+- `resources/roves_wordmark.svg` — boot-splash wordmark asset (not read by any Rust code, so
+  its absence doesn't break a build, only what the splash actually displays).
+- `support/openharmony/{AppScope,entry/src/main}/resources/base/media/servo_{64,1024}.png` —
+  plain-text files containing a relative path back to the two `resources/servo_*.png` above
+  (Roves' Windows-compatible stand-in for what upstream tracks as a real git symlink); **also
+  a type change, not just new binary content**, so it hits the exact same "can't be a text
+  patch" wall even though the content itself is a short text string.
+
+**Verification:** `mach build --features steam` succeeds from a clean checkout of this
+branch (confirmed via a throwaway CI workflow building directly from the branch, not through
+the reconstruction path above — see that workflow's own comment for why). The reconstruction
+path itself (this entry's actual patches, applied to a fresh pristine v0.5.0 download the way
+`test.yml`/`android.yml` do) has not yet been separately verified end-to-end as of this
+entry — do that before considering this migration fully done, not just "the tree we hand-built
+compiles."
 
 ---
 

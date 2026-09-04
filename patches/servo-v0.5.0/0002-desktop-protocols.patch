@@ -1,0 +1,1338 @@
+diff --git a/ports/servoshell/desktop/protocols/file.rs b/ports/servoshell/desktop/protocols/file.rs
+new file mode 100644
+index 000000000..f8d65a055
+--- /dev/null
++++ b/ports/servoshell/desktop/protocols/file.rs
+@@ -0,0 +1,214 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! `file:` protocol handler — replicates Servo's own upstream behavior
++//! (plain filesystem reads, HTTP Range support) with one addition: if the
++//! requested path doesn't exist yet *and* falls under a directory known to
++//! hold lazily-extracted packed game content, it's extracted on demand —
++//! from whichever `.pack` archive contains it — before the read proceeds.
++//! See `support/content-packer` and CUSTOMIZATIONS.md's content-compression
++//! entries for the full design.
++//!
++//! Registered for the `file` scheme in `app.rs`, taking over from the
++//! engine's own internal default — see `components/servo/servo.rs`'s
++//! protocol-registry merge-order change, without which an embedder can't
++//! override `file` at all.
++//!
++//! Deliberately does **not** replicate the stock handler's directory-listing
++//! fallback (`local_directory_listing`): Roves never opens more than one
++//! `file://` document and never navigates to a bare directory (no address
++//! bar, no tabs), so that upstream-only code path doesn't apply here and
++//! isn't worth the extra `pub(crate)`-visibility patch to `components/net`
++//! it would need. A directory request just becomes a network error instead.
++
++use std::fs::File;
++use std::future::{Future, ready};
++use std::io::{BufReader, Seek, SeekFrom};
++use std::path::{Component, Path, PathBuf};
++use std::pin::Pin;
++
++use headers::{ContentLength, ContentRange, ContentType, HeaderMapExt, Range};
++use http::Method;
++use servo::protocol_handler::{
++    DoneChannel, FetchContext, FILE_CHUNK_SIZE, NetworkError, ProtocolHandler, Request,
++    ResourceFetchTiming, Response, ResponseBody, get_range_request_bounds, partial_content,
++    range_not_satisfiable_error,
++};
++use tokio::sync::mpsc::unbounded_channel;
++
++use super::packed_content::PackedContent;
++
++pub struct FileProtocolHandler {
++    /// The directory containing the document Roves was launched with — the effective
++    /// content "root" a root-absolute reference gets rebased onto when it doesn't
++    /// resolve for real (see `rebase_to_content_root`). Independent of `packed`: this is
++    /// set for every launch that has an initial path at all, packed content or not.
++    initial_dir: Option<PathBuf>,
++    packed: Option<PackedContent>,
++}
++
++impl FileProtocolHandler {
++    /// `initial_file_path`: the local path the engine was told to open —
++    /// i.e. the resolved initial `file:` URL's path. Its directory doubles as
++    /// this session's content root (`initial_dir`, `rebase_to_content_root`)
++    /// and as where to look for a `.roves-content-source` marker (written by
++    /// `roves-content-packer extract`, see CUSTOMIZATIONS.md) — present only
++    /// for a packed-content launch; absent for one opened via raw CLI args
++    /// for local dev/testing, or a build with `--content-compress=none`, in
++    /// which case `packed` alone (not `initial_dir`) behaves exactly like
++    /// the stock handler.
++    pub fn new(initial_file_path: Option<&Path>) -> Self {
++        let initial_dir = initial_file_path.and_then(|p| p.parent()).map(Path::to_path_buf);
++        let packed = initial_dir.as_deref().and_then(PackedContent::resolve);
++        Self { initial_dir, packed }
++    }
++
++    /// See `PackedContent::ensure_available` — a no-op when this launch has no
++    /// managed packed content at all (a dev `--url` run, or `--content-compress=none`).
++    fn ensure_available(&self, file_path: &Path) {
++        if let Some(packed) = &self.packed {
++            packed.ensure_available(file_path);
++        }
++    }
++
++    /// If `file_path` doesn't exist as given, tries it again as though it had been
++    /// requested root-relative to this session's own content root (`initial_dir`)
++    /// instead of the real OS filesystem root. Per the URL spec, `<script src="/foo.js">`
++    /// on a document loaded from a bare `file:` URL (rather than served over http(s)
++    /// from an actual domain root) resolves to `file:///foo.js` — `C:\foo.js` on Windows,
++    /// `/foo.js` on Linux/macOS — exactly what any browser does for a `file://`
++    /// document, and exactly the footgun this exists to route around: virtually every
++    /// bundler (Vite, webpack, ...) emits root-absolute asset references by default, and
++    /// a game's content root is never actually the OS filesystem root. Only ever
++    /// consulted as a fallback, after the literal path already failed to resolve — a
++    /// request that already resolves for real (a genuine OS-root file, vanishingly
++    /// unlikely to collide with a game's own asset name) is left untouched.
++    fn rebase_to_content_root(&self, file_path: &Path) -> Option<PathBuf> {
++        let root = self.initial_dir.as_deref()?;
++        let relative: PathBuf = file_path
++            .components()
++            .filter(|c| !matches!(c, Component::Prefix(_) | Component::RootDir))
++            .collect();
++        if relative.as_os_str().is_empty() {
++            return None;
++        }
++        Some(root.join(relative))
++    }
++}
++
++impl ProtocolHandler for FileProtocolHandler {
++    // Both default to `false` on `ProtocolHandler` (see components/net/protocols/mod.rs) --
++    // fine for a protocol handler nobody's meant to treat as the app's own trusted origin,
++    // but this one *is* that origin: every Roves game is a `file:` document, and the engine
++    // registers this handler in place of Servo's own built-in `file:` support specifically
++    // so it's the one deciding this. Leaving both at their default `false` silently broke
++    // real games: `is_secure() == false` fails Worker/`blob:` mixed-content checks (a page
++    // loaded via `file:` was refusing to spawn its own Worker scripts, "Blocked as mixed
++    // content", hanging any code waiting on a message back from one -- confirmed via a real
++    // game whose loading screen never advanced past "loading" for exactly this reason), and
++    // `is_fetchable() == false` would equally break a game's own `fetch()` calls for its own
++    // bundled JSON/data assets.
++    fn is_fetchable(&self) -> bool {
++        true
++    }
++
++    fn is_secure(&self) -> bool {
++        true
++    }
++
++    fn load<'a>(
++        &'a self,
++        request: &'a mut Request,
++        done_chan: &mut DoneChannel,
++        context: &FetchContext,
++    ) -> Pin<Box<dyn Future<Output = Response> + Send + 'a>> {
++        let url = request.current_url();
++
++        if request.method != Method::GET {
++            return Box::pin(ready(Response::network_error(NetworkError::InvalidMethod)));
++        }
++
++        let response = if let Ok(mut file_path) = url.to_file_path() {
++            self.ensure_available(&file_path);
++            if !file_path.exists() &&
++                let Some(rebased) = self.rebase_to_content_root(&file_path)
++            {
++                self.ensure_available(&rebased);
++                if rebased.exists() {
++                    file_path = rebased;
++                }
++            }
++
++            if file_path.is_dir() {
++                return Box::pin(ready(Response::network_error(NetworkError::ResourceLoadError(
++                    "Directory listing is not supported".to_owned(),
++                ))));
++            }
++
++            if let Ok(file) = File::open(file_path.clone()) {
++                let file_size = file.metadata().ok().map(|metadata| metadata.len());
++
++                let mut response =
++                    Response::new(url, ResourceFetchTiming::new(request.timing_type()));
++
++                let range_header = request.headers.typed_get::<Range>();
++                let is_range_request = range_header.is_some();
++                let Ok(range) = get_range_request_bounds(range_header, file_size.unwrap_or(0))
++                    .get_final(file_size)
++                else {
++                    range_not_satisfiable_error(&mut response);
++                    return Box::pin(ready(response));
++                };
++                let mut reader = BufReader::with_capacity(FILE_CHUNK_SIZE, file);
++                if reader.seek(SeekFrom::Start(range.start as u64)).is_err() {
++                    return Box::pin(ready(Response::network_error(NetworkError::InvalidMethod)));
++                }
++
++                if is_range_request {
++                    partial_content(&mut response);
++                }
++
++                let end_byte = range.end.map(|e| e as u64).or(file_size);
++                if let Some(end_byte) = end_byte {
++                    let start_byte = range.start as u64;
++                    response
++                        .headers
++                        .typed_insert(ContentLength(end_byte - start_byte));
++                    if is_range_request {
++                        if let Ok(content_range) = ContentRange::bytes(start_byte..end_byte, file_size) {
++                            response.headers.typed_insert(content_range);
++                        }
++                    }
++                }
++
++                let mime = mime_guess::from_path(file_path).first_or_octet_stream();
++                response.headers.typed_insert(ContentType::from(mime));
++
++                let (mut done_sender, done_receiver) = unbounded_channel();
++                *done_chan = Some((done_sender.clone(), done_receiver));
++                *response.body.lock() = ResponseBody::Receiving(vec![]);
++
++                context.filemanager.fetch_file_in_chunks(
++                    &mut done_sender,
++                    reader,
++                    response.body.clone(),
++                    context.cancellation_listener.clone(),
++                    range,
++                );
++
++                response
++            } else {
++                Response::network_error(NetworkError::ResourceLoadError(
++                    "Opening file failed".to_owned(),
++                ))
++            }
++        } else {
++            Response::network_error(NetworkError::ResourceLoadError(
++                "Constructing file path failed".to_owned(),
++            ))
++        };
++
++        Box::pin(ready(response))
++    }
++}
+diff --git a/ports/servoshell/desktop/protocols/game.rs b/ports/servoshell/desktop/protocols/game.rs
+new file mode 100644
+index 000000000..63bc62ee4
+--- /dev/null
++++ b/ports/servoshell/desktop/protocols/game.rs
+@@ -0,0 +1,229 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! `game:` protocol handler — serves bundled game content under a fixed
++//! virtual origin (`game://content/...`) instead of the raw absolute
++//! `file:` path `file.rs` opens a game's `index.html` from.
++//!
++//! **Why this exists, when `file.rs` already serves the exact same files:**
++//! a `file://` document's `window.location.pathname` is the real OS path
++//! (e.g. `/C:/Users/.../dist/index.html`), not a root-relative one — so any
++//! client-side history router (React Router, TanStack Router, Vue Router in
++//! "history" mode, ...) can never match its own routes against it, and
++//! falls back to its own "not found" page immediately. Root-absolute asset
++//! references (`<script src="/assets/foo.js">`) have the exact same
++//! underlying problem, which `file.rs`'s `rebase_to_content_root` works
++//! around for that one case — but a router's own `location.pathname` isn't
++//! an asset reference `rebase_to_content_root` ever sees; there is no
++//! request to rebase.
++//!
++//! `game://content/` sidesteps this at the root: it's a real, distinct
++//! origin (see `ImmutableOrigin::new_opaque_for_game_content`), with its own
++//! authority ("content") standing in for what an actual HTTP deployment's
++//! domain would be — so `location.pathname` at boot is simply `/`, and
++//! `pushState("/about")` (any router's own client-side navigation) stays
++//! same-origin and same-scheme, so the History API allows it. This is the
++//! same idea Tauri itself uses (`tauri://localhost/` / `https://
++//! tauri.localhost/`) to avoid this exact class of problem, rather than
++//! something novel to this fork.
++//!
++//! **Boot deliberately requests the root, not `/index.html` itself**
++//! (`bundle_launch.rs`'s `game_content_url`) — a client-side router matches
++//! its own root route against `/`, not against a literal `/index.html`,
++//! same as it would never match a hard-coded `/about.html`. The bundle's
++//! entry HTML is still what actually gets served for that request, via the
++//! exact same `Destination::Document`-no-matching-file fallback described
++//! below (`content_root` itself is a directory, so it "doesn't match" too)
++//! — booting at `/index.html` instead served identical bytes but left every
++//! such router unable to match anything at boot, immediately falling back
++//! to its own "not found" page. That failure was easy to miss from logs
++//! alone: a *root-level* route loader (data preloading, asset prefetch)
++//! still runs even when no *leaf* route matches, so network requests kept
++//! firing normally while the actual visible page was nothing but the
++//! router's own unstyled "Not Found" fallback the whole time.
++//!
++//! A **direct navigation** to a sub-route (a hard reload while on
++//! `game://content/about`, or `location.href = "/about"`) has no
++//! `about.html` file to serve — same as any static host serving a
++//! history-mode SPA needs a fallback rule (nginx's `try_files`, Vite's own
++//! dev-server `historyApiFallback`, ...). `load` below serves the bundle's
++//! entry HTML for exactly this case (`Destination::Document`, no matching
++//! file) — deliberately gated to real navigations only, so a genuinely
++//! missing *asset* (an actual 404) still surfaces as an error instead of
++//! silently becoming HTML.
++//!
++//! Registered only for the fixed authority `content` — `mach bundle`/
++//! Packmaster/`roves-action` are the only things that ever construct a
++//! `game:` URL (see `bundle_launch.rs`), always with that exact host, so
++//! anything else reaching this handler is a bug elsewhere, not a real
++//! request. `file.rs`'s own on-demand packed-content extraction
++//! (`packed_content::PackedContent`) is reused as-is — this handler serves
++//! the same on-disk content, just addressed differently.
++
++use std::fs::File;
++use std::future::{Future, ready};
++use std::io::{BufReader, Seek, SeekFrom};
++use std::path::{Component, Path, PathBuf};
++use std::pin::Pin;
++
++use headers::{ContentLength, ContentRange, ContentType, HeaderMapExt, Range};
++use http::Method;
++use servo::protocol_handler::{
++    Destination, DoneChannel, FetchContext, FILE_CHUNK_SIZE, NetworkError, ProtocolHandler,
++    Request, ResourceFetchTiming, Response, ResponseBody, get_range_request_bounds,
++    partial_content, range_not_satisfiable_error,
++};
++use tokio::sync::mpsc::unbounded_channel;
++
++use super::packed_content::PackedContent;
++
++/// The only authority this handler ever serves — see this module's own doc comment.
++/// `pub(crate)` so `bundle_launch.rs` can build the exact same `game://<CONTENT_HOST>/...`
++/// URLs this handler expects, from one shared source of truth instead of two copies of
++/// the literal that could silently drift apart.
++pub(crate) const CONTENT_HOST: &str = "content";
++
++pub struct GameProtocolHandler {
++    /// Where the bundled content actually lives on disk — what a `game://content/<path>`
++    /// request's `<path>` resolves against.
++    content_root: PathBuf,
++    /// The bundle's entry HTML file, relative to `content_root` (e.g. `"index.html"`) —
++    /// see this module's own doc comment on the SPA-fallback behavior this is for.
++    entry_html: String,
++    packed: Option<PackedContent>,
++}
++
++impl GameProtocolHandler {
++    pub fn new(content_root: PathBuf, entry_html: String) -> Self {
++        let packed = PackedContent::resolve(&content_root);
++        Self { content_root, entry_html, packed }
++    }
++
++    /// See `PackedContent::ensure_available` — a no-op when this launch has no
++    /// managed packed content at all (`--content-compress=none`).
++    fn ensure_available(&self, file_path: &Path) {
++        if let Some(packed) = &self.packed {
++            packed.ensure_available(file_path);
++        }
++    }
++
++    /// `game://content/foo/bar.js` → `<content_root>/foo/bar.js`. Filters out any
++    /// `..`/root/prefix component defensively (a URL's path is already dot-segment-
++    /// normalized by the `url` crate for a URL with an authority, which every
++    /// `game:` URL this handler ever sees has — but there's no reason to trust that
++    /// invariant here when a cheap, explicit filter closes off path traversal
++    /// entirely regardless).
++    fn resolve_path(&self, url_path: &str) -> PathBuf {
++        let relative: PathBuf = Path::new(url_path)
++            .components()
++            .filter(|c| matches!(c, Component::Normal(_)))
++            .collect();
++        self.content_root.join(relative)
++    }
++}
++
++impl ProtocolHandler for GameProtocolHandler {
++    // Trusted first-party content origin, same reasoning as `file.rs`'s own overrides —
++    // see that file's own comment.
++    fn is_fetchable(&self) -> bool {
++        true
++    }
++
++    fn is_secure(&self) -> bool {
++        true
++    }
++
++    fn load<'a>(
++        &'a self,
++        request: &'a mut Request,
++        done_chan: &mut DoneChannel,
++        context: &FetchContext,
++    ) -> Pin<Box<dyn Future<Output = Response> + Send + 'a>> {
++        let url = request.current_url();
++
++        if request.method != Method::GET {
++            return Box::pin(ready(Response::network_error(NetworkError::InvalidMethod)));
++        }
++
++        if url.host_str() != Some(CONTENT_HOST) {
++            return Box::pin(ready(Response::network_error(NetworkError::ResourceLoadError(
++                format!("game: only serves the \"{CONTENT_HOST}\" host"),
++            ))));
++        }
++
++        let mut file_path = self.resolve_path(url.path());
++        self.ensure_available(&file_path);
++
++        // SPA fallback: a real navigation (not an asset subresource) to a path with
++        // no matching file falls back to the bundle's own entry HTML — see this
++        // module's own doc comment for why. An asset request that genuinely doesn't
++        // exist stays a real error below, not silently a page of HTML.
++        if (!file_path.exists() || file_path.is_dir()) && request.destination == Destination::Document
++        {
++            file_path = self.content_root.join(&self.entry_html);
++            self.ensure_available(&file_path);
++        }
++
++        if file_path.is_dir() {
++            return Box::pin(ready(Response::network_error(NetworkError::ResourceLoadError(
++                "Directory listing is not supported".to_owned(),
++            ))));
++        }
++
++        let response = if let Ok(file) = File::open(&file_path) {
++            let file_size = file.metadata().ok().map(|metadata| metadata.len());
++
++            let mut response = Response::new(url, ResourceFetchTiming::new(request.timing_type()));
++
++            let range_header = request.headers.typed_get::<Range>();
++            let is_range_request = range_header.is_some();
++            let Ok(range) = get_range_request_bounds(range_header, file_size.unwrap_or(0))
++                .get_final(file_size)
++            else {
++                range_not_satisfiable_error(&mut response);
++                return Box::pin(ready(response));
++            };
++            let mut reader = BufReader::with_capacity(FILE_CHUNK_SIZE, file);
++            if reader.seek(SeekFrom::Start(range.start as u64)).is_err() {
++                return Box::pin(ready(Response::network_error(NetworkError::InvalidMethod)));
++            }
++
++            if is_range_request {
++                partial_content(&mut response);
++            }
++
++            let end_byte = range.end.map(|e| e as u64).or(file_size);
++            if let Some(end_byte) = end_byte {
++                let start_byte = range.start as u64;
++                response.headers.typed_insert(ContentLength(end_byte - start_byte));
++                if is_range_request {
++                    if let Ok(content_range) = ContentRange::bytes(start_byte..end_byte, file_size) {
++                        response.headers.typed_insert(content_range);
++                    }
++                }
++            }
++
++            let mime = mime_guess::from_path(&file_path).first_or_octet_stream();
++            response.headers.typed_insert(ContentType::from(mime));
++
++            let (mut done_sender, done_receiver) = unbounded_channel();
++            *done_chan = Some((done_sender.clone(), done_receiver));
++            *response.body.lock() = ResponseBody::Receiving(vec![]);
++
++            context.filemanager.fetch_file_in_chunks(
++                &mut done_sender,
++                reader,
++                response.body.clone(),
++                context.cancellation_listener.clone(),
++                range,
++            );
++
++            response
++        } else {
++            Response::network_error(NetworkError::ResourceLoadError("Opening file failed".to_owned()))
++        };
++
++        Box::pin(ready(response))
++    }
++}
+diff --git a/ports/servoshell/desktop/protocols/mod.rs b/ports/servoshell/desktop/protocols/mod.rs
+index 434826f5b..3599609e4 100644
+--- a/ports/servoshell/desktop/protocols/mod.rs
++++ b/ports/servoshell/desktop/protocols/mod.rs
+@@ -2,6 +2,13 @@
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+ 
++pub(crate) mod file;
++pub(crate) mod game;
++pub(crate) mod packed_content;
+ pub(crate) mod resource;
++pub(crate) mod roves;
++pub(crate) mod saves;
+ pub(crate) mod servo;
++#[cfg(feature = "steam")]
++pub(crate) mod steam;
+ pub(crate) mod urlinfo;
+diff --git a/ports/servoshell/desktop/protocols/packed_content.rs b/ports/servoshell/desktop/protocols/packed_content.rs
+new file mode 100644
+index 000000000..d3ef16aa1
+--- /dev/null
++++ b/ports/servoshell/desktop/protocols/packed_content.rs
+@@ -0,0 +1,84 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! On-demand pack extraction, shared between `file.rs` and `game.rs` — both
++//! protocol handlers serve the exact same bundled content, just under
++//! different URL schemes (a raw `file:` path vs. `game:`'s virtual root; see
++//! `game.rs`'s own module doc comment for why the latter exists), so the
++//! logic for "extract whichever `.pack` archive a not-yet-extracted file
++//! lives in, the first time it's touched" only needs to exist once. Extracted
++//! out of `file.rs` when `game.rs` was added rather than duplicated — see
++//! CUSTOMIZATIONS.md's "Virtual content root (game: protocol)" entry.
++
++use std::path::{Path, PathBuf};
++use std::sync::Mutex;
++
++use roves_content_packer::manifest::Manifest;
++
++pub struct PackedContent {
++    /// Where `manifest.json` + `.pack` files live (read-only, shipped as-is).
++    pub content_dir: PathBuf,
++    /// Where boot files were already extracted, and where lazy ones land —
++    /// the directory the initial `file:` URL's path lives in.
++    pub cache_dir: PathBuf,
++    pub manifest: Manifest,
++    /// Serializes on-demand extraction: two near-simultaneous loads for
++    /// files in the same not-yet-extracted pack must not both start
++    /// unpacking it at once. Extraction is rare/one-time per pack per
++    /// session, so coarse (one lock for all packs, not per-pack) is fine.
++    extracting: Mutex<()>,
++}
++
++impl PackedContent {
++    /// `cache_dir`: the directory a `.roves-content-source` marker (written by
++    /// `roves-content-packer extract`, see CUSTOMIZATIONS.md) is looked for in —
++    /// present only for a packed-content launch; absent for one opened via raw CLI
++    /// args for local dev/testing, or a build with `--content-compress=none`.
++    pub fn resolve(cache_dir: &Path) -> Option<Self> {
++        let marker = cache_dir.join(roves_content_packer::extract::CONTENT_SOURCE_MARKER);
++        let content_dir = std::fs::read_to_string(&marker).ok()?;
++        let content_dir = PathBuf::from(content_dir.trim());
++        let manifest = roves_content_packer::extract::load_manifest(&content_dir).ok()?;
++        Some(Self {
++            content_dir,
++            cache_dir: cache_dir.to_path_buf(),
++            manifest,
++            extracting: Mutex::new(()),
++        })
++    }
++
++    /// If `file_path` doesn't exist yet and falls under this managed packed
++    /// content, extracts whichever pack contains it — a synchronous,
++    /// blocking call, same as the plain file I/O around it; this only ever
++    /// happens the first time a given pack's contents are touched, including
++    /// across relaunches (see `ensure_file_available`'s own marker file).
++    pub fn ensure_available(&self, file_path: &Path) {
++        if file_path.exists() {
++            return;
++        }
++        let Ok(rel) = file_path.strip_prefix(&self.cache_dir) else {
++            return;
++        };
++        let rel_path = rel
++            .components()
++            .map(|c| c.as_os_str().to_string_lossy().into_owned())
++            .collect::<Vec<_>>()
++            .join("/");
++
++        let _guard = self.extracting.lock().unwrap();
++        // Re-check now that we hold the lock: another load() may have just
++        // finished extracting the exact pack this path lives in.
++        if file_path.exists() {
++            return;
++        }
++        if let Err(e) = roves_content_packer::extract::ensure_file_available(
++            &self.content_dir,
++            &self.cache_dir,
++            &self.manifest,
++            &rel_path,
++        ) {
++            log::warn!("on-demand extraction of {rel_path:?} failed: {e}");
++        }
++    }
++}
+diff --git a/ports/servoshell/desktop/protocols/roves.rs b/ports/servoshell/desktop/protocols/roves.rs
+new file mode 100644
+index 000000000..05ebfaca9
+--- /dev/null
++++ b/ports/servoshell/desktop/protocols/roves.rs
+@@ -0,0 +1,151 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! Roves' own general-purpose `invoke()` bridge — the `@drincs/roves-api`
++//! `core` module (see servo/packages/roves-api) talks to this over a
++//! `roves:` custom protocol, fetchable from ordinary page JS
++//! (`fetch('roves:exit')`), the same way `protocols/steam.rs` exposes
++//! Steamworks over `steam:`. This is the generic "control this app from JS"
++//! surface (window/process lifecycle today); Steam has its own dedicated
++//! scheme since it's a large, separate SDK surface, not something that
++//! belongs generically here.
++
++use std::future::Future;
++use std::path::PathBuf;
++use std::pin::Pin;
++use std::sync::{Arc, Mutex};
++
++use headers::{ContentType, HeaderMapExt};
++use roves_content_packer::extract;
++use servo::protocol_handler::{
++    DoneChannel, FetchContext, NetworkError, ProtocolHandler, Request, ResourceFetchTiming,
++    Response, ResponseBody,
++};
++use winit::event_loop::EventLoopProxy;
++
++use crate::desktop::event_loop::AppEvent;
++
++pub struct RovesProtocolHandler {
++    /// `None` in headless mode, where there's no window to close and no
++    /// winit event loop to send this through in the first place (see
++    /// `ServoShellEventLoop::event_loop_proxy`).
++    close_proxy: Option<Arc<Mutex<EventLoopProxy<AppEvent>>>>,
++    /// The directory packed game content was (or would be) extracted into —
++    /// the same directory `FileProtocolHandler` serves from — if this launch
++    /// is a packed-content one at all. `None` for a dev `--url` launch, which
++    /// has no extraction cache to clear.
++    content_cache_dir: Option<PathBuf>,
++}
++
++impl RovesProtocolHandler {
++    pub fn new(
++        close_proxy: Option<Arc<Mutex<EventLoopProxy<AppEvent>>>>,
++        content_cache_dir: Option<PathBuf>,
++    ) -> Self {
++        Self { close_proxy, content_cache_dir }
++    }
++
++    /// Sends `AppEvent::CloseAllWindows`, same as the `exit` command — used
++    /// after clearing the content cache, since that cache is the *live*
++    /// document root while the game runs (see `extract::clear_cache`'s
++    /// caller here): leaving the app open afterwards risks a broken load for
++    /// any asset not yet extracted this session.
++    fn close_all_windows(&self) -> Result<(), String> {
++        match &self.close_proxy {
++            Some(proxy) => proxy
++                .lock()
++                .unwrap()
++                .send_event(AppEvent::CloseAllWindows)
++                .map_err(|_| "Failed to reach the main event loop".to_owned()),
++            None => Err("No window to close (headless mode)".to_owned()),
++        }
++    }
++}
++
++impl ProtocolHandler for RovesProtocolHandler {
++    fn is_fetchable(&self) -> bool {
++        true
++    }
++
++    fn is_secure(&self) -> bool {
++        true
++    }
++
++    fn load(
++        &self,
++        request: &mut Request,
++        _done_chan: &mut DoneChannel,
++        _context: &FetchContext,
++    ) -> Pin<Box<dyn Future<Output = Response> + Send>> {
++        let command = request.current_url().path().to_owned();
++
++        let result: Result<&'static str, String> = match command.as_str() {
++            // The generic "is this page actually running inside Roves"
++            // check — see `@drincs/roves-api/core`'s `isAvailable()`. Always
++            // `true` here: reaching this match arm at all means a `roves:`
++            // fetch resolved, which only happens when this protocol handler
++            // is registered, i.e. only inside Roves. A regular browser (or
++            // any other embedder that never registered `roves:`) fails the
++            // `fetch()` itself before ever reaching Rust code, which is
++            // exactly what `core.invoke`'s caller sees as "unavailable".
++            "is_available" => Ok("true"),
++            // Host/engine diagnostics for bug reports and graphics-compatibility triage --
++            // see `@drincs/roves-api/core`'s `systemInfo()`. Field names deliberately mirror
++            // `@tauri-apps/plugin-os`'s (`type()`/`version()`/`arch()`) and the `os_info`
++            // crate's (`os_type`/`version`/`bitness`/`architecture`) conventions, so code
++            // that already knows either of those feels at home here too -- `engine_version`
++            // is the one addition neither has an equivalent for, since neither wraps an
++            // engine a page could plausibly want the *version of*, the way Roves' own
++            // `servoshell::VERSION` matters for graphics/compatibility debugging the same way
++            // a "webview version" would elsewhere.
++            "system_info" => return Box::pin(std::future::ready(json_response(
++                request,
++                serde_json::json!({
++                    "os_type": sysinfo::System::distribution_id(),
++                    "os_version": sysinfo::System::os_version(),
++                    "bitness": if cfg!(target_pointer_width = "64") { "64-bit" } else { "32-bit" },
++                    "architecture": std::env::consts::ARCH,
++                    "engine_version": crate::VERSION,
++                })
++                .to_string(),
++            ))),
++            // Closes every open window. In this fork's usual single-window
++            // kiosk setup (see ../../CUSTOMIZATIONS.md's toolbar/tab removal
++            // entries) that's equivalent to quitting the app: once no
++            // windows remain, `App::pump_servo_event_loop` returns `false`
++            // and the event loop exits on its own — see app.rs.
++            "exit" | "close_window" => self.close_all_windows().map(|()| "true"),
++            // Wipes the startup extraction cache — not save data, see
++            // `support/content-packer`'s doc comments — and then closes the
++            // app the same way `exit` does, since that cache is the live
++            // document root while running (see `close_all_windows`'s doc
++            // comment). The next launch re-extracts fresh from the shipped
++            // bundle.
++            "clear_content_cache" => match &self.content_cache_dir {
++                Some(dir) => extract::clear_cache(dir).and_then(|()| self.close_all_windows()).map(|()| "true"),
++                None => Err("No extraction cache to clear (not a packed-content launch)".to_owned()),
++            },
++            _ => {
++                return Box::pin(std::future::ready(Response::network_error(
++                    NetworkError::ResourceLoadError(format!("Unknown roves: command '{command}'")),
++                )));
++            },
++        };
++
++        Box::pin(std::future::ready(match result {
++            Ok(body) => json_response(request, body.to_owned()),
++            Err(error) => Response::network_error(NetworkError::ResourceLoadError(error)),
++        }))
++    }
++}
++
++fn json_response(request: &Request, body: String) -> Response {
++    let mut response = Response::new(
++        request.current_url(),
++        ResourceFetchTiming::new(request.timing_type()),
++    );
++    response.headers.typed_insert(ContentType::json());
++    *response.body.lock() = ResponseBody::Done(body.into_bytes());
++    response
++}
+diff --git a/ports/servoshell/desktop/protocols/saves.rs b/ports/servoshell/desktop/protocols/saves.rs
+new file mode 100644
+index 000000000..51ad7c5e5
+--- /dev/null
++++ b/ports/servoshell/desktop/protocols/saves.rs
+@@ -0,0 +1,427 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! Save-game storage exposed to web content through a `saves:` custom
++//! protocol, fetchable from ordinary page JS (`fetch('saves:read?key=slot1')`)
++//! — mirrors `protocols/roves.rs`/`protocols/steam.rs`'s "large, separate
++//! surface gets its own scheme" convention. Shaped like an async,
++//! origin-scoped key/value store on purpose (the same reasoning a game
++//! already using IndexedDB would recognize), but backed by real files on
++//! disk rather than the engine's own (upstream) IndexedDB implementation —
++//! see CUSTOMIZATIONS.md's "Save-game storage API" entry for why a
++//! dedicated store, not IndexedDB itself, was the right choice here.
++//!
++//! Where a save actually lands depends on how this exact binary was shipped
++//! — see [`resolve_saves_dir`]:
++//! - **Portable** (the default `mach bundle` output, no installer): a
++//!   `saves/` folder next to the binary — inside the same folder a player
++//!   sees when they extract the zip, so copying that folder elsewhere
++//!   carries saves along with it.
++//! - **Installed** (`--msi`/`--dmg`/`--deb`): under the OS's cache directory
++//!   (`roves_content_packer::extract::game_data_dir`), a sibling of the
++//!   content-extraction cache and `roves.log` — not next to the binary,
++//!   which for an installed game commonly sits somewhere a player either
++//!   shouldn't write to (`Program Files`) or wouldn't think to look
++//!   (`/usr/lib/<package>`).
++//! - **Console**: not implemented yet — every command answers "unavailable"
++//!   rather than guessing at a location no console port exists to validate
++//!   against.
++//!
++//! When compiled with `--features steam` and a Steam client is running,
++//! every write/delete is also mirrored to Steam Cloud
++//! (`ISteamRemoteStorage`, via the `steamworks` crate's `remote_storage()`)
++//! under the same key — local disk stays the source of truth for reads (no
++//! conflict resolution to get wrong), except that a `read` for a key with no
++//! local file present but a Cloud copy pulls that copy down first, so a
++//! fresh install on a second machine still sees existing cloud saves.
++
++use std::fs;
++use std::path::{Path, PathBuf};
++
++use headers::{ContentType, HeaderMapExt};
++use serde_json::Value;
++use servo::protocol_handler::{
++    DoneChannel, FetchContext, NetworkError, ProtocolHandler, Request, ResourceFetchTiming,
++    Response, ResponseBody,
++};
++
++#[cfg(feature = "steam")]
++use std::io::{Read, Write};
++
++/// Written by `mach bundle --msi`/`--dmg`/`--deb` (see
++/// `python/servo/post_build_commands.py`'s own `INSTALLED_MARKER`) into the
++/// same directory the engine binary itself ends up in once installed — the
++/// only signal this binary has for telling "I was installed" apart from "I'm
++/// running portably", since those three flags otherwise wrap the exact same
++/// portable output byte-for-byte.
++const INSTALLED_MARKER: &str = ".roves-installed";
++
++/// Sub-folder name under whichever root [`resolve_saves_dir`] picks.
++const SAVES_SUBDIR: &str = "saves";
++
++pub struct SavesProtocolHandler {
++    /// `None` when no save location could be resolved at all (no
++    /// `current_exe()`, or creating the directory failed — e.g. a read-only
++    /// portable install with no fallback available) — every command then
++    /// answers "unavailable" instead of panicking or silently no-opping.
++    saves_dir: Option<PathBuf>,
++    #[cfg(feature = "steam")]
++    steam_client: Option<steamworks::Client>,
++}
++
++impl SavesProtocolHandler {
++    /// `game_data_dir_hint`: the resolved `game_data_dir(game_name)` for
++    /// this launch, if known — the same directory `roves.log` and the
++    /// content-extraction cache live under (see `app.rs`'s registration
++    /// site for exactly how this is derived from `App::packed_content_dest`).
++    /// `None` for a launch with no packed-content boot extraction at all
++    /// (a dev `--url` run, or a `--content-compress=none` bundle) — the
++    /// *installed* case then falls back to the generic, ungamed
++    /// `game_data_dir(None)` bucket, the same fallback `roves.log`'s own
++    /// resolution already accepts (see `bundle_launch.rs`'s
++    /// `peek_game_name_for_logging`) — not ideal for two different loose
++    /// games installed on the same machine, but no worse than the existing
++    /// logging behavior, and the *portable* case (next to the binary) is
++    /// entirely unaffected either way.
++    pub fn new(game_data_dir_hint: Option<PathBuf>) -> Self {
++        let saves_dir = resolve_saves_dir(game_data_dir_hint);
++        if let Some(dir) = &saves_dir {
++            if let Err(e) = fs::create_dir_all(dir) {
++                log::warn!("could not create saves directory {dir:?}: {e}");
++                return Self {
++                    saves_dir: None,
++                    #[cfg(feature = "steam")]
++                    steam_client: None,
++                };
++            }
++        }
++        Self {
++            saves_dir,
++            #[cfg(feature = "steam")]
++            steam_client: init_steam_for_saves(),
++        }
++    }
++}
++
++/// Tries to init a Steam client purely for save-sync purposes. This is a
++/// **separate** `Client::init()` call from `protocols/steam.rs`'s own —
++/// deliberately: `steamworks::Client` is cheap to initialize a second time
++/// (it's a thin handle onto the already-running Steam client process, not a
++/// second connection), and keeping the two protocol handlers independent
++/// avoids `app.rs` having to thread a shared handle through registration
++/// order that today has no dependency between the two at all. Degrades to
++/// `None` exactly like `steam.rs` does — never a hard error.
++#[cfg(feature = "steam")]
++fn init_steam_for_saves() -> Option<steamworks::Client> {
++    match steamworks::Client::init() {
++        Ok(client) => Some(client),
++        Err(error) => {
++            log::info!("[Saves] Steam Cloud sync unavailable: {error}");
++            None
++        },
++    }
++}
++
++/// Picks this session's save root — see this module's own doc comment for
++/// the portable/installed split. Falls back from portable to installed
++/// (never the reverse) if the portable location genuinely isn't writable —
++/// e.g. a zip extracted into `Program Files` without admin rights — rather
++/// than failing outright, since the *intent* ("give me a good place to
++/// write player data") is the same either way.
++fn resolve_saves_dir(game_data_dir_hint: Option<PathBuf>) -> Option<PathBuf> {
++    let exe = std::env::current_exe().ok()?;
++    let exe_dir = exe.parent()?.to_path_buf();
++
++    let installed = exe_dir.join(INSTALLED_MARKER).is_file();
++    if !installed {
++        let portable_dir = bundle_root(&exe_dir).join(SAVES_SUBDIR);
++        if fs::create_dir_all(&portable_dir).is_ok() {
++            return Some(portable_dir);
++        }
++        log::warn!(
++            "portable saves dir {portable_dir:?} isn't writable — falling back to the OS cache dir"
++        );
++    }
++
++    let game_data_dir = game_data_dir_hint.unwrap_or_else(|| roves_content_packer::extract::game_data_dir(None));
++    Some(game_data_dir.join(SAVES_SUBDIR))
++}
++
++/// The folder a player would recognize as "the game's own folder" — on
++/// every platform but macOS this is just `exe_dir` itself. On macOS the
++/// binary lives nested inside `<Name>.app/Contents/MacOS/`; treating that
++/// internal directory as the "portable game folder" would mean writing
++/// saves *inside* the `.app` bundle, which is both bad practice (bundles
++/// are conventionally treated as read-only, signed artifacts) and, for a
++/// bundle mounted read-only from a `.dmg`, not even possible — so this
++/// walks up to the `.app` itself and uses *its* parent instead, the folder
++/// a player would actually see the game "living in" (Desktop, a
++/// Downloads/extracted folder, wherever they put it).
++fn bundle_root(exe_dir: &Path) -> PathBuf {
++    if cfg!(target_os = "macos") {
++        let app_bundle = exe_dir
++            .ancestors()
++            .find(|p| p.extension().and_then(|e| e.to_str()) == Some("app"));
++        if let Some(app_bundle) = app_bundle
++            && let Some(parent) = app_bundle.parent()
++        {
++            return parent.to_path_buf();
++        }
++    }
++    exe_dir.to_path_buf()
++}
++
++/// Turns an arbitrary save key (a game-chosen string, e.g. `"slot-1"` or
++/// `"autosave"`) into a safe, single-path-segment filename — rejects
++/// anything that could otherwise escape `saves_dir` (`..`, a path
++/// separator, a Windows drive-letter colon) rather than trying to sanitize
++/// it piecemeal, since a save key has no reason to ever need those
++/// characters in the first place.
++fn sanitize_key(key: &str) -> Option<String> {
++    if key.is_empty()
++        || key.len() > 200
++        || key == "."
++        || key == ".."
++        || key.contains(['/', '\\', ':', '\0'])
++    {
++        return None;
++    }
++    Some(format!("{key}.save"))
++}
++
++impl ProtocolHandler for SavesProtocolHandler {
++    fn is_fetchable(&self) -> bool {
++        true
++    }
++
++    fn is_secure(&self) -> bool {
++        true
++    }
++
++    fn load(
++        &self,
++        request: &mut Request,
++        _done_chan: &mut DoneChannel,
++        _context: &FetchContext,
++    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
++        let url = request.current_url();
++        let query: std::collections::HashMap<String, String> =
++            url.as_url().query_pairs().into_owned().collect();
++        let command = url.path().to_owned();
++
++        let body = handle_command(self, &command, &query);
++
++        Box::pin(std::future::ready(match body {
++            Some(body) => json_response(request, body),
++            None => Response::network_error(NetworkError::ResourceLoadError(format!(
++                "Unknown saves: command '{command}'"
++            ))),
++        }))
++    }
++}
++
++fn handle_command(
++    handler: &SavesProtocolHandler,
++    command: &str,
++    query: &std::collections::HashMap<String, String>,
++) -> Option<String> {
++    let Some(saves_dir) = &handler.saves_dir else {
++        // No usable save location at all (see `SavesProtocolHandler::new`'s
++        // doc comment) — every command degrades the same way Steam's own
++        // "not available" answers do, rather than erroring per-call.
++        return match command {
++            "is_available" => Some(Value::Bool(false).to_string()),
++            "list" => Some(Value::Array(vec![]).to_string()),
++            "read" | "most_recent" => Some(Value::Null.to_string()),
++            "write" | "delete" | "clear" => Some(Value::Bool(false).to_string()),
++            _ => None,
++        };
++    };
++
++    let value = match command {
++        "is_available" => Value::Bool(true),
++
++        "write" => {
++            let key = sanitize_key(query.get("key")?)?;
++            let data = base64_decode(query.get("data")?)?;
++            let path = saves_dir.join(&key);
++            let ok = fs::write(&path, &data).is_ok();
++            if ok {
++                #[cfg(feature = "steam")]
++                steam_sync_write(handler, &key, &data);
++            }
++            Value::Bool(ok)
++        },
++
++        "read" => {
++            let key = sanitize_key(query.get("key")?)?;
++            let path = saves_dir.join(&key);
++            match fs::read(&path) {
++                Ok(bytes) => Value::String(base64_encode(&bytes)),
++                Err(_) => {
++                    // Not on disk yet — a fresh install on a second machine
++                    // wouldn't have this file locally even though Steam
++                    // Cloud might, so try pulling it down before giving up.
++                    #[cfg(feature = "steam")]
++                    if let Some(bytes) = steam_try_pull(handler, &key, &path) {
++                        return Some(Value::String(base64_encode(&bytes)).to_string());
++                    }
++                    Value::Null
++                },
++            }
++        },
++
++        "delete" => {
++            let key = sanitize_key(query.get("key")?)?;
++            let path = saves_dir.join(&key);
++            let ok = match fs::remove_file(&path) {
++                Ok(()) => true,
++                Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
++                Err(_) => false,
++            };
++            if ok {
++                #[cfg(feature = "steam")]
++                steam_sync_delete(handler, &key);
++            }
++            Value::Bool(ok)
++        },
++
++        "list" => {
++            let mut keys = vec![];
++            if let Ok(entries) = fs::read_dir(saves_dir) {
++                for entry in entries.flatten() {
++                    if let Some(name) = entry.file_name().to_str()
++                        && let Some(key) = name.strip_suffix(".save")
++                    {
++                        keys.push(Value::String(key.to_owned()));
++                    }
++                }
++            }
++            Value::Array(keys)
++        },
++
++        // Picks the most recently modified save key — local disk and, when Steam is
++        // compiled in and running, Steam Cloud's own per-file timestamp — without reading
++        // (or downloading) that save's content. `list`/`clear` are local-only (see this
++        // module's own doc comment on Steam Cloud sync), but a file's Cloud timestamp is
++        // metadata Steamworks already tracks per file regardless of whether it's ever been
++        // pulled down locally, so this one command *can* see a save made on another
++        // machine before anything triggers a local download of it.
++        "most_recent" => {
++            let mut best: Option<(String, i64)> = None;
++
++            if let Ok(entries) = fs::read_dir(saves_dir) {
++                for entry in entries.flatten() {
++                    if let Some(name) = entry.file_name().to_str()
++                        && let Some(key) = name.strip_suffix(".save")
++                        && let Ok(metadata) = entry.metadata()
++                        && let Ok(modified) = metadata.modified()
++                        && let Ok(since_epoch) = modified.duration_since(std::time::UNIX_EPOCH)
++                    {
++                        let modified_ms = since_epoch.as_millis() as i64;
++                        if best.as_ref().map_or(true, |(_, ms)| modified_ms > *ms) {
++                            best = Some((key.to_owned(), modified_ms));
++                        }
++                    }
++                }
++            }
++
++            #[cfg(feature = "steam")]
++            if let Some(client) = &handler.steam_client {
++                for info in client.remote_storage().files() {
++                    if let Some(key) = info.name.strip_suffix(".save") {
++                        let modified_ms = client.remote_storage().file(&info.name).timestamp() * 1000;
++                        if best.as_ref().map_or(true, |(_, ms)| modified_ms > *ms) {
++                            best = Some((key.to_owned(), modified_ms));
++                        }
++                    }
++                }
++            }
++
++            match best {
++                Some((key, modified_ms)) => {
++                    let mut result = serde_json::Map::new();
++                    result.insert("key".to_owned(), Value::String(key));
++                    result.insert("modifiedMs".to_owned(), Value::Number(modified_ms.into()));
++                    Value::Object(result)
++                },
++                None => Value::Null,
++            }
++        },
++
++        "clear" => {
++            let mut ok = true;
++            if let Ok(entries) = fs::read_dir(saves_dir) {
++                for entry in entries.flatten() {
++                    if let Some(name) = entry.file_name().to_str()
++                        && let Some(key) = name.strip_suffix(".save")
++                    {
++                        if fs::remove_file(entry.path()).is_err() {
++                            ok = false;
++                        }
++                        #[cfg(feature = "steam")]
++                        steam_sync_delete(handler, &format!("{key}.save"));
++                    }
++                }
++            }
++            Value::Bool(ok)
++        },
++
++        _ => return None,
++    };
++    Some(value.to_string())
++}
++
++#[cfg(feature = "steam")]
++fn steam_sync_write(handler: &SavesProtocolHandler, key: &str, data: &[u8]) {
++    let Some(client) = &handler.steam_client else { return };
++    let mut writer = client.remote_storage().file(key).write();
++    if let Err(e) = writer.write_all(data) {
++        log::warn!("[Saves] Steam Cloud write for {key:?} failed: {e}");
++    }
++}
++
++#[cfg(feature = "steam")]
++fn steam_sync_delete(handler: &SavesProtocolHandler, key: &str) {
++    let Some(client) = &handler.steam_client else { return };
++    client.remote_storage().file(key).delete();
++}
++
++/// Pulls a Cloud-only save down to `local_path` the first time it's read on
++/// a machine that doesn't have it locally yet — see this module's own doc
++/// comment on why reads otherwise never consult Steam Cloud at all.
++#[cfg(feature = "steam")]
++fn steam_try_pull(handler: &SavesProtocolHandler, key: &str, local_path: &Path) -> Option<Vec<u8>> {
++    let client = handler.steam_client.as_ref()?;
++    let file = client.remote_storage().file(key);
++    if !file.exists() {
++        return None;
++    }
++    let mut buf = Vec::new();
++    file.read().read_to_end(&mut buf).ok()?;
++    if let Err(e) = fs::write(local_path, &buf) {
++        log::warn!("[Saves] pulled {key:?} from Steam Cloud but couldn't cache it locally: {e}");
++    }
++    Some(buf)
++}
++
++fn base64_encode(bytes: &[u8]) -> String {
++    use base64::Engine;
++    base64::engine::general_purpose::STANDARD.encode(bytes)
++}
++
++fn base64_decode(text: &str) -> Option<Vec<u8>> {
++    use base64::Engine;
++    base64::engine::general_purpose::STANDARD.decode(text).ok()
++}
++
++fn json_response(request: &Request, body: String) -> Response {
++    let mut response = Response::new(
++        request.current_url(),
++        ResourceFetchTiming::new(request.timing_type()),
++    );
++    response.headers.typed_insert(ContentType::json());
++    *response.body.lock() = ResponseBody::Done(body.into_bytes());
++    response
++}
+diff --git a/ports/servoshell/desktop/protocols/steam.rs b/ports/servoshell/desktop/protocols/steam.rs
+new file mode 100644
+index 000000000..d4cbf6e67
+--- /dev/null
++++ b/ports/servoshell/desktop/protocols/steam.rs
+@@ -0,0 +1,179 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! Exposes a small subset of the Steamworks SDK to web content through a
++//! `steam:` custom protocol, fetchable from ordinary page JS
++//! (`fetch('steam:unlock_achievement?id=ACH_X')`). This mirrors the Tauri
++//! build's `steam` feature (see the parent project's `src-tauri/src/steam.rs`)
++//! command-for-command, so the JS side (`src/lib/steam.ts`) exposes the exact
++//! same API regardless of which native shell is running the game.
++
++use std::collections::HashMap;
++use std::future::Future;
++use std::pin::Pin;
++use std::time::Duration;
++
++use headers::{ContentType, HeaderMapExt};
++use servo::protocol_handler::{
++    DoneChannel, FetchContext, NetworkError, ProtocolHandler, Request, ResourceFetchTiming,
++    Response, ResponseBody,
++};
++use steamworks::{AppId, Client, OverlayToStoreFlag};
++
++pub struct SteamProtocolHandler {
++    client: Option<Client>,
++}
++
++impl SteamProtocolHandler {
++    /// Try to initialise Steam once, at registration time. `client` stays
++    /// `None` (never a hard error) when Steam isn't running or the app was
++    /// launched outside Steam — e.g. during CI builds, or in local dev.
++    /// Every command below degrades to a harmless default in that case,
++    /// exactly like the Tauri-side `steam::try_init()` it mirrors.
++    pub fn new() -> Self {
++        let client = match Client::init() {
++            Ok(client) => {
++                // `Client` is Clone + Send + Sync: safe to move into a thread.
++                let ticker = client.clone();
++                std::thread::spawn(move || loop {
++                    ticker.run_callbacks();
++                    std::thread::sleep(Duration::from_millis(100));
++                });
++                eprintln!("[Steam] Initialised — App ID {}", client.utils().app_id().0);
++                Some(client)
++            },
++            Err(error) => {
++                eprintln!("[Steam] Not available: {error}");
++                None
++            },
++        };
++        Self { client }
++    }
++}
++
++impl ProtocolHandler for SteamProtocolHandler {
++    fn is_fetchable(&self) -> bool {
++        true
++    }
++
++    fn is_secure(&self) -> bool {
++        true
++    }
++
++    fn load(
++        &self,
++        request: &mut Request,
++        _done_chan: &mut DoneChannel,
++        _context: &FetchContext,
++    ) -> Pin<Box<dyn Future<Output = Response> + Send>> {
++        let url = request.current_url();
++        let query: HashMap<String, String> = url.as_url().query_pairs().into_owned().collect();
++        let command = url.path();
++
++        let body = match &self.client {
++            Some(client) => handle_command(client, command, &query),
++            // No Steam client: every read answers with its "unavailable"
++            // default, every write is a silent no-op — same contract the
++            // Tauri commands provide via their own `Option<Client>` guard.
++            None => handle_unavailable(command),
++        };
++
++        Box::pin(std::future::ready(match body {
++            Some(body) => json_response(request, body),
++            None => Response::network_error(NetworkError::ResourceLoadError(
++                format!("Unknown steam: command '{command}'"),
++            )),
++        }))
++    }
++}
++
++fn handle_unavailable(command: &str) -> Option<String> {
++    use serde_json::Value;
++    let value = match command {
++        "is_available" | "is_achievement_unlocked" | "is_dlc_installed" | "open_overlay"
++        | "open_store" => Value::Bool(false),
++        "get_stat_int" => Value::from(0i32),
++        "get_stat_float" => Value::from(0f32),
++        "get_player_name" | "get_app_id" => Value::Null,
++        "unlock_achievement" | "clear_achievement" | "set_stat_int" | "set_stat_float"
++        | "store_stats" => Value::Null,
++        _ => return None,
++    };
++    Some(value.to_string())
++}
++
++fn handle_command(client: &Client, command: &str, query: &HashMap<String, String>) -> Option<String> {
++    use serde_json::Value;
++
++    let stats = client.user_stats();
++    let string_arg = |key: &str| query.get(key).cloned();
++    let u32_arg = |key: &str| query.get(key).and_then(|v| v.parse::<u32>().ok());
++    let i32_arg = |key: &str| query.get(key).and_then(|v| v.parse::<i32>().ok());
++    let f32_arg = |key: &str| query.get(key).and_then(|v| v.parse::<f32>().ok());
++
++    let value = match command {
++        "is_available" => Value::Bool(true),
++        "get_player_name" => Value::String(client.friends().name()),
++        "get_app_id" => Value::from(client.utils().app_id().0),
++
++        // Param is `achievement_id`, not `id`: matches the snake_case'd
++        // query param names `callRoves()` derives from the Tauri commands'
++        // own camelCase arg names (`achievementId`) in src/lib/steam.ts.
++        "unlock_achievement" => {
++            let id = string_arg("achievement_id")?;
++            let ok = stats.achievement(&id).set().is_ok() && stats.store_stats().is_ok();
++            Value::Bool(ok)
++        },
++        "is_achievement_unlocked" => {
++            let id = string_arg("achievement_id")?;
++            Value::Bool(stats.achievement(&id).get().unwrap_or(false))
++        },
++        "clear_achievement" => {
++            let id = string_arg("achievement_id")?;
++            let ok = stats.achievement(&id).clear().is_ok() && stats.store_stats().is_ok();
++            Value::Bool(ok)
++        },
++
++        "set_stat_int" => {
++            let (name, val) = (string_arg("name")?, i32_arg("value")?);
++            Value::Bool(stats.set_stat_i32(&name, val).is_ok())
++        },
++        "get_stat_int" => Value::from(stats.get_stat_i32(&string_arg("name")?).unwrap_or(0)),
++        "set_stat_float" => {
++            let (name, val) = (string_arg("name")?, f32_arg("value")?);
++            Value::Bool(stats.set_stat_f32(&name, val).is_ok())
++        },
++        "get_stat_float" => Value::from(stats.get_stat_f32(&string_arg("name")?).unwrap_or(0.0)),
++        "store_stats" => Value::Bool(stats.store_stats().is_ok()),
++
++        "is_dlc_installed" => {
++            Value::Bool(client.apps().is_dlc_installed(AppId(u32_arg("app_id")?)))
++        },
++
++        "open_overlay" => {
++            client.friends().activate_game_overlay(&string_arg("dialog")?);
++            Value::Bool(true)
++        },
++        "open_store" => {
++            let target = u32_arg("app_id").map(AppId).unwrap_or_else(|| client.utils().app_id());
++            client
++                .friends()
++                .activate_game_overlay_to_store(target, OverlayToStoreFlag::None);
++            Value::Bool(true)
++        },
++
++        _ => return None,
++    };
++    Some(value.to_string())
++}
++
++fn json_response(request: &Request, body: String) -> Response {
++    let mut response = Response::new(
++        request.current_url(),
++        ResourceFetchTiming::new(request.timing_type()),
++    );
++    response.headers.typed_insert(ContentType::json());
++    *response.body.lock() = ResponseBody::Done(body.into_bytes());
++    response
++}

@@ -46,7 +46,7 @@ on:
   workflow_dispatch: {}
 
 env:
-  SERVO_TAG: '0.4.0'
+  SERVO_TAG: '0.5.0'
   # support/android/apk/servoapp/build.gradle.kts's `android {}` block.
   ANDROID_COMPILE_SDK: '37'
   ANDROID_BUILD_TOOLS: '36.0.0'
@@ -215,10 +215,19 @@ jobs:
 
           # Same reasoning as test.yml's own copy of these: new binary assets no text patch
           # can carry, but gui.rs's/build.rs's include_bytes!() need them to genuinely exist
-          # on disk to compile at all.
+          # on disk to compile at all. `roves_wordmark.svg`/the OpenHarmony placeholders
+          # aren't load-bearing for compilation, but copied anyway to match the real repo
+          # layout — see test.yml's own copy of this step for the fuller reasoning.
           mkdir -p resources/fonts
           cp -r ../resources/fonts/. resources/fonts/
-          cp ../resources/servo_64.png ../resources/servo_1024.png ../resources/servo.ico ../resources/servo.icns resources/
+          cp ../resources/servo_64.png ../resources/servo_1024.png ../resources/servo.ico \
+             ../resources/servo.icns ../resources/servo.svg ../resources/roves_wordmark.svg resources/
+          cp ../support/openharmony/AppScope/resources/base/media/servo_64.png \
+             support/openharmony/AppScope/resources/base/media/servo_64.png
+          cp ../support/openharmony/entry/src/main/resources/base/media/servo_1024.png \
+             support/openharmony/entry/src/main/resources/base/media/servo_1024.png
+          cp ../support/openharmony/entry/src/main/resources/base/media/servo_64.png \
+             support/openharmony/entry/src/main/resources/base/media/servo_64.png
 
       # Same dpkg-lock race as test.yml's own copy of this step — confirmed to affect
       # `mach bootstrap`'s own internal apt-get calls too, not just ones we issue ourselves.

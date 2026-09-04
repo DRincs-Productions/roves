@@ -1,0 +1,151 @@
+diff --git a/mach.bat b/mach.bat
+index 0b836dfe2..ba9e2e688 100644
+--- a/mach.bat
++++ b/mach.bat
+@@ -5,4 +5,4 @@ REM https://github.com/astral-sh/uv/issues/12906
+ if "%PROCESSOR_ARCHITECTURE%"=="ARM64" ( set "UV_PYTHON=arm64" )
+ 
+ set workdir=%~dp0
+-uv run --frozen python %workdir%mach %*
++uv run --frozen python "%workdir%mach" %*
+diff --git a/support/windows/roves-bundle.wxs.mako b/support/windows/roves-bundle.wxs.mako
+new file mode 100644
+index 000000000..f1df891df
+--- /dev/null
++++ b/support/windows/roves-bundle.wxs.mako
+@@ -0,0 +1,135 @@
++<?xml version="1.0" encoding="utf-8"?>
++<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
++  <Product Id="*"
++           Name="${package_name}"
++           Manufacturer="unspecified"
++           UpgradeCode="${upgrade_code}"
++           Language="1033"
++           Codepage="1252"
++           Version="${msi_version}">
++    <Package Id="*"
++             Keywords="Installer"
++             Description="${package_name} installer"
++             Manufacturer="unspecified"
++             InstallerVersion="200"
++             Platform="x64"
++             Languages="1033"
++             SummaryCodepage="1252"
++             Compressed="yes"/>
++    <MajorUpgrade AllowDowngrades="yes"/>
++    <Media Id="1"
++           Cabinet="bundle.cab"
++           EmbedCab="yes"/>
++    <Directory Id="TARGETDIR" Name="SourceDir">
++      <Directory Id="ProgramFiles64Folder" Name="PFiles">
++        <Directory Id="INSTALLDIR" Name="${package_name}">
++          <Component Id="MainExe" Guid="${uuid.uuid4()}" Win64="yes">
++            <File Id="PlayEXE"
++                  Name="play.exe"
++                  DiskId="1"
++                  Source="${windowize(path.join(stage_dir, 'play.exe'))}"
++                  KeyPath="yes"/>
++            ${include_flat_files()}
++          </Component>
++          % for d in listdirs(stage_dir):
++          ${include_directory(path.join(stage_dir, d), d)}
++          % endfor
++        </Directory>
++      </Directory>
++
++      <Directory Id="ProgramMenuFolder" Name="Programs">
++        <Directory Id="ProgramMenuDir" Name="${package_name}">
++          <Component Id="ProgramMenuDir" Guid="${uuid.uuid4()}">
++            <RemoveFolder Id="ProgramMenuDir" On="both"/>
++            <RegistryValue Root="HKCU"
++                           Key="Software\${package_name}"
++                           Type="string"
++                           Value=""
++                           KeyPath="yes"/>
++            <Shortcut Id="StartMenuShortcut"
++              Directory="ProgramMenuDir"
++              Name="${package_name}"
++              Target="[INSTALLDIR]play.exe"
++              WorkingDirectory="INSTALLDIR"
++              Icon="PlayIcon"/>
++          </Component>
++        </Directory>
++      </Directory>
++    </Directory>
++
++    <Feature Id="Complete" Level="1">
++      <ComponentRef Id="MainExe"/>
++      % for c in components:
++      <ComponentRef Id="${c}"/>
++      % endfor
++      <ComponentRef Id="ProgramMenuDir"/>
++    </Feature>
++
++    <Icon Id="PlayIcon" SourceFile="${windowize(path.join(stage_dir, 'play.exe'))}"/>
++  </Product>
++</Wix>
++<%!
++# Adapted from servoshell.wxs.mako's recursive-harvest technique (see that
++# file for the original, hardcoded-around-a-fixed-layout version this one
++# generalizes): rather than a fixed "servoshell.exe + resources/" shape,
++# this harvests whatever `mach bundle` actually staged into `stage_dir` —
++# play.exe, its DLLs, launch.json, and (only when --content-dir was passed
++# with --content-compress=none, or always for the packed-archive case)
++# whatever subfolder the html file's own directory put game content in —
++# so it stays correct regardless of what a given game's bundle contains.
++import os
++import os.path as path
++import re
++import uuid
++
++def make_id(s):
++    s = s.replace("-", "_").replace("/", "_").replace("\\", "_").replace(".", "_")
++    return "Id{}".format(s)
++
++def listfiles(directory):
++    return [f for f in os.listdir(directory)
++            if path.isfile(path.join(directory, f))]
++
++def listdirs(directory):
++    return [f for f in os.listdir(directory)
++            if path.isdir(path.join(directory, f))]
++
++def windowize(p):
++    if not p.startswith("/"):
++        return p
++    return re.sub("^/([^/])+", "\\1:", p)
++
++components = []
++%>
++
++<%def name="include_flat_files()">
++% for f in listfiles(stage_dir):
++% if f != "play.exe":
++              <File Id="${make_id(f)}"
++                    Name="${f}"
++                    Source="${windowize(path.join(stage_dir, f))}"
++                    DiskId="1"/>
++% endif
++% endfor
++</%def>
++
++<%def name="include_directory(d, n)">
++<Directory Id="${make_id(path.basename(d))}" Name="${n}">
++  <Component Id="${make_id(path.basename(d))}"
++             Guid="${uuid.uuid4()}"
++             Win64="yes">
++    <CreateFolder/>
++    <% components.append(make_id(path.basename(d))) %>
++    % for f in listfiles(d):
++    <File Id="${make_id(path.join(d, f).replace(stage_dir, ''))}"
++          Name="${f}"
++          Source="${windowize(path.join(d, f))}"
++          DiskId="1"/>
++    % endfor
++  </Component>
++
++  % for f in listdirs(d):
++  ${include_directory(path.join(d, f), f)}
++  % endfor
++</Directory>
++</%def>

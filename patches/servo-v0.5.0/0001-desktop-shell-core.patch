@@ -1,0 +1,3096 @@
+diff --git a/ports/servoshell/Cargo.toml b/ports/servoshell/Cargo.toml
+index 59f5581f7..d2b014501 100644
+--- a/ports/servoshell/Cargo.toml
++++ b/ports/servoshell/Cargo.toml
+@@ -35,10 +35,10 @@ cc = { workspace = true }
+ winresource = { workspace = true }
+ 
+ [package.metadata.winresource]
+-FileDescription = "ServoShell"
++FileDescription = "Roves"
+ LegalCopyright = "© The Servo Project Developers"
+-OriginalFilename = "servoshell.exe"
+-ProductName = "ServoShell"
++OriginalFilename = "Roves.exe"
++ProductName = "Roves"
+ 
+ [features]
+ default = ["baked-in-resources", "bundled_freetype", "gamepad", "servo/clipboard", "js_jit", "max_log_level", "webgpu", "webxr"]
+@@ -61,6 +61,11 @@ vello = ["servo/vello"]
+ webgl_backtrace = ["servo/webgl_backtrace"]
+ webgpu = ["servo/webgpu"]
+ webxr = ["servo/webxr"]
++# Desktop only (see the `not(any(target_os = "android", target_env = "ohos"))`
++# dependency block below) — mirrors the equivalent `steam` feature in
++# ../../../../src-tauri/Cargo.toml. Exposes a `steam:` protocol scheme to web
++# content; see desktop/protocols/steam.rs.
++steam = ["dep:steamworks"]
+ 
+ [dependencies]
+ accesskit = { workspace = true }
+@@ -68,14 +73,17 @@ bpaf = { workspace = true, features = ["derive"] }
+ cfg-if = { workspace = true }
+ crossbeam-channel = { workspace = true }
+ dpi = { workspace = true }
++env_logger = { workspace = true }
+ euclid = { workspace = true }
+ hitrace = { workspace = true, optional = true }
++http = { workspace = true }
+ image = { workspace = true }
+ keyboard-types = { workspace = true }
+ libc = { workspace = true }
+ log = { workspace = true }
+ mime_guess = { workspace = true }
+ raw-window-handle = { workspace = true }
++roves-content-packer = { path = "../../support/content-packer" }
+ rustls = { workspace = true, features = ["aws-lc-rs"] }
+ servo = { workspace = true, features = ["background_hang_monitor", "bluetooth", "testbinding"], default-features = false }
+ tokio = { workspace = true }
+@@ -115,6 +123,7 @@ servo-base = { workspace = true }
+ surfman = { workspace = true, features = ["sm-angle-default"] }
+ 
+ [target.'cfg(not(any(target_os = "android", target_env = "ohos")))'.dependencies]
++base64 = { workspace = true }
+ dirs = { workspace = true }
+ egui = { workspace = true }
+ egui-file-dialog = { workspace = true }
+@@ -126,7 +135,9 @@ headers = { workspace = true }
+ serde_json = { workspace = true }
+ # For optional feature servo-allocator/use-system-allocator and servo-allocator/allocation-tracking
+ servo-allocator = { workspace = true }
++steamworks = { version = "0.13", optional = true }
+ surfman = { workspace = true, features = ["sm-raw-window-handle-06", "sm-x11"] }
++sysinfo = { workspace = true }
+ winit = { workspace = true }
+ 
+ [target.'cfg(any(all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))'.dependencies]
+@@ -134,7 +145,7 @@ signal-hook-registry = { workspace = true }
+ 
+ [target.'cfg(target_os = "windows")'.dependencies]
+ servo = { workspace = true, features = ["no-wgl"] }
+-windows-sys = { workspace = true, features = ["Win32_Graphics_Gdi", "Win32_System_Console"] }
++windows-sys = { workspace = true, features = ["Win32_Graphics_Gdi", "Win32_System_Console", "Win32_System_LibraryLoader"] }
+ 
+ [target.'cfg(target_os = "macos")'.dependencies]
+ objc2-app-kit = { workspace = true, features = [
+diff --git a/ports/servoshell/build.rs b/ports/servoshell/build.rs
+index 918273cb8..a640e3854 100644
+--- a/ports/servoshell/build.rs
++++ b/ports/servoshell/build.rs
+@@ -8,6 +8,50 @@ use std::io::Write;
+ use std::path::Path;
+ use std::process::Command;
+ 
++// Copies the Steamworks redistributable library from steamworks-sys's OUT_DIR
++// into target/<profile>/, right next to the built `servoshell` binary — see
++// the parent project's `src-tauri/build.rs` for the equivalent Tauri-side
++// copy (which lands the same file in src-tauri/ for Tauri's own bundler to
++// pick up instead). Landing it in target/<profile>/ means `./mach bundle`
++// (see ../../CUSTOMIZATIONS.md) picks it up for free via the same
++// *.dll/*.dylib/*.so glob it already uses for ANGLE/GStreamer — no extra
++// plumbing needed there.
++fn copy_steam_lib(target_profile_dir: &Path) {
++    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
++    let out_dir = Path::new(&out_dir);
++    // OUT_DIR layout: .../target/<profile>/build/<pkg-hash>/out — walk up to
++    // the shared `build/` directory to find steamworks-sys's own OUT_DIR,
++    // which is a sibling of ours, not a descendant.
++    let build_dir = out_dir
++        .ancestors()
++        .nth(2)
++        .expect("unexpected OUT_DIR layout");
++
++    let lib_name = match std::env::var("CARGO_CFG_TARGET_OS").as_deref() {
++        Ok("windows") => "steam_api64.dll",
++        Ok("macos") => "libsteam_api.dylib",
++        _ => "libsteam_api.so",
++    };
++
++    let Ok(entries) = std::fs::read_dir(build_dir) else {
++        panic!("Steam: could not read {}", build_dir.display());
++    };
++    for entry in entries.flatten() {
++        let candidate = entry.path().join("out").join(lib_name);
++        if candidate.exists() {
++            let dest = target_profile_dir.join(lib_name);
++            std::fs::copy(&candidate, &dest)
++                .unwrap_or_else(|e| panic!("failed to copy {lib_name}: {e}"));
++            println!("cargo:warning=Steam: copied {lib_name} -> {}", dest.display());
++            return;
++        }
++    }
++    panic!(
++        "Steam: could not find `{lib_name}` in build artifacts. \
++         Ensure `--features steam` is active and steamworks-sys compiled successfully."
++    );
++}
++
+ fn git_sha() -> Result<String, String> {
+     let output = Command::new("git")
+         .args(["rev-parse", "--short", "HEAD"])
+@@ -43,16 +87,44 @@ fn main() -> Result<(), Box<dyn Error>> {
+         println!("cargo:rustc-cfg=servo_do_not_use_in_production");
+     }
+ 
++    // Always Roves' own branding at compile time — a per-game icon is no longer a
++    // compile-time concern at all (see CUSTOMIZATIONS.md's "Runtime + post-build game icon"
++    // entry): `headed_window.rs`'s `runtime_window_icon_bytes` checks for an `icon.png`
++    // next to the running binary first (copied there by `mach bundle --icon-png`, working
++    // identically for a prebuilt shell or a freshly compiled one), only falling back to
++    // this compiled-in default when no such file exists. This used to prefer a game-supplied
++    // `test-page/public/icon.png` if present — but that file is a permanent, checked-in test
++    // fixture of *this* repo, not a per-build signal, so it silently won every single build
++    // that never explicitly overrode it, including the officially published release shell —
++    // confirmed by a real game shipped through it showing test-page's icon instead of Roves'
++    // own. The Windows `.exe`'s own resource icon (below) has the exact same story, fixed
++    // the exact same way (`mach bundle --icon-ico`, patched in post-build via `rcedit`).
++    let window_icon_src = Path::new("../../resources/servo_64.png");
++    std::fs::copy(window_icon_src, out.join("window_icon.png"))
++        .expect("failed to copy window icon into OUT_DIR");
++
+     // Note: We can't use `#[cfg(windows)]`, since that would check the host platform
+     // and not the target platform
+     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
+     let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap();
+ 
++    // `CARGO_FEATURE_STEAM` (not `#[cfg(feature = "steam")]`, which build
++    // scripts don't get applied to their own compilation) is how Cargo tells
++    // a build script that the crate's `steam` feature is enabled.
++    if std::env::var("CARGO_FEATURE_STEAM").is_ok() {
++        copy_steam_lib(build.parent().unwrap());
++    }
++
+     if target_os == "windows" {
+         #[cfg(windows)]
+         {
++            // Always Roves' own `.ico` at compile time — see the window-icon comment
++            // above for why a game-supplied icon is no longer read from `test-page/` here
++            // at all; `mach bundle --icon-ico` patches this in afterward via `rcedit`.
++            let exe_icon = Path::new("../../resources/servo.ico");
++
+             let mut res = winresource::WindowsResource::new();
+-            res.set_icon("../../resources/servo.ico");
++            res.set_icon(exe_icon.to_str().expect("icon path is not valid UTF-8"));
+             res.set_manifest_file("platform/windows/servoshell.exe.manifest");
+             res.compile().unwrap();
+         }
+@@ -93,6 +165,17 @@ fn main() -> Result<(), Box<dyn Error>> {
+         println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path/lib/");
+     }
+ 
++    // Kiosk/embedded fork: on Linux, `mach bundle` ships `.so` dependencies
++    // flat next to the binary (see `python/servo/post_build_commands.py`),
++    // and used to rely on a wrapper launcher script (`play.sh`) setting
++    // `LD_LIBRARY_PATH` before exec'ing the real engine binary. That
++    // wrapper is gone (see CUSTOMIZATIONS.md's single-executable-bundle
++    // entry) — the shipped binary now needs to find its own siblings, same
++    // as the macOS case above.
++    if target_os == "linux" {
++        println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
++    }
++
+     // On OpenHarmony, libservoshell.so is loaded by ArkTS as a NAPI module.
+     // Passing a version script allows us to inform the linker about required
+     // symbol visibility (only one), which improves stripping of unused sections.
+diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
+index b3092ada0..bc8a6683c 100644
+--- a/ports/servoshell/desktop/app.rs
++++ b/ports/servoshell/desktop/app.rs
+@@ -4,24 +4,27 @@
+ 
+ //! Application entry point, runs the event loop.
+ 
+-use std::path::Path;
++use std::path::{Path, PathBuf};
+ use std::rc::Rc;
+-use std::time::Instant;
++use std::sync::{Arc, Mutex};
++use std::thread;
++use std::time::{Duration, Instant};
+ use std::{env, fs};
+ 
++use roves_content_packer::extract;
+ use servo::protocol_handler::ProtocolRegistry;
+ use servo::{
+     EventLoopWaker, Opts, Preferences, ServoBuilder, ServoUrl, UserContentManager, UserScript,
+ };
+ use url::Url;
+ use winit::application::ApplicationHandler;
+-use winit::event::WindowEvent;
++use winit::event::{StartCause, WindowEvent};
+ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
+ use winit::window::WindowId;
+ 
+ use super::event_loop::AppEvent;
+ use crate::desktop::event_loop::ServoShellEventLoop;
+-use crate::desktop::headed_window::HeadedWindow;
++use crate::desktop::headed_window::{HeadedWindow, SPLASH_ANIMATION_TICK};
+ use crate::desktop::headless_window::HeadlessWindow;
+ use crate::desktop::protocols;
+ use crate::desktop::tracing::trace_winit_event;
+@@ -32,8 +35,44 @@ use crate::running_app_state::RunningAppState;
+ use crate::running_app_state::ServoshellGamepadDelegate;
+ use crate::window::{PlatformWindow, ServoShellWindowId};
+ 
++/// Minimum time every headed launch spends on the boot splash before
++/// `finish_init` runs (building Servo, opening the real `WebView`),
++/// regardless of whether there's any boot extraction to wait on. Without
++/// this, a launch with nothing to extract — a dev `--url` run, or (the
++/// common case after the very first launch) a packed-content launch whose
++/// destination is already cached from a previous run — skipped
++/// `AppState::Booting` entirely: the window's very first frame *is* the
++/// branded splash (see `Gui::new`), but the next frame immediately swapped
++/// in the real, still-loading `WebView`. Holding the splash up for a fixed
++/// minimum makes it long enough to actually register on every launch, not
++/// just a slow first one. This is only half of what keeps the splash from
++/// flashing away too early, though — see `HeadedWindow::begin_page_load_splash`
++/// for the other half: once `finish_init` *does* open the real `WebView`, the
++/// splash stays up still further, until that page is actually ready.
++const MIN_SPLASH_DURATION: Duration = Duration::from_millis(500);
++
+ pub(crate) enum AppState {
+     Initializing,
++    /// A headed launch that hasn't finished starting up yet — `window` is
++    /// already created and showing the boot splash (see
++    /// `HeadedWindow::paint_splash`) while, if there's a pending
++    /// packed-content boot extraction, a background thread (spawned from
++    /// `App::init`) decompresses the boot set. `extraction_started` drives
++    /// both `MIN_SPLASH_DURATION` and the splash's animation clock (passed
++    /// to `paint_splash` as elapsed time — see that function's doc comment
++    /// for why it's no longer a completion fraction). `extraction_done`
++    /// starts `true` when there was no pending extraction to begin with
++    /// (nothing to wait on but `MIN_SPLASH_DURATION`), or flips to `true`
++    /// once `AppEvent::BootReady` arrives. `App::try_finish_booting` is what
++    /// actually decides, from these fields, when to hand off to
++    /// `finish_init` — which, for a headed launch, keeps the splash up
++    /// still further (see `MIN_SPLASH_DURATION`'s own doc comment) rather
++    /// than transitioning straight to `Running`.
++    Booting {
++        window: Rc<dyn PlatformWindow>,
++        extraction_started: Instant,
++        extraction_done: bool,
++    },
+     Running(Rc<RunningAppState>),
+     ShuttingDown,
+ }
+@@ -45,6 +84,28 @@ pub struct App {
+     waker: Box<dyn EventLoopWaker>,
+     event_loop_proxy: Option<EventLoopProxy<AppEvent>>,
+     initial_url: ServoUrl,
++    /// A packed-content launch's still-to-run boot extraction (see
++    /// `bundle_launch.rs`'s `BundledLaunch`), taken (and consumed) by the
++    /// first call to `init`. `None` for a dev run, a plain `--url` launch,
++    /// or a packed-content launch whose destination was already up to date.
++    pending_extraction: Option<extract::ExtractOptions>,
++    /// The managed extraction-cache directory a packed-content launch's boot
++    /// content lives (or will live) in — captured from `pending_extraction`
++    /// before `init` takes and consumes it, so `finish_init` still has it
++    /// available for `roves:clear_content_cache` (see `content_cache_dir`
++    /// below). `None` for anything that isn't a packed-content launch (a dev
++    /// run, or an uncompressed `--content-compress=none` bundle), so that
++    /// case correctly reports "not a packed-content launch" instead of
++    /// pointing `clear_content_cache` at the bundle's own loose content
++    /// folder — which is real, on-disk content, not a cache, and must never
++    /// be deleted.
++    packed_content_dest: Option<PathBuf>,
++    /// Where the bundle's content lives on disk, and its entry HTML file relative to
++    /// that — `None` for a dev/`--url` launch, `Some` for any real bundled launch
++    /// (packed or not). See `bundle_launch.rs`'s `BundledLaunch::game_content` and
++    /// `protocols::game`'s own doc comment for why bundled content is served via
++    /// `game://content/...` instead of a raw `file:` path.
++    game_content: Option<(PathBuf, String)>,
+     t_start: Instant,
+     t: Instant,
+     state: AppState,
+@@ -56,14 +117,9 @@ impl App {
+         preferences: Preferences,
+         servo_shell_preferences: ServoShellPreferences,
+         event_loop: &ServoShellEventLoop,
++        pending_boot_extraction: Option<extract::ExtractOptions>,
++        game_content: Option<(PathBuf, String)>,
+     ) -> Self {
+-        let initial_url = get_default_url(
+-            servo_shell_preferences.url.as_deref(),
+-            env::current_dir().unwrap(),
+-            |path| fs::metadata(path).is_ok(),
+-            &servo_shell_preferences,
+-        );
+-
+         let t = Instant::now();
+         App {
+             opts,
+@@ -71,15 +127,159 @@ impl App {
+             servoshell_preferences: servo_shell_preferences,
+             waker: event_loop.create_event_loop_waker(),
+             event_loop_proxy: event_loop.event_loop_proxy(),
+-            initial_url,
++            // Placeholder — recomputed in `finish_init`, once any pending boot
++            // extraction has actually finished. See that function's doc
++            // comment for why this can't be computed here, at construction
++            // time, for a packed-content launch.
++            initial_url: ServoUrl::parse("about:blank").expect("\"about:blank\" is a valid URL"),
++            packed_content_dest: pending_boot_extraction.as_ref().and_then(|opts| opts.dest.clone()),
++            pending_extraction: pending_boot_extraction,
++            game_content,
+             t_start: t,
+             t,
+             state: AppState::Initializing,
+         }
+     }
+ 
+-    /// Initialize Application once event loop start running.
++    /// Initialize Application once event loop start running. Always creates
++    /// the window immediately. For a headed launch, always shows the boot
++    /// splash for at least `MIN_SPLASH_DURATION` before deferring the rest
++    /// of startup (`finish_init`) — if there's also a pending packed-content
++    /// boot extraction, that runs concurrently on a background thread and
++    /// must finish too (see `AppState::Booting`, `try_finish_booting`)
++    /// instead of blocking window creation on it, as a plain synchronous
++    /// call used to. Headless launches have no splash to show, so a pending
++    /// extraction there just runs synchronously, exactly as before.
+     pub fn init(&mut self, active_event_loop: Option<&ActiveEventLoop>) {
++        // `self.initial_url` is still just the `finish_init`-pending placeholder
++        // at this point — harmless here, since `create_platform_window`'s `url`
++        // param is only ever forwarded to `Gui::new`'s own dead `_initial_url`
++        // parameter (see CUSTOMIZATIONS.md), never actually used.
++        let url = self.initial_url.as_url().clone();
++        // See the milestone-logging comment in `cli::main` — window/GL
++        // surface creation (winit + ANGLE/GL context setup) is the single
++        // most likely place for a silent, unloggable native crash on
++        // Windows, so this is bracketed specifically rather than just
++        // logged once before/after everything in `init`.
++        log::info!("creating platform window");
++        let platform_window = self.create_platform_window(url, active_event_loop);
++        log::info!("created platform window");
++
++        let opts = self.pending_extraction.take();
++
++        let Some(active_event_loop) = active_event_loop else {
++            // Headless: no splash to show either way, so just run any
++            // pending extraction synchronously and move straight on, same
++            // as before this function also started gating headed launches
++            // on `MIN_SPLASH_DURATION`.
++            if let Some(opts) = opts {
++                if let Err(error) = extract::extract_boot(&opts) {
++                    log::error!("extracting boot content: {error}");
++                }
++            }
++            self.finish_init(platform_window, None);
++            return;
++        };
++
++        // Show the splash immediately, then make sure we wake up again at the next
++        // animation tick even if no `BootProgress`/`BootReady` arrives before then — see
++        // `new_events`/`try_finish_booting`, which take over re-arming this on every
++        // subsequent tick.
++        if let Some(headed_window) = platform_window.as_headed_window() {
++            headed_window.winit_window().request_redraw();
++        }
++        active_event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + SPLASH_ANIMATION_TICK));
++
++        let extraction_done = match opts {
++            Some(opts) => {
++                let proxy = self
++                    .event_loop_proxy
++                    .clone()
++                    .expect("Should always have event loop proxy in headed mode.");
++                thread::spawn(move || {
++                    let result = extract::extract_boot_with_progress(&opts, |progress| {
++                        let _ = proxy.send_event(AppEvent::BootProgress(progress));
++                    });
++                    if let Err(error) = result {
++                        log::error!("extracting boot content: {error}");
++                    }
++                    // Sent even on failure: the page will simply fail to load
++                    // (same failure philosophy as elsewhere for missing/
++                    // corrupt content) rather than leaving the app stuck on
++                    // the splash forever.
++                    let _ = proxy.send_event(AppEvent::BootReady);
++                });
++                false
++            },
++            // Nothing to extract — the only thing `try_finish_booting` still
++            // needs to wait on is `MIN_SPLASH_DURATION` itself.
++            None => true,
++        };
++        self.state = AppState::Booting {
++            window: platform_window,
++            extraction_started: Instant::now(),
++            extraction_done,
++        };
++    }
++
++    /// If `Booting`, check whether both extraction (if any was pending) and
++    /// `MIN_SPLASH_DURATION` have finished; if so, hand off to
++    /// `finish_init`. Otherwise (re)arm `control_flow` to wake up at the next
++    /// `SPLASH_ANIMATION_TICK` (so the splash's indeterminate animation keeps
++    /// moving the whole time, not just once at the `MIN_SPLASH_DURATION`
++    /// mark), capped so it never overshoots that mark on the first tick. A
++    /// no-op when not `Booting`, so every event handler below can call this
++    /// unconditionally.
++    fn try_finish_booting(&mut self, event_loop: &ActiveEventLoop) {
++        let AppState::Booting { window, extraction_started, extraction_done, .. } = &self.state
++        else {
++            return;
++        };
++        let elapsed = extraction_started.elapsed();
++        if !*extraction_done || elapsed < MIN_SPLASH_DURATION {
++            // Once past `MIN_SPLASH_DURATION` itself, `saturating_sub` alone would
++            // return zero and busy-loop while still waiting on `extraction_done` — tick
++            // at the animation rate instead in that case, same as while still within
++            // `MIN_SPLASH_DURATION` but capped so the first tick doesn't overshoot it.
++            let remaining = MIN_SPLASH_DURATION.saturating_sub(elapsed);
++            let tick = if remaining.is_zero() {
++                SPLASH_ANIMATION_TICK
++            } else {
++                remaining.min(SPLASH_ANIMATION_TICK)
++            };
++            event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + tick));
++            return;
++        }
++        let window = window.clone();
++        self.finish_init(window, Some(event_loop));
++    }
++
++    /// The rest of startup, deferred behind boot extraction when there is
++    /// one (see `init`): builds the protocol registry/Servo instance,
++    /// constructs `RunningAppState`, and opens the real webview into
++    /// `platform_window` (already created by `init`).
++    fn finish_init(&mut self, platform_window: Rc<dyn PlatformWindow>, active_event_loop: Option<&ActiveEventLoop>) {
++        // Computed here rather than at `App::new` time: for a packed-content
++        // launch, `init` only ever calls `finish_init` once any pending boot
++        // extraction has actually finished (synchronously for headless, or
++        // via `AppEvent::BootReady` for headed — see `init`), so the target
++        // file genuinely exists on disk by now. Computing this any earlier
++        // (as used to happen, in `App::new`) races extraction on a true
++        // first launch: `get_default_url` only trusts a `file:` URL whose
++        // target already exists (`parser.rs`'s `exists(path)` check), so on
++        // a cache-miss first launch it would silently fall through to
++        // parsing the raw path as a URL directly — which, for a Windows
++        // absolute path, misparses the drive letter as the scheme (see
++        // `parser.rs`'s own comment on this) — surfacing as "Could not load
++        // the requested page: Unsupported scheme" until the *next* launch,
++        // once extraction has already happened once.
++        self.initial_url = get_default_url(
++            self.servoshell_preferences.url.as_deref(),
++            env::current_dir().unwrap(),
++            |path| fs::metadata(path).is_ok(),
++            &self.servoshell_preferences,
++        );
++
+         let mut protocol_registry = ProtocolRegistry::default();
+         let _ = protocol_registry.register(
+             "urlinfo",
+@@ -91,6 +291,60 @@ impl App {
+             "resource",
+             protocols::resource::ResourceProtocolHandler::default(),
+         );
++        // Takes over from the engine's own internal `file:` handler — see
++        // `components/servo/servo.rs`'s protocol-registry merge-order change,
++        // without which this registration would silently be discarded.
++        let initial_file_path = self.initial_url.as_url().to_file_path().ok();
++        let _ = protocol_registry.register(
++            "file",
++            protocols::file::FileProtocolHandler::new(initial_file_path.as_deref()),
++        );
++        // Only registered for a real bundled launch (`self.game_content` is `None` for
++        // a dev `--url`/drag-drop run, which keeps using `file:` above directly) — see
++        // `protocols::game`'s own doc comment for why bundled content is served this
++        // way instead.
++        if let Some((content_root, entry_html)) = self.game_content.clone() {
++            let _ = protocol_registry.register(
++                "game",
++                protocols::game::GameProtocolHandler::new(content_root, entry_html),
++            );
++        }
++        // `@drincs/roves-api`'s `core`/`process` modules talk to this — see
++        // protocols/roves.rs. `None` in headless mode (no window, no winit
++        // event loop to send AppEvent::CloseAllWindows through).
++        let close_proxy = self
++            .event_loop_proxy
++            .clone()
++            .map(|proxy| Arc::new(Mutex::new(proxy)));
++        // `roves:clear_content_cache` needs to know what to delete —
++        // `self.packed_content_dest` (see its own doc comment), not
++        // `initial_file_path`'s parent: for an uncompressed bundle, that
++        // parent is the bundle's own loose content folder, not a cache Roves
++        // ever created, and must never be a candidate for deletion.
++        let _ = protocol_registry.register(
++            "roves",
++            protocols::roves::RovesProtocolHandler::new(close_proxy, self.packed_content_dest.clone()),
++        );
++        // `@drincs/roves-api`'s `saves` module talks to this — see
++        // protocols/saves.rs. `game_data_dir` is `packed_content_dest`'s own
++        // grandparent (`game_data_dir(name)/cache/<hash>` — see
++        // `support/content-packer/src/extract.rs`'s `default_dest`): reusing
++        // that avoids re-resolving the game's name a second time here.
++        let game_data_dir = self
++            .packed_content_dest
++            .as_deref()
++            .and_then(Path::parent)
++            .and_then(Path::parent)
++            .map(Path::to_path_buf);
++        let _ =
++            protocol_registry.register("saves", protocols::saves::SavesProtocolHandler::new(game_data_dir));
++        // Only registered with `--features steam` (see ports/servoshell/Cargo.toml)
++        // — mirrors the parent project's Tauri `steam` feature. `SteamProtocolHandler::new()`
++        // tries to init Steam once here; it degrades to "unavailable" answers rather
++        // than failing when Steam isn't running (e.g. outside Steam, in CI).
++        #[cfg(feature = "steam")]
++        let _ =
++            protocol_registry.register("steam", protocols::steam::SteamProtocolHandler::new());
+ 
+         let servo_builder = ServoBuilder::default()
+             .opts(self.opts.clone())
+@@ -98,10 +352,9 @@ impl App {
+             .protocol_registry(protocol_registry)
+             .event_loop_waker(self.waker.clone());
+ 
+-        let url = self.initial_url.as_url().clone();
+-
++        log::info!("building Servo instance");
+         let servo = servo_builder.build();
+-        let platform_window = self.create_platform_window(url, active_event_loop);
++        log::info!("built Servo instance");
+ 
+         #[cfg(feature = "webxr")]
+         servo.register_webxr_registry(super::webxr::XrDiscoveryWebXrRegistry::new_boxed(
+@@ -113,6 +366,11 @@ impl App {
+         servo.setup_logging();
+ 
+         let user_content_manager = Rc::new(UserContentManager::new(&servo));
++        // Lets page JS detect it's running inside Roves synchronously, no `fetch()` round
++        // trip needed — `@drincs/roves-api/core`'s `isAvailable()` reads this. Runs on every
++        // navigation as soon as `<head>` exists (see `dom::userscripts::load_script`), before
++        // the page's own scripts.
++        user_content_manager.add_script(Rc::new(UserScript::from("window.__ROVES__ = true;")));
+         for script in load_userscripts(self.servoshell_preferences.userscripts_directory.as_deref())
+             .expect("Loading userscripts failed")
+         {
+@@ -135,6 +393,13 @@ impl App {
+                 .map(ServoshellGamepadDelegate::new)
+                 .map(Rc::new),
+         ));
++
++        // Keep the boot splash up (see its own doc comment) instead of immediately
++        // handing off to a page that hasn't painted anything of its own yet — a no-op
++        // for headless, which has no splash/window to begin with.
++        if let Some(headed_window) = platform_window.as_headed_window() {
++            headed_window.begin_page_load_splash();
++        }
+         running_state.open_window(platform_window, self.initial_url.as_url().clone());
+ 
+         self.state = AppState::Running(running_state);
+@@ -184,6 +449,42 @@ impl ApplicationHandler<AppEvent> for App {
+         self.init(Some(event_loop));
+     }
+ 
++    /// Drives the two periodic ticks the boot splash's animation relies on, neither of
++    /// which any real `WindowEvent`/`AppEvent` is guaranteed to otherwise deliver
++    /// promptly (or at all, during an otherwise-silent wait):
++    /// - While `Booting`: forces a redraw at each `SPLASH_ANIMATION_TICK` (see
++    ///   `try_finish_booting`, which arms this), then defers to `try_finish_booting`
++    ///   itself — also what transitions to `finish_init` once both extraction and
++    ///   `MIN_SPLASH_DURATION` are done.
++    /// - While `Running` with a window whose `page_load_splash_since` is still set (see
++    ///   `HeadedWindow::splash_animation_wake_deadline`, armed by `window_event`/
++    ///   `user_event`'s tail): forces that window's next redraw too, both to keep the
++    ///   splash animating and to promptly notice `LoadStatus::Complete` firing with no
++    ///   further page activity after it.
++    fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
++        if !matches!(cause, StartCause::ResumeTimeReached { .. }) {
++            return;
++        }
++        match &self.state {
++            AppState::Booting { window, .. } => {
++                if let Some(headed_window) = window.as_headed_window() {
++                    headed_window.winit_window().request_redraw();
++                }
++                self.try_finish_booting(event_loop);
++            },
++            AppState::Running(state) => {
++                for window in state.windows().values() {
++                    if let Some(headed_window) = window.platform_window().as_headed_window() &&
++                        headed_window.splash_animation_wake_deadline(state).is_some()
++                    {
++                        headed_window.winit_window().request_redraw();
++                    }
++                }
++            },
++            _ => {},
++        }
++    }
++
+     fn window_event(
+         &mut self,
+         event_loop: &ActiveEventLoop,
+@@ -199,9 +500,24 @@ impl ApplicationHandler<AppEvent> for App {
+         );
+         self.t = now;
+ 
++        if matches!(self.state, AppState::Booting { .. }) {
++            if let AppState::Booting { window, extraction_started, .. } = &self.state &&
++                let Some(headed_window) = window.as_headed_window() &&
++                headed_window.winit_window().id() == window_id &&
++                matches!(window_event, WindowEvent::RedrawRequested | WindowEvent::Resized(_))
++            {
++                headed_window.paint_splash(extraction_started.elapsed());
++            }
++            self.try_finish_booting(event_loop);
++            return;
++        }
++
+         let AppState::Running(state) = &self.state else {
+             return;
+         };
++        // Cloned out of `self.state`'s borrow (cheap — `Rc` clone) so it's still usable
++        // below, after `self.pump_servo_event_loop` needs `&mut self`.
++        let state = state.clone();
+ 
+         if let Some(window) = state.window(ServoShellWindowId::from(u64::from(window_id))) &&
+             let Some(headed_window) = window.platform_window().as_headed_window()
+@@ -212,17 +528,49 @@ impl ApplicationHandler<AppEvent> for App {
+         if !self.pump_servo_event_loop(event_loop.into()) {
+             event_loop.exit();
+         }
+-        // Block until the window gets an event
+-        event_loop.set_control_flow(ControlFlow::Wait);
++        set_running_control_flow(event_loop, &state);
+     }
+ 
+     fn user_event(&mut self, event_loop: &ActiveEventLoop, app_event: AppEvent) {
++        let mut redraw_window = None;
++        if let AppState::Booting { window, extraction_done, .. } = &mut self.state {
++            match app_event {
++                AppEvent::BootProgress(_) => {
++                    redraw_window = Some(window.clone());
++                },
++                AppEvent::BootReady => *extraction_done = true,
++                _ => {},
++            }
++        }
++        if let Some(window) = redraw_window &&
++            let Some(headed_window) = window.as_headed_window()
++        {
++            headed_window.winit_window().request_redraw();
++        }
++        if matches!(self.state, AppState::Booting { .. }) {
++            self.try_finish_booting(event_loop);
++            return;
++        }
++
+         let AppState::Running(state) = &self.state else {
+             return;
+         };
++        // Cloned out of `self.state`'s borrow (cheap — `Rc` clone) so it's still usable
++        // below, after `self.pump_servo_event_loop` needs `&mut self`.
++        let state = state.clone();
+ 
+         match app_event {
+             AppEvent::Waker => (),
++            AppEvent::CloseAllWindows => {
++                // See protocols/roves.rs and event_loop.rs's own doc comment on
++                // this variant: this is the only way a `ProtocolHandler` (which
++                // must be `Send + Sync`, and runs off the main thread) can ask
++                // the main thread to close windows, since `ServoShellWindow`
++                // itself is `Rc`-based and can't be touched from there directly.
++                for window in state.windows().values() {
++                    window.schedule_close();
++                }
++            },
+             AppEvent::Accessibility(ref event) => {
+                 if let Some(window) =
+                     state.window(ServoShellWindowId::from(u64::from(event.window_id))) &&
+@@ -234,17 +582,38 @@ impl ApplicationHandler<AppEvent> for App {
+             AppEvent::Gamepad(event, gamepad_name, gamepad_index) => {
+                 state.handle_gamepad_events(event, gamepad_name, gamepad_index);
+             },
++            // Already acted on above, while `self.state` was still `Booting` -- a no-op
++            // here since `self.state` is `Running` by this point (checked above).
++            AppEvent::BootProgress(_) | AppEvent::BootReady => {},
+         }
+ 
+         if !self.pump_servo_event_loop(event_loop.into()) {
+             event_loop.exit();
+         }
+ 
+-        // Block until the window gets an event
+-        event_loop.set_control_flow(ControlFlow::Wait);
++        set_running_control_flow(event_loop, &state);
+     }
+ }
+ 
++/// Sets `control_flow` to keep the event loop ticking at `SPLASH_ANIMATION_TICK` if any
++/// window's boot splash is still covering its still-loading real page (see
++/// `HeadedWindow::splash_animation_wake_deadline`) — otherwise, fully idle
++/// (`ControlFlow::Wait`) until the next real event, same as before this splash-overlay
++/// mechanism existed. Shared by `window_event`/`user_event`'s `Running` tails.
++fn set_running_control_flow(event_loop: &ActiveEventLoop, state: &RunningAppState) {
++    let next_wake = state
++        .windows()
++        .values()
++        .filter_map(|window| {
++            window
++                .platform_window()
++                .as_headed_window()?
++                .splash_animation_wake_deadline(state)
++        })
++        .min();
++    event_loop.set_control_flow(next_wake.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
++}
++
+ fn load_userscripts(userscripts_directory: Option<&Path>) -> std::io::Result<Vec<UserScript>> {
+     let mut userscripts = Vec::new();
+     if let Some(userscripts_directory) = &userscripts_directory {
+diff --git a/ports/servoshell/desktop/bundle_launch.rs b/ports/servoshell/desktop/bundle_launch.rs
+new file mode 100644
+index 000000000..5693b5eef
+--- /dev/null
++++ b/ports/servoshell/desktop/bundle_launch.rs
+@@ -0,0 +1,217 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! Resolves the CLI args a bundled build should launch with, in-process,
++//! instead of relying on a separate launcher executable to compute and pass
++//! them in. `mach bundle` (see `python/servo/post_build_commands.py`) writes
++//! a small `launch.json` next to the shipped binary; this reads it back so
++//! the shipped bundle can contain exactly one executable (`play`/`play.exe`/
++//! `Roves`) instead of a thin launcher plus a separately-named engine
++//! binary. See CUSTOMIZATIONS.md's single-executable-bundle entry.
++//!
++//! `launch.json` shape (all paths relative to the config file's own
++//! directory):
++//! ```json
++//! {
++//!   "content_dir": "dist",   // present only for --content-compress=auto builds
++//!   "url": "dist/index.html", // used only when content_dir is absent
++//!   "args": ["--window-size", "1280x720"]
++//! }
++//! ```
++//!
++//! The resolved positional URL a bundled launch actually opens is the fixed
++//! `game://content/` virtual root (see [`game_content_url`] and
++//! `protocols::game`'s own doc comment for why the root, not `<entry_html>`
++//! itself), not a raw `file:` path onto `content_dir`/`url` above —
++//! `game_content` on [`BundledLaunch`] carries the real on-disk location
++//! that URL resolves against, alongside it.
++
++use std::env;
++use std::path::{Path, PathBuf};
++
++use roves_content_packer::extract;
++
++use crate::desktop::protocols::game::CONTENT_HOST;
++
++const LAUNCH_CONFIG_FILE: &str = "launch.json";
++
++/// The boot URL every bundled launch opens: `game://<CONTENT_HOST>/`, the virtual root —
++/// deliberately *not* `game://<CONTENT_HOST>/<entry_html>`. `GameProtocolHandler::load`'s
++/// own SPA fallback (see `protocols/game.rs`'s doc comment) already serves the bundle's
++/// entry HTML for any document-destination request with no matching file, root included
++/// (`content_root` itself has no matching *file*, so the fallback fires) — so requesting
++/// the root gets the exact same bytes while leaving `location.pathname` as `/`, not
++/// `/index.html`. That distinction matters: a client-side history router (React Router,
++/// TanStack Router, ...) matches its own root route against `/`, never against a literal
++/// `/index.html`, so booting at the latter left every such router unable to match anything
++/// and falling back to its own "not found" page before a single in-app navigation ever
++/// happened — confirmed the hard way: a root-level loader (data preloading, asset
++/// prefetch, ...) still runs even when no *leaf* route matches, so a bundled launch could
++/// look like it was working (network requests firing, assets downloading) while the actual
++/// visible page was nothing but the router's unstyled "Not Found" fallback the entire time.
++fn game_content_url() -> String {
++    format!("game://{CONTENT_HOST}/")
++}
++
++/// Result of [`resolve_bundled_launch_args`]: the args to launch with,
++/// exactly as if they'd been passed on the command line (a positional URL
++/// followed by flags), plus — for a packed-content build — the boot
++/// extraction that still needs to actually run before that URL's files
++/// exist on disk. Resolving the args never blocks on extraction itself (see
++/// `resolve_packed_content_url`); the caller (`App`, see `app.rs`) is what
++/// runs `pending_boot_extraction` in the background and shows a splash
++/// while it does, instead of extraction happening synchronously before the
++/// window even exists.
++pub(crate) struct BundledLaunch {
++    pub(crate) args: Vec<String>,
++    pub(crate) pending_boot_extraction: Option<extract::ExtractOptions>,
++    /// Where the bundle's content actually lives on disk, and its entry HTML file's
++    /// path relative to that — what `protocols::game::GameProtocolHandler` resolves
++    /// `game://content/<path>` requests against (see that module's own doc comment for
++    /// why bundled content is served this way instead of a raw `file:` path). `None`
++    /// only if the launch config couldn't be resolved at all (`resolve_bundled_launch_args`
++    /// already returns `None` outright in that case) — every real bundled launch has one.
++    pub(crate) game_content: Option<(PathBuf, String)>,
++}
++
++/// Cheaply figures out which game (if any) this is a bundled launch of,
++/// *before* anything else has run — specifically, before
++/// `resolve_bundled_launch_args` below, or logging (`desktop/logging.rs`)
++/// is even installed — so `cli::main` can pick the right per-game log
++/// directory (`extract::game_data_dir`) and have every log line from the
++/// rest of startup, including whatever `resolve_bundled_launch_args` itself
++/// logs, actually land somewhere instead of being silently dropped (no
++/// logger exists yet at that point otherwise). Deliberately does not log
++/// anything itself, for the same reason, and deliberately re-reads
++/// `launch.json`/`manifest.json` rather than sharing state with
++/// `resolve_bundled_launch_args` — the two run at genuinely different
++/// times (this one first), and duplicating a couple of small, fast file
++/// reads is simpler and safer than threading a shared result across that
++/// gap. Returns `None` for every case that isn't "a packed-content bundled
++/// launch with a named manifest" (no `launch.json`, a `url`-based bundle, a
++/// dev/explicit-argv invocation, or a manifest predating the `name` field)
++/// — callers should treat that the same as [`extract::game_data_dir`]'s own
++/// `None` fallback.
++pub(crate) fn peek_game_name_for_logging() -> Option<String> {
++    if env::args().nth(1).is_some() {
++        return None;
++    }
++    let exe_dir = env::current_exe().ok()?.parent()?.to_path_buf();
++    let text = std::fs::read_to_string(exe_dir.join(LAUNCH_CONFIG_FILE)).ok()?;
++    let config: serde_json::Value = serde_json::from_str(&text).ok()?;
++    let content_rel_dir = config.get("content_dir")?.as_str()?;
++    let content_dir = content_root(&exe_dir).join(content_rel_dir);
++    extract::load_manifest(&content_dir).ok()?.name
++}
++
++/// Returns the args to launch with, or `None` to fall back to the process's
++/// real `argv` unchanged.
++///
++/// Deliberately only consulted when the real `argv` is completely empty —
++/// this is what a genuine double-click launch looks like, and it's the only
++/// case it's safe to override: an explicit invocation (a developer running
++/// the shipped binary from a terminal, a Steam launch-options override, and
++/// critically Servo's own multiprocess content-process children
++/// re-executing *themselves* with `--content-process <token>` in argv, see
++/// `ports/servoshell/prefs.rs`'s `content_process` field) must always be
++/// left untouched, or a bundled multiprocess build would have every child
++/// process silently discard its real startup args and try to open the game
++/// window all over again.
++pub(crate) fn resolve_bundled_launch_args() -> Option<BundledLaunch> {
++    if env::args().nth(1).is_some() {
++        return None;
++    }
++
++    let exe_dir = env::current_exe().ok()?.parent()?.to_path_buf();
++    let config_path = exe_dir.join(LAUNCH_CONFIG_FILE);
++    // Absence is the common case: a plain `./mach run`/dev invocation never
++    // has a launch.json sitting next to it. Not an error.
++    let text = std::fs::read_to_string(&config_path).ok()?;
++    let config: serde_json::Value = serde_json::from_str(&text)
++        .inspect_err(|e| log::error!("parsing {config_path:?}: {e}"))
++        .ok()?;
++
++    let extra_args: Vec<String> = config
++        .get("args")
++        .and_then(|v| v.as_array())
++        .map(|values| {
++            values
++                .iter()
++                .filter_map(|v| v.as_str().map(str::to_owned))
++                .collect()
++        })
++        .unwrap_or_default();
++
++    let (url, pending_boot_extraction, game_content) =
++        if let Some(content_rel_dir) = config.get("content_dir").and_then(|v| v.as_str()) {
++            let (url, opts, game_content) = resolve_packed_content_url(&exe_dir, content_rel_dir)?;
++            (url, Some(opts), Some(game_content))
++        } else {
++            let rel_url = config.get("url").and_then(|v| v.as_str())?;
++            // Same "content root = the entry html's own parent directory" assumption
++            // `desktop/protocols/file.rs`'s `initial_dir` already makes for this exact
++            // (uncompressed, `--content-compress=none`) case — not a new limitation.
++            let html_path = exe_dir.join(rel_url);
++            let content_root = html_path.parent()?.to_path_buf();
++            let entry_html = html_path.file_name()?.to_string_lossy().into_owned();
++            let url = game_content_url();
++            (url, None, Some((content_root, entry_html)))
++        };
++
++    let mut args = vec![url];
++    args.extend(extra_args);
++    Some(BundledLaunch {
++        args,
++        pending_boot_extraction,
++        game_content,
++    })
++}
++
++/// macOS app bundles keep the executable in `Contents/MacOS/` and bundled
++/// resources — here, packed game content — in the sibling
++/// `Contents/Resources/`, the standard layout `_bundle_macos` (see
++/// `python/servo/post_build_commands.py`) already places content into.
++/// Windows/Linux keep content flat, next to the binary.
++#[cfg(target_os = "macos")]
++fn content_root(exe_dir: &Path) -> PathBuf {
++    exe_dir.join("..").join("Resources")
++}
++
++#[cfg(not(target_os = "macos"))]
++fn content_root(exe_dir: &Path) -> PathBuf {
++    exe_dir.to_path_buf()
++}
++
++/// Resolves the absolute `file:` URL a packed-content build will open, and
++/// the [`extract::ExtractOptions`] that must still be run to actually make
++/// that URL's files exist. Deliberately does **not** extract anything
++/// itself — only `extract::resolve_dest` (a path/hash computation) and a
++/// `manifest.json` read, both fast — so this never blocks the caller. The
++/// actual (slow) decompression is the caller's job: `App::init` (`app.rs`)
++/// runs it on a background thread while showing a boot splash, and
++/// `desktop/protocols/file.rs` separately extracts individual lazy packs
++/// on demand once the engine is running. Any failure (missing/corrupt
++/// content) is logged and treated as "no bundled launch config", leaving
++/// the engine to fall back to its normal preference-based default rather
++/// than hard-crashing on a broken install.
++fn resolve_packed_content_url(
++    exe_dir: &Path,
++    content_rel_dir: &str,
++) -> Option<(String, extract::ExtractOptions, (PathBuf, String))> {
++    let content_dir = content_root(exe_dir).join(content_rel_dir);
++    let manifest = extract::load_manifest(&content_dir)
++        .inspect_err(|e| log::error!("loading packed-content manifest at {content_dir:?}: {e}"))
++        .ok()?;
++    let (content_dir, dest) = extract::resolve_dest(&content_dir, None, manifest.name.as_deref())
++        .inspect_err(|e| log::error!("resolving boot content destination: {e}"))
++        .ok()?;
++    let url = game_content_url();
++    let game_content = (dest.clone(), manifest.entry_html.clone());
++    let opts = extract::ExtractOptions {
++        content_dir,
++        dest: Some(dest),
++        force: false,
++    };
++    Some((url, opts, game_content))
++}
+diff --git a/ports/servoshell/desktop/cli.rs b/ports/servoshell/desktop/cli.rs
+index 82b3aef92..4375a3a20 100644
+--- a/ports/servoshell/desktop/cli.rs
++++ b/ports/servoshell/desktop/cli.rs
+@@ -5,7 +5,9 @@
+ use std::{env, panic};
+ 
+ use crate::desktop::app::App;
++use crate::desktop::bundle_launch::{peek_game_name_for_logging, resolve_bundled_launch_args};
+ use crate::desktop::event_loop::ServoShellEventLoop;
++use crate::desktop::logging;
+ use crate::panic_hook;
+ use crate::prefs::{ArgumentParsingResult, parse_command_line_arguments};
+ 
+@@ -13,12 +15,61 @@ pub fn main() {
+     crate::crash_handler::install();
+     crate::init_crypto();
+ 
++    // Installed before anything else that could fail — including the panic
++    // hook and `resolve_bundled_launch_args` below — so a failure that
++    // early is actually diagnosable instead of vanishing silently (this app
++    // is `#![windows_subsystem = "windows"]`, so there's no console to see
++    // stderr in even if something did print to it). See `logging.rs`.
++    //
++    // Gated on the same "real argv is empty" check `resolve_bundled_launch_args`
++    // itself uses (see `peek_game_name_for_logging`'s doc comment) — critically,
++    // this excludes Servo's own multiprocess content-process children, which
++    // re-exec *themselves* with `--content-process <token>` in argv. Each one
++    // installing its own truncating file logger would race every other
++    // process (including the main one) writing to that same file, each
++    // wiping out whatever the others had already logged. Content processes
++    // fall through to `Servo::setup_logging`'s content-process counterpart
++    // (`set_logger`) exactly as before this module existed — unchanged, not
++    // a regression, since the whole point of this early file logger is
++    // diagnosing a launch that never gets that far in the first place.
++    if env::args().nth(1).is_none() {
++        let log_dir =
++            roves_content_packer::extract::game_data_dir(peek_game_name_for_logging().as_deref());
++        logging::init(&log_dir);
++    }
++
+     // TODO: once log-panics is released, can this be replaced by
+     // log_panics::init()?
+     panic::set_hook(Box::new(panic_hook::panic_hook));
+ 
+-    // Skip the first argument, which is the binary name.
+-    let args: Vec<String> = env::args().skip(1).collect();
++    // A bundled build (see `python/servo/post_build_commands.py`'s `bundle`
++    // command and CUSTOMIZATIONS.md) resolves its own launch args from a
++    // `launch.json` sitting next to the running executable, in place of the
++    // separate launcher process a bundle used to spawn. Falls back to the
++    // real argv (skipping the binary name) for every other invocation.
++    // `pending_boot_extraction` (packed-content builds only) is threaded
++    // through to `App::new` unresolved — `resolve_bundled_launch_args`
++    // never blocks on it; see `bundle_launch.rs` and `App::init`'s boot
++    // splash handling.
++    let (args, pending_boot_extraction, game_content, is_bundled_launch) =
++        match resolve_bundled_launch_args() {
++            Some(bundled) => (
++                bundled.args,
++                bundled.pending_boot_extraction,
++                bundled.game_content,
++                true,
++            ),
++            None => (env::args().skip(1).collect(), None, None, false),
++        };
++    // Startup milestones below: this app has no console on a double-clicked
++    // Windows build (`#![windows_subsystem = "windows"]`), so a launch that
++    // dies with no further output — a hang, or a hard native crash that
++    // bypasses `panic_hook.rs` entirely (a GPU/driver issue in window/GL
++    // context creation, a missing DLL, ...) — leaves nothing to go on
++    // besides "which of these was the last one logged". Not meant to stay
++    // this granular forever; remove once real-machine testing has actually
++    // localized this class of failure.
++    log::info!("resolved launch args: {args:?}");
+     let (opts, preferences, servoshell_preferences) = match parse_command_line_arguments(&*args) {
+         ArgumentParsingResult::ContentProcess(token) => return servo::run_content_process(token),
+         ArgumentParsingResult::ChromeProcess(opts, preferences, servoshell_preferences) => {
+@@ -27,10 +78,36 @@ pub fn main() {
+         ArgumentParsingResult::Exit => {
+             std::process::exit(0);
+         },
++        // `launch.json`'s "args" (see `bundle_launch.rs`) are build-tool-
++        // generated config, not interactive user input — unlike a real CLI
++        // typo, there is no user present to see the parse error and correct
++        // it. A stray build-tool flag leaking in there (see
++        // CUSTOMIZATIONS.md's launch-args-sanitization entry for a real
++        // incident of exactly this) must never be able to silently kill
++        // every future launch of an otherwise-working bundle (no window, no
++        // console, on a double-clicked Windows build). Retry once with just
++        // the content URL, dropping every extra arg, instead of exiting —
++        // worst case is losing that launch.json's window-size/title/etc.
++        // customization, not "the game never starts". Real (non-bundled)
++        // invocations are unaffected: a developer's own CLI typo still
++        // hard-errors exactly as before.
++        ArgumentParsingResult::ErrorParsing if is_bundled_launch && args.len() > 1 => {
++            log::error!(
++                "bundled launch.json's args failed to parse ({args:?}); retrying with just the \
++                 content URL, dropping every extra arg"
++            );
++            match parse_command_line_arguments(&args[..1]) {
++                ArgumentParsingResult::ChromeProcess(opts, preferences, servoshell_preferences) => {
++                    (opts, preferences, servoshell_preferences)
++                },
++                _ => std::process::exit(1),
++            }
++        },
+         ArgumentParsingResult::ErrorParsing => {
+             std::process::exit(1);
+         },
+     };
++    log::info!("parsed command line arguments");
+ 
+     crate::init_tracing(servoshell_preferences.tracing_filter.as_deref());
+ 
+@@ -39,9 +116,21 @@ pub fn main() {
+         true => ServoShellEventLoop::headless(),
+         false => ServoShellEventLoop::headed(),
+     };
++    log::info!(
++        "created event loop, headless={}",
++        servoshell_preferences.headless
++    );
+ 
+     {
+-        let mut app = App::new(opts, preferences, servoshell_preferences, &event_loop);
++        let mut app = App::new(
++            opts,
++            preferences,
++            servoshell_preferences,
++            &event_loop,
++            pending_boot_extraction,
++            game_content,
++        );
++        log::info!("running event loop");
+         event_loop.run_app(&mut app);
+     }
+ 
+diff --git a/ports/servoshell/desktop/dialog.rs b/ports/servoshell/desktop/dialog.rs
+index bddb6ffd6..3b4bfddd2 100644
+--- a/ports/servoshell/desktop/dialog.rs
++++ b/ports/servoshell/desktop/dialog.rs
+@@ -4,17 +4,15 @@
+ 
+ use std::path::Path;
+ 
+-use egui::{
+-    Area, Button, CornerRadius, Frame, Id, Modal, Order, RichText, Sense, Stroke, Vec2, pos2,
+-};
++use egui::{Modal, RichText};
+ use egui_file_dialog::{DialogState, FileDialog as EguiFileDialog, Filter};
+ use euclid::Length;
+ use log::{error, warn};
+ use servo::{
+     AlertDialog, AuthenticationRequest, BluetoothDeviceSelectionRequest, ColorPicker,
+-    ConfirmDialog, ContextMenu, ContextMenuItem, DeviceIndependentPixel, EmbedderControlId,
+-    FilePicker, PermissionRequest, PromptDialog, RgbColor, SelectElement, SelectElementOption,
+-    SelectElementOptionOrOptgroup, SimpleDialog,
++    ConfirmDialog, DeviceIndependentPixel, EmbedderControlId, FilePicker, PermissionRequest,
++    PromptDialog, RgbColor, SelectElement, SelectElementOption, SelectElementOptionOrOptgroup,
++    SimpleDialog,
+ };
+ 
+ /// The minimum width of many UI elements including dialog boxes and menus,
+@@ -52,10 +50,6 @@ pub enum Dialog {
+         maybe_prompt: Option<ColorPicker>,
+         toolbar_offset: Length<f32, DeviceIndependentPixel>,
+     },
+-    ContextMenu {
+-        menu: Option<ContextMenu>,
+-        toolbar_offset: Length<f32, DeviceIndependentPixel>,
+-    },
+ }
+ 
+ impl Dialog {
+@@ -640,81 +634,6 @@ impl Dialog {
+ 
+                 is_open
+             },
+-            Dialog::ContextMenu {
+-                menu,
+-                toolbar_offset,
+-            } => {
+-                let mut is_open = true;
+-                if let Some(context_menu) = menu {
+-                    let mut selected_action = None;
+-                    let mut position = context_menu.position();
+-                    position.min.y += toolbar_offset.0 as i32;
+-                    position.max.y += toolbar_offset.0 as i32;
+-
+-                    let response = Area::new(Id::new("context_menu"))
+-                        .fixed_pos(pos2(position.min.x as f32, position.min.y as f32))
+-                        .order(Order::Foreground)
+-                        .show(ctx, |ui| {
+-                            Frame::popup(ui.style()).show(ui, |ui| {
+-                                ui.set_min_width(MINIMUM_UI_ELEMENT_WIDTH);
+-                                for item in context_menu.items() {
+-                                    match item {
+-                                        ContextMenuItem::Item {
+-                                            label,
+-                                            action,
+-                                            enabled,
+-                                        } => {
+-                                            let (color, sense) = match enabled {
+-                                                true => (
+-                                                    ui.visuals().strong_text_color(),
+-                                                    Sense::click(),
+-                                                ),
+-                                                false => {
+-                                                    (ui.visuals().weak_text_color(), Sense::empty())
+-                                                },
+-                                            };
+-
+-                                            ui.style_mut().visuals.widgets.inactive.weak_bg_fill =
+-                                                ui.visuals().panel_fill;
+-                                            ui.style_mut().visuals.widgets.inactive.bg_fill =
+-                                                ui.visuals().panel_fill;
+-                                            let button =
+-                                                Button::new(RichText::new(label).color(color))
+-                                                    .sense(sense)
+-                                                    .corner_radius(CornerRadius::ZERO)
+-                                                    .stroke(Stroke::NONE)
+-                                                    .wrap_mode(egui::TextWrapMode::Extend)
+-                                                    .min_size(Vec2 {
+-                                                        x: MINIMUM_UI_ELEMENT_WIDTH,
+-                                                        y: 0.0,
+-                                                    });
+-
+-                                            if ui.add(button).clicked() {
+-                                                selected_action = Some(*action);
+-                                                ui.close();
+-                                            }
+-                                        },
+-                                        ContextMenuItem::Separator => {
+-                                            ui.separator();
+-                                        },
+-                                    }
+-                                }
+-                            })
+-                        });
+-
+-                    if response.response.clicked_elsewhere() {
+-                        is_open = false;
+-                    }
+-
+-                    if let Some(action) = selected_action &&
+-                        let Some(context_menu) = menu.take()
+-                    {
+-                        context_menu.select(action);
+-                        return false;
+-                    }
+-                }
+-                is_open
+-            },
+         }
+     }
+ 
+@@ -726,20 +645,9 @@ impl Dialog {
+             Dialog::ColorPicker { maybe_prompt, .. } => {
+                 maybe_prompt.as_ref().map(|element| element.id())
+             },
+-            Dialog::ContextMenu { menu, .. } => menu.as_ref().map(|menu| menu.id()),
+             _ => None,
+         }
+     }
+-
+-    pub(crate) fn new_context_menu(
+-        menu: ContextMenu,
+-        toolbar_offset: Length<f32, DeviceIndependentPixel>,
+-    ) -> Dialog {
+-        Dialog::ContextMenu {
+-            menu: Some(menu),
+-            toolbar_offset,
+-        }
+-    }
+ }
+ 
+ fn make_dialog_label(message: &str, ui: &mut egui::Ui, input_text: Option<&mut String>) {
+diff --git a/ports/servoshell/desktop/event_loop.rs b/ports/servoshell/desktop/event_loop.rs
+index a8685a194..b2a756501 100644
+--- a/ports/servoshell/desktop/event_loop.rs
++++ b/ports/servoshell/desktop/event_loop.rs
+@@ -20,6 +20,23 @@ pub enum AppEvent {
+     Waker,
+     Accessibility(egui_winit::accesskit_winit::Event),
+     Gamepad(Event, String, GamepadIndex),
++    /// Requested by `protocols::roves::RovesProtocolHandler` (the `roves:` scheme's
++    /// `exit`/`close_window` command — see `@drincs/roves-api`'s `process.exit()`) from
++    /// whatever thread is servicing that `fetch()`. `RunningAppState`/`ServoShellWindow`
++    /// are `Rc`-based (main-thread-only), so a `ProtocolHandler` (`Send + Sync`, and run
++    /// off-thread) can't call `schedule_close()` directly — it has to ask the main thread
++    /// to do it instead, the same way `HeadedEventLoopWaker` already asks the main thread
++    /// to wake up, via this same `EventLoopProxy`.
++    CloseAllWindows,
++    /// Sent by the background boot-extraction thread `App::init` spawns for a
++    /// packed-content launch (see `bundle_launch.rs`'s `BundledLaunch`) as extraction
++    /// proceeds, so the boot splash's progress bar can be repainted with real progress
++    /// (0.0-1.0) instead of just spinning.
++    BootProgress(f32),
++    /// Sent once by that same background thread when boot extraction finishes (or fails —
++    /// either way the boot URL's files are as ready as they'll get), so `App` can finish
++    /// building Servo/`RunningAppState` and open the real webview. See `AppState::Booting`.
++    BootReady,
+ }
+ 
+ impl From<egui_winit::accesskit_winit::Event> for AppEvent {
+diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
+index 860090c55..a69166678 100644
+--- a/ports/servoshell/desktop/gui.rs
++++ b/ports/servoshell/desktop/gui.rs
+@@ -2,23 +2,21 @@
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+ 
+-use std::collections::HashMap;
+ #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
+ use std::fs;
+ #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
+ use std::path::Path;
+ use std::rc::Rc;
+ use std::sync::Arc;
++use std::time::Duration;
+ 
+ use dpi::PhysicalSize;
+ use egui::text::{CCursor, CCursorRange};
+ use egui::text_edit::TextEditState;
+ use egui::{
+-    Button, FontDefinitions, Id, Key, Label, LayerId, Modifiers, Order, PaintCallback, Panel, Vec2,
+-    WidgetInfo, WidgetType, pos2,
++    Button, FontData, FontDefinitions, FontFamily, Id, Key, Label, LayerId, Modifiers, Order,
++    PaintCallback, Panel, Vec2, WidgetInfo, WidgetType, pos2,
+ };
+-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
+-use egui::{FontData, FontFamily};
+ use egui_glow::{CallbackFn, EguiGlow};
+ use egui_winit::EventResponse;
+ use euclid::{Length, Point2D, Rect, Scale, Size2D};
+@@ -26,8 +24,7 @@ use euclid::{Length, Point2D, Rect, Scale, Size2D};
+ use log::info;
+ use log::warn;
+ use servo::{
+-    DeviceIndependentPixel, DevicePixel, Image, LoadStatus, OffscreenRenderingContext, PixelFormat,
+-    RenderingContext, WebView, WebViewId,
++    DeviceIndependentPixel, DevicePixel, OffscreenRenderingContext, RenderingContext, WebView,
+ };
+ use url::Url;
+ use winit::event::WindowEvent;
+@@ -46,31 +43,36 @@ pub struct Gui {
+     context: EguiGlow,
+     toolbar_height: Length<f32, DeviceIndependentPixel>,
+ 
+-    location: String,
+-
+-    /// Whether the location has been edited by the user without clicking Go.
+-    location_dirty: bool,
+-
+-    /// The [`LoadStatus`] of the active `WebView`.
+-    load_status: LoadStatus,
+-
+     /// The text to display in the status bar on the bottom of the window.
+     status_text: Option<String>,
+ 
+-    /// Whether or not the current `WebView` can navigate backward.
+-    can_go_back: bool,
+-
+-    /// Whether or not the current `WebView` can navigate forward.
+-    can_go_forward: bool,
+-
+-    /// Handle to the GPU texture of the favicon.
+-    ///
+-    /// These need to be cached across egui draw calls.
+-    favicon_textures: HashMap<WebViewId, (egui::TextureHandle, egui::load::SizedTexture)>,
+-
+     /// AccessKit tree updates pending the next egui tick.
+     /// This allows us to ensure that graft nodes are sent before the subtrees they graft.
+     pending_accesskit_updates: Vec<accesskit::TreeUpdate>,
++
++    /// Loaded once, in [`Gui::new`], for [`Gui::update_splash`]'s boot splash — always
++    /// `resources/servo_1024.png` regardless of any game-supplied window/taskbar icon (see
++    /// `headed_window.rs`'s icon loading), since the splash is explicitly Roves-branded, not
++    /// the game's own branding. The 1024px asset, not the 64px one `build.rs`'s window icon
++    /// uses — the splash renders this at a size that can exceed 64px once scaled up to
++    /// visually match the wordmark (see `SPLASH_ICON_SCALE`), and upscaling a 64px source
++    /// that far looked visibly pixelated on a real build; downscaling a larger source never
++    /// has that problem.
++    splash_icon_texture: egui::TextureHandle,
++}
++
++/// Decodes `resources/servo_1024.png` into an `egui::ColorImage` for the boot
++/// splash's icon — see [`Gui::update_splash`]. Deliberately independent of
++/// `headed_window.rs`'s own (Linux/Windows-only) `load_icon`/winit `Icon`
++/// loading: this must work on macOS too, and egui wants a `ColorImage`, not
++/// a winit `Icon`.
++fn load_splash_icon_image() -> egui::ColorImage {
++    let bytes = include_bytes!("../../../resources/servo_1024.png");
++    let image = image::load_from_memory(bytes)
++        .expect("Failed to load boot splash icon")
++        .to_rgba8();
++    let (width, height) = image.dimensions();
++    egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], image.as_raw())
+ }
+ 
+ fn truncate_with_ellipsis(input: &str, max_length: usize) -> String {
+@@ -175,6 +177,129 @@ fn configure_fonts() -> FontDefinitions {
+     FontDefinitions::default()
+ }
+ 
++/// Registers the bundled Metal Mania display font (`resources/fonts/`, OFL-licensed — see
++/// `resources/fonts/MetalMania-OFL.txt`) under its own named family,
++/// `FontFamily::Name("metal_mania")`, used only for the "Roves" wordmark on the boot splash
++/// (see [`Gui::update_splash`]) — unlike `configure_fonts` above, this isn't a
++/// proportional-font *fallback* (nothing else in the UI should render in a display/
++/// blackletter font), so it gets its own family instead of being pushed onto
++/// `FontFamily::Proportional`'s fallback chain, and runs on every platform, not just
++/// where CJK system fonts get probed.
++fn add_wordmark_font(fonts: &mut FontDefinitions) {
++    const WORDMARK_FONT_NAME: &str = "Metal Mania";
++    fonts.font_data.insert(
++        WORDMARK_FONT_NAME.to_owned(),
++        Arc::new(FontData::from_static(include_bytes!(
++            "../../../resources/fonts/MetalMania-Regular.ttf"
++        ))),
++    );
++    fonts.families.insert(
++        FontFamily::Name(WORDMARK_FONT_NAME.into()),
++        vec![WORDMARK_FONT_NAME.to_owned()],
++    );
++}
++
++/// Boot splash sizing (`Gui::update_splash`). No separate icon-size constant
++/// here: the icon is sized to match the wordmark's own measured height at
++/// `SPLASH_WORDMARK_FONT_SIZE` (see `update_splash`), not an independently
++/// guessed proportion — the two are meant to read as one lockup, the same
++/// height, side by side.
++const SPLASH_WORDMARK_FONT_SIZE: f32 = 88.0;
++const SPLASH_PROGRESS_BAR_WIDTH: f32 = 260.0;
++const SPLASH_PROGRESS_BAR_HEIGHT: f32 = 6.0;
++
++/// How wide the sliding highlight in [`draw_splash_progress_bar`]'s indeterminate
++/// animation is, as a fraction of the bar's own width.
++const SPLASH_PROGRESS_INDICATOR_WIDTH_RATIO: f32 = 0.35;
++
++/// How long one full sweep (track start to end) of that same animation takes.
++const SPLASH_PROGRESS_ANIMATION_PERIOD: f32 = 1.4;
++
++/// `resources/servo_64.png`'s own artwork — a wide, oval badge — doesn't fill its
++/// square canvas: confirmed directly (rendering `icon.svg` fresh and measuring its
++/// actual non-transparent bounding box) that the visible content is only ~78% of the
++/// canvas height, the rest being transparent top/bottom padding. Sizing the *image* to
++/// match the wordmark's height (see `update_splash`) therefore visibly undersizes the
++/// *badge* by that same margin — this compensates so the badge itself, not its padded
++/// canvas, ends up the intended height. Deliberately left as a splash-only correction
++/// rather than re-cropping the shared icon assets: those also serve as the Windows
++/// `.exe`/taskbar icon (`build.rs`) and (once wired up) the macOS `.app` icon, both
++/// contexts where square, centered padding is the normal, correct look.
++const SPLASH_ICON_CONTENT_HEIGHT_RATIO: f32 = 0.784;
++
++/// Requested directly, after the content-padding compensation above still read as too
++/// small next to the wordmark in a real build: the icon should be a distinctly bigger,
++/// more prominent mark, not merely height-matched to the text. Applied on top of
++/// `SPLASH_ICON_CONTENT_HEIGHT_RATIO` (see `update_splash`), not instead of it — that
++/// compensation is a measured correction for the asset's own padding, this is a separate,
++/// deliberate design choice on top of the now-correctly-measured size.
++///
++/// Was `2.0` — once `fit_to_exact_size` (see `update_splash`) made this scale actually
++/// take visible effect for the first time, `2.0` read as too big on a real build; halved
++/// to `1.0` (requested directly).
++const SPLASH_ICON_SCALE: f32 = 1.0;
++
++/// Draws the boot splash's progress bar track and an indeterminate animated fill
++/// directly via `Ui::painter`, rather than `egui::ProgressBar` — that widget draws its
++/// track in `visuals.extreme_bg_color`, which under this app's light fallback theme
++/// (`Gui::new`'s `options.fallback_theme`) is pure white, identical to the fill color
++/// the splash also wants; the two were indistinguishable, so the "bar" just read as a
++/// static white rectangle rather than a loading indicator.
++///
++/// This used to instead be a *determinate* bar, filled to the real fraction of boot
++/// extraction completed. Dropped (asked directly, after it read as fake/broken on a real
++/// launch): `extract_boot_with_progress` only reports progress per whole boot pack
++/// (`support/content-packer/src/extract.rs`), and the boot set is deliberately just the
++/// page's own HTML plus whatever it directly references — "usually only one or two
++/// packs" per that function's own doc comment — so on the overwhelmingly common case (a
++/// cache hit from a previous launch, or any small boot set) the very first progress
++/// report already reads `1.0`, before a single visible frame at any other value ever
++/// gets painted. The bar was therefore, in practice, always full and never animated,
++/// which reads as broken rather than as "already done". Separately, this splash also
++/// now stays up through the page-load wait that follows extraction (see
++/// `headed_window.rs`'s `page_load_splash_since`), which has no fractional signal *at
++/// all* (`LoadStatus` is a 3-state enum, not a percentage). Given neither phase has a
++/// completion fraction worth trusting, this instead always draws a dim, translucent
++/// track with a brighter outline, and a fixed-width white highlight that sweeps back and
++/// forth across it — driven purely by `elapsed` (wall-clock time since the current wait
++/// began, see `HeadedWindow::paint_splash`), so it's continuously, honestly "doing
++/// something" for as long as the splash is up, instead of asserting a specific,
++/// frequently-wrong amount of completion.
++fn draw_splash_progress_bar(ui: &mut egui::Ui, elapsed: Duration) {
++    let (outer_rect, _response) = ui.allocate_exact_size(
++        egui::vec2(SPLASH_PROGRESS_BAR_WIDTH, SPLASH_PROGRESS_BAR_HEIGHT),
++        egui::Sense::hover(),
++    );
++    if !ui.is_rect_visible(outer_rect) {
++        return;
++    }
++    let corner_radius = egui::CornerRadius::same(2);
++    let painter = ui.painter();
++    painter.rect_filled(
++        outer_rect,
++        corner_radius,
++        egui::Color32::from_white_alpha(28),
++    );
++    painter.rect_stroke(
++        outer_rect,
++        corner_radius,
++        egui::Stroke::new(1.0, egui::Color32::from_white_alpha(90)),
++        egui::StrokeKind::Outside,
++    );
++
++    let indicator_width = outer_rect.width() * SPLASH_PROGRESS_INDICATOR_WIDTH_RATIO;
++    let travel = (outer_rect.width() - indicator_width).max(0.0);
++    // Triangle wave in [0, 1]: sweeps start-to-end over the first half of the period,
++    // then end-to-start over the second, so the highlight ping-pongs indefinitely.
++    let phase = (elapsed.as_secs_f32() / SPLASH_PROGRESS_ANIMATION_PERIOD).rem_euclid(2.0);
++    let ping_pong = if phase <= 1.0 { phase } else { 2.0 - phase };
++    let indicator_rect = egui::Rect::from_min_size(
++        outer_rect.min + egui::vec2(travel * ping_pong, 0.0),
++        egui::vec2(indicator_width, outer_rect.height()),
++    );
++    painter.rect_filled(indicator_rect, corner_radius, egui::Color32::WHITE);
++}
++
+ impl Drop for Gui {
+     fn drop(&mut self) {
+         self.rendering_context
+@@ -190,7 +315,9 @@ impl Gui {
+         event_loop: &ActiveEventLoop,
+         event_loop_proxy: EventLoopProxy<AppEvent>,
+         rendering_context: Rc<OffscreenRenderingContext>,
+-        initial_url: Url,
++        // Kept only so callers don't need updating: the address bar this used to
++        // seed no longer exists. See CUSTOMIZATIONS.md.
++        _initial_url: Url,
+     ) -> Self {
+         rendering_context
+             .make_current()
+@@ -203,13 +330,13 @@ impl Gui {
+             false,
+         );
+ 
+-        let font_definitions = configure_fonts();
++        let mut font_definitions = configure_fonts();
++        add_wordmark_font(&mut font_definitions);
+         context.egui_ctx.set_fonts(font_definitions);
+ 
+         context
+             .egui_winit
+             .init_accesskit(event_loop, winit_window, event_loop_proxy);
+-        winit_window.set_visible(true);
+ 
+         context.egui_ctx.options_mut(|options| {
+             // Disable the builtin egui handlers for the Ctrl+Plus, Ctrl+Minus and Ctrl+0
+@@ -221,19 +348,43 @@ impl Gui {
+             options.fallback_theme = egui::Theme::Light;
+         });
+ 
+-        Self {
++        let splash_icon_texture = context.egui_ctx.load_texture(
++            "boot-splash-icon",
++            load_splash_icon_image(),
++            egui::TextureOptions::default(),
++        );
++
++        let mut gui = Self {
+             rendering_context,
+             context,
+             toolbar_height: Default::default(),
+-            location: initial_url.to_string(),
+-            location_dirty: false,
+-            load_status: LoadStatus::Complete,
+             status_text: None,
+-            can_go_back: false,
+-            can_go_forward: false,
+-            favicon_textures: Default::default(),
+             pending_accesskit_updates: vec![],
+-        }
++            splash_icon_texture,
++        };
++
++        // Paint one black splash frame *before* the window is ever shown —
++        // on every code path, not just a packed-content boot extraction —
++        // so there is never a moment where the OS displays the window's
++        // undefined/default backing buffer (surfman/the GL driver don't
++        // clear it themselves; see CUSTOMIZATIONS.md). `AppState::Booting`
++        // repaints over this as extraction proceeds; `AppState::Running`
++        // (no pending extraction, or once `BootReady` fires) repaints over
++        // it with the real page — which itself clears to
++        // `shell_background_color_rgba` (black, see `components/config/
++        // prefs.rs`) until it has something of its own to paint.
++        // Bracketed with logging (see the milestone-logging comment in
++        // `cli::main`) — this is the very first GL draw call/buffer swap
++        // this app makes, right after window/context creation, and
++        // therefore a plausible place for a silent native crash (GPU
++        // driver, ANGLE/GL context issue) that never reaches `panic_hook.rs`.
++        log::info!("painting first splash frame");
++        gui.update_splash(winit_window, Duration::ZERO);
++        gui.paint(winit_window);
++        log::info!("painted first splash frame");
++        winit_window.set_visible(true);
++
++        gui
+     }
+ 
+     pub(crate) fn has_keyboard_focus(&self) -> bool {
+@@ -379,204 +530,15 @@ impl Gui {
+             rendering_context,
+             context,
+             toolbar_height,
+-            location,
+-            location_dirty,
+-            favicon_textures,
+             ..
+         } = self;
+ 
+         let winit_window = headed_window.winit_window();
+         context.run(winit_window, |ctx| {
+-            load_pending_favicons(ctx, window, favicon_textures);
+-
+-            // TODO: While in fullscreen add some way to mitigate the increased phishing risk
+-            // when not displaying the URL bar: https://github.com/servo/servo/issues/32443
+-            if winit_window.fullscreen().is_none() {
+-                let frame = egui::Frame::default()
+-                    .fill(ctx.style().visuals.window_fill)
+-                    .inner_margin(4.0);
+-                Panel::top("toolbar").frame(frame).show_inside(ctx, |ui| {
+-                    ui.allocate_ui_with_layout(
+-                        ui.available_size(),
+-                        egui::Layout::left_to_right(egui::Align::Center),
+-                        |ui| {
+-                            let back_button =
+-                                ui.add_enabled(self.can_go_back, Gui::toolbar_button("⏴"));
+-                            back_button.widget_info(|| {
+-                                let mut info = WidgetInfo::new(WidgetType::Button);
+-                                info.label = Some("Back".into());
+-                                info
+-                            });
+-                            if back_button.clicked() {
+-                                *location_dirty = false;
+-                                window.queue_user_interface_command(UserInterfaceCommand::Back);
+-                            }
+-
+-                            let forward_button =
+-                                ui.add_enabled(self.can_go_forward, Gui::toolbar_button("⏵"));
+-                            forward_button.widget_info(|| {
+-                                let mut info = WidgetInfo::new(WidgetType::Button);
+-                                info.label = Some("Forward".into());
+-                                info
+-                            });
+-                            if forward_button.clicked() {
+-                                *location_dirty = false;
+-                                window.queue_user_interface_command(UserInterfaceCommand::Forward);
+-                            }
+-
+-                            match self.load_status {
+-                                LoadStatus::Started | LoadStatus::HeadParsed => {
+-                                    let stop_button = ui.add(Gui::toolbar_button("X"));
+-                                    stop_button.widget_info(|| {
+-                                        let mut info = WidgetInfo::new(WidgetType::Button);
+-                                        info.label = Some("Stop".into());
+-                                        info
+-                                    });
+-                                    if stop_button.clicked() {
+-                                        warn!("Do not support stop yet.");
+-                                    }
+-                                },
+-                                LoadStatus::Complete => {
+-                                    let reload_button = ui.add(Gui::toolbar_button("↻"));
+-                                    reload_button.widget_info(|| {
+-                                        let mut info = WidgetInfo::new(WidgetType::Button);
+-                                        info.label = Some("Reload".into());
+-                                        info
+-                                    });
+-                                    if reload_button.clicked() {
+-                                        *location_dirty = false;
+-                                        window.queue_user_interface_command(
+-                                            UserInterfaceCommand::Reload,
+-                                        );
+-                                    }
+-                                },
+-                            }
+-                            ui.add_space(2.0);
+-
+-                            ui.allocate_ui_with_layout(
+-                                ui.available_size(),
+-                                egui::Layout::right_to_left(egui::Align::Center),
+-                                |ui| {
+-                                    let mut experimental_preferences_enabled =
+-                                        state.experimental_preferences_enabled();
+-                                    let prefs_toggle = ui
+-                                        .toggle_value(&mut experimental_preferences_enabled, "☢")
+-                                        .on_hover_text("Enable experimental prefs");
+-                                    prefs_toggle.widget_info(|| {
+-                                        let mut info = WidgetInfo::new(WidgetType::Button);
+-                                        info.label = Some("Enable experimental preferences".into());
+-                                        info.selected = Some(experimental_preferences_enabled);
+-                                        info
+-                                    });
+-                                    if prefs_toggle.clicked() {
+-                                        state.set_experimental_preferences_enabled(
+-                                            experimental_preferences_enabled,
+-                                        );
+-                                        *location_dirty = false;
+-                                        window.queue_user_interface_command(
+-                                            UserInterfaceCommand::ReloadAll,
+-                                        );
+-                                    }
+-
+-                                    let location_id = egui::Id::new("location_input");
+-                                    let location_field = ui.add_sized(
+-                                        ui.available_size(),
+-                                        egui::TextEdit::singleline(location)
+-                                            .id(location_id)
+-                                            .hint_text("Search or enter address"),
+-                                    );
+-
+-                                    if location_field.changed() {
+-                                        *location_dirty = true;
+-                                    }
+-                                    // Handle adddress bar shortcut.
+-                                    if ui.input(|i| {
+-                                        if cfg!(target_os = "macos") {
+-                                            i.clone().consume_key(Modifiers::COMMAND, Key::L)
+-                                        } else {
+-                                            i.clone().consume_key(Modifiers::COMMAND, Key::L) ||
+-                                                i.clone().consume_key(Modifiers::ALT, Key::D)
+-                                        }
+-                                    }) {
+-                                        // The focus request immediately makes gained_focus return true.
+-                                        location_field.request_focus();
+-                                    }
+-                                    // Select address bar text when it's focused (click or shortcut).
+-                                    if location_field.gained_focus() &&
+-                                        let Some(mut state) =
+-                                            TextEditState::load(ui.ctx(), location_id)
+-                                    {
+-                                        // Select the whole input.
+-                                        state.cursor.set_char_range(Some(CCursorRange::two(
+-                                            CCursor::new(0),
+-                                            CCursor::new(location.len()),
+-                                        )));
+-                                        state.store(ui.ctx(), location_id);
+-                                    }
+-                                    // Navigate to address when enter is pressed in the address bar.
+-                                    if location_field.lost_focus() &&
+-                                        ui.input(|i| i.clone().key_pressed(Key::Enter))
+-                                    {
+-                                        window.queue_user_interface_command(
+-                                            UserInterfaceCommand::Go(location.clone()),
+-                                        );
+-                                    }
+-                                },
+-                            );
+-                        },
+-                    );
+-                });
+-
+-                // A simple Tab header strip
+-                let outer = Panel::top("tabs").show_inside(ctx, |ui| {
+-                    // Add scroll for overflowing tabs
+-                    egui::ScrollArea::horizontal()
+-                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+-                        .show(ui, |ui| {
+-                            ui.allocate_ui_with_layout(
+-                                ui.available_size(),
+-                                egui::Layout::left_to_right(egui::Align::Center),
+-                                |ui| {
+-                                    for (id, webview) in window.webviews().into_iter() {
+-                                        let favicon = favicon_textures
+-                                            .get(&id)
+-                                            .map(|(_, favicon)| favicon)
+-                                            .copied();
+-                                        Self::browser_tab(ui, window, webview, favicon);
+-                                    }
+-
+-                                    let new_tab_button = ui.add(Gui::toolbar_button("+"));
+-                                    new_tab_button.widget_info(|| {
+-                                        let mut info = WidgetInfo::new(WidgetType::Button);
+-                                        info.label = Some("New tab".into());
+-                                        info
+-                                    });
+-                                    if new_tab_button.clicked() {
+-                                        window.queue_user_interface_command(
+-                                            UserInterfaceCommand::NewWebView,
+-                                        );
+-                                    }
+-
+-                                    let new_window_button = ui.add(Gui::toolbar_button("⊞"));
+-                                    new_window_button.widget_info(|| {
+-                                        let mut info = WidgetInfo::new(WidgetType::Button);
+-                                        info.label = Some("New window".into());
+-                                        info
+-                                    });
+-                                    if new_window_button.clicked() {
+-                                        window.queue_user_interface_command(
+-                                            UserInterfaceCommand::NewWindow,
+-                                        );
+-                                    }
+-                                },
+-                            );
+-                        })
+-                });
+-
+-                *toolbar_height = Length::new(outer.response.rect.max.y);
+-            } else {
+-                *toolbar_height = Length::default();
+-            }
++            // Kiosk/embedded fork: never draw the toolbar or tab strip, in windowed
++            // mode or fullscreen — this build is meant to look like a native app
++            // window, not a browser.
++            *toolbar_height = Length::default();
+ 
+             let scale =
+                 Scale::<_, DeviceIndependentPixel, DevicePixel>::new(ctx.pixels_per_point());
+@@ -650,6 +612,155 @@ impl Gui {
+         }
+     }
+ 
++    /// Update the boot splash — a minimal black screen with the Roves icon and wordmark
++    /// (see `resources/roves_wordmark.svg` for the same lockup as a standalone asset),
++    /// shown in place of the normal browser UI both while a packed-content launch's boot
++    /// extraction still hasn't finished (`AppState::Booting` in `app.rs`) and while the
++    /// real page that follows it is still loading (`headed_window.rs`'s
++    /// `page_load_splash_since`). `elapsed` drives a squared-off, indeterminate
++    /// progress-bar animation below the wordmark (see [`draw_splash_progress_bar`] for
++    /// why it's indeterminate rather than a completion fraction) — always drawn, so the
++    /// splash never shows a bare wordmark with no indication that something is loading.
++    /// Call [`Gui::paint`] afterward, same as [`Gui::update`].
++    pub(crate) fn update_splash(&mut self, winit_window: &Window, elapsed: Duration) {
++        self.rendering_context
++            .make_current()
++            .expect("Could not make RenderingContext current");
++        let wordmark_font = egui::FontId::new(
++            SPLASH_WORDMARK_FONT_SIZE,
++            egui::FontFamily::Name("Metal Mania".into()),
++        );
++        // Cloned (cheap — `TextureHandle` is a small ref-counted handle) so the closure
++        // below doesn't need to borrow `self` at all: `self.context.run` already holds
++        // `self.context` mutably for the duration of the closure, and — separately, the
++        // actual reason this has to happen out here rather than being a borrow-checker
++        // nicety — `egui::Context::fonts_mut` (needed inside, to measure the wordmark)
++        // panics with "No fonts available until first call to Context::run()" if called
++        // any earlier than the closure itself; confirmed the hard way, on a real build.
++        let splash_icon_texture = self.splash_icon_texture.clone();
++        self.context.run(winit_window, |ctx| {
++            // Measured (not guessed) — both so the icon+wordmark row below can be
++            // centered exactly, rather than trusting `top_down`'s `Align::Center` to
++            // center a nested `ui.horizontal` row on its own, and so the icon can be
++            // sized to actually match the wordmark's rendered height instead of an
++            // independently guessed constant (`SPLASH_ICON_SIZE` used to be hardcoded
++            // to 128px against an 88px font size — a ratio borrowed from
++            // `resources/roves_wordmark.svg`'s lockup that doesn't necessarily hold for
++            // Metal Mania's actual glyph metrics at this size).
++            let wordmark_size = ctx.fonts_mut(|fonts| {
++                fonts
++                    .layout_no_wrap(
++                        "Roves".to_owned(),
++                        wordmark_font.clone(),
++                        egui::Color32::WHITE,
++                    )
++                    .size()
++            });
++            // See `SPLASH_ICON_CONTENT_HEIGHT_RATIO`'s own doc comment: the icon's
++            // *texture* is sized taller than the wordmark so the visible badge inside
++            // its transparent padding ends up the intended height, not the padded
++            // canvas. Every other measurement below that used to treat "the icon's
++            // height" as `wordmark_size.y` — the row's vertical centering, the lockup
++            // width — needs this same compensated value instead, now that the two
++            // aren't equal any more.
++            let icon_size = wordmark_size.y / SPLASH_ICON_CONTENT_HEIGHT_RATIO * SPLASH_ICON_SCALE;
++            // `.max_height()` only ever *caps* a size, it never scales an image up past
++            // its own default/native size — confirmed directly against egui's own docs
++            // after a real build showed `icon_size` growing (per `SPLASH_ICON_SCALE`
++            // above) with zero visible effect on the rendered icon, while the layout
++            // math below (which does use `icon_size`) shifted everything else out of
++            // alignment to compensate for a size change that was never actually
++            // rendered. `fit_to_exact_size` forces the actual displayed size instead —
++            // `resources/servo_64.png`'s canvas is square, so `Vec2::splat` is correct
++            // here without distorting the (also square) source texture.
++            let icon = egui::Image::from_texture(&splash_icon_texture)
++                .fit_to_exact_size(egui::Vec2::splat(icon_size));
++            // `Panel::show` (the top-level entry point, as opposed to
++            // `show_inside` for nesting inside another container) is
++            // deprecated in this egui version in favor of hand-building a
++            // full-window `Ui` — not worth the extra internal-API surface
++            // for this deliberately simple splash.
++            #[expect(deprecated)]
++            egui::CentralPanel::default()
++                .frame(egui::Frame::default().fill(egui::Color32::BLACK))
++                .show(ctx, |ui| {
++                    ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
++                        // Half-height offset for the icon+wordmark row (`icon_size` now
++                        // dominates it, being taller than the wordmark) + gap (40px) +
++                        // progress bar (`SPLASH_PROGRESS_BAR_HEIGHT`).
++                        ui.add_space(
++                            ui.available_height() / 2.0
++                                - (icon_size + 40.0 + SPLASH_PROGRESS_BAR_HEIGHT) / 2.0,
++                        );
++                        let lockup_width =
++                            icon_size + ui.spacing().item_spacing.x + wordmark_size.x;
++                        ui.horizontal(|ui| {
++                            ui.add_space(((ui.available_width() - lockup_width) / 2.0).max(0.0));
++                            ui.add(icon.clone());
++                            ui.label(
++                                egui::RichText::new("Roves")
++                                    .font(wordmark_font.clone())
++                                    .color(egui::Color32::WHITE),
++                            );
++                        });
++                        ui.add_space(40.0);
++                        draw_splash_progress_bar(ui, elapsed);
++                    });
++                });
++        });
++    }
++
++    /// Shown instead of the normal page once the initial load finished but a
++    /// content-load error was recorded along the way (see
++    /// `logging::content_load_error`, `headed_window.rs`'s `paint_content_load_error`)
++    /// — the page's own script never actually ran, so there's nothing of its own left to
++    /// composite. Without this, that failure mode reads as a silent black window:
++    /// `LoadStatus::Complete` still fires normally (navigation itself did complete), so
++    /// the boot splash comes down the same as any successful load, revealing
++    /// WebRender's plain black default background since nothing the page would have
++    /// painted ever ran. Reuses the splash's icon and black-panel styling for visual
++    /// continuity, but is a distinct, static screen — no progress bar, since there is
++    /// nothing left in flight to animate. Call [`Gui::paint`] afterward, same as
++    /// [`Gui::update`]/[`Gui::update_splash`].
++    pub(crate) fn update_content_load_error(&mut self, winit_window: &Window, message: &str) {
++        self.rendering_context
++            .make_current()
++            .expect("Could not make RenderingContext current");
++        let splash_icon_texture = self.splash_icon_texture.clone();
++        let message = message.to_owned();
++        self.context.run(winit_window, |ctx| {
++            let icon = egui::Image::from_texture(&splash_icon_texture)
++                .fit_to_exact_size(egui::Vec2::splat(64.0));
++            #[expect(deprecated)]
++            egui::CentralPanel::default()
++                .frame(egui::Frame::default().fill(egui::Color32::BLACK))
++                .show(ctx, |ui| {
++                    ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
++                        ui.add_space(ui.available_height() / 3.0);
++                        ui.add(icon);
++                        ui.add_space(24.0);
++                        ui.label(
++                            egui::RichText::new("This game's content failed to load")
++                                .size(20.0)
++                                .color(egui::Color32::WHITE),
++                        );
++                        ui.add_space(12.0);
++                        ui.label(
++                            egui::RichText::new(&message)
++                                .size(14.0)
++                                .color(egui::Color32::from_rgb(255, 140, 140)),
++                        );
++                        ui.add_space(12.0);
++                        ui.label(
++                            egui::RichText::new("See roves.log for details.")
++                                .size(13.0)
++                                .color(egui::Color32::GRAY),
++                        );
++                    });
++                });
++        });
++    }
++
+     /// Paint the GUI, as of the last update.
+     pub(crate) fn paint(&mut self, window: &Window) {
+         self.rendering_context
+@@ -662,43 +773,6 @@ impl Gui {
+         self.rendering_context.parent_context().present();
+     }
+ 
+-    /// Updates the location field from the given [`RunningAppState`], unless the user has started
+-    /// editing it without clicking Go, returning true iff it has changed (needing an egui update).
+-    fn update_location_in_toolbar(&mut self, window: &ServoShellWindow) -> bool {
+-        // User edited without clicking Go?
+-        if self.location_dirty {
+-            return false;
+-        }
+-
+-        let current_url_string = window
+-            .active_webview()
+-            .and_then(|webview| Some(webview.url()?.to_string()));
+-        match current_url_string {
+-            Some(location) if location != self.location => {
+-                self.location = location;
+-                true
+-            },
+-            _ => false,
+-        }
+-    }
+-
+-    fn update_load_status(&mut self, window: &ServoShellWindow) -> bool {
+-        let state_status = window
+-            .active_webview()
+-            .map(|webview| webview.load_status())
+-            .unwrap_or(LoadStatus::Complete);
+-        let old_status = std::mem::replace(&mut self.load_status, state_status);
+-        let status_changed = old_status != self.load_status;
+-
+-        // When the load status changes, we want the new changes to the URL to start
+-        // being reflected in the location bar.
+-        if status_changed {
+-            self.location_dirty = false;
+-        }
+-
+-        status_changed
+-    }
+-
+     fn update_status_text(&mut self, window: &ServoShellWindow) -> bool {
+         let state_status = window
+             .active_webview()
+@@ -707,27 +781,10 @@ impl Gui {
+         old_status != self.status_text
+     }
+ 
+-    fn update_can_go_back_and_forward(&mut self, window: &ServoShellWindow) -> bool {
+-        let (can_go_back, can_go_forward) = window
+-            .active_webview()
+-            .map(|webview| (webview.can_go_back(), webview.can_go_forward()))
+-            .unwrap_or((false, false));
+-        let old_can_go_back = std::mem::replace(&mut self.can_go_back, can_go_back);
+-        let old_can_go_forward = std::mem::replace(&mut self.can_go_forward, can_go_forward);
+-        old_can_go_back != self.can_go_back || old_can_go_forward != self.can_go_forward
+-    }
+-
+-    /// Updates all fields taken from the given [`ServoShellWindow`], such as the location field.
+-    /// Returns true iff the egui needs an update.
++    /// Updates all fields taken from the given [`ServoShellWindow`]. Returns true iff the egui
++    /// needs an update.
+     pub(crate) fn update_webview_data(&mut self, window: &ServoShellWindow) -> bool {
+-        // Note: We must use the "bitwise OR" (|) operator here instead of "logical OR" (||)
+-        //       because logical OR would short-circuit if any of the functions return true.
+-        //       We want to ensure that all functions are called. The "bitwise OR" operator
+-        //       does not short-circuit.
+-        self.update_load_status(window) |
+-            self.update_location_in_toolbar(window) |
+-            self.update_status_text(window) |
+-            self.update_can_go_back_and_forward(window)
++        self.update_status_text(window)
+     }
+ 
+     /// Returns true if a redraw is required after handling the provided event.
+@@ -761,61 +818,3 @@ impl Gui {
+         self.pending_accesskit_updates.push(tree_update);
+     }
+ }
+-
+-fn embedder_image_to_egui_image(image: &Image) -> egui::ColorImage {
+-    let width = image.width as usize;
+-    let height = image.height as usize;
+-
+-    match image.format {
+-        PixelFormat::K8 => egui::ColorImage::from_gray([width, height], image.data()),
+-        PixelFormat::KA8 => {
+-            // Convert to rgba
+-            let data: Vec<u8> = image
+-                .data()
+-                .chunks_exact(2)
+-                .flat_map(|pixel| [pixel[0], pixel[0], pixel[0], pixel[1]])
+-                .collect();
+-            egui::ColorImage::from_rgba_unmultiplied([width, height], &data)
+-        },
+-        PixelFormat::RGB8 => egui::ColorImage::from_rgb([width, height], image.data()),
+-        PixelFormat::RGBA8 => {
+-            egui::ColorImage::from_rgba_unmultiplied([width, height], image.data())
+-        },
+-        PixelFormat::BGRA8 => {
+-            // Convert from BGRA to RGBA
+-            let data: Vec<u8> = image
+-                .data()
+-                .chunks_exact(4)
+-                .flat_map(|chunk| [chunk[2], chunk[1], chunk[0], chunk[3]])
+-                .collect();
+-            egui::ColorImage::from_rgba_unmultiplied([width, height], &data)
+-        },
+-    }
+-}
+-
+-/// Uploads all favicons that have not yet been processed to the GPU.
+-fn load_pending_favicons(
+-    ctx: &egui::Context,
+-    window: &ServoShellWindow,
+-    texture_cache: &mut HashMap<WebViewId, (egui::TextureHandle, egui::load::SizedTexture)>,
+-) {
+-    for id in window.take_pending_favicon_loads() {
+-        let Some(webview) = window.webview_by_id(id) else {
+-            continue;
+-        };
+-        let Some(favicon) = webview.favicon() else {
+-            continue;
+-        };
+-
+-        let egui_image = embedder_image_to_egui_image(&favicon);
+-        let handle = ctx.load_texture(format!("favicon-{id:?}"), egui_image, Default::default());
+-        let texture = egui::load::SizedTexture::new(
+-            handle.id(),
+-            egui::vec2(favicon.width as f32, favicon.height as f32),
+-        );
+-
+-        // We don't need the handle anymore but we can't drop it either since that would cause
+-        // the texture to be freed.
+-        texture_cache.insert(id, (handle, texture));
+-    }
+-}
+diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/desktop/headed_window.rs
+index 2fa9260e9..d109793a1 100644
+--- a/ports/servoshell/desktop/headed_window.rs
++++ b/ports/servoshell/desktop/headed_window.rs
+@@ -10,8 +10,10 @@
+ use std::cell::{Cell, RefCell};
+ use std::collections::HashMap;
+ use std::env;
++use std::fs;
++use std::path::{Path, PathBuf};
+ use std::rc::Rc;
+-use std::time::Duration;
++use std::time::{Duration, Instant};
+ 
+ use euclid::{Angle, Length, Point2D, Rect, Rotation3D, Scale, Size2D, UnknownUnit, Vector3D};
+ use keyboard_types::ShortcutMatcher;
+@@ -37,6 +39,8 @@ use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
+ use winit::keyboard::{Key as LogicalKey, ModifiersState, NamedKey as WinitNamedKey};
+ #[cfg(target_os = "linux")]
+ use winit::platform::wayland::WindowAttributesExtWayland;
++#[cfg(target_os = "windows")]
++use winit::platform::windows::WindowExtWindows;
+ #[cfg(any(target_os = "linux", target_os = "windows"))]
+ use winit::window::Icon;
+ #[cfg(target_os = "macos")]
+@@ -46,12 +50,13 @@ use {
+ };
+ 
+ use super::geometry::{winit_position_to_euclid_point, winit_size_to_euclid_size};
+-use super::keyutils::{CMD_OR_ALT, keyboard_event_from_winit};
++use super::keyutils::keyboard_event_from_winit;
+ use crate::desktop::accelerated_gl_media::setup_gl_accelerated_media;
+ use crate::desktop::dialog::Dialog;
+ use crate::desktop::event_loop::AppEvent;
+ use crate::desktop::gui::Gui;
+ use crate::desktop::keyutils::CMD_OR_CONTROL;
++use crate::desktop::logging;
+ use crate::prefs::ServoShellPreferences;
+ use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
+ use crate::window::{
+@@ -59,7 +64,24 @@ use crate::window::{
+     ServoShellWindowId,
+ };
+ 
+-pub(crate) const INITIAL_WINDOW_TITLE: &str = "Servo";
++pub(crate) const INITIAL_WINDOW_TITLE: &str = "Roves";
++
++/// How often the boot splash's indeterminate progress-bar animation (`gui.rs`'s
++/// `draw_splash_progress_bar`) advances, whether it's holding for `app.rs`'s
++/// `MIN_SPLASH_DURATION`/waiting on boot extraction, or covering a still-loading real
++/// page (see `page_load_splash_since`, `splash_animation_wake_deadline`, and
++/// `App::try_finish_booting`). ~30fps: smooth enough to read as animated, without waking
++/// the event loop needlessly often during what's meant to be a brief, incidental wait.
++pub(crate) const SPLASH_ANIMATION_TICK: Duration = Duration::from_millis(33);
++
++/// How long the boot splash keeps covering the real page after `App::finish_init` opens
++/// it (see `page_load_splash_since`), if the initial page's `LoadStatus::Complete` never
++/// arrives -- a broken load, or a page that's still loading subresources it doesn't
++/// consider blocking. Matches this codebase's existing "never leave the user stuck on a
++/// splash forever" philosophy (see `bundle_launch.rs`'s boot-extraction-failure
++/// handling) -- past this, showing the real page, even mid-load, beats an indefinite
++/// Roves-branded hang.
++const MAX_PAGE_LOAD_SPLASH_DURATION: Duration = Duration::from_secs(8);
+ 
+ pub struct HeadedWindow {
+     /// The egui interface that is responsible for showing the user interface elements of
+@@ -71,6 +93,11 @@ pub struct HeadedWindow {
+     /// It equals viewport size + (0, toolbar height).
+     inner_size: Cell<PhysicalSize<u32>>,
+     fullscreen: Cell<bool>,
++    /// Where `set_fullscreen` persists fullscreen state across launches (a marker file
++    /// named `fullscreen`, written when entering fullscreen and removed when leaving it —
++    /// see `prefs.rs`'s `start_fullscreen`). `None` disables persistence entirely (matches
++    /// `ServoShellPreferences::config_dir`, e.g. when the config dir couldn't be resolved).
++    config_dir: Option<PathBuf>,
+     device_pixel_ratio_override: Option<f32>,
+     xr_window_poses: RefCell<Vec<Rc<XRWindowPose>>>,
+     modifiers_state: Cell<ModifiersState>,
+@@ -95,6 +122,10 @@ pub struct HeadedWindow {
+     /// The last title set on this window. We need to store this value here, as `winit::Window::title`
+     /// is not supported very many platforms.
+     last_title: RefCell<String>,
++    /// A fixed title overriding the default of mirroring the active page's own title —
++    /// see `ServoShellPreferences::window_title_override` and
++    /// `update_user_interface_state`.
++    window_title_override: Option<String>,
+     /// The current set of open dialogs.
+     dialogs: RefCell<HashMap<WebViewId, Vec<Dialog>>>,
+     /// The [`EmbedderControlId`] of the currently showing [`InputMethod`] interfaces,
+@@ -102,6 +133,17 @@ pub struct HeadedWindow {
+     visible_input_method: Cell<Option<EmbedderControlId>>,
+     /// The position of the mouse cursor after the most recent `MouseMove` event.
+     last_mouse_position: Cell<Option<Point2D<f32, DeviceIndependentPixel>>>,
++    /// Set by `App::finish_init` (see `app.rs`) the moment the real `WebView` opens, and
++    /// cleared once its initial page reaches `LoadStatus::Complete` or
++    /// `MAX_PAGE_LOAD_SPLASH_DURATION` elapses, whichever comes first -- see
++    /// `begin_page_load_splash`, `splash_animation_wake_deadline`, and
++    /// `RunningAppState::is_initial_page_loaded`. While set, `handle_winit_window_event`
++    /// keeps painting the boot splash instead of compositing the real page: the page's
++    /// own "nothing painted yet" clear color is black (see CUSTOMIZATIONS.md's boot-
++    /// splash entries), and without this, that black frame is exactly what showed
++    /// through for however long the page took to paint anything of its own -- read by a
++    /// user as "splash, then a black screen, then the game".
++    page_load_splash_since: Cell<Option<Instant>>,
+ }
+ 
+ impl HeadedWindow {
+@@ -127,9 +169,21 @@ impl HeadedWindow {
+             // happen before the window is shown for the first time.
+             .with_visible(false);
+ 
++        // Reopen already in fullscreen if that's how the game was last left running (see
++        // `prefs.rs`'s `start_fullscreen`/`set_fullscreen`'s persistence below) — avoids a
++        // visible windowed-then-fullscreen transition on startup. See CUSTOMIZATIONS.md.
++        let window_attr = if servoshell_preferences.start_fullscreen {
++            let monitor = event_loop
++                .primary_monitor()
++                .or_else(|| event_loop.available_monitors().next());
++            window_attr.with_fullscreen(Some(winit::window::Fullscreen::Borderless(monitor)))
++        } else {
++            window_attr
++        };
++
+         // Set a name so it can be pinned to taskbars in Linux.
+         #[cfg(target_os = "linux")]
+-        let window_attr = window_attr.with_name("org.servo.Servo", "Servo");
++        let window_attr = window_attr.with_name("org.roves.Roves", "Roves");
+ 
+         #[allow(deprecated)]
+         let winit_window = event_loop
+@@ -138,8 +192,30 @@ impl HeadedWindow {
+ 
+         #[cfg(any(target_os = "linux", target_os = "windows"))]
+         {
+-            let icon_bytes = include_bytes!("../../../resources/servo_64.png");
+-            winit_window.set_window_icon(Some(load_icon(icon_bytes)));
++            // A game-supplied `icon.png` next to the running binary (copied there by
++            // `mach bundle --icon-png`, see `python/servo/post_build_commands.py`) takes
++            // priority over the compile-time default `build.rs` bakes into `OUT_DIR` — see
++            // `runtime_window_icon_bytes`'s own doc comment for why this matters (a
++            // *prebuilt* shell, the one every roves-action base-mode/Packmaster consumer
++            // downloads, is never compiled per-game). Falls back to the compiled-in bytes
++            // (whichever of the game's own `icon.png` or Roves' own `resources/servo_64.png`
++            // existed at compile time — see CUSTOMIZATIONS.md) when no runtime file is
++            // present, e.g. an advanced-mode build or one predating this fallback. Not the
++            // boot splash's icon, which is always Roves-branded regardless (`gui.rs`).
++            let runtime_icon_bytes = runtime_window_icon_bytes();
++            let icon_bytes: &[u8] = runtime_icon_bytes.as_deref().unwrap_or_else(|| {
++                include_bytes!(concat!(env!("OUT_DIR"), "/window_icon.png"))
++            });
++            let icon = load_icon(icon_bytes);
++            // `set_window_icon` only sets `ICON_SMALL` (the title bar icon) —
++            // on Windows, the taskbar/Alt-Tab icon is `ICON_BIG`, a separate
++            // call (`WindowExtWindows::set_taskbar_icon`), or it silently
++            // falls back to the `.exe`'s own resource icon (`build.rs`'s
++            // `winresource` step) instead of this one. Set both explicitly so
++            // they're always the same icon, regardless of platform quirks.
++            #[cfg(target_os = "windows")]
++            winit_window.set_taskbar_icon(Some(icon.clone()));
++            winit_window.set_window_icon(Some(icon));
+         }
+ 
+         let window_handle = winit_window
+@@ -198,7 +274,8 @@ impl HeadedWindow {
+             gui,
+             winit_window,
+             webview_relative_mouse_point: Cell::new(Point2D::zero()),
+-            fullscreen: Cell::new(false),
++            fullscreen: Cell::new(servoshell_preferences.start_fullscreen),
++            config_dir: servoshell_preferences.config_dir.clone(),
+             inner_size: Cell::new(inner_size),
+             screen_size,
+             device_pixel_ratio_override: servoshell_preferences.device_pixel_ratio_override,
+@@ -211,9 +288,11 @@ impl HeadedWindow {
+             pending_keyboard_events: Default::default(),
+             rendering_context,
+             last_title: RefCell::new(String::from(INITIAL_WINDOW_TITLE)),
++            window_title_override: servoshell_preferences.window_title_override.clone(),
+             dialogs: Default::default(),
+             visible_input_method: Default::default(),
+             last_mouse_position: Default::default(),
++            page_load_splash_since: Cell::new(None),
+         })
+     }
+ 
+@@ -221,6 +300,58 @@ impl HeadedWindow {
+         &self.winit_window
+     }
+ 
++    /// Paints the boot splash instead of the normal browser UI — used both while a
++    /// packed-content launch's boot extraction is still running on a background thread
++    /// (`AppState::Booting` in `app.rs`, before there's a `RunningAppState`/webview to
++    /// draw at all), and afterward, while `page_load_splash_since` is set, covering the
++    /// real (still-loading) page. `elapsed` — time since whichever of those two waits
++    /// began — drives the splash's indeterminate progress-bar animation (see
++    /// `Gui::update_splash`/`draw_splash_progress_bar`); it isn't a completion fraction,
++    /// since neither wait has one worth showing (a boot extraction is almost always one
++    /// or two packs and finishes near-instantly once it starts; a page load has no
++    /// fractional signal at all) — see `draw_splash_progress_bar`'s own doc comment.
++    pub(crate) fn paint_splash(&self, elapsed: Duration) {
++        let mut gui = self.gui.borrow_mut();
++        gui.update_splash(&self.winit_window, elapsed);
++        gui.paint(&self.winit_window);
++    }
++
++    /// Paints a visible error message instead of handing off to the (in this case
++    /// broken) real page — used once the initial page has finished loading but a
++    /// content-load error was recorded along the way (see `logging::content_load_error`)
++    /// meaning the page's own script never actually ran. Without this, that case reads
++    /// as a silent black window: `LoadStatus::Complete` still fires normally (navigation
++    /// itself did complete), so the boot splash comes down same as any successful load,
++    /// revealing WebRender's plain black default background since nothing the page
++    /// would have painted ever ran.
++    pub(crate) fn paint_content_load_error(&self, message: &str) {
++        let mut gui = self.gui.borrow_mut();
++        gui.update_content_load_error(&self.winit_window, message);
++        gui.paint(&self.winit_window);
++    }
++
++    /// Called once by `App::finish_init`, right as the real `WebView` opens, to keep the
++    /// boot splash up (see `page_load_splash_since`) instead of immediately handing off
++    /// to a page that hasn't painted anything of its own yet.
++    pub(crate) fn begin_page_load_splash(&self) {
++        self.page_load_splash_since.set(Some(Instant::now()));
++    }
++
++    /// `Some(deadline)` while the boot splash is still covering this window's real
++    /// (still-loading) page (see `page_load_splash_since`), so `App::window_event`/
++    /// `new_events` can keep the winit event loop ticking at `SPLASH_ANIMATION_TICK`
++    /// instead of going fully idle. Without this, once the last real `WindowEvent`/
++    /// repaint request had been handled, nothing would wake the loop up again to
++    /// animate the splash during a long, otherwise-silent load, or to promptly notice
++    /// `LoadStatus::Complete` firing with no further page activity after it.
++    pub(crate) fn splash_animation_wake_deadline(&self, state: &RunningAppState) -> Option<Instant> {
++        let since = self.page_load_splash_since.get()?;
++        if state.is_initial_page_loaded() || since.elapsed() >= MAX_PAGE_LOAD_SPLASH_DURATION {
++            return None;
++        }
++        Some(Instant::now() + SPLASH_ANIMATION_TICK)
++    }
++
+     fn handle_keyboard_input(
+         &self,
+         state: Rc<RunningAppState>,
+@@ -381,28 +512,9 @@ impl HeadedWindow {
+             .shortcut(Modifiers::CONTROL, Key::Named(NamedKey::F12), || {
+                 active_webview.toggle_webrender_debugging(WebRenderDebugOption::Profiler);
+             })
+-            .shortcut(CMD_OR_ALT, Key::Named(NamedKey::ArrowRight), || {
+-                active_webview.go_forward(1);
+-            })
+-            .optional_shortcut(
+-                cfg!(not(target_os = "windows")),
+-                CMD_OR_CONTROL,
+-                ']',
+-                || {
+-                    active_webview.go_forward(1);
+-                },
+-            )
+-            .shortcut(CMD_OR_ALT, Key::Named(NamedKey::ArrowLeft), || {
+-                active_webview.go_back(1);
+-            })
+-            .optional_shortcut(
+-                cfg!(not(target_os = "windows")),
+-                CMD_OR_CONTROL,
+-                '[',
+-                || {
+-                    active_webview.go_back(1);
+-                },
+-            )
++            // Back/forward history navigation (Cmd/Ctrl+Alt+Left/Right, Cmd/Ctrl+[/]) is
++            // intentionally not bound to a shortcut here: a player navigating "back" out of
++            // the game's page can silently destroy in-game state.
+             .optional_shortcut(
+                 self.get_fullscreen(),
+                 Modifiers::empty(),
+@@ -549,11 +661,28 @@ impl HeadedWindow {
+         }
+ 
+         // If requested to redraw or resized, repaint as soon as possible, so that new buffer
+-        // contents are available to the window manager.
++        // contents are available to the window manager. While `page_load_splash_since` is
++        // still set (see its own doc comment), keep painting the boot splash over the real
++        // page instead of compositing it, until the page reports itself ready or we give up
++        // waiting.
+         if event == WindowEvent::RedrawRequested || resized {
+-            let mut gui = self.gui.borrow_mut();
+-            gui.update(&state, &window, self);
+-            gui.paint(&self.winit_window);
++            let still_loading = self.page_load_splash_since.get().filter(|since| {
++                !state.is_initial_page_loaded() && since.elapsed() < MAX_PAGE_LOAD_SPLASH_DURATION
++            });
++            match still_loading {
++                Some(since) => self.paint_splash(since.elapsed()),
++                None => {
++                    self.page_load_splash_since.set(None);
++                    match logging::content_load_error() {
++                        Some(message) => self.paint_content_load_error(&message),
++                        None => {
++                            let mut gui = self.gui.borrow_mut();
++                            gui.update(&state, &window, self);
++                            gui.paint(&self.winit_window);
++                        },
++                    }
++                },
++            }
+         }
+ 
+         if let WindowEvent::CursorMoved { position, .. } = event {
+@@ -602,18 +731,12 @@ impl HeadedWindow {
+             },
+             WindowEvent::MouseInput {
+                 state: ElementState::Pressed,
+-                button: MouseButton::Forward,
+-                ..
+-            } => {
+-                window.queue_user_interface_command(UserInterfaceCommand::Forward);
+-                consumed = true;
+-            },
+-            WindowEvent::MouseInput {
+-                state: ElementState::Pressed,
+-                button: MouseButton::Back,
++                button: MouseButton::Forward | MouseButton::Back,
+                 ..
+             } => {
+-                window.queue_user_interface_command(UserInterfaceCommand::Back);
++                // Mouse "back"/"forward" side buttons are swallowed rather than triggering
++                // history navigation, for the same reason the keyboard shortcuts and context
++                // menu entries are disabled: navigating away can silently destroy game state.
+                 consumed = true;
+             },
+             WindowEvent::MouseWheel { .. } | WindowEvent::MouseInput { .. }
+@@ -845,15 +968,17 @@ impl PlatformWindow for HeadedWindow {
+     }
+ 
+     fn update_user_interface_state(&self, _: &RunningAppState, window: &ServoShellWindow) -> bool {
+-        let title = window
+-            .active_webview()
+-            .and_then(|webview| {
+-                webview
+-                    .page_title()
+-                    .filter(|title| !title.is_empty())
+-                    .or_else(|| webview.url().map(|url| url.to_string()))
+-            })
+-            .unwrap_or_else(|| INITIAL_WINDOW_TITLE.to_string());
++        let title = self.window_title_override.clone().unwrap_or_else(|| {
++            window
++                .active_webview()
++                .and_then(|webview| {
++                    webview
++                        .page_title()
++                        .filter(|title| !title.is_empty())
++                        .or_else(|| webview.url().map(|url| url.to_string()))
++                })
++                .unwrap_or_else(|| INITIAL_WINDOW_TITLE.to_string())
++        });
+         if title != *self.last_title.borrow() {
+             self.winit_window.set_title(&title);
+             *self.last_title.borrow_mut() = title;
+@@ -942,6 +1067,7 @@ impl PlatformWindow for HeadedWindow {
+             } else {
+                 None
+             });
++            persist_fullscreen_state(self.config_dir.as_deref(), state);
+         }
+         self.fullscreen.set(state);
+     }
+@@ -1007,7 +1133,7 @@ impl PlatformWindow for HeadedWindow {
+         let size = self.winit_window.outer_size();
+ 
+         let window_attr = winit::window::Window::default_attributes()
+-            .with_title("Servo XR".to_string())
++            .with_title("Roves XR".to_string())
+             .with_inner_size(size)
+             .with_visible(false);
+ 
+@@ -1064,10 +1190,6 @@ impl PlatformWindow for HeadedWindow {
+             })
+             .shortcut(CMD_OR_CONTROL, '0', || {
+                 webview.set_page_zoom(1.0);
+-            })
+-            .shortcut(CMD_OR_CONTROL, 'R', || webview.reload())
+-            .shortcut(Modifiers::empty(), Key::Named(NamedKey::F5), || {
+-                webview.reload()
+             });
+     }
+ 
+@@ -1110,8 +1232,10 @@ impl PlatformWindow for HeadedWindow {
+                 self.add_dialog(webview_id, Dialog::new_simple_dialog(simple_dialog));
+             },
+             EmbedderControl::ContextMenu(prompt) => {
+-                let offset = self.gui.borrow().toolbar_height();
+-                self.add_dialog(webview_id, Dialog::new_context_menu(prompt, offset));
++                // Right-click context menus are disabled entirely for this game embedding:
++                // dismissing the request immediately is a no-op from the player's perspective,
++                // since `ContextMenu::drop` sends the "no selection" response on our behalf.
++                drop(prompt);
+             },
+         }
+     }
+@@ -1171,6 +1295,32 @@ impl PlatformWindow for HeadedWindow {
+     }
+ }
+ 
++/// Persists fullscreen state across launches as a marker file's mere existence — no JSON,
++/// matching `support/content-packer/src/extract.rs`'s own marker-file convention — so
++/// `prefs.rs`'s `start_fullscreen` can read it back with a plain `Path::exists()` check next
++/// launch. `config_dir` is `None` when it couldn't be resolved at all (see
++/// `ServoShellPreferences::config_dir`); persistence is simply skipped in that case, same
++/// failure philosophy as elsewhere in this codebase (missing state degrades to "off" rather
++/// than panicking).
++fn persist_fullscreen_state(config_dir: Option<&Path>, fullscreen: bool) {
++    let Some(config_dir) = config_dir else { return };
++    let marker = config_dir.join("fullscreen");
++    let result = if fullscreen {
++        fs::write(&marker, b"")
++    } else {
++        fs::remove_file(&marker).or_else(|error| {
++            if error.kind() == std::io::ErrorKind::NotFound {
++                Ok(())
++            } else {
++                Err(error)
++            }
++        })
++    };
++    if let Err(error) = result {
++        log::warn!("persisting fullscreen state to {marker:?}: {error}");
++    }
++}
++
+ fn winit_phase_to_touch_event_type(phase: TouchPhase) -> TouchEventType {
+     match phase {
+         TouchPhase::Started => TouchEventType::Down,
+@@ -1180,6 +1330,21 @@ fn winit_phase_to_touch_event_type(phase: TouchPhase) -> TouchEventType {
+     }
+ }
+ 
++/// A game-supplied window icon, if `mach bundle --icon-png` copied one next to this exact
++/// binary (see `python/servo/post_build_commands.py`) — checked at every launch, not baked
++/// in at compile time, specifically so a *prebuilt* shell (downloaded, never compiled
++/// per-game — every `roves-action` base-mode consumer, and Packmaster) can still show a
++/// game's own branding instead of whatever `build.rs` happened to bake in when that shell
++/// itself was built (Roves' own icon, absent a `--icon-png` passed to that build). `None`
++/// when no such file exists, or `current_exe()` itself fails — never a hard error, since the
++/// compile-time default is always a safe fallback.
++#[cfg(any(target_os = "linux", target_os = "windows"))]
++fn runtime_window_icon_bytes() -> Option<Vec<u8>> {
++    let exe = std::env::current_exe().ok()?;
++    let dir = exe.parent()?;
++    std::fs::read(dir.join("icon.png")).ok()
++}
++
+ #[cfg(any(target_os = "linux", target_os = "windows"))]
+ fn load_icon(icon_bytes: &[u8]) -> Icon {
+     let (icon_rgba, icon_width, icon_height) = {
+diff --git a/ports/servoshell/desktop/logging.rs b/ports/servoshell/desktop/logging.rs
+new file mode 100644
+index 000000000..1d9f6b40a
+--- /dev/null
++++ b/ports/servoshell/desktop/logging.rs
+@@ -0,0 +1,140 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! Installs a single process-wide file logger as early in `cli::main` as
++//! possible — before `panic::set_hook`, before `resolve_bundled_launch_args`,
++//! before anything else that can fail silently. This exists because, until
++//! now, nothing installed a `log` backend at all until deep inside
++//! `App::finish_init` (`Servo::setup_logging`, called only once a `Servo`
++//! instance exists), so every `log::error!`/`warn!` call before that point —
++//! including inside `bundle_launch::resolve_bundled_launch_args` itself,
++//! exactly where a broken/missing packed-content bundle would report the
++//! problem — was silently discarded. Combined with `ports/servoshell/main.rs`
++//! setting `#![windows_subsystem = "windows"]` (no console unless launched
++//! from one), a double-clicked `play.exe` that failed early looked like
++//! nothing happened at all, with no way to tell why.
++//!
++//! `log::set_boxed_logger` only ever succeeds once per process — see
++//! `components/servo/servo.rs`'s `setup_logging`/`set_logger`, both patched
++//! (`patches/servo-v0.4.0/0030-...patch`) to no-op instead of panicking on
++//! the second call this now causes, since this module's logger always
++//! installs first. The trade-off: `FromEmbedderLogger`'s
++//! constellation-forwarding (an embedder-side crash/warning-UI hook) never
++//! runs — this fork has no such UI to forward to (see CUSTOMIZATIONS.md's
++//! earliest entries removing the toolbar/tabs entirely), so that's a
++//! deliberate no-op, not a silently swallowed feature.
++
++use std::fs::File;
++use std::path::Path;
++use std::sync::{Mutex, OnceLock};
++
++/// Filename of the on-disk log, truncated fresh on every launch (`File::create`)
++/// so it never grows unbounded across repeated runs — old runs' output isn't
++/// meant to be kept, just this run's.
++const LOG_FILE_NAME: &str = "roves.log";
++
++/// Set the first time the game's own top-level document fails to fetch a `<script>` it
++/// needs to actually run (a classic or module script) — checked every repaint by
++/// `headed_window.rs`, once the page reports itself loaded, so a black canvas (nothing
++/// ever painted, because the page's own JS never ran) shows a visible message instead of
++/// silently doing nothing. Sticky for the rest of the session once set, deliberately: the
++/// script already failed once, there's nothing to retry.
++static CONTENT_LOAD_ERROR: OnceLock<Mutex<Option<String>>> = OnceLock::new();
++
++/// The message set by [`CONTENT_LOAD_ERROR`], if a content-load error was ever seen —
++/// see `headed_window.rs`'s `handle_winit_window_event`.
++pub(crate) fn content_load_error() -> Option<String> {
++    CONTENT_LOAD_ERROR.get()?.lock().unwrap().clone()
++}
++
++/// Matches the exact two upstream Servo log call sites that mean "the page's own script
++/// failed to load" — `script::script_module`'s `Fetching module script failed` and
++/// `script::dom::html::htmlscriptelement`'s `Fetching classic script failed` (see
++/// `components/script/script_module.rs`/`components/script/dom/htmlscriptelement.rs`).
++/// Deliberately narrow: an ordinary page can 404 an image or a non-critical fetch without
++/// the whole app being broken, but a `<script>` the page itself needed to run failing is
++/// exactly the "renders nothing, looks like it hung" failure mode this exists to surface.
++fn note_potential_content_load_error(record: &log::Record) {
++    if record.level() != log::Level::Error {
++        return;
++    }
++    if !matches!(
++        record.target(),
++        "script::script_module" | "script::dom::html::htmlscriptelement"
++    ) {
++        return;
++    }
++    let slot = CONTENT_LOAD_ERROR.get_or_init(|| Mutex::new(None));
++    let mut slot = slot.lock().unwrap();
++    if slot.is_none() {
++        *slot = Some(record.args().to_string());
++    }
++}
++
++/// Wraps `env_logger`'s own [`env_logger::Logger`] to additionally watch for the narrow
++/// class of Servo-internal error logs handled by [`note_potential_content_load_error`] —
++/// everything else about logging (destination, level filtering, formatting) is
++/// unchanged, `env_logger`'s `Logger` still does all of it; this only adds a side effect
++/// on top, purely so `headed_window.rs` has something to poll without needing its own
++/// hook into Servo's script-loading internals.
++struct RovesLogger {
++    inner: env_logger::Logger,
++}
++
++impl log::Log for RovesLogger {
++    fn enabled(&self, metadata: &log::Metadata) -> bool {
++        self.inner.enabled(metadata)
++    }
++
++    fn log(&self, record: &log::Record) {
++        note_potential_content_load_error(record);
++        self.inner.log(record);
++    }
++
++    fn flush(&self) {
++        self.inner.flush();
++    }
++}
++
++/// Installs the file logger, rooted at `log_dir` (see
++/// `roves_content_packer::extract::game_data_dir` — a sibling of the
++/// extraction cache, not inside the game's own content directory). Returns
++/// the log file's path on success, purely for callers that want to mention
++/// it in a startup message; installation failing (directory/file couldn't
++/// be created — e.g. a read-only install location) is not fatal and is not
++/// itself logged anywhere (nothing to log it *to*) — `Servo::setup_logging`
++/// simply ends up being the first successful `log::set_boxed_logger` call
++/// instead, same as before this module existed.
++///
++/// Captures everything: normal `env_logger`-style filtering, defaulting to
++/// `info` (not `env_logger`'s own default of `error`-only) since a private
++/// log file, unlike a terminal, isn't noisy for the user — override with
++/// `RUST_LOG` as usual. Because the game's own `console.log`/`warn`/`error`
++/// already route through `log::log!` (see `headed_window.rs`/
++/// `headless_window.rs`'s `show_console_message`), and every panic already
++/// routes through `log::error!` (`panic_hook.rs`), a single logger installed
++/// here is enough to capture Roves/Servo's own logging, the game's console
++/// output, and startup panics, all in one file.
++pub(crate) fn init(log_dir: &Path) -> Option<std::path::PathBuf> {
++    std::fs::create_dir_all(log_dir).ok()?;
++    let log_path = log_dir.join(LOG_FILE_NAME);
++    let file = File::create(&log_path).ok()?;
++
++    let env = env_logger::Env::default().default_filter_or("info");
++    let mut builder = env_logger::Builder::from_env(env);
++    builder.target(env_logger::Target::Pipe(Box::new(file)));
++    builder.format_timestamp_millis();
++    let logger = builder.build();
++    let filter = logger.filter();
++    let logger = RovesLogger { inner: logger };
++
++    log::set_boxed_logger(Box::new(logger)).ok()?;
++    log::set_max_level(filter);
++    // First line in every fresh log, so anyone who finds the file
++    // immediately knows what it is and where it's rooted — helpful given
++    // this whole module exists for the case where nothing else visibly
++    // happened.
++    log::info!("Roves logging started, writing to {log_path:?}");
++    Some(log_path)
++}
+diff --git a/ports/servoshell/desktop/mod.rs b/ports/servoshell/desktop/mod.rs
+index 8ade3831c..287d27f53 100644
+--- a/ports/servoshell/desktop/mod.rs
++++ b/ports/servoshell/desktop/mod.rs
+@@ -6,6 +6,7 @@
+ 
+ mod accelerated_gl_media;
+ pub(crate) mod app;
++mod bundle_launch;
+ pub(crate) mod cli;
+ pub(crate) mod dialog;
+ pub(crate) mod event_loop;
+@@ -16,6 +17,7 @@ mod gui;
+ pub(crate) mod headed_window;
+ mod headless_window;
+ mod keyutils;
++mod logging;
+ mod protocols;
+ mod tracing;
+ #[cfg(feature = "webxr")]
+diff --git a/ports/servoshell/desktop/tracing.rs b/ports/servoshell/desktop/tracing.rs
+index 9511a1933..e67693a20 100644
+--- a/ports/servoshell/desktop/tracing.rs
++++ b/ports/servoshell/desktop/tracing.rs
+@@ -54,6 +54,10 @@ mod from_winit {
+                 Self::UserEvent(AppEvent::Waker) => target!("UserEvent(Waker)"),
+                 Self::UserEvent(AppEvent::Accessibility(..)) => target!("UserEvent(Accessibility)"),
+                 Self::UserEvent(AppEvent::Gamepad(..)) => target!("UserEvent(Gamepad)"),
++                Self::UserEvent(AppEvent::CloseAllWindows) => target!("UserEvent(CloseAllWindows)"),
++                Self::UserEvent(AppEvent::BootProgress(..)) => target!("UserEvent(BootProgress)"),
++                Self::UserEvent(AppEvent::BootReady) => target!("UserEvent(BootReady)"),
++                Self::UserEvent(AppEvent::Gamepad(..)) => target!("UserEvent(Gamepad)"),
+                 Self::Suspended => target!("Suspended"),
+                 Self::Resumed => target!("Resumed"),
+                 Self::AboutToWait => target!("AboutToWait"),
+diff --git a/ports/servoshell/desktop/webxr.rs b/ports/servoshell/desktop/webxr.rs
+index 118a1da7f..0bc95db9b 100644
+--- a/ports/servoshell/desktop/webxr.rs
++++ b/ports/servoshell/desktop/webxr.rs
+@@ -40,7 +40,7 @@ impl XrDiscoveryWebXrRegistry {
+         let xr_discovery = if preferences.dom_webxr_openxr_enabled {
+             #[cfg(target_os = "windows")]
+             {
+-                let app_info = OpenXrAppInfo::new("Servoshell", 0, "Servo", 0);
++                let app_info = OpenXrAppInfo::new("Roves", 0, "Servo", 0);
+                 Some(XrDiscovery::OpenXr(OpenXrDiscovery::new(None, app_info)))
+             }
+             #[cfg(not(target_os = "windows"))]
+diff --git a/ports/servoshell/main.rs b/ports/servoshell/main.rs
+index ba1baae63..bb508031a 100644
+--- a/ports/servoshell/main.rs
++++ b/ports/servoshell/main.rs
+@@ -14,10 +14,57 @@
+ //!
+ //! [winit]: https://github.com/rust-windowing/winit
+ 
++#[cfg(target_os = "windows")]
++use std::os::windows::ffi::OsStrExt;
++
+ #[cfg(target_os = "windows")]
+ use windows_sys::Win32::System::Console;
++#[cfg(target_os = "windows")]
++use windows_sys::Win32::System::LibraryLoader::SetDllDirectoryW;
++
++// Windows only: adds `lib/` (next to this executable) to the process-wide DLL search path,
++// used by GStreamer's own plugin loading. A plugin file itself is found via `gst_plugin_
++// load_file`'s own `LOAD_WITH_ALTERED_SEARCH_PATH` (relative to that plugin's own
++// directory) regardless of this call -- but once found, the OS loader resolves *that
++// plugin's own* implicit imports (e.g. `gstnice.dll` needing `nice-10.dll`) through the
++// normal, process-wide search order, which by default never includes `lib/` at all. See
++// `python/servo/post_build_commands.py`'s `_bundle_windows`/CUSTOMIZATIONS.md's 2026-08-19
++// "attempted to shrink the root further, reverted" entry for the full story of finding this
++// out the hard way (duplicating every dependency DLL flat next to the binary, rather than
++// this) -- that entry's own "why not lower still" section flagged this exact fix as the
++// real way to go lower, deliberately deferred at the time. `SetDllDirectoryW` prepends its
++// argument to the search order without removing the application directory from it (per its
++// own documented behavior), so this is purely additive -- it doesn't change how anything
++// already flat next to the binary resolves.
++#[cfg(target_os = "windows")]
++fn add_lib_dir_to_dll_search_path() {
++    let Ok(exe_path) = std::env::current_exe() else {
++        return;
++    };
++    let Some(exe_dir) = exe_path.parent() else {
++        return;
++    };
++    let lib_dir = exe_dir.join("lib");
++    if !lib_dir.is_dir() {
++        // Not every build has a lib/ subfolder (e.g. a dev build run in-place) -- nothing
++        // to add in that case, and SetDllDirectoryW on a nonexistent path would otherwise
++        // just silently make that one entry a no-op anyway.
++        return;
++    }
++    let mut wide: Vec<u16> = lib_dir.as_os_str().encode_wide().collect();
++    wide.push(0);
++    // SAFETY: `wide` is a valid, null-terminated UTF-16 string kept alive for the duration
++    // of this call. `SetDllDirectoryW` only reads from it; it doesn't retain the pointer
++    // afterward (the OS copies the path internally).
++    unsafe {
++        SetDllDirectoryW(wide.as_ptr());
++    }
++}
+ 
+ fn main() {
++    #[cfg(target_os = "windows")]
++    add_lib_dir_to_dll_search_path();
++
+     #[cfg(target_os = "windows")]
+     // SAFETY: No safety related side effects or requirements.
+     // See <https://learn.microsoft.com/en-au/windows/console/freeconsole#remarks>
+diff --git a/ports/servoshell/panic_hook.rs b/ports/servoshell/panic_hook.rs
+index 662cb7ba8..a885821f0 100644
+--- a/ports/servoshell/panic_hook.rs
++++ b/ports/servoshell/panic_hook.rs
+@@ -22,20 +22,24 @@ pub(crate) fn panic_hook(info: &PanicHookInfo) {
+     };
+     let current_thread = thread::current();
+     let name = current_thread.name().unwrap_or("<unnamed>");
+-    let stderr = std::io::stderr();
+-    let mut stderr = stderr.lock();
+-    if let Some(location) = info.location() {
+-        let _ = writeln!(
+-            &mut stderr,
++    // Built once and used for both the stderr write below (invisible on a
++    // windowed build launched without a console — see `logging.rs`) and the
++    // `error!` call at the end, so whichever sink is actually reachable
++    // (the log file, in the common case this fork cares about) gets the
++    // same file:line/thread detail, not just the bare panic message.
++    let detail = match info.location() {
++        Some(location) => format!(
+             "{} (thread {}, at {}:{})",
+             msg,
+             name,
+             location.file(),
+             location.line()
+-        );
+-    } else {
+-        let _ = writeln!(&mut stderr, "{} (thread {})", msg, name);
+-    }
++        ),
++        None => format!("{} (thread {})", msg, name),
++    };
++    let stderr = std::io::stderr();
++    let mut stderr = stderr.lock();
++    let _ = writeln!(&mut stderr, "{detail}");
+     if env::var("RUST_BACKTRACE").is_ok() {
+         let _ = crate::backtrace::print(&mut stderr);
+     }
+@@ -49,6 +53,6 @@ pub(crate) fn panic_hook(info: &PanicHookInfo) {
+             // tests detect that we crashed. If we exit normally it just looks like a non-crash exit.
+             raise_signal_or_exit_with_error(libc::SIGSEGV);
+         }
+-        error!("{}", msg);
++        error!("{detail}");
+     }
+ }
+diff --git a/ports/servoshell/parser.rs b/ports/servoshell/parser.rs
+index 822620678..637c05abe 100644
+--- a/ports/servoshell/parser.rs
++++ b/ports/servoshell/parser.rs
+@@ -9,6 +9,35 @@ use servo::{ServoUrl, is_reg_domain};
+ 
+ #[cfg(not(any(target_os = "android", target_env = "ohos")))]
+ pub fn parse_url_or_filename(cwd: &Path, input: &str) -> Result<ServoUrl, ()> {
++    // Kiosk/embedded fork: an absolute Windows path (`C:\dir\index.html`) is a
++    // perfectly *valid* URL as far as the WHATWG parser is concerned — scheme
++    // `c`, opaque path `\dir\index.html` — so `ServoUrl::parse` below returns
++    // `Ok` for it and it never reaches the `RelativeUrlWithoutBase` "treat it
++    // as a filename" arm. The result gets navigated to as a `c:` URL, which no
++    // protocol handler claims, and the window shows "Could not load the
++    // requested page: Unsupported scheme". POSIX absolute paths don't hit this
++    // (a leading `/` is not a scheme, so they do fail to parse and do reach the
++    // filename arm), which is why this only ever bit Windows.
++    //
++    // It became reachable when the generated `play.exe` launcher started
++    // passing an *absolute* html path — the extraction cache directory printed
++    // by `roves-content-packer extract`, unknown until launch (see
++    // `python/servo/post_build_commands.py` and CUSTOMIZATIONS.md's lazy
++    // extraction entry). Before that it passed a bundle-relative path, which
++    // parsed as a relative URL and worked.
++    //
++    // Handled here rather than by hand-assembling a `file:///` string in the
++    // launcher: `Url::from_file_path` does the percent-encoding correctly for
++    // paths containing spaces, `#`, `?` and friends (Windows temp directories
++    // live under the user's profile, so `C:\Users\Mario Rossi\...` is entirely
++    // ordinary), and this way *any* Windows path handed to servoshell on the
++    // command line works, not just the launcher's.
++    if is_windows_absolute_path(input) {
++        if let Ok(url) = url::Url::from_file_path(input) {
++            return Ok(ServoUrl::from_url(url));
++        }
++    }
++
+     match ServoUrl::parse(input) {
+         Ok(url) => Ok(url),
+         Err(url::ParseError::RelativeUrlWithoutBase) => {
+@@ -18,6 +47,21 @@ pub fn parse_url_or_filename(cwd: &Path, input: &str) -> Result<ServoUrl, ()> {
+     }
+ }
+ 
++/// `C:\dir\file.html` / `C:/dir/file.html` (drive-absolute) or
++/// `\\server\share\file.html` (UNC). Deliberately not `#[cfg(windows)]`-gated:
++/// the conversion above is guarded by `Url::from_file_path` succeeding, which
++/// on a non-Windows build rejects both shapes (neither is an absolute path
++/// there), so behavior off Windows is unchanged.
++#[cfg(not(any(target_os = "android", target_env = "ohos")))]
++fn is_windows_absolute_path(input: &str) -> bool {
++    let bytes = input.as_bytes();
++    let drive_absolute = bytes.len() >= 3 &&
++        bytes[0].is_ascii_alphabetic() &&
++        bytes[1] == b':' &&
++        (bytes[2] == b'\\' || bytes[2] == b'/');
++    drive_absolute || input.starts_with(r"\\")
++}
++
+ #[cfg(not(any(target_os = "android", target_env = "ohos")))]
+ pub fn get_default_url(
+     url_opt: Option<&str>,
+@@ -42,6 +86,16 @@ pub fn get_default_url(
+             ("file", None, Ok(ref path)) if exists(path) => {
+                 new_url = cmdline_url;
+             },
++            // Kiosk/embedded fork: a bundled launch's positional URL is a
++            // `game://content/...` one (see `desktop/protocols/game.rs`'s own doc
++            // comment) — no `to_file_path()`/`exists()` check makes sense for it (it
++            // isn't a real filesystem path at all), and it's never user-typed input to
++            // begin with — always built by this same binary's own `bundle_launch.rs`
++            // from a `launch.json` it trusts — so accept it outright, same as the
++            // `file:` arm above accepts an already-verified-to-exist path outright.
++            ("game", Some(_), _) => {
++                new_url = cmdline_url;
++            },
+             (scheme, None, Err(_)) if is_localhost(scheme) || is_domain_like(scheme) => {
+                 new_url = ServoUrl::parse(&format!("http://{}:{}", scheme, &url.path())).ok();
+             },
+diff --git a/ports/servoshell/platform/windows/servoshell.exe.manifest b/ports/servoshell/platform/windows/servoshell.exe.manifest
+index 4a967e39e..2f4963631 100644
+--- a/ports/servoshell/platform/windows/servoshell.exe.manifest
++++ b/ports/servoshell/platform/windows/servoshell.exe.manifest
+@@ -3,7 +3,7 @@
+           manifestVersion="1.0"
+           xmlns:asmv3="urn:schemas-microsoft-com:asm.v3">
+   <assemblyIdentity type="win32"
+-                    name="servo.ServoShell"
++                    name="org.roves.Roves"
+                     version="0.5.0.0"/>
+ 
+   <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+diff --git a/ports/servoshell/prefs.rs b/ports/servoshell/prefs.rs
+index d82e3c622..429493fc0 100644
+--- a/ports/servoshell/prefs.rs
++++ b/ports/servoshell/prefs.rs
+@@ -81,6 +81,11 @@ pub(crate) struct ServoShellPreferences {
+     pub tracing_filter: Option<String>,
+     /// The initial requested inner size of the window.
+     pub initial_window_size: Size2D<u32, DeviceIndependentPixel>,
++    /// A fixed native window title, overriding the default of always mirroring the
++    /// active page's own title — see `HeadedWindow::update_user_interface_state`.
++    /// `mach bundle` sets this from the game's own `manifest.json`/`package.json`
++    /// `name` when present; `None` otherwise (dev runs, or neither file has a name).
++    pub window_title_override: Option<String>,
+     /// An override for the screen resolution. This is useful for testing behavior on different screen sizes,
+     /// such as the screen of a mobile device.
+     pub screen_size_override: Option<Size2D<u32, DeviceIndependentPixel>>,
+@@ -101,6 +106,15 @@ pub(crate) struct ServoShellPreferences {
+     pub webdriver_port: Cell<Option<u16>>,
+     /// Whether the CLI option to enable experimental prefs was present at startup.
+     pub experimental_preferences_enabled: bool,
++    /// Whether the window should open already in fullscreen — persisted across launches
++    /// (a marker file under `config_dir`, written/removed by `HeadedWindow::set_fullscreen`)
++    /// so a game closed in fullscreen reopens that way, without a windowed-then-fullscreen
++    /// transition on startup. See CUSTOMIZATIONS.md.
++    pub start_fullscreen: bool,
++    /// Resolved once at startup (`default_config_dir`, possibly overridden by
++    /// `--config-dir`) and kept here so `HeadedWindow` can persist UI state (currently just
++    /// `start_fullscreen`) back to the same directory without re-deriving it.
++    pub config_dir: Option<PathBuf>,
+     /// Log filter given in the `log_filter` spec as a String, if any.
+     /// If a filter is passed, the logger should adjust accordingly.
+     #[cfg(target_env = "ohos")]
+@@ -118,6 +132,7 @@ impl Default for ServoShellPreferences {
+             headless: false,
+             homepage: "https://servo.org".into(),
+             initial_window_size: Size2D::new(1024, 740),
++            window_title_override: None,
+             no_native_titlebar: true,
+             screen_size_override: None,
+             simulate_touch_events: false,
+@@ -134,6 +149,8 @@ impl Default for ServoShellPreferences {
+             #[cfg(target_env = "ohos")]
+             log_to_file: false,
+             experimental_preferences_enabled: false,
++            start_fullscreen: false,
++            config_dir: None,
+         }
+     }
+ }
+@@ -569,6 +586,15 @@ struct CmdArgs {
+     #[bpaf(external)]
+     webdriver_port: Option<u16>,
+ 
++    ///
++    ///  Override the native window's title — set once at startup and never changed
++    ///  afterward, even if the page's own `document.title` changes (the window title
++    ///  otherwise always mirrors the active page's title). `mach bundle` fills this in
++    ///  from the game's `manifest.json`/`package.json` `name`, when present — see
++    ///  CUSTOMIZATIONS.md.
++    #[bpaf(long, argument("TEXT"))]
++    window_title: Option<String>,
++
+     ///
+     ///  Set the initial window size in logical (device independent) pixels.
+     #[bpaf(argument::<String>("1024x740"), parse(parse_resolution_string), fallback(None))]
+@@ -682,6 +708,11 @@ fn parse_arguments_helper(args_without_binary: Args) -> ArgumentParsingResult {
+                 fs::create_dir_all(config_dir).expect("Could not create config_dir");
+             }
+         });
++    // See `HeadedWindow::set_fullscreen` (`desktop/headed_window.rs`) for where this marker
++    // is written/removed as fullscreen is toggled during play.
++    let start_fullscreen = config_dir
++        .as_deref()
++        .is_some_and(|dir| dir.join("fullscreen").exists());
+     let temporary_storage = cmd_args.temporary_storage;
+     if let Some(ref time_profiler_trace_path) = cmd_args.profiler_trace_path {
+         let mut path = PathBuf::from(time_profiler_trace_path);
+@@ -716,6 +747,7 @@ fn parse_arguments_helper(args_without_binary: Args) -> ArgumentParsingResult {
+         headless: cmd_args.headless,
+         tracing_filter: cmd_args.tracing_filter,
+         initial_window_size: cmd_args.window_size.unwrap_or(default_window_size),
++        window_title_override: cmd_args.window_title,
+         screen_size_override: cmd_args.screen_size_override,
+         simulate_touch_events: cmd_args.simulate_touch_events,
+         webdriver_port: Cell::new(cmd_args.webdriver_port),
+@@ -724,6 +756,8 @@ fn parse_arguments_helper(args_without_binary: Args) -> ArgumentParsingResult {
+         userscripts_directory: cmd_args.userscripts,
+         user_stylesheets: cmd_args.user_stylesheet,
+         experimental_preferences_enabled: cmd_args.enable_experimental_web_platform_features,
++        start_fullscreen,
++        config_dir: config_dir.clone(),
+         #[cfg(target_env = "ohos")]
+         log_filter: cmd_args.log_filter.or_else(|| {
+             (!preferences.log_filter.is_empty()).then(|| preferences.log_filter.clone())
+diff --git a/ports/servoshell/running_app_state.rs b/ports/servoshell/running_app_state.rs
+index 4685ebd21..b04003c60 100644
+--- a/ports/servoshell/running_app_state.rs
++++ b/ports/servoshell/running_app_state.rs
+@@ -229,6 +229,16 @@ pub(crate) struct RunningAppState {
+     /// [`WebView::set_accessibility_active()`], in [`Self::set_accessibility_active()`] and
+     /// and [`ServoShellWindow::create_toplevel_webview()`].
+     accessibility_active: Cell<bool>,
++
++    /// The id of the first (and, outside multi-window/tab flows, only) [`WebView`] this
++    /// instance ever opens — set once, in [`Self::open_window`], and never cleared. Used
++    /// by [`Self::is_initial_page_loaded`] to know which `WebView`'s `LoadStatus::Complete`
++    /// actually marks "the game's own page is ready", as opposed to some later tab/popup.
++    initial_webview_id: Cell<Option<WebViewId>>,
++
++    /// Set by [`Self::notify_load_status_changed`] the first time `initial_webview_id`'s
++    /// `WebView` reaches `LoadStatus::Complete`. See [`Self::is_initial_page_loaded`].
++    initial_load_complete: Cell<bool>,
+ }
+ 
+ impl RunningAppState {
+@@ -279,6 +289,8 @@ impl RunningAppState {
+             user_content_manager,
+             experimental_preferences_enabled,
+             accessibility_active: Cell::new(false),
++            initial_webview_id: Cell::new(None),
++            initial_load_complete: Cell::new(false),
+         }
+     }
+ 
+@@ -293,6 +305,12 @@ impl RunningAppState {
+             .insert(window.id(), window.clone());
+         window.create_and_activate_toplevel_webview(self.clone(), initial_url);
+ 
++        if self.initial_webview_id.get().is_none() &&
++            let Some(webview) = window.active_webview()
++        {
++            self.initial_webview_id.set(Some(webview.id()));
++        }
++
+         // If the window already has platform focus, mark it as focused in our application state.
+         if platform_window.has_platform_focus() {
+             self.focus_window(window.clone());
+@@ -307,6 +325,18 @@ impl RunningAppState {
+         self.windows.borrow()
+     }
+ 
++    /// Whether the very first `WebView` this instance ever opened (`open_window`'s
++    /// initial navigation — practically always the game's own page) has reached
++    /// `LoadStatus::Complete`. Used by the boot splash (`headed_window.rs`'s
++    /// `page_load_splash_since`) as the least-bad available proxy for "the real page is
++    /// ready to be shown" — see `notify_load_status_changed` above. Not a true first-
++    /// *paint* signal (no such thing is exposed to the embedder today — see
++    /// CUSTOMIZATIONS.md's boot-splash entries), just DOM readiness, but far closer than
++    /// showing the page the instant its `WebView` is created.
++    pub(crate) fn is_initial_page_loaded(&self) -> bool {
++        self.initial_load_complete.get()
++    }
++
+     pub(crate) fn focused_window(&self) -> Option<Rc<ServoShellWindow>> {
+         self.focused_window.borrow().clone()
+     }
+@@ -799,6 +829,9 @@ impl WebViewDelegate for RunningAppState {
+         self.window_for_webview(&webview).set_needs_update();
+ 
+         if status == LoadStatus::Complete {
++            if self.initial_webview_id.get() == Some(webview.id()) {
++                self.initial_load_complete.set(true);
++            }
+             if let Some(sender) = self
+                 .webdriver_senders
+                 .borrow_mut()

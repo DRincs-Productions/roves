@@ -1,0 +1,1376 @@
+diff --git a/support/content-packer/Cargo.toml b/support/content-packer/Cargo.toml
+new file mode 100644
+index 000000000..de520b8a2
+--- /dev/null
++++ b/support/content-packer/Cargo.toml
+@@ -0,0 +1,25 @@
++[package]
++name = "roves-content-packer"
++version = "0.1.0"
++edition = "2024"
++license = "MPL-2.0"
++publish = false
++description = "Packs a built game dist/ into a handful of tar+zstd archives (instead of shipping it as loose files), and extracts them back at launch time. See ../../CUSTOMIZATIONS.md."
++
++[lib]
++name = "roves_content_packer"
++path = "src/lib.rs"
++
++[[bin]]
++name = "roves-content-packer"
++path = "src/main.rs"
++
++[dependencies]
++bpaf = { workspace = true }
++serde = { workspace = true, features = ["derive"] }
++serde_json = { workspace = true }
++sha2 = { workspace = true }
++glob = "0.3.3"
++tar = "0.4.46"
++walkdir = "2.5.0"
++zstd = "0.13.3"
+diff --git a/support/content-packer/src/extract.rs b/support/content-packer/src/extract.rs
+new file mode 100644
+index 000000000..6dce332c8
+--- /dev/null
++++ b/support/content-packer/src/extract.rs
+@@ -0,0 +1,386 @@
++use std::fs;
++use std::path::{Path, PathBuf};
++
++use sha2::{Digest, Sha256};
++
++use crate::manifest::{Manifest, PackEntry};
++
++pub struct ExtractOptions {
++    pub content_dir: PathBuf,
++    /// Where to extract to. `None` picks a location under the OS's real
++    /// (disk-backed) cache directory instead — see [`default_dest`] — which
++    /// is how every generated launcher calls this in practice: nothing is
++    /// ever extracted next to the bundle itself.
++    pub dest: Option<PathBuf>,
++    pub force: bool,
++}
++
++/// Records the manifest `content_hash` a destination was last (re)built for.
++/// A mismatch means `content_dir`'s packed content changed since — the
++/// destination (including any lazily-extracted packs from a previous run,
++/// now potentially stale) is wiped and rebuilt from scratch.
++const CONTENT_HASH_MARKER: &str = ".roves-content-hash";
++/// Directory of empty per-pack marker files (named after the pack's own
++/// filename) recording which packs have already been extracted into this
++/// destination — lets both `extract_boot` and the in-process on-demand path
++/// skip re-extracting a pack that's already there, across launches too.
++const EXTRACTED_MARKER_DIR: &str = ".roves-extracted";
++/// Plain text file recording the resolved, canonical `content_dir` path this
++/// destination was extracted from — read back by servoshell's own `file:`
++/// handler at startup so it knows where to find `manifest.json` and the
++/// `.pack` files for on-demand extraction, without needing a dedicated CLI
++/// argument threaded all the way through `mach bundle`/the launcher/the
++/// engine. Absence of this file (e.g. a destination that isn't packed
++/// content at all) means "don't do anything special here".
++pub const CONTENT_SOURCE_MARKER: &str = ".roves-content-source";
++
++/// Picks a stable, per-install destination under the OS's cache directory
++/// (`~/.cache` on Linux, `Library/Caches` on macOS, `%LOCALAPPDATA%` on
++/// Windows — real disk, *not* a RAM-backed `tmpfs` like `/tmp` often is on
++/// Linux, which matters once a project's assets reach the multi-GB range):
++/// `<cache_dir>/<game_name>/cache/<hash8>/`. `game_name` (from
++/// `Manifest::name`, plumbed in by every caller of this function — see
++/// `resolve_dest`) makes the top-level folder recognizable as "this game's
++/// stuff" instead of an opaque `roves-content-<hash>`; it's sanitized via
++/// [`sanitize_path_segment`] and falls back to `"roves"` if absent (a dev/
++/// uncompressed build, or a manifest predating this field) or if nothing
++/// filesystem-safe survives sanitizing. The trailing hash — of the resolved
++/// `content_dir` path, *not* game name — is what actually keeps repeat
++/// launches of the *same* install pointed at the same destination (letting
++/// the marker-based skip-cache below help) while different installs/games
++/// that happen to share a display name still don't collide with each other.
++/// Nothing is ever written next to the bundle itself — see CUSTOMIZATIONS.md.
++fn default_dest(content_dir: &Path, game_name: Option<&str>) -> PathBuf {
++    let mut hasher = Sha256::new();
++    hasher.update(content_dir.to_string_lossy().as_bytes());
++    let digest = hasher.finalize();
++    let short: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
++    game_data_dir(game_name).join("cache").join(short)
++}
++
++/// The per-game top-level folder under the OS's cache directory that both
++/// [`default_dest`] (nested inside, at `<this>/cache/<hash8>/`) and
++/// servoshell's own startup log file (a sibling, at `<this>/roves.log` —
++/// see `ports/servoshell/desktop/logging.rs`) live under. Exposed on its
++/// own, rather than only reachable via `default_dest`, specifically so the
++/// log file can be placed next to the extraction cache instead of inside
++/// the game's own content directory — see [`sanitize_path_segment`] for the
++/// sanitizing/fallback this applies to `game_name`.
++pub fn game_data_dir(game_name: Option<&str>) -> PathBuf {
++    let game_dir = game_name.and_then(sanitize_path_segment).unwrap_or_else(|| "roves".to_string());
++    cache_dir().join(game_dir)
++}
++
++/// Turns arbitrary manifest-supplied text (a game's display name) into a
++/// single path segment safe to use as a directory name on Linux, macOS, and
++/// Windows alike: strips path separators, the `:` a Windows drive letter
++/// uses (and that a `NAME:AlternateStream` could otherwise smuggle in),
++/// Windows' other reserved characters (`*?"<>|`), and control characters;
++/// trims leading/trailing whitespace and `.` (Windows also disallows a
++/// trailing dot or space, and a lone leading dot reads as a hidden file on
++/// Unix); and caps length well under every platform's per-segment limit.
++/// Returns `None` if nothing usable survives, so the caller can fall back to
++/// a sane default instead of creating an empty (or `.`/`..`-named) directory.
++fn sanitize_path_segment(name: &str) -> Option<String> {
++    let cleaned: String = name
++        .chars()
++        .map(|c| match c {
++            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '-',
++            c if c.is_control() => '-',
++            c => c,
++        })
++        .collect();
++    let trimmed = cleaned.trim_matches(|c: char| c.is_whitespace() || c == '.');
++    if trimmed.is_empty() {
++        return None;
++    }
++    Some(trimmed.chars().take(64).collect())
++}
++
++/// Resolves the OS's disk-backed user cache directory, matching each
++/// platform's own convention (not `std::env::temp_dir()`, which on Linux is
++/// commonly `tmpfs` — RAM, not disk).
++fn cache_dir() -> PathBuf {
++    if let Some(dir) = std::env::var_os("XDG_CACHE_HOME") {
++        let dir = PathBuf::from(dir);
++        if dir.is_absolute() {
++            return dir;
++        }
++    }
++    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
++    if cfg!(target_os = "macos") {
++        if let Some(home) = home {
++            return PathBuf::from(home).join("Library").join("Caches");
++        }
++    } else if cfg!(target_os = "windows") {
++        if let Some(dir) = std::env::var_os("LOCALAPPDATA") {
++            return PathBuf::from(dir);
++        }
++    } else if let Some(home) = home {
++        return PathBuf::from(home).join(".cache");
++    }
++    // Last-resort fallback for the rare case none of the above resolved
++    // (e.g. no HOME/USERPROFILE set at all) — still better than failing.
++    std::env::temp_dir()
++}
++
++pub fn load_manifest(content_dir: &Path) -> Result<Manifest, String> {
++    let manifest_path = content_dir.join("manifest.json");
++    let bytes = fs::read(&manifest_path).map_err(|e| format!("reading {manifest_path:?}: {e}"))?;
++    serde_json::from_slice(&bytes).map_err(|e| format!("parsing {manifest_path:?}: {e}"))
++}
++
++/// Resolves `content_dir` to its canonical form and picks the destination
++/// (`dest`, or [`default_dest`] if `None`, using `game_name` — see that
++/// function) — the cheap, non-extracting half of [`prepare_dest`], split out
++/// so a caller can learn *where* boot content will end up (e.g. to build the
++/// `file:` URL it'll load once extraction finishes) without paying for the
++/// actual decompression yet. Does no I/O beyond `canonicalize`.
++pub fn resolve_dest(
++    content_dir: &Path,
++    dest: Option<PathBuf>,
++    game_name: Option<&str>,
++) -> Result<(PathBuf, PathBuf), String> {
++    let content_dir = content_dir
++        .canonicalize()
++        .map_err(|e| format!("resolving {content_dir:?}: {e}"))?;
++    let dest = dest.unwrap_or_else(|| default_dest(&content_dir, game_name));
++    Ok((content_dir, dest))
++}
++
++/// Resolves `content_dir`/`dest`, loads the manifest, and ensures `dest`
++/// isn't stale — wiping and recreating it (fresh marker directory, fresh
++/// `.roves-content-hash`/`.roves-content-source`) if its recorded content
++/// hash doesn't match, or if `force` was passed. Safe to call repeatedly:
++/// a matching, non-forced call is a no-op past the manifest read.
++///
++/// Loads the manifest *before* resolving `dest` (rather than after, as it
++/// used to) so `Manifest::name` is available for [`default_dest`] to name
++/// the destination after — a `content_dir.join("manifest.json")` read
++/// either way, just reordered; nothing here depends on `content_dir` being
++/// canonicalized first.
++fn prepare_dest(
++    content_dir: &Path,
++    dest: Option<PathBuf>,
++    force: bool,
++) -> Result<(PathBuf, PathBuf, Manifest), String> {
++    let manifest = load_manifest(content_dir)?;
++    let (content_dir, dest) = resolve_dest(content_dir, dest, manifest.name.as_deref())?;
++
++    let hash_marker = dest.join(CONTENT_HASH_MARKER);
++    let up_to_date = !force &&
++        fs::read_to_string(&hash_marker)
++            .map(|existing| existing.trim() == manifest.content_hash)
++            .unwrap_or(false);
++
++    if !up_to_date {
++        if dest.exists() {
++            fs::remove_dir_all(&dest).map_err(|e| format!("clearing {dest:?}: {e}"))?;
++        }
++        fs::create_dir_all(dest.join(EXTRACTED_MARKER_DIR))
++            .map_err(|e| format!("creating {dest:?}: {e}"))?;
++        fs::write(&hash_marker, &manifest.content_hash)
++            .map_err(|e| format!("writing {hash_marker:?}: {e}"))?;
++        fs::write(dest.join(CONTENT_SOURCE_MARKER), content_dir.to_string_lossy().as_bytes())
++            .map_err(|e| format!("writing content-source marker in {dest:?}: {e}"))?;
++    }
++
++    Ok((content_dir, dest, manifest))
++}
++
++fn extracted_marker_path(dest: &Path, pack_file: &str) -> PathBuf {
++    dest.join(EXTRACTED_MARKER_DIR).join(pack_file)
++}
++
++/// Decompresses `pack` into `dest` if (and only if) it hasn't been already —
++/// checked via a per-pack marker file, so this is cheap to call repeatedly,
++/// including across separate launches of the same, unchanged install.
++pub fn ensure_pack_extracted(content_dir: &Path, dest: &Path, pack: &PackEntry) -> Result<(), String> {
++    let marker = extracted_marker_path(dest, &pack.file);
++    if marker.exists() {
++        return Ok(());
++    }
++
++    let pack_path = content_dir.join(&pack.file);
++    let file = fs::File::open(&pack_path).map_err(|e| format!("opening {pack_path:?}: {e}"))?;
++    if pack.compressed {
++        let decoder =
++            zstd::Decoder::new(file).map_err(|e| format!("decoding {pack_path:?}: {e}"))?;
++        tar::Archive::new(decoder)
++            .unpack(dest)
++            .map_err(|e| format!("extracting {pack_path:?}: {e}"))?;
++    } else {
++        tar::Archive::new(file)
++            .unpack(dest)
++            .map_err(|e| format!("extracting {pack_path:?}: {e}"))?;
++    }
++
++    if let Some(parent) = marker.parent() {
++        fs::create_dir_all(parent).map_err(|e| format!("creating {parent:?}: {e}"))?;
++    }
++    fs::write(&marker, b"").map_err(|e| format!("writing {marker:?}: {e}"))?;
++    Ok(())
++}
++
++fn copy_excluded(content_dir: &Path, dest: &Path, manifest: &Manifest) -> Result<(), String> {
++    for rel in &manifest.excluded {
++        let src = content_dir.join(rel);
++        let dst = dest.join(rel);
++        if dst.exists() {
++            continue;
++        }
++        if let Some(parent) = dst.parent() {
++            fs::create_dir_all(parent).map_err(|e| format!("creating {parent:?}: {e}"))?;
++        }
++        fs::copy(&src, &dst).map_err(|e| format!("copying {src:?}: {e}"))?;
++    }
++    Ok(())
++}
++
++/// Shared body of [`extract_boot`]/[`extract_boot_with_progress`]. `on_progress`,
++/// when given, is called after each boot pack finishes (as `done / total`,
++/// where `total` is the boot pack count) and once more with `1.0` after the
++/// final `copy_excluded` — coarse (per-pack, not per-byte) but the boot set
++/// is deliberately just the html file and whatever it directly references,
++/// so it's usually only one or two packs anyway.
++fn extract_boot_impl(
++    opts: &ExtractOptions,
++    mut on_progress: Option<&mut dyn FnMut(f32)>,
++) -> Result<PathBuf, String> {
++    let (content_dir, dest, manifest) = prepare_dest(&opts.content_dir, opts.dest.clone(), opts.force)?;
++    let boot_packs: Vec<_> = manifest.packs.iter().filter(|p| p.boot).collect();
++    let total = boot_packs.len().max(1);
++    for (i, pack) in boot_packs.into_iter().enumerate() {
++        ensure_pack_extracted(&content_dir, &dest, pack)?;
++        if let Some(cb) = on_progress.as_deref_mut() {
++            cb((i + 1) as f32 / total as f32);
++        }
++    }
++    copy_excluded(&content_dir, &dest, &manifest)?;
++    if let Some(cb) = on_progress.as_deref_mut() {
++        cb(1.0);
++    }
++    Ok(dest)
++}
++
++/// Extracts just the boot set (every [`PackEntry`] with `boot: true`) plus
++/// every excluded/loose file, and returns the destination directory. This is
++/// what every generated launcher calls before starting the engine — small
++/// and fast by construction, since the boot set is deliberately just the
++/// html file and whatever it directly references. Everything else stays
++/// compressed until [`ensure_file_available`] is asked for it, in-process,
++/// by the engine's own `file:` handler.
++pub fn extract_boot(opts: &ExtractOptions) -> Result<PathBuf, String> {
++    extract_boot_impl(opts, None)
++}
++
++/// Same as [`extract_boot`], but calls `on_progress` as extraction proceeds
++/// — see [`extract_boot_impl`]. Used by the engine to drive a boot splash's
++/// progress bar while extraction runs on a background thread; not exposed
++/// through the CLI, which has no equivalent UI to feed.
++pub fn extract_boot_with_progress(
++    opts: &ExtractOptions,
++    mut on_progress: impl FnMut(f32),
++) -> Result<PathBuf, String> {
++    extract_boot_impl(opts, Some(&mut on_progress))
++}
++
++/// Returns whether `dir` is a destination directory previously created by
++/// [`prepare_dest`] (i.e. actually managed packed-content cache) — checked
++/// via [`CONTENT_SOURCE_MARKER`]'s presence, the same signal `FileProtocolHandler`
++/// uses to recognize one. Guards [`clear_cache`] against wiping an unrelated
++/// directory, e.g. a plain dev `--url` launch's own folder, which this crate
++/// never wrote to in the first place.
++pub fn is_managed_cache_dir(dir: &Path) -> bool {
++    dir.join(CONTENT_SOURCE_MARKER).is_file()
++}
++
++/// Deletes a previously-extracted destination directory in its entirety —
++/// the whole point being that the next launch's `prepare_dest` sees no
++/// `CONTENT_HASH_MARKER` and rebuilds it from scratch. Refuses (rather than
++/// deleting) a `dir` that isn't a recognized managed cache — see
++/// [`is_managed_cache_dir`].
++pub fn clear_cache(dir: &Path) -> Result<(), String> {
++    if !is_managed_cache_dir(dir) {
++        return Err(format!("{dir:?} is not a managed content cache directory"));
++    }
++    fs::remove_dir_all(dir).map_err(|e| format!("clearing {dir:?}: {e}"))
++}
++
++/// Looks up `rel_path` (forward-slash, relative to `dest`) in `manifest` and
++/// ensures whichever pack contains it has been extracted into `dest`.
++/// Returns `Ok(false)` if `rel_path` isn't a packed file at all (the caller
++/// should fall back to treating the path as an ordinary, possibly-missing
++/// file — e.g. it's one of the already-loose `excluded` files, or simply
++/// doesn't exist).
++pub fn ensure_file_available(
++    content_dir: &Path,
++    dest: &Path,
++    manifest: &Manifest,
++    rel_path: &str,
++) -> Result<bool, String> {
++    let Some(pack_file) = manifest.files.get(rel_path) else {
++        return Ok(false);
++    };
++    let pack = manifest
++        .packs
++        .iter()
++        .find(|p| &p.file == pack_file)
++        .ok_or_else(|| format!("manifest inconsistency: {rel_path} points at unknown pack {pack_file}"))?;
++    ensure_pack_extracted(content_dir, dest, pack)?;
++    Ok(true)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::{default_dest, game_data_dir, sanitize_path_segment};
++
++    #[test]
++    fn sanitize_path_segment_strips_unsafe_characters_and_trims() {
++        assert_eq!(sanitize_path_segment("Roves test-page").unwrap(), "Roves test-page");
++        assert_eq!(sanitize_path_segment("My:Game/Title*?\"<>|").unwrap(), "My-Game-Title------");
++        assert_eq!(sanitize_path_segment("  ..leading and trailing.. ").unwrap(), "leading and trailing");
++        assert_eq!(sanitize_path_segment(&"x".repeat(200)).unwrap().len(), 64);
++    }
++
++    #[test]
++    fn sanitize_path_segment_rejects_nothing_usable() {
++        assert!(sanitize_path_segment("").is_none());
++        assert!(sanitize_path_segment("   ").is_none());
++        assert!(sanitize_path_segment("...").is_none());
++        // Path separators/reserved characters become `-`, which (unlike
++        // whitespace/`.`) isn't trimmed — a filesystem-safe, if unhelpful,
++        // name, not "nothing usable".
++        assert_eq!(sanitize_path_segment("/\\:").unwrap(), "---");
++    }
++
++    #[test]
++    fn default_dest_nests_cache_and_hash_under_the_game_name() {
++        let content_dir = std::path::Path::new("/some/build/dist");
++        let named = default_dest(content_dir, Some("Roves test-page"));
++        let mut components = named.components().rev();
++        let hash = components.next().unwrap().as_os_str().to_str().unwrap().to_string();
++        assert_eq!(components.next().unwrap().as_os_str(), "cache");
++        assert_eq!(components.next().unwrap().as_os_str(), "Roves test-page");
++        assert_eq!(hash.len(), 16, "8 bytes, hex-encoded");
++
++        // Same content_dir, no name at all -> same hash, generic top-level folder.
++        let unnamed = default_dest(content_dir, None);
++        assert_eq!(unnamed.file_name().unwrap(), named.file_name().unwrap());
++        assert_eq!(unnamed.parent().unwrap().file_name().unwrap(), "cache");
++        assert_eq!(unnamed.parent().unwrap().parent().unwrap().file_name().unwrap(), "roves");
++    }
++
++    #[test]
++    fn game_data_dir_is_default_dests_cache_grandparent() {
++        // The whole point of exposing `game_data_dir` separately: a log file
++        // placed there (see `ports/servoshell/desktop/logging.rs`) must land
++        // as a sibling of `cache/`, not inside a specific install's
++        // `cache/<hash>/` — i.e. exactly two levels up from `default_dest`.
++        let content_dir = std::path::Path::new("/some/build/dist");
++        for name in [Some("Roves test-page"), None] {
++            let dest = default_dest(content_dir, name);
++            assert_eq!(dest.parent().unwrap().parent().unwrap(), game_data_dir(name));
++        }
++    }
++}
+diff --git a/support/content-packer/src/lib.rs b/support/content-packer/src/lib.rs
+new file mode 100644
+index 000000000..d01f0805e
+--- /dev/null
++++ b/support/content-packer/src/lib.rs
+@@ -0,0 +1,10 @@
++//! Library half of `roves-content-packer` — see `src/main.rs` for the CLI
++//! (`pack`/`extract`) and CUSTOMIZATIONS.md for the full design. Split out so
++//! `ports/servoshell` can link this directly (for [`extract::ensure_file_available`],
++//! the in-process, on-demand path used by its own `file:` protocol handler)
++//! instead of shelling out to the binary for that part.
++
++pub mod extract;
++pub mod manifest;
++pub mod pack;
++pub mod size;
+diff --git a/support/content-packer/src/main.rs b/support/content-packer/src/main.rs
+new file mode 100644
+index 000000000..59f942eca
+--- /dev/null
++++ b/support/content-packer/src/main.rs
+@@ -0,0 +1,172 @@
++//! `roves-content-packer` — see ../../../CUSTOMIZATIONS.md for why this
++//! exists. Two subcommands:
++//!
++//! - `pack`: turns a built `dist/`-shaped directory into a handful of
++//!   `.pack` archives (tar, zstd-compressed unless made entirely of
++//!   already-compressed extensions) plus a `manifest.json`, instead of
++//!   shipping it as loose files. The html file itself, whatever it directly
++//!   references, and anything matching `--boot-include` are split into their
++//!   own dedicated "boot" archive(s).
++//! - `extract`: extracts just the boot set (+ any excluded/loose files) back
++//!   to plain files — used at game launch time (see the generated
++//!   `play.sh`/`play.exe`/`play.app` launchers), so the release artifact
++//!   itself never contains the plain, browsable dist tree. Everything past
++//!   the boot set stays compressed until the engine's own `file:` handler
++//!   asks for it on demand — see `roves_content_packer::extract::ensure_file_available`,
++//!   used directly (not via this CLI) from `ports/servoshell`.
++
++use std::path::PathBuf;
++use std::process::ExitCode;
++
++use bpaf::Parser;
++use roves_content_packer::{extract, pack, size};
++
++#[derive(Debug, Clone)]
++enum Cmd {
++    Pack(PackCli),
++    Extract(ExtractCli),
++}
++
++#[derive(Debug, Clone)]
++struct PackCli {
++    input: PathBuf,
++    output: PathBuf,
++    level: i32,
++    max_pack_size: String,
++    exclude: Vec<String>,
++    html_file: String,
++    boot_include: Vec<String>,
++    name: Option<String>,
++}
++
++#[derive(Debug, Clone)]
++struct ExtractCli {
++    content_dir: PathBuf,
++    dest: Option<PathBuf>,
++    force: bool,
++}
++
++fn pack_cli() -> impl Parser<PackCli> {
++    let input = bpaf::long("input")
++        .help("Directory to pack, e.g. a built dist/")
++        .argument::<PathBuf>("DIR");
++    let output = bpaf::long("output")
++        .help("Directory to write .pack files + manifest.json into")
++        .argument::<PathBuf>("DIR");
++    let level = bpaf::long("level")
++        .help("zstd compression level — low values favor speed over ratio")
++        .argument::<i32>("N")
++        .fallback(1)
++        .display_fallback();
++    let max_pack_size = bpaf::long("max-pack-size")
++        .help("Split into multiple archives past this size, e.g. 500M")
++        .argument::<String>("SIZE")
++        .fallback("500M".to_string())
++        .display_fallback();
++    let exclude = bpaf::long("exclude")
++        .help("Glob (relative to --input) of files to leave as loose, uncompressed files; repeatable")
++        .argument::<String>("GLOB")
++        .many();
++    let html_file = bpaf::long("html-file")
++        .help("Entry html file, relative to --input — always in the boot set, and scanned for \
++            local src=/href= references to grow it automatically")
++        .argument::<String>("PATH")
++        .fallback("index.html".to_string())
++        .display_fallback();
++    let boot_include = bpaf::long("boot-include")
++        .help("Glob (relative to --input), repeatable, of extra files to add to the boot set \
++            beyond the html file and what it directly references")
++        .argument::<String>("GLOB")
++        .many();
++    let name = bpaf::long("name")
++        .help("The game's own display name, written into manifest.json — used by `extract` to \
++            name the on-disk extraction cache directory after the game instead of a bare hash")
++        .argument::<String>("NAME")
++        .optional();
++    bpaf::construct!(PackCli { input, output, level, max_pack_size, exclude, html_file, boot_include, name })
++}
++
++fn extract_cli() -> impl Parser<ExtractCli> {
++    let content_dir = bpaf::long("content-dir")
++        .help("Directory containing manifest.json + .pack files, produced by `pack`")
++        .argument::<PathBuf>("DIR");
++    let dest = bpaf::long("dest")
++        .help("Directory to extract the boot set into. Defaults to a stable, per-install \
++            location under the OS's own cache directory — nothing is extracted next to \
++            --content-dir unless this is passed explicitly.")
++        .argument::<PathBuf>("DIR")
++        .optional();
++    let force = bpaf::long("force")
++        .help("Re-extract even if the cached content hash in --dest already matches")
++        .switch();
++    bpaf::construct!(ExtractCli { content_dir, dest, force })
++}
++
++fn cmd() -> Cmd {
++    let pack = pack_cli()
++        .map(Cmd::Pack)
++        .to_options()
++        .descr("Pack a dist/-shaped directory into a handful of tar+zstd archives");
++    let extract = extract_cli()
++        .map(Cmd::Extract)
++        .to_options()
++        .descr("Extract just the boot set back into plain files");
++    let pack_cmd = pack.command("pack");
++    let extract_cmd = extract.command("extract");
++    bpaf::construct!([pack_cmd, extract_cmd])
++        .to_options()
++        .descr("Packs/unpacks a game's dist/ so a release doesn't ship it as trivially browsable loose files")
++        .run()
++}
++
++fn main() -> ExitCode {
++    let result = match cmd() {
++        Cmd::Pack(args) => run_pack(args),
++        Cmd::Extract(args) => run_extract(args),
++    };
++    match result {
++        Ok(()) => ExitCode::SUCCESS,
++        Err(e) => {
++            eprintln!("error: {e}");
++            ExitCode::FAILURE
++        }
++    }
++}
++
++fn run_pack(args: PackCli) -> Result<(), String> {
++    let exclude = args
++        .exclude
++        .iter()
++        .map(|pattern| glob::Pattern::new(pattern).map_err(|e| format!("--exclude {pattern:?}: {e}")))
++        .collect::<Result<Vec<_>, _>>()?;
++    let boot_include = args
++        .boot_include
++        .iter()
++        .map(|pattern| glob::Pattern::new(pattern).map_err(|e| format!("--boot-include {pattern:?}: {e}")))
++        .collect::<Result<Vec<_>, _>>()?;
++    let opts = pack::PackOptions {
++        input: args.input,
++        output: args.output,
++        level: args.level,
++        max_pack_size: size::parse_size(&args.max_pack_size)?,
++        exclude,
++        html_file: args.html_file,
++        boot_include,
++        name: args.name,
++    };
++    pack::pack(&opts)
++}
++
++fn run_extract(args: ExtractCli) -> Result<(), String> {
++    let opts = extract::ExtractOptions {
++        content_dir: args.content_dir,
++        dest: args.dest,
++        force: args.force,
++    };
++    // Printed so callers (the generated launchers) can capture where
++    // extraction actually landed, e.g.
++    // `CACHE_DIR="$(roves-content-packer extract --content-dir "$DIR")"`.
++    let dest = extract::extract_boot(&opts)?;
++    println!("{}", dest.display());
++    Ok(())
++}
+diff --git a/support/content-packer/src/manifest.rs b/support/content-packer/src/manifest.rs
+new file mode 100644
+index 000000000..3a3ecb0b5
+--- /dev/null
++++ b/support/content-packer/src/manifest.rs
+@@ -0,0 +1,71 @@
++use std::collections::BTreeMap;
++
++use serde::{Deserialize, Serialize};
++
++/// On-disk `manifest.json` sitting next to a set of `.pack` files, produced by
++/// `pack` and consumed by `extract`. Bumped whenever the pack/extract contract
++/// changes shape, so an old extractor refuses to (mis)handle a newer manifest.
++///
++/// v2 added `PackEntry::boot` and `Manifest::files` (the boot/lazy split —
++/// see CUSTOMIZATIONS.md). v3 added `Manifest::entry_html`.
++pub const FORMAT_VERSION: u32 = 3;
++
++#[derive(Debug, Serialize, Deserialize)]
++pub struct Manifest {
++    pub format_version: u32,
++    /// sha256 over every packed/excluded file's relative path + contents, in a
++    /// fixed sorted order — changes iff the extracted output would change.
++    /// Used by `extract` to tell whether a destination's cached content is
++    /// stale (and must be wiped) or still matches this exact input.
++    pub content_hash: String,
++    pub compression_level: i32,
++    pub packs: Vec<PackEntry>,
++    /// Relative paths (forward-slash, relative to the content root) that were
++    /// left out of every pack by `--exclude` and instead sit next to the packs
++    /// as plain files, to be copied verbatim by `extract`.
++    pub excluded: Vec<String>,
++    /// Maps every packed (non-excluded) file's relative path to the filename
++    /// of the pack that contains it, so a lookup for one specific path (e.g.
++    /// a `file:` load for a path not yet extracted) can find — and lazily
++    /// decompress — the one archive that holds it, without touching any
++    /// other. A `BTreeMap` (not a `HashMap`) purely so `manifest.json`
++    /// serializes in a fixed, sorted key order — see `pack`'s deterministic
++    /// output guarantee.
++    pub files: BTreeMap<String, String>,
++    /// Relative path (forward-slash, relative to the content root) of the
++    /// entry html file — the same string passed as `--html-file` at pack
++    /// time. Read back by the engine's own in-process boot extraction (see
++    /// CUSTOMIZATIONS.md's single-executable-bundle entry) to build the
++    /// final `file:` URL to open, without needing that filename threaded
++    /// through as a separate CLI argument.
++    pub entry_html: String,
++    /// The game's own display name, as passed via `--name` at pack time
++    /// (`mach bundle` resolves this from `manifest.json`'s/`package.json`'s
++    /// `name` — the same source used for the window title, see
++    /// `python/servo/post_build_commands.py`'s `_resolve_window_title`).
++    /// `None` for a dev/uncompressed build, or an older manifest predating
++    /// this field (`#[serde(default)]` so those still deserialize). Used by
++    /// `extract::default_dest` to name the on-disk extraction cache
++    /// directory after the game instead of a bare content hash — see
++    /// CUSTOMIZATIONS.md.
++    #[serde(default)]
++    pub name: Option<String>,
++}
++
++#[derive(Debug, Serialize, Deserialize)]
++pub struct PackEntry {
++    /// Filename of the archive, relative to the directory the manifest lives in.
++    pub file: String,
++    /// `true` = `file` is a zstd-compressed tar (`tar.zst`). `false` = a plain,
++    /// uncompressed tar — used for buckets made entirely of already-compressed
++    /// extensions (images/audio/video/fonts/archives), where re-compressing
++    /// would spend CPU for essentially no size win.
++    pub compressed: bool,
++    /// Whether this archive is part of the small "boot set": the html file
++    /// itself plus whatever it directly references (script/link/img `src`/
++    /// `href`), or anything matched by `--boot-include`. Boot archives are
++    /// extracted eagerly, in full, before the engine opens anything — every
++    /// other archive stays compressed until something actually requests a
++    /// file inside it (see `ports/servoshell/desktop/protocols/file.rs`).
++    pub boot: bool,
++}
+diff --git a/support/content-packer/src/pack.rs b/support/content-packer/src/pack.rs
+new file mode 100644
+index 000000000..1afa6d03e
+--- /dev/null
++++ b/support/content-packer/src/pack.rs
+@@ -0,0 +1,419 @@
++use std::collections::{BTreeMap, HashSet};
++use std::fs::{self, File};
++use std::io::Write;
++use std::path::{Path, PathBuf};
++
++use sha2::{Digest, Sha256};
++use walkdir::WalkDir;
++
++use crate::manifest::{FORMAT_VERSION, Manifest, PackEntry};
++
++/// Extensions that are already internally compressed (lossy/lossless image,
++/// audio, video, font and archive formats) — re-running zstd over them buys
++/// essentially nothing and just spends CPU, so files with these extensions go
++/// into a plain, uncompressed tar ("stored") instead of a `tar.zst`.
++const STORED_EXTENSIONS: &[&str] = &[
++    "png", "jpg", "jpeg", "webp", "avif", "gif", "ico", "mp3", "ogg", "oga", "opus", "m4a", "aac",
++    "flac", "mp4", "webm", "mov", "mkv", "avi", "woff", "woff2", "zip", "gz", "bz2", "xz", "zst",
++    "br", "7z", "rar", "ktx2", "basis", "astc", "dds",
++];
++
++pub struct PackOptions {
++    pub input: PathBuf,
++    pub output: PathBuf,
++    pub level: i32,
++    pub max_pack_size: u64,
++    pub exclude: Vec<glob::Pattern>,
++    /// Relative path (within `input`) of the entry html file, e.g. `"index.html"`.
++    /// Always in the boot set itself; scanned for local `src`/`href`
++    /// references to grow the boot set automatically.
++    pub html_file: String,
++    /// Extra globs (relative to `input`), repeatable, of files to add to the
++    /// boot set beyond the html file and what it references directly — e.g.
++    /// a splash image shown before the page itself has rendered anything.
++    pub boot_include: Vec<glob::Pattern>,
++    /// The game's own display name, if known — written into the manifest
++    /// verbatim; see `Manifest::name`.
++    pub name: Option<String>,
++}
++
++struct FileEntry {
++    /// Forward-slash path relative to `input`, e.g. `assets/icons/logo.png`.
++    rel_path: String,
++    abs_path: PathBuf,
++    size: u64,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
++enum BucketKey {
++    Boot,
++    Root,
++    Own(String),
++    Nested(String),
++}
++
++pub fn pack(opts: &PackOptions) -> Result<(), String> {
++    fs::create_dir_all(&opts.output).map_err(|e| format!("creating {:?}: {e}", opts.output))?;
++
++    let mut all_files = collect_files(&opts.input)?;
++    all_files.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
++
++    let mut excluded = Vec::new();
++    let mut packable = Vec::new();
++    for f in all_files {
++        if opts.exclude.iter().any(|p| p.matches(&f.rel_path)) {
++            excluded.push(f);
++        } else {
++            packable.push(f);
++        }
++    }
++
++    let boot_set = detect_boot_set(&opts.input, &opts.html_file, &opts.boot_include, &packable)?;
++
++    // Bucket key: `Boot` = the boot set (see `detect_boot_set`), regardless of
++    // where its files actually live in the tree. Otherwise: `Root` = dist's
++    // own root files. `Own(folder)` = files directly inside a direct
++    // subfolder of dist. `Nested(folder)` = files anywhere deeper than that,
++    // flattened into one bucket per top-level subfolder — see CUSTOMIZATIONS.md.
++    let mut buckets: BTreeMap<BucketKey, Vec<FileEntry>> = BTreeMap::new();
++    for f in packable {
++        let key = if boot_set.contains(&f.rel_path) {
++            BucketKey::Boot
++        } else {
++            let mut components = f.rel_path.split('/');
++            let first = components.next().unwrap_or("");
++            let depth_after_first = components.count();
++            if first == f.rel_path {
++                BucketKey::Root
++            } else if depth_after_first == 1 {
++                BucketKey::Own(first.to_string())
++            } else {
++                BucketKey::Nested(first.to_string())
++            }
++        };
++        buckets.entry(key).or_default().push(f);
++    }
++
++    let mut hasher = Sha256::new();
++    let mut pack_entries = Vec::new();
++    let mut file_locations: BTreeMap<String, String> = BTreeMap::new();
++    let mut used_names = HashSet::new();
++
++    for (key, files) in buckets {
++        let is_boot = key == BucketKey::Boot;
++        let base_name = bucket_base_name(&key, &mut used_names);
++        let (stored, compressible): (Vec<_>, Vec<_>) =
++            files.into_iter().partition(|f| is_stored_extension(&f.rel_path));
++
++        write_group(
++            opts,
++            &base_name,
++            false,
++            is_boot,
++            compressible,
++            &mut pack_entries,
++            &mut file_locations,
++            &mut hasher,
++        )?;
++        write_group(
++            opts,
++            &base_name,
++            true,
++            is_boot,
++            stored,
++            &mut pack_entries,
++            &mut file_locations,
++            &mut hasher,
++        )?;
++    }
++
++    let mut excluded_rel = Vec::new();
++    for f in &excluded {
++        let bytes = fs::read(&f.abs_path).map_err(|e| format!("reading {:?}: {e}", f.abs_path))?;
++        hasher.update(f.rel_path.as_bytes());
++        hasher.update(bytes.len().to_le_bytes());
++        hasher.update(&bytes);
++
++        let dest = opts.output.join(&f.rel_path);
++        if let Some(parent) = dest.parent() {
++            fs::create_dir_all(parent).map_err(|e| format!("creating {parent:?}: {e}"))?;
++        }
++        fs::write(&dest, &bytes).map_err(|e| format!("writing {dest:?}: {e}"))?;
++        excluded_rel.push(f.rel_path.clone());
++    }
++
++    let manifest = Manifest {
++        format_version: FORMAT_VERSION,
++        content_hash: format!("sha256:{}", hex_encode(&hasher.finalize())),
++        compression_level: opts.level,
++        packs: pack_entries,
++        excluded: excluded_rel,
++        files: file_locations,
++        entry_html: opts.html_file.clone(),
++        name: opts.name.clone(),
++    };
++    let manifest_path = opts.output.join("manifest.json");
++    let manifest_file =
++        File::create(&manifest_path).map_err(|e| format!("creating {manifest_path:?}: {e}"))?;
++    serde_json::to_writer_pretty(manifest_file, &manifest)
++        .map_err(|e| format!("writing {manifest_path:?}: {e}"))?;
++    Ok(())
++}
++
++/// The boot set: the html file itself, every local `src=`/`href=` reference
++/// it contains (script/link/img tags — a normal bundler's entry chunk, main
++/// stylesheet, favicon, etc.), and anything matching `--boot-include`. This
++/// is a lightweight attribute scan, not a real HTML parser — good enough for
++/// the flat `<script src>`/`<link href>` markup every bundler emits, not
++/// meant to handle arbitrary hand-written HTML.
++fn detect_boot_set(
++    input: &Path,
++    html_file: &str,
++    boot_include: &[glob::Pattern],
++    packable: &[FileEntry],
++) -> Result<HashSet<String>, String> {
++    let mut boot = HashSet::new();
++    boot.insert(html_file.to_string());
++
++    let html_path = input.join(html_file);
++    if let Ok(html) = fs::read_to_string(&html_path) {
++        let html_dir = Path::new(html_file)
++            .parent()
++            .map(|p| p.to_string_lossy().into_owned())
++            .unwrap_or_default();
++        for raw_ref in extract_local_refs(&html) {
++            boot.insert(normalize_local_ref(&html_dir, &raw_ref));
++        }
++    } else {
++        return Err(format!("reading html file {html_path:?} for boot-set detection"));
++    }
++
++    for f in packable {
++        if boot_include.iter().any(|p| p.matches(&f.rel_path)) {
++            boot.insert(f.rel_path.clone());
++        }
++    }
++
++    Ok(boot)
++}
++
++fn extract_local_refs(html: &str) -> Vec<String> {
++    let mut refs = Vec::new();
++    for attr in ["src=", "href="] {
++        let mut rest = html;
++        while let Some(pos) = rest.find(attr) {
++            rest = &rest[pos + attr.len()..];
++            let Some(quote) = rest.chars().next() else {
++                break;
++            };
++            if quote != '"' && quote != '\'' {
++                continue;
++            }
++            let after_quote = &rest[1..];
++            let Some(end) = after_quote.find(quote) else {
++                break;
++            };
++            let value = &after_quote[..end];
++            if is_local_ref(value) {
++                refs.push(value.to_string());
++            }
++            rest = &after_quote[end + 1..];
++        }
++    }
++    refs
++}
++
++fn is_local_ref(value: &str) -> bool {
++    if value.is_empty() || value.starts_with('#') {
++        return false;
++    }
++    !(value.contains("://") || value.starts_with("//") || value.starts_with("data:") || value.starts_with("mailto:"))
++}
++
++fn normalize_local_ref(html_dir: &str, raw: &str) -> String {
++    let without_query = raw.split(['?', '#']).next().unwrap_or(raw);
++    let joined = if html_dir.is_empty() {
++        without_query.to_string()
++    } else {
++        format!("{html_dir}/{without_query}")
++    };
++    let mut stack: Vec<&str> = Vec::new();
++    for seg in joined.split('/') {
++        match seg {
++            "" | "." => {},
++            ".." => {
++                stack.pop();
++            },
++            _ => stack.push(seg),
++        }
++    }
++    stack.join("/")
++}
++
++fn collect_files(root: &Path) -> Result<Vec<FileEntry>, String> {
++    let mut files = Vec::new();
++    for entry in WalkDir::new(root) {
++        let entry = entry.map_err(|e| format!("walking {root:?}: {e}"))?;
++        if !entry.file_type().is_file() {
++            continue;
++        }
++        let abs_path = entry.path().to_path_buf();
++        let rel_path = abs_path
++            .strip_prefix(root)
++            .map_err(|e| format!("{abs_path:?} is not under {root:?}: {e}"))?
++            .components()
++            .map(|c| c.as_os_str().to_string_lossy().into_owned())
++            .collect::<Vec<_>>()
++            .join("/");
++        let size = entry.metadata().map_err(|e| e.to_string())?.len();
++        files.push(FileEntry { rel_path, abs_path, size });
++    }
++    Ok(files)
++}
++
++/// Picks the on-disk basename for a bucket's archive(s), sanitized for safe
++/// use as a filename and disambiguated against any other bucket that would
++/// otherwise produce the same name (e.g. a real subfolder literally named
++/// `root`/`boot` colliding with a fixed bucket name).
++fn bucket_base_name(key: &BucketKey, used: &mut HashSet<String>) -> String {
++    let (sanitized, nested) = match key {
++        BucketKey::Boot => ("__boot__".to_string(), false),
++        BucketKey::Root => ("__root__".to_string(), false),
++        BucketKey::Own(f) => (sanitize(f), false),
++        BucketKey::Nested(f) => (sanitize(f), true),
++    };
++    let mut name = if nested { format!("{sanitized}.nested") } else { sanitized.clone() };
++    let mut suffix = 2;
++    while !used.insert(name.clone()) {
++        name = format!("{sanitized}_{suffix}");
++        if nested {
++            name.push_str(".nested");
++        }
++        suffix += 1;
++    }
++    name
++}
++
++fn sanitize(name: &str) -> String {
++    name.chars()
++        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
++        .collect()
++}
++
++fn hex_encode(bytes: &[u8]) -> String {
++    bytes.iter().map(|b| format!("{b:02x}")).collect()
++}
++
++fn is_stored_extension(rel_path: &str) -> bool {
++    match rel_path.rsplit_once('.') {
++        Some((_, ext)) => STORED_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()),
++        None => false,
++    }
++}
++
++/// Splits `files` into `--max-pack-size`-bounded parts and writes each as its
++/// own `.pack` archive (`<base_name>[.stored][.N].pack`), recording a
++/// [`PackEntry`] and a [`FileLocation`] per file. No-op if `files` is empty (a
++/// bucket with only stored, or only compressible, files skips the other
++/// archive entirely).
++fn write_group(
++    opts: &PackOptions,
++    base_name: &str,
++    stored: bool,
++    boot: bool,
++    files: Vec<FileEntry>,
++    pack_entries: &mut Vec<PackEntry>,
++    file_locations: &mut BTreeMap<String, String>,
++    hasher: &mut Sha256,
++) -> Result<(), String> {
++    if files.is_empty() {
++        return Ok(());
++    }
++
++    let mut parts: Vec<Vec<FileEntry>> = Vec::new();
++    let mut current = Vec::new();
++    let mut current_size = 0u64;
++    for f in files {
++        if !current.is_empty() && current_size + f.size > opts.max_pack_size {
++            parts.push(std::mem::take(&mut current));
++            current_size = 0;
++        }
++        current_size += f.size;
++        current.push(f);
++    }
++    if !current.is_empty() {
++        parts.push(current);
++    }
++
++    let multi_part = parts.len() > 1;
++    for (i, part_files) in parts.into_iter().enumerate() {
++        let mut name = base_name.to_string();
++        if stored {
++            name.push_str(".stored");
++        }
++        if multi_part {
++            name.push('.');
++            name.push_str(&(i + 1).to_string());
++        }
++        name.push_str(".pack");
++
++        for f in &part_files {
++            file_locations.insert(f.rel_path.clone(), name.clone());
++        }
++
++        let out_path = opts.output.join(&name);
++        write_pack_file(&out_path, &part_files, !stored, opts.level, hasher)?;
++        pack_entries.push(PackEntry { file: name, compressed: !stored, boot });
++    }
++    Ok(())
++}
++
++fn write_pack_file(
++    out_path: &Path,
++    files: &[FileEntry],
++    compress: bool,
++    level: i32,
++    hasher: &mut Sha256,
++) -> Result<(), String> {
++    let out_file = File::create(out_path).map_err(|e| format!("creating {out_path:?}: {e}"))?;
++    if compress {
++        let encoder =
++            zstd::Encoder::new(out_file, level).map_err(|e| format!("{out_path:?}: {e}"))?;
++        let mut builder = tar::Builder::new(encoder);
++        append_entries(&mut builder, files, hasher)?;
++        let encoder = builder.into_inner().map_err(|e| format!("{out_path:?}: {e}"))?;
++        let mut inner = encoder.finish().map_err(|e| format!("{out_path:?}: {e}"))?;
++        inner.flush().map_err(|e| format!("{out_path:?}: {e}"))?;
++    } else {
++        let mut builder = tar::Builder::new(out_file);
++        append_entries(&mut builder, files, hasher)?;
++        let mut inner = builder.into_inner().map_err(|e| format!("{out_path:?}: {e}"))?;
++        inner.flush().map_err(|e| format!("{out_path:?}: {e}"))?;
++    }
++    Ok(())
++}
++
++fn append_entries<W: Write>(
++    builder: &mut tar::Builder<W>,
++    files: &[FileEntry],
++    hasher: &mut Sha256,
++) -> Result<(), String> {
++    for f in files {
++        let bytes = fs::read(&f.abs_path).map_err(|e| format!("reading {:?}: {e}", f.abs_path))?;
++        hasher.update(f.rel_path.as_bytes());
++        hasher.update(bytes.len().to_le_bytes());
++        hasher.update(&bytes);
++
++        let mut header = tar::Header::new_gnu();
++        header
++            .set_path(&f.rel_path)
++            .map_err(|e| format!("tar path {}: {e}", f.rel_path))?;
++        header.set_size(bytes.len() as u64);
++        header.set_mode(0o644);
++        header.set_cksum();
++        builder
++            .append(&header, bytes.as_slice())
++            .map_err(|e| format!("appending {}: {e}", f.rel_path))?;
++    }
++    Ok(())
++}
+diff --git a/support/content-packer/src/size.rs b/support/content-packer/src/size.rs
+new file mode 100644
+index 000000000..0dd924f18
+--- /dev/null
++++ b/support/content-packer/src/size.rs
+@@ -0,0 +1,34 @@
++/// Parses sizes like `"500M"`, `"1G"`, `"250000000"` into a byte count.
++/// Suffixes are decimal (K=1000, M=1000^2, G=1000^3), matching how most
++/// release-size limits (e.g. GitHub's) are usually quoted — not `KiB`/`MiB`.
++pub fn parse_size(input: &str) -> Result<u64, String> {
++    let input = input.trim();
++    let (digits, mult) = match input.chars().last() {
++        Some(c) if c.eq_ignore_ascii_case(&'k') => (&input[..input.len() - 1], 1_000u64),
++        Some(c) if c.eq_ignore_ascii_case(&'m') => (&input[..input.len() - 1], 1_000_000u64),
++        Some(c) if c.eq_ignore_ascii_case(&'g') => (&input[..input.len() - 1], 1_000_000_000u64),
++        _ => (input, 1u64),
++    };
++    let value: f64 = digits
++        .trim()
++        .parse()
++        .map_err(|_| format!("invalid size: {input:?}"))?;
++    if value < 0.0 {
++        return Err(format!("size cannot be negative: {input:?}"));
++    }
++    Ok((value * mult as f64) as u64)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::parse_size;
++
++    #[test]
++    fn parses_plain_and_suffixed_sizes() {
++        assert_eq!(parse_size("500").unwrap(), 500);
++        assert_eq!(parse_size("500M").unwrap(), 500_000_000);
++        assert_eq!(parse_size("1.5M").unwrap(), 1_500_000);
++        assert_eq!(parse_size("2G").unwrap(), 2_000_000_000);
++        assert_eq!(parse_size("10k").unwrap(), 10_000);
++    }
++}
+diff --git a/support/content-packer/tests/roundtrip.rs b/support/content-packer/tests/roundtrip.rs
+new file mode 100644
+index 000000000..4d28044d9
+--- /dev/null
++++ b/support/content-packer/tests/roundtrip.rs
+@@ -0,0 +1,211 @@
++use std::fs;
++use std::path::{Path, PathBuf};
++
++use roves_content_packer::extract::{self, ExtractOptions};
++use roves_content_packer::pack::{self, PackOptions};
++
++fn scratch(name: &str) -> PathBuf {
++    let dir = std::env::temp_dir().join(format!("roves-content-packer-test-{}-{name}", std::process::id()));
++    let _ = fs::remove_dir_all(&dir);
++    fs::create_dir_all(&dir).unwrap();
++    dir
++}
++
++fn write(path: &Path, contents: &[u8]) {
++    fs::create_dir_all(path.parent().unwrap()).unwrap();
++    fs::write(path, contents).unwrap();
++}
++
++fn build_fake_dist(dist: &Path) {
++    write(
++        &dist.join("index.html"),
++        br#"<html><head>
++            <script type="module" src="./assets/entry.js"></script>
++            <link rel="modulepreload" href="./assets/vendor.js">
++        </head><body></body></html>"#,
++    );
++    write(&dist.join("assets/entry.js"), b"console.log('entry')");
++    write(&dist.join("assets/vendor.js"), b"console.log('vendor')");
++    write(&dist.join("assets/lazy-level1.js"), b"console.log('level 1, loaded on demand')");
++    write(&dist.join("images/hero.png"), &[0u8; 128]);
++    write(&dist.join("images/levels/level1-bg.png"), &[1u8; 256]);
++    write(&dist.join("audio/theme.wav"), &[2u8; 64]);
++}
++
++fn pack_it(dist: &Path, out: &Path) {
++    pack::pack(&PackOptions {
++        input: dist.to_path_buf(),
++        output: out.to_path_buf(),
++        level: 1,
++        max_pack_size: 500_000_000,
++        exclude: vec![],
++        html_file: "index.html".to_string(),
++        boot_include: vec![],
++        name: None,
++    })
++    .expect("pack should succeed");
++}
++
++#[test]
++fn boot_set_is_html_plus_directly_referenced_files_only() {
++    let root = scratch("boot-set");
++    let dist = root.join("dist");
++    let out = root.join("packed");
++    build_fake_dist(&dist);
++    pack_it(&dist, &out);
++
++    let manifest = extract::load_manifest(&out).unwrap();
++    let boot_pack_names: Vec<&str> = manifest.packs.iter().filter(|p| p.boot).map(|p| p.file.as_str()).collect();
++    assert!(!boot_pack_names.is_empty(), "expected at least one boot pack");
++
++    let pack_for = |rel: &str| manifest.files.get(rel).map(|s| s.as_str());
++    let is_boot_pack = |name: Option<&str>| name.is_some_and(|n| boot_pack_names.contains(&n));
++
++    assert!(is_boot_pack(pack_for("index.html")), "the html file itself must always be in the boot set");
++    assert!(is_boot_pack(pack_for("assets/entry.js")), "the directly-<script src>'d entry chunk must be in the boot set");
++    assert!(is_boot_pack(pack_for("assets/vendor.js")), "a modulepreload-referenced chunk must be in the boot set");
++    assert!(
++        !is_boot_pack(pack_for("assets/lazy-level1.js")),
++        "a chunk never referenced by index.html must NOT be in the boot set"
++    );
++    assert!(
++        !is_boot_pack(pack_for("images/levels/level1-bg.png")),
++        "an image never referenced by index.html must NOT be in the boot set"
++    );
++    assert_eq!(manifest.entry_html, "index.html", "manifest must record the entry html file passed to pack()");
++}
++
++#[test]
++fn boot_extraction_only_materializes_boot_files() {
++    let root = scratch("boot-extraction");
++    let dist = root.join("dist");
++    let out = root.join("packed");
++    let dest = root.join("cache");
++    build_fake_dist(&dist);
++    pack_it(&dist, &out);
++
++    let extracted = extract::extract_boot(&ExtractOptions {
++        content_dir: out.clone(),
++        dest: Some(dest.clone()),
++        force: false,
++    })
++    .expect("extract_boot should succeed");
++    assert_eq!(extracted, dest);
++
++    assert!(dest.join("assets/entry.js").exists(), "directly-referenced script should be extracted eagerly");
++    assert!(dest.join("assets/vendor.js").exists(), "modulepreload-referenced script should be extracted eagerly");
++    assert!(
++        !dest.join("assets/lazy-level1.js").exists(),
++        "a file never referenced by index.html should NOT be extracted eagerly"
++    );
++    assert!(!dest.join("images/levels/level1-bg.png").exists(), "unreferenced image should stay lazy");
++}
++
++#[test]
++fn on_demand_extraction_materializes_exactly_the_requested_files_pack() {
++    let root = scratch("on-demand");
++    let dist = root.join("dist");
++    let out = root.join("packed");
++    let dest = root.join("cache");
++    build_fake_dist(&dist);
++    pack_it(&dist, &out);
++
++    extract::extract_boot(&ExtractOptions { content_dir: out.clone(), dest: Some(dest.clone()), force: false })
++        .unwrap();
++    assert!(!dest.join("assets/lazy-level1.js").exists());
++
++    let manifest = extract::load_manifest(&out).unwrap();
++    let found = extract::ensure_file_available(&out, &dest, &manifest, "assets/lazy-level1.js").unwrap();
++    assert!(found, "lazy-level1.js is a real packed file, lookup must succeed");
++    assert!(dest.join("assets/lazy-level1.js").exists(), "the requested file must now be on disk");
++
++    // A file from a *different* still-untouched bucket must remain lazy —
++    // on-demand extraction is per-pack, not "extract everything once anything is touched".
++    assert!(
++        !dest.join("images/levels/level1-bg.png").exists(),
++        "requesting one lazy file must not eagerly extract unrelated lazy packs"
++    );
++
++    let not_packed = extract::ensure_file_available(&out, &dest, &manifest, "does/not/exist.js").unwrap();
++    assert!(!not_packed, "a path with no manifest entry must report false, not error");
++}
++
++#[test]
++fn unchanged_content_keeps_previously_extracted_lazy_files_across_relaunches() {
++    let root = scratch("cache-reuse");
++    let dist = root.join("dist");
++    let out = root.join("packed");
++    let dest = root.join("cache");
++    build_fake_dist(&dist);
++    pack_it(&dist, &out);
++
++    extract::extract_boot(&ExtractOptions { content_dir: out.clone(), dest: Some(dest.clone()), force: false })
++        .unwrap();
++    let manifest = extract::load_manifest(&out).unwrap();
++    extract::ensure_file_available(&out, &dest, &manifest, "assets/lazy-level1.js").unwrap();
++    assert!(dest.join("assets/lazy-level1.js").exists());
++
++    // Simulate a second launch: extract_boot runs again, content is unchanged.
++    extract::extract_boot(&ExtractOptions { content_dir: out.clone(), dest: Some(dest.clone()), force: false })
++        .unwrap();
++    assert!(
++        dest.join("assets/lazy-level1.js").exists(),
++        "a lazily-extracted file from a previous session must survive a relaunch with unchanged content"
++    );
++}
++
++#[test]
++fn changed_content_wipes_the_destination_including_stale_lazy_extractions() {
++    let root = scratch("content-changed");
++    let dist = root.join("dist");
++    let out = root.join("packed");
++    let dest = root.join("cache");
++    build_fake_dist(&dist);
++    pack_it(&dist, &out);
++
++    extract::extract_boot(&ExtractOptions { content_dir: out.clone(), dest: Some(dest.clone()), force: false })
++        .unwrap();
++    let manifest = extract::load_manifest(&out).unwrap();
++    extract::ensure_file_available(&out, &dest, &manifest, "assets/lazy-level1.js").unwrap();
++    assert!(dest.join("assets/lazy-level1.js").exists());
++
++    // Change the source content and re-pack into the same `out` location.
++    write(&dist.join("assets/lazy-level1.js"), b"console.log('level 1, changed content')");
++    pack_it(&dist, &out);
++
++    extract::extract_boot(&ExtractOptions { content_dir: out.clone(), dest: Some(dest.clone()), force: false })
++        .unwrap();
++    assert!(
++        !dest.join("assets/lazy-level1.js").exists(),
++        "changed content must wipe stale lazily-extracted files, not silently keep old ones around"
++    );
++}
++
++#[test]
++fn excluded_files_are_always_present_after_boot_extraction_and_never_in_the_files_map() {
++    let root = scratch("excluded");
++    let dist = root.join("dist");
++    let out = root.join("packed");
++    let dest = root.join("cache");
++    build_fake_dist(&dist);
++    write(&dist.join("save/profile.json"), b"{}");
++
++    pack::pack(&PackOptions {
++        input: dist.clone(),
++        output: out.clone(),
++        level: 1,
++        max_pack_size: 500_000_000,
++        exclude: vec![glob::Pattern::new("save/**").unwrap()],
++        html_file: "index.html".to_string(),
++        boot_include: vec![],
++        name: None,
++    })
++    .unwrap();
++
++    let manifest = extract::load_manifest(&out).unwrap();
++    assert!(manifest.files.get("save/profile.json").is_none(), "excluded files must not be in the packed-files map");
++    assert!(manifest.excluded.contains(&"save/profile.json".to_string()));
++
++    extract::extract_boot(&ExtractOptions { content_dir: out, dest: Some(dest.clone()), force: false }).unwrap();
++    assert!(dest.join("save/profile.json").exists(), "excluded files must be copied during boot extraction");
++}

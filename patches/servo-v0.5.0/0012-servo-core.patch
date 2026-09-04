@@ -1,0 +1,98 @@
+diff --git a/components/servo/lib.rs b/components/servo/lib.rs
+index f7a33d88c..737ce154a 100644
+--- a/components/servo/lib.rs
++++ b/components/servo/lib.rs
+@@ -135,10 +135,16 @@ pub mod webxr {
+ pub mod protocol_handler {
+     pub use net::fetch::methods::{DoneChannel, FetchContext};
+     pub use net::filemanager_thread::FILE_CHUNK_SIZE;
++    // Kiosk/embedded fork: re-exported so an embedder-side `file:` handler (see
++    // `ports/servoshell/desktop/protocols/file.rs`) can replicate the stock `file:`
++    // handler's HTTP Range-request support (e.g. `<video>`/`<audio>` seeking) instead of
++    // silently dropping it — these three are already `pub fn` in `net::protocols`, just
++    // not previously threaded through this facade module.
++    pub use net::protocols::{get_range_request_bounds, partial_content, range_not_satisfiable_error};
+     pub use net::protocols::{ProtocolHandler, ProtocolRegistry};
+     pub use net_traits::filemanager_thread::RelativePos;
+     pub use net_traits::http_status::HttpStatus;
+-    pub use net_traits::request::Request;
++    pub use net_traits::request::{Destination, Request};
+     pub use net_traits::response::{Response, ResponseBody};
+     pub use net_traits::{NetworkError, ResourceFetchTiming};
+ 
+diff --git a/components/servo/servo.rs b/components/servo/servo.rs
+index b08d06e85..13be9d49c 100644
+--- a/components/servo/servo.rs
++++ b/components/servo/servo.rs
+@@ -107,7 +107,13 @@ mod media_platform {
+             let mut plugin_dir = std::env::current_exe().unwrap();
+             plugin_dir.pop();
+ 
+-            if cfg!(target_os = "macos") {
++            // Kiosk/embedded fork: on Windows too, plugin element libraries (and their own
++            // private codec/dependency libs) now live in a `lib/` subdirectory next to the
++            // binary rather than flat alongside it — see `python/servo/post_build_commands.py`'s
++            // `_bundle_windows`, which moved them there specifically so `Plugin::load_file`'s
++            // Windows `LOAD_WITH_ALTERED_SEARCH_PATH` semantics (search the *plugin's own*
++            // directory first) still resolve correctly.
++            if cfg!(any(target_os = "macos", windows)) {
+                 plugin_dir.push("lib");
+             }
+ 
+@@ -944,8 +950,19 @@ impl Servo {
+ 
+         // Create the constellation, which maintains the engine pipelines, including script and
+         // layout, as well as the navigation context.
+-        let mut protocols = ProtocolRegistry::with_internal_protocols();
+-        protocols.merge(builder.protocol_registry);
++        //
++        // Kiosk/embedded fork: the embedder's registrations win over the internal defaults
++        // (`data`/`blob`/`file`) for any scheme it explicitly registered itself, not just the
++        // reverse — `ProtocolRegistry::merge`'s `or_insert` only fills in *vacant* entries, so
++        // building the internal-defaults registry first and merging the embedder's registry
++        // into *that* (the original order) meant an embedder could never override `file` (or
++        // `data`/`blob`) even on purpose. Starting from the embedder's own registry and merging
++        // the internal defaults in on top preserves the exact same behavior for every embedder
++        // that doesn't register those schemes itself (the common case — internal defaults still
++        // fill every scheme the embedder left alone) while letting one that does (see
++        // `ports/servoshell/desktop/protocols/file.rs`) actually take effect.
++        let mut protocols = builder.protocol_registry;
++        protocols.merge(ProtocolRegistry::with_internal_protocols());
+ 
+         // The `Paint` coordinates with the client window to create the final
+         // rendered page and display it somewhere.
+@@ -1063,8 +1080,18 @@ impl Servo {
+         let filter = max(env_logger.filter(), con_logger.filter());
+         let logger = BothLogger(env_logger, con_logger);
+ 
+-        log::set_boxed_logger(Box::new(logger)).expect("Failed to set logger.");
+-        log::set_max_level(filter);
++        // `log::set_boxed_logger` only ever succeeds once per process — an
++        // embedder that already installed its own logger before this ran
++        // (servoshell's does, deliberately, to capture startup output this
++        // call would otherwise be too late for — see
++        // `ports/servoshell/desktop/logging.rs`) wins, and this becomes a
++        // no-op instead of a hard failure: losing `FromEmbedderLogger`'s
++        // constellation-forwarding is an acceptable trade-off for an
++        // embedder that already has its own logging story, not a reason to
++        // panic the whole engine.
++        if log::set_boxed_logger(Box::new(logger)).is_ok() {
++            log::set_max_level(filter);
++        }
+     }
+ 
+     pub fn create_memory_report(&self, snd: GenericCallback<MemoryReportResult>) {
+@@ -1290,8 +1317,11 @@ fn set_logger(script_to_constellation_sender: ScriptToConstellationSender) {
+     let filter = max(env_logger.filter(), con_logger.filter());
+     let logger = BothLogger(env_logger, con_logger);
+ 
+-    log::set_boxed_logger(Box::new(logger)).expect("Failed to set logger.");
+-    log::set_max_level(filter);
++    // See the identical guard in `setup_logging` above for why this doesn't
++    // `.expect()` a fresh install to succeed.
++    if log::set_boxed_logger(Box::new(logger)).is_ok() {
++        log::set_max_level(filter);
++    }
+ }
+ 
+ /// Content process entry point.

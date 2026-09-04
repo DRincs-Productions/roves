@@ -23,7 +23,7 @@ on:
   workflow_dispatch: {}
 
 env:
-  SERVO_TAG: '0.4.0'
+  SERVO_TAG: '0.5.0'
   TEST_RELEASE_TAG: 'test'
 
 jobs:
@@ -175,8 +175,24 @@ jobs:
           # sitting at these exact paths (same filenames, real Servo ships its own icon
           # there too) — gui.rs's include_bytes!/build.rs's icon embedding compiled fine
           # either way, silently baking in the wrong (upstream) icon instead of failing
-          # loudly, which is exactly how this went unnoticed.
-          cp ../resources/servo_64.png ../resources/servo_1024.png ../resources/servo.ico ../resources/servo.icns resources/
+          # loudly, which is exactly how this went unnoticed. `roves_wordmark.svg` isn't
+          # read by any Rust code (no build failure risk if it's missing), but is copied
+          # here anyway so this tree matches the real repo layout, same as everything
+          # else in this step.
+          cp ../resources/servo_64.png ../resources/servo_1024.png ../resources/servo.ico \
+             ../resources/servo.icns ../resources/servo.svg ../resources/roves_wordmark.svg resources/
+
+          # Same reasoning a third time, for the OpenHarmony icon placeholders (see
+          # CUSTOMIZATIONS.md's v0.5.0 migration entry): these are tracked as plain-text
+          # files containing a relative path back to resources/servo_{64,1024}.png (not
+          # real symlinks — Windows checkouts don't handle those), a representation only
+          # git's binary-patch format can carry, which this repo deliberately doesn't use.
+          cp ../support/openharmony/AppScope/resources/base/media/servo_64.png \
+             support/openharmony/AppScope/resources/base/media/servo_64.png
+          cp ../support/openharmony/entry/src/main/resources/base/media/servo_1024.png \
+             support/openharmony/entry/src/main/resources/base/media/servo_1024.png
+          cp ../support/openharmony/entry/src/main/resources/base/media/servo_64.png \
+             support/openharmony/entry/src/main/resources/base/media/servo_64.png
 
       # Windows only: install the real GStreamer runtime+devel MSIs ourselves, directly via
       # msiexec, to the exact path `./mach bootstrap`'s own installer would use (see

@@ -1,0 +1,22 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 19d4caa07..9ae8c0828 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -5,8 +5,7 @@ members = [
+     "components/xpath",
+     "ffi/capi",
+     "ports/servoshell",
+-    "tests/capi",
+-    "tests/unit/*",
++    "support/content-packer",
+ ]
+ default-members = ["ports/servoshell"]
+ exclude = [".cargo", "support/crown"]
+@@ -246,6 +245,7 @@ swapper = "0.1"
+ syn = { version = "2", default-features = false, features = ["clone-impls", "derive", "parsing"] }
+ synstructure = "0.13"
+ sys-locale = "0.3"
++sysinfo = { version = "0.38" }
+ taffy = { version = "0.12.1", default-features = false, features = ["calc", "detailed_layout_info", "grid", "std"] }
+ tempfile = "3"
+ tendril = { version = "0.5", features = ["encoding_rs"] }

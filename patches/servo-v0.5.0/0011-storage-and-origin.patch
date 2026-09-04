@@ -1,0 +1,391 @@
+diff --git a/components/config/prefs.rs b/components/config/prefs.rs
+index 9c1ff9469..e597bec7a 100644
+--- a/components/config/prefs.rs
++++ b/components/config/prefs.rs
+@@ -551,13 +551,28 @@ impl Preferences {
+             js_wasm_ion_enabled: true,
+             largest_contentful_paint_enabled: false,
+             layout_animations_test_enabled: false,
+-            layout_columns_enabled: false,
+-            layout_container_queries_enabled: false,
+-            layout_css_alpha_color_function_enabled: false,
+-            layout_css_attr_enabled: false,
+-            layout_css_ellipse_corners_enabled: false,
+-            layout_css_progress_function_enabled: false,
+-            layout_grid_enabled: false,
++            // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the
++            // dom_async_clipboard_enabled entry above.
++            layout_columns_enabled: true,
++            // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the
++            // dom_async_clipboard_enabled entry above.
++            layout_container_queries_enabled: true,
++            // Roves: on by default — new in EXPERIMENTAL_PREFS as of Servo v0.5.0 (wasn't in
++            // v0.4.0's bundle this fork originally defaulted on) — same CSS-styling-capability
++            // reasoning as the other layout_css_*/layout_columns/layout_grid entries here.
++            layout_css_alpha_color_function_enabled: true,
++            // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the
++            // dom_async_clipboard_enabled entry above.
++            layout_css_attr_enabled: true,
++            // Roves: on by default — new in EXPERIMENTAL_PREFS as of Servo v0.5.0, see the
++            // layout_css_alpha_color_function_enabled entry above.
++            layout_css_ellipse_corners_enabled: true,
++            // Roves: on by default — new in EXPERIMENTAL_PREFS as of Servo v0.5.0, see the
++            // layout_css_alpha_color_function_enabled entry above.
++            layout_css_progress_function_enabled: true,
++            // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the
++            // dom_async_clipboard_enabled entry above.
++            layout_grid_enabled: true,
+             layout_style_sharing_cache_enabled: true,
+             // TODO(mrobinson): This should likely be based on the number of processors.
+             layout_threads: 3,
+diff --git a/components/net/fetch/methods.rs b/components/net/fetch/methods.rs
+index 14fb7cbad..b7a6fe188 100644
+--- a/components/net/fetch/methods.rs
++++ b/components/net/fetch/methods.rs
+@@ -1222,6 +1222,30 @@ pub fn should_request_be_blocked_due_to_a_bad_port(url: &ServoUrl) -> bool {
+     false
+ }
+ 
++/// Roves fork: a `blob:` URL can't recover its creator's origin by re-parsing the URL
++/// text — opaque origins (including this fork's own `file://` origin, see
++/// `ImmutableOrigin::new_opaque_for_file`) serialize as the literal string `"null"`, so
++/// `parse_blob_url`'s own text-based fallback always yields a *fresh*, unrelated opaque
++/// origin for a blob created by an opaque origin (see that function's own FIXME about not
++/// considering "blob URL entries"). That's harmless as long as mixed-content checking
++/// never engages for a non-trustworthy creating origin in the first place — which is why
++/// this went unnoticed before `file://` origins were made potentially-trustworthy — but
++/// once the creating origin genuinely is trustworthy, this check needs the blob's real,
++/// tracked creator origin (`UrlWithBlobClaim::origin`, the exact lookup `BlobProtocolHander`
++/// already uses to authorize the fetch itself), not a re-derived one. Without this, every
++/// `blob:` Worker script this engine spawns (how bundlers like Vite/webpack ship Web
++/// Workers) is wrongly blocked as mixed content.
++fn is_request_url_potentially_trustworthy(
++    request: &Request,
++    protocol_registry: &ProtocolRegistry,
++) -> bool {
++    let url_with_blob_claim = request.current_url_with_blob_claim();
++    if url_with_blob_claim.url().scheme() == "blob" {
++        return url_with_blob_claim.origin().is_potentially_trustworthy();
++    }
++    is_url_potentially_trustworthy(protocol_registry, &url_with_blob_claim.url())
++}
++
+ /// <https://w3c.github.io/webappsec-mixed-content/#should-block-fetch>
+ pub fn should_request_be_blocked_as_mixed_content(
+     request: &Request,
+@@ -1237,7 +1261,7 @@ pub fn should_request_be_blocked_as_mixed_content(
+     }
+ 
+     // 1.2. request’s URL is a potentially trustworthy URL.
+-    if is_url_potentially_trustworthy(protocol_registry, &request.current_url()) {
++    if is_request_url_potentially_trustworthy(request, protocol_registry) {
+         return false;
+     }
+ 
+@@ -1269,11 +1293,18 @@ pub fn should_response_be_blocked_as_mixed_content(
+     }
+ 
+     // 1.2. response’s url is a potentially trustworthy URL.
+-    if response
+-        .actual_response()
+-        .url()
+-        .is_some_and(|response_url| is_url_potentially_trustworthy(protocol_registry, response_url))
+-    {
++    // Roves fork: for a `blob:` response, `response.url()` is just the request's own
++    // blob: URL echoed back — reuse the same blob-claim-aware check as the request side
++    // (see `is_request_url_potentially_trustworthy`'s doc comment) instead of naively
++    // re-deriving an origin from the URL text, which always fails for an opaque creator.
++    let response_url_is_trustworthy = response.actual_response().url().is_some_and(|response_url| {
++        if response_url.scheme() == "blob" {
++            is_request_url_potentially_trustworthy(request, protocol_registry)
++        } else {
++            is_url_potentially_trustworthy(protocol_registry, response_url)
++        }
++    });
++    if response_url_is_trustworthy {
+         return false;
+     }
+ 
+diff --git a/components/script/dom/globalscope/globalscope.rs b/components/script/dom/globalscope/globalscope.rs
+index 2e4397563..3f6a97344 100644
+--- a/components/script/dom/globalscope/globalscope.rs
++++ b/components/script/dom/globalscope/globalscope.rs
+@@ -745,7 +745,9 @@ impl GlobalScope {
+         let key = self.obtain_storage_key_for_non_storage_purposes();
+ 
+         // Step 2: If key's origin is an opaque origin, then return failure.
+-        if let ImmutableOrigin::Opaque(_) = key {
++        // Roves: `can_access_storage()` instead of a blanket opaque-origin check — see its
++        // doc comment in components/url/origin.rs for why `file://` documents are exempted.
++        if !key.can_access_storage() {
+             return None;
+         }
+ 
+diff --git a/components/script/dom/window/history.rs b/components/script/dom/window/history.rs
+index bf4c610d4..3da2f454c 100644
+--- a/components/script/dom/window/history.rs
++++ b/components/script/dom/window/history.rs
+@@ -309,7 +309,19 @@ impl History {
+         }
+ 
+         // Step 3. If targetURL's scheme is an HTTP(S) scheme, then return true.
+-        if target_url.scheme() == "http" || target_url.scheme() == "https" {
++        //
++        // Kiosk/embedded fork: `game:` (this fork's virtual content-root scheme bundled
++        // game content is served under — see desktop/protocols/game.rs) is treated the
++        // same as HTTP(S) here, not left to fall through to Step 5's stricter
++        // same-path-and-query rule below. `game://` URLs have real host+path structure
++        // exactly like http(s) does (Step 2 above already required host/port/scheme to
++        // match) — unlike `file:`'s Step 4 carve-out, whose "path" is a raw OS path, not
++        // a meaningful route. Without this, a client-side history router's own
++        // `pushState("/about")` call — exactly what this scheme exists to make work at
++        // all, see CUSTOMIZATIONS.md's "Virtual content root (game: protocol)" entry —
++        // would throw `SecurityError` on every in-app navigation.
++        if target_url.scheme() == "http" || target_url.scheme() == "https" || target_url.scheme() == "game"
++        {
+             return true;
+         }
+ 
+diff --git a/components/script/dom/window/window.rs b/components/script/dom/window/window.rs
+index c62d46628..6abe5f4a2 100644
+--- a/components/script/dom/window/window.rs
++++ b/components/script/dom/window/window.rs
+@@ -91,6 +91,7 @@ use servo_geometry::DeviceIndependentIntRect;
+ use servo_url::{ImmutableOrigin, MutableOrigin, ServoUrl};
+ use storage_traits::StorageThreads;
+ use storage_traits::webstorage_thread::WebStorageType;
++use style::color::AbsoluteColor;
+ use style::error_reporting::{ContextualParseError, ParseErrorReporter};
+ use style::properties::PropertyId;
+ use style::properties::style_structs::Font;
+@@ -1526,7 +1527,9 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
+         // Step 2. Let map be the result of running obtain a session storage bottle map
+         // with this's relevant settings object and "sessionStorage".
+         // Step 3. If map is failure, then throw a "SecurityError" DOMException.
+-        if !self.origin().is_tuple() {
++        // Roves: `can_access_storage()` instead of `is_tuple()` — see its doc comment in
++        // components/url/origin.rs for why `file://` documents are exempted here.
++        if !self.origin().can_access_storage() {
+             return Err(Error::Security(Some(
+                 "Cannot access sessionStorage from opaque origin.".to_string(),
+             )));
+@@ -1553,7 +1556,9 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
+         // Step 2. Let map be the result of running obtain a local storage bottle map
+         // with this's relevant settings object and "localStorage".
+         // Step 3. If map is failure, then throw a "SecurityError" DOMException.
+-        if !self.origin().is_tuple() {
++        // Roves: `can_access_storage()` instead of `is_tuple()` — see its doc comment in
++        // components/url/origin.rs for why `file://` documents are exempted here.
++        if !self.origin().can_access_storage() {
+             return Err(Error::Security(Some(
+                 "Cannot access localStorage from opaque origin.".to_string(),
+             )));
+@@ -3720,7 +3725,7 @@ impl Window {
+         cx: &mut JSContext,
+         pending_images: Vec<PendingImage>,
+         pending_rasterization_images: Vec<PendingRasterizationImage>,
+-        pending_svg_element_for_serialization: Vec<UntrustedNodeAddress>,
++        pending_svg_element_for_serialization: Vec<(UntrustedNodeAddress, AbsoluteColor)>,
+     ) {
+         let pipeline_id = self.pipeline_id();
+         let image_cache = self.image_cache();
+@@ -3782,10 +3787,10 @@ impl Window {
+             }
+         }
+ 
+-        for node in pending_svg_element_for_serialization.into_iter() {
++        for (node, resolved_color) in pending_svg_element_for_serialization.into_iter() {
+             let node = unsafe { from_untrusted_node_address(node) };
+             let svg = node.downcast::<SVGSVGElement>().unwrap();
+-            svg.serialize_and_cache_subtree(cx);
++            svg.serialize_and_cache_subtree(cx, resolved_color);
+             node.dirty(NodeDamage::Other);
+         }
+     }
+diff --git a/components/storage/client_storage.rs b/components/storage/client_storage.rs
+index 868ffaadc..f263e2505 100644
+--- a/components/storage/client_storage.rs
++++ b/components/storage/client_storage.rs
+@@ -318,7 +318,10 @@ fn obtain_a_local_storage_shelf(
+     origin: &ImmutableOrigin,
+     tx: &Transaction,
+ ) -> Result<StorageShelf, String> {
+-    if !origin.is_tuple() {
++    // Roves: `can_access_storage()` instead of `is_tuple()` — see its doc comment in
++    // components/url/origin.rs for why `file://` documents are exempted here, same as
++    // the localStorage/indexedDB checks in window.rs/globalscope.rs.
++    if !origin.can_access_storage() {
+         return Err("Storage is unavailable for opaque origins".to_owned());
+     }
+ 
+diff --git a/components/url/origin.rs b/components/url/origin.rs
+index 651a0182c..144f44ff0 100644
+--- a/components/url/origin.rs
++++ b/components/url/origin.rs
+@@ -12,6 +12,19 @@ use serde::{Deserialize, Serialize};
+ use url::{Host, Origin, Url};
+ use uuid::Uuid;
+ 
++/// Fixed id shared by every `file://` opaque origin — see `ImmutableOrigin::
++/// new_opaque_for_file`'s doc comment for why this isn't a fresh `Uuid::new_v4()`
++/// like the other opaque-origin constructors in this file.
++const FILE_ORIGIN_ID: Uuid = Uuid::nil();
++
++/// Fixed id shared by every `game://` opaque origin — same reasoning as
++/// `FILE_ORIGIN_ID`, see `ImmutableOrigin::new_opaque_for_game_content`'s doc
++/// comment. Distinct from `FILE_ORIGIN_ID` (a `game://` document and a
++/// `file://` document are never meant to compare as same-origin with each
++/// other, only with themselves) — any fixed, non-nil value works; `1` is
++/// arbitrary.
++const GAME_ORIGIN_ID: Uuid = Uuid::from_u128(1);
++
+ /// The origin of an URL
+ #[derive(Clone, Debug, Deserialize, Eq, Hash, MallocSizeOf, PartialEq, Serialize)]
+ pub enum ImmutableOrigin {
+@@ -50,6 +63,9 @@ impl ImmutableOrigin {
+         if url.scheme() == "file" {
+             return Self::new_opaque_for_file();
+         }
++        if url.scheme() == "game" {
++            return Self::new_opaque_for_game_content();
++        }
+ 
+         match url.origin() {
+             Origin::Opaque(_) => ImmutableOrigin::new_opaque(),
+@@ -71,6 +87,7 @@ impl ImmutableOrigin {
+             id: Uuid::new_v4(),
+             is_for_data_worker_from_secure_context: false,
+             is_file_origin: false,
++            is_game_content_origin: false,
+         })
+     }
+ 
+@@ -80,14 +97,56 @@ impl ImmutableOrigin {
+             id: Uuid::new_v4(),
+             is_for_data_worker_from_secure_context: true,
+             is_file_origin: false,
++            is_game_content_origin: false,
+         })
+     }
+ 
++    /// Kiosk/embedded fork: unlike every other opaque-origin constructor here, this one
++    /// does *not* mint a fresh random id per call — it always returns the same fixed id
++    /// (see `FILE_ORIGIN_ID` below), so two `file://` URLs (even the exact same URL
++    /// resolved twice) compare as same-origin instead of never matching anything, ever.
++    ///
++    /// Upstream minted a new `Uuid::new_v4()` here on every call, which is defensible
++    /// per spec (opaque origins are meant to be globally unique) but means the Fetch
++    /// same-origin check (`is_url_potentially_trustworthy`/`should_request_be_blocked_
++    /// as_mixed_content` and friends) can never succeed for anything loaded from
++    /// `file://` — including a page fetching its own sibling files. That specifically
++    /// breaks external `<script type="module" src="...">` (the module-script spec always
++    /// fetches those in CORS mode, which needs same-origin here), i.e. any normal Vite/
++    /// webpack/etc. build opened via a `file://` URL — see `../TODO.md`'s "schermata
++    /// bianca" writeup for the manual repro. Mainstream browsers don't have this problem
++    /// in practice (they treat `file://` content as usable roughly the way a real site
++    /// would be — the spec itself leaves this underspecified, see
++    /// <https://github.com/whatwg/html/issues/3099>), which this change now matches for
++    /// this fork's purposes: this build only ever opens one `file://` document (the
++    /// game's own bundled `dist/index.html`) and never exposes navigation to any other
++    /// `file://` URL (no address bar, no tabs — see the toolbar-removal patch), so
++    /// treating all `file://` origins as the same origin has no realistic downside here.
+     pub fn new_opaque_for_file() -> ImmutableOrigin {
+         ImmutableOrigin::Opaque(OpaqueOrigin {
+-            id: Uuid::new_v4(),
++            id: FILE_ORIGIN_ID,
+             is_for_data_worker_from_secure_context: false,
+             is_file_origin: true,
++            is_game_content_origin: false,
++        })
++    }
++
++    /// Same reasoning and same fork-specific carve-out as `new_opaque_for_file` above —
++    /// see that method's doc comment — for `game://`, the virtual-root scheme bundled
++    /// game content is served under instead of a raw `file://` path (see
++    /// `ports/servoshell/desktop/protocols/game.rs` and CUSTOMIZATIONS.md's "Virtual
++    /// content root (game: protocol)" entry). A tuple origin was considered instead of
++    /// reusing this opaque-with-a-fixed-id pattern (unlike `file://`, `game://` URLs do
++    /// have a real, meaningful host component), but would have meant auditing every other
++    /// origin-consuming code path in this engine that currently assumes a tuple origin
++    /// only ever comes from `http(s)`/`ws(s)` — far larger a change than this fork's actual
++    /// need (one first-party trusted local content origin, same as `file://` already is).
++    pub fn new_opaque_for_game_content() -> ImmutableOrigin {
++        ImmutableOrigin::Opaque(OpaqueOrigin {
++            id: GAME_ORIGIN_ID,
++            is_for_data_worker_from_secure_context: false,
++            is_file_origin: false,
++            is_game_content_origin: true,
+         })
+     }
+ 
+@@ -135,6 +194,39 @@ impl ImmutableOrigin {
+         )
+     }
+ 
++    pub fn is_game_content_origin(&self) -> bool {
++        matches!(
++            self,
++            ImmutableOrigin::Opaque(OpaqueOrigin {
++                is_game_content_origin: true,
++                ..
++            })
++        )
++    }
++
++    /// Kiosk/embedded fork: whether this origin is allowed to use Storage-Standard
++    /// storage (`localStorage`/`sessionStorage`/`indexedDB`) despite `file://` documents
++    /// being opaque origins (see `new_opaque_for_file`'s doc comment above).
++    ///
++    /// Per spec, opaque origins never get a storage shelf (`is_tuple()` alone gates it in
++    /// upstream) — correct for e.g. `data:`/`blob:`-without-origin, which really are
++    /// meant to be storage-isolated from everything, including each other. `file://` here
++    /// is different: `new_opaque_for_file` already made every `file://` document compare
++    /// as the *same* fixed origin (`FILE_ORIGIN_ID`) specifically because this fork only
++    /// ever opens one `file://` document at a time (the game's own bundled `dist/`), with
++    /// no navigation to any other origin — the same reasoning that made stabilizing the
++    /// origin safe there applies just as well to storage: there is no second `file://`
++    /// document around to leak into or collide with.
++    ///
++    /// Deliberately narrower than making `file://` a tuple origin outright (which would
++    /// also affect Cookie Store, CORS/same-origin checks, mixed content, etc. — see
++    /// `is_potentially_trustworthy` below for the one other spot this fork already carves
++    /// out a `file://` exception, for the same reason): this only lifts the storage
++    /// restriction, so everything else stays spec-strict.
++    pub fn can_access_storage(&self) -> bool {
++        self.is_tuple() || self.is_file_origin() || self.is_game_content_origin()
++    }
++
+     pub fn is_for_data_worker_from_secure_context(&self) -> bool {
+         matches!(
+             self,
+@@ -155,7 +247,7 @@ impl ImmutableOrigin {
+             //
+             // They're not tuple origins in our implementation (which is the more correct choice),
+             // so we have to return here instead of Step 6.
+-            if opaque_origin.is_file_origin {
++            if opaque_origin.is_file_origin || opaque_origin.is_game_content_origin {
+                 return true;
+             }
+             return false;
+@@ -211,6 +303,9 @@ pub struct OpaqueOrigin {
+     ///
+     /// See <https://github.com/whatwg/html/issues/3099>.
+     is_file_origin: bool,
++    /// Same idea as `is_file_origin`, for this fork's `game://` virtual-content-root
++    /// scheme — see `ImmutableOrigin::new_opaque_for_game_content`'s doc comment.
++    is_game_content_origin: bool,
+ }
+ 
+ malloc_size_of_is_0!(OpaqueOrigin);
+@@ -272,6 +367,11 @@ impl MutableOrigin {
+         self.immutable().is_tuple()
+     }
+ 
++    /// See `ImmutableOrigin::can_access_storage`'s doc comment.
++    pub fn can_access_storage(&self) -> bool {
++        self.immutable().can_access_storage()
++    }
++
+     pub fn scheme(&self) -> Option<&str> {
+         self.immutable().scheme()
+     }
