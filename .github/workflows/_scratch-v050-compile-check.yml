@@ -32,12 +32,25 @@ jobs:
 
       # See CLAUDE.md's "mach needs tests/wpt/tests/tools/ to exist" note -- mach's own
       # command loader unconditionally imports WPT test tooling even for build/bootstrap.
-      - name: sparse-checkout WPT tooling only
+      # Exact method release.yml already uses successfully (git sparse-checkout in cone
+      # mode, not a tar extraction -- a tar with --strip-components only grabs the named
+      # subdirectory itself and misses sibling files cone mode pulls in automatically,
+      # e.g. tests/wpt/tests/localpaths.py, which is exactly what this workflow's first
+      # attempt (tar-based) missed, still failing with "No module named 'localpaths'").
+      - name: fetch tests/wpt/tests/tools (mach's command loader needs it to exist)
         shell: bash
         run: |
-          mkdir -p tests/wpt/tests
-          curl -fsSL "https://github.com/servo/servo/archive/refs/tags/v0.5.0.tar.gz" | \
-            tar -xz --strip-components=3 -C tests/wpt/tests "servo-0.5.0/tests/wpt/tests/tools"
+          rm -rf /tmp/wpt-tools-src
+          git init -q /tmp/wpt-tools-src
+          git -C /tmp/wpt-tools-src remote add origin https://github.com/servo/servo.git
+          git -C /tmp/wpt-tools-src config core.sparseCheckout true
+          git -C /tmp/wpt-tools-src sparse-checkout init --cone
+          git -C /tmp/wpt-tools-src sparse-checkout set tests/wpt/tests/tools
+          git -C /tmp/wpt-tools-src fetch --depth 1 --filter=blob:none origin v0.5.0
+          git -C /tmp/wpt-tools-src checkout FETCH_HEAD
+          mkdir -p tests/wpt
+          cp -r /tmp/wpt-tools-src/tests/wpt/tests tests/wpt/tests
+          rm -rf /tmp/wpt-tools-src
 
       - name: stop background apt processes and wait for the dpkg lock
         shell: bash
