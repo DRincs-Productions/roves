@@ -42,10 +42,7 @@ name: 'Build Android APK (debug, from source, with local patches)'
 
 on:
   push:
-    # TEMPORARY: servo-v0.5.0-migration added to validate the v0.5.0 patches/SERVO_TAG bump
-    # via CI (no workflow_dispatch write access available to trigger it any other way) --
-    # remove this branch from the list once that run is confirmed, don't leave it in.
-    branches: [main, servo-v0.5.0-migration]
+    branches: [main]
   workflow_dispatch: {}
 
 env:
