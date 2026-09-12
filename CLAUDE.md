@@ -27,7 +27,7 @@ files, and our own `.github/` and `patches/` — see below) stays trackable.
 
 ## Standing authorization: autonomous CI/push/release loop
 
-The user (Simon / Black Ram) has given standing permission to operate autonomously across
+The user has given standing permission to operate autonomously across
 this whole ecosystem — this repo, `roves-action`, `roves-ui`/Packmaster, `roves-vscode`,
 `roves-wiki`, `roves-api`, and any game repo used to test them (e.g.
 `pixi-vn-react-template`) — without stopping to ask for confirmation at each step:
