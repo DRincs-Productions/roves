@@ -36,6 +36,20 @@ Riferimenti ufficiali: [Android App Bundle](https://developer.android.com/guide/
 [Publishing API](https://developers.google.com/android-publisher).
 Le funzionalità opzionali non sono prerequisiti universali per pubblicare un gioco.
 
+### Decisione API Google Play — libreria opzionale
+
+- [ ] Realizzare il supporto Google Play come libreria separata, integrata nella libreria API JavaScript (`roves-api`), senza renderlo una dipendenza obbligatoria del core Roves. Nome del pacchetto da definire.
+- [ ] Dichiarare il pacchetto Google Play in `peerDependencies` della libreria API, con `peerDependenciesMeta["<pacchetto-google-play>"].optional = true`. Il gioco installa esplicitamente il pacchetto solo quando vuole utilizzare l'integrazione. Non aggiungerlo alle dipendenze obbligatorie.
+- [ ] Usare import/entry point opzionali: importare il core API senza il pacchetto Google Play deve funzionare e non deve caricare il modulo Google. Un peer opzionale da solo non rende sicuro un import statico obbligatorio.
+- [ ] Implementare il backend Android con SDK ufficiale Google in Kotlin e bridge asincrono verso JavaScript, senza introdurre un wrapper Rust/JNI salvo una necessità concreta di logica condivisa.
+- [ ] Rendere l'integrazione Android disabilitata per default e abilitabile nel packaging; aggiungere SDK Gradle e configurazione Google soltanto alle build che la richiedono. Le dipendenze native Gradle non sono peer dependency npm.
+- [ ] Esporre un contratto coerente nello stile con Steam: disponibilità, stato autenticazione/profilo, obiettivi e classifiche; distinguere servizio assente, utente non autenticato, annullamento ed errore. API asincrone con comportamento documentato anche fuori da Android.
+- [ ] Mantenere Play Billing un modulo separato e opzionale. Verificare installazione/build del core senza integrazione e del gioco con pacchetto e backend Google abilitati.
+
+Questa decisione specifica la voce Google Play sopra; l'implementazione della
+libreria API richiede un intervento nel suo repository, non viene effettuata da
+questo aggiornamento del TODO dell'engine.
+
 ### Mobile: completare il percorso applicativo
 
 - [ ] **WebView native Android/iOS:** proposta nella [PR #7](https://github.com/DRincs-Productions/roves/pull/7), non presente in `main` alla revisione. Verificare prima di sostituire il percorso Servo/JNI corrente.
