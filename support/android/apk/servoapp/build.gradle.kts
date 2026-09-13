@@ -16,8 +16,17 @@ val generateRovesBrandAssets by tasks.registering(Sync::class) {
 }
 
 android {
-    sourceSets.getByName("main").assets.srcDir(layout.buildDirectory.dir("generated/rovesBrand/assets"))
-    sourceSets.getByName("main").res.srcDir(layout.buildDirectory.dir("generated/rovesBrand/res"))
+    // `srcDir` takes a `Provider<Directory>` (`layout.buildDirectory.dir(...)`) on the legacy
+    // `SourceSet` API here, and this AGP version rejects that outright ("You cannot add
+    // Provider instances to the Android SourceSet API ... use SourceDirectories.
+    // addGeneratedDirectory/addStaticDirectories in the Variant API instead", a real CI
+    // failure, not a hypothetical one) -- resolving eagerly via `.get().asFile` sidesteps it.
+    // Safe to resolve early: this is just the static generated-output *path*
+    // (`project.buildDir`-relative), not its contents -- those still only exist once
+    // `generateRovesBrandAssets` actually runs, which `preBuild`'s `dependsOn` below ensures
+    // happens before anything reads from these directories.
+    sourceSets.getByName("main").assets.srcDir(layout.buildDirectory.dir("generated/rovesBrand/assets").get().asFile)
+    sourceSets.getByName("main").res.srcDir(layout.buildDirectory.dir("generated/rovesBrand/res").get().asFile)
     compileSdk = 37
     buildToolsVersion = "36.0.0"
 
