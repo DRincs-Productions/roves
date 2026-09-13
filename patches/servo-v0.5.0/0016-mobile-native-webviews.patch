@@ -3310,6 +3310,55 @@ index fcbad7f..0000000
 -        }
 -    }
 -}
+diff --git a/support/android/apk/servoapp/src/main/res/drawable/media_session_icon.xml b/support/android/apk/servoapp/src/main/res/drawable/media_session_icon.xml
+deleted file mode 100644
+index 99c13eecf..000000000
+--- a/support/android/apk/servoapp/src/main/res/drawable/media_session_icon.xml
++++ /dev/null
+@@ -1,11 +0,0 @@
+-<vector xmlns:android="http://schemas.android.com/apk/res/android"
+-    android:width="24dp"
+-    android:height="24dp"
+-    android:autoMirrored="true"
+-    android:tint="?attr/colorControlNormal"
+-    android:viewportWidth="960"
+-    android:viewportHeight="960">
+-    <path
+-        android:fillColor="@android:color/white"
+-        android:pathData="M560,829L560,747Q650,721 705,647Q760,573 760,479Q760,385 705,311Q650,237 560,211L560,129Q684,157 762,254.5Q840,352 840,479Q840,606 762,703.5Q684,801 560,829ZM120,600L120,360L280,360L480,160L480,800L280,600L120,600ZM560,640L560,318Q607,340 633.5,384Q660,428 660,480Q660,531 633.5,574.5Q607,618 560,640ZM400,354L314,440L200,440L200,520L314,520L400,606L400,354ZM300,480L300,480L300,480L300,480L300,480L300,480Z" />
+-</vector>
+diff --git a/support/android/apk/servoapp/src/main/res/drawable/media_session_pause.xml b/support/android/apk/servoapp/src/main/res/drawable/media_session_pause.xml
+deleted file mode 100644
+index ec16b1473..000000000
+--- a/support/android/apk/servoapp/src/main/res/drawable/media_session_pause.xml
++++ /dev/null
+@@ -1,10 +0,0 @@
+-<vector xmlns:android="http://schemas.android.com/apk/res/android"
+-    android:width="24dp"
+-    android:height="24dp"
+-    android:tint="?attr/colorControlNormal"
+-    android:viewportWidth="960"
+-    android:viewportHeight="960">
+-    <path
+-        android:fillColor="@android:color/white"
+-        android:pathData="M560,760L560,200L720,200L720,760L560,760ZM240,760L240,200L400,200L400,760L240,760Z" />
+-</vector>
+diff --git a/support/android/apk/servoapp/src/main/res/drawable/media_session_play.xml b/support/android/apk/servoapp/src/main/res/drawable/media_session_play.xml
+deleted file mode 100644
+index 7013afe73..000000000
+--- a/support/android/apk/servoapp/src/main/res/drawable/media_session_play.xml
++++ /dev/null
+@@ -1,10 +0,0 @@
+-<vector xmlns:android="http://schemas.android.com/apk/res/android"
+-    android:width="24dp"
+-    android:height="24dp"
+-    android:tint="?attr/colorControlNormal"
+-    android:viewportWidth="960"
+-    android:viewportHeight="960">
+-    <path
+-        android:fillColor="@android:color/white"
+-        android:pathData="M320,760L320,200L760,480L320,760ZM400,480L400,480L400,480ZM400,614L610,480L400,346L400,614Z" />
+-</vector>
 diff --git a/support/ios/App.swift b/support/ios/App.swift
 new file mode 100644
 index 000000000..bad4f9db6
