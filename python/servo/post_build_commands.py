@@ -41,7 +41,7 @@ from servo.command_base import (
     is_macosx,
     is_windows,
 )
-from servo.package_commands import check_call_with_randomized_backoff, copy_packaged_resources
+from servo.package_commands import check_call_with_randomized_backoff
 from servo.platform.build_target import is_android
 from servo.util import delete
 
@@ -1116,41 +1116,10 @@ class PostBuildCommands(CommandBase):
         icon_png: Optional[str] = None,
         android_release: bool = False,
     ) -> int | None:
-        """`mach bundle --android`'s entire packaging path: unlike desktop (see `bundle`'s own
-        doc comment above), an installed APK's assets/label/icon are baked in at package time
-        -- there's no equivalent to shipping one prebuilt shell binary and dropping/packing
-        content next to it afterward. So this builds from a throwaway copy of
-        `support/android/apk/` (never the tracked source tree directly -- see the "Correction"
-        note in CUSTOMIZATIONS.md for why: an earlier version of this method copied
-        `--content-dir` straight into the tracked Gradle project, which silently persisted a
-        specific game's content/icon across later, unrelated `mach build`/`bundle` runs on the
-        same checkout), copies `--content-dir` into that copy's own asset folder (read back at
-        launch by MainActivity.kt's default `loadUri("file:///android_asset/www/index.html")`),
-        optionally drops in `icon_png` as the launcher icon, and invokes Gradle from there --
-        a real build, not a file copy -- before lifting the resulting `.apk` into `--output`.
-
-        `manifest.webmanifest`/`manifest.json`/`site.webmanifest` (see `_read_web_manifest`)
-        defaults the app's label (`name`/-`short_name`), locked screen orientation
-        (`orientation`), and status bar color (`theme_color`) -- each overridable via `bundle`'s
-        own `--android-app-name`/`--android-orientation`/`--android-theme-color` flags, which
-        always win when given. `icon_png` is resolved by `bundle` itself, the same
-        --icon-png/auto-detect-from-content-dir logic every other platform uses -- there's no
-        separate, Android-specific reading of the manifest's own `icons` array, deliberately:
-        one icon-resolution mechanism for every platform, not one per platform.
-
-        Debug build by default, same as the plain-shell CI build in
-        `.github/workflows/android.yml`. `--android-release` switches to a real, signed
-        release build instead -- see this method's own signing-credential check below for
-        exactly how. `mach bundle` has no `--android-keystore`/-password/-alias flags of its
-        own: upstream Servo's `support/android/apk/buildSrc/src/main/kotlin/Android.kt`
-        (`getSigningKeyInfo`) already reads the 4 credentials straight from the environment
-        (`APK_SIGNING_KEY_STORE_PATH`/`_STORE_PASS`/`_ALIAS`/`_PASS`) when configuring
-        `servoapp/build.gradle.kts`'s own `release` signing config -- and this function's own
-        `env = self.build_env()` a few lines below already inherits the *calling* process's
-        full environment (`os.environ.copy()`), so setting those 4 vars before invoking
-        `mach bundle --android --android-release` is the entire mechanism, no plumbing needed
-        here at all.
-        """
+        """Build an Android game using the system WebView, without compiling Servo."""
+        if not content_dir or not path.isfile(path.join(content_dir, "index.html")):
+            print("Android WebView bundles require --content-dir with an index.html.")
+            return 1
         manifest = _read_web_manifest(content_dir) if content_dir else {}
 
         if android_release and not os.environ.get("APK_SIGNING_KEY_STORE_PATH"):
@@ -1209,29 +1178,12 @@ class PostBuildCommands(CommandBase):
         }.get(target_triple, "Arm64")
         variant = f"{arch_string}{'Release' if android_release else 'Debug'}"
 
-        env = cast(dict[str, str], self.build_env())
-        # `servo_binary` is always `None` here, not a bug specific to this function --
-        # command_base.py's own `binary_selection` deliberately nulls it out for any
-        # "packaged" target (Android, OpenHarmony): "we can't run it directly... doesn't
-        # seem very useful" (see that file's own comment). Find `libservoshell.so`'s actual
-        # directory on disk instead, exactly the way `.github/workflows/android.yml`'s own
-        # `find target/<triple> -name libservoshell.so` does -- robust to whichever
-        # debug/release profile subdirectory Cargo actually used, unlike trying to
-        # reconstruct that name from `self.configure_build_type()` (which `bundle()`'s own
-        # decorator doesn't even hand this command in the first place -- see this method's
-        # call site in `bundle()` above).
-        so_matches = glob.glob(path.join(self.get_top_dir(), "target", target_triple, "**", "libservoshell.so"), recursive=True)
-        if not so_matches:
-            print(f"No libservoshell.so found under target/{target_triple}/ -- did `mach build --android` run first?")
-            return 1
-        env["SERVO_TARGET_DIR"] = path.dirname(so_matches[0])
-
-        # An absolute, top_dir-relative path -- unaffected by `build_root` being a scratch
-        # copy rather than `apk_project_src` itself.
-        dir_to_resources = path.join(self.get_top_dir(), "target", target_triple, "resources")
-        if path.exists(dir_to_resources):
-            delete(dir_to_resources)
-        copy_packaged_resources(self.get_top_dir(), dir_to_resources)
+        # Native WebView packaging only needs the Android SDK and Java, not Servo,
+        # GStreamer, the NDK, or a cross-compiled Rust library.
+        env = os.environ.copy()
+        sdk = self.config["android"].get("sdk")
+        if sdk:
+            env["ANDROID_HOME"] = sdk
 
         argv = [
             "./gradlew",
@@ -1248,29 +1200,11 @@ class PostBuildCommands(CommandBase):
             print("Packaging Android exited with return value %d" % e.returncode)
             return e.returncode
 
-        # Not `servoapp/build/outputs/apk/<variant>/*.apk` (AGP's own standard per-variant
-        # output location) -- confirmed via a real build that this glob matches nothing:
-        # `servoapp/build.gradle.kts`'s own `copyAndRename<Variant>APK` task (`finalizedBy`
-        # the Gradle assemble task, see that file) renames and *moves* the apk elsewhere, via
-        # `getTargetDir`'s own "3 parentFile calls up from the Gradle module root, then back
-        # down through target/<rust-triple>/<SERVO_TARGET_DIR's basename>" math. Also NOT
-        # simply "somewhere under `build_root`" (confirmed getting that wrong too, via a real
-        # build: Gradle's own "BUILD SUCCESSFUL" doesn't mean this glob found anything) --
-        # `build_root` is a scratch copy nested an extra `android-bundle/` level below
-        # `target/<triple>/`, and those 3 parentFile hops land back on this method's own
-        # top_dir, one level *above* `target/` entirely, then back down a completely
-        # different branch (`target/<triple>/<SERVO_TARGET_DIR's basename>/`, i.e. the very
-        # same directory `libservoshell.so` was found in above) -- a sibling of `build_root`,
-        # not a descendant of it. Searching all of `target/<triple>/` (a superset covering
-        # both that real location and `build_root`, so this doesn't depend on hand-recomputing
-        # the exact parentFile math staying correct) sidesteps needing to get this exactly
-        # right again.
-        target_dir_root = path.join(self.get_top_dir(), "target", target_triple)
-        built_apks = glob.glob(path.join(target_dir_root, "**", "servoapp.apk"), recursive=True)
-        if not built_apks:
-            print(f"No servoapp.apk found anywhere under {target_dir_root} after a successful-looking Gradle build.")
+        built_apks = glob.glob(path.join(build_root, "servoapp", "build", "outputs", "apk", "**", "*.apk"), recursive=True)
+        if len(built_apks) != 1:
+            print(f"Expected one newly built APK, found {len(built_apks)}.")
             return 1
-        shutil.copy(built_apks[0], output_dir)
+        shutil.copy(built_apks[0], path.join(output_dir, "servoapp.apk"))
 
         print(f"Bundle written to {output_dir}")
         return None

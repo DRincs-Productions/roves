@@ -1,11 +1,32 @@
-import java.util.regex.Pattern
-
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.compose)
+}
+
+// Keep engine branding separate from www and the game's replaceable launcher icon.
+val generateRovesBrandAssets by tasks.registering(Sync::class) {
+    from(rootProject.file("../../../resources")) {
+        include("servo_1024.png", "fonts/MetalMania-Regular.ttf", "fonts/MetalMania-OFL.txt")
+        into("assets/roves-brand")
+    }
+    from(rootProject.file("../../../resources/servo_1024.png")) {
+        into("res/drawable")
+        rename { "roves_boot_icon.png" }
+    }
+    into(layout.buildDirectory.dir("generated/rovesBrand"))
 }
 
 android {
+    // `srcDir` takes a `Provider<Directory>` (`layout.buildDirectory.dir(...)`) on the legacy
+    // `SourceSet` API here, and this AGP version rejects that outright ("You cannot add
+    // Provider instances to the Android SourceSet API ... use SourceDirectories.
+    // addGeneratedDirectory/addStaticDirectories in the Variant API instead", a real CI
+    // failure, not a hypothetical one) -- resolving eagerly via `.get().asFile` sidesteps it.
+    // Safe to resolve early: this is just the static generated-output *path*
+    // (`project.buildDir`-relative), not its contents -- those still only exist once
+    // `generateRovesBrandAssets` actually runs, which `preBuild`'s `dependsOn` below ensures
+    // happens before anything reads from these directories.
+    sourceSets.getByName("main").assets.srcDir(layout.buildDirectory.dir("generated/rovesBrand/assets").get().asFile)
+    sourceSets.getByName("main").res.srcDir(layout.buildDirectory.dir("generated/rovesBrand/res").get().asFile)
     compileSdk = 37
     buildToolsVersion = "36.0.0"
 
@@ -146,38 +167,8 @@ androidComponents {
     }
 }
 
-project.afterEvaluate {
-    android.applicationVariants.forEach { variant ->
-        val pattern = Pattern.compile("^([\\w\\d]+)(Debug|Release)")
-        val matcher = pattern.matcher(variant.name)
-        if (!matcher.find()) {
-            throw GradleException("Invalid variant name for output: " + variant.name)
-        }
-        val arch = matcher.group(1)
-        val debug = variant.name.contains("Debug")
-        val finalFolder = getTargetDir(debug, arch)
-        val finalFile = File(finalFolder, "servoapp.apk")
-        variant.outputs.forEach { output ->
-            val copyAndRenameAPKTask =
-                project.task<Copy>("copyAndRename${variant.name.capitalize()}APK") {
-                    from(output.outputFile.parent)
-                    into(finalFolder)
-                    include(output.outputFile.name)
-                    rename(output.outputFile.name, finalFile.name)
-                }
-            variant.assembleProvider.get().finalizedBy(copyAndRenameAPKTask)
-        }
-    }
+dependencies {
+    implementation("androidx.webkit:webkit:1.12.1")
 }
 
-dependencies {
-    if (findProject(":servoview-local") != null) {
-        implementation(project(":servoview-local"))
-    } else {
-        implementation(project(":servoview"))
-    }
-    implementation(libs.androidx.activity.compose)
-    implementation(libs.androidx.material3.compose)
-    implementation(libs.androidx.material3.compose.adaptive)
-    implementation(libs.androidx.preference)
-}
+tasks.named("preBuild").configure { dependsOn(generateRovesBrandAssets) }
