@@ -50,6 +50,22 @@ Questa decisione specifica la voce Google Play sopra; l'implementazione della
 libreria API richiede un intervento nel suo repository, non viene effettuata da
 questo aggiornamento del TODO dell'engine.
 
+### iOS: Game Center e API opzionale — da implementare
+
+- [ ] Integrare Game Center tramite il framework ufficiale GameKit, con backend Swift e bridge asincrono verso JavaScript nella WKWebView. Non introdurre un wrapper Rust salvo una necessità concreta di logica condivisa.
+- [ ] Realizzare una libreria JavaScript Game Center separata (nome da definire), collegata a `roves-api` come `peerDependencies` con `peerDependenciesMeta["<pacchetto-game-center>"].optional = true`. Il gioco installa il pacchetto esplicitamente; il core API deve funzionare senza di esso, evitando import statici obbligatori.
+- [ ] Rendere l'integrazione disabilitata per default e attivabile nel packaging iOS. Aggiungere capability/entitlement Game Center e configurazione del progetto soltanto quando richiesti; documentare configurazione degli ID in App Store Connect.
+- [ ] Esporre disponibilità, stato autenticazione/profilo giocatore, obiettivi e classifiche con API asincrone coerenti nello stile con Steam e Google Play. Gestire utente non autenticato, annullamento, errori e uso fuori dalla piattaforma supportata.
+- [ ] Valutare salvataggi GameKit con requisiti iCloud/capability appropriati, sincronizzazione tra dispositivi, conflitti, versioni e funzionamento offline; mantenere distinto il salvataggio locale dal backend cloud.
+- [ ] Valutare matchmaking e multiplayer GameKit come estensione opzionale successiva, se richiesti dai giochi.
+- [ ] Implementare acquisti in-app tramite StoreKit in un modulo separato e opzionale, con verifica delle transazioni, ripristino e gestione degli stati di acquisto.
+- [ ] Verificare build senza integrazione e build abilitata, autenticazione e funzionalità su dispositivi reali, con account/configurazione di test appropriati. Coordinare libreria API e strumenti di packaging nei rispettivi repository.
+
+Riferimenti ufficiali: [Game Center](https://developer.apple.com/game-center/),
+[GameKit](https://developer.apple.com/documentation/gamekit),
+[StoreKit](https://developer.apple.com/documentation/storekit).
+Questa voce aggiunge il lavoro al backlog; non implementa né abilita i servizi Apple.
+
 ### Mobile: completare il percorso applicativo
 
 - [ ] **WebView native Android/iOS:** proposta nella [PR #7](https://github.com/DRincs-Productions/roves/pull/7), non presente in `main` alla revisione. Verificare prima di sostituire il percorso Servo/JNI corrente.
