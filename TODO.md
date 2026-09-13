@@ -66,6 +66,21 @@ Riferimenti ufficiali: [Game Center](https://developer.apple.com/game-center/),
 [StoreKit](https://developer.apple.com/documentation/storekit).
 Questa voce aggiunge il lavoro al backlog; non implementa né abilita i servizi Apple.
 
+### Epic Online Services: API opzionale — da implementare
+
+- [ ] Realizzare l'integrazione EOS come libreria JavaScript separata (nome da definire), collegata a `roves-api` in `peerDependencies` con `peerDependenciesMeta["<pacchetto-eos>"].optional = true`. Il gioco installa esplicitamente il pacchetto; il core API deve funzionare senza di esso, evitando import statici obbligatori.
+- [ ] Rendere il backend EOS disabilitato per default e abilitabile nel packaging. Includere SDK e librerie native soltanto nelle build che lo richiedono; iniziare dai target desktop Windows/macOS/Linux e verificare separatamente supporto e requisiti mobile.
+- [ ] Valutare SDK ufficiale EOS tramite FFI Rust e wrapper mantenuti: verificare compatibilità, licenza, distribuzione dei binari, callback, gestione della memoria, inizializzazione/tick e arresto. Non presumere l'esistenza di un SDK Rust ufficiale.
+- [ ] Configurare prodotto, sandbox, deployment e client policy nel Developer Portal. Distinguere autenticazione Epic Account Services e identità EOS Connect/Product User ID, scegliendo il flusso richiesto dal gioco; non distribuire credenziali privilegiate o segreti del backend nel bundle.
+- [ ] Esporre disponibilità, autenticazione/stato giocatore, obiettivi, statistiche e classifiche con API asincrone coerenti nello stile con Steam, Google Play e Game Center. Documentare capability effettive e gestire servizio assente, offline, annullamento ed errori.
+- [ ] Integrare Player Data Storage come backend cloud opzionale, con quote, versioni, conflitti tra dispositivi e recupero offline; preservare i salvataggi locali e mantenere distinti i backend Steam/Google/Apple/EOS.
+- [ ] Valutare lobby, sessioni, matchmaking, P2P e voce come estensioni opzionali successive, secondo le esigenze dei giochi.
+- [ ] Mantenere distinta l'integrazione EOS dalla distribuzione e dalle funzionalità commerciali dell'Epic Games Store: non rendere la pubblicazione nello store un prerequisito dell'API.
+- [ ] Verificare build del core senza EOS e build abilitata, caricamento delle librerie distribuite, callback/lifecycle, autenticazione con account di test, obiettivi/classifiche e conflitti cloud. Coordinare libreria API e strumenti di packaging nei rispettivi repository.
+
+Riferimento ufficiale: [Epic Online Services](https://dev.epicgames.com/docs/epic-online-services/eos-overview).
+Questa voce pianifica l'integrazione opzionale; non introduce SDK o funzionalità runtime.
+
 ### Mobile: completare il percorso applicativo
 
 - [ ] **WebView native Android/iOS:** proposta nella [PR #7](https://github.com/DRincs-Productions/roves/pull/7), non presente in `main` alla revisione. Verificare prima di sostituire il percorso Servo/JNI corrente.
