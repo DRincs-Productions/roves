@@ -3,6 +3,7 @@ package org.servo.servoshell
 import android.app.Activity
 import android.graphics.Color
 import android.os.Bundle
+import android.os.SystemClock
 import android.view.View
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -16,15 +17,26 @@ import androidx.webkit.WebViewAssetLoader
 class MainActivity : Activity() {
     private lateinit var webView: WebView
     private lateinit var container: FrameLayout
+    private lateinit var splash: RovesSplashView
+    private var splashStarted = 0L
+    private var startupPending = true
+    private var startupNavigation = 0L
+    private var destroyed = false
     private var fullscreenView: View? = null
     private var fullscreenCallback: WebChromeClient.CustomViewCallback? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         container = FrameLayout(this)
-        webView = WebView(this)
-        container.addView(webView, FrameLayout.LayoutParams(-1, -1))
+        container.setBackgroundColor(Color.BLACK)
+        splash = RovesSplashView(this)
+        splashStarted = SystemClock.uptimeMillis()
+        // Paint branding before constructing the potentially expensive system WebView.
+        container.addView(splash, FrameLayout.LayoutParams(-1, -1))
         setContentView(container)
+        webView = WebView(this)
+        webView.setBackgroundColor(Color.BLACK)
+        container.addView(webView, 0, FrameLayout.LayoutParams(-1, -1))
         val themeColor = getString(R.string.servoThemeColor)
         if (themeColor.isNotEmpty()) {
             runCatching { window.statusBarColor = Color.parseColor(themeColor) }
@@ -45,6 +57,27 @@ class MainActivity : Activity() {
             (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
         )
         webView.webViewClient = object : WebViewClient() {
+            override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
+                startupNavigation++
+            }
+
+            override fun onPageFinished(view: WebView, url: String) {
+                if (!startupPending || url != view.url) return
+                val navigation = startupNavigation
+                // Page completion alone doesn't guarantee its contents can be drawn.
+                view.postVisualStateCallback(navigation, object : WebView.VisualStateCallback() {
+                    override fun onComplete(requestId: Long) {
+                        val remaining = (500L - (SystemClock.uptimeMillis() - splashStarted)).coerceAtLeast(0L)
+                        splash.postDelayed({
+                            if (!destroyed && startupPending && navigation == startupNavigation) {
+                                startupPending = false
+                                container.removeView(splash)
+                            }
+                        }, remaining)
+                    }
+                })
+            }
+
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
                 val response = loader.shouldInterceptRequest(request.url)
                 if (request.url.host == WebViewAssetLoader.DEFAULT_DOMAIN && response == null) {
@@ -66,6 +99,7 @@ class MainActivity : Activity() {
                 fullscreenCallback = callback
                 webView.visibility = View.GONE
                 container.addView(view, FrameLayout.LayoutParams(-1, -1))
+                if (startupPending) splash.bringToFront()
                 window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or
                     View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
             }
@@ -99,6 +133,7 @@ class MainActivity : Activity() {
     override fun onPause() { webView.onPause(); super.onPause() }
     override fun onResume() { super.onResume(); webView.onResume() }
     override fun onDestroy() {
+        destroyed = true
         leaveFullscreen()
         container.removeView(webView)
         webView.destroy()

@@ -1,5 +1,18 @@
 # Mobile packaging
 
+## Android startup branding
+
+Android displays a native black Roves splash with the desktop icon, Metal Mania
+wordmark and animated loading bar. Branding is generated from the engine resources,
+separately from bundled game assets and the replaceable launcher icon.
+The overlay stays for at least 500 ms and until the initial main document finishes
+loading and WebView confirms a drawable visual state. Redirects invalidate stale
+completion callbacks; later navigation does not replay the startup splash.
+This indicates document readiness, not completion of asynchronous game asset loading.
+Android 12+ uses a black, Roves-branded system splash.
+Device validation remains pending: cold/warm launch, slow content, redirects,
+missing index.html, rotation and fullscreen. Local Java cannot currently launch Gradle.
+
 Desktop continues to use Servo. Android uses the system Android WebView; iOS
 uses Apple's WKWebView. Neither mobile container loads Servo, JNI or GStreamer.
 Web APIs and rendering therefore follow the installed platform engine.

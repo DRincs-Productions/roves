@@ -6052,3 +6052,17 @@ in `patches/servo-v0.5.0/` touch the same file, so there's no cross-patch orderi
 this relocation. No local Rust toolchain — real verification is `android.yml` + `test.yml`
 both green, and ultimately the real device confirming the "Not Found" page is gone, both
 pending as of this entry.
+
+
+## 2026-09-13 — Android native WebView startup splash
+
+MainActivity on feat/mobile-native-webviews now covers the initial WebView load
+with native Roves branding: black background, engine icon, Metal Mania wordmark
+and animated bar. Generated Gradle assets include only the branding image/font/license;
+game launcher icon and www content remain independent. The overlay waits at least
+500 ms and for onPageFinished plus a visual-state callback; navigation generations
+invalidate stale callbacks and destruction prevents deferred UI updates.
+Android 12+ system splash uses the engine icon on black. Document readiness does
+not guarantee asynchronous game initialization. Updated reconstruction patch 0005.
+All six changed/new patch sections reconstruct byte-identical files from recovered
+baselines. Gradle/device checks remain pending: local Java fails loading libjli.so.

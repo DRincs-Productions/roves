@@ -128,12 +128,23 @@ index f0f45bd..761557c 100644
          print(f"Bundle written to {output_dir}")
          return None
 diff --git a/support/MOBILE.md b/support/MOBILE.md
-new file mode 100644
-index 0000000..502a060
 --- /dev/null
 +++ b/support/MOBILE.md
-@@ -0,0 +1,73 @@
+@@ -0,0 +1,86 @@
 +# Mobile packaging
++
++## Android startup branding
++
++Android displays a native black Roves splash with the desktop icon, Metal Mania
++wordmark and animated loading bar. Branding is generated from the engine resources,
++separately from bundled game assets and the replaceable launcher icon.
++The overlay stays for at least 500 ms and until the initial main document finishes
++loading and WebView confirms a drawable visual state. Redirects invalidate stale
++completion callbacks; later navigation does not replay the startup splash.
++This indicates document readiness, not completion of asynchronous game asset loading.
++Android 12+ uses a black, Roves-branded system splash.
++Device validation remains pending: cold/warm launch, slow content, redirects,
++missing index.html, rotation and fullscreen. Local Java cannot currently launch Gradle.
 +
 +Desktop continues to use Servo. Android uses the system Android WebView; iOS
 +uses Apple's WKWebView. Neither mobile container loads Servo, JNI or GStreamer.
@@ -207,19 +218,36 @@ index 0000000..502a060
 +checks require macOS/Xcode. CI builds the Android app, but device runtime checks
 +are still required for graphics, sound, fullscreen and save persistence.
 diff --git a/support/android/apk/servoapp/build.gradle.kts b/support/android/apk/servoapp/build.gradle.kts
-index db87ea8..bf5b300 100644
 --- a/support/android/apk/servoapp/build.gradle.kts
 +++ b/support/android/apk/servoapp/build.gradle.kts
-@@ -1,8 +1,5 @@
+@@ -1,11 +1,23 @@
 -import java.util.regex.Pattern
 -
  plugins {
      alias(libs.plugins.android.application)
 -    alias(libs.plugins.compose)
++}
++
++// Keep engine branding separate from www and the game's replaceable launcher icon.
++val generateRovesBrandAssets by tasks.registering(Sync::class) {
++    from(rootProject.file("../../../resources")) {
++        include("servo_1024.png", "fonts/MetalMania-Regular.ttf", "fonts/MetalMania-OFL.txt")
++        into("assets/roves-brand")
++    }
++    from(rootProject.file("../../../resources/servo_1024.png")) {
++        into("res/drawable")
++        rename { "roves_boot_icon.png" }
++    }
++    into(layout.buildDirectory.dir("generated/rovesBrand"))
  }
  
  android {
-@@ -146,38 +143,6 @@ androidComponents {
++    sourceSets.getByName("main").assets.srcDir(layout.buildDirectory.dir("generated/rovesBrand/assets"))
++    sourceSets.getByName("main").res.srcDir(layout.buildDirectory.dir("generated/rovesBrand/res"))
+     compileSdk = 37
+     buildToolsVersion = "36.0.0"
+ 
+@@ -146,38 +158,8 @@
      }
  }
  
@@ -245,9 +273,11 @@ index db87ea8..bf5b300 100644
 -            variant.assembleProvider.get().finalizedBy(copyAndRenameAPKTask)
 -        }
 -    }
--}
--
- dependencies {
++dependencies {
++    implementation("androidx.webkit:webkit:1.12.1")
+ }
+ 
+-dependencies {
 -    if (findProject(":servoview-local") != null) {
 -        implementation(project(":servoview-local"))
 -    } else {
@@ -257,8 +287,8 @@ index db87ea8..bf5b300 100644
 -    implementation(libs.androidx.material3.compose)
 -    implementation(libs.androidx.material3.compose.adaptive)
 -    implementation(libs.androidx.preference)
-+    implementation("androidx.webkit:webkit:1.12.1")
- }
+-}
++tasks.named("preBuild").configure { dependsOn(generateRovesBrandAssets) }
 diff --git a/support/android/apk/servoapp/src/main/AndroidManifest.xml b/support/android/apk/servoapp/src/main/AndroidManifest.xml
 index 58b439d..80abf01 100644
 --- a/support/android/apk/servoapp/src/main/AndroidManifest.xml
@@ -287,10 +317,9 @@ index 58b439d..80abf01 100644
                  <action android:name="android.intent.action.MAIN" />
                  <category android:name="android.intent.category.LAUNCHER" />
 diff --git a/support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt b/support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt
-index 2f68bf9..a1f4986 100644
 --- a/support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt
 +++ b/support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt
-@@ -1,286 +1,107 @@
+@@ -1,286 +1,142 @@
 -/*
 - * This Source Code Form is subject to the terms of the Mozilla Public
 - * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -322,7 +351,16 @@ index 2f68bf9..a1f4986 100644
 -import org.servo.servoview.ServoView
 -import java.io.File
 -import java.io.FileNotFoundException
--
++import android.os.SystemClock
++import android.view.View
++import android.webkit.WebChromeClient
++import android.webkit.WebResourceRequest
++import android.webkit.WebResourceResponse
++import android.webkit.WebView
++import android.webkit.WebViewClient
++import android.widget.FrameLayout
++import androidx.webkit.WebViewAssetLoader
+ 
 -// Roves fork: upstream Servo's own reference "servoshell" browser UI (address bar, back/
 -// forward/refresh buttons, a Settings screen, a History screen, and manifest intent-filters
 -// offering this app as a system-wide browser/URL handler) has all been removed -- this is
@@ -336,47 +374,31 @@ index 2f68bf9..a1f4986 100644
 -
 -    private var canGoBackState = mutableStateOf(false)
 -    private var mediaSession: MediaSession? = null
-+import android.view.View
-+import android.webkit.WebChromeClient
-+import android.webkit.WebResourceRequest
-+import android.webkit.WebResourceResponse
-+import android.webkit.WebView
-+import android.webkit.WebViewClient
-+import android.widget.FrameLayout
-+import androidx.webkit.WebViewAssetLoader
-+
 +/** The game runs on Android's system WebView; no Servo or JNI library is loaded. */
 +class MainActivity : Activity() {
 +    private lateinit var webView: WebView
 +    private lateinit var container: FrameLayout
++    private lateinit var splash: RovesSplashView
++    private var splashStarted = 0L
++    private var startupPending = true
++    private var startupNavigation = 0L
++    private var destroyed = false
 +    private var fullscreenView: View? = null
 +    private var fullscreenCallback: WebChromeClient.CustomViewCallback? = null
  
      override fun onCreate(savedInstanceState: Bundle?) {
          super.onCreate(savedInstanceState)
--
--        hideSystemBars()
--
--        servoView = ServoView(this)
--
--        // `servoThemeColor` is a Gradle `resValue` (see servoapp/build.gradle.kts), sourced
--        // from the bundled game's own manifest `theme_color` (or `mach bundle`'s own
--        // --android-theme-color override) -- empty string by default, meaning "no theme_color
--        // was set, leave the status bar at its normal theme color" rather than forcing some
--        // placeholder color. `Color.parseColor` only understands `#rrggbb`/`#aarrggbb` and a
--        // handful of named colors (not arbitrary CSS like `rgb(...)`), so an unparseable value
--        // is caught and ignored rather than crashing the app on launch.
 +        container = FrameLayout(this)
-+        webView = WebView(this)
-+        container.addView(webView, FrameLayout.LayoutParams(-1, -1))
++        container.setBackgroundColor(Color.BLACK)
++        splash = RovesSplashView(this)
++        splashStarted = SystemClock.uptimeMillis()
++        // Paint branding before constructing the potentially expensive system WebView.
++        container.addView(splash, FrameLayout.LayoutParams(-1, -1))
 +        setContentView(container)
-         val themeColor = getString(R.string.servoThemeColor)
--        if (themeColor.isNotBlank()) {
--            try {
--                @Suppress("DEPRECATION")
--                window.statusBarColor = Color.parseColor(themeColor)
--            } catch (e: IllegalArgumentException) {
--                Log.w("MainActivity", "Ignoring unparseable --android-theme-color/theme_color '$themeColor'", e)
++        webView = WebView(this)
++        webView.setBackgroundColor(Color.BLACK)
++        container.addView(webView, 0, FrameLayout.LayoutParams(-1, -1))
++        val themeColor = getString(R.string.servoThemeColor)
 +        if (themeColor.isNotEmpty()) {
 +            runCatching { window.statusBarColor = Color.parseColor(themeColor) }
 +        }
@@ -396,6 +418,44 @@ index 2f68bf9..a1f4986 100644
 +            (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
 +        )
 +        webView.webViewClient = object : WebViewClient() {
++            override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
++                startupNavigation++
++            }
+ 
+-        hideSystemBars()
++            override fun onPageFinished(view: WebView, url: String) {
++                if (!startupPending || url != view.url) return
++                val navigation = startupNavigation
++                // Page completion alone doesn't guarantee its contents can be drawn.
++                view.postVisualStateCallback(navigation, object : WebView.VisualStateCallback() {
++                    override fun onComplete(requestId: Long) {
++                        val remaining = (500L - (SystemClock.uptimeMillis() - splashStarted)).coerceAtLeast(0L)
++                        splash.postDelayed({
++                            if (!destroyed && startupPending && navigation == startupNavigation) {
++                                startupPending = false
++                                container.removeView(splash)
++                            }
++                        }, remaining)
++                    }
++                })
++            }
+ 
+-        servoView = ServoView(this)
+-
+-        // `servoThemeColor` is a Gradle `resValue` (see servoapp/build.gradle.kts), sourced
+-        // from the bundled game's own manifest `theme_color` (or `mach bundle`'s own
+-        // --android-theme-color override) -- empty string by default, meaning "no theme_color
+-        // was set, leave the status bar at its normal theme color" rather than forcing some
+-        // placeholder color. `Color.parseColor` only understands `#rrggbb`/`#aarrggbb` and a
+-        // handful of named colors (not arbitrary CSS like `rgb(...)`), so an unparseable value
+-        // is caught and ignored rather than crashing the app on launch.
+-        val themeColor = getString(R.string.servoThemeColor)
+-        if (themeColor.isNotBlank()) {
+-            try {
+-                @Suppress("DEPRECATION")
+-                window.statusBarColor = Color.parseColor(themeColor)
+-            } catch (e: IllegalArgumentException) {
+-                Log.w("MainActivity", "Ignoring unparseable --android-theme-color/theme_color '$themeColor'", e)
 +            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
 +                val response = loader.shouldInterceptRequest(request.url)
 +                if (request.url.host == WebViewAssetLoader.DEFAULT_DOMAIN && response == null) {
@@ -422,6 +482,7 @@ index 2f68bf9..a1f4986 100644
 +                fullscreenCallback = callback
 +                webView.visibility = View.GONE
 +                container.addView(view, FrameLayout.LayoutParams(-1, -1))
++                if (startupPending) splash.bringToFront()
 +                window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or
 +                    View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
              }
@@ -437,9 +498,7 @@ index 2f68bf9..a1f4986 100644
 -            Os.setenv("HOST_FILE", host, false)
 -        } catch (e: ErrnoException) {
 -            e.printStackTrace()
-+        if (savedInstanceState == null || webView.restoreState(savedInstanceState) == null) {
-+            webView.loadUrl("https://appassets.androidplatform.net/index.html")
-         }
+-        }
 -
 -        val intent = getIntent()
 -        val args = intent.getStringExtra("servoargs")
@@ -486,32 +545,17 @@ index 2f68bf9..a1f4986 100644
 -    }
 -
 -    override fun onTitleChanged(title: String) {
-     }
- 
+-    }
+-
 -    override fun onUrlChanged(url: String) {
-+    private fun leaveFullscreen() {
-+        fullscreenView?.let { container.removeView(it) }
-+        fullscreenView = null
-+        webView.visibility = View.VISIBLE
-+        window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
-+        fullscreenCallback?.onCustomViewHidden()
-+        fullscreenCallback = null
-     }
- 
+-    }
+-
 -    override fun onHistoryChanged(canGoBack: Boolean, canGoForward: Boolean) {
 -        canGoBackState.value = canGoBack
-+    @Deprecated("Activity back navigation")
-+    override fun onBackPressed() {
-+        if (fullscreenView != null) leaveFullscreen()
-+        else if (webView.canGoBack()) webView.goBack()
-+        else super.onBackPressed()
-     }
- 
+-    }
+-
 -    override fun onRedrawing(redrawing: Boolean) {
-+    override fun onSaveInstanceState(outState: Bundle) {
-+        webView.saveState(outState)
-+        super.onSaveInstanceState(outState)
-     }
+-    }
 -
 -    public override fun onPause() {
 -        servoView.onPause()
@@ -538,15 +582,24 @@ index 2f68bf9..a1f4986 100644
 -        WindowInsetsControllerCompat(window, window.decorView).let { controller ->
 -            controller.hide(WindowInsetsCompat.Type.systemBars())
 -            controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
--        }
--    }
--
++        if (savedInstanceState == null || webView.restoreState(savedInstanceState) == null) {
++            webView.loadUrl("https://appassets.androidplatform.net/index.html")
+         }
+     }
+ 
 -    override fun onMediaSessionMetadata(title: String, artist: String, album: String) {
 -        Log.d("onMediaSessionMetadata", "$title $artist $album")
 -        val mediaSession = mediaSession ?: MediaSession(servoView, applicationContext).also { mediaSession = it }
 -        mediaSession.updateMetadata(title, artist, album)
--    }
--
++    private fun leaveFullscreen() {
++        fullscreenView?.let { container.removeView(it) }
++        fullscreenView = null
++        webView.visibility = View.VISIBLE
++        window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
++        fullscreenCallback?.onCustomViewHidden()
++        fullscreenCallback = null
+     }
+ 
 -    override fun onMediaSessionPlaybackStateChange(state: Int) {
 -        Log.d("onMediaSessionPlaybackStateChange", state.toString())
 -        val mediaSession = mediaSession ?: MediaSession(servoView, applicationContext).also { mediaSession = it }
@@ -562,12 +615,29 @@ index 2f68bf9..a1f4986 100644
 -        ) {
 -            mediaSession.showMediaSessionControls()
 -        }
--    }
--
++    @Deprecated("Activity back navigation")
++    override fun onBackPressed() {
++        if (fullscreenView != null) leaveFullscreen()
++        else if (webView.canGoBack()) webView.goBack()
++        else super.onBackPressed()
+     }
+ 
 -    override fun onMediaSessionSetPositionState(duration: Float, position: Float, playbackRate: Float) {
 -        Log.d("onMediaSessionSetPositionState", "$duration $position $playbackRate")
--    }
--}
++    override fun onSaveInstanceState(outState: Bundle) {
++        webView.saveState(outState)
++        super.onSaveInstanceState(outState)
++    }
++    override fun onPause() { webView.onPause(); super.onPause() }
++    override fun onResume() { super.onResume(); webView.onResume() }
++    override fun onDestroy() {
++        destroyed = true
++        leaveFullscreen()
++        container.removeView(webView)
++        webView.destroy()
++        super.onDestroy()
+     }
+ }
 -
 -/**
 - * Copies the `assets/<assetRoot>/` tree Gradle bundles the game's own content into (see
@@ -633,15 +703,8 @@ index 2f68bf9..a1f4986 100644
 -        for (child in assets.list(assetPath) ?: emptyArray()) {
 -            copyAssetTree(assets, "$assetPath/$child", File(destFile, child))
 -        }
-+    override fun onPause() { webView.onPause(); super.onPause() }
-+    override fun onResume() { super.onResume(); webView.onResume() }
-+    override fun onDestroy() {
-+        leaveFullscreen()
-+        container.removeView(webView)
-+        webView.destroy()
-+        super.onDestroy()
-     }
- }
+-    }
+-}
 -
 -/**
 - * Matches `src="/foo"`/`href="/foo"` (a root-relative reference, the default a bundler like
@@ -1086,3 +1149,95 @@ index 0000000..e539cc2
 +
 +if __name__ == '__main__':
 +    unittest.main()
+
+diff --git a/support/android/apk/servoapp/src/main/res/values/styles.xml b/support/android/apk/servoapp/src/main/res/values/styles.xml
+--- a/support/android/apk/servoapp/src/main/res/values/styles.xml
++++ b/support/android/apk/servoapp/src/main/res/values/styles.xml
+@@ -2,6 +2,8 @@
+ 
+     <!-- Base application theme. -->
+     <style name="AppTheme" parent="android:Theme.Material.Light.NoActionBar">
++        <item name="android:windowBackground">@android:color/black</item>
++        <item name="android:colorBackground">@android:color/black</item>
+         <item name="android:statusBarColor">#212121</item>
+     </style>
+ 
+diff --git a/support/android/apk/servoapp/src/main/java/org/servo/servoshell/RovesSplashView.kt b/support/android/apk/servoapp/src/main/java/org/servo/servoshell/RovesSplashView.kt
+--- /dev/null
++++ b/support/android/apk/servoapp/src/main/java/org/servo/servoshell/RovesSplashView.kt
+@@ -0,0 +1,60 @@
++package org.servo.servoshell
++
++import android.content.Context
++import android.graphics.BitmapFactory
++import android.graphics.Canvas
++import android.graphics.Color
++import android.graphics.Paint
++import android.graphics.RectF
++import android.graphics.Typeface
++import android.os.SystemClock
++import android.view.View
++import kotlin.math.min
++
++/** Native branding, independent of the game's assets and launcher icon. */
++class RovesSplashView(context: Context) : View(context) {
++    private val icon = context.assets.open("roves-brand/servo_1024.png").use {
++        BitmapFactory.decodeStream(it)
++    }
++    private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
++    private val font = Typeface.createFromAsset(context.assets, "roves-brand/fonts/MetalMania-Regular.ttf")
++    private val started = SystemClock.uptimeMillis()
++
++    init {
++        setBackgroundColor(Color.BLACK)
++        isClickable = true
++        contentDescription = "Roves"
++    }
++
++    override fun onDraw(canvas: Canvas) {
++        super.onDraw(canvas)
++        val density = resources.displayMetrics.density
++        val scale = min(density, width / 400f)
++        paint.typeface = font
++        paint.textSize = 64f * scale
++        paint.color = Color.WHITE
++        val iconSize = 120f * scale
++        val gap = 8f * scale
++        val textWidth = paint.measureText("Roves")
++        val left = (width - iconSize - gap - textWidth) / 2f
++        val top = height / 2f - iconSize / 2f - 20f * scale
++        canvas.drawBitmap(icon, null, RectF(left, top, left + iconSize, top + iconSize), paint)
++        val metrics = paint.fontMetrics
++        canvas.drawText("Roves", left + iconSize + gap,
++            top + iconSize / 2f - (metrics.ascent + metrics.descent) / 2f, paint)
++        val barWidth = 240f * scale
++        val barLeft = (width - barWidth) / 2f
++        val barTop = top + iconSize + 32f * scale
++        paint.color = Color.DKGRAY
++        canvas.drawRect(barLeft, barTop, barLeft + barWidth, barTop + 4f * scale, paint)
++        val phase = ((SystemClock.uptimeMillis() - started) % 1400L) / 1400f
++        val highlight = barWidth * 0.25f
++        val x = barLeft - highlight + phase * (barWidth + highlight)
++        canvas.save()
++        canvas.clipRect(barLeft, barTop, barLeft + barWidth, barTop + 4f * scale)
++        paint.color = Color.WHITE
++        canvas.drawRect(x, barTop, x + highlight, barTop + 4f * scale, paint)
++        canvas.restore()
++        postInvalidateOnAnimation()
++    }
++}
+diff --git a/support/android/apk/servoapp/src/main/res/values-v31/styles.xml b/support/android/apk/servoapp/src/main/res/values-v31/styles.xml
+--- /dev/null
++++ b/support/android/apk/servoapp/src/main/res/values-v31/styles.xml
+@@ -0,0 +1,11 @@
++<resources>
++    <!-- Android 12+ owns the initial system splash; keep its branding consistent. -->
++    <style name="AppTheme" parent="android:Theme.Material.Light.NoActionBar">
++        <item name="android:windowBackground">@android:color/black</item>
++        <item name="android:colorBackground">@android:color/black</item>
++        <item name="android:statusBarColor">#212121</item>
++        <item name="android:windowSplashScreenBackground">@android:color/black</item>
++        <item name="android:windowSplashScreenAnimatedIcon">@drawable/roves_boot_icon</item>
++        <item name="android:windowSplashScreenIconBackgroundColor">@android:color/black</item>
++    </style>
++</resources>

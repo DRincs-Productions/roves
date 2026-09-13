@@ -2,7 +2,22 @@ plugins {
     alias(libs.plugins.android.application)
 }
 
+// Keep engine branding separate from www and the game's replaceable launcher icon.
+val generateRovesBrandAssets by tasks.registering(Sync::class) {
+    from(rootProject.file("../../../resources")) {
+        include("servo_1024.png", "fonts/MetalMania-Regular.ttf", "fonts/MetalMania-OFL.txt")
+        into("assets/roves-brand")
+    }
+    from(rootProject.file("../../../resources/servo_1024.png")) {
+        into("res/drawable")
+        rename { "roves_boot_icon.png" }
+    }
+    into(layout.buildDirectory.dir("generated/rovesBrand"))
+}
+
 android {
+    sourceSets.getByName("main").assets.srcDir(layout.buildDirectory.dir("generated/rovesBrand/assets"))
+    sourceSets.getByName("main").res.srcDir(layout.buildDirectory.dir("generated/rovesBrand/res"))
     compileSdk = 37
     buildToolsVersion = "36.0.0"
 
@@ -146,3 +161,5 @@ androidComponents {
 dependencies {
     implementation("androidx.webkit:webkit:1.12.1")
 }
+
+tasks.named("preBuild").configure { dependsOn(generateRovesBrandAssets) }
