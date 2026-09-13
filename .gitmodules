@@ -10,3 +10,6 @@
 [submodule "roves-action"]
 	path = roves-action
 	url = https://github.com/DRincs-Productions/roves-action
+[submodule "roves-packmaster"]
+	path = roves-packmaster
+	url = https://github.com/DRincs-Productions/roves-packmaster
