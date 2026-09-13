@@ -15,7 +15,7 @@ name: Build Android native WebView APK
 #
 # Also publishes `roves_android_project.zip` (a snapshot of support/android/apk/) to the
 # rolling "test" GitHub Release (same one test.yml uses for desktop) -- Roves Packmaster's
-# own Android backend (roves-ui/src-tauri/src/android.rs) downloads this directly since it
+# own Android backend (roves-packmaster/src-tauri/src/android.rs) downloads this directly since it
 # never does a git checkout of the engine itself. No more `roves_android_native_arm64.zip`
 # (a compiled libservoshell.so) as of the 2026-09-13 mobile pivot to native WebView -- there's
 # no native library to publish anymore, see CUSTOMIZATIONS.md's entry on this.
@@ -79,7 +79,7 @@ jobs:
       - name: Install Android SDK
         # Google doesn't publish a bare "platforms;android-37" package -- API 37 ships
         # versioned as android-37.0/.1/.2 (and possibly higher by the time this runs), a
-        # real, previously-confirmed failure (see roves-ui's src-tauri/src/android.rs,
+        # real, previously-confirmed failure (see roves-packmaster's src-tauri/src/android.rs,
         # `resolve_platform_package`, and CUSTOMIZATIONS.md's Packmaster-Android-on-Windows
         # entries) -- resolved dynamically here for the same reason: hardcoding today's exact
         # suffix would just break again the next time Google ships a new one. --channel=3

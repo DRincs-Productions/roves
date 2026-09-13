@@ -153,13 +153,13 @@ esattamente il "quale renderer/GPU viene effettivamente riportato" che mancava. 
 fare: controllare i log di Servo/ANGLE al lancio, e soprattutto **verificarlo su una build
 reale** su ciascuna piattaforma della matrice CI (Windows/macOS/Linux) — non ancora fatto.
 
-## 3. Android: leggere tutto `manifest.webmanifest` (non solo `orientation`), override via parametro, e riflettere tutto in `roves-action`/Roves Packmaster (`roves-ui`)
+## 3. Android: leggere tutto `manifest.webmanifest` (non solo `orientation`), override via parametro, e riflettere tutto in `roves-action`/Roves Packmaster (`roves-packmaster`)
 
 **Stato: fatto (2026-09-01/02, branch `android` su tutti e tre i repo).** Copertura completa
 del manifest (`name`/`short_name`/`orientation`, non più solo `orientation`) + override
 espliciti lato engine (vedi `CUSTOMIZATIONS.md`, voce "`mach bundle --android`: full manifest
 coverage..."); `roves-action` espone `android-app-name`/`android-orientation`/
-`android-theme-color`; Roves Packmaster (`roves-ui`) ha sia la UI (card Mobile, switch
+`android-theme-color`; Roves Packmaster (`roves-packmaster`) ha sia la UI (card Mobile, switch
 webmanifest, campi disabilitati che mostrano i valori reali del manifest) sia un vero backend
 (`src-tauri/src/android.rs`) che genera davvero un `.apk` — non più solo placeholder.
 
@@ -198,7 +198,7 @@ Da fare, in ordine indicativo di dipendenza:
   supporta questi parametri, `action.yml` deve esporli come input (mirroring — vedi
   `CLAUDE.md`, sezione "keep `roves-action` in sync"). Non toccato in questo giro perché il
   lavoro Android è stato scoperto esplicitamente alla sola cartella dell'engine.
-- **Roves Packmaster** (cartella sibling `roves-ui`, package.json name `roves-packmaster` —
+- **Roves Packmaster** (cartella sibling `roves-packmaster`, package.json name `roves-packmaster` —
   stesso progetto descritto in `CLAUDE.md`, solo nome di cartella diverso): aggiungere una
   nuova sezione "Mobile" (per ora solo Android), parallela all'esistente sezione Desktop/
   `PortableSettings` in `src/lib/settings.ts` — una card abilitabile/disabilitabile come quella
@@ -220,7 +220,7 @@ su nessuna piattaforma. Lasciato qui solo come riferimento storico.
 **Stato (storico, pre-pivot): fatto (2026-09-10), non verificato su un build Windows reale.** Vedi
 `CUSTOMIZATIONS.md`, voce "Fix `ndk-build` invocation for Windows", e
 `patches/servo-v0.5.0/0004-android.patch` (rigenerata). Scoperto il 2026-09-02 lavorando al
-backend Android di Roves Packmaster (`roves-ui/src-tauri/src/android.rs`).
+backend Android di Roves Packmaster (`roves-packmaster/src-tauri/src/android.rs`).
 
 `support/android/apk/servoview/build.gradle.kts` (upstream Servo, non una customizzazione di
 questo fork) invoca l'NDK con `getNdkDir() + "/ndk-build"` — letteralmente senza estensione,
@@ -244,7 +244,7 @@ noto di `ProcessBuilder` su Windows, non testato.
 `org.gradle.internal.os.OperatingSystem.current().isWindows`. Verificato solo che la patch si
 applichi pulita a un'estrazione pristine di v0.5.0 — non testato contro un vero
 Gradle/NDK/`ndk-build.cmd` su Windows (nessun toolchain Android disponibile in questa
-sessione). `check_android_availability()` in `roves-ui/src-tauri/src/android.rs` va comunque
+sessione). `check_android_availability()` in `roves-packmaster/src-tauri/src/android.rs` va comunque
 aggiornato per smettere di bloccare Windows, e il tutto va riverificato su un runner Windows
 reale prima di considerare questo punto davvero chiuso — vedi il punto 6 sotto.
 
@@ -254,7 +254,7 @@ reale prima di considerare questo punto davvero chiuso — vedi il punto 6 sotto
 verificato end-to-end via CI reale (vedi punto 3 sopra); `--android-release` in sé resta non
 verificato** (nessun ambiente CI con un keystore reale lo esercita ancora). Lato Roves
 Packmaster: fatto (2026-09-10, `src-tauri/src/signing.rs`), anch'esso non verificato con una
-build reale — vedi `roves-ui/TODO.md` #2. `roves-action` ancora da fare (vedi sotto). Vedi
+build reale — vedi `roves-packmaster/TODO.md` #2. `roves-action` ancora da fare (vedi sotto). Vedi
 `CUSTOMIZATIONS.md`, voce "`mach bundle --android-release`", per il dettaglio completo.
 
 `mach bundle --android --android-release` ora sceglie la variante Gradle `Release` invece di
@@ -278,14 +278,14 @@ che l'apk risultante sia genuinamente firmato, es. via `apksigner verify`).
 **Superato (2026-09-13):** vedi la nota nel punto 4 sopra — niente più NDK/Rust da
 cross-compilare, su nessuna piattaforma, quindi "farlo funzionare su Windows" non è più
 un problema NDK ma solo Java+Android SDK+Gradle, già cross-platform di per sé.
-`roves-ui/src-tauri/src/android.rs` va comunque riscritto per il nuovo bundling
-Gradle-only — vedi `roves-ui/TODO.md`.
+`roves-packmaster/src-tauri/src/android.rs` va comunque riscritto per il nuovo bundling
+Gradle-only — vedi `roves-packmaster/TODO.md`.
 
 **Stato (storico, pre-pivot): sbloccato dal punto 4, ma non ancora chiuso.** Il blocco Gradle (`ndk-build` senza
 fallback `.cmd`) è risolto (punto 4), ma restano da fare, in ordine:
 
 1. Rimuovere il blocco esplicito in `check_android_availability()`
-   (`roves-ui/src-tauri/src/android.rs`) che oggi disabilita Android su Windows in Packmaster
+   (`roves-packmaster/src-tauri/src/android.rs`) che oggi disabilita Android su Windows in Packmaster
    — non ha più motivo di esistere una volta verificato il punto 4.
 2. **Verificare per davvero su un runner/macchina Windows con Android SDK/NDK reale** — il
    fix del punto 4 non è mai stato eseguito contro un `ndk-build.cmd` vero, solo verificato
@@ -332,7 +332,7 @@ implementato nella stessa giornata.
 **Stato: motore fatto (2026-09-13) — vedi `CUSTOMIZATIONS.md`, voce "Mobile pivots from
 Servo to native WebView". Restano aperti, in ordine di priorità:**
 
-1. **Migrare `roves-action` e `roves-ui`/Packmaster al nuovo bundling Gradle-only** — vedi
+1. **Migrare `roves-action` e `roves-packmaster`/Packmaster al nuovo bundling Gradle-only** — vedi
    i `TODO.md` di quei due repo. `roves-action` scaricava `roves_android_native_arm64.zip`/
    `roves_android_project.zip` dalla release "test" del motore (che `android.yml` non
    pubblica più); Packmaster's `android.rs` faceva il bootstrap NDK/Rust/JRE che non serve

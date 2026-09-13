@@ -4978,7 +4978,7 @@ Every other `.svg` in this repo was checked and left alone — none of them are 
 Servo's own wordmark logo (a wide 284×63 text lockup, used for `resource:`-served error/about
 pages — never Roves-branded), `test-page/public/favicon.svg` is a deliberately unrelated
 placeholder for a different feature (see the 2026-08-09 "Game-supplied icon" entry above —
-literally documented there as unrelated to this mark), and `roves-ui`/`pixi-vn-react-template`'s
+literally documented there as unrelated to this mark), and `roves-packmaster`/`pixi-vn-react-template`'s
 own `.svg` files belong to Packmaster's and the game template's own, entirely separate branding.
 
 **Tooling note (differs from the 2026-08-13 entry's own pipeline):** that entry used
@@ -5318,7 +5318,7 @@ built in place inside `support/android/apk/`, same as before; only this fork's o
 **Why:** direct continuation of the 2026-08-31 entry's own explicitly-deferred follow-up
 ("App name/icon/theme-color from the same manifest are a deliberate follow-up, not attempted
 here") — requested the next day, together with corresponding `roves-action`/Roves Packmaster
-(`roves-ui`) work tracked separately (see `TODO.md` #3, which this entry closes the
+(`roves-packmaster`) work tracked separately (see `TODO.md` #3, which this entry closes the
 engine-side portion of).
 
 **Not done (left as a judgment call, not an oversight):** `display`, `background_color`, and
@@ -5366,7 +5366,7 @@ on the classpath, no new dependency) to pick the right extension per host OS.
 
 **Why:** this was the one concrete blocker keeping Android out of reach for anyone building
 from source on Windows, and separately kept Roves Packmaster's own Android backend
-(`roves-ui/src-tauri/src/android.rs`) explicitly disabled on Windows via
+(`roves-packmaster/src-tauri/src/android.rs`) explicitly disabled on Windows via
 `check_android_availability()` — neither compiles anything themselves on Windows in
 Packmaster's case, but both still shell out to this exact Gradle task, which was failing
 regardless of who invoked it or why.
@@ -6155,7 +6155,7 @@ bootstrap, just Java + Android SDK platform-tools + a real `./mach bundle --andr
 consumer (roves-action, Packmaster) uses instead of a hand-rolled `./gradlew` invocation. Two
 real bugs fixed in the same pass: (1) `sdkmanager 'platforms;android-37'` — Google doesn't
 publish that exact package name, only versioned `android-37.0`/`.1`/`.2` — the *identical*
-failure already diagnosed and fixed for Packmaster earlier this session (see `roves-ui`'s
+failure already diagnosed and fixed for Packmaster earlier this session (see `roves-packmaster`'s
 `src-tauri/src/android.rs`, `resolve_platform_package`); resolved dynamically here the same way.
 (2) the original CI step copied smoke-test content directly into the *tracked* `support/android/
 apk/servoapp/src/main/assets/www/` — the exact "persists one game's content across unrelated
@@ -6170,6 +6170,6 @@ by hand) — the Android side is fully automated, iOS isn't yet. No device runti
 for either platform (splash timing, WebView storage persistence, video seeking, rotation,
 fullscreen) — this machine has no Android emulator/device attached and no macOS/Xcode at all,
 so CI-green plus code review is the ceiling of verification reachable from here; real coverage
-needs someone with a device. **`roves-action` and `roves-ui`/Packmaster's own Android bundling
+needs someone with a device. **`roves-action` and `roves-packmaster`/Packmaster's own Android bundling
 still assumed the old Rust/NDK path as of this entry** — see their own `CUSTOMIZATIONS.md`/
 `CLAUDE.md` entries for whether that migration has landed by the time you're reading this.
