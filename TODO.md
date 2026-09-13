@@ -97,7 +97,13 @@ Da fare, in ordine indicativo di dipendenza:
 
 ## 4. Bundling Android su Windows: `ndk-build` invocato senza fallback `.cmd`
 
-**Stato: fatto (2026-09-10), non verificato su un build Windows reale.** Vedi
+**Superato (2026-09-13):** Android non compila più Rust/NDK affatto — vedi
+`CUSTOMIZATIONS.md`, voce "Mobile pivots from Servo to native WebView". `servoview/`
+(il modulo che invocava `ndk-build`) è stato eliminato del tutto. Questo intero punto,
+incluso il punto 6 sotto, non si applica più: non c'è nessun `ndk-build`/NDK da invocare,
+su nessuna piattaforma. Lasciato qui solo come riferimento storico.
+
+**Stato (storico, pre-pivot): fatto (2026-09-10), non verificato su un build Windows reale.** Vedi
 `CUSTOMIZATIONS.md`, voce "Fix `ndk-build` invocation for Windows", e
 `patches/servo-v0.5.0/0004-android.patch` (rigenerata). Scoperto il 2026-09-02 lavorando al
 backend Android di Roves Packmaster (`roves-ui/src-tauri/src/android.rs`).
@@ -155,7 +161,13 @@ che l'apk risultante sia genuinamente firmato, es. via `apksigner verify`).
 
 ## 6. Bundling/generazione dell'APK Android anche su Windows
 
-**Stato: sbloccato dal punto 4, ma non ancora chiuso.** Il blocco Gradle (`ndk-build` senza
+**Superato (2026-09-13):** vedi la nota nel punto 4 sopra — niente più NDK/Rust da
+cross-compilare, su nessuna piattaforma, quindi "farlo funzionare su Windows" non è più
+un problema NDK ma solo Java+Android SDK+Gradle, già cross-platform di per sé.
+`roves-ui/src-tauri/src/android.rs` va comunque riscritto per il nuovo bundling
+Gradle-only — vedi `roves-ui/TODO.md`.
+
+**Stato (storico, pre-pivot): sbloccato dal punto 4, ma non ancora chiuso.** Il blocco Gradle (`ndk-build` senza
 fallback `.cmd`) è risolto (punto 4), ma restano da fare, in ordine:
 
 1. Rimuovere il blocco esplicito in `check_android_availability()`
@@ -171,7 +183,15 @@ fallback `.cmd`) è risolto (punto 4), ma restano da fare, in ordine:
 
 ## 7. Portare il protocollo `game://` anche su Android
 
-**Stato: fatto (2026-09-12) — vedi `CUSTOMIZATIONS.md`, voci "Port `file:`'s content-root
+**Superato (2026-09-13):** Android non usa più Servo/`game://`/`file://` affatto — vedi
+`CUSTOMIZATIONS.md`, voce "Mobile pivots from Servo to native WebView". Il problema che
+questo punto risolveva (router lato client, path assoluti rotti) è ora risolto in modo
+diverso: `WebViewAssetLoader` serve il gioco su una vera origine
+`https://appassets.androidplatform.net/`, non `file://`, quindi non c'è più bisogno del
+protocollo `game://` su Android. Lasciato qui come riferimento storico — il lavoro sotto
+resta valido per desktop/OpenHarmony, che continuano a usare Servo.
+
+**Stato (storico, pre-pivot): fatto (2026-09-12) — vedi `CUSTOMIZATIONS.md`, voci "Port `file:`'s content-root
 rebasing to Android" e "Port the full `game://content/` protocol to Android", per il dettaglio
 completo. In attesa di conferma finale su dispositivo reale + CI (`android.yml`/`test.yml`)
 prima di considerarlo definitivamente chiuso.**
@@ -192,6 +212,27 @@ fallback del router. Il fix completo — portare anche `game.rs`/`GameProtocolHa
 il fallback di `file.rs`) sullo stesso modulo condiviso, e far avviare `egl/app.rs` su
 `game://content/` invece del `file://` letterale quando c'è un lancio bundled — è stato
 implementato nella stessa giornata.
+
+## 8. Rifinire il pivot mobile a WebView nativo (Android/iOS)
+
+**Stato: motore fatto (2026-09-13) — vedi `CUSTOMIZATIONS.md`, voce "Mobile pivots from
+Servo to native WebView". Restano aperti, in ordine di priorità:**
+
+1. **Migrare `roves-action` e `roves-ui`/Packmaster al nuovo bundling Gradle-only** — vedi
+   i `TODO.md` di quei due repo. `roves-action` scaricava `roves_android_native_arm64.zip`/
+   `roves_android_project.zip` dalla release "test" del motore (che `android.yml` non
+   pubblica più); Packmaster's `android.rs` faceva il bootstrap NDK/Rust/JRE che non serve
+   più affatto — va riscritto per scaricare solo Java+Android SDK e lanciare Gradle.
+2. **Wire iOS staging into `mach bundle`** — `support/ios/bundle.py` è oggi uno script
+   standalone, non collegato a `post_build_commands.py`/`mach bundle --ios`. Servirebbe un
+   `is_ios(self.target)` branch analogo a `is_android`, e capire come/se firmare/costruire
+   automaticamente (richiede macOS+Xcode, non disponibile in questa sessione).
+3. **Verifica su dispositivo reale, entrambe le piattaforme** — nessun emulatore/dispositivo
+   Android né macOS/Xcode disponibili in questa sessione. Da verificare: timing dello splash,
+   persistenza storage, seeking video/audio, rotazione, fullscreen, comportamento del router
+   lato client con un gioco reale (`pixi-vn-react-template`).
+4. **APK signing** (punto 5 sopra) resta valido e non affetto dal pivot — `--android-release`
+   funziona identicamente nel nuovo `_bundle_android`.
 
 ## Note
 

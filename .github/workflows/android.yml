@@ -1,5 +1,15 @@
 name: Build Android native WebView APK
 
+# Smoke-tests the real `mach bundle --android` path (python/servo/post_build_commands.py's
+# `_bundle_android`) end to end, the same one roves-action and Packmaster both drive -- not a
+# hand-rolled Gradle invocation that writes test content straight into the tracked source
+# tree. An earlier version of this workflow did exactly that (copied test content into
+# support/android/apk/servoapp/src/main/assets/www/ directly), the precise anti-pattern
+# `_bundle_android`'s own doc comment already warns about for a different reason (silently
+# persisting one game's content across unrelated local runs) -- harmless on a fresh CI
+# checkout, but it meant this workflow never actually exercised the code every real consumer
+# uses, so a real `_bundle_android` bug could pass CI here undetected.
+
 on:
   push:
     branches: [main]
@@ -9,33 +19,90 @@ on:
 permissions:
   contents: read
 
+env:
+  SERVO_TAG: '0.5.0'
+
 jobs:
   android:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: setup python (gives a consistent `python3` across runners, see ./mach)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: setup uv (needed by ./mach, see README.md)
+        uses: astral-sh/setup-uv@v5
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
+
       - uses: android-actions/setup-android@v3
+
       - name: Install Android SDK
-        run: sdkmanager 'platforms;android-37' 'build-tools;36.0.0'
-      - name: Bundle smoke-test content
+        # Google doesn't publish a bare "platforms;android-37" package -- API 37 ships
+        # versioned as android-37.0/.1/.2 (and possibly higher by the time this runs), a
+        # real, previously-confirmed failure (see roves-ui's src-tauri/src/android.rs,
+        # `resolve_platform_package`, and CUSTOMIZATIONS.md's Packmaster-Android-on-Windows
+        # entries) -- resolved dynamically here for the same reason: hardcoding today's exact
+        # suffix would just break again the next time Google ships a new one. --channel=3
+        # (canary, the widest channel) since a still-preview API level is canary-only.
         run: |
-          mkdir -p support/android/apk/servoapp/src/main/assets/www
-          cp -r test-page/public/. support/android/apk/servoapp/src/main/assets/www/
-          cat > support/android/apk/servoapp/src/main/assets/www/index.html <<'HTML'
+          platform=$(sdkmanager --channel=3 --list 2>/dev/null \
+            | grep -oE '^\s*platforms;android-37(\.[0-9]+)?' | tr -d ' ' \
+            | sort -t. -k2 -n -r | head -1)
+          if [ -z "$platform" ]; then
+            echo "::error::No platforms;android-37* package found via sdkmanager --list."
+            exit 1
+          fi
+          echo "Resolved platform package: $platform"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          sdkmanager --channel=3 "$platform" 'build-tools;36.0.0'
+
+      - name: chmod +x mach
+        # This repo's own `mach` is tracked as mode 100644 (committed from Windows, where the
+        # exec bit is meaningless) -- see CLAUDE.md's "mach needs chmod +x on Linux/macOS".
+        run: chmod +x mach
+
+      - name: fetch tests/wpt/tests/tools (mach's command loader needs it to exist)
+        # Every mach command except `bootstrap` unconditionally imports WPT test tooling that
+        # lives under tests/wpt/, a ~1.3GB directory this repo deliberately excludes from git
+        # -- without it, `mach bundle` crashes immediately with `ModuleNotFoundError: No
+        # module named 'localpaths'`. See CLAUDE.md's own entry on this for the full
+        # explanation -- identical to release.yml's own step of the same name.
+        run: |
+          rm -rf /tmp/wpt-tools-src
+          git init -q /tmp/wpt-tools-src
+          git -C /tmp/wpt-tools-src remote add origin https://github.com/servo/servo.git
+          git -C /tmp/wpt-tools-src config core.sparseCheckout true
+          git -C /tmp/wpt-tools-src sparse-checkout init --cone
+          git -C /tmp/wpt-tools-src sparse-checkout set tests/wpt/tests/tools
+          git -C /tmp/wpt-tools-src fetch --depth 1 --filter=blob:none origin "v${SERVO_TAG}"
+          git -C /tmp/wpt-tools-src checkout FETCH_HEAD
+          mkdir -p tests/wpt
+          cp -r /tmp/wpt-tools-src/tests/wpt/tests tests/wpt/tests
+          rm -rf /tmp/wpt-tools-src
+
+      - name: Build smoke-test content
+        run: |
+          mkdir -p /tmp/smoke-content
+          cp -r test-page/public/. /tmp/smoke-content/
+          cat > /tmp/smoke-content/index.html <<'HTML'
           <!doctype html><html><body><h1>Roves native WebView</h1><script>
           localStorage.setItem('roves-smoke', 'ok');
           fetch('/favicon.svg').then(r => { if (!r.ok) throw Error(r.status); return r.text(); })
             .then(() => document.body.append('Local assets and storage ready'));
           </script></body></html>
           HTML
-      - name: Build without Servo or NDK
-        working-directory: support/android/apk
-        run: ./gradlew --no-daemon :servoapp:assembleArm64Debug
+
+      - name: mach bundle --android
+        run: ./mach bundle --android --content-dir /tmp/smoke-content --output /tmp/android-output
+
       - uses: actions/upload-artifact@v4
         with:
           name: roves-android-webview
-          path: support/android/apk/servoapp/build/outputs/apk/**/*.apk
+          path: /tmp/android-output/*.apk

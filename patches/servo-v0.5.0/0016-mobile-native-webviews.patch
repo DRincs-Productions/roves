@@ -1,0 +1,3850 @@
+diff --git a/python/servo/post_build_commands.py b/python/servo/post_build_commands.py
+index 2f513955f..761557c62 100644
+--- a/python/servo/post_build_commands.py
++++ b/python/servo/post_build_commands.py
+@@ -7,13 +7,17 @@
+ # option. This file may not be copied, modified, or distributed
+ # except according to those terms.
+ 
++import glob
+ import json
+ import os
+ import os.path as path
++import shutil
+ import subprocess
++import urllib.request
++import uuid
+ from subprocess import CompletedProcess
+ from shutil import copy2
+-from typing import Any, Optional, List
++from typing import Any, Optional, List, NamedTuple, cast
+ 
+ import mozdebug
+ 
+@@ -25,19 +29,100 @@ from mach.decorators import (
+ 
+ import servo.util
+ import servo.platform
++from servo.gstreamer import windows_dlls, windows_dlls_needed_flat, windows_plugins
+ 
+ from servo.command_base import (
++    BuildNotFound,
+     CommandBase,
++    cd,
+     check_call,
+     is_linux,
+     is_freebsd,
++    is_macosx,
++    is_windows,
+ )
++from servo.package_commands import check_call_with_randomized_backoff
+ from servo.platform.build_target import is_android
++from servo.util import delete
+ 
+ from python.servo.command_base import BuildType
+ 
+ ANDROID_APP_NAME = "org.servo.servoshell"
+ 
++# Written next to the engine binary itself (same directory `std::env::current_exe()`'s
++# `.parent()` resolves to at runtime -- see `ports/servoshell/desktop/protocols/saves.rs`)
++# whenever bundle() wraps the portable output into an installer (--msi/--dmg/--deb).
++# Its only purpose is letting the *running* binary tell "I was installed" apart from "I'm
++# running portably" -- something no other signal (env var, cfg flag) previously exposed,
++# since --msi/--dmg/--deb otherwise wrap the exact same portable output byte-for-byte. The
++# save-game API is the first, and so far only, consumer: an installed game's saves live
++# under the OS cache dir (see `roves_content_packer::extract::game_data_dir`), a portable
++# one's live in a `saves/` folder next to the binary -- see CUSTOMIZATIONS.md's "Save-game
++# storage API" entry for the full design.
++INSTALLED_MARKER = ".roves-installed"
++
++# Pinned by exact tag+asset so this download is reproducible -- bump deliberately (a real
++# commit, not a drive-by edit) if rcedit ever cuts a new release worth picking up.
++_RCEDIT_URL = "https://github.com/electron/rcedit/releases/download/v2.0.0/rcedit-x64.exe"
++
++
++def _ensure_rcedit() -> str:
++    """Downloads (once; cached under `target/dependencies/rcedit/`) `rcedit-x64.exe` --
++    a small, MIT-licensed CLI tool from the Electron project
++    (https://github.com/electron/rcedit) that patches an *already-linked* Windows `.exe`'s
++    icon (and version-info) resources in place, no recompile needed. This is exactly the
++    tool Electron itself, and most Electron-based app builders, use to solve the same
++    problem `--icon-ico` exists for here: letting a downloaded prebuilt shell (or a freshly
++    built one -- `mach bundle` uses this either way) carry a different icon per game,
++    without a custom compile. See CUSTOMIZATIONS.md's "Runtime + post-build game icon" entry.
++    """
++    dest_dir = path.join(servo.util.get_target_dir(), "dependencies", "rcedit")
++    dest = path.join(dest_dir, "rcedit-x64.exe")
++    if not path.exists(dest):
++        os.makedirs(dest_dir, exist_ok=True)
++        print(f"Downloading rcedit from {_RCEDIT_URL}")
++        urllib.request.urlretrieve(_RCEDIT_URL, dest)
++    return dest
++
++
++def _patch_windows_exe_icon(exe_path: str, icon_ico: str) -> None:
++    """Patches `exe_path`'s own icon resource to `icon_ico`, in place, via rcedit -- see
++    `_ensure_rcedit`'s own doc comment. Called after the binary is already staged as
++    `play.exe` (works identically whether that binary was just compiled by `mach build` or
++    extracted from a prebuilt shell release asset), and before any `--msi` wrapping, so the
++    icon change is included in both the portable and installer outputs."""
++    rcedit = _ensure_rcedit()
++    subprocess.check_call([rcedit, exe_path, "--set-icon", icon_ico])
++
++
++def _packer_binary_name() -> str:
++    return "roves-content-packer.exe" if is_windows() else "roves-content-packer"
++
++
++class BundleLaunchInfo(NamedTuple):
++    """Everything the shipped bundle's `launch.json` needs, read back at
++    startup by the engine's own `ports/servoshell/desktop/bundle_launch.rs`
++    to resolve its launch args in-process — see CUSTOMIZATIONS.md's
++    single-executable-bundle entry. Always constructed (regardless of
++    whether content ended up packed), so `_write_launch_config` has one
++    shape to write either way.
++    """
++
++    #: Where the `.pack` files + `manifest.json` live, relative to
++    #: `launch.json`'s own directory (e.g. `"dist"`) — `None` when content
++    #: isn't packed (`--content-compress=none`, or no `--content-dir` at
++    #: all), in which case `html_file` below is used directly instead.
++    packed_rel_dir: Optional[str]
++    #: Bundle-relative path (relative to `launch.json`'s own directory) to
++    #: the html file to open — only used when `packed_rel_dir` is `None`,
++    #: since a packed build's actual entry file is only known after
++    #: extraction (recorded in `manifest.json`'s `entry_html`, read by the
++    #: engine itself, not threaded through here).
++    html_file: str
++    #: Launch args other than the html file itself (`--window-size ...` plus
++    #: anything passed after `--` on the `mach bundle` command line).
++    extra_args: List[str]
++
+ 
+ def read_file(filename: str, if_exists: bool = False) -> str | None:
+     if if_exists and not path.exists(filename):
+@@ -53,6 +138,349 @@ def shell_quote(arg: str) -> str:
+     return "'" + arg.replace("'", "'\"'\"'") + "'"
+ 
+ 
++# Debian's arch names don't match Rust's. Extend as new targets need `--deb`.
++_DEBIAN_ARCH_BY_RUST_ARCH = {
++    "x86_64": "amd64",
++    "aarch64": "arm64",
++    "i686": "i386",
++}
++
++
++def _sanitize_msi_version(version: str) -> str:
++    """WiX's `Product/@Version` must be a dotted run of 1-4 integers, each
++    0-65535 — an MSI file-format constraint, not a WiX one — unlike
++    `--package-version` for `--deb`, which lands in a free-text Debian
++    control field and accepts anything. Strips a leading `v` (a common git
++    tag convention, e.g. `v1.2.3`) and raises rather than silently coercing
++    an incompatible value: mangling a version string a game's own CI might
++    rely on for update checks is worse than failing loudly at bundle time.
++    """
++    trimmed = version[1:] if version[:1].lower() == "v" and version[1:2].isdigit() else version
++    parts = trimmed.split(".")
++    if not (1 <= len(parts) <= 4) or not all(p.isdigit() and int(p) <= 65535 for p in parts):
++        raise ValueError(
++            f"--package-version {version!r} isn't a valid MSI version (1-4 dot-separated "
++            "integers, each 0-65535, e.g. 1.2.3) — required for --msi."
++        )
++    return trimmed
++
++
++def _place_bundle_content(
++    bundle_root: str,
++    html_file: str,
++    content_dir: Optional[str],
++    compress: str,
++    packer_binary: Optional[str],
++    compression_level: int,
++    max_pack_size: str,
++    exclude: List[str],
++    boot_include: List[str],
++    game_name: Optional[str],
++) -> None:
++    """Copy `content_dir` (e.g. a built `dist/`) into `bundle_root` at whatever
++    relative location `html_file` expects to find it at (e.g. `html_file` of
++    `dist/index.html` puts the content at `bundle_root/dist/`).
++
++    When `compress` is `"none"`, this is a plain recursive copy, exactly as
++    before. Otherwise `content_dir` is packed into a handful of tar+zstd
++    archives instead (see `support/content-packer` and CUSTOMIZATIONS.md) —
++    the release then ships those archives, not the individually-browsable
++    loose files. `roves-content-packer pack` splits off a small "boot set"
++    (the html file itself plus whatever it directly references, or matched by
++    `boot_include`) into its own archive(s): the generated launcher extracts
++    only *that* eagerly at startup; everything else stays compressed until
++    servoshell's own `file:` handler asks for it on demand.
++
++    `game_name` (the same value already resolved for the window title, see
++    `_resolve_window_title`) is written into the packed manifest via `--name`
++    so the engine's extraction cache directory is named after the game
++    instead of a bare content hash — see `Manifest::name`/`extract::
++    default_dest` and CUSTOMIZATIONS.md.
++    """
++    if not content_dir:
++        return
++    rel_dir = path.dirname(html_file)
++    dest = path.join(bundle_root, rel_dir) if rel_dir else bundle_root
++    if compress == "none":
++        shutil.copytree(content_dir, dest, dirs_exist_ok=True)
++        return
++
++    assert packer_binary is not None
++    os.makedirs(dest, exist_ok=True)
++    pack_args = [
++        packer_binary,
++        "pack",
++        "--input",
++        content_dir,
++        "--output",
++        dest,
++        "--level",
++        str(compression_level),
++        "--max-pack-size",
++        max_pack_size,
++        "--html-file",
++        path.basename(html_file),
++    ]
++    for pattern in exclude:
++        pack_args += ["--exclude", pattern]
++    for pattern in boot_include:
++        pack_args += ["--boot-include", pattern]
++    if game_name:
++        pack_args += ["--name", game_name]
++    subprocess.check_call(pack_args)
++
++
++def _resolve_window_title(content_dir: str) -> Optional[str]:
++    """Reads the game's own display name — `manifest.json`'s `name` (a standard web
++    app manifest field, and the file actually ships inside `content_dir`, e.g. `dist/`,
++    since a bundler copies `public/` files there verbatim), or, failing that,
++    `package.json`'s `name` one directory up from `content_dir` (the common
++    Vite/webpack convention: `package.json` lives next to the project, `content_dir`
++    is its built `dist/` one level below — a source file, so only available here at
++    bundle time, never inside the shipped `content_dir` itself). Used verbatim as the
++    window title, exactly as written — this doesn't prepend "Roves" or anything else;
++    that's the content author's own call to make in `name` (see e.g. `test-page/public/
++    manifest.json`'s `"name": "Roves test-page"`). Returns `None` if neither file
++    exists or has a usable `name`, leaving the window title exactly as it was before
++    this feature (the page's own `document.title`) — see CUSTOMIZATIONS.md.
++    """
++    for candidate in (
++        path.join(content_dir, "manifest.json"),
++        path.join(content_dir, "..", "package.json"),
++    ):
++        if not path.exists(candidate):
++            continue
++        try:
++            with open(candidate) as f:
++                name = json.load(f).get("name")
++        except (json.JSONDecodeError, OSError):
++            continue
++        if name:
++            return str(name)
++    return None
++
++
++# Filenames tried, in order, by `_read_web_manifest` below. `manifest.webmanifest` is what
++# most bundlers emit by default (e.g. vite-plugin-pwa); `manifest.json` is also what
++# `_resolve_window_title` above already reads for the desktop window title; `site.webmanifest`
++# is what some favicon-generator tools (e.g. realfavicongenerator.net) emit instead.
++_WEB_MANIFEST_CANDIDATES = ("manifest.webmanifest", "manifest.json", "site.webmanifest")
++
++
++def _read_web_manifest(content_dir: str) -> dict[str, Any]:
++    """Reads and parses the game's own web app manifest (see `_WEB_MANIFEST_CANDIDATES`),
++    returning `{}` if none of the candidate filenames exist or parse as a JSON object. Used by
++    `_bundle_android` to default the Android app label/orientation/status-bar color when
++    `--content-dir` has one — see `bundle`'s own `--android-app-name`/`--android-orientation`/
++    `--android-theme-color` flags for the explicit-override side of that: each one always
++    wins over its manifest counterpart when given, this is only ever a default.
++    """
++    for candidate in _WEB_MANIFEST_CANDIDATES:
++        manifest_path = path.join(content_dir, candidate)
++        if not path.isfile(manifest_path):
++            continue
++        try:
++            with open(manifest_path, encoding="utf8") as f:
++                data = json.load(f)
++        except (json.JSONDecodeError, OSError):
++            continue
++        if isinstance(data, dict):
++            return cast(dict[str, Any], data)
++    return {}
++
++
++# Maps the standard PWA `orientation` manifest field (and `bundle`'s own --android-orientation,
++# which accepts the same vocabulary) to Android's own `android:screenOrientation` values. Only
++# the 6 directional orientation-lock values are handled; "any"/"natural" (also valid PWA/
++# --android-orientation values) and anything else fall back to "unspecified" (today's
++# un-overridden behavior) since neither has a single obvious Android equivalent.
++_ANDROID_ORIENTATION_MAP = {
++    "landscape": "sensorLandscape",
++    "landscape-primary": "landscape",
++    "landscape-secondary": "reverseLandscape",
++    "portrait": "sensorPortrait",
++    "portrait-primary": "portrait",
++    "portrait-secondary": "reversePortrait",
++}
++
++
++def _write_launch_config(config_dir: str, info: BundleLaunchInfo) -> None:
++    """Writes `launch.json` into `config_dir` (always a sibling of the real,
++    single shipped binary — see the `_bundle_*` methods below). This is the
++    entire replacement for what used to be a separate generated launcher
++    executable: previously each platform got its own generated source/script
++    hardcoding these same values and (for packed content) shelling out to
++    `roves-content-packer extract` at startup; now the engine reads this
++    plain data file and calls the equivalent extraction code itself,
++    in-process, as a library — see `ports/servoshell/desktop/bundle_launch.rs`.
++    """
++    config = {
++        "content_dir": info.packed_rel_dir,
++        "url": None if info.packed_rel_dir else info.html_file,
++        "args": info.extra_args,
++    }
++    with open(path.join(config_dir, "launch.json"), "w") as f:
++        json.dump(config, f)
++
++
++# See `_write_diagnostic_script` below for why these exist. Kept as plain,
++# readable script text (not templated/generated) so anyone can read exactly
++# what runs without needing to trace through this file — the whole point is
++# to be inspectable by a non-technical tester asked to run it.
++_DIAGNOSE_BAT = """@echo off
++setlocal enabledelayedexpansion
++cd /d "%~dp0"
++
++echo ===================================================
++echo  Roves startup diagnostic
++echo ===================================================
++echo.
++echo Launching play.exe ...
++echo (Close the game window normally when you're done, or press Ctrl+C here
++echo  to stop early.)
++echo.
++
++play.exe
++set EXITCODE=%ERRORLEVEL%
++
++echo.
++echo ===================================================
++echo  play.exe exited with code %EXITCODE%
++if %EXITCODE% NEQ 0 (
++    echo  ** This looks like a launch failure. **
++)
++echo ===================================================
++echo.
++echo Looking for the most recent roves.log under %LOCALAPPDATA% ...
++echo.
++
++set "FOUND="
++for /f "delims=" %%F in ('dir /b /s /o-d "%LOCALAPPDATA%\\roves.log" 2^>nul') do (
++    if not defined FOUND set "FOUND=%%F"
++)
++
++if defined FOUND (
++    echo Found: !FOUND!
++    echo.
++    echo --- log contents ---
++    type "!FOUND!"
++    echo ---------------------
++) else (
++    echo No roves.log found. If play.exe crashed before logging even
++    echo started, that itself is useful information to report.
++)
++
++echo.
++echo Copy everything above into a bug report for this game.
++echo.
++pause
++"""
++
++_DIAGNOSE_SH = """#!/bin/sh
++cd "$(dirname "$0")"
++
++echo "==================================================="
++echo " Roves startup diagnostic"
++echo "==================================================="
++echo
++
++if [ -x "./play.app/Contents/MacOS/play" ]; then
++    BIN="./play.app/Contents/MacOS/play"
++elif [ -x "./play" ]; then
++    BIN="./play"
++else
++    echo "Could not find the game binary next to this script."
++    exit 1
++fi
++
++echo "Launching $BIN ..."
++echo "(Close the game window normally when you're done, or press Ctrl+C"
++echo " here to stop early.)"
++echo
++
++"$BIN"
++EXIT_CODE=$?
++
++echo
++echo "==================================================="
++echo " $BIN exited with code $EXIT_CODE"
++if [ "$EXIT_CODE" -ne 0 ]; then
++    echo " ** This looks like a launch failure. **"
++fi
++echo "==================================================="
++echo
++
++if [ "$(uname)" = "Darwin" ]; then
++    CACHE_ROOT="$HOME/Library/Caches"
++else
++    CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}"
++fi
++
++echo "Looking for the most recent roves.log under $CACHE_ROOT ..."
++echo
++LOG=$(find "$CACHE_ROOT" -iname roves.log 2>/dev/null -exec ls -t {} + 2>/dev/null | head -1)
++
++if [ -n "$LOG" ]; then
++    echo "Found: $LOG"
++    echo
++    echo "--- log contents ---"
++    cat "$LOG"
++    echo "---------------------"
++else
++    echo "No roves.log found. If the game crashed before logging even"
++    echo "started, that itself is useful information to report."
++fi
++
++echo
++echo "Copy everything above into a bug report for this game."
++echo
++"""
++
++
++def _write_diagnostic_script(dest_dir: str) -> None:
++    """Writes a small, standalone launch-and-report script next to the
++    bundle's executable — `diagnose.bat` on Windows, `diagnose.sh` on
++    macOS/Linux — gated behind `bundle`'s own `--diagnostic-script` (off by
++    default: a real game's shipped release has no reason to carry
++    engine-internal debug tooling players never asked for; CI's own
++    `.github/workflows/test.yml` always passes it).
++
++    Exists for exactly the failure mode CUSTOMIZATIONS.md's `launch.json`
++    entries describe: a Windows build has no console
++    (`#![windows_subsystem = "windows"]`), so a launch that dies before a
++    window ever appears looks like literally nothing happened, with
++    nothing on-screen to report back. Running this script instead of the
++    game directly launches the exact same binary from a console/terminal
++    that stays open afterward, printing the exit code and `roves.log`'s
++    contents inline — something a non-technical tester can copy-paste into
++    a bug report without knowing what a log file even is, let alone where
++    to find one.
++
++    Placed alongside `mach bundle`'s shared "stage" output (see `bundle`'s
++    own `stage_dir`), not inside `_place_bundle_content`'s `bundle_root` —
++    on macOS that distinction matters: `bundle_root` there is
++    `play.app/Contents/Resources`, invisible to a user browsing the
++    bundle folder, whereas `stage_dir` is the directory `play.app` itself
++    sits in. Because `--msi`/`--dmg` wrap this same `stage_dir` into their
++    installer, the script ships inside those too — not just the portable
++    output. Deliberately not written for `--deb`: a `.deb` install runs
++    from `/usr/bin` via a normal terminal already showing stdout/stderr
++    directly, so this script would have nothing to add there.
++    """
++    if is_windows():
++        script_path = path.join(dest_dir, "diagnose.bat")
++        script = _DIAGNOSE_BAT
++        newline = "\r\n"
++    else:
++        script_path = path.join(dest_dir, "diagnose.sh")
++        script = _DIAGNOSE_SH
++        newline = "\n"
++    with open(script_path, "w", newline=newline) as f:
++        f.write(script)
++    if not is_windows():
++        os.chmod(script_path, 0o755)
++
++
+ @CommandProvider
+ class PostBuildCommands(CommandBase):
+     @Command("run", description="Run Servo", category="post-build")
+@@ -199,6 +627,993 @@ class PostBuildCommands(CommandBase):
+             else:
+                 raise exception
+ 
++    @Command(
++        "bundle",
++        description="Package a completed build into a portable, double-click-runnable bundle",
++        category="post-build",
++    )
++    @CommandArgument(
++        "--html-file", default="dist/index.html", help="HTML file (relative to the bundle) to open on launch"
++    )
++    @CommandArgument("--window-size", default="1280x720", help="Initial window size, e.g. 1280x720")
++    @CommandArgument(
++        "--output", "-o", default=None, help="Directory to write the bundle to (default: <build dir>/bundle)"
++    )
++    @CommandArgument(
++        "--content-dir",
++        default=None,
++        help="Directory of web content (e.g. a built dist/) to copy into the bundle, so --html-file "
++        "resolves without a separate copy step",
++    )
++    @CommandArgument(
++        "--content-compress",
++        default="auto",
++        choices=["auto", "none"],
++        help="'auto' (default): pack --content-dir into a handful of tar+zstd archives instead of "
++        "shipping it as loose, individually browsable files (see support/content-packer and "
++        "CUSTOMIZATIONS.md). 'none': copy it in as-is, exactly like before this option existed.",
++    )
++    @CommandArgument(
++        "--content-compression-level",
++        default=1,
++        type=int,
++        help="zstd compression level used by --content-compress=auto. Low values (the default) favor "
++        "speed over ratio — see CUSTOMIZATIONS.md for why that's the right tradeoff here.",
++    )
++    @CommandArgument(
++        "--content-max-pack-size",
++        default="500M",
++        help="Split --content-dir's archives so no single one exceeds this size, e.g. 500M or 1G "
++        "(default: 500M). Only meaningful with --content-compress=auto.",
++    )
++    @CommandArgument(
++        "--content-exclude",
++        action="append",
++        default=[],
++        metavar="GLOB",
++        help="Glob (relative to --content-dir), repeatable, of files to leave as loose, uncompressed "
++        "files instead of packing them — e.g. a save-data or user-config subfolder that shouldn't sit "
++        "inside a read-only archive. Only meaningful with --content-compress=auto.",
++    )
++    @CommandArgument(
++        "--content-boot-include",
++        action="append",
++        default=[],
++        metavar="GLOB",
++        help="Glob (relative to --content-dir), repeatable, of extra files to add to the eagerly-"
++        "extracted 'boot set' beyond the html file and whatever it directly references (e.g. a "
++        "splash image shown before the page itself has rendered anything). Only meaningful with "
++        "--content-compress=auto.",
++    )
++    @CommandArgument(
++        "--deb",
++        action="store_true",
++        help="Linux only: build a .deb package instead of the default self-contained play.sh bundle",
++    )
++    @CommandArgument(
++        "--msi",
++        action="store_true",
++        help="Windows only: build an installable .msi package instead of the default self-contained "
++        "play.exe bundle",
++    )
++    @CommandArgument(
++        "--dmg",
++        action="store_true",
++        help="macOS only: wrap the default play.app bundle in an installable .dmg disk image instead "
++        "of shipping the .app on its own",
++    )
++    @CommandArgument("--package-name", default="roves", help="Package name to use with --deb/--msi/--dmg")
++    @CommandArgument("--package-version", default="0.0.0", help="Package version to use with --deb/--msi/--dmg")
++    @CommandArgument(
++        "--diagnostic-script",
++        action="store_true",
++        help="Ship a diagnose.bat/diagnose.sh alongside the bundle (portable/--msi/--dmg only, not --deb) "
++        "that launches the game from a console and prints its exit code plus roves.log inline — for "
++        "testers to run when a build appears to do nothing. Off by default: a real release has no "
++        "reason to carry this debug tooling unasked.",
++    )
++    @CommandArgument(
++        "--icon-png",
++        default=None,
++        help="Path to a window/taskbar icon (PNG). Copied next to the bundled binary as `icon.png` — "
++        "read at every launch (see ports/servoshell/desktop/headed_window.rs's "
++        "runtime_window_icon_bytes), not baked in at compile time, so this works identically for a "
++        "prebuilt shell (never compiled per-game) or a freshly built one. Windows/Linux only — macOS's "
++        "own Dock/app icon has no equivalent runtime override yet, see CUSTOMIZATIONS.md.",
++    )
++    @CommandArgument(
++        "--icon-ico",
++        default=None,
++        help="Windows only: path to a Windows .exe icon (multi-size .ico). Patches the bundled play.exe's "
++        "own icon resource in place, after bundling, via rcedit (downloaded/cached automatically — see "
++        "_ensure_rcedit) — the .exe's icon is embedded at link time, so unlike --icon-png this can't be a "
++        "plain runtime file, but doesn't need a recompile either.",
++    )
++    @CommandArgument(
++        "--android-app-name",
++        default=None,
++        help="Android only: override the app's launcher label. Defaults to --content-dir's own "
++        "manifest.webmanifest/manifest.json/site.webmanifest `short_name` (falling back to `name`), or "
++        "Roves' own default label if neither the manifest nor this flag provide one.",
++    )
++    @CommandArgument(
++        "--android-orientation",
++        default=None,
++        choices=["any", "natural", *_ANDROID_ORIENTATION_MAP.keys()],
++        help="Android only: override the app's locked screen orientation (standard web app manifest "
++        "`orientation` vocabulary — translated to the matching `android:screenOrientation`, see "
++        "_ANDROID_ORIENTATION_MAP). Defaults to --content-dir's own manifest `orientation` field, or "
++        "unlocked (`unspecified`, the OS/sensor decides) if neither the manifest nor this flag set one.",
++    )
++    @CommandArgument(
++        "--android-theme-color",
++        default=None,
++        help="Android only: override the status bar color (any value Android's Color.parseColor "
++        "accepts, e.g. `#ffffff`). Defaults to --content-dir's own manifest `theme_color` field, or "
++        "leaves the status bar at its normal theme color if neither the manifest nor this flag set one.",
++    )
++    @CommandArgument(
++        "--android-release",
++        action="store_true",
++        default=False,
++        help="Android only: build a signed release .apk (Gradle's `assembleRelease`) instead of the "
++        "default debug .apk. Requires APK_SIGNING_KEY_STORE_PATH/_STORE_PASS/_ALIAS/_PASS to already "
++        "be set in the environment (read directly by "
++        "support/android/apk/buildSrc/src/main/kotlin/Android.kt's getSigningKeyInfo, part of "
++        "upstream Servo's own Gradle project, not something this flag configures itself) -- fails "
++        "loudly instead of silently producing a debug-signed 'release' build if they're missing.",
++    )
++    @CommandArgument("params", nargs="...", help="Extra command-line arguments to pass through to servoshell on launch")
++    # build_configuration=True (not just binary_selection): registers --android/--target (see
++    # command_base.py's common_command_arguments) and, crucially, makes this same decorator
++    # call `self.configure_build_target(kwargs)` *before* binary_selection's own
++    # `self.get_binary_path(...)` runs a few lines later in that same wrapper -- both happen
++    # inside command_base.py's single `configuration_decorator` closure, in that order, so
++    # `--android` correctly resolves `servo_binary` to the cross-compiled
++    # target/aarch64-linux-android/.../libservoshell.so instead of the host's own desktop
++    # binary. (A separate `@CommandBase.allow_target_configuration` decorator, as `run`/
++    # `package` use, would run its `configure_build_target` call too late here -- *after*
++    # binary_selection's own wrapper has already resolved `servo_binary` against the
++    # unconfigured host target.) The extra desktop-build-only flags this also pulls in
++    # (--features, --media-stack, etc.) are inert no-ops for `bundle`, silently absorbed by
++    # its own **kwargs -- see `bundle`'s signature below.
++    @CommandBase.common_command_arguments(binary_selection=True, build_configuration=True)
++    def bundle(
++        self,
++        servo_binary: str,
++        html_file: str = "dist/index.html",
++        window_size: str = "1280x720",
++        output: Optional[str] = None,
++        content_dir: Optional[str] = None,
++        content_compress: str = "auto",
++        content_compression_level: int = 1,
++        content_max_pack_size: str = "500M",
++        content_exclude: Optional[List[str]] = None,
++        content_boot_include: Optional[List[str]] = None,
++        deb: bool = False,
++        msi: bool = False,
++        dmg: bool = False,
++        package_name: str = "roves",
++        package_version: str = "0.0.0",
++        diagnostic_script: bool = False,
++        icon_png: Optional[str] = None,
++        icon_ico: Optional[str] = None,
++        android_app_name: Optional[str] = None,
++        android_orientation: Optional[str] = None,
++        android_theme_color: Optional[str] = None,
++        android_release: bool = False,
++        params: Optional[List[str]] = None,
++        **kwargs: Any,
++    ) -> int | None:
++        """Turn a build produced by `./mach build` into something a user can
++        double-click to run, instead of the bare build artifact in target/:
++
++        * Windows: a single play.exe (built with the "windows" subsystem, so
++          it never flashes a console — see ports/servoshell/main.rs for the
++          same attribute the underlying engine binary already carries). With
++          --msi, an installable .msi package instead (see _wrap_windows_msi).
++        * macOS: a minimal play.app bundle whose Contents/MacOS/play *is*
++          the engine binary itself. Finder launches it directly, no
++          Terminal involved at all. With --dmg, that same .app wrapped in an
++          installable .dmg disk image instead (see _wrap_macos_dmg).
++        * Linux: by default, a single `play` binary. With --deb, a proper
++          .deb package instead (see _bundle_linux_deb for what it does and
++          does not attempt).
++        * Android (--android): a debug .apk by default, built via a real
++          Gradle invocation (not a single-binary copy like the desktop
++          platforms above) — see `_bundle_android`. `--content-dir` is
++          copied into the APK's own assets instead of being packed/
++          extracted at runtime. The game's own web app manifest
++          (`manifest.webmanifest`/`manifest.json`/`site.webmanifest`, see
++          `_read_web_manifest`) defaults the app label, locked orientation,
++          and status bar color — each overridable via --android-app-name/
++          --android-orientation/--android-theme-color. The launcher icon
++          reuses the same --icon-png/auto-detected icon every other
++          platform gets, not a separate manifest `icons`-array reading.
++          --android-release builds a real, signed release .apk instead —
++          see that flag's own help text for the (upstream, unmodified)
++          Gradle signing mechanism it relies on.
++
++        Every platform's *portable* output ships exactly one executable — no
++        separate launcher process and no `roves-content-packer` binary
++        alongside it. A small `launch.json` sits next to the binary instead,
++        read back by the engine's own `ports/servoshell/desktop/
++        bundle_launch.rs` at startup to resolve its launch args (window
++        size, content location) and, for packed content, run the equivalent
++        of `roves-content-packer extract` in-process as a library call
++        rather than a separate program. An installer (--deb/--msi/--dmg)
++        wraps that exact same portable output — the portable staging files
++        themselves aren't left behind once the installer is built.
++
++        By default (`--content-compress=auto`), `--content-dir` isn't copied
++        into the bundle as loose files: it's packed into a handful of
++        tar+zstd archives (see support/content-packer and CUSTOMIZATIONS.md),
++        extracted back to plain files in-process at launch time instead — so
++        the shipped bundle itself never contains an individually browsable
++        copy of the game's web content. Pass `--content-compress=none` to
++        get the old, always-loose-files behavior back.
++
++        None of this touches target/<profile>/ itself or the binary Cargo
++        put there — `./mach run` and friends keep working exactly as before.
++        """
++        if deb and not is_linux():
++            print("--deb is only supported on Linux.")
++            return 1
++        if msi and not is_windows():
++            print("--msi is only supported on Windows.")
++            return 1
++        if dmg and not is_macosx():
++            print("--dmg is only supported on macOS.")
++            return 1
++
++        # `servo_binary` is `None` for a "packaged" target (Android, OpenHarmony) --
++        # command_base.py's own `binary_selection` deliberately nulls it out for those (see
++        # that file's own comment: there's no single runnable binary to hand back). Only
++        # matters here as a *default* output location when `--output` isn't given --
++        # `_bundle_android` below derives everything it actually needs from
++        # `self.target.triple()` instead, not from this.
++        binary_dir = path.dirname(servo_binary) if servo_binary is not None else self.get_top_dir()
++        # abspath, not the possibly-relative `output` as-is: `_wrap_windows_msi` below
++        # `cd`s into a separate build directory before invoking candle/light, and WiX
++        # resolves each <File Source="..."> path (baked into the .wxs from `stage_dir`,
++        # itself derived from `output_dir`) relative to *its own* cwd at that point — a
++        # relative `output_dir` resolves to the wrong place once the cwd changes out from
++        # under it (see CUSTOMIZATIONS.md's --msi/--dmg installer entry, "Correction").
++        output_dir = path.abspath(output or path.join(binary_dir, "bundle"))
++        if path.exists(output_dir):
++            delete(output_dir)
++        os.makedirs(output_dir)
++
++        # No --icon-png/--icon-ico given? Auto-detect one from --content-dir itself before
++        # falling back to Roves' own branding -- many bundlers already emit an `icon.png`
++        # there for their own PWA manifest (confirmed: pixi-vn-react-template's own `dist/`
++        # has exactly this), so a game that already has one gets its own icon for free,
++        # with zero extra configuration. Only ever a *default*: an explicitly passed
++        # --icon-png/--icon-ico always wins, same as before. Shared with `_bundle_android`
++        # below (the whole point being "one icon-resolution mechanism serves every
++        # platform," not a separate Android-specific one) -- resolved here, before the
++        # is_android branch, rather than inside `_bundle_android` itself.
++        if not icon_png and content_dir:
++            candidate = path.join(content_dir, "icon.png")
++            if path.isfile(candidate):
++                icon_png = candidate
++        if not icon_ico and content_dir:
++            candidate = path.join(content_dir, "icon.ico")
++            if path.isfile(candidate):
++                icon_ico = candidate
++            else:
++                # icon.ico is rare -- favicon.ico is what virtually every bundler actually
++                # emits (confirmed: pixi-vn-react-template has this, not icon.ico), and is
++                # itself already a valid multi-size .ico rcedit can patch in directly, so
++                # it's worth trying before giving up and keeping Roves' own default icon.
++                candidate = path.join(content_dir, "favicon.ico")
++                if path.isfile(candidate):
++                    icon_ico = candidate
++
++        # Android has no equivalent to "one prebuilt binary + loose/packed files sitting
++        # next to it" (an installed APK's assets are baked in at package time, there's
++        # nothing to drop content next to after the fact) -- so none of the rest of this
++        # function (launch.json, --icon-ico/is_macosx handling below, per-desktop-OS
++        # bundling) applies. See `_bundle_android`'s own doc comment for what it does
++        # instead -- `icon_png` (just resolved above) is the one piece of desktop state
++        # it does share.
++        if is_android(self.target):
++            return self._bundle_android(
++                servo_binary,
++                content_dir,
++                output_dir,
++                android_app_name=android_app_name,
++                android_orientation=android_orientation,
++                android_theme_color=android_theme_color,
++                icon_png=icon_png,
++                android_release=android_release,
++            )
++        elif android_release:
++            print("--android-release requires --android -- there's no release-signing concept for a desktop bundle.")
++            return 1
++
++        content_exclude = content_exclude or []
++        content_boot_include = content_boot_include or []
++        compress_enabled = bool(content_dir) and content_compress != "none"
++        packer_binary = self._build_content_packer() if compress_enabled else None
++
++        # `params` (this command's `nargs="..."` catch-all — see its own
++        # `@CommandArgument` above) is meant for flags the *shipped game*
++        # should see at launch (forwarded verbatim into `launch.json`'s
++        # "args", read back by `bundle_launch.rs`). It is NOT meant for this
++        # `mach bundle` invocation's own flags — but if one of those (e.g.
++        # `--package-name`/`--package-version`, meant only for naming a
++        # --deb/--msi/--dmg output) ever ends up here anyway — seen in
++        # practice, cause not fully understood, filed as a real incident —
++        # blindly forwarding it into launch.json silently breaks every
++        # future launch of the resulting bundle: servoshell's own CLI
++        # parser rejects the unrecognized flag and exits immediately,
++        # before any window ever appears or anything gets logged (see
++        # CUSTOMIZATIONS.md's startup-file-logging entry, which is what
++        # actually surfaced this). Guard against that class of bug
++        # unconditionally, regardless of how a reserved flag got into
++        # `params` in the first place. `_BOOLEAN_ARGPARSE_ACTIONS` mirrors
++        # which of this command's own flags take no value (so skipping a
++        # leaked flag doesn't also eat the next, unrelated, legitimate
++        # passthrough token).
++        _BOOLEAN_ARGPARSE_ACTIONS = {"store_true", "store_false", "store_const", "count"}
++        takes_value_by_flag = {}
++        for flag_names, flag_kwargs in cast(List[Any], self.__class__.bundle._mach_command.arguments):
++            for flag_name in flag_names:
++                takes_value_by_flag[flag_name] = flag_kwargs.get("action") not in _BOOLEAN_ARGPARSE_ACTIONS
++
++        extra_args = ["--window-size", window_size]
++        skip_next_as_value = False
++        leaked_reserved_flags = []
++        for p in params or []:
++            if skip_next_as_value:
++                skip_next_as_value = False
++                continue
++            if p in takes_value_by_flag:
++                leaked_reserved_flags.append(p)
++                skip_next_as_value = takes_value_by_flag[p]
++                continue
++            extra_args.append(p)
++        if leaked_reserved_flags:
++            print(
++                f"warning: mach bundle's own flag(s) {leaked_reserved_flags} ended up in the "
++                "passthrough args meant for the shipped game (see post_build_commands.py's "
++                "`bundle` for why this is dangerous) — dropping them, along with the value "
++                "each one takes, rather than writing a broken launch.json."
++            )
++        window_title = _resolve_window_title(content_dir) if content_dir else None
++        if window_title:
++            extra_args += ["--window-title", window_title]
++        launch_info = BundleLaunchInfo(
++            packed_rel_dir=path.dirname(html_file) if compress_enabled else None,
++            html_file=html_file,
++            extra_args=extra_args,
++        )
++
++        # --msi/--dmg wrap the exact same portable output the plain windows/macOS
++        # branches below produce — built into a throwaway staging directory first,
++        # so `_bundle_windows`/`_bundle_macos` and `_place_bundle_content` don't need
++        # to know or care whether their output ends up shipped as-is or wrapped into
++        # an installer afterward.
++        stage_dir = path.join(output_dir, "_stage") if (msi or dmg) else output_dir
++
++        if icon_ico and not is_windows():
++            print("--icon-ico only has an effect on Windows -- ignoring.")
++            icon_ico = None
++        if icon_png and is_macosx():
++            print(
++                "--icon-png has no effect on macOS yet -- its own Dock/app icon has no runtime "
++                "override, see CUSTOMIZATIONS.md's \"Runtime + post-build game icon\" entry. Ignoring."
++            )
++            icon_png = None
++
++        if is_windows():
++            if msi:
++                os.makedirs(stage_dir)
++            self._bundle_windows(servo_binary, binary_dir, stage_dir, launch_info)
++            bundle_root = stage_dir
++            # Before any --msi wrapping, so the icon change is included in both the
++            # portable and installer outputs -- see _patch_windows_exe_icon's own comment.
++            if icon_ico:
++                _patch_windows_exe_icon(path.join(stage_dir, "play.exe"), icon_ico)
++            if icon_png:
++                shutil.copy(icon_png, path.join(stage_dir, "icon.png"))
++        elif is_macosx():
++            if dmg:
++                os.makedirs(stage_dir)
++            bundle_root = path.join(stage_dir, "play.app", "Contents", "Resources")
++            os.makedirs(bundle_root)
++            self._bundle_macos(servo_binary, binary_dir, stage_dir, launch_info)
++        elif deb:
++            self._bundle_linux_deb(
++                servo_binary,
++                binary_dir,
++                output_dir,
++                launch_info,
++                package_name,
++                package_version,
++                html_file,
++                content_dir,
++                content_compress,
++                packer_binary,
++                content_compression_level,
++                content_max_pack_size,
++                content_exclude,
++                content_boot_include,
++                window_title,
++                icon_png,
++            )
++            print(f"Bundle written to {output_dir}")
++            return None
++        else:
++            self._bundle_linux(servo_binary, binary_dir, output_dir, launch_info)
++            bundle_root = output_dir
++            if icon_png:
++                shutil.copy(icon_png, path.join(output_dir, "icon.png"))
++
++        _place_bundle_content(
++            bundle_root,
++            html_file,
++            content_dir,
++            content_compress,
++            packer_binary,
++            content_compression_level,
++            content_max_pack_size,
++            content_exclude,
++            content_boot_include,
++            window_title,
++        )
++
++        if diagnostic_script:
++            # `stage_dir`, not `bundle_root`: on macOS `bundle_root` is
++            # `play.app/Contents/Resources`, invisible to a user browsing
++            # the bundle — `stage_dir` is where `play.app` itself (or
++            # play.exe/play) sits. See `_write_diagnostic_script`.
++            _write_diagnostic_script(stage_dir)
++
++        if msi or dmg:
++            # Same directory the engine binary itself sits in -- Contents/MacOS/ on
++            # macOS (where `_bundle_macos` placed `play`), `stage_dir` itself
++            # everywhere else -- see `INSTALLED_MARKER`'s own doc comment.
++            exe_dir = path.join(stage_dir, "play.app", "Contents", "MacOS") if is_macosx() else stage_dir
++            open(path.join(exe_dir, INSTALLED_MARKER), "w").close()
++
++        if msi:
++            self._wrap_windows_msi(stage_dir, output_dir, package_name, package_version)
++            delete(stage_dir)
++        elif dmg:
++            self._wrap_macos_dmg(stage_dir, output_dir, package_name, package_version)
++            delete(stage_dir)
++
++        print(f"Bundle written to {output_dir}")
++        return None
++
++    def _build_content_packer(self) -> str:
++        """Builds (release profile) and returns the path to
++        `roves-content-packer` — used to `pack` `--content-dir` here on the
++        machine running `mach bundle`. Not shipped into the bundle itself:
++        extraction on the player's machine happens in-process, inside the
++        engine binary, which already links `roves_content_packer` as a
++        library (see `ports/servoshell/desktop/bundle_launch.rs` and
++        CUSTOMIZATIONS.md). Always a host-native build (no --target) —
++        packing only ever needs to run here, on this host."""
++        manifest_path = path.join(self.context.topdir, "support", "content-packer", "Cargo.toml")
++        subprocess.check_call(
++            ["cargo", "build", "--release", "--manifest-path", manifest_path],
++            env=cast(dict[str, str], self.build_env()),
++        )
++        target_dir = servo.util.get_target_dir()
++        return path.join(target_dir, "release", _packer_binary_name())
++
++    def _bundle_android(
++        self,
++        servo_binary: str,
++        content_dir: Optional[str],
++        output_dir: str,
++        android_app_name: Optional[str] = None,
++        android_orientation: Optional[str] = None,
++        android_theme_color: Optional[str] = None,
++        icon_png: Optional[str] = None,
++        android_release: bool = False,
++    ) -> int | None:
++        """Build an Android game using the system WebView, without compiling Servo."""
++        if not content_dir or not path.isfile(path.join(content_dir, "index.html")):
++            print("Android WebView bundles require --content-dir with an index.html.")
++            return 1
++        manifest = _read_web_manifest(content_dir) if content_dir else {}
++
++        if android_release and not os.environ.get("APK_SIGNING_KEY_STORE_PATH"):
++            print(
++                "--android-release requires APK_SIGNING_KEY_STORE_PATH (and "
++                "_STORE_PASS/_ALIAS/_PASS) to already be set in the environment -- without "
++                "them, Gradle's own signing config falls back to the debug key (see "
++                "buildSrc/src/main/kotlin/Android.kt's getSigningKeyInfo), which defeats the "
++                "point of asking for a release build at all. Refusing rather than silently "
++                "producing a debug-signed 'release' .apk."
++            )
++            return 1
++
++        orientation = _ANDROID_ORIENTATION_MAP.get(android_orientation or manifest.get("orientation"), "unspecified")
++        app_name = android_app_name or manifest.get("short_name") or manifest.get("name") or "@string/app_name"
++        theme_color = android_theme_color or manifest.get("theme_color") or ""
++
++        target_triple = self.target.triple()
++
++        # A scratch copy, not `support/android/apk/` itself -- see this method's own doc
++        # comment above for why. `target/<triple>/android-bundle` mirrors where every other
++        # per-target intermediate already lives (e.g. `dir_to_resources` below), so a repeat
++        # `mach bundle --android` for a different game starts from a clean copy every time
++        # rather than accumulating the previous game's files.
++        apk_project_src = path.join(self.get_top_dir(), "support", "android", "apk")
++        build_root = path.join(self.get_top_dir(), "target", target_triple, "android-bundle")
++        if path.exists(build_root):
++            delete(build_root)
++        shutil.copytree(apk_project_src, build_root)
++
++        assets_dir = path.join(build_root, "servoapp", "src", "main", "assets", "www")
++        if content_dir:
++            shutil.copytree(content_dir, assets_dir)
++        else:
++            os.makedirs(assets_dir)
++
++        if icon_png:
++            # `AndroidManifest.xml` references `@mipmap/servo` -- a resource *name*, resolved
++            # against whatever file sits at res/mipmap/servo.* regardless of format,
++            # independent of extension. The tracked source ships `servo.webp`; replacing it
++            # instead of adding `servo.png` alongside avoids a duplicate-resource-name build
++            # error from having both under the same name in the same density bucket.
++            mipmap_dir = path.join(build_root, "servoapp", "src", "main", "res", "mipmap")
++            for existing_icon in glob.glob(path.join(mipmap_dir, "servo.*")):
++                os.remove(existing_icon)
++            shutil.copy(icon_png, path.join(mipmap_dir, "servo.png"))
++
++        # Mirrors package_commands.py's own `package --android` arch-string mapping -- not
++        # reused directly since that command has no way to take the extra -Pservo* properties
++        # below.
++        arch_string = {
++            "aarch64-linux-android": "Arm64",
++            "armv7-linux-androideabi": "Armv7",
++            "i686-linux-android": "x86",
++            "x86_64-linux-android": "x64",
++        }.get(target_triple, "Arm64")
++        variant = f"{arch_string}{'Release' if android_release else 'Debug'}"
++
++        # Native WebView packaging only needs the Android SDK and Java, not Servo,
++        # GStreamer, the NDK, or a cross-compiled Rust library.
++        env = os.environ.copy()
++        sdk = self.config["android"].get("sdk")
++        if sdk:
++            env["ANDROID_HOME"] = sdk
++
++        argv = [
++            "./gradlew",
++            "--no-daemon",
++            f":servoapp:assemble{variant}",
++            f"-PservoScreenOrientation={orientation}",
++            f"-PservoAppName={app_name}",
++            f"-PservoThemeColor={theme_color}",
++        ]
++        try:
++            with cd(build_root):
++                subprocess.check_call(argv, env=env)
++        except subprocess.CalledProcessError as e:
++            print("Packaging Android exited with return value %d" % e.returncode)
++            return e.returncode
++
++        built_apks = glob.glob(path.join(build_root, "servoapp", "build", "outputs", "apk", "**", "*.apk"), recursive=True)
++        if len(built_apks) != 1:
++            print(f"Expected one newly built APK, found {len(built_apks)}.")
++            return 1
++        shutil.copy(built_apks[0], path.join(output_dir, "servoapp.apk"))
++
++        print(f"Bundle written to {output_dir}")
++        return None
++
++    def _bundle_windows(
++        self,
++        servo_binary: str,
++        binary_dir: str,
++        output_dir: str,
++        launch_info: BundleLaunchInfo,
++    ) -> None:
++        """The engine binary itself, copied and renamed to `play.exe`,
++        sitting flat in `output_dir` — no `bin/` subdirectory, no separate
++        launcher. `#![windows_subsystem = "windows"]` (so it never flashes a
++        console) is already set on this binary itself, in
++        `ports/servoshell/main.rs`. See `_write_launch_config`/
++        `ports/servoshell/desktop/bundle_launch.rs` for how it resolves its
++        launch args and, for packed content, extracts it, entirely
++        in-process — no `roves-content-packer.exe` is shipped here either.
++
++        Most of the ~100 DLLs `copy_windows_dlls_to_build_directory` placed flat in
++        `binary_dir` are GStreamer *plugin* element libraries (`windows_plugins()`) —
++        loaded by explicit file path via `gstreamer::Plugin::load_file` (see
++        `components/servo/servo.rs`'s `media_platform::init`, which now points
++        `plugin_dir` at this same `lib/` on Windows too, mirroring the macOS case
++        below), never linked by `play.exe` itself at load time. GStreamer loads each
++        of those with Windows' `LOAD_WITH_ALTERED_SEARCH_PATH`, which searches the
++        *plugin's own* directory first instead of `play.exe`'s — so both the plugins
++        and their own private dependency libs (`windows_dlls()`'s
++        `GSTREAMER_WIN_DEPENDENCY_LIBS` — ffmpeg, vorbis/opus/theora, OpenSSL, glib
++        and friends) need to live in `lib/` too, not next to `play.exe`, for that
++        altered search to actually find them.
++
++        `windows_dlls()` also includes GStreamer's own *core* shared libs
++        (`GSTREAMER_BASE_LIBS`, e.g. `gstreamer-1.0-0.dll`) — a curated subset of those
++        really are real load-time dependencies of `play.exe` itself
++        (`windows_dlls_needed_flat()`, confirmed via `dumpbin /dependents`; see
++        CUSTOMIZATIONS.md's 2026-08-19 "shrink the bundle root further, for real this
++        time" entry for the full derivation), so those get copied to *both* `output_dir`
++        and `lib/` — the rest of `windows_dlls()` is only ever needed inside `lib/`.
++
++        A 2026-08-19 attempt at exactly this narrowing was tried once already and reverted
++        as wrong: `LOAD_WITH_ALTERED_SEARCH_PATH` (what GStreamer uses to find a plugin
++        *file* itself) only changes how that one file is found — a plugin's own
++        dependencies (e.g. `gstnice.dll` needing `nice-10.dll`) still resolved through the
++        OS's normal, process-wide search order, which never included `lib/`, causing a
++        real, reproduced `ErrorLoadingPlugins` failure. That gap is now closed at the
++        source: `ports/servoshell/main.rs` calls `SetDllDirectoryW` to add `lib/` to the
++        process-wide search path itself, early in `main()` — before any plugin ever gets
++        loaded, so this narrowing is safe now. (It couldn't have covered play.exe's own
++        static imports either way, which the OS resolves before `main()` runs at all —
++        that's exactly why `windows_dlls_needed_flat()`'s subset still needs a flat copy
++        regardless of the new call.)
++        """
++        shutil.copy(servo_binary, path.join(output_dir, "play.exe"))
++
++        plugin_files = set(windows_plugins())
++        dependency_files = set(windows_dlls())
++        needed_flat = set(windows_dlls_needed_flat())
++        lib_dir = path.join(output_dir, "lib")
++        os.makedirs(lib_dir, exist_ok=True)
++
++        for f in os.listdir(binary_dir):
++            if not f.lower().endswith(".dll"):
++                continue
++            src = path.join(binary_dir, f)
++            is_plugin = f in plugin_files
++            is_dependency = f in dependency_files
++            if is_plugin or is_dependency:
++                shutil.copy(src, lib_dir)
++            # Flat next to play.exe when: an unrecognized DLL neither list knows about
++            # (unchanged from before this), or a dependency lib play.exe itself actually
++            # needs at load time (resolved before main()/SetDllDirectoryW ever run). A
++            # plugin, or a dependency lib only ever needed inside lib/, does NOT also
++            # get a flat copy.
++            if not is_plugin and (not is_dependency or f in needed_flat):
++                shutil.copy(src, output_dir)
++
++        # `--bin`/`--nightly` can point `servo_binary` at an already-*bundled* shell
++        # (e.g. one extracted from a previously-published `roves_shell_<platform>.zip`
++        # release asset, re-bundled here just to add game content) rather than a fresh
++        # `target/release/` build -- `binary_dir` then already has its own `lib/`
++        # (plugins already split out, per this same function) instead of everything
++        # flat. The loop above only lists `binary_dir` itself, so it'd silently miss
++        # every plugin sitting one level down in that case -- copy that pre-existing
++        # `lib/` wholesale too, on top of whatever the flat scan above already found.
++        # Mirrors `_bundle_macos`'s own identical `gstreamer_lib_dir` handling below.
++        existing_lib_dir = path.join(binary_dir, "lib")
++        if path.isdir(existing_lib_dir):
++            shutil.copytree(existing_lib_dir, lib_dir, dirs_exist_ok=True)
++
++        _write_launch_config(output_dir, launch_info)
++
++    def _wrap_windows_msi(self, stage_dir: str, output_dir: str, package_name: str, version: str) -> None:
++        """Wraps the portable Windows bundle already built into `stage_dir`
++        (by `_bundle_windows` + `_place_bundle_content`) into an installable
++        `.msi`, via WiX's `candle`/`light` — the same toolset upstream's own
++        `./mach package` uses for stock Servo (see package_commands.py and
++        support/windows/servoshell.wxs.mako), adapted here as a generic
++        recursive harvest of `stage_dir` instead of that template's
++        hardcoded servoshell.exe + resources/ layout, since a bundle's
++        actual contents (DLL set, whether/where packed content ended up)
++        vary per game and per --content-compress setting.
++        """
++        for tool in ("candle", "light"):
++            if not shutil.which(tool):
++                print(f"--msi requires the WiX Toolset ('{tool}' not found on PATH).")
++                raise BuildNotFound(f"{tool} not found")
++
++        msi_version = _sanitize_msi_version(version)
++        # Deterministic per-package-name, not per-build: WiX's MajorUpgrade
++        # mechanism (below, in the template) uses a stable UpgradeCode to
++        # recognize "this is a newer version of the same product" across
++        # separate `mach bundle` invocations — a fresh random one every
++        # build would make every install look like an unrelated product.
++        upgrade_code = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"roves.bundle.{package_name}"))
++
++        import mako.template
++
++        msi_build_dir = path.join(path.dirname(stage_dir), "_msi-build")
++        if path.exists(msi_build_dir):
++            delete(msi_build_dir)
++        os.makedirs(msi_build_dir)
++
++        template_path = path.join(self.context.topdir, "support", "windows", "roves-bundle.wxs.mako")
++        template = mako.template.Template(open(template_path).read())
++        wxs_path = path.join(msi_build_dir, "Bundle.wxs")
++        with open(wxs_path, "w") as f:
++            f.write(
++                template.render(
++                    package_name=package_name,
++                    upgrade_code=upgrade_code,
++                    msi_version=msi_version,
++                    stage_dir=stage_dir,
++                )
++            )
++
++        try:
++            with cd(msi_build_dir):
++                subprocess.check_call(["candle", "Bundle.wxs"])
++                subprocess.check_call(["light", "Bundle.wixobj"])
++        except subprocess.CalledProcessError as e:
++            print("WiX candle/light exited with return value %d" % e.returncode)
++            raise
++
++        msi_path = path.join(output_dir, f"{package_name}_{version}.msi")
++        if path.exists(msi_path):
++            os.remove(msi_path)
++        shutil.move(path.join(msi_build_dir, "Bundle.msi"), msi_path)
++        delete(msi_build_dir)
++        print(f"Packaged into {msi_path}")
++
++    def _bundle_macos(
++        self,
++        servo_binary: str,
++        binary_dir: str,
++        output_dir: str,
++        launch_info: BundleLaunchInfo,
++    ) -> None:
++        """The engine binary itself becomes `Contents/MacOS/play` directly
++        — no wrapper script. Finder (and `CFBundleExecutable` below) launch
++        it as-is."""
++        contents_dir = path.join(output_dir, "play.app", "Contents")
++        macos_dir = path.join(contents_dir, "MacOS")
++        os.makedirs(macos_dir)
++
++        exe_path = path.join(macos_dir, "play")
++        shutil.copy(servo_binary, exe_path)
++        os.chmod(exe_path, 0o755)
++        # Linked with `-rpath @executable_path/lib/` (see
++        # ports/servoshell/build.rs) — dylibs have to land in a `lib/`
++        # subdirectory next to the binary, not flat next to it, or dyld
++        # won't find them at runtime.
++        #
++        # `libsteam_api.dylib` is the one exception: steamworks-sys links it
++        # with a hardcoded `@loader_path/libsteam_api.dylib` install name
++        # (Valve's own SDK convention), not `@rpath/...` like every other
++        # dylib here — `@loader_path` for the main executable means "flat,
++        # next to the binary itself", not `lib/`. Confirmed the hard way: a
++        # real `--features steam` macOS bundle crashed on launch with
++        # `Library not loaded: @loader_path/libsteam_api.dylib` while every
++        # other dylib resolved fine, since this loop used to copy it into
++        # `lib/` along with everything else.
++        dylibs = [f for f in os.listdir(binary_dir) if f.endswith(".dylib")]
++        steam_dylib = "libsteam_api.dylib"
++        if steam_dylib in dylibs:
++            dylibs.remove(steam_dylib)
++            shutil.copy(path.join(binary_dir, steam_dylib), macos_dir)
++        if dylibs:
++            lib_dir = path.join(macos_dir, "lib")
++            os.makedirs(lib_dir, exist_ok=True)
++            for f in dylibs:
++                shutil.copy(path.join(binary_dir, f), lib_dir)
++
++        # GStreamer's own dylibs (and its plugins) are copied by `mach build`'s post-build
++        # step into `<binary_dir>/lib/` (see gstreamer.py's `package_gstreamer_dylibs`), not
++        # flat into `binary_dir` itself -- the loop above only ever looks at loose *.dylib
++        # files directly in `binary_dir`, so it silently missed all of GStreamer's libraries.
++        # This went unnoticed until a real (non-`--media-stack dummy`) bundled macOS build
++        # was actually launched and crashed with `Library not loaded:
++        # @rpath/libgstplay-1.0.0.dylib` -- a plain `mach build`/`mach bundle` success never
++        # exercises this, since neither of them launches the result (see the smoke-test
++        # comment in .github/workflows/test.yml for the same class of gap, elsewhere).
++        gstreamer_lib_dir = path.join(binary_dir, "lib")
++        if os.path.isdir(gstreamer_lib_dir):
++            shutil.copytree(gstreamer_lib_dir, path.join(macos_dir, "lib"), dirs_exist_ok=True)
++
++        # CFBundleIdentifier deliberately still says "servoshell", not
++        # "roves" — the 2026-08-07 rename entry in CUSTOMIZATIONS.md already
++        # considered and deliberately deferred this exact string, since a
++        # bundle identifier (unlike a display label) affects macOS-level
++        # identity (defaults/prefs, TCC permission grants, code signing) and
++        # needs its own explicit decision, not a mechanical rename.
++        info_plist = """<?xml version="1.0" encoding="UTF-8"?>
++<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
++<plist version="1.0">
++<dict>
++    <key>CFBundleExecutable</key>
++    <string>play</string>
++    <key>CFBundleIdentifier</key>
++    <string>org.servo.servoshell.bundle</string>
++    <key>CFBundleName</key>
++    <string>play</string>
++    <key>CFBundlePackageType</key>
++    <string>APPL</string>
++    <key>CFBundleShortVersionString</key>
++    <string>1.0</string>
++    <key>LSMinimumSystemVersion</key>
++    <string>10.13</string>
++</dict>
++</plist>
++"""
++        with open(path.join(contents_dir, "Info.plist"), "w") as f:
++            f.write(info_plist)
++
++        # Content (packed by _place_bundle_content) sits in Contents/Resources,
++        # a sibling of Contents/MacOS — `bundle_launch.rs` knows to look
++        # there specifically on macOS.
++        _write_launch_config(macos_dir, launch_info)
++
++    def _wrap_macos_dmg(self, stage_dir: str, output_dir: str, package_name: str, version: str) -> None:
++        """Wraps the play.app bundle already built into `stage_dir` (by
++        `_bundle_macos` + `_place_bundle_content`) into an installable
++        `.dmg` disk image via `hdiutil` — the same tool upstream's own
++        `./mach package` uses for stock Servo's `Servo.app` (see
++        package_commands.py's `package` command), adapted here to wrap our
++        content-bearing `play.app` instead. An `/Applications` symlink
++        sits alongside the `.app` inside the mounted volume so Finder's
++        usual drag-to-install gesture works.
++        """
++        if not shutil.which("hdiutil"):
++            print("--dmg requires `hdiutil`, which was not found on PATH.")
++            raise BuildNotFound("hdiutil not found")
++
++        os.symlink("/Applications", path.join(stage_dir, "Applications"))
++        dmg_path = path.join(output_dir, f"{package_name}-{version}.dmg")
++        if path.exists(dmg_path):
++            os.remove(dmg_path)
++        try:
++            # hdiutil gives "Resource busy" failures on GitHub Actions at
++            # times — see package_commands.py's own use of this same retry
++            # helper for the identical issue with stock Servo's .dmg.
++            check_call_with_randomized_backoff(
++                ["hdiutil", "create", "-volname", package_name, "-srcfolder", stage_dir, dmg_path],
++                retries=3,
++            )
++        except subprocess.CalledProcessError as e:
++            print("hdiutil exited with return value %d" % e.returncode)
++            raise
++        print(f"Packaged into {dmg_path}")
++
++    def _bundle_linux(
++        self,
++        servo_binary: str,
++        binary_dir: str,
++        output_dir: str,
++        launch_info: BundleLaunchInfo,
++    ) -> None:
++        """The engine binary itself, copied and renamed to `play`, sitting
++        flat in `output_dir` next to its `.so` dependencies (which it now
++        finds via the `$ORIGIN` rpath added in `ports/servoshell/build.rs`
++        — no `LD_LIBRARY_PATH` wrapper script needed)."""
++        play_path = path.join(output_dir, "play")
++        shutil.copy(servo_binary, play_path)
++        os.chmod(play_path, 0o755)
++        for f in os.listdir(binary_dir):
++            if ".so" in f:
++                shutil.copy(path.join(binary_dir, f), output_dir)
++        _write_launch_config(output_dir, launch_info)
++
++    def _bundle_linux_deb(
++        self,
++        servo_binary: str,
++        binary_dir: str,
++        output_dir: str,
++        launch_info: BundleLaunchInfo,
++        package_name: str,
++        version: str,
++        html_file: str,
++        content_dir: Optional[str],
++        content_compress: str,
++        packer_binary: Optional[str],
++        compression_level: int,
++        max_pack_size: str,
++        exclude: List[str],
++        boot_include: List[str],
++        game_name: Optional[str],
++        icon_png: Optional[str] = None,
++    ) -> None:
++        """Build a real, installable .deb: `dpkg -i` puts the engine + its
++        content under /usr/lib/<package_name>/, with /usr/bin/<package_name>
++        a plain symlink to it (not a wrapper script — the engine now finds
++        its own `.so` dependencies via the `$ORIGIN` rpath added in
++        `ports/servoshell/build.rs`, and resolves its own launch args
++        in-process, so nothing needs to run before it), and a .desktop entry
++        so it shows up in application launchers. This is a functional
++        package, not a lintian-clean one — no changelog, no man page, no
++        maintainer scripts; add those if this ever needs to go through a
++        real Debian/Ubuntu review.
++        """
++        if not shutil.which("dpkg-deb"):
++            print("--deb requires `dpkg-deb` (from dpkg-dev), which was not found on PATH.")
++            raise BuildNotFound("dpkg-deb not found")
++
++        arch = self.target.triple().split("-")[0]
++        debian_arch = _DEBIAN_ARCH_BY_RUST_ARCH.get(arch, arch)
++
++        pkg_root = path.join(output_dir, "pkgroot")
++        lib_dir = path.join(pkg_root, "usr", "lib", package_name)
++        bin_dir = path.join(pkg_root, "usr", "bin")
++        applications_dir = path.join(pkg_root, "usr", "share", "applications")
++        debian_dir = path.join(pkg_root, "DEBIAN")
++        for d in (lib_dir, bin_dir, applications_dir, debian_dir):
++            os.makedirs(d)
++
++        binary_name = path.basename(servo_binary)
++        shutil.copy(servo_binary, path.join(lib_dir, binary_name))
++        os.chmod(path.join(lib_dir, binary_name), 0o755)
++        # See `INSTALLED_MARKER`'s own doc comment -- `lib_dir` is where `dpkg -i`
++        # actually installs the binary to (`/usr/bin/<package_name>` is just a symlink
++        # to it), so it's where `std::env::current_exe()`'s `.parent()` resolves to
++        # at runtime.
++        open(path.join(lib_dir, INSTALLED_MARKER), "w").close()
++        if icon_png:
++            shutil.copy(icon_png, path.join(lib_dir, "icon.png"))
++        for f in os.listdir(binary_dir):
++            if ".so" in f:
++                shutil.copy(path.join(binary_dir, f), lib_dir)
++        _place_bundle_content(
++            lib_dir,
++            html_file,
++            content_dir,
++            content_compress,
++            packer_binary,
++            compression_level,
++            max_pack_size,
++            exclude,
++            boot_include,
++            game_name,
++        )
++        _write_launch_config(lib_dir, launch_info)
++
++        # /usr/lib/<package_name> isn't on PATH, so /usr/bin/<package_name>
++        # needs to point at the real binary somehow — a symlink is a
++        # filesystem alias, not a second executable/process, and
++        # `env::current_exe()` (what `bundle_launch.rs` looks next to)
++        # resolves through it to the real path on Linux automatically.
++        os.symlink(path.join("/usr", "lib", package_name, binary_name), path.join(bin_dir, package_name))
++
++        icon_line = f"Icon={path.join(lib_dir, 'icon.png')}\n" if icon_png else ""
++        desktop_entry = f"""[Desktop Entry]
++Type=Application
++Name={package_name}
++Exec=/usr/bin/{package_name}
++Terminal=false
++Categories=Network;WebBrowser;
++{icon_line}"""
++        with open(path.join(applications_dir, f"{package_name}.desktop"), "w") as f:
++            f.write(desktop_entry)
++
++        # `lstat`, not `getsize`/`stat`: `usr/bin/{package_name}` is now a
++        # symlink whose target (`/usr/lib/{package_name}/{binary_name}`) is
++        # an absolute path that doesn't exist on *this* (build) machine —
++        # only after installation — so following it here would raise
++        # `FileNotFoundError`. `lstat` reports the symlink's own (tiny)
++        # size instead, matching how `du`/real `dpkg-deb` account for it.
++        installed_size_kb = sum(
++            os.lstat(path.join(dirpath, name)).st_size
++            for dirpath, _dirnames, filenames in os.walk(pkg_root)
++            for name in filenames
++        ) // 1024
++        control = f"""Package: {package_name}
++Version: {version}
++Section: web
++Priority: optional
++Architecture: {debian_arch}
++Installed-Size: {installed_size_kb}
++Maintainer: unspecified <unspecified@example.com>
++Description: {package_name} (Servo-based application bundle)
++ Packaged by `mach bundle --deb`; see servo/CUSTOMIZATIONS.md for how this
++ differs from stock Servo.
++"""
++        with open(path.join(debian_dir, "control"), "w") as f:
++            f.write(control)
++
++        deb_path = path.join(output_dir, f"{package_name}_{version}_{debian_arch}.deb")
++        subprocess.check_call(["dpkg-deb", "--build", "--root-owner-group", pkg_root, deb_path])
++        delete(pkg_root)
++
+     @Command("coverage-report", description="Create Servo Code Coverage report.", category="post-build")
+     @CommandArgument("params", nargs="...", help="Command-line arguments to be passed through to cargo llvm-cov")
+     @CommandBase.common_command_arguments(binary_selection=True, build_type=True, coverage_report=True)
+diff --git a/support/MOBILE.md b/support/MOBILE.md
+new file mode 100644
+index 000000000..696accbb5
+--- /dev/null
++++ b/support/MOBILE.md
+@@ -0,0 +1,101 @@
++# Mobile packaging
++
++## Android startup branding
++
++Android displays a native black Roves splash with the desktop icon, Metal Mania
++wordmark and animated loading bar. Branding is generated from the engine resources,
++separately from bundled game assets and the replaceable launcher icon.
++The overlay stays for at least 500 ms and until the initial main document finishes
++loading and WebView confirms a drawable visual state. Redirects invalidate stale
++completion callbacks; later navigation does not replay the startup splash.
++This indicates document readiness, not completion of asynchronous game asset loading.
++Android 12+ uses a black, Roves-branded system splash.
++Device validation remains pending: cold/warm launch, slow content, redirects,
++missing index.html, rotation and fullscreen. Local Java cannot currently launch Gradle.
++
++Desktop continues to use Servo. Android uses the system Android WebView; iOS
++uses Apple's WKWebView. Neither mobile container loads Servo, JNI or GStreamer.
++Web APIs and rendering therefore follow the installed platform engine.
++
++## Android
++
++Install Java 17 and the Android SDK (platform 37 and build tools 36.0.0), set
++ANDROID_HOME, then run from the repository root:
++
++```sh
++./mach bundle --android --content-dir /absolute/path/to/dist --output /absolute/path/to/android-output
++```
++
++No `mach build --android`, Rust cross compilation or NDK is required for game
++packaging. The existing Android app name, orientation, theme color and icon
++options are preserved. Release builds use `--android-release` and the existing
++APK_SIGNING_KEY_STORE_PATH, APK_SIGNING_KEY_STORE_PASS, APK_SIGNING_KEY_ALIAS and
++APK_SIGNING_KEY_PASS environment variables.
++
++For Android Studio or direct Gradle builds, put the game in
++`support/android/apk/servoapp/src/main/assets/www`, then run
++`./gradlew :servoapp:assembleArm64Debug` inside `support/android/apk`.
++The APK is in `servoapp/build/outputs/apk/`. Variant architecture names remain
++for compatibility; the WebView app itself has no architecture-specific binaries.
++
++The local origin is `https://appassets.androidplatform.net/`: relative and
++root-relative asset URLs, JavaScript modules, fetch and browser storage use this
++origin. Missing local files return 404 instead of accessing the network.
++Storage persists across app launches. Debug APKs enable WebView debugging;
++release APKs do not. Video fullscreen, back navigation and lifecycle are handled
++by the container.
++
++## iOS
++
++Stage the game on any host:
++
++```sh
++python3 support/ios/bundle.py --content-dir /absolute/path/to/dist --output /absolute/path/to/ios-project --app-name 'My Game' --bundle-id com.example.mygame
++```
++
++On macOS, install Xcode and XcodeGen, then inside the generated directory run:
++
++```sh
++xcodegen generate --spec project.json
++open RovesGame.xcodeproj
++```
++
++Choose your development team in Xcode, add the required app icons and build for
++a simulator or device. Archive and export using your Apple distribution signing
++configuration for an IPA. The generated project targets iOS 15+ and iPhone/iPad.
++The output directory must be new and must not overlap the content directory.
++
++The local origin is `game://content/`, served by a `WKURLSchemeHandler`
++(`GameSchemeHandler` in App.swift) instead of a raw `file://` path: relative and
++root-relative asset URLs resolve correctly, and `location.pathname` is `/` at
++boot, so a client-side history router's root route matches (the same reasoning
++as Android's `https://appassets.androidplatform.net/` origin, and desktop's own
++`game://content/` protocol handler — see `ports/servoshell/protocols/game.rs`).
++A path with no matching file falls back to `index.html`, the same SPA-fallback
++behavior as those two. Byte-range requests are honored, so `<video>`/`<audio>`
++seeking works. Missing files return 404. `game://` isn't a WebKit secure
++context (no Service Workers, some newer APIs gated on that) — an accepted
++tradeoff, not an oversight; desktop's own `game://` makes the same call.
++A native black splash with the Roves icon, Metal Mania wordmark and animated
++bar (`RovesSplashView` in App.swift) covers the initial load, removed once the
++WKWebView navigation delegate reports the document finished (with the same
++500ms floor as Android's splash) — the iOS equivalent of Android's startup
++branding above. Validate your game's module loading and storage behavior on
++the target iOS version before release; device runtime checks (seeking,
++splash timing, storage persistence) remain pending, same caveat as Android.
++
++## Compatibility and validation
++
++Servo-specific extensions (including native Roves save APIs) are not
++implemented by these containers. Games should use standard web APIs or a
++platform bridge provided separately. Android and iOS builds in external
++projects such as Packmaster and roves-action need their own migration to this
++same WebView-only approach — see those repos' own CLAUDE.md/CUSTOMIZATIONS.md
++for whether that's already been done by the time you're reading this. The
++Android workflow no longer produces Servo native-library downloads.
++
++Python staging and packaging checks can run on Linux. Actual Android compilation
++requires a working JDK/SDK and dependency downloads; iOS compilation and runtime
++checks require macOS/Xcode. CI runs the real `mach bundle --android` path (not a
++hand-rolled Gradle invocation) against smoke-test content, but device runtime
++checks are still required for graphics, sound, fullscreen and save persistence.
+diff --git a/support/android/apk/servoapp/build.gradle.kts b/support/android/apk/servoapp/build.gradle.kts
+index 1ea7d64e3..90cfcc0ac 100644
+--- a/support/android/apk/servoapp/build.gradle.kts
++++ b/support/android/apk/servoapp/build.gradle.kts
+@@ -1,11 +1,23 @@
+-import java.util.regex.Pattern
+-
+ plugins {
+     alias(libs.plugins.android.application)
+-    alias(libs.plugins.compose)
++}
++
++// Keep engine branding separate from www and the game's replaceable launcher icon.
++val generateRovesBrandAssets by tasks.registering(Sync::class) {
++    from(rootProject.file("../../../resources")) {
++        include("servo_1024.png", "fonts/MetalMania-Regular.ttf", "fonts/MetalMania-OFL.txt")
++        into("assets/roves-brand")
++    }
++    from(rootProject.file("../../../resources/servo_1024.png")) {
++        into("res/drawable")
++        rename { "roves_boot_icon.png" }
++    }
++    into(layout.buildDirectory.dir("generated/rovesBrand"))
+ }
+ 
+ android {
++    sourceSets.getByName("main").assets.srcDir(layout.buildDirectory.dir("generated/rovesBrand/assets"))
++    sourceSets.getByName("main").res.srcDir(layout.buildDirectory.dir("generated/rovesBrand/res"))
+     compileSdk = 37
+     buildToolsVersion = "36.0.0"
+ 
+@@ -17,6 +29,38 @@ android {
+         targetSdk = 34
+         versionCode = generatedVersionCode
+         versionName = "0.5.0"
++
++        // Sourced from the game's own web app manifest (`manifest.webmanifest`/
++        // `manifest.json`/`site.webmanifest`) by `mach bundle --android --content-dir` --
++        // see python/servo/post_build_commands.py's `_bundle_android`/`_read_web_manifest` --
++        // or from that command's own --android-orientation/--android-app-name/
++        // --android-theme-color overrides, passed here as Gradle project properties. Both
++        // default to values that reproduce today's un-overridden behavior for a build with
++        // no bundled content, e.g. the plain engine-shell build
++        // `.github/workflows/android.yml` produces: "unspecified" leaves the screen
++        // orientation up to the OS/sensor, and "@string/app_name" is itself a resource
++        // reference -- once substituted into AndroidManifest.xml's `android:label`, Android
++        // resolves it exactly like the un-placeholdered `@string/app_name` this replaced.
++        manifestPlaceholders["screenOrientation"] =
++            (project.findProperty("servoScreenOrientation") as String?) ?: "unspecified"
++        manifestPlaceholders["appName"] =
++            (project.findProperty("servoAppName") as String?) ?: "@string/app_name"
++
++        // Not a manifest placeholder like the two above: `android:statusBarColor` lives in a
++        // *theme* (res/values/styles.xml), which manifestPlaceholders can't reach (those only
++        // substitute inside AndroidManifest.xml itself). Instead this generates a new string
++        // resource MainActivity.kt reads and applies to the status bar at runtime via
++        // `Window.setStatusBarColor` -- see that file. Empty string (not a color) by default,
++        // so "no theme_color set" means "don't touch the status bar" rather than forcing some
++        // placeholder color.
++        resValue("string", "servoThemeColor", (project.findProperty("servoThemeColor") as String?) ?: "")
++    }
++
++    // AGP 8+ requires this explicit opt-in for defaultConfig's `resValue` (used above for
++    // `servoThemeColor`) -- off by default since AGP stopped generating it unconditionally
++    // for build-time-cost reasons.
++    buildFeatures {
++        resValues = true
+     }
+ 
+     compileOptions {
+@@ -114,38 +158,8 @@ androidComponents {
+     }
+ }
+ 
+-project.afterEvaluate {
+-    android.applicationVariants.forEach { variant ->
+-        val pattern = Pattern.compile("^([\\w\\d]+)(Debug|Release)")
+-        val matcher = pattern.matcher(variant.name)
+-        if (!matcher.find()) {
+-            throw GradleException("Invalid variant name for output: " + variant.name)
+-        }
+-        val arch = matcher.group(1)
+-        val debug = variant.name.contains("Debug")
+-        val finalFolder = getTargetDir(debug, arch)
+-        val finalFile = File(finalFolder, "servoapp.apk")
+-        variant.outputs.forEach { output ->
+-            val copyAndRenameAPKTask =
+-                project.task<Copy>("copyAndRename${variant.name.capitalize()}APK") {
+-                    from(output.outputFile.parent)
+-                    into(finalFolder)
+-                    include(output.outputFile.name)
+-                    rename(output.outputFile.name, finalFile.name)
+-                }
+-            variant.assembleProvider.get().finalizedBy(copyAndRenameAPKTask)
+-        }
+-    }
+-}
+-
+ dependencies {
+-    if (findProject(":servoview-local") != null) {
+-        implementation(project(":servoview-local"))
+-    } else {
+-        implementation(project(":servoview"))
+-    }
+-    implementation(libs.androidx.activity.compose)
+-    implementation(libs.androidx.material3.compose)
+-    implementation(libs.androidx.material3.compose.adaptive)
+-    implementation(libs.androidx.preference)
++    implementation("androidx.webkit:webkit:1.12.1")
+ }
++
++tasks.named("preBuild").configure { dependsOn(generateRovesBrandAssets) }
+diff --git a/support/android/apk/servoapp/src/main/AndroidManifest.xml b/support/android/apk/servoapp/src/main/AndroidManifest.xml
+index 0d75b9613..80abf0129 100644
+--- a/support/android/apk/servoapp/src/main/AndroidManifest.xml
++++ b/support/android/apk/servoapp/src/main/AndroidManifest.xml
+@@ -1,57 +1,18 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <manifest xmlns:android="http://schemas.android.com/apk/res/android" android:installLocation="auto">
+ 
+-    <uses-feature android:glEsVersion="0x00030000" android:required="true" />
+-    <uses-feature android:name="android.hardware.bluetooth_le" android:required="true"/>
+     <uses-permission android:name="android.permission.INTERNET" />
+-    <uses-permission android:name="android.permission.BLUETOOTH" />
+-    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"/>
+-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+ 
+-    <application android:label="@string/app_name" android:icon="@mipmap/servo">
++    <application android:label="${appName}" android:icon="@mipmap/servo">
+         <activity android:name=".MainActivity"
+             android:configChanges="density|keyboardHidden|navigation|orientation|screenSize|uiMode"
++            android:screenOrientation="${screenOrientation}"
+             android:exported="true"
+             android:theme="@style/AppTheme">
+-            <meta-data android:name="android.app.lib_name" android:value="servo" />
+             <intent-filter>
+                 <action android:name="android.intent.action.MAIN" />
+                 <category android:name="android.intent.category.LAUNCHER" />
+             </intent-filter>
+-
+-            <!-- Web browser intents -->
+-            <intent-filter>
+-              <action android:name="android.intent.action.VIEW" />
+-              <category android:name="android.intent.category.DEFAULT" />
+-              <category android:name="android.intent.category.BROWSABLE" />
+-              <data android:scheme="http" />
+-              <data android:scheme="https" />
+-              <data android:scheme="data" />
+-              <data android:scheme="javascript" />
+-            </intent-filter>
+-            <intent-filter>
+-              <action android:name="android.intent.action.VIEW" />
+-              <category android:name="android.intent.category.DEFAULT" />
+-              <category android:name="android.intent.category.BROWSABLE" />
+-              <data android:scheme="file" />
+-              <data android:scheme="http" />
+-              <data android:scheme="https" />
+-              <data android:mimeType="text/html"/>
+-              <data android:mimeType="text/plain"/>
+-              <data android:mimeType="application/xhtml+xml"/>
+-            </intent-filter>
+-        </activity>
+-        <activity android:name=".SettingsActivity"
+-            android:configChanges="density|keyboardHidden|navigation|orientation|screenSize|uiMode"
+-            android:exported="true"
+-            android:theme="@style/AppTheme">
+-        </activity>
+-        <activity android:name=".HistoryActivity"
+-            android:configChanges="density|keyboardHidden|navigation|orientation|screenSize|uiMode"
+-            android:exported="true"
+-            android:theme="@style/AppTheme">
+         </activity>
+     </application>
+ 
+diff --git a/support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt b/support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt
+index 1f95d4c5b..8fbc58d57 100644
+--- a/support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt
++++ b/support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt
+@@ -1,410 +1,142 @@
+-/*
+- * This Source Code Form is subject to the terms of the Mozilla Public
+- * License, v. 2.0. If a copy of the MPL was not distributed with this
+- * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+- */
+ package org.servo.servoshell
+ 
+-import android.app.AlertDialog
+-import android.content.Intent
+-import android.content.SharedPreferences
++import android.app.Activity
++import android.graphics.Color
+ import android.os.Bundle
+-import android.system.ErrnoException
+-import android.system.Os
+-import android.util.Log
+-import android.view.inputmethod.InputMethodManager
+-import androidx.activity.ComponentActivity
+-import androidx.activity.compose.BackHandler
+-import androidx.activity.compose.setContent
+-import androidx.compose.foundation.layout.Row
+-import androidx.compose.foundation.layout.padding
+-import androidx.compose.foundation.layout.size
+-import androidx.compose.foundation.text.input.TextFieldState
+-import androidx.compose.foundation.text.input.selectAll
+-import androidx.compose.material3.CircularProgressIndicator
+-import androidx.compose.material3.ExperimentalMaterial3Api
+-import androidx.compose.material3.Icon
+-import androidx.compose.material3.IconButton
+-import androidx.compose.material3.NavigationBar
+-import androidx.compose.material3.NavigationBarItem
+-import androidx.compose.material3.Scaffold
+-import androidx.compose.material3.SearchBar
+-import androidx.compose.material3.SearchBarDefaults
+-import androidx.compose.material3.Text
+-import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
+-import androidx.compose.material3.rememberSearchBarState
+-import androidx.compose.runtime.Composable
+-import androidx.compose.runtime.mutableStateOf
+-import androidx.compose.runtime.rememberCoroutineScope
+-import androidx.compose.ui.Alignment
+-import androidx.compose.ui.Modifier
+-import androidx.compose.ui.focus.onFocusChanged
+-import androidx.compose.ui.res.painterResource
+-import androidx.compose.ui.res.stringResource
+-import androidx.compose.ui.unit.dp
+-import androidx.compose.ui.viewinterop.AndroidView
+-import androidx.core.content.getSystemService
+-import androidx.preference.PreferenceManager
+-import androidx.window.core.layout.WindowSizeClass
+-import kotlinx.coroutines.launch
+-import org.servo.servoview.Servo
+-import org.servo.servoview.ServoView
+-
+-class MainActivity : ComponentActivity(), Servo.Client {
+-    private lateinit var servoView: ServoView
+-
+-    private val urlTextFieldState = TextFieldState()
+-    private var canGoBackState = mutableStateOf(false)
+-    private var canGoForwardState = mutableStateOf(false)
+-    private var isRefreshingState = mutableStateOf(false)
+-    private var mediaSession: MediaSession? = null
+-    private lateinit var historyManager: HistoryManager
+-    private var currentUrl = ""
+-    private var currentTitle = ""
+-
+-    private class Settings(preferences: SharedPreferences) {
+-        var experimental = preferences.getBoolean("experimental", false)
+-    }
+-
+-    private lateinit var settings: Settings
++import android.os.SystemClock
++import android.view.View
++import android.webkit.WebChromeClient
++import android.webkit.WebResourceRequest
++import android.webkit.WebResourceResponse
++import android.webkit.WebView
++import android.webkit.WebViewClient
++import android.widget.FrameLayout
++import androidx.webkit.WebViewAssetLoader
++
++/** The game runs on Android's system WebView; no Servo or JNI library is loaded. */
++class MainActivity : Activity() {
++    private lateinit var webView: WebView
++    private lateinit var container: FrameLayout
++    private lateinit var splash: RovesSplashView
++    private var splashStarted = 0L
++    private var startupPending = true
++    private var startupNavigation = 0L
++    private var destroyed = false
++    private var fullscreenView: View? = null
++    private var fullscreenCallback: WebChromeClient.CustomViewCallback? = null
+ 
+     override fun onCreate(savedInstanceState: Bundle?) {
+         super.onCreate(savedInstanceState)
++        container = FrameLayout(this)
++        container.setBackgroundColor(Color.BLACK)
++        splash = RovesSplashView(this)
++        splashStarted = SystemClock.uptimeMillis()
++        // Paint branding before constructing the potentially expensive system WebView.
++        container.addView(splash, FrameLayout.LayoutParams(-1, -1))
++        setContentView(container)
++        webView = WebView(this)
++        webView.setBackgroundColor(Color.BLACK)
++        container.addView(webView, 0, FrameLayout.LayoutParams(-1, -1))
++        val themeColor = getString(R.string.servoThemeColor)
++        if (themeColor.isNotEmpty()) {
++            runCatching { window.statusBarColor = Color.parseColor(themeColor) }
++        }
++        val assets = WebViewAssetLoader.AssetsPathHandler(this)
++        val loader = WebViewAssetLoader.Builder()
++            // Serve the game at the origin root so /images and /audio also work.
++            .addPathHandler("/") { path -> assets.handle("www/$path") }
++            .build()
++        webView.settings.apply {
++            javaScriptEnabled = true
++            domStorageEnabled = true
++            mediaPlaybackRequiresUserGesture = false
++            allowFileAccess = false
++            allowContentAccess = false
++        }
++        WebView.setWebContentsDebuggingEnabled(
++            (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
++        )
++        webView.webViewClient = object : WebViewClient() {
++            override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
++                startupNavigation++
++            }
+ 
+-        servoView = ServoView(this)
+-
+-        historyManager = HistoryManager(this)
+-
+-        updateSettingsIfNecessary(true)
+-
+-        setContent {
+-            val isWindowWidthAtLeastMedium = currentWindowAdaptiveInfo().windowSizeClass.isWidthAtLeastBreakpoint(WindowSizeClass.WIDTH_DP_MEDIUM_LOWER_BOUND)
+-
+-            Scaffold(
+-                topBar = {
+-                    Row(
+-                        verticalAlignment = Alignment.CenterVertically,
+-                    ) {
+-                        if (isWindowWidthAtLeastMedium) {
+-                            IconButton(onClick = ::onHistoryBackMenuItemClicked, enabled = canGoBackState.value) {
+-                                Icon(painterResource(R.drawable.arrow_back), stringResource(R.string.history_back))
++            override fun onPageFinished(view: WebView, url: String) {
++                if (!startupPending || url != view.url) return
++                val navigation = startupNavigation
++                // Page completion alone doesn't guarantee its contents can be drawn.
++                view.postVisualStateCallback(navigation, object : WebView.VisualStateCallback() {
++                    override fun onComplete(requestId: Long) {
++                        val remaining = (500L - (SystemClock.uptimeMillis() - splashStarted)).coerceAtLeast(0L)
++                        splash.postDelayed({
++                            if (!destroyed && startupPending && navigation == startupNavigation) {
++                                startupPending = false
++                                container.removeView(splash)
+                             }
+-                            IconButton(onClick = ::onHistoryForwardMenuItemClicked, enabled = canGoForwardState.value) {
+-                                Icon(painterResource(R.drawable.arrow_forward), stringResource(R.string.history_forward))
+-                            }
+-                            IconButton(onClick = { if (isRefreshingState.value) onCancelMenuItemClicked() else onRefreshMenuItemClicked() }) {
+-                                if (isRefreshingState.value) {
+-                                    Icon(painterResource(R.drawable.cancel), stringResource(R.string.cancel))
+-                                } else {
+-                                    Icon(painterResource(R.drawable.refresh), stringResource(R.string.refresh))
+-                                }
+-                            }
+-                        }
+-                        Omnibox(
+-                            urlTextFieldState,
+-                            onSearch = { search ->
+-                                loadUrl(search)
+-                                servoView.requestFocus()
+-                            },
+-                            modifier = Modifier
+-                                .weight(1f)
+-                                .padding(end = 10.dp),
+-                        )
+-                        if (isRefreshingState.value) {
+-                            CircularProgressIndicator(
+-                                modifier = Modifier
+-                                    .padding(end = 10.dp)
+-                                    .size(20.dp),
+-                            )
+-                        }
+-                        if (isWindowWidthAtLeastMedium) {
+-                            IconButton(onClick = ::onSettingsMenuItemClicked) {
+-                                Icon(painterResource(R.drawable.settings), stringResource(R.string.options))
+-                            }
+-                            IconButton(onClick = ::onHistoryMenuItemClicked) {
+-                                Icon(painterResource(R.drawable.history), stringResource(R.string.history_title))
+-                            }
+-                        }
+-                    }
+-                },
+-                bottomBar = {
+-                    if (!isWindowWidthAtLeastMedium) {
+-                        NavigationBar {
+-                            NavigationBarItem(
+-                                selected = false,
+-                                enabled = canGoBackState.value,
+-                                onClick = ::onHistoryBackMenuItemClicked,
+-                                icon = { Icon(painterResource(R.drawable.arrow_back), null) },
+-                                label = { Text(stringResource(R.string.history_back)) },
+-                            )
+-                            NavigationBarItem(
+-                                selected = false,
+-                                enabled = canGoForwardState.value,
+-                                onClick = { onHistoryForwardMenuItemClicked() },
+-                                icon = { Icon(painterResource(R.drawable.arrow_forward), null) },
+-                                label = { Text(stringResource(R.string.history_forward)) },
+-                            )
+-                            if (isRefreshingState.value) {
+-                                NavigationBarItem(
+-                                    selected = false,
+-                                    onClick = ::onCancelMenuItemClicked,
+-                                    icon = { Icon(painterResource(R.drawable.cancel), null) },
+-                                    label = { Text(stringResource(R.string.cancel)) },
+-                                )
+-                            } else {
+-                                NavigationBarItem(
+-                                    selected = false,
+-                                    onClick = ::onRefreshMenuItemClicked,
+-                                    icon = { Icon(painterResource(R.drawable.refresh), null) },
+-                                    label = { Text(stringResource(R.string.refresh)) },
+-                                )
+-                            }
+-                            NavigationBarItem(
+-                                selected = false,
+-                                onClick = ::onSettingsMenuItemClicked,
+-                                icon = { Icon(painterResource(R.drawable.settings), null) },
+-                                label = { Text(stringResource(R.string.options)) },
+-                            )
+-                            NavigationBarItem(
+-                                selected = false,
+-                                onClick = ::onHistoryMenuItemClicked,
+-                                icon = { Icon(painterResource(R.drawable.history), null) },
+-                                label = { Text(stringResource(R.string.history_title)) },
+-                            )
+-                        }
++                        }, remaining)
+                     }
+-                },
+-            ) { innerPadding ->
+-                AndroidView(
+-                    factory = { _ -> servoView },
+-                    modifier = Modifier.padding(innerPadding),
+-                )
+-                BackHandler(enabled = canGoBackState.value) {
+-                    servoView.goBack()
+-                }
++                })
+             }
+-        }
+-
+-        servoView.setClient(this)
+-        servoView.requestFocus()
+-
+-        val sdcard = getExternalFilesDir("")
+-        val host = sdcard!!.toPath().resolve("android_hosts").toString()
+-        try {
+-            Os.setenv("HOST_FILE", host, false)
+-        } catch (e: ErrnoException) {
+-            e.printStackTrace()
+-        }
+-
+-        val intent = getIntent()
+-        val args = intent.getStringExtra("servoargs")
+-        val log = intent.getStringExtra("servolog")
+-        servoView.setServoArgs(args, log, settings.experimental)
+-
+-        if (Intent.ACTION_VIEW == intent.action) {
+-            servoView.loadUri(intent.data.toString())
+-        }
+-    }
+-
+-    override fun onDestroy() {
+-        super.onDestroy()
+-        mediaSession?.hideMediaSessionControls()
+-    }
+-
+-    /**
+-     * We’re unsetting all the loading UI just in case loading got stuck, and we’re
+-     * navigating to a cached page, which doesn’t trigger [onLoadEnded]. The "stop
+-     * loading" button is implemented by [onCancelMenuItemClicked], but the underlying
+-     * Servo view can’t actually [ServoView.stop] yet.
+-     */
+-    private fun onHistoryItemClicked() {
+-        onLoadEnded()
+-    }
+-
+-    private fun onHistoryBackMenuItemClicked() {
+-        onHistoryItemClicked()
+-        servoView.goBack()
+-    }
+-
+-    private fun onHistoryForwardMenuItemClicked() {
+-        onHistoryItemClicked()
+-        servoView.goForward()
+-    }
+-
+-    private fun onRefreshMenuItemClicked() {
+-        servoView.reload()
+-    }
+-
+-    private fun onCancelMenuItemClicked() {
+-        servoView.stop()
+-    }
+-
+-    private fun onSettingsMenuItemClicked() {
+-        startActivity(Intent(this, SettingsActivity::class.java))
+-    }
+-
+-    private fun onHistoryMenuItemClicked() {
+-        startActivityForResult(Intent(this, HistoryActivity::class.java), HISTORY_REQUEST_CODE)
+-    }
+-
+-    private fun loadUrl(search: String) {
+-        servoView.loadUri(search.trim { it <= ' ' })
+-    }
+ 
+-    override fun onImeShow() {
+-        getSystemService<InputMethodManager>()?.showSoftInput(servoView, InputMethodManager.SHOW_IMPLICIT)
+-    }
+-
+-    override fun onImeHide() {
+-        getSystemService<InputMethodManager>()?.hideSoftInputFromWindow(servoView.windowToken, InputMethodManager.SHOW_IMPLICIT)
+-    }
+-
+-    override fun onAlert(message: String) {
+-        AlertDialog.Builder(this)
+-            .setMessage(message)
+-            .show()
+-    }
+-
+-    override fun onLoadStarted() {
+-        // This doesn’t seem to actually happen when navigating
+-        // back to a page that is already cached.
+-        Log.i(TAG, "onLoadStarted: ")
+-        isRefreshingState.value = true
+-    }
+-
+-    // INFO: This currently gets called multiple times on each load.
+-    override fun onLoadEnded() {
+-        Log.i(TAG, "onLoadEnded: ")
+-        if (currentUrl.isNotEmpty()) {
+-            // HistoryManager has a basic method of preventing clobbering
+-            // by the fact that onLoadEnded gets called multiple times
+-            // per page. 
+-            historyManager.addEntry(currentUrl, currentTitle)
+-        }
+-        isRefreshingState.value = false
+-    }
+-
+-    override fun onTitleChanged(title: String) {
+-        currentTitle = title
+-    }
+-
+-    override fun onUrlChanged(url: String) {
+-        urlTextFieldState.edit { replace(0, length, url) }
+-        currentUrl = url
+-    }
+-
+-    override fun onHistoryChanged(canGoBack: Boolean, canGoForward: Boolean) {
+-        Log.i(TAG, "onHistoryChanged: $canGoBack<->$canGoForward")
+-        canGoBackState.value = canGoBack
+-        canGoForwardState.value = canGoForward
+-    }
+-
+-    override fun onRedrawing(redrawing: Boolean) {
+-    }
+-
+-    public override fun onPause() {
+-        servoView.onPause()
+-        super.onPause()
+-    }
+-
+-    public override fun onResume() {
+-        servoView.onResume()
+-        super.onResume()
+-        updateSettingsIfNecessary(false)
+-    }
+-
+-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+-        super.onActivityResult(requestCode, resultCode, data)
+-
+-        if (requestCode == HISTORY_REQUEST_CODE && resultCode == RESULT_OK && data != null) {
+-            val url = data.getStringExtra("url")
+-            if (!url.isNullOrEmpty()) {
+-                urlTextFieldState.edit { replace(0, length, url) }
+-                loadUrl(urlTextFieldState.text.toString())
++            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
++                val response = loader.shouldInterceptRequest(request.url)
++                if (request.url.host == WebViewAssetLoader.DEFAULT_DOMAIN && response == null) {
++                    return WebResourceResponse("text/plain", "UTF-8", 404, "Not Found", emptyMap(), null)
++                }
++                return response
++            }
++            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
++                return request.url.scheme !in listOf("https", "http")
+             }
+         }
+-    }
+-
+-    override fun onMediaSessionMetadata(title: String, artist: String, album: String) {
+-        Log.d("onMediaSessionMetadata", "$title $artist $album")
+-        val mediaSession = mediaSession ?: MediaSession(servoView, applicationContext).also { mediaSession = it }
+-        mediaSession.updateMetadata(title, artist, album)
+-    }
+-
+-    override fun onMediaSessionPlaybackStateChange(state: Int) {
+-        Log.d("onMediaSessionPlaybackStateChange", state.toString())
+-        val mediaSession = mediaSession ?: MediaSession(servoView, applicationContext).also { mediaSession = it }
+-
+-        mediaSession.setPlaybackState(state)
+-
+-        if (state == MediaSession.PLAYBACK_STATE_NONE) {
+-            mediaSession.hideMediaSessionControls()
+-            return
++        webView.webChromeClient = object : WebChromeClient() {
++            override fun onShowCustomView(view: View, callback: CustomViewCallback) {
++                if (fullscreenView != null) {
++                    callback.onCustomViewHidden()
++                    return
++                }
++                fullscreenView = view
++                fullscreenCallback = callback
++                webView.visibility = View.GONE
++                container.addView(view, FrameLayout.LayoutParams(-1, -1))
++                if (startupPending) splash.bringToFront()
++                window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or
++                    View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
++            }
++            override fun onHideCustomView() = leaveFullscreen()
+         }
+-        if (state == MediaSession.PLAYBACK_STATE_PLAYING ||
+-            state == MediaSession.PLAYBACK_STATE_PAUSED
+-        ) {
+-            mediaSession.showMediaSessionControls()
++        if (savedInstanceState == null || webView.restoreState(savedInstanceState) == null) {
++            webView.loadUrl("https://appassets.androidplatform.net/index.html")
+         }
+     }
+ 
+-    override fun onMediaSessionSetPositionState(duration: Float, position: Float, playbackRate: Float) {
+-        Log.d("onMediaSessionSetPositionState", "$duration $position $playbackRate")
++    private fun leaveFullscreen() {
++        fullscreenView?.let { container.removeView(it) }
++        fullscreenView = null
++        webView.visibility = View.VISIBLE
++        window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
++        fullscreenCallback?.onCustomViewHidden()
++        fullscreenCallback = null
+     }
+ 
+-    private fun onExperimentalPrefChanged(value: Boolean) {
+-        servoView.setExperimentalMode(value)
++    @Deprecated("Activity back navigation")
++    override fun onBackPressed() {
++        if (fullscreenView != null) leaveFullscreen()
++        else if (webView.canGoBack()) webView.goBack()
++        else super.onBackPressed()
+     }
+ 
+-    private fun updateSettingsIfNecessary(force: Boolean) {
+-        val preferences = PreferenceManager.getDefaultSharedPreferences(applicationContext)
+-        val updated = Settings(preferences)
+-
+-        if (force || updated.experimental != settings.experimental) {
+-            onExperimentalPrefChanged(updated.experimental)
+-        }
+-
+-        settings = updated
++    override fun onSaveInstanceState(outState: Bundle) {
++        webView.saveState(outState)
++        super.onSaveInstanceState(outState)
+     }
+-
+-    companion object {
+-        private const val TAG = "MainActivity"
+-
+-        // Identify which activity a result came from, if we ever have more
+-        // than one
+-        private const val HISTORY_REQUEST_CODE = 1
++    override fun onPause() { webView.onPause(); super.onPause() }
++    override fun onResume() { super.onResume(); webView.onResume() }
++    override fun onDestroy() {
++        destroyed = true
++        leaveFullscreen()
++        container.removeView(webView)
++        webView.destroy()
++        super.onDestroy()
+     }
+ }
+-
+-@OptIn(ExperimentalMaterial3Api::class)
+-@Composable
+-private fun Omnibox(
+-    textFieldState: TextFieldState,
+-    onSearch: (String) -> Unit,
+-    modifier: Modifier = Modifier,
+-) {
+-    val searchBarState = rememberSearchBarState()
+-
+-    SearchBar(
+-        state = searchBarState,
+-        inputField = {
+-            val coroutineScope = rememberCoroutineScope()
+-
+-            SearchBarDefaults.InputField(
+-                textFieldState = textFieldState,
+-                searchBarState = searchBarState,
+-                onSearch = onSearch,
+-                modifier = Modifier
+-                    .onFocusChanged { focusState ->
+-                        if (focusState.isFocused) {
+-                            coroutineScope.launch {
+-                                textFieldState.edit { selectAll() }
+-                            }
+-                        }
+-                    },
+-                placeholder = { Text(stringResource(R.string.url_or_search)) },
+-            )
+-        },
+-        modifier = modifier,
+-    )
+-}
+diff --git a/support/android/apk/servoapp/src/main/java/org/servo/servoshell/MediaSession.kt b/support/android/apk/servoapp/src/main/java/org/servo/servoshell/MediaSession.kt
+deleted file mode 100644
+index caf9676..0000000
+--- a/support/android/apk/servoapp/src/main/java/org/servo/servoshell/MediaSession.kt
++++ /dev/null
+@@ -1,185 +0,0 @@
+-/*
+- * This Source Code Form is subject to the terms of the Mozilla Public
+- * License, v. 2.0. If a copy of the MPL was not distributed with this
+- * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+- */
+-package org.servo.servoshell
+-
+-import android.app.Notification
+-import android.app.Notification.MediaStyle
+-import android.app.NotificationChannel
+-import android.app.NotificationManager
+-import android.app.PendingIntent
+-import android.content.BroadcastReceiver
+-import android.content.Context
+-import android.content.Intent
+-import android.content.IntentFilter
+-import android.graphics.drawable.Icon
+-import android.util.Log
+-import androidx.core.content.ContextCompat
+-import androidx.core.content.getSystemService
+-import org.servo.servoview.ServoView
+-
+-class MediaSession(private val view: ServoView, private val context: Context) {
+-    private class NotificationID {
+-        private var lastID = 0
+-        val next: Int
+-            get() {
+-                lastID++
+-                return lastID
+-            }
+-
+-        fun get(): Int {
+-            return lastID
+-        }
+-    }
+-
+-    private val notificationID = NotificationID()
+-    private var mediaSessionActionReceiver: BroadcastReceiver? = null
+-
+-    private var playbackState = PLAYBACK_STATE_PAUSED
+-
+-    private var title: String? = null
+-    private var artist: String? = null
+-    private var album: String? = null
+-
+-    init {
+-        createMediaNotificationChannel()
+-    }
+-
+-    private fun createMediaNotificationChannel() {
+-        val channel = NotificationChannel(
+-            MEDIA_CHANNEL_ID,
+-            context.getString(R.string.media_channel_name),
+-            NotificationManager.IMPORTANCE_LOW,
+-        )
+-        channel.description = context.getString(R.string.media_channel_description)
+-        val notificationManager = context.getSystemService<NotificationManager>()!!
+-        notificationManager.createNotificationChannel(channel)
+-    }
+-
+-    fun showMediaSessionControls() {
+-        Log.d("MediaSession", "showMediaSessionControls $playbackState")
+-        val filter = IntentFilter()
+-        if (playbackState == PLAYBACK_STATE_PAUSED) {
+-            filter.addAction(KEY_MEDIA_PLAY)
+-        }
+-        if (playbackState == PLAYBACK_STATE_PLAYING) {
+-            filter.addAction(KEY_MEDIA_PAUSE)
+-        }
+-
+-        val id: Int
+-        if (mediaSessionActionReceiver == null) {
+-            id = notificationID.next
+-
+-            mediaSessionActionReceiver = object : BroadcastReceiver() {
+-                override fun onReceive(context: Context?, intent: Intent) {
+-                    if (intent.action == KEY_MEDIA_PAUSE) {
+-                        view.mediaSessionAction(ACTION_PAUSE)
+-                        Log.d("MediaSession", "PAUSE action")
+-                    } else if (intent.action == KEY_MEDIA_PLAY) {
+-                        view.mediaSessionAction(ACTION_PLAY)
+-                        Log.d("MediaSession", "PLAY action")
+-                    }
+-                }
+-            }
+-        } else {
+-            id = notificationID.get()
+-        }
+-
+-        ContextCompat.registerReceiver(context, mediaSessionActionReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+-
+-        val builder = Notification.Builder(context, MEDIA_CHANNEL_ID)
+-            .setSmallIcon(R.drawable.media_session_icon)
+-            .setContentTitle(title)
+-            .setVisibility(Notification.VISIBILITY_PUBLIC)
+-
+-        var contentText = ""
+-        val artist = artist
+-        if (!artist.isNullOrEmpty()) {
+-            contentText = artist
+-        }
+-        val album = album
+-        if (!album.isNullOrEmpty()) {
+-            if (contentText.isNotEmpty()) {
+-                contentText += " - $album"
+-            } else {
+-                contentText = album
+-            }
+-        }
+-
+-        if (contentText.isNotEmpty()) {
+-            builder.setContentText(contentText)
+-        }
+-
+-        if (playbackState == PLAYBACK_STATE_PAUSED) {
+-            builder.addAction(
+-                Notification.Action.Builder(
+-                    Icon.createWithResource(context, R.drawable.media_session_play),
+-                    "Play",
+-                    PendingIntent.getBroadcast(context, 0, Intent(KEY_MEDIA_PLAY), PendingIntent.FLAG_IMMUTABLE),
+-                ).build()
+-            )
+-        }
+-
+-        if (playbackState == PLAYBACK_STATE_PLAYING) {
+-            builder.addAction(
+-                Notification.Action.Builder(
+-                    Icon.createWithResource(context, R.drawable.media_session_pause),
+-                    "Pause",
+-                    PendingIntent.getBroadcast(context, 0, Intent(KEY_MEDIA_PAUSE), PendingIntent.FLAG_IMMUTABLE),
+-                ).build()
+-            )
+-        }
+-
+-        builder.setStyle(MediaStyle().setShowActionsInCompactView(0))
+-
+-        context.getSystemService<NotificationManager>()?.notify(id, builder.build())
+-    }
+-
+-    fun hideMediaSessionControls() {
+-        Log.d("MediaSession", "hideMediaSessionControls")
+-        context.getSystemService<NotificationManager>()?.cancel(notificationID.get())
+-        context.unregisterReceiver(mediaSessionActionReceiver)
+-        mediaSessionActionReceiver = null
+-    }
+-
+-    fun setPlaybackState(state: Int) {
+-        playbackState = state
+-    }
+-
+-    fun updateMetadata(title: String, artist: String, album: String) {
+-        this.title = title
+-        this.artist = artist
+-        this.album = album
+-
+-        if (mediaSessionActionReceiver != null) {
+-            showMediaSessionControls()
+-        }
+-    }
+-
+-    companion object {
+-        // https://w3c.github.io/mediasession/#enumdef-mediasessionplaybackstate
+-        const val PLAYBACK_STATE_NONE: Int = 1
+-        const val PLAYBACK_STATE_PLAYING: Int = 2
+-        const val PLAYBACK_STATE_PAUSED: Int = 3
+-
+-        // https://w3c.github.io/mediasession/#enumdef-mediasessionaction
+-        private const val ACTION_PLAY = 1
+-        private const val ACTION_PAUSE = 2
+-        private const val ACTON_SEEK_BACKWARD = 3
+-        private const val ACTION_SEEK_FORWARD = 4
+-        private const val ACTION_PREVIOUS_TRACK = 5
+-        private const val ACTION_NEXT_TRACK = 6
+-        private const val ACTION_SKIP_AD = 7
+-        private const val ACTION_STOP = 8
+-        private const val ACTION_SEEK_TO = 9
+-
+-        private const val MEDIA_CHANNEL_ID = "MediaNotificationChannel"
+-        private const val KEY_MEDIA_PLAY = "org.servo.servoview.MainActivity.play"
+-        private const val KEY_MEDIA_PAUSE = "org.servo.servoview.MainActivity.pause"
+-        private const val KEY_MEDIA_PREV = "org.servo.servoview.MainActivity.prev"
+-        private const val KEY_MEDIA_NEXT = "org.servo.servoview.MainActivity.next"
+-        private const val KEY_MEDIA_STOP = "org.servo.servoview.MainActivity.stop"
+-    }
+-}
+diff --git a/support/android/apk/settings.gradle.kts b/support/android/apk/settings.gradle.kts
+index d48c612..cc29a4d 100644
+--- a/support/android/apk/settings.gradle.kts
++++ b/support/android/apk/settings.gradle.kts
+@@ -17,25 +17,3 @@ dependencyResolutionManagement {
+ }
+ 
+ include(":servoapp")
+-
+-val userPropertiesFile = File("user.properties")
+-if (userPropertiesFile.exists()) {
+-    println("Loading user.properties")
+-    val props = Properties()
+-    userPropertiesFile.inputStream().use {
+-        props.load(it)
+-    }
+-    props.forEach { (key, value) ->
+-        println("$key = $value")
+-        gradle.extra.set(key!!.toString(), value)
+-    }
+-    if (props.containsKey("servoViewLocal")) {
+-        println("Using local build of servoview")
+-        include (":servoview-local")
+-        project(":servoview-local").projectDir = File("servoview-local")
+-    } else {
+-        include(":servoview")
+-    }
+-} else {
+-    include(":servoview")
+-}
+\ No newline at end of file
+diff --git a/support/android/apk/servoview/build.gradle.kts b/support/android/apk/servoview/build.gradle.kts
+deleted file mode 100644
+index df31c98..0000000
+--- a/support/android/apk/servoview/build.gradle.kts
++++ /dev/null
+@@ -1,178 +0,0 @@
+-import java.util.regex.Pattern
+-
+-plugins {
+-    alias(libs.plugins.android.library)
+-}
+-
+-android {
+-    compileSdk = 37
+-    buildToolsVersion = "36.0.0"
+-
+-    namespace = "org.servo.servoview"
+-
+-    ndkPath = getNdkDir()
+-
+-    defaultConfig {
+-        minSdk = libs.versions.android.sdk.min.get().toInt()
+-    }
+-
+-    lint {
+-        targetSdk = 33
+-    }
+-
+-    compileOptions {
+-        sourceCompatibility = JavaVersion.VERSION_1_8
+-        targetCompatibility = JavaVersion.VERSION_1_8
+-    }
+-
+-    buildTypes {
+-        // Default debug and release build types are used as templates
+-        debug {
+-            isJniDebuggable = true
+-        }
+-
+-        release {
+-            signingConfig =
+-                signingConfigs.getByName("debug") // Change this to sign with a production key
+-            isMinifyEnabled = false
+-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+-        }
+-
+-        val debug = getByName("debug")
+-        val release = getByName("release")
+-
+-        // Custom build types
+-        register("armv7Debug") {
+-            initWith(debug)
+-        }
+-        register("armv7Release") {
+-            initWith(release)
+-        }
+-        register("arm64Debug") {
+-            initWith(debug)
+-        }
+-        register("arm64Release") {
+-            initWith(release)
+-        }
+-        register("x86Debug") {
+-            initWith(debug)
+-        }
+-        register("x86Release") {
+-            initWith(release)
+-        }
+-        register("x64Debug") {
+-            initWith(debug)
+-        }
+-        register("x64Release") {
+-            initWith(release)
+-        }
+-    }
+-
+-    sourceSets {
+-        named("main") {
+-        }
+-        named("armv7Debug") {
+-            jniLibs.srcDirs(getJniLibsPath(true, "armv7"))
+-        }
+-        named("armv7Release") {
+-            jniLibs.srcDirs(getJniLibsPath(false, "armv7"))
+-        }
+-        named("arm64Debug") {
+-            jniLibs.srcDirs(getJniLibsPath(true, "arm64"))
+-        }
+-        named("arm64Release") {
+-            jniLibs.srcDirs(getJniLibsPath(false, "arm64"))
+-        }
+-        named("x86Debug") {
+-            jniLibs.srcDirs(getJniLibsPath(true, "x86"))
+-        }
+-        named("x86Release") {
+-            jniLibs.srcDirs(getJniLibsPath(false, "x86"))
+-        }
+-        named("x64Debug") {
+-            jniLibs.srcDirs(getJniLibsPath(true, "x64"))
+-        }
+-        named("x64Release") {
+-            jniLibs.srcDirs(getJniLibsPath(false, "x64"))
+-        }
+-    }
+-}
+-
+-// Ignore default "debug" and "release" build types
+-androidComponents {
+-    beforeVariants {
+-        if (it.buildType == "release" || it.buildType == "debug") {
+-            it.enable = false
+-        }
+-    }
+-}
+-
+-// Call our custom NDK Build task using flavor parameters.
+-// This step is needed because the Android Gradle Plugin system"s
+-// integration with native C/C++ shared objects (based on the
+-// `android.externalNativeBuild` dsl object) assumes that we
+-// actually execute compiler commands to produced the shared
+-// objects. We already have the libservoshell.so produced by rustc.
+-// We could simply copy the .so to the `sourceSet.jniLibs` folder
+-// to make AGP bundle it with the APK, but this doesn't copy the STL
+-// (libc++_shared.so) as well. So we use ndk-build as a glorified
+-// `cp` command to copy the libservoshell.so from target/<arch>
+-// to target/android and crucially also include libc++_shared.so
+-// as well.
+-//
+-// FIXME(mukilan): According to the AGP docs, we should not be
+-// relying on task names used by the plugin system to hook into
+-// the build process, but instead we should use officially supported
+-// extension points such as `androidComponents.beforeVariants`
+-project.afterEvaluate {
+-    // we filter entries first in order to abstract to a new list
+-    // as to prevent concurrent modification exceptions due to creating a new task
+-    // while iterating
+-    tasks.mapNotNull { compileTask -> // mapNotNull acts as our filter, null results are dropped
+-        // This matches the task `mergeArmv7DebugJniLibFolders`.
+-        val pattern = Pattern.compile("^merge([A-Z]\\w+)(Debug|Release)JniLibFolders")
+-        val matcher = pattern.matcher(compileTask.name)
+-        if (matcher.find())
+-            compileTask to matcher.group(1)
+-        else null
+-    }.forEach { (compileTask, arch) ->
+-        val ndkBuildTask = tasks.create<Exec>("ndkbuild" + compileTask.name) {
+-            val debug = compileTask.name.contains("Debug")
+-            commandLine(
+-                getNdkDir() + "/ndk-build",
+-                "APP_BUILD_SCRIPT=../jni/Android.mk",
+-                "NDK_APPLICATION_MK=../jni/Application.mk",
+-                "NDK_LIBS_OUT=" + getJniLibsPath(debug, arch),
+-                "NDK_DEBUG=" + if (debug) "1" else "0",
+-                "APP_ABI=" + getNDKAbi(arch),
+-                "APP_PLATFORM=android-" + libs.versions.android.sdk.min.get(),
+-                "NDK_LOG=1",
+-                "SERVO_TARGET_DIR=" + getNativeTargetDir(debug, arch)
+-            )
+-        }
+-
+-        compileTask.dependsOn(ndkBuildTask)
+-    }
+-
+-    android.libraryVariants.forEach { variant ->
+-        val pattern = Pattern.compile("^([\\w\\d]+)(Debug|Release)")
+-        val matcher = pattern.matcher(variant.name)
+-        if (!matcher.find()) {
+-            throw GradleException("Invalid variant name for output: " + variant.name)
+-        }
+-        val arch = matcher.group(1)
+-        val debug = variant.name.contains("Debug")
+-        val finalFolder = getTargetDir(debug, arch)
+-        val finalFile = File(finalFolder, "servoview.aar")
+-        variant.outputs.forEach { output ->
+-            val copyAndRenameAARTask =
+-                project.task<Copy>("copyAndRename${variant.name.capitalize()}AAR") {
+-                    from(output.outputFile.parent)
+-                    into(finalFolder)
+-                    include(output.outputFile.name)
+-                    rename(output.outputFile.name, finalFile.name)
+-                }
+-            variant.assembleProvider.get().finalizedBy(copyAndRenameAARTask)
+-        }
+-    }
+-}
+diff --git a/support/android/apk/servoview/src/main/java/org/servo/servoview/JNIServo.kt b/support/android/apk/servoview/src/main/java/org/servo/servoview/JNIServo.kt
+deleted file mode 100644
+index 681c126..0000000
+--- a/support/android/apk/servoview/src/main/java/org/servo/servoview/JNIServo.kt
++++ /dev/null
+@@ -1,107 +0,0 @@
+-/*
+- * This Source Code Form is subject to the terms of the Mozilla Public
+- * License, v. 2.0. If a copy of the MPL was not distributed with this
+- * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+- */
+-package org.servo.servoview
+-
+-import android.content.Context
+-import android.util.Size
+-import android.view.Surface
+-
+-/**
+- * Maps /ports/servoshell API
+- */
+-internal class JNIServo {
+-    init {
+-        System.loadLibrary("c++_shared")
+-        System.loadLibrary("servoshell")
+-    }
+-
+-    external fun version(): String
+-
+-    external fun init(
+-        context: Context,
+-        args: String?,
+-        url: String?,
+-        size: Size,
+-        density: Float,
+-        logStr: String?,
+-        enableLogs: Boolean,
+-        experimentalMode: Boolean,
+-        callbacks: Callbacks,
+-        surface: Surface,
+-    )
+-
+-    external fun performUpdates()
+-
+-    external fun resize(size: Size)
+-
+-    external fun reload()
+-
+-    external fun stop()
+-
+-    external fun goBack()
+-
+-    external fun goForward()
+-
+-    external fun loadUri(uri: String)
+-
+-    external fun scroll(dx: Int, dy: Int, x: Int, y: Int)
+-
+-    external fun keydown(keycode: Int, unicode: Int)
+-
+-    external fun keyup(keycode: Int, unicode: Int)
+-
+-    external fun touchDown(x: Float, y: Float, pointer_id: Int)
+-
+-    external fun touchMove(x: Float, y: Float, pointer_id: Int)
+-
+-    external fun touchUp(x: Float, y: Float, pointer_id: Int)
+-
+-    external fun touchCancel(x: Float, y: Float, pointer_id: Int)
+-
+-    external fun pinchZoomStart(factor: Float, x: Float, y: Float)
+-
+-    external fun pinchZoom(factor: Float, x: Float, y: Float)
+-
+-    external fun pinchZoomEnd(factor: Float, x: Float, y: Float)
+-
+-    external fun click(x: Float, y: Float)
+-
+-    external fun pausePainting()
+-
+-    external fun resumePainting(surface: Surface, size: Size)
+-
+-    external fun mediaSessionAction(action: Int)
+-
+-    external fun setExperimentalMode(enable: Boolean)
+-
+-    external fun doFrame()
+-
+-    interface Callbacks {
+-        fun wakeup()
+-
+-        fun onAlert(message: String)
+-
+-        fun onLoadStarted()
+-
+-        fun onLoadEnded()
+-
+-        fun onTitleChanged(title: String)
+-
+-        fun onUrlChanged(url: String)
+-
+-        fun onHistoryChanged(canGoBack: Boolean, canGoForward: Boolean)
+-
+-        fun onImeShow()
+-
+-        fun onImeHide()
+-
+-        fun onMediaSessionMetadata(title: String, artist: String, album: String)
+-
+-        fun onMediaSessionPlaybackStateChange(state: Int)
+-
+-        fun onMediaSessionSetPositionState(duration: Float, position: Float, playbackRate: Float)
+-    }
+-}
+diff --git a/support/android/apk/servoview/src/main/java/org/servo/servoview/Servo.kt b/support/android/apk/servoview/src/main/java/org/servo/servoview/Servo.kt
+deleted file mode 100644
+index 01aec58..0000000
+--- a/support/android/apk/servoview/src/main/java/org/servo/servoview/Servo.kt
++++ /dev/null
+@@ -1,239 +0,0 @@
+-/*
+- * This Source Code Form is subject to the terms of the Mozilla Public
+- * License, v. 2.0. If a copy of the MPL was not distributed with this
+- * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+- */
+-package org.servo.servoview
+-
+-import android.content.Context
+-import android.util.Size
+-import android.view.KeyEvent
+-import android.view.Surface
+-
+-class Servo(
+-    args: String?,
+-    url: String?,
+-    size: Size,
+-    density: Float,
+-    logStr: String?,
+-    enableLogs: Boolean,
+-    experimentalMode: Boolean,
+-    private val runCallback: RunCallback,
+-    client: Client,
+-    context: Context,
+-    surface: Surface,
+-) {
+-    private val jni = JNIServo()
+-    private val servoCallbacks = Callbacks(client, jni, runCallback)
+-
+-    init {
+-        this.runCallback.inGLThread {
+-            jni.init(
+-                context,
+-                args,
+-                url,
+-                size,
+-                density,
+-                logStr,
+-                enableLogs,
+-                experimentalMode,
+-                servoCallbacks,
+-                surface,
+-            )
+-        }
+-    }
+-
+-    fun version(): String {
+-        return jni.version()
+-    }
+-
+-    fun performUpdates() {
+-        runCallback.inGLThread { jni.performUpdates() }
+-    }
+-
+-    fun resize(size: Size) {
+-        runCallback.inGLThread { jni.resize(size) }
+-    }
+-
+-    fun reload() {
+-        runCallback.inGLThread { jni.reload() }
+-    }
+-
+-    fun stop() {
+-        runCallback.inGLThread { jni.stop() }
+-    }
+-
+-    fun goBack() {
+-        runCallback.inGLThread { jni.goBack() }
+-    }
+-
+-    fun goForward() {
+-        runCallback.inGLThread { jni.goForward() }
+-    }
+-
+-    fun loadUri(uri: String) {
+-        runCallback.inGLThread { jni.loadUri(uri) }
+-    }
+-
+-    fun scroll(dx: Int, dy: Int, x: Int, y: Int) {
+-        runCallback.inGLThread { jni.scroll(dx, dy, x, y) }
+-    }
+-
+-    fun onKeyDown(keyCode: Int, event: KeyEvent) {
+-        runCallback.inGLThread { jni.keydown(keyCode, event.unicodeChar) }
+-    }
+-
+-    fun onKeyUp(keyCode: Int, event: KeyEvent) {
+-        runCallback.inGLThread { jni.keyup(keyCode, event.unicodeChar) }
+-    }
+-
+-    fun touchDown(x: Float, y: Float, pointerId: Int) {
+-        runCallback.inGLThread { jni.touchDown(x, y, pointerId) }
+-    }
+-
+-    fun touchMove(x: Float, y: Float, pointerId: Int) {
+-        runCallback.inGLThread { jni.touchMove(x, y, pointerId) }
+-    }
+-
+-    fun touchUp(x: Float, y: Float, pointerId: Int) {
+-        runCallback.inGLThread { jni.touchUp(x, y, pointerId) }
+-    }
+-
+-    fun touchCancel(x: Float, y: Float, pointerId: Int) {
+-        runCallback.inGLThread { jni.touchCancel(x, y, pointerId) }
+-    }
+-
+-    fun pinchZoomStart(factor: Float, x: Float, y: Float) {
+-        runCallback.inGLThread { jni.pinchZoomStart(factor, x, y) }
+-    }
+-
+-    fun pinchZoom(factor: Float, x: Float, y: Float) {
+-        runCallback.inGLThread { jni.pinchZoom(factor, x, y) }
+-    }
+-
+-    fun pinchZoomEnd(factor: Float, x: Float, y: Float) {
+-        runCallback.inGLThread { jni.pinchZoomEnd(factor, x, y) }
+-    }
+-
+-    fun click(x: Float, y: Float) {
+-        runCallback.inGLThread { jni.click(x, y) }
+-    }
+-
+-    fun pausePainting() {
+-        runCallback.inGLThread { jni.pausePainting() }
+-    }
+-
+-    fun resumePainting(surface: Surface, size: Size) {
+-        runCallback.inGLThread { jni.resumePainting(surface, size) }
+-    }
+-
+-    fun suspend(suspended: Boolean) {
+-        servoCallbacks.suspended = suspended
+-    }
+-
+-    fun mediaSessionAction(action: Int) {
+-        runCallback.inGLThread { jni.mediaSessionAction(action) }
+-    }
+-
+-    fun setExperimentalMode(enable: Boolean) {
+-        runCallback.inGLThread { jni.setExperimentalMode(enable) }
+-    }
+-
+-    fun onDoFrame() {
+-        runCallback.inGLThread { jni.doFrame() }
+-    }
+-
+-    interface Client {
+-        fun onAlert(message: String)
+-
+-        fun onLoadStarted()
+-
+-        fun onLoadEnded()
+-
+-        fun onTitleChanged(title: String)
+-
+-        fun onUrlChanged(url: String)
+-
+-        fun onHistoryChanged(canGoBack: Boolean, canGoForward: Boolean)
+-
+-        fun onRedrawing(redrawing: Boolean)
+-
+-        fun onImeShow()
+-
+-        fun onImeHide()
+-
+-        fun onMediaSessionMetadata(title: String, artist: String, album: String)
+-
+-        fun onMediaSessionPlaybackStateChange(state: Int)
+-
+-        fun onMediaSessionSetPositionState(duration: Float, position: Float, playbackRate: Float)
+-    }
+-
+-    interface RunCallback {
+-        fun inGLThread(f: Runnable)
+-
+-        fun inUIThread(f: Runnable)
+-    }
+-
+-    private class Callbacks(
+-        private var client: Client,
+-        private val jni: JNIServo,
+-        private val runCallback: RunCallback,
+-    ) : JNIServo.Callbacks, Client {
+-        var suspended: Boolean = false
+-
+-        override fun wakeup() {
+-            if (!suspended) {
+-                runCallback.inGLThread { jni.performUpdates() }
+-            }
+-        }
+-
+-        override fun onAlert(message: String) {
+-            runCallback.inUIThread { client.onAlert(message) }
+-        }
+-
+-        override fun onImeShow() {
+-            runCallback.inUIThread { client.onImeShow() }
+-        }
+-
+-        override fun onImeHide() {
+-            runCallback.inUIThread { client.onImeHide() }
+-        }
+-
+-        override fun onLoadStarted() {
+-            runCallback.inUIThread { client.onLoadStarted() }
+-        }
+-
+-        override fun onLoadEnded() {
+-            runCallback.inUIThread { client.onLoadEnded() }
+-        }
+-
+-        override fun onTitleChanged(title: String) {
+-            runCallback.inUIThread { client.onTitleChanged(title) }
+-        }
+-
+-        override fun onUrlChanged(url: String) {
+-            runCallback.inUIThread { client.onUrlChanged(url) }
+-        }
+-
+-        override fun onHistoryChanged(canGoBack: Boolean, canGoForward: Boolean) {
+-            runCallback.inUIThread { client.onHistoryChanged(canGoBack, canGoForward) }
+-        }
+-
+-        override fun onRedrawing(redrawing: Boolean) {
+-            runCallback.inUIThread { client.onRedrawing(redrawing) }
+-        }
+-
+-        override fun onMediaSessionMetadata(title: String, artist: String, album: String) {
+-            runCallback.inUIThread { client.onMediaSessionMetadata(title, artist, album) }
+-        }
+-
+-        override fun onMediaSessionPlaybackStateChange(state: Int) {
+-            runCallback.inUIThread { client.onMediaSessionPlaybackStateChange(state) }
+-        }
+-
+-        override fun onMediaSessionSetPositionState(duration: Float, position: Float, playbackRate: Float) {
+-            runCallback.inUIThread { client.onMediaSessionSetPositionState(duration, position, playbackRate) }
+-        }
+-    }
+-}
+diff --git a/support/android/apk/servoview/src/main/java/org/servo/servoview/ServoView.java b/support/android/apk/servoview/src/main/java/org/servo/servoview/ServoView.java
+deleted file mode 100644
+index fcbad7f..0000000
+--- a/support/android/apk/servoview/src/main/java/org/servo/servoview/ServoView.java
++++ /dev/null
+@@ -1,249 +0,0 @@
+-/* -*- Mode: Java; c-basic-offset: 4; tab-width: 4; indent-tabs-mode: nil; -*-
+- * This Source Code Form is subject to the terms of the Mozilla Public
+- * License, v. 2.0. If a copy of the MPL was not distributed with this
+- * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+-
+-package org.servo.servoview;
+-
+-import android.content.Context;
+-import android.os.Handler;
+-import android.os.Looper;
+-import android.util.AttributeSet;
+-import android.util.Log;
+-import android.util.Size;
+-import android.view.Choreographer;
+-import android.view.KeyEvent;
+-import android.view.MotionEvent;
+-import android.view.Surface;
+-import android.view.SurfaceHolder;
+-import android.view.SurfaceView;
+-import android.view.View;
+-
+-import org.servo.servoview.Servo.Client;
+-import org.servo.servoview.Servo.RunCallback;
+-
+-import java.util.ArrayList;
+-
+-public class ServoView extends SurfaceView
+-        implements
+-        RunCallback,
+-        Choreographer.FrameCallback {
+-    private static final String LOGTAG = "ServoView";
+-    private final GLThread glThread;
+-    private final SurfaceHolderCallback surfaceHolderCallback;
+-    protected Servo servo = null;
+-    private String servoArgs;
+-    private String initialUri;
+-
+-    private boolean experimentalMode;
+-
+-    public ServoView(Context context) {
+-        this(context, null);
+-    }
+-
+-    public ServoView(Context context, AttributeSet attrs) {
+-        super(context, attrs);
+-        setFocusable(true);
+-        setFocusableInTouchMode(true);
+-        setClickable(true);
+-        ArrayList<View> view = new ArrayList<>();
+-        view.add(this);
+-        addTouchables(view);
+-
+-        glThread = new GLThread();
+-        surfaceHolderCallback = new SurfaceHolderCallback(this);
+-        getHolder().addCallback(surfaceHolderCallback);
+-        glThread.start();
+-    }
+-
+-    public void setClient(Client client) {
+-        surfaceHolderCallback.client = client;
+-    }
+-
+-    public void setServoArgs(String args, String log, boolean experimentalMode) {
+-        servoArgs = args;
+-        surfaceHolderCallback.servoLog = log;
+-        this.experimentalMode = experimentalMode;
+-    }
+-
+-    // RunCallback
+-    @Override
+-    public void inGLThread(Runnable r) {
+-        glThread.glLooperHandler.post(r);
+-    }
+-
+-    @Override
+-    public void inUIThread(Runnable r) {
+-        post(r);
+-    }
+-
+-    // View
+-    @Override
+-    public boolean onKeyDown(int keyCode, KeyEvent event) {
+-        if (event.getKeyCode() != KeyEvent.KEYCODE_BACK) {
+-            servo.onKeyDown(keyCode, event);
+-            return true;
+-        }
+-        return false;
+-    }
+-
+-    @Override
+-    public boolean onKeyUp(int keyCode, KeyEvent event) {
+-        if (event.getKeyCode() != KeyEvent.KEYCODE_BACK) {
+-            servo.onKeyUp(keyCode, event);
+-            return true;
+-        }
+-        return false;
+-    }
+-
+-    @Override
+-    public boolean onTouchEvent(final MotionEvent motionEvent) {
+-        requestFocus();
+-
+-        int action = motionEvent.getActionMasked();
+-        int pointerIndex = motionEvent.getActionIndex();
+-        int pointerId = motionEvent.getPointerId(pointerIndex);
+-        float x = motionEvent.getX(pointerIndex);
+-        float y = motionEvent.getY(pointerIndex);
+-
+-
+-        switch (action) {
+-            case (MotionEvent.ACTION_DOWN):
+-            case (MotionEvent.ACTION_POINTER_DOWN):
+-                servo.touchDown(x, y, pointerId);
+-                break;
+-            case (MotionEvent.ACTION_MOVE):
+-                servo.touchMove(x, y, pointerId);
+-                break;
+-            case (MotionEvent.ACTION_UP):
+-            case (MotionEvent.ACTION_POINTER_UP):
+-                servo.touchUp(x, y, pointerId);
+-                break;
+-            case (MotionEvent.ACTION_CANCEL):
+-                servo.touchCancel(x, y, pointerId);
+-                break;
+-            default:
+-        }
+-
+-        return true;
+-    }
+-
+-    @Override
+-    public void doFrame(long frameTimeNanos) {
+-        if (servo != null) {
+-            servo.onDoFrame();
+-        }
+-        Choreographer.getInstance().postFrameCallback(this);
+-    }
+-
+-    // Calls from Activity
+-    public void onPause() {
+-        if (servo != null) {
+-            servo.suspend(true);
+-        }
+-    }
+-
+-    public void onResume() {
+-        if (servo != null) {
+-            servo.suspend(false);
+-        }
+-    }
+-
+-    public void reload() {
+-        servo.reload();
+-    }
+-
+-    public void goBack() {
+-        servo.goBack();
+-    }
+-
+-    public void goForward() {
+-        servo.goForward();
+-    }
+-
+-    public void stop() {
+-        servo.stop();
+-    }
+-
+-    public void loadUri(String uri) {
+-        if (servo != null) {
+-            servo.loadUri(uri);
+-        } else {
+-            initialUri = uri;
+-        }
+-    }
+-
+-    public void mediaSessionAction(int action) {
+-        servo.mediaSessionAction(action);
+-    }
+-
+-    public void setExperimentalMode(boolean enable) {
+-        if (servo != null) {
+-            servo.setExperimentalMode(enable);
+-        }
+-    }
+-
+-    private static class GLThread extends Thread {
+-        private Handler glLooperHandler;
+-
+-        public void run() {
+-            Looper.prepare();
+-
+-            glLooperHandler = new Handler(Looper.myLooper());
+-
+-            Looper.loop();
+-        }
+-    }
+-
+-    private static class SurfaceHolderCallback implements SurfaceHolder.Callback {
+-        private ServoView servoView;
+-        private Client client = null;
+-        private String servoLog;
+-        private boolean paused = false;
+-
+-        SurfaceHolderCallback(ServoView servoView) {
+-            this.servoView = servoView;
+-        }
+-
+-        public void surfaceCreated(SurfaceHolder holder) {
+-            Log.d(LOGTAG, "GLThread::surfaceCreated");
+-
+-            Size size = new Size(servoView.getWidth(), servoView.getHeight());
+-
+-            Surface surface = holder.getSurface();
+-
+-            if (servoView.servo == null && !paused) {
+-                servoView.servo = new Servo(
+-                        servoView.servoArgs,
+-                        servoView.initialUri,
+-                        size,
+-                        servoView.getResources().getDisplayMetrics().density,
+-                        servoLog,
+-                        true,
+-                        servoView.experimentalMode,
+-                        servoView,
+-                        client,
+-                        servoView.getContext(),
+-                        surface
+-                );
+-            } else {
+-                paused = false;
+-                servoView.servo.resumePainting(surface, size);
+-            }
+-
+-            Choreographer.getInstance().postFrameCallback(servoView);
+-
+-        }
+-
+-        public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+-            Log.d(LOGTAG, "GLThread::surfaceChanged");
+-            servoView.servo.resize(new Size(width, height));
+-        }
+-
+-        public void surfaceDestroyed(SurfaceHolder holder) {
+-            Log.d(LOGTAG, "GLThread::surfaceDestroyed");
+-            paused = true;
+-            servoView.servo.pausePainting();
+-        }
+-    }
+-}
+diff --git a/support/ios/App.swift b/support/ios/App.swift
+new file mode 100644
+index 000000000..bad4f9db6
+--- /dev/null
++++ b/support/ios/App.swift
+@@ -0,0 +1,285 @@
++import UIKit
++import WebKit
++
++@main
++class AppDelegate: UIResponder, UIApplicationDelegate {
++    var window: UIWindow?
++
++    func application(_ application: UIApplication,
++                     didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
++        let window = UIWindow(frame: UIScreen.main.bounds)
++        window.rootViewController = GameViewController()
++        window.makeKeyAndVisible()
++        self.window = window
++        return true
++    }
++}
++
++/// Serves the bundled game under the virtual origin `game://content/` instead of a raw
++/// `file://` path, mirroring the engine's own desktop/Android `game:` protocol handler (see
++/// `ports/servoshell/protocols/game.rs`) and Android's `WebViewAssetLoader` origin in this
++/// same mobile pivot. `WKWebView.loadFileURL` gives `location.pathname` the real on-disk
++/// path and leaves root-relative references (`<script src="/assets/x.js">`, the default
++/// virtually every bundler emits) resolving against the OS filesystem root -- the exact bug
++/// this project already hit and fixed for `file://` on every other platform it ships. A real
++/// origin fixes both: `pathname` is `/` at boot (so a client-side history router's root route
++/// matches), and root-relative paths resolve against this handler's own `root` instead.
++///
++/// Deliberately a plain custom scheme, not `https`: `WKURLSchemeHandler` is per-*scheme*, not
++/// per-host, so registering for `https` itself would intercept every real network request too
++/// (fonts, CDNs, analytics) -- reimplementing an entire pass-through HTTP client is out of
++/// scope for what's still an initial container. `game://` isn't a WebKit "secure context"
++/// (no Service Workers, some newer APIs gated on that) -- an accepted, pre-existing tradeoff:
++/// desktop's own `game://` (see `ports/servoshell/protocols/game.rs`'s doc comment) makes the
++/// exact same call for the exact same reason.
++final class GameSchemeHandler: NSObject, WKURLSchemeHandler {
++    static let scheme = "game"
++    static let host = "content"
++
++    private let root: URL
++
++    init(root: URL) {
++        self.root = root
++    }
++
++    func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
++        guard let url = urlSchemeTask.request.url else {
++            urlSchemeTask.didFailWithError(URLError(.badURL))
++            return
++        }
++        // SPA fallback: any path with no matching file serves the entry document, the same
++        // way `protocols/game.rs`'s `GameProtocolHandler::load` does -- a client-side router
++        // navigating to e.g. `game://content/level/3` has no file at that path, but should
++        // still get `index.html` (and let the router itself decide what to render), not a 404.
++        var relativePath = url.path
++        if relativePath.isEmpty { relativePath = "/" }
++        var fileURL = root.appendingPathComponent(String(relativePath.dropFirst()))
++        var isDirectory: ObjCBool = false
++        let exists = FileManager.default.fileExists(atPath: fileURL.path, isDirectory: &isDirectory)
++        if !exists || isDirectory.boolValue {
++            fileURL = root.appendingPathComponent("index.html")
++        }
++
++        guard let data = try? Data(contentsOf: fileURL) else {
++            respond(urlSchemeTask, url: url, statusCode: 404, data: Data("Not Found".utf8), mimeType: "text/plain")
++            return
++        }
++
++        let mimeType = Self.mimeType(for: fileURL.pathExtension)
++        // Range support: a `<video>`/`<audio>` element seeks by issuing a byte-range request,
++        // which `WKURLSchemeTask` never synthesizes for you -- ignoring it entirely still
++        // "works" for playback from the start, but silently breaks seeking/scrubbing.
++        if let rangeHeader = urlSchemeTask.request.value(forHTTPHeaderField: "Range"),
++           let (start, end) = Self.parseRange(rangeHeader, totalLength: data.count) {
++            let slice = data.subdata(in: start..<(end + 1))
++            let headers = [
++                "Content-Range": "bytes \(start)-\(end)/\(data.count)",
++                "Accept-Ranges": "bytes",
++                "Content-Length": String(slice.count),
++            ]
++            respond(urlSchemeTask, url: url, statusCode: 206, data: slice, mimeType: mimeType, headers: headers)
++            return
++        }
++
++        respond(urlSchemeTask, url: url, statusCode: 200, data: data, mimeType: mimeType,
++                headers: ["Accept-Ranges": "bytes", "Content-Length": String(data.count)])
++    }
++
++    func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {}
++
++    private func respond(_ task: WKURLSchemeTask, url: URL, statusCode: Int, data: Data, mimeType: String, headers: [String: String] = [:]) {
++        let response = HTTPURLResponse(url: url, statusCode: statusCode, httpVersion: "HTTP/1.1",
++                                        headerFields: headers.merging(["Content-Type": mimeType]) { a, _ in a })!
++        task.didReceive(response)
++        task.didReceive(data)
++        task.didFinish()
++    }
++
++    private static func parseRange(_ header: String, totalLength: Int) -> (Int, Int)? {
++        guard header.hasPrefix("bytes="), totalLength > 0 else { return nil }
++        let spec = header.dropFirst("bytes=".count)
++        let parts = spec.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
++        guard let start = Int(parts.first ?? "") else { return nil }
++        let end = parts.count > 1 ? (Int(parts[1]) ?? totalLength - 1) : totalLength - 1
++        guard start >= 0, end < totalLength, start <= end else { return nil }
++        return (start, end)
++    }
++
++    private static let mimeTypes: [String: String] = [
++        "html": "text/html", "htm": "text/html", "js": "text/javascript", "mjs": "text/javascript",
++        "css": "text/css", "json": "application/json", "wasm": "application/wasm",
++        "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "gif": "image/gif",
++        "svg": "image/svg+xml", "webp": "image/webp", "ico": "image/x-icon",
++        "woff": "font/woff", "woff2": "font/woff2", "ttf": "font/ttf", "otf": "font/otf",
++        "mp3": "audio/mpeg", "wav": "audio/wav", "ogg": "audio/ogg",
++        "mp4": "video/mp4", "webm": "video/webm",
++        "txt": "text/plain", "xml": "application/xml",
++    ]
++
++    private static func mimeType(for ext: String) -> String {
++        mimeTypes[ext.lowercased()] ?? "application/octet-stream"
++    }
++}
++
++/// Native branding shown while the game's own document loads, independent of the game's
++/// assets and launcher icon -- the iOS equivalent of Android's `RovesSplashView.kt` in this
++/// same mobile pivot (see that file's own doc comment). Black background, engine icon, Metal
++/// Mania wordmark, animated loading bar; removed once the WKWebView navigation delegate
++/// reports the initial document finished, with the same "stay at least 500ms" floor so a
++/// near-instant load doesn't just flash.
++final class RovesSplashView: UIView {
++    private let barTrack = UIView()
++    private let barHighlight = UIView()
++
++    init() {
++        super.init(frame: .zero)
++        backgroundColor = .black
++        isAccessibilityElement = true
++        accessibilityLabel = "Roves"
++
++        let icon = UIImageView(image: UIImage(contentsOfFile:
++            Bundle.main.path(forResource: "servo_1024", ofType: "png", inDirectory: "roves-brand") ?? ""))
++        icon.contentMode = .scaleAspectFit
++        icon.translatesAutoresizingMaskIntoConstraints = false
++
++        let label = UILabel()
++        label.text = "Roves"
++        label.textColor = .white
++        if let fontURL = Bundle.main.url(forResource: "MetalMania-Regular", withExtension: "ttf", subdirectory: "roves-brand"),
++           let fontData = try? Data(contentsOf: fontURL),
++           let provider = CGDataProvider(data: fontData as CFData),
++           let cgFont = CGFont(provider),
++           let name = cgFont.postScriptName {
++            var error: Unmanaged<CFError>?
++            CTFontManagerRegisterGraphicsFont(cgFont, &error)
++            label.font = UIFont(name: name as String, size: 32) ?? UIFont.systemFont(ofSize: 32)
++        } else {
++            label.font = UIFont.systemFont(ofSize: 32)
++        }
++        label.translatesAutoresizingMaskIntoConstraints = false
++
++        barTrack.backgroundColor = .darkGray
++        barTrack.translatesAutoresizingMaskIntoConstraints = false
++        barHighlight.backgroundColor = .white
++        barTrack.clipsToBounds = true
++        barTrack.addSubview(barHighlight)
++
++        let row = UIStackView(arrangedSubviews: [icon, label])
++        row.axis = .horizontal
++        row.spacing = 8
++        row.alignment = .center
++        row.translatesAutoresizingMaskIntoConstraints = false
++
++        addSubview(row)
++        addSubview(barTrack)
++        NSLayoutConstraint.activate([
++            icon.widthAnchor.constraint(equalToConstant: 48),
++            icon.heightAnchor.constraint(equalToConstant: 48),
++            row.centerXAnchor.constraint(equalTo: centerXAnchor),
++            row.centerYAnchor.constraint(equalTo: centerYAnchor, constant: -16),
++            barTrack.centerXAnchor.constraint(equalTo: centerXAnchor),
++            barTrack.topAnchor.constraint(equalTo: row.bottomAnchor, constant: 24),
++            barTrack.widthAnchor.constraint(equalToConstant: 160),
++            barTrack.heightAnchor.constraint(equalToConstant: 3),
++        ])
++    }
++
++    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
++
++    override func didMoveToWindow() {
++        super.didMoveToWindow()
++        guard window != nil else { return }
++        barHighlight.frame = CGRect(x: -40, y: 0, width: 40, height: 3)
++        animateBar()
++    }
++
++    private func animateBar() {
++        UIView.animate(withDuration: 1.1, delay: 0, options: [.curveLinear], animations: {
++            self.barHighlight.frame.origin.x = self.barTrack.bounds.width
++        }, completion: { [weak self] _ in
++            guard let self, self.window != nil else { return }
++            self.barHighlight.frame.origin.x = -40
++            self.animateBar()
++        })
++    }
++}
++
++final class GameViewController: UIViewController, WKNavigationDelegate {
++    private var webView: WKWebView!
++    private var splash: RovesSplashView!
++    private var splashStarted: CFAbsoluteTime = 0
++    private var startupPending = true
++
++    override func loadView() {
++        let contentRoot = Bundle.main.resourceURL?.appendingPathComponent("www")
++        let container = UIView()
++        container.backgroundColor = .black
++        view = container
++
++        let configuration = WKWebViewConfiguration()
++        configuration.allowsInlineMediaPlayback = true
++        configuration.mediaTypesRequiringUserActionForPlayback = []
++        configuration.websiteDataStore = .default()
++        if let contentRoot {
++            configuration.setURLSchemeHandler(GameSchemeHandler(root: contentRoot), forURLScheme: GameSchemeHandler.scheme)
++        }
++        webView = WKWebView(frame: .zero, configuration: configuration)
++        webView.navigationDelegate = self
++        webView.scrollView.bounces = false
++        webView.translatesAutoresizingMaskIntoConstraints = false
++        container.addSubview(webView)
++        NSLayoutConstraint.activate([
++            webView.topAnchor.constraint(equalTo: container.topAnchor),
++            webView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
++            webView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
++            webView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
++        ])
++
++        splash = RovesSplashView()
++        splashStarted = CFAbsoluteTimeGetCurrent()
++        splash.translatesAutoresizingMaskIntoConstraints = false
++        container.addSubview(splash)
++        NSLayoutConstraint.activate([
++            splash.topAnchor.constraint(equalTo: container.topAnchor),
++            splash.bottomAnchor.constraint(equalTo: container.bottomAnchor),
++            splash.leadingAnchor.constraint(equalTo: container.leadingAnchor),
++            splash.trailingAnchor.constraint(equalTo: container.trailingAnchor),
++        ])
++    }
++
++    override func viewDidLoad() {
++        super.viewDidLoad()
++        guard let root = Bundle.main.resourceURL?.appendingPathComponent("www"),
++              FileManager.default.fileExists(atPath: root.appendingPathComponent("index.html").path) else {
++            let label = UILabel()
++            label.text = "Missing bundled game: www/index.html"
++            label.textColor = .white
++            label.textAlignment = .center
++            view = label
++            return
++        }
++        webView.load(URLRequest(url: URL(string: "game://\(GameSchemeHandler.host)/")!))
++    }
++
++    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
++        guard startupPending else { return }
++        let remaining = max(0, 0.5 - (CFAbsoluteTimeGetCurrent() - splashStarted))
++        DispatchQueue.main.asyncAfter(deadline: .now() + remaining) { [weak self] in
++            guard let self, self.startupPending else { return }
++            self.startupPending = false
++            UIView.animate(withDuration: 0.2, animations: { self.splash.alpha = 0 }) { _ in
++                self.splash.removeFromSuperview()
++            }
++        }
++    }
++
++    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
++                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
++        guard let scheme = navigationAction.request.url?.scheme,
++              [GameSchemeHandler.scheme, "https", "http", "about"].contains(scheme) else {
++            decisionHandler(.cancel)
++            return
++        }
++        decisionHandler(.allow)
++    }
++}
+diff --git a/support/ios/bundle.py b/support/ios/bundle.py
+new file mode 100644
+index 000000000..4f882467c
+--- /dev/null
++++ b/support/ios/bundle.py
+@@ -0,0 +1,72 @@
++"""Stage a WKWebView Xcode project; build and sign it on macOS with XcodeGen."""
++import argparse
++import json
++import plistlib
++import shutil
++from pathlib import Path
++
++
++def stage(content_dir, output, app_name="Roves Game", bundle_id="org.roves.game"):
++    content, output = Path(content_dir).resolve(), Path(output).resolve()
++    if not (content / "index.html").is_file():
++        raise ValueError("Content directory must contain index.html")
++    if output == content or output in content.parents or content in output.parents:
++        raise ValueError("Output and content directories must not overlap")
++    if output.exists():
++        raise ValueError("Output already exists; choose a new directory")
++    output.mkdir(parents=True)
++    shutil.copy(Path(__file__).with_name("App.swift"), output / "App.swift")
++    shutil.copytree(content, output / "www")
++
++    # Native branding shown while the game's own document loads (RovesSplashView, in
++    # App.swift) -- kept separate from `www`/the game's own replaceable launcher icon, same
++    # split as the Android side of this same mobile pivot (see build.gradle.kts's own
++    # `generateRovesBrandAssets` task and its doc comment).
++    engine_resources = Path(__file__).resolve().parents[2] / "resources"
++    brand_dir = output / "roves-brand"
++    brand_dir.mkdir()
++    shutil.copy(engine_resources / "servo_1024.png", brand_dir / "servo_1024.png")
++    shutil.copy(engine_resources / "fonts" / "MetalMania-Regular.ttf", brand_dir / "MetalMania-Regular.ttf")
++    shutil.copy(engine_resources / "fonts" / "MetalMania-OFL.txt", brand_dir / "MetalMania-OFL.txt")
++    info = {
++        "CFBundleDisplayName": app_name,
++        "CFBundleIdentifier": "$(PRODUCT_BUNDLE_IDENTIFIER)",
++        "CFBundleExecutable": "$(EXECUTABLE_NAME)",
++        "CFBundleName": "$(PRODUCT_NAME)", "CFBundlePackageType": "APPL",
++        "CFBundleShortVersionString": "1.0", "CFBundleVersion": "1",
++        "UILaunchScreen": {},
++        "UISupportedInterfaceOrientations": ["UIInterfaceOrientationPortrait", "UIInterfaceOrientationLandscapeLeft", "UIInterfaceOrientationLandscapeRight"],
++    }
++    with (output / "Info.plist").open("wb") as stream:
++        plistlib.dump(info, stream)
++    spec = {
++        "name": "RovesGame", "options": {"deploymentTarget": {"iOS": "15.0"}},
++        "targets": {"RovesGame": {
++            "type": "application", "platform": "iOS",
++            "sources": [
++                {"path": "App.swift"},
++                {"path": "www", "type": "folder", "buildPhase": "resources"},
++                {"path": "roves-brand", "type": "folder", "buildPhase": "resources"},
++            ],
++            "settings": {"base": {
++                "PRODUCT_BUNDLE_IDENTIFIER": bundle_id, "INFOPLIST_FILE": "Info.plist",
++                "SWIFT_VERSION": "5.0", "TARGETED_DEVICE_FAMILY": "1,2",
++            }},
++        }},
++    }
++    (output / "project.json").write_text(json.dumps(spec, indent=2) + "\n")
++    return output
++
++
++if __name__ == "__main__":
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--content-dir", required=True)
++    parser.add_argument("--output", required=True)
++    parser.add_argument("--app-name", default="Roves Game")
++    parser.add_argument("--bundle-id", default="org.roves.game")
++    args = parser.parse_args()
++    try:
++        result = stage(args.content_dir, args.output, args.app_name, args.bundle_id)
++    except ValueError as error:
++        parser.error(str(error))
++    print(f"Project staged in {result}. On macOS: xcodegen generate --spec project.json")
+diff --git a/tests/mobile/test_packaging.py b/tests/mobile/test_packaging.py
+new file mode 100644
+index 000000000..f40076f42
+--- /dev/null
++++ b/tests/mobile/test_packaging.py
+@@ -0,0 +1,77 @@
++import ast
++import glob
++import importlib.util
++import os
++import shutil
++import subprocess
++import tempfile
++import unittest
++from pathlib import Path
++from types import SimpleNamespace
++from unittest.mock import patch
++
++ROOT = Path(__file__).resolve().parents[2]
++spec = importlib.util.spec_from_file_location("ios_bundle", ROOT / "support/ios/bundle.py")
++ios_bundle = importlib.util.module_from_spec(spec)
++spec.loader.exec_module(ios_bundle)
++
++
++class PackagingTests(unittest.TestCase):
++    def test_ios_stages_content_and_rejects_overlap_and_existing_output(self):
++        with tempfile.TemporaryDirectory() as temp:
++            content = Path(temp) / "dist"
++            content.mkdir()
++            (content / "index.html").write_text("game")
++            output = Path(temp) / "ios"
++            ios_bundle.stage(content, output, "Game")
++            self.assertEqual((output / "www/index.html").read_text(), "game")
++            self.assertTrue((output / "App.swift").is_file())
++            self.assertTrue((output / "project.json").is_file())
++            self.assertTrue((output / "roves-brand/servo_1024.png").is_file())
++            self.assertTrue((output / "roves-brand/MetalMania-Regular.ttf").is_file())
++            for invalid in (output, content, content / "build", content.parent):
++                with self.assertRaises(ValueError):
++                    ios_bundle.stage(content, invalid)
++
++    def test_android_bundles_without_native_library_and_ignores_stale_apks(self):
++        # Load only the packaging method so the test does not require Servo's build dependencies.
++        tree = ast.parse((ROOT / "python/servo/post_build_commands.py").read_text())
++        method = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_bundle_android")
++        method.decorator_list = []
++        namespace = dict(glob=glob, os=os, path=os.path, shutil=shutil, subprocess=subprocess,
++                         Optional=__import__('typing').Optional, _read_web_manifest=lambda _: {},
++                         _ANDROID_ORIENTATION_MAP={}, delete=shutil.rmtree)
++        from contextlib import contextmanager
++        @contextmanager
++        def cd(directory):
++            old = os.getcwd()
++            os.chdir(directory)
++            try:
++                yield
++            finally:
++                os.chdir(old)
++        namespace['cd'] = cd
++        exec(compile(ast.Module(body=[method], type_ignores=[]), "packaging", "exec"), namespace)
++        with tempfile.TemporaryDirectory() as temp:
++            root = Path(temp)
++            shutil.copytree(ROOT / "support/android/apk", root / "support/android/apk")
++            content, output = root / "dist", root / "output"
++            content.mkdir(); output.mkdir()
++            (content / "index.html").write_text("game")
++            triple = "aarch64-linux-android"
++            stale = root / "target" / triple / "old/servoapp.apk"
++            stale.parent.mkdir(parents=True); stale.write_bytes(b"stale")
++            target = SimpleNamespace(triple=lambda: triple)
++            owner = SimpleNamespace(target=target, get_top_dir=lambda: str(root), config={"android": {}})
++            def build(argv, env):
++                self.assertNotIn("SERVO_TARGET_DIR", env)
++                self.assertTrue(Path("servoapp/src/main/assets/www/index.html").is_file())
++                apk = Path("servoapp/build/outputs/apk/arm64Debug/game.apk")
++                apk.parent.mkdir(parents=True); apk.write_bytes(b"native-webview")
++            with patch.object(subprocess, 'check_call', side_effect=build):
++                namespace['_bundle_android'](owner, None, str(content), str(output))
++            self.assertEqual((output / "servoapp.apk").read_bytes(), b"native-webview")
++
++
++if __name__ == '__main__':
++    unittest.main()
+diff --git a/support/android/apk/servoapp/src/main/res/values/styles.xml b/support/android/apk/servoapp/src/main/res/values/styles.xml
+--- a/support/android/apk/servoapp/src/main/res/values/styles.xml
++++ b/support/android/apk/servoapp/src/main/res/values/styles.xml
+@@ -2,6 +2,8 @@
+ 
+     <!-- Base application theme. -->
+     <style name="AppTheme" parent="android:Theme.Material.Light.NoActionBar">
++        <item name="android:windowBackground">@android:color/black</item>
++        <item name="android:colorBackground">@android:color/black</item>
+         <item name="android:statusBarColor">#212121</item>
+     </style>
+ 
+diff --git a/support/android/apk/servoapp/src/main/java/org/servo/servoshell/RovesSplashView.kt b/support/android/apk/servoapp/src/main/java/org/servo/servoshell/RovesSplashView.kt
+new file mode 100644
+index 000000000..8708341fe
+--- /dev/null
++++ b/support/android/apk/servoapp/src/main/java/org/servo/servoshell/RovesSplashView.kt
+@@ -0,0 +1,60 @@
++package org.servo.servoshell
++
++import android.content.Context
++import android.graphics.BitmapFactory
++import android.graphics.Canvas
++import android.graphics.Color
++import android.graphics.Paint
++import android.graphics.RectF
++import android.graphics.Typeface
++import android.os.SystemClock
++import android.view.View
++import kotlin.math.min
++
++/** Native branding, independent of the game's assets and launcher icon. */
++class RovesSplashView(context: Context) : View(context) {
++    private val icon = context.assets.open("roves-brand/servo_1024.png").use {
++        BitmapFactory.decodeStream(it)
++    }
++    private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
++    private val font = Typeface.createFromAsset(context.assets, "roves-brand/fonts/MetalMania-Regular.ttf")
++    private val started = SystemClock.uptimeMillis()
++
++    init {
++        setBackgroundColor(Color.BLACK)
++        isClickable = true
++        contentDescription = "Roves"
++    }
++
++    override fun onDraw(canvas: Canvas) {
++        super.onDraw(canvas)
++        val density = resources.displayMetrics.density
++        val scale = min(density, width / 400f)
++        paint.typeface = font
++        paint.textSize = 64f * scale
++        paint.color = Color.WHITE
++        val iconSize = 120f * scale
++        val gap = 8f * scale
++        val textWidth = paint.measureText("Roves")
++        val left = (width - iconSize - gap - textWidth) / 2f
++        val top = height / 2f - iconSize / 2f - 20f * scale
++        canvas.drawBitmap(icon, null, RectF(left, top, left + iconSize, top + iconSize), paint)
++        val metrics = paint.fontMetrics
++        canvas.drawText("Roves", left + iconSize + gap,
++            top + iconSize / 2f - (metrics.ascent + metrics.descent) / 2f, paint)
++        val barWidth = 240f * scale
++        val barLeft = (width - barWidth) / 2f
++        val barTop = top + iconSize + 32f * scale
++        paint.color = Color.DKGRAY
++        canvas.drawRect(barLeft, barTop, barLeft + barWidth, barTop + 4f * scale, paint)
++        val phase = ((SystemClock.uptimeMillis() - started) % 1400L) / 1400f
++        val highlight = barWidth * 0.25f
++        val x = barLeft - highlight + phase * (barWidth + highlight)
++        canvas.save()
++        canvas.clipRect(barLeft, barTop, barLeft + barWidth, barTop + 4f * scale)
++        paint.color = Color.WHITE
++        canvas.drawRect(x, barTop, x + highlight, barTop + 4f * scale, paint)
++        canvas.restore()
++        postInvalidateOnAnimation()
++    }
++}
+diff --git a/support/android/apk/servoapp/src/main/res/values-v31/styles.xml b/support/android/apk/servoapp/src/main/res/values-v31/styles.xml
+new file mode 100644
+index 000000000..66faa8bcb
+--- /dev/null
++++ b/support/android/apk/servoapp/src/main/res/values-v31/styles.xml
+@@ -0,0 +1,11 @@
++<resources>
++    <!-- Android 12+ owns the initial system splash; keep its branding consistent. -->
++    <style name="AppTheme" parent="android:Theme.Material.Light.NoActionBar">
++        <item name="android:windowBackground">@android:color/black</item>
++        <item name="android:colorBackground">@android:color/black</item>
++        <item name="android:statusBarColor">#212121</item>
++        <item name="android:windowSplashScreenBackground">@android:color/black</item>
++        <item name="android:windowSplashScreenAnimatedIcon">@drawable/roves_boot_icon</item>
++        <item name="android:windowSplashScreenIconBackgroundColor">@android:color/black</item>
++    </style>
++</resources>

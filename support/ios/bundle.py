@@ -17,6 +17,17 @@ def stage(content_dir, output, app_name="Roves Game", bundle_id="org.roves.game"
     output.mkdir(parents=True)
     shutil.copy(Path(__file__).with_name("App.swift"), output / "App.swift")
     shutil.copytree(content, output / "www")
+
+    # Native branding shown while the game's own document loads (RovesSplashView, in
+    # App.swift) -- kept separate from `www`/the game's own replaceable launcher icon, same
+    # split as the Android side of this same mobile pivot (see build.gradle.kts's own
+    # `generateRovesBrandAssets` task and its doc comment).
+    engine_resources = Path(__file__).resolve().parents[2] / "resources"
+    brand_dir = output / "roves-brand"
+    brand_dir.mkdir()
+    shutil.copy(engine_resources / "servo_1024.png", brand_dir / "servo_1024.png")
+    shutil.copy(engine_resources / "fonts" / "MetalMania-Regular.ttf", brand_dir / "MetalMania-Regular.ttf")
+    shutil.copy(engine_resources / "fonts" / "MetalMania-OFL.txt", brand_dir / "MetalMania-OFL.txt")
     info = {
         "CFBundleDisplayName": app_name,
         "CFBundleIdentifier": "$(PRODUCT_BUNDLE_IDENTIFIER)",
@@ -32,7 +43,11 @@ def stage(content_dir, output, app_name="Roves Game", bundle_id="org.roves.game"
         "name": "RovesGame", "options": {"deploymentTarget": {"iOS": "15.0"}},
         "targets": {"RovesGame": {
             "type": "application", "platform": "iOS",
-            "sources": [{"path": "App.swift"}, {"path": "www", "type": "folder", "buildPhase": "resources"}],
+            "sources": [
+                {"path": "App.swift"},
+                {"path": "www", "type": "folder", "buildPhase": "resources"},
+                {"path": "roves-brand", "type": "folder", "buildPhase": "resources"},
+            ],
             "settings": {"base": {
                 "PRODUCT_BUNDLE_IDENTIFIER": bundle_id, "INFOPLIST_FILE": "Info.plist",
                 "SWIFT_VERSION": "5.0", "TARGETED_DEVICE_FAMILY": "1,2",

@@ -118,6 +118,7 @@ your page's own initial load — see the "Native boot splash" and later boot-spl
 | **macOS** (Apple Silicon and Intel) | ✅ Implemented | native (Rust std) |
 | **Linux** (x64) | ✅ Implemented | native (Rust std) |
 | Android | 🚧 Native WebView APK | Android WebView |
+| iOS/iPadOS | 🚧 Native WKWebView (manual Xcode build) | WKWebView |
 | Nintendo Switch | 🚧 In development | `nx` |
 | Nintendo 3DS | 🚧 In development | `ctru-rs` |
 | PlayStation Portable (PSP) | 🚧 In development | `rust-psp` |

@@ -65,22 +65,37 @@ a simulator or device. Archive and export using your Apple distribution signing
 configuration for an IPA. The generated project targets iOS 15+ and iPhone/iPad.
 The output directory must be new and must not overlap the content directory.
 
-The initial iOS container loads `www/index.html` with WKWebView's file loading
-API. Use relative URLs and configure your web bundler accordingly. Root-relative
-paths, fetch of local files, service workers and APIs requiring an HTTPS origin
-are not supported by this initial file-based container. Validate your game's
-module loading and storage behavior on the target iOS version before release.
+The local origin is `game://content/`, served by a `WKURLSchemeHandler`
+(`GameSchemeHandler` in App.swift) instead of a raw `file://` path: relative and
+root-relative asset URLs resolve correctly, and `location.pathname` is `/` at
+boot, so a client-side history router's root route matches (the same reasoning
+as Android's `https://appassets.androidplatform.net/` origin, and desktop's own
+`game://content/` protocol handler — see `ports/servoshell/protocols/game.rs`).
+A path with no matching file falls back to `index.html`, the same SPA-fallback
+behavior as those two. Byte-range requests are honored, so `<video>`/`<audio>`
+seeking works. Missing files return 404. `game://` isn't a WebKit secure
+context (no Service Workers, some newer APIs gated on that) — an accepted
+tradeoff, not an oversight; desktop's own `game://` makes the same call.
+A native black splash with the Roves icon, Metal Mania wordmark and animated
+bar (`RovesSplashView` in App.swift) covers the initial load, removed once the
+WKWebView navigation delegate reports the document finished (with the same
+500ms floor as Android's splash) — the iOS equivalent of Android's startup
+branding above. Validate your game's module loading and storage behavior on
+the target iOS version before release; device runtime checks (seeking,
+splash timing, storage persistence) remain pending, same caveat as Android.
 
 ## Compatibility and validation
 
-Servo-specific extensions (including `game://` and native Roves save APIs) are
-not implemented by these containers. Games should use standard web APIs or a
-platform bridge provided separately. Android and iOS builds in external projects
-such as Packmaster and roves-action will need their own migration: this change
-only updates this repository. The Android workflow no longer produces Servo
-native-library downloads.
+Servo-specific extensions (including native Roves save APIs) are not
+implemented by these containers. Games should use standard web APIs or a
+platform bridge provided separately. Android and iOS builds in external
+projects such as Packmaster and roves-action need their own migration to this
+same WebView-only approach — see those repos' own CLAUDE.md/CUSTOMIZATIONS.md
+for whether that's already been done by the time you're reading this. The
+Android workflow no longer produces Servo native-library downloads.
 
 Python staging and packaging checks can run on Linux. Actual Android compilation
 requires a working JDK/SDK and dependency downloads; iOS compilation and runtime
-checks require macOS/Xcode. CI builds the Android app, but device runtime checks
-are still required for graphics, sound, fullscreen and save persistence.
+checks require macOS/Xcode. CI runs the real `mach bundle --android` path (not a
+hand-rolled Gradle invocation) against smoke-test content, but device runtime
+checks are still required for graphics, sound, fullscreen and save persistence.

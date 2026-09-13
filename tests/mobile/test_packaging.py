@@ -27,6 +27,8 @@ class PackagingTests(unittest.TestCase):
             self.assertEqual((output / "www/index.html").read_text(), "game")
             self.assertTrue((output / "App.swift").is_file())
             self.assertTrue((output / "project.json").is_file())
+            self.assertTrue((output / "roves-brand/servo_1024.png").is_file())
+            self.assertTrue((output / "roves-brand/MetalMania-Regular.ttf").is_file())
             for invalid in (output, content, content / "build", content.parent):
                 with self.assertRaises(ValueError):
                     ios_bundle.stage(content, invalid)

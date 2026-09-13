@@ -6054,15 +6054,122 @@ both green, and ultimately the real device confirming the "Not Found" page is go
 pending as of this entry.
 
 
-## 2026-09-13 — Android native WebView startup splash
+## 2026-09-13 — Mobile pivots from Servo to native WebView (Android WebView + iOS WKWebView)
 
-MainActivity on feat/mobile-native-webviews now covers the initial WebView load
-with native Roves branding: black background, engine icon, Metal Mania wordmark
-and animated bar. Generated Gradle assets include only the branding image/font/license;
-game launcher icon and www content remain independent. The overlay waits at least
-500 ms and for onPageFinished plus a visual-state callback; navigation generations
-invalidate stale callbacks and destruction prevents deferred UI updates.
-Android 12+ system splash uses the engine icon on black. Document readiness does
-not guarantee asynchronous game initialization. Updated reconstruction patch 0005.
-All six changed/new patch sections reconstruct byte-identical files from recovered
-baselines. Gradle/device checks remain pending: local Java fails loading libjli.so.
+**Files:** too many to list individually — see `patches/servo-v0.5.0/0016-mobile-native-webviews.patch`'s
+own file list (17 files: `python/servo/post_build_commands.py`, `support/MOBILE.md` (new),
+`support/android/apk/servoapp/{build.gradle.kts,src/main/AndroidManifest.xml,src/main/java/
+org/servo/servoshell/{MainActivity.kt,MediaSession.kt (deleted),RovesSplashView.kt (new)},
+src/main/res/values{,-v31}/styles.xml}`, `support/android/apk/settings.gradle.kts`,
+`support/android/apk/servoview/**` (all 4 files deleted), `support/ios/{App.swift,bundle.py}`
+(new), `tests/mobile/test_packaging.py` (new)), plus `.github/workflows/android.yml`
+(rewritten — no patch, this repo's own CI file, not vendored) and `README.md`.
+
+**Why:** Servo's Android JNI bridge (`servoview`, `egl/android/`) works, but every web
+platform feature a mobile game gets is whatever this fork's own Servo build supports —
+narrower than a real WebView, and iOS has no Servo/JNI-equivalent port at all (Servo doesn't
+target iOS). Android's `WebView` and iOS's `WKWebView` are both full, independently-updated
+browser engines already present on every device — swapping to them for mobile trades "one
+engine everywhere" for "desktop keeps the custom engine, mobile gets the platform's own,
+already-maintained one," and unblocks iOS entirely. Desktop is unaffected: it still uses
+Servo, unchanged.
+
+**What changed on Android:** `MainActivity.kt` rewritten from the Compose-based browser-chrome
+shell (see this file's earlier 2026-09-11/12 entries) to a plain `WebView` + `WebViewAssetLoader`
+(`androidx.webkit`) serving the game at `https://appassets.androidplatform.net/` — a real
+origin, not `file://`, so `location.pathname` is `/` at boot (client-side routers match) and
+root-relative asset references resolve correctly, the same class of fix `ports/servoshell/
+protocols/game.rs` gives desktop/embedded via `game://content/` (see this file's 2026-09-12
+entries on that). Missing files 404 instead of hitting the real network. `_bundle_android`
+(`post_build_commands.py`) no longer compiles anything: no `mach build --android` prerequisite,
+no NDK, no `libservoshell.so` — it copies `--content-dir` into a scratch Gradle project's own
+`assets/www/` and runs `:servoapp:assembleXDebug`/`Release` directly, the exact same `--android-
+app-name`/`-orientation`/`-theme-color`/`--android-release` surface as before. `servoview/`
+(Servo's own JNI bridge, `JNIServo.kt`/`Servo.kt`/`ServoView.java`) is deleted outright —
+`settings.gradle.kts` no longer includes it, and nothing else referenced it once `MainActivity`
+stopped depending on it. `MediaSession.kt` (a Servo/JNI-specific media-notification integration)
+is deleted too; a plain in-page `<video>`/`<audio>` element doesn't need a custom Android-side
+media session the way a full custom player did. A native splash (`RovesSplashView.kt`, a plain
+`View.onDraw` — black background, engine icon, Metal Mania wordmark, animated loading bar) covers
+the WebView's own load, removed once `onPageFinished` + `postVisualStateCallback` both fire and
+at least 500ms has elapsed (so a near-instant load doesn't just flash); an Android 12+
+`windowSplashScreenAnimatedIcon` system splash (`values-v31/styles.xml`) covers the very first
+frame before that. Both generated from the same `resources/servo_1024.png` + Metal Mania font
+already used for the *desktop* boot splash (`build.gradle.kts`'s new `generateRovesBrandAssets`
+Gradle task) — one branding asset, reused, not a separate Android-specific one.
+
+**What's new on iOS:** `support/ios/{App.swift,bundle.py}` — an initial `WKWebView` container
+(`bundle.py` stages `App.swift` + `--content-dir`'s content + branding assets into an
+XcodeGen `project.json`; build/sign happens in Xcode, macOS-only, not wired into `mach bundle`
+at all yet — a real gap, see "Known gaps" below). Not wired through `mach`/`post_build_commands.py`.
+
+**Correction, same day:** the first version of this container used `WKWebView.loadFileURL`
+(plain `file://`) — the *exact* bug the Android paragraph above just described fixing, on the
+one platform in this same change that was writing new code, not porting an existing fix. Real
+device testing wasn't available to catch it before merge; caught by code review, treated with
+the same seriousness as any other real-device-confirmed bug in this file. Fixed the same day:
+`App.swift` now has its own `GameSchemeHandler` (`WKURLSchemeHandler`), serving the game at
+`game://content/` — the same virtual-origin idea as Android's `WebViewAssetLoader` and desktop's
+`game://` protocol handler, reimplemented natively in Swift since `WKURLSchemeHandler` has no
+built-in asset-loader equivalent the way `androidx.webkit` does. Includes an SPA fallback
+(unmatched path → `index.html`, mirroring `GameProtocolHandler::load`'s own doc comment) and
+`Range` header support (so `<video>`/`<audio>` seeking works — `WKURLSchemeTask` never
+synthesizes range handling on its own). Deliberately a plain custom scheme, not `https`:
+`WKURLSchemeHandler` registers per-*scheme*, not per-host, so claiming `https` itself would
+intercept every real network request (fonts, CDNs, analytics) too. `game://` isn't a WebKit
+secure context (no Service Workers, some newer APIs gated on that) — an accepted tradeoff, the
+same one desktop's own `game://` already makes, not an oversight. Also added a `RovesSplashView`
+(`UIView`, driven by `WKNavigationDelegate.didFinish` + the same 500ms floor as Android) and
+extended `bundle.py` to stage the branding assets — iOS had no equivalent to Android's startup
+splash at all until this fix, leaving a plain white screen during load, exactly the gap
+`TODO.md`/this session's own desktop work already flagged as worth fixing everywhere.
+
+**Patch consolidation:** the branch this landed on originally introduced a `0005-mobile-native-
+webviews.patch` — colliding with the *already-existing* `0005-windows-packaging.patch` (both
+numbered "0005"; harmless as distinct filenames but confusing, and against this project's own
+sequential-numbering convention) — and its diffs for `post_build_commands.py`/`AndroidManifest.
+xml`/`build.gradle.kts`/`MainActivity.kt` overlapped with `0004-android.patch`, which already
+owned those same files (this project's own established invariant, checked throughout this
+session, is one file per patch — see the 2026-09-12 `game://`-port entries above for why: it's
+what lets a future Servo-version upgrade reconcile each file's customizations in exactly one
+place). Confirmed as a *real* problem, not just a style nit: applying `0004` then the original
+`0005` in the real CI sequence still failed outright for `post_build_commands.py` (that file's
+diff was generated assuming `0007-build-tooling.patch`'s changes already applied, even though
+`0007` sorts *after* `0005`) — proof this patch had never actually been verified against a
+real from-pristine reconstruction. Separately, three of its new-file sections (`MOBILE.md`,
+`RovesSplashView.kt`, `values-v31/styles.xml`) were missing the `new file mode`/`index` header
+lines `git apply` requires (though harmless for this repo's own `patch -p1`-based CI — see
+`test.yml`). Fixed by regenerating a single, self-contained diff for every file directly from
+fresh pristine `v0.5.0` (not from any intermediate patched state), removing the four overlapping
+sections from `0004`/`0007`, and consolidating everything mobile-related into one renumbered
+`0016-mobile-native-webviews.patch` (0005-0015 were all already taken). Also physically deleted
+`servoview/` (see above) rather than leaving `0004`'s now-pointless diff for a module nothing
+includes anymore. Every file in the new patch re-verified byte-identical against the actual
+working tree from a fresh pristine reconstruction; `grep -h "^diff --git a/" patches/servo-v0.5.0/*.patch
+| sort | uniq -c | awk '$1>1'` (this session's own standard check) now reports zero files
+touched by more than one patch, repo-wide.
+
+**CI:** `.github/workflows/android.yml` rewritten to match — no more SDK/NDK/Rust-cross-compile
+bootstrap, just Java + Android SDK platform-tools + a real `./mach bundle --android --content-dir
+... --output ...` run against smoke-test content, verifying the actual code path every real
+consumer (roves-action, Packmaster) uses instead of a hand-rolled `./gradlew` invocation. Two
+real bugs fixed in the same pass: (1) `sdkmanager 'platforms;android-37'` — Google doesn't
+publish that exact package name, only versioned `android-37.0`/`.1`/`.2` — the *identical*
+failure already diagnosed and fixed for Packmaster earlier this session (see `roves-ui`'s
+`src-tauri/src/android.rs`, `resolve_platform_package`); resolved dynamically here the same way.
+(2) the original CI step copied smoke-test content directly into the *tracked* `support/android/
+apk/servoapp/src/main/assets/www/` — the exact "persists one game's content across unrelated
+runs" anti-pattern `_bundle_android`'s own doc comment already warns about (see this file's
+2026-09-10 Android-bundling entries) — harmless on a fresh CI checkout, but meant this workflow
+never actually exercised `_bundle_android` at all. Fixed by using a real `--content-dir`/`--output`
+in `/tmp` instead.
+
+**Known gaps, left open on purpose:** iOS staging isn't wired into `mach bundle` (`bundle.py` is
+a standalone script; building the Xcode project still needs a human on macOS running `xcodegen`
+by hand) — the Android side is fully automated, iOS isn't yet. No device runtime verification
+for either platform (splash timing, WebView storage persistence, video seeking, rotation,
+fullscreen) — this machine has no Android emulator/device attached and no macOS/Xcode at all,
+so CI-green plus code review is the ceiling of verification reachable from here; real coverage
+needs someone with a device. **`roves-action` and `roves-ui`/Packmaster's own Android bundling
+still assumed the old Rust/NDK path as of this entry** — see their own `CUSTOMIZATIONS.md`/
+`CLAUDE.md` entries for whether that migration has landed by the time you're reading this.
