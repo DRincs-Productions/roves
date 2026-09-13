@@ -8,7 +8,17 @@ name: Build Android native WebView APK
 # `_bundle_android`'s own doc comment already warns about for a different reason (silently
 # persisting one game's content across unrelated local runs) -- harmless on a fresh CI
 # checkout, but it meant this workflow never actually exercised the code every real consumer
-# uses, so a real `_bundle_android` bug could pass CI here undetected.
+# uses, so a real `_bundle_android` bug could pass CI here undetected. `_bundle_android`
+# itself never touches the tracked support/android/apk/ tree anymore either way (it copies
+# into a scratch target/<triple>/android-bundle/ dir) -- there's nothing left for this
+# workflow to accidentally pollute even if it wanted to.
+#
+# Also publishes `roves_android_project.zip` (a snapshot of support/android/apk/) to the
+# rolling "test" GitHub Release (same one test.yml uses for desktop) -- Roves Packmaster's
+# own Android backend (roves-ui/src-tauri/src/android.rs) downloads this directly since it
+# never does a git checkout of the engine itself. No more `roves_android_native_arm64.zip`
+# (a compiled libservoshell.so) as of the 2026-09-13 mobile pivot to native WebView -- there's
+# no native library to publish anymore, see CUSTOMIZATIONS.md's entry on this.
 
 on:
   push:
@@ -16,14 +26,37 @@ on:
   pull_request:
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 env:
   SERVO_TAG: '0.5.0'
+  TEST_RELEASE_TAG: 'test'
 
 jobs:
+  # Mirrors test.yml's own job of the same name -- see that workflow's own comment. Both
+  # workflows publish to the same rolling "test" release, so either one creates it first,
+  # whichever runs first after the release doesn't exist yet (e.g. right after someone
+  # deletes it to retry a failed run).
+  ensure-test-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: ensure release "test" exists
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release view "$TEST_RELEASE_TAG" 2>/dev/null || \
+          gh release create "$TEST_RELEASE_TAG" \
+            --title "Servo customization test build" \
+            --notes "Rolling test build from source (Servo v${SERVO_TAG} + patches/). Overwritten on every push touching patches/ or android.yml. Not a real release — see release.yml for that." \
+            --prerelease \
+            2>/dev/null || \
+          gh release view "$TEST_RELEASE_TAG" > /dev/null
+
   android:
+    needs: ensure-test-release
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -106,3 +139,28 @@ jobs:
         with:
           name: roves-android-webview
           path: /tmp/android-output/*.apk
+
+      # A clean checkout of support/android/apk/ -- `_bundle_android` never touches this
+      # tracked tree (it copies into a scratch target/<triple>/android-bundle/ dir instead),
+      # so there's no build/.gradle/obj/ cruft to strip out first the way the old,
+      # Rust-cross-compiling version of this workflow needed to (see this file's own git
+      # history if that reasoning is ever needed again for something else).
+      - name: package Android project for Packmaster
+        run: zip -rq roves_android_project.zip support/android/apk
+
+      # Retries: see test.yml's own identical step/comment -- this job can race a concurrent
+      # test.yml run uploading to the same "test" release at the same time.
+      - name: upload to "test" release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          for attempt in 1 2 3; do
+            gh release upload "$TEST_RELEASE_TAG" roves_android_project.zip --clobber && break
+            echo "upload attempt $attempt failed, retrying in $((attempt * 10))s..." >&2
+            sleep $((attempt * 10))
+            if [ "$attempt" = "3" ]; then
+              echo "::error::failed to upload roves_android_project.zip after 3 attempts"
+              exit 1
+            fi
+          done
