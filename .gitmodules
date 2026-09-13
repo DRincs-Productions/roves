@@ -4,3 +4,6 @@
 [submodule "roves-vscode"]
 	path = roves-vscode
 	url = https://github.com/DRincs-Productions/roves-vscode
+[submodule "roves-wiki"]
+	path = roves-wiki
+	url = https://github.com/DRincs-Productions/roves-wiki
