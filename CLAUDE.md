@@ -211,6 +211,29 @@ be asked, and don't treat "I already wrote the `CUSTOMIZATIONS.md` entry" as cov
 too. A change that's only documented in `CUSTOMIZATIONS.md` is invisible to everyone except
 the next person upgrading the Servo version; a real user has no reason to ever open that file.
 
+## CRITICAL: pushing a fix to `main` is not enough — cut a release and bump the pin too
+
+`roves-action` and `roves-packmaster` never build against this repo's `main` branch — both pin a
+specific, already-released version tag (`roves-action/action.yml`'s `ref:`/download URL,
+`roves-packmaster/src/lib/shell-version.ts`'s `TARGET_SHELL_VERSION`). A fix pushed to `main`
+is invisible to both of them, and to anyone building through them, until a new tag is cut *and*
+that pin is bumped to point at it — merging to `main` alone changes nothing anyone downstream
+actually consumes.
+
+This bit on 2026-09-14: an Android WebView bug fix (immersive mode, a 404 response body) landed
+on `main`, `roves-action`'s own CI was green, but a real device test of the APK `roves-action`
+produced showed no change at all — because `roves-action` was still pinned to `v0.4.18`, cut
+*before* the fix, and its `advanced-mode`/`android`/`ios` paths check out the engine at that
+pinned tag, not at `main`'s tip. The fix was real and correct; it just never reached the
+artifact being tested. Cutting `v0.4.19` and re-pinning `roves-action` to it was the actual fix.
+
+**So: any time a change here is meant to reach a real user through `roves-action` or
+`roves-packmaster` (not just a `test.yml`/`android.yml`/`ios.yml` CI smoke test on `main`) —
+not only for Android/iOS, this applies just as much to a desktop-only fix — cut a new release
+(below) and bump both pins in the same effort, don't treat "it's on `main` and CI is green" as
+done. If you're not sure whether a given change is significant enough to warrant a release yet,
+ask rather than silently leaving `main` ahead of the last cut tag indefinitely.**
+
 ## Cutting a versioned release (`v<major>.<minor>.<patch>` tags)
 
 `.github/workflows/release.yml` builds and publishes a real, versioned GitHub Release —
