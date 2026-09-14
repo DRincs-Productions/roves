@@ -1,15 +1,17 @@
 diff --git a/python/servo/post_build_commands.py b/python/servo/post_build_commands.py
-index 2f513955f..761557c62 100644
+index 2f513955f..48c536e7a 100644
 --- a/python/servo/post_build_commands.py
 +++ b/python/servo/post_build_commands.py
-@@ -7,13 +7,17 @@
+@@ -7,13 +7,19 @@
  # option. This file may not be copied, modified, or distributed
  # except according to those terms.
  
 +import glob
++import importlib.util
  import json
  import os
  import os.path as path
++import plistlib
 +import shutil
  import subprocess
 +import urllib.request
@@ -21,7 +23,7 @@ index 2f513955f..761557c62 100644
  
  import mozdebug
  
-@@ -25,19 +29,100 @@ from mach.decorators import (
+@@ -25,19 +31,100 @@ from mach.decorators import (
  
  import servo.util
  import servo.platform
@@ -122,7 +124,7 @@ index 2f513955f..761557c62 100644
  
  def read_file(filename: str, if_exists: bool = False) -> str | None:
      if if_exists and not path.exists(filename):
-@@ -53,6 +138,349 @@ def shell_quote(arg: str) -> str:
+@@ -53,6 +140,349 @@ def shell_quote(arg: str) -> str:
      return "'" + arg.replace("'", "'\"'\"'") + "'"
  
  
@@ -472,7 +474,7 @@ index 2f513955f..761557c62 100644
  @CommandProvider
  class PostBuildCommands(CommandBase):
      @Command("run", description="Run Servo", category="post-build")
-@@ -199,6 +627,993 @@ class PostBuildCommands(CommandBase):
+@@ -199,6 +629,1268 @@ class PostBuildCommands(CommandBase):
              else:
                  raise exception
  
@@ -612,6 +614,35 @@ index 2f513955f..761557c62 100644
 +        "upstream Servo's own Gradle project, not something this flag configures itself) -- fails "
 +        "loudly instead of silently producing a debug-signed 'release' build if they're missing.",
 +    )
++    @CommandArgument(
++        "--ios",
++        action="store_true",
++        default=False,
++        help="Stage, build, and package an iOS WKWebView app via XcodeGen + xcodebuild -- macOS "
++        "only (Xcode is required). Mirrors --android: no Servo/Rust/mach-build step, see "
++        "_bundle_ios. Without --ios-release, produces an unsigned iphonesimulator .app.",
++    )
++    @CommandArgument(
++        "--ios-app-name",
++        default=None,
++        help="iOS only: the app's display name. Defaults to 'Roves Game'.",
++    )
++    @CommandArgument(
++        "--ios-bundle-id",
++        default=None,
++        help="iOS only: the app's bundle identifier (e.g. com.example.mygame). Defaults to "
++        "'org.roves.game'.",
++    )
++    @CommandArgument(
++        "--ios-release",
++        action="store_true",
++        default=False,
++        help="iOS only: archive and export a real, signed .ipa (Apple's 'app-store' export "
++        "method) instead of the default unsigned iphonesimulator build. Requires "
++        "IOS_SIGNING_CERTIFICATE_P12_PATH (+ _PASSWORD), IOS_SIGNING_PROVISIONING_PROFILE_PATH "
++        "and IOS_SIGNING_TEAM_ID to already be set in the environment -- see _bundle_ios -- "
++        "fails loudly instead of silently falling back to an unsigned build if they're missing.",
++    )
 +    @CommandArgument("params", nargs="...", help="Extra command-line arguments to pass through to servoshell on launch")
 +    # build_configuration=True (not just binary_selection): registers --android/--target (see
 +    # command_base.py's common_command_arguments) and, crucially, makes this same decorator
@@ -651,6 +682,10 @@ index 2f513955f..761557c62 100644
 +        android_orientation: Optional[str] = None,
 +        android_theme_color: Optional[str] = None,
 +        android_release: bool = False,
++        ios: bool = False,
++        ios_app_name: Optional[str] = None,
++        ios_bundle_id: Optional[str] = None,
++        ios_release: bool = False,
 +        params: Optional[List[str]] = None,
 +        **kwargs: Any,
 +    ) -> int | None:
@@ -682,6 +717,13 @@ index 2f513955f..761557c62 100644
 +          --android-release builds a real, signed release .apk instead —
 +          see that flag's own help text for the (upstream, unmodified)
 +          Gradle signing mechanism it relies on.
++        * iOS (--ios): macOS only. An unsigned iphonesimulator .app by
++          default, staged via support/ios/bundle.py and built with
++          XcodeGen + xcodebuild — see `_bundle_ios`. --ios-release
++          archives and exports a real, signed .ipa instead, using a
++          distribution certificate/provisioning profile/team ID supplied
++          via environment variables (that flag's own help text has the
++          exact names) — Apple's own signing, nothing this flag invents.
 +
 +        Every platform's *portable* output ships exactly one executable — no
 +        separate launcher process and no `roves-content-packer` binary
@@ -766,6 +808,10 @@ index 2f513955f..761557c62 100644
 +        # bundling) applies. See `_bundle_android`'s own doc comment for what it does
 +        # instead -- `icon_png` (just resolved above) is the one piece of desktop state
 +        # it does share.
++        if ios and is_android(self.target):
++            print("--ios and --android are mutually exclusive.")
++            return 1
++
 +        if is_android(self.target):
 +            return self._bundle_android(
 +                servo_binary,
@@ -779,6 +825,22 @@ index 2f513955f..761557c62 100644
 +            )
 +        elif android_release:
 +            print("--android-release requires --android -- there's no release-signing concept for a desktop bundle.")
++            return 1
++
++        # Same reasoning as the is_android branch above: iOS has no "prebuilt binary + loose
++        # files next to it" bundle shape either -- xcodebuild produces its own .app/.ipa, so
++        # none of the desktop launch.json/installer logic below applies. See _bundle_ios's own
++        # doc comment for what happens instead.
++        if ios:
++            return self._bundle_ios(
++                content_dir,
++                output_dir,
++                ios_app_name=ios_app_name,
++                ios_bundle_id=ios_bundle_id,
++                ios_release=ios_release,
++            )
++        elif ios_release:
++            print("--ios-release requires --ios -- there's no release-signing concept for a desktop bundle.")
 +            return 1
 +
 +        content_exclude = content_exclude or []
@@ -1056,6 +1118,221 @@ index 2f513955f..761557c62 100644
 +        shutil.copy(built_apks[0], path.join(output_dir, "servoapp.apk"))
 +
 +        print(f"Bundle written to {output_dir}")
++        return None
++
++    def _bundle_ios(
++        self,
++        content_dir: Optional[str],
++        output_dir: str,
++        ios_app_name: Optional[str] = None,
++        ios_bundle_id: Optional[str] = None,
++        ios_release: bool = False,
++    ) -> int | None:
++        """Stage, build, and (--ios-release) sign an iOS WKWebView app --
++        the iOS mirror of `_bundle_android` above: no Servo, no Rust
++        cross-compile, just Apple's own toolchain (XcodeGen + xcodebuild),
++        which only exists on macOS. Staging itself (support/ios/bundle.py's
++        `stage`) is reused as-is rather than duplicated -- it's also used
++        standalone by consumers that only want the project template (see
++        roves-action's `ios` input) without a full engine checkout.
++        """
++        if not is_macosx():
++            print("--ios requires macOS -- Xcode/xcodebuild are Apple-only tools.")
++            return 1
++        if not content_dir or not path.isfile(path.join(content_dir, "index.html")):
++            print("iOS WKWebView bundles require --content-dir with an index.html.")
++            return 1
++        if shutil.which("xcodegen") is None:
++            print("--ios requires XcodeGen on PATH (`brew install xcodegen`).")
++            return 1
++
++        cert_p12_path = os.environ.get("IOS_SIGNING_CERTIFICATE_P12_PATH")
++        cert_p12_password = os.environ.get("IOS_SIGNING_CERTIFICATE_P12_PASSWORD", "")
++        provisioning_profile_path = os.environ.get("IOS_SIGNING_PROVISIONING_PROFILE_PATH")
++        team_id = os.environ.get("IOS_SIGNING_TEAM_ID")
++        if ios_release and not (cert_p12_path and provisioning_profile_path and team_id):
++            print(
++                "--ios-release requires IOS_SIGNING_CERTIFICATE_P12_PATH (and "
++                "_PASSWORD), IOS_SIGNING_PROVISIONING_PROFILE_PATH and IOS_SIGNING_TEAM_ID to "
++                "already be set in the environment -- without them there's no real Apple "
++                "distribution identity to sign with. Refusing rather than silently producing an "
++                "unsigned/simulator-only build."
++            )
++            return 1
++
++        # A scratch copy, mirroring _bundle_android's own build_root reasoning -- a repeat
++        # `mach bundle --ios` for a different game starts clean rather than reusing another
++        # game's staged Xcode project.
++        build_root = path.join(self.get_top_dir(), "target", "ios-bundle")
++        if path.exists(build_root):
++            delete(build_root)
++
++        ios_bundle_module_spec = importlib.util.spec_from_file_location(
++            "roves_ios_bundle", path.join(self.get_top_dir(), "support", "ios", "bundle.py")
++        )
++        assert ios_bundle_module_spec and ios_bundle_module_spec.loader
++        ios_bundle_module = importlib.util.module_from_spec(ios_bundle_module_spec)
++        ios_bundle_module_spec.loader.exec_module(ios_bundle_module)
++        ios_bundle_module.stage(
++            content_dir,
++            build_root,
++            app_name=ios_app_name or "Roves Game",
++            bundle_id=ios_bundle_id or "org.roves.game",
++        )
++
++        try:
++            with cd(build_root):
++                subprocess.check_call(["xcodegen", "generate", "--spec", "project.json"])
++        except subprocess.CalledProcessError as e:
++            print("xcodegen generate exited with return value %d" % e.returncode)
++            return e.returncode
++
++        if not ios_release:
++            try:
++                with cd(build_root):
++                    subprocess.check_call(
++                        [
++                            "xcodebuild",
++                            "-project",
++                            "RovesGame.xcodeproj",
++                            "-scheme",
++                            "RovesGame",
++                            "-configuration",
++                            "Debug",
++                            "-sdk",
++                            "iphonesimulator",
++                            "-derivedDataPath",
++                            "build",
++                            "CODE_SIGN_IDENTITY=",
++                            "CODE_SIGNING_REQUIRED=NO",
++                            "CODE_SIGNING_ALLOWED=NO",
++                            "build",
++                        ]
++                    )
++            except subprocess.CalledProcessError as e:
++                print("xcodebuild exited with return value %d" % e.returncode)
++                return e.returncode
++            app_path = path.join(build_root, "build", "Build", "Products", "Debug-iphonesimulator", "RovesGame.app")
++            shutil.copytree(app_path, path.join(output_dir, "RovesGame.app"))
++            print(f"Unsigned simulator bundle written to {output_dir}")
++            return None
++
++        return self._sign_and_export_ios_release(
++            build_root, output_dir, ios_bundle_id or "org.roves.game", cert_p12_path, cert_p12_password,
++            provisioning_profile_path, team_id,
++        )
++
++    def _sign_and_export_ios_release(
++        self,
++        build_root: str,
++        output_dir: str,
++        bundle_id: str,
++        cert_p12_path: str,
++        cert_p12_password: str,
++        provisioning_profile_path: str,
++        team_id: str,
++    ) -> int | None:
++        """The --ios-release half of `_bundle_ios`: imports the distribution identity into a
++        dedicated, ephemeral keychain (never the caller's login keychain -- CI has none, and
++        even locally this shouldn't touch it), installs the provisioning profile where Xcode
++        looks for it, then archives + exports a real, signed .ipa. Split out of `_bundle_ios`
++        only to keep that method's unsigned/signed branches each readable on their own.
++        """
++        keychain_path = path.join(build_root, "roves-ios-signing.keychain")
++        keychain_password = uuid.uuid4().hex
++        try:
++            subprocess.check_call(["security", "create-keychain", "-p", keychain_password, keychain_path])
++            subprocess.check_call(["security", "set-keychain-settings", "-lut", "3600", keychain_path])
++            subprocess.check_call(["security", "unlock-keychain", "-p", keychain_password, keychain_path])
++            subprocess.check_call(
++                [
++                    "security",
++                    "import",
++                    cert_p12_path,
++                    "-k",
++                    keychain_path,
++                    "-P",
++                    cert_p12_password,
++                    "-T",
++                    "/usr/bin/codesign",
++                    "-T",
++                    "/usr/bin/security",
++                ]
++            )
++            subprocess.check_call(
++                ["security", "set-key-partition-list", "-S", "apple-tool:,apple:", "-k", keychain_password, keychain_path]
++            )
++            existing_keychains = subprocess.check_output(
++                ["security", "list-keychains", "-d", "user"], encoding="utf8"
++            )
++            existing_keychain_paths = [line.strip().strip('"') for line in existing_keychains.splitlines() if line.strip()]
++            subprocess.check_call(["security", "list-keychains", "-d", "user", "-s", keychain_path, *existing_keychain_paths])
++
++            # `security cms -D` decodes the CMS signature Apple wraps every real provisioning
++            # profile in -- there is no other supported way to read one, and Xcode itself looks
++            # it up by this exact UUID filename under ~/Library/MobileDevice/Provisioning Profiles.
++            decoded_profile = subprocess.check_output(["security", "cms", "-D", "-i", provisioning_profile_path])
++            profile_uuid = plistlib.loads(decoded_profile)["UUID"]
++            profiles_dir = path.expanduser("~/Library/MobileDevice/Provisioning Profiles")
++            os.makedirs(profiles_dir, exist_ok=True)
++            shutil.copy(provisioning_profile_path, path.join(profiles_dir, f"{profile_uuid}.mobileprovision"))
++
++            archive_path = path.join(build_root, "RovesGame.xcarchive")
++            with cd(build_root):
++                subprocess.check_call(
++                    [
++                        "xcodebuild",
++                        "-project",
++                        "RovesGame.xcodeproj",
++                        "-scheme",
++                        "RovesGame",
++                        "-configuration",
++                        "Release",
++                        "-sdk",
++                        "iphoneos",
++                        "-archivePath",
++                        archive_path,
++                        f"DEVELOPMENT_TEAM={team_id}",
++                        "CODE_SIGN_STYLE=Manual",
++                        f"PROVISIONING_PROFILE_SPECIFIER={profile_uuid}",
++                        "archive",
++                    ]
++                )
++                export_options_path = path.join(build_root, "ExportOptions.plist")
++                with open(export_options_path, "wb") as export_options_file:
++                    plistlib.dump(
++                        {
++                            "method": "app-store",
++                            "teamID": team_id,
++                            "signingStyle": "manual",
++                            "provisioningProfiles": {bundle_id: profile_uuid},
++                        },
++                        export_options_file,
++                    )
++                subprocess.check_call(
++                    [
++                        "xcodebuild",
++                        "-exportArchive",
++                        "-archivePath",
++                        archive_path,
++                        "-exportOptionsPlist",
++                        export_options_path,
++                        "-exportPath",
++                        build_root,
++                    ]
++                )
++        except subprocess.CalledProcessError as e:
++            print("iOS release signing/export exited with return value %d" % e.returncode)
++            return e.returncode
++        finally:
++            subprocess.call(["security", "delete-keychain", keychain_path])
++
++        built_ipas = glob.glob(path.join(build_root, "*.ipa"))
++        if len(built_ipas) != 1:
++            print(f"Expected one exported .ipa, found {len(built_ipas)}.")
++            return 1
++        shutil.copy(built_ipas[0], path.join(output_dir, "RovesGame.ipa"))
++        print(f"Signed bundle written to {output_dir}")
 +        return None
 +
 +    def _bundle_windows(
@@ -4085,18 +4362,21 @@ index 000000000..444aa868d
 +    print(f"Project staged in {result}. On macOS: xcodegen generate --spec project.json")
 diff --git a/tests/mobile/test_packaging.py b/tests/mobile/test_packaging.py
 new file mode 100644
-index 000000000..f40076f42
+index 000000000..abcdef123
 --- /dev/null
 +++ b/tests/mobile/test_packaging.py
-@@ -0,0 +1,77 @@
+@@ -0,0 +1,239 @@
 +import ast
++import functools
 +import glob
 +import importlib.util
 +import os
++import plistlib
 +import shutil
 +import subprocess
 +import tempfile
 +import unittest
++import uuid
 +from pathlib import Path
 +from types import SimpleNamespace
 +from unittest.mock import patch
@@ -4162,6 +4442,165 @@ index 000000000..f40076f42
 +            with patch.object(subprocess, 'check_call', side_effect=build):
 +                namespace['_bundle_android'](owner, None, str(content), str(output))
 +            self.assertEqual((output / "servoapp.apk").read_bytes(), b"native-webview")
++
++    def _load_ios_bundle_methods(self, is_macosx_return=True, xcodegen_present=True):
++        # Same isolation trick as _bundle_android above: extract just the two iOS methods so
++        # this test needs neither Servo's build dependencies nor a real macOS/Xcode toolchain.
++        tree = ast.parse((ROOT / "python/servo/post_build_commands.py").read_text())
++        methods = [
++            n for n in ast.walk(tree)
++            if isinstance(n, ast.FunctionDef) and n.name in ("_bundle_ios", "_sign_and_export_ios_release")
++        ]
++        for method in methods:
++            method.decorator_list = []
++        namespace = dict(
++            os=os, path=os.path, shutil=shutil, subprocess=subprocess, glob=glob,
++            plistlib=plistlib, uuid=uuid, importlib=importlib,
++            Optional=__import__('typing').Optional,
++            is_macosx=lambda: is_macosx_return,
++        )
++        from contextlib import contextmanager
++
++        @contextmanager
++        def cd(directory):
++            old = os.getcwd()
++            os.chdir(directory)
++            try:
++                yield
++            finally:
++                os.chdir(old)
++        namespace['cd'] = cd
++        namespace['delete'] = shutil.rmtree
++        exec(compile(ast.Module(body=methods, type_ignores=[]), "ios_packaging", "exec"), namespace)
++        return namespace
++
++    def test_bundle_ios_refuses_without_macos_content_dir_or_xcodegen(self):
++        namespace = self._load_ios_bundle_methods(is_macosx_return=False)
++        owner = SimpleNamespace(get_top_dir=lambda: "/nonexistent")
++        with tempfile.TemporaryDirectory() as temp:
++            output = str(Path(temp) / "out")
++            self.assertEqual(namespace['_bundle_ios'](owner, None, output), 1)
++
++        namespace = self._load_ios_bundle_methods(is_macosx_return=True)
++        with tempfile.TemporaryDirectory() as temp:
++            content = Path(temp) / "dist"
++            content.mkdir()  # no index.html
++            self.assertEqual(namespace['_bundle_ios'](owner, str(content), str(Path(temp) / "out")), 1)
++
++        with patch.object(shutil, 'which', return_value=None):
++            namespace = self._load_ios_bundle_methods(is_macosx_return=True)
++            with tempfile.TemporaryDirectory() as temp:
++                content = Path(temp) / "dist"
++                content.mkdir()
++                (content / "index.html").write_text("game")
++                self.assertEqual(namespace['_bundle_ios'](owner, str(content), str(Path(temp) / "out")), 1)
++
++    def test_bundle_ios_release_refuses_without_signing_env_vars(self):
++        namespace = self._load_ios_bundle_methods(is_macosx_return=True)
++        owner = SimpleNamespace(get_top_dir=lambda: "/nonexistent")
++        with tempfile.TemporaryDirectory() as temp:
++            content = Path(temp) / "dist"
++            content.mkdir()
++            (content / "index.html").write_text("game")
++            with patch.dict(os.environ, {}, clear=False):
++                for var in ("IOS_SIGNING_CERTIFICATE_P12_PATH", "IOS_SIGNING_PROVISIONING_PROFILE_PATH", "IOS_SIGNING_TEAM_ID"):
++                    os.environ.pop(var, None)
++                with patch.object(subprocess, 'check_call') as check_call:
++                    result = namespace['_bundle_ios'](owner, str(content), str(Path(temp) / "out"), ios_release=True)
++            self.assertEqual(result, 1)
++            check_call.assert_not_called()
++
++    def test_bundle_ios_unsigned_stages_and_invokes_xcodegen_and_simulator_build(self):
++        namespace = self._load_ios_bundle_methods(is_macosx_return=True)
++        with tempfile.TemporaryDirectory() as temp:
++            root = Path(temp)
++            shutil.copytree(ROOT / "support/ios", root / "support/ios")
++            shutil.copytree(ROOT / "resources", root / "resources")
++            owner = SimpleNamespace(get_top_dir=lambda: str(root))
++            content, output = root / "dist", root / "output"
++            content.mkdir(); output.mkdir()
++            (content / "index.html").write_text("game")
++
++            calls = []
++
++            def build(argv, **kwargs):
++                calls.append(argv)
++                if argv[:2] == ["xcodegen", "generate"]:
++                    return
++                if argv[0] == "xcodebuild":
++                    app_dir = Path("build/Build/Products/Debug-iphonesimulator/RovesGame.app")
++                    app_dir.mkdir(parents=True)
++                    (app_dir / "RovesGame").write_bytes(b"app-binary")
++
++            with patch.object(subprocess, 'check_call', side_effect=build), \
++                 patch.object(shutil, 'which', return_value='/usr/bin/xcodegen'):
++                result = namespace['_bundle_ios'](owner, str(content), str(output), ios_app_name="Test Game")
++
++            self.assertIsNone(result)
++            self.assertTrue((output / "RovesGame.app" / "RovesGame").is_file())
++            self.assertTrue(any(c[:2] == ["xcodegen", "generate"] for c in calls))
++            self.assertTrue(any(c[0] == "xcodebuild" and "iphonesimulator" in c for c in calls))
++            self.assertTrue(any("CODE_SIGNING_ALLOWED=NO" in c for c in calls))
++
++    def test_bundle_ios_release_signs_and_exports_then_always_deletes_keychain(self):
++        namespace = self._load_ios_bundle_methods(is_macosx_return=True)
++        with tempfile.TemporaryDirectory() as temp:
++            root = Path(temp)
++            shutil.copytree(ROOT / "support/ios", root / "support/ios")
++            shutil.copytree(ROOT / "resources", root / "resources")
++            owner = SimpleNamespace(get_top_dir=lambda: str(root))
++            # _bundle_ios calls self._sign_and_export_ios_release(...) for --ios-release --
++            # bind the sibling extracted method onto the same fake `self` so that resolves.
++            owner._sign_and_export_ios_release = functools.partial(namespace['_sign_and_export_ios_release'], owner)
++            content, output = root / "dist", root / "output"
++            content.mkdir(); output.mkdir()
++            (content / "index.html").write_text("game")
++
++            cert = root / "cert.p12"
++            cert.write_bytes(b"fake-p12")
++            profile = root / "profile.mobileprovision"
++            profile.write_bytes(b"fake-profile")
++
++            calls = []
++
++            def check_call(argv, **kwargs):
++                calls.append(argv)
++                if argv[0] == "xcodebuild" and "-exportArchive" in argv:
++                    export_path = argv[argv.index("-exportPath") + 1]
++                    Path(export_path, "RovesGame.ipa").write_bytes(b"signed-ipa")
++
++            def check_output(argv, **kwargs):
++                if argv[:3] == ["security", "cms", "-D"]:
++                    return plistlib.dumps({"UUID": "FAKE-PROFILE-UUID"})
++                if argv[:3] == ["security", "list-keychains", "-d"]:
++                    return "/some/existing.keychain\n"
++                raise AssertionError(f"unexpected check_output call: {argv}")
++
++            fake_home = root / "home"
++            fake_home.mkdir()
++            with patch.object(subprocess, 'check_call', side_effect=check_call), \
++                 patch.object(subprocess, 'check_output', side_effect=check_output), \
++                 patch.object(subprocess, 'call') as fake_call, \
++                 patch.object(shutil, 'which', return_value='/usr/bin/xcodegen'), \
++                 patch.dict(os.environ, {
++                     "IOS_SIGNING_CERTIFICATE_P12_PATH": str(cert),
++                     "IOS_SIGNING_CERTIFICATE_P12_PASSWORD": "pw",
++                     "IOS_SIGNING_PROVISIONING_PROFILE_PATH": str(profile),
++                     "IOS_SIGNING_TEAM_ID": "TEAMID1234",
++                 }), \
++                 patch.object(os.path, 'expanduser', return_value=str(fake_home / "Provisioning Profiles")):
++                result = namespace['_bundle_ios'](owner, str(content), str(output), ios_release=True)
++
++            self.assertIsNone(result)
++            self.assertEqual((output / "RovesGame.ipa").read_bytes(), b"signed-ipa")
++            self.assertTrue(any(c[:2] == ["security", "create-keychain"] for c in calls))
++            self.assertTrue(any(c[:2] == ["security", "import"] and str(cert) in c for c in calls))
++            self.assertTrue(any(c[0] == "xcodebuild" and "archive" in c and "DEVELOPMENT_TEAM=TEAMID1234" in c for c in calls))
++            self.assertTrue(any(c[0] == "xcodebuild" and "-exportArchive" in c for c in calls))
++            # The ephemeral signing keychain is always torn down, success or failure.
++            self.assertTrue(fake_call.called)
++            self.assertEqual(fake_call.call_args[0][0][:2], ["security", "delete-keychain"])
++            self.assertTrue((fake_home / "Provisioning Profiles" / "FAKE-PROFILE-UUID.mobileprovision").is_file())
 +
 +
 +if __name__ == '__main__':

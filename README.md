@@ -117,8 +117,8 @@ your page's own initial load — see the "Native boot splash" and later boot-spl
 | **Windows** (x64) | ✅ Implemented | native (Rust std) |
 | **macOS** (Apple Silicon and Intel) | ✅ Implemented | native (Rust std) |
 | **Linux** (x64) | ✅ Implemented | native (Rust std) |
-| Android | 🚧 Native WebView APK | Android WebView |
-| iOS/iPadOS | 🚧 Native WKWebView (manual Xcode build) | WKWebView |
+| Android | 🚧 Native WebView APK, `mach bundle --android`, real release signing | Android WebView |
+| iOS/iPadOS | 🚧 Native WKWebView, `mach bundle --ios`, real release signing | WKWebView |
 | Nintendo Switch | 🚧 In development | `nx` |
 | Nintendo 3DS | 🚧 In development | `ctru-rs` |
 | PlayStation Portable (PSP) | 🚧 In development | `rust-psp` |
@@ -130,10 +130,17 @@ your page's own initial load — see the "Native boot splash" and later boot-spl
 
 Desktop targets (Windows, macOS, Linux) use Servo. Mobile games use the system
 WebView and do not ship or compile Servo. See [mobile packaging](support/MOBILE.md)
-for Android APK and iOS Xcode project instructions — both platforms run
-edge-to-edge (status bar and system navigation/home indicator hidden). CI
-builds a native WebView smoke-test APK on Android and an unsigned iOS
-Simulator build on macOS. Console targets remain on the roadmap.
+for Android APK and iOS app instructions — both platforms run edge-to-edge
+(status bar and system navigation/home indicator hidden) and are built the
+same way as desktop, via `mach bundle --android`/`--ios`, no separate Xcode-
+or Gradle-only workflow needed. `--android-release`/`--ios-release` produce a
+real, signed release build instead of the default debug/simulator one — see
+`support/MOBILE.md` for the required signing credentials (an Android keystore
+you can generate yourself, or an Apple Distribution certificate + provisioning
+profile from your own Apple Developer Program account for iOS). CI builds a
+native WebView smoke-test APK on Android and an unsigned iOS Simulator build
+on macOS, plus a real signed-release verification for Android. Console
+targets remain on the roadmap.
 
 ## Embedding
 

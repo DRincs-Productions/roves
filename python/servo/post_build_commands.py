@@ -8,9 +8,11 @@
 # except according to those terms.
 
 import glob
+import importlib.util
 import json
 import os
 import os.path as path
+import plistlib
 import shutil
 import subprocess
 import urllib.request
@@ -763,6 +765,35 @@ class PostBuildCommands(CommandBase):
         "upstream Servo's own Gradle project, not something this flag configures itself) -- fails "
         "loudly instead of silently producing a debug-signed 'release' build if they're missing.",
     )
+    @CommandArgument(
+        "--ios",
+        action="store_true",
+        default=False,
+        help="Stage, build, and package an iOS WKWebView app via XcodeGen + xcodebuild -- macOS "
+        "only (Xcode is required). Mirrors --android: no Servo/Rust/mach-build step, see "
+        "_bundle_ios. Without --ios-release, produces an unsigned iphonesimulator .app.",
+    )
+    @CommandArgument(
+        "--ios-app-name",
+        default=None,
+        help="iOS only: the app's display name. Defaults to 'Roves Game'.",
+    )
+    @CommandArgument(
+        "--ios-bundle-id",
+        default=None,
+        help="iOS only: the app's bundle identifier (e.g. com.example.mygame). Defaults to "
+        "'org.roves.game'.",
+    )
+    @CommandArgument(
+        "--ios-release",
+        action="store_true",
+        default=False,
+        help="iOS only: archive and export a real, signed .ipa (Apple's 'app-store' export "
+        "method) instead of the default unsigned iphonesimulator build. Requires "
+        "IOS_SIGNING_CERTIFICATE_P12_PATH (+ _PASSWORD), IOS_SIGNING_PROVISIONING_PROFILE_PATH "
+        "and IOS_SIGNING_TEAM_ID to already be set in the environment -- see _bundle_ios -- "
+        "fails loudly instead of silently falling back to an unsigned build if they're missing.",
+    )
     @CommandArgument("params", nargs="...", help="Extra command-line arguments to pass through to servoshell on launch")
     # build_configuration=True (not just binary_selection): registers --android/--target (see
     # command_base.py's common_command_arguments) and, crucially, makes this same decorator
@@ -802,6 +833,10 @@ class PostBuildCommands(CommandBase):
         android_orientation: Optional[str] = None,
         android_theme_color: Optional[str] = None,
         android_release: bool = False,
+        ios: bool = False,
+        ios_app_name: Optional[str] = None,
+        ios_bundle_id: Optional[str] = None,
+        ios_release: bool = False,
         params: Optional[List[str]] = None,
         **kwargs: Any,
     ) -> int | None:
@@ -833,6 +868,13 @@ class PostBuildCommands(CommandBase):
           --android-release builds a real, signed release .apk instead —
           see that flag's own help text for the (upstream, unmodified)
           Gradle signing mechanism it relies on.
+        * iOS (--ios): macOS only. An unsigned iphonesimulator .app by
+          default, staged via support/ios/bundle.py and built with
+          XcodeGen + xcodebuild — see `_bundle_ios`. --ios-release
+          archives and exports a real, signed .ipa instead, using a
+          distribution certificate/provisioning profile/team ID supplied
+          via environment variables (that flag's own help text has the
+          exact names) — Apple's own signing, nothing this flag invents.
 
         Every platform's *portable* output ships exactly one executable — no
         separate launcher process and no `roves-content-packer` binary
@@ -917,6 +959,10 @@ class PostBuildCommands(CommandBase):
         # bundling) applies. See `_bundle_android`'s own doc comment for what it does
         # instead -- `icon_png` (just resolved above) is the one piece of desktop state
         # it does share.
+        if ios and is_android(self.target):
+            print("--ios and --android are mutually exclusive.")
+            return 1
+
         if is_android(self.target):
             return self._bundle_android(
                 servo_binary,
@@ -930,6 +976,22 @@ class PostBuildCommands(CommandBase):
             )
         elif android_release:
             print("--android-release requires --android -- there's no release-signing concept for a desktop bundle.")
+            return 1
+
+        # Same reasoning as the is_android branch above: iOS has no "prebuilt binary + loose
+        # files next to it" bundle shape either -- xcodebuild produces its own .app/.ipa, so
+        # none of the desktop launch.json/installer logic below applies. See _bundle_ios's own
+        # doc comment for what happens instead.
+        if ios:
+            return self._bundle_ios(
+                content_dir,
+                output_dir,
+                ios_app_name=ios_app_name,
+                ios_bundle_id=ios_bundle_id,
+                ios_release=ios_release,
+            )
+        elif ios_release:
+            print("--ios-release requires --ios -- there's no release-signing concept for a desktop bundle.")
             return 1
 
         content_exclude = content_exclude or []
@@ -1207,6 +1269,221 @@ class PostBuildCommands(CommandBase):
         shutil.copy(built_apks[0], path.join(output_dir, "servoapp.apk"))
 
         print(f"Bundle written to {output_dir}")
+        return None
+
+    def _bundle_ios(
+        self,
+        content_dir: Optional[str],
+        output_dir: str,
+        ios_app_name: Optional[str] = None,
+        ios_bundle_id: Optional[str] = None,
+        ios_release: bool = False,
+    ) -> int | None:
+        """Stage, build, and (--ios-release) sign an iOS WKWebView app --
+        the iOS mirror of `_bundle_android` above: no Servo, no Rust
+        cross-compile, just Apple's own toolchain (XcodeGen + xcodebuild),
+        which only exists on macOS. Staging itself (support/ios/bundle.py's
+        `stage`) is reused as-is rather than duplicated -- it's also used
+        standalone by consumers that only want the project template (see
+        roves-action's `ios` input) without a full engine checkout.
+        """
+        if not is_macosx():
+            print("--ios requires macOS -- Xcode/xcodebuild are Apple-only tools.")
+            return 1
+        if not content_dir or not path.isfile(path.join(content_dir, "index.html")):
+            print("iOS WKWebView bundles require --content-dir with an index.html.")
+            return 1
+        if shutil.which("xcodegen") is None:
+            print("--ios requires XcodeGen on PATH (`brew install xcodegen`).")
+            return 1
+
+        cert_p12_path = os.environ.get("IOS_SIGNING_CERTIFICATE_P12_PATH")
+        cert_p12_password = os.environ.get("IOS_SIGNING_CERTIFICATE_P12_PASSWORD", "")
+        provisioning_profile_path = os.environ.get("IOS_SIGNING_PROVISIONING_PROFILE_PATH")
+        team_id = os.environ.get("IOS_SIGNING_TEAM_ID")
+        if ios_release and not (cert_p12_path and provisioning_profile_path and team_id):
+            print(
+                "--ios-release requires IOS_SIGNING_CERTIFICATE_P12_PATH (and "
+                "_PASSWORD), IOS_SIGNING_PROVISIONING_PROFILE_PATH and IOS_SIGNING_TEAM_ID to "
+                "already be set in the environment -- without them there's no real Apple "
+                "distribution identity to sign with. Refusing rather than silently producing an "
+                "unsigned/simulator-only build."
+            )
+            return 1
+
+        # A scratch copy, mirroring _bundle_android's own build_root reasoning -- a repeat
+        # `mach bundle --ios` for a different game starts clean rather than reusing another
+        # game's staged Xcode project.
+        build_root = path.join(self.get_top_dir(), "target", "ios-bundle")
+        if path.exists(build_root):
+            delete(build_root)
+
+        ios_bundle_module_spec = importlib.util.spec_from_file_location(
+            "roves_ios_bundle", path.join(self.get_top_dir(), "support", "ios", "bundle.py")
+        )
+        assert ios_bundle_module_spec and ios_bundle_module_spec.loader
+        ios_bundle_module = importlib.util.module_from_spec(ios_bundle_module_spec)
+        ios_bundle_module_spec.loader.exec_module(ios_bundle_module)
+        ios_bundle_module.stage(
+            content_dir,
+            build_root,
+            app_name=ios_app_name or "Roves Game",
+            bundle_id=ios_bundle_id or "org.roves.game",
+        )
+
+        try:
+            with cd(build_root):
+                subprocess.check_call(["xcodegen", "generate", "--spec", "project.json"])
+        except subprocess.CalledProcessError as e:
+            print("xcodegen generate exited with return value %d" % e.returncode)
+            return e.returncode
+
+        if not ios_release:
+            try:
+                with cd(build_root):
+                    subprocess.check_call(
+                        [
+                            "xcodebuild",
+                            "-project",
+                            "RovesGame.xcodeproj",
+                            "-scheme",
+                            "RovesGame",
+                            "-configuration",
+                            "Debug",
+                            "-sdk",
+                            "iphonesimulator",
+                            "-derivedDataPath",
+                            "build",
+                            "CODE_SIGN_IDENTITY=",
+                            "CODE_SIGNING_REQUIRED=NO",
+                            "CODE_SIGNING_ALLOWED=NO",
+                            "build",
+                        ]
+                    )
+            except subprocess.CalledProcessError as e:
+                print("xcodebuild exited with return value %d" % e.returncode)
+                return e.returncode
+            app_path = path.join(build_root, "build", "Build", "Products", "Debug-iphonesimulator", "RovesGame.app")
+            shutil.copytree(app_path, path.join(output_dir, "RovesGame.app"))
+            print(f"Unsigned simulator bundle written to {output_dir}")
+            return None
+
+        return self._sign_and_export_ios_release(
+            build_root, output_dir, ios_bundle_id or "org.roves.game", cert_p12_path, cert_p12_password,
+            provisioning_profile_path, team_id,
+        )
+
+    def _sign_and_export_ios_release(
+        self,
+        build_root: str,
+        output_dir: str,
+        bundle_id: str,
+        cert_p12_path: str,
+        cert_p12_password: str,
+        provisioning_profile_path: str,
+        team_id: str,
+    ) -> int | None:
+        """The --ios-release half of `_bundle_ios`: imports the distribution identity into a
+        dedicated, ephemeral keychain (never the caller's login keychain -- CI has none, and
+        even locally this shouldn't touch it), installs the provisioning profile where Xcode
+        looks for it, then archives + exports a real, signed .ipa. Split out of `_bundle_ios`
+        only to keep that method's unsigned/signed branches each readable on their own.
+        """
+        keychain_path = path.join(build_root, "roves-ios-signing.keychain")
+        keychain_password = uuid.uuid4().hex
+        try:
+            subprocess.check_call(["security", "create-keychain", "-p", keychain_password, keychain_path])
+            subprocess.check_call(["security", "set-keychain-settings", "-lut", "3600", keychain_path])
+            subprocess.check_call(["security", "unlock-keychain", "-p", keychain_password, keychain_path])
+            subprocess.check_call(
+                [
+                    "security",
+                    "import",
+                    cert_p12_path,
+                    "-k",
+                    keychain_path,
+                    "-P",
+                    cert_p12_password,
+                    "-T",
+                    "/usr/bin/codesign",
+                    "-T",
+                    "/usr/bin/security",
+                ]
+            )
+            subprocess.check_call(
+                ["security", "set-key-partition-list", "-S", "apple-tool:,apple:", "-k", keychain_password, keychain_path]
+            )
+            existing_keychains = subprocess.check_output(
+                ["security", "list-keychains", "-d", "user"], encoding="utf8"
+            )
+            existing_keychain_paths = [line.strip().strip('"') for line in existing_keychains.splitlines() if line.strip()]
+            subprocess.check_call(["security", "list-keychains", "-d", "user", "-s", keychain_path, *existing_keychain_paths])
+
+            # `security cms -D` decodes the CMS signature Apple wraps every real provisioning
+            # profile in -- there is no other supported way to read one, and Xcode itself looks
+            # it up by this exact UUID filename under ~/Library/MobileDevice/Provisioning Profiles.
+            decoded_profile = subprocess.check_output(["security", "cms", "-D", "-i", provisioning_profile_path])
+            profile_uuid = plistlib.loads(decoded_profile)["UUID"]
+            profiles_dir = path.expanduser("~/Library/MobileDevice/Provisioning Profiles")
+            os.makedirs(profiles_dir, exist_ok=True)
+            shutil.copy(provisioning_profile_path, path.join(profiles_dir, f"{profile_uuid}.mobileprovision"))
+
+            archive_path = path.join(build_root, "RovesGame.xcarchive")
+            with cd(build_root):
+                subprocess.check_call(
+                    [
+                        "xcodebuild",
+                        "-project",
+                        "RovesGame.xcodeproj",
+                        "-scheme",
+                        "RovesGame",
+                        "-configuration",
+                        "Release",
+                        "-sdk",
+                        "iphoneos",
+                        "-archivePath",
+                        archive_path,
+                        f"DEVELOPMENT_TEAM={team_id}",
+                        "CODE_SIGN_STYLE=Manual",
+                        f"PROVISIONING_PROFILE_SPECIFIER={profile_uuid}",
+                        "archive",
+                    ]
+                )
+                export_options_path = path.join(build_root, "ExportOptions.plist")
+                with open(export_options_path, "wb") as export_options_file:
+                    plistlib.dump(
+                        {
+                            "method": "app-store",
+                            "teamID": team_id,
+                            "signingStyle": "manual",
+                            "provisioningProfiles": {bundle_id: profile_uuid},
+                        },
+                        export_options_file,
+                    )
+                subprocess.check_call(
+                    [
+                        "xcodebuild",
+                        "-exportArchive",
+                        "-archivePath",
+                        archive_path,
+                        "-exportOptionsPlist",
+                        export_options_path,
+                        "-exportPath",
+                        build_root,
+                    ]
+                )
+        except subprocess.CalledProcessError as e:
+            print("iOS release signing/export exited with return value %d" % e.returncode)
+            return e.returncode
+        finally:
+            subprocess.call(["security", "delete-keychain", keychain_path])
+
+        built_ipas = glob.glob(path.join(build_root, "*.ipa"))
+        if len(built_ipas) != 1:
+            print(f"Expected one exported .ipa, found {len(built_ipas)}.")
+            return 1
+        shutil.copy(built_ipas[0], path.join(output_dir, "RovesGame.ipa"))
+        print(f"Signed bundle written to {output_dir}")
         return None
 
     def _bundle_windows(

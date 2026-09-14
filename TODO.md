@@ -330,17 +330,41 @@ implementato nella stessa giornata.
 ## 8. Rifinire il pivot mobile a WebView nativo (Android/iOS)
 
 **Stato: motore fatto (2026-09-13) — vedi `CUSTOMIZATIONS.md`, voce "Mobile pivots from
-Servo to native WebView". Restano aperti, in ordine di priorità:**
+Servo to native WebView".**
 
-1. **Migrare `roves-action` e `roves-packmaster`/Packmaster al nuovo bundling Gradle-only** — vedi
-   i `TODO.md` di quei due repo. `roves-action` scaricava `roves_android_native_arm64.zip`/
-   `roves_android_project.zip` dalla release "test" del motore (che `android.yml` non
-   pubblica più); Packmaster's `android.rs` faceva il bootstrap NDK/Rust/JRE che non serve
-   più affatto — va riscritto per scaricare solo Java+Android SDK e lanciare Gradle.
-2. **Wire iOS staging into `mach bundle`** — `support/ios/bundle.py` è oggi uno script
-   standalone, non collegato a `post_build_commands.py`/`mach bundle --ios`. Servirebbe un
-   `is_ios(self.target)` branch analogo a `is_android`, e capire come/se firmare/costruire
-   automaticamente (richiede macOS+Xcode, non disponibile in questa sessione).
+**Aggiornamento 2026-09-14 — punti 1 e 2 chiusi:**
+
+1. **Migrare `roves-action` e `roves-packmaster`/Packmaster al nuovo bundling Gradle-only —
+   fatto**, verificato leggendo il codice attuale di entrambi i repo (non solo da questa
+   sessione: già così quando controllato). `roves-action`'s `android`/`ios` non scaricano più
+   `roves_android_native_arm64.zip`; Packmaster's `android.rs` non fa più bootstrap
+   NDK/Rust — solo JRE + Android SDK + Gradle, esattamente come descritto qui sopra.
+2. **Wire iOS staging into `mach bundle` — fatto (2026-09-14).** `_bundle_ios`/
+   `_sign_and_export_ios_release` in `post_build_commands.py`: `--ios`/`--ios-app-name`/
+   `--ios-bundle-id`/`--ios-release` reali, con firma via `IOS_SIGNING_CERTIFICATE_P12_PATH`/
+   `_PASSWORD`/`IOS_SIGNING_PROVISIONING_PROFILE_PATH`/`IOS_SIGNING_TEAM_ID` (stesso schema
+   "env var in, rifiuta se mancano" di `--android-release`). Vedi `CUSTOMIZATIONS.md`, voce
+   "Wire `--ios`/`--ios-release` into `mach bundle`", per il dettaglio completo — incluso
+   **perché** la firma Android e quella iOS non sono simmetriche (keystore autofirmata vs.
+   certificato che solo Apple può controfirmare). Stessa giornata: `roves-action` ha guadagnato
+   `android-release`/`android-keystore-*` e `ios-release`/`ios-certificate-*`/
+   `ios-provisioning-profile-*`/`ios-team-id`; Roves Packmaster ha guadagnato un'intera sezione
+   iOS (`ios.rs`/`ios_signing.rs` + UI in `configure.tsx`), parallela a quella Android già
+   esistente (la firma Android in Packmaster era **già completa** prima di questa sessione —
+   trovata leggendo `configure.tsx`, non mancante come una prima ricognizione superficiale
+   aveva sospettato).
+   **Non verificato end-to-end su una build reale**: nessun toolchain Rust funzionante su
+   questa macchina Windows (linker mancante, vedi i gap di toolchain già noti altrove in
+   questo file) per un `cargo check` di Packmaster, e nessun macOS/Xcode per eseguire
+   `xcodebuild` per davvero da nessuna parte in questa sessione. Verificato staticamente
+   (rilettura riga per riga, un test Python isolato per `_bundle_ios`/
+   `_sign_and_export_ios_release` con `subprocess`/`security`/`xcodebuild` mockati, `tsc`/
+   Biome puliti per il lato TypeScript di Packmaster) — la vera verifica resta la CI reale
+   (`ios.yml`/`android.yml` del motore, `test.yml` di Packmaster) più, alla fine, qualcuno con
+   un Mac reale che prova davvero `--ios-release`/il tab iOS di Packmaster. La firma iOS
+   *release* end-to-end resta non verificabile del tutto finché non arriva un certificato
+   Apple Distribution + provisioning profile reali (richiede un account Apple Developer
+   Program reale — generata una CSR a questo scopo, consegnata fuori banda, non committata).
 3. **Verifica su dispositivo reale, entrambe le piattaforme** — **Android: fatta (2026-09-14)**,
    su un dispositivo reale (Pixel 8 Pro) con un APK reale (`pixi-vn-react-template` via
    `roves-action`). Ha trovato e corretto bug reali, non solo confermato che "funzionava":
