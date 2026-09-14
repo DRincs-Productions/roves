@@ -6278,3 +6278,66 @@ this explicitly rather than silently leaving it: whether `roves-action` should g
 `ios: 'true'` input (and, if so, whether it should shell out to `support/ios/bundle.py` +
 XcodeGen the way this workflow does, since there's still no `mach bundle --ios`) is a real
 follow-up, not done as part of this change.
+
+---
+
+## 2026-09-14 — Android: the actual "Not Found" root cause (loading `/index.html`, not `/`)
+
+**Files:** `support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt`,
+`support/MOBILE.md`.
+
+**Patch:** `patches/servo-v0.5.0/0016-mobile-native-webviews.patch` (regenerated again).
+
+**Why:** the 2026-09-14 entry above ("First real-device pass...") fixed two real bugs but
+*didn't actually fix the reported "Not Found" screen* — confirmed by testing the rebuilt APK
+on the same real device again. Diagnosed properly this time via the device's own Chrome
+DevTools remote inspection (`chrome://inspect`, reachable since debug APKs already enable
+`setWebContentsDebuggingEnabled`): the real game's JS console showed no native/Android-side
+error at all. The actual cause was entirely different from anything in that earlier entry.
+
+**The real bug:** `onCreate` called `webView.loadUrl("https://appassets.androidplatform.net/
+index.html")` — the literal `/index.html` path, not the bare origin root `/`. This makes
+`location.pathname` equal `/index.html` on boot, which a client-side router (react-router,
+matching against `/` as its home route — confirmed against the real smoke-test content,
+`pixi-vn-react-template`) doesn't recognize, rendering *the game's own* "Not Found" 404 route.
+This was never a native asset-loading bug at all — downloading and unzipping the actual built
+APK (`roves-action`'s `roves_action_android_debug.apk`) confirmed `assets/www/index.html`
+was correctly present with real content the whole time; `AssetsPathHandler` was finding it
+fine. iOS's `App.swift` was never affected by this — it already loads the bare
+`game://content/` (no `/index.html`), which is exactly why this session's earlier assumption
+("iOS probably has the same bug") turned out not to hold once its code was actually re-checked
+line by line against this specific failure mode. Fixed by loading
+`https://appassets.androidplatform.net/` instead, mirroring `App.swift`.
+
+**A second, related bug found while fixing the first:** the previous entry's SPA-fallback
+addition (`assets.handle(...) ?: assets.handle("www/index.html")`) was dead code.
+`WebViewAssetLoader.AssetsPathHandler.handle()` does **not** return `null` on a missing asset
+— confirmed by reading the real `androidx.webkit` source (`WebViewAssetLoader.java`,
+`androidx-main` branch): on an `IOException` it returns a *non-null* `WebResourceResponse`
+with `mimeType`/`encoding`/`data` all `null`, not `null` itself. A `?:` Elvis fallback keyed on
+that call therefore never triggers — the left side is never null. Same issue affected
+`shouldInterceptRequest`'s own `response == null` check for constructing the real 404: since
+`WebViewAssetLoader.shouldInterceptRequest(Uri)` itself only returns `null` when *no handler
+matched at all* (impossible here, our own handler matches every path under `/`), that branch
+was equally unreachable. Both now check `response?.data == null` instead — the actual signal
+for "even the fallback failed to open a real file" — verified against the real
+`PathMatcher`/`WebViewAssetLoader` source, not assumed.
+
+**A third bug, found the same way while re-reading this file end to end:** the page's own
+service worker (`registerSW.js`, from `vite-plugin-pwa` in the smoke-test content) failed to
+register — visible directly in the DevTools console as `Failed to register a ServiceWorker
+for scope (...): An unknown error occurred when fetching the script`. Android WebView routes
+a service worker's own network requests through a **separate** interception hook
+(`androidx.webkit.ServiceWorkerControllerCompat`/`ServiceWorkerClientCompat`), distinct from
+`WebViewClient.shouldInterceptRequest` — without it, `sw.js`'s own fetch fell through to the
+real network, which fails outright since `appassets.androidplatform.net` isn't a real,
+resolvable domain. Fixed by registering a `ServiceWorkerClientCompat` (feature-checked via
+`WebViewFeature.isFeatureSupported`, since not every WebView provider implements this) that
+shares the exact same interception logic as the main `WebViewClient`, factored into one local
+`intercept(url)` function used by both.
+
+**Lesson, for real this time:** two rounds of "fix confirmed via CI green + code review" both
+missed the actual bug, because CI never runs the APK, and the real per-symptom cause (a
+client-side router mismatch) doesn't look like an Android/WebView problem from source reading
+alone. Real-device DevTools inspection is what actually found it, in a few minutes, after
+static analysis alone hadn't. `support/MOBILE.md` updated to describe the corrected boot URL.

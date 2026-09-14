@@ -2,6 +2,7 @@ package org.servo.servoshell
 
 import android.app.Activity
 import android.graphics.Color
+import android.net.Uri
 import android.os.Bundle
 import android.os.SystemClock
 import android.view.View
@@ -11,7 +12,10 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
+import androidx.webkit.ServiceWorkerClientCompat
+import androidx.webkit.ServiceWorkerControllerCompat
 import androidx.webkit.WebViewAssetLoader
+import androidx.webkit.WebViewFeature
 
 /** The game runs on Android's system WebView; no Servo or JNI library is loaded. */
 class MainActivity : Activity() {
@@ -48,8 +52,37 @@ class MainActivity : Activity() {
             // fallback mirrors iOS's GameSchemeHandler/desktop's game.rs: a client-side
             // router navigating to a path with no matching asset (e.g. /level/3) still gets
             // index.html, letting the router itself decide what to render, instead of a 404.
-            .addPathHandler("/") { path -> assets.handle("www/$path") ?: assets.handle("www/index.html") }
+            //
+            // AssetsPathHandler.handle() never actually returns null on a missing asset --
+            // confirmed by reading its real implementation (androidx.webkit source): on an
+            // IOException it returns a *non-null* WebResourceResponse with mimeType/encoding/
+            // data all null, not null itself. A plain `?:` Elvis fallback on that call is
+            // therefore dead code (the left side is never null), so this checks the actual
+            // `data` stream instead -- the same signal shouldInterceptRequest below uses to
+            // decide whether a request truly failed.
+            .addPathHandler("/") { path ->
+                val primary = assets.handle("www/$path")
+                if (primary.data != null) primary else assets.handle("www/index.html")
+            }
             .build()
+
+        // Shared by the WebViewClient below and, further down, the ServiceWorkerClientCompat --
+        // a page's own service worker script/fetches are a *separate* request pipeline from the
+        // main document/subresource one WebViewClient.shouldInterceptRequest covers, and need
+        // their own interception hook to see this same local content instead of hitting the
+        // real network (which fails outright, since appassets.androidplatform.net isn't a real,
+        // resolvable domain) -- confirmed via real-device Chrome DevTools remote inspection:
+        // vite-plugin-pwa's registerSW.js failed with "An unknown error occurred when fetching
+        // the script" for sw.js before this existed.
+        fun intercept(url: Uri): WebResourceResponse? {
+            val response = loader.shouldInterceptRequest(url)
+            if (url.host == WebViewAssetLoader.DEFAULT_DOMAIN && response?.data == null) {
+                val body = "Not Found".byteInputStream(Charsets.UTF_8)
+                return WebResourceResponse("text/plain", "UTF-8", 404, "Not Found", emptyMap(), body)
+            }
+            return response
+        }
+
         webView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
@@ -82,21 +115,24 @@ class MainActivity : Activity() {
                 })
             }
 
-            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
-                val response = loader.shouldInterceptRequest(request.url)
-                if (request.url.host == WebViewAssetLoader.DEFAULT_DOMAIN && response == null) {
-                    // Only reachable once index.html itself is missing (the SPA fallback above
-                    // already covers any other missing path) -- a real 404 body, not a null
-                    // stream, matching iOS's GameSchemeHandler.respond (App.swift), which passes
-                    // Data("Not Found".utf8) rather than an empty body for the same case.
-                    val body = "Not Found".byteInputStream(Charsets.UTF_8)
-                    return WebResourceResponse("text/plain", "UTF-8", 404, "Not Found", emptyMap(), body)
-                }
-                return response
-            }
+            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
+                intercept(request.url)
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 return request.url.scheme !in listOf("https", "http")
             }
+        }
+
+        // Feature-checked because not every WebView provider/version implements service worker
+        // interception (older WebView releases, some OEM forks) -- skipping it there just means
+        // a service worker (if the game registers one at all) falls back to the real network,
+        // same as before this existed, rather than crashing on an unsupported API call.
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.SERVICE_WORKER_BASIC_USAGE) &&
+            WebViewFeature.isFeatureSupported(WebViewFeature.SERVICE_WORKER_SHOULD_INTERCEPT_REQUEST)
+        ) {
+            ServiceWorkerControllerCompat.getInstance().setServiceWorkerClient(object : ServiceWorkerClientCompat() {
+                override fun shouldInterceptRequest(request: WebResourceRequest): WebResourceResponse? =
+                    intercept(request.url)
+            })
         }
         webView.webChromeClient = object : WebChromeClient() {
             override fun onShowCustomView(view: View, callback: CustomViewCallback) {
@@ -114,7 +150,14 @@ class MainActivity : Activity() {
             override fun onHideCustomView() = leaveFullscreen()
         }
         if (savedInstanceState == null || webView.restoreState(savedInstanceState) == null) {
-            webView.loadUrl("https://appassets.androidplatform.net/index.html")
+            // The bare origin root, not "/index.html" -- confirmed via a real device's Chrome
+            // DevTools remote inspection to be the actual root cause of a "Not Found" screen
+            // seen on real hardware: loading "/index.html" gives location.pathname that exact
+            // value, which a client-side router (expecting "/" as its home route) doesn't
+            // match, rendering the *game's own* "Not Found" page -- nothing to do with this
+            // engine's asset loading, which was already serving files correctly. Mirrors
+            // App.swift's identical `game://content/` (no "/index.html") for the same reason.
+            webView.loadUrl("https://appassets.androidplatform.net/")
         }
     }
 

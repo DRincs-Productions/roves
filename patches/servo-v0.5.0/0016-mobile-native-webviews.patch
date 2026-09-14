@@ -1468,10 +1468,10 @@ index 2f513955f..761557c62 100644
      @CommandBase.common_command_arguments(binary_selection=True, build_type=True, coverage_report=True)
 diff --git a/support/MOBILE.md b/support/MOBILE.md
 new file mode 100644
-index 000000000..696accbb5
+index 000000000..04ff85fdc
 --- /dev/null
 +++ b/support/MOBILE.md
-@@ -0,0 +1,101 @@
+@@ -0,0 +1,112 @@
 +# Mobile packaging
 +
 +## Android startup branding
@@ -1483,9 +1483,13 @@ index 000000000..696accbb5
 +loading and WebView confirms a drawable visual state. Redirects invalidate stale
 +completion callbacks; later navigation does not replay the startup splash.
 +This indicates document readiness, not completion of asynchronous game asset loading.
-+Android 12+ uses a black, Roves-branded system splash.
-+Device validation remains pending: cold/warm launch, slow content, redirects,
-+missing index.html, rotation and fullscreen. Local Java cannot currently launch Gradle.
++Android 12+ uses a black, Roves-branded system splash. The app always runs
++edge-to-edge: the status and navigation bars are hidden from first frame
++(confirmed on a real device), not just during `<video>`/Fullscreen API
++content, and reappear only for a temporary edge swipe before auto-hiding
++again. Device validation remains pending: cold/warm launch, slow content,
++redirects, missing index.html and rotation. Local Java cannot currently
++launch Gradle.
 +
 +Desktop continues to use Servo. Android uses the system Android WebView; iOS
 +uses Apple's WKWebView. Neither mobile container loads Servo, JNI or GStreamer.
@@ -1514,10 +1518,12 @@ index 000000000..696accbb5
 +
 +The local origin is `https://appassets.androidplatform.net/`: relative and
 +root-relative asset URLs, JavaScript modules, fetch and browser storage use this
-+origin. Missing local files return 404 instead of accessing the network.
-+Storage persists across app launches. Debug APKs enable WebView debugging;
-+release APKs do not. Video fullscreen, back navigation and lifecycle are handled
-+by the container.
++origin. A path with no matching file falls back to `index.html` (the same
++SPA-fallback behavior as iOS and desktop's own `game://`, see below); only a
++missing `index.html` itself 404s, with a real "Not Found" body instead of an
++empty one. Storage persists across app launches. Debug APKs enable WebView
++debugging; release APKs do not. Video fullscreen, back navigation and
++lifecycle are handled by the container.
 +
 +## iOS
 +
@@ -1554,7 +1560,12 @@ index 000000000..696accbb5
 +bar (`RovesSplashView` in App.swift) covers the initial load, removed once the
 +WKWebView navigation delegate reports the document finished (with the same
 +500ms floor as Android's splash) — the iOS equivalent of Android's startup
-+branding above. Validate your game's module loading and storage behavior on
++branding above. The app always runs edge-to-edge: the status bar and, on
++Face ID devices, the home indicator are hidden (`GameViewController`'s
++`prefersStatusBarHidden`/`prefersHomeIndicatorAutoHidden`) — not yet
++confirmed on a physical device or simulator, only reasoned from the API
++contract (no macOS/Xcode available where this was written; re-verify before
++relying on it). Validate your game's module loading and storage behavior on
 +the target iOS version before release; device runtime checks (seeking,
 +splash timing, storage persistence) remain pending, same caveat as Android.
 +
@@ -1759,10 +1770,10 @@ index 0d75b9613..80abf0129 100644
      </application>
  
 diff --git a/support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt b/support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt
-index 1f95d4c5b..3a195d908 100644
+index 1f95d4c5b..6f7e33dae 100644
 --- a/support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt
 +++ b/support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt
-@@ -1,410 +1,172 @@
+@@ -1,410 +1,215 @@
 -/*
 - * This Source Code Form is subject to the terms of the Mozilla Public
 - * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -1775,6 +1786,7 @@ index 1f95d4c5b..3a195d908 100644
 -import android.content.SharedPreferences
 +import android.app.Activity
 +import android.graphics.Color
++import android.net.Uri
  import android.os.Bundle
 -import android.system.ErrnoException
 -import android.system.Os
@@ -1842,7 +1854,10 @@ index 1f95d4c5b..3a195d908 100644
 +import android.webkit.WebView
 +import android.webkit.WebViewClient
 +import android.widget.FrameLayout
++import androidx.webkit.ServiceWorkerClientCompat
++import androidx.webkit.ServiceWorkerControllerCompat
 +import androidx.webkit.WebViewAssetLoader
++import androidx.webkit.WebViewFeature
 +
 +/** The game runs on Android's system WebView; no Servo or JNI library is loaded. */
 +class MainActivity : Activity() {
@@ -1879,8 +1894,44 @@ index 1f95d4c5b..3a195d908 100644
 +            // fallback mirrors iOS's GameSchemeHandler/desktop's game.rs: a client-side
 +            // router navigating to a path with no matching asset (e.g. /level/3) still gets
 +            // index.html, letting the router itself decide what to render, instead of a 404.
-+            .addPathHandler("/") { path -> assets.handle("www/$path") ?: assets.handle("www/index.html") }
++            //
++            // AssetsPathHandler.handle() never actually returns null on a missing asset --
++            // confirmed by reading its real implementation (androidx.webkit source): on an
++            // IOException it returns a *non-null* WebResourceResponse with mimeType/encoding/
++            // data all null, not null itself. A plain `?:` Elvis fallback on that call is
++            // therefore dead code (the left side is never null), so this checks the actual
++            // `data` stream instead -- the same signal shouldInterceptRequest below uses to
++            // decide whether a request truly failed.
++            .addPathHandler("/") { path ->
++                val primary = assets.handle("www/$path")
++                if (primary.data != null) primary else assets.handle("www/index.html")
++            }
 +            .build()
+ 
+-        servoView = ServoView(this)
+-
+-        historyManager = HistoryManager(this)
+-
+-        updateSettingsIfNecessary(true)
++        // Shared by the WebViewClient below and, further down, the ServiceWorkerClientCompat --
++        // a page's own service worker script/fetches are a *separate* request pipeline from the
++        // main document/subresource one WebViewClient.shouldInterceptRequest covers, and need
++        // their own interception hook to see this same local content instead of hitting the
++        // real network (which fails outright, since appassets.androidplatform.net isn't a real,
++        // resolvable domain) -- confirmed via real-device Chrome DevTools remote inspection:
++        // vite-plugin-pwa's registerSW.js failed with "An unknown error occurred when fetching
++        // the script" for sw.js before this existed.
++        fun intercept(url: Uri): WebResourceResponse? {
++            val response = loader.shouldInterceptRequest(url)
++            if (url.host == WebViewAssetLoader.DEFAULT_DOMAIN && response?.data == null) {
++                val body = "Not Found".byteInputStream(Charsets.UTF_8)
++                return WebResourceResponse("text/plain", "UTF-8", 404, "Not Found", emptyMap(), body)
++            }
++            return response
++        }
+ 
+-        setContent {
+-            val isWindowWidthAtLeastMedium = currentWindowAdaptiveInfo().windowSizeClass.isWidthAtLeastBreakpoint(WindowSizeClass.WIDTH_DP_MEDIUM_LOWER_BOUND)
 +        webView.settings.apply {
 +            javaScriptEnabled = true
 +            domStorageEnabled = true
@@ -1896,15 +1947,6 @@ index 1f95d4c5b..3a195d908 100644
 +                startupNavigation++
 +            }
  
--        servoView = ServoView(this)
--
--        historyManager = HistoryManager(this)
--
--        updateSettingsIfNecessary(true)
--
--        setContent {
--            val isWindowWidthAtLeastMedium = currentWindowAdaptiveInfo().windowSizeClass.isWidthAtLeastBreakpoint(WindowSizeClass.WIDTH_DP_MEDIUM_LOWER_BOUND)
--
 -            Scaffold(
 -                topBar = {
 -                    Row(
@@ -2018,26 +2060,11 @@ index 1f95d4c5b..3a195d908 100644
 -                )
 -                BackHandler(enabled = canGoBackState.value) {
 -                    servoView.goBack()
+-                }
 +                })
-+            }
-+
-+            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
-+                val response = loader.shouldInterceptRequest(request.url)
-+                if (request.url.host == WebViewAssetLoader.DEFAULT_DOMAIN && response == null) {
-+                    // Only reachable once index.html itself is missing (the SPA fallback above
-+                    // already covers any other missing path) -- a real 404 body, not a null
-+                    // stream, matching iOS's GameSchemeHandler.respond (App.swift), which passes
-+                    // Data("Not Found".utf8) rather than an empty body for the same case.
-+                    val body = "Not Found".byteInputStream(Charsets.UTF_8)
-+                    return WebResourceResponse("text/plain", "UTF-8", 404, "Not Found", emptyMap(), body)
-                 }
-+                return response
-+            }
-+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-+                return request.url.scheme !in listOf("https", "http")
              }
-         }
--
+-        }
+ 
 -        servoView.setClient(this)
 -        servoView.requestFocus()
 -
@@ -2047,6 +2074,32 @@ index 1f95d4c5b..3a195d908 100644
 -            Os.setenv("HOST_FILE", host, false)
 -        } catch (e: ErrnoException) {
 -            e.printStackTrace()
++            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
++                intercept(request.url)
++            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
++                return request.url.scheme !in listOf("https", "http")
++            }
+         }
+ 
+-        val intent = getIntent()
+-        val args = intent.getStringExtra("servoargs")
+-        val log = intent.getStringExtra("servolog")
+-        servoView.setServoArgs(args, log, settings.experimental)
+-
+-        if (Intent.ACTION_VIEW == intent.action) {
+-            servoView.loadUri(intent.data.toString())
++        // Feature-checked because not every WebView provider/version implements service worker
++        // interception (older WebView releases, some OEM forks) -- skipping it there just means
++        // a service worker (if the game registers one at all) falls back to the real network,
++        // same as before this existed, rather than crashing on an unsupported API call.
++        if (WebViewFeature.isFeatureSupported(WebViewFeature.SERVICE_WORKER_BASIC_USAGE) &&
++            WebViewFeature.isFeatureSupported(WebViewFeature.SERVICE_WORKER_SHOULD_INTERCEPT_REQUEST)
++        ) {
++            ServiceWorkerControllerCompat.getInstance().setServiceWorkerClient(object : ServiceWorkerClientCompat() {
++                override fun shouldInterceptRequest(request: WebResourceRequest): WebResourceResponse? =
++                    intercept(request.url)
++            })
++        }
 +        webView.webChromeClient = object : WebChromeClient() {
 +            override fun onShowCustomView(view: View, callback: CustomViewCallback) {
 +                if (fullscreenView != null) {
@@ -2061,25 +2114,24 @@ index 1f95d4c5b..3a195d908 100644
 +                enterImmersiveMode()
 +            }
 +            override fun onHideCustomView() = leaveFullscreen()
-         }
--
--        val intent = getIntent()
--        val args = intent.getStringExtra("servoargs")
--        val log = intent.getStringExtra("servolog")
--        servoView.setServoArgs(args, log, settings.experimental)
--
--        if (Intent.ACTION_VIEW == intent.action) {
--            servoView.loadUri(intent.data.toString())
++        }
 +        if (savedInstanceState == null || webView.restoreState(savedInstanceState) == null) {
-+            webView.loadUrl("https://appassets.androidplatform.net/index.html")
++            // The bare origin root, not "/index.html" -- confirmed via a real device's Chrome
++            // DevTools remote inspection to be the actual root cause of a "Not Found" screen
++            // seen on real hardware: loading "/index.html" gives location.pathname that exact
++            // value, which a client-side router (expecting "/" as its home route) doesn't
++            // match, rendering the *game's own* "Not Found" page -- nothing to do with this
++            // engine's asset loading, which was already serving files correctly. Mirrors
++            // App.swift's identical `game://content/` (no "/index.html") for the same reason.
++            webView.loadUrl("https://appassets.androidplatform.net/")
          }
-     }
- 
+-    }
+-
 -    override fun onDestroy() {
 -        super.onDestroy()
 -        mediaSession?.hideMediaSessionControls()
--    }
--
+     }
+ 
      /**
 -     * We’re unsetting all the loading UI just in case loading got stuck, and we’re
 -     * navigating to a cached page, which doesn’t trigger [onLoadEnded]. The "stop
@@ -2096,24 +2148,6 @@ index 1f95d4c5b..3a195d908 100644
       */
 -    private fun onHistoryItemClicked() {
 -        onLoadEnded()
--    }
--
--    private fun onHistoryBackMenuItemClicked() {
--        onHistoryItemClicked()
--        servoView.goBack()
--    }
--
--    private fun onHistoryForwardMenuItemClicked() {
--        onHistoryItemClicked()
--        servoView.goForward()
--    }
--
--    private fun onRefreshMenuItemClicked() {
--        servoView.reload()
--    }
--
--    private fun onCancelMenuItemClicked() {
--        servoView.stop()
 +    private fun enterImmersiveMode() {
 +        window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
 +            View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
@@ -2121,15 +2155,17 @@ index 1f95d4c5b..3a195d908 100644
 +            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
      }
  
--    private fun onSettingsMenuItemClicked() {
--        startActivity(Intent(this, SettingsActivity::class.java))
+-    private fun onHistoryBackMenuItemClicked() {
+-        onHistoryItemClicked()
+-        servoView.goBack()
 +    override fun onWindowFocusChanged(hasFocus: Boolean) {
 +        super.onWindowFocusChanged(hasFocus)
 +        if (hasFocus) enterImmersiveMode()
      }
  
--    private fun onHistoryMenuItemClicked() {
--        startActivityForResult(Intent(this, HistoryActivity::class.java), HISTORY_REQUEST_CODE)
+-    private fun onHistoryForwardMenuItemClicked() {
+-        onHistoryItemClicked()
+-        servoView.goForward()
 +    private fun leaveFullscreen() {
 +        fullscreenView?.let { container.removeView(it) }
 +        fullscreenView = null
@@ -2139,8 +2175,8 @@ index 1f95d4c5b..3a195d908 100644
 +        fullscreenCallback = null
      }
  
--    private fun loadUrl(search: String) {
--        servoView.loadUri(search.trim { it <= ' ' })
+-    private fun onRefreshMenuItemClicked() {
+-        servoView.reload()
 +    @Deprecated("Activity back navigation")
 +    override fun onBackPressed() {
 +        if (fullscreenView != null) leaveFullscreen()
@@ -2148,12 +2184,28 @@ index 1f95d4c5b..3a195d908 100644
 +        else super.onBackPressed()
      }
  
--    override fun onImeShow() {
--        getSystemService<InputMethodManager>()?.showSoftInput(servoView, InputMethodManager.SHOW_IMPLICIT)
+-    private fun onCancelMenuItemClicked() {
+-        servoView.stop()
 +    override fun onSaveInstanceState(outState: Bundle) {
 +        webView.saveState(outState)
 +        super.onSaveInstanceState(outState)
      }
+-
+-    private fun onSettingsMenuItemClicked() {
+-        startActivity(Intent(this, SettingsActivity::class.java))
+-    }
+-
+-    private fun onHistoryMenuItemClicked() {
+-        startActivityForResult(Intent(this, HistoryActivity::class.java), HISTORY_REQUEST_CODE)
+-    }
+-
+-    private fun loadUrl(search: String) {
+-        servoView.loadUri(search.trim { it <= ' ' })
+-    }
+-
+-    override fun onImeShow() {
+-        getSystemService<InputMethodManager>()?.showSoftInput(servoView, InputMethodManager.SHOW_IMPLICIT)
+-    }
 -
 -    override fun onImeHide() {
 -        getSystemService<InputMethodManager>()?.hideSoftInputFromWindow(servoView.windowToken, InputMethodManager.SHOW_IMPLICIT)

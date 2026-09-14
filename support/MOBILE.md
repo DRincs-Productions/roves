@@ -14,8 +14,7 @@ edge-to-edge: the status and navigation bars are hidden from first frame
 (confirmed on a real device), not just during `<video>`/Fullscreen API
 content, and reappear only for a temporary edge swipe before auto-hiding
 again. Device validation remains pending: cold/warm launch, slow content,
-redirects, missing index.html and rotation. Local Java cannot currently
-launch Gradle.
+redirects and rotation. Local Java cannot currently launch Gradle.
 
 Desktop continues to use Servo. Android uses the system Android WebView; iOS
 uses Apple's WKWebView. Neither mobile container loads Servo, JNI or GStreamer.
@@ -42,14 +41,22 @@ For Android Studio or direct Gradle builds, put the game in
 The APK is in `servoapp/build/outputs/apk/`. Variant architecture names remain
 for compatibility; the WebView app itself has no architecture-specific binaries.
 
-The local origin is `https://appassets.androidplatform.net/`: relative and
-root-relative asset URLs, JavaScript modules, fetch and browser storage use this
-origin. A path with no matching file falls back to `index.html` (the same
-SPA-fallback behavior as iOS and desktop's own `game://`, see below); only a
-missing `index.html` itself 404s, with a real "Not Found" body instead of an
-empty one. Storage persists across app launches. Debug APKs enable WebView
-debugging; release APKs do not. Video fullscreen, back navigation and
-lifecycle are handled by the container.
+The local origin is `https://appassets.androidplatform.net/` — the bare root,
+not `/index.html`: `location.pathname` is `/` at boot, so a client-side
+history router's root route matches, the same reasoning as iOS's
+`game://content/` below. Loading `/index.html` directly instead was a real,
+confirmed bug (a device-tested "Not Found" screen, actually the game's own
+router rendering its 404 route because `/index.html` matched nothing) — fixed
+2026-09-14, see CUSTOMIZATIONS.md. A path with no matching file falls back to
+`index.html` (the same SPA-fallback behavior as iOS and desktop's own
+`game://`, see below); only a missing `index.html` itself 404s, with a real
+"Not Found" body instead of an empty one. A page's own service worker is
+supported too (`ServiceWorkerControllerCompat`, separate from the main
+request path) — without it, `navigator.serviceWorker.register()` fails
+outright since this origin doesn't resolve on the real network. Storage
+persists across app launches. Debug APKs enable WebView debugging; release
+APKs do not. Video fullscreen, back navigation and lifecycle are handled by
+the container.
 
 ## iOS
 
@@ -99,11 +106,12 @@ splash timing, storage persistence) remain pending, same caveat as Android.
 
 Servo-specific extensions (including native Roves save APIs) are not
 implemented by these containers. Games should use standard web APIs or a
-platform bridge provided separately. Android and iOS builds in external
-projects such as Packmaster and roves-action need their own migration to this
-same WebView-only approach — see those repos' own CLAUDE.md/CUSTOMIZATIONS.md
-for whether that's already been done by the time you're reading this. The
-Android workflow no longer produces Servo native-library downloads.
+platform bridge provided separately. Packmaster's Android backend and
+roves-action's `android`/`ios` inputs already build against this same
+WebView-only approach (see those repos' own CLAUDE.md/CUSTOMIZATIONS.md for
+current detail) — Packmaster has no iOS packaging (GUI or otherwise) yet,
+Android only. The Android workflow no longer produces Servo native-library
+downloads.
 
 Python staging and packaging checks can run on Linux. Actual Android compilation
 requires a working JDK/SDK and dependency downloads; iOS compilation and runtime
