@@ -6392,3 +6392,71 @@ last regenerated, in the same session, without anyone re-running the regeneratio
 time. The full byte-for-byte diff-against-working-tree check (not just a clean `patch` exit
 code) is what caught this, and should be treated as the actual bar for "done," not the dry-run
 alone.
+
+---
+
+## 2026-09-14 — Save import/export (`<input type="file">`/`<a download>`) didn't work in either mobile container
+
+**Files:** `support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt`,
+`support/ios/App.swift`.
+
+**Patch:** `patches/servo-v0.5.0/0016-mobile-native-webviews.patch` (regenerated).
+
+**Why:** reported directly from a real device — a game's save-menu import/export buttons
+(`<input type="file">` to load a save, `<a download>` on a Blob/data URL to export one) did
+nothing at all on Android. Neither is a permissions problem (no manifest permission was ever
+missing) — both `WebView` and `WKWebView` simply have **no default handling** for either of
+these, unlike a real browser tab; a native container has to wire up the equivalent itself.
+
+**Android:**
+- **Import** needed `WebChromeClient.onShowFileChooser` — without it, `<input type="file">`'s
+  `.click()` shows no picker at all. Implemented via the classic `startActivityForResult`/
+  `onActivityResult` pair (`MainActivity` extends plain `Activity`, not AndroidX
+  `ComponentActivity`, so the modern Activity Result API isn't available here without a larger
+  refactor) plus `WebChromeClient.FileChooserParams.createIntent()`/`.parseResult()`.
+- **Export** needed `WebView.setDownloadListener` — without it, an `<a download>` click on a
+  `blob:`/`data:` URL is silently dropped. `blob:` URLs are only valid inside the page's own JS
+  context, so the listener injects a small `evaluateJavascript` snippet (`fetch` the blob,
+  `FileReader.readAsDataURL` it) that hands the result to a new `@JavascriptInterface` bridge
+  (`RovesFileBridge`) rather than trying to resolve the blob: URL as a real network request.
+  `data:` URLs are decoded directly, no JS round-trip needed. A real http(s) download (not a
+  save export) falls back to the system `DownloadManager`.
+- **Where files land:** `Documents/<this app's own launcher label>/<fileName>`, via the
+  `MediaStore` `Files`/`Documents` collection (`RELATIVE_PATH`), not raw external storage —
+  needs no `WRITE_EXTERNAL_STORAGE` permission at all on API 29+ (this app's own `minSdk`).
+  Real, player-visible location (Files app, USB/MTP), not an app-private directory.
+
+**iOS:** the equivalent gaps, adapted to WKWebView's own constraints:
+- **Export** — WKWebView has no `DownloadListener` equivalent that fires for a JS-triggered
+  `<a download>` click on a blob:/data: URL at all (`WKNavigationDelegate`'s
+  `decidePolicyFor navigationResponse`/`WKDownloadDelegate` only cover a real top-level
+  navigation to a downloadable response, never this case). Fixed with the same shape of
+  workaround as Android's blob handling, adapted: a `WKUserScript` injected at document-start
+  intercepts `click` events on `a[download]` elements whose `href` is `blob:`/`data:`,
+  prevents the default action, converts a blob to a data URL the same way (`fetch` +
+  `FileReader.readAsDataURL`), and posts it to a `WKScriptMessageHandler` (`rovesSaveFile`)
+  that decodes and writes it into this app's own `Documents/` — already private per-app on
+  iOS, so (unlike Android) there's no shared collection to disambiguate between apps and
+  therefore no per-game subfolder to create.
+- **Import — real gap, only partially closed:** `WKUIDelegate`'s
+  `webView(_:runOpenPanelWith:initiatedByFrame:completionHandler:)` is the only hook for
+  `<input type="file">` in WKWebView, backed by `UIDocumentPickerViewController`. **Confirmed
+  directly against Apple's own documentation (platform availability table, not assumed): this
+  method only exists starting iOS/iPadOS 18.4** — file input support in WKWebView is a
+  genuinely recent WebKit addition; it existed on macOS since 10.12 but never on iOS until
+  18.4. This project's own deployment target is iOS 15.0 (`support/ios/bundle.py`), well
+  below that. Implemented and gated behind `@available(iOS 18.4, *)` rather than skipped
+  entirely or used to justify raising the deployment target: on iOS 15.0–18.3 a file
+  `<input>` stays exactly as inert as it already was (no regression), and starts working the
+  moment the OS itself does, with zero code changes needed once real-world adoption of
+  18.4+ is high enough not to matter. First version of this fix declared the method
+  unguarded, assuming (wrongly, from memory, not verified) that iOS 14.5 added it — caught
+  before committing by actually checking Apple's documentation JSON directly, given the
+  previous two entries' own lesson about not trusting unverified recall for exact platform
+  API contracts.
+
+**Not verified on a real device or simulator, either platform** — Android's specific fix here
+follows the same real-device-report pattern the previous two entries did, but the fix itself
+hasn't been re-confirmed working yet (no device access from this session after the report was
+filed); iOS has never been runtime-tested at all this session (no macOS/Xcode). Both should be
+re-checked before being treated as settled.

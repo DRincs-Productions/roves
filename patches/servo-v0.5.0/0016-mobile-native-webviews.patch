@@ -1468,10 +1468,10 @@ index 2f513955f..761557c62 100644
      @CommandBase.common_command_arguments(binary_selection=True, build_type=True, coverage_report=True)
 diff --git a/support/MOBILE.md b/support/MOBILE.md
 new file mode 100644
-index 000000000..d32fd576a
+index 000000000..7b1621cbb
 --- /dev/null
 +++ b/support/MOBILE.md
-@@ -0,0 +1,120 @@
+@@ -0,0 +1,142 @@
 +# Mobile packaging
 +
 +## Android startup branding
@@ -1532,6 +1532,17 @@ index 000000000..d32fd576a
 +APKs do not. Video fullscreen, back navigation and lifecycle are handled by
 +the container.
 +
++A game's own save import/export (`<input type="file">`, `<a download>` on a
++Blob/data URL) works out of the box — neither has any default handling in a
++plain WebView, so the container wires up `WebChromeClient.onShowFileChooser`
++(a real system file picker) and `WebView.setDownloadListener` (blob:/data:
++URLs decoded and written natively; a real http(s) URL falls back to the
++system Download Manager). Exported files land in
++`Documents/<this app's own launcher label>/<fileName>`, a real,
++player-visible location (Files app, USB/MTP) via the `MediaStore`
++`Documents` collection — no `WRITE_EXTERNAL_STORAGE` permission needed on
++API 29+.
++
 +## iOS
 +
 +Stage the game on any host:
@@ -1575,6 +1586,17 @@ index 000000000..d32fd576a
 +relying on it). Validate your game's module loading and storage behavior on
 +the target iOS version before release; device runtime checks (seeking,
 +splash timing, storage persistence) remain pending, same caveat as Android.
++
++Save export (`<a download>` on a Blob/data URL) works the same way as
++Android, adapted to WKWebView: an injected script intercepts the download
++click and hands the data to a native bridge, which writes it into this
++app's own `Documents/` folder (already private per app on iOS, so — unlike
++Android — there's no per-game subfolder). Save **import**
++(`<input type="file">`) only works on iOS/iPadOS 18.4+ — confirmed against
++Apple's own documentation: WKWebView never supported file input at all on
++iOS before that version (unlike macOS, which has had it since 10.12). On an
++older iOS a file input stays inert, exactly as before this existed; no
++workaround exists below 18.4.
 +
 +## Compatibility and validation
 +
@@ -1778,10 +1800,10 @@ index 0d75b9613..80abf0129 100644
      </application>
  
 diff --git a/support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt b/support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt
-index 1f95d4c5b..7a5b85239 100644
+index 1f95d4c5b..bbdcec3d8 100644
 --- a/support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt
 +++ b/support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt
-@@ -1,410 +1,215 @@
+@@ -1,410 +1,354 @@
 -/*
 - * This Source Code Form is subject to the terms of the Mozilla Public
 - * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -1790,9 +1812,11 @@ index 1f95d4c5b..7a5b85239 100644
  package org.servo.servoshell
  
 -import android.app.AlertDialog
--import android.content.Intent
--import android.content.SharedPreferences
 +import android.app.Activity
++import android.content.ActivityNotFoundException
++import android.content.ContentValues
+ import android.content.Intent
+-import android.content.SharedPreferences
 +import android.graphics.Color
 +import android.net.Uri
  import android.os.Bundle
@@ -1854,8 +1878,14 @@ index 1f95d4c5b..7a5b85239 100644
 -    }
 -
 -    private lateinit var settings: Settings
++import android.os.Environment
 +import android.os.SystemClock
++import android.provider.MediaStore
++import android.util.Base64
 +import android.view.View
++import android.webkit.JavascriptInterface
++import android.webkit.URLUtil
++import android.webkit.ValueCallback
 +import android.webkit.WebChromeClient
 +import android.webkit.WebResourceRequest
 +import android.webkit.WebResourceResponse
@@ -1878,6 +1908,7 @@ index 1f95d4c5b..7a5b85239 100644
 +    private var destroyed = false
 +    private var fullscreenView: View? = null
 +    private var fullscreenCallback: WebChromeClient.CustomViewCallback? = null
++    private var pendingFileChooserCallback: ValueCallback<Array<Uri>>? = null
  
      override fun onCreate(savedInstanceState: Bundle?) {
          super.onCreate(savedInstanceState)
@@ -1966,13 +1997,6 @@ index 1f95d4c5b..7a5b85239 100644
 -                            }
 -                            IconButton(onClick = ::onHistoryForwardMenuItemClicked, enabled = canGoForwardState.value) {
 -                                Icon(painterResource(R.drawable.arrow_forward), stringResource(R.string.history_forward))
--                            }
--                            IconButton(onClick = { if (isRefreshingState.value) onCancelMenuItemClicked() else onRefreshMenuItemClicked() }) {
--                                if (isRefreshingState.value) {
--                                    Icon(painterResource(R.drawable.cancel), stringResource(R.string.cancel))
--                                } else {
--                                    Icon(painterResource(R.drawable.refresh), stringResource(R.string.refresh))
--                                }
 +            override fun onPageFinished(view: WebView, url: String) {
 +                if (!startupPending || url != view.url) return
 +                val navigation = startupNavigation
@@ -1985,6 +2009,13 @@ index 1f95d4c5b..7a5b85239 100644
 +                                startupPending = false
 +                                container.removeView(splash)
                              }
+-                            IconButton(onClick = { if (isRefreshingState.value) onCancelMenuItemClicked() else onRefreshMenuItemClicked() }) {
+-                                if (isRefreshingState.value) {
+-                                    Icon(painterResource(R.drawable.cancel), stringResource(R.string.cancel))
+-                                } else {
+-                                    Icon(painterResource(R.drawable.refresh), stringResource(R.string.refresh))
+-                                }
+-                            }
 -                        }
 -                        Omnibox(
 -                            urlTextFieldState,
@@ -2011,7 +2042,8 @@ index 1f95d4c5b..7a5b85239 100644
 -                                Icon(painterResource(R.drawable.history), stringResource(R.string.history_title))
 -                            }
 -                        }
--                    }
++                        }, remaining)
+                     }
 -                },
 -                bottomBar = {
 -                    if (!isWindowWidthAtLeastMedium) {
@@ -2056,46 +2088,16 @@ index 1f95d4c5b..7a5b85239 100644
 -                                onClick = ::onHistoryMenuItemClicked,
 -                                icon = { Icon(painterResource(R.drawable.history), null) },
 -                                label = { Text(stringResource(R.string.history_title)) },
--                            )
--                        }
-+                        }, remaining)
-                     }
--                },
--            ) { innerPadding ->
--                AndroidView(
--                    factory = { _ -> servoView },
--                    modifier = Modifier.padding(innerPadding),
--                )
--                BackHandler(enabled = canGoBackState.value) {
--                    servoView.goBack()
--                }
 +                })
-             }
--        }
- 
--        servoView.setClient(this)
--        servoView.requestFocus()
--
--        val sdcard = getExternalFilesDir("")
--        val host = sdcard!!.toPath().resolve("android_hosts").toString()
--        try {
--            Os.setenv("HOST_FILE", host, false)
--        } catch (e: ErrnoException) {
--            e.printStackTrace()
++            }
++
 +            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
 +                intercept(request.url)
 +            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
 +                return request.url.scheme !in listOf("https", "http")
 +            }
-         }
- 
--        val intent = getIntent()
--        val args = intent.getStringExtra("servoargs")
--        val log = intent.getStringExtra("servolog")
--        servoView.setServoArgs(args, log, settings.experimental)
--
--        if (Intent.ACTION_VIEW == intent.action) {
--            servoView.loadUri(intent.data.toString())
++        }
++
 +        // Feature-checked because not every WebView provider/version implements service worker
 +        // interception (older WebView releases, some OEM forks) -- skipping it there just means
 +        // a service worker (if the game registers one at all) falls back to the real network,
@@ -2108,6 +2110,67 @@ index 1f95d4c5b..7a5b85239 100644
 +                    intercept(request.url)
 +            })
 +        }
++
++        // A game's save export (typically `<a download>.click()` on a Blob/data URL, e.g. a
++        // JSON save file) needs both of these to actually do anything in a WebView -- neither
++        // exists by default, unlike a real browser tab. Confirmed missing on a real device
++        // (2026-09-14): the save menu's own import/export buttons were silently inert.
++        webView.addJavascriptInterface(RovesFileBridge(), "RovesFiles")
++        webView.setDownloadListener { url, _, contentDisposition, mimeType, _ ->
++            val fileName = URLUtil.guessFileName(url, contentDisposition, mimeType)
++            when {
++                // A blob: URL is only valid inside the page's own JS context -- this fetches
++                // it back out as base64 there and hands the bytes to RovesFileBridge below,
++                // rather than trying (and failing) to resolve it as a real network request.
++                url.startsWith("blob:") -> webView.evaluateJavascript(
++                    "fetch(${jsStringLiteral(url)}).then(r => r.blob()).then(b => { " +
++                        "const r = new FileReader(); " +
++                        "r.onloadend = () => RovesFiles.saveDataUrl(r.result, ${jsStringLiteral(fileName)}); " +
++                        "r.readAsDataURL(b); });",
++                    null,
++                )
++                url.startsWith("data:") -> saveDataUrl(url, fileName)
++                else -> {
++                    // A real http(s) download (not a save export) -- hand it to the system's
++                    // own Download Manager instead of trying to special-case every possible
++                    // use a game's content might have for a download link.
++                    runCatching {
++                        val request = android.app.DownloadManager.Request(Uri.parse(url))
++                            .setMimeType(mimeType)
++                            .setNotificationVisibility(
++                                android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED,
+                             )
+-                        }
++                            .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
++                        (getSystemService(DOWNLOAD_SERVICE) as android.app.DownloadManager).enqueue(request)
+                     }
+-                },
+-            ) { innerPadding ->
+-                AndroidView(
+-                    factory = { _ -> servoView },
+-                    modifier = Modifier.padding(innerPadding),
+-                )
+-                BackHandler(enabled = canGoBackState.value) {
+-                    servoView.goBack()
+                 }
+             }
+         }
+ 
+-        servoView.setClient(this)
+-        servoView.requestFocus()
+-
+-        val sdcard = getExternalFilesDir("")
+-        val host = sdcard!!.toPath().resolve("android_hosts").toString()
+-        try {
+-            Os.setenv("HOST_FILE", host, false)
+-        } catch (e: ErrnoException) {
+-            e.printStackTrace()
+-        }
+-
+-        val intent = getIntent()
+-        val args = intent.getStringExtra("servoargs")
+-        val log = intent.getStringExtra("servolog")
+-        servoView.setServoArgs(args, log, settings.experimental)
 +        webView.webChromeClient = object : WebChromeClient() {
 +            override fun onShowCustomView(view: View, callback: CustomViewCallback) {
 +                if (fullscreenView != null) {
@@ -2122,6 +2185,27 @@ index 1f95d4c5b..7a5b85239 100644
 +                enterImmersiveMode()
 +            }
 +            override fun onHideCustomView() = leaveFullscreen()
+ 
+-        if (Intent.ACTION_VIEW == intent.action) {
+-            servoView.loadUri(intent.data.toString())
++            // A game's save import (an `<input type="file">` picker, e.g. loading a JSON
++            // save file back in) needs this to show any file picker at all in a WebView --
++            // confirmed missing the same way as the download side above.
++            override fun onShowFileChooser(
++                webView: WebView,
++                filePathCallback: ValueCallback<Array<Uri>>,
++                fileChooserParams: FileChooserParams,
++            ): Boolean {
++                pendingFileChooserCallback?.onReceiveValue(null)
++                pendingFileChooserCallback = filePathCallback
++                return try {
++                    startActivityForResult(fileChooserParams.createIntent(), FILE_CHOOSER_REQUEST_CODE)
++                    true
++                } catch (e: ActivityNotFoundException) {
++                    pendingFileChooserCallback = null
++                    false
++                }
++            }
 +        }
 +        if (savedInstanceState == null || webView.restoreState(savedInstanceState) == null) {
 +            // The bare origin root, not "/index.html" -- confirmed via a real device's Chrome
@@ -2133,71 +2217,46 @@ index 1f95d4c5b..7a5b85239 100644
 +            // App.swift's identical `game://content/` (no "/index.html") for the same reason.
 +            webView.loadUrl("https://appassets.androidplatform.net/")
          }
--    }
--
+     }
+ 
 -    override fun onDestroy() {
 -        super.onDestroy()
 -        mediaSession?.hideMediaSessionControls()
-     }
+-    }
++    /** Escapes `value` for embedding as a double-quoted JavaScript string literal. */
++    private fun jsStringLiteral(value: String): String =
++        "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
  
      /**
 -     * We’re unsetting all the loading UI just in case loading got stuck, and we’re
 -     * navigating to a cached page, which doesn’t trigger [onLoadEnded]. The "stop
 -     * loading" button is implemented by [onCancelMenuItemClicked], but the underlying
 -     * Servo view can’t actually [ServoView.stop] yet.
-+     * The game always runs edge-to-edge, with the status and navigation bars hidden -- this
-+     * isn't limited to HTML5 `<video>`/Fullscreen API content (`onShowCustomView` above), which
-+     * is the only case the system bars were previously hidden for. `IMMERSIVE_STICKY` lets a
-+     * swipe from a screen edge reveal the bars temporarily (required for the user to ever get
-+     * them back at all, e.g. to check the clock or notifications) without permanently exiting
-+     * this mode -- they auto-hide again on the next interaction. Reapplied in
-+     * `onWindowFocusChanged` because Android clears these flags whenever the window loses and
-+     * regains focus (e.g. the notification shade, a system dialog, or switching apps and back).
++     * The bridge a game's own JS never calls directly -- only the `evaluateJavascript` snippet
++     * this file injects for a blob: download does, to hand a Blob's content back out as a data
++     * URL once it's been read on the page side (see the `setDownloadListener` block above).
       */
 -    private fun onHistoryItemClicked() {
 -        onLoadEnded()
-+    private fun enterImmersiveMode() {
-+        window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
-+            View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
-+            View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
-+            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-     }
- 
+-    }
+-
 -    private fun onHistoryBackMenuItemClicked() {
 -        onHistoryItemClicked()
 -        servoView.goBack()
-+    override fun onWindowFocusChanged(hasFocus: Boolean) {
-+        super.onWindowFocusChanged(hasFocus)
-+        if (hasFocus) enterImmersiveMode()
-     }
- 
+-    }
+-
 -    private fun onHistoryForwardMenuItemClicked() {
 -        onHistoryItemClicked()
 -        servoView.goForward()
-+    private fun leaveFullscreen() {
-+        fullscreenView?.let { container.removeView(it) }
-+        fullscreenView = null
-+        webView.visibility = View.VISIBLE
-+        enterImmersiveMode()
-+        fullscreenCallback?.onCustomViewHidden()
-+        fullscreenCallback = null
-     }
- 
+-    }
+-
 -    private fun onRefreshMenuItemClicked() {
 -        servoView.reload()
-+    @Deprecated("Activity back navigation")
-+    override fun onBackPressed() {
-+        if (fullscreenView != null) leaveFullscreen()
-+        else if (webView.canGoBack()) webView.goBack()
-+        else super.onBackPressed()
-     }
- 
+-    }
+-
 -    private fun onCancelMenuItemClicked() {
 -        servoView.stop()
-+    override fun onSaveInstanceState(outState: Bundle) {
-+        webView.saveState(outState)
-+        super.onSaveInstanceState(outState)
-     }
+-    }
 -
 -    private fun onSettingsMenuItemClicked() {
 -        startActivity(Intent(this, SettingsActivity::class.java))
@@ -2240,41 +2299,112 @@ index 1f95d4c5b..7a5b85239 100644
 -            // by the fact that onLoadEnded gets called multiple times
 -            // per page. 
 -            historyManager.addEntry(currentUrl, currentTitle)
--        }
++    inner class RovesFileBridge {
++        @JavascriptInterface
++        fun saveDataUrl(dataUrl: String, fileName: String) {
++            this@MainActivity.saveDataUrl(dataUrl, fileName)
+         }
 -        isRefreshingState.value = false
--    }
--
+     }
+ 
 -    override fun onTitleChanged(title: String) {
 -        currentTitle = title
--    }
--
++    /** Decodes a `data:` URL (as produced by `FileReader.readAsDataURL`) and writes it out. */
++    private fun saveDataUrl(dataUrl: String, fileName: String) {
++        runCatching {
++            val commaIndex = dataUrl.indexOf(',')
++            if (!dataUrl.startsWith("data:") || commaIndex == -1) return
++            val meta = dataUrl.substring(5, commaIndex)
++            val mimeType = meta.substringBefore(";").ifEmpty { "application/octet-stream" }
++            val payload = dataUrl.substring(commaIndex + 1)
++            val bytes = if (meta.endsWith(";base64")) {
++                Base64.decode(payload, Base64.DEFAULT)
++            } else {
++                Uri.decode(payload).toByteArray(Charsets.UTF_8)
++            }
++            saveToDocuments(fileName, mimeType, bytes)
++        }
+     }
+ 
 -    override fun onUrlChanged(url: String) {
 -        urlTextFieldState.edit { replace(0, length, url) }
 -        currentUrl = url
--    }
--
++    /**
++     * Writes into `Documents/<this game's own launcher label>/<fileName>` -- a real,
++     * player-visible location (Files app, a USB/MTP file browser, ...), not an
++     * app-private directory another app or the player themselves can't get to. Uses the
++     * `MediaStore` `Documents`/`Files` collection, not raw external storage: this needs no
++     * `WRITE_EXTERNAL_STORAGE` permission at all on API 29+ (this app's own `minSdk`) -- a
++     * missing permission was never actually the cause of the import/export buttons doing
++     * nothing (see this same session's real-device report); they were simply never wired up
++     * to anything before this.
++     */
++    private fun saveToDocuments(fileName: String, mimeType: String, bytes: ByteArray) {
++        runCatching {
++            val appLabel = packageManager.getApplicationLabel(applicationInfo).toString()
++            val values = ContentValues().apply {
++                put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
++                put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
++                put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOCUMENTS}/$appLabel")
++            }
++            val uri = contentResolver.insert(MediaStore.Files.getContentUri("external"), values) ?: return
++            contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
++        }
+     }
+ 
 -    override fun onHistoryChanged(canGoBack: Boolean, canGoForward: Boolean) {
 -        Log.i(TAG, "onHistoryChanged: $canGoBack<->$canGoForward")
 -        canGoBackState.value = canGoBack
 -        canGoForwardState.value = canGoForward
--    }
--
++    /**
++     * The game always runs edge-to-edge, with the status and navigation bars hidden -- this
++     * isn't limited to HTML5 `<video>`/Fullscreen API content (`onShowCustomView` above), which
++     * is the only case the system bars were previously hidden for. `IMMERSIVE_STICKY` lets a
++     * swipe from a screen edge reveal the bars temporarily (required for the user to ever get
++     * them back at all, e.g. to check the clock or notifications) without permanently exiting
++     * this mode -- they auto-hide again on the next interaction. Reapplied in
++     * `onWindowFocusChanged` because Android clears these flags whenever the window loses and
++     * regains focus (e.g. the notification shade, a system dialog, or switching apps and back).
++     */
++    private fun enterImmersiveMode() {
++        window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
++            View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
++            View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
++            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+     }
+ 
 -    override fun onRedrawing(redrawing: Boolean) {
--    }
--
++    override fun onWindowFocusChanged(hasFocus: Boolean) {
++        super.onWindowFocusChanged(hasFocus)
++        if (hasFocus) enterImmersiveMode()
+     }
+ 
 -    public override fun onPause() {
 -        servoView.onPause()
 -        super.onPause()
--    }
--
++    private fun leaveFullscreen() {
++        fullscreenView?.let { container.removeView(it) }
++        fullscreenView = null
++        webView.visibility = View.VISIBLE
++        enterImmersiveMode()
++        fullscreenCallback?.onCustomViewHidden()
++        fullscreenCallback = null
+     }
+ 
 -    public override fun onResume() {
 -        servoView.onResume()
 -        super.onResume()
 -        updateSettingsIfNecessary(false)
--    }
--
--    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
--        super.onActivityResult(requestCode, resultCode, data)
++    @Deprecated("Activity back navigation")
++    override fun onBackPressed() {
++        if (fullscreenView != null) leaveFullscreen()
++        else if (webView.canGoBack()) webView.goBack()
++        else super.onBackPressed()
+     }
+ 
++    @Deprecated("Deprecated in Java")
+     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+         super.onActivityResult(requestCode, resultCode, data)
 -
 -        if (requestCode == HISTORY_REQUEST_CODE && resultCode == RESULT_OK && data != null) {
 -            val url = data.getStringExtra("url")
@@ -2305,12 +2435,22 @@ index 1f95d4c5b..7a5b85239 100644
 -            state == MediaSession.PLAYBACK_STATE_PAUSED
 -        ) {
 -            mediaSession.showMediaSessionControls()
--        }
--    }
--
++        if (requestCode != FILE_CHOOSER_REQUEST_CODE) return
++        val results = if (resultCode == RESULT_OK && data != null) {
++            WebChromeClient.FileChooserParams.parseResult(resultCode, data)
++        } else {
++            null
+         }
++        pendingFileChooserCallback?.onReceiveValue(results)
++        pendingFileChooserCallback = null
+     }
+ 
 -    override fun onMediaSessionSetPositionState(duration: Float, position: Float, playbackRate: Float) {
 -        Log.d("onMediaSessionSetPositionState", "$duration $position $playbackRate")
--    }
++    override fun onSaveInstanceState(outState: Bundle) {
++        webView.saveState(outState)
++        super.onSaveInstanceState(outState)
+     }
 -
 -    private fun onExperimentalPrefChanged(value: Boolean) {
 -        servoView.setExperimentalMode(value)
@@ -2325,14 +2465,6 @@ index 1f95d4c5b..7a5b85239 100644
 -        }
 -
 -        settings = updated
--    }
--
--    companion object {
--        private const val TAG = "MainActivity"
--
--        // Identify which activity a result came from, if we ever have more
--        // than one
--        private const val HISTORY_REQUEST_CODE = 1
 +    override fun onPause() { webView.onPause(); super.onPause() }
 +    override fun onResume() { super.onResume(); webView.onResume() }
 +    override fun onDestroy() {
@@ -2341,6 +2473,16 @@ index 1f95d4c5b..7a5b85239 100644
 +        container.removeView(webView)
 +        webView.destroy()
 +        super.onDestroy()
+     }
+ 
+-    companion object {
+-        private const val TAG = "MainActivity"
+-
+-        // Identify which activity a result came from, if we ever have more
+-        // than one
+-        private const val HISTORY_REQUEST_CODE = 1
++    private companion object {
++        const val FILE_CHOOSER_REQUEST_CODE = 51426
      }
  }
 -
@@ -3446,11 +3588,12 @@ index 7013afe73..000000000
 -</vector>
 diff --git a/support/ios/App.swift b/support/ios/App.swift
 new file mode 100644
-index 000000000..613f20b3f
+index 000000000..342acde55
 --- /dev/null
 +++ b/support/ios/App.swift
-@@ -0,0 +1,294 @@
+@@ -0,0 +1,406 @@
 +import UIKit
++import UniformTypeIdentifiers
 +import WebKit
 +
 +@main
@@ -3656,11 +3799,49 @@ index 000000000..613f20b3f
 +    }
 +}
 +
-+final class GameViewController: UIViewController, WKNavigationDelegate {
++/// Intercepts `<a download>` clicks on `blob:`/`data:` URLs (a game's save export, e.g.
++/// `save.download()` writing a JSON save file) and routes them to `rovesSaveFile` below
++/// instead of leaving WebKit to handle them -- WKWebView has no built-in download handling
++/// for this exact case: `WKNavigationDelegate`'s `decidePolicyFor navigationResponse`/
++/// `WKDownloadDelegate` only fire for a real top-level navigation to a downloadable
++/// response, never for a JS-triggered anchor click that never navigates the page at all
++/// (confirmed missing on a real device on Android, where the equivalent gap needed the same
++/// kind of workaround -- see MainActivity.kt's own `setDownloadListener` comment; this is the
++/// same fix, adapted to WKWebView's own constraints since there's no `DownloadListener`
++/// equivalent that fires for blob: URLs here at all). Injected at document start so it's in
++/// place before the game's own script runs.
++private let downloadInterceptScript = """
++(function() {
++  document.addEventListener('click', function(event) {
++    var a = event.target && event.target.closest && event.target.closest('a[download]');
++    if (!a) return;
++    var href = a.getAttribute('href') || '';
++    if (href.indexOf('blob:') !== 0 && href.indexOf('data:') !== 0) return;
++    event.preventDefault();
++    var fileName = a.getAttribute('download') || 'download';
++    function post(dataUrl) {
++      window.webkit.messageHandlers.rovesSaveFile.postMessage({ dataUrl: dataUrl, fileName: fileName });
++    }
++    if (href.indexOf('data:') === 0) { post(href); return; }
++    fetch(href).then(function(r) { return r.blob(); }).then(function(blob) {
++      var reader = new FileReader();
++      reader.onloadend = function() { post(reader.result); };
++      reader.readAsDataURL(blob);
++    });
++  }, true);
++})();
++"""
++
++final class GameViewController: UIViewController, WKNavigationDelegate, WKUIDelegate,
++    WKScriptMessageHandler, UIDocumentPickerDelegate {
 +    private var webView: WKWebView!
 +    private var splash: RovesSplashView!
 +    private var splashStarted: CFAbsoluteTime = 0
 +    private var startupPending = true
++    /// Held between `onShowFileChooser`'s Android equivalent (`runOpenPanelWith` below) and
++    /// the document picker actually returning -- a game's save import (an
++    /// `<input type="file">` picker).
++    private var filePickerCompletionHandler: (([URL]?) -> Void)?
 +
 +    // The game always runs edge-to-edge: no status bar, and no home indicator on Face ID
 +    // devices (the bottom "bar" equivalent to Android's gesture nav bar) -- mirrors
@@ -3684,8 +3865,15 @@ index 000000000..613f20b3f
 +        if let contentRoot {
 +            configuration.setURLSchemeHandler(GameSchemeHandler(root: contentRoot), forURLScheme: GameSchemeHandler.scheme)
 +        }
++        let contentController = WKUserContentController()
++        contentController.add(self, name: "rovesSaveFile")
++        contentController.addUserScript(
++            WKUserScript(source: downloadInterceptScript, injectionTime: .atDocumentStart, forMainFrameOnly: false)
++        )
++        configuration.userContentController = contentController
 +        webView = WKWebView(frame: .zero, configuration: configuration)
 +        webView.navigationDelegate = self
++        webView.uiDelegate = self
 +        webView.scrollView.bounces = false
 +        webView.translatesAutoresizingMaskIntoConstraints = false
 +        container.addSubview(webView)
@@ -3742,6 +3930,72 @@ index 000000000..613f20b3f
 +            return
 +        }
 +        decisionHandler(.allow)
++    }
++
++    // MARK: - WKUIDelegate: a game's save import (`<input type="file">`)
++
++    // WKUIDelegate only gained this method on iOS 18.4 (confirmed against Apple's own
++    // documentation -- file input support in WKWebView on iOS is a genuinely recent addition;
++    // it has existed on macOS since 10.12, but never on iOS/iPadOS until 18.4) -- this
++    // project's own deployment target is iOS 15.0, well below that, so this must be
++    // explicitly gated. On an older iOS a file `<input>` simply stays exactly as inert as it
++    // is without this method at all -- the same behavior as before this existed, not a
++    // regression -- and starts working the moment the OS itself supports it.
++    @available(iOS 18.4, *)
++    func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters,
++                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping ([URL]?) -> Void) {
++        filePickerCompletionHandler?(nil)
++        filePickerCompletionHandler = completionHandler
++        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item])
++        picker.allowsMultipleSelection = parameters.allowsMultipleSelection
++        picker.delegate = self
++        present(picker, animated: true)
++    }
++
++    // MARK: - UIDocumentPickerDelegate
++
++    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
++        filePickerCompletionHandler?(urls)
++        filePickerCompletionHandler = nil
++    }
++
++    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
++        filePickerCompletionHandler?(nil)
++        filePickerCompletionHandler = nil
++    }
++
++    // MARK: - WKScriptMessageHandler: a game's save export (`<a download>` on a blob:/data: URL)
++
++    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
++        guard message.name == "rovesSaveFile",
++              let body = message.body as? [String: Any],
++              let dataUrl = body["dataUrl"] as? String,
++              let fileName = body["fileName"] as? String else { return }
++        saveDataUrl(dataUrl, fileName: fileName)
++    }
++
++    /// Decodes a `data:` URL (produced either directly by the injected script, for a `data:`
++    /// href, or via `FileReader.readAsDataURL` for a `blob:` one) and writes it into this
++    /// app's own `Documents/` folder -- already private to this app and player-visible via
++    /// the Files app (with "Supports opening documents in place"/"Application supports
++    /// iTunes file sharing" set, which a game's own Info.plist can opt into same as any other
++    /// iOS app), unlike Android's shared, system-wide `Documents/<app name>/` this mirrors:
++    /// iOS has no equivalent shared collection to disambiguate between apps in the first
++    /// place, so there's no per-game subfolder to create here.
++    private func saveDataUrl(_ dataUrl: String, fileName: String) {
++        guard dataUrl.hasPrefix("data:"), let commaIndex = dataUrl.firstIndex(of: ",") else { return }
++        let meta = dataUrl[dataUrl.index(dataUrl.startIndex, offsetBy: 5)..<commaIndex]
++        let payload = String(dataUrl[dataUrl.index(after: commaIndex)...])
++        let data: Data?
++        if meta.contains(";base64") {
++            data = Data(base64Encoded: payload)
++        } else {
++            data = payload.removingPercentEncoding?.data(using: .utf8)
++        }
++        guard let data,
++              let documentsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
++        else { return }
++        try? data.write(to: documentsDir.appendingPathComponent(fileName))
 +    }
 +}
 diff --git a/support/ios/bundle.py b/support/ios/bundle.py

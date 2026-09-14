@@ -1,4 +1,5 @@
 import UIKit
+import UniformTypeIdentifiers
 import WebKit
 
 @main
@@ -204,11 +205,49 @@ final class RovesSplashView: UIView {
     }
 }
 
-final class GameViewController: UIViewController, WKNavigationDelegate {
+/// Intercepts `<a download>` clicks on `blob:`/`data:` URLs (a game's save export, e.g.
+/// `save.download()` writing a JSON save file) and routes them to `rovesSaveFile` below
+/// instead of leaving WebKit to handle them -- WKWebView has no built-in download handling
+/// for this exact case: `WKNavigationDelegate`'s `decidePolicyFor navigationResponse`/
+/// `WKDownloadDelegate` only fire for a real top-level navigation to a downloadable
+/// response, never for a JS-triggered anchor click that never navigates the page at all
+/// (confirmed missing on a real device on Android, where the equivalent gap needed the same
+/// kind of workaround -- see MainActivity.kt's own `setDownloadListener` comment; this is the
+/// same fix, adapted to WKWebView's own constraints since there's no `DownloadListener`
+/// equivalent that fires for blob: URLs here at all). Injected at document start so it's in
+/// place before the game's own script runs.
+private let downloadInterceptScript = """
+(function() {
+  document.addEventListener('click', function(event) {
+    var a = event.target && event.target.closest && event.target.closest('a[download]');
+    if (!a) return;
+    var href = a.getAttribute('href') || '';
+    if (href.indexOf('blob:') !== 0 && href.indexOf('data:') !== 0) return;
+    event.preventDefault();
+    var fileName = a.getAttribute('download') || 'download';
+    function post(dataUrl) {
+      window.webkit.messageHandlers.rovesSaveFile.postMessage({ dataUrl: dataUrl, fileName: fileName });
+    }
+    if (href.indexOf('data:') === 0) { post(href); return; }
+    fetch(href).then(function(r) { return r.blob(); }).then(function(blob) {
+      var reader = new FileReader();
+      reader.onloadend = function() { post(reader.result); };
+      reader.readAsDataURL(blob);
+    });
+  }, true);
+})();
+"""
+
+final class GameViewController: UIViewController, WKNavigationDelegate, WKUIDelegate,
+    WKScriptMessageHandler, UIDocumentPickerDelegate {
     private var webView: WKWebView!
     private var splash: RovesSplashView!
     private var splashStarted: CFAbsoluteTime = 0
     private var startupPending = true
+    /// Held between `onShowFileChooser`'s Android equivalent (`runOpenPanelWith` below) and
+    /// the document picker actually returning -- a game's save import (an
+    /// `<input type="file">` picker).
+    private var filePickerCompletionHandler: (([URL]?) -> Void)?
 
     // The game always runs edge-to-edge: no status bar, and no home indicator on Face ID
     // devices (the bottom "bar" equivalent to Android's gesture nav bar) -- mirrors
@@ -232,8 +271,15 @@ final class GameViewController: UIViewController, WKNavigationDelegate {
         if let contentRoot {
             configuration.setURLSchemeHandler(GameSchemeHandler(root: contentRoot), forURLScheme: GameSchemeHandler.scheme)
         }
+        let contentController = WKUserContentController()
+        contentController.add(self, name: "rovesSaveFile")
+        contentController.addUserScript(
+            WKUserScript(source: downloadInterceptScript, injectionTime: .atDocumentStart, forMainFrameOnly: false)
+        )
+        configuration.userContentController = contentController
         webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = self
+        webView.uiDelegate = self
         webView.scrollView.bounces = false
         webView.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(webView)
@@ -290,5 +336,71 @@ final class GameViewController: UIViewController, WKNavigationDelegate {
             return
         }
         decisionHandler(.allow)
+    }
+
+    // MARK: - WKUIDelegate: a game's save import (`<input type="file">`)
+
+    // WKUIDelegate only gained this method on iOS 18.4 (confirmed against Apple's own
+    // documentation -- file input support in WKWebView on iOS is a genuinely recent addition;
+    // it has existed on macOS since 10.12, but never on iOS/iPadOS until 18.4) -- this
+    // project's own deployment target is iOS 15.0, well below that, so this must be
+    // explicitly gated. On an older iOS a file `<input>` simply stays exactly as inert as it
+    // is without this method at all -- the same behavior as before this existed, not a
+    // regression -- and starts working the moment the OS itself supports it.
+    @available(iOS 18.4, *)
+    func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters,
+                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping ([URL]?) -> Void) {
+        filePickerCompletionHandler?(nil)
+        filePickerCompletionHandler = completionHandler
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item])
+        picker.allowsMultipleSelection = parameters.allowsMultipleSelection
+        picker.delegate = self
+        present(picker, animated: true)
+    }
+
+    // MARK: - UIDocumentPickerDelegate
+
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        filePickerCompletionHandler?(urls)
+        filePickerCompletionHandler = nil
+    }
+
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        filePickerCompletionHandler?(nil)
+        filePickerCompletionHandler = nil
+    }
+
+    // MARK: - WKScriptMessageHandler: a game's save export (`<a download>` on a blob:/data: URL)
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "rovesSaveFile",
+              let body = message.body as? [String: Any],
+              let dataUrl = body["dataUrl"] as? String,
+              let fileName = body["fileName"] as? String else { return }
+        saveDataUrl(dataUrl, fileName: fileName)
+    }
+
+    /// Decodes a `data:` URL (produced either directly by the injected script, for a `data:`
+    /// href, or via `FileReader.readAsDataURL` for a `blob:` one) and writes it into this
+    /// app's own `Documents/` folder -- already private to this app and player-visible via
+    /// the Files app (with "Supports opening documents in place"/"Application supports
+    /// iTunes file sharing" set, which a game's own Info.plist can opt into same as any other
+    /// iOS app), unlike Android's shared, system-wide `Documents/<app name>/` this mirrors:
+    /// iOS has no equivalent shared collection to disambiguate between apps in the first
+    /// place, so there's no per-game subfolder to create here.
+    private func saveDataUrl(_ dataUrl: String, fileName: String) {
+        guard dataUrl.hasPrefix("data:"), let commaIndex = dataUrl.firstIndex(of: ",") else { return }
+        let meta = dataUrl[dataUrl.index(dataUrl.startIndex, offsetBy: 5)..<commaIndex]
+        let payload = String(dataUrl[dataUrl.index(after: commaIndex)...])
+        let data: Data?
+        if meta.contains(";base64") {
+            data = Data(base64Encoded: payload)
+        } else {
+            data = payload.removingPercentEncoding?.data(using: .utf8)
+        }
+        guard let data,
+              let documentsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        else { return }
+        try? data.write(to: documentsDir.appendingPathComponent(fileName))
     }
 }

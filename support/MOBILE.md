@@ -58,6 +58,17 @@ persists across app launches. Debug APKs enable WebView debugging; release
 APKs do not. Video fullscreen, back navigation and lifecycle are handled by
 the container.
 
+A game's own save import/export (`<input type="file">`, `<a download>` on a
+Blob/data URL) works out of the box — neither has any default handling in a
+plain WebView, so the container wires up `WebChromeClient.onShowFileChooser`
+(a real system file picker) and `WebView.setDownloadListener` (blob:/data:
+URLs decoded and written natively; a real http(s) URL falls back to the
+system Download Manager). Exported files land in
+`Documents/<this app's own launcher label>/<fileName>`, a real,
+player-visible location (Files app, USB/MTP) via the `MediaStore`
+`Documents` collection — no `WRITE_EXTERNAL_STORAGE` permission needed on
+API 29+.
+
 ## iOS
 
 Stage the game on any host:
@@ -101,6 +112,17 @@ contract (no macOS/Xcode available where this was written; re-verify before
 relying on it). Validate your game's module loading and storage behavior on
 the target iOS version before release; device runtime checks (seeking,
 splash timing, storage persistence) remain pending, same caveat as Android.
+
+Save export (`<a download>` on a Blob/data URL) works the same way as
+Android, adapted to WKWebView: an injected script intercepts the download
+click and hands the data to a native bridge, which writes it into this
+app's own `Documents/` folder (already private per app on iOS, so — unlike
+Android — there's no per-game subfolder). Save **import**
+(`<input type="file">`) only works on iOS/iPadOS 18.4+ — confirmed against
+Apple's own documentation: WKWebView never supported file input at all on
+iOS before that version (unlike macOS, which has had it since 10.12). On an
+older iOS a file input stays inert, exactly as before this existed; no
+workaround exists below 18.4.
 
 ## Compatibility and validation
 
