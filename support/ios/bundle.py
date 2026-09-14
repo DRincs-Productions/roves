@@ -36,6 +36,13 @@ def stage(content_dir, output, app_name="Roves Game", bundle_id="org.roves.game"
         "CFBundleShortVersionString": "1.0", "CFBundleVersion": "1",
         "UILaunchScreen": {},
         "UISupportedInterfaceOrientations": ["UIInterfaceOrientationPortrait", "UIInterfaceOrientationLandscapeLeft", "UIInterfaceOrientationLandscapeRight"],
+        # Edge-to-edge: no status bar, no home indicator -- see GameViewController's
+        # `prefersStatusBarHidden`/`prefersHomeIndicatorAutoHidden` overrides in App.swift,
+        # which do the actual hiding. `UIViewControllerBasedStatusBarAppearance` defaults to
+        # true, but set it explicitly so those overrides are honored even if some future
+        # Info.plist merge (e.g. a signing/export step) ever introduces a conflicting default.
+        "UIViewControllerBasedStatusBarAppearance": True,
+        "UIStatusBarHidden": True,
     }
     with (output / "Info.plist").open("wb") as stream:
         plistlib.dump(info, stream)

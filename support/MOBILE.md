@@ -9,9 +9,13 @@ The overlay stays for at least 500 ms and until the initial main document finish
 loading and WebView confirms a drawable visual state. Redirects invalidate stale
 completion callbacks; later navigation does not replay the startup splash.
 This indicates document readiness, not completion of asynchronous game asset loading.
-Android 12+ uses a black, Roves-branded system splash.
-Device validation remains pending: cold/warm launch, slow content, redirects,
-missing index.html, rotation and fullscreen. Local Java cannot currently launch Gradle.
+Android 12+ uses a black, Roves-branded system splash. The app always runs
+edge-to-edge: the status and navigation bars are hidden from first frame
+(confirmed on a real device), not just during `<video>`/Fullscreen API
+content, and reappear only for a temporary edge swipe before auto-hiding
+again. Device validation remains pending: cold/warm launch, slow content,
+redirects, missing index.html and rotation. Local Java cannot currently
+launch Gradle.
 
 Desktop continues to use Servo. Android uses the system Android WebView; iOS
 uses Apple's WKWebView. Neither mobile container loads Servo, JNI or GStreamer.
@@ -40,10 +44,12 @@ for compatibility; the WebView app itself has no architecture-specific binaries.
 
 The local origin is `https://appassets.androidplatform.net/`: relative and
 root-relative asset URLs, JavaScript modules, fetch and browser storage use this
-origin. Missing local files return 404 instead of accessing the network.
-Storage persists across app launches. Debug APKs enable WebView debugging;
-release APKs do not. Video fullscreen, back navigation and lifecycle are handled
-by the container.
+origin. A path with no matching file falls back to `index.html` (the same
+SPA-fallback behavior as iOS and desktop's own `game://`, see below); only a
+missing `index.html` itself 404s, with a real "Not Found" body instead of an
+empty one. Storage persists across app launches. Debug APKs enable WebView
+debugging; release APKs do not. Video fullscreen, back navigation and
+lifecycle are handled by the container.
 
 ## iOS
 
@@ -80,7 +86,12 @@ A native black splash with the Roves icon, Metal Mania wordmark and animated
 bar (`RovesSplashView` in App.swift) covers the initial load, removed once the
 WKWebView navigation delegate reports the document finished (with the same
 500ms floor as Android's splash) — the iOS equivalent of Android's startup
-branding above. Validate your game's module loading and storage behavior on
+branding above. The app always runs edge-to-edge: the status bar and, on
+Face ID devices, the home indicator are hidden (`GameViewController`'s
+`prefersStatusBarHidden`/`prefersHomeIndicatorAutoHidden`) — not yet
+confirmed on a physical device or simulator, only reasoned from the API
+contract (no macOS/Xcode available where this was written; re-verify before
+relying on it). Validate your game's module loading and storage behavior on
 the target iOS version before release; device runtime checks (seeking,
 splash timing, storage persistence) remain pending, same caveat as Android.
 

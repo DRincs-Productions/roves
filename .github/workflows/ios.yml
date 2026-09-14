@@ -1,0 +1,129 @@
+name: Build iOS native WKWebView app
+
+# Smoke-tests the real `support/ios/bundle.py` + XcodeGen + xcodebuild path -- the same
+# staging flow support/MOBILE.md documents for any consumer building an iOS app from a game's
+# --content-dir, and the iOS mirror of android.yml's own reasoning (see that file's own
+# comment): exercising the real toolchain end to end instead of a hand-rolled Xcode project,
+# so a real bundle.py/App.swift bug can't pass CI undetected.
+#
+# Unlike android.yml, this never touches `mach` at all -- bundle.py is a standalone script
+# (see support/MOBILE.md's own "iOS" section), so there's no `tests/wpt/tests/tools/`
+# workaround needed here (that's a `mach` command-loader quirk, see CLAUDE.md).
+#
+# Builds unsigned, for the iOS Simulator only (CODE_SIGNING_ALLOWED=NO) -- there's no Apple
+# developer/distribution signing identity available in CI, the same reason release.yml's
+# desktop builds don't attempt any mobile app-store signing either. This only proves the
+# staging + XcodeGen + Xcode build pipeline itself works, not a device-installable or
+# distributable build -- see support/MOBILE.md's own "Archive and export using your Apple
+# distribution signing configuration for an IPA" for the real, human-with-Xcode path.
+#
+# Also publishes `roves_ios_project.zip` (a snapshot of support/ios/) to the rolling "test"
+# GitHub Release (same one test.yml/android.yml use), mirroring android.yml's own
+# `roves_android_project.zip` -- a consumer (Packmaster, roves-action) that wants the iOS
+# template without a git checkout of the engine can download this directly, the same way
+# Packmaster's Android backend already does for the Android project.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  TEST_RELEASE_TAG: 'test'
+
+jobs:
+  # Mirrors test.yml's/android.yml's own job of the same name -- see android.yml's own
+  # comment. All three workflows publish to the same rolling "test" release, so whichever
+  # runs first (after the release doesn't exist yet, e.g. right after someone deletes it to
+  # retry a failed run) creates it.
+  ensure-test-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: ensure release "test" exists
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release view "$TEST_RELEASE_TAG" 2>/dev/null || \
+          gh release create "$TEST_RELEASE_TAG" \
+            --title "Servo customization test build" \
+            --notes "Rolling test build (native WebView containers, no Servo/patches involved on iOS). Overwritten on every push to main. Not a real release — see release.yml for that." \
+            --prerelease \
+            2>/dev/null || \
+          gh release view "$TEST_RELEASE_TAG" > /dev/null
+
+  ios:
+    needs: ensure-test-release
+    permissions:
+      contents: write
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Build smoke-test content
+        # Identical to android.yml's own step of the same name, so both platforms exercise
+        # the same fetch/localStorage/local-asset behavior.
+        run: |
+          mkdir -p /tmp/smoke-content
+          cp -r test-page/public/. /tmp/smoke-content/
+          cat > /tmp/smoke-content/index.html <<'HTML'
+          <!doctype html><html><body><h1>Roves native WKWebView</h1><script>
+          localStorage.setItem('roves-smoke', 'ok');
+          fetch('/favicon.svg').then(r => { if (!r.ok) throw Error(r.status); return r.text(); })
+            .then(() => document.body.append('Local assets and storage ready'));
+          </script></body></html>
+          HTML
+
+      - name: support/ios/bundle.py --content-dir ...
+        run: |
+          python3 support/ios/bundle.py \
+            --content-dir /tmp/smoke-content \
+            --output /tmp/ios-output \
+            --app-name "Roves Smoke Test" \
+            --bundle-id org.roves.smoketest
+
+      - name: xcodegen generate
+        working-directory: /tmp/ios-output
+        run: xcodegen generate --spec project.json
+
+      - name: xcodebuild (unsigned, iphonesimulator)
+        working-directory: /tmp/ios-output
+        run: |
+          xcodebuild -project RovesGame.xcodeproj -scheme RovesGame \
+            -configuration Debug -sdk iphonesimulator -derivedDataPath build \
+            CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: roves-ios-webview
+          path: /tmp/ios-output/build/Build/Products/Debug-iphonesimulator/RovesGame.app
+
+      # A clean checkout of support/ios/ -- bundle.py never touches this tracked tree itself
+      # (it stages into --output, a separate directory), so there's nothing to strip out
+      # first, same as android.yml's own equivalent step for support/android/apk/.
+      - name: package iOS project for Packmaster/roves-action
+        run: zip -rq roves_ios_project.zip support/ios
+
+      # Retries: see test.yml's/android.yml's own identical step/comment -- this job can race
+      # a concurrent test.yml/android.yml run uploading to the same "test" release.
+      - name: upload to "test" release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          for attempt in 1 2 3; do
+            gh release upload "$TEST_RELEASE_TAG" roves_ios_project.zip --clobber && break
+            echo "upload attempt $attempt failed, retrying in $((attempt * 10))s..." >&2
+            sleep $((attempt * 10))
+            if [ "$attempt" = "3" ]; then
+              echo "::error::failed to upload roves_ios_project.zip after 3 attempts"
+              exit 1
+            fi
+          done

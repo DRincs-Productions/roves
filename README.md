@@ -130,8 +130,10 @@ your page's own initial load — see the "Native boot splash" and later boot-spl
 
 Desktop targets (Windows, macOS, Linux) use Servo. Mobile games use the system
 WebView and do not ship or compile Servo. See [mobile packaging](support/MOBILE.md)
-for Android APK and iOS Xcode project instructions. Android CI builds a native
-WebView smoke-test APK. Console targets remain on the roadmap.
+for Android APK and iOS Xcode project instructions — both platforms run
+edge-to-edge (status bar and system navigation/home indicator hidden). CI
+builds a native WebView smoke-test APK on Android and an unsigned iOS
+Simulator build on macOS. Console targets remain on the roadmap.
 
 ## Embedding
 

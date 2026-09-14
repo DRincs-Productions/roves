@@ -210,6 +210,15 @@ final class GameViewController: UIViewController, WKNavigationDelegate {
     private var splashStarted: CFAbsoluteTime = 0
     private var startupPending = true
 
+    // The game always runs edge-to-edge: no status bar, and no home indicator on Face ID
+    // devices (the bottom "bar" equivalent to Android's gesture nav bar) -- mirrors
+    // MainActivity.kt's `enterImmersiveMode`. `prefersStatusBarHidden` alone is enough to hide
+    // the status bar since `UIViewControllerBasedStatusBarAppearance` defaults to true; both
+    // are read once and never change, so no `setNeedsStatusBarAppearanceUpdate`/
+    // `setNeedsUpdateOfHomeIndicatorAutoHidden` call is needed.
+    override var prefersStatusBarHidden: Bool { true }
+    override var prefersHomeIndicatorAutoHidden: Bool { true }
+
     override func loadView() {
         let contentRoot = Bundle.main.resourceURL?.appendingPathComponent("www")
         let container = UIView()

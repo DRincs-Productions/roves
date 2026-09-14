@@ -41,10 +41,14 @@ class MainActivity : Activity() {
         if (themeColor.isNotEmpty()) {
             runCatching { window.statusBarColor = Color.parseColor(themeColor) }
         }
+        enterImmersiveMode()
         val assets = WebViewAssetLoader.AssetsPathHandler(this)
         val loader = WebViewAssetLoader.Builder()
-            // Serve the game at the origin root so /images and /audio also work.
-            .addPathHandler("/") { path -> assets.handle("www/$path") }
+            // Serve the game at the origin root so /images and /audio also work. SPA
+            // fallback mirrors iOS's GameSchemeHandler/desktop's game.rs: a client-side
+            // router navigating to a path with no matching asset (e.g. /level/3) still gets
+            // index.html, letting the router itself decide what to render, instead of a 404.
+            .addPathHandler("/") { path -> assets.handle("www/$path") ?: assets.handle("www/index.html") }
             .build()
         webView.settings.apply {
             javaScriptEnabled = true
@@ -81,7 +85,12 @@ class MainActivity : Activity() {
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
                 val response = loader.shouldInterceptRequest(request.url)
                 if (request.url.host == WebViewAssetLoader.DEFAULT_DOMAIN && response == null) {
-                    return WebResourceResponse("text/plain", "UTF-8", 404, "Not Found", emptyMap(), null)
+                    // Only reachable once index.html itself is missing (the SPA fallback above
+                    // already covers any other missing path) -- a real 404 body, not a null
+                    // stream, matching iOS's GameSchemeHandler.respond (App.swift), which passes
+                    // Data("Not Found".utf8) rather than an empty body for the same case.
+                    val body = "Not Found".byteInputStream(Charsets.UTF_8)
+                    return WebResourceResponse("text/plain", "UTF-8", 404, "Not Found", emptyMap(), body)
                 }
                 return response
             }
@@ -100,8 +109,7 @@ class MainActivity : Activity() {
                 webView.visibility = View.GONE
                 container.addView(view, FrameLayout.LayoutParams(-1, -1))
                 if (startupPending) splash.bringToFront()
-                window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or
-                    View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                enterImmersiveMode()
             }
             override fun onHideCustomView() = leaveFullscreen()
         }
@@ -110,11 +118,33 @@ class MainActivity : Activity() {
         }
     }
 
+    /**
+     * The game always runs edge-to-edge, with the status and navigation bars hidden -- this
+     * isn't limited to HTML5 `<video>`/Fullscreen API content (`onShowCustomView` above), which
+     * is the only case the system bars were previously hidden for. `IMMERSIVE_STICKY` lets a
+     * swipe from a screen edge reveal the bars temporarily (required for the user to ever get
+     * them back at all, e.g. to check the clock or notifications) without permanently exiting
+     * this mode -- they auto-hide again on the next interaction. Reapplied in
+     * `onWindowFocusChanged` because Android clears these flags whenever the window loses and
+     * regains focus (e.g. the notification shade, a system dialog, or switching apps and back).
+     */
+    private fun enterImmersiveMode() {
+        window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+            View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+            View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) enterImmersiveMode()
+    }
+
     private fun leaveFullscreen() {
         fullscreenView?.let { container.removeView(it) }
         fullscreenView = null
         webView.visibility = View.VISIBLE
-        window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
+        enterImmersiveMode()
         fullscreenCallback?.onCustomViewHidden()
         fullscreenCallback = null
     }

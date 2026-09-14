@@ -6173,3 +6173,108 @@ so CI-green plus code review is the ceiling of verification reachable from here;
 needs someone with a device. **`roves-action` and `roves-packmaster`/Packmaster's own Android bundling
 still assumed the old Rust/NDK path as of this entry** — see their own `CUSTOMIZATIONS.md`/
 `CLAUDE.md` entries for whether that migration has landed by the time you're reading this.
+
+---
+
+## 2026-09-14 — First real-device pass on the WebView mobile containers: immersive mode, Android 404 body, SPA-fallback parity
+
+**Files:** `support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt`,
+`support/ios/App.swift`, `support/ios/bundle.py`.
+
+**Patch:** `patches/servo-v0.5.0/0016-mobile-native-webviews.patch` (regenerated — see the
+2026-09-13 entry above for why this is one consolidated patch rather than a new numbered one).
+
+**Why:** the previous entry's "Known gaps" flagged that neither container had ever been run on
+a real device. It just was, on Android (first real report), and two real bugs surfaced —
+exactly the class of thing that section anticipated.
+
+**Android bar was never actually hidden by default.** `enterImmersiveMode` (`SYSTEM_UI_FLAG_
+FULLSCREEN`/`HIDE_NAVIGATION`/`IMMERSIVE_STICKY`, plus the `LAYOUT_*` variants so content
+doesn't jump when the bars transiently reappear) previously only ran inside `onShowCustomView`
+— i.e. only for HTML5 `<video>`/Fullscreen-API content, never for the game's own normal UI. Now
+called from `onCreate` so the status/navigation bars are hidden from first frame, and from
+`onWindowFocusChanged(hasFocus = true)` since Android silently clears these flags whenever the
+window loses and regains focus (notification shade, a system dialog, switching apps and back)
+— without that reapply, one swipe from the user permanently un-hides the bars for the rest of
+the session. `leaveFullscreen` (previously restoring `SYSTEM_UI_FLAG_VISIBLE` when HTML5
+fullscreen ends) now calls `enterImmersiveMode` instead, so exiting video fullscreen returns to
+the app's own always-immersive baseline instead of revealing the bars.
+
+**Android's 404 response had a `null` body.** `shouldInterceptRequest`'s manual 404 for a
+missing `WebViewAssetLoader` path passed `null` as the `WebResourceResponse` data stream —
+`reasonPhrase` was set to the literal string `"Not Found"`, which is the HTTP status line, not
+page content; the actual response body was empty. iOS's equivalent (`GameSchemeHandler.respond`
+in `App.swift`) already did this correctly (`Data("Not Found".utf8)` as real body bytes). Fixed
+to match: `"Not Found".byteInputStream(Charsets.UTF_8)` as the data stream.
+
+**Android had no SPA fallback; iOS did.** `GameSchemeHandler` has served a missing path as
+`index.html` since it was written (see the 2026-09-13 entry's "Correction, same day"
+paragraph) — a client-side router navigating to e.g. `/level/3` has no file at that path but
+should still get the entry document and let the router decide what to render. Android's
+`WebViewAssetLoader` path handler had no equivalent: a missing path just 404'd. Added the same
+fallback (`assets.handle("www/$path") ?: assets.handle("www/index.html")`) for parity — the
+same tradeoff both platforms and desktop's own `game://` (`ports/servoshell/protocols/game.rs`)
+already accept: a genuinely-missing sub-resource (an image, a script) now serves `index.html`
+with a 200 instead of a proper 404, in exchange for client-side routing working at all. The
+manual 404 branch is only reachable now when `index.html` itself is missing.
+
+**iOS never hid the status bar or home indicator.** Unlike Android (which only had the
+*default-on* bug above), iOS had no immersive/edge-to-edge handling at all — `GameViewController`
+now overrides `prefersStatusBarHidden`/`prefersHomeIndicatorAutoHidden` (both `true`, read once,
+never toggled, so no `setNeedsStatusBarAppearanceUpdate`/`setNeedsUpdateOfHomeIndicatorAutoHidden`
+calls are needed). `bundle.py`'s generated `Info.plist` also sets
+`UIViewControllerBasedStatusBarAppearance`/`UIStatusBarHidden` explicitly (redundant with the
+override under today's defaults, but guards against a future signing/export step's Info.plist
+merge ever introducing a conflicting default).
+
+**Not yet device-verified:** iOS — no device/simulator on this machine to confirm the status
+bar/home indicator fix visually, only Android was actually observed. Re-verify on iOS before
+relying on this entry for that platform.
+
+---
+
+## 2026-09-14 — CI parity: `.github/workflows/ios.yml`, mirroring `android.yml`
+
+**Files:** `.github/workflows/ios.yml` (new). No patch — this repo's own CI file, not
+vendored (same as `android.yml`/`test.yml`/`release.yml`).
+
+**Why:** the 2026-09-13 entry's "Known gaps" explicitly called out that "the Android side is
+fully automated, iOS isn't yet" — CI only ever smoke-tested `mach bundle --android`, never
+`support/ios/bundle.py`. Requested directly: the CI/CD that produces an Android build should
+do the same for iOS.
+
+**What it does:** mirrors `android.yml`'s own structure and reasoning (same smoke-test content,
+same `ensure-test-release` job/rolling "test" release) but drives the real iOS path
+`support/MOBILE.md` documents instead of `mach bundle` — `support/ios/bundle.py` stages the
+content, `xcodegen generate` turns the resulting `project.json` into a real `.xcodeproj`, then
+`xcodebuild -sdk iphonesimulator ... CODE_SIGNING_ALLOWED=NO` builds it unsigned for the
+Simulator (no Apple developer/distribution signing identity exists in CI — same reason
+`release.yml`'s desktop builds don't attempt any mobile store signing either). This proves the
+staging + XcodeGen + Xcode build pipeline itself works end to end; it is **not** a
+device-installable or distributable build — a human on macOS still needs to open the generated
+project in Xcode, choose a development team, and archive/export for a real device or the App
+Store, exactly as `support/MOBILE.md`'s own iOS section already documented before this change.
+Also publishes `roves_ios_project.zip` (a snapshot of `support/ios/`) to the rolling "test"
+release, mirroring `android.yml`'s own `roves_android_project.zip` — so Packmaster/roves-action
+can fetch the iOS staging template directly, the same way Packmaster's Android backend already
+does for the Android Gradle project, without a git checkout of this engine.
+
+**Unlike `android.yml`, no `mach`/`patches/`/`tests/wpt/` involvement at all**:
+`support/ios/bundle.py` is a standalone script with no dependency on `mach`'s command loader
+(see `support/MOBILE.md`'s own "iOS" section — it's invoked directly with `python3`), so none
+of `android.yml`'s WPT-tooling-sparse-checkout workaround applies here.
+
+**Left open on purpose:** still no real device/App Store distribution path in CI (would need
+an Apple developer account's signing certificate + provisioning profile as repo secrets, out
+of scope for what's still an initial container per the 2026-09-13 entry). `README.md`'s
+"Supported platforms" section and `support/MOBILE.md` updated to mention the CI coverage and
+the always-hidden status bar/home indicator from the entry above.
+
+**Cross-repo sync check (per this repo's own `CLAUDE.md`):** `roves-action`'s `action.yml`
+already has an `android: 'true'` input mirroring `mach bundle --android` (added for the
+2026-09-13 pivot) but has no `ios` equivalent — this workflow only smoke-tests the engine
+repo's own iOS staging path, it doesn't add iOS support to `roves-action` itself. Flagging
+this explicitly rather than silently leaving it: whether `roves-action` should gain a matching
+`ios: 'true'` input (and, if so, whether it should shell out to `support/ios/bundle.py` +
+XcodeGen the way this workflow does, since there's still no `mach bundle --ios`) is a real
+follow-up, not done as part of this change.

@@ -1759,10 +1759,10 @@ index 0d75b9613..80abf0129 100644
      </application>
  
 diff --git a/support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt b/support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt
-index 1f95d4c5b..8fbc58d57 100644
+index 1f95d4c5b..3a195d908 100644
 --- a/support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt
 +++ b/support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt
-@@ -1,410 +1,142 @@
+@@ -1,410 +1,172 @@
 -/*
 - * This Source Code Form is subject to the terms of the Mozilla Public
 - * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -1872,10 +1872,14 @@ index 1f95d4c5b..8fbc58d57 100644
 +        if (themeColor.isNotEmpty()) {
 +            runCatching { window.statusBarColor = Color.parseColor(themeColor) }
 +        }
++        enterImmersiveMode()
 +        val assets = WebViewAssetLoader.AssetsPathHandler(this)
 +        val loader = WebViewAssetLoader.Builder()
-+            // Serve the game at the origin root so /images and /audio also work.
-+            .addPathHandler("/") { path -> assets.handle("www/$path") }
++            // Serve the game at the origin root so /images and /audio also work. SPA
++            // fallback mirrors iOS's GameSchemeHandler/desktop's game.rs: a client-side
++            // router navigating to a path with no matching asset (e.g. /level/3) still gets
++            // index.html, letting the router itself decide what to render, instead of a 404.
++            .addPathHandler("/") { path -> assets.handle("www/$path") ?: assets.handle("www/index.html") }
 +            .build()
 +        webView.settings.apply {
 +            javaScriptEnabled = true
@@ -1909,6 +1913,16 @@ index 1f95d4c5b..8fbc58d57 100644
 -                        if (isWindowWidthAtLeastMedium) {
 -                            IconButton(onClick = ::onHistoryBackMenuItemClicked, enabled = canGoBackState.value) {
 -                                Icon(painterResource(R.drawable.arrow_back), stringResource(R.string.history_back))
+-                            }
+-                            IconButton(onClick = ::onHistoryForwardMenuItemClicked, enabled = canGoForwardState.value) {
+-                                Icon(painterResource(R.drawable.arrow_forward), stringResource(R.string.history_forward))
+-                            }
+-                            IconButton(onClick = { if (isRefreshingState.value) onCancelMenuItemClicked() else onRefreshMenuItemClicked() }) {
+-                                if (isRefreshingState.value) {
+-                                    Icon(painterResource(R.drawable.cancel), stringResource(R.string.cancel))
+-                                } else {
+-                                    Icon(painterResource(R.drawable.refresh), stringResource(R.string.refresh))
+-                                }
 +            override fun onPageFinished(view: WebView, url: String) {
 +                if (!startupPending || url != view.url) return
 +                val navigation = startupNavigation
@@ -1921,16 +1935,6 @@ index 1f95d4c5b..8fbc58d57 100644
 +                                startupPending = false
 +                                container.removeView(splash)
                              }
--                            IconButton(onClick = ::onHistoryForwardMenuItemClicked, enabled = canGoForwardState.value) {
--                                Icon(painterResource(R.drawable.arrow_forward), stringResource(R.string.history_forward))
--                            }
--                            IconButton(onClick = { if (isRefreshingState.value) onCancelMenuItemClicked() else onRefreshMenuItemClicked() }) {
--                                if (isRefreshingState.value) {
--                                    Icon(painterResource(R.drawable.cancel), stringResource(R.string.cancel))
--                                } else {
--                                    Icon(painterResource(R.drawable.refresh), stringResource(R.string.refresh))
--                                }
--                            }
 -                        }
 -                        Omnibox(
 -                            urlTextFieldState,
@@ -2014,10 +2018,25 @@ index 1f95d4c5b..8fbc58d57 100644
 -                )
 -                BackHandler(enabled = canGoBackState.value) {
 -                    servoView.goBack()
--                }
 +                })
++            }
++
++            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
++                val response = loader.shouldInterceptRequest(request.url)
++                if (request.url.host == WebViewAssetLoader.DEFAULT_DOMAIN && response == null) {
++                    // Only reachable once index.html itself is missing (the SPA fallback above
++                    // already covers any other missing path) -- a real 404 body, not a null
++                    // stream, matching iOS's GameSchemeHandler.respond (App.swift), which passes
++                    // Data("Not Found".utf8) rather than an empty body for the same case.
++                    val body = "Not Found".byteInputStream(Charsets.UTF_8)
++                    return WebResourceResponse("text/plain", "UTF-8", 404, "Not Found", emptyMap(), body)
+                 }
++                return response
++            }
++            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
++                return request.url.scheme !in listOf("https", "http")
              }
--        }
+         }
 -
 -        servoView.setClient(this)
 -        servoView.requestFocus()
@@ -2028,7 +2047,21 @@ index 1f95d4c5b..8fbc58d57 100644
 -            Os.setenv("HOST_FILE", host, false)
 -        } catch (e: ErrnoException) {
 -            e.printStackTrace()
--        }
++        webView.webChromeClient = object : WebChromeClient() {
++            override fun onShowCustomView(view: View, callback: CustomViewCallback) {
++                if (fullscreenView != null) {
++                    callback.onCustomViewHidden()
++                    return
++                }
++                fullscreenView = view
++                fullscreenCallback = callback
++                webView.visibility = View.GONE
++                container.addView(view, FrameLayout.LayoutParams(-1, -1))
++                if (startupPending) splash.bringToFront()
++                enterImmersiveMode()
++            }
++            override fun onHideCustomView() = leaveFullscreen()
+         }
 -
 -        val intent = getIntent()
 -        val args = intent.getStringExtra("servoargs")
@@ -2037,20 +2070,30 @@ index 1f95d4c5b..8fbc58d57 100644
 -
 -        if (Intent.ACTION_VIEW == intent.action) {
 -            servoView.loadUri(intent.data.toString())
--        }
--    }
--
++        if (savedInstanceState == null || webView.restoreState(savedInstanceState) == null) {
++            webView.loadUrl("https://appassets.androidplatform.net/index.html")
+         }
+     }
+ 
 -    override fun onDestroy() {
 -        super.onDestroy()
 -        mediaSession?.hideMediaSessionControls()
 -    }
 -
--    /**
+     /**
 -     * We’re unsetting all the loading UI just in case loading got stuck, and we’re
 -     * navigating to a cached page, which doesn’t trigger [onLoadEnded]. The "stop
 -     * loading" button is implemented by [onCancelMenuItemClicked], but the underlying
 -     * Servo view can’t actually [ServoView.stop] yet.
--     */
++     * The game always runs edge-to-edge, with the status and navigation bars hidden -- this
++     * isn't limited to HTML5 `<video>`/Fullscreen API content (`onShowCustomView` above), which
++     * is the only case the system bars were previously hidden for. `IMMERSIVE_STICKY` lets a
++     * swipe from a screen edge reveal the bars temporarily (required for the user to ever get
++     * them back at all, e.g. to check the clock or notifications) without permanently exiting
++     * this mode -- they auto-hide again on the next interaction. Reapplied in
++     * `onWindowFocusChanged` because Android clears these flags whenever the window loses and
++     * regains focus (e.g. the notification shade, a system dialog, or switching apps and back).
+      */
 -    private fun onHistoryItemClicked() {
 -        onLoadEnded()
 -    }
@@ -2071,23 +2114,46 @@ index 1f95d4c5b..8fbc58d57 100644
 -
 -    private fun onCancelMenuItemClicked() {
 -        servoView.stop()
--    }
--
++    private fun enterImmersiveMode() {
++        window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
++            View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
++            View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
++            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+     }
+ 
 -    private fun onSettingsMenuItemClicked() {
 -        startActivity(Intent(this, SettingsActivity::class.java))
--    }
--
++    override fun onWindowFocusChanged(hasFocus: Boolean) {
++        super.onWindowFocusChanged(hasFocus)
++        if (hasFocus) enterImmersiveMode()
+     }
+ 
 -    private fun onHistoryMenuItemClicked() {
 -        startActivityForResult(Intent(this, HistoryActivity::class.java), HISTORY_REQUEST_CODE)
--    }
--
++    private fun leaveFullscreen() {
++        fullscreenView?.let { container.removeView(it) }
++        fullscreenView = null
++        webView.visibility = View.VISIBLE
++        enterImmersiveMode()
++        fullscreenCallback?.onCustomViewHidden()
++        fullscreenCallback = null
+     }
+ 
 -    private fun loadUrl(search: String) {
 -        servoView.loadUri(search.trim { it <= ' ' })
--    }
++    @Deprecated("Activity back navigation")
++    override fun onBackPressed() {
++        if (fullscreenView != null) leaveFullscreen()
++        else if (webView.canGoBack()) webView.goBack()
++        else super.onBackPressed()
+     }
  
 -    override fun onImeShow() {
 -        getSystemService<InputMethodManager>()?.showSoftInput(servoView, InputMethodManager.SHOW_IMPLICIT)
--    }
++    override fun onSaveInstanceState(outState: Bundle) {
++        webView.saveState(outState)
++        super.onSaveInstanceState(outState)
+     }
 -
 -    override fun onImeHide() {
 -        getSystemService<InputMethodManager>()?.hideSoftInputFromWindow(servoView.windowToken, InputMethodManager.SHOW_IMPLICIT)
@@ -2155,17 +2221,8 @@ index 1f95d4c5b..8fbc58d57 100644
 -            if (!url.isNullOrEmpty()) {
 -                urlTextFieldState.edit { replace(0, length, url) }
 -                loadUrl(urlTextFieldState.text.toString())
-+            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
-+                val response = loader.shouldInterceptRequest(request.url)
-+                if (request.url.host == WebViewAssetLoader.DEFAULT_DOMAIN && response == null) {
-+                    return WebResourceResponse("text/plain", "UTF-8", 404, "Not Found", emptyMap(), null)
-+                }
-+                return response
-+            }
-+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-+                return request.url.scheme !in listOf("https", "http")
-             }
-         }
+-            }
+-        }
 -    }
 -
 -    override fun onMediaSessionMetadata(title: String, artist: String, album: String) {
@@ -2183,51 +2240,22 @@ index 1f95d4c5b..8fbc58d57 100644
 -        if (state == MediaSession.PLAYBACK_STATE_NONE) {
 -            mediaSession.hideMediaSessionControls()
 -            return
-+        webView.webChromeClient = object : WebChromeClient() {
-+            override fun onShowCustomView(view: View, callback: CustomViewCallback) {
-+                if (fullscreenView != null) {
-+                    callback.onCustomViewHidden()
-+                    return
-+                }
-+                fullscreenView = view
-+                fullscreenCallback = callback
-+                webView.visibility = View.GONE
-+                container.addView(view, FrameLayout.LayoutParams(-1, -1))
-+                if (startupPending) splash.bringToFront()
-+                window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or
-+                    View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-+            }
-+            override fun onHideCustomView() = leaveFullscreen()
-         }
+-        }
 -        if (state == MediaSession.PLAYBACK_STATE_PLAYING ||
 -            state == MediaSession.PLAYBACK_STATE_PAUSED
 -        ) {
 -            mediaSession.showMediaSessionControls()
-+        if (savedInstanceState == null || webView.restoreState(savedInstanceState) == null) {
-+            webView.loadUrl("https://appassets.androidplatform.net/index.html")
-         }
-     }
- 
+-        }
+-    }
+-
 -    override fun onMediaSessionSetPositionState(duration: Float, position: Float, playbackRate: Float) {
 -        Log.d("onMediaSessionSetPositionState", "$duration $position $playbackRate")
-+    private fun leaveFullscreen() {
-+        fullscreenView?.let { container.removeView(it) }
-+        fullscreenView = null
-+        webView.visibility = View.VISIBLE
-+        window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
-+        fullscreenCallback?.onCustomViewHidden()
-+        fullscreenCallback = null
-     }
- 
+-    }
+-
 -    private fun onExperimentalPrefChanged(value: Boolean) {
 -        servoView.setExperimentalMode(value)
-+    @Deprecated("Activity back navigation")
-+    override fun onBackPressed() {
-+        if (fullscreenView != null) leaveFullscreen()
-+        else if (webView.canGoBack()) webView.goBack()
-+        else super.onBackPressed()
-     }
- 
+-    }
+-
 -    private fun updateSettingsIfNecessary(force: Boolean) {
 -        val preferences = PreferenceManager.getDefaultSharedPreferences(applicationContext)
 -        val updated = Settings(preferences)
@@ -2237,10 +2265,7 @@ index 1f95d4c5b..8fbc58d57 100644
 -        }
 -
 -        settings = updated
-+    override fun onSaveInstanceState(outState: Bundle) {
-+        webView.saveState(outState)
-+        super.onSaveInstanceState(outState)
-     }
+-    }
 -
 -    companion object {
 -        private const val TAG = "MainActivity"
@@ -3361,10 +3386,10 @@ index 7013afe73..000000000
 -</vector>
 diff --git a/support/ios/App.swift b/support/ios/App.swift
 new file mode 100644
-index 000000000..bad4f9db6
+index 000000000..613f20b3f
 --- /dev/null
 +++ b/support/ios/App.swift
-@@ -0,0 +1,285 @@
+@@ -0,0 +1,294 @@
 +import UIKit
 +import WebKit
 +
@@ -3577,6 +3602,15 @@ index 000000000..bad4f9db6
 +    private var splashStarted: CFAbsoluteTime = 0
 +    private var startupPending = true
 +
++    // The game always runs edge-to-edge: no status bar, and no home indicator on Face ID
++    // devices (the bottom "bar" equivalent to Android's gesture nav bar) -- mirrors
++    // MainActivity.kt's `enterImmersiveMode`. `prefersStatusBarHidden` alone is enough to hide
++    // the status bar since `UIViewControllerBasedStatusBarAppearance` defaults to true; both
++    // are read once and never change, so no `setNeedsStatusBarAppearanceUpdate`/
++    // `setNeedsUpdateOfHomeIndicatorAutoHidden` call is needed.
++    override var prefersStatusBarHidden: Bool { true }
++    override var prefersHomeIndicatorAutoHidden: Bool { true }
++
 +    override func loadView() {
 +        let contentRoot = Bundle.main.resourceURL?.appendingPathComponent("www")
 +        let container = UIView()
@@ -3652,10 +3686,10 @@ index 000000000..bad4f9db6
 +}
 diff --git a/support/ios/bundle.py b/support/ios/bundle.py
 new file mode 100644
-index 000000000..4f882467c
+index 000000000..444aa868d
 --- /dev/null
 +++ b/support/ios/bundle.py
-@@ -0,0 +1,72 @@
+@@ -0,0 +1,79 @@
 +"""Stage a WKWebView Xcode project; build and sign it on macOS with XcodeGen."""
 +import argparse
 +import json
@@ -3694,6 +3728,13 @@ index 000000000..4f882467c
 +        "CFBundleShortVersionString": "1.0", "CFBundleVersion": "1",
 +        "UILaunchScreen": {},
 +        "UISupportedInterfaceOrientations": ["UIInterfaceOrientationPortrait", "UIInterfaceOrientationLandscapeLeft", "UIInterfaceOrientationLandscapeRight"],
++        # Edge-to-edge: no status bar, no home indicator -- see GameViewController's
++        # `prefersStatusBarHidden`/`prefersHomeIndicatorAutoHidden` overrides in App.swift,
++        # which do the actual hiding. `UIViewControllerBasedStatusBarAppearance` defaults to
++        # true, but set it explicitly so those overrides are honored even if some future
++        # Info.plist merge (e.g. a signing/export step) ever introduces a conflicting default.
++        "UIViewControllerBasedStatusBarAppearance": True,
++        "UIStatusBarHidden": True,
 +    }
 +    with (output / "Info.plist").open("wb") as stream:
 +        plistlib.dump(info, stream)
