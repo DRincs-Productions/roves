@@ -6341,3 +6341,54 @@ missed the actual bug, because CI never runs the APK, and the real per-symptom c
 client-side router mismatch) doesn't look like an Android/WebView problem from source reading
 alone. Real-device DevTools inspection is what actually found it, in a few minutes, after
 static analysis alone hadn't. `support/MOBILE.md` updated to describe the corrected boot URL.
+
+---
+
+## 2026-09-14 — Fixing the fix: a real Kotlin compile error, and a patch that had silently drifted from its own source file
+
+**Files:** `support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt`.
+
+**Patch:** `patches/servo-v0.5.0/0016-mobile-native-webviews.patch` (regenerated a third time).
+
+**Why:** the previous entry's fix never actually reached a device — `roves-action`'s
+`build-android` CI job (which *does* run a real Gradle assemble, unlike this repo's own
+`android.yml` smoke test... no, both do) failed outright once the pinned tag was bumped to
+include it. Two independent, unrelated bugs, both self-inflicted in the same commit:
+
+**1. A real Kotlin compile error.** The path handler's fallback was written as
+`if (primary.data != null) primary else ...` — but `AssetsPathHandler.handle()`'s declared
+return type is `@Nullable WebResourceResponse` (confirmed against the real androidx.webkit
+source, same as the previous entry's own finding), so `primary` has Kotlin type
+`WebResourceResponse?`. Accessing `.data` on it without a safe call (`?.`) or a preceding
+null-check is a compile-time error, not a runtime one — this was conflating "never actually
+null at runtime" (true) with "not declared nullable" (false), the same category of mistake
+the previous entry already made once and corrected elsewhere in the same file (the
+`intercept` function's `response?.data == null` check *did* use a safe call correctly) — just
+missed in this one other spot. Fixed to `if (primary != null && primary.data != null) primary
+else ...`, which lets Kotlin smart-cast `primary` to non-null inside the branch. Caught by a
+failed `build-android` CI run in `roves-action`, not locally (no Kotlin/Gradle toolchain
+available in this environment at all — every check on this file this session has been static
+source review, not a compile) — the annotations API only surfaced a generic "Process
+completed with exit code 1" for the failing composite step, no compiler error text; the fix
+was derived by re-deriving the nullability chain by hand against the real androidx.webkit
+signatures already fetched for the previous entry, not by reading an actual compiler message.
+
+**2. `patches/servo-v0.5.0/0016-mobile-native-webviews.patch`'s own `support/MOBILE.md` block
+had silently drifted from the real file** — a self-inflicted process bug, not a code bug.
+The previous entry's session edited `support/MOBILE.md` in two separate passes (once for the
+"First real-device pass" fixes, once more for this same entry's own root-cause writeup) but
+only regenerated that file's *patch block* after the first pass, not the second — so the
+committed patch quietly still described the *older* wording (e.g. still listing "missing
+index.html" as a pending validation item) while the real `support/MOBILE.md` had already
+moved on. Caught only by this session's own byte-for-byte verification step (reconstruct
+pristine, forward-apply, diff against the real working tree file by file) catching a mismatch
+on `support/MOBILE.md` specifically — exactly the kind of drift that verification step exists
+to catch, and did. Regenerated correctly this time from the file's actual current content.
+
+**Lesson on top of the previous entry's own lesson:** verifying a patch "applies cleanly"
+isn't the same as verifying it matches the *current* file — a patch can apply perfectly clean
+and still encode stale content if the underlying file was edited again after the patch was
+last regenerated, in the same session, without anyone re-running the regeneration a second
+time. The full byte-for-byte diff-against-working-tree check (not just a clean `patch` exit
+code) is what caught this, and should be treated as the actual bar for "done," not the dry-run
+alone.

@@ -62,7 +62,7 @@ class MainActivity : Activity() {
             // decide whether a request truly failed.
             .addPathHandler("/") { path ->
                 val primary = assets.handle("www/$path")
-                if (primary.data != null) primary else assets.handle("www/index.html")
+                if (primary != null && primary.data != null) primary else assets.handle("www/index.html")
             }
             .build()
 
