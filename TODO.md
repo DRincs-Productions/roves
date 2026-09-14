@@ -341,10 +341,31 @@ Servo to native WebView". Restano aperti, in ordine di priorità:**
    standalone, non collegato a `post_build_commands.py`/`mach bundle --ios`. Servirebbe un
    `is_ios(self.target)` branch analogo a `is_android`, e capire come/se firmare/costruire
    automaticamente (richiede macOS+Xcode, non disponibile in questa sessione).
-3. **Verifica su dispositivo reale, entrambe le piattaforme** — nessun emulatore/dispositivo
-   Android né macOS/Xcode disponibili in questa sessione. Da verificare: timing dello splash,
-   persistenza storage, seeking video/audio, rotazione, fullscreen, comportamento del router
-   lato client con un gioco reale (`pixi-vn-react-template`).
+3. **Verifica su dispositivo reale, entrambe le piattaforme** — **Android: fatta (2026-09-14)**,
+   su un dispositivo reale (Pixel 8 Pro) con un APK reale (`pixi-vn-react-template` via
+   `roves-action`). Ha trovato e corretto bug reali, non solo confermato che "funzionava":
+   barre di stato/navigazione mai nascoste di default, body del 404 nullo invece di reale,
+   fallback SPA dead-code (`AssetsPathHandler.handle()` non ritorna mai `null`, a differenza
+   di quanto assunto), registrazione Service Worker fallita (serve un
+   `ServiceWorkerControllerCompat` separato), e — la causa vera dietro un primo "Not Found"
+   visto in due round di fix precedenti — l'app caricava `.../index.html` invece della radice
+   `/`, facendo sì che il router lato client del gioco (non Android) rendesse la propria
+   pagina 404. Vedi `CUSTOMIZATIONS.md`, voci del 2026-09-14, per il dettaglio completo di
+   ogni bug e come sono stati diagnosticati (Chrome DevTools via `chrome://inspect`, non solo
+   lettura del codice — la lezione esplicita di quella sessione è che "CI verde + code review"
+   da sola aveva mancato la causa vera per due round consecutivi).
+   **iOS: ancora non verificato** — nessun macOS/Xcode/simulatore/dispositivo disponibile in
+   nessuna sessione finora. Il codice (`App.swift`) è stato riletto riga per riga contro gli
+   stessi identici bug trovati su Android (URL di boot, logica di fallback) e **non li ha**:
+   carica già la radice nuda `game://content/`, e il suo fallback usa un vero controllo
+   `FileManager.fileExists` invece di un `?:` su un valore che non è mai `nil` — ma questo
+   resta un'analisi statica, non una conferma su un device/simulatore reale. **Se capita di
+   avere del tempo e un Mac/dispositivo iOS a disposizione**: fare lo stesso identico test
+   fatto su Android (build reale via `roves-action`'s `ios: 'true'` o `support/ios/bundle.py`,
+   avvio su un device/simulatore reale, ispezione con Safari Web Inspector — l'equivalente
+   iOS di `chrome://inspect`) e condividere il risultato sul Discord del progetto
+   (<https://discord.gg/E95FZWakzp>) — utile sia se conferma che tutto funziona, sia
+   soprattutto se emerge un problema analogo a quelli trovati su Android.
 4. **APK signing** (punto 5 sopra) resta valido e non affetto dal pivot — `--android-release`
    funziona identicamente nel nuovo `_bundle_android`.
 
