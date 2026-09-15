@@ -25,6 +25,15 @@ const STEAM_AUTOTEST_STAT_NAME = "test_stat";
 const STEAM_AUTOTEST_STAT_VALUE = 42;
 const STEAM_AUTOTEST_MARKER = "[roves-steam-autotest]";
 
+// Regression coverage for the `roves:save_file` command (../../CUSTOMIZATIONS.md's 2026-09-15
+// desktop save export/import entry) that doesn't require a human to click through a native
+// "Save As" dialog -- CI has no way to automate that part, so this only exercises the
+// parameter-validation path, which returns before `protocols/roves.rs` ever reaches
+// `AppEvent::SaveFileDialog`/shows any UI at all. The real end-to-end path (a save actually
+// landing on disk) still needs the manual "Test save export" button below, clicked by a human
+// after downloading a build from the "test" release.
+const SAVE_FILE_AUTOTEST_MARKER = "[roves-save-file-autotest]";
+
 /**
  * Manual diagnostic page for ../../.github/workflows/test.yml's build-from-source
  * smoke test — a human clicks through this after downloading a build from the
@@ -124,6 +133,39 @@ export default function App() {
     return () => clearTimeout(timer);
   }, []);
 
+  // See SAVE_FILE_AUTOTEST_MARKER's own doc comment: only the parameter-validation path,
+  // which answers before any native dialog would ever show. `roves:save_file` (no params at
+  // all) should fail fast with a 4xx-shaped NetworkError, not hang or crash the page.
+  useEffect(() => {
+    const timer = setTimeout(async () => {
+      const result: Record<string, unknown> = {};
+      try {
+        const response = await fetch("roves:save_file");
+        result.ok = response.ok;
+        result.status = response.status;
+      } catch (error) {
+        result.error = String(error);
+      }
+      console.log(`${SAVE_FILE_AUTOTEST_MARKER} ${JSON.stringify(result)}`);
+    }, 2000);
+    return () => clearTimeout(timer);
+  }, []);
+
+  // Manual only (see the file doc comment) -- actually exercises the full round trip a human
+  // tester needs to click through: the download-intercept userscript (app.rs) catches this
+  // `<a download>` click, reads the Blob back out, and calls `roves:save_file`, which pops a
+  // real native "Save As" dialog (`Dialog::SaveFile` in dialog.rs). CI can't automate picking
+  // a destination in that dialog, so this can only ever be a manual check.
+  const testSaveExport = () => {
+    const blob = new Blob([JSON.stringify({ hello: "from the test page", at: new Date().toISOString() })], {
+      type: "application/json",
+    });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "roves-test-export.json";
+    a.click();
+  };
+
   const quitApp = async () => {
     if (!window.confirm("This calls @drincs/roves-api/process's exit() — it will close this window. Continue?")) {
       return;
@@ -166,6 +208,9 @@ export default function App() {
         </button>
         <button type="button" onClick={checkSteamApi}>
           Test steam: protocol (@drincs/roves-api)
+        </button>
+        <button type="button" onClick={testSaveExport}>
+          Test save export (real file, needs manual click-through)
         </button>
         <button type="button" onClick={() => toggleRenderTest("pixi")}>
           {renderTest === "pixi" ? "Stop" : "Test"} PixiJS render

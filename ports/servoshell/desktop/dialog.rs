@@ -19,11 +19,42 @@ use servo::{
 /// for the sake of consistency.
 const MINIMUM_UI_ELEMENT_WIDTH: f32 = 150.0;
 
+/// Starts both the file-open (`<input type="file">`) and file-save (a game's save export)
+/// dialogs in the OS Downloads folder rather than wherever `egui_file_dialog`/the OS's own
+/// dialog-position memory happens to land otherwise — confirmed on a real Windows build to
+/// otherwise open into this game's own `saves/` folder (Roves' internal save-slot storage,
+/// see `protocols/saves.rs`), which structurally never contains a manually exported/imported
+/// file, making the folder look empty even when a real exported file exists elsewhere. Not
+/// perfect (a save exported somewhere else entirely still needs manual navigation), but a
+/// meaningfully better default than an internal-only folder no export ever lands in.
+/// `dirs::download_dir()` returning `None` (no meaningful home directory resolvable at all)
+/// just leaves `egui_file_dialog`'s own fallback in place — see `FileDialog::initial_directory`'s
+/// own doc comment on that fallback.
+fn with_default_initial_directory(dialog: EguiFileDialog) -> EguiFileDialog {
+    match dirs::download_dir() {
+        Some(downloads) => dialog.initial_directory(downloads),
+        None => dialog,
+    }
+}
+
 #[expect(clippy::large_enum_variant)]
 pub enum Dialog {
     File {
         dialog: EguiFileDialog,
         maybe_picker: Option<FilePicker>,
+    },
+    /// A native "Save As" dialog for a game's save export (`<a download>` on a `blob:`/
+    /// `data:` URL, intercepted by the userscript `app.rs` registers alongside
+    /// `window.__ROVES__ = true;` and routed here via `AppEvent::SaveFileDialog` — see that
+    /// variant's own doc comment for why this can't reuse `Dialog::File`'s own
+    /// `EmbedderControlRequest`/`FilePicker` machinery, which is script/DOM-specific).
+    /// `response` answers the `roves:save_file` `fetch()` that's still pending on some other
+    /// thread; `None` once sent (a plain `Option` instead of relying on `Sender` itself being
+    /// one-shot-safe to `.take()` from a `&mut self` match arm).
+    SaveFile {
+        dialog: EguiFileDialog,
+        data: Vec<u8>,
+        response: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
     },
     Alert(Option<AlertDialog>),
     Confirm(Option<ConfirmDialog>),
@@ -55,6 +86,7 @@ pub enum Dialog {
 impl Dialog {
     pub fn new_file_dialog(file_picker: FilePicker) -> Self {
         let mut dialog = EguiFileDialog::new();
+        dialog = with_default_initial_directory(dialog);
         if !file_picker.filter_patterns().is_empty() {
             let filter_patterns = file_picker.filter_patterns().to_owned();
             let filter = Filter::new(move |path: &Path| {
@@ -73,6 +105,23 @@ impl Dialog {
         Dialog::File {
             dialog,
             maybe_picker: Some(file_picker),
+        }
+    }
+
+    /// See `Dialog::SaveFile`'s own doc comment. `suggested_name` pre-fills the dialog's
+    /// filename field (`egui_file_dialog::default_file_name`) but the user can still change
+    /// it before confirming — this is a suggestion, not an enforced value.
+    pub fn new_save_file_dialog(
+        suggested_name: String,
+        data: Vec<u8>,
+        response: tokio::sync::oneshot::Sender<Result<(), String>>,
+    ) -> Self {
+        let mut dialog = EguiFileDialog::new().default_file_name(&suggested_name);
+        dialog = with_default_initial_directory(dialog);
+        Dialog::SaveFile {
+            dialog,
+            data,
+            response: Some(response),
         }
     }
 
@@ -190,6 +239,34 @@ impl Dialog {
                     DialogAction::Continue => {},
                 }
                 matches!(action, DialogAction::Continue)
+            },
+            Dialog::SaveFile { dialog, data, response } => {
+                if *dialog.state() == DialogState::Closed {
+                    dialog.save_file();
+                }
+                match dialog.update(ctx).state() {
+                    DialogState::Open => true,
+                    DialogState::Picked(path) => {
+                        let result =
+                            std::fs::write(path, data.as_slice()).map_err(|error| error.to_string());
+                        if let Some(response) = response.take() {
+                            let _ = response.send(result);
+                        }
+                        false
+                    },
+                    // `DialogMode::SaveFile` (see `Dialog::new_save_file_dialog`) never
+                    // produces `PickedMultiple` — that variant is only reachable via
+                    // `pick_multiple()`, which nothing here ever calls.
+                    DialogState::PickedMultiple(_) => unreachable!(
+                        "a SaveFile-mode egui_file_dialog produced PickedMultiple"
+                    ),
+                    DialogState::Cancelled | DialogState::Closed => {
+                        if let Some(response) = response.take() {
+                            let _ = response.send(Err("Save cancelled".to_owned()));
+                        }
+                        false
+                    },
+                }
             },
             Dialog::Alert(maybe_alert_dialog) => {
                 let Some(alert_dialog) = maybe_alert_dialog else {

@@ -205,17 +205,29 @@ final class RovesSplashView: UIView {
     }
 }
 
-/// Intercepts `<a download>` clicks on `blob:`/`data:` URLs (a game's save export, e.g.
-/// `save.download()` writing a JSON save file) and routes them to `rovesSaveFile` below
-/// instead of leaving WebKit to handle them -- WKWebView has no built-in download handling
-/// for this exact case: `WKNavigationDelegate`'s `decidePolicyFor navigationResponse`/
-/// `WKDownloadDelegate` only fire for a real top-level navigation to a downloadable
-/// response, never for a JS-triggered anchor click that never navigates the page at all
-/// (confirmed missing on a real device on Android, where the equivalent gap needed the same
-/// kind of workaround -- see MainActivity.kt's own `setDownloadListener` comment; this is the
-/// same fix, adapted to WKWebView's own constraints since there's no `DownloadListener`
-/// equivalent that fires for blob: URLs here at all). Injected at document start so it's in
-/// place before the game's own script runs.
+/// Two things, both injected at document start so they're in place before the game's own
+/// script runs:
+///
+/// 1. Intercepts `<a download>` clicks on `blob:`/`data:` URLs (a game's save export, e.g.
+///    `save.download()` writing a JSON save file) and routes them to `rovesSaveFile` below
+///    instead of leaving WebKit to handle them -- WKWebView has no built-in download handling
+///    for this exact case: `WKNavigationDelegate`'s `decidePolicyFor navigationResponse`/
+///    `WKDownloadDelegate` only fire for a real top-level navigation to a downloadable
+///    response, never for a JS-triggered anchor click that never navigates the page at all
+///    (confirmed missing on a real device on Android, where the equivalent gap needed the same
+///    kind of workaround -- see MainActivity.kt's own `setDownloadListener` comment; this is
+///    the same fix, adapted to WKWebView's own constraints since there's no `DownloadListener`
+///    equivalent that fires for blob: URLs here at all).
+/// 2. Neutralizes the Fullscreen API (`Element.requestFullscreen`/`Document.exitFullscreen`)
+///    into a harmless resolved no-op -- this app already always runs edge-to-edge (see
+///    `prefersStatusBarHidden`/`prefersHomeIndicatorAutoHidden` below), so there's nothing for
+///    a "toggle fullscreen" call to meaningfully do. `WKPreferences.elementFullscreenEnabled`
+///    is never turned on in this file, so WebKit's own Fullscreen API support is already off
+///    by default here -- this override exists for predictability (a resolved promise, not
+///    whatever WebKit's own default-disabled rejection looks like) and to match
+///    `MainActivity.kt`'s equivalent override, which *is* load-bearing there (see its own doc
+///    comment: `onShowCustomView` visibly breaks the game's UI on Android without it), so a
+///    game targeting both platforms sees the same behavior either way.
 private let downloadInterceptScript = """
 (function() {
   document.addEventListener('click', function(event) {
@@ -235,6 +247,10 @@ private let downloadInterceptScript = """
       reader.readAsDataURL(blob);
     });
   }, true);
+
+  var fullscreenNoop = function() { return Promise.resolve(); };
+  if (window.Element && Element.prototype) { Element.prototype.requestFullscreen = fullscreenNoop; }
+  if (window.Document && Document.prototype) { Document.prototype.exitFullscreen = fullscreenNoop; }
 })();
 """
 

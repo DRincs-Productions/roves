@@ -6696,3 +6696,154 @@ by name are everything a Gradle-based `mach bundle --android` actually touches.
 `android-release-signing` both fully green, `setup-android` included, `mach bundle --android`/
 `--android --android-release` and `apksigner verify` all passing (the in-CI-generated release
 keystore from the entry above working end to end for the first time).
+
+---
+
+## 2026-09-15 — Desktop save export/import: `<a download>` never worked, "open" dialog opened the wrong folder
+
+**Files:** `ports/servoshell/desktop/app.rs`, `ports/servoshell/desktop/protocols/roves.rs`,
+`ports/servoshell/desktop/dialog.rs`, `ports/servoshell/desktop/event_loop.rs`,
+`ports/servoshell/desktop/headed_window.rs`, `ports/servoshell/Cargo.toml`.
+
+**Patch:** `patches/servo-v0.5.0/0001-desktop-shell-core.patch` (app.rs, dialog.rs,
+event_loop.rs, headed_window.rs, Cargo.toml), `patches/servo-v0.5.0/0002-desktop-protocols.patch`
+(roves.rs).
+
+**Reported by a real user testing `visual-novel-template`'s Save/Load screen on a real Windows
+build:** clicking "save to file" (`save.download()`, an `<a download>` click on a `blob:` URL —
+see that template's `src/lib/utils/save-utility.ts`) navigated to an error page reading exactly
+`Could not load the requested page: InvalidOrigin`; clicking "load from file" opened a native
+file picker correctly pointed at the game's own `saves/` folder, but the folder looked empty
+even though a real save (visible in the game's own save-slot grid) existed.
+
+**Root cause, `<a download>`:** not implemented at all in this Servo tree — stock upstream, not
+a Roves patch (`components/script/dom/html/htmlanchorelement.rs` has a literal
+`// TODO: Download the link is `download` attribute is set.`) — so every click just does a real
+top-level navigation to the `blob:` URL. That navigation path never attaches the creating
+document's origin to the blob (`ensure_blob_referenced_by_url_is_kept_alive` in
+`components/script/url.rs` is only wired into `fetch`/XHR/media/worker call sites, not hyperlink
+navigation), so the origin gets re-derived from the serialized `blob:` URL text instead
+(`components/net/protocols/blob.rs`). That works for an ordinary `https://` document (a tuple
+origin round-trips through a `blob:` URL), but never for a Roves game: `game://` documents get
+an **opaque** origin by design (`0053-virtual-content-root-game-protocol`,
+`components/url/origin.rs`'s `new_opaque_for_game_content`), and an opaque origin can't
+round-trip through a `blob:` URL at all — guaranteeing a mismatch in
+`components/net/filemanager_thread.rs`'s `get_impl`, which is exactly where
+`BlobURLStoreError::InvalidOrigin` comes from. Traced the exact string all the way through
+`components/net/protocols/blob.rs`'s `format!("{:?}", err)` and
+`components/script/dom/servoparser/mod.rs`'s `${reason}` substitution (no prefix added) to
+confirm it produces that literal message, not a coincidence.
+
+**Root cause, empty "open" folder:** not a filter bug — `accept="application/json"` (the
+template's actual value) correctly maps to a `.json` extension filter via `mime_guess` in
+`components/script/dom/html/form_controls/input_type/file_input_type.rs`'s `filter_from_accept`
+(stock upstream, unmodified). The real problem: `Dialog::new_file_dialog` in `dialog.rs` never
+set an initial directory at all, so the dialog opened wherever the OS/`egui_file_dialog`
+happened to land — which turned out to be this game's own `saves/` folder (Roves' internal
+save-slot storage, `.save` files — see the "Save-game storage API" entry above), a folder that
+structurally never contains a manually exported `.json` file. Compounded by the `<a download>`
+bug above: with export never actually succeeding, there was no exported file anywhere to find
+regardless of which folder the picker opened to.
+
+**Fix, three parts, all reusing existing infrastructure rather than inventing new plumbing:**
+
+1. **A new injected userscript** (`DOWNLOAD_INTERCEPT_SCRIPT` in `app.rs`, registered alongside
+   the existing `window.__ROVES__ = true;` one) intercepts `<a download>` clicks on `blob:`/
+   `data:` hrefs with `event.preventDefault()` before Servo ever attempts to navigate — the same
+   fix already shipped for both mobile WebView containers (see the entry below), applied to
+   desktop for the first time. Reads the blob back out via `fetch()`+`FileReader.readAsDataURL`
+   (base64), then calls a new `roves:save_file?filename=...&data=...` command.
+2. **`roves:save_file`** (`protocols/roves.rs`) is the first command in this handler that
+   genuinely has to wait on user interaction rather than answer immediately — it base64-decodes
+   `data` and sends a new `AppEvent::SaveFileDialog { suggested_name, data, response }`
+   (`event_loop.rs`) through the same `EventLoopProxy<AppEvent>` the existing `exit`/
+   `close_window` commands already use to reach the main thread from a background protocol-
+   handler thread (`RovesProtocolHandler` is `Send + Sync` and runs off-thread; `AppEvent` is
+   winit's own cross-thread wakeup queue) — the one new piece is `response`, a
+   `tokio::sync::oneshot::Sender<Result<(), String>>` the still-pending `fetch()`'s `Future`
+   awaits, since (unlike `exit`) this needs a real answer back once the user picks a destination
+   or cancels. `ports/servoshell/Cargo.toml`'s `tokio` dependency gained an explicit
+   `features = ["sync"]` for this (previously depended on cross-crate feature unification with
+   whatever else in the workspace happened to enable it, which happened to work but wasn't
+   declared).
+3. **A new `Dialog::SaveFile` variant** (`dialog.rs`), driven by `egui-file-dialog`'s own
+   `DialogMode::SaveFile` (`FileDialog::save_file()`/`default_file_name()` — already a dependency,
+   just an unused mode until now) — `App::user_event`'s handling for
+   `AppEvent::SaveFileDialog` resolves a window/webview itself (this event has no originating
+   `WebViewId` the way a DOM `<input type="file">`'s `EmbedderControlRequest` does — picks the
+   first window with an active webview, which in this fork's usual single-window kiosk setup is
+   always the one sensible choice) and calls a new `HeadedWindow::show_save_file_dialog` to add
+   it. On `DialogState::Picked`, writes the bytes and answers `response`; on
+   `Cancelled`/`Closed`, answers with an error.
+
+**Also fixes the empty-folder bug at the root**, not just as a side effect of export now
+working: both `Dialog::new_file_dialog` (open) and the new `Dialog::new_save_file_dialog` (save)
+now call a shared `with_default_initial_directory` helper defaulting to `dirs::download_dir()`
+(already a workspace dependency) instead of leaving `egui_file_dialog` to land wherever it
+otherwise would — a real, if imperfect, improvement (a save exported somewhere else entirely
+still needs manual navigation), chosen over doing nothing since the previous default landed
+specifically in a folder that can *never* be correct for either dialog.
+
+**Verification:** all 6 regenerated hunks (Cargo.toml, app.rs, dialog.rs, event_loop.rs,
+headed_window.rs, and roves.rs as a fresh "new file" diff) apply cleanly
+(`patch -p1 --dry-run`) to their real pristine `v0.5.0` content, downloaded individually and
+confirmed by line count before diffing. Not yet verified end-to-end on a real device/build (no
+working local Windows toolchain — see this file's own recurring note on that) — pending a green
+CI run and a real re-test of the exact repro steps from the original report.
+
+---
+
+## 2026-09-15 — Mobile: save-export silently did nothing on Android; Fullscreen API risked hiding the game
+
+**Files:** `support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt`,
+`support/ios/App.swift`.
+
+**Patch:** none — neither file has a pristine-upstream counterpart to diff against (same
+category as `test-page/`, see that entry's own reasoning: these are Roves-original native
+container code, not modifications of any vendored Servo source).
+
+**Reported by the same real-device test as the desktop entry above:** on Android (and,
+untested but suspected by the same reporter, iOS), both the save-export and save-import buttons
+did nothing at all — no dialog, no error, no log output.
+
+**Root cause (Android export only — import was already wired correctly):**
+`shouldOverrideUrlLoading` (added long before the save feature, `dc0b0925b`, "Use native
+Android WebView and add initial iOS WKWebView container") returns `true` — "I'm handling this
+myself" — for **any** non-http(s) scheme, `blob:` included. That cancels the navigation
+attempt outright, which starves `setDownloadListener` (added by the same commit that landed
+save import/export, `16a461ef6`) of the one signal it needs to ever fire at all: WebView only
+invokes a `DownloadListener` when it *attempts* a real navigation and discovers it can't render
+the result — an attempt `shouldOverrideUrlLoading` had already vetoed before that could happen.
+Two features landed in different commits, individually reasonable, silently incompatible with
+each other from day one.
+
+**Fix:** adopted `App.swift`'s existing, working pattern instead (it never had this problem —
+`WKWebView` has no navigation-based download signal to conflict with in the first place, so it
+already intercepted the click directly): a new document-start injected script
+(`DOWNLOAD_INTERCEPT_SCRIPT`, registered via `WebViewCompat.addDocumentStartJavaScript`, feature-
+checked against `WebViewFeature.DOCUMENT_START_SCRIPT` the same way the existing service-worker
+interception already feature-checks its own APIs) calls `event.preventDefault()` on any
+`a[download]` click before the browser ever attempts to navigate, then hands the decoded bytes
+straight to the existing `RovesFileBridge.saveDataUrl` `@JavascriptInterface` — which was always
+correct, just never reached by the broken navigation-based path. `shouldOverrideUrlLoading`
+itself also now excludes `blob:`/`data:` from the blocked-scheme list, so `setDownloadListener`
+stays a working fallback for anything the click-interceptor doesn't catch, rather than a
+permanently dead path.
+
+**Fullscreen API, both platforms:** this app (and the iOS one) already always run edge-to-edge/
+immersive (`enterImmersiveMode`/`prefersStatusBarHidden`) — there is no "windowed" mode for the
+standard `document.documentElement.requestFullscreen()` to meaningfully toggle into or out of.
+On Android specifically this isn't just a redundant no-op: `WebChromeClient.onShowCustomView`
+(designed for `<video>` fullscreen) also fires for a whole-document fullscreen request, and it
+**hides the entire WebView** (`webView.visibility = View.GONE`) in favor of a custom view never
+designed to render a full document — a real risk of a game's UI visibly vanishing, not a
+theoretical one. The same injected script neutralizes `Element.prototype.requestFullscreen`/
+`Document.prototype.exitFullscreen` into a harmless resolved no-op on both platforms — on iOS
+this is precautionary (`WKPreferences.elementFullscreenEnabled` is never turned on in
+`App.swift`, so WebKit's own Fullscreen API support is already off by default there) but kept
+for predictability and parity with Android, where it's load-bearing.
+
+**Verification:** not yet verified on a real device (this repo's own CI can build both mobile
+targets but has no real device/simulator interaction step for this feature — see the "Save
+import/export" entry's own note making the same caveat for the original, buggy version of this
+code). Pending a real-device re-test of both the save-export and fullscreen-safety fixes.

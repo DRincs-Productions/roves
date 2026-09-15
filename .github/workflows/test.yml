@@ -466,6 +466,25 @@ jobs:
             echo "::error::GStreamer failed to initialize — see roves.log above for the plugin/DLL error"
           fi
 
+          # Regression check for the new `roves:save_file` command (see ../CUSTOMIZATIONS.md's
+          # 2026-09-15 desktop save export/import entry) — test-page's own auto-run effect
+          # (App.tsx) already logged its result via console.log, which reaches this same
+          # captured stdout/roves.log for free (see that effect's own comment). Only the
+          # parameter-validation path is checked here — the real "Save As" dialog needs a
+          # human, see the manual button in the same file.
+          FILES=(smoke-stdout.log)
+          [ -n "$LOG" ] && FILES+=("$LOG")
+          SAVE_FILE_LINE=$(grep -h '\[roves-save-file-autotest\]' "${FILES[@]}" 2>/dev/null | tail -1)
+          if [ -z "$SAVE_FILE_LINE" ]; then
+            echo "::error::no [roves-save-file-autotest] result line found — test-page's roves:save_file check never completed"
+            exit 1
+          elif echo "$SAVE_FILE_LINE" | grep -q '"ok":true'; then
+            echo "::error::roves:save_file with no params unexpectedly succeeded — parameter validation regressed: $SAVE_FILE_LINE"
+            exit 1
+          else
+            echo "roves:save_file parameter-validation check passed: $SAVE_FILE_LINE"
+          fi
+
           [ -n "${MOUNT_DIR:-}" ] && hdiutil detach "$MOUNT_DIR" 2>/dev/null
 
           if [ "$STILL_RUNNING" = false ]; then
@@ -553,6 +572,23 @@ jobs:
           # generic "bundle exited early", straight from the job summary/annotations.
           if ($log -and (Select-String -Path $log.FullName -Pattern "Error initializing GStreamer" -Quiet)) {
             Write-Host "::error::GStreamer failed to initialize — see roves.log above for the plugin/DLL error"
+          }
+
+          # Regression check for the new `roves:save_file` command (see ../CUSTOMIZATIONS.md's
+          # 2026-09-15 desktop save export/import entry) -- same reasoning as the Linux/macOS
+          # smoke-test step's own equivalent check a few lines up in this file.
+          $saveFileFiles = @($stdout)
+          if ($log) { $saveFileFiles += $log.FullName }
+          $saveFileLine = Get-Content $saveFileFiles -ErrorAction SilentlyContinue |
+            Select-String -Pattern '\[roves-save-file-autotest\]' | Select-Object -Last 1
+          if (-not $saveFileLine) {
+            Write-Host "::error::no [roves-save-file-autotest] result line found -- test-page's roves:save_file check never completed"
+            exit 1
+          } elseif ($saveFileLine.Line -match '"ok":true') {
+            Write-Host "::error::roves:save_file with no params unexpectedly succeeded -- parameter validation regressed: $($saveFileLine.Line)"
+            exit 1
+          } else {
+            Write-Host "roves:save_file parameter-validation check passed: $($saveFileLine.Line)"
           }
 
           if (-not $stillRunning) {

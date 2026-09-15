@@ -24,7 +24,58 @@ import android.widget.FrameLayout
 import androidx.webkit.ServiceWorkerClientCompat
 import androidx.webkit.ServiceWorkerControllerCompat
 import androidx.webkit.WebViewAssetLoader
+import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+
+/**
+ * Injected before any of the game's own scripts run (`WebViewCompat.addDocumentStartJavaScript`
+ * below), doing two things:
+ *
+ * 1. Intercepts `<a download>` clicks on `blob:`/`data:` URLs (a game's save export) and hands
+ *    the decoded bytes to [RovesFileBridge.saveDataUrl] directly, via `preventDefault()` before
+ *    any navigation is even attempted -- mirrors `support/ios/App.swift`'s own
+ *    `downloadInterceptScript` verbatim (same underlying problem: no browser chrome to hand a
+ *    download to, so the platform has to intercept the click itself). This replaces reliance on
+ *    `setDownloadListener` for this case: that only fires *after* WebView attempts a real
+ *    navigation and fails to render the result, and `shouldOverrideUrlLoading` above already
+ *    vetoes that attempt for blob:/data: before it can happen (confirmed on a real device,
+ *    2026-09-14, to be exactly why the save-export button silently did nothing) --
+ *    `setDownloadListener` stays in place for a real http(s) download, an unrelated case this
+ *    script's `href` scheme check never touches.
+ * 2. Neutralizes the Fullscreen API (`Element.requestFullscreen`/`Document.exitFullscreen`) into
+ *    a harmless resolved no-op. This app already always runs edge-to-edge/immersive (see
+ *    `enterImmersiveMode`) -- unlike a `<video>` element's fullscreen request, which WebView's
+ *    own `onShowCustomView` handles correctly, calling `requestFullscreen()` on the *document*
+ *    itself still triggers that same callback, which hides the entire WebView
+ *    (`webView.visibility = View.GONE`) and replaces it with a custom view never designed to
+ *    render a whole document -- a real risk of the game's UI silently vanishing, not just a
+ *    redundant no-op, for any game that reaches for the standard web Fullscreen API expecting
+ *    "toggle fullscreen" the way a desktop build would (already always fullscreen here, so
+ *    there is nothing for that toggle to meaningfully do).
+ */
+private const val DOWNLOAD_INTERCEPT_SCRIPT = """
+(function() {
+  document.addEventListener('click', function(event) {
+    var a = event.target && event.target.closest && event.target.closest('a[download]');
+    if (!a) return;
+    var href = a.getAttribute('href') || '';
+    if (href.indexOf('blob:') !== 0 && href.indexOf('data:') !== 0) return;
+    event.preventDefault();
+    var fileName = a.getAttribute('download') || 'download';
+    function post(dataUrl) { RovesFiles.saveDataUrl(dataUrl, fileName); }
+    if (href.indexOf('data:') === 0) { post(href); return; }
+    fetch(href).then(function(r) { return r.blob(); }).then(function(blob) {
+      var reader = new FileReader();
+      reader.onloadend = function() { post(reader.result); };
+      reader.readAsDataURL(blob);
+    });
+  }, true);
+
+  var fullscreenNoop = function() { return Promise.resolve(); };
+  if (window.Element && Element.prototype) { Element.prototype.requestFullscreen = fullscreenNoop; }
+  if (window.Document && Document.prototype) { Document.prototype.exitFullscreen = fullscreenNoop; }
+})();
+"""
 
 /** The game runs on Android's system WebView; no Servo or JNI library is loaded. */
 class MainActivity : Activity() {
@@ -128,8 +179,21 @@ class MainActivity : Activity() {
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
                 intercept(request.url)
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-                return request.url.scheme !in listOf("https", "http")
+                // blob:/data: excluded: a save export's `<a download>` click is now caught
+                // before it ever navigates at all (`preventDefault()` in the document-start
+                // script registered below, mirroring iOS's own `downloadInterceptScript` in
+                // App.swift) -- returning `true` here for those schemes used to cancel that
+                // navigation outright, which silently starved `setDownloadListener` below of
+                // the one signal it needs to ever fire: WebView only invokes it when it
+                // *attempts* a navigation and discovers it can't render the result, and this
+                // check ran first and vetoed the attempt before that could happen. Confirmed
+                // on a real device (2026-09-14): the save-export button did nothing at all,
+                // no error, no log -- this exact conflict, not a missing feature.
+                return request.url.scheme !in listOf("https", "http", "blob", "data")
             }
+        }
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            WebViewCompat.addDocumentStartJavaScript(webView, DOWNLOAD_INTERCEPT_SCRIPT, setOf("*"))
         }
 
         // Feature-checked because not every WebView provider/version implements service worker

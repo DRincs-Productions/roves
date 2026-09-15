@@ -1,8 +1,6 @@
 diff --git a/ports/servoshell/Cargo.toml b/ports/servoshell/Cargo.toml
-index 59f5581f7..a66842255 100644
---- a/ports/servoshell/Cargo.toml
-+++ b/ports/servoshell/Cargo.toml
-@@ -35,10 +35,10 @@ cc = { workspace = true }
+index 000000000..000000000 100644
+@@ -35,10 +35,10 @@
  winresource = { workspace = true }
  
  [package.metadata.winresource]
@@ -16,7 +14,7 @@ index 59f5581f7..a66842255 100644
  
  [features]
  default = ["baked-in-resources", "bundled_freetype", "gamepad", "servo/clipboard", "js_jit", "max_log_level", "webgpu", "webxr"]
-@@ -61,6 +61,11 @@ vello = ["servo/vello"]
+@@ -61,6 +61,11 @@
  webgl_backtrace = ["servo/webgl_backtrace"]
  webgpu = ["servo/webgpu"]
  webxr = ["servo/webxr"]
@@ -28,7 +26,7 @@ index 59f5581f7..a66842255 100644
  
  [dependencies]
  accesskit = { workspace = true }
-@@ -68,14 +73,18 @@ bpaf = { workspace = true, features = ["derive"] }
+@@ -68,17 +73,21 @@
  cfg-if = { workspace = true }
  crossbeam-channel = { workspace = true }
  dpi = { workspace = true }
@@ -46,8 +44,12 @@ index 59f5581f7..a66842255 100644
 +roves-content-packer = { path = "../../support/content-packer" }
  rustls = { workspace = true, features = ["aws-lc-rs"] }
  servo = { workspace = true, features = ["background_hang_monitor", "bluetooth", "testbinding"], default-features = false }
- tokio = { workspace = true }
-@@ -115,6 +124,7 @@ servo-base = { workspace = true }
+-tokio = { workspace = true }
++tokio = { workspace = true, features = ["sync"] }
+ tracing = { workspace = true, optional = true }
+ tracing-perfetto = { workspace = true, optional = true }
+ tracing-subscriber = { workspace = true, optional = true, features = ["env-filter"] }
+@@ -115,6 +124,7 @@
  surfman = { workspace = true, features = ["sm-angle-default"] }
  
  [target.'cfg(not(any(target_os = "android", target_env = "ohos")))'.dependencies]
@@ -55,7 +57,7 @@ index 59f5581f7..a66842255 100644
  dirs = { workspace = true }
  egui = { workspace = true }
  egui-file-dialog = { workspace = true }
-@@ -122,11 +132,12 @@ egui-winit = { workspace = true, features = ["accesskit", "clipboard", "wayland"
+@@ -122,11 +132,12 @@
  egui_glow = { workspace = true, features = ["winit"] }
  gilrs = { workspace = true }
  glow = { workspace = true }
@@ -69,7 +71,7 @@ index 59f5581f7..a66842255 100644
  winit = { workspace = true }
  
  [target.'cfg(any(all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))'.dependencies]
-@@ -134,7 +145,7 @@ signal-hook-registry = { workspace = true }
+@@ -134,7 +145,7 @@
  
  [target.'cfg(target_os = "windows")'.dependencies]
  servo = { workspace = true, features = ["no-wgl"] }
@@ -198,9 +200,7 @@ index 918273cb8..a640e3854 100644
      // Passing a version script allows us to inform the linker about required
      // symbol visibility (only one), which improves stripping of unused sections.
 diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
-index b3092ada0..8661b911c 100644
---- a/ports/servoshell/desktop/app.rs
-+++ b/ports/servoshell/desktop/app.rs
+index 000000000..000000000 100644
 @@ -4,24 +4,27 @@
  
  //! Application entry point, runs the event loop.
@@ -233,8 +233,53 @@ index b3092ada0..8661b911c 100644
  use crate::desktop::headless_window::HeadlessWindow;
  use crate::desktop::protocols;
  use crate::desktop::tracing::trace_winit_event;
-@@ -32,8 +35,44 @@ use crate::running_app_state::RunningAppState;
+@@ -30,10 +33,89 @@
+ use crate::running_app_state::RunningAppState;
+ #[cfg(feature = "gamepad")]
  use crate::running_app_state::ServoshellGamepadDelegate;
++
++/// Intercepts `<a download>` clicks on `blob:`/`data:` URLs (a game's save export, e.g.
++/// `save.download()` writing a JSON save file) and routes them to the new `roves:save_file`
++/// command (`protocols/roves.rs`) instead of leaving Servo to handle them — `<a download>`
++/// isn't implemented in this Servo tree at all (stock upstream, not a Roves patch — see
++/// `components/script/dom/html/htmlanchorelement.rs`'s own TODO), so an unintercepted click
++/// falls through to a real top-level navigation to the `blob:` URL, which then fails outright
++/// with a `NetworkError::BlobURLStoreError("InvalidOrigin")` for any `game://`-hosted page:
++/// this fork gives `game://` documents an opaque origin (see ../../CUSTOMIZATIONS.md's
++/// `game:` protocol entry), and an opaque origin can't round-trip through a serialized
++/// `blob:` URL, so the origin check a blob fetch does against its creating document's origin
++/// can never pass. Confirmed on a real Windows build: exactly this error, verbatim.
++///
++/// Mirrors `support/ios/App.swift`'s `downloadInterceptScript` (`event.preventDefault()` on
++/// a document-start click listener) and, once fixed the same way there, `MainActivity.kt`'s
++/// own document-start script — same underlying problem (no browser chrome to hand a download
++/// to), same fix, three different native transports for the actual bytes (this one goes
++/// through `roves:save_file`, which pops a real "Save As" dialog — see `AppEvent::SaveFileDialog`'s
++/// own doc comment in event_loop.rs — where the mobile containers write straight into a
++/// fixed, player-visible folder instead, since neither Android's nor iOS's WebView container
++/// has anything resembling a native file-picker to prompt with mid-download).
++const DOWNLOAD_INTERCEPT_SCRIPT: &str = r#"
++(function() {
++  document.addEventListener('click', function(event) {
++    var a = event.target && event.target.closest && event.target.closest('a[download]');
++    if (!a) return;
++    var href = a.getAttribute('href') || '';
++    if (href.indexOf('blob:') !== 0 && href.indexOf('data:') !== 0) return;
++    event.preventDefault();
++    var fileName = a.getAttribute('download') || 'download';
++    function post(dataUrl) {
++      var base64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
++      fetch('roves:save_file?filename=' + encodeURIComponent(fileName) + '&data=' + encodeURIComponent(base64));
++    }
++    if (href.indexOf('data:') === 0) { post(href); return; }
++    fetch(href).then(function(r) { return r.blob(); }).then(function(blob) {
++      var reader = new FileReader();
++      reader.onloadend = function() { post(reader.result); };
++      reader.readAsDataURL(blob);
++    });
++  }, true);
++})();
++"#;
  use crate::window::{PlatformWindow, ServoShellWindowId};
  
 +/// Minimum time every headed launch spends on the boot splash before
@@ -278,7 +323,7 @@ index b3092ada0..8661b911c 100644
      Running(Rc<RunningAppState>),
      ShuttingDown,
  }
-@@ -45,6 +84,28 @@ pub struct App {
+@@ -45,6 +127,28 @@
      waker: Box<dyn EventLoopWaker>,
      event_loop_proxy: Option<EventLoopProxy<AppEvent>>,
      initial_url: ServoUrl,
@@ -307,7 +352,7 @@ index b3092ada0..8661b911c 100644
      t_start: Instant,
      t: Instant,
      state: AppState,
-@@ -56,14 +117,9 @@ impl App {
+@@ -56,14 +160,9 @@
          preferences: Preferences,
          servo_shell_preferences: ServoShellPreferences,
          event_loop: &ServoShellEventLoop,
@@ -324,7 +369,7 @@ index b3092ada0..8661b911c 100644
          let t = Instant::now();
          App {
              opts,
-@@ -71,15 +127,159 @@ impl App {
+@@ -71,15 +170,159 @@
              servoshell_preferences: servo_shell_preferences,
              waker: event_loop.create_event_loop_waker(),
              event_loop_proxy: event_loop.event_loop_proxy(),
@@ -486,7 +531,7 @@ index b3092ada0..8661b911c 100644
          let mut protocol_registry = ProtocolRegistry::default();
          let _ = protocol_registry.register(
              "urlinfo",
-@@ -91,6 +291,63 @@ impl App {
+@@ -91,6 +334,63 @@
              "resource",
              protocols::resource::ResourceProtocolHandler::default(),
          );
@@ -550,7 +595,7 @@ index b3092ada0..8661b911c 100644
  
          let servo_builder = ServoBuilder::default()
              .opts(self.opts.clone())
-@@ -98,10 +355,9 @@ impl App {
+@@ -98,10 +398,9 @@
              .protocol_registry(protocol_registry)
              .event_loop_waker(self.waker.clone());
  
@@ -563,7 +608,7 @@ index b3092ada0..8661b911c 100644
  
          #[cfg(feature = "webxr")]
          servo.register_webxr_registry(super::webxr::XrDiscoveryWebXrRegistry::new_boxed(
-@@ -113,6 +369,11 @@ impl App {
+@@ -113,6 +412,12 @@
          servo.setup_logging();
  
          let user_content_manager = Rc::new(UserContentManager::new(&servo));
@@ -572,10 +617,11 @@ index b3092ada0..8661b911c 100644
 +        // navigation as soon as `<head>` exists (see `dom::userscripts::load_script`), before
 +        // the page's own scripts.
 +        user_content_manager.add_script(Rc::new(UserScript::from("window.__ROVES__ = true;")));
++        user_content_manager.add_script(Rc::new(UserScript::from(DOWNLOAD_INTERCEPT_SCRIPT)));
          for script in load_userscripts(self.servoshell_preferences.userscripts_directory.as_deref())
              .expect("Loading userscripts failed")
          {
-@@ -135,6 +396,13 @@ impl App {
+@@ -135,6 +440,13 @@
                  .map(ServoshellGamepadDelegate::new)
                  .map(Rc::new),
          ));
@@ -589,7 +635,7 @@ index b3092ada0..8661b911c 100644
          running_state.open_window(platform_window, self.initial_url.as_url().clone());
  
          self.state = AppState::Running(running_state);
-@@ -184,6 +452,42 @@ impl ApplicationHandler<AppEvent> for App {
+@@ -184,6 +496,42 @@
          self.init(Some(event_loop));
      }
  
@@ -632,7 +678,7 @@ index b3092ada0..8661b911c 100644
      fn window_event(
          &mut self,
          event_loop: &ActiveEventLoop,
-@@ -199,9 +503,24 @@ impl ApplicationHandler<AppEvent> for App {
+@@ -199,9 +547,24 @@
          );
          self.t = now;
  
@@ -657,7 +703,7 @@ index b3092ada0..8661b911c 100644
  
          if let Some(window) = state.window(ServoShellWindowId::from(u64::from(window_id))) &&
              let Some(headed_window) = window.platform_window().as_headed_window()
-@@ -212,17 +531,49 @@ impl ApplicationHandler<AppEvent> for App {
+@@ -212,17 +575,49 @@
          if !self.pump_servo_event_loop(event_loop.into()) {
              event_loop.exit();
          }
@@ -709,13 +755,38 @@ index b3092ada0..8661b911c 100644
              AppEvent::Accessibility(ref event) => {
                  if let Some(window) =
                      state.window(ServoShellWindowId::from(u64::from(event.window_id))) &&
-@@ -234,17 +585,38 @@ impl ApplicationHandler<AppEvent> for App {
+@@ -234,17 +629,63 @@
              AppEvent::Gamepad(event, gamepad_name, gamepad_index) => {
                  state.handle_gamepad_events(event, gamepad_name, gamepad_index);
              },
 +            // Already acted on above, while `self.state` was still `Booting` -- a no-op
 +            // here since `self.state` is `Running` by this point (checked above).
 +            AppEvent::BootProgress(_) | AppEvent::BootReady => {},
++            AppEvent::SaveFileDialog { suggested_name, data, response } => {
++                // See `HeadedWindow::show_save_file_dialog`'s own doc comment on why this
++                // has to resolve a window/webview itself, unlike `CloseAllWindows` above
++                // (which just acts on every window) or the `EmbedderControl` dialog call
++                // sites in headed_window.rs (which already have a `WebViewId` handed to
++                // them). The first window with an active webview at all, rather than
++                // iterating every window the way `CloseAllWindows` does: a save dialog is a
++                // single, one-shot native prompt, not something that makes sense to show
++                // once per window in this fork's usual single-window setup.
++                let shown = state.windows().values().find_map(|window| {
++                    let webview_id = window.active_webview()?.id();
++                    let headed_window = window.platform_window().as_headed_window()?;
++                    Some((headed_window, webview_id))
++                });
++                match shown {
++                    Some((headed_window, webview_id)) => {
++                        headed_window.show_save_file_dialog(webview_id, suggested_name, data, response);
++                    },
++                    None => {
++                        let _ = response.send(Err(
++                            "No window available to show a save dialog in".to_owned(),
++                        ));
++                    },
++                }
++            },
          }
  
          if !self.pump_servo_event_loop(event_loop.into()) {
@@ -1112,10 +1183,8 @@ index 82b3aef92..4375a3a20 100644
      }
  
 diff --git a/ports/servoshell/desktop/dialog.rs b/ports/servoshell/desktop/dialog.rs
-index bddb6ffd6..3b4bfddd2 100644
---- a/ports/servoshell/desktop/dialog.rs
-+++ b/ports/servoshell/desktop/dialog.rs
-@@ -4,17 +4,15 @@
+index 000000000..000000000 100644
+@@ -4,29 +4,58 @@
  
  use std::path::Path;
  
@@ -1137,7 +1206,50 @@ index bddb6ffd6..3b4bfddd2 100644
  };
  
  /// The minimum width of many UI elements including dialog boxes and menus,
-@@ -52,10 +50,6 @@ pub enum Dialog {
+ /// for the sake of consistency.
+ const MINIMUM_UI_ELEMENT_WIDTH: f32 = 150.0;
+ 
++/// Starts both the file-open (`<input type="file">`) and file-save (a game's save export)
++/// dialogs in the OS Downloads folder rather than wherever `egui_file_dialog`/the OS's own
++/// dialog-position memory happens to land otherwise — confirmed on a real Windows build to
++/// otherwise open into this game's own `saves/` folder (Roves' internal save-slot storage,
++/// see `protocols/saves.rs`), which structurally never contains a manually exported/imported
++/// file, making the folder look empty even when a real exported file exists elsewhere. Not
++/// perfect (a save exported somewhere else entirely still needs manual navigation), but a
++/// meaningfully better default than an internal-only folder no export ever lands in.
++/// `dirs::download_dir()` returning `None` (no meaningful home directory resolvable at all)
++/// just leaves `egui_file_dialog`'s own fallback in place — see `FileDialog::initial_directory`'s
++/// own doc comment on that fallback.
++fn with_default_initial_directory(dialog: EguiFileDialog) -> EguiFileDialog {
++    match dirs::download_dir() {
++        Some(downloads) => dialog.initial_directory(downloads),
++        None => dialog,
++    }
++}
++
+ #[expect(clippy::large_enum_variant)]
+ pub enum Dialog {
+     File {
+         dialog: EguiFileDialog,
+         maybe_picker: Option<FilePicker>,
+     },
++    /// A native "Save As" dialog for a game's save export (`<a download>` on a `blob:`/
++    /// `data:` URL, intercepted by the userscript `app.rs` registers alongside
++    /// `window.__ROVES__ = true;` and routed here via `AppEvent::SaveFileDialog` — see that
++    /// variant's own doc comment for why this can't reuse `Dialog::File`'s own
++    /// `EmbedderControlRequest`/`FilePicker` machinery, which is script/DOM-specific).
++    /// `response` answers the `roves:save_file` `fetch()` that's still pending on some other
++    /// thread; `None` once sent (a plain `Option` instead of relying on `Sender` itself being
++    /// one-shot-safe to `.take()` from a `&mut self` match arm).
++    SaveFile {
++        dialog: EguiFileDialog,
++        data: Vec<u8>,
++        response: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
++    },
+     Alert(Option<AlertDialog>),
+     Confirm(Option<ConfirmDialog>),
+     Prompt(Option<PromptDialog>),
+@@ -52,15 +81,12 @@
          maybe_prompt: Option<ColorPicker>,
          toolbar_offset: Length<f32, DeviceIndependentPixel>,
      },
@@ -1148,7 +1260,72 @@ index bddb6ffd6..3b4bfddd2 100644
  }
  
  impl Dialog {
-@@ -640,81 +634,6 @@ impl Dialog {
+     pub fn new_file_dialog(file_picker: FilePicker) -> Self {
+         let mut dialog = EguiFileDialog::new();
++        dialog = with_default_initial_directory(dialog);
+         if !file_picker.filter_patterns().is_empty() {
+             let filter_patterns = file_picker.filter_patterns().to_owned();
+             let filter = Filter::new(move |path: &Path| {
+@@ -82,6 +108,23 @@
+         }
+     }
+ 
++    /// See `Dialog::SaveFile`'s own doc comment. `suggested_name` pre-fills the dialog's
++    /// filename field (`egui_file_dialog::default_file_name`) but the user can still change
++    /// it before confirming — this is a suggestion, not an enforced value.
++    pub fn new_save_file_dialog(
++        suggested_name: String,
++        data: Vec<u8>,
++        response: tokio::sync::oneshot::Sender<Result<(), String>>,
++    ) -> Self {
++        let mut dialog = EguiFileDialog::new().default_file_name(&suggested_name);
++        dialog = with_default_initial_directory(dialog);
++        Dialog::SaveFile {
++            dialog,
++            data,
++            response: Some(response),
++        }
++    }
++
+     pub fn new_simple_dialog(dialog: SimpleDialog) -> Self {
+         match dialog {
+             SimpleDialog::Alert(alert_dialog) => Self::Alert(Some(alert_dialog)),
+@@ -197,6 +240,34 @@
+                 }
+                 matches!(action, DialogAction::Continue)
+             },
++            Dialog::SaveFile { dialog, data, response } => {
++                if *dialog.state() == DialogState::Closed {
++                    dialog.save_file();
++                }
++                match dialog.update(ctx).state() {
++                    DialogState::Open => true,
++                    DialogState::Picked(path) => {
++                        let result =
++                            std::fs::write(path, data.as_slice()).map_err(|error| error.to_string());
++                        if let Some(response) = response.take() {
++                            let _ = response.send(result);
++                        }
++                        false
++                    },
++                    // `DialogMode::SaveFile` (see `Dialog::new_save_file_dialog`) never
++                    // produces `PickedMultiple` — that variant is only reachable via
++                    // `pick_multiple()`, which nothing here ever calls.
++                    DialogState::PickedMultiple(_) => unreachable!(
++                        "a SaveFile-mode egui_file_dialog produced PickedMultiple"
++                    ),
++                    DialogState::Cancelled | DialogState::Closed => {
++                        if let Some(response) = response.take() {
++                            let _ = response.send(Err("Save cancelled".to_owned()));
++                        }
++                        false
++                    },
++                }
++            },
+             Dialog::Alert(maybe_alert_dialog) => {
+                 let Some(alert_dialog) = maybe_alert_dialog else {
+                     return false;
+@@ -640,81 +711,6 @@
  
                  is_open
              },
@@ -1230,7 +1407,7 @@ index bddb6ffd6..3b4bfddd2 100644
          }
      }
  
-@@ -726,20 +645,9 @@ impl Dialog {
+@@ -726,20 +722,9 @@
              Dialog::ColorPicker { maybe_prompt, .. } => {
                  maybe_prompt.as_ref().map(|element| element.id())
              },
@@ -1252,10 +1429,14 @@ index bddb6ffd6..3b4bfddd2 100644
  
  fn make_dialog_label(message: &str, ui: &mut egui::Ui, input_text: Option<&mut String>) {
 diff --git a/ports/servoshell/desktop/event_loop.rs b/ports/servoshell/desktop/event_loop.rs
-index a8685a194..b2a756501 100644
---- a/ports/servoshell/desktop/event_loop.rs
-+++ b/ports/servoshell/desktop/event_loop.rs
-@@ -20,6 +20,23 @@ pub enum AppEvent {
+index 000000000..000000000 100644
+@@ -14,12 +14,64 @@
+ 
+ use super::app::App;
+ 
+-#[derive(Debug)]
+ pub enum AppEvent {
+     /// Another process or thread has kicked the OS event loop with EventLoopWaker.
      Waker,
      Accessibility(egui_winit::accesskit_winit::Event),
      Gamepad(Event, String, GamepadIndex),
@@ -1276,6 +1457,42 @@ index a8685a194..b2a756501 100644
 +    /// either way the boot URL's files are as ready as they'll get), so `App` can finish
 +    /// building Servo/`RunningAppState` and open the real webview. See `AppState::Booting`.
 +    BootReady,
++    /// Requested by `protocols::roves::RovesProtocolHandler`'s `save_file` command (the
++    /// desktop side of a game's save export — see `@drincs/roves-api`'s doc comments, and
++    /// the injected `download`-interception userscript `app.rs` registers alongside
++    /// `window.__ROVES__ = true;`) — same reasoning as `CloseAllWindows` above: the native
++    /// "Save As" dialog this shows (`Dialog::SaveFile` in `dialog.rs`) has to run on the
++    /// main thread, which a `ProtocolHandler` can't touch directly. Unlike `CloseAllWindows`
++    /// this needs a reply: `response` carries the write result back to the still-pending
++    /// `fetch()` once the user actually picks a destination (or cancels).
++    SaveFileDialog {
++        suggested_name: String,
++        data: Vec<u8>,
++        response: tokio::sync::oneshot::Sender<Result<(), String>>,
++    },
++}
++
++impl std::fmt::Debug for AppEvent {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        match self {
++            AppEvent::Waker => write!(f, "Waker"),
++            AppEvent::Accessibility(event) => f.debug_tuple("Accessibility").field(event).finish(),
++            AppEvent::Gamepad(event, name, index) => {
++                f.debug_tuple("Gamepad").field(event).field(name).field(index).finish()
++            },
++            AppEvent::CloseAllWindows => write!(f, "CloseAllWindows"),
++            AppEvent::BootProgress(progress) => f.debug_tuple("BootProgress").field(progress).finish(),
++            AppEvent::BootReady => write!(f, "BootReady"),
++            // `tokio::sync::oneshot::Sender` isn't `Debug`, so this can't be derived —
++            // `data`'s length stands in for its (likely uninteresting, possibly large)
++            // bytes, same idea as not dumping a whole file's contents into a log line.
++            AppEvent::SaveFileDialog { suggested_name, data, .. } => f
++                .debug_struct("SaveFileDialog")
++                .field("suggested_name", suggested_name)
++                .field("data_len", &data.len())
++                .finish(),
++        }
++    }
  }
  
  impl From<egui_winit::accesskit_winit::Event> for AppEvent {
@@ -2088,9 +2305,7 @@ index 860090c55..a69166678 100644
 -    }
 -}
 diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/desktop/headed_window.rs
-index 2fa9260e9..d109793a1 100644
---- a/ports/servoshell/desktop/headed_window.rs
-+++ b/ports/servoshell/desktop/headed_window.rs
+index 000000000..000000000 100644
 @@ -10,8 +10,10 @@
  use std::cell::{Cell, RefCell};
  use std::collections::HashMap;
@@ -2103,7 +2318,7 @@ index 2fa9260e9..d109793a1 100644
  
  use euclid::{Angle, Length, Point2D, Rect, Rotation3D, Scale, Size2D, UnknownUnit, Vector3D};
  use keyboard_types::ShortcutMatcher;
-@@ -37,6 +39,8 @@ use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
+@@ -37,6 +39,8 @@
  use winit::keyboard::{Key as LogicalKey, ModifiersState, NamedKey as WinitNamedKey};
  #[cfg(target_os = "linux")]
  use winit::platform::wayland::WindowAttributesExtWayland;
@@ -2112,7 +2327,7 @@ index 2fa9260e9..d109793a1 100644
  #[cfg(any(target_os = "linux", target_os = "windows"))]
  use winit::window::Icon;
  #[cfg(target_os = "macos")]
-@@ -46,12 +50,13 @@ use {
+@@ -46,12 +50,13 @@
  };
  
  use super::geometry::{winit_position_to_euclid_point, winit_size_to_euclid_size};
@@ -2127,7 +2342,7 @@ index 2fa9260e9..d109793a1 100644
  use crate::prefs::ServoShellPreferences;
  use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
  use crate::window::{
-@@ -59,7 +64,24 @@ use crate::window::{
+@@ -59,7 +64,24 @@
      ServoShellWindowId,
  };
  
@@ -2153,7 +2368,7 @@ index 2fa9260e9..d109793a1 100644
  
  pub struct HeadedWindow {
      /// The egui interface that is responsible for showing the user interface elements of
-@@ -71,6 +93,11 @@ pub struct HeadedWindow {
+@@ -71,6 +93,11 @@
      /// It equals viewport size + (0, toolbar height).
      inner_size: Cell<PhysicalSize<u32>>,
      fullscreen: Cell<bool>,
@@ -2165,7 +2380,7 @@ index 2fa9260e9..d109793a1 100644
      device_pixel_ratio_override: Option<f32>,
      xr_window_poses: RefCell<Vec<Rc<XRWindowPose>>>,
      modifiers_state: Cell<ModifiersState>,
-@@ -95,6 +122,10 @@ pub struct HeadedWindow {
+@@ -95,6 +122,10 @@
      /// The last title set on this window. We need to store this value here, as `winit::Window::title`
      /// is not supported very many platforms.
      last_title: RefCell<String>,
@@ -2176,7 +2391,7 @@ index 2fa9260e9..d109793a1 100644
      /// The current set of open dialogs.
      dialogs: RefCell<HashMap<WebViewId, Vec<Dialog>>>,
      /// The [`EmbedderControlId`] of the currently showing [`InputMethod`] interfaces,
-@@ -102,6 +133,17 @@ pub struct HeadedWindow {
+@@ -102,6 +133,17 @@
      visible_input_method: Cell<Option<EmbedderControlId>>,
      /// The position of the mouse cursor after the most recent `MouseMove` event.
      last_mouse_position: Cell<Option<Point2D<f32, DeviceIndependentPixel>>>,
@@ -2194,7 +2409,7 @@ index 2fa9260e9..d109793a1 100644
  }
  
  impl HeadedWindow {
-@@ -127,9 +169,21 @@ impl HeadedWindow {
+@@ -127,9 +169,21 @@
              // happen before the window is shown for the first time.
              .with_visible(false);
  
@@ -2217,7 +2432,7 @@ index 2fa9260e9..d109793a1 100644
  
          #[allow(deprecated)]
          let winit_window = event_loop
-@@ -138,8 +192,30 @@ impl HeadedWindow {
+@@ -138,8 +192,30 @@
  
          #[cfg(any(target_os = "linux", target_os = "windows"))]
          {
@@ -2250,7 +2465,7 @@ index 2fa9260e9..d109793a1 100644
          }
  
          let window_handle = winit_window
-@@ -198,7 +274,8 @@ impl HeadedWindow {
+@@ -198,7 +274,8 @@
              gui,
              winit_window,
              webview_relative_mouse_point: Cell::new(Point2D::zero()),
@@ -2260,7 +2475,7 @@ index 2fa9260e9..d109793a1 100644
              inner_size: Cell::new(inner_size),
              screen_size,
              device_pixel_ratio_override: servoshell_preferences.device_pixel_ratio_override,
-@@ -211,9 +288,11 @@ impl HeadedWindow {
+@@ -211,9 +288,11 @@
              pending_keyboard_events: Default::default(),
              rendering_context,
              last_title: RefCell::new(String::from(INITIAL_WINDOW_TITLE)),
@@ -2272,7 +2487,7 @@ index 2fa9260e9..d109793a1 100644
          })
      }
  
-@@ -221,6 +300,58 @@ impl HeadedWindow {
+@@ -221,6 +300,58 @@
          &self.winit_window
      }
  
@@ -2331,7 +2546,7 @@ index 2fa9260e9..d109793a1 100644
      fn handle_keyboard_input(
          &self,
          state: Rc<RunningAppState>,
-@@ -381,28 +512,9 @@ impl HeadedWindow {
+@@ -381,28 +512,9 @@
              .shortcut(Modifiers::CONTROL, Key::Named(NamedKey::F12), || {
                  active_webview.toggle_webrender_debugging(WebRenderDebugOption::Profiler);
              })
@@ -2363,7 +2578,35 @@ index 2fa9260e9..d109793a1 100644
              .optional_shortcut(
                  self.get_fullscreen(),
                  Modifiers::empty(),
-@@ -549,11 +661,28 @@ impl HeadedWindow {
+@@ -512,6 +624,27 @@
+             .push(dialog)
+     }
+ 
++    /// The `AppEvent::SaveFileDialog` side of `App::user_event`'s handling for it — see that
++    /// variant's own doc comment. Unlike every other `add_dialog` call site in this file,
++    /// this one doesn't originate from an `EmbedderControl`/script-thread request tied to a
++    /// specific `WebViewId` — it comes from `protocols/roves.rs`'s `save_file` command, which
++    /// has no such id at all (a custom protocol handler isn't scoped to one webview the way a
++    /// DOM `<input type="file">` is), so the caller resolves one itself (this fork's usual
++    /// single-window/single-webview kiosk setup, see ../../CUSTOMIZATIONS.md, means there's
++    /// normally exactly one sensible choice anyway).
++    pub(crate) fn show_save_file_dialog(
++        &self,
++        webview_id: WebViewId,
++        suggested_name: String,
++        data: Vec<u8>,
++        response: tokio::sync::oneshot::Sender<Result<(), String>>,
++    ) {
++        self.add_dialog(
++            webview_id,
++            Dialog::new_save_file_dialog(suggested_name, data, response),
++        );
++    }
++
+     fn remove_dialog(&self, webview_id: WebViewId, embedder_control_id: EmbedderControlId) {
+         let mut dialogs = self.dialogs.borrow_mut();
+         if let Some(dialogs) = dialogs.get_mut(&webview_id) {
+@@ -549,11 +682,28 @@
          }
  
          // If requested to redraw or resized, repaint as soon as possible, so that new buffer
@@ -2396,7 +2639,7 @@ index 2fa9260e9..d109793a1 100644
          }
  
          if let WindowEvent::CursorMoved { position, .. } = event {
-@@ -602,18 +731,12 @@ impl HeadedWindow {
+@@ -602,18 +752,12 @@
              },
              WindowEvent::MouseInput {
                  state: ElementState::Pressed,
@@ -2419,7 +2662,7 @@ index 2fa9260e9..d109793a1 100644
                  consumed = true;
              },
              WindowEvent::MouseWheel { .. } | WindowEvent::MouseInput { .. }
-@@ -845,15 +968,17 @@ impl PlatformWindow for HeadedWindow {
+@@ -845,15 +989,17 @@
      }
  
      fn update_user_interface_state(&self, _: &RunningAppState, window: &ServoShellWindow) -> bool {
@@ -2446,7 +2689,7 @@ index 2fa9260e9..d109793a1 100644
          if title != *self.last_title.borrow() {
              self.winit_window.set_title(&title);
              *self.last_title.borrow_mut() = title;
-@@ -942,6 +1067,7 @@ impl PlatformWindow for HeadedWindow {
+@@ -942,6 +1088,7 @@
              } else {
                  None
              });
@@ -2454,7 +2697,7 @@ index 2fa9260e9..d109793a1 100644
          }
          self.fullscreen.set(state);
      }
-@@ -1007,7 +1133,7 @@ impl PlatformWindow for HeadedWindow {
+@@ -1007,7 +1154,7 @@
          let size = self.winit_window.outer_size();
  
          let window_attr = winit::window::Window::default_attributes()
@@ -2463,7 +2706,7 @@ index 2fa9260e9..d109793a1 100644
              .with_inner_size(size)
              .with_visible(false);
  
-@@ -1064,10 +1190,6 @@ impl PlatformWindow for HeadedWindow {
+@@ -1064,10 +1211,6 @@
              })
              .shortcut(CMD_OR_CONTROL, '0', || {
                  webview.set_page_zoom(1.0);
@@ -2474,7 +2717,7 @@ index 2fa9260e9..d109793a1 100644
              });
      }
  
-@@ -1110,8 +1232,10 @@ impl PlatformWindow for HeadedWindow {
+@@ -1110,8 +1253,10 @@
                  self.add_dialog(webview_id, Dialog::new_simple_dialog(simple_dialog));
              },
              EmbedderControl::ContextMenu(prompt) => {
@@ -2487,7 +2730,7 @@ index 2fa9260e9..d109793a1 100644
              },
          }
      }
-@@ -1171,6 +1295,32 @@ impl PlatformWindow for HeadedWindow {
+@@ -1171,6 +1316,32 @@
      }
  }
  
@@ -2520,7 +2763,7 @@ index 2fa9260e9..d109793a1 100644
  fn winit_phase_to_touch_event_type(phase: TouchPhase) -> TouchEventType {
      match phase {
          TouchPhase::Started => TouchEventType::Down,
-@@ -1180,6 +1330,21 @@ fn winit_phase_to_touch_event_type(phase: TouchPhase) -> TouchEventType {
+@@ -1180,6 +1351,21 @@
      }
  }
  

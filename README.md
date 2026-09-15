@@ -240,6 +240,13 @@ without downloading anything. See the "Save-game storage API" entry in [CUSTOMIZ
 the full design, and the [wiki](https://github.com/DRincs-Productions/roves-wiki) for player/game-dev-facing
 docs.
 
+Separately, letting a player export/import a save as a plain file (`<a download>` on a Blob,
+`<input type="file">`) works out of the box with no `roves-api` call needed — Roves intercepts
+both transparently on every platform (a native "Save As"/"Open" dialog on desktop, a
+player-visible folder and native document picker on Android/iOS). See the wiki's
+[Save-game storage](https://github.com/DRincs-Productions/roves-wiki/blob/main/content/docs/integrations/saves.mdx)
+page for the pattern.
+
 ## Getting started
 
 Prebuilt, versioned engine shell builds (no game content bundled — see below) are published

@@ -624,6 +624,27 @@ impl HeadedWindow {
             .push(dialog)
     }
 
+    /// The `AppEvent::SaveFileDialog` side of `App::user_event`'s handling for it — see that
+    /// variant's own doc comment. Unlike every other `add_dialog` call site in this file,
+    /// this one doesn't originate from an `EmbedderControl`/script-thread request tied to a
+    /// specific `WebViewId` — it comes from `protocols/roves.rs`'s `save_file` command, which
+    /// has no such id at all (a custom protocol handler isn't scoped to one webview the way a
+    /// DOM `<input type="file">` is), so the caller resolves one itself (this fork's usual
+    /// single-window/single-webview kiosk setup, see ../../CUSTOMIZATIONS.md, means there's
+    /// normally exactly one sensible choice anyway).
+    pub(crate) fn show_save_file_dialog(
+        &self,
+        webview_id: WebViewId,
+        suggested_name: String,
+        data: Vec<u8>,
+        response: tokio::sync::oneshot::Sender<Result<(), String>>,
+    ) {
+        self.add_dialog(
+            webview_id,
+            Dialog::new_save_file_dialog(suggested_name, data, response),
+        );
+    }
+
     fn remove_dialog(&self, webview_id: WebViewId, embedder_control_id: EmbedderControlId) {
         let mut dialogs = self.dialogs.borrow_mut();
         if let Some(dialogs) = dialogs.get_mut(&webview_id) {

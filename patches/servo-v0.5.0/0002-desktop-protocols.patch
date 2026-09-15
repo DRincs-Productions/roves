@@ -18,10 +18,8 @@ index 434826f5b..0744c2ce7 100644
  pub(crate) mod urlinfo;
 diff --git a/ports/servoshell/desktop/protocols/roves.rs b/ports/servoshell/desktop/protocols/roves.rs
 new file mode 100644
-index 000000000..05ebfaca9
---- /dev/null
-+++ b/ports/servoshell/desktop/protocols/roves.rs
-@@ -0,0 +1,151 @@
+index 000000000..000000000
+@@ -0,0 +1,247 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
@@ -85,6 +83,45 @@ index 000000000..05ebfaca9
 +            None => Err("No window to close (headless mode)".to_owned()),
 +        }
 +    }
++
++    /// The desktop side of a game's save export — see `AppEvent::SaveFileDialog`'s own doc
++    /// comment for the full chain (the injected userscript that intercepts `<a download>`
++    /// clicks and lands here, and why this needs the main thread at all). Unlike every other
++    /// command in this handler, the response genuinely waits on user interaction (picking a
++    /// destination, or cancelling) — potentially a long time — hence a real `Future` here
++    /// instead of the `future::ready` every other command returns.
++    fn save_file(
++        &self,
++        suggested_name: String,
++        data: Vec<u8>,
++    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> {
++        let Some(proxy) = self.close_proxy.clone() else {
++            return Box::pin(std::future::ready(Err(
++                "No window to show a save dialog in (headless mode)".to_owned(),
++            )));
++        };
++        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
++        let send_result = proxy.lock().unwrap().send_event(AppEvent::SaveFileDialog {
++            suggested_name,
++            data,
++            response: response_tx,
++        });
++        if send_result.is_err() {
++            return Box::pin(std::future::ready(Err(
++                "Failed to reach the main event loop".to_owned(),
++            )));
++        }
++        Box::pin(async move {
++            match response_rx.await {
++                Ok(result) => result,
++                // The main thread dropped `response_tx` without ever sending — shouldn't
++                // happen (every path through `AppEvent::SaveFileDialog`'s handling in app.rs
++                // sends exactly once) but a closed app/window mid-dialog is a real enough
++                // possibility not to just unwrap.
++                Err(_) => Err("The save dialog was closed without a result".to_owned()),
++            }
++        })
++    }
 +}
 +
 +impl ProtocolHandler for RovesProtocolHandler {
@@ -102,7 +139,55 @@ index 000000000..05ebfaca9
 +        _done_chan: &mut DoneChannel,
 +        _context: &FetchContext,
 +    ) -> Pin<Box<dyn Future<Output = Response> + Send>> {
-+        let command = request.current_url().path().to_owned();
++        let url = request.current_url();
++        let command = url.path().to_owned();
++
++        // The one command here that genuinely needs to await a main-thread round trip (the
++        // save dialog can stay open for as long as the user takes to decide) — doesn't fit
++        // the uniform `Result<&'static str, String>`/`future::ready` shape every other
++        // command below uses, so it's handled separately, before that match.
++        if command == "save_file" {
++            let query: std::collections::HashMap<String, String> =
++                url.as_url().query_pairs().into_owned().collect();
++
++            // Captured by value (not `&Request`, which doesn't outlive this call) so the
++            // success response can still be built inside the async block below — a closure
++            // rather than a second top-level function so the exact `ServoUrl`/
++            // `ResourceTimingType` types never need spelling out (they're not otherwise
++            // imported into this file; `json_response`'s existing signature only needs
++            // `&Request`, which type inference threads through for it already).
++            let (response_url, timing_type) = (request.current_url(), request.timing_type());
++            let make_json_response = move |body: String| -> Response {
++                let mut response = Response::new(response_url, ResourceFetchTiming::new(timing_type));
++                response.headers.typed_insert(ContentType::json());
++                *response.body.lock() = ResponseBody::Done(body.into_bytes());
++                response
++            };
++
++            // Resolved synchronously, before the async block below, so that block never
++            // needs to borrow `self` — it only needs to `.await` the already-independent
++            // future `save_file` hands back (see that method's own doc comment).
++            let outcome_future = 'setup: {
++                let Some(filename) = query.get("filename").cloned() else {
++                    break 'setup Box::pin(std::future::ready(Err(
++                        "Missing 'filename' parameter".to_owned(),
++                    ))) as Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
++                };
++                let Some(data) = query.get("data").and_then(|data| base64_decode(data)) else {
++                    break 'setup Box::pin(std::future::ready(Err(
++                        "Missing or invalid base64 'data' parameter".to_owned(),
++                    )));
++                };
++                self.save_file(filename, data)
++            };
++
++            return Box::pin(async move {
++                match outcome_future.await {
++                    Ok(()) => make_json_response("true".to_owned()),
++                    Err(error) => Response::network_error(NetworkError::ResourceLoadError(error)),
++                }
++            });
++        }
 +
 +        let result: Result<&'static str, String> = match command.as_str() {
 +            // The generic "is this page actually running inside Roves"
@@ -162,6 +247,15 @@ index 000000000..05ebfaca9
 +            Err(error) => Response::network_error(NetworkError::ResourceLoadError(error)),
 +        }))
 +    }
++}
++
++/// Same base64 alphabet/decoding `protocols/saves.rs` uses for its own `write` command's
++/// `data` parameter — this command's `data` parameter is shaped identically (a base64
++/// payload in a query string), produced by the same `FileReader.readAsDataURL` pattern on
++/// the JS side either way (see the userscript `app.rs` registers).
++fn base64_decode(text: &str) -> Option<Vec<u8>> {
++    use base64::Engine;
++    base64::engine::general_purpose::STANDARD.decode(text).ok()
 +}
 +
 +fn json_response(request: &Request, body: String) -> Response {
