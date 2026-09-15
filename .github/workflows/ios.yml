@@ -175,6 +175,19 @@ jobs:
   # `set-key-partition-list` sequence `_sign_and_export_ios_release` runs works for real on a
   # macOS runner -- once a real certificate/profile/team ID land as secrets, only the
   # profile-trust step is genuinely new ground.
+  #
+  # Regenerating IOS_CI_TEST_P12_BASE64/_PASSWORD (e.g. after the 2026-09-15 "wrong password"
+  # incident -- the two secrets had drifted out of sync with each other, see CUSTOMIZATIONS.md's
+  # entry of that date): the only hard requirement is a self-signed cert whose CN is exactly
+  # "Roves CI Test Signing" (this job's own `grep -q` below) with `codeSigning` extended key
+  # usage, e.g.:
+  #   openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 10950 -nodes \
+  #     -subj "/CN=Roves CI Test Signing" \
+  #     -addext "keyUsage=critical,digitalSignature" -addext "extendedKeyUsage=critical,codeSigning"
+  #   openssl pkcs12 -export -out ci-test.p12 -inkey key.pem -in cert.pem \
+  #     -name "Roves CI Test Signing" -passout "pass:<PASSWORD>"
+  #   base64 -w0 ci-test.p12   # -> IOS_CI_TEST_P12_BASE64; the -passout value -> _PASSWORD
+  # Set both secrets from the SAME generation run -- they're a pair, not independently rotatable.
   ios-release-signing-smoke:
     runs-on: macos-latest
     steps:

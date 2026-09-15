@@ -409,6 +409,19 @@ upload artifact, packaging, upload release "test" tutti riusciti) — vedi
 ancora confermata (nessuna annotation utile, nessun PAT GitHub disponibile per leggere il log
 reale in questa sessione).
 
+**Aggiornamento 2026-09-15 (stessa sessione, l'utente ha fornito un PAT fresco) —
+`ios-release-signing-smoke` diagnosticato e risolto:** il log reale mostrava `SecKeychainItemImport:
+MAC verification failed during PKCS12 import (wrong password?)` — i due secret
+`IOS_CI_TEST_P12_BASE64`/`_PASSWORD` erano disallineati tra loro (probabile residuo
+dell'handoff multi-macchina). Non risolvibile da codice (sono secret GitHub write-only):
+rigenerata una coppia certificato/password self-signed coerente con `openssl` (CN esatto
+"Roves CI Test Signing", `codeSigning` extended key usage), verificata localmente, e i due
+nuovi valori consegnati all'utente da impostare a mano sui secret GitHub (il PAT di questa
+sessione è read-only per policy, vedi `CLAUDE.md`). Documentata la ricetta di rigenerazione
+come commento in `.github/workflows/ios.yml` così non si ripete lo stesso disallineamento
+silenzioso — non era scritta da nessuna parte prima. **Da confermare al prossimo run CI dopo
+che l'utente ha aggiornato i secret.**
+
 **Decisione ancora in sospeso, chiesta esplicitamente all'utente in una sessione precedente
 (2026-09-14), risposta: "aspetta" — non ancora ridecisa in questa sessione.** Perché
 `roves-action`/Roves Packmaster possano davvero usare `--ios`/`--ios-release` (oggi puntano a un

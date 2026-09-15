@@ -6597,11 +6597,29 @@ XcodeGen + `xcodebuild` build this time), and the whole `ios` job is now green e
 artifact upload, `roves_ios_project.zip` packaging, and the "test" release upload all
 succeeded too.
 
-**Left open — a separate, unrelated failure in the same CI run:** `ios-release-signing-smoke`
-(the self-signed-test-certificate keychain-import smoke test, see the 2026-09-14 entry above)
-also failed in the same run, at the `security import ... -k "$keychain"` step. This is *not* the
-same bug — that job never calls `mach bundle` at all, so this fix doesn't touch it. No custom
-annotation there either and no PAT available yet to pull the real log, so the actual cause
-(wrong/stale `IOS_CI_TEST_P12_PASSWORD`, a certificate whose subject doesn't match the
-`grep -q "Roves CI Test Signing"` check, or something else in the `security` sequence itself) is
-still unconfirmed — needs either a fresh GitHub PAT or a repo-admin checking the raw log directly.
+**Left open at the time — a separate, unrelated failure in the same CI run:**
+`ios-release-signing-smoke` (the self-signed-test-certificate keychain-import smoke test, see
+the 2026-09-14 entry above) also failed in the same run, at the `security import ... -k
+"$keychain"` step. This is *not* the same bug — that job never calls `mach bundle` at all, so
+this fix doesn't touch it.
+
+**Update, same day — root cause found and fixed, with a fresh PAT the user provided:** the raw
+job log (`GET .../actions/jobs/{id}/logs`, needs an authenticated PAT — the anonymous
+annotations endpoint used above only ever showed the generic "Process completed with exit code
+1") showed the real error: `security: SecKeychainItemImport: MAC verification failed during
+PKCS12 import (wrong password?)`. The `IOS_CI_TEST_P12_BASE64` and `IOS_CI_TEST_P12_PASSWORD`
+secrets had drifted out of sync with each other — likely from the machine handoff documented in
+the now-deleted `HANDOFF.md` (the previous session generated and uploaded these on a different
+machine; something in that process left the two secrets not matching the same generation run).
+Not fixable by editing code — these are GitHub repo secrets, write-only once set, so the only
+fix is regenerating the pair and re-uploading both together. Generated a fresh self-signed
+cert/`.p12` locally with `openssl` (CN `Roves CI Test Signing` — the exact string this job's own
+`grep -q` checks for — with `codeSigning` extended key usage so `security find-identity -v -p
+codesigning` lists it), verified the password and base64 encoding round-trip locally before
+handing the two values to the user to set as `IOS_CI_TEST_P12_BASE64`/`_PASSWORD` (GitHub
+secrets can only be written through the web UI or an authenticated write-scoped token — this
+session's PAT is read-only by design, see `CLAUDE.md`'s "GitHub PAT usage" section — so setting
+them was the user's own manual step, not something done here). Documented the exact
+regeneration recipe as a comment directly in `.github/workflows/ios.yml` next to the
+`ios-release-signing-smoke` job, since the previous cert's generation recipe was never written
+down anywhere — the root cause of it drifting silently in the first place.
