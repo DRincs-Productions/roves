@@ -393,6 +393,20 @@ Servo to native WebView".**
 4. **APK signing** (punto 5 sopra) resta valido e non affetto dal pivot — `--android-release`
    funziona identicamente nel nuovo `_bundle_android`.
 
+**Aggiornamento 2026-09-15 — bug CI del job `ios` diagnosticato e risolto:** `mach bundle --ios`
+falliva in CI in ~6 secondi, prima ancora di entrare in `_bundle_ios` — causa: il decoratore
+`binary_selection` di `command_base.py` risolve `servo_binary` chiamando
+`self.get_binary_path(...)` a meno che `self.target.needs_packaging()` sia vero, e questo è vero
+per Android/OpenHarmony (hanno una propria `BuildTarget` subclass) ma **non** per iOS (che non ne
+ha una — resta sul target host macOS di default). Risultato: `get_binary_path` cercava un
+binario `servoshell` mai compilato (`ios.yml` non esegue mai `mach build`) e falliva con "No
+Servo binary found" prima che il branch `--ios` di `bundle()` venisse mai raggiunto. Vedi
+`CUSTOMIZATIONS.md`, voce "Fix `mach bundle --ios` failing immediately", per il dettaglio
+completo. **Non ancora confermato su CI reale** (serve il prossimo push su `main` per vederlo
+girare). **Rimane aperto, non collegato a questo fix**: `ios-release-signing-smoke` fallisce
+separatamente allo step `security import` — causa non ancora confermata (nessuna annotation
+utile, nessun PAT GitHub disponibile per leggere il log reale in questa sessione).
+
 ## Note
 
 - Punto risolto nella sessione del 2026-08-06: stato di navigazione browser morto

@@ -6547,3 +6547,56 @@ Android never had this gap because `support/android/apk/`'s own tracked tree alr
 `res/mipmap/servo.webp` inside it — iOS's equivalent assets live one level up, outside
 `support/ios/` entirely, so the zip step needed to explicitly reach for them too. No patch —
 this is this repo's own CI file, not vendored.
+
+## 2026-09-15 — Fix `mach bundle --ios` failing immediately, before ever reaching `_bundle_ios`
+
+**File:** `python/servo/command_base.py` (`common_command_arguments`'s `binary_selection` block).
+
+**Patch:** `patches/servo-v0.5.0/0016-mobile-native-webviews.patch` (regenerated — appended a new
+diff for this file, which the patch didn't previously touch at all; see the 2026-09-13 entry
+above for why iOS/Android mobile changes are consolidated into this one patch rather than a new
+numbered one).
+
+**Why:** flagged as an open bug in the previous session's `HANDOFF.md` — `ios.yml`'s `ios` job
+failed `mach bundle --ios` in ~6 seconds with only a generic "Process completed with exit code 1"
+(no custom annotation to read anonymously, and no GitHub PAT was available in that session to
+pull the real job log). Confirmed by reading the code, not the log: `bundle()` is decorated with
+`@CommandBase.common_command_arguments(binary_selection=True, build_configuration=True)`. The
+`binary_selection` block resolves `servo_binary` unconditionally unless
+`self.target.needs_packaging()` is true — which is exactly how `--android`/`--ohos` skip it,
+since `configure_build_target` (part of the same `build_configuration=True`) routes those into an
+`AndroidTarget`/`OpenHarmonyTarget` (`CrossBuildTarget` subclasses whose `needs_packaging()` is
+`True`). **iOS has no `BuildTarget` subclass of its own** — `--ios` never sets `--target`, so
+`self.target` stays the host default (macOS), whose `needs_packaging()` is `False`. That routed
+`--ios` straight into `self.get_binary_path(...)`, which unconditionally requires a prior
+`./mach build` (`raise BuildNotFound("No Servo binary found. Perhaps you forgot to run
+\`./mach build\`?")`) — something `--ios` never needs, since `_bundle_ios` stages/builds a native
+Swift/WKWebView app via XcodeGen, never a Servo/Rust binary at all (same reasoning `_bundle_android`
+already documents for why it takes no `servo_binary` either). This crashed inside the decorator,
+*before* `bundle()`'s own body — and therefore its `if ios: return self._bundle_ios(...)` branch
+— ever ran, matching the observed instant failure exactly (`ios.yml` never runs `mach build`
+first, only `mach bundle --ios` directly).
+
+**Fix:** widened the skip condition to `self.target.needs_packaging() or kwargs.get("ios")` —
+`kwargs.get("ios")` is safe (returns `None`) for every other `binary_selection`-decorated command
+(`build`, `run`, `package`) that has no `--ios` flag at all. The `--bin`-conflict error message one
+line below was widened the same way (`target_description = "ios" if kwargs.get("ios") else
+self.target.triple()` — calling `self.target.triple()` unconditionally would itself have thrown
+for the iOS case, a real host desktop target has a triple but that's not the relevant one to name
+in the error).
+
+**Verification:** syntax-checked (`ast.parse`) and reasoned through by hand against
+`_bundle_android`'s already-working equivalent — no local Rust/mach toolchain in this session
+(this repo's own known Windows toolchain gap, see this file's earlier entries). Patch
+re-verified to apply cleanly to a fresh pristine `v0.5.0` extraction. Real verification is
+`ios.yml`'s own `ios` job on the next push to `main` — should get past the `mach bundle --ios`
+step and reach `_bundle_ios` for real this time.
+
+**Left open — a separate, unrelated failure in the same CI run:** `ios-release-signing-smoke`
+(the self-signed-test-certificate keychain-import smoke test, see the 2026-09-14 entry above)
+also failed in the same run, at the `security import ... -k "$keychain"` step. This is *not* the
+same bug — that job never calls `mach bundle` at all, so this fix doesn't touch it. No custom
+annotation there either and no PAT available yet to pull the real log, so the actual cause
+(wrong/stale `IOS_CI_TEST_P12_PASSWORD`, a certificate whose subject doesn't match the
+`grep -q "Roves CI Test Signing"` check, or something else in the `security` sequence itself) is
+still unconfirmed — needs either a fresh GitHub PAT or a repo-admin checking the raw log directly.
