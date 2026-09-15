@@ -432,7 +432,12 @@ jobs:
           set +e
           "${RUNNER[@]}" "$BIN" > smoke-stdout.log 2> smoke-stderr.log &
           PID=$!
-          sleep 10
+          # 15s, not the original 10s: this step now also waits on test-page's own
+          # roves:save_file auto-check (App.tsx, 2s internal delay before it even starts) to
+          # both run and get captured before the process is killed -- 10s was cutting it too
+          # close on a loaded/slower CI runner, confirmed by a real run where exactly this
+          # check came back empty on 2 of 6 platforms while the process itself launched fine.
+          sleep 15
           if kill -0 "$PID" 2>/dev/null; then
             STILL_RUNNING=true
             kill "$PID"
@@ -547,7 +552,9 @@ jobs:
           $stderr = Join-Path $env:RUNNER_TEMP "smoke-stderr.log"
           $proc = Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName -PassThru `
             -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-          Start-Sleep -Seconds 10
+          # 15s, not the original 10s -- same reasoning as the Linux/macOS smoke-test step's
+          # own identical change a few lines up in this file.
+          Start-Sleep -Seconds 15
           $stillRunning = -not $proc.HasExited
           if ($stillRunning) { Stop-Process -Id $proc.Id -Force }
 
