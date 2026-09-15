@@ -6839,9 +6839,13 @@ specifically in a folder that can *never* be correct for either dialog.
    `find` instead, then re-deriving `.platform_window().as_headed_window()` fresh and using
    it immediately, matching the pattern every other call site already follows.
 
-Not yet verified end-to-end on a real device/build (no working local Windows toolchain — see
-this file's own recurring note on that) — pending a green CI run and a real re-test of the
-exact repro steps from the original report.
+5. **Fourth push (with the sleep bump) came back fully green**: `ensure-test-release`,
+   `steam-emulator-smoke-test`, and all 6 `build-and-publish` legs (Windows msi/portable,
+   Linux deb/portable, macOS portable/dmg) — confirming both real bugs above (the tracing.rs
+   exhaustiveness gap and the app.rs temporary-lifetime error) are actually fixed, not just
+   locally-plausible. Still not verified against a real device/build by a human, though (this
+   session has no working local Windows toolchain — see this file's own recurring note on
+   that) — pending a real re-test of the exact repro steps from the original report.
 
 ---
 
