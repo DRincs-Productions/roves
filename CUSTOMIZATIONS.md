@@ -6825,6 +6825,19 @@ specifically in a folder that can *never* be correct for either dialog.
    request through `curl.exe` (Windows' own native curl, invoked from PowerShell instead)
    worked on the first try. Worth remembering for next time this comes up: prefer `curl.exe`
    over git-bash's `curl` for this specific endpoint on this machine.
+4. **Third push (with the patch-header fix) got past `download + patch Servo source` for
+   the first time and produced a real, single `rustc` error** — `error[E0515]: cannot return
+   value referencing temporary value` at `app.rs`'s `AppEvent::SaveFileDialog` handler:
+   `window.platform_window().as_headed_window()` was being bound to a variable and returned
+   out of a `find_map` closure as part of a tuple, but `as_headed_window()` returns
+   `Option<&HeadedWindow>` borrowed from the `Rc<dyn PlatformWindow>` `platform_window()`
+   returns — a temporary that drops at the end of that statement, so the reference couldn't
+   outlive it. Every other call site of this exact chain in the codebase (e.g.
+   `set_running_control_flow` a few lines below) only ever uses the result immediately in
+   the same expression, never stores or returns it — this was the first call site that tried
+   to carry it further. Fixed by cloning the (cheap) `Rc<ServoShellWindow>` itself out of
+   `find` instead, then re-deriving `.platform_window().as_headed_window()` fresh and using
+   it immediately, matching the pattern every other call site already follows.
 
 Not yet verified end-to-end on a real device/build (no working local Windows toolchain — see
 this file's own recurring note on that) — pending a green CI run and a real re-test of the

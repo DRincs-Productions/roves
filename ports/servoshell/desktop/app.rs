@@ -641,14 +641,34 @@ impl ApplicationHandler<AppEvent> for App {
                 // iterating every window the way `CloseAllWindows` does: a save dialog is a
                 // single, one-shot native prompt, not something that makes sense to show
                 // once per window in this fork's usual single-window setup.
-                let shown = state.windows().values().find_map(|window| {
-                    let webview_id = window.active_webview()?.id();
-                    let headed_window = window.platform_window().as_headed_window()?;
-                    Some((headed_window, webview_id))
-                });
-                match shown {
-                    Some((headed_window, webview_id)) => {
-                        headed_window.show_save_file_dialog(webview_id, suggested_name, data, response);
+                //
+                // Cloning the `Rc<ServoShellWindow>` out of `find` (cheap) rather than
+                // trying to carry a `&HeadedWindow` past this point: `as_headed_window()`
+                // returns `Option<&HeadedWindow>` borrowed from the `Rc<dyn PlatformWindow>`
+                // `platform_window()` returns, which is itself a temporary — fine to use
+                // immediately (as `set_running_control_flow` below already does), but not to
+                // carry out of a closure/`match` arm the way an owned `Rc` can be.
+                let target = state
+                    .windows()
+                    .values()
+                    .find(|window| window.active_webview().is_some())
+                    .cloned();
+                match target {
+                    Some(window) => {
+                        let webview_id = window
+                            .active_webview()
+                            .expect("just confirmed present above")
+                            .id();
+                        match window.platform_window().as_headed_window() {
+                            Some(headed_window) => {
+                                headed_window.show_save_file_dialog(webview_id, suggested_name, data, response);
+                            },
+                            None => {
+                                let _ = response.send(Err(
+                                    "No headed window available to show a save dialog in".to_owned(),
+                                ));
+                            },
+                        }
                     },
                     None => {
                         let _ = response.send(Err(
