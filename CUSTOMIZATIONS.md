@@ -6659,6 +6659,17 @@ in order since each one looked completely plausible until the next run disproved
 validity, which is all this job ever needed to prove (that the cert + matching key made it into
 the keychain), matching what `_sign_and_export_ios_release` itself actually relies on.
 
+**Confirmed on real CI**: run
+<https://github.com/DRincs-Productions/roves/actions/runs/34967882996> — `ios-release-signing-smoke`
+green, completing in seconds like every other step in the job, alongside `ios` and
+`ensure-test-release` both also green. Six wrong turns (two secret-sync theories, a PBE-format
+bug hiding behind a misleading "wrong password" message, a trust-chasing detour that hung the
+job then hit a hard macOS security wall, and finally realizing the check itself was testing a
+requirement the real code never has) to reach a fix that ended up removing code rather than
+adding more of it — the lesson being that `security`'s error messages are not reliable guides to
+the actual failure, and it's worth checking what the production code an ad-hoc CI check is
+supposedly mirroring *actually* does before hardening the check further.
+
 ## 2026-09-15 — `android-actions/setup-android@v3`'s default `tools` package no longer exists
 
 **File:** `.github/workflows/android.yml` (both `android` and `android-release-signing` jobs'

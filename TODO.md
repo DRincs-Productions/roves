@@ -436,7 +436,11 @@ risolve la firma via profilo di provisioning + team ID. Tutto l'inseguimento del
 testando un requisito che il codice reale non ha mai avuto: rimosso `-p codesigning`/`-v` dalla
 verifica, usando `security find-identity` senza filtri (elenca tutte le identità a prescindere
 dal trust — tutto ciò che serve per provare che l'import ha funzionato). Vedi `CUSTOMIZATIONS.md`
-per il dettaglio completo passo per passo. **Da confermare con un nuovo run CI.**
+per il dettaglio completo passo per passo. **Confermato su CI reale (2026-09-15)** — run
+<https://github.com/DRincs-Productions/roves/actions/runs/34967882996>, tutti e tre i job
+(`ensure-test-release`, `ios-release-signing-smoke`, `ios`) verdi. Saga chiusa: 6 tentativi, di
+cui i primi 5 sbagliati, prima di trovare che il codice reale non valida mai il trust e che
+bastava smettere di testare quel requisito inesistente.
 
 **Bug separato trovato nello stesso run — `android`/`android-release-signing` falliscono su
 `android-actions/setup-android@v3` (non un flake, un problema reale e permanente).** Il log reale
