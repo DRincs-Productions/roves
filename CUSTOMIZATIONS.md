@@ -6664,5 +6664,36 @@ Neither workflow reads `IOS_CI_TEST_P12_BASE64`/`_PASSWORD` or
 `ANDROID_KEYSTORE_BASE64`/`_PASSWORD`/`ANDROID_KEY_ALIAS`/`_PASSWORD` any more, so all six are now
 dead repo secrets, safe for the user to delete from GitHub — eliminating this whole incident's
 root cause class (two paired secrets that can silently drift out of sync) rather than just
-patching around one occurrence of it. **Not yet confirmed on real CI** — next push exercises both
-rewritten jobs for the first time.
+patching around one occurrence of it.
+
+**Correction, same day — every theory above about the actual failure cause was wrong.**
+`ios-release-signing-smoke` failed *again* on the very first run after the in-CI generation
+change, with the exact same `SecKeychainItemImport: MAC verification failed (wrong password?)`
+error — except this time the certificate, key, and password were all generated together in the
+same job run, with zero copy-paste or secrets involved anywhere. That ruled out every prior
+theory (secret drift, whitespace from pasting) at a stroke: the real bug was in the `openssl
+pkcs12 -export` invocation itself. OpenSSL 3.0 changed its default PKCS#12 encryption to
+PBES2/PBKDF2/AES-256-CBC — cryptographically fine, but macOS's `security import` goes through the
+old `SecKeychainItemImport` API, which predates PBES2 support entirely and cannot decode it. It
+has no "unsupported format" error path for this case; it reports exactly the same "wrong
+password?" message as an actual wrong password, which is what sent the previous two rounds of
+debugging in the wrong direction — a password that had been correct the whole time. The original
+"disallineamento tra i due secret" from earlier the same day, generated on a different machine in
+the previous session, almost certainly had this exact same root cause, not an actual secret
+mismatch.
+
+**Fix:** force the old-style PBE OpenSSL used before 3.0, which `security import` does
+understand: `openssl pkcs12 -export ... -certpbe PBE-SHA1-3DES -keypbe PBE-SHA1-3DES -macalg
+SHA1`. Verified locally (this session's local OpenSSL is also 3.x) that `-info` on the resulting
+file reports `pbeWithSHA1And3-KeyTripleDES-CBC` instead of `PBES2, PBKDF2, AES-256-CBC` — the
+same legacy format Apple's tooling has always supported. Deliberately did **not** use the
+commonly-suggested `-legacy` flag/`-provider legacy` combination: that pulls in RC2-40-CBC by
+default, and this session's local OpenSSL build doesn't have RC2 compiled into its legacy
+provider at all (`unsupported... Algorithm (RC2-40-CBC : 0)`) — the explicit `-certpbe`/`-keypbe
+PBE-SHA1-3DES` combination needs no provider beyond the default one, so it's the more portable
+fix, not just the one that happened to work here.
+
+**Not yet confirmed on real CI** — next push exercises this for the first time. If it fails
+again, the next suspect would be `-macalg SHA1` needing the same legacy-provider treatment (this
+session's local OpenSSL produced it fine without one, but a stricter macOS-runner OpenSSL build
+is not yet ruled out).

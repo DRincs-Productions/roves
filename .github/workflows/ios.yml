@@ -177,14 +177,18 @@ jobs:
   # ground.
   #
   # 2026-09-15: this used to import a certificate from IOS_CI_TEST_P12_BASE64/_PASSWORD repo
-  # secrets, generated once and re-uploaded by hand. That went wrong twice in a row (the two
-  # secrets drifted out of sync with each other, then -- even after a verified-matching
-  # re-upload -- kept failing on what looked like leftover whitespace from a chat-to-GitHub-
-  # secrets-field copy-paste). Since this certificate is purely a mechanism smoke test (its
-  # whole point is proving the security-tool sequence works, not carrying any real identity)
-  # and is never reused for anything else, generating it fresh inside the job removes the
-  # secrets -- and this whole class of "did the two secrets actually stay in sync" bug --
-  # entirely. See CUSTOMIZATIONS.md's entry of that date for the full incident.
+  # secrets, generated once and re-uploaded by hand -- switched to generating it fresh inside
+  # the job instead, since it's purely a mechanism smoke test never reused for anything else, so
+  # there was nothing to gain from persisting it as a secret at all (see CUSTOMIZATIONS.md's
+  # entry of that date). That switch surfaced the REAL bug behind every "wrong password" failure
+  # up to that point (secret-sync theories included): `openssl pkcs12 -export` defaults changed
+  # in OpenSSL 3.0 to PBES2/PBKDF2/AES-256-CBC, which macOS's `security import` (the legacy
+  # SecKeychainItemImport API) cannot decode at all -- it silently reports this as "wrong
+  # password" instead of an unsupported-format error. Fixed by forcing the old-style PBE
+  # algorithms `security import` actually understands (`-certpbe`/`-keypbe PBE-SHA1-3DES`,
+  # `-macalg SHA1` below) -- confirmed locally that this combination doesn't need OpenSSL's
+  # "legacy" provider at all (unlike the commonly-suggested `-legacy` flag, which pulls in
+  # RC2-40-CBC and failed outright on a build without that cipher compiled in).
   ios-release-signing-smoke:
     runs-on: macos-latest
     steps:
@@ -197,7 +201,8 @@ jobs:
           echo "::add-mask::$pass"
           echo "P12_PASSWORD=$pass" >> "$GITHUB_ENV"
           openssl pkcs12 -export -out /tmp/ci-test.p12 -inkey /tmp/ci-test-key.pem \
-            -in /tmp/ci-test-cert.pem -name "Roves CI Test Signing" -passout "pass:$pass"
+            -in /tmp/ci-test-cert.pem -name "Roves CI Test Signing" -passout "pass:$pass" \
+            -certpbe PBE-SHA1-3DES -keypbe PBE-SHA1-3DES -macalg SHA1
 
       - name: import into an ephemeral keychain (same sequence _sign_and_export_ios_release uses)
         run: |

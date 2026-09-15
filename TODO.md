@@ -437,8 +437,20 @@ a testare il meccanismo di firma, mai riusati per una release reale — quindi g
 direttamente dentro il job CI (`openssl`/`keytool`), niente più secret da tenere sincronizzati.
 `IOS_CI_TEST_P12_BASE64`/`_PASSWORD` e `ANDROID_KEYSTORE_BASE64`/`_PASSWORD`/`ANDROID_KEY_ALIAS`/
 `_PASSWORD` sono ora secret morti, eliminabili da GitHub. Vedi `CUSTOMIZATIONS.md` per il
-dettaglio completo. **Da confermare al prossimo run CI** — è la prima volta che girano i job
-riscritti.
+dettaglio completo.
+
+**Correzione 2026-09-15 — la vera causa non era mai stata i secret.** Il primo run del job
+riscritto (certificato/password generati insieme nello stesso job, zero copia-incolla) è fallito
+di nuovo con lo stesso identico errore "wrong password" — smentendo tutte le teorie precedenti
+in un colpo solo. Causa reale: `openssl pkcs12 -export` da OpenSSL 3.0 in poi usa di default
+PBES2/PBKDF2/AES-256-CBC, formato che l'API `SecKeychainItemImport` di macOS (usata da `security
+import`) non sa decodificare — e lo segnala con lo stesso identico messaggio di una password
+sbagliata, invece di un errore di formato non supportato. La password non è mai stata sbagliata.
+Fix: forzare l'algoritmo PBE legacy che `security import` capisce
+(`-certpbe PBE-SHA1-3DES -keypbe PBE-SHA1-3DES -macalg SHA1`), verificato localmente. Vedi
+`CUSTOMIZATIONS.md` per il dettaglio completo, incluso perché il flag `-legacy` più comunemente
+suggerito online non è stato usato (richiede RC2, non sempre compilato in OpenSSL). **Da
+confermare al prossimo run CI.**
 
 **Decisione ancora in sospeso, chiesta esplicitamente all'utente in una sessione precedente
 (2026-09-14), risposta: "aspetta" — non ancora ridecisa in questa sessione.** Perché
