@@ -169,10 +169,15 @@ jobs:
   # `_bundle_android`, `android_release=True` branch) -- unlike iOS release signing (see
   # ios.yml's own `ios-release-signing-smoke` job and its comment on why a full signed export
   # can't be verified without a real Apple Developer Program account), an Android keystore is
-  # self-signed by design: ANDROID_KEYSTORE_BASE64/_PASSWORD/_ALIAS/_KEY_PASSWORD are a real,
-  # complete signing identity, not a stand-in for one -- so this job proves the whole
-  # `--android-release` path for real, `apksigner verify` included, not just a mechanism
-  # smoke-test.
+  # self-signed by design: any keystore is a real, complete signing identity, not a stand-in for
+  # one -- so this job proves the whole `--android-release` path for real, `apksigner verify`
+  # included, not just a mechanism smoke-test, using a keystore generated fresh on the runner
+  # itself (via `keytool`, already available from the `setup-java` step below) rather than a
+  # stored secret -- this keystore is purely for exercising the signing mechanism in CI and is
+  # never reused for an actual game release, so there's nothing to gain from persisting it
+  # between runs (see ios.yml's own 2026-09-15 comment on the analogous iOS change, and
+  # CUSTOMIZATIONS.md's entry of that date, for why this replaced the previous
+  # ANDROID_KEYSTORE_BASE64/_PASSWORD/_ALIAS/_KEY_PASSWORD secrets).
   android-release-signing:
     runs-on: ubuntu-latest
     steps:
@@ -224,15 +229,15 @@ jobs:
           cp -r /tmp/wpt-tools-src/tests/wpt/tests tests/wpt/tests
           rm -rf /tmp/wpt-tools-src
 
-      - name: decode release keystore
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      - name: generate a fresh release keystore
         run: |
-          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
-            echo "::error::ANDROID_KEYSTORE_BASE64 secret not set -- see CUSTOMIZATIONS.md's --android-release entry."
-            exit 1
-          fi
-          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > /tmp/roves-release.keystore
+          pass=$(uuidgen)
+          echo "::add-mask::$pass"
+          echo "KEYSTORE_PASS=$pass" >> "$GITHUB_ENV"
+          keytool -genkeypair -v -keystore /tmp/roves-release.keystore \
+            -storepass "$pass" -keypass "$pass" -alias roves-ci-test \
+            -keyalg RSA -keysize 2048 -validity 1 \
+            -dname "CN=Roves CI Test, OU=CI, O=Roves, C=US"
 
       - name: Build smoke-test content
         run: |
@@ -245,9 +250,9 @@ jobs:
       - name: mach bundle --android --android-release
         env:
           APK_SIGNING_KEY_STORE_PATH: /tmp/roves-release.keystore
-          APK_SIGNING_KEY_STORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          APK_SIGNING_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          APK_SIGNING_KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          APK_SIGNING_KEY_STORE_PASS: ${{ env.KEYSTORE_PASS }}
+          APK_SIGNING_KEY_ALIAS: roves-ci-test
+          APK_SIGNING_KEY_PASS: ${{ env.KEYSTORE_PASS }}
         run: |
           ./mach bundle --android --android-release \
             --content-dir /tmp/smoke-content --output /tmp/android-release-output

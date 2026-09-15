@@ -431,6 +431,15 @@ generata, vedi la ricetta in `ios.yml`). **Ancora da confermare con un nuovo run
 fallisce di nuovo con lo stesso errore, il problema non è lo whitespace ma la password stessa
 (secret impostato sul repo sbagliato, o valori di generazioni diverse).
 
+**Risoluzione finale 2026-09-15 — rimossi del tutto i secret, su suggerimento dell'utente.**
+Sia il certificato iOS di test che la keystore Android di `android-release-signing` servono solo
+a testare il meccanismo di firma, mai riusati per una release reale — quindi generati ora
+direttamente dentro il job CI (`openssl`/`keytool`), niente più secret da tenere sincronizzati.
+`IOS_CI_TEST_P12_BASE64`/`_PASSWORD` e `ANDROID_KEYSTORE_BASE64`/`_PASSWORD`/`ANDROID_KEY_ALIAS`/
+`_PASSWORD` sono ora secret morti, eliminabili da GitHub. Vedi `CUSTOMIZATIONS.md` per il
+dettaglio completo. **Da confermare al prossimo run CI** — è la prima volta che girano i job
+riscritti.
+
 **Decisione ancora in sospeso, chiesta esplicitamente all'utente in una sessione precedente
 (2026-09-14), risposta: "aspetta" — non ancora ridecisa in questa sessione.** Perché
 `roves-action`/Roves Packmaster possano davvero usare `--ios`/`--ios-release` (oggi puntano a un

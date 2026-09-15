@@ -20,9 +20,9 @@ name: Build iOS native WKWebView app
 # --ios-release/human-with-Xcode paths.
 #
 # The `ios-release-signing-smoke` job separately verifies `--ios-release`'s keychain-import
-# mechanics using a **self-signed test certificate** (`IOS_CI_TEST_P12_BASE64`/`_PASSWORD`
-# secrets -- not a real Apple Distribution identity, see that job's own comment for why a full
-# signed-archive-and-export can't be verified this way).
+# mechanics using a **self-signed test certificate generated fresh on the runner** -- not a real
+# Apple Distribution identity, see that job's own comment for why a full signed-archive-and-export
+# can't be verified this way (or why this no longer needs any repo secrets at all).
 #
 # Also publishes `roves_ios_project.zip` (a snapshot of support/ios/) to the rolling "test"
 # GitHub Release (same one test.yml/android.yml use), mirroring android.yml's own
@@ -167,55 +167,46 @@ jobs:
 
   # Verifies the *keychain-import* half of --ios-release's signing mechanism
   # (_sign_and_export_ios_release in post_build_commands.py) using a self-signed **test**
-  # certificate (IOS_CI_TEST_P12_BASE64/_PASSWORD secrets) -- not a real Apple Distribution
-  # identity. Deliberately does NOT run `mach bundle --ios --ios-release` end to end: that
-  # also needs a real, Apple-issued provisioning profile (a CMS structure only Apple can
-  # produce, see support/MOBILE.md's iOS section) -- no amount of local tooling can fabricate
-  # one. What this DOES prove: the `security create-keychain`/`import`/
-  # `set-key-partition-list` sequence `_sign_and_export_ios_release` runs works for real on a
-  # macOS runner -- once a real certificate/profile/team ID land as secrets, only the
-  # profile-trust step is genuinely new ground.
+  # certificate generated fresh on the runner itself -- not a real Apple Distribution identity.
+  # Deliberately does NOT run `mach bundle --ios --ios-release` end to end: that also needs a
+  # real, Apple-issued provisioning profile (a CMS structure only Apple can produce, see
+  # support/MOBILE.md's iOS section) -- no amount of local tooling can fabricate one. What this
+  # DOES prove: the `security create-keychain`/`import`/`set-key-partition-list` sequence
+  # `_sign_and_export_ios_release` runs works for real on a macOS runner -- once a real
+  # certificate/profile/team ID land as secrets, only the profile-trust step is genuinely new
+  # ground.
   #
-  # Regenerating IOS_CI_TEST_P12_BASE64/_PASSWORD (e.g. after the 2026-09-15 "wrong password"
-  # incident -- the two secrets had drifted out of sync with each other, see CUSTOMIZATIONS.md's
-  # entry of that date): the only hard requirement is a self-signed cert whose CN is exactly
-  # "Roves CI Test Signing" (this job's own `grep -q` below) with `codeSigning` extended key
-  # usage, e.g.:
-  #   openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 10950 -nodes \
-  #     -subj "/CN=Roves CI Test Signing" \
-  #     -addext "keyUsage=critical,digitalSignature" -addext "extendedKeyUsage=critical,codeSigning"
-  #   openssl pkcs12 -export -out ci-test.p12 -inkey key.pem -in cert.pem \
-  #     -name "Roves CI Test Signing" -passout "pass:<PASSWORD>"
-  #   base64 -w0 ci-test.p12   # -> IOS_CI_TEST_P12_BASE64; the -passout value -> _PASSWORD
-  # Set both secrets from the SAME generation run -- they're a pair, not independently rotatable.
+  # 2026-09-15: this used to import a certificate from IOS_CI_TEST_P12_BASE64/_PASSWORD repo
+  # secrets, generated once and re-uploaded by hand. That went wrong twice in a row (the two
+  # secrets drifted out of sync with each other, then -- even after a verified-matching
+  # re-upload -- kept failing on what looked like leftover whitespace from a chat-to-GitHub-
+  # secrets-field copy-paste). Since this certificate is purely a mechanism smoke test (its
+  # whole point is proving the security-tool sequence works, not carrying any real identity)
+  # and is never reused for anything else, generating it fresh inside the job removes the
+  # secrets -- and this whole class of "did the two secrets actually stay in sync" bug --
+  # entirely. See CUSTOMIZATIONS.md's entry of that date for the full incident.
   ios-release-signing-smoke:
     runs-on: macos-latest
     steps:
-      - name: decode test signing certificate
-        env:
-          IOS_CI_TEST_P12_BASE64: ${{ secrets.IOS_CI_TEST_P12_BASE64 }}
+      - name: generate a fresh self-signed test signing certificate
         run: |
-          if [ -z "$IOS_CI_TEST_P12_BASE64" ]; then
-            echo "::error::IOS_CI_TEST_P12_BASE64 secret not set -- see support/MOBILE.md's iOS section."
-            exit 1
-          fi
-          echo "$IOS_CI_TEST_P12_BASE64" | base64 --decode > /tmp/ci-test.p12
+          openssl req -x509 -newkey rsa:2048 -keyout /tmp/ci-test-key.pem -out /tmp/ci-test-cert.pem \
+            -days 1 -nodes -subj "/CN=Roves CI Test Signing" \
+            -addext "keyUsage=critical,digitalSignature" -addext "extendedKeyUsage=critical,codeSigning"
+          pass=$(uuidgen)
+          echo "::add-mask::$pass"
+          echo "P12_PASSWORD=$pass" >> "$GITHUB_ENV"
+          openssl pkcs12 -export -out /tmp/ci-test.p12 -inkey /tmp/ci-test-key.pem \
+            -in /tmp/ci-test-cert.pem -name "Roves CI Test Signing" -passout "pass:$pass"
 
       - name: import into an ephemeral keychain (same sequence _sign_and_export_ios_release uses)
-        env:
-          IOS_CI_TEST_P12_PASSWORD: ${{ secrets.IOS_CI_TEST_P12_PASSWORD }}
         run: |
-          # Strip any stray CR/LF/trailing whitespace picked up when pasting the secret into
-          # GitHub's UI -- this password is always a generated alnum string (see the
-          # regeneration recipe above), so trimming here is safe and closes off an entire class
-          # of "wrong password" false negatives that are otherwise invisible to whoever pastes it.
-          IOS_CI_TEST_P12_PASSWORD="$(printf '%s' "$IOS_CI_TEST_P12_PASSWORD" | tr -d '[:space:]')"
           keychain=/tmp/roves-ci-test.keychain
           pass=$(uuidgen)
           security create-keychain -p "$pass" "$keychain"
           security set-keychain-settings -lut 3600 "$keychain"
           security unlock-keychain -p "$pass" "$keychain"
-          security import /tmp/ci-test.p12 -k "$keychain" -P "$IOS_CI_TEST_P12_PASSWORD" \
+          security import /tmp/ci-test.p12 -k "$keychain" -P "$P12_PASSWORD" \
             -T /usr/bin/codesign -T /usr/bin/security
           security set-key-partition-list -S apple-tool:,apple: -k "$pass" "$keychain"
           existing=$(security list-keychains -d user | tr -d '"')

@@ -6640,3 +6640,29 @@ run to confirm this was actually the cause** — if it still fails after this, t
 (not just its whitespace) is wrong, and the more likely explanation would shift to the two
 secrets belonging to different generation runs after all, or the value having been set on the
 wrong repository.
+
+**Final resolution, same day — removed the secrets entirely.** After a second re-upload also hit
+the same error, the user pointed out (correctly) that both this iOS test certificate and
+Android's analogous release-signing keystore (see the 2026-08/09 `--android-release` entries)
+exist purely to smoke-test a signing *mechanism* — neither is ever reused for an actual game
+release — so there was never a real reason to persist either as a stored secret at all. Rewrote
+both `ios-release-signing-smoke` (`ios.yml`) and `android-release-signing` (`android.yml`) to
+generate a throwaway identity fresh on the runner, inside the job itself, with no repo secrets
+involved:
+
+- **iOS**: `openssl req -x509 ...` generates the self-signed cert/key pair directly (CN `Roves
+  CI Test Signing`, `codeSigning` extended key usage, `-days 1` — it only needs to outlive the
+  job), then `openssl pkcs12 -export` packages it with a `uuidgen`-generated password masked via
+  `::add-mask::` and threaded to the next step through `$GITHUB_ENV`. Everything downstream
+  (`security import`/`set-key-partition-list`/`find-identity`) is unchanged.
+- **Android**: `keytool -genkeypair` (already on `PATH` from the job's own `setup-java` step)
+  generates the keystore directly, alias `roves-ci-test`, same `uuidgen`+`::add-mask::`+
+  `$GITHUB_ENV` password-threading pattern. `mach bundle --android --android-release` and
+  `apksigner verify` are otherwise unchanged.
+
+Neither workflow reads `IOS_CI_TEST_P12_BASE64`/`_PASSWORD` or
+`ANDROID_KEYSTORE_BASE64`/`_PASSWORD`/`ANDROID_KEY_ALIAS`/`_PASSWORD` any more, so all six are now
+dead repo secrets, safe for the user to delete from GitHub — eliminating this whole incident's
+root cause class (two paired secrets that can silently drift out of sync) rather than just
+patching around one occurrence of it. **Not yet confirmed on real CI** — next push exercises both
+rewritten jobs for the first time.
