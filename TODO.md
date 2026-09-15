@@ -402,10 +402,12 @@ ha una — resta sul target host macOS di default). Risultato: `get_binary_path`
 binario `servoshell` mai compilato (`ios.yml` non esegue mai `mach build`) e falliva con "No
 Servo binary found" prima che il branch `--ios` di `bundle()` venisse mai raggiunto. Vedi
 `CUSTOMIZATIONS.md`, voce "Fix `mach bundle --ios` failing immediately", per il dettaglio
-completo. **Non ancora confermato su CI reale** (serve il prossimo push su `main` per vederlo
-girare). **Rimane aperto, non collegato a questo fix**: `ios-release-signing-smoke` fallisce
-separatamente allo step `security import` — causa non ancora confermata (nessuna annotation
-utile, nessun PAT GitHub disponibile per leggere il log reale in questa sessione).
+completo. **Confermato su CI reale (2026-09-15)**: il job `ios` è ora verde end-to-end (build,
+upload artifact, packaging, upload release "test" tutti riusciti) — vedi
+`CUSTOMIZATIONS.md` per il link al run. **Rimane aperto, non collegato a questo fix**:
+`ios-release-signing-smoke` fallisce separatamente allo step `security import` — causa non
+ancora confermata (nessuna annotation utile, nessun PAT GitHub disponibile per leggere il log
+reale in questa sessione).
 
 **Decisione ancora in sospeso, chiesta esplicitamente all'utente in una sessione precedente
 (2026-09-14), risposta: "aspetta" — non ancora ridecisa in questa sessione.** Perché

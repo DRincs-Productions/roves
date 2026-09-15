@@ -6588,9 +6588,14 @@ in the error).
 **Verification:** syntax-checked (`ast.parse`) and reasoned through by hand against
 `_bundle_android`'s already-working equivalent — no local Rust/mach toolchain in this session
 (this repo's own known Windows toolchain gap, see this file's earlier entries). Patch
-re-verified to apply cleanly to a fresh pristine `v0.5.0` extraction. Real verification is
-`ios.yml`'s own `ios` job on the next push to `main` — should get past the `mach bundle --ios`
-step and reach `_bundle_ios` for real this time.
+re-verified to apply cleanly to a fresh pristine `v0.5.0` extraction.
+
+**Confirmed fixed on real CI** (run for commit `3a202fbbcf1`,
+<https://github.com/DRincs-Productions/roves/actions/runs/34939544032>): the `ios` job's
+`mach bundle --ios` step went from failing in ~6 seconds to succeeding in ~46 seconds (a real
+XcodeGen + `xcodebuild` build this time), and the whole `ios` job is now green end to end —
+artifact upload, `roves_ios_project.zip` packaging, and the "test" release upload all
+succeeded too.
 
 **Left open — a separate, unrelated failure in the same CI run:** `ios-release-signing-smoke`
 (the self-signed-test-certificate keychain-import smoke test, see the 2026-09-14 entry above)
