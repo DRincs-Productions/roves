@@ -6706,8 +6706,32 @@ Distribution certificate doesn't hit this because it chains to Apple's own root 
 trusted system-wide — this only shows up for a self-signed stand-in. Fixed by explicitly
 trusting the cert as its own root right after import: `security add-trusted-cert -r trustRoot -k
 "$keychain" /tmp/ci-test-cert.pem` (user-domain trust, no `sudo`/`-d` admin domain needed — scoped
-to the CI user session on an already-ephemeral, discarded-after-the-job runner). **Not yet
-confirmed on real CI** — next push exercises this.
+to the CI user session on an already-ephemeral, discarded-after-the-job runner).
+
+**Update — that fix hung the job instead of failing it.** The step sat with no output for 12+
+minutes (every prior step in this job completes in well under a second) instead of either
+passing or failing outright. Cause: `security add-trusted-cert` modifying trust settings
+normally pops a `SecurityAgent` GUI authorization dialog for the user to approve — on a headless
+CI runner with nothing to click that dialog, the command just blocks forever (until the job's
+overall multi-hour timeout, not a fast failure). This apparently happens for user-domain trust
+changes too, not only the `-d` admin domain the workaround below is usually described for.
+Fixed using the standard non-interactive workaround from GitHub's own official guide
+("Installing an Apple certificate on macOS runners for Xcode development"): temporarily loosen
+the trust-settings authorization policy so the change doesn't prompt, make the change, then
+restore the policy immediately after:
+
+```
+sudo security authorizationdb write com.apple.trust-settings.admin allow
+security add-trusted-cert -d -r trustRoot -k "$keychain" /tmp/ci-test-cert.pem
+sudo security authorizationdb remove com.apple.trust-settings.admin
+```
+
+Switched to `-d` (admin/system domain) to match this documented recipe exactly, rather than
+guessing whether the user-domain variant is prompt-free on this runner image. **The stuck run
+itself needed manual cancellation** — a read-only PAT can only read Actions data, not cancel a
+run (that's a write call, out of scope by design, see `CLAUDE.md`'s "GitHub PAT usage" section)
+— someone with repo access had to cancel it from the Actions UI. **Not yet confirmed on real
+CI** — next push exercises this.
 
 ## 2026-09-15 — `android-actions/setup-android@v3`'s default `tools` package no longer exists
 
@@ -6730,4 +6754,8 @@ retry.
 `platforms;android-NN`/`build-tools;NN.N.N` the very next step (`Install Android SDK`) installs
 by name are everything a Gradle-based `mach bundle --android` actually touches.
 
-**Verification:** not yet confirmed on real CI — next push exercises both jobs again.
+**Verification:** confirmed on real CI (run
+<https://github.com/DRincs-Productions/roves/actions/runs/34966071804>) — `android` and
+`android-release-signing` both fully green, `setup-android` included, `mach bundle --android`/
+`--android --android-release` and `apksigner verify` all passing (the in-CI-generated release
+keystore from the entry above working end to end for the first time).

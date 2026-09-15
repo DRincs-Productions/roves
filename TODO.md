@@ -459,7 +459,17 @@ certificato self-signed non è considerato attendibile per la policy di code-sig
 `security add-trusted-cert -r trustRoot -k "$keychain" ...` subito dopo l'import per fidare
 esplicitamente il certificato come propria root (trust a livello utente, nessun sudo/dominio
 admin necessario, su un runner comunque effimero). Vedi `CUSTOMIZATIONS.md` per il dettaglio.
-**Da confermare al prossimo run CI.**
+
+**Aggiornamento 2026-09-15 — quel fix ha bloccato il job invece di farlo fallire.** Lo step è
+rimasto fermo 12+ minuti senza output (ogni altro step del job impiega meno di un secondo) —
+`security add-trusted-cert` apre un dialog di autorizzazione grafico che su un runner headless
+non arriva mai, quindi il comando resta bloccato indefinitamente invece di fallire in fretta.
+Fix: workaround standard della guida ufficiale GitHub per questo esatto caso — disattivare
+temporaneamente il prompt di autorizzazione (`sudo security authorizationdb write
+com.apple.trust-settings.admin allow`), fare la modifica con `-d` (dominio admin), poi ripristinare
+subito la policy. **Il run bloccato ha richiesto una cancellazione manuale** — il PAT di questa
+sessione è read-only e non può cancellare run (solo l'utente può farlo dalla UI). **Da
+confermare al prossimo run CI.**
 
 **Bug separato trovato nello stesso run — `android`/`android-release-signing` falliscono su
 `android-actions/setup-android@v3` (non un flake, un problema reale e permanente).** Il log reale
@@ -467,7 +477,9 @@ mostra `Warning: Failed to find package 'tools'` — Google ha rimosso dal repos
 pacchetto legacy `tools` che questa action richiede di default. Fix: passato esplicitamente
 `packages: platform-tools` a entrambi i punti in `android.yml` che usano l'action, eliminando
 `tools` (non serve a nulla qui: il passo successivo installa già `platforms;android-NN`/
-`build-tools;NN.N.N` per nome). Vedi `CUSTOMIZATIONS.md`. **Da confermare al prossimo run CI.**
+`build-tools;NN.N.N` per nome). Vedi `CUSTOMIZATIONS.md`. **Confermato su CI reale (2026-09-15)**
+— entrambi i job Android completamente verdi, keystore generata in-CI e `apksigner verify`
+inclusi.
 
 **Decisione ancora in sospeso, chiesta esplicitamente all'utente in una sessione precedente
 (2026-09-14), risposta: "aspetta" — non ancora ridecisa in questa sessione.** Perché
