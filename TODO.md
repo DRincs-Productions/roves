@@ -407,6 +407,16 @@ girare). **Rimane aperto, non collegato a questo fix**: `ios-release-signing-smo
 separatamente allo step `security import` — causa non ancora confermata (nessuna annotation
 utile, nessun PAT GitHub disponibile per leggere il log reale in questa sessione).
 
+**Decisione ancora in sospeso, chiesta esplicitamente all'utente in una sessione precedente
+(2026-09-14), risposta: "aspetta" — non ancora ridecisa in questa sessione.** Perché
+`roves-action`/Roves Packmaster possano davvero usare `--ios`/`--ios-release` (oggi puntano a un
+tag motore già pubblicato che non li contiene affatto), serve tagliare una nuova release del
+motore (vedi `CLAUDE.md`, "Cutting a versioned release") e poi aggiornare il pin in
+`roves-action/action.yml` e `roves-packmaster/src/lib/shell-version.ts`'s `TARGET_SHELL_VERSION`.
+L'utente aveva chiesto di rivedere prima il codice — da richiedere conferma esplicita prima di
+procedere, non tagliare la release di propria iniziativa solo perché il bug del job `ios` è
+stato risolto.
+
 ## Note
 
 - Punto risolto nella sessione del 2026-08-06: stato di navigazione browser morto
