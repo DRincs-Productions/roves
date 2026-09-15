@@ -6708,3 +6708,26 @@ trusting the cert as its own root right after import: `security add-trusted-cert
 "$keychain" /tmp/ci-test-cert.pem` (user-domain trust, no `sudo`/`-d` admin domain needed — scoped
 to the CI user session on an already-ephemeral, discarded-after-the-job runner). **Not yet
 confirmed on real CI** — next push exercises this.
+
+## 2026-09-15 — `android-actions/setup-android@v3`'s default `tools` package no longer exists
+
+**File:** `.github/workflows/android.yml` (both `android` and `android-release-signing` jobs'
+`android-actions/setup-android@v3` steps).
+
+**Why:** while chasing the iOS signing saga above, both Android CI jobs also failed on the same
+run at this same step — looked at first like the transient `android-actions/setup-android` flake
+a much earlier commit's own message already mentions retrying past once. It wasn't: the real log
+showed `Warning: Failed to find package 'tools'` followed by `sdkmanager` exiting 1. Google has
+removed the legacy Android SDK `tools` package (the old standalone `android`/`monitor`/etc.
+bundle, deprecated for years) from its repository entirely — `android-actions/setup-android@v3`
+still requests it by default (`packages: tools platform-tools` when no `packages` input is given)
+and now hard-fails immediately instead of the license-acceptance step it used to sail through.
+This is a real, permanent break caused by an upstream removal, not something that resolves on
+retry.
+
+**Fix:** pass `packages: platform-tools` explicitly to both `setup-android` steps, dropping
+`tools`. Nothing in this workflow needed it: `platform-tools` (`adb`) plus the specific
+`platforms;android-NN`/`build-tools;NN.N.N` the very next step (`Install Android SDK`) installs
+by name are everything a Gradle-based `mach bundle --android` actually touches.
+
+**Verification:** not yet confirmed on real CI — next push exercises both jobs again.

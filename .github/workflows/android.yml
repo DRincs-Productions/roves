@@ -75,6 +75,15 @@ jobs:
           java-version: '17'
 
       - uses: android-actions/setup-android@v3
+        with:
+          # Override the action's own default (`tools platform-tools`): Google has removed the
+          # legacy "tools" package from the SDK repository entirely (`sdkmanager` now reports
+          # "Warning: Failed to find package 'tools'" and exits 1 for it -- a real, permanent
+          # break, not the transient flake this looked like at first). Nothing here actually
+          # needs it: `platform-tools` (adb) plus the `platforms;android-NN`/`build-tools;NN.N.N`
+          # the very next step installs explicitly are everything a Gradle-based `mach bundle`
+          # requires.
+          packages: platform-tools
 
       - name: Install Android SDK
         # Google doesn't publish a bare "platforms;android-37" package -- API 37 ships
@@ -197,6 +206,15 @@ jobs:
           java-version: '17'
 
       - uses: android-actions/setup-android@v3
+        with:
+          # Override the action's own default (`tools platform-tools`): Google has removed the
+          # legacy "tools" package from the SDK repository entirely (`sdkmanager` now reports
+          # "Warning: Failed to find package 'tools'" and exits 1 for it -- a real, permanent
+          # break, not the transient flake this looked like at first). Nothing here actually
+          # needs it: `platform-tools` (adb) plus the `platforms;android-NN`/`build-tools;NN.N.N`
+          # the very next step installs explicitly are everything a Gradle-based `mach bundle`
+          # requires.
+          packages: platform-tools
 
       - name: Install Android SDK
         # See the `android` job's own identical step/comment above for why this resolves the

@@ -461,6 +461,14 @@ esplicitamente il certificato come propria root (trust a livello utente, nessun 
 admin necessario, su un runner comunque effimero). Vedi `CUSTOMIZATIONS.md` per il dettaglio.
 **Da confermare al prossimo run CI.**
 
+**Bug separato trovato nello stesso run — `android`/`android-release-signing` falliscono su
+`android-actions/setup-android@v3` (non un flake, un problema reale e permanente).** Il log reale
+mostra `Warning: Failed to find package 'tools'` — Google ha rimosso dal repository SDK il
+pacchetto legacy `tools` che questa action richiede di default. Fix: passato esplicitamente
+`packages: platform-tools` a entrambi i punti in `android.yml` che usano l'action, eliminando
+`tools` (non serve a nulla qui: il passo successivo installa già `platforms;android-NN`/
+`build-tools;NN.N.N` per nome). Vedi `CUSTOMIZATIONS.md`. **Da confermare al prossimo run CI.**
+
 **Decisione ancora in sospeso, chiesta esplicitamente all'utente in una sessione precedente
 (2026-09-14), risposta: "aspetta" — non ancora ridecisa in questa sessione.** Perché
 `roves-action`/Roves Packmaster possano davvero usare `--ios`/`--ios-release` (oggi puntano a un
