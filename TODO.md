@@ -409,67 +409,34 @@ upload artifact, packaging, upload release "test" tutti riusciti) — vedi
 ancora confermata (nessuna annotation utile, nessun PAT GitHub disponibile per leggere il log
 reale in questa sessione).
 
-**Aggiornamento 2026-09-15 (stessa sessione, l'utente ha fornito un PAT fresco) —
-`ios-release-signing-smoke` diagnosticato e risolto:** il log reale mostrava `SecKeychainItemImport:
-MAC verification failed during PKCS12 import (wrong password?)` — i due secret
-`IOS_CI_TEST_P12_BASE64`/`_PASSWORD` erano disallineati tra loro (probabile residuo
-dell'handoff multi-macchina). Non risolvibile da codice (sono secret GitHub write-only):
-rigenerata una coppia certificato/password self-signed coerente con `openssl` (CN esatto
-"Roves CI Test Signing", `codeSigning` extended key usage), verificata localmente, e i due
-nuovi valori consegnati all'utente da impostare a mano sui secret GitHub (il PAT di questa
-sessione è read-only per policy, vedi `CLAUDE.md`). Documentata la ricetta di rigenerazione
-come commento in `.github/workflows/ios.yml` così non si ripete lo stesso disallineamento
-silenzioso — non era scritta da nessuna parte prima.
-
-**Aggiornamento 2026-09-15 (continua) — stesso errore anche dopo il re-upload dei secret.**
-Verificato byte-per-byte che il base64 incollato dall'utente corrisponde esattamente a quello
-generato (e lo step di decode non ha mai fallito, quindi il secret non era vuoto) — il sospetto
-si è ristretto a `IOS_CI_TEST_P12_PASSWORD` con probabile spazio/a-capo residuo da un
-copia-incolla da chat. Invece di continuare a tentativi, reso lo step stesso resiliente:
-`tr -d '[:space:]'` sulla password prima dell'uso (sicuro perché è sempre una stringa alfanumerica
-generata, vedi la ricetta in `ios.yml`). **Ancora da confermare con un nuovo run CI** — se
-fallisce di nuovo con lo stesso errore, il problema non è lo whitespace ma la password stessa
-(secret impostato sul repo sbagliato, o valori di generazioni diverse).
-
-**Risoluzione finale 2026-09-15 — rimossi del tutto i secret, su suggerimento dell'utente.**
-Sia il certificato iOS di test che la keystore Android di `android-release-signing` servono solo
-a testare il meccanismo di firma, mai riusati per una release reale — quindi generati ora
-direttamente dentro il job CI (`openssl`/`keytool`), niente più secret da tenere sincronizzati.
-`IOS_CI_TEST_P12_BASE64`/`_PASSWORD` e `ANDROID_KEYSTORE_BASE64`/`_PASSWORD`/`ANDROID_KEY_ALIAS`/
-`_PASSWORD` sono ora secret morti, eliminabili da GitHub. Vedi `CUSTOMIZATIONS.md` per il
-dettaglio completo.
-
-**Correzione 2026-09-15 — la vera causa non era mai stata i secret.** Il primo run del job
-riscritto (certificato/password generati insieme nello stesso job, zero copia-incolla) è fallito
-di nuovo con lo stesso identico errore "wrong password" — smentendo tutte le teorie precedenti
-in un colpo solo. Causa reale: `openssl pkcs12 -export` da OpenSSL 3.0 in poi usa di default
-PBES2/PBKDF2/AES-256-CBC, formato che l'API `SecKeychainItemImport` di macOS (usata da `security
-import`) non sa decodificare — e lo segnala con lo stesso identico messaggio di una password
-sbagliata, invece di un errore di formato non supportato. La password non è mai stata sbagliata.
-Fix: forzare l'algoritmo PBE legacy che `security import` capisce
-(`-certpbe PBE-SHA1-3DES -keypbe PBE-SHA1-3DES -macalg SHA1`), verificato localmente. Vedi
-`CUSTOMIZATIONS.md` per il dettaglio completo, incluso perché il flag `-legacy` più comunemente
-suggerito online non è stato usato (richiede RC2, non sempre compilato in OpenSSL).
-
-**Aggiornamento 2026-09-15 — il fix PBE ha funzionato, ma ha scoperto un secondo problema
-distinto.** Confermato su CI reale: l'import ora riesce (`1 identity imported`), ma
-`security find-identity -v -p codesigning` restituisce `0 valid identities found` — un
-certificato self-signed non è considerato attendibile per la policy di code-signing di default
-(un certificato Apple reale invece incatena alla CA Apple, già fidata di sistema). Fix: aggiunto
-`security add-trusted-cert -r trustRoot -k "$keychain" ...` subito dopo l'import per fidare
-esplicitamente il certificato come propria root (trust a livello utente, nessun sudo/dominio
-admin necessario, su un runner comunque effimero). Vedi `CUSTOMIZATIONS.md` per il dettaglio.
-
-**Aggiornamento 2026-09-15 — quel fix ha bloccato il job invece di farlo fallire.** Lo step è
-rimasto fermo 12+ minuti senza output (ogni altro step del job impiega meno di un secondo) —
-`security add-trusted-cert` apre un dialog di autorizzazione grafico che su un runner headless
-non arriva mai, quindi il comando resta bloccato indefinitamente invece di fallire in fretta.
-Fix: workaround standard della guida ufficiale GitHub per questo esatto caso — disattivare
-temporaneamente il prompt di autorizzazione (`sudo security authorizationdb write
-com.apple.trust-settings.admin allow`), fare la modifica con `-d` (dominio admin), poi ripristinare
-subito la policy. **Il run bloccato ha richiesto una cancellazione manuale** — il PAT di questa
-sessione è read-only e non può cancellare run (solo l'utente può farlo dalla UI). **Da
-confermare al prossimo run CI.**
+**`ios-release-signing-smoke` — cinque tentativi sbagliati prima della causa vera, stessa
+sessione (2026-09-15):** il log reale (letto con un PAT fornito dall'utente) mostrava
+`SecKeychainItemImport: MAC verification failed (wrong password?)`. Tentativi, in ordine, tutti
+smentiti dal run successivo: (1) i due secret `IOS_CI_TEST_P12_BASE64`/`_PASSWORD` disallineati
+→ rigenerati e riverificati byte-per-byte, stesso errore; (2) spazio/a-capo residuo nella
+password da un copia-incolla → `tr -d '[:space:]'`, stesso errore; (3) su suggerimento
+dell'utente, eliminati del tutto i secret (sia questo certificato iOS che la keystore Android di
+`android-release-signing` servono solo a testare il meccanismo, mai riusati per una release
+reale) — generati invece direttamente nel job CI (`openssl`/`keytool`); (4) **causa vera,
+trovata solo quando certificato/chiave/password generati insieme nello stesso job hanno dato lo
+stesso identico errore, escludendo ogni teoria sui secret**: `openssl pkcs12 -export` da OpenSSL
+3.0 in poi usa di default PBES2/AES-256, formato che l'API macOS `SecKeychainItemImport` non sa
+decodificare — e lo segnala con lo stesso messaggio di una password sbagliata. Fix:
+`-certpbe PBE-SHA1-3DES -keypbe PBE-SHA1-3DES -macalg SHA1`; (5) con l'import finalmente
+funzionante, `security find-identity -v -p codesigning` restituiva "0 valid identities found"
+(un certificato self-signed non è mai attendibile per quella policy) — tentato
+`security add-trusted-cert` per fidarlo esplicitamente, che però ha **bloccato il job 12+
+minuti** in attesa di un dialog di autorizzazione grafico mai arrivato su un runner headless
+(richiesta cancellazione manuale del run, il PAT read-only non può farlo), poi anche con il
+workaround `authorizationdb`+`sudo` standard di GitHub è fallito comunque con `errSecAuthFailed`
+(macOS moderno blocca la scrittura del trust store di sistema). **Fix finale**: rileggendo il
+codice di produzione (`_sign_and_export_ios_release`) risulta che non chiama mai
+`find-identity` né valida il trust — passa l'identità direttamente a `xcodebuild archive`, che
+risolve la firma via profilo di provisioning + team ID. Tutto l'inseguimento del trust stava
+testando un requisito che il codice reale non ha mai avuto: rimosso `-p codesigning`/`-v` dalla
+verifica, usando `security find-identity` senza filtri (elenca tutte le identità a prescindere
+dal trust — tutto ciò che serve per provare che l'import ha funzionato). Vedi `CUSTOMIZATIONS.md`
+per il dettaglio completo passo per passo. **Da confermare con un nuovo run CI.**
 
 **Bug separato trovato nello stesso run — `android`/`android-release-signing` falliscono su
 `android-actions/setup-android@v3` (non un flake, un problema reale e permanente).** Il log reale

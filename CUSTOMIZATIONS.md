@@ -6597,141 +6597,67 @@ XcodeGen + `xcodebuild` build this time), and the whole `ios` job is now green e
 artifact upload, `roves_ios_project.zip` packaging, and the "test" release upload all
 succeeded too.
 
-**Left open at the time — a separate, unrelated failure in the same CI run:**
-`ios-release-signing-smoke` (the self-signed-test-certificate keychain-import smoke test, see
-the 2026-09-14 entry above) also failed in the same run, at the `security import ... -k
-"$keychain"` step. This is *not* the same bug — that job never calls `mach bundle` at all, so
-this fix doesn't touch it.
+**Left open at the time — a separate, unrelated failure in the same CI run, that turned into its
+own multi-round saga:** `ios-release-signing-smoke` (the self-signed-test-certificate
+keychain-import smoke test, see the 2026-09-14 entry above) also failed in the same run, at the
+`security import ... -k "$keychain"` step. Not the same bug — that job never calls `mach bundle`
+at all — but chasing it down took five wrong turns before landing on the real fix, worth reading
+in order since each one looked completely plausible until the next run disproved it:
 
-**Update, same day — root cause found and fixed, with a fresh PAT the user provided:** the raw
-job log (`GET .../actions/jobs/{id}/logs`, needs an authenticated PAT — the anonymous
-annotations endpoint used above only ever showed the generic "Process completed with exit code
-1") showed the real error: `security: SecKeychainItemImport: MAC verification failed during
-PKCS12 import (wrong password?)`. The `IOS_CI_TEST_P12_BASE64` and `IOS_CI_TEST_P12_PASSWORD`
-secrets had drifted out of sync with each other — likely from the machine handoff documented in
-the now-deleted `HANDOFF.md` (the previous session generated and uploaded these on a different
-machine; something in that process left the two secrets not matching the same generation run).
-Not fixable by editing code — these are GitHub repo secrets, write-only once set, so the only
-fix is regenerating the pair and re-uploading both together. Generated a fresh self-signed
-cert/`.p12` locally with `openssl` (CN `Roves CI Test Signing` — the exact string this job's own
-`grep -q` checks for — with `codeSigning` extended key usage so `security find-identity -v -p
-codesigning` lists it), verified the password and base64 encoding round-trip locally before
-handing the two values to the user to set as `IOS_CI_TEST_P12_BASE64`/`_PASSWORD` (GitHub
-secrets can only be written through the web UI or an authenticated write-scoped token — this
-session's PAT is read-only by design, see `CLAUDE.md`'s "GitHub PAT usage" section — so setting
-them was the user's own manual step, not something done here). Documented the exact
-regeneration recipe as a comment directly in `.github/workflows/ios.yml` next to the
-`ios-release-signing-smoke` job, since the previous cert's generation recipe was never written
-down anywhere — the root cause of it drifting silently in the first place.
+1. **"The two secrets drifted apart."** The real job log (pulled with a user-provided
+   read-only PAT — anonymous annotations only ever showed the generic "exit code 1") showed
+   `SecKeychainItemImport: MAC verification failed during PKCS12 import (wrong password?)`.
+   Regenerated and re-uploaded a fresh, verified-matching `IOS_CI_TEST_P12_BASE64`/`_PASSWORD`
+   pair. Same error. A byte-for-byte diff proved the re-uploaded value matched exactly, so this
+   theory was wrong.
+2. **"Whitespace from pasting the secret."** Made the password-consuming step strip
+   `[:space:]` before use. Same error again.
+3. **Removed the secrets entirely.** At this point the user pointed out — correctly — that
+   both this iOS test cert and Android's analogous release-signing keystore exist purely to
+   smoke-test a signing *mechanism*, never reused for a real release, so there was never a
+   reason to persist either as a secret at all. Rewrote both `ios-release-signing-smoke`
+   (`ios.yml`) and `android-release-signing` (`android.yml`) to generate a throwaway identity
+   fresh on the runner instead: iOS via `openssl req -x509`/`openssl pkcs12 -export` (CN
+   `Roves CI Test Signing`, `codeSigning` EKU), Android via `keytool -genkeypair` (already on
+   `PATH` from `setup-java`) — both using a `uuidgen` password threaded via `$GITHUB_ENV`
+   (`::add-mask::`-masked). This deleted `IOS_CI_TEST_P12_BASE64`/`_PASSWORD` and
+   `ANDROID_KEYSTORE_BASE64`/`_PASSWORD`/`ANDROID_KEY_ALIAS`/`_PASSWORD` as dead secrets
+   (removed from GitHub) — a real improvement kept regardless of what came next.
+4. **The actual bug, finally found:** the very first run after generating everything fresh —
+   cert, key, and password all created together in the same job, zero secrets or copy-paste
+   anywhere — failed with the *exact same* "wrong password?" error. That's what finally ruled
+   out every secret/whitespace theory at once: OpenSSL 3.0 changed `openssl pkcs12 -export`'s
+   default encryption to PBES2/PBKDF2/AES-256-CBC, which macOS's `security import` (the legacy
+   `SecKeychainItemImport` API) cannot decode at all — and reports as "wrong password?" instead
+   of an unsupported-format error, which is exactly what sent every prior round in the wrong
+   direction. Fixed with `-certpbe PBE-SHA1-3DES -keypbe PBE-SHA1-3DES -macalg SHA1` (verified
+   locally that this switches the output to `pbeWithSHA1And3-KeyTripleDES-CBC`). Deliberately
+   not the commonly-suggested `-legacy` flag: that needs RC2-40-CBC, missing from this
+   session's local OpenSSL's legacy provider entirely — the explicit `-certpbe`/`-keypbe`
+   combination needs no special provider.
+5. **A detour chasing a check the real code never makes.** With the PBE fixed, `security
+   import` finally succeeded ("1 identity imported") — but the next check,
+   `security find-identity -v -p codesigning`, reported "0 valid identities found": a
+   self-signed cert isn't trusted for anything by default, and that policy-validated lookup
+   requires a trust chain a bare self-signed leaf can't have (a real Apple Distribution cert
+   wouldn't hit this, since it chains to Apple's already-trusted root). Tried explicitly
+   trusting the cert via `security add-trusted-cert` — which then *hung* the job for 12+
+   minutes waiting on a `SecurityAgent` GUI authorization dialog that no headless runner can
+   ever click (needing a manual cancellation of the stuck run, since a read-only PAT can't
+   cancel one), then, after adding the standard `authorizationdb write
+   com.apple.trust-settings.admin allow` non-interactive workaround plus `sudo`, still failed
+   with `NO (-60005)` (`errSecAuthFailed`) — modern macOS apparently blocks system trust-store
+   writes outright regardless of that workaround. Stepping back at this point and actually
+   reading `_sign_and_export_ios_release` (the real production code this job is meant to
+   smoke-test) showed it **never calls `find-identity` or validates trust at all** — it hands
+   the identity straight to `xcodebuild archive`, which resolves signing via the provisioning
+   profile + team ID instead. The whole trust-chasing detour was chasing a self-imposed
+   requirement the real code doesn't have.
 
-**Update, same day — still failing after re-upload, same "wrong password" error.** The user set
-both secrets from the exact values handed over above; a byte-for-byte diff of the pasted base64
-against the locally-generated file (round-tripped through the user's own message back to this
-session) confirmed it matched exactly, and the decode step succeeded both times (so
-`IOS_CI_TEST_P12_BASE64` was never empty/missing) — narrowing this to `IOS_CI_TEST_P12_PASSWORD`
-picking up something extra (most likely a trailing newline/whitespace character from copying a
-single-line secret out of a chat UI into GitHub's secret text field, invisible to whoever pastes
-it). Rather than keep asking the user to re-paste and hope, made the job itself resilient to this
-whole class of mistake: `import into an ephemeral keychain` now runs
-`IOS_CI_TEST_P12_PASSWORD="$(printf '%s' "$IOS_CI_TEST_P12_PASSWORD" | tr -d '[:space:]')"` before
-using it — safe because this password is always a generated alnum string (see the recipe comment
-above), so stripping whitespace can't silently corrupt a legitimate password. **Still needs a CI
-run to confirm this was actually the cause** — if it still fails after this, the password itself
-(not just its whitespace) is wrong, and the more likely explanation would shift to the two
-secrets belonging to different generation runs after all, or the value having been set on the
-wrong repository.
-
-**Final resolution, same day — removed the secrets entirely.** After a second re-upload also hit
-the same error, the user pointed out (correctly) that both this iOS test certificate and
-Android's analogous release-signing keystore (see the 2026-08/09 `--android-release` entries)
-exist purely to smoke-test a signing *mechanism* — neither is ever reused for an actual game
-release — so there was never a real reason to persist either as a stored secret at all. Rewrote
-both `ios-release-signing-smoke` (`ios.yml`) and `android-release-signing` (`android.yml`) to
-generate a throwaway identity fresh on the runner, inside the job itself, with no repo secrets
-involved:
-
-- **iOS**: `openssl req -x509 ...` generates the self-signed cert/key pair directly (CN `Roves
-  CI Test Signing`, `codeSigning` extended key usage, `-days 1` — it only needs to outlive the
-  job), then `openssl pkcs12 -export` packages it with a `uuidgen`-generated password masked via
-  `::add-mask::` and threaded to the next step through `$GITHUB_ENV`. Everything downstream
-  (`security import`/`set-key-partition-list`/`find-identity`) is unchanged.
-- **Android**: `keytool -genkeypair` (already on `PATH` from the job's own `setup-java` step)
-  generates the keystore directly, alias `roves-ci-test`, same `uuidgen`+`::add-mask::`+
-  `$GITHUB_ENV` password-threading pattern. `mach bundle --android --android-release` and
-  `apksigner verify` are otherwise unchanged.
-
-Neither workflow reads `IOS_CI_TEST_P12_BASE64`/`_PASSWORD` or
-`ANDROID_KEYSTORE_BASE64`/`_PASSWORD`/`ANDROID_KEY_ALIAS`/`_PASSWORD` any more, so all six are now
-dead repo secrets, safe for the user to delete from GitHub — eliminating this whole incident's
-root cause class (two paired secrets that can silently drift out of sync) rather than just
-patching around one occurrence of it.
-
-**Correction, same day — every theory above about the actual failure cause was wrong.**
-`ios-release-signing-smoke` failed *again* on the very first run after the in-CI generation
-change, with the exact same `SecKeychainItemImport: MAC verification failed (wrong password?)`
-error — except this time the certificate, key, and password were all generated together in the
-same job run, with zero copy-paste or secrets involved anywhere. That ruled out every prior
-theory (secret drift, whitespace from pasting) at a stroke: the real bug was in the `openssl
-pkcs12 -export` invocation itself. OpenSSL 3.0 changed its default PKCS#12 encryption to
-PBES2/PBKDF2/AES-256-CBC — cryptographically fine, but macOS's `security import` goes through the
-old `SecKeychainItemImport` API, which predates PBES2 support entirely and cannot decode it. It
-has no "unsupported format" error path for this case; it reports exactly the same "wrong
-password?" message as an actual wrong password, which is what sent the previous two rounds of
-debugging in the wrong direction — a password that had been correct the whole time. The original
-"disallineamento tra i due secret" from earlier the same day, generated on a different machine in
-the previous session, almost certainly had this exact same root cause, not an actual secret
-mismatch.
-
-**Fix:** force the old-style PBE OpenSSL used before 3.0, which `security import` does
-understand: `openssl pkcs12 -export ... -certpbe PBE-SHA1-3DES -keypbe PBE-SHA1-3DES -macalg
-SHA1`. Verified locally (this session's local OpenSSL is also 3.x) that `-info` on the resulting
-file reports `pbeWithSHA1And3-KeyTripleDES-CBC` instead of `PBES2, PBKDF2, AES-256-CBC` — the
-same legacy format Apple's tooling has always supported. Deliberately did **not** use the
-commonly-suggested `-legacy` flag/`-provider legacy` combination: that pulls in RC2-40-CBC by
-default, and this session's local OpenSSL build doesn't have RC2 compiled into its legacy
-provider at all (`unsupported... Algorithm (RC2-40-CBC : 0)`) — the explicit `-certpbe`/`-keypbe
-PBE-SHA1-3DES` combination needs no provider beyond the default one, so it's the more portable
-fix, not just the one that happened to work here.
-
-**Update — the PBE fix worked, but surfaced a second, distinct issue.** Real CI run confirmed:
-`1 identity imported` (the `-macalg SHA1` concern above didn't materialize — no legacy-provider
-issue on the runner's OpenSSL either), but the very next check failed anyway: `security
-find-identity -v -p codesigning` reported `0 valid identities found`, so `grep -q "Roves CI Test
-Signing"` failed against an empty result. Cause: a self-signed certificate isn't trusted for
-*anything* by default — `find-identity -p codesigning`'s policy validation (mirroring what
-`codesign` itself would require) needs the certificate to chain to something the keychain trusts,
-and a bare self-signed leaf with no trust record fails that chain-of-trust check even though the
-identity (cert + matching private key) is sitting right there in the keychain. A real Apple
-Distribution certificate doesn't hit this because it chains to Apple's own root CA, already
-trusted system-wide — this only shows up for a self-signed stand-in. Fixed by explicitly
-trusting the cert as its own root right after import: `security add-trusted-cert -r trustRoot -k
-"$keychain" /tmp/ci-test-cert.pem` (user-domain trust, no `sudo`/`-d` admin domain needed — scoped
-to the CI user session on an already-ephemeral, discarded-after-the-job runner).
-
-**Update — that fix hung the job instead of failing it.** The step sat with no output for 12+
-minutes (every prior step in this job completes in well under a second) instead of either
-passing or failing outright. Cause: `security add-trusted-cert` modifying trust settings
-normally pops a `SecurityAgent` GUI authorization dialog for the user to approve — on a headless
-CI runner with nothing to click that dialog, the command just blocks forever (until the job's
-overall multi-hour timeout, not a fast failure). This apparently happens for user-domain trust
-changes too, not only the `-d` admin domain the workaround below is usually described for.
-Fixed using the standard non-interactive workaround from GitHub's own official guide
-("Installing an Apple certificate on macOS runners for Xcode development"): temporarily loosen
-the trust-settings authorization policy so the change doesn't prompt, make the change, then
-restore the policy immediately after:
-
-```
-sudo security authorizationdb write com.apple.trust-settings.admin allow
-security add-trusted-cert -d -r trustRoot -k "$keychain" /tmp/ci-test-cert.pem
-sudo security authorizationdb remove com.apple.trust-settings.admin
-```
-
-Switched to `-d` (admin/system domain) to match this documented recipe exactly, rather than
-guessing whether the user-domain variant is prompt-free on this runner image. **The stuck run
-itself needed manual cancellation** — a read-only PAT can only read Actions data, not cancel a
-run (that's a write call, out of scope by design, see `CLAUDE.md`'s "GitHub PAT usage" section)
-— someone with repo access had to cancel it from the Actions UI. **Not yet confirmed on real
-CI** — next push exercises this.
+**Final fix:** dropped `-p codesigning`/`-v` from the verification `find-identity` call entirely
+— a bare `security find-identity "$keychain"` lists every identity present regardless of trust
+validity, which is all this job ever needed to prove (that the cert + matching key made it into
+the keychain), matching what `_sign_and_export_ios_release` itself actually relies on.
 
 ## 2026-09-15 — `android-actions/setup-android@v3`'s default `tools` package no longer exists
 
