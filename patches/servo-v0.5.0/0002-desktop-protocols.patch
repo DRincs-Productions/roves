@@ -19,7 +19,7 @@ index 434826f5b..0744c2ce7 100644
 diff --git a/ports/servoshell/desktop/protocols/roves.rs b/ports/servoshell/desktop/protocols/roves.rs
 new file mode 100644
 index 000000000..000000000
-@@ -0,0 +1,247 @@
+@@ -0,0 +1,251 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
@@ -166,20 +166,24 @@ index 000000000..000000000
 +
 +            // Resolved synchronously, before the async block below, so that block never
 +            // needs to borrow `self` — it only needs to `.await` the already-independent
-+            // future `save_file` hands back (see that method's own doc comment).
-+            let outcome_future = 'setup: {
-+                let Some(filename) = query.get("filename").cloned() else {
-+                    break 'setup Box::pin(std::future::ready(Err(
++            // future `save_file` hands back (see that method's own doc comment). The
++            // explicit type annotation on `outcome_future` (rather than relying on each
++            // match arm's own inferred type to line up) is what makes every arm below
++            // coerce to the same boxed trait object, since they're otherwise three
++            // different concrete `Future` implementations (two `std::future::Ready`s and
++            // `save_file`'s own already-boxed one).
++            let filename = query.get("filename").cloned();
++            let data = query.get("data").and_then(|data| base64_decode(data));
++            let outcome_future: Pin<Box<dyn Future<Output = Result<(), String>> + Send>> =
++                match (filename, data) {
++                    (Some(filename), Some(data)) => self.save_file(filename, data),
++                    (None, _) => Box::pin(std::future::ready(Err(
 +                        "Missing 'filename' parameter".to_owned(),
-+                    ))) as Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
-+                };
-+                let Some(data) = query.get("data").and_then(|data| base64_decode(data)) else {
-+                    break 'setup Box::pin(std::future::ready(Err(
++                    ))),
++                    (Some(_), None) => Box::pin(std::future::ready(Err(
 +                        "Missing or invalid base64 'data' parameter".to_owned(),
-+                    )));
++                    ))),
 +                };
-+                self.save_file(filename, data)
-+            };
 +
 +            return Box::pin(async move {
 +                match outcome_future.await {
