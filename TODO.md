@@ -419,8 +419,17 @@ rigenerata una coppia certificato/password self-signed coerente con `openssl` (C
 nuovi valori consegnati all'utente da impostare a mano sui secret GitHub (il PAT di questa
 sessione è read-only per policy, vedi `CLAUDE.md`). Documentata la ricetta di rigenerazione
 come commento in `.github/workflows/ios.yml` così non si ripete lo stesso disallineamento
-silenzioso — non era scritta da nessuna parte prima. **Da confermare al prossimo run CI dopo
-che l'utente ha aggiornato i secret.**
+silenzioso — non era scritta da nessuna parte prima.
+
+**Aggiornamento 2026-09-15 (continua) — stesso errore anche dopo il re-upload dei secret.**
+Verificato byte-per-byte che il base64 incollato dall'utente corrisponde esattamente a quello
+generato (e lo step di decode non ha mai fallito, quindi il secret non era vuoto) — il sospetto
+si è ristretto a `IOS_CI_TEST_P12_PASSWORD` con probabile spazio/a-capo residuo da un
+copia-incolla da chat. Invece di continuare a tentativi, reso lo step stesso resiliente:
+`tr -d '[:space:]'` sulla password prima dell'uso (sicuro perché è sempre una stringa alfanumerica
+generata, vedi la ricetta in `ios.yml`). **Ancora da confermare con un nuovo run CI** — se
+fallisce di nuovo con lo stesso errore, il problema non è lo whitespace ma la password stessa
+(secret impostato sul repo sbagliato, o valori di generazioni diverse).
 
 **Decisione ancora in sospeso, chiesta esplicitamente all'utente in una sessione precedente
 (2026-09-14), risposta: "aspetta" — non ancora ridecisa in questa sessione.** Perché

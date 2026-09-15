@@ -6623,3 +6623,20 @@ them was the user's own manual step, not something done here). Documented the ex
 regeneration recipe as a comment directly in `.github/workflows/ios.yml` next to the
 `ios-release-signing-smoke` job, since the previous cert's generation recipe was never written
 down anywhere — the root cause of it drifting silently in the first place.
+
+**Update, same day — still failing after re-upload, same "wrong password" error.** The user set
+both secrets from the exact values handed over above; a byte-for-byte diff of the pasted base64
+against the locally-generated file (round-tripped through the user's own message back to this
+session) confirmed it matched exactly, and the decode step succeeded both times (so
+`IOS_CI_TEST_P12_BASE64` was never empty/missing) — narrowing this to `IOS_CI_TEST_P12_PASSWORD`
+picking up something extra (most likely a trailing newline/whitespace character from copying a
+single-line secret out of a chat UI into GitHub's secret text field, invisible to whoever pastes
+it). Rather than keep asking the user to re-paste and hope, made the job itself resilient to this
+whole class of mistake: `import into an ephemeral keychain` now runs
+`IOS_CI_TEST_P12_PASSWORD="$(printf '%s' "$IOS_CI_TEST_P12_PASSWORD" | tr -d '[:space:]')"` before
+using it — safe because this password is always a generated alnum string (see the recipe comment
+above), so stripping whitespace can't silently corrupt a legitimate password. **Still needs a CI
+run to confirm this was actually the cause** — if it still fails after this, the password itself
+(not just its whitespace) is wrong, and the more likely explanation would shift to the two
+secrets belonging to different generation runs after all, or the value having been set on the
+wrong repository.
