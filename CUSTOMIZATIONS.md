@@ -6785,21 +6785,50 @@ otherwise would — a real, if imperfect, improvement (a save exported somewhere
 still needs manual navigation), chosen over doing nothing since the previous default landed
 specifically in a folder that can *never* be correct for either dialog.
 
-**Verification:** all 7 regenerated hunks (Cargo.toml, app.rs, dialog.rs, event_loop.rs,
-headed_window.rs, tracing.rs, and roves.rs as a fresh "new file" diff) apply cleanly
-(`patch -p1 --dry-run`) to their real pristine `v0.5.0` content, downloaded individually and
-confirmed by line count before diffing. That local check couldn't catch everything, though: the
-first push (without the `tracing.rs` fix) failed **every** `build-and-publish` leg and
-`steam-emulator-smoke-test` identically — `ports/servoshell/desktop/tracing.rs`'s
-`LogTarget for winit::event::Event<AppEvent>` impl matches every `AppEvent` variant explicitly
-with no wildcard arm, and the new `AppEvent::SaveFileDialog` variant wasn't covered, so it's a
-plain `E0004` non-exhaustive-match compile error — real logs weren't fetchable (a persistent
-connection failure to GitHub's log-blob storage from this session's own network, unrelated to
-GitHub itself), but every leg failing identically pointed straight at code shared by all of
-them, and grepping every `AppEvent` match site in the tree found the one uncovered arm on
-inspection. Fixed and re-pushed; not yet verified end-to-end on a real device/build (no working
-local Windows toolchain — see this file's own recurring note on that) — pending a green CI run
-and a real re-test of the exact repro steps from the original report.
+**Verification — three pushes, two real bugs, worth reading in order:**
+
+1. **First push failed every `build-and-publish` leg and `steam-emulator-smoke-test`
+   identically.** Real cause: `ports/servoshell/desktop/tracing.rs`'s
+   `LogTarget for winit::event::Event<AppEvent>` impl matches every `AppEvent` variant
+   explicitly with no wildcard arm, and the new `AppEvent::SaveFileDialog` variant wasn't
+   covered — a plain `error[E0004]: non-exhaustive patterns`. Every leg failing identically
+   pointed at code shared by all of them; grepping every `AppEvent` match site in the tree
+   found the one uncovered arm. Fixed by adding the missing arm.
+2. **Second push (with the `tracing.rs` fix) failed exactly the same way.** This time the
+   real logs *were* fetchable (see below) — and the actual failure had nothing to do with
+   Rust at all: it never got past `download + patch Servo source`.
+   `patch` reported `The next patch would create the file ports/servoshell/Cargo.toml, which
+   already exists!` for every one of the 6 files this entry's own hunks had regenerated
+   (Cargo.toml, app.rs, dialog.rs, event_loop.rs, headed_window.rs, tracing.rs) — the
+   `patches/`-splicing script used to regenerate them (per-file sections spliced into the
+   existing multi-file patch, see the top of this file on why patches are grouped by
+   subsystem) reconstructed each "modified file" header as
+   `diff --git a/X b/X` / `index 000000000..000000000 100644` / `--- a/X` / `+++ b/X` — the
+   all-zero `index` hash is git's own convention for "this blob doesn't exist", which made
+   `patch`'s git-extended-header parsing treat the file as a *creation* regardless of what
+   the `---`/`+++` lines said. The `roves.rs` "new file" section (patch `0002`) had the
+   mirror-image bug — genuinely missing `--- /dev/null`/`+++ b/...` lines entirely, which
+   made `patch` read it as a *deletion* instead. **This is exactly what the earlier
+   `patch -p1 --dry-run` verification failed to catch**: it tested the raw, standalone hunk
+   files this entry's own splicing script produced, never the *actual spliced patch file* —
+   proving the ingredients were fine while the assembled dish was broken. Fixed by dropping
+   the misleading `index` line from every "modified" section and adding the missing
+   `/dev/null` header to the "new file" one, then re-verified for real this time: downloaded
+   every pristine file `0001`/`0002` touch (including the two genuinely-new-upstream files,
+   `bundle_launch.rs`/`logging.rs`, confirmed absent from pristine and left for `patch` itself
+   to create) into one tree each and ran the exact `patch -p1` both patches actually get
+   subjected to in CI — clean, no prompts, for every file in both patches this time, not just
+   the ones this entry touched.
+3. Real logs, once fetchable: Windows-side `curl` (this session's usual tool, via its
+   git-bash/MSYS build) reliably failed to reach GitHub's log-blob storage with a bare
+   connection error, on every retry, across multiple unrelated endpoints — but the same
+   request through `curl.exe` (Windows' own native curl, invoked from PowerShell instead)
+   worked on the first try. Worth remembering for next time this comes up: prefer `curl.exe`
+   over git-bash's `curl` for this specific endpoint on this machine.
+
+Not yet verified end-to-end on a real device/build (no working local Windows toolchain — see
+this file's own recurring note on that) — pending a green CI run and a real re-test of the
+exact repro steps from the original report.
 
 ---
 

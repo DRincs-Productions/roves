@@ -18,7 +18,8 @@ index 434826f5b..0744c2ce7 100644
  pub(crate) mod urlinfo;
 diff --git a/ports/servoshell/desktop/protocols/roves.rs b/ports/servoshell/desktop/protocols/roves.rs
 new file mode 100644
-index 000000000..000000000
+--- /dev/null
++++ b/ports/servoshell/desktop/protocols/roves.rs
 @@ -0,0 +1,251 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this

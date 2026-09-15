@@ -1,5 +1,6 @@
 diff --git a/ports/servoshell/Cargo.toml b/ports/servoshell/Cargo.toml
-index 000000000..000000000 100644
+--- a/ports/servoshell/Cargo.toml
++++ b/ports/servoshell/Cargo.toml
 @@ -35,10 +35,10 @@
  winresource = { workspace = true }
  
@@ -200,7 +201,8 @@ index 918273cb8..a640e3854 100644
      // Passing a version script allows us to inform the linker about required
      // symbol visibility (only one), which improves stripping of unused sections.
 diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
-index 000000000..000000000 100644
+--- a/ports/servoshell/desktop/app.rs
++++ b/ports/servoshell/desktop/app.rs
 @@ -4,24 +4,27 @@
  
  //! Application entry point, runs the event loop.
@@ -1183,7 +1185,8 @@ index 82b3aef92..4375a3a20 100644
      }
  
 diff --git a/ports/servoshell/desktop/dialog.rs b/ports/servoshell/desktop/dialog.rs
-index 000000000..000000000 100644
+--- a/ports/servoshell/desktop/dialog.rs
++++ b/ports/servoshell/desktop/dialog.rs
 @@ -4,29 +4,58 @@
  
  use std::path::Path;
@@ -1429,7 +1432,8 @@ index 000000000..000000000 100644
  
  fn make_dialog_label(message: &str, ui: &mut egui::Ui, input_text: Option<&mut String>) {
 diff --git a/ports/servoshell/desktop/event_loop.rs b/ports/servoshell/desktop/event_loop.rs
-index 000000000..000000000 100644
+--- a/ports/servoshell/desktop/event_loop.rs
++++ b/ports/servoshell/desktop/event_loop.rs
 @@ -14,12 +14,64 @@
  
  use super::app::App;
@@ -2305,7 +2309,8 @@ index 860090c55..a69166678 100644
 -    }
 -}
 diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/desktop/headed_window.rs
-index 000000000..000000000 100644
+--- a/ports/servoshell/desktop/headed_window.rs
++++ b/ports/servoshell/desktop/headed_window.rs
 @@ -10,8 +10,10 @@
  use std::cell::{Cell, RefCell};
  use std::collections::HashMap;
@@ -2952,7 +2957,8 @@ index 8ade3831c..287d27f53 100644
  mod tracing;
  #[cfg(feature = "webxr")]
 diff --git a/ports/servoshell/desktop/tracing.rs b/ports/servoshell/desktop/tracing.rs
-index 000000000..000000000 100644
+--- a/ports/servoshell/desktop/tracing.rs
++++ b/ports/servoshell/desktop/tracing.rs
 @@ -54,6 +54,10 @@
                  Self::UserEvent(AppEvent::Waker) => target!("UserEvent(Waker)"),
                  Self::UserEvent(AppEvent::Accessibility(..)) => target!("UserEvent(Accessibility)"),
