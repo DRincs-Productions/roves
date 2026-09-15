@@ -449,8 +449,17 @@ sbagliata, invece di un errore di formato non supportato. La password non è mai
 Fix: forzare l'algoritmo PBE legacy che `security import` capisce
 (`-certpbe PBE-SHA1-3DES -keypbe PBE-SHA1-3DES -macalg SHA1`), verificato localmente. Vedi
 `CUSTOMIZATIONS.md` per il dettaglio completo, incluso perché il flag `-legacy` più comunemente
-suggerito online non è stato usato (richiede RC2, non sempre compilato in OpenSSL). **Da
-confermare al prossimo run CI.**
+suggerito online non è stato usato (richiede RC2, non sempre compilato in OpenSSL).
+
+**Aggiornamento 2026-09-15 — il fix PBE ha funzionato, ma ha scoperto un secondo problema
+distinto.** Confermato su CI reale: l'import ora riesce (`1 identity imported`), ma
+`security find-identity -v -p codesigning` restituisce `0 valid identities found` — un
+certificato self-signed non è considerato attendibile per la policy di code-signing di default
+(un certificato Apple reale invece incatena alla CA Apple, già fidata di sistema). Fix: aggiunto
+`security add-trusted-cert -r trustRoot -k "$keychain" ...` subito dopo l'import per fidare
+esplicitamente il certificato come propria root (trust a livello utente, nessun sudo/dominio
+admin necessario, su un runner comunque effimero). Vedi `CUSTOMIZATIONS.md` per il dettaglio.
+**Da confermare al prossimo run CI.**
 
 **Decisione ancora in sospeso, chiesta esplicitamente all'utente in una sessione precedente
 (2026-09-14), risposta: "aspetta" — non ancora ridecisa in questa sessione.** Perché

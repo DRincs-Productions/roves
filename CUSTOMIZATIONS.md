@@ -6693,7 +6693,18 @@ provider at all (`unsupported... Algorithm (RC2-40-CBC : 0)`) — the explicit `
 PBE-SHA1-3DES` combination needs no provider beyond the default one, so it's the more portable
 fix, not just the one that happened to work here.
 
-**Not yet confirmed on real CI** — next push exercises this for the first time. If it fails
-again, the next suspect would be `-macalg SHA1` needing the same legacy-provider treatment (this
-session's local OpenSSL produced it fine without one, but a stricter macOS-runner OpenSSL build
-is not yet ruled out).
+**Update — the PBE fix worked, but surfaced a second, distinct issue.** Real CI run confirmed:
+`1 identity imported` (the `-macalg SHA1` concern above didn't materialize — no legacy-provider
+issue on the runner's OpenSSL either), but the very next check failed anyway: `security
+find-identity -v -p codesigning` reported `0 valid identities found`, so `grep -q "Roves CI Test
+Signing"` failed against an empty result. Cause: a self-signed certificate isn't trusted for
+*anything* by default — `find-identity -p codesigning`'s policy validation (mirroring what
+`codesign` itself would require) needs the certificate to chain to something the keychain trusts,
+and a bare self-signed leaf with no trust record fails that chain-of-trust check even though the
+identity (cert + matching private key) is sitting right there in the keychain. A real Apple
+Distribution certificate doesn't hit this because it chains to Apple's own root CA, already
+trusted system-wide — this only shows up for a self-signed stand-in. Fixed by explicitly
+trusting the cert as its own root right after import: `security add-trusted-cert -r trustRoot -k
+"$keychain" /tmp/ci-test-cert.pem` (user-domain trust, no `sudo`/`-d` admin domain needed — scoped
+to the CI user session on an already-ephemeral, discarded-after-the-job runner). **Not yet
+confirmed on real CI** — next push exercises this.
