@@ -222,7 +222,7 @@ jobs:
           # certificate on macOS runners" guide) is to temporarily allow the trust-settings
           # change without prompting, then restore the default policy right after.
           sudo security authorizationdb write com.apple.trust-settings.admin allow
-          security add-trusted-cert -d -r trustRoot -k "$keychain" /tmp/ci-test-cert.pem
+          sudo security add-trusted-cert -d -r trustRoot -k "$keychain" /tmp/ci-test-cert.pem
           sudo security authorizationdb remove com.apple.trust-settings.admin
           security set-key-partition-list -S apple-tool:,apple: -k "$pass" "$keychain"
           existing=$(security list-keychains -d user | tr -d '"')
