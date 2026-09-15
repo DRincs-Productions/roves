@@ -1,6 +1,6 @@
 import { exit } from "@drincs/roves-api/process";
 import { steam } from "@drincs/roves-api/steam";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import ClearCacheButton from "./ClearCacheButton.tsx";
 import DiagnosticsPanel from "./DiagnosticsPanel.tsx";
 import FullscreenButton from "./FullscreenButton.tsx";
@@ -14,6 +14,16 @@ import ThreePanel from "./ThreePanel.tsx";
 import ToneButton from "./ToneButton.tsx";
 
 type RenderTest = "none" | "pixi" | "three";
+
+// Matches the fixture `steam_settings/achievements.json` / `stats.json` the
+// steam-emulator-smoke-test CI job (../../.github/workflows/test.yml) generates
+// for the Goldberg/GSE emulator it swaps in for `libsteam_api.so` before
+// launching this build — see that job for the emulator setup, and
+// STEAM_AUTOTEST_MARKER below for how the two sides meet.
+const STEAM_AUTOTEST_ACHIEVEMENT_ID = "ACH_TEST_1";
+const STEAM_AUTOTEST_STAT_NAME = "test_stat";
+const STEAM_AUTOTEST_STAT_VALUE = 42;
+const STEAM_AUTOTEST_MARKER = "[roves-steam-autotest]";
 
 /**
  * Manual diagnostic page for ../../.github/workflows/test.yml's build-from-source
@@ -80,6 +90,39 @@ export default function App() {
       setSteamResult(`@drincs/roves-api/steam — FAILED: ${String(error)}`);
     }
   };
+
+  // Runs unconditionally on mount — this page is never shipped to a real
+  // player (see the file doc comment above), so there's no harm in always
+  // exercising the full round trip in addition to the manual buttons.
+  // console.log() here reaches the CI-visible logs for free: servoshell's
+  // WebViewDelegate::show_console_message already forwards page console
+  // output to stdout/roves.log (see ../../ports/servoshell/desktop/headed_window.rs
+  // and headless_window.rs), which the smoke-test steps in test.yml already
+  // capture — no new plumbing needed on the Rust side to get this result out
+  // of a headless CI run. A short delay first gives the background
+  // `client.run_callbacks()` thread in steam.rs a chance to receive the
+  // initial user-stats callback the Steamworks SDK needs before achievement/
+  // stat reads are reliable (see @drincs/roves-api/steam's isAchievementUnlocked
+  // doc comment, which already calls this out for real Steam too).
+  useEffect(() => {
+    const timer = setTimeout(async () => {
+      const result: Record<string, unknown> = {};
+      try {
+        result.isAvailable = await steam.isAvailable();
+        result.appId = await steam.getAppId();
+        result.playerName = await steam.getPlayerName();
+        result.unlockAchievement = await steam.unlockAchievement(STEAM_AUTOTEST_ACHIEVEMENT_ID);
+        result.isAchievementUnlocked = await steam.isAchievementUnlocked(STEAM_AUTOTEST_ACHIEVEMENT_ID);
+        result.setStatInt = await steam.setStatInt(STEAM_AUTOTEST_STAT_NAME, STEAM_AUTOTEST_STAT_VALUE);
+        result.storeStats = await steam.storeStats();
+        result.getStatInt = await steam.getStatInt(STEAM_AUTOTEST_STAT_NAME);
+      } catch (error) {
+        result.error = String(error);
+      }
+      console.log(`${STEAM_AUTOTEST_MARKER} ${JSON.stringify(result)}`);
+    }, 2000);
+    return () => clearTimeout(timer);
+  }, []);
 
   const quitApp = async () => {
     if (!window.confirm("This calls @drincs/roves-api/process's exit() — it will close this window. Continue?")) {
