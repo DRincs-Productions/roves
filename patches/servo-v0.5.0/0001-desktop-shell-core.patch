@@ -2952,17 +2952,15 @@ index 8ade3831c..287d27f53 100644
  mod tracing;
  #[cfg(feature = "webxr")]
 diff --git a/ports/servoshell/desktop/tracing.rs b/ports/servoshell/desktop/tracing.rs
-index 9511a1933..e67693a20 100644
---- a/ports/servoshell/desktop/tracing.rs
-+++ b/ports/servoshell/desktop/tracing.rs
-@@ -54,6 +54,10 @@ mod from_winit {
+index 000000000..000000000 100644
+@@ -54,6 +54,10 @@
                  Self::UserEvent(AppEvent::Waker) => target!("UserEvent(Waker)"),
                  Self::UserEvent(AppEvent::Accessibility(..)) => target!("UserEvent(Accessibility)"),
                  Self::UserEvent(AppEvent::Gamepad(..)) => target!("UserEvent(Gamepad)"),
 +                Self::UserEvent(AppEvent::CloseAllWindows) => target!("UserEvent(CloseAllWindows)"),
 +                Self::UserEvent(AppEvent::BootProgress(..)) => target!("UserEvent(BootProgress)"),
 +                Self::UserEvent(AppEvent::BootReady) => target!("UserEvent(BootReady)"),
-+                Self::UserEvent(AppEvent::Gamepad(..)) => target!("UserEvent(Gamepad)"),
++                Self::UserEvent(AppEvent::SaveFileDialog { .. }) => target!("UserEvent(SaveFileDialog)"),
                  Self::Suspended => target!("Suspended"),
                  Self::Resumed => target!("Resumed"),
                  Self::AboutToWait => target!("AboutToWait"),

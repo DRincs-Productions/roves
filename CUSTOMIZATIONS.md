@@ -6703,11 +6703,12 @@ keystore from the entry above working end to end for the first time).
 
 **Files:** `ports/servoshell/desktop/app.rs`, `ports/servoshell/desktop/protocols/roves.rs`,
 `ports/servoshell/desktop/dialog.rs`, `ports/servoshell/desktop/event_loop.rs`,
-`ports/servoshell/desktop/headed_window.rs`, `ports/servoshell/Cargo.toml`.
+`ports/servoshell/desktop/headed_window.rs`, `ports/servoshell/desktop/tracing.rs`,
+`ports/servoshell/Cargo.toml`.
 
 **Patch:** `patches/servo-v0.5.0/0001-desktop-shell-core.patch` (app.rs, dialog.rs,
-event_loop.rs, headed_window.rs, Cargo.toml), `patches/servo-v0.5.0/0002-desktop-protocols.patch`
-(roves.rs).
+event_loop.rs, headed_window.rs, tracing.rs, Cargo.toml),
+`patches/servo-v0.5.0/0002-desktop-protocols.patch` (roves.rs).
 
 **Reported by a real user testing `visual-novel-template`'s Save/Load screen on a real Windows
 build:** clicking "save to file" (`save.download()`, an `<a download>` click on a `blob:` URL —
@@ -6784,12 +6785,21 @@ otherwise would — a real, if imperfect, improvement (a save exported somewhere
 still needs manual navigation), chosen over doing nothing since the previous default landed
 specifically in a folder that can *never* be correct for either dialog.
 
-**Verification:** all 6 regenerated hunks (Cargo.toml, app.rs, dialog.rs, event_loop.rs,
-headed_window.rs, and roves.rs as a fresh "new file" diff) apply cleanly
+**Verification:** all 7 regenerated hunks (Cargo.toml, app.rs, dialog.rs, event_loop.rs,
+headed_window.rs, tracing.rs, and roves.rs as a fresh "new file" diff) apply cleanly
 (`patch -p1 --dry-run`) to their real pristine `v0.5.0` content, downloaded individually and
-confirmed by line count before diffing. Not yet verified end-to-end on a real device/build (no
-working local Windows toolchain — see this file's own recurring note on that) — pending a green
-CI run and a real re-test of the exact repro steps from the original report.
+confirmed by line count before diffing. That local check couldn't catch everything, though: the
+first push (without the `tracing.rs` fix) failed **every** `build-and-publish` leg and
+`steam-emulator-smoke-test` identically — `ports/servoshell/desktop/tracing.rs`'s
+`LogTarget for winit::event::Event<AppEvent>` impl matches every `AppEvent` variant explicitly
+with no wildcard arm, and the new `AppEvent::SaveFileDialog` variant wasn't covered, so it's a
+plain `E0004` non-exhaustive-match compile error — real logs weren't fetchable (a persistent
+connection failure to GitHub's log-blob storage from this session's own network, unrelated to
+GitHub itself), but every leg failing identically pointed straight at code shared by all of
+them, and grepping every `AppEvent` match site in the tree found the one uncovered arm on
+inspection. Fixed and re-pushed; not yet verified end-to-end on a real device/build (no working
+local Windows toolchain — see this file's own recurring note on that) — pending a green CI run
+and a real re-test of the exact repro steps from the original report.
 
 ---
 
