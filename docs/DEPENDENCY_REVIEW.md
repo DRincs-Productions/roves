@@ -8,14 +8,20 @@ modifiche mobile e il branch dell'analisi prestazionale non sono inclusi.
 
 ## Decisione proposta
 
-La preferenza progettuale aggiornata è accettare cambiamenti architetturali
-quando rendono Roves più adatto ai videogiochi, mantenendoli però come prototipi
-separati e confrontabili prima di sostituire il percorso stabile. Aggiornamenti
-mirati di mozjs, GStreamer, egui, mozangle e allocatore restano utili, ma non sono
-la sola strada. Le prime nuove dipendenze da valutare sono strumenti di profiling
-orientati ai frame; le architetture candidate sono un backend WebView desktop,
-un profilo Servo specializzato per giochi e, solo come progetto distinto, un
-runtime Canvas/WebGL/WebGPU a compatibilità Web ridotta.
+Il desktop deve restare un runtime **embedded basato su una versione custom di
+Servo**, distribuita e controllata da Roves. Possiamo modificare Servo anche
+pesantemente e sostituire sue librerie interne, ma Windows, macOS e Linux devono
+esporre lo stesso contratto Web/Roves e comportarsi nello stesso modo. Le WebView
+di sistema restano una scelta mobile e un riferimento esterno di benchmark, non
+un backend desktop candidato; anche CEF non è la direzione del prodotto.
+
+La strategia è quindi un **Servo Game Profile**: specializzare scheduling,
+compositore, input, audio, caricamento e feature del fork per un singolo gioco,
+valutando aggiornamenti o sostituzioni interne con implementazioni incorporabili
+e versionate da Roves. Le prime nuove dipendenze da valutare sono strumenti di
+profiling orientati ai frame. SpiderMonkey e WebRender rimangono la baseline,
+ma non sono intoccabili: una sostituzione richiede un piano per binding DOM,
+semantica Web, determinismo multipiattaforma e migrazione completa.
 
 Priorità significa ordine di indagine, non approvazione di una versione pronta
 alla distribuzione. Le versioni online sono quelle osservate nelle fonti indicate;
@@ -128,189 +134,164 @@ Registrare throughput, frammentazione/RSS e p99 dei frame. Le allocazioni di
 SpiderMonkey, GStreamer e altre librerie native non seguono necessariamente
 l'allocatore globale Rust.
 
-## Valutazione architetturale orientata ai videogiochi — 2026-09-16
+## Architettura vincolante: Servo embedded e uniforme — 2026-09-16
 
-### Criterio fondamentale: quale compatibilità conservare
+### Vincoli non negoziabili
 
-Servo non è soltanto un renderer: fornisce DOM, CSS, layout, eventi, fetch,
-storage, Canvas, WebGL/WebGPU, Web Audio, workers e integrazione JavaScript.
-Una libreria grafica da videogiochi sostituisce solo una parte di questo insieme.
-Prima di scegliere un'architettura, ogni gioco Roves va classificato:
+- Il motore desktop è il fork custom di Servo, non la WebView installata nel SO.
+- La build incorpora versioni note dei componenti e non dipende dal motore Web
+  scelto o aggiornato dall'utente.
+- Windows, macOS e Linux espongono lo stesso insieme di API e la stessa semantica.
+  Le differenze inevitabili di driver, codec e sistema devono essere normalizzate,
+  rilevate nei test e mai trasformate silenziosamente in tre prodotti diversi.
+- Roves resta compatibile con giochi Web secondo una matrice dichiarata. Un
+  profilo canvas-first può essere un fast path interno di Servo, non un runtime
+  desktop alternativo incompatibile.
+- Android e iOS sono l'eccezione esplicita: usano WebView native.
 
-- **Web completo:** usa DOM/CSS e librerie browser oltre al canvas.
-- **Canvas-first:** usa il DOM quasi solo per creare canvas e bootstrap.
-- **Runtime controllato:** il gioco può dipendere da una API Roves ridotta e
-  accetta di non essere più una normale applicazione Web.
+Wry/WebView2/WKWebView/WebKitGTK e CEF restano utili soltanto come baseline di
+confronto per benchmark. Non devono comparire nella roadmap come sostituti del
+runtime desktop.
 
-Questa distinzione decide se una sostituzione è un'ottimizzazione o la creazione
-di un nuovo runtime incompatibile.
+### Servo Game Profile — architettura raccomandata
 
-### Candidato A — backend WebView desktop con Wry
+Il fork può divergere in modo importante dall'impostazione da browser, purché
+mantenga un contratto desktop unico:
 
-Wry incorpora i motori di sistema: WebView2 su Windows, WKWebView su macOS e
-WebKitGTK su Linux. È il candidato con il minor tempo per ottenere un confronto
-architetturale reale, e replica sul desktop la decisione già presa per Android.
+1. refresh driver collegato al display, con scheduling e frame pacing pensati
+   per fullscreen e refresh elevato;
+2. percorso di composizione diretto per una sola WebView quando overlay e
+   dialoghi non sono visibili;
+3. repaint indipendenti per contenuto e shell;
+4. fast path canvas/WebGL/WebGPU che eviti lavoro DOM/layout/compositing quando
+   la pagina del gioco non lo richiede, senza cambiare la semantica osservabile;
+5. budget e priorità coordinati per JS, WebRender, decoder, I/O e compilazione
+   shader;
+6. warm-up dichiarativo di shader, pipeline e asset attraverso API Roves;
+7. input/gamepad a bassa latenza e politiche coerenti per focus, occlusione,
+   fullscreen e background;
+8. profilo di feature embedded generato dal packaging, validato contro la matrice
+   di API richiesta dal gioco.
 
-**Vantaggi:** compatibilità Web elevata, motori maturi, meno codice browser da
-mantenere in Roves, shell Rust e bridge nativi conservabili, ottimo backend di
-riferimento per verificare se il problema percepito appartiene a Servo.
+Il vantaggio rispetto a Chrome può nascere dalla specializzazione e dal controllo
+end-to-end, non semplicemente dalla scelta di una crate diversa.
 
-**Limiti:** motore e comportamento cambiano per piattaforma; WebGPU, codec e
-feature possono non essere uniformi. Su Windows il motore è Edge/Chromium:
-Roves può eliminare UI e servizi superflui della shell, ma non possiede il
-renderer/GC e non ha una base credibile per promettere di battere Chrome nel
-cuore del workload. Aggiornamenti del runtime di sistema sono meno controllabili.
+## Candidati interni al fork Servo
 
-**Decisione proposta:** prototipo opzionale desktop, non sostituzione immediata.
-Eseguire lo stesso harness su Servo, Wry e Chrome. Se Wry elimina gli scatti,
-diventa sia fallback distribuibile sia oracle per isolare il percorso Servo.
+### SpiderMonkey e possibili motori JavaScript
 
-Fonte: [documentazione Wry](https://docs.rs/wry/latest/wry/) e
-[matrice WebView Tauri](https://v2.tauri.app/reference/webview-versions/).
+**SpiderMonkey aggiornato** è la prima scelta: conserva binding, modello GC e
+integrazione Servo. Prima aggiornamento mozjs compatibile, poi nuova major in un
+branch dedicato. Svantaggi: rimane un motore generalista, il GC incrementale
+richiede comunque correggere le pre-barriere Servo e una nuova major può cambiare
+API, JIT, rooting e memoria.
 
-### Candidato B — CEF, Chromium confezionato e controllato
+**V8** è incorporabile e molto ottimizzato, ma sostituire SpiderMonkey significa
+rifare binding DOM, conversioni dei valori, rooting/handle, eccezioni, promise,
+worker, moduli, GC, debugging e build C++ multipiattaforma. È grande, complesso
+da compilare e non è orientato specificamente ai giochi. La stessa versione
+incorporata darebbe uniformità, ma il costo è paragonabile a un port del motore.
 
-CEF offre Chromium embedded consistente sui tre desktop e permette di fissare
-la versione distribuita.
+**JavaScriptCore** è un'altra opzione JIT, ma presenta lo stesso problema dei
+binding e una pipeline di build/distribuzione da rendere identica sui tre desktop.
+Usarlo non significa ottenere WKWebView e non offre automaticamente le API Web.
 
-**Vantaggi:** compatibilità molto vicina a Chrome, comportamento più uniforme di
-tre WebView di sistema, ecosistema e diagnostica Chromium.
+**QuickJS** è piccolo, incorporabile e rapido all'avvio, con reference counting
+e raccolta dei cicli. Lo svantaggio decisivo per il runtime principale è essere
+un interprete: giochi JavaScript CPU-heavy potrebbero perdere molto rispetto a
+un JIT. È più adatto a mod, configurazione o script isolati. Fonte:
+[QuickJS](https://bellard.org/quickjs/quickjs.html).
 
-**Limiti:** dimensione elevata, aggiornamenti di sicurezza continui, architettura
-multiprocesso e consumo RAM difficilmente coerenti con l'obiettivo di una shell
-leggera. Permette di eguagliare più rapidamente Chrome, non crea facilmente un
-vantaggio strutturale su Blink/V8.
+Decisione: SpiderMonkey resta baseline. V8/JSC possono essere studiati soltanto
+come migrazione completa con prototipo DOM minimo; QuickJS non è candidato per
+il gameplay principale senza risultati sorprendenti su benchmark reali.
 
-**Decisione proposta:** usarlo eventualmente come esperimento o baseline
-controllata, non come prima scelta strategica.
-Fonte: [documentazione CEF](https://chromiumembedded.github.io/cef/).
+### WebRender, wgpu e Vello
 
-### Candidato C — “Servo Game Profile”, raccomandato per differenziarsi
+**WebRender** resta il renderer di riferimento perché implementa la scena Web,
+clip, stacking, compositing e integrazione Servo. Lo svantaggio è che il percorso
+generale può fare più lavoro di quanto serva a un singolo canvas fullscreen.
 
-Conservare SpiderMonkey, DOM e WebRender, ma creare un percorso esplicitamente
-specializzato per una singola WebView fullscreen:
+**wgpu** è un ottimo candidato interno per API GPU moderne, backend e fast path,
+ma non sostituisce DOM, CSS, Canvas2D, WebGL o il compositore Web. Usarlo come
+sostituto totale richiederebbe reimplementare queste parti; usarlo sotto percorsi
+mirati di Servo è molto più realistico. Fonte: [wgpu](https://wgpu.rs/).
 
-- refresh driver guidato dal display e frame pacing misurabile;
-- composizione diretta quando overlay e dialoghi non sono attivi;
-- separazione tra repaint del gioco e repaint della shell;
-- profilo di feature per rimuovere funzioni browser non richieste dalla matrice
-  Roves, senza rimuoverle alla cieca;
-- priorità e pool coordinati tra JS, scene building, decoder e I/O;
-- warm-up controllato di shader/pipeline e risorse previste dal gioco;
-- policy esplicite per fullscreen, focus, occlusione, controller e latenza input;
-- API Roves e marcatori prestazionali integrati nel ciclo del frame.
+**Vello** può essere utile per rendering vettoriale/2D, ma non è un sostituto
+completo di WebRender. Aggiungerlo crea inoltre un secondo stack GPU e possibili
+duplicazioni di wgpu, cache, shader e memoria.
 
-Questo è il percorso con la migliore possibilità teorica di superare Chrome in
-un workload ristretto, perché conserva un motore Web ma può eliminare lavoro da
-browser generalista. È anche quello che richiede più lavoro sul fork e test di
-correttezza. Non esiste una singola “game library” che implementi questo profilo.
+Decisione: ottimizzare WebRender e progettare un canvas fast path; valutare wgpu
+come componente coordinato del fork, non come libreria magica che sostituisce il
+browser renderer.
 
-### Candidato D — runtime Canvas-first: JS + wgpu + API Roves
+### winit/surfman oppure SDL3
 
-Architettura radicale: mantenere un motore JavaScript e implementare soltanto le
-API richieste dai giochi, usando wgpu per GPU e una shell/input/audio dedicata.
-Potrebbe ridurre memoria, superficie e scheduling non necessari.
-
-Il costo è assimilabile a creare un piccolo browser/game engine: occorre fornire
-Canvas/WebGL o migrare i giochi a WebGPU, fetch, timing, workers, input, audio,
-storage, immagini/font e abbastanza DOM per le librerie usate. wgpu implementa
-l'accesso GPU, non HTML, CSS, Canvas2D o WebGL. Three.js/PixiJS non diventano
-automaticamente compatibili collegando wgpu.
-
-**Decisione proposta:** trattarlo come possibile Roves 2 o runtime alternativo,
-solo dopo un inventario delle API realmente usate. Ha senso se si accetta una
-piattaforma Roves più stretta del Web; non come sostituzione trasparente di Servo.
-Fonte: [wgpu](https://wgpu.rs/) e [specifica WebGPU](https://www.w3.org/TR/webgpu/).
-
-## Librerie candidate con una reale ottica gaming
-
-### Tracy e Perfetto — priorità alta per lo sviluppo
-
-[Tracy](https://github.com/wolfpld/tracy) è un profiler di frame in tempo reale
-con zone CPU/GPU, memoria, lock e telemetria, progettato anche per videogiochi.
-È un candidato forte per build diagnostiche e per correlare frame, scene building,
-GC e presentazione. Non deve però diventare l'unico formato dei benchmark o una
-dipendenza attiva nelle release normali.
-
-[Perfetto](https://perfetto.dev/docs/) offre tracce temporali, track per thread e
-analisi programmabile. È particolarmente utile per confrontare eventi Roves con
-tracce di sistema e Chromium. La scelta consigliata è mantenere il buffer e lo
-schema aggregato Roves come fonte stabile, poi aggiungere un exporter compatibile
-con Perfetto/Chrome Trace; Tracy può fornire la vista interattiva profonda nelle
-build da sviluppatore.
-
-### SDL3 — interessante, ma non sostituisce Servo
-
-SDL3 è veramente orientato ai giochi e copre finestra, display, input, gamepad,
-aptica, audio e API GPU. Potrebbe diventare la piattaforma della shell di un
-runtime Canvas-first, oppure migliorare controller e dispositivi.
-
-Nel percorso Servo attuale sostituire winit/surfman con SDL3 non risolve DOM,
-JavaScript, WebRender o frame pacing e rischia di complicare condivisione delle
-superfici. Valutarlo prima per il sottosistema gamepad/aptica o nel prototipo D,
-non come modifica globale iniziale.
+**SDL3** è realmente orientato ai videogiochi e offre display, eventi, gamepad,
+aptica, audio e API GPU con un contratto multipiattaforma. Potrebbe sostituire
+parti della shell o fornire controller/aptica più completi.
 Fonte: [API SDL3](https://wiki.libsdl.org/SDL3/APIByCategory).
 
-### Kira — ottima libreria game-audio, ma API diversa dal Web Audio
+Svantaggi: Servo usa già winit e surfman; una migrazione richiede ridisegnare
+event loop, IME, accessibilità, finestre, context/surface sharing e integrazione
+del compositore. SDL normalizza molte API ma non elimina differenze di driver e
+sistema. Usarne soltanto gamepad/aptica può duplicare gli event loop.
 
-[Kira](https://docs.rs/kira/latest/kira/) offre mixer, clock, tween, streaming e
-audio spaziale orientati ai giochi. È un buon candidato per una futura API audio
-nativa Roves o per il runtime controllato.
+Decisione: candidato architetturale serio, ma iniziare con uno spike della shell
+che dimostri presentazione, input, resize, fullscreen e superfici condivise sui
+tre desktop prima di sostituire winit/surfman.
 
-Non è una sostituzione trasparente di GStreamer/Web Audio: i giochi Web si
-aspettano AudioContext, nodi, scheduling e media browser. Potrebbe convivere come
-API opzionale, ma due motori audio richiedono policy su device, focus e mixing.
+### Audio: GStreamer e Kira
 
-### QuickJS — piccolo, deterministico, non il candidato per massimi FPS JS
+**GStreamer** conserva compatibilità con media Web, codec, streaming e WebRTC.
+È pesante e la distribuzione di plugin/runtime deve essere resa uniforme.
 
-QuickJS è piccolo, incorporabile, con avvio rapido e garbage collection basata
-su reference counting con rimozione dei cicli. Questo lo rende interessante per
-script di configurazione, mod o un runtime molto controllato.
-La documentazione lo descrive come interprete: prima di usarlo per gameplay
-JavaScript intensivo servono benchmark contro SpiderMonkey JIT. Sostituirlo in
-Servo richiederebbe comunque rifare binding DOM, rooting e integrazione, quindi
-non è la scorciatoia per correggere il GC corrente.
-Fonte: [QuickJS](https://bellard.org/quickjs/quickjs.html).
+**Kira** è progettata per giochi e offre mixer, clock, tween, streaming e audio
+spaziale. È interessante per un'API Roves nativa e per audio di gioco a latenza
+controllata. Svantaggio: non implementa Web Audio, HTML media o WebRTC; sostituire
+GStreamer richiederebbe ricostruire la semantica browser. Due stack audio possono
+competere per device, focus e mixing. Fonte: [Kira](https://docs.rs/kira/latest/kira/).
 
-### SpiderMonkey, WebRender, ANGLE e surfman
+Decisione: aggiornare GStreamer per le API Web; valutare Kira come backend o API
+gaming solo dopo una mappa precisa delle funzioni Web Audio richieste, con un
+unico coordinatore dei dispositivi.
 
-- **SpiderMonkey:** tenere come motore principale nel profilo Servo. Provare prima
-  mozjs 0.21.6, poi un prototipo separato con nuova major. È già un motore JIT
-  browser di fascia alta; nessun motore JS è specificamente “gaming” mantenendo
-  automaticamente i binding Web di Servo.
-- **WebRender:** tenere nel profilo Servo. È già un renderer GPU adatto a scene
-  Web; ottimizzare percorso e composizione prima di sostituirlo.
-- **ANGLE/mozangle:** candidato concreto per aggiornamenti WebGL e compatibilità
-  driver, soprattutto Windows. Testare per matrice GPU, shader e stutter.
-- **surfman:** mantenere finché serve l'interoperabilità delle superfici Servo.
-  SDL/glutin non sono sostituzioni equivalenti senza ridisegnare il compositore.
+### Tracy e Perfetto
 
-### Allocatore: mimalloc come esperimento, non architettura
+[Tracy](https://github.com/wolfpld/tracy) è un candidato prioritario per build
+diagnostiche: frame, zone CPU/GPU, allocazioni e lock. Svantaggi: integrazione
+nativa, overhead da quantificare e formato/tool dedicato; non deve essere attivo
+nelle release normali.
 
-mimalloc resta un candidato ragionevole per una build A/B perché l'intervento è
-più delimitato. Può influenzare latenza e frammentazione delle allocazioni Rust,
-ma non governa automaticamente heap SpiderMonkey, texture GPU o tutte le librerie
-native. Misurare RSS e p99, non soltanto throughput sintetico.
+[Perfetto](https://perfetto.dev/docs/) consente timeline, eventi per thread e
+analisi programmabile, oltre al confronto con Chromium. Svantaggi: SDK/export
+più complessi di CSV e costo dei dati ad alta frequenza.
 
-## Percorso raccomandato
+Decisione: buffer e aggregati Roves restano fonte stabile; exporter Perfetto per
+tracce confrontabili e Tracy opzionale nelle build developer.
 
-1. Implementare telemetria frame con schema Roves ed exporter Perfetto; integrare
-   Tracy solo nelle build di sviluppo.
-2. Costruire un backend desktop Wry opzionale e confrontarlo con Servo e Chrome
-   sullo stesso gioco. Non rimuovere Servo.
-3. Implementare il Servo Game Profile: display pacing, percorso diretto,
-   repaint separati e feature profile misurato.
-4. Eseguire in parallelo esperimenti isolati mozjs 0.21.6, mozangle e mimalloc,
-   uno per volta sulle tre architetture pertinenti.
-5. Decidere con dati se Wry è un backend di produzione, Servo resta principale
-   o entrambi diventano selezionabili per gioco/piattaforma.
-6. Avviare il runtime Canvas-first soltanto se l'inventario dimostra che i giochi
-   possono rinunciare a DOM/CSS e accettare una API Roves specifica.
+### Allocatore
 
-Questa sequenza accetta cambiamenti architetturali come richiesto, ma conserva
-baseline e rollback: “cambiare tutto e poi misurare” non consente di capire quale
-scelta abbia aiutato. Ogni prototipo viene ritestato completamente, mentre le
-modifiche interne restano attribuibili.
+mimalloc resta un buon esperimento A/B incorporabile e uniforme. Può migliorare
+latenza o frammentazione delle allocazioni Rust, ma non controlla automaticamente
+heap SpiderMonkey, risorse GPU e tutte le librerie native. Va misurato con RSS,
+p99 e ownership corretta delle allocazioni cross-FFI.
+
+## Piano corretto
+
+1. Telemetria dei frame ed exporter Perfetto; Tracy opzionale.
+2. Baseline del medesimo fork Servo sui tre desktop con suite di conformità Roves.
+3. Servo Game Profile: pacing, composizione diretta e repaint separati.
+4. Esperimenti isolati su mozjs, mozangle e allocatore.
+5. Spike SDL3 soltanto come possibile piattaforma interna della shell embedded.
+6. Prototipo wgpu/canvas fast path dentro Servo, preservando fallback WebRender.
+7. Valutazione Kira per API gaming senza rompere Web Audio.
+8. Solo dopo evidenze insufficienti da SpiderMonkey, studio V8/JSC come port
+   completo; nessun motore JS viene scambiato senza binding e test equivalenti.
+
+Ogni cambiamento deve produrre lo stesso comportamento osservabile sui tre
+desktop, essere incorporato/versionato nel bundle e avere rollback. I benchmark
+contro Chrome e WebView restano riferimenti esterni, non proposte di backend.
 
 ## Sostituzioni: quali hanno senso?
 
