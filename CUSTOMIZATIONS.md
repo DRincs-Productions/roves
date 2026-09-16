@@ -7075,3 +7075,24 @@ toolchain, see `CLAUDE.md`; no compiled `play.exe` to run `dumpbin` against). If
 same "`ERROR: could not find`" mechanism will surface it immediately on the next `test.yml` run,
 the same way it caught this. Pending that next run to confirm the Windows jobs are fully green,
 not just past this specific error.
+
+**Second `test.yml` run: past the DLL-copy error, one new transitive dependency found.**
+`mach build` and `mach bundle` both succeeded this time (the 12 renames above were the whole
+copy-step fix) — the failure moved downstream, to the actual bundle-launch smoke test:
+`GStreamer-WARNING: Failed to load plugin '...\release\lib\gstlibav.dll': The specified module
+could not be found`, and `roves.log` confirms it as `ErrorLoadingPlugins(["gstlibav.dll"])`. This
+is `_bundle_windows`'s `lib/` split working as designed (see its own docstring in
+`post_build_commands.py`) — `gstlibav.dll` and every name in `GSTREAMER_WIN_DEPENDENCY_LIBS` both
+land in `lib/`, and `main.rs`'s `SetDllDirectoryW` adds `lib/` to the process search path before
+any plugin loads — so a generic "module not found" here means `gstlibav.dll` needs a DLL that
+isn't in that list *at all*, not a renamed one. Compared the full 1.28.7 `bin/` listing (from the
+same local reinstall used for the rename fix) against the dependency-review-era assumption that
+ffmpeg's own shared libs were fully accounted for: `swscale-8.dll` is present in 1.28.7's `bin/`
+and was never in this list, under any name, at any prior version — 1.22.x's `gstlibav` build
+evidently didn't need libswscale as a separate runtime dependency (statically linked, or simply
+unused by the codec paths active then); 1.28.7's does. Added `swscale-8.dll` to
+`GSTREAMER_WIN_DEPENDENCY_LIBS`. No other `Failed to load plugin` line appeared in the log, but a
+single generic loader error doesn't guarantee there's only one missing dependency — the same
+detection mechanism will catch a further one immediately if it exists. Pending a third
+`test.yml` run to confirm the Windows jobs are fully green end to end, including this launch
+smoke test.

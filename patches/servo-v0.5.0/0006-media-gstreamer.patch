@@ -1,5 +1,5 @@
 diff --git a/python/servo/gstreamer.py b/python/servo/gstreamer.py
-index 21850aa..f0035a5 100644
+index 21850aa..05e2da0 100644
 --- a/python/servo/gstreamer.py
 +++ b/python/servo/gstreamer.py
 @@ -48,10 +48,10 @@ may have shared object dependencies on them.
@@ -17,7 +17,7 @@ index 21850aa..f0035a5 100644
      "bz2.dll",
      "ffi-7.dll",
      "gio-2.0-0.dll",
-@@ -60,19 +60,19 @@ GSTREAMER_WIN_DEPENDENCY_LIBS = [
+@@ -60,19 +60,20 @@ GSTREAMER_WIN_DEPENDENCY_LIBS = [
      "gobject-2.0-0.dll",
      "graphene-1.0-0.dll",
      "intl-8.dll",
@@ -42,10 +42,11 @@ index 21850aa..f0035a5 100644
      "pcre2-8-0.dll",
 -    "swresample-4.dll",
 +    "swresample-5.dll",
++    "swscale-8.dll",
      "theora-0.dll",
      "theoradec-1.dll",
      "theoraenc-1.dll",
-@@ -123,6 +123,57 @@ def windows_dlls() -> list[str]:
+@@ -123,6 +124,57 @@ def windows_dlls() -> list[str]:
      return GSTREAMER_WIN_DEPENDENCY_LIBS + [f"{lib}-1.0-0.dll" for lib in GSTREAMER_BASE_LIBS]
  
  
@@ -103,7 +104,7 @@ index 21850aa..f0035a5 100644
  def windows_plugins() -> list[str]:
      plugins = load_plugin_libraries_from_text_file("common.rs.in")
      plugins.extend(load_plugin_libraries_from_text_file("windows.rs.in"))
-@@ -141,6 +192,23 @@ def is_macos_system_library(library_path: str) -> bool:
+@@ -141,6 +193,23 @@ def is_macos_system_library(library_path: str) -> bool:
      return library_path.startswith("/System/Library") or library_path.startswith("/usr/lib") or ".asan." in library_path
  
  
@@ -127,7 +128,7 @@ index 21850aa..f0035a5 100644
  def rewrite_dependencies_to_be_relative(binary: str, dependency_lines: Set[str], relative_path: str) -> None:
      """Given a path to a binary (either an executable or a dylib), rewrite the
      the given dependency lines to be found at the given relative path to
-@@ -187,8 +255,13 @@ def find_non_system_dependencies_with_otool(binary_path: str) -> Set[str]:
+@@ -187,8 +256,13 @@ def find_non_system_dependencies_with_otool(binary_path: str) -> Set[str]:
          dependency = line.split(" ", 1)[0][1:]
  
          # No need to do any processing for system libraries. They should be
