@@ -434,10 +434,12 @@ impl App {
             self.waker.clone(),
             user_content_manager,
             self.preferences.clone(),
+            // Headed-only, same as everything else keyed off `event_loop_proxy` here — no
+            // window to receive gamepad input in headless mode.
             #[cfg(feature = "gamepad")]
             self.event_loop_proxy
-                .clone()
-                .map(ServoshellGamepadDelegate::new)
+                .as_ref()
+                .map(|_| ServoshellGamepadDelegate::new())
                 .map(Rc::new),
         ));
 
@@ -520,6 +522,15 @@ impl ApplicationHandler<AppEvent> for App {
                 self.try_finish_booting(event_loop);
             },
             AppState::Running(state) => {
+                // SDL only allows gamepad polling from this thread (the one `main()` was
+                // called on — see `gamepad.rs`'s own doc comment), so unlike the old
+                // GilRs-backed implementation (its own dedicated background thread, woken
+                // independently of winit's control flow), this has to be driven from here —
+                // `set_running_control_flow` below is what keeps this tick recurring.
+                #[cfg(feature = "gamepad")]
+                if let Some(gamepad_delegate) = state.gamepad_delegate() {
+                    gamepad_delegate.poll(state);
+                }
                 for window in state.windows().values() {
                     if let Some(headed_window) = window.platform_window().as_headed_window() &&
                         headed_window.splash_animation_wake_deadline(state).is_some()
@@ -527,6 +538,7 @@ impl ApplicationHandler<AppEvent> for App {
                         headed_window.winit_window().request_redraw();
                     }
                 }
+                set_running_control_flow(event_loop, state);
             },
             _ => {},
         }
@@ -626,9 +638,6 @@ impl ApplicationHandler<AppEvent> for App {
                     headed_window.handle_winit_app_event(state.clone(), app_event);
                 }
             },
-            AppEvent::Gamepad(event, gamepad_name, gamepad_index) => {
-                state.handle_gamepad_events(event, gamepad_name, gamepad_index);
-            },
             // Already acted on above, while `self.state` was still `Booting` -- a no-op
             // here since `self.state` is `Running` by this point (checked above).
             AppEvent::BootProgress(_) | AppEvent::BootReady => {},
@@ -689,11 +698,13 @@ impl ApplicationHandler<AppEvent> for App {
 
 /// Sets `control_flow` to keep the event loop ticking at `SPLASH_ANIMATION_TICK` if any
 /// window's boot splash is still covering its still-loading real page (see
-/// `HeadedWindow::splash_animation_wake_deadline`) — otherwise, fully idle
-/// (`ControlFlow::Wait`) until the next real event, same as before this splash-overlay
-/// mechanism existed. Shared by `window_event`/`user_event`'s `Running` tails.
+/// `HeadedWindow::splash_animation_wake_deadline`), or at `GAMEPAD_POLL_INTERVAL` while a
+/// gamepad delegate exists (see `gamepad.rs` — SDL has to be polled from this same thread on
+/// some fixed cadence, unlike GilRs' own dedicated background thread) — otherwise, fully idle
+/// (`ControlFlow::Wait`) until the next real event. Shared by `window_event`/`user_event`'s
+/// `Running` tails, and by `new_events`' own `Running` arm (which is what actually polls).
 fn set_running_control_flow(event_loop: &ActiveEventLoop, state: &RunningAppState) {
-    let next_wake = state
+    let mut next_wake = state
         .windows()
         .values()
         .filter_map(|window| {
@@ -703,6 +714,11 @@ fn set_running_control_flow(event_loop: &ActiveEventLoop, state: &RunningAppStat
                 .splash_animation_wake_deadline(state)
         })
         .min();
+    #[cfg(feature = "gamepad")]
+    if state.gamepad_delegate().is_some() {
+        let gamepad_deadline = Instant::now() + crate::desktop::gamepad::GAMEPAD_POLL_INTERVAL;
+        next_wake = Some(next_wake.map_or(gamepad_deadline, |deadline| deadline.min(gamepad_deadline)));
+    }
     event_loop.set_control_flow(next_wake.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
 }
 

@@ -1,7 +1,8 @@
 diff --git a/ports/servoshell/Cargo.toml b/ports/servoshell/Cargo.toml
+index 59f5581..d249724 100644
 --- a/ports/servoshell/Cargo.toml
 +++ b/ports/servoshell/Cargo.toml
-@@ -35,10 +35,10 @@
+@@ -35,10 +35,10 @@ cc = { workspace = true }
  winresource = { workspace = true }
  
  [package.metadata.winresource]
@@ -15,7 +16,7 @@ diff --git a/ports/servoshell/Cargo.toml b/ports/servoshell/Cargo.toml
  
  [features]
  default = ["baked-in-resources", "bundled_freetype", "gamepad", "servo/clipboard", "js_jit", "max_log_level", "webgpu", "webxr"]
-@@ -61,6 +61,11 @@
+@@ -61,6 +61,11 @@ vello = ["servo/vello"]
  webgl_backtrace = ["servo/webgl_backtrace"]
  webgpu = ["servo/webgpu"]
  webxr = ["servo/webxr"]
@@ -27,7 +28,7 @@ diff --git a/ports/servoshell/Cargo.toml b/ports/servoshell/Cargo.toml
  
  [dependencies]
  accesskit = { workspace = true }
-@@ -68,17 +73,21 @@
+@@ -68,17 +73,21 @@ bpaf = { workspace = true, features = ["derive"] }
  cfg-if = { workspace = true }
  crossbeam-channel = { workspace = true }
  dpi = { workspace = true }
@@ -50,7 +51,7 @@ diff --git a/ports/servoshell/Cargo.toml b/ports/servoshell/Cargo.toml
  tracing = { workspace = true, optional = true }
  tracing-perfetto = { workspace = true, optional = true }
  tracing-subscriber = { workspace = true, optional = true, features = ["env-filter"] }
-@@ -115,6 +124,7 @@
+@@ -115,18 +124,20 @@ servo-base = { workspace = true }
  surfman = { workspace = true, features = ["sm-angle-default"] }
  
  [target.'cfg(not(any(target_os = "android", target_env = "ohos")))'.dependencies]
@@ -58,11 +59,12 @@ diff --git a/ports/servoshell/Cargo.toml b/ports/servoshell/Cargo.toml
  dirs = { workspace = true }
  egui = { workspace = true }
  egui-file-dialog = { workspace = true }
-@@ -122,11 +132,12 @@
+ egui-winit = { workspace = true, features = ["accesskit", "clipboard", "wayland"] }
  egui_glow = { workspace = true, features = ["winit"] }
- gilrs = { workspace = true }
+-gilrs = { workspace = true }
  glow = { workspace = true }
 -headers = { workspace = true }
++sdl3 = { workspace = true }
  serde_json = { workspace = true }
  # For optional feature servo-allocator/use-system-allocator and servo-allocator/allocation-tracking
  servo-allocator = { workspace = true }
@@ -72,7 +74,7 @@ diff --git a/ports/servoshell/Cargo.toml b/ports/servoshell/Cargo.toml
  winit = { workspace = true }
  
  [target.'cfg(any(all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))'.dependencies]
-@@ -134,7 +145,7 @@
+@@ -134,7 +145,7 @@ signal-hook-registry = { workspace = true }
  
  [target.'cfg(target_os = "windows")'.dependencies]
  servo = { workspace = true, features = ["no-wgl"] }
@@ -201,6 +203,7 @@ index 918273cb8..a640e3854 100644
      // Passing a version script allows us to inform the linker about required
      // symbol visibility (only one), which improves stripping of unused sections.
 diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
+index b3092ad..972ea2f 100644
 --- a/ports/servoshell/desktop/app.rs
 +++ b/ports/servoshell/desktop/app.rs
 @@ -4,24 +4,27 @@
@@ -235,7 +238,7 @@ diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
  use crate::desktop::headless_window::HeadlessWindow;
  use crate::desktop::protocols;
  use crate::desktop::tracing::trace_winit_event;
-@@ -30,10 +33,89 @@
+@@ -30,10 +33,89 @@ use crate::prefs::ServoShellPreferences;
  use crate::running_app_state::RunningAppState;
  #[cfg(feature = "gamepad")]
  use crate::running_app_state::ServoshellGamepadDelegate;
@@ -325,7 +328,7 @@ diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
      Running(Rc<RunningAppState>),
      ShuttingDown,
  }
-@@ -45,6 +127,28 @@
+@@ -45,6 +127,28 @@ pub struct App {
      waker: Box<dyn EventLoopWaker>,
      event_loop_proxy: Option<EventLoopProxy<AppEvent>>,
      initial_url: ServoUrl,
@@ -354,7 +357,7 @@ diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
      t_start: Instant,
      t: Instant,
      state: AppState,
-@@ -56,14 +160,9 @@
+@@ -56,14 +160,9 @@ impl App {
          preferences: Preferences,
          servo_shell_preferences: ServoShellPreferences,
          event_loop: &ServoShellEventLoop,
@@ -371,7 +374,7 @@ diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
          let t = Instant::now();
          App {
              opts,
-@@ -71,15 +170,159 @@
+@@ -71,15 +170,159 @@ impl App {
              servoshell_preferences: servo_shell_preferences,
              waker: event_loop.create_event_loop_waker(),
              event_loop_proxy: event_loop.event_loop_proxy(),
@@ -533,7 +536,7 @@ diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
          let mut protocol_registry = ProtocolRegistry::default();
          let _ = protocol_registry.register(
              "urlinfo",
-@@ -91,6 +334,63 @@
+@@ -91,6 +334,63 @@ impl App {
              "resource",
              protocols::resource::ResourceProtocolHandler::default(),
          );
@@ -597,7 +600,7 @@ diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
  
          let servo_builder = ServoBuilder::default()
              .opts(self.opts.clone())
-@@ -98,10 +398,9 @@
+@@ -98,10 +398,9 @@ impl App {
              .protocol_registry(protocol_registry)
              .event_loop_waker(self.waker.clone());
  
@@ -610,7 +613,7 @@ diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
  
          #[cfg(feature = "webxr")]
          servo.register_webxr_registry(super::webxr::XrDiscoveryWebXrRegistry::new_boxed(
-@@ -113,6 +412,12 @@
+@@ -113,6 +412,12 @@ impl App {
          servo.setup_logging();
  
          let user_content_manager = Rc::new(UserContentManager::new(&servo));
@@ -623,8 +626,18 @@ diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
          for script in load_userscripts(self.servoshell_preferences.userscripts_directory.as_deref())
              .expect("Loading userscripts failed")
          {
-@@ -135,6 +440,13 @@
-                 .map(ServoshellGamepadDelegate::new)
+@@ -129,12 +434,21 @@ impl App {
+             self.waker.clone(),
+             user_content_manager,
+             self.preferences.clone(),
++            // Headed-only, same as everything else keyed off `event_loop_proxy` here — no
++            // window to receive gamepad input in headless mode.
+             #[cfg(feature = "gamepad")]
+             self.event_loop_proxy
+-                .clone()
+-                .map(ServoshellGamepadDelegate::new)
++                .as_ref()
++                .map(|_| ServoshellGamepadDelegate::new())
                  .map(Rc::new),
          ));
 +
@@ -637,7 +650,7 @@ diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
          running_state.open_window(platform_window, self.initial_url.as_url().clone());
  
          self.state = AppState::Running(running_state);
-@@ -184,6 +496,42 @@
+@@ -184,6 +498,52 @@ impl ApplicationHandler<AppEvent> for App {
          self.init(Some(event_loop));
      }
  
@@ -665,6 +678,15 @@ diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
 +                self.try_finish_booting(event_loop);
 +            },
 +            AppState::Running(state) => {
++                // SDL only allows gamepad polling from this thread (the one `main()` was
++                // called on — see `gamepad.rs`'s own doc comment), so unlike the old
++                // GilRs-backed implementation (its own dedicated background thread, woken
++                // independently of winit's control flow), this has to be driven from here —
++                // `set_running_control_flow` below is what keeps this tick recurring.
++                #[cfg(feature = "gamepad")]
++                if let Some(gamepad_delegate) = state.gamepad_delegate() {
++                    gamepad_delegate.poll(state);
++                }
 +                for window in state.windows().values() {
 +                    if let Some(headed_window) = window.platform_window().as_headed_window() &&
 +                        headed_window.splash_animation_wake_deadline(state).is_some()
@@ -672,6 +694,7 @@ diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
 +                        headed_window.winit_window().request_redraw();
 +                    }
 +                }
++                set_running_control_flow(event_loop, state);
 +            },
 +            _ => {},
 +        }
@@ -680,7 +703,7 @@ diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
      fn window_event(
          &mut self,
          event_loop: &ActiveEventLoop,
-@@ -199,9 +547,24 @@
+@@ -199,9 +559,24 @@ impl ApplicationHandler<AppEvent> for App {
          );
          self.t = now;
  
@@ -705,7 +728,7 @@ diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
  
          if let Some(window) = state.window(ServoShellWindowId::from(u64::from(window_id))) &&
              let Some(headed_window) = window.platform_window().as_headed_window()
-@@ -212,17 +575,49 @@
+@@ -212,17 +587,49 @@ impl ApplicationHandler<AppEvent> for App {
          if !self.pump_servo_event_loop(event_loop.into()) {
              event_loop.exit();
          }
@@ -757,10 +780,12 @@ diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
              AppEvent::Accessibility(ref event) => {
                  if let Some(window) =
                      state.window(ServoShellWindowId::from(u64::from(event.window_id))) &&
-@@ -234,17 +629,83 @@
-             AppEvent::Gamepad(event, gamepad_name, gamepad_index) => {
-                 state.handle_gamepad_events(event, gamepad_name, gamepad_index);
+@@ -231,8 +638,53 @@ impl ApplicationHandler<AppEvent> for App {
+                     headed_window.handle_winit_app_event(state.clone(), app_event);
+                 }
              },
+-            AppEvent::Gamepad(event, gamepad_name, gamepad_index) => {
+-                state.handle_gamepad_events(event, gamepad_name, gamepad_index);
 +            // Already acted on above, while `self.state` was still `Booting` -- a no-op
 +            // here since `self.state` is `Running` by this point (checked above).
 +            AppEvent::BootProgress(_) | AppEvent::BootReady => {},
@@ -808,26 +833,28 @@ diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
 +                        ));
 +                    },
 +                }
-+            },
+             },
          }
  
-         if !self.pump_servo_event_loop(event_loop.into()) {
+@@ -240,9 +692,34 @@ impl ApplicationHandler<AppEvent> for App {
              event_loop.exit();
          }
  
 -        // Block until the window gets an event
 -        event_loop.set_control_flow(ControlFlow::Wait);
 +        set_running_control_flow(event_loop, &state);
-     }
- }
- 
++    }
++}
++
 +/// Sets `control_flow` to keep the event loop ticking at `SPLASH_ANIMATION_TICK` if any
 +/// window's boot splash is still covering its still-loading real page (see
-+/// `HeadedWindow::splash_animation_wake_deadline`) — otherwise, fully idle
-+/// (`ControlFlow::Wait`) until the next real event, same as before this splash-overlay
-+/// mechanism existed. Shared by `window_event`/`user_event`'s `Running` tails.
++/// `HeadedWindow::splash_animation_wake_deadline`), or at `GAMEPAD_POLL_INTERVAL` while a
++/// gamepad delegate exists (see `gamepad.rs` — SDL has to be polled from this same thread on
++/// some fixed cadence, unlike GilRs' own dedicated background thread) — otherwise, fully idle
++/// (`ControlFlow::Wait`) until the next real event. Shared by `window_event`/`user_event`'s
++/// `Running` tails, and by `new_events`' own `Running` arm (which is what actually polls).
 +fn set_running_control_flow(event_loop: &ActiveEventLoop, state: &RunningAppState) {
-+    let next_wake = state
++    let mut next_wake = state
 +        .windows()
 +        .values()
 +        .filter_map(|window| {
@@ -837,12 +864,15 @@ diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
 +                .splash_animation_wake_deadline(state)
 +        })
 +        .min();
++    #[cfg(feature = "gamepad")]
++    if state.gamepad_delegate().is_some() {
++        let gamepad_deadline = Instant::now() + crate::desktop::gamepad::GAMEPAD_POLL_INTERVAL;
++        next_wake = Some(next_wake.map_or(gamepad_deadline, |deadline| deadline.min(gamepad_deadline)));
+     }
 +    event_loop.set_control_flow(next_wake.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
-+}
-+
+ }
+ 
  fn load_userscripts(userscripts_directory: Option<&Path>) -> std::io::Result<Vec<UserScript>> {
-     let mut userscripts = Vec::new();
-     if let Some(userscripts_directory) = &userscripts_directory {
 diff --git a/ports/servoshell/desktop/bundle_launch.rs b/ports/servoshell/desktop/bundle_launch.rs
 new file mode 100644
 index 000000000..7a7afed01
@@ -1452,9 +1482,18 @@ diff --git a/ports/servoshell/desktop/dialog.rs b/ports/servoshell/desktop/dialo
  
  fn make_dialog_label(message: &str, ui: &mut egui::Ui, input_text: Option<&mut String>) {
 diff --git a/ports/servoshell/desktop/event_loop.rs b/ports/servoshell/desktop/event_loop.rs
+index a8685a1..5fc08a1 100644
 --- a/ports/servoshell/desktop/event_loop.rs
 +++ b/ports/servoshell/desktop/event_loop.rs
-@@ -14,12 +14,64 @@
+@@ -7,19 +7,66 @@
+ use std::sync::{Arc, Condvar, Mutex};
+ use std::time;
+ 
+-use gilrs::Event;
+ use log::warn;
+-use servo::{EventLoopWaker, GamepadIndex};
++use servo::EventLoopWaker;
+ use winit::event_loop::{EventLoop, EventLoop as WinitEventLoop, EventLoopProxy};
  
  use super::app::App;
  
@@ -1463,7 +1502,7 @@ diff --git a/ports/servoshell/desktop/event_loop.rs b/ports/servoshell/desktop/e
      /// Another process or thread has kicked the OS event loop with EventLoopWaker.
      Waker,
      Accessibility(egui_winit::accesskit_winit::Event),
-     Gamepad(Event, String, GamepadIndex),
+-    Gamepad(Event, String, GamepadIndex),
 +    /// Requested by `protocols::roves::RovesProtocolHandler` (the `roves:` scheme's
 +    /// `exit`/`close_window` command — see `@drincs/roves-api`'s `process.exit()`) from
 +    /// whatever thread is servicing that `fetch()`. `RunningAppState`/`ServoShellWindow`
@@ -1501,9 +1540,6 @@ diff --git a/ports/servoshell/desktop/event_loop.rs b/ports/servoshell/desktop/e
 +        match self {
 +            AppEvent::Waker => write!(f, "Waker"),
 +            AppEvent::Accessibility(event) => f.debug_tuple("Accessibility").field(event).finish(),
-+            AppEvent::Gamepad(event, name, index) => {
-+                f.debug_tuple("Gamepad").field(event).field(name).field(index).finish()
-+            },
 +            AppEvent::CloseAllWindows => write!(f, "CloseAllWindows"),
 +            AppEvent::BootProgress(progress) => f.debug_tuple("BootProgress").field(progress).finish(),
 +            AppEvent::BootReady => write!(f, "BootReady"),
@@ -1520,6 +1556,580 @@ diff --git a/ports/servoshell/desktop/event_loop.rs b/ports/servoshell/desktop/e
  }
  
  impl From<egui_winit::accesskit_winit::Event> for AppEvent {
+diff --git a/ports/servoshell/desktop/gamepad.rs b/ports/servoshell/desktop/gamepad.rs
+index 34bf808..e9c5c8e 100644
+--- a/ports/servoshell/desktop/gamepad.rs
++++ b/ports/servoshell/desktop/gamepad.rs
+@@ -2,173 +2,277 @@
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+ 
++use std::cell::RefCell;
+ use std::collections::HashMap;
+-use std::sync::mpsc::{Sender, channel};
+-use std::thread;
+-use std::time::Duration;
++use std::sync::mpsc::{Receiver, Sender, channel};
++use std::time::{Duration, Instant};
+ 
+-use gilrs::ff::{BaseEffect, BaseEffectType, Effect, EffectBuilder, Repeat, Replay, Ticks};
+-use gilrs::{Event, EventType, GamepadId, Gilrs};
+ use log::{debug, warn};
++use sdl3::event::Event;
++use sdl3::gamepad::{Axis, Button, Gamepad};
++use sdl3::joystick::JoystickId;
++use sdl3::{EventPump, GamepadSubsystem};
+ use servo::{
+     GamepadDelegate, GamepadEvent, GamepadHapticEffectRequest, GamepadHapticEffectRequestType,
+     GamepadHapticEffectType, GamepadIndex, GamepadInputBounds, GamepadSupportedHapticEffects,
+     GamepadUpdateType, InputEvent, WebView,
+ };
+-use winit::event_loop::EventLoopProxy;
+ 
+-use crate::desktop::event_loop::AppEvent;
++use crate::running_app_state::RunningAppState;
+ 
+-pub struct HapticEffect {
+-    pub effect: Effect,
+-    pub request: GamepadHapticEffectRequest,
++/// How often `App::new_events` polls SDL for gamepad activity while `Running` — the same
++/// cadence the old GilRs-backed implementation blocked on (`next_event_blocking(Some(...))`).
++/// SDL only allows the calls this module makes (`sdl3::init()` and friends) from the thread
++/// that first called `main()`, unlike GilRs, which was happy running on its own dedicated
++/// background thread -- see `CUSTOMIZATIONS.md`'s SDL3 gamepad entry for why. Polling is driven
++/// from `App::new_events`/`set_running_control_flow` instead.
++pub(crate) const GAMEPAD_POLL_INTERVAL: Duration = Duration::from_millis(100);
++
++/// A rumble request whose `start_delay` hasn't elapsed yet. SDL's `set_rumble` has no delay
++/// parameter of its own (unlike GilRs' `Replay` scheduling), so the delay is emulated here by
++/// holding the request until `poll` (called roughly every `GAMEPAD_POLL_INTERVAL`) notices
++/// `fire_at` has passed. SDL also has no "effect completed" event (unlike GilRs'
++/// `ForceFeedbackEffectCompleted`) — `request.succeeded()` is therefore reported as soon as the
++/// rumble is actually started, not when it finishes; SDL stops it on its own after `duration_ms`.
++struct PendingHapticEffect {
++    request: GamepadHapticEffectRequest,
++    joystick_id: JoystickId,
++    fire_at: Instant,
++    strong_magnitude: u16,
++    weak_magnitude: u16,
++    duration_ms: u32,
++}
++
++struct SdlGamepadState {
++    // Kept alive alongside the subsystems/event pump borrowed from it; never read directly
++    // again after `init_sdl`.
++    _sdl_context: sdl3::Sdl,
++    gamepad_subsystem: GamepadSubsystem,
++    event_pump: EventPump,
++    open_gamepads: HashMap<JoystickId, Gamepad>,
++    pending_haptic_effects: HashMap<usize, PendingHapticEffect>,
+ }
+ 
+ pub(crate) struct ServoshellGamepadDelegate {
+     sender: Sender<GamepadHapticEffectRequest>,
++    receiver: Receiver<GamepadHapticEffectRequest>,
++    // `None` if SDL failed to initialize (e.g. no gamepad support on this platform/environment)
++    // -- `poll` and haptic handling then silently no-op instead of panicking.
++    sdl_state: RefCell<Option<SdlGamepadState>>,
+ }
+ 
+ impl ServoshellGamepadDelegate {
+-    pub(crate) fn new(event_loop_proxy: EventLoopProxy<AppEvent>) -> Self {
++    pub(crate) fn new() -> Self {
+         let (tx, rx) = channel::<GamepadHapticEffectRequest>();
++        Self {
++            sender: tx,
++            receiver: rx,
++            sdl_state: RefCell::new(Self::init_sdl()),
++        }
++    }
+ 
+-        let _ = thread::Builder::new()
+-            .name(String::from("GamepadThread"))
+-            .spawn(move || {
+-                let mut haptic_effects: HashMap<usize, HapticEffect> = HashMap::new();
+-                let mut handle = match Gilrs::new() {
+-                    Ok(handle) => handle,
+-                    Err(error) => {
+-                        warn!("Error creating gamepad input connection ({error})");
+-                        return;
+-                    },
+-                };
+-
+-                let mut connected_gamepads: Vec<GamepadId> =
+-                    handle.gamepads().map(|(id, _)| id).collect();
+-
+-                loop {
+-                    while let Some(event) =
+-                        handle.next_event_blocking(Some(Duration::from_millis(100)))
+-                    {
+-                        let id: usize = event.id.into();
+-                        let gamepad = handle.gamepad(event.id);
+-                        let name = gamepad.name();
+-                        let index = GamepadIndex(id);
+-
+-                        if let Some(index) = connected_gamepads
+-                            .iter()
+-                            .position(|&gamepad_id| event.id == gamepad_id)
+-                        {
+-                            handle.insert_event(Event::new(event.id, EventType::Connected));
+-                            handle.insert_event(event);
+-
+-                            connected_gamepads.swap_remove(index);
+-
+-                            continue;
+-                        }
++    fn init_sdl() -> Option<SdlGamepadState> {
++        let sdl_context = match sdl3::init() {
++            Ok(context) => context,
++            Err(error) => {
++                warn!("Error initializing SDL for gamepad input ({error})");
++                return None;
++            },
++        };
++        let gamepad_subsystem = match sdl_context.gamepad() {
++            Ok(subsystem) => subsystem,
++            Err(error) => {
++                warn!("Error initializing SDL gamepad subsystem ({error})");
++                return None;
++            },
++        };
++        let event_pump = match sdl_context.event_pump() {
++            Ok(pump) => pump,
++            Err(error) => {
++                warn!("Error creating SDL event pump for gamepad input ({error})");
++                return None;
++            },
++        };
++        Some(SdlGamepadState {
++            _sdl_context: sdl_context,
++            gamepad_subsystem,
++            event_pump,
++            open_gamepads: HashMap::new(),
++            pending_haptic_effects: HashMap::new(),
++        })
++    }
+ 
+-                        if matches!(&event.event, EventType::ForceFeedbackEffectCompleted) {
+-                            match haptic_effects.remove(&id) {
+-                                Some(haptic_effect) => haptic_effect.request.succeeded(),
+-                                None => warn!("Failed to find haptic effect for id {id}"),
+-                            }
++    /// Drain any pending SDL gamepad activity and haptic effect requests. Called from
++    /// `App::new_events` (main thread only — see this module's own doc comment).
++    pub(crate) fn poll(&self, state: &RunningAppState) {
++        let mut sdl_state = self.sdl_state.borrow_mut();
++        let Some(sdl_state) = sdl_state.as_mut() else {
++            return;
++        };
+ 
++        // Devices already connected before the first poll still produce their own
++        // `Event::GamepadAdded` here, so unlike GilRs (whose `Gilrs::new()` doesn't emit
++        // `Connected` for pre-existing devices), no separate startup enumeration is needed.
++        while let Some(event) = sdl_state.event_pump.poll_event() {
++            match event {
++                Event::GamepadAdded { which, .. } => {
++                    let gamepad = match sdl_state.gamepad_subsystem.open(which) {
++                        Ok(gamepad) => gamepad,
++                        Err(error) => {
++                            warn!("Error opening gamepad {which} ({error})");
+                             continue;
+-                        }
++                        },
++                    };
++                    let name = gamepad.name().unwrap_or_else(|| "Unknown Gamepad".to_owned());
++                    sdl_state.open_gamepads.insert(which, gamepad);
++                    let index = GamepadIndex(which.raw() as usize);
++                    Self::dispatch(state, event, name, index);
++                },
++                Event::GamepadRemoved { which, .. } => {
++                    sdl_state.open_gamepads.remove(&which);
++                    let index = GamepadIndex(which.raw() as usize);
++                    Self::dispatch(state, event, String::new(), index);
++                },
++                Event::GamepadAxisMotion { which, .. } |
++                Event::GamepadButtonDown { which, .. } |
++                Event::GamepadButtonUp { which, .. } => {
++                    let name = sdl_state
++                        .open_gamepads
++                        .get(&which)
++                        .and_then(|gamepad| gamepad.name())
++                        .unwrap_or_default();
++                    let index = GamepadIndex(which.raw() as usize);
++                    Self::dispatch(state, event, name, index);
++                },
++                _ => {},
++            }
++        }
+ 
+-                        if event_loop_proxy
+-                            .send_event(AppEvent::Gamepad(event, name.to_owned(), index))
+-                            .is_err()
+-                        {
+-                            warn!("Error sending gamepad event to event loop proxy");
+-                            return;
+-                        }
+-                    }
++        let now = Instant::now();
++        let ready: Vec<usize> = sdl_state
++            .pending_haptic_effects
++            .iter()
++            .filter(|(_, effect)| now >= effect.fire_at)
++            .map(|(index, _)| *index)
++            .collect();
++        for index in ready {
++            let Some(effect) = sdl_state.pending_haptic_effects.remove(&index) else {
++                continue;
++            };
++            let Some(gamepad) = sdl_state.open_gamepads.get_mut(&effect.joystick_id) else {
++                effect.request.failed();
++                continue;
++            };
++            match gamepad.set_rumble(
++                effect.weak_magnitude,
++                effect.strong_magnitude,
++                effect.duration_ms,
++            ) {
++                Ok(()) => effect.request.succeeded(),
++                Err(error) => {
++                    debug!("Failed to start haptic effect: {error:?}");
++                    effect.request.failed();
++                },
++            }
++        }
+ 
+-                    while let Ok(request) = rx.try_recv() {
+-                        match request.request_type() {
+-                            GamepadHapticEffectRequestType::Play(effect_type) => {
+-                                Self::play_haptic_effect(
+-                                    &mut haptic_effects,
+-                                    &effect_type.clone(),
+-                                    request,
+-                                    &mut handle,
+-                                );
+-                            },
+-                            GamepadHapticEffectRequestType::Stop => {
+-                                Self::stop_haptic_effect(&mut haptic_effects, request);
+-                            },
+-                        }
+-                    }
+-                }
+-            });
++        while let Ok(request) = self.receiver.try_recv() {
++            match request.request_type() {
++                GamepadHapticEffectRequestType::Play(effect_type) => {
++                    Self::play_haptic_effect(
++                        &sdl_state.open_gamepads,
++                        &mut sdl_state.pending_haptic_effects,
++                        &effect_type.clone(),
++                        request,
++                    );
++                },
++                GamepadHapticEffectRequestType::Stop => {
++                    Self::stop_haptic_effect(
++                        &mut sdl_state.open_gamepads,
++                        &mut sdl_state.pending_haptic_effects,
++                        request,
++                    );
++                },
++            }
++        }
++    }
+ 
+-        Self { sender: tx }
++    fn dispatch(state: &RunningAppState, event: Event, name: String, index: GamepadIndex) {
++        let Some(active_webview) =
++            state.focused_window().and_then(|window| window.active_webview())
++        else {
++            return;
++        };
++        Self::handle_gamepad_events(event, name, index, active_webview);
+     }
+ 
+-    /// Handle updates to connected gamepads from GilRs
+-    pub(crate) fn handle_gamepad_events(
+-        &self,
++    /// Translate an SDL gamepad event into a `GamepadEvent` and forward it to the active
++    /// webview.
++    fn handle_gamepad_events(
+         event: Event,
+         name: String,
+         index: GamepadIndex,
+         active_webview: WebView,
+     ) {
+         let mut gamepad_event: Option<GamepadEvent> = None;
+-        match event.event {
+-            EventType::ButtonPressed(button, _) => {
++        match event {
++            Event::GamepadButtonDown { button, .. } => {
+                 let mapped_index = Self::map_gamepad_button(button);
+-                // We only want to send this for a valid digital button, aka on/off only
+-                if !matches!(mapped_index, 6 | 7 | 17) {
++                // We only want to send this for a valid digital button, aka on/off only --
++                // the analog triggers arrive as `GamepadAxisMotion` instead (see below), so
++                // unlike the old GilRs mapping, `mapped_index` can never actually be 6 or 7
++                // here; the exclusion is kept only for `17` (unmapped buttons).
++                if mapped_index != 17 {
+                     let update_type = GamepadUpdateType::Button(mapped_index, 1.0);
+                     gamepad_event = Some(GamepadEvent::Updated(index, update_type));
+                 }
+             },
+-            EventType::ButtonReleased(button, _) => {
++            Event::GamepadButtonUp { button, .. } => {
+                 let mapped_index = Self::map_gamepad_button(button);
+-                // We only want to send this for a valid digital button, aka on/off only
+-                if !matches!(mapped_index, 6 | 7 | 17) {
++                if mapped_index != 17 {
+                     let update_type = GamepadUpdateType::Button(mapped_index, 0.0);
+                     gamepad_event = Some(GamepadEvent::Updated(index, update_type));
+                 }
+             },
+-            EventType::ButtonChanged(button, value, _) => {
+-                let mapped_index = Self::map_gamepad_button(button);
+-                // We only want to send this for a valid non-digital button, aka the triggers
+-                if matches!(mapped_index, 6 | 7) {
+-                    let update_type = GamepadUpdateType::Button(mapped_index, value as f64);
+-                    gamepad_event = Some(GamepadEvent::Updated(index, update_type));
+-                }
+-            },
+-            EventType::AxisChanged(axis, value, _) => {
+-                // Map axis index and value to represent Standard Gamepad axis
+-                // <https://www.w3.org/TR/gamepad/#dfn-represents-a-standard-gamepad-axis>
+-                let mapped_axis: usize = match axis {
+-                    gilrs::Axis::LeftStickX => 0,
+-                    gilrs::Axis::LeftStickY => 1,
+-                    gilrs::Axis::RightStickX => 2,
+-                    gilrs::Axis::RightStickY => 3,
+-                    _ => 4, // Other axes do not map to "standard" gamepad mapping and are ignored
+-                };
+-                if mapped_axis < 4 {
+-                    // The Gamepad spec designates down as positive and up as negative.
+-                    // GilRs does the inverse of this, so correct for it here.
+-                    let axis_value = match mapped_axis {
+-                        0 | 2 => value,
+-                        1 | 3 => -value,
+-                        _ => 0., // Should not reach here
+-                    };
+-                    let update_type = GamepadUpdateType::Axis(mapped_axis, axis_value as f64);
+-                    gamepad_event = Some(GamepadEvent::Updated(index, update_type));
++            Event::GamepadAxisMotion { axis, value, .. } => {
++                match axis {
++                    // The analog triggers: SDL reports these as axes (0..=32767), but the
++                    // Gamepad spec's "Standard Gamepad" represents them as buttons 6/7 with an
++                    // analog value -- same convention the old GilRs code already used.
++                    Axis::TriggerLeft | Axis::TriggerRight => {
++                        let mapped_index = if axis == Axis::TriggerLeft { 6 } else { 7 };
++                        let axis_value = (value.max(0) as f64) / (i16::MAX as f64);
++                        let update_type = GamepadUpdateType::Button(mapped_index, axis_value);
++                        gamepad_event = Some(GamepadEvent::Updated(index, update_type));
++                    },
++                    // Map axis index and value to represent Standard Gamepad axis
++                    // <https://www.w3.org/TR/gamepad/#dfn-represents-a-standard-gamepad-axis>
++                    Axis::LeftX | Axis::LeftY | Axis::RightX | Axis::RightY => {
++                        let mapped_axis: usize = match axis {
++                            Axis::LeftX => 0,
++                            Axis::LeftY => 1,
++                            Axis::RightX => 2,
++                            Axis::RightY => 3,
++                            _ => unreachable!(),
++                        };
++                        // Unlike GilRs (whose Y axes are inverted relative to the spec, see the
++                        // old code's own comment), SDL's Y axes already follow the Gamepad
++                        // spec's convention directly (down is positive) -- no sign flip needed.
++                        let axis_value = value as f64 /
++                            if value < 0 { -(i16::MIN as f64) } else { i16::MAX as f64 };
++                        let update_type = GamepadUpdateType::Axis(mapped_axis, axis_value);
++                        gamepad_event = Some(GamepadEvent::Updated(index, update_type));
++                    },
+                 }
+             },
+-            EventType::Connected => {
++            Event::GamepadAdded { .. } => {
+                 let bounds = GamepadInputBounds {
+                     axis_bounds: (-1.0, 1.0),
+                     button_bounds: (0.0, 1.0),
+                 };
+-                // GilRs does not yet support trigger rumble
++                // SDL can drive trigger rumble too (`Gamepad::set_rumble_triggers`), but
++                // capability detection isn't wired through this event yet -- conservatively
++                // matching the old GilRs-era default until that's added.
+                 let supported_haptic_effects = GamepadSupportedHapticEffects {
+                     supports_dual_rumble: true,
+                     supports_trigger_rumble: false,
+@@ -180,7 +284,7 @@ impl ServoshellGamepadDelegate {
+                     supported_haptic_effects,
+                 ));
+             },
+-            EventType::Disconnected => {
++            Event::GamepadRemoved { .. } => {
+                 gamepad_event = Some(GamepadEvent::Disconnected(index));
+             },
+             _ => {},
+@@ -193,110 +297,93 @@ impl ServoshellGamepadDelegate {
+ 
+     // Map button index and value to represent Standard Gamepad button
+     // <https://www.w3.org/TR/gamepad/#dfn-represents-a-standard-gamepad-button>
+-    fn map_gamepad_button(button: gilrs::Button) -> usize {
++    fn map_gamepad_button(button: Button) -> usize {
+         match button {
+-            gilrs::Button::South => 0,
+-            gilrs::Button::East => 1,
+-            gilrs::Button::West => 2,
+-            gilrs::Button::North => 3,
+-            gilrs::Button::LeftTrigger => 4,
+-            gilrs::Button::RightTrigger => 5,
+-            gilrs::Button::LeftTrigger2 => 6,
+-            gilrs::Button::RightTrigger2 => 7,
+-            gilrs::Button::Select => 8,
+-            gilrs::Button::Start => 9,
+-            gilrs::Button::LeftThumb => 10,
+-            gilrs::Button::RightThumb => 11,
+-            gilrs::Button::DPadUp => 12,
+-            gilrs::Button::DPadDown => 13,
+-            gilrs::Button::DPadLeft => 14,
+-            gilrs::Button::DPadRight => 15,
+-            gilrs::Button::Mode => 16,
++            Button::South => 0,
++            Button::East => 1,
++            Button::West => 2,
++            Button::North => 3,
++            Button::LeftShoulder => 4,
++            Button::RightShoulder => 5,
++            // 6 and 7 (the analog triggers) never arrive as a `Button` in SDL -- see
++            // `handle_gamepad_events`'s `GamepadAxisMotion` arm instead.
++            Button::Back => 8,
++            Button::Start => 9,
++            Button::LeftStick => 10,
++            Button::RightStick => 11,
++            Button::DPadUp => 12,
++            Button::DPadDown => 13,
++            Button::DPadLeft => 14,
++            Button::DPadRight => 15,
++            Button::Guide => 16,
+             _ => 17, // Other buttons do not map to "standard" gamepad mapping and are ignored
+         }
+     }
+ 
+     fn play_haptic_effect(
+-        haptic_effects: &mut HashMap<usize, HapticEffect>,
++        open_gamepads: &HashMap<JoystickId, Gamepad>,
++        pending_haptic_effects: &mut HashMap<usize, PendingHapticEffect>,
+         effect_type: &GamepadHapticEffectType,
+         request: GamepadHapticEffectRequest,
+-        handle: &mut Gilrs,
+     ) {
+         let index = request.gamepad_index();
+         let GamepadHapticEffectType::DualRumble(params) = effect_type;
+ 
+-        let Some(connected_gamepad) = handle
+-            .gamepads()
+-            .find(|gamepad| usize::from(gamepad.0) == index)
++        let Some((&joystick_id, _)) = open_gamepads
++            .iter()
++            .find(|(id, _)| id.raw() as usize == index)
+         else {
+             debug!("Couldn't find connected gamepad to play haptic effect on");
+             request.failed();
+             return;
+         };
+ 
+-        let start_delay = Ticks::from_ms(params.start_delay as u32);
+-        let duration = Ticks::from_ms(params.duration as u32);
++        let start_delay = Duration::from_millis(params.start_delay as u64);
++        let duration_ms = params.duration as u32;
+         let strong_magnitude = (params.strong_magnitude * u16::MAX as f64).round() as u16;
+         let weak_magnitude = (params.weak_magnitude * u16::MAX as f64).round() as u16;
+ 
+-        let scheduling = Replay {
+-            after: start_delay,
+-            play_for: duration,
+-            with_delay: Ticks::from_ms(0),
+-        };
+-        let effect = EffectBuilder::new()
+-            .add_effect(BaseEffect {
+-                kind: BaseEffectType::Strong {
+-                    magnitude: strong_magnitude,
+-                },
+-                scheduling,
+-                envelope: Default::default(),
+-            })
+-            .add_effect(BaseEffect {
+-                kind: BaseEffectType::Weak {
+-                    magnitude: weak_magnitude,
+-                },
+-                scheduling,
+-                envelope: Default::default(),
+-            })
+-            .repeat(Repeat::For(start_delay + duration))
+-            .add_gamepad(&connected_gamepad.1)
+-            .finish(handle)
+-            .expect(
+-                "Failed to create haptic effect, ensure connected gamepad supports force feedback.",
+-            );
+-
+-        haptic_effects.insert(index, HapticEffect { effect, request });
+-        haptic_effects[&index]
+-            .effect
+-            .play()
+-            .expect("Failed to play haptic effect.");
++        pending_haptic_effects.insert(
++            index,
++            PendingHapticEffect {
++                request,
++                joystick_id,
++                fire_at: Instant::now() + start_delay,
++                strong_magnitude,
++                weak_magnitude,
++                duration_ms,
++            },
++        );
+     }
+ 
+     fn stop_haptic_effect(
+-        haptic_effects: &mut HashMap<usize, HapticEffect>,
++        open_gamepads: &mut HashMap<JoystickId, Gamepad>,
++        pending_haptic_effects: &mut HashMap<usize, PendingHapticEffect>,
+         request: GamepadHapticEffectRequest,
+     ) {
+         let index = request.gamepad_index();
+ 
+-        let Some(haptic_effect) = haptic_effects.get(&index) else {
++        // A still-delayed (not yet started) effect: just drop it, nothing to stop on the
++        // device itself yet.
++        if pending_haptic_effects.remove(&index).is_some() {
++            request.succeeded();
++            return;
++        }
++
++        let Some(gamepad) = open_gamepads
++            .values_mut()
++            .find(|gamepad| gamepad.id().map(|id| id.raw() as usize) == Ok(index))
++        else {
+             request.failed();
+             return;
+         };
+ 
+-        let stopped_successfully = match haptic_effect.effect.stop() {
+-            Ok(()) => true,
+-            Err(e) => {
+-                debug!("Failed to stop haptic effect: {:?}", e);
+-                false
++        match gamepad.set_rumble(0, 0, 0) {
++            Ok(()) => request.succeeded(),
++            Err(error) => {
++                debug!("Failed to stop haptic effect: {error:?}");
++                request.failed();
+             },
+-        };
+-        haptic_effects.remove(&index);
+-
+-        if stopped_successfully {
+-            request.succeeded();
+-        } else {
+-            request.failed();
+         }
+     }
+ }
 diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
 index 860090c55..a69166678 100644
 --- a/ports/servoshell/desktop/gui.rs
@@ -3315,10 +3925,34 @@ index d82e3c622..429493fc0 100644
          log_filter: cmd_args.log_filter.or_else(|| {
              (!preferences.log_filter.is_empty()).then(|| preferences.log_filter.clone())
 diff --git a/ports/servoshell/running_app_state.rs b/ports/servoshell/running_app_state.rs
-index 4685ebd21..b04003c60 100644
+index 4685ebd..18c21b3 100644
 --- a/ports/servoshell/running_app_state.rs
 +++ b/ports/servoshell/running_app_state.rs
-@@ -229,6 +229,16 @@ pub(crate) struct RunningAppState {
+@@ -11,11 +11,6 @@ use std::rc::Rc;
+ 
+ use crossbeam_channel::{Receiver, Sender, unbounded};
+ use euclid::Rect;
+-#[cfg(all(
+-    feature = "gamepad",
+-    not(any(target_os = "android", target_env = "ohos"))
+-))]
+-use gilrs::Event;
+ use image::{DynamicImage, ImageFormat, RgbaImage};
+ #[cfg(all(
+     any(coverage, llvm_pgo),
+@@ -23,11 +18,6 @@ use image::{DynamicImage, ImageFormat, RgbaImage};
+ ))]
+ use libc::c_char;
+ use log::{error, info, warn};
+-#[cfg(all(
+-    feature = "gamepad",
+-    not(any(target_os = "android", target_env = "ohos"))
+-))]
+-use servo::GamepadIndex;
+ use servo::{
+     AllowOrDenyRequest, AuthenticationRequest, BluetoothDeviceSelectionRequest, CSSPixel,
+     ConsoleLogLevel, CreateNewWebViewRequest, DeviceIntPoint, DeviceIntSize, EmbedderControl,
+@@ -229,6 +219,16 @@ pub(crate) struct RunningAppState {
      /// [`WebView::set_accessibility_active()`], in [`Self::set_accessibility_active()`] and
      /// and [`ServoShellWindow::create_toplevel_webview()`].
      accessibility_active: Cell<bool>,
@@ -3335,7 +3969,7 @@ index 4685ebd21..b04003c60 100644
  }
  
  impl RunningAppState {
-@@ -279,6 +289,8 @@ impl RunningAppState {
+@@ -279,6 +279,8 @@ impl RunningAppState {
              user_content_manager,
              experimental_preferences_enabled,
              accessibility_active: Cell::new(false),
@@ -3344,7 +3978,7 @@ index 4685ebd21..b04003c60 100644
          }
      }
  
-@@ -293,6 +305,12 @@ impl RunningAppState {
+@@ -293,6 +295,12 @@ impl RunningAppState {
              .insert(window.id(), window.clone());
          window.create_and_activate_toplevel_webview(self.clone(), initial_url);
  
@@ -3357,7 +3991,7 @@ index 4685ebd21..b04003c60 100644
          // If the window already has platform focus, mark it as focused in our application state.
          if platform_window.has_platform_focus() {
              self.focus_window(window.clone());
-@@ -307,6 +325,18 @@ impl RunningAppState {
+@@ -307,6 +315,18 @@ impl RunningAppState {
          self.windows.borrow()
      }
  
@@ -3376,7 +4010,50 @@ index 4685ebd21..b04003c60 100644
      pub(crate) fn focused_window(&self) -> Option<Rc<ServoShellWindow>> {
          self.focused_window.borrow().clone()
      }
-@@ -799,6 +829,9 @@ impl WebViewDelegate for RunningAppState {
+@@ -426,14 +446,6 @@ impl RunningAppState {
+ 
+         self.handle_webdriver_messages(create_platform_window);
+ 
+-        /* #[cfg(all(
+-            feature = "gamepad",
+-            not(any(target_os = "android", target_env = "ohos"))
+-        ))]
+-        if servo::pref!(dom_gamepad_enabled) {
+-            self.handle_gamepad_events();
+-        } */
+-
+         self.servo.spin_event_loop();
+ 
+         for window in self.windows.borrow().values() {
+@@ -634,27 +646,6 @@ impl RunningAppState {
+         webview.load(url);
+     }
+ 
+-    #[cfg(all(
+-        feature = "gamepad",
+-        not(any(target_os = "android", target_env = "ohos"))
+-    ))]
+-    pub(crate) fn handle_gamepad_events(
+-        &self,
+-        event: Event,
+-        gamepad_name: String,
+-        gamepad_index: GamepadIndex,
+-    ) {
+-        let Some(gamepad_delegate) = self.gamepad_delegate.as_ref() else {
+-            return;
+-        };
+-        let Some(active_webview) = self
+-            .focused_window()
+-            .and_then(|window| window.active_webview())
+-        else {
+-            return;
+-        };
+-        gamepad_delegate.handle_gamepad_events(event, gamepad_name, gamepad_index, active_webview);
+-    }
+ 
+     #[cfg(not(any(target_os = "android", target_env = "ohos")))]
+     pub(crate) fn handle_focused(&self, window: Rc<ServoShellWindow>) {
+@@ -799,6 +790,9 @@ impl WebViewDelegate for RunningAppState {
          self.window_for_webview(&webview).set_needs_update();
  
          if status == LoadStatus::Complete {

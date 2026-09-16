@@ -7,9 +7,8 @@
 use std::sync::{Arc, Condvar, Mutex};
 use std::time;
 
-use gilrs::Event;
 use log::warn;
-use servo::{EventLoopWaker, GamepadIndex};
+use servo::EventLoopWaker;
 use winit::event_loop::{EventLoop, EventLoop as WinitEventLoop, EventLoopProxy};
 
 use super::app::App;
@@ -18,7 +17,6 @@ pub enum AppEvent {
     /// Another process or thread has kicked the OS event loop with EventLoopWaker.
     Waker,
     Accessibility(egui_winit::accesskit_winit::Event),
-    Gamepad(Event, String, GamepadIndex),
     /// Requested by `protocols::roves::RovesProtocolHandler` (the `roves:` scheme's
     /// `exit`/`close_window` command — see `@drincs/roves-api`'s `process.exit()`) from
     /// whatever thread is servicing that `fetch()`. `RunningAppState`/`ServoShellWindow`
@@ -56,9 +54,6 @@ impl std::fmt::Debug for AppEvent {
         match self {
             AppEvent::Waker => write!(f, "Waker"),
             AppEvent::Accessibility(event) => f.debug_tuple("Accessibility").field(event).finish(),
-            AppEvent::Gamepad(event, name, index) => {
-                f.debug_tuple("Gamepad").field(event).field(name).field(index).finish()
-            },
             AppEvent::CloseAllWindows => write!(f, "CloseAllWindows"),
             AppEvent::BootProgress(progress) => f.debug_tuple("BootProgress").field(progress).finish(),
             AppEvent::BootReady => write!(f, "BootReady"),

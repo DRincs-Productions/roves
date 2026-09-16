@@ -7207,3 +7207,112 @@ single generic loader error doesn't guarantee there's only one missing dependenc
 detection mechanism will catch a further one immediately if it exists. Pending a third
 `test.yml` run to confirm the Windows jobs are fully green end to end, including this launch
 smoke test.
+
+---
+
+## 2026-09-16 — SDL3 gamepad: GilRs → SDL3, first slice of the SDL3 migration
+
+**Files:** `Cargo.toml`, `ports/servoshell/Cargo.toml`, `ports/servoshell/desktop/gamepad.rs`
+(rewritten — previously pristine, upstream still uses GilRs itself), `ports/servoshell/desktop/
+app.rs`, `ports/servoshell/desktop/event_loop.rs`, `ports/servoshell/running_app_state.rs`.
+
+**Patch:** `patches/servo-v0.5.0/0014-root-workspace.patch` (the `gilrs`→`sdl3` workspace pin
+swap) and `patches/servo-v0.5.0/0001-desktop-shell-core.patch` (regenerated — the four existing
+sections plus a brand-new `gamepad.rs` one, `gamepad.rs` having had zero prior customization).
+
+**Why SDL3, and why gamepad first:** `docs/DEPENDENCY_REVIEW.md`'s confirmed decision — SDL3
+migrates progressively, "iniziando da `gilrs`/gamepad." Of the 13 files using `winit::` directly,
+gamepad support was the one piece with no coupling to window creation, IME, or GL surface
+sharing, making it the lowest-risk first slice to actually land before tackling the much larger
+windowing/event-loop replacement (still open — see below).
+
+**A hard architectural constraint found by reading the `sdl3`-rs source before writing any code,
+not by a failed CI run:** `sdl3::init()` unconditionally refuses to run on any thread other than
+the one that first calls it (checked via a thread-local + a process-wide `AtomicBool`), unless
+the crate's own `test-mode` feature is enabled — which the crate's error message and feature
+documentation both describe as a testing-only escape hatch, not a supported production
+configuration. This isn't a Rust-binding-only pedantry check: it reflects a real constraint SDL
+itself has on some platforms (Cocoa's own main-thread requirements on macOS). This directly
+broke the natural direct port of the old design: GilRs ran on its own dedicated background
+thread (`gamepad.rs`'s `ServoshellGamepadDelegate::new` used to `thread::Builder::new().spawn`),
+which is exactly the pattern `sdl3::init()` rejects unless running from `main()`'s own thread.
+
+**Decision: integrate into winit's main-thread loop, not `test-mode`.** Using `test-mode` in
+shipped code would be exactly the kind of shortcut its own name warns against — real risk of
+instability on macOS specifically, for a "just make the error go away" reason. Instead:
+
+- `ServoshellGamepadDelegate` no longer spawns a thread. It owns the SDL state directly
+  (`Sdl`, `GamepadSubsystem`, `EventPump`, open gamepads, pending haptic effects) behind a
+  `RefCell` (needed since the delegate is shared via `Rc`), created by `ServoshellGamepadDelegate::
+  new()` — called from `App::finish_init`, which only ever runs on the same thread `main()`
+  itself runs on, satisfying SDL's real requirement.
+- A new `poll(&self, state: &RunningAppState)` method drains SDL's event queue
+  (`EventPump::poll_event`, non-blocking) and any due haptic effects/requests, translating and
+  dispatching directly — inline, synchronously, no more `AppEvent::Gamepad` message hop at all
+  (removed that variant from `event_loop.rs`'s `AppEvent` enum, and the now-dead
+  `RunningAppState::handle_gamepad_events` indirection it went through).
+- `App::new_events`' `Running` arm calls `gamepad_delegate.poll(state)` on every
+  `StartCause::ResumeTimeReached`, and `set_running_control_flow` (already shared by `window_event`/
+  `user_event`'s tails, and now also called at the end of `new_events`' own `Running` arm) folds a
+  `GAMEPAD_POLL_INTERVAL` (100ms — the same cadence GilRs' own `next_event_blocking(Some(...))`
+  polled at) into its `ControlFlow::WaitUntil` deadline computation, alongside the pre-existing
+  boot-splash-animation deadline. This reuses the exact mechanism the splash screen's
+  indeterminate animation already relies on to keep winit's event loop ticking instead of fully
+  idling (`ControlFlow::Wait`) — no new timer/wake mechanism invented, same pattern, folded in.
+- The haptic-effect request path (`GamepadDelegate::handle_haptic_effect_request`, called from
+  wherever `Gamepad.vibrationActuator.playEffect()` reaches native code — not necessarily the
+  main thread) still needs a channel, since that call site isn't guaranteed to be on the main
+  thread the way event polling now is — `sender`/`receiver` (`std::sync::mpsc`) kept for that,
+  just drained by `poll()` now instead of a background loop.
+
+**API mapping notes (GilRs → SDL3), each checked against real API signatures, not assumed:**
+
+- GilRs represents the analog triggers as *buttons* with an analog value
+  (`ButtonChanged(LeftTrigger2/RightTrigger2, value)`); SDL3 represents them as *axes*
+  (`Axis::TriggerLeft`/`TriggerRight` via `GamepadAxisMotion`, range `0..=32767`). Both still map
+  to Standard Gamepad button indices 6/7 per the W3C spec — `handle_gamepad_events`'s
+  `GamepadAxisMotion` arm special-cases these two axes into `GamepadUpdateType::Button`, not
+  `Axis`, to preserve that mapping.
+- GilRs' Y axes are inverted relative to the Gamepad spec (the old code's own comment says so,
+  and negated them for that reason). SDL3's Y axes already match the spec's convention (down is
+  positive) directly — confirmed against `sdl3-rs`' own axis documentation, not assumed by
+  symmetry with X. The negation was *not* carried over; carrying it over unchanged would have
+  silently inverted every analog stick's up/down on first real use.
+- `Gamepad::set_rumble`/`set_rumble_triggers` are fire-and-forget calls (magnitude + duration),
+  unlike GilRs' `EffectBuilder`/`Effect` with an explicit `play()`/`stop()` lifecycle and a
+  `ForceFeedbackEffectCompleted` completion event. SDL has no completion event at all —
+  `request.succeeded()` is now reported once a delayed rumble actually starts, not once it
+  finishes; `start_delay` (which SDL's API has no parameter for) is emulated by holding the
+  request until `poll()`'s ~100ms cadence notices `fire_at` has passed.
+- `supports_trigger_rumble` stays hardcoded `false` on connect, matching the GilRs-era default,
+  even though SDL can genuinely drive trigger rumble (`set_rumble_triggers`) — real per-device
+  capability detection wasn't wired through the `Connected` event payload in this pass; left as a
+  known follow-up, not a functional regression (the dual-rumble path GilRs already supported
+  works the same as before).
+
+**Native SDL3 build: `build-from-source`, not a system install.** `sdl3-sys` defaults to
+`use-pkg-config`/`use-vcpkg` — i.e. expecting a pre-installed system SDL3, the same shape of
+problem GStreamer's Windows installer saga (above) turned into two extra rounds of CI failures.
+Enabled `build-from-source` instead (`sdl3 = { version = "0.20", default-features = false,
+features = ["build-from-source"] }`): SDL3 compiles from vendored source (`sdl3-src`, pinned to
+`3.4.16`) as part of the normal Rust build, via `cmake` + the C/C++ toolchain this project's other
+native dependencies already require — no new native-installer/bootstrap surface on any platform,
+consistent with the "embedded, versioned by Roves" principle `docs/DEPENDENCY_REVIEW.md`'s own
+architecture section states for the whole engine.
+
+**Not done in this pass:** `winit`/`surfman`/window creation, IME, `keyutils.rs`'s key mapping,
+`webxr.rs`, and `gui.rs`'s `egui-winit`/`accesskit_winit` accessibility bridge are all still
+winit-based — see `docs/DEPENDENCY_REVIEW.md`'s own note that dropping `egui-winit` needs a new,
+hand-written AccessKit integration, since no maintained `egui`-on-`SDL3` backend exists upstream.
+This entry covers gamepad only.
+
+**Verification:** every SDL3 API signature and enum shape cited above (`Sdl::gamepad`/
+`event_pump`, `GamepadSubsystem::open`, `Gamepad::set_rumble`/`id`/`name`, the `Event::Gamepad*`
+variants and their fields, `Axis`/`Button` variant names, the main-thread check itself) was
+checked against the real `sdl3`/`sdl3-sys` crate source (`vhspace/sdl3-rs` on GitHub), not
+guessed from memory or by analogy with `sdl2`. The main-thread constraint specifically was caught
+this way, *before* it could burn a ~25-35 minute CI round trip discovering it via a runtime panic
+instead. What's still unverified: this machine has no working `cargo build` locally (see
+`CLAUDE.md`), so none of this has actually compiled yet — real compile correctness (in particular
+the `RefCell`/field-borrow-splitting design in `poll()`, and whether `build-from-source`'s
+`cmake`+`cc` build actually succeeds on all three CI runners) is pending a `test.yml` run.

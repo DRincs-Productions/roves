@@ -11,11 +11,6 @@ use std::rc::Rc;
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use euclid::Rect;
-#[cfg(all(
-    feature = "gamepad",
-    not(any(target_os = "android", target_env = "ohos"))
-))]
-use gilrs::Event;
 use image::{DynamicImage, ImageFormat, RgbaImage};
 #[cfg(all(
     any(coverage, llvm_pgo),
@@ -23,11 +18,6 @@ use image::{DynamicImage, ImageFormat, RgbaImage};
 ))]
 use libc::c_char;
 use log::{error, info, warn};
-#[cfg(all(
-    feature = "gamepad",
-    not(any(target_os = "android", target_env = "ohos"))
-))]
-use servo::GamepadIndex;
 use servo::{
     AllowOrDenyRequest, AuthenticationRequest, BluetoothDeviceSelectionRequest, CSSPixel,
     ConsoleLogLevel, CreateNewWebViewRequest, DeviceIntPoint, DeviceIntSize, EmbedderControl,
@@ -456,14 +446,6 @@ impl RunningAppState {
 
         self.handle_webdriver_messages(create_platform_window);
 
-        /* #[cfg(all(
-            feature = "gamepad",
-            not(any(target_os = "android", target_env = "ohos"))
-        ))]
-        if servo::pref!(dom_gamepad_enabled) {
-            self.handle_gamepad_events();
-        } */
-
         self.servo.spin_event_loop();
 
         for window in self.windows.borrow().values() {
@@ -664,27 +646,6 @@ impl RunningAppState {
         webview.load(url);
     }
 
-    #[cfg(all(
-        feature = "gamepad",
-        not(any(target_os = "android", target_env = "ohos"))
-    ))]
-    pub(crate) fn handle_gamepad_events(
-        &self,
-        event: Event,
-        gamepad_name: String,
-        gamepad_index: GamepadIndex,
-    ) {
-        let Some(gamepad_delegate) = self.gamepad_delegate.as_ref() else {
-            return;
-        };
-        let Some(active_webview) = self
-            .focused_window()
-            .and_then(|window| window.active_webview())
-        else {
-            return;
-        };
-        gamepad_delegate.handle_gamepad_events(event, gamepad_name, gamepad_index, active_webview);
-    }
 
     #[cfg(not(any(target_os = "android", target_env = "ohos")))]
     pub(crate) fn handle_focused(&self, window: Rc<ServoShellWindow>) {

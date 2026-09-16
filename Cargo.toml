@@ -98,7 +98,6 @@ futures-core = { version = "0.3", default-features = false }
 futures-intrusive = "0.5"
 futures-util = { version = "0.3", default-features = false }
 gaol = "0.2.1"
-gilrs = "0.11.1"
 gleam = "0.15"
 glib = "0.22"
 glib-sys = "0.22"
@@ -215,6 +214,13 @@ rustc-hash = "2.1.2"
 rustls = { version = "0.23", default-features = false, features = ["logging", "std", "tls12"] }
 rustls-pki-types = "1.14"
 rustls-platform-verifier = "0.7.0"
+# `build-from-source`: builds SDL3 from vendored source as part of the Rust build (via `cmake`
+# + a C/C++ toolchain, both already required for other native deps here) instead of the crate's
+# own default of requiring a pre-installed system SDL3 via pkg-config/vcpkg -- keeps this
+# self-contained/versioned by Roves, the same reasoning `docs/DEPENDENCY_REVIEW.md` already
+# applies to the rest of the embedded engine, and avoids a second native-installer saga on top
+# of GStreamer's (see CUSTOMIZATIONS.md).
+sdl3 = { version = "0.20", default-features = false, features = ["build-from-source"] }
 sea-query = { version = "1.0.1", default-features = false, features = ["backend-sqlite", "derive"] }
 sea-query-rusqlite = "0.8.0"
 selectors = { version = "0.40" }
