@@ -7096,6 +7096,44 @@ da... verificare il codice effettivamente compilato," not something a source dif
 
 ---
 
+## 2026-09-16 — zstd 0.13.3 → 0.14.0 (content-packer only)
+
+**Files:** `support/content-packer/Cargo.toml`, `Cargo.lock`.
+
+**Patch:** `patches/servo-v0.5.0/0003-content-packer.patch` (regenerated — only its
+`Cargo.toml` "new file" block changed; the crate's own source files are untouched).
+
+**Why:** next candidate from `docs/DEPENDENCY_REVIEW.md`'s inventory. `zstd` here is only
+`support/content-packer`'s own dependency (this repo's tar+zstd game-content packer, not
+anything upstream Servo pulls in — `components/net`'s own `zstd` reference is just an
+`async-compression` feature flag string, not this crate). Checked the real upstream changelog
+(`gyscos/zstd-rs` release notes for `v0.14.0`) before touching anything: the one breaking change
+is to `with_prepared_dictionary()`'s borrow semantics (content-packer uses plain
+`zstd::Encoder::new`/`Decoder::new`, no dictionaries — not affected) plus a fixed
+`Decoder::finish()` reader-position bug (content-packer's `extract.rs` never calls `.finish()`
+on its decoder at all — reads it as a plain stream to EOF instead — so that fix doesn't change
+its behavior either). `pack.rs`'s `encoder.finish()` call is the *encoder* side, a different,
+unaffected method. Low risk for the same reason the review document itself gave: this crate's
+usage is the minimal streaming read/write path, not the parts of the API that moved.
+
+**Change:** `zstd = "0.13.3"` → `"0.14.0"` in `support/content-packer/Cargo.toml`.
+`cargo update -p zstd --precise 0.14.0` pulled `zstd-safe` 7.2.4 → 8.0.0 (zstd 0.14's own
+declared requirement, confirmed via crates.io's dependency listing rather than assumed) and
+`zstd-sys` 2.0.16 → 2.1.0 — the underlying native zstd C library version embedded stayed at
+1.5.7 (`zstd-sys`'s own version string keeps that suffix), so this is a pure Rust-wrapper bump,
+no change to the actual compression algorithm/format version. `async-compression`'s own
+`compression-codecs`/`compression-core` sub-crates also moved to their latest compatible patch
+versions as a side effect of the same resolution pass (0.4.38→0.4.42, 0.4.32→0.4.33) — expected
+collateral from sharing the `zstd-safe` dependency, not a separate deliberate bump.
+
+**Verification:** patch applies cleanly to a fresh pristine extraction. Pack/extract behavior,
+performance, and old-pack/new-pack compatibility (the review document's own required checks for
+this candidate — "misurare pack/estrazione, CPU, RAM e avvio freddo/caldo") are pending a
+`test.yml` run; this machine can't run the crate's own `tests/roundtrip.rs` locally without a
+working `cargo test` toolchain (see `CLAUDE.md`'s Windows build gap).
+
+---
+
 **What's still unverified:** whether 1.28.7 introduced any *new* transitive DLL dependency for
 the specific plugin selection this fork copies (as opposed to a rename of an existing one) —
 the code comment on this list says it's normally curated via `dumpbin` plus "the errors that
