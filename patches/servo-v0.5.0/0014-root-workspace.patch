@@ -1,5 +1,5 @@
 diff --git a/Cargo.toml b/Cargo.toml
-index 19d4caa..bb3c5b3 100644
+index 19d4caa..abe1c78 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
 @@ -5,8 +5,7 @@ members = [
@@ -63,7 +63,7 @@ index 19d4caa..bb3c5b3 100644
 +# self-contained/versioned by Roves, the same reasoning `docs/DEPENDENCY_REVIEW.md` already
 +# applies to the rest of the embedded engine, and avoids a second native-installer saga on top
 +# of GStreamer's (see CUSTOMIZATIONS.md).
-+sdl3 = { version = "0.20", default-features = false, features = ["build-from-source"] }
++sdl3 = { version = "0.20", default-features = false, features = ["build-from-source-static"] }
  sea-query = { version = "1.0.1", default-features = false, features = ["backend-sqlite", "derive"] }
  sea-query-rusqlite = "0.8.0"
  selectors = { version = "0.40" }

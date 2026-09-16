@@ -7312,10 +7312,38 @@ variants and their fields, `Axis`/`Button` variant names, the main-thread check 
 checked against the real `sdl3`/`sdl3-sys` crate source (`vhspace/sdl3-rs` on GitHub), not
 guessed from memory or by analogy with `sdl2`. The main-thread constraint specifically was caught
 this way, *before* it could burn a ~25-35 minute CI round trip discovering it via a runtime panic
-instead. What's still unverified: this machine has no working `cargo build` locally (see
-`CLAUDE.md`), so none of this has actually compiled yet — real compile correctness (in particular
-the `RefCell`/field-borrow-splitting design in `poll()`, and whether `build-from-source`'s
-`cmake`+`cc` build actually succeeds on all three CI runners) is pending a `test.yml` run.
+instead.
+
+**First `test.yml` run: one real compile miss, found immediately.** `desktop/tracing.rs`'s own
+`winit`-event logging `target!` macro had a separate match arm on `AppEvent::Gamepad(..)` that
+the `app.rs`/`event_loop.rs` cleanup missed (`error[E0599]: no variant... named Gamepad`) —
+one-line fix. Encouragingly, everything upstream of that compiled cleanly on the first attempt:
+`sdl3-src`/`sdl3-sys`/`sdl3` (`build-from-source`) all built successfully in under 90 seconds on
+Linux.
+
+**Second run (after the `tracing.rs` fix): Linux and Windows fully green, macOS failed —
+not a compile error this time, `mach build`'s own Rust compile finished cleanly in ~15
+minutes.** The failure was in `python/servo/gstreamer.py`'s post-build dylib-packaging step
+(`package_gstreamer_dylibs` → `make_rpath_path_absolute`): `ERROR: could not package required
+dylibs: Unable to satisfy rpath dependency: @rpath/libSDL3.0.dylib`. This function walks every
+`@rpath/...` entry `otool -L` reports for the compiled binary and its dependencies and expects
+each one to resolve inside GStreamer's own `lib/` directory — reasonable when GStreamer's dylibs
+were the only `@rpath`-relative dependency in the tree, but `build-from-source`'s default
+(dynamic) linking mode gives SDL3 its own `@rpath`-relative `libSDL3.0.dylib` too, which this
+GStreamer-specific walker has no way to know isn't one of its own. The existing
+`is_separately_packaged_dylib` exclusion (added earlier for `libsteam_api.dylib`, see that entry
+above) could have been extended the same way, but the more robust fix is removing the dylib
+entirely: switched the `sdl3` feature from `build-from-source` to `build-from-source-static`
+(confirmed via `sdl3-sys`'s own `Cargo.toml`: `build-from-source-static = ["build-from-source",
+"link-static"]`) — SDL3 (zlib-licensed, no static-linking restriction) is now linked directly
+into the binary, so there's no separate dylib for *any* platform's packaging step to trip over,
+not just macOS's. `cargo metadata` after the switch only dropped `sdl3-net-src`/`sdl3-net-sys`
+from the lockfile's reachable-optional-deps set (the `net` feature was never requested either
+way) — no other change.
+
+**Not yet re-verified:** this exact fix (`build-from-source-static`) hasn't had its own `test.yml`
+run yet — pending. Linux/Windows were already green under dynamic linking, so the expectation is
+they stay green under static linking too, but that's an expectation, not a confirmed result.
 
 ---
 
