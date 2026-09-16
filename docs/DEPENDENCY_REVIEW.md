@@ -27,6 +27,29 @@ Priorità significa ordine di indagine, non approvazione di una versione pronta
 alla distribuzione. Le versioni online sono quelle osservate nelle fonti indicate;
 ricontrollare release, eventuali yanked e compatibilità quando si implementa.
 
+## Decisioni confermate: SDL3 e audio Web trasparente
+
+- **SDL3 è da implementare.** L'obiettivo è sostituire progressivamente il
+  maggior numero di responsabilità duplicate possibile, iniziando da
+  `gilrs`/gamepad e arrivando a finestra/event loop al posto di `winit`.
+  Ogni fase deve conservare API Web, input, IME, accessibilità, fullscreen,
+  superfici e comportamento sui tre desktop. `surfman` si rimuove soltanto
+  quando SDL e il compositore coprono realmente context/offscreen/interoperabilità.
+- **Nessuna API audio Roves per le funzioni di base.** I game engine e Tone.js
+  devono continuare a usare Web Audio e HTML media. Un cambio audio è accettato
+  solo se trasparente, conforme e dimostra latenza/jitter/CPU migliori.
+- **Kira non è nella roadmap base.** Può essere rivalutata solo come dettaglio
+  interno se implementa senza compromessi le trait e la semantica esistenti;
+  non aggiungere un secondo sistema o API pubblica.
+- **GStreamer va separato per responsabilità.** Il grafo Web Audio è già in
+  `servo-media-audio`; GStreamer fornisce oggi il sink reale tramite appsrc,
+  conversione/resampling e autoaudiosink, oltre a player, decoder, video e
+  WebRTC. Il primo esperimento non deve sostituire il grafo: deve sostituire
+  soltanto `AudioSink` con cubeb, CPAL o miniaudio.
+- **web-audio-api-rs è un confronto del grafo**, non la prima sostituzione:
+  valutarlo solo se conformità, scheduling o prestazioni del grafo
+  `servo-media-audio` risultano insufficienti.
+
 ## Inventario e valutazione
 
 Le versioni correnti sotto sono estratte da `Cargo.lock`, non dedotte dai soli
