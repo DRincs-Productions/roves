@@ -101,6 +101,21 @@ Questa voce pianifica l'integrazione opzionale; non introduce SDK o funzionalit�
 - [ ] **Steam avanzato, opzionale:** valutare classifiche e ulteriori servizi richiesti dai giochi. Obiettivi, statistiche, DLC, overlay e Steam Cloud sono già implementati: concentrare il backlog sulle capability mancanti e sui test reali.
 - [ ] **Aggiornamenti contenuti, opzionali:** progettare aggiornamento/versionamento dei contenuti senza ricreare sempre il bundle, con integrità, rollback e coerenza della cache. Decidere prima se serve un updater completo o basta il meccanismo di aggiornamento della piattaforma store.
 
+### Rendering futuro: fast path wgpu — backlog
+
+- [ ] Progettare un fast path interno a Servo per il caso di una singola
+  WebView/canvas fullscreen, inizialmente WebGPU, riducendo composizione, blit,
+  clear e copie GPU non necessari. Mantenere WebRender come percorso completo.
+- [ ] Attivarlo solo quando la pagina e lo stato grafico soddisfano condizioni
+  verificabili; DOM/CSS, overlay, dialoghi, trasparenza o feature incompatibili
+  devono tornare automaticamente al percorso generale senza differenze visibili.
+- [ ] Preservare resize/HiDPI, color space e alpha, screenshot/capture, context
+  loss, metriche, accessibilità e presentazione coerente su Windows, macOS e
+  Linux.
+- [ ] Implementarlo soltanto dopo telemetria e baseline: confrontare copie GPU,
+  composizione, latenza, p95/p99 e frame oltre budget. Questa è
+  un'ottimizzazione futura, non una priorità dell'intervento corrente.
+
 ### Dipendenze, release e manutenzione
 
 - [ ] **Aggiornamenti mirati:** valutare mozjs nella serie attuale e runtime nativo GStreamer, poi prove coordinate egui/ANGLE/zstd/allocatore. Analisi separata nella [PR #9](https://github.com/DRincs-Productions/roves/pull/9); nessun bump è già stato applicato.
