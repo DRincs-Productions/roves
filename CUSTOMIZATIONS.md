@@ -7067,6 +7067,35 @@ siblings) were also spot-checked against the new `bin/` listing and are unaffect
 keeps that suffix stable as its own ABI convention across the whole 1.x series, unlike the
 bundled third-party libraries above.
 
+## 2026-09-16 — mozangle 0.6.0 → 0.7.0
+
+**Files:** `Cargo.toml`, `Cargo.lock`.
+
+**Patch:** `patches/servo-v0.5.0/0014-root-workspace.patch` (regenerated — now carries a fourth
+hunk for the `mozangle` pin, alongside the workspace-members, `js`, and `sysinfo` ones).
+
+**Why:** next candidate from `docs/DEPENDENCY_REVIEW.md`'s inventory (WebGL/ANGLE, "soprattutto
+Windows"). Checked the real upstream diff before touching anything, not just the version number:
+`servo/mozangle`'s own `compare/v0.6.0...v0.7.0` is exactly 2 commits — both are its own
+`update.py`-driven re-vendor of Mozilla's ANGLE fork against a newer pinned Firefox ESR tag
+(`FIREFOX_140_12_0esr_RELEASE` → `FIREFOX_153_1_0esr_RELEASE`). Every changed file is under
+`gfx/angle/checkout/` (D3D11 renderer internals, GPU info detection, the shader translator) or
+`mozangle`'s own build tooling (`update.py`, `generate_build_data.py`) — nothing under a
+top-level `src/` touches the crate's own Rust binding surface, so this is a pure
+implementation/bugfix update, not an API change. Low risk for exactly that reason.
+
+**Change:** `mozangle = "0.6"` → `"0.7"` (Cargo's default caret behavior treats a `0.x` minor
+bump as a compatibility boundary, so this needed an explicit `Cargo.toml` edit, not just
+`cargo update`). `cargo update -p mozangle --precise 0.7.0` resolved cleanly, touching only this
+one crate in `Cargo.lock`.
+
+**Verification:** patch applies cleanly to a fresh pristine extraction. Compile/link and actual
+WebGL rendering behavior (the whole point of this candidate) pending a `test.yml` run — this is
+exactly the kind of change the review document's own caution applies to: "il beneficio dipende
+da... verificare il codice effettivamente compilato," not something a source diff alone proves.
+
+---
+
 **What's still unverified:** whether 1.28.7 introduced any *new* transitive DLL dependency for
 the specific plugin selection this fork copies (as opposed to a rename of an existing one) —
 the code comment on this list says it's normally curated via `dumpbin` plus "the errors that

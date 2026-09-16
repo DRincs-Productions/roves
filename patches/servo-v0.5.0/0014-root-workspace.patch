@@ -1,5 +1,5 @@
 diff --git a/Cargo.toml b/Cargo.toml
-index 19d4caa..37ae18a 100644
+index 19d4caa..fa6eb0c 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
 @@ -5,8 +5,7 @@ members = [
@@ -21,6 +21,15 @@ index 19d4caa..37ae18a 100644
  k12 = "0.5"
  keyboard-types = { version = "0.8.3", features = ["serde", "webdriver"] }
  kurbo = { version = "0.13.1", features = ["euclid"] }
+@@ -155,7 +154,7 @@ mime = "0.3.13"
+ mime_guess = "2.0.5"
+ ml-dsa = { version = "0.1", features = ["zeroize"] }
+ ml-kem = { version = "0.3", features = ["getrandom", "pkcs8", "zeroize"] }
+-mozangle = "0.6"
++mozangle = "0.7"
+ napi-derive-ohos = "1.2.0"
+ napi-ohos = "1.2.0"
+ nix = "0.30"
 @@ -246,6 +245,7 @@ swapper = "0.1"
  syn = { version = "2", default-features = false, features = ["clone-impls", "derive", "parsing"] }
  synstructure = "0.13"
