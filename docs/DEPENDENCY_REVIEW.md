@@ -293,6 +293,102 @@ Ogni cambiamento deve produrre lo stesso comportamento osservabile sui tre
 desktop, essere incorporato/versionato nel bundle e avere rollback. I benchmark
 contro Chrome e WebView restano riferimenti esterni, non proposte di backend.
 
+## Approfondimento: motori JS, SDL3 e audio trasparente
+
+### Alternative a SpiderMonkey entro i vincoli embedded
+
+Il problema non è soltanto incorporare un motore JS: bisogna rifare l'integrazione
+Servo con WebIDL/DOM, GC, promise, worker, moduli, eccezioni e debugger. Tutti i
+candidati devono essere versionati e compilati da Roves sui tre desktop.
+
+| Motore | Vantaggi | Svantaggi per Roves | Giudizio |
+|---|---|---|---|
+| SpiderMonkey | Binding Servo esistenti, JIT e Wasm maturi | Generalista; pre-barriere da correggere; major update complessi | Baseline e prima scelta |
+| V8 | JIT maturo e API ufficiale di embedding | Port completo dei binding, build C++ pesante, memoria; non gaming-specific | Principale sfidante se SpiderMonkey limita |
+| JavaScriptCore | VM ottimizzante multi-tier | Stesso costo dei binding; pipeline Windows/Linux da controllare | Secondo sfidante |
+| Hermes | Bytecode compatto, attenzione a startup e memoria | Progettato per React Native, non DOM; throughput dei giochi da dimostrare | Studio RAM/avvio, non prima scelta fluidità |
+| QuickJS | Piccolo, rapido all'avvio | Interprete, rischio throughput insufficiente | Mod e script secondari |
+| Boa | Rust e facile embedding | Dichiarato sperimentale e interprete | Non candidato production oggi |
+
+Fonti: [V8 embedding](https://v8.dev/docs/embed),
+[JavaScriptCore](https://docs.webkit.org/Deep%20Dive/JSC/JavaScriptCore.html),
+[Hermes](https://github.com/facebook/hermes) e [Boa](https://boajs.dev/docs/intro).
+
+V8 è quindi l'unica alternativa che oggi giustificherebbe un vero prototipo
+prestazionale, ma soltanto dopo avere aggiornato e misurato SpiderMonkey. Un
+benchmark JS isolato non basta: serve almeno un adapter WebIDL con Pixi/Three,
+Tone, worker e Wasm, misurando warm-up, p99, pause GC e RSS.
+
+### Cosa sostituirebbe SDL3 nel codice attuale
+
+Oggi Roves usa:
+
+- `winit` per finestra, display, event loop, input, resize, focus e wake-up;
+- `egui-winit` per shell e accessibilità;
+- `gilrs` in un thread dedicato per gamepad e force feedback;
+- `surfman` in paint, WebGL, WebXR e media per context, superfici offscreen e
+  condivisione col compositore;
+- WebRender/ANGLE per rendering Web e WebGL.
+
+SDL3 può sostituire in modo credibile **winit + gilrs**, unificando finestra,
+eventi, controller, hotplug, rumble, trigger rumble, sensori e aptica. È utile
+anche in ottica console, ma i port console continuano a richiedere SDK, accesso
+e integrazioni specifiche.
+
+Non sostituisce automaticamente surfman, WebRender, WebGL, DOM o egui. SDL_GPU
+è un'API grafica, non un compositore Web. All'inizio il codice aumenterebbe:
+servono adapter SDL→Servo, SDL→egui/AccessKit e una soluzione per le superfici.
+Dopo una migrazione completa potrebbe diminuire eliminando thread gilrs,
+conversioni winit e parte delle diramazioni piattaforma.
+
+Spike consigliato:
+
+1. SDL3 solo per gamepad/aptica dietro il delegate Servo;
+2. finestra/event loop in un binario sperimentale;
+3. superfici/compositore soltanto dopo aver validato input, IME, accessibilità,
+   fullscreen, resize e presentazione sui tre desktop.
+
+### Kira, GStreamer e Tone.js
+
+Tone.js usa la Web Audio API. Due integrazioni diverse producono effetti diversi:
+
+- Se Kira viene esposta come **API Roves**, aggiunge possibilità gaming ma Tone.js
+  non cambia e il gioco deve usare chiamate specifiche.
+- Se un nuovo motore implementa le trait `Backend`/`AudioBackend` di
+  `servo-media` e la semantica Web Audio, Tone.js continua a funzionare senza
+  modifiche e beneficia automaticamente di minore latenza/jitter.
+
+Kira non implementa già AudioContext, nodi, AudioParam, automazioni, offline
+context e worklet con la semantica Web. Adattarla completamente è un progetto,
+non un semplice cambio di backend.
+
+Candidati più diretti per migliorare l'API standard:
+
+- [web-audio-api-rs](https://github.com/orottier/web-audio-api-rs), perché
+  implementa Web Audio in Rust; copertura e conformità vanno verificate;
+- [cubeb](https://github.com/mozilla/cubeb), I/O cross-platform a bassa latenza
+  proveniente dall'ecosistema Mozilla; non implementa il grafo;
+- [CPAL](https://github.com/RustAudio/cpal), I/O Rust di basso livello;
+- [miniaudio](https://miniaud.io/), I/O/mixing/decodifica facilmente embedded;
+- Kira, migliore per un'API gaming aggiuntiva che come rimpiazzo Web Audio.
+
+GStreamer può restare per player HTML audio/video, codec, streaming e WebRTC,
+mentre un backend dedicato gestisce il grafo Web Audio. Questa separazione
+potrebbe rendere Tone.js più fluido senza API Roves, ma aumenta i backend e
+richiede un unico coordinamento di clock, device, focus, volume e mixing.
+
+Esperimento corretto: misurare Tone.js corrente (latenza output, jitter, dropout,
+CPU), provare web-audio-api-rs con CPAL o cubeb dietro `servo-media`, eseguire
+le stesse pagine senza modificarle e lasciare video/WebRTC a GStreamer.
+
+### Altri candidati pertinenti
+
+SDL3 è il candidato principale per piattaforma/input; web-audio-api-rs più cubeb
+è il nuovo candidato audio trasparente; Tracy/Perfetto restano prioritari per
+misurare; mimalloc per RSS/p99; wgpu per un fast path canvas interno. GLFW,
+glutin, rodio o un altro runtime async coprono meno responsabilità e non sono
+sostituzioni architetturali più adatte al problema.
+
 ## Sostituzioni: quali hanno senso?
 
 | Sostituzione | Giudizio | Motivo e costo |
