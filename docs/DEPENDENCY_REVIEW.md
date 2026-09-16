@@ -50,6 +50,27 @@ ricontrollare release, eventuali yanked e compatibilità quando si implementa.
   valutarlo solo se conformità, scheduling o prestazioni del grafo
   `servo-media-audio` risultano insufficienti.
 
+## Decisioni definitive della revisione del 2026-09-16
+
+- **Hermes escluso:** la compatibilità Web completa e il throughput di gameplay
+  hanno precedenza sui vantaggi mirati a React Native, startup e bytecode.
+- **GStreamer mantenuto:** è attivamente mantenuto; la serie stabile 1.28 ha
+  ricevuto la bug-fix 1.28.7 il 7 settembre 2026. Aggiornare runtime e plugin
+  distribuiti, poi ottimizzare la pipeline corrente. Cubeb/CPAL/miniaudio si
+  rivalutano soltanto se misure mostrano latenza, jitter, dropout o CPU imputabili
+  al sink GStreamer. Nessuna API audio Roves di base e nessuna Kira.
+- **Tracy e Perfetto durante l'implementazione:** Tracy profondo solo in build
+  developer/profiling; nelle release lasciare una diagnostica Roves leggera,
+  opt-in e senza logging per frame, esportabile in JSON/CSV/Perfetto.
+- **mimalloc rinviato:** esperimento soltanto davanti a evidenza di contesa,
+  frammentazione, RSS o pause di allocazione.
+- **wgpu fast path rinviato:** ottimizzazione futura nel TODO, non nel ciclo di
+  implementazione attuale.
+- **SDL3 confermato:** migrazione progressiva con obiettivo di consolidare più
+  sottosistemi possibile senza perdere funzionalità.
+
+Riferimento manutenzione: [GStreamer 1.28 release notes](https://gstreamer.freedesktop.org/releases/1.28/).
+
 ## Inventario e valutazione
 
 Le versioni correnti sotto sono estratte da `Cargo.lock`, non dedotte dai soli
@@ -275,9 +296,9 @@ controllata. Svantaggio: non implementa Web Audio, HTML media o WebRTC; sostitui
 GStreamer richiederebbe ricostruire la semantica browser. Due stack audio possono
 competere per device, focus e mixing. Fonte: [Kira](https://docs.rs/kira/latest/kira/).
 
-Decisione: aggiornare GStreamer per le API Web; valutare Kira come backend o API
-gaming solo dopo una mappa precisa delle funzioni Web Audio richieste, con un
-unico coordinatore dei dispositivi.
+Decisione aggiornata: mantenere GStreamer come backend multimediale unico e
+aggiornarlo alla serie stabile corrente. Kira è esclusa dalla roadmap: non
+aggiungere API Roves audio né un secondo motore, salvo nuove evidenze future.
 
 ### Tracy e Perfetto
 
@@ -290,15 +311,20 @@ nelle release normali.
 analisi programmabile, oltre al confronto con Chromium. Svantaggi: SDK/export
 più complessi di CSV e costo dei dati ad alta frequenza.
 
-Decisione: buffer e aggregati Roves restano fonte stabile; exporter Perfetto per
-tracce confrontabili e Tracy opzionale nelle build developer.
+Decisione: buffer e aggregati Roves restano la fonte stabile; exporter Perfetto
+per tracce confrontabili e Tracy opzionale nelle build developer. Nelle release
+pubbliche mantenere soltanto metriche aggregate e buffer circolare a basso costo,
+disabilitati per default e attivabili esplicitamente per diagnosticare problemi
+degli utenti. Zone profonde Tracy, call stack, allocazioni e tracing GPU restano
+compilate esclusivamente nelle build developer/profiling.
 
 ### Allocatore
 
-mimalloc resta un buon esperimento A/B incorporabile e uniforme. Può migliorare
-latenza o frammentazione delle allocazioni Rust, ma non controlla automaticamente
-heap SpiderMonkey, risorse GPU e tutte le librerie native. Va misurato con RSS,
-p99 e ownership corretta delle allocazioni cross-FFI.
+mimalloc non è lavoro attuale. Resta nel backlog condizionale soltanto se la
+telemetria mostra contesa dell'allocatore Rust, frammentazione/RSS o pause p99
+attribuibili alle allocazioni. Non controlla automaticamente heap SpiderMonkey,
+risorse GPU e tutte le librerie native; un eventuale test deve preservare
+ownership corretta delle allocazioni cross-FFI.
 
 ## Piano corretto
 
@@ -308,7 +334,7 @@ p99 e ownership corretta delle allocazioni cross-FFI.
 4. Esperimenti isolati su mozjs, mozangle e allocatore.
 5. Spike SDL3 soltanto come possibile piattaforma interna della shell embedded.
 6. Prototipo wgpu/canvas fast path dentro Servo, preservando fallback WebRender.
-7. Valutazione Kira per API gaming senza rompere Web Audio.
+7. Conservare GStreamer per Web Audio/media e misurarne latenza e jitter.
 8. Solo dopo evidenze insufficienti da SpiderMonkey, studio V8/JSC come port
    completo; nessun motore JS viene scambiato senza binding e test equivalenti.
 
@@ -329,13 +355,12 @@ candidati devono essere versionati e compilati da Roves sui tre desktop.
 | SpiderMonkey | Binding Servo esistenti, JIT e Wasm maturi | Generalista; pre-barriere da correggere; major update complessi | Baseline e prima scelta |
 | V8 | JIT maturo e API ufficiale di embedding | Port completo dei binding, build C++ pesante, memoria; non gaming-specific | Principale sfidante se SpiderMonkey limita |
 | JavaScriptCore | VM ottimizzante multi-tier | Stesso costo dei binding; pipeline Windows/Linux da controllare | Secondo sfidante |
-| Hermes | Bytecode compatto, attenzione a startup e memoria | Progettato per React Native, non DOM; throughput dei giochi da dimostrare | Studio RAM/avvio, non prima scelta fluidità |
 | QuickJS | Piccolo, rapido all'avvio | Interprete, rischio throughput insufficiente | Mod e script secondari |
 | Boa | Rust e facile embedding | Dichiarato sperimentale e interprete | Non candidato production oggi |
 
 Fonti: [V8 embedding](https://v8.dev/docs/embed),
 [JavaScriptCore](https://docs.webkit.org/Deep%20Dive/JSC/JavaScriptCore.html),
-[Hermes](https://github.com/facebook/hermes) e [Boa](https://boajs.dev/docs/intro).
+[Boa](https://boajs.dev/docs/intro).
 
 V8 è quindi l'unica alternativa che oggi giustificherebbe un vero prototipo
 prestazionale, ma soltanto dopo avere aggiornato e misurato SpiderMonkey. Un
