@@ -53,7 +53,6 @@ mod from_winit {
                 Self::DeviceEvent { .. } => target!("DeviceEvent"),
                 Self::UserEvent(AppEvent::Waker) => target!("UserEvent(Waker)"),
                 Self::UserEvent(AppEvent::Accessibility(..)) => target!("UserEvent(Accessibility)"),
-                Self::UserEvent(AppEvent::Gamepad(..)) => target!("UserEvent(Gamepad)"),
                 Self::UserEvent(AppEvent::CloseAllWindows) => target!("UserEvent(CloseAllWindows)"),
                 Self::UserEvent(AppEvent::BootProgress(..)) => target!("UserEvent(BootProgress)"),
                 Self::UserEvent(AppEvent::BootReady) => target!("UserEvent(BootReady)"),
