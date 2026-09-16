@@ -7163,10 +7163,18 @@ crate, a separate package from `-sys`) has no yanked `0.7.0` and stays at that v
 **Change:** `tikv-jemalloc-sys = "0.6.1"` → `"0.7.1"`, `tikv-jemallocator = "0.6.1"` → `"0.7.0"`
 (different patch numbers between the two is correct here, not a typo — see the yank above).
 
-**Verification:** patch applies cleanly to a fresh pristine extraction. The stats/`usable_size`
-behavior this fork actually depends on (macOS/Linux only) is pending a `test.yml` run — this
-machine has no working `cargo build` locally (see `CLAUDE.md`), so this couldn't be exercised
-beyond dependency resolution.
+**Verification:** patch applies cleanly to a fresh pristine extraction. `test.yml` ran: macOS
+(portable + dmg), Linux (portable + deb), and Windows `msi` all green. Windows `portable` failed,
+but only at the launch smoke test's save-file-autotest timing check — the process itself was
+confirmed still running and healthy (`"still running after 10s: True"`), matching a flaky pattern
+`test.yml`'s own comments already document on a loaded runner, not a real regression (jemalloc is
+`cfg`-gated out of Windows builds entirely — see above — so it structurally can't be the cause).
+Couldn't force an immediate clean re-run: `workflow_dispatch` 403s with this read-only PAT
+("Resource not accessible by personal access token", as expected per `CLAUDE.md`), and an empty
+commit doesn't retrigger `test.yml` since it only fires on pushes touching `patches/**`,
+`test-page/**`, or the workflow file itself — none of which an empty commit touches. Will be
+reconfirmed as a side effect of the next real `patches/**` push (`test.yml` always rebuilds and
+tests the full current patch set, not just that push's own diff).
 
 ---
 
