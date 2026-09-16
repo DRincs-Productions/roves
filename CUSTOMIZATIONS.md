@@ -6903,3 +6903,30 @@ for predictability and parity with Android, where it's load-bearing.
 targets but has no real device/simulator interaction step for this feature — see the "Save
 import/export" entry's own note making the same caveat for the original, buggy version of this
 code). Pending a real-device re-test of both the save-export and fullscreen-safety fixes.
+
+---
+
+## 2026-09-16 — Cargo.lock: regenerate to match actual workspace dependencies
+
+**Files:** `Cargo.lock`.
+
+**Patch:** none needed — `Cargo.lock` is not part of the pristine-download-plus-`patches/`
+reconstruction `test.yml`/`android.yml` do (no existing patch touches it, and those workflows
+never copy this repo's own lockfile in; they resolve fresh against the pristine tag's lock plus
+whatever the patched `Cargo.toml` requires). It only matters for tooling that builds directly
+from this checkout — `release.yml` and any local `cargo`/`mach` invocation.
+
+**Found while starting the dependency-review implementation** (`docs/DEPENDENCY_REVIEW.md`),
+before touching anything else: `Cargo.lock` was already stale relative to
+`ports/servoshell/Cargo.toml`'s real dependencies — missing `roves-content-packer`,
+`steamworks`, `steamworks-sys` (all genuinely used, see `support/content-packer` and
+`ports/servoshell/src/steam.rs`) and `sysinfo`'s `ntapi` dependency entirely, while still
+carrying phantom entries for `malloc_size_of_tests`/`profile_tests`/`script_tests`/
+`servo-capi-tests`/`style_tests` — workspace members from an earlier layout that no longer
+exist. Unrelated to any dependency-review change; fixed first, on its own, so it doesn't get
+bundled into or confused with the isolated per-candidate patches that follow.
+
+**Fix:** `cargo metadata` (minimal/conservative resolution — adds what's missing and drops what
+no longer resolves, without bumping any already-locked compatible version, unlike a bare
+`cargo update` which would have moved dozens of unrelated crates to their latest semver-compatible
+release). Verified the resulting diff touches only the entries named above, nothing else.
