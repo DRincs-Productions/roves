@@ -1,5 +1,5 @@
 diff --git a/Cargo.toml b/Cargo.toml
-index 19d4caa..fa6eb0c 100644
+index 19d4caa..5ef2197 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
 @@ -5,8 +5,7 @@ members = [
@@ -30,7 +30,7 @@ index 19d4caa..fa6eb0c 100644
  napi-derive-ohos = "1.2.0"
  napi-ohos = "1.2.0"
  nix = "0.30"
-@@ -246,6 +245,7 @@ swapper = "0.1"
+@@ -246,11 +245,12 @@ swapper = "0.1"
  syn = { version = "2", default-features = false, features = ["clone-impls", "derive", "parsing"] }
  synstructure = "0.13"
  sys-locale = "0.3"
@@ -38,3 +38,10 @@ index 19d4caa..fa6eb0c 100644
  taffy = { version = "0.12.1", default-features = false, features = ["calc", "detailed_layout_info", "grid", "std"] }
  tempfile = "3"
  tendril = { version = "0.5", features = ["encoding_rs"] }
+-tikv-jemalloc-sys = "0.6.1"
+-tikv-jemallocator = "0.6.1"
++tikv-jemalloc-sys = "0.7.1"
++tikv-jemallocator = "0.7.0"
+ time = { package = "time", version = "0.3", features = ["large-dates", "local-offset", "serde"] }
+ tokio = "1"
+ tokio-rustls = { version = "0.26", default-features = false, features = ["logging"] }

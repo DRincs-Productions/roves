@@ -7134,6 +7134,42 @@ working `cargo test` toolchain (see `CLAUDE.md`'s Windows build gap).
 
 ---
 
+## 2026-09-16 — tikv-jemallocator/tikv-jemalloc-sys 0.6.1 → 0.7.0/0.7.1
+
+**Files:** `Cargo.toml`, `Cargo.lock`.
+
+**Patch:** `patches/servo-v0.5.0/0014-root-workspace.patch` (regenerated — fifth hunk, for the
+two `tikv-jemalloc*` pins).
+
+**Why:** next candidate from `docs/DEPENDENCY_REVIEW.md`'s inventory. Checked actual usage
+first, since the review flagged this crate needs coordinated `sys`+wrapper checks: this fork
+uses `tikv_jemalloc_sys::mallctl` directly (raw FFI, reading `stats.allocated`/`stats.active`/
+`stats.mapped` after an explicit `epoch` refresh — see `components/allocator/lib.rs`) plus
+`tikv_jemallocator::usable_size`, not the separate higher-level `jemalloc-ctl` crate. **jemalloc
+is Windows-`cfg`-gated out entirely** (`#[cfg(not(any(windows, feature = "use-system-allocator",
+target_env = "ohos")))]` — Windows uses `GetProcessHeap`/`HeapSize` instead, a separate code
+path this bump doesn't touch at all), so the real risk surface is macOS/Linux only. Checked the
+real 0.7.0 changelog: build/cross-compile fixes, a `jemalloc-ctl` update-implementation fix (not
+the crate this fork uses), and native jemalloc bumped from 5.3.0(+1 commit) to 5.3.1 — a jemalloc
+micro release, not a surface this fork's three `mallctl` MIB strings would be sensitive to.
+
+**A real gotcha, not from the changelog:** `cargo update -p tikv-jemalloc-sys --precise 0.7.0`
+initially resolved and warned `selected package tikv-jemalloc-sys@0.7.0 was yanked by the
+author`. Confirmed via the crate's own version list (`yanked: true` for `0.7.0`, `false` for
+`0.7.1`, both built from the identical jemalloc git ref — this was a republish, not a version
+bump) before re-pinning to `0.7.1` instead. `tikv-jemallocator` itself (the allocator/wrapper
+crate, a separate package from `-sys`) has no yanked `0.7.0` and stays at that version.
+
+**Change:** `tikv-jemalloc-sys = "0.6.1"` → `"0.7.1"`, `tikv-jemallocator = "0.6.1"` → `"0.7.0"`
+(different patch numbers between the two is correct here, not a typo — see the yank above).
+
+**Verification:** patch applies cleanly to a fresh pristine extraction. The stats/`usable_size`
+behavior this fork actually depends on (macOS/Linux only) is pending a `test.yml` run — this
+machine has no working `cargo build` locally (see `CLAUDE.md`), so this couldn't be exercised
+beyond dependency resolution.
+
+---
+
 **What's still unverified:** whether 1.28.7 introduced any *new* transitive DLL dependency for
 the specific plugin selection this fork copies (as opposed to a rename of an existing one) —
 the code comment on this list says it's normally curated via `dumpbin` plus "the errors that
