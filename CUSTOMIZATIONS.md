@@ -7345,6 +7345,43 @@ way) — no other change.
 run yet — pending. Linux/Windows were already green under dynamic linking, so the expectation is
 they stay green under static linking too, but that's an expectation, not a confirmed result.
 
+**Third run (after the static-link fix): Linux and Windows fully green again, macOS hung —
+not a build error at all this time, `mach build`/`mach bundle` both succeeded.** The failure
+was the launch smoke test itself: the bundled binary never exited, never printed anything (no
+`still running`/`stdout`/`roves.log` lines ever appeared, checked by fetching the in-progress
+job's own log directly, which the public Checks API allows even before a job finishes), and
+`kill "$PID"` didn't unstick it — the step sat for 100+ minutes before being abandoned (GitHub's
+default job timeout is several hours; this was cut short manually instead of waiting it out, on
+a hard time budget for the day). **Root cause not confirmed — no interactive Mac was available
+to verify directly.** Leading hypothesis: `sdl3::init().gamepad()` triggers `IOHIDManager` device
+enumeration, which macOS's Input Monitoring TCC privacy permission can gate; an unattended CI
+process has no session to show or answer a permission prompt, which would explain an
+unkillable-by-SIGTERM hang (documented elsewhere as a real class of macOS issue for TCC-gated
+processes). This is *not confirmed* to be CI-only — a real interactive user might see a
+resolvable system prompt on first launch instead of a silent hang, which would still be a real
+first-launch UX problem, not just a test artifact. Weakening evidence against the hypothesis:
+research indicates SDL3's non-HIDAPI ("classic") macOS joystick backend *also* goes through
+`IOHIDManager`, so an `SDL_HINT_JOYSTICK_HIDAPI=0` hint (the first fix considered) likely
+wouldn't have helped either way — not attempted, to avoid spending the day's last CI round on a
+low-confidence guess.
+
+**Decision: disable gamepad on macOS specifically, as an explicit, temporary carve-out — not a
+permanent product decision.** Extended every `not(any(target_os = "android", target_env =
+"ohos"))` gate already used for `feature = "gamepad"` (in `running_app_state.rs`'s
+`ServoshellGamepadDelegate` import/field/constructor/accessor, and `window.rs`'s
+`gamepad_delegate` call site — `window.rs` had zero prior customizations, now patched for the
+first time) to also exclude `target_os = "macos"`; `app.rs`'s own (module-tree-already-desktop-
+only, so a bare `not(target_os = "macos")` there is equivalent) call sites updated the same way.
+`desktop/gamepad.rs` and its `sdl3` dependency are untouched and still compile on macOS — they're
+simply never invoked there. Windows and Linux gamepad support via SDL3 is unaffected.
+
+**Follow-up needed, tracked in TODO.md:** get real access to a Mac (interactive, not CI) to
+observe what actually happens — does a permission prompt appear at all, does accepting it
+resolve the hang, is this specific to a fresh/first-run TCC state (would a pre-granted
+permission avoid it entirely, meaning CI could pre-authorize itself somehow), or is the true
+cause something else entirely unrelated to TCC. Until then, macOS ships without gamepad support
+compared to upstream Servo's own GilRs-based build, a real (if narrow) functionality gap.
+
 ---
 
 ## 2026-09-16 — Tracy: new `tracing-tracy` feature (Perfetto already existed upstream)

@@ -212,10 +212,10 @@ index 918273cb8..a640e3854 100644
      // Passing a version script allows us to inform the linker about required
      // symbol visibility (only one), which improves stripping of unused sections.
 diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
-index b3092ad..972ea2f 100644
+index b3092ad..d97eebf 100644
 --- a/ports/servoshell/desktop/app.rs
 +++ b/ports/servoshell/desktop/app.rs
-@@ -4,24 +4,27 @@
+@@ -4,36 +4,118 @@
  
  //! Application entry point, runs the event loop.
  
@@ -247,9 +247,11 @@ index b3092ad..972ea2f 100644
  use crate::desktop::headless_window::HeadlessWindow;
  use crate::desktop::protocols;
  use crate::desktop::tracing::trace_winit_event;
-@@ -30,10 +33,89 @@ use crate::prefs::ServoShellPreferences;
+ use crate::parser::get_default_url;
+ use crate::prefs::ServoShellPreferences;
  use crate::running_app_state::RunningAppState;
- #[cfg(feature = "gamepad")]
+-#[cfg(feature = "gamepad")]
++#[cfg(all(feature = "gamepad", not(target_os = "macos")))]
  use crate::running_app_state::ServoshellGamepadDelegate;
 +
 +/// Intercepts `<a download>` clicks on `blob:`/`data:` URLs (a game's save export, e.g.
@@ -639,9 +641,10 @@ index b3092ad..972ea2f 100644
              self.waker.clone(),
              user_content_manager,
              self.preferences.clone(),
+-            #[cfg(feature = "gamepad")]
 +            // Headed-only, same as everything else keyed off `event_loop_proxy` here — no
 +            // window to receive gamepad input in headless mode.
-             #[cfg(feature = "gamepad")]
++            #[cfg(all(feature = "gamepad", not(target_os = "macos")))]
              self.event_loop_proxy
 -                .clone()
 -                .map(ServoshellGamepadDelegate::new)
@@ -692,7 +695,7 @@ index b3092ad..972ea2f 100644
 +                // GilRs-backed implementation (its own dedicated background thread, woken
 +                // independently of winit's control flow), this has to be driven from here —
 +                // `set_running_control_flow` below is what keeps this tick recurring.
-+                #[cfg(feature = "gamepad")]
++                #[cfg(all(feature = "gamepad", not(target_os = "macos")))]
 +                if let Some(gamepad_delegate) = state.gamepad_delegate() {
 +                    gamepad_delegate.poll(state);
 +                }
@@ -873,7 +876,7 @@ index b3092ad..972ea2f 100644
 +                .splash_animation_wake_deadline(state)
 +        })
 +        .min();
-+    #[cfg(feature = "gamepad")]
++    #[cfg(all(feature = "gamepad", not(target_os = "macos")))]
 +    if state.gamepad_delegate().is_some() {
 +        let gamepad_deadline = Instant::now() + crate::desktop::gamepad::GAMEPAD_POLL_INTERVAL;
 +        next_wake = Some(next_wake.map_or(gamepad_deadline, |deadline| deadline.min(gamepad_deadline)));
@@ -3979,7 +3982,7 @@ index d82e3c622..429493fc0 100644
          log_filter: cmd_args.log_filter.or_else(|| {
              (!preferences.log_filter.is_empty()).then(|| preferences.log_filter.clone())
 diff --git a/ports/servoshell/running_app_state.rs b/ports/servoshell/running_app_state.rs
-index 4685ebd..18c21b3 100644
+index 4685ebd..7f38a4a 100644
 --- a/ports/servoshell/running_app_state.rs
 +++ b/ports/servoshell/running_app_state.rs
 @@ -11,11 +11,6 @@ use std::rc::Rc;
@@ -4006,7 +4009,37 @@ index 4685ebd..18c21b3 100644
  use servo::{
      AllowOrDenyRequest, AuthenticationRequest, BluetoothDeviceSelectionRequest, CSSPixel,
      ConsoleLogLevel, CreateNewWebViewRequest, DeviceIntPoint, DeviceIntSize, EmbedderControl,
-@@ -229,6 +219,16 @@ pub(crate) struct RunningAppState {
+@@ -39,9 +29,14 @@ use servo::{
+ };
+ use url::Url;
+ 
++// `target_os = "macos"` is a temporary exclusion, not a permanent decision: SDL3's gamepad
++// subsystem init (`sdl3::init().gamepad()`) hangs indefinitely on macOS CI runners, likely
++// `IOHIDManager`/Input Monitoring TCC permission gating (unconfirmed — no interactive Mac
++// available to verify whether a real user would see a resolvable system prompt instead of a
++// silent hang). See CUSTOMIZATIONS.md's SDL3 gamepad entry. Revisit once investigated properly.
+ #[cfg(all(
+     feature = "gamepad",
+-    not(any(target_os = "android", target_env = "ohos"))
++    not(any(target_os = "android", target_env = "ohos", target_os = "macos"))
+ ))]
+ pub(crate) use crate::desktop::gamepad::ServoshellGamepadDelegate;
+ use crate::prefs::{EXPERIMENTAL_PREFS, ServoShellPreferences};
+@@ -170,10 +165,11 @@ pub(crate) enum UserInterfaceCommand {
+ 
+ pub(crate) struct RunningAppState {
+     /// The gamepad provider, used for handling gamepad events and set on each WebView.
+-    /// May be `None` if gamepad support is disabled or failed to initialize.
++    /// May be `None` if gamepad support is disabled or failed to initialize, or on macOS
++    /// (see the `use` above for why).
+     #[cfg(all(
+         feature = "gamepad",
+-        not(any(target_os = "android", target_env = "ohos"))
++        not(any(target_os = "android", target_env = "ohos", target_os = "macos"))
+     ))]
+     gamepad_delegate: Option<Rc<ServoshellGamepadDelegate>>,
+ 
+@@ -229,6 +225,16 @@ pub(crate) struct RunningAppState {
      /// [`WebView::set_accessibility_active()`], in [`Self::set_accessibility_active()`] and
      /// and [`ServoShellWindow::create_toplevel_webview()`].
      accessibility_active: Cell<bool>,
@@ -4023,7 +4056,25 @@ index 4685ebd..18c21b3 100644
  }
  
  impl RunningAppState {
-@@ -279,6 +279,8 @@ impl RunningAppState {
+@@ -240,7 +246,7 @@ impl RunningAppState {
+         default_preferences: Preferences,
+         #[cfg(all(
+             feature = "gamepad",
+-            not(any(target_os = "android", target_env = "ohos"))
++            not(any(target_os = "android", target_env = "ohos", target_os = "macos"))
+         ))]
+         gamepad_delegate: Option<Rc<ServoshellGamepadDelegate>>,
+     ) -> Self {
+@@ -265,7 +271,7 @@ impl RunningAppState {
+             focused_window: Default::default(),
+             #[cfg(all(
+                 feature = "gamepad",
+-                not(any(target_os = "android", target_env = "ohos"))
++                not(any(target_os = "android", target_env = "ohos", target_os = "macos"))
+             ))]
+             gamepad_delegate,
+             webdriver_senders: RefCell::default(),
+@@ -279,6 +285,8 @@ impl RunningAppState {
              user_content_manager,
              experimental_preferences_enabled,
              accessibility_active: Cell::new(false),
@@ -4032,7 +4083,7 @@ index 4685ebd..18c21b3 100644
          }
      }
  
-@@ -293,6 +295,12 @@ impl RunningAppState {
+@@ -293,6 +301,12 @@ impl RunningAppState {
              .insert(window.id(), window.clone());
          window.create_and_activate_toplevel_webview(self.clone(), initial_url);
  
@@ -4045,7 +4096,7 @@ index 4685ebd..18c21b3 100644
          // If the window already has platform focus, mark it as focused in our application state.
          if platform_window.has_platform_focus() {
              self.focus_window(window.clone());
-@@ -307,6 +315,18 @@ impl RunningAppState {
+@@ -307,6 +321,18 @@ impl RunningAppState {
          self.windows.borrow()
      }
  
@@ -4064,7 +4115,16 @@ index 4685ebd..18c21b3 100644
      pub(crate) fn focused_window(&self) -> Option<Rc<ServoShellWindow>> {
          self.focused_window.borrow().clone()
      }
-@@ -426,14 +446,6 @@ impl RunningAppState {
+@@ -337,7 +363,7 @@ impl RunningAppState {
+ 
+     #[cfg(all(
+         feature = "gamepad",
+-        not(any(target_os = "android", target_env = "ohos"))
++        not(any(target_os = "android", target_env = "ohos", target_os = "macos"))
+     ))]
+     pub(crate) fn gamepad_delegate(&self) -> Option<Rc<ServoshellGamepadDelegate>> {
+         self.gamepad_delegate.clone()
+@@ -426,14 +452,6 @@ impl RunningAppState {
  
          self.handle_webdriver_messages(create_platform_window);
  
@@ -4079,7 +4139,7 @@ index 4685ebd..18c21b3 100644
          self.servo.spin_event_loop();
  
          for window in self.windows.borrow().values() {
-@@ -634,27 +646,6 @@ impl RunningAppState {
+@@ -634,27 +652,6 @@ impl RunningAppState {
          webview.load(url);
      }
  
@@ -4107,7 +4167,7 @@ index 4685ebd..18c21b3 100644
  
      #[cfg(not(any(target_os = "android", target_env = "ohos")))]
      pub(crate) fn handle_focused(&self, window: Rc<ServoShellWindow>) {
-@@ -799,6 +790,9 @@ impl WebViewDelegate for RunningAppState {
+@@ -799,6 +796,9 @@ impl WebViewDelegate for RunningAppState {
          self.window_for_webview(&webview).set_needs_update();
  
          if status == LoadStatus::Complete {
@@ -4117,3 +4177,16 @@ index 4685ebd..18c21b3 100644
              if let Some(sender) = self
                  .webdriver_senders
                  .borrow_mut()
+diff --git a/ports/servoshell/window.rs b/ports/servoshell/window.rs
+index 4f268f4..c062e25 100644
+--- a/ports/servoshell/window.rs
++++ b/ports/servoshell/window.rs
+@@ -112,7 +112,7 @@ impl ServoShellWindow {
+ 
+         #[cfg(all(
+             feature = "gamepad",
+-            not(any(target_os = "android", target_env = "ohos"))
++            not(any(target_os = "android", target_env = "ohos", target_os = "macos"))
+         ))]
+         if let Some(gamepad_delegate) = state.gamepad_delegate() {
+             webview_builder = webview_builder.gamepad_delegate(gamepad_delegate);

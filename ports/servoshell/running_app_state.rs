@@ -29,9 +29,14 @@ use servo::{
 };
 use url::Url;
 
+// `target_os = "macos"` is a temporary exclusion, not a permanent decision: SDL3's gamepad
+// subsystem init (`sdl3::init().gamepad()`) hangs indefinitely on macOS CI runners, likely
+// `IOHIDManager`/Input Monitoring TCC permission gating (unconfirmed — no interactive Mac
+// available to verify whether a real user would see a resolvable system prompt instead of a
+// silent hang). See CUSTOMIZATIONS.md's SDL3 gamepad entry. Revisit once investigated properly.
 #[cfg(all(
     feature = "gamepad",
-    not(any(target_os = "android", target_env = "ohos"))
+    not(any(target_os = "android", target_env = "ohos", target_os = "macos"))
 ))]
 pub(crate) use crate::desktop::gamepad::ServoshellGamepadDelegate;
 use crate::prefs::{EXPERIMENTAL_PREFS, ServoShellPreferences};
@@ -160,10 +165,11 @@ pub(crate) enum UserInterfaceCommand {
 
 pub(crate) struct RunningAppState {
     /// The gamepad provider, used for handling gamepad events and set on each WebView.
-    /// May be `None` if gamepad support is disabled or failed to initialize.
+    /// May be `None` if gamepad support is disabled or failed to initialize, or on macOS
+    /// (see the `use` above for why).
     #[cfg(all(
         feature = "gamepad",
-        not(any(target_os = "android", target_env = "ohos"))
+        not(any(target_os = "android", target_env = "ohos", target_os = "macos"))
     ))]
     gamepad_delegate: Option<Rc<ServoshellGamepadDelegate>>,
 
@@ -240,7 +246,7 @@ impl RunningAppState {
         default_preferences: Preferences,
         #[cfg(all(
             feature = "gamepad",
-            not(any(target_os = "android", target_env = "ohos"))
+            not(any(target_os = "android", target_env = "ohos", target_os = "macos"))
         ))]
         gamepad_delegate: Option<Rc<ServoshellGamepadDelegate>>,
     ) -> Self {
@@ -265,7 +271,7 @@ impl RunningAppState {
             focused_window: Default::default(),
             #[cfg(all(
                 feature = "gamepad",
-                not(any(target_os = "android", target_env = "ohos"))
+                not(any(target_os = "android", target_env = "ohos", target_os = "macos"))
             ))]
             gamepad_delegate,
             webdriver_senders: RefCell::default(),
@@ -357,7 +363,7 @@ impl RunningAppState {
 
     #[cfg(all(
         feature = "gamepad",
-        not(any(target_os = "android", target_env = "ohos"))
+        not(any(target_os = "android", target_env = "ohos", target_os = "macos"))
     ))]
     pub(crate) fn gamepad_delegate(&self) -> Option<Rc<ServoshellGamepadDelegate>> {
         self.gamepad_delegate.clone()

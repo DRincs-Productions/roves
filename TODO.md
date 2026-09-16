@@ -137,9 +137,22 @@ Riferimenti: [Tracy](https://github.com/wolfpld/tracy) e
 ### SDL3: gamepad fatto, finestra/event-loop ancora da fare — portata reale misurata
 
 `docs/DEPENDENCY_REVIEW.md` prevede una sostituzione diretta di `winit`+`gilrs` con SDL3.
-Il gamepad (`gilrs`→SDL3) è **fatto** (2026-09-16, vedi CUSTOMIZATIONS.md) — polling sul
-main thread via `App::new_events`/`set_running_control_flow`, dato che `sdl3::init()`
-rifiuta di girare fuori dal thread `main()` (vincolo reale, non solo dei binding Rust).
+Il gamepad (`gilrs`→SDL3) è **fatto su Windows e Linux** (2026-09-16, vedi CUSTOMIZATIONS.md) —
+polling sul main thread via `App::new_events`/`set_running_control_flow`, dato che
+`sdl3::init()` rifiuta di girare fuori dal thread `main()` (vincolo reale, non solo dei
+binding Rust).
+
+- [ ] **Gamepad disabilitato su macOS, causa non confermata:** `sdl3::init().gamepad()` si
+  blocca indefinitamente su CI macOS (100+ minuti, nemmeno `kill` lo sblocca) — non un errore
+  di compilazione, `mach build`/`mach bundle` completano con successo. Ipotesi principale:
+  `IOHIDManager` dietro un permesso di sistema (Input Monitoring/TCC) che in CI non ha nessuno
+  a cui mostrare/rispondere un prompt — possibile problema reale anche per un utente Mac vero
+  al primo avvio, non solo un artefatto CI. Non confermato: serve un Mac reale interattivo per
+  osservare cosa succede davvero (appare un prompt? risolve l'hang? è legato a uno stato TCC
+  "primo avvio"?). Nel frattempo il gamepad è disattivato specificamente su macOS
+  (`not(target_os = "macos")` aggiunto ai gate esistenti in `running_app_state.rs`/`window.rs`)
+  — un vero gap funzionale rispetto a GilRs su quella piattaforma, da richiudere appena
+  verificata la causa reale.
 La sostituzione di finestra/event-loop **non è stata tentata** in questa sessione: portata
 misurata concretamente prima di iniziare, non stimata — 13 file usano `winit::` (confermato
 via grep), di cui i più grossi sono `desktop/headed_window.rs` (1553 righe, 34 punti
