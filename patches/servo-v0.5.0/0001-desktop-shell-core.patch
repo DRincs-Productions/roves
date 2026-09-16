@@ -1,5 +1,5 @@
 diff --git a/ports/servoshell/Cargo.toml b/ports/servoshell/Cargo.toml
-index 59f5581..d249724 100644
+index 59f5581..c9cf2f0 100644
 --- a/ports/servoshell/Cargo.toml
 +++ b/ports/servoshell/Cargo.toml
 @@ -35,10 +35,10 @@ cc = { workspace = true }
@@ -16,7 +16,12 @@ index 59f5581..d249724 100644
  
  [features]
  default = ["baked-in-resources", "bundled_freetype", "gamepad", "servo/clipboard", "js_jit", "max_log_level", "webgpu", "webxr"]
-@@ -61,6 +61,11 @@ vello = ["servo/vello"]
+@@ -57,10 +57,16 @@ profilemozjs = ["servo/profilemozjs"]
+ tracing = ["dep:tracing", "dep:tracing-subscriber", "servo/tracing"]
+ tracing-hitrace = ["tracing", "dep:hitrace"]
+ tracing-perfetto = ["tracing", "dep:tracing-perfetto"]
++tracing-tracy = ["tracing", "dep:tracing-tracy"]
+ vello = ["servo/vello"]
  webgl_backtrace = ["servo/webgl_backtrace"]
  webgpu = ["servo/webgpu"]
  webxr = ["servo/webxr"]
@@ -28,7 +33,7 @@ index 59f5581..d249724 100644
  
  [dependencies]
  accesskit = { workspace = true }
-@@ -68,17 +73,21 @@ bpaf = { workspace = true, features = ["derive"] }
+@@ -68,20 +74,25 @@ bpaf = { workspace = true, features = ["derive"] }
  cfg-if = { workspace = true }
  crossbeam-channel = { workspace = true }
  dpi = { workspace = true }
@@ -51,7 +56,11 @@ index 59f5581..d249724 100644
  tracing = { workspace = true, optional = true }
  tracing-perfetto = { workspace = true, optional = true }
  tracing-subscriber = { workspace = true, optional = true, features = ["env-filter"] }
-@@ -115,18 +124,20 @@ servo-base = { workspace = true }
++tracing-tracy = { workspace = true, optional = true }
+ url = { workspace = true }
+ webdriver_server = { workspace = true }
+ 
+@@ -115,18 +126,20 @@ servo-base = { workspace = true }
  surfman = { workspace = true, features = ["sm-angle-default"] }
  
  [target.'cfg(not(any(target_os = "android", target_env = "ohos")))'.dependencies]
@@ -74,7 +83,7 @@ index 59f5581..d249724 100644
  winit = { workspace = true }
  
  [target.'cfg(any(all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))'.dependencies]
-@@ -134,7 +145,7 @@ signal-hook-registry = { workspace = true }
+@@ -134,7 +147,7 @@ signal-hook-registry = { workspace = true }
  
  [target.'cfg(target_os = "windows")'.dependencies]
  servo = { workspace = true, features = ["no-wgl"] }

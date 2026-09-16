@@ -7316,3 +7316,67 @@ instead. What's still unverified: this machine has no working `cargo build` loca
 `CLAUDE.md`), so none of this has actually compiled yet — real compile correctness (in particular
 the `RefCell`/field-borrow-splitting design in `poll()`, and whether `build-from-source`'s
 `cmake`+`cc` build actually succeeds on all three CI runners) is pending a `test.yml` run.
+
+---
+
+## 2026-09-16 — Tracy: new `tracing-tracy` feature (Perfetto already existed upstream)
+
+**Files:** `Cargo.toml`, `ports/servoshell/Cargo.toml`, `ports/servoshell/lib.rs`.
+
+**Patch:** `patches/servo-v0.5.0/0014-root-workspace.patch` (new hunk for the root
+`tracing-tracy` pin), `patches/servo-v0.5.0/0001-desktop-shell-core.patch` (`Cargo.toml`
+section regenerated again, on top of the SDL3 change above), `patches/servo-v0.5.0/
+0015-shared-content-protocols.patch` (`lib.rs` section regenerated).
+
+**Before writing any code: checked what `docs/DEPENDENCY_REVIEW.md`'s "Tracy e Perfetto" plan
+item actually still needs, since assuming both are greenfield would have wasted real effort.**
+Perfetto turned out to be **pristine upstream Servo functionality that already exists in full**,
+not something to build: `tracing`/`tracing-perfetto`/`tracing-hitrace` Cargo features, a
+`PerfettoLayer` wired into `init_tracing` (`ports/servoshell/lib.rs`, writing `servo.pftrace`,
+openable at ui.perfetto.dev), and — found by tracing `Opts::time_profiling`/
+`time_profiler_trace_path` from `components/config/opts.rs` forward — a **separate**,
+also-already-wired Servo time-profiler (`components/profile/time.rs`: CSV output, terminal
+output, and an HTML/JS/CSS `TraceDump` viewer under `components/profile/trace-dump*`) already
+reachable through this fork's own `prefs.rs` argument parsing (`cmd_args.profile`/
+`cmd_args.profiler_trace_path` → `Opts`). None of this was ever a Roves-specific gap; only Tracy
+itself was genuinely absent (confirmed: no "tracy"/"Tracy" match anywhere under `ports/` or
+`components/`).
+
+**Change:** added `tracing-tracy` (`nagisa/rust_tracy_client`, 0.12.0) as a new optional
+feature, `tracing-tracy = ["tracing", "dep:tracing-tracy"]`, mirroring the existing
+`tracing-perfetto` feature's exact shape — same gating (`tracing` must also be on), same "off
+unless explicitly requested" default (not in servoshell's `default = [...]` feature list).
+`init_tracing` gains a matching `#[cfg(feature = "tracing-tracy")]` block that adds
+`tracing_tracy::TracyLayer::default()` to the subscriber, right alongside the existing
+`PerfettoLayer` block — both can be enabled together, since they're independent `tracing-
+subscriber` layers on the same registry.
+
+**Native build: no new installer risk.** `tracing-tracy` → `tracy-client` → `tracy-client-sys`
+only needs the `cc` crate as a build-dependency (verified via that crate's own `Cargo.toml`) —
+Tracy's C++ client compiles from vendored source using the C/C++ toolchain this project's other
+native dependencies already require, no system Tracy install, no `pkg-config`/`vcpkg`, unlike
+`sdl3-sys`'s default (see the SDL3 entry above) or GStreamer's own installer story. Left
+`tracy-client`'s own default feature set as-is (`system-tracing`, `context-switch-tracing`,
+`sampling`, etc.) rather than restricting it pre-emptively — this feature is never requested by
+any current CI job (`test.yml`/`release.yml` don't pass `--features tracing-tracy`, matching
+`tracing-perfetto`'s own current status — neither has ever actually been exercised by CI), so
+there's no real build-time risk today either way, and no evidence yet to justify overriding
+upstream's own considered defaults.
+
+**Deliberately not built in this pass:** the dependency review's own separate, lower-confidence
+idea of a lightweight always-shippable Roves diagnostics ring buffer (low-cost, off by default,
+explicitly activatable to diagnose a real user's problem in a release build) — Servo's existing
+CSV/trace-dump profiler and the two `tracing` layers above are session-long, CLI-activated
+tools, not a rolling last-N-frames buffer meant to ship quietly in every build. That's a
+genuinely new, separate feature (needs its own frame-time hook, buffer design, and export
+format/activation mechanism), not something "Tracy e Perfetto" alone implies, and was scoped
+out to keep pace with the much larger SDL3 windowing work still ahead. Worth a dedicated pass
+later if real user-diagnostic needs come up.
+
+**Verification:** `cargo metadata` resolves cleanly (`tracing-tracy`, `tracy-client`,
+`tracy-client-sys`, plus two small transitive deps — nothing unrelated moved). Both regenerated
+patches apply cleanly to a fresh pristine extraction. Actual compilation is, like the SDL3
+change above, pending a `test.yml` run — and even a green run only proves this *compiles*
+(nothing in CI ever builds with `--features tracing-tracy`/`tracing-perfetto` today, so this
+entry doesn't claim the Tracy/Perfetto integration itself was exercised, only that adding the
+feature doesn't break the default build).

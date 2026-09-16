@@ -1,5 +1,5 @@
 diff --git a/ports/servoshell/lib.rs b/ports/servoshell/lib.rs
-index 399e0c4fc..ad8454698 100644
+index 399e0c4..1f71f89 100644
 --- a/ports/servoshell/lib.rs
 +++ b/ports/servoshell/lib.rs
 @@ -19,6 +19,7 @@ mod egl;
@@ -10,6 +10,23 @@ index 399e0c4fc..ad8454698 100644
  #[cfg(not(any(target_os = "android", target_env = "ohos")))]
  mod resources;
  mod running_app_state;
+@@ -76,6 +77,16 @@ pub fn init_tracing(filter_directives: Option<&str>) {
+             subscriber.with(HitraceLayer::default())
+         };
+ 
++        // Deep, developer/profiling-build-only tracing (frame/CPU/GPU zones, allocations,
++        // locks) via a live Tracy connection — see docs/DEPENDENCY_REVIEW.md's "Tracy e
++        // Perfetto" decision. Never enabled by default (see the `tracing-tracy` feature's own
++        // gating below and in ports/servoshell/Cargo.toml) — the release build story stays the
++        // existing `tracing-perfetto` exporter above plus Servo's own `--profile`/
++        // `--profiler-trace-path` CSV/trace-dump profiler (components/profile/time.rs),
++        // neither of which need a live client attached to produce output.
++        #[cfg(feature = "tracing-tracy")]
++        let subscriber = subscriber.with(tracing_tracy::TracyLayer::default());
++
+         // Filter events and spans by the directives in SERVO_TRACING, using EnvFilter as a global filter.
+         // <https://docs.rs/tracing-subscriber/0.3.18/tracing_subscriber/layer/index.html#global-filtering>
+         let filter_builder = tracing_subscriber::EnvFilter::builder()
 diff --git a/ports/servoshell/protocols/mod.rs b/ports/servoshell/protocols/mod.rs
 new file mode 100644
 index 000000000..5c52353c9

@@ -77,6 +77,16 @@ pub fn init_tracing(filter_directives: Option<&str>) {
             subscriber.with(HitraceLayer::default())
         };
 
+        // Deep, developer/profiling-build-only tracing (frame/CPU/GPU zones, allocations,
+        // locks) via a live Tracy connection — see docs/DEPENDENCY_REVIEW.md's "Tracy e
+        // Perfetto" decision. Never enabled by default (see the `tracing-tracy` feature's own
+        // gating below and in ports/servoshell/Cargo.toml) — the release build story stays the
+        // existing `tracing-perfetto` exporter above plus Servo's own `--profile`/
+        // `--profiler-trace-path` CSV/trace-dump profiler (components/profile/time.rs),
+        // neither of which need a live client attached to produce output.
+        #[cfg(feature = "tracing-tracy")]
+        let subscriber = subscriber.with(tracing_tracy::TracyLayer::default());
+
         // Filter events and spans by the directives in SERVO_TRACING, using EnvFilter as a global filter.
         // <https://docs.rs/tracing-subscriber/0.3.18/tracing_subscriber/layer/index.html#global-filtering>
         let filter_builder = tracing_subscriber::EnvFilter::builder()
