@@ -1,0 +1,15 @@
+[submodule "roves-api"]
+	path = roves-api
+	url = https://github.com/DRincs-Productions/roves-api
+[submodule "roves-vscode"]
+	path = roves-vscode
+	url = https://github.com/DRincs-Productions/roves-vscode
+[submodule "roves-wiki"]
+	path = roves-wiki
+	url = https://github.com/DRincs-Productions/roves-wiki
+[submodule "roves-action"]
+	path = roves-action
+	url = https://github.com/DRincs-Productions/roves-action
+[submodule "roves-packmaster"]
+	path = roves-packmaster
+	url = https://github.com/DRincs-Productions/roves-packmaster

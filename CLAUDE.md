@@ -25,6 +25,51 @@ upstream's own `.gitignore` to additionally exclude upstream bulk/noise we'll ne
 list. Everything else (`ports/`, `components/`, `python/`, `resources/`, `support/`, build
 files, and our own `.github/` and `patches/` — see below) stays trackable.
 
+## Standing authorization: autonomous CI/push/release loop
+
+The user has given standing permission to operate autonomously across this whole ecosystem —
+this repo, `roves-action`, `roves-packmaster`/Packmaster, `roves-vscode`, `roves-wiki`, `roves-api`,
+and any game repo used to test them (e.g. `pixi-vn-react-template`) — without stopping to ask
+for confirmation at each step:
+
+- **Push freely.** Commit and push directly to the active branch (usually `main`) once a
+  change is verified — don't wait for a "go ahead" before pushing. Applies to every sibling
+  repo in this ecosystem, not just this one.
+- **Run whatever CI/CD is needed to verify a fix.** Push branches/tags, trigger runs, and
+  watch them to completion as part of normal iteration — this is the real verification path
+  given this machine's local toolchain gaps (no working `cargo build` on Windows here, see
+  "Diagnosing a failure without `gh`/a token on hand" below).
+- **Iterate the fix → push → watch CI → fix loop independently** rather than stopping to
+  report every intermediate failure — the user prefers being handed the end result (a green
+  CI run, a cut release, a working artifact/APK link) over a play-by-play. Report honestly
+  when asked directly whether something is finished; don't claim done prematurely.
+
+This doesn't extend to genuinely destructive or hard-to-reverse actions outside the normal
+build/test/release loop (force-pushing over someone else's work, deleting a branch/release
+nobody asked to delete, rewriting published history) — those still warrant checking first,
+same as with any other user.
+
+## GitHub PAT usage (when the user provides one for CI diagnosis)
+
+The user periodically shares a fine-grained GitHub PAT so Actions run logs/annotations can be
+read directly via the API instead of asking them to paste a screenshot of every CI failure.
+Strict rules for it, every time one is provided, in any repo in this ecosystem:
+
+- **Read-only use.** It's scoped for reading the Actions API (run status, jobs, annotations,
+  releases) — not for write operations. A write call (e.g. `POST .../rerun-failed-jobs`)
+  will 403; that's expected, not a bug to work around. To retrigger a workflow, use a real
+  `git push` instead (git push already works via a separate, independent credential store —
+  it never needed this token) — an empty commit (`git commit --allow-empty`) is a legitimate
+  way to do this when there's no real code change to make, e.g. retrying after a transient
+  CI/infra flake or a release/pin-bump race condition.
+- **Never persist it.** Don't write it to any file, don't commit it, don't put it in a script
+  saved to disk — export it as an env var inline in the same command that uses it.
+- **Re-export it every time.** Shell environment variables don't persist across separate tool
+  invocations in this environment — `export GITHUB_TOKEN=...` has to be repeated in every
+  command that needs it, not set once and assumed to still be there.
+- **It expires.** When a call starts failing with 401/"Bad credentials", say so explicitly
+  and ask for a fresh one — don't guess or keep retrying with a dead token.
+
 ## This directory is meant to be self-contained and separable
 
 Everything Servo-specific — patches, and the CI that tests them — lives inside `servo/`
@@ -165,6 +210,29 @@ Do this unprompted, the same way `CUSTOMIZATIONS.md` gets updated unprompted —
 be asked, and don't treat "I already wrote the `CUSTOMIZATIONS.md` entry" as covering this
 too. A change that's only documented in `CUSTOMIZATIONS.md` is invisible to everyone except
 the next person upgrading the Servo version; a real user has no reason to ever open that file.
+
+## CRITICAL: pushing a fix to `main` is not enough — cut a release and bump the pin too
+
+`roves-action` and `roves-packmaster` never build against this repo's `main` branch — both pin a
+specific, already-released version tag (`roves-action/action.yml`'s `ref:`/download URL,
+`roves-packmaster/src/lib/shell-version.ts`'s `TARGET_SHELL_VERSION`). A fix pushed to `main`
+is invisible to both of them, and to anyone building through them, until a new tag is cut *and*
+that pin is bumped to point at it — merging to `main` alone changes nothing anyone downstream
+actually consumes.
+
+This bit on 2026-09-14: an Android WebView bug fix (immersive mode, a 404 response body) landed
+on `main`, `roves-action`'s own CI was green, but a real device test of the APK `roves-action`
+produced showed no change at all — because `roves-action` was still pinned to `v0.4.18`, cut
+*before* the fix, and its `advanced-mode`/`android`/`ios` paths check out the engine at that
+pinned tag, not at `main`'s tip. The fix was real and correct; it just never reached the
+artifact being tested. Cutting `v0.4.19` and re-pinning `roves-action` to it was the actual fix.
+
+**So: any time a change here is meant to reach a real user through `roves-action` or
+`roves-packmaster` (not just a `test.yml`/`android.yml`/`ios.yml` CI smoke test on `main`) —
+not only for Android/iOS, this applies just as much to a desktop-only fix — cut a new release
+(below) and bump both pins in the same effort, don't treat "it's on `main` and CI is green" as
+done. If you're not sure whether a given change is significant enough to warrant a release yet,
+ask rather than silently leaving `main` ahead of the last cut tag indefinitely.**
 
 ## Cutting a versioned release (`v<major>.<minor>.<patch>` tags)
 

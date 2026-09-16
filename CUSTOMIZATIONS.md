@@ -4978,7 +4978,7 @@ Every other `.svg` in this repo was checked and left alone — none of them are 
 Servo's own wordmark logo (a wide 284×63 text lockup, used for `resource:`-served error/about
 pages — never Roves-branded), `test-page/public/favicon.svg` is a deliberately unrelated
 placeholder for a different feature (see the 2026-08-09 "Game-supplied icon" entry above —
-literally documented there as unrelated to this mark), and `roves-ui`/`pixi-vn-react-template`'s
+literally documented there as unrelated to this mark), and `roves-packmaster`/`pixi-vn-react-template`'s
 own `.svg` files belong to Packmaster's and the game template's own, entirely separate branding.
 
 **Tooling note (differs from the 2026-08-13 entry's own pipeline):** that entry used
@@ -5318,7 +5318,7 @@ built in place inside `support/android/apk/`, same as before; only this fork's o
 **Why:** direct continuation of the 2026-08-31 entry's own explicitly-deferred follow-up
 ("App name/icon/theme-color from the same manifest are a deliberate follow-up, not attempted
 here") — requested the next day, together with corresponding `roves-action`/Roves Packmaster
-(`roves-ui`) work tracked separately (see `TODO.md` #3, which this entry closes the
+(`roves-packmaster`) work tracked separately (see `TODO.md` #3, which this entry closes the
 engine-side portion of).
 
 **Not done (left as a judgment call, not an oversight):** `display`, `background_color`, and
@@ -5366,7 +5366,7 @@ on the classpath, no new dependency) to pick the right extension per host OS.
 
 **Why:** this was the one concrete blocker keeping Android out of reach for anyone building
 from source on Windows, and separately kept Roves Packmaster's own Android backend
-(`roves-ui/src-tauri/src/android.rs`) explicitly disabled on Windows via
+(`roves-packmaster/src-tauri/src/android.rs`) explicitly disabled on Windows via
 `check_android_availability()` — neither compiles anything themselves on Windows in
 Packmaster's case, but both still shell out to this exact Gradle task, which was failing
 regardless of who invoked it or why.
@@ -6052,3 +6052,854 @@ in `patches/servo-v0.5.0/` touch the same file, so there's no cross-patch orderi
 this relocation. No local Rust toolchain — real verification is `android.yml` + `test.yml`
 both green, and ultimately the real device confirming the "Not Found" page is gone, both
 pending as of this entry.
+
+
+## 2026-09-13 — Mobile pivots from Servo to native WebView (Android WebView + iOS WKWebView)
+
+**Files:** too many to list individually — see `patches/servo-v0.5.0/0016-mobile-native-webviews.patch`'s
+own file list (17 files: `python/servo/post_build_commands.py`, `support/MOBILE.md` (new),
+`support/android/apk/servoapp/{build.gradle.kts,src/main/AndroidManifest.xml,src/main/java/
+org/servo/servoshell/{MainActivity.kt,MediaSession.kt (deleted),RovesSplashView.kt (new)},
+src/main/res/values{,-v31}/styles.xml}`, `support/android/apk/settings.gradle.kts`,
+`support/android/apk/servoview/**` (all 4 files deleted), `support/ios/{App.swift,bundle.py}`
+(new), `tests/mobile/test_packaging.py` (new)), plus `.github/workflows/android.yml`
+(rewritten — no patch, this repo's own CI file, not vendored) and `README.md`.
+
+**Why:** Servo's Android JNI bridge (`servoview`, `egl/android/`) works, but every web
+platform feature a mobile game gets is whatever this fork's own Servo build supports —
+narrower than a real WebView, and iOS has no Servo/JNI-equivalent port at all (Servo doesn't
+target iOS). Android's `WebView` and iOS's `WKWebView` are both full, independently-updated
+browser engines already present on every device — swapping to them for mobile trades "one
+engine everywhere" for "desktop keeps the custom engine, mobile gets the platform's own,
+already-maintained one," and unblocks iOS entirely. Desktop is unaffected: it still uses
+Servo, unchanged.
+
+**What changed on Android:** `MainActivity.kt` rewritten from the Compose-based browser-chrome
+shell (see this file's earlier 2026-09-11/12 entries) to a plain `WebView` + `WebViewAssetLoader`
+(`androidx.webkit`) serving the game at `https://appassets.androidplatform.net/` — a real
+origin, not `file://`, so `location.pathname` is `/` at boot (client-side routers match) and
+root-relative asset references resolve correctly, the same class of fix `ports/servoshell/
+protocols/game.rs` gives desktop/embedded via `game://content/` (see this file's 2026-09-12
+entries on that). Missing files 404 instead of hitting the real network. `_bundle_android`
+(`post_build_commands.py`) no longer compiles anything: no `mach build --android` prerequisite,
+no NDK, no `libservoshell.so` — it copies `--content-dir` into a scratch Gradle project's own
+`assets/www/` and runs `:servoapp:assembleXDebug`/`Release` directly, the exact same `--android-
+app-name`/`-orientation`/`-theme-color`/`--android-release` surface as before. `servoview/`
+(Servo's own JNI bridge, `JNIServo.kt`/`Servo.kt`/`ServoView.java`) is deleted outright —
+`settings.gradle.kts` no longer includes it, and nothing else referenced it once `MainActivity`
+stopped depending on it. `MediaSession.kt` (a Servo/JNI-specific media-notification integration)
+is deleted too; a plain in-page `<video>`/`<audio>` element doesn't need a custom Android-side
+media session the way a full custom player did. A native splash (`RovesSplashView.kt`, a plain
+`View.onDraw` — black background, engine icon, Metal Mania wordmark, animated loading bar) covers
+the WebView's own load, removed once `onPageFinished` + `postVisualStateCallback` both fire and
+at least 500ms has elapsed (so a near-instant load doesn't just flash); an Android 12+
+`windowSplashScreenAnimatedIcon` system splash (`values-v31/styles.xml`) covers the very first
+frame before that. Both generated from the same `resources/servo_1024.png` + Metal Mania font
+already used for the *desktop* boot splash (`build.gradle.kts`'s new `generateRovesBrandAssets`
+Gradle task) — one branding asset, reused, not a separate Android-specific one.
+
+**What's new on iOS:** `support/ios/{App.swift,bundle.py}` — an initial `WKWebView` container
+(`bundle.py` stages `App.swift` + `--content-dir`'s content + branding assets into an
+XcodeGen `project.json`; build/sign happens in Xcode, macOS-only, not wired into `mach bundle`
+at all yet — a real gap, see "Known gaps" below). Not wired through `mach`/`post_build_commands.py`.
+
+**Correction, same day:** the first version of this container used `WKWebView.loadFileURL`
+(plain `file://`) — the *exact* bug the Android paragraph above just described fixing, on the
+one platform in this same change that was writing new code, not porting an existing fix. Real
+device testing wasn't available to catch it before merge; caught by code review, treated with
+the same seriousness as any other real-device-confirmed bug in this file. Fixed the same day:
+`App.swift` now has its own `GameSchemeHandler` (`WKURLSchemeHandler`), serving the game at
+`game://content/` — the same virtual-origin idea as Android's `WebViewAssetLoader` and desktop's
+`game://` protocol handler, reimplemented natively in Swift since `WKURLSchemeHandler` has no
+built-in asset-loader equivalent the way `androidx.webkit` does. Includes an SPA fallback
+(unmatched path → `index.html`, mirroring `GameProtocolHandler::load`'s own doc comment) and
+`Range` header support (so `<video>`/`<audio>` seeking works — `WKURLSchemeTask` never
+synthesizes range handling on its own). Deliberately a plain custom scheme, not `https`:
+`WKURLSchemeHandler` registers per-*scheme*, not per-host, so claiming `https` itself would
+intercept every real network request (fonts, CDNs, analytics) too. `game://` isn't a WebKit
+secure context (no Service Workers, some newer APIs gated on that) — an accepted tradeoff, the
+same one desktop's own `game://` already makes, not an oversight. Also added a `RovesSplashView`
+(`UIView`, driven by `WKNavigationDelegate.didFinish` + the same 500ms floor as Android) and
+extended `bundle.py` to stage the branding assets — iOS had no equivalent to Android's startup
+splash at all until this fix, leaving a plain white screen during load, exactly the gap
+`TODO.md`/this session's own desktop work already flagged as worth fixing everywhere.
+
+**Patch consolidation:** the branch this landed on originally introduced a `0005-mobile-native-
+webviews.patch` — colliding with the *already-existing* `0005-windows-packaging.patch` (both
+numbered "0005"; harmless as distinct filenames but confusing, and against this project's own
+sequential-numbering convention) — and its diffs for `post_build_commands.py`/`AndroidManifest.
+xml`/`build.gradle.kts`/`MainActivity.kt` overlapped with `0004-android.patch`, which already
+owned those same files (this project's own established invariant, checked throughout this
+session, is one file per patch — see the 2026-09-12 `game://`-port entries above for why: it's
+what lets a future Servo-version upgrade reconcile each file's customizations in exactly one
+place). Confirmed as a *real* problem, not just a style nit: applying `0004` then the original
+`0005` in the real CI sequence still failed outright for `post_build_commands.py` (that file's
+diff was generated assuming `0007-build-tooling.patch`'s changes already applied, even though
+`0007` sorts *after* `0005`) — proof this patch had never actually been verified against a
+real from-pristine reconstruction. Separately, three of its new-file sections (`MOBILE.md`,
+`RovesSplashView.kt`, `values-v31/styles.xml`) were missing the `new file mode`/`index` header
+lines `git apply` requires (though harmless for this repo's own `patch -p1`-based CI — see
+`test.yml`). Fixed by regenerating a single, self-contained diff for every file directly from
+fresh pristine `v0.5.0` (not from any intermediate patched state), removing the four overlapping
+sections from `0004`/`0007`, and consolidating everything mobile-related into one renumbered
+`0016-mobile-native-webviews.patch` (0005-0015 were all already taken). Also physically deleted
+`servoview/` (see above) rather than leaving `0004`'s now-pointless diff for a module nothing
+includes anymore. Every file in the new patch re-verified byte-identical against the actual
+working tree from a fresh pristine reconstruction; `grep -h "^diff --git a/" patches/servo-v0.5.0/*.patch
+| sort | uniq -c | awk '$1>1'` (this session's own standard check) now reports zero files
+touched by more than one patch, repo-wide.
+
+**CI:** `.github/workflows/android.yml` rewritten to match — no more SDK/NDK/Rust-cross-compile
+bootstrap, just Java + Android SDK platform-tools + a real `./mach bundle --android --content-dir
+... --output ...` run against smoke-test content, verifying the actual code path every real
+consumer (roves-action, Packmaster) uses instead of a hand-rolled `./gradlew` invocation. Two
+real bugs fixed in the same pass: (1) `sdkmanager 'platforms;android-37'` — Google doesn't
+publish that exact package name, only versioned `android-37.0`/`.1`/`.2` — the *identical*
+failure already diagnosed and fixed for Packmaster earlier this session (see `roves-packmaster`'s
+`src-tauri/src/android.rs`, `resolve_platform_package`); resolved dynamically here the same way.
+(2) the original CI step copied smoke-test content directly into the *tracked* `support/android/
+apk/servoapp/src/main/assets/www/` — the exact "persists one game's content across unrelated
+runs" anti-pattern `_bundle_android`'s own doc comment already warns about (see this file's
+2026-09-10 Android-bundling entries) — harmless on a fresh CI checkout, but meant this workflow
+never actually exercised `_bundle_android` at all. Fixed by using a real `--content-dir`/`--output`
+in `/tmp` instead.
+
+**Known gaps, left open on purpose:** iOS staging isn't wired into `mach bundle` (`bundle.py` is
+a standalone script; building the Xcode project still needs a human on macOS running `xcodegen`
+by hand) — the Android side is fully automated, iOS isn't yet. No device runtime verification
+for either platform (splash timing, WebView storage persistence, video seeking, rotation,
+fullscreen) — this machine has no Android emulator/device attached and no macOS/Xcode at all,
+so CI-green plus code review is the ceiling of verification reachable from here; real coverage
+needs someone with a device. **`roves-action` and `roves-packmaster`/Packmaster's own Android bundling
+still assumed the old Rust/NDK path as of this entry** — see their own `CUSTOMIZATIONS.md`/
+`CLAUDE.md` entries for whether that migration has landed by the time you're reading this.
+
+---
+
+## 2026-09-14 — First real-device pass on the WebView mobile containers: immersive mode, Android 404 body, SPA-fallback parity
+
+**Files:** `support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt`,
+`support/ios/App.swift`, `support/ios/bundle.py`.
+
+**Patch:** `patches/servo-v0.5.0/0016-mobile-native-webviews.patch` (regenerated — see the
+2026-09-13 entry above for why this is one consolidated patch rather than a new numbered one).
+
+**Why:** the previous entry's "Known gaps" flagged that neither container had ever been run on
+a real device. It just was, on Android (first real report), and two real bugs surfaced —
+exactly the class of thing that section anticipated.
+
+**Android bar was never actually hidden by default.** `enterImmersiveMode` (`SYSTEM_UI_FLAG_
+FULLSCREEN`/`HIDE_NAVIGATION`/`IMMERSIVE_STICKY`, plus the `LAYOUT_*` variants so content
+doesn't jump when the bars transiently reappear) previously only ran inside `onShowCustomView`
+— i.e. only for HTML5 `<video>`/Fullscreen-API content, never for the game's own normal UI. Now
+called from `onCreate` so the status/navigation bars are hidden from first frame, and from
+`onWindowFocusChanged(hasFocus = true)` since Android silently clears these flags whenever the
+window loses and regains focus (notification shade, a system dialog, switching apps and back)
+— without that reapply, one swipe from the user permanently un-hides the bars for the rest of
+the session. `leaveFullscreen` (previously restoring `SYSTEM_UI_FLAG_VISIBLE` when HTML5
+fullscreen ends) now calls `enterImmersiveMode` instead, so exiting video fullscreen returns to
+the app's own always-immersive baseline instead of revealing the bars.
+
+**Android's 404 response had a `null` body.** `shouldInterceptRequest`'s manual 404 for a
+missing `WebViewAssetLoader` path passed `null` as the `WebResourceResponse` data stream —
+`reasonPhrase` was set to the literal string `"Not Found"`, which is the HTTP status line, not
+page content; the actual response body was empty. iOS's equivalent (`GameSchemeHandler.respond`
+in `App.swift`) already did this correctly (`Data("Not Found".utf8)` as real body bytes). Fixed
+to match: `"Not Found".byteInputStream(Charsets.UTF_8)` as the data stream.
+
+**Android had no SPA fallback; iOS did.** `GameSchemeHandler` has served a missing path as
+`index.html` since it was written (see the 2026-09-13 entry's "Correction, same day"
+paragraph) — a client-side router navigating to e.g. `/level/3` has no file at that path but
+should still get the entry document and let the router decide what to render. Android's
+`WebViewAssetLoader` path handler had no equivalent: a missing path just 404'd. Added the same
+fallback (`assets.handle("www/$path") ?: assets.handle("www/index.html")`) for parity — the
+same tradeoff both platforms and desktop's own `game://` (`ports/servoshell/protocols/game.rs`)
+already accept: a genuinely-missing sub-resource (an image, a script) now serves `index.html`
+with a 200 instead of a proper 404, in exchange for client-side routing working at all. The
+manual 404 branch is only reachable now when `index.html` itself is missing.
+
+**iOS never hid the status bar or home indicator.** Unlike Android (which only had the
+*default-on* bug above), iOS had no immersive/edge-to-edge handling at all — `GameViewController`
+now overrides `prefersStatusBarHidden`/`prefersHomeIndicatorAutoHidden` (both `true`, read once,
+never toggled, so no `setNeedsStatusBarAppearanceUpdate`/`setNeedsUpdateOfHomeIndicatorAutoHidden`
+calls are needed). `bundle.py`'s generated `Info.plist` also sets
+`UIViewControllerBasedStatusBarAppearance`/`UIStatusBarHidden` explicitly (redundant with the
+override under today's defaults, but guards against a future signing/export step's Info.plist
+merge ever introducing a conflicting default).
+
+**Not yet device-verified:** iOS — no device/simulator on this machine to confirm the status
+bar/home indicator fix visually, only Android was actually observed. Re-verify on iOS before
+relying on this entry for that platform.
+
+---
+
+## 2026-09-14 — CI parity: `.github/workflows/ios.yml`, mirroring `android.yml`
+
+**Files:** `.github/workflows/ios.yml` (new). No patch — this repo's own CI file, not
+vendored (same as `android.yml`/`test.yml`/`release.yml`).
+
+**Why:** the 2026-09-13 entry's "Known gaps" explicitly called out that "the Android side is
+fully automated, iOS isn't yet" — CI only ever smoke-tested `mach bundle --android`, never
+`support/ios/bundle.py`. Requested directly: the CI/CD that produces an Android build should
+do the same for iOS.
+
+**What it does:** mirrors `android.yml`'s own structure and reasoning (same smoke-test content,
+same `ensure-test-release` job/rolling "test" release) but drives the real iOS path
+`support/MOBILE.md` documents instead of `mach bundle` — `support/ios/bundle.py` stages the
+content, `xcodegen generate` turns the resulting `project.json` into a real `.xcodeproj`, then
+`xcodebuild -sdk iphonesimulator ... CODE_SIGNING_ALLOWED=NO` builds it unsigned for the
+Simulator (no Apple developer/distribution signing identity exists in CI — same reason
+`release.yml`'s desktop builds don't attempt any mobile store signing either). This proves the
+staging + XcodeGen + Xcode build pipeline itself works end to end; it is **not** a
+device-installable or distributable build — a human on macOS still needs to open the generated
+project in Xcode, choose a development team, and archive/export for a real device or the App
+Store, exactly as `support/MOBILE.md`'s own iOS section already documented before this change.
+Also publishes `roves_ios_project.zip` (a snapshot of `support/ios/`) to the rolling "test"
+release, mirroring `android.yml`'s own `roves_android_project.zip` — so Packmaster/roves-action
+can fetch the iOS staging template directly, the same way Packmaster's Android backend already
+does for the Android Gradle project, without a git checkout of this engine.
+
+**Unlike `android.yml`, no `mach`/`patches/`/`tests/wpt/` involvement at all**:
+`support/ios/bundle.py` is a standalone script with no dependency on `mach`'s command loader
+(see `support/MOBILE.md`'s own "iOS" section — it's invoked directly with `python3`), so none
+of `android.yml`'s WPT-tooling-sparse-checkout workaround applies here.
+
+**Left open on purpose:** still no real device/App Store distribution path in CI (would need
+an Apple developer account's signing certificate + provisioning profile as repo secrets, out
+of scope for what's still an initial container per the 2026-09-13 entry). `README.md`'s
+"Supported platforms" section and `support/MOBILE.md` updated to mention the CI coverage and
+the always-hidden status bar/home indicator from the entry above.
+
+**Cross-repo sync check (per this repo's own `CLAUDE.md`):** `roves-action`'s `action.yml`
+already has an `android: 'true'` input mirroring `mach bundle --android` (added for the
+2026-09-13 pivot) but has no `ios` equivalent — this workflow only smoke-tests the engine
+repo's own iOS staging path, it doesn't add iOS support to `roves-action` itself. Flagging
+this explicitly rather than silently leaving it: whether `roves-action` should gain a matching
+`ios: 'true'` input (and, if so, whether it should shell out to `support/ios/bundle.py` +
+XcodeGen the way this workflow does, since there's still no `mach bundle --ios`) is a real
+follow-up, not done as part of this change.
+
+---
+
+## 2026-09-14 — Android: the actual "Not Found" root cause (loading `/index.html`, not `/`)
+
+**Files:** `support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt`,
+`support/MOBILE.md`.
+
+**Patch:** `patches/servo-v0.5.0/0016-mobile-native-webviews.patch` (regenerated again).
+
+**Why:** the 2026-09-14 entry above ("First real-device pass...") fixed two real bugs but
+*didn't actually fix the reported "Not Found" screen* — confirmed by testing the rebuilt APK
+on the same real device again. Diagnosed properly this time via the device's own Chrome
+DevTools remote inspection (`chrome://inspect`, reachable since debug APKs already enable
+`setWebContentsDebuggingEnabled`): the real game's JS console showed no native/Android-side
+error at all. The actual cause was entirely different from anything in that earlier entry.
+
+**The real bug:** `onCreate` called `webView.loadUrl("https://appassets.androidplatform.net/
+index.html")` — the literal `/index.html` path, not the bare origin root `/`. This makes
+`location.pathname` equal `/index.html` on boot, which a client-side router (react-router,
+matching against `/` as its home route — confirmed against the real smoke-test content,
+`pixi-vn-react-template`) doesn't recognize, rendering *the game's own* "Not Found" 404 route.
+This was never a native asset-loading bug at all — downloading and unzipping the actual built
+APK (`roves-action`'s `roves_action_android_debug.apk`) confirmed `assets/www/index.html`
+was correctly present with real content the whole time; `AssetsPathHandler` was finding it
+fine. iOS's `App.swift` was never affected by this — it already loads the bare
+`game://content/` (no `/index.html`), which is exactly why this session's earlier assumption
+("iOS probably has the same bug") turned out not to hold once its code was actually re-checked
+line by line against this specific failure mode. Fixed by loading
+`https://appassets.androidplatform.net/` instead, mirroring `App.swift`.
+
+**A second, related bug found while fixing the first:** the previous entry's SPA-fallback
+addition (`assets.handle(...) ?: assets.handle("www/index.html")`) was dead code.
+`WebViewAssetLoader.AssetsPathHandler.handle()` does **not** return `null` on a missing asset
+— confirmed by reading the real `androidx.webkit` source (`WebViewAssetLoader.java`,
+`androidx-main` branch): on an `IOException` it returns a *non-null* `WebResourceResponse`
+with `mimeType`/`encoding`/`data` all `null`, not `null` itself. A `?:` Elvis fallback keyed on
+that call therefore never triggers — the left side is never null. Same issue affected
+`shouldInterceptRequest`'s own `response == null` check for constructing the real 404: since
+`WebViewAssetLoader.shouldInterceptRequest(Uri)` itself only returns `null` when *no handler
+matched at all* (impossible here, our own handler matches every path under `/`), that branch
+was equally unreachable. Both now check `response?.data == null` instead — the actual signal
+for "even the fallback failed to open a real file" — verified against the real
+`PathMatcher`/`WebViewAssetLoader` source, not assumed.
+
+**A third bug, found the same way while re-reading this file end to end:** the page's own
+service worker (`registerSW.js`, from `vite-plugin-pwa` in the smoke-test content) failed to
+register — visible directly in the DevTools console as `Failed to register a ServiceWorker
+for scope (...): An unknown error occurred when fetching the script`. Android WebView routes
+a service worker's own network requests through a **separate** interception hook
+(`androidx.webkit.ServiceWorkerControllerCompat`/`ServiceWorkerClientCompat`), distinct from
+`WebViewClient.shouldInterceptRequest` — without it, `sw.js`'s own fetch fell through to the
+real network, which fails outright since `appassets.androidplatform.net` isn't a real,
+resolvable domain. Fixed by registering a `ServiceWorkerClientCompat` (feature-checked via
+`WebViewFeature.isFeatureSupported`, since not every WebView provider implements this) that
+shares the exact same interception logic as the main `WebViewClient`, factored into one local
+`intercept(url)` function used by both.
+
+**Lesson, for real this time:** two rounds of "fix confirmed via CI green + code review" both
+missed the actual bug, because CI never runs the APK, and the real per-symptom cause (a
+client-side router mismatch) doesn't look like an Android/WebView problem from source reading
+alone. Real-device DevTools inspection is what actually found it, in a few minutes, after
+static analysis alone hadn't. `support/MOBILE.md` updated to describe the corrected boot URL.
+
+---
+
+## 2026-09-14 — Fixing the fix: a real Kotlin compile error, and a patch that had silently drifted from its own source file
+
+**Files:** `support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt`.
+
+**Patch:** `patches/servo-v0.5.0/0016-mobile-native-webviews.patch` (regenerated a third time).
+
+**Why:** the previous entry's fix never actually reached a device — `roves-action`'s
+`build-android` CI job (which *does* run a real Gradle assemble, unlike this repo's own
+`android.yml` smoke test... no, both do) failed outright once the pinned tag was bumped to
+include it. Two independent, unrelated bugs, both self-inflicted in the same commit:
+
+**1. A real Kotlin compile error.** The path handler's fallback was written as
+`if (primary.data != null) primary else ...` — but `AssetsPathHandler.handle()`'s declared
+return type is `@Nullable WebResourceResponse` (confirmed against the real androidx.webkit
+source, same as the previous entry's own finding), so `primary` has Kotlin type
+`WebResourceResponse?`. Accessing `.data` on it without a safe call (`?.`) or a preceding
+null-check is a compile-time error, not a runtime one — this was conflating "never actually
+null at runtime" (true) with "not declared nullable" (false), the same category of mistake
+the previous entry already made once and corrected elsewhere in the same file (the
+`intercept` function's `response?.data == null` check *did* use a safe call correctly) — just
+missed in this one other spot. Fixed to `if (primary != null && primary.data != null) primary
+else ...`, which lets Kotlin smart-cast `primary` to non-null inside the branch. Caught by a
+failed `build-android` CI run in `roves-action`, not locally (no Kotlin/Gradle toolchain
+available in this environment at all — every check on this file this session has been static
+source review, not a compile) — the annotations API only surfaced a generic "Process
+completed with exit code 1" for the failing composite step, no compiler error text; the fix
+was derived by re-deriving the nullability chain by hand against the real androidx.webkit
+signatures already fetched for the previous entry, not by reading an actual compiler message.
+
+**2. `patches/servo-v0.5.0/0016-mobile-native-webviews.patch`'s own `support/MOBILE.md` block
+had silently drifted from the real file** — a self-inflicted process bug, not a code bug.
+The previous entry's session edited `support/MOBILE.md` in two separate passes (once for the
+"First real-device pass" fixes, once more for this same entry's own root-cause writeup) but
+only regenerated that file's *patch block* after the first pass, not the second — so the
+committed patch quietly still described the *older* wording (e.g. still listing "missing
+index.html" as a pending validation item) while the real `support/MOBILE.md` had already
+moved on. Caught only by this session's own byte-for-byte verification step (reconstruct
+pristine, forward-apply, diff against the real working tree file by file) catching a mismatch
+on `support/MOBILE.md` specifically — exactly the kind of drift that verification step exists
+to catch, and did. Regenerated correctly this time from the file's actual current content.
+
+**Lesson on top of the previous entry's own lesson:** verifying a patch "applies cleanly"
+isn't the same as verifying it matches the *current* file — a patch can apply perfectly clean
+and still encode stale content if the underlying file was edited again after the patch was
+last regenerated, in the same session, without anyone re-running the regeneration a second
+time. The full byte-for-byte diff-against-working-tree check (not just a clean `patch` exit
+code) is what caught this, and should be treated as the actual bar for "done," not the dry-run
+alone.
+
+---
+
+## 2026-09-14 — Save import/export (`<input type="file">`/`<a download>`) didn't work in either mobile container
+
+**Files:** `support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt`,
+`support/ios/App.swift`.
+
+**Patch:** `patches/servo-v0.5.0/0016-mobile-native-webviews.patch` (regenerated).
+
+**Why:** reported directly from a real device — a game's save-menu import/export buttons
+(`<input type="file">` to load a save, `<a download>` on a Blob/data URL to export one) did
+nothing at all on Android. Neither is a permissions problem (no manifest permission was ever
+missing) — both `WebView` and `WKWebView` simply have **no default handling** for either of
+these, unlike a real browser tab; a native container has to wire up the equivalent itself.
+
+**Android:**
+- **Import** needed `WebChromeClient.onShowFileChooser` — without it, `<input type="file">`'s
+  `.click()` shows no picker at all. Implemented via the classic `startActivityForResult`/
+  `onActivityResult` pair (`MainActivity` extends plain `Activity`, not AndroidX
+  `ComponentActivity`, so the modern Activity Result API isn't available here without a larger
+  refactor) plus `WebChromeClient.FileChooserParams.createIntent()`/`.parseResult()`.
+- **Export** needed `WebView.setDownloadListener` — without it, an `<a download>` click on a
+  `blob:`/`data:` URL is silently dropped. `blob:` URLs are only valid inside the page's own JS
+  context, so the listener injects a small `evaluateJavascript` snippet (`fetch` the blob,
+  `FileReader.readAsDataURL` it) that hands the result to a new `@JavascriptInterface` bridge
+  (`RovesFileBridge`) rather than trying to resolve the blob: URL as a real network request.
+  `data:` URLs are decoded directly, no JS round-trip needed. A real http(s) download (not a
+  save export) falls back to the system `DownloadManager`.
+- **Where files land:** `Documents/<this app's own launcher label>/<fileName>`, via the
+  `MediaStore` `Files`/`Documents` collection (`RELATIVE_PATH`), not raw external storage —
+  needs no `WRITE_EXTERNAL_STORAGE` permission at all on API 29+ (this app's own `minSdk`).
+  Real, player-visible location (Files app, USB/MTP), not an app-private directory.
+
+**iOS:** the equivalent gaps, adapted to WKWebView's own constraints:
+- **Export** — WKWebView has no `DownloadListener` equivalent that fires for a JS-triggered
+  `<a download>` click on a blob:/data: URL at all (`WKNavigationDelegate`'s
+  `decidePolicyFor navigationResponse`/`WKDownloadDelegate` only cover a real top-level
+  navigation to a downloadable response, never this case). Fixed with the same shape of
+  workaround as Android's blob handling, adapted: a `WKUserScript` injected at document-start
+  intercepts `click` events on `a[download]` elements whose `href` is `blob:`/`data:`,
+  prevents the default action, converts a blob to a data URL the same way (`fetch` +
+  `FileReader.readAsDataURL`), and posts it to a `WKScriptMessageHandler` (`rovesSaveFile`)
+  that decodes and writes it into this app's own `Documents/` — already private per-app on
+  iOS, so (unlike Android) there's no shared collection to disambiguate between apps and
+  therefore no per-game subfolder to create.
+- **Import — real gap, only partially closed:** `WKUIDelegate`'s
+  `webView(_:runOpenPanelWith:initiatedByFrame:completionHandler:)` is the only hook for
+  `<input type="file">` in WKWebView, backed by `UIDocumentPickerViewController`. **Confirmed
+  directly against Apple's own documentation (platform availability table, not assumed): this
+  method only exists starting iOS/iPadOS 18.4** — file input support in WKWebView is a
+  genuinely recent WebKit addition; it existed on macOS since 10.12 but never on iOS until
+  18.4. This project's own deployment target is iOS 15.0 (`support/ios/bundle.py`), well
+  below that. Implemented and gated behind `@available(iOS 18.4, *)` rather than skipped
+  entirely or used to justify raising the deployment target: on iOS 15.0–18.3 a file
+  `<input>` stays exactly as inert as it already was (no regression), and starts working the
+  moment the OS itself does, with zero code changes needed once real-world adoption of
+  18.4+ is high enough not to matter. First version of this fix declared the method
+  unguarded, assuming (wrongly, from memory, not verified) that iOS 14.5 added it — caught
+  before committing by actually checking Apple's documentation JSON directly, given the
+  previous two entries' own lesson about not trusting unverified recall for exact platform
+  API contracts.
+
+**Not verified on a real device or simulator, either platform** — Android's specific fix here
+follows the same real-device-report pattern the previous two entries did, but the fix itself
+hasn't been re-confirmed working yet (no device access from this session after the report was
+filed); iOS has never been runtime-tested at all this session (no macOS/Xcode). Both should be
+re-checked before being treated as settled.
+
+---
+
+## 2026-09-14 — Wire `--ios`/`--ios-release` into `mach bundle` (`_bundle_ios`)
+
+**Files:** `python/servo/post_build_commands.py` (new `--ios`/`--ios-app-name`/`--ios-bundle-id`/
+`--ios-release` flags, `_bundle_ios`, `_sign_and_export_ios_release`).
+
+**Patch:** `patches/servo-v0.5.0/0016-mobile-native-webviews.patch` (regenerated — same file this
+patch already owns, see the 2026-09-13 entry above for why iOS/Android mobile changes are
+consolidated into this one patch rather than a new numbered one).
+
+**Why:** the 2026-09-13 entry's own "Known gaps" and the 2026-09-14 CI-parity entry's "Left open
+on purpose" both flagged the same thing: `support/ios/bundle.py` was a standalone script, not
+reachable from `mach bundle` the way `--android` is — a human on macOS had to run
+`bundle.py`/`xcodegen`/`xcodebuild` by hand. TODO.md point 8.2 tracked this as the next-priority
+iOS gap. Closed now, following `_bundle_android`'s exact shape (this method takes no
+`servo_binary`/target-triple involvement either, since XcodeGen/xcodebuild need neither Servo nor
+a Rust cross-compile — matching that method's own "no Rust cross-compile" reasoning).
+
+**What `_bundle_ios` does:** macOS-only (checked via `is_macosx()`, refuses loudly on Windows/
+Linux — `xcodebuild`/`xcodegen` are Apple-only tools, no cross-platform equivalent). Reuses
+`support/ios/bundle.py`'s `stage()` as-is (loaded via `importlib.util.spec_from_file_location`
+rather than duplicated — `bundle.py` stays independently invocable too, since `roves-action`'s
+`ios` input and a bare-checkout consumer both still call it directly without a full engine
+build). Stages into a scratch `target/ios-bundle` (mirrors `_bundle_android`'s own
+`target/<triple>/android-bundle` scratch-copy reasoning — a repeat `mach bundle --ios` for a
+different game starts clean). Runs `xcodegen generate` then, without `--ios-release`, the exact
+unsigned `xcodebuild -sdk iphonesimulator ... CODE_SIGNING_ALLOWED=NO` invocation `ios.yml`
+already ran by hand — the resulting `.app` is copied to `--output`.
+
+**`--ios-release` — real signing, not another "no signing concept" refusal:** unlike desktop's
+`--deb`/`--msi`/`--dmg` (no signing concept at all) and mirroring `--android-release`'s own
+"refuse loudly rather than silently produce something weaker" stance, `--ios-release` requires
+`IOS_SIGNING_CERTIFICATE_P12_PATH` (+ `_PASSWORD`), `IOS_SIGNING_PROVISIONING_PROFILE_PATH` and
+`IOS_SIGNING_TEAM_ID` already set in the environment, exactly the same "env vars in, refuse if
+missing" shape as Android's `APK_SIGNING_KEY_STORE_PATH` quartet — no new config file, no flags
+for secrets. `_sign_and_export_ios_release` then: creates a throwaway keychain under the scratch
+build root (never the caller's login keychain — CI has none, and this shouldn't touch a local
+dev's own either), imports the `.p12` into it, grants `codesign`/`security` access
+(`set-key-partition-list`, otherwise every use of the imported key prompts interactively — fatal
+in CI), pushes it onto the keychain search list, decodes the provisioning profile's UUID
+(`security cms -D`, the only supported way to read one) and installs it at the exact path/name
+(`~/Library/MobileDevice/Provisioning Profiles/<uuid>.mobileprovision`) Xcode itself looks it up
+by, then runs `xcodebuild archive` (manual signing style, explicit team ID + profile specifier)
+followed by `-exportArchive` with a generated `ExportOptions.plist` (`method: app-store`). The
+temporary keychain is always deleted in a `finally`, whether signing succeeded or not.
+
+**Why Android and iOS signing look almost, but not quite, the same:** both are "env vars in,
+refuse if missing" — the difference is *why* the credential can't be generated by whoever's
+running this. An Android keystore is self-signed by design (Play accepts whatever key the
+developer holds); an Apple distribution certificate must be countersigned by Apple itself
+(uploading a CSR to the Apple Developer Program, only the account holder can do that) — so
+unlike `APK_SIGNING_KEY_STORE_PATH`, `IOS_SIGNING_CERTIFICATE_P12_PATH` can never be something
+this repo, CI, or any tooling manufactures end-to-end on its own; it always traces back to a
+human with Apple Developer Program access.
+
+**Verification:** syntax-checked (`ast.parse`) — no local Rust/Xcode toolchain in this session to
+run `mach` itself (this repo's own known Windows toolchain gap, see this file's earlier entries;
+Xcode is additionally macOS-only regardless of platform). Real verification is CI: `ios.yml`
+updated to call `./mach bundle --ios` for the unsigned path (replacing its previous direct
+`bundle.py`/`xcodegen`/`xcodebuild` steps, so CI now exercises the same code path every real
+consumer uses — the same reasoning `android.yml`'s own 2026-09-13 rewrite already applied), plus
+a new signing-verification job for each platform using freshly-generated **test** credentials
+(a real, self-contained Android release keystore — self-signed keys are how Android signing
+normally works, nothing fake about it; and a self-signed iOS certificate that can only prove the
+keychain-import half of `_sign_and_export_ios_release` mechanically works, since a real
+Apple-trusted provisioning profile cannot be synthesized without an actual Apple Developer
+Program account — see the note above). **`--ios-release`'s full archive+export path is not yet
+verified end-to-end** — that needs a real Apple Distribution certificate + provisioning profile
+supplied as repository secrets by someone with Apple Developer Program access to the
+"DRincs Productions" account; a CSR was generated for exactly this purpose (handed to the user
+out-of-band, not committed anywhere) but submitting it to Apple's portal is a manual step only
+an account holder can do.
+
+**Same-turn follow-up: `.github/workflows/ios.yml`'s `roves_ios_project.zip` now also carries
+`resources/servo_1024.png` + the Metal Mania font files, not just `support/ios/`.** Found while
+adding iOS support to Packmaster (`roves-packmaster`, sibling checkout): `support/ios/bundle.py`'s
+`stage()` copies those branding assets from the engine repo's own top-level `resources/`
+directory at build time (see the 2026-09-13 entry above, "What's new on iOS") — fine for
+anything with a full engine checkout (this repo's own `ios.yml`, `roves-action`), but
+Packmaster's own `ios.rs` (mirroring how its existing `android.rs` downloads
+`roves_android_project.zip` instead of needing a checkout at all) only ever gets this one zip.
+Android never had this gap because `support/android/apk/`'s own tracked tree already carries
+`res/mipmap/servo.webp` inside it — iOS's equivalent assets live one level up, outside
+`support/ios/` entirely, so the zip step needed to explicitly reach for them too. No patch —
+this is this repo's own CI file, not vendored.
+
+## 2026-09-15 — Fix `mach bundle --ios` failing immediately, before ever reaching `_bundle_ios`
+
+**File:** `python/servo/command_base.py` (`common_command_arguments`'s `binary_selection` block).
+
+**Patch:** `patches/servo-v0.5.0/0016-mobile-native-webviews.patch` (regenerated — appended a new
+diff for this file, which the patch didn't previously touch at all; see the 2026-09-13 entry
+above for why iOS/Android mobile changes are consolidated into this one patch rather than a new
+numbered one).
+
+**Why:** flagged as an open bug in the previous session's `HANDOFF.md` — `ios.yml`'s `ios` job
+failed `mach bundle --ios` in ~6 seconds with only a generic "Process completed with exit code 1"
+(no custom annotation to read anonymously, and no GitHub PAT was available in that session to
+pull the real job log). Confirmed by reading the code, not the log: `bundle()` is decorated with
+`@CommandBase.common_command_arguments(binary_selection=True, build_configuration=True)`. The
+`binary_selection` block resolves `servo_binary` unconditionally unless
+`self.target.needs_packaging()` is true — which is exactly how `--android`/`--ohos` skip it,
+since `configure_build_target` (part of the same `build_configuration=True`) routes those into an
+`AndroidTarget`/`OpenHarmonyTarget` (`CrossBuildTarget` subclasses whose `needs_packaging()` is
+`True`). **iOS has no `BuildTarget` subclass of its own** — `--ios` never sets `--target`, so
+`self.target` stays the host default (macOS), whose `needs_packaging()` is `False`. That routed
+`--ios` straight into `self.get_binary_path(...)`, which unconditionally requires a prior
+`./mach build` (`raise BuildNotFound("No Servo binary found. Perhaps you forgot to run
+\`./mach build\`?")`) — something `--ios` never needs, since `_bundle_ios` stages/builds a native
+Swift/WKWebView app via XcodeGen, never a Servo/Rust binary at all (same reasoning `_bundle_android`
+already documents for why it takes no `servo_binary` either). This crashed inside the decorator,
+*before* `bundle()`'s own body — and therefore its `if ios: return self._bundle_ios(...)` branch
+— ever ran, matching the observed instant failure exactly (`ios.yml` never runs `mach build`
+first, only `mach bundle --ios` directly).
+
+**Fix:** widened the skip condition to `self.target.needs_packaging() or kwargs.get("ios")` —
+`kwargs.get("ios")` is safe (returns `None`) for every other `binary_selection`-decorated command
+(`build`, `run`, `package`) that has no `--ios` flag at all. The `--bin`-conflict error message one
+line below was widened the same way (`target_description = "ios" if kwargs.get("ios") else
+self.target.triple()` — calling `self.target.triple()` unconditionally would itself have thrown
+for the iOS case, a real host desktop target has a triple but that's not the relevant one to name
+in the error).
+
+**Verification:** syntax-checked (`ast.parse`) and reasoned through by hand against
+`_bundle_android`'s already-working equivalent — no local Rust/mach toolchain in this session
+(this repo's own known Windows toolchain gap, see this file's earlier entries). Patch
+re-verified to apply cleanly to a fresh pristine `v0.5.0` extraction.
+
+**Confirmed fixed on real CI** (run for commit `3a202fbbcf1`,
+<https://github.com/DRincs-Productions/roves/actions/runs/34939544032>): the `ios` job's
+`mach bundle --ios` step went from failing in ~6 seconds to succeeding in ~46 seconds (a real
+XcodeGen + `xcodebuild` build this time), and the whole `ios` job is now green end to end —
+artifact upload, `roves_ios_project.zip` packaging, and the "test" release upload all
+succeeded too.
+
+**Left open at the time — a separate, unrelated failure in the same CI run, that turned into its
+own multi-round saga:** `ios-release-signing-smoke` (the self-signed-test-certificate
+keychain-import smoke test, see the 2026-09-14 entry above) also failed in the same run, at the
+`security import ... -k "$keychain"` step. Not the same bug — that job never calls `mach bundle`
+at all — but chasing it down took five wrong turns before landing on the real fix, worth reading
+in order since each one looked completely plausible until the next run disproved it:
+
+1. **"The two secrets drifted apart."** The real job log (pulled with a user-provided
+   read-only PAT — anonymous annotations only ever showed the generic "exit code 1") showed
+   `SecKeychainItemImport: MAC verification failed during PKCS12 import (wrong password?)`.
+   Regenerated and re-uploaded a fresh, verified-matching `IOS_CI_TEST_P12_BASE64`/`_PASSWORD`
+   pair. Same error. A byte-for-byte diff proved the re-uploaded value matched exactly, so this
+   theory was wrong.
+2. **"Whitespace from pasting the secret."** Made the password-consuming step strip
+   `[:space:]` before use. Same error again.
+3. **Removed the secrets entirely.** At this point the user pointed out — correctly — that
+   both this iOS test cert and Android's analogous release-signing keystore exist purely to
+   smoke-test a signing *mechanism*, never reused for a real release, so there was never a
+   reason to persist either as a secret at all. Rewrote both `ios-release-signing-smoke`
+   (`ios.yml`) and `android-release-signing` (`android.yml`) to generate a throwaway identity
+   fresh on the runner instead: iOS via `openssl req -x509`/`openssl pkcs12 -export` (CN
+   `Roves CI Test Signing`, `codeSigning` EKU), Android via `keytool -genkeypair` (already on
+   `PATH` from `setup-java`) — both using a `uuidgen` password threaded via `$GITHUB_ENV`
+   (`::add-mask::`-masked). This deleted `IOS_CI_TEST_P12_BASE64`/`_PASSWORD` and
+   `ANDROID_KEYSTORE_BASE64`/`_PASSWORD`/`ANDROID_KEY_ALIAS`/`_PASSWORD` as dead secrets
+   (removed from GitHub) — a real improvement kept regardless of what came next.
+4. **The actual bug, finally found:** the very first run after generating everything fresh —
+   cert, key, and password all created together in the same job, zero secrets or copy-paste
+   anywhere — failed with the *exact same* "wrong password?" error. That's what finally ruled
+   out every secret/whitespace theory at once: OpenSSL 3.0 changed `openssl pkcs12 -export`'s
+   default encryption to PBES2/PBKDF2/AES-256-CBC, which macOS's `security import` (the legacy
+   `SecKeychainItemImport` API) cannot decode at all — and reports as "wrong password?" instead
+   of an unsupported-format error, which is exactly what sent every prior round in the wrong
+   direction. Fixed with `-certpbe PBE-SHA1-3DES -keypbe PBE-SHA1-3DES -macalg SHA1` (verified
+   locally that this switches the output to `pbeWithSHA1And3-KeyTripleDES-CBC`). Deliberately
+   not the commonly-suggested `-legacy` flag: that needs RC2-40-CBC, missing from this
+   session's local OpenSSL's legacy provider entirely — the explicit `-certpbe`/`-keypbe`
+   combination needs no special provider.
+5. **A detour chasing a check the real code never makes.** With the PBE fixed, `security
+   import` finally succeeded ("1 identity imported") — but the next check,
+   `security find-identity -v -p codesigning`, reported "0 valid identities found": a
+   self-signed cert isn't trusted for anything by default, and that policy-validated lookup
+   requires a trust chain a bare self-signed leaf can't have (a real Apple Distribution cert
+   wouldn't hit this, since it chains to Apple's already-trusted root). Tried explicitly
+   trusting the cert via `security add-trusted-cert` — which then *hung* the job for 12+
+   minutes waiting on a `SecurityAgent` GUI authorization dialog that no headless runner can
+   ever click (needing a manual cancellation of the stuck run, since a read-only PAT can't
+   cancel one), then, after adding the standard `authorizationdb write
+   com.apple.trust-settings.admin allow` non-interactive workaround plus `sudo`, still failed
+   with `NO (-60005)` (`errSecAuthFailed`) — modern macOS apparently blocks system trust-store
+   writes outright regardless of that workaround. Stepping back at this point and actually
+   reading `_sign_and_export_ios_release` (the real production code this job is meant to
+   smoke-test) showed it **never calls `find-identity` or validates trust at all** — it hands
+   the identity straight to `xcodebuild archive`, which resolves signing via the provisioning
+   profile + team ID instead. The whole trust-chasing detour was chasing a self-imposed
+   requirement the real code doesn't have.
+
+**Final fix:** dropped `-p codesigning`/`-v` from the verification `find-identity` call entirely
+— a bare `security find-identity "$keychain"` lists every identity present regardless of trust
+validity, which is all this job ever needed to prove (that the cert + matching key made it into
+the keychain), matching what `_sign_and_export_ios_release` itself actually relies on.
+
+**Confirmed on real CI**: run
+<https://github.com/DRincs-Productions/roves/actions/runs/34967882996> — `ios-release-signing-smoke`
+green, completing in seconds like every other step in the job, alongside `ios` and
+`ensure-test-release` both also green. Six wrong turns (two secret-sync theories, a PBE-format
+bug hiding behind a misleading "wrong password" message, a trust-chasing detour that hung the
+job then hit a hard macOS security wall, and finally realizing the check itself was testing a
+requirement the real code never has) to reach a fix that ended up removing code rather than
+adding more of it — the lesson being that `security`'s error messages are not reliable guides to
+the actual failure, and it's worth checking what the production code an ad-hoc CI check is
+supposedly mirroring *actually* does before hardening the check further.
+
+## 2026-09-15 — `android-actions/setup-android@v3`'s default `tools` package no longer exists
+
+**File:** `.github/workflows/android.yml` (both `android` and `android-release-signing` jobs'
+`android-actions/setup-android@v3` steps).
+
+**Why:** while chasing the iOS signing saga above, both Android CI jobs also failed on the same
+run at this same step — looked at first like the transient `android-actions/setup-android` flake
+a much earlier commit's own message already mentions retrying past once. It wasn't: the real log
+showed `Warning: Failed to find package 'tools'` followed by `sdkmanager` exiting 1. Google has
+removed the legacy Android SDK `tools` package (the old standalone `android`/`monitor`/etc.
+bundle, deprecated for years) from its repository entirely — `android-actions/setup-android@v3`
+still requests it by default (`packages: tools platform-tools` when no `packages` input is given)
+and now hard-fails immediately instead of the license-acceptance step it used to sail through.
+This is a real, permanent break caused by an upstream removal, not something that resolves on
+retry.
+
+**Fix:** pass `packages: platform-tools` explicitly to both `setup-android` steps, dropping
+`tools`. Nothing in this workflow needed it: `platform-tools` (`adb`) plus the specific
+`platforms;android-NN`/`build-tools;NN.N.N` the very next step (`Install Android SDK`) installs
+by name are everything a Gradle-based `mach bundle --android` actually touches.
+
+**Verification:** confirmed on real CI (run
+<https://github.com/DRincs-Productions/roves/actions/runs/34966071804>) — `android` and
+`android-release-signing` both fully green, `setup-android` included, `mach bundle --android`/
+`--android --android-release` and `apksigner verify` all passing (the in-CI-generated release
+keystore from the entry above working end to end for the first time).
+
+---
+
+## 2026-09-15 — Desktop save export/import: `<a download>` never worked, "open" dialog opened the wrong folder
+
+**Files:** `ports/servoshell/desktop/app.rs`, `ports/servoshell/desktop/protocols/roves.rs`,
+`ports/servoshell/desktop/dialog.rs`, `ports/servoshell/desktop/event_loop.rs`,
+`ports/servoshell/desktop/headed_window.rs`, `ports/servoshell/desktop/tracing.rs`,
+`ports/servoshell/Cargo.toml`.
+
+**Patch:** `patches/servo-v0.5.0/0001-desktop-shell-core.patch` (app.rs, dialog.rs,
+event_loop.rs, headed_window.rs, tracing.rs, Cargo.toml),
+`patches/servo-v0.5.0/0002-desktop-protocols.patch` (roves.rs).
+
+**Reported by a real user testing `visual-novel-template`'s Save/Load screen on a real Windows
+build:** clicking "save to file" (`save.download()`, an `<a download>` click on a `blob:` URL —
+see that template's `src/lib/utils/save-utility.ts`) navigated to an error page reading exactly
+`Could not load the requested page: InvalidOrigin`; clicking "load from file" opened a native
+file picker correctly pointed at the game's own `saves/` folder, but the folder looked empty
+even though a real save (visible in the game's own save-slot grid) existed.
+
+**Root cause, `<a download>`:** not implemented at all in this Servo tree — stock upstream, not
+a Roves patch (`components/script/dom/html/htmlanchorelement.rs` has a literal
+`// TODO: Download the link is `download` attribute is set.`) — so every click just does a real
+top-level navigation to the `blob:` URL. That navigation path never attaches the creating
+document's origin to the blob (`ensure_blob_referenced_by_url_is_kept_alive` in
+`components/script/url.rs` is only wired into `fetch`/XHR/media/worker call sites, not hyperlink
+navigation), so the origin gets re-derived from the serialized `blob:` URL text instead
+(`components/net/protocols/blob.rs`). That works for an ordinary `https://` document (a tuple
+origin round-trips through a `blob:` URL), but never for a Roves game: `game://` documents get
+an **opaque** origin by design (`0053-virtual-content-root-game-protocol`,
+`components/url/origin.rs`'s `new_opaque_for_game_content`), and an opaque origin can't
+round-trip through a `blob:` URL at all — guaranteeing a mismatch in
+`components/net/filemanager_thread.rs`'s `get_impl`, which is exactly where
+`BlobURLStoreError::InvalidOrigin` comes from. Traced the exact string all the way through
+`components/net/protocols/blob.rs`'s `format!("{:?}", err)` and
+`components/script/dom/servoparser/mod.rs`'s `${reason}` substitution (no prefix added) to
+confirm it produces that literal message, not a coincidence.
+
+**Root cause, empty "open" folder:** not a filter bug — `accept="application/json"` (the
+template's actual value) correctly maps to a `.json` extension filter via `mime_guess` in
+`components/script/dom/html/form_controls/input_type/file_input_type.rs`'s `filter_from_accept`
+(stock upstream, unmodified). The real problem: `Dialog::new_file_dialog` in `dialog.rs` never
+set an initial directory at all, so the dialog opened wherever the OS/`egui_file_dialog`
+happened to land — which turned out to be this game's own `saves/` folder (Roves' internal
+save-slot storage, `.save` files — see the "Save-game storage API" entry above), a folder that
+structurally never contains a manually exported `.json` file. Compounded by the `<a download>`
+bug above: with export never actually succeeding, there was no exported file anywhere to find
+regardless of which folder the picker opened to.
+
+**Fix, three parts, all reusing existing infrastructure rather than inventing new plumbing:**
+
+1. **A new injected userscript** (`DOWNLOAD_INTERCEPT_SCRIPT` in `app.rs`, registered alongside
+   the existing `window.__ROVES__ = true;` one) intercepts `<a download>` clicks on `blob:`/
+   `data:` hrefs with `event.preventDefault()` before Servo ever attempts to navigate — the same
+   fix already shipped for both mobile WebView containers (see the entry below), applied to
+   desktop for the first time. Reads the blob back out via `fetch()`+`FileReader.readAsDataURL`
+   (base64), then calls a new `roves:save_file?filename=...&data=...` command.
+2. **`roves:save_file`** (`protocols/roves.rs`) is the first command in this handler that
+   genuinely has to wait on user interaction rather than answer immediately — it base64-decodes
+   `data` and sends a new `AppEvent::SaveFileDialog { suggested_name, data, response }`
+   (`event_loop.rs`) through the same `EventLoopProxy<AppEvent>` the existing `exit`/
+   `close_window` commands already use to reach the main thread from a background protocol-
+   handler thread (`RovesProtocolHandler` is `Send + Sync` and runs off-thread; `AppEvent` is
+   winit's own cross-thread wakeup queue) — the one new piece is `response`, a
+   `tokio::sync::oneshot::Sender<Result<(), String>>` the still-pending `fetch()`'s `Future`
+   awaits, since (unlike `exit`) this needs a real answer back once the user picks a destination
+   or cancels. `ports/servoshell/Cargo.toml`'s `tokio` dependency gained an explicit
+   `features = ["sync"]` for this (previously depended on cross-crate feature unification with
+   whatever else in the workspace happened to enable it, which happened to work but wasn't
+   declared).
+3. **A new `Dialog::SaveFile` variant** (`dialog.rs`), driven by `egui-file-dialog`'s own
+   `DialogMode::SaveFile` (`FileDialog::save_file()`/`default_file_name()` — already a dependency,
+   just an unused mode until now) — `App::user_event`'s handling for
+   `AppEvent::SaveFileDialog` resolves a window/webview itself (this event has no originating
+   `WebViewId` the way a DOM `<input type="file">`'s `EmbedderControlRequest` does — picks the
+   first window with an active webview, which in this fork's usual single-window kiosk setup is
+   always the one sensible choice) and calls a new `HeadedWindow::show_save_file_dialog` to add
+   it. On `DialogState::Picked`, writes the bytes and answers `response`; on
+   `Cancelled`/`Closed`, answers with an error.
+
+**Also fixes the empty-folder bug at the root**, not just as a side effect of export now
+working: both `Dialog::new_file_dialog` (open) and the new `Dialog::new_save_file_dialog` (save)
+now call a shared `with_default_initial_directory` helper defaulting to `dirs::download_dir()`
+(already a workspace dependency) instead of leaving `egui_file_dialog` to land wherever it
+otherwise would — a real, if imperfect, improvement (a save exported somewhere else entirely
+still needs manual navigation), chosen over doing nothing since the previous default landed
+specifically in a folder that can *never* be correct for either dialog.
+
+**Verification — three pushes, two real bugs, worth reading in order:**
+
+1. **First push failed every `build-and-publish` leg and `steam-emulator-smoke-test`
+   identically.** Real cause: `ports/servoshell/desktop/tracing.rs`'s
+   `LogTarget for winit::event::Event<AppEvent>` impl matches every `AppEvent` variant
+   explicitly with no wildcard arm, and the new `AppEvent::SaveFileDialog` variant wasn't
+   covered — a plain `error[E0004]: non-exhaustive patterns`. Every leg failing identically
+   pointed at code shared by all of them; grepping every `AppEvent` match site in the tree
+   found the one uncovered arm. Fixed by adding the missing arm.
+2. **Second push (with the `tracing.rs` fix) failed exactly the same way.** This time the
+   real logs *were* fetchable (see below) — and the actual failure had nothing to do with
+   Rust at all: it never got past `download + patch Servo source`.
+   `patch` reported `The next patch would create the file ports/servoshell/Cargo.toml, which
+   already exists!` for every one of the 6 files this entry's own hunks had regenerated
+   (Cargo.toml, app.rs, dialog.rs, event_loop.rs, headed_window.rs, tracing.rs) — the
+   `patches/`-splicing script used to regenerate them (per-file sections spliced into the
+   existing multi-file patch, see the top of this file on why patches are grouped by
+   subsystem) reconstructed each "modified file" header as
+   `diff --git a/X b/X` / `index 000000000..000000000 100644` / `--- a/X` / `+++ b/X` — the
+   all-zero `index` hash is git's own convention for "this blob doesn't exist", which made
+   `patch`'s git-extended-header parsing treat the file as a *creation* regardless of what
+   the `---`/`+++` lines said. The `roves.rs` "new file" section (patch `0002`) had the
+   mirror-image bug — genuinely missing `--- /dev/null`/`+++ b/...` lines entirely, which
+   made `patch` read it as a *deletion* instead. **This is exactly what the earlier
+   `patch -p1 --dry-run` verification failed to catch**: it tested the raw, standalone hunk
+   files this entry's own splicing script produced, never the *actual spliced patch file* —
+   proving the ingredients were fine while the assembled dish was broken. Fixed by dropping
+   the misleading `index` line from every "modified" section and adding the missing
+   `/dev/null` header to the "new file" one, then re-verified for real this time: downloaded
+   every pristine file `0001`/`0002` touch (including the two genuinely-new-upstream files,
+   `bundle_launch.rs`/`logging.rs`, confirmed absent from pristine and left for `patch` itself
+   to create) into one tree each and ran the exact `patch -p1` both patches actually get
+   subjected to in CI — clean, no prompts, for every file in both patches this time, not just
+   the ones this entry touched.
+3. Real logs, once fetchable: Windows-side `curl` (this session's usual tool, via its
+   git-bash/MSYS build) reliably failed to reach GitHub's log-blob storage with a bare
+   connection error, on every retry, across multiple unrelated endpoints — but the same
+   request through `curl.exe` (Windows' own native curl, invoked from PowerShell instead)
+   worked on the first try. Worth remembering for next time this comes up: prefer `curl.exe`
+   over git-bash's `curl` for this specific endpoint on this machine.
+4. **Third push (with the patch-header fix) got past `download + patch Servo source` for
+   the first time and produced a real, single `rustc` error** — `error[E0515]: cannot return
+   value referencing temporary value` at `app.rs`'s `AppEvent::SaveFileDialog` handler:
+   `window.platform_window().as_headed_window()` was being bound to a variable and returned
+   out of a `find_map` closure as part of a tuple, but `as_headed_window()` returns
+   `Option<&HeadedWindow>` borrowed from the `Rc<dyn PlatformWindow>` `platform_window()`
+   returns — a temporary that drops at the end of that statement, so the reference couldn't
+   outlive it. Every other call site of this exact chain in the codebase (e.g.
+   `set_running_control_flow` a few lines below) only ever uses the result immediately in
+   the same expression, never stores or returns it — this was the first call site that tried
+   to carry it further. Fixed by cloning the (cheap) `Rc<ServoShellWindow>` itself out of
+   `find` instead, then re-deriving `.platform_window().as_headed_window()` fresh and using
+   it immediately, matching the pattern every other call site already follows.
+
+5. **Fourth push (with the sleep bump) came back fully green**: `ensure-test-release`,
+   `steam-emulator-smoke-test`, and all 6 `build-and-publish` legs (Windows msi/portable,
+   Linux deb/portable, macOS portable/dmg) — confirming both real bugs above (the tracing.rs
+   exhaustiveness gap and the app.rs temporary-lifetime error) are actually fixed, not just
+   locally-plausible. Still not verified against a real device/build by a human, though (this
+   session has no working local Windows toolchain — see this file's own recurring note on
+   that) — pending a real re-test of the exact repro steps from the original report.
+
+---
+
+## 2026-09-15 — Mobile: save-export silently did nothing on Android; Fullscreen API risked hiding the game
+
+**Files:** `support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt`,
+`support/ios/App.swift`.
+
+**Patch:** none — neither file has a pristine-upstream counterpart to diff against (same
+category as `test-page/`, see that entry's own reasoning: these are Roves-original native
+container code, not modifications of any vendored Servo source).
+
+**Reported by the same real-device test as the desktop entry above:** on Android (and,
+untested but suspected by the same reporter, iOS), both the save-export and save-import buttons
+did nothing at all — no dialog, no error, no log output.
+
+**Root cause (Android export only — import was already wired correctly):**
+`shouldOverrideUrlLoading` (added long before the save feature, `dc0b0925b`, "Use native
+Android WebView and add initial iOS WKWebView container") returns `true` — "I'm handling this
+myself" — for **any** non-http(s) scheme, `blob:` included. That cancels the navigation
+attempt outright, which starves `setDownloadListener` (added by the same commit that landed
+save import/export, `16a461ef6`) of the one signal it needs to ever fire at all: WebView only
+invokes a `DownloadListener` when it *attempts* a real navigation and discovers it can't render
+the result — an attempt `shouldOverrideUrlLoading` had already vetoed before that could happen.
+Two features landed in different commits, individually reasonable, silently incompatible with
+each other from day one.
+
+**Fix:** adopted `App.swift`'s existing, working pattern instead (it never had this problem —
+`WKWebView` has no navigation-based download signal to conflict with in the first place, so it
+already intercepted the click directly): a new document-start injected script
+(`DOWNLOAD_INTERCEPT_SCRIPT`, registered via `WebViewCompat.addDocumentStartJavaScript`, feature-
+checked against `WebViewFeature.DOCUMENT_START_SCRIPT` the same way the existing service-worker
+interception already feature-checks its own APIs) calls `event.preventDefault()` on any
+`a[download]` click before the browser ever attempts to navigate, then hands the decoded bytes
+straight to the existing `RovesFileBridge.saveDataUrl` `@JavascriptInterface` — which was always
+correct, just never reached by the broken navigation-based path. `shouldOverrideUrlLoading`
+itself also now excludes `blob:`/`data:` from the blocked-scheme list, so `setDownloadListener`
+stays a working fallback for anything the click-interceptor doesn't catch, rather than a
+permanently dead path.
+
+**Fullscreen API, both platforms:** this app (and the iOS one) already always run edge-to-edge/
+immersive (`enterImmersiveMode`/`prefersStatusBarHidden`) — there is no "windowed" mode for the
+standard `document.documentElement.requestFullscreen()` to meaningfully toggle into or out of.
+On Android specifically this isn't just a redundant no-op: `WebChromeClient.onShowCustomView`
+(designed for `<video>` fullscreen) also fires for a whole-document fullscreen request, and it
+**hides the entire WebView** (`webView.visibility = View.GONE`) in favor of a custom view never
+designed to render a full document — a real risk of a game's UI visibly vanishing, not a
+theoretical one. The same injected script neutralizes `Element.prototype.requestFullscreen`/
+`Document.prototype.exitFullscreen` into a harmless resolved no-op on both platforms — on iOS
+this is precautionary (`WKPreferences.elementFullscreenEnabled` is never turned on in
+`App.swift`, so WebKit's own Fullscreen API support is already off by default there) but kept
+for predictability and parity with Android, where it's load-bearing.
+
+**Verification:** not yet verified on a real device (this repo's own CI can build both mobile
+targets but has no real device/simulator interaction step for this feature — see the "Save
+import/export" entry's own note making the same caveat for the original, buggy version of this
+code). Pending a real-device re-test of both the save-export and fullscreen-safety fixes.

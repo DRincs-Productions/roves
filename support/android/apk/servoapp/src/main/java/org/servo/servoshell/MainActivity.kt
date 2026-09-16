@@ -1,286 +1,418 @@
-/*
- * This Source Code Form is subject to the terms of the Mozilla Public
- * License, v. 2.0. If a copy of the MPL was not distributed with this
- * file, You can obtain one at https://mozilla.org/MPL/2.0/.
- */
 package org.servo.servoshell
 
-import android.app.AlertDialog
-import android.content.Context
-import android.content.res.AssetManager
+import android.app.Activity
+import android.content.ActivityNotFoundException
+import android.content.ContentValues
+import android.content.Intent
 import android.graphics.Color
+import android.net.Uri
 import android.os.Bundle
-import android.system.ErrnoException
-import android.system.Os
-import android.util.Log
-import android.view.inputmethod.InputMethodManager
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.BackHandler
-import androidx.activity.compose.setContent
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.viewinterop.AndroidView
-import androidx.core.content.getSystemService
-import androidx.core.view.WindowCompat
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
-import org.servo.servoview.Servo
-import org.servo.servoview.ServoView
-import java.io.File
-import java.io.FileNotFoundException
+import android.os.Environment
+import android.os.SystemClock
+import android.provider.MediaStore
+import android.util.Base64
+import android.view.View
+import android.webkit.JavascriptInterface
+import android.webkit.URLUtil
+import android.webkit.ValueCallback
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.widget.FrameLayout
+import androidx.webkit.ServiceWorkerClientCompat
+import androidx.webkit.ServiceWorkerControllerCompat
+import androidx.webkit.WebViewAssetLoader
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 
-// Roves fork: upstream Servo's own reference "servoshell" browser UI (address bar, back/
-// forward/refresh buttons, a Settings screen, a History screen, and manifest intent-filters
-// offering this app as a system-wide browser/URL handler) has all been removed -- this is
-// meant to look and behave like a native game, not a browser a player could set as their
-// default. See AndroidManifest.xml for the matching intent-filter/activity removal, and
-// CUSTOMIZATIONS.md for the full writeup (mirrors the desktop shell's own, much older
-// "remove toolbar and tab strip" customization -- this is the same intent, just never ported
-// to the Android target when it was added).
-class MainActivity : ComponentActivity(), Servo.Client {
-    private lateinit var servoView: ServoView
+/**
+ * Injected before any of the game's own scripts run (`WebViewCompat.addDocumentStartJavaScript`
+ * below), doing two things:
+ *
+ * 1. Intercepts `<a download>` clicks on `blob:`/`data:` URLs (a game's save export) and hands
+ *    the decoded bytes to [RovesFileBridge.saveDataUrl] directly, via `preventDefault()` before
+ *    any navigation is even attempted -- mirrors `support/ios/App.swift`'s own
+ *    `downloadInterceptScript` verbatim (same underlying problem: no browser chrome to hand a
+ *    download to, so the platform has to intercept the click itself). This replaces reliance on
+ *    `setDownloadListener` for this case: that only fires *after* WebView attempts a real
+ *    navigation and fails to render the result, and `shouldOverrideUrlLoading` above already
+ *    vetoes that attempt for blob:/data: before it can happen (confirmed on a real device,
+ *    2026-09-14, to be exactly why the save-export button silently did nothing) --
+ *    `setDownloadListener` stays in place for a real http(s) download, an unrelated case this
+ *    script's `href` scheme check never touches.
+ * 2. Neutralizes the Fullscreen API (`Element.requestFullscreen`/`Document.exitFullscreen`) into
+ *    a harmless resolved no-op. This app already always runs edge-to-edge/immersive (see
+ *    `enterImmersiveMode`) -- unlike a `<video>` element's fullscreen request, which WebView's
+ *    own `onShowCustomView` handles correctly, calling `requestFullscreen()` on the *document*
+ *    itself still triggers that same callback, which hides the entire WebView
+ *    (`webView.visibility = View.GONE`) and replaces it with a custom view never designed to
+ *    render a whole document -- a real risk of the game's UI silently vanishing, not just a
+ *    redundant no-op, for any game that reaches for the standard web Fullscreen API expecting
+ *    "toggle fullscreen" the way a desktop build would (already always fullscreen here, so
+ *    there is nothing for that toggle to meaningfully do).
+ */
+private const val DOWNLOAD_INTERCEPT_SCRIPT = """
+(function() {
+  document.addEventListener('click', function(event) {
+    var a = event.target && event.target.closest && event.target.closest('a[download]');
+    if (!a) return;
+    var href = a.getAttribute('href') || '';
+    if (href.indexOf('blob:') !== 0 && href.indexOf('data:') !== 0) return;
+    event.preventDefault();
+    var fileName = a.getAttribute('download') || 'download';
+    function post(dataUrl) { RovesFiles.saveDataUrl(dataUrl, fileName); }
+    if (href.indexOf('data:') === 0) { post(href); return; }
+    fetch(href).then(function(r) { return r.blob(); }).then(function(blob) {
+      var reader = new FileReader();
+      reader.onloadend = function() { post(reader.result); };
+      reader.readAsDataURL(blob);
+    });
+  }, true);
 
-    private var canGoBackState = mutableStateOf(false)
-    private var mediaSession: MediaSession? = null
+  var fullscreenNoop = function() { return Promise.resolve(); };
+  if (window.Element && Element.prototype) { Element.prototype.requestFullscreen = fullscreenNoop; }
+  if (window.Document && Document.prototype) { Document.prototype.exitFullscreen = fullscreenNoop; }
+})();
+"""
+
+/** The game runs on Android's system WebView; no Servo or JNI library is loaded. */
+class MainActivity : Activity() {
+    private lateinit var webView: WebView
+    private lateinit var container: FrameLayout
+    private lateinit var splash: RovesSplashView
+    private var splashStarted = 0L
+    private var startupPending = true
+    private var startupNavigation = 0L
+    private var destroyed = false
+    private var fullscreenView: View? = null
+    private var fullscreenCallback: WebChromeClient.CustomViewCallback? = null
+    private var pendingFileChooserCallback: ValueCallback<Array<Uri>>? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        hideSystemBars()
-
-        servoView = ServoView(this)
-
-        // `servoThemeColor` is a Gradle `resValue` (see servoapp/build.gradle.kts), sourced
-        // from the bundled game's own manifest `theme_color` (or `mach bundle`'s own
-        // --android-theme-color override) -- empty string by default, meaning "no theme_color
-        // was set, leave the status bar at its normal theme color" rather than forcing some
-        // placeholder color. `Color.parseColor` only understands `#rrggbb`/`#aarrggbb` and a
-        // handful of named colors (not arbitrary CSS like `rgb(...)`), so an unparseable value
-        // is caught and ignored rather than crashing the app on launch.
+        container = FrameLayout(this)
+        container.setBackgroundColor(Color.BLACK)
+        splash = RovesSplashView(this)
+        splashStarted = SystemClock.uptimeMillis()
+        // Paint branding before constructing the potentially expensive system WebView.
+        container.addView(splash, FrameLayout.LayoutParams(-1, -1))
+        setContentView(container)
+        webView = WebView(this)
+        webView.setBackgroundColor(Color.BLACK)
+        container.addView(webView, 0, FrameLayout.LayoutParams(-1, -1))
         val themeColor = getString(R.string.servoThemeColor)
-        if (themeColor.isNotBlank()) {
-            try {
-                @Suppress("DEPRECATION")
-                window.statusBarColor = Color.parseColor(themeColor)
-            } catch (e: IllegalArgumentException) {
-                Log.w("MainActivity", "Ignoring unparseable --android-theme-color/theme_color '$themeColor'", e)
+        if (themeColor.isNotEmpty()) {
+            runCatching { window.statusBarColor = Color.parseColor(themeColor) }
+        }
+        enterImmersiveMode()
+        val assets = WebViewAssetLoader.AssetsPathHandler(this)
+        val loader = WebViewAssetLoader.Builder()
+            // Serve the game at the origin root so /images and /audio also work. SPA
+            // fallback mirrors iOS's GameSchemeHandler/desktop's game.rs: a client-side
+            // router navigating to a path with no matching asset (e.g. /level/3) still gets
+            // index.html, letting the router itself decide what to render, instead of a 404.
+            //
+            // AssetsPathHandler.handle() never actually returns null on a missing asset --
+            // confirmed by reading its real implementation (androidx.webkit source): on an
+            // IOException it returns a *non-null* WebResourceResponse with mimeType/encoding/
+            // data all null, not null itself. A plain `?:` Elvis fallback on that call is
+            // therefore dead code (the left side is never null), so this checks the actual
+            // `data` stream instead -- the same signal shouldInterceptRequest below uses to
+            // decide whether a request truly failed.
+            .addPathHandler("/") { path ->
+                val primary = assets.handle("www/$path")
+                if (primary != null && primary.data != null) primary else assets.handle("www/index.html")
+            }
+            .build()
+
+        // Shared by the WebViewClient below and, further down, the ServiceWorkerClientCompat --
+        // a page's own service worker script/fetches are a *separate* request pipeline from the
+        // main document/subresource one WebViewClient.shouldInterceptRequest covers, and need
+        // their own interception hook to see this same local content instead of hitting the
+        // real network (which fails outright, since appassets.androidplatform.net isn't a real,
+        // resolvable domain) -- confirmed via real-device Chrome DevTools remote inspection:
+        // vite-plugin-pwa's registerSW.js failed with "An unknown error occurred when fetching
+        // the script" for sw.js before this existed.
+        fun intercept(url: Uri): WebResourceResponse? {
+            val response = loader.shouldInterceptRequest(url)
+            if (url.host == WebViewAssetLoader.DEFAULT_DOMAIN && response?.data == null) {
+                val body = "Not Found".byteInputStream(Charsets.UTF_8)
+                return WebResourceResponse("text/plain", "UTF-8", 404, "Not Found", emptyMap(), body)
+            }
+            return response
+        }
+
+        webView.settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            mediaPlaybackRequiresUserGesture = false
+            allowFileAccess = false
+            allowContentAccess = false
+        }
+        WebView.setWebContentsDebuggingEnabled(
+            (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        )
+        webView.webViewClient = object : WebViewClient() {
+            override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
+                startupNavigation++
+            }
+
+            override fun onPageFinished(view: WebView, url: String) {
+                if (!startupPending || url != view.url) return
+                val navigation = startupNavigation
+                // Page completion alone doesn't guarantee its contents can be drawn.
+                view.postVisualStateCallback(navigation, object : WebView.VisualStateCallback() {
+                    override fun onComplete(requestId: Long) {
+                        val remaining = (500L - (SystemClock.uptimeMillis() - splashStarted)).coerceAtLeast(0L)
+                        splash.postDelayed({
+                            if (!destroyed && startupPending && navigation == startupNavigation) {
+                                startupPending = false
+                                container.removeView(splash)
+                            }
+                        }, remaining)
+                    }
+                })
+            }
+
+            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
+                intercept(request.url)
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                // blob:/data: excluded: a save export's `<a download>` click is now caught
+                // before it ever navigates at all (`preventDefault()` in the document-start
+                // script registered below, mirroring iOS's own `downloadInterceptScript` in
+                // App.swift) -- returning `true` here for those schemes used to cancel that
+                // navigation outright, which silently starved `setDownloadListener` below of
+                // the one signal it needs to ever fire: WebView only invokes it when it
+                // *attempts* a navigation and discovers it can't render the result, and this
+                // check ran first and vetoed the attempt before that could happen. Confirmed
+                // on a real device (2026-09-14): the save-export button did nothing at all,
+                // no error, no log -- this exact conflict, not a missing feature.
+                return request.url.scheme !in listOf("https", "http", "blob", "data")
             }
         }
-
-        setContent {
-            AndroidView(factory = { _ -> servoView }, modifier = Modifier)
-            BackHandler(enabled = canGoBackState.value) {
-                servoView.goBack()
-            }
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            WebViewCompat.addDocumentStartJavaScript(webView, DOWNLOAD_INTERCEPT_SCRIPT, setOf("*"))
         }
 
-        servoView.setClient(this)
-        servoView.requestFocus()
-
-        val sdcard = getExternalFilesDir("")
-        val host = sdcard!!.toPath().resolve("android_hosts").toString()
-        try {
-            Os.setenv("HOST_FILE", host, false)
-        } catch (e: ErrnoException) {
-            e.printStackTrace()
-        }
-
-        val intent = getIntent()
-        val args = intent.getStringExtra("servoargs")
-        val log = intent.getStringExtra("servolog")
-        servoView.setServoArgs(args, log, false)
-
-        // No "open with" intent to handle -- the manifest's own LAUNCHER-only intent-filter
-        // (see AndroidManifest.xml) means this activity is never started any other way. Load
-        // whatever `mach bundle --android --content-dir` packed into the APK's own assets (see
-        // post_build_commands.py's `_bundle_android`), if anything was bundled at all -- via a
-        // real, extracted-once filesystem path, not `file:///android_asset/...` (see
-        // `extractBundledContent`'s own doc comment for why that never actually worked). A
-        // plain engine-shell build with no bundled content (e.g. .github/workflows/
-        // android.yml's per-commit build) extracts an empty `www/` tree, so this still 404s
-        // inside Servo itself the same as before -- same as any other missing local file, no
-        // special-casing needed here.
-        val contentDir = extractBundledContent(this, "www", File(filesDir, "www"))
-        servoView.loadUri("file://${File(contentDir, "index.html").absolutePath}")
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        mediaSession?.hideMediaSessionControls()
-    }
-
-    override fun onImeShow() {
-        getSystemService<InputMethodManager>()?.showSoftInput(servoView, InputMethodManager.SHOW_IMPLICIT)
-    }
-
-    override fun onImeHide() {
-        getSystemService<InputMethodManager>()?.hideSoftInputFromWindow(servoView.windowToken, InputMethodManager.SHOW_IMPLICIT)
-    }
-
-    override fun onAlert(message: String) {
-        AlertDialog.Builder(this)
-            .setMessage(message)
-            .show()
-    }
-
-    override fun onLoadStarted() {
-    }
-
-    override fun onLoadEnded() {
-    }
-
-    override fun onTitleChanged(title: String) {
-    }
-
-    override fun onUrlChanged(url: String) {
-    }
-
-    override fun onHistoryChanged(canGoBack: Boolean, canGoForward: Boolean) {
-        canGoBackState.value = canGoBack
-    }
-
-    override fun onRedrawing(redrawing: Boolean) {
-    }
-
-    public override fun onPause() {
-        servoView.onPause()
-        super.onPause()
-    }
-
-    public override fun onResume() {
-        servoView.onResume()
-        super.onResume()
-        // The system bars this hides can reappear on their own after the app loses and
-        // regains focus (a well-documented Android quirk with this API) -- re-applying here,
-        // not just once in `onCreate`, is what actually keeps them hidden across that.
-        hideSystemBars()
-    }
-
-    // A game, not a browser -- the Android status bar and navigation bar were still showing
-    // on top of it (reported directly by a user on a real device), never addressed when
-    // Android support was added, same gap as the browser chrome this file's own top comment
-    // already covers. `BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE` (rather than never showing them at
-    // all) still lets a player swipe from an edge to reveal them temporarily -- the standard
-    // Android "immersive" convention, not a fully locked-down kiosk mode.
-    private fun hideSystemBars() {
-        WindowCompat.setDecorFitsSystemWindows(window, false)
-        WindowInsetsControllerCompat(window, window.decorView).let { controller ->
-            controller.hide(WindowInsetsCompat.Type.systemBars())
-            controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        }
-    }
-
-    override fun onMediaSessionMetadata(title: String, artist: String, album: String) {
-        Log.d("onMediaSessionMetadata", "$title $artist $album")
-        val mediaSession = mediaSession ?: MediaSession(servoView, applicationContext).also { mediaSession = it }
-        mediaSession.updateMetadata(title, artist, album)
-    }
-
-    override fun onMediaSessionPlaybackStateChange(state: Int) {
-        Log.d("onMediaSessionPlaybackStateChange", state.toString())
-        val mediaSession = mediaSession ?: MediaSession(servoView, applicationContext).also { mediaSession = it }
-
-        mediaSession.setPlaybackState(state)
-
-        if (state == MediaSession.PLAYBACK_STATE_NONE) {
-            mediaSession.hideMediaSessionControls()
-            return
-        }
-        if (state == MediaSession.PLAYBACK_STATE_PLAYING ||
-            state == MediaSession.PLAYBACK_STATE_PAUSED
+        // Feature-checked because not every WebView provider/version implements service worker
+        // interception (older WebView releases, some OEM forks) -- skipping it there just means
+        // a service worker (if the game registers one at all) falls back to the real network,
+        // same as before this existed, rather than crashing on an unsupported API call.
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.SERVICE_WORKER_BASIC_USAGE) &&
+            WebViewFeature.isFeatureSupported(WebViewFeature.SERVICE_WORKER_SHOULD_INTERCEPT_REQUEST)
         ) {
-            mediaSession.showMediaSessionControls()
+            ServiceWorkerControllerCompat.getInstance().setServiceWorkerClient(object : ServiceWorkerClientCompat() {
+                override fun shouldInterceptRequest(request: WebResourceRequest): WebResourceResponse? =
+                    intercept(request.url)
+            })
         }
-    }
 
-    override fun onMediaSessionSetPositionState(duration: Float, position: Float, playbackRate: Float) {
-        Log.d("onMediaSessionSetPositionState", "$duration $position $playbackRate")
-    }
-}
-
-/**
- * Copies the `assets/<assetRoot>/` tree Gradle bundles the game's own content into (see
- * `servoapp/build.gradle.kts`/`post_build_commands.py`'s `_bundle_android`) out to a real,
- * plain filesystem directory the first time this exact app build runs.
- *
- * This is necessary, not just a nice-to-have: Servo's own `file://` protocol handler
- * (`ports/servoshell/desktop/protocols/file.rs`) is a plain `std::fs::File::open` -- it has no
- * concept of Android's `android_asset` virtual path, a WebView-specific convention only
- * Chromium's own asset resolver understands. `file:///android_asset/www/index.html` (this
- * function's own predecessor) could therefore never resolve, with or without real bundled
- * content -- confirmed directly against a real device: "Could not load the requested page:
- * Opening file failed" on a build with real, verified-present bundled assets. Extracting once
- * to `filesDir` (always private and writable, no runtime permission needed, unlike external
- * storage) and loading a real `file://` path from there sidesteps the missing Android-asset
- * support entirely, the same "extract once, then load a real path" shape the desktop shell's
- * own packed-content cache already uses (see the engine's own `CUSTOMIZATIONS.md`, "Pack
- * --content-dir into the APK" and "Single-executable bundle" entries) -- just simpler here,
- * since Android's own `mach bundle` path has no compression step to reverse, only a plain
- * asset-to-file copy.
- *
- * Skips the copy on a later launch of the *same* installed build (tracked via a marker file
- * storing the app's own `longVersionCode`) -- an update (a new APK, a new `versionCode`) still
- * re-extracts, so stale content from a previous install never lingers.
- */
-private fun extractBundledContent(context: Context, assetRoot: String, destDir: File): File {
-    val marker = File(destDir.parentFile, "${destDir.name}.extracted-version")
-    val versionCode = context.packageManager.getPackageInfo(context.packageName, 0).longVersionCode.toString()
-    if (marker.isFile && marker.readText() == versionCode && destDir.isDirectory) {
-        return destDir
-    }
-    destDir.deleteRecursively()
-    copyAssetTree(context.assets, assetRoot, destDir)
-    marker.parentFile?.mkdirs()
-    marker.writeText(versionCode)
-    return destDir
-}
-
-/**
- * Recursively copies one asset path into `destFile`. `AssetManager.list()`'s own return value
- * for a *leaf* file (as opposed to a directory) isn't reliably documented across Android
- * versions (empty array on some, an exception on others) -- trying `open()` first and treating
- * a `FileNotFoundException` as "this was a directory, not a file" is the robust way to tell
- * the two apart regardless.
- *
- * `.html` files get their root-relative asset references (`src="/..."`, `href="/..."`) rewritten
- * to be relative (`src="./..."`) on the way out -- see `ROOT_RELATIVE_ATTR` for why.
- */
-private fun copyAssetTree(assets: AssetManager, assetPath: String, destFile: File) {
-    try {
-        if (destFile.name.endsWith(".html", ignoreCase = true)) {
-            val html = assets.open(assetPath).use { it.readBytes().toString(Charsets.UTF_8) }
-            destFile.parentFile?.mkdirs()
-            destFile.writeText(ROOT_RELATIVE_ATTR.replace(html) { "${it.groupValues[1]}=\"./" })
-        } else {
-            assets.open(assetPath).use { input ->
-                destFile.parentFile?.mkdirs()
-                destFile.outputStream().use { output -> input.copyTo(output) }
+        // A game's save export (typically `<a download>.click()` on a Blob/data URL, e.g. a
+        // JSON save file) needs both of these to actually do anything in a WebView -- neither
+        // exists by default, unlike a real browser tab. Confirmed missing on a real device
+        // (2026-09-14): the save menu's own import/export buttons were silently inert.
+        webView.addJavascriptInterface(RovesFileBridge(), "RovesFiles")
+        webView.setDownloadListener { url, _, contentDisposition, mimeType, _ ->
+            val fileName = URLUtil.guessFileName(url, contentDisposition, mimeType)
+            when {
+                // A blob: URL is only valid inside the page's own JS context -- this fetches
+                // it back out as base64 there and hands the bytes to RovesFileBridge below,
+                // rather than trying (and failing) to resolve it as a real network request.
+                url.startsWith("blob:") -> webView.evaluateJavascript(
+                    "fetch(${jsStringLiteral(url)}).then(r => r.blob()).then(b => { " +
+                        "const r = new FileReader(); " +
+                        "r.onloadend = () => RovesFiles.saveDataUrl(r.result, ${jsStringLiteral(fileName)}); " +
+                        "r.readAsDataURL(b); });",
+                    null,
+                )
+                url.startsWith("data:") -> saveDataUrl(url, fileName)
+                else -> {
+                    // A real http(s) download (not a save export) -- hand it to the system's
+                    // own Download Manager instead of trying to special-case every possible
+                    // use a game's content might have for a download link.
+                    runCatching {
+                        val request = android.app.DownloadManager.Request(Uri.parse(url))
+                            .setMimeType(mimeType)
+                            .setNotificationVisibility(
+                                android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED,
+                            )
+                            .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
+                        (getSystemService(DOWNLOAD_SERVICE) as android.app.DownloadManager).enqueue(request)
+                    }
+                }
             }
         }
-    } catch (e: FileNotFoundException) {
-        destFile.mkdirs()
-        for (child in assets.list(assetPath) ?: emptyArray()) {
-            copyAssetTree(assets, "$assetPath/$child", File(destFile, child))
+
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onShowCustomView(view: View, callback: CustomViewCallback) {
+                if (fullscreenView != null) {
+                    callback.onCustomViewHidden()
+                    return
+                }
+                fullscreenView = view
+                fullscreenCallback = callback
+                webView.visibility = View.GONE
+                container.addView(view, FrameLayout.LayoutParams(-1, -1))
+                if (startupPending) splash.bringToFront()
+                enterImmersiveMode()
+            }
+            override fun onHideCustomView() = leaveFullscreen()
+
+            // A game's save import (an `<input type="file">` picker, e.g. loading a JSON
+            // save file back in) needs this to show any file picker at all in a WebView --
+            // confirmed missing the same way as the download side above.
+            override fun onShowFileChooser(
+                webView: WebView,
+                filePathCallback: ValueCallback<Array<Uri>>,
+                fileChooserParams: FileChooserParams,
+            ): Boolean {
+                pendingFileChooserCallback?.onReceiveValue(null)
+                pendingFileChooserCallback = filePathCallback
+                return try {
+                    startActivityForResult(fileChooserParams.createIntent(), FILE_CHOOSER_REQUEST_CODE)
+                    true
+                } catch (e: ActivityNotFoundException) {
+                    pendingFileChooserCallback = null
+                    false
+                }
+            }
+        }
+        if (savedInstanceState == null || webView.restoreState(savedInstanceState) == null) {
+            // The bare origin root, not "/index.html" -- confirmed via a real device's Chrome
+            // DevTools remote inspection to be the actual root cause of a "Not Found" screen
+            // seen on real hardware: loading "/index.html" gives location.pathname that exact
+            // value, which a client-side router (expecting "/" as its home route) doesn't
+            // match, rendering the *game's own* "Not Found" page -- nothing to do with this
+            // engine's asset loading, which was already serving files correctly. Mirrors
+            // App.swift's identical `game://content/` (no "/index.html") for the same reason.
+            webView.loadUrl("https://appassets.androidplatform.net/")
         }
     }
-}
 
-/**
- * Matches `src="/foo"`/`href="/foo"` (a root-relative reference, the default a bundler like
- * Vite emits) but not `src="//cdn.example.com/foo"` (protocol-relative, a real external host)
- * or an already-relative/absolute-URL reference.
- *
- * Needed because the extracted content is loaded via a real `file://<path>/index.html` (see
- * `extractBundledContent`'s own doc comment), and a `file://` document's root-relative
- * references resolve against the *entire device filesystem* root, not the extracted
- * directory -- unlike the desktop shell, which sidesteps this with its own `game://content/`
- * virtual-origin protocol (see the engine's `ports/servoshell/desktop/protocols/game.rs`), not
- * yet ported to the Android target (a real engine-level change, deliberately not attempted
- * here -- see this repo's own `CUSTOMIZATIONS.md` for the full tradeoff). This regex-based
- * rewrite is a narrower, lower-risk stand-in: it fixes the top-level HTML's own asset
- * references (which is what was producing a fully blank white screen -- the page's very first
- * `<script>` tag never loaded at all), but does *not* address a client-side router's own
- * `location.pathname` matching at boot the way `game://` does -- a game using one may still
- * show its own "not found" page instead of real content even after this fix.
- */
-private val ROOT_RELATIVE_ATTR = Regex("""\b(src|href)="/(?!/)""")
+    /** Escapes `value` for embedding as a double-quoted JavaScript string literal. */
+    private fun jsStringLiteral(value: String): String =
+        "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+
+    /**
+     * The bridge a game's own JS never calls directly -- only the `evaluateJavascript` snippet
+     * this file injects for a blob: download does, to hand a Blob's content back out as a data
+     * URL once it's been read on the page side (see the `setDownloadListener` block above).
+     */
+    inner class RovesFileBridge {
+        @JavascriptInterface
+        fun saveDataUrl(dataUrl: String, fileName: String) {
+            this@MainActivity.saveDataUrl(dataUrl, fileName)
+        }
+    }
+
+    /** Decodes a `data:` URL (as produced by `FileReader.readAsDataURL`) and writes it out. */
+    private fun saveDataUrl(dataUrl: String, fileName: String) {
+        runCatching {
+            val commaIndex = dataUrl.indexOf(',')
+            if (!dataUrl.startsWith("data:") || commaIndex == -1) return
+            val meta = dataUrl.substring(5, commaIndex)
+            val mimeType = meta.substringBefore(";").ifEmpty { "application/octet-stream" }
+            val payload = dataUrl.substring(commaIndex + 1)
+            val bytes = if (meta.endsWith(";base64")) {
+                Base64.decode(payload, Base64.DEFAULT)
+            } else {
+                Uri.decode(payload).toByteArray(Charsets.UTF_8)
+            }
+            saveToDocuments(fileName, mimeType, bytes)
+        }
+    }
+
+    /**
+     * Writes into `Documents/<this game's own launcher label>/<fileName>` -- a real,
+     * player-visible location (Files app, a USB/MTP file browser, ...), not an
+     * app-private directory another app or the player themselves can't get to. Uses the
+     * `MediaStore` `Documents`/`Files` collection, not raw external storage: this needs no
+     * `WRITE_EXTERNAL_STORAGE` permission at all on API 29+ (this app's own `minSdk`) -- a
+     * missing permission was never actually the cause of the import/export buttons doing
+     * nothing (see this same session's real-device report); they were simply never wired up
+     * to anything before this.
+     */
+    private fun saveToDocuments(fileName: String, mimeType: String, bytes: ByteArray) {
+        runCatching {
+            val appLabel = packageManager.getApplicationLabel(applicationInfo).toString()
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+                put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOCUMENTS}/$appLabel")
+            }
+            val uri = contentResolver.insert(MediaStore.Files.getContentUri("external"), values) ?: return
+            contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
+        }
+    }
+
+    /**
+     * The game always runs edge-to-edge, with the status and navigation bars hidden -- this
+     * isn't limited to HTML5 `<video>`/Fullscreen API content (`onShowCustomView` above), which
+     * is the only case the system bars were previously hidden for. `IMMERSIVE_STICKY` lets a
+     * swipe from a screen edge reveal the bars temporarily (required for the user to ever get
+     * them back at all, e.g. to check the clock or notifications) without permanently exiting
+     * this mode -- they auto-hide again on the next interaction. Reapplied in
+     * `onWindowFocusChanged` because Android clears these flags whenever the window loses and
+     * regains focus (e.g. the notification shade, a system dialog, or switching apps and back).
+     */
+    private fun enterImmersiveMode() {
+        window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+            View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+            View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) enterImmersiveMode()
+    }
+
+    private fun leaveFullscreen() {
+        fullscreenView?.let { container.removeView(it) }
+        fullscreenView = null
+        webView.visibility = View.VISIBLE
+        enterImmersiveMode()
+        fullscreenCallback?.onCustomViewHidden()
+        fullscreenCallback = null
+    }
+
+    @Deprecated("Activity back navigation")
+    override fun onBackPressed() {
+        if (fullscreenView != null) leaveFullscreen()
+        else if (webView.canGoBack()) webView.goBack()
+        else super.onBackPressed()
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != FILE_CHOOSER_REQUEST_CODE) return
+        val results = if (resultCode == RESULT_OK && data != null) {
+            WebChromeClient.FileChooserParams.parseResult(resultCode, data)
+        } else {
+            null
+        }
+        pendingFileChooserCallback?.onReceiveValue(results)
+        pendingFileChooserCallback = null
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        webView.saveState(outState)
+        super.onSaveInstanceState(outState)
+    }
+    override fun onPause() { webView.onPause(); super.onPause() }
+    override fun onResume() { super.onResume(); webView.onResume() }
+    override fun onDestroy() {
+        destroyed = true
+        leaveFullscreen()
+        container.removeView(webView)
+        webView.destroy()
+        super.onDestroy()
+    }
+
+    private companion object {
+        const val FILE_CHOOSER_REQUEST_CODE = 51426
+    }
+}

@@ -5,6 +5,158 @@ questa cartella. Vedi [`CUSTOMIZATIONS.md`](./CUSTOMIZATIONS.md) per le modifich
 applicate e [`CLAUDE.md`](./CLAUDE.md) per il protocollo da seguire quando si chiude uno di
 questi punti (aggiornare `CUSTOMIZATIONS.md` + rigenerare la patch nella stessa sessione).
 
+
+## Backlog attuale — revisione 2026-09-13
+
+Questa sezione è la lista operativa aggiornata dopo il controllo di `main`.
+Le sezioni numerate sotto sono conservate come storico: le loro dichiarazioni
+su repository sibling e workflow dormienti non descrivono necessariamente la
+struttura attuale. Le modifiche nei repository esterni non sono state verificate
+in questa revisione e non vengono considerate completate per inferenza.
+
+### Android: integrazione con Google Play — da implementare
+
+In `main` non risultano SDK o bridge per Google Play Games Services, Billing o
+Play Asset Delivery. La presenza di `google()` nei repository Gradle serve a
+risolvere dipendenze e non costituisce un'integrazione Google Play.
+
+- [ ] **Pubblicazione:** aggiungere output Android App Bundle (`.aab`) nel percorso `mach bundle`, mantenendo l'APK per test/sideload. Gestire application ID per gioco e versionCode/versionName espliciti: oggi il modulo usa `org.servo.servoshell` e una versione del motore.
+- [ ] **Configurazione release:** collegare upload key/Play App Signing al flusso documentato; verificare firma reale, aggiornamento di una versione installata e gestione delle credenziali in CI. Controllare i requisiti target SDK e delle librerie native richiesti al momento della pubblicazione, senza fissare nel TODO requisiti che cambiano nel tempo.
+- [ ] **Play Games Services:** integrare autenticazione/stato del giocatore, obiettivi e classifiche tramite SDK Android nativo e un bridge asincrono per il gioco web; configurare ID, certificati e account di test. Definire comportamento offline, annullamento ed errori.
+- [ ] **Salvataggi cloud Google Play:** integrare Saved Games se previsto per il gioco; definire conflitti tra dispositivi, metadati/versioni e recupero offline. Non presumere che i salvataggi Steam Cloud offrano già un backend Android equivalente.
+- [ ] **Acquisti in-app, opzionali:** aggiungere Play Billing per i giochi che lo richiedono, con catalogo/configurazione per gioco, ripristino degli acquisti, gestione pending/cancellazioni e verifica/acknowledgement delle transazioni. Definire quali operazioni richiedono un backend del gioco.
+- [ ] **Asset grandi, opzionali:** integrare Play Asset Delivery con contenuti install-time/fast-follow/on-demand; collegare disponibilità, progresso, errori e percorsi degli asset al loader. Non confondere asset pack Android con gli archivi tar/zstd desktop.
+- [ ] **Distribuzione di test:** documentare Play Console e provare una release su un track di test e un dispositivo reale. La pubblicazione automatica tramite Developer Publishing API è un passo successivo configurabile; non attivarla automaticamente nei workflow esistenti.
+- [ ] **API e strumenti esterni:** esporre configurazione e capability in `roves-api`, `roves-action` e Packmaster con interventi dedicati nei rispettivi repository; assenza dei servizi deve produrre uno stato non disponibile prevedibile.
+
+Riferimenti ufficiali: [Android App Bundle](https://developer.android.com/guide/app-bundle),
+[Play Games Services](https://play.google.com/console/about/playgamesservices/),
+[Play Billing](https://developer.android.com/google/play/billing),
+[Play Asset Delivery](https://developer.android.com/guide/playcore/asset-delivery),
+[Publishing API](https://developers.google.com/android-publisher).
+Le funzionalità opzionali non sono prerequisiti universali per pubblicare un gioco.
+
+### Decisione API Google Play — libreria opzionale
+
+- [ ] Realizzare il supporto Google Play come libreria separata, integrata nella libreria API JavaScript (`roves-api`), senza renderlo una dipendenza obbligatoria del core Roves. Nome del pacchetto da definire.
+- [ ] Dichiarare il pacchetto Google Play in `peerDependencies` della libreria API, con `peerDependenciesMeta["<pacchetto-google-play>"].optional = true`. Il gioco installa esplicitamente il pacchetto solo quando vuole utilizzare l'integrazione. Non aggiungerlo alle dipendenze obbligatorie.
+- [ ] Usare import/entry point opzionali: importare il core API senza il pacchetto Google Play deve funzionare e non deve caricare il modulo Google. Un peer opzionale da solo non rende sicuro un import statico obbligatorio.
+- [ ] Implementare il backend Android con SDK ufficiale Google in Kotlin e bridge asincrono verso JavaScript, senza introdurre un wrapper Rust/JNI salvo una necessità concreta di logica condivisa.
+- [ ] Rendere l'integrazione Android disabilitata per default e abilitabile nel packaging; aggiungere SDK Gradle e configurazione Google soltanto alle build che la richiedono. Le dipendenze native Gradle non sono peer dependency npm.
+- [ ] Esporre un contratto coerente nello stile con Steam: disponibilità, stato autenticazione/profilo, obiettivi e classifiche; distinguere servizio assente, utente non autenticato, annullamento ed errore. API asincrone con comportamento documentato anche fuori da Android.
+- [ ] Mantenere Play Billing un modulo separato e opzionale. Verificare installazione/build del core senza integrazione e del gioco con pacchetto e backend Google abilitati.
+
+Questa decisione specifica la voce Google Play sopra; l'implementazione della
+libreria API richiede un intervento nel suo repository, non viene effettuata da
+questo aggiornamento del TODO dell'engine.
+
+### iOS: Game Center e API opzionale — da implementare
+
+- [ ] Integrare Game Center tramite il framework ufficiale GameKit, con backend Swift e bridge asincrono verso JavaScript nella WKWebView. Non introdurre un wrapper Rust salvo una necessità concreta di logica condivisa.
+- [ ] Realizzare una libreria JavaScript Game Center separata (nome da definire), collegata a `roves-api` come `peerDependencies` con `peerDependenciesMeta["<pacchetto-game-center>"].optional = true`. Il gioco installa il pacchetto esplicitamente; il core API deve funzionare senza di esso, evitando import statici obbligatori.
+- [ ] Rendere l'integrazione disabilitata per default e attivabile nel packaging iOS. Aggiungere capability/entitlement Game Center e configurazione del progetto soltanto quando richiesti; documentare configurazione degli ID in App Store Connect.
+- [ ] Esporre disponibilità, stato autenticazione/profilo giocatore, obiettivi e classifiche con API asincrone coerenti nello stile con Steam e Google Play. Gestire utente non autenticato, annullamento, errori e uso fuori dalla piattaforma supportata.
+- [ ] Valutare salvataggi GameKit con requisiti iCloud/capability appropriati, sincronizzazione tra dispositivi, conflitti, versioni e funzionamento offline; mantenere distinto il salvataggio locale dal backend cloud.
+- [ ] Valutare matchmaking e multiplayer GameKit come estensione opzionale successiva, se richiesti dai giochi.
+- [ ] Implementare acquisti in-app tramite StoreKit in un modulo separato e opzionale, con verifica delle transazioni, ripristino e gestione degli stati di acquisto.
+- [ ] Verificare build senza integrazione e build abilitata, autenticazione e funzionalità su dispositivi reali, con account/configurazione di test appropriati. Coordinare libreria API e strumenti di packaging nei rispettivi repository.
+
+Riferimenti ufficiali: [Game Center](https://developer.apple.com/game-center/),
+[GameKit](https://developer.apple.com/documentation/gamekit),
+[StoreKit](https://developer.apple.com/documentation/storekit).
+Questa voce aggiunge il lavoro al backlog; non implementa né abilita i servizi Apple.
+
+### Epic Online Services: API opzionale — da implementare
+
+- [ ] Realizzare l'integrazione EOS come libreria JavaScript separata (nome da definire), collegata a `roves-api` in `peerDependencies` con `peerDependenciesMeta["<pacchetto-eos>"].optional = true`. Il gioco installa esplicitamente il pacchetto; il core API deve funzionare senza di esso, evitando import statici obbligatori.
+- [ ] Rendere il backend EOS disabilitato per default e abilitabile nel packaging. Includere SDK e librerie native soltanto nelle build che lo richiedono; iniziare dai target desktop Windows/macOS/Linux e verificare separatamente supporto e requisiti mobile.
+- [ ] Valutare SDK ufficiale EOS tramite FFI Rust e wrapper mantenuti: verificare compatibilità, licenza, distribuzione dei binari, callback, gestione della memoria, inizializzazione/tick e arresto. Non presumere l'esistenza di un SDK Rust ufficiale.
+- [ ] Configurare prodotto, sandbox, deployment e client policy nel Developer Portal. Distinguere autenticazione Epic Account Services e identità EOS Connect/Product User ID, scegliendo il flusso richiesto dal gioco; non distribuire credenziali privilegiate o segreti del backend nel bundle.
+- [ ] Esporre disponibilità, autenticazione/stato giocatore, obiettivi, statistiche e classifiche con API asincrone coerenti nello stile con Steam, Google Play e Game Center. Documentare capability effettive e gestire servizio assente, offline, annullamento ed errori.
+- [ ] Integrare Player Data Storage come backend cloud opzionale, con quote, versioni, conflitti tra dispositivi e recupero offline; preservare i salvataggi locali e mantenere distinti i backend Steam/Google/Apple/EOS.
+- [ ] Valutare lobby, sessioni, matchmaking, P2P e voce come estensioni opzionali successive, secondo le esigenze dei giochi.
+- [ ] Mantenere distinta l'integrazione EOS dalla distribuzione e dalle funzionalità commerciali dell'Epic Games Store: non rendere la pubblicazione nello store un prerequisito dell'API.
+- [ ] Verificare build del core senza EOS e build abilitata, caricamento delle librerie distribuite, callback/lifecycle, autenticazione con account di test, obiettivi/classifiche e conflitti cloud. Coordinare libreria API e strumenti di packaging nei rispettivi repository.
+
+Riferimento ufficiale: [Epic Online Services](https://dev.epicgames.com/docs/epic-online-services/eos-overview).
+Questa voce pianifica l'integrazione opzionale; non introduce SDK o funzionalità runtime.
+
+### Mobile: completare il percorso applicativo
+
+- [ ] **WebView native Android/iOS:** proposta nella [PR #7](https://github.com/DRincs-Productions/roves/pull/7), non presente in `main` alla revisione. Verificare prima di sostituire il percorso Servo/JNI corrente.
+- [ ] **iOS:** contenitore e packaging completi, firma/archive/export, icone e metadati per gioco, test su simulatori/dispositivi. Il contenitore proposto in #7 carica file locali: restano origine stabile, fetch/moduli, routing e storage compatibili con i giochi reali.
+- [ ] **Bridge mobile Roves:** definire capability e contratti asincroni per salvataggi, servizi store e funzionalità native; evitare di presumere che `game://`, `steam:` e i protocolli desktop esistano automaticamente nelle WebView.
+- [ ] **Verifiche Android aperte:** firma release effettiva; bundling su Windows; caricamento di routing, asset assoluti, moduli e storage su dispositivo; pausa/ripresa, rotazione, fullscreen, audio e gamepad. Il codice presente e una build debug riuscita non chiudono questi test.
+- [ ] **Manifest residuo:** definire quali campi hanno un equivalente mobile sensato (`background_color`, display, lingua ed entry point) e testarli. Name/short_name/orientation, candidati manifest e risoluzione icona sono già presenti: non reimplementarli. Non reintrodurre la status bar contro il design precedente.
+
+### Desktop: prestazioni, contenuti e salvataggi
+
+- [ ] **Baseline hardware:** confermare GPU/renderer e assenza di fallback software sui target reali Windows/macOS/Linux; fissare giochi, risoluzioni, cache e metodologia di misura.
+- [ ] **Frame pacing e rendering:** valutare refresh/vsync del monitor, costo composizione della shell e repaint separati GUI/contenuto. Indagine nella [PR #8](https://github.com/DRincs-Productions/roves/pull/8), non implementazioni completate.
+- [ ] **I/O e asset:** evitare letture/decompressione bloccanti nei percorsi sensibili; misurare copie e code dei blocchi; valutare prefetch e pack per livello con cancellazione e invalidazione cache coerenti.
+- [ ] **Consumi in background:** verificare e collegare occlusione/minimizzazione al throttling desktop, preservando la politica del gioco per audio e multiplayer.
+- [ ] **GC incrementale:** includere il lavoro lungo di correttezza Servo–SpiderMonkey (inventario pre-barriere, correzioni, stress test, poi benchmark). Non abilitarlo semplicemente tramite flag: `script_runtime.rs` segnala pre-barriere non corrette. Piano nella PR #8.
+- [ ] **Salvataggi locali robusti:** valutare scritture atomiche, backup/recupero da interruzioni, schema/versioni e migrazioni; il protocollo attuale usa scritture dirette ai file.
+- [ ] **Conflitti Steam Cloud:** il backend esiste già, ma documenta una politica locale-prima con download cloud quando manca il file locale. Implementare confronto/versioni e risoluzione dei conflitti se richiesti; verificare errori/quota/offline senza perdere il salvataggio locale.
+- [ ] **Steam avanzato, opzionale:** valutare classifiche e ulteriori servizi richiesti dai giochi. Obiettivi, statistiche, DLC, overlay e Steam Cloud sono già implementati: concentrare il backlog sulle capability mancanti e sui test reali.
+- [ ] **Aggiornamenti contenuti, opzionali:** progettare aggiornamento/versionamento dei contenuti senza ricreare sempre il bundle, con integrità, rollback e coerenza della cache. Decidere prima se serve un updater completo o basta il meccanismo di aggiornamento della piattaforma store.
+
+### Diagnostica prestazioni: Tracy e Perfetto — da implementare
+
+- [ ] Costruire una telemetria Roves comune con clock monotono, frame ID,
+  aggregati p50/p95/p99, frame oltre budget e buffer circolare preallocato.
+  Evitare log, allocazioni e serializzazione per ogni frame.
+- [ ] Integrare **Tracy** nelle build developer/profiling per frame, zone CPU/GPU,
+  thread, lock, allocazioni e marcatori di GC, shader, navigazione, asset, audio
+  e presentazione. Misurare l'overhead; non abilitarlo nelle release normali.
+- [ ] Aggiungere un exporter **Perfetto** per timeline correlabili e analisi
+  automatica, mantenendo anche JSON/CSV versionati. Verificare apertura, query e
+  confronto delle tracce Roves/Chrome sullo stesso benchmark.
+- [ ] Nelle release includere soltanto diagnostica Roves leggera, disabilitata
+  per default e attivabile esplicitamente dall'utente. Nessun upload automatico;
+  omettere URL, percorsi e dati sensibili per default.
+- [ ] Aggiungere overlay opzionale e trigger manuale/automatico per congelare gli
+  ultimi secondi intorno a uno scatto. L'overlay deve leggere aggregati esistenti
+  e non modificare il percorso di rendering quando è nascosto.
+- [ ] Eseguire prove A/B con strumentazione spenta, diagnostica release attiva e
+  profiling completo, dichiarando overhead e campioni persi.
+
+Riferimenti: [Tracy](https://github.com/wolfpld/tracy) e
+[Perfetto](https://perfetto.dev/docs/).
+
+### Rendering futuro: fast path wgpu — backlog
+
+- [ ] Progettare un fast path interno a Servo per il caso di una singola
+  WebView/canvas fullscreen, inizialmente WebGPU, riducendo composizione, blit,
+  clear e copie GPU non necessari. Mantenere WebRender come percorso completo.
+- [ ] Attivarlo solo quando la pagina e lo stato grafico soddisfano condizioni
+  verificabili; DOM/CSS, overlay, dialoghi, trasparenza o feature incompatibili
+  devono tornare automaticamente al percorso generale senza differenze visibili.
+- [ ] Preservare resize/HiDPI, color space e alpha, screenshot/capture, context
+  loss, metriche, accessibilità e presentazione coerente su Windows, macOS e
+  Linux.
+- [ ] Implementarlo soltanto dopo telemetria e baseline: confrontare copie GPU,
+  composizione, latenza, p95/p99 e frame oltre budget. Questa è
+  un'ottimizzazione futura, non una priorità dell'intervento corrente.
+
+### Dipendenze, release e manutenzione
+
+- [ ] **Aggiornamenti mirati:** valutare mozjs nella serie attuale e runtime nativo GStreamer, poi prove coordinate egui/ANGLE/zstd/allocatore. Analisi separata nella [PR #9](https://github.com/DRincs-Productions/roves/pull/9); nessun bump è già stato applicato.
+- [ ] **Grafo desktop effettivo:** controllare feature e duplicazioni del target scelto prima di rimuovere dipendenze o deduplicare major incompatibili; non trattare tutto il lockfile workspace come contenuto del binario.
+- [ ] **Distribuzione del fork:** i workflow test/release/android sono alla radice di questo repository e quindi non sono qui dormienti. Verificare separatamente che i consumer esterni scarichino Roves patchato; il vecchio punto 1 non dimostra un difetto ancora presente in quei repository.
+- [ ] **Matrice di regressione:** aggiungere/verificare smoke test delle app confezionate con routing, JS, storage, salvataggi, grafica, audio e API native; separare test della build, test della firma e test sul dispositivo.
+- [ ] **Riproducibilità:** ogni modifica runtime deve essere riproducibile da upstream + patch e mantenere coerenti documentazione, lockfile, bundle e asset CI. Gli aggiornamenti del solo backlog non richiedono una patch del motore.
+- [ ] **Console:** definire priorità e feasibility per i target roadmap prima di considerarli supportati; implementazioni e validazione richiedono gli SDK e ambienti appropriati.
+
+### Regola per chiudere i punti
+
+Distinguere sempre **implementato**, **verificato** e **proposto in PR**. Un punto
+si chiude con evidenza pertinente al comportamento finale. Il presente aggiornamento
+è una revisione statica del backlog: non certifica build/device test né modifica
+funzionalità del motore.
+
+## Storico delle verifiche e degli interventi precedenti
+
 ---
 
 ## 1. Collegare `embedded.yml` al build patchato invece del binario Servo stock
@@ -39,13 +191,13 @@ esattamente il "quale renderer/GPU viene effettivamente riportato" che mancava. 
 fare: controllare i log di Servo/ANGLE al lancio, e soprattutto **verificarlo su una build
 reale** su ciascuna piattaforma della matrice CI (Windows/macOS/Linux) — non ancora fatto.
 
-## 3. Android: leggere tutto `manifest.webmanifest` (non solo `orientation`), override via parametro, e riflettere tutto in `roves-action`/Roves Packmaster (`roves-ui`)
+## 3. Android: leggere tutto `manifest.webmanifest` (non solo `orientation`), override via parametro, e riflettere tutto in `roves-action`/Roves Packmaster (`roves-packmaster`)
 
 **Stato: fatto (2026-09-01/02, branch `android` su tutti e tre i repo).** Copertura completa
 del manifest (`name`/`short_name`/`orientation`, non più solo `orientation`) + override
 espliciti lato engine (vedi `CUSTOMIZATIONS.md`, voce "`mach bundle --android`: full manifest
 coverage..."); `roves-action` espone `android-app-name`/`android-orientation`/
-`android-theme-color`; Roves Packmaster (`roves-ui`) ha sia la UI (card Mobile, switch
+`android-theme-color`; Roves Packmaster (`roves-packmaster`) ha sia la UI (card Mobile, switch
 webmanifest, campi disabilitati che mostrano i valori reali del manifest) sia un vero backend
 (`src-tauri/src/android.rs`) che genera davvero un `.apk` — non più solo placeholder.
 
@@ -84,7 +236,7 @@ Da fare, in ordine indicativo di dipendenza:
   supporta questi parametri, `action.yml` deve esporli come input (mirroring — vedi
   `CLAUDE.md`, sezione "keep `roves-action` in sync"). Non toccato in questo giro perché il
   lavoro Android è stato scoperto esplicitamente alla sola cartella dell'engine.
-- **Roves Packmaster** (cartella sibling `roves-ui`, package.json name `roves-packmaster` —
+- **Roves Packmaster** (cartella sibling `roves-packmaster`, package.json name `roves-packmaster` —
   stesso progetto descritto in `CLAUDE.md`, solo nome di cartella diverso): aggiungere una
   nuova sezione "Mobile" (per ora solo Android), parallela all'esistente sezione Desktop/
   `PortableSettings` in `src/lib/settings.ts` — una card abilitabile/disabilitabile come quella
@@ -97,10 +249,16 @@ Da fare, in ordine indicativo di dipendenza:
 
 ## 4. Bundling Android su Windows: `ndk-build` invocato senza fallback `.cmd`
 
-**Stato: fatto (2026-09-10), non verificato su un build Windows reale.** Vedi
+**Superato (2026-09-13):** Android non compila più Rust/NDK affatto — vedi
+`CUSTOMIZATIONS.md`, voce "Mobile pivots from Servo to native WebView". `servoview/`
+(il modulo che invocava `ndk-build`) è stato eliminato del tutto. Questo intero punto,
+incluso il punto 6 sotto, non si applica più: non c'è nessun `ndk-build`/NDK da invocare,
+su nessuna piattaforma. Lasciato qui solo come riferimento storico.
+
+**Stato (storico, pre-pivot): fatto (2026-09-10), non verificato su un build Windows reale.** Vedi
 `CUSTOMIZATIONS.md`, voce "Fix `ndk-build` invocation for Windows", e
 `patches/servo-v0.5.0/0004-android.patch` (rigenerata). Scoperto il 2026-09-02 lavorando al
-backend Android di Roves Packmaster (`roves-ui/src-tauri/src/android.rs`).
+backend Android di Roves Packmaster (`roves-packmaster/src-tauri/src/android.rs`).
 
 `support/android/apk/servoview/build.gradle.kts` (upstream Servo, non una customizzazione di
 questo fork) invoca l'NDK con `getNdkDir() + "/ndk-build"` — letteralmente senza estensione,
@@ -124,7 +282,7 @@ noto di `ProcessBuilder` su Windows, non testato.
 `org.gradle.internal.os.OperatingSystem.current().isWindows`. Verificato solo che la patch si
 applichi pulita a un'estrazione pristine di v0.5.0 — non testato contro un vero
 Gradle/NDK/`ndk-build.cmd` su Windows (nessun toolchain Android disponibile in questa
-sessione). `check_android_availability()` in `roves-ui/src-tauri/src/android.rs` va comunque
+sessione). `check_android_availability()` in `roves-packmaster/src-tauri/src/android.rs` va comunque
 aggiornato per smettere di bloccare Windows, e il tutto va riverificato su un runner Windows
 reale prima di considerare questo punto davvero chiuso — vedi il punto 6 sotto.
 
@@ -134,7 +292,7 @@ reale prima di considerare questo punto davvero chiuso — vedi il punto 6 sotto
 verificato end-to-end via CI reale (vedi punto 3 sopra); `--android-release` in sé resta non
 verificato** (nessun ambiente CI con un keystore reale lo esercita ancora). Lato Roves
 Packmaster: fatto (2026-09-10, `src-tauri/src/signing.rs`), anch'esso non verificato con una
-build reale — vedi `roves-ui/TODO.md` #2. `roves-action` ancora da fare (vedi sotto). Vedi
+build reale — vedi `roves-packmaster/TODO.md` #2. `roves-action` ancora da fare (vedi sotto). Vedi
 `CUSTOMIZATIONS.md`, voce "`mach bundle --android-release`", per il dettaglio completo.
 
 `mach bundle --android --android-release` ora sceglie la variante Gradle `Release` invece di
@@ -155,11 +313,17 @@ che l'apk risultante sia genuinamente firmato, es. via `apksigner verify`).
 
 ## 6. Bundling/generazione dell'APK Android anche su Windows
 
-**Stato: sbloccato dal punto 4, ma non ancora chiuso.** Il blocco Gradle (`ndk-build` senza
+**Superato (2026-09-13):** vedi la nota nel punto 4 sopra — niente più NDK/Rust da
+cross-compilare, su nessuna piattaforma, quindi "farlo funzionare su Windows" non è più
+un problema NDK ma solo Java+Android SDK+Gradle, già cross-platform di per sé.
+`roves-packmaster/src-tauri/src/android.rs` va comunque riscritto per il nuovo bundling
+Gradle-only — vedi `roves-packmaster/TODO.md`.
+
+**Stato (storico, pre-pivot): sbloccato dal punto 4, ma non ancora chiuso.** Il blocco Gradle (`ndk-build` senza
 fallback `.cmd`) è risolto (punto 4), ma restano da fare, in ordine:
 
 1. Rimuovere il blocco esplicito in `check_android_availability()`
-   (`roves-ui/src-tauri/src/android.rs`) che oggi disabilita Android su Windows in Packmaster
+   (`roves-packmaster/src-tauri/src/android.rs`) che oggi disabilita Android su Windows in Packmaster
    — non ha più motivo di esistere una volta verificato il punto 4.
 2. **Verificare per davvero su un runner/macchina Windows con Android SDK/NDK reale** — il
    fix del punto 4 non è mai stato eseguito contro un `ndk-build.cmd` vero, solo verificato
@@ -171,7 +335,15 @@ fallback `.cmd`) è risolto (punto 4), ma restano da fare, in ordine:
 
 ## 7. Portare il protocollo `game://` anche su Android
 
-**Stato: fatto (2026-09-12) — vedi `CUSTOMIZATIONS.md`, voci "Port `file:`'s content-root
+**Superato (2026-09-13):** Android non usa più Servo/`game://`/`file://` affatto — vedi
+`CUSTOMIZATIONS.md`, voce "Mobile pivots from Servo to native WebView". Il problema che
+questo punto risolveva (router lato client, path assoluti rotti) è ora risolto in modo
+diverso: `WebViewAssetLoader` serve il gioco su una vera origine
+`https://appassets.androidplatform.net/`, non `file://`, quindi non c'è più bisogno del
+protocollo `game://` su Android. Lasciato qui come riferimento storico — il lavoro sotto
+resta valido per desktop/OpenHarmony, che continuano a usare Servo.
+
+**Stato (storico, pre-pivot): fatto (2026-09-12) — vedi `CUSTOMIZATIONS.md`, voci "Port `file:`'s content-root
 rebasing to Android" e "Port the full `game://content/` protocol to Android", per il dettaglio
 completo. In attesa di conferma finale su dispositivo reale + CI (`android.yml`/`test.yml`)
 prima di considerarlo definitivamente chiuso.**
@@ -192,6 +364,141 @@ fallback del router. Il fix completo — portare anche `game.rs`/`GameProtocolHa
 il fallback di `file.rs`) sullo stesso modulo condiviso, e far avviare `egl/app.rs` su
 `game://content/` invece del `file://` letterale quando c'è un lancio bundled — è stato
 implementato nella stessa giornata.
+
+## 8. Rifinire il pivot mobile a WebView nativo (Android/iOS)
+
+**Stato: motore fatto (2026-09-13) — vedi `CUSTOMIZATIONS.md`, voce "Mobile pivots from
+Servo to native WebView".**
+
+**Aggiornamento 2026-09-14 — punti 1 e 2 chiusi:**
+
+1. **Migrare `roves-action` e `roves-packmaster`/Packmaster al nuovo bundling Gradle-only —
+   fatto**, verificato leggendo il codice attuale di entrambi i repo (non solo da questa
+   sessione: già così quando controllato). `roves-action`'s `android`/`ios` non scaricano più
+   `roves_android_native_arm64.zip`; Packmaster's `android.rs` non fa più bootstrap
+   NDK/Rust — solo JRE + Android SDK + Gradle, esattamente come descritto qui sopra.
+2. **Wire iOS staging into `mach bundle` — fatto (2026-09-14).** `_bundle_ios`/
+   `_sign_and_export_ios_release` in `post_build_commands.py`: `--ios`/`--ios-app-name`/
+   `--ios-bundle-id`/`--ios-release` reali, con firma via `IOS_SIGNING_CERTIFICATE_P12_PATH`/
+   `_PASSWORD`/`IOS_SIGNING_PROVISIONING_PROFILE_PATH`/`IOS_SIGNING_TEAM_ID` (stesso schema
+   "env var in, rifiuta se mancano" di `--android-release`). Vedi `CUSTOMIZATIONS.md`, voce
+   "Wire `--ios`/`--ios-release` into `mach bundle`", per il dettaglio completo — incluso
+   **perché** la firma Android e quella iOS non sono simmetriche (keystore autofirmata vs.
+   certificato che solo Apple può controfirmare). Stessa giornata: `roves-action` ha guadagnato
+   `android-release`/`android-keystore-*` e `ios-release`/`ios-certificate-*`/
+   `ios-provisioning-profile-*`/`ios-team-id`; Roves Packmaster ha guadagnato un'intera sezione
+   iOS (`ios.rs`/`ios_signing.rs` + UI in `configure.tsx`), parallela a quella Android già
+   esistente (la firma Android in Packmaster era **già completa** prima di questa sessione —
+   trovata leggendo `configure.tsx`, non mancante come una prima ricognizione superficiale
+   aveva sospettato).
+   **Non verificato end-to-end su una build reale**: nessun toolchain Rust funzionante su
+   questa macchina Windows (linker mancante, vedi i gap di toolchain già noti altrove in
+   questo file) per un `cargo check` di Packmaster, e nessun macOS/Xcode per eseguire
+   `xcodebuild` per davvero da nessuna parte in questa sessione. Verificato staticamente
+   (rilettura riga per riga, un test Python isolato per `_bundle_ios`/
+   `_sign_and_export_ios_release` con `subprocess`/`security`/`xcodebuild` mockati, `tsc`/
+   Biome puliti per il lato TypeScript di Packmaster) — la vera verifica resta la CI reale
+   (`ios.yml`/`android.yml` del motore, `test.yml` di Packmaster) più, alla fine, qualcuno con
+   un Mac reale che prova davvero `--ios-release`/il tab iOS di Packmaster. La firma iOS
+   *release* end-to-end resta non verificabile del tutto finché non arriva un certificato
+   Apple Distribution + provisioning profile reali (richiede un account Apple Developer
+   Program reale — generata una CSR a questo scopo, consegnata fuori banda, non committata).
+3. **Verifica su dispositivo reale, entrambe le piattaforme** — **Android: fatta (2026-09-14)**,
+   su un dispositivo reale (Pixel 8 Pro) con un APK reale (`pixi-vn-react-template` via
+   `roves-action`). Ha trovato e corretto bug reali, non solo confermato che "funzionava":
+   barre di stato/navigazione mai nascoste di default, body del 404 nullo invece di reale,
+   fallback SPA dead-code (`AssetsPathHandler.handle()` non ritorna mai `null`, a differenza
+   di quanto assunto), registrazione Service Worker fallita (serve un
+   `ServiceWorkerControllerCompat` separato), e — la causa vera dietro un primo "Not Found"
+   visto in due round di fix precedenti — l'app caricava `.../index.html` invece della radice
+   `/`, facendo sì che il router lato client del gioco (non Android) rendesse la propria
+   pagina 404. Vedi `CUSTOMIZATIONS.md`, voci del 2026-09-14, per il dettaglio completo di
+   ogni bug e come sono stati diagnosticati (Chrome DevTools via `chrome://inspect`, non solo
+   lettura del codice — la lezione esplicita di quella sessione è che "CI verde + code review"
+   da sola aveva mancato la causa vera per due round consecutivi).
+   **iOS: ancora non verificato** — nessun macOS/Xcode/simulatore/dispositivo disponibile in
+   nessuna sessione finora. Il codice (`App.swift`) è stato riletto riga per riga contro gli
+   stessi identici bug trovati su Android (URL di boot, logica di fallback) e **non li ha**:
+   carica già la radice nuda `game://content/`, e il suo fallback usa un vero controllo
+   `FileManager.fileExists` invece di un `?:` su un valore che non è mai `nil` — ma questo
+   resta un'analisi statica, non una conferma su un device/simulatore reale. **Se capita di
+   avere del tempo e un Mac/dispositivo iOS a disposizione**: fare lo stesso identico test
+   fatto su Android (build reale via `roves-action`'s `ios: 'true'` o `support/ios/bundle.py`,
+   avvio su un device/simulatore reale, ispezione con Safari Web Inspector — l'equivalente
+   iOS di `chrome://inspect`) e condividere il risultato sul Discord del progetto
+   (<https://discord.gg/E95FZWakzp>) — utile sia se conferma che tutto funziona, sia
+   soprattutto se emerge un problema analogo a quelli trovati su Android.
+4. **APK signing** (punto 5 sopra) resta valido e non affetto dal pivot — `--android-release`
+   funziona identicamente nel nuovo `_bundle_android`.
+
+**Aggiornamento 2026-09-15 — bug CI del job `ios` diagnosticato e risolto:** `mach bundle --ios`
+falliva in CI in ~6 secondi, prima ancora di entrare in `_bundle_ios` — causa: il decoratore
+`binary_selection` di `command_base.py` risolve `servo_binary` chiamando
+`self.get_binary_path(...)` a meno che `self.target.needs_packaging()` sia vero, e questo è vero
+per Android/OpenHarmony (hanno una propria `BuildTarget` subclass) ma **non** per iOS (che non ne
+ha una — resta sul target host macOS di default). Risultato: `get_binary_path` cercava un
+binario `servoshell` mai compilato (`ios.yml` non esegue mai `mach build`) e falliva con "No
+Servo binary found" prima che il branch `--ios` di `bundle()` venisse mai raggiunto. Vedi
+`CUSTOMIZATIONS.md`, voce "Fix `mach bundle --ios` failing immediately", per il dettaglio
+completo. **Confermato su CI reale (2026-09-15)**: il job `ios` è ora verde end-to-end (build,
+upload artifact, packaging, upload release "test" tutti riusciti) — vedi
+`CUSTOMIZATIONS.md` per il link al run. **Rimane aperto, non collegato a questo fix**:
+`ios-release-signing-smoke` fallisce separatamente allo step `security import` — causa non
+ancora confermata (nessuna annotation utile, nessun PAT GitHub disponibile per leggere il log
+reale in questa sessione).
+
+**`ios-release-signing-smoke` — cinque tentativi sbagliati prima della causa vera, stessa
+sessione (2026-09-15):** il log reale (letto con un PAT fornito dall'utente) mostrava
+`SecKeychainItemImport: MAC verification failed (wrong password?)`. Tentativi, in ordine, tutti
+smentiti dal run successivo: (1) i due secret `IOS_CI_TEST_P12_BASE64`/`_PASSWORD` disallineati
+→ rigenerati e riverificati byte-per-byte, stesso errore; (2) spazio/a-capo residuo nella
+password da un copia-incolla → `tr -d '[:space:]'`, stesso errore; (3) su suggerimento
+dell'utente, eliminati del tutto i secret (sia questo certificato iOS che la keystore Android di
+`android-release-signing` servono solo a testare il meccanismo, mai riusati per una release
+reale) — generati invece direttamente nel job CI (`openssl`/`keytool`); (4) **causa vera,
+trovata solo quando certificato/chiave/password generati insieme nello stesso job hanno dato lo
+stesso identico errore, escludendo ogni teoria sui secret**: `openssl pkcs12 -export` da OpenSSL
+3.0 in poi usa di default PBES2/AES-256, formato che l'API macOS `SecKeychainItemImport` non sa
+decodificare — e lo segnala con lo stesso messaggio di una password sbagliata. Fix:
+`-certpbe PBE-SHA1-3DES -keypbe PBE-SHA1-3DES -macalg SHA1`; (5) con l'import finalmente
+funzionante, `security find-identity -v -p codesigning` restituiva "0 valid identities found"
+(un certificato self-signed non è mai attendibile per quella policy) — tentato
+`security add-trusted-cert` per fidarlo esplicitamente, che però ha **bloccato il job 12+
+minuti** in attesa di un dialog di autorizzazione grafico mai arrivato su un runner headless
+(richiesta cancellazione manuale del run, il PAT read-only non può farlo), poi anche con il
+workaround `authorizationdb`+`sudo` standard di GitHub è fallito comunque con `errSecAuthFailed`
+(macOS moderno blocca la scrittura del trust store di sistema). **Fix finale**: rileggendo il
+codice di produzione (`_sign_and_export_ios_release`) risulta che non chiama mai
+`find-identity` né valida il trust — passa l'identità direttamente a `xcodebuild archive`, che
+risolve la firma via profilo di provisioning + team ID. Tutto l'inseguimento del trust stava
+testando un requisito che il codice reale non ha mai avuto: rimosso `-p codesigning`/`-v` dalla
+verifica, usando `security find-identity` senza filtri (elenca tutte le identità a prescindere
+dal trust — tutto ciò che serve per provare che l'import ha funzionato). Vedi `CUSTOMIZATIONS.md`
+per il dettaglio completo passo per passo. **Confermato su CI reale (2026-09-15)** — run
+<https://github.com/DRincs-Productions/roves/actions/runs/34967882996>, tutti e tre i job
+(`ensure-test-release`, `ios-release-signing-smoke`, `ios`) verdi. Saga chiusa: 6 tentativi, di
+cui i primi 5 sbagliati, prima di trovare che il codice reale non valida mai il trust e che
+bastava smettere di testare quel requisito inesistente.
+
+**Bug separato trovato nello stesso run — `android`/`android-release-signing` falliscono su
+`android-actions/setup-android@v3` (non un flake, un problema reale e permanente).** Il log reale
+mostra `Warning: Failed to find package 'tools'` — Google ha rimosso dal repository SDK il
+pacchetto legacy `tools` che questa action richiede di default. Fix: passato esplicitamente
+`packages: platform-tools` a entrambi i punti in `android.yml` che usano l'action, eliminando
+`tools` (non serve a nulla qui: il passo successivo installa già `platforms;android-NN`/
+`build-tools;NN.N.N` per nome). Vedi `CUSTOMIZATIONS.md`. **Confermato su CI reale (2026-09-15)**
+— entrambi i job Android completamente verdi, keystore generata in-CI e `apksigner verify`
+inclusi.
+
+**Decisione ancora in sospeso, chiesta esplicitamente all'utente in una sessione precedente
+(2026-09-14), risposta: "aspetta" — non ancora ridecisa in questa sessione.** Perché
+`roves-action`/Roves Packmaster possano davvero usare `--ios`/`--ios-release` (oggi puntano a un
+tag motore già pubblicato che non li contiene affatto), serve tagliare una nuova release del
+motore (vedi `CLAUDE.md`, "Cutting a versioned release") e poi aggiornare il pin in
+`roves-action/action.yml` e `roves-packmaster/src/lib/shell-version.ts`'s `TARGET_SHELL_VERSION`.
+L'utente aveva chiesto di rivedere prima il codice — da richiedere conferma esplicita prima di
+procedere, non tagliare la release di propria iniziativa solo perché il bug del job `ios` è
+stato risolto.
 
 ## Note
 

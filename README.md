@@ -117,7 +117,8 @@ your page's own initial load — see the "Native boot splash" and later boot-spl
 | **Windows** (x64) | ✅ Implemented | native (Rust std) |
 | **macOS** (Apple Silicon and Intel) | ✅ Implemented | native (Rust std) |
 | **Linux** (x64) | ✅ Implemented | native (Rust std) |
-| Android | 🚧 Early/experimental (debug `.apk` only) | JNI |
+| Android | 🚧 Native WebView APK, `mach bundle --android`, real release signing | Android WebView |
+| iOS/iPadOS | 🚧 Native WKWebView, `mach bundle --ios`, real release signing | WKWebView |
 | Nintendo Switch | 🚧 In development | `nx` |
 | Nintendo 3DS | 🚧 In development | `ctru-rs` |
 | PlayStation Portable (PSP) | 🚧 In development | `rust-psp` |
@@ -127,22 +128,19 @@ your page's own initial load — see the "Native boot splash" and later boot-spl
 | Xbox One | 🚧 In development | — (official SDK, NDA-gated; no public Rust crate) |
 | Xbox Series X\|S | 🚧 In development | — (official SDK, NDA-gated; no public Rust crate) |
 
-Desktop targets (Windows, macOS, Linux) are supported today. Android builds from source via
-`mach build --android` (a plain engine-shell debug `.apk` is also built on every commit to
-`main`, see `.github/workflows/android.yml`) and `mach bundle --android --content-dir <dist>`
-packs a game's own web content into that APK too, reading `manifest.webmanifest`'s `name`/
-`short_name`/`orientation` fields (with `--android-app-name`/`--android-orientation`/
-`--android-theme-color` overrides) to configure the app's launcher label, screen orientation,
-and status bar color. Both
-[`roves-action`](https://github.com/DRincs-Productions/roves-action) (`android: true` and the
-matching `android-*` inputs) and
-[Roves Packmaster](https://github.com/DRincs-Productions/roves-packmaster) (a "Mobile" section
-in its UI that self-bootstraps a JRE/Android SDK/NDK — no Rust/Cargo/Android Studio needed) can
-now build a real Android release without a source checkout. It's still early: debug `.apk`
-only, no signed/release build path, no way to update bundled content short of a full rebuild,
-and Packmaster's Android build isn't available when Packmaster itself runs on Windows (Gradle's
-NDK invocation has no `.cmd` fallback there yet). All console targets are on the roadmap but
-not yet functional.
+Desktop targets (Windows, macOS, Linux) use Servo. Mobile games use the system
+WebView and do not ship or compile Servo. See [mobile packaging](support/MOBILE.md)
+for Android APK and iOS app instructions — both platforms run edge-to-edge
+(status bar and system navigation/home indicator hidden) and are built the
+same way as desktop, via `mach bundle --android`/`--ios`, no separate Xcode-
+or Gradle-only workflow needed. `--android-release`/`--ios-release` produce a
+real, signed release build instead of the default debug/simulator one — see
+`support/MOBILE.md` for the required signing credentials (an Android keystore
+you can generate yourself, or an Apple Distribution certificate + provisioning
+profile from your own Apple Developer Program account for iOS). CI builds a
+native WebView smoke-test APK on Android and an unsigned iOS Simulator build
+on macOS, plus a real signed-release verification for Android. Console
+targets remain on the roadmap.
 
 ## Embedding
 
@@ -241,6 +239,13 @@ Steam Cloud — and `getMostRecent()` can tell which save is newest, Cloud-only 
 without downloading anything. See the "Save-game storage API" entry in [CUSTOMIZATIONS.md] for
 the full design, and the [wiki](https://github.com/DRincs-Productions/roves-wiki) for player/game-dev-facing
 docs.
+
+Separately, letting a player export/import a save as a plain file (`<a download>` on a Blob,
+`<input type="file">`) works out of the box with no `roves-api` call needed — Roves intercepts
+both transparently on every platform (a native "Save As"/"Open" dialog on desktop, a
+player-visible folder and native document picker on Android/iOS). See the wiki's
+[Save-game storage](https://github.com/DRincs-Productions/roves-wiki/blob/main/content/docs/integrations/saves.mdx)
+page for the pattern.
 
 ## Getting started
 

@@ -605,9 +605,19 @@ class CommandBase(object):
                         # For packaged targets (Android, OpenHarmony) the binary is not important,
                         # since we can't run it directly. We could return the shared library object,
                         # but that doesn't seem very useful.
-                        if self.target.needs_packaging():
+                        #
+                        # iOS (--ios) is the same story, but has no BuildTarget subclass of its own
+                        # to route through `needs_packaging()` -- `mach bundle --ios` stages/builds a
+                        # native Swift/WKWebView app via XcodeGen, never a Servo/Rust binary at all
+                        # (see `_bundle_ios` in post_build_commands.py), so `self.target` stays
+                        # whatever the host default is (macOS, `needs_packaging()` False). Without
+                        # this check, `get_binary_path()` below unconditionally required a prior
+                        # `./mach build` -- which `--ios` never needs -- and failed immediately with
+                        # "No Servo binary found", before `bundle()`'s own `--ios` branch ever ran.
+                        if self.target.needs_packaging() or kwargs.get("ios"):
                             if kwargs.get("bin") is not None:
-                                print(f"`--bin` cannot be used with the '{self.target.triple()}' target.")
+                                target_description = "ios" if kwargs.get("ios") else self.target.triple()
+                                print(f"`--bin` cannot be used with the '{target_description}' target.")
                                 sys.exit(1)
                             kwargs["servo_binary"] = None
                         else:

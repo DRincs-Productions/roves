@@ -33,6 +33,49 @@ use crate::prefs::ServoShellPreferences;
 use crate::running_app_state::RunningAppState;
 #[cfg(feature = "gamepad")]
 use crate::running_app_state::ServoshellGamepadDelegate;
+
+/// Intercepts `<a download>` clicks on `blob:`/`data:` URLs (a game's save export, e.g.
+/// `save.download()` writing a JSON save file) and routes them to the new `roves:save_file`
+/// command (`protocols/roves.rs`) instead of leaving Servo to handle them — `<a download>`
+/// isn't implemented in this Servo tree at all (stock upstream, not a Roves patch — see
+/// `components/script/dom/html/htmlanchorelement.rs`'s own TODO), so an unintercepted click
+/// falls through to a real top-level navigation to the `blob:` URL, which then fails outright
+/// with a `NetworkError::BlobURLStoreError("InvalidOrigin")` for any `game://`-hosted page:
+/// this fork gives `game://` documents an opaque origin (see ../../CUSTOMIZATIONS.md's
+/// `game:` protocol entry), and an opaque origin can't round-trip through a serialized
+/// `blob:` URL, so the origin check a blob fetch does against its creating document's origin
+/// can never pass. Confirmed on a real Windows build: exactly this error, verbatim.
+///
+/// Mirrors `support/ios/App.swift`'s `downloadInterceptScript` (`event.preventDefault()` on
+/// a document-start click listener) and, once fixed the same way there, `MainActivity.kt`'s
+/// own document-start script — same underlying problem (no browser chrome to hand a download
+/// to), same fix, three different native transports for the actual bytes (this one goes
+/// through `roves:save_file`, which pops a real "Save As" dialog — see `AppEvent::SaveFileDialog`'s
+/// own doc comment in event_loop.rs — where the mobile containers write straight into a
+/// fixed, player-visible folder instead, since neither Android's nor iOS's WebView container
+/// has anything resembling a native file-picker to prompt with mid-download).
+const DOWNLOAD_INTERCEPT_SCRIPT: &str = r#"
+(function() {
+  document.addEventListener('click', function(event) {
+    var a = event.target && event.target.closest && event.target.closest('a[download]');
+    if (!a) return;
+    var href = a.getAttribute('href') || '';
+    if (href.indexOf('blob:') !== 0 && href.indexOf('data:') !== 0) return;
+    event.preventDefault();
+    var fileName = a.getAttribute('download') || 'download';
+    function post(dataUrl) {
+      var base64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
+      fetch('roves:save_file?filename=' + encodeURIComponent(fileName) + '&data=' + encodeURIComponent(base64));
+    }
+    if (href.indexOf('data:') === 0) { post(href); return; }
+    fetch(href).then(function(r) { return r.blob(); }).then(function(blob) {
+      var reader = new FileReader();
+      reader.onloadend = function() { post(reader.result); };
+      reader.readAsDataURL(blob);
+    });
+  }, true);
+})();
+"#;
 use crate::window::{PlatformWindow, ServoShellWindowId};
 
 /// Minimum time every headed launch spends on the boot splash before
@@ -374,6 +417,7 @@ impl App {
         // navigation as soon as `<head>` exists (see `dom::userscripts::load_script`), before
         // the page's own scripts.
         user_content_manager.add_script(Rc::new(UserScript::from("window.__ROVES__ = true;")));
+        user_content_manager.add_script(Rc::new(UserScript::from(DOWNLOAD_INTERCEPT_SCRIPT)));
         for script in load_userscripts(self.servoshell_preferences.userscripts_directory.as_deref())
             .expect("Loading userscripts failed")
         {
@@ -588,6 +632,51 @@ impl ApplicationHandler<AppEvent> for App {
             // Already acted on above, while `self.state` was still `Booting` -- a no-op
             // here since `self.state` is `Running` by this point (checked above).
             AppEvent::BootProgress(_) | AppEvent::BootReady => {},
+            AppEvent::SaveFileDialog { suggested_name, data, response } => {
+                // See `HeadedWindow::show_save_file_dialog`'s own doc comment on why this
+                // has to resolve a window/webview itself, unlike `CloseAllWindows` above
+                // (which just acts on every window) or the `EmbedderControl` dialog call
+                // sites in headed_window.rs (which already have a `WebViewId` handed to
+                // them). The first window with an active webview at all, rather than
+                // iterating every window the way `CloseAllWindows` does: a save dialog is a
+                // single, one-shot native prompt, not something that makes sense to show
+                // once per window in this fork's usual single-window setup.
+                //
+                // Cloning the `Rc<ServoShellWindow>` out of `find` (cheap) rather than
+                // trying to carry a `&HeadedWindow` past this point: `as_headed_window()`
+                // returns `Option<&HeadedWindow>` borrowed from the `Rc<dyn PlatformWindow>`
+                // `platform_window()` returns, which is itself a temporary — fine to use
+                // immediately (as `set_running_control_flow` below already does), but not to
+                // carry out of a closure/`match` arm the way an owned `Rc` can be.
+                let target = state
+                    .windows()
+                    .values()
+                    .find(|window| window.active_webview().is_some())
+                    .cloned();
+                match target {
+                    Some(window) => {
+                        let webview_id = window
+                            .active_webview()
+                            .expect("just confirmed present above")
+                            .id();
+                        match window.platform_window().as_headed_window() {
+                            Some(headed_window) => {
+                                headed_window.show_save_file_dialog(webview_id, suggested_name, data, response);
+                            },
+                            None => {
+                                let _ = response.send(Err(
+                                    "No headed window available to show a save dialog in".to_owned(),
+                                ));
+                            },
+                        }
+                    },
+                    None => {
+                        let _ = response.send(Err(
+                            "No window available to show a save dialog in".to_owned(),
+                        ));
+                    },
+                }
+            },
         }
 
         if !self.pump_servo_event_loop(event_loop.into()) {

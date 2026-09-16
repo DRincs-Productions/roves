@@ -432,7 +432,12 @@ jobs:
           set +e
           "${RUNNER[@]}" "$BIN" > smoke-stdout.log 2> smoke-stderr.log &
           PID=$!
-          sleep 10
+          # 15s, not the original 10s: this step now also waits on test-page's own
+          # roves:save_file auto-check (App.tsx, 2s internal delay before it even starts) to
+          # both run and get captured before the process is killed -- 10s was cutting it too
+          # close on a loaded/slower CI runner, confirmed by a real run where exactly this
+          # check came back empty on 2 of 6 platforms while the process itself launched fine.
+          sleep 15
           if kill -0 "$PID" 2>/dev/null; then
             STILL_RUNNING=true
             kill "$PID"
@@ -464,6 +469,25 @@ jobs:
           # generic "bundle exited early", straight from the job summary/annotations.
           if [ -n "$LOG" ] && grep -q "Error initializing GStreamer" "$LOG"; then
             echo "::error::GStreamer failed to initialize — see roves.log above for the plugin/DLL error"
+          fi
+
+          # Regression check for the new `roves:save_file` command (see ../CUSTOMIZATIONS.md's
+          # 2026-09-15 desktop save export/import entry) — test-page's own auto-run effect
+          # (App.tsx) already logged its result via console.log, which reaches this same
+          # captured stdout/roves.log for free (see that effect's own comment). Only the
+          # parameter-validation path is checked here — the real "Save As" dialog needs a
+          # human, see the manual button in the same file.
+          FILES=(smoke-stdout.log)
+          [ -n "$LOG" ] && FILES+=("$LOG")
+          SAVE_FILE_LINE=$(grep -h '\[roves-save-file-autotest\]' "${FILES[@]}" 2>/dev/null | tail -1)
+          if [ -z "$SAVE_FILE_LINE" ]; then
+            echo "::error::no [roves-save-file-autotest] result line found — test-page's roves:save_file check never completed"
+            exit 1
+          elif echo "$SAVE_FILE_LINE" | grep -q '"ok":true'; then
+            echo "::error::roves:save_file with no params unexpectedly succeeded — parameter validation regressed: $SAVE_FILE_LINE"
+            exit 1
+          else
+            echo "roves:save_file parameter-validation check passed: $SAVE_FILE_LINE"
           fi
 
           [ -n "${MOUNT_DIR:-}" ] && hdiutil detach "$MOUNT_DIR" 2>/dev/null
@@ -528,7 +552,9 @@ jobs:
           $stderr = Join-Path $env:RUNNER_TEMP "smoke-stderr.log"
           $proc = Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName -PassThru `
             -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-          Start-Sleep -Seconds 10
+          # 15s, not the original 10s -- same reasoning as the Linux/macOS smoke-test step's
+          # own identical change a few lines up in this file.
+          Start-Sleep -Seconds 15
           $stillRunning = -not $proc.HasExited
           if ($stillRunning) { Stop-Process -Id $proc.Id -Force }
 
@@ -553,6 +579,23 @@ jobs:
           # generic "bundle exited early", straight from the job summary/annotations.
           if ($log -and (Select-String -Path $log.FullName -Pattern "Error initializing GStreamer" -Quiet)) {
             Write-Host "::error::GStreamer failed to initialize — see roves.log above for the plugin/DLL error"
+          }
+
+          # Regression check for the new `roves:save_file` command (see ../CUSTOMIZATIONS.md's
+          # 2026-09-15 desktop save export/import entry) -- same reasoning as the Linux/macOS
+          # smoke-test step's own equivalent check a few lines up in this file.
+          $saveFileFiles = @($stdout)
+          if ($log) { $saveFileFiles += $log.FullName }
+          $saveFileLine = Get-Content $saveFileFiles -ErrorAction SilentlyContinue |
+            Select-String -Pattern '\[roves-save-file-autotest\]' | Select-Object -Last 1
+          if (-not $saveFileLine) {
+            Write-Host "::error::no [roves-save-file-autotest] result line found -- test-page's roves:save_file check never completed"
+            exit 1
+          } elseif ($saveFileLine.Line -match '"ok":true') {
+            Write-Host "::error::roves:save_file with no params unexpectedly succeeded -- parameter validation regressed: $($saveFileLine.Line)"
+            exit 1
+          } else {
+            Write-Host "roves:save_file parameter-validation check passed: $($saveFileLine.Line)"
           }
 
           if (-not $stillRunning) {
@@ -628,3 +671,285 @@ jobs:
             sleep $((attempt * 10))
           done
           exit 1
+
+  # ── Steam: exercise the real steamworks round trip against a mocked backend ────
+  # `--features steam` has been built on every platform in build-and-publish above
+  # since steam.rs itself landed, but that only ever confirmed steamworks-sys
+  # compiles/links -- steamworks::Client::init() always failed silently in CI (no
+  # real Steam client on a runner), so the "unavailable" fallback in steam.rs was
+  # the only path ever exercised there, and @drincs/roves-api/steam's own round
+  # trip through the `steam:` protocol was never verified against a real (even if
+  # fake) Steamworks backend. See test-page/src/App.tsx's own comment on the
+  # auto-run effect for the JS side of this.
+  #
+  # Goldberg/GSE (github.com/Detanup01/gbe_fork, an actively maintained continuation
+  # of the long-standing Mr_Goldberg/goldberg_emulator) is a drop-in libsteam_api.so
+  # replacement that needs no running Steam client at all -- swap it in for the real
+  # redistributable `mach build`'s build.rs already copies next to the binary (see
+  # build.rs's copy_steam_lib) and steamworks-rs's dynamic load picks it up
+  # transparently. This is a local library + a steam_settings/ config folder, not a
+  # network service -- no Docker/container needed.
+  #
+  # steam_interfaces.txt (Goldberg's one hard requirement) has to be generated by
+  # its own generate_interfaces tool run against "the original" steam_api lib --
+  # here that's simply the real redistributable mach bundle just produced a couple
+  # steps above, before we overwrite it with Goldberg's -- so no Steamworks Partner
+  # account or extra download is needed for that part.
+  #
+  # Linux only for now (fastest runner, simplest lib swap, and the only platform
+  # this was validated against) -- extend to Windows/macOS once this first pass is
+  # proven out for real by a green run.
+  steam-emulator-smoke-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: setup python (gives a consistent `python3` across all 3 OSes)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: setup uv (needed by ./mach, see servo/README.md)
+        uses: astral-sh/setup-uv@v5
+
+      - name: setup node (for test-page/)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: build test-page
+        shell: bash
+        working-directory: test-page
+        run: |
+          npm install
+          npm run build
+
+      - name: prefetch pinned rust toolchain
+        shell: bash
+        run: |
+          curl -fsSL -o /tmp/rust-toolchain.toml "https://raw.githubusercontent.com/servo/servo/v${SERVO_TAG}/rust-toolchain.toml"
+          mkdir -p /tmp/toolchain-probe && cp /tmp/rust-toolchain.toml /tmp/toolchain-probe/
+          cd /tmp/toolchain-probe && rustup show
+
+      # Same reconstruction as build-and-publish's own "download + patch Servo
+      # source" step above (see that step for the full reasoning) -- kept as its
+      # own copy rather than a shared step/action since the two jobs diverge right
+      # after this point (no matrix here, only one mach build/bundle instead of six).
+      - name: download + patch Servo source
+        shell: bash
+        run: |
+          curl -fsSL -o servo-src.zip "https://github.com/servo/servo/archive/refs/tags/v${SERVO_TAG}.zip"
+          python3 -c "import zipfile; zipfile.ZipFile('servo-src.zip').extractall('servo-src-tmp')"
+          mv "servo-src-tmp/servo-${SERVO_TAG}" servo-src
+          rm -rf servo-src-tmp servo-src.zip
+
+          shopt -s nullglob
+          patches=(patches/servo-v${SERVO_TAG}/*.patch)
+          if [ ${#patches[@]} -eq 0 ]; then
+            echo "::error::No patches found in patches/servo-v${SERVO_TAG}/ — nothing to test."
+            exit 1
+          fi
+          cd servo-src
+          chmod +x mach
+          for p in "${patches[@]}"; do
+            echo "Applying $(basename "$p")..."
+            patch -p1 < "../$p"
+          done
+
+          mkdir -p test-page
+          cp -r ../test-page/public test-page/public
+          cp -r ../test-page/dist test-page/dist
+
+          mkdir -p resources/fonts
+          cp -r ../resources/fonts/. resources/fonts/
+
+      # Same dpkg-lock wait as build-and-publish's own Linux step above.
+      - name: stop background apt processes and wait for the dpkg lock
+        shell: bash
+        run: |
+          sudo systemctl stop apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+          sudo systemctl kill --kill-who=all apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
+          sudo pkill -9 -f unattended-upgrade 2>/dev/null || true
+          for i in $(seq 1 60); do
+            if ! sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::warning::dpkg/apt lock still held after 60s -- proceeding anyway"
+
+      - name: mach bootstrap (installs build dependencies, real GStreamer)
+        shell: bash
+        working-directory: servo-src
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        timeout-minutes: 15
+        run: ./mach bootstrap --force --yes --skip-lints --skip-nextest
+
+      - name: mach build (debug, --features steam)
+        shell: bash
+        working-directory: servo-src
+        run: ./mach build --features steam
+
+      - name: mach bundle
+        shell: bash
+        working-directory: servo-src
+        run: |
+          ./mach bundle --content-dir test-page/dist --output ../release \
+            --package-name servoshell-test --package-version "${SERVO_TAG}"
+
+      # ── Swap in the Goldberg/GSE emulator ────────────────────────────────────
+      - name: generate steam_settings fixtures and swap in Goldberg/GSE
+        shell: bash
+        run: |
+          URL=$(curl -fsSL https://api.github.com/repos/Detanup01/gbe_fork/releases/latest \
+            | jq -r '.assets[] | select(.name=="emu-linux-release.tar.bz2") | .browser_download_url')
+          if [ -z "$URL" ]; then
+            echo "::error::could not resolve emu-linux-release.tar.bz2 from Detanup01/gbe_fork's latest release"
+            exit 1
+          fi
+          curl -fsSL -o gse.tar.bz2 "$URL"
+          mkdir -p gse
+          tar xjf gse.tar.bz2 -C gse
+
+          # Run generate_interfaces against the REAL redistributable libsteam_api.so
+          # mach bundle just placed in release/ (build.rs's copy_steam_lib) -- must
+          # happen before it gets overwritten below. Copied next to its target and
+          # run from there so wherever it writes the output (cwd, or beside the
+          # input), it lands in release/ either way.
+          cp gse/release/tools/generate_interfaces/generate_interfaces_x64 release/
+          chmod +x release/generate_interfaces_x64 release/libsteam_api.so
+          ( cd release && ./generate_interfaces_x64 libsteam_api.so )
+          rm release/generate_interfaces_x64
+
+          mkdir -p release/steam_settings
+          if [ -f release/steam_interfaces.txt ]; then
+            mv release/steam_interfaces.txt release/steam_settings/steam_interfaces.txt
+          elif [ -f steam_interfaces.txt ]; then
+            mv steam_interfaces.txt release/steam_settings/steam_interfaces.txt
+          else
+            echo "::error::generate_interfaces didn't produce steam_interfaces.txt -- contents of release/:"
+            find release -maxdepth 1
+            exit 1
+          fi
+
+          # Fake but well-known test App ID (Valve's own public "Spacewar" test
+          # app) -- Goldberg is fully offline/local, so any ID works, but this one
+          # avoids any ambiguity with a real DRincs-Productions title.
+          echo "480" > release/steam_settings/steam_appid.txt
+
+          # Matches STEAM_AUTOTEST_ACHIEVEMENT_ID in test-page/src/App.tsx.
+          cat > release/steam_settings/achievements.json << 'JSON'
+          [
+            {
+              "name": "ACH_TEST_1",
+              "displayName": "CI Test Achievement",
+              "description": "Unlocked by the steam-emulator-smoke-test CI job.",
+              "hidden": "0",
+              "icon": "",
+              "icongray": ""
+            }
+          ]
+          JSON
+
+          # Matches STEAM_AUTOTEST_STAT_NAME in test-page/src/App.tsx.
+          cat > release/steam_settings/stats.json << 'JSON'
+          [
+            {
+              "name": "test_stat",
+              "type": "int",
+              "default": "0",
+              "global": "0"
+            }
+          ]
+          JSON
+
+          # The actual swap: steamworks-rs dynamically loads whatever's at this
+          # path by name, so this is transparent to it -- same reasoning as
+          # build.rs's own copy_steam_lib comment on why this works at all.
+          cp gse/release/regular/x64/libsteam_api.so release/libsteam_api.so
+          chmod +x release/libsteam_api.so
+
+      # Launches the real bundle (same shape as build-and-publish's own Linux
+      # smoke-test step above) but goes further: instead of only checking the
+      # process survives, it waits for test-page's auto-run Steam check (see
+      # App.tsx) to report its result via console.log -- which servoshell's
+      # WebViewDelegate::show_console_message already forwards to stdout/
+      # roves.log (ports/servoshell/desktop/headed_window.rs), so no new
+      # Rust-side plumbing was needed to get this result out of a headless run --
+      # and asserts every field came back as a real, mocked Steamworks backend
+      # would produce, not steam.rs's "unavailable" fallback defaults.
+      - name: launch under Xvfb and verify the Steam round trip
+        shell: bash
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb
+          BIN="release/play"
+          chmod +x "$BIN" || true
+
+          set +e
+          xvfb-run -a --server-args="-screen 0 1280x720x24" "$BIN" > smoke-stdout.log 2> smoke-stderr.log &
+          PID=$!
+          sleep 15
+          if kill -0 "$PID" 2>/dev/null; then
+            kill "$PID"
+            wait "$PID" 2>/dev/null
+          else
+            wait "$PID"
+          fi
+
+          echo "--- stdout ---"; cat smoke-stdout.log
+          echo "--- stderr ---"; cat smoke-stderr.log
+
+          LOG=$(find "$HOME/.cache" -iname roves.log 2>/dev/null -exec ls -t {} + 2>/dev/null | head -1)
+          FILES=(smoke-stdout.log)
+          if [ -n "$LOG" ]; then
+            echo "--- roves.log ($LOG) ---"; cat "$LOG"
+            FILES+=("$LOG")
+          fi
+
+          gh_notice() {
+            local msg="$1"
+            msg="${msg//%/%25}"; msg="${msg//$'\r'/%0D}"; msg="${msg//$'\n'/%0A}"
+            echo "::notice::${msg}"
+          }
+
+          RESULT_LINE=$(grep -h '\[roves-steam-autotest\]' "${FILES[@]}" 2>/dev/null | tail -1)
+          if [ -z "$RESULT_LINE" ]; then
+            gh_notice "stdout: $(cat smoke-stdout.log)"
+            gh_notice "stderr: $(cat smoke-stderr.log)"
+            echo "::error::no [roves-steam-autotest] result line found -- either the bundle never launched, or test-page's auto-run Steam check never completed"
+            exit 1
+          fi
+
+          JSON="${RESULT_LINE#*\[roves-steam-autotest\] }"
+          echo "Steam autotest result: $JSON"
+
+          python3 - "$JSON" << 'PYEOF'
+          import json
+          import sys
+
+          result = json.loads(sys.argv[1])
+          expected = {
+              "isAvailable": True,
+              "appId": 480,
+              "unlockAchievement": True,
+              "isAchievementUnlocked": True,
+              "setStatInt": True,
+              "storeStats": True,
+              "getStatInt": 42,
+          }
+          failures = [
+              f"{key}: expected {value!r}, got {result.get(key)!r}"
+              for key, value in expected.items()
+              if result.get(key) != value
+          ]
+          if "error" in result:
+              failures.append(f"JS-side error: {result['error']}")
+          if failures:
+              print("::error::Steam round-trip check failed:\n" + "\n".join(failures))
+              sys.exit(1)
+          print(
+              "Steam round-trip through steamworks-rs + Goldberg/GSE emulator + "
+              "@drincs/roves-api/steam: all checks passed."
+          )
+          PYEOF

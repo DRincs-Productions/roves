@@ -14,7 +14,6 @@ use winit::event_loop::{EventLoop, EventLoop as WinitEventLoop, EventLoopProxy};
 
 use super::app::App;
 
-#[derive(Debug)]
 pub enum AppEvent {
     /// Another process or thread has kicked the OS event loop with EventLoopWaker.
     Waker,
@@ -37,6 +36,42 @@ pub enum AppEvent {
     /// either way the boot URL's files are as ready as they'll get), so `App` can finish
     /// building Servo/`RunningAppState` and open the real webview. See `AppState::Booting`.
     BootReady,
+    /// Requested by `protocols::roves::RovesProtocolHandler`'s `save_file` command (the
+    /// desktop side of a game's save export — see `@drincs/roves-api`'s doc comments, and
+    /// the injected `download`-interception userscript `app.rs` registers alongside
+    /// `window.__ROVES__ = true;`) — same reasoning as `CloseAllWindows` above: the native
+    /// "Save As" dialog this shows (`Dialog::SaveFile` in `dialog.rs`) has to run on the
+    /// main thread, which a `ProtocolHandler` can't touch directly. Unlike `CloseAllWindows`
+    /// this needs a reply: `response` carries the write result back to the still-pending
+    /// `fetch()` once the user actually picks a destination (or cancels).
+    SaveFileDialog {
+        suggested_name: String,
+        data: Vec<u8>,
+        response: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
+}
+
+impl std::fmt::Debug for AppEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AppEvent::Waker => write!(f, "Waker"),
+            AppEvent::Accessibility(event) => f.debug_tuple("Accessibility").field(event).finish(),
+            AppEvent::Gamepad(event, name, index) => {
+                f.debug_tuple("Gamepad").field(event).field(name).field(index).finish()
+            },
+            AppEvent::CloseAllWindows => write!(f, "CloseAllWindows"),
+            AppEvent::BootProgress(progress) => f.debug_tuple("BootProgress").field(progress).finish(),
+            AppEvent::BootReady => write!(f, "BootReady"),
+            // `tokio::sync::oneshot::Sender` isn't `Debug`, so this can't be derived —
+            // `data`'s length stands in for its (likely uninteresting, possibly large)
+            // bytes, same idea as not dumping a whole file's contents into a log line.
+            AppEvent::SaveFileDialog { suggested_name, data, .. } => f
+                .debug_struct("SaveFileDialog")
+                .field("suggested_name", suggested_name)
+                .field("data_len", &data.len())
+                .finish(),
+        }
+    }
 }
 
 impl From<egui_winit::accesskit_winit::Event> for AppEvent {

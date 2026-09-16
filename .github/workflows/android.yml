@@ -1,59 +1,33 @@
-name: 'Build Android APK (debug, from source, with local patches)'
+name: Build Android native WebView APK
 
-# Early Android smoke build: on every push to main, cross-compile the engine for Android and
-# package it into a debug .apk, published two ways: as a plain workflow artifact (per-run
-# provenance, but expires and needs digging through Actions runs to find) and — the easier
-# way to just grab the latest one to sideload/test — as a `roves_android_debug.apk` asset on
-# the rolling "test" GitHub Release (same one used for the two Packmaster-only assets below;
-# not a real, tagged GitHub Release — see test.yml/release.yml for those). This builds the
-# plain engine shell via `./mach build
-# --android` -- no --content-dir, so no bundled game content -- it's the same "engine shell
-# only, no bundled content" scope release.yml's first desktop release started with. A game's
-# own content goes through `mach bundle --android --content-dir <dist>` instead (see
-# CUSTOMIZATIONS.md's "mach bundle --android" entry and post_build_commands.py's
-# `_bundle_android`), not wired into this workflow. See CUSTOMIZATIONS.md for why nothing
-# needed patching to get *this* far: upstream Servo already ships a complete Android port
-# (JNI bridge in ports/servoshell/egl/android/, a real Gradle project under
-# support/android/apk/, and full `--android` handling in
-# python/servo/platform/build_target.py / build_commands.py / package_commands.py) that
-# Roves' own desktop-focused customizations never touched or disabled. `./mach build
-# --android` alone is enough: build_commands.py auto-dispatches into `mach package --android`
-# (a Gradle assemble task) once the native libservoshell.so cross-compiles, since
-# AndroidTarget.needs_packaging() is true.
+# Smoke-tests the real `mach bundle --android` path (python/servo/post_build_commands.py's
+# `_bundle_android`) end to end, the same one roves-action and Packmaster both drive -- not a
+# hand-rolled Gradle invocation that writes test content straight into the tracked source
+# tree. An earlier version of this workflow did exactly that (copied test content into
+# support/android/apk/servoapp/src/main/assets/www/ directly), the precise anti-pattern
+# `_bundle_android`'s own doc comment already warns about for a different reason (silently
+# persisting one game's content across unrelated local runs) -- harmless on a fresh CI
+# checkout, but it meant this workflow never actually exercised the code every real consumer
+# uses, so a real `_bundle_android` bug could pass CI here undetected. `_bundle_android`
+# itself never touches the tracked support/android/apk/ tree anymore either way (it copies
+# into a scratch target/<triple>/android-bundle/ dir) -- there's nothing left for this
+# workflow to accidentally pollute even if it wanted to.
 #
-# Same source-reconstruction pattern as test.yml: pristine upstream Servo source for the
-# pinned tag, plus every patch under patches/servo-v<tag>/ applied on top — see that
-# workflow's own top comment for why (this repo's own pristine content is mostly gitignored).
-# Unlike test.yml this isn't scoped to `paths:` — every push to main gets a build, per how
-# this workflow was requested.
-#
-# Debug build only: unsigned beyond the Android Gradle Plugin's own auto-generated debug
-# key (servoapp/build.gradle.kts's `release` build type is the one that looks for a real
-# signing key — `debug` needs none). Not a distributable release, just a per-commit
-# build/smoke check — see release.yml if a signed, versioned Android release is ever needed.
-#
-# Android cross builds only run on Linux/macOs hosts (enforced by
-# python/servo/platform/build_target.py's AndroidTarget) — ubuntu-latest here.
-#
-# Also publishes two assets to the rolling "test" GitHub Release (same one test.yml uses for
-# desktop) that Roves Packmaster's own Android backend (roves-ui/src-tauri/src/android.rs)
-# downloads: `roves_android_native_arm64.zip` (the raw compiled `libservoshell.so`, since
-# Packmaster never compiles Rust itself) and `roves_android_project.zip` (a snapshot of
-# `support/android/apk/`, so Packmaster doesn't need its own git-fetch logic for it). This is
-# the only place either asset is published today — Android isn't part of a real, tagged
-# release yet (see README.md's "Supported platforms" table), so there's nothing versioned to
-# pin Packmaster's own download to.
+# Also publishes `roves_android_project.zip` (a snapshot of support/android/apk/) to the
+# rolling "test" GitHub Release (same one test.yml uses for desktop) -- Roves Packmaster's
+# own Android backend (roves-packmaster/src-tauri/src/android.rs) downloads this directly since it
+# never does a git checkout of the engine itself. No more `roves_android_native_arm64.zip`
+# (a compiled libservoshell.so) as of the 2026-09-13 mobile pivot to native WebView -- there's
+# no native library to publish anymore, see CUSTOMIZATIONS.md's entry on this.
 
 on:
   push:
     branches: [main]
-  workflow_dispatch: {}
+  pull_request:
+  workflow_dispatch:
 
 env:
   SERVO_TAG: '0.5.0'
-  # support/android/apk/servoapp/build.gradle.kts's `android {}` block.
-  ANDROID_COMPILE_SDK: '37'
-  ANDROID_BUILD_TOOLS: '36.0.0'
   TEST_RELEASE_TAG: 'test'
 
 jobs:
@@ -79,7 +53,7 @@ jobs:
             2>/dev/null || \
           gh release view "$TEST_RELEASE_TAG" > /dev/null
 
-  build-apk:
+  android:
     needs: ensure-test-release
     permissions:
       contents: write
@@ -95,288 +69,218 @@ jobs:
       - name: setup uv (needed by ./mach, see README.md)
         uses: astral-sh/setup-uv@v5
 
-      - name: setup JDK (Gradle/AGP toolchain for support/android/apk)
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
-          java-version: '21'
+          distribution: temurin
+          java-version: '17'
 
-      # `android-actions/setup-android@v3` used to be here — dropped after a real, reproduced
-      # failure (2026-09-01, this exact job): it just points at whatever cmdline-tools happens
-      # to already be preinstalled on the `ubuntu-latest` image, and that bundled sdkmanager
-      # crashed immediately (4s, before any network activity) once JAVA_HOME pointed at the
-      # JDK 21 the step above installs — a known class of issue with older cmdline-tools
-      # releases under newer JDKs. Installing a known-fresh cmdline-tools ourselves (same
-      # build Roves Packmaster's own `android.rs` downloads, for the same reason: don't trust
-      # whatever happens to be preinstalled) sidesteps it entirely and doesn't depend on a
-      # third-party action's own choices at all.
-      - name: install Android SDK cmdline-tools
-        shell: bash
+      - uses: android-actions/setup-android@v3
+        with:
+          # Override the action's own default (`tools platform-tools`): Google has removed the
+          # legacy "tools" package from the SDK repository entirely (`sdkmanager` now reports
+          # "Warning: Failed to find package 'tools'" and exits 1 for it -- a real, permanent
+          # break, not the transient flake this looked like at first). Nothing here actually
+          # needs it: `platform-tools` (adb) plus the `platforms;android-NN`/`build-tools;NN.N.N`
+          # the very next step installs explicitly are everything a Gradle-based `mach bundle`
+          # requires.
+          packages: platform-tools
+
+      - name: Install Android SDK
+        # Google doesn't publish a bare "platforms;android-37" package -- API 37 ships
+        # versioned as android-37.0/.1/.2 (and possibly higher by the time this runs), a
+        # real, previously-confirmed failure (see roves-packmaster's src-tauri/src/android.rs,
+        # `resolve_platform_package`, and CUSTOMIZATIONS.md's Packmaster-Android-on-Windows
+        # entries) -- resolved dynamically here for the same reason: hardcoding today's exact
+        # suffix would just break again the next time Google ships a new one. --channel=3
+        # (canary, the widest channel) since a still-preview API level is canary-only.
         run: |
-          mkdir -p "$HOME/android-sdk/cmdline-tools"
-          curl -fsSL -o /tmp/cmdline-tools.zip \
-            "https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip"
-          unzip -q /tmp/cmdline-tools.zip -d /tmp/cmdline-tools-extract
-          rm /tmp/cmdline-tools.zip
-          # sdkmanager insists on sitting inside a version-named folder one level below
-          # cmdline-tools/ (here, "latest") or it refuses to run at all -- the zip's own top
-          # level folder is just "cmdline-tools", not "cmdline-tools/latest".
-          mv /tmp/cmdline-tools-extract/cmdline-tools "$HOME/android-sdk/cmdline-tools/latest"
-          echo "ANDROID_SDK_ROOT=$HOME/android-sdk" >> "$GITHUB_ENV"
-          echo "ANDROID_HOME=$HOME/android-sdk" >> "$GITHUB_ENV"
-          echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
-          echo "$HOME/android-sdk/platform-tools" >> "$GITHUB_PATH"
-
-      # python/servo/platform/build_target.py's AndroidTarget.configure_build_environment
-      # hard-requires NDK r28 specifically (it reads source.properties and rejects anything
-      # else) — resolved dynamically here (rather than a hardcoded exact patch version like
-      # `28.0.13004108`) so this doesn't silently go stale if Google ships a later r28.x and
-      # retires the first one from the sdkmanager repo.
-      #
-      # --channel=3 (canary -- the widest channel, superset of stable/beta/dev): Android 17/
-      # API 37 is still in preview ("Cinnamon Bun Preview" in Android Studio's own SDK Manager
-      # UI as of this writing) even though servoapp/build.gradle.kts already targets
-      # `compileSdk = 37`. Applies to every install in this step, since a superset channel is
-      # always safe to request.
-      #
-      # The platform package itself also isn't installable as a plain `platforms;android-37`
-      # -- confirmed against the real repository manifest (dl.google.com/android/repository/
-      # repository2-3.xml) that, mid-preview, Google publishes it under decimal sub-versions
-      # instead (`platforms;android-37.0`/`37.1`/`37.2` as of this writing, likely more later)
-      # with no bare `-37` alias yet. Resolved dynamically here for the same reason as the NDK
-      # version just below -- pick the newest non-prerelease (`-beta`/`-rc`) match instead of
-      # hardcoding one exact sub-version that will itself be superseded.
-      - name: install Android SDK components + NDK r28
-        shell: bash
-        run: |
-          yes | sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --channel=3 --licenses >/dev/null || true
-
-          PLATFORM_PKG=$(sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --channel=3 --list 2>/dev/null \
-            | grep -oE "platforms;android-${ANDROID_COMPILE_SDK}(\.[0-9]+)?(-ext[0-9]+)?" \
-            | grep -v -- '-beta\|-rc' | sort -V | tail -1)
-          if [ -z "$PLATFORM_PKG" ]; then
-            echo "::error::no platforms;android-${ANDROID_COMPILE_SDK}* package advertised by sdkmanager --list"
+          platform=$(sdkmanager --channel=3 --list 2>/dev/null \
+            | grep -oE '^\s*platforms;android-37(\.[0-9]+)?' | tr -d ' ' \
+            | sort -t. -k2 -n -r | head -1)
+          if [ -z "$platform" ]; then
+            echo "::error::No platforms;android-37* package found via sdkmanager --list."
             exit 1
           fi
-          echo "Installing $PLATFORM_PKG"
-          sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --channel=3 "platform-tools" "$PLATFORM_PKG" "build-tools;${ANDROID_BUILD_TOOLS}"
+          echo "Resolved platform package: $platform"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          sdkmanager --channel=3 "$platform" 'build-tools;36.0.0'
 
-          NDK_PKG=$(sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --channel=3 --list 2>/dev/null | grep -oE 'ndk;28\.[0-9]+\.[0-9]+' | sort -V | tail -1)
-          if [ -z "$NDK_PKG" ]; then
-            echo "::error::no NDK r28.x package advertised by sdkmanager --list -- Servo currently only supports NDK r28, see build_target.py"
-            exit 1
-          fi
-          echo "Installing $NDK_PKG"
-          sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --channel=3 "$NDK_PKG"
+      - name: chmod +x mach
+        # This repo's own `mach` is tracked as mode 100644 (committed from Windows, where the
+        # exec bit is meaningless) -- see CLAUDE.md's "mach needs chmod +x on Linux/macOS".
+        run: chmod +x mach
 
-          NDK_VERSION="${NDK_PKG#ndk;}"
-          echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
-
-      # rustup ships preinstalled on the ubuntu-latest runner image. We don't install a
-      # toolchain explicitly: rustup auto-detects and fetches whatever rust-toolchain.toml in
-      # the downloaded Servo source pins, the first time cargo/mach runs inside that directory
-      # (`mach build --android` also does its own `rustup target add
-      # aarch64-linux-android` the same way, see command_base.py). This just forces the
-      # toolchain fetch early, with its own clear log output.
-      - name: prefetch pinned rust toolchain
-        shell: bash
+      - name: fetch tests/wpt/tests/tools (mach's command loader needs it to exist)
+        # Every mach command except `bootstrap` unconditionally imports WPT test tooling that
+        # lives under tests/wpt/, a ~1.3GB directory this repo deliberately excludes from git
+        # -- without it, `mach bundle` crashes immediately with `ModuleNotFoundError: No
+        # module named 'localpaths'`. See CLAUDE.md's own entry on this for the full
+        # explanation -- identical to release.yml's own step of the same name.
         run: |
-          curl -fsSL -o /tmp/rust-toolchain.toml "https://raw.githubusercontent.com/servo/servo/v${SERVO_TAG}/rust-toolchain.toml"
-          mkdir -p /tmp/toolchain-probe && cp /tmp/rust-toolchain.toml /tmp/toolchain-probe/
-          cd /tmp/toolchain-probe && rustup show
+          rm -rf /tmp/wpt-tools-src
+          git init -q /tmp/wpt-tools-src
+          git -C /tmp/wpt-tools-src remote add origin https://github.com/servo/servo.git
+          git -C /tmp/wpt-tools-src config core.sparseCheckout true
+          git -C /tmp/wpt-tools-src sparse-checkout init --cone
+          git -C /tmp/wpt-tools-src sparse-checkout set tests/wpt/tests/tools
+          git -C /tmp/wpt-tools-src fetch --depth 1 --filter=blob:none origin "v${SERVO_TAG}"
+          git -C /tmp/wpt-tools-src checkout FETCH_HEAD
+          mkdir -p tests/wpt
+          cp -r /tmp/wpt-tools-src/tests/wpt/tests tests/wpt/tests
+          rm -rf /tmp/wpt-tools-src
 
-      # Downloads the *full* pristine tag source (unlike a plain `git clone` of this repo,
-      # which gitignores tests/wpt/ — see CUSTOMIZATIONS.md's "mach needs tests/wpt/tests/
-      # tools/" note), so mach's own command loader finds everything it needs without a
-      # separate sparse-checkout step (release.yml needs one; this reconstruction doesn't).
-      - name: download + patch Servo source
-        shell: bash
+      - name: Build smoke-test content
         run: |
-          curl -fsSL -o servo-src.zip "https://github.com/servo/servo/archive/refs/tags/v${SERVO_TAG}.zip"
-          python3 -c "import zipfile; zipfile.ZipFile('servo-src.zip').extractall('servo-src-tmp')"
-          mv "servo-src-tmp/servo-${SERVO_TAG}" servo-src
-          rm -rf servo-src-tmp servo-src.zip
+          mkdir -p /tmp/smoke-content
+          cp -r test-page/public/. /tmp/smoke-content/
+          cat > /tmp/smoke-content/index.html <<'HTML'
+          <!doctype html><html><body><h1>Roves native WebView</h1><script>
+          localStorage.setItem('roves-smoke', 'ok');
+          fetch('/favicon.svg').then(r => { if (!r.ok) throw Error(r.status); return r.text(); })
+            .then(() => document.body.append('Local assets and storage ready'));
+          </script></body></html>
+          HTML
 
-          shopt -s nullglob
-          patches=(patches/servo-v${SERVO_TAG}/*.patch)
-          if [ ${#patches[@]} -eq 0 ]; then
-            echo "::error::No patches found in patches/servo-v${SERVO_TAG}/ — nothing to test."
-            exit 1
-          fi
-          cd servo-src
-          chmod +x mach
-          # Same reasoning as `mach` itself (see CLAUDE.md's own "mach needs chmod +x on
-          # Linux/macOS" note): extracted from a zip, not a git checkout, so the executable
-          # bit tracked in Servo's own git history is lost -- `mach build --android`'s
-          # auto-package step shells out to this directly (package_commands.py's
-          # `subprocess.check_call(["./gradlew", ...])`), which needs it set or fails with a
-          # plain PermissionError before Gradle ever runs.
-          chmod +x support/android/apk/gradlew
-          for p in "${patches[@]}"; do
-            echo "Applying $(basename "$p")..."
-            patch -p1 < "../$p"
-          done
-
-          # Same reasoning as test.yml's own copy of these: new binary assets no text patch
-          # can carry, but gui.rs's/build.rs's include_bytes!() need them to genuinely exist
-          # on disk to compile at all. `roves_wordmark.svg`/the OpenHarmony placeholders
-          # aren't load-bearing for compilation, but copied anyway to match the real repo
-          # layout — see test.yml's own copy of this step for the fuller reasoning.
-          mkdir -p resources/fonts
-          cp -r ../resources/fonts/. resources/fonts/
-          cp ../resources/servo_64.png ../resources/servo_1024.png ../resources/servo.ico \
-             ../resources/servo.icns ../resources/servo.svg ../resources/roves_wordmark.svg resources/
-          cp ../support/openharmony/AppScope/resources/base/media/servo_64.png \
-             support/openharmony/AppScope/resources/base/media/servo_64.png
-          cp ../support/openharmony/entry/src/main/resources/base/media/servo_1024.png \
-             support/openharmony/entry/src/main/resources/base/media/servo_1024.png
-          cp ../support/openharmony/entry/src/main/resources/base/media/servo_64.png \
-             support/openharmony/entry/src/main/resources/base/media/servo_64.png
-
-      # Same dpkg-lock race as test.yml's own copy of this step — confirmed to affect
-      # `mach bootstrap`'s own internal apt-get calls too, not just ones we issue ourselves.
-      - name: stop background apt processes and wait for the dpkg lock
-        shell: bash
-        run: |
-          sudo systemctl stop apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
-          sudo systemctl kill --kill-who=all apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
-          sudo pkill -9 -f unattended-upgrade 2>/dev/null || true
-
-          for i in $(seq 1 60); do
-            if ! sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock >/dev/null 2>&1; then
-              echo "dpkg/apt lock free after ${i}s"
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "::warning::dpkg/apt lock still held after 60s -- proceeding anyway"
-
-      # No --skip-platform: Linux's own bootstrap path installs GStreamer non-interactively
-      # already (apt packages, covered by --yes) — see test.yml for why that only matters on
-      # Windows. Moot for the Android build itself anyway: cross builds default to the
-      # `dummy` media stack (see command_base.py's is_media_enabled), so `mach build
-      # --android` below never touches GStreamer at all.
-      # timeout-minutes: 30, not test.yml's own 15 -- confirmed via a real, reproduced timeout
-      # (2026-09-02) that this was genuinely still making progress (apt actively unpacking
-      # hundreds of packages, not stuck) when 15 minutes ran out. Same backstop reasoning as
-      # test.yml's own comment either way: caps a genuine hang regardless of cause, just with
-      # more headroom for legitimate apt slowness under runner load.
-      - name: mach bootstrap (installs build dependencies)
-        shell: bash
-        working-directory: servo-src
-        env:
-          DEBIAN_FRONTEND: noninteractive
-        timeout-minutes: 30
-        run: ./mach bootstrap --force --yes --skip-lints --skip-nextest
-
-      # Debug profile (no --release): this is a per-commit smoke/artifact build, not a
-      # distributable release — see release.yml if that's ever needed. This single command
-      # both cross-compiles libservoshell.so for aarch64-linux-android (the default target,
-      # see AndroidTarget.DEFAULT_TRIPLE) *and* packages it into a debug .apk via Gradle —
-      # see build_commands.py's `needs_packaging()` dispatch into `mach package --android`.
-      - name: mach build --android (also auto-packages the APK via Gradle)
-        shell: bash
-        working-directory: servo-src
-        run: ./mach build --android
-
-      - name: locate built APK
-        id: apk
-        shell: bash
-        working-directory: servo-src
-        run: |
-          APK=$(find support/android/apk -iname '*.apk' -path '*Debug*' | head -1)
-          if [ -z "$APK" ]; then
-            echo "::error::no debug .apk found under support/android/apk/**/build/outputs/apk -- contents:"
-            find support/android/apk -iname '*.apk'
-            exit 1
-          fi
-          echo "path=$APK" >> "$GITHUB_OUTPUT"
+      - name: mach bundle --android
+        run: ./mach bundle --android --content-dir /tmp/smoke-content --output /tmp/android-output
 
       - uses: actions/upload-artifact@v4
         with:
-          name: roves_shell_android_debug
-          path: servo-src/${{ steps.apk.outputs.path }}
+          name: roves-android-webview
+          path: /tmp/android-output/*.apk
 
-      # Also published as a "test" release asset (see the "upload to test release" step
-      # below) under a clean, stable filename -- the workflow-artifact upload above still
-      # exists too (mainly for anyone wanting the exact per-run provenance/UI), but artifacts
-      # expire (default retention) and are only reachable from a specific run's own page,
-      # whereas this makes "the latest debug APK" a single, permanent, easy-to-find link
-      # anyone can grab without digging through Actions runs.
-      - name: rename APK for the "test" release
-        shell: bash
-        working-directory: servo-src
-        run: cp "${{ steps.apk.outputs.path }}" ../roves_android_debug.apk
-
-      # Packmaster's own Android backend (roves-ui/src-tauri/src/android.rs) never compiles
-      # Rust or runs `mach` itself -- it downloads this raw .so (built here, where the NDK/
-      # Rust toolchain already exist) and drives Gradle/ndk-build locally to package it with a
-      # game's own content. aarch64 (the default `mach build --android` target above) covers
-      # virtually every real Android device; no other ABI is published yet.
-      - name: package native library for Packmaster
-        id: native
-        shell: bash
-        working-directory: servo-src
-        run: |
-          SO=$(find target/aarch64-linux-android -maxdepth 2 -name 'libservoshell.so' | head -1)
-          if [ -z "$SO" ]; then
-            echo "::error::no libservoshell.so found under target/aarch64-linux-android -- contents:"
-            find target/aarch64-linux-android -maxdepth 3
-            exit 1
-          fi
-          zip -j ../roves_android_native_arm64.zip "$SO"
-          echo "path=roves_android_native_arm64.zip" >> "$GITHUB_OUTPUT"
-
-      # The Gradle project itself (support/android/apk/) barely ever changes on its own --
-      # published fresh every run anyway (not conditioned on patches/ changing, matching this
-      # workflow's own on.push scope) so Packmaster always gets an exact match for whichever
-      # patches/engine behavior it's also targeting via the native .so above.
-      #
-      # Deletes every module's own `build/` output and Gradle's `.gradle/` caches before
-      # zipping -- both only exist here because this step runs *after* `mach build --android`
-      # already invoked Gradle once (see above), and both are pure, regeneratable build
-      # output, not part of the actual project. Confirmed via two real, reproduced failures
-      # (2026-09-02): first the zip exceeded GitHub's 2GB release-asset limit outright
-      # ("size must be less than 2147483648"); switching to `zip -x` glob excludes instead of
-      # deleting first "fixed" the size limit but still produced a 461MB zip (INFO-ZIP's `-x`
-      # patterns apparently didn't actually match these nested paths the way expected). Deleting
-      # `build`/`.gradle` outright side-stepped zip's own pattern-matching, but the zip was
-      # STILL ~460MB after that -- the real bulk turned out to be `obj/local/<abi>/
-      # libservoshell.so`, a 1.8GB *uncompressed* copy of the native lib that classic `ndk-build`
-      # (used by servoview's build.gradle.kts only to copy the prebuilt .so, not to compile
-      # anything) writes to its own default intermediate output dir. That Gradle script only
-      # redirects `NDK_LIBS_OUT` (the final .so destination, already outside this tree); it never
-      # sets `NDK_OUT`, so `obj/` defaults to sitting right under the module root, same level as
-      # `jni/` -- outside both `build/` and `.gradle/`, so neither exclusion ever touched it.
-      # Confirmed by downloading the actual uploaded zip and listing entries by size. Deleting
-      # `obj` here now gets this down to the real ~300KB source tree.
+      # A clean checkout of support/android/apk/ -- `_bundle_android` never touches this
+      # tracked tree (it copies into a scratch target/<triple>/android-bundle/ dir instead),
+      # so there's no build/.gradle/obj/ cruft to strip out first the way the old,
+      # Rust-cross-compiling version of this workflow needed to (see this file's own git
+      # history if that reasoning is ever needed again for something else).
       - name: package Android project for Packmaster
-        id: project
-        shell: bash
-        working-directory: servo-src
-        run: |
-          find support/android/apk -type d \( -name build -o -name .gradle -o -name obj \) -prune -exec rm -rf {} +
-          zip -rq ../roves_android_project.zip support/android/apk
-          echo "path=roves_android_project.zip" >> "$GITHUB_OUTPUT"
-          du -sh ../roves_android_project.zip
+        run: zip -rq roves_android_project.zip support/android/apk
 
-      # Retries: see test.yml's own identical step/comment -- every matrix job (there, 6; here
-      # just this one, but android.yml's own build-apk job can still race a concurrent test.yml
-      # run uploading to the same "test" release at the same time).
+      # Retries: see test.yml's own identical step/comment -- this job can race a concurrent
+      # test.yml run uploading to the same "test" release at the same time.
       - name: upload to "test" release
-        shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: |
-          for asset in roves_android_debug.apk roves_android_native_arm64.zip roves_android_project.zip; do
-            for attempt in 1 2 3; do
-              gh release upload "$TEST_RELEASE_TAG" "$asset" --clobber && break
-              echo "upload attempt $attempt for $asset failed, retrying in $((attempt * 10))s..." >&2
-              sleep $((attempt * 10))
-              if [ "$attempt" = "3" ]; then
-                echo "::error::failed to upload $asset after 3 attempts"
-                exit 1
-              fi
-            done
+          for attempt in 1 2 3; do
+            gh release upload "$TEST_RELEASE_TAG" roves_android_project.zip --clobber && break
+            echo "upload attempt $attempt failed, retrying in $((attempt * 10))s..." >&2
+            sleep $((attempt * 10))
+            if [ "$attempt" = "3" ]; then
+              echo "::error::failed to upload roves_android_project.zip after 3 attempts"
+              exit 1
+            fi
           done
+
+  # Real, end-to-end verification of `--android-release` (post_build_commands.py's
+  # `_bundle_android`, `android_release=True` branch) -- unlike iOS release signing (see
+  # ios.yml's own `ios-release-signing-smoke` job and its comment on why a full signed export
+  # can't be verified without a real Apple Developer Program account), an Android keystore is
+  # self-signed by design: any keystore is a real, complete signing identity, not a stand-in for
+  # one -- so this job proves the whole `--android-release` path for real, `apksigner verify`
+  # included, not just a mechanism smoke-test, using a keystore generated fresh on the runner
+  # itself (via `keytool`, already available from the `setup-java` step below) rather than a
+  # stored secret -- this keystore is purely for exercising the signing mechanism in CI and is
+  # never reused for an actual game release, so there's nothing to gain from persisting it
+  # between runs (see ios.yml's own 2026-09-15 comment on the analogous iOS change, and
+  # CUSTOMIZATIONS.md's entry of that date, for why this replaced the previous
+  # ANDROID_KEYSTORE_BASE64/_PASSWORD/_ALIAS/_KEY_PASSWORD secrets).
+  android-release-signing:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: setup python (gives a consistent `python3` across runners, see ./mach)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: setup uv (needed by ./mach, see README.md)
+        uses: astral-sh/setup-uv@v5
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+        with:
+          # Override the action's own default (`tools platform-tools`): Google has removed the
+          # legacy "tools" package from the SDK repository entirely (`sdkmanager` now reports
+          # "Warning: Failed to find package 'tools'" and exits 1 for it -- a real, permanent
+          # break, not the transient flake this looked like at first). Nothing here actually
+          # needs it: `platform-tools` (adb) plus the `platforms;android-NN`/`build-tools;NN.N.N`
+          # the very next step installs explicitly are everything a Gradle-based `mach bundle`
+          # requires.
+          packages: platform-tools
+
+      - name: Install Android SDK
+        # See the `android` job's own identical step/comment above for why this resolves the
+        # platform package dynamically instead of hardcoding `platforms;android-37`.
+        run: |
+          platform=$(sdkmanager --channel=3 --list 2>/dev/null \
+            | grep -oE '^\s*platforms;android-37(\.[0-9]+)?' | tr -d ' ' \
+            | sort -t. -k2 -n -r | head -1)
+          if [ -z "$platform" ]; then
+            echo "::error::No platforms;android-37* package found via sdkmanager --list."
+            exit 1
+          fi
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          sdkmanager --channel=3 "$platform" 'build-tools;36.0.0'
+
+      - name: chmod +x mach
+        run: chmod +x mach
+
+      - name: fetch tests/wpt/tests/tools (mach's command loader needs it to exist)
+        run: |
+          rm -rf /tmp/wpt-tools-src
+          git init -q /tmp/wpt-tools-src
+          git -C /tmp/wpt-tools-src remote add origin https://github.com/servo/servo.git
+          git -C /tmp/wpt-tools-src config core.sparseCheckout true
+          git -C /tmp/wpt-tools-src sparse-checkout init --cone
+          git -C /tmp/wpt-tools-src sparse-checkout set tests/wpt/tests/tools
+          git -C /tmp/wpt-tools-src fetch --depth 1 --filter=blob:none origin "v${SERVO_TAG}"
+          git -C /tmp/wpt-tools-src checkout FETCH_HEAD
+          mkdir -p tests/wpt
+          cp -r /tmp/wpt-tools-src/tests/wpt/tests tests/wpt/tests
+          rm -rf /tmp/wpt-tools-src
+
+      - name: generate a fresh release keystore
+        run: |
+          pass=$(uuidgen)
+          echo "::add-mask::$pass"
+          echo "KEYSTORE_PASS=$pass" >> "$GITHUB_ENV"
+          keytool -genkeypair -v -keystore /tmp/roves-release.keystore \
+            -storepass "$pass" -keypass "$pass" -alias roves-ci-test \
+            -keyalg RSA -keysize 2048 -validity 1 \
+            -dname "CN=Roves CI Test, OU=CI, O=Roves, C=US"
+
+      - name: Build smoke-test content
+        run: |
+          mkdir -p /tmp/smoke-content
+          cp -r test-page/public/. /tmp/smoke-content/
+          cat > /tmp/smoke-content/index.html <<'HTML'
+          <!doctype html><html><body><h1>Roves native WebView</h1></body></html>
+          HTML
+
+      - name: mach bundle --android --android-release
+        env:
+          APK_SIGNING_KEY_STORE_PATH: /tmp/roves-release.keystore
+          APK_SIGNING_KEY_STORE_PASS: ${{ env.KEYSTORE_PASS }}
+          APK_SIGNING_KEY_ALIAS: roves-ci-test
+          APK_SIGNING_KEY_PASS: ${{ env.KEYSTORE_PASS }}
+        run: |
+          ./mach bundle --android --android-release \
+            --content-dir /tmp/smoke-content --output /tmp/android-release-output
+
+      - name: apksigner verify (confirms this is a genuinely signed release APK, not debug-signed)
+        run: |
+          apksigner="$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -name apksigner | sort -V | tail -1)"
+          "$apksigner" verify --print-certs /tmp/android-release-output/servoapp.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: roves-android-webview-release-signed
+          path: /tmp/android-release-output/*.apk

@@ -57,7 +57,7 @@ mod from_winit {
                 Self::UserEvent(AppEvent::CloseAllWindows) => target!("UserEvent(CloseAllWindows)"),
                 Self::UserEvent(AppEvent::BootProgress(..)) => target!("UserEvent(BootProgress)"),
                 Self::UserEvent(AppEvent::BootReady) => target!("UserEvent(BootReady)"),
-                Self::UserEvent(AppEvent::Gamepad(..)) => target!("UserEvent(Gamepad)"),
+                Self::UserEvent(AppEvent::SaveFileDialog { .. }) => target!("UserEvent(SaveFileDialog)"),
                 Self::Suspended => target!("Suspended"),
                 Self::Resumed => target!("Resumed"),
                 Self::AboutToWait => target!("AboutToWait"),
