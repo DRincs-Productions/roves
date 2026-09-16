@@ -7,17 +7,19 @@ le opportunità indicate sono ipotesi da misurare, non miglioramenti dimostrati.
 
 ## Risultato
 
-Sì, ci sono opportunità concrete. Le prime verifiche dovrebbero riguardare
-la sincronizzazione delle animazioni con il monitor, il costo della composizione
-della shell e gli scatti dovuti al primo accesso ai contenuti compressi.
-Le ottimizzazioni del compilatore sono una pista secondaria, da confrontare
-con un benchmark: la release attuale è già ottimizzata.
+Sì, ci sono opportunità concrete, ma la prima implementazione deve essere la
+strumentazione integrata e il confronto controllato con Chrome. Solo quei dati
+permetteranno di attribuire la scarsa fluidità a frame pacing, composizione,
+renderer, GC o caricamenti. La compressione viene mantenuta nell'analisi ma
+spostata all'ultimo posto; la release attuale è già ottimizzata e anche i profili
+di compilazione restano esperimenti da misurare.
 
 | Priorità | Opportunità | Evidenza nel codice | Effetto atteso da verificare |
 |---|---|---|---|
-| Alta | Refresh driver desktop legato al monitor/vsync | `components/paint/refresh_driver.rs`, `TimerRefreshDriver::observe_next_frame`: `Duration::from_millis(1000 / 120)` | Migliore regolarità dei frame e meno lavoro superfluo sui monitor lenti |
-| Alta | Misurare un percorso di rendering senza egui quando non ci sono overlay | `desktop/gui.rs`: `Gui::update` chiama `repaint_webviews` e inserisce un callback di composizione; `Gui::paint` presenta la GUI | Ridurre lavoro CPU della shell e copie GPU, soprattutto a risoluzioni alte |
-| Alta per giochi con streaming | Spostare decompressione e I/O bloccante fuori dal percorso di caricamento | `protocols/game.rs::load` chiama `ensure_available` prima di restituire il future; `protocols/packed_content.rs` usa un mutex unico | Ridurre picchi di latenza al primo caricamento di livelli/audio/texture |
+| Prima | Overlay, export, buffer circolare, marcatori e benchmark Roves/Chrome | Mancano misure integrate equivalenti e ripetibili | Identificare la causa degli scatti e impedire regressioni |
+| Alta, dopo la strumentazione | Refresh driver desktop legato al monitor/vsync | `components/paint/refresh_driver.rs`, `TimerRefreshDriver::observe_next_frame`: `Duration::from_millis(1000 / 120)` | Migliore regolarità dei frame e meno lavoro superfluo sui monitor lenti |
+| Alta, dopo la strumentazione | Misurare un percorso di rendering senza egui quando non ci sono overlay | `desktop/gui.rs`: `Gui::update` chiama `repaint_webviews` e inserisce un callback di composizione; `Gui::paint` presenta la GUI | Ridurre lavoro CPU della shell e copie GPU, soprattutto a risoluzioni alte |
+| Ultima, salvo correlazione misurata | Spostare decompressione e I/O bloccante fuori dal percorso di caricamento | `protocols/game.rs::load` chiama `ensure_available` prima di restituire il future; `protocols/packed_content.rs` usa un mutex unico | Ridurre picchi di latenza al primo caricamento di livelli/audio/texture |
 | Non applicabile come semplice tuning | GC incrementale | `components/script/script_runtime.rs`: commento esplicito sulle pre-barriere non corrette | Richiede prima un intervento di correttezza nel motore |
 | Media | Confrontare release, production e un profilo orientato alla velocità con ThinLTO | `Cargo.toml`: production usa `opt-level = "s"`, LTO e un codegen unit; release workflow usa `--release` | Possibile vantaggio CPU; costo di compilazione e dimensioni da misurare |
 | Media per GPU limitate | Risoluzione interna configurabile per il contenuto del gioco | Viewport fisico dipendente dalla scala HiDPI in `desktop/gui.rs` e `headed_window.rs` | Ridurre il carico GPU con compromesso sulla qualità |
@@ -25,6 +27,131 @@ con un benchmark: la release attuale è già ottimizzata.
 
 I percorsi `desktop/...` e `protocols/...` della tabella sono relativi a
 `ports/servoshell/`. Il content packer è in `support/content-packer/`.
+
+## Registro delle decisioni del 2026-09-16
+
+Questo registro conserva il ragionamento della sessione, non soltanto la roadmap
+finale, così le prossime modifiche possono essere confrontate con le decisioni
+effettivamente prese.
+
+- **Segnale iniziale:** lo stesso gioco risultava poco fluido sia su desktop sia
+  nel precedente percorso Android basato su Servo; passando Android alla WebView
+  di sistema la fluidità percepita è migliorata notevolmente. È un indizio a
+  favore di un costo nel percorso Servo/Roves, ma non isola da solo la causa e
+  non costituisce ancora un benchmark.
+- **Obiettivo:** raggiungere Chrome e, dove la specializzazione di Roves lo
+  consente, superarlo sullo stesso gioco e hardware. Il confronto comprende
+  fluidità, RAM, CPU/GPU e avvio; non viene dichiarato successo sulla sola base
+  del linguaggio Rust o degli FPS medi.
+- **Prima azione:** osservabilità integrata prima delle ottimizzazioni. Sono
+  prioritari overlay opzionale, JSON/CSV, buffer circolare pre-scatti, marcatori
+  asset/GC/navigazione/shader e benchmark identici Roves/Chrome.
+- **Niente log per frame:** il percorso caldo accumula dati in memoria e produce
+  riepiloghi o dump al trigger, perché logging e serializzazione sincroni
+  falserebbero i frame time.
+- **Frame time scomposto:** quando osservabile, misurare intervallo tra frame,
+  CPU della shell, egui/composizione, Servo/WebRender, attesa present/GPU,
+  richieste e frame prodotti/saltati. Registrare anche refresh, GPU/renderer,
+  visibilità/minimizzazione e conteggi oltre 25/50/100 ms.
+- **Metriche decisionali:** p50/p95/p99, massimo, frame oltre il budget del
+  display, sequenze di scatti e presentazione effettiva hanno precedenza sugli
+  FPS medi. rAF da solo non prova quando il frame è apparso sullo schermo.
+- **Ordine delle cause:** dopo gli strumenti, indagare frame pacing/vsync,
+  renderer e presentazione, lavoro della shell/repaint, quindi pause JS/GC.
+  I/O e compressione restano più in basso e vengono promossi solo se i marcatori
+  li correlano agli scatti.
+- **GC incrementale:** resta un progetto importante ma non un flag prestazionale:
+  prima correggere e verificare le pre-barriere Servo–SpiderMonkey, poi misurare
+  pause, throughput e memoria.
+- **Dipendenze:** valutare aggiornamenti isolati e misurabili; non sostituire
+  SpiderMonkey, WebRender o librerie native sulla sola aspettativa che una
+  versione diversa sia più veloce.
+- **Interpretazione di Rust:** la shell specializzata può eliminare funzioni e
+  overhead di un browser generalista, ma DOM, heap JS, texture, cache, driver e
+  librerie native determinano gran parte di memoria e latenza. Il vantaggio deve
+  risultare dai numeri.
+- **Compressione:** ultimo intervento previsto. Documentarne comunque l'impatto
+  possibile su avvio, cambio scena, picchi CPU, copie e RAM; non attribuirle
+  la scarsa fluidità stabile senza evidenza.
+
+## Decisioni operative aggiunte il 2026-09-16
+
+L'obiettivo dichiarato è raggiungere o superare Chrome nella fluidità dei giochi
+rappresentativi, sullo stesso hardware e con impostazioni equivalenti. Non basta
+confrontare gli FPS medi: il criterio principale è la distribuzione dei frame time
+e, in particolare, p95, p99, frame oltre il budget del display e scatti consecutivi.
+
+Prima priorità: costruire una modalità diagnostica disabilitata per default che
+fornisca insieme questi cinque strumenti:
+
+1. **Overlay di sviluppo opzionale**, con FPS, frame time corrente, p50/p95/p99,
+   massimo recente, frame oltre budget, refresh rilevato e renderer/GPU.
+2. **Esportazione JSON e CSV**, con schema/versione, clock monotono, metadati di
+   build, sistema, GPU, monitor e configurazione, per confronti ripetibili.
+3. **Buffer circolare in memoria**, dimensionato per conservare gli ultimi secondi
+   senza fare log per frame. Uno scatto, una soglia configurabile o un comando
+   manuale congela e scarica il contesto precedente e successivo all'evento.
+4. **Marcatori temporali correlabili**, almeno per caricamento/estrazione asset,
+   navigazione, GC e relative pause/slice, compilazione shader e primo utilizzo
+   delle pipeline. Ogni marcatore deve avere inizio/fine, categoria e identificatore
+   senza includere percorsi o dati sensibili per default.
+5. **Harness comparativo Roves/Chrome**, che esegua gli stessi workload, input,
+   risoluzione, scala, warm-up e durata. Il gioco deve includere un percorso
+   deterministico o replay; Chrome va avviato con profilo pulito e configurazione
+   documentata. I risultati devono indicare quando le metriche non sono equivalenti
+   (per esempio rAF contro presentazione effettiva).
+
+L'overlay legge aggregati già raccolti e non deve cambiare il percorso di rendering
+quando è nascosto. Il percorso caldo registra timestamp e contatori in strutture
+preallocate; niente riga di log, allocazione o serializzazione per ogni frame.
+JSON/CSV vengono prodotti a fine sessione o al trigger. Il profiler misura il
+proprio overhead con una prova A/B e dichiara campioni persi o incompleti.
+
+### Metriche minime e significato
+
+Registrare separatamente intervallo rAF, inizio/fine lavoro Servo, rendering
+WebRender, composizione egui, richiesta redraw e presentazione/swap quando il
+backend la rende osservabile. Un singolo valore chiamato “frame time” sarebbe
+ambiguo. Assegnare un frame ID propagabile tra le fasi e usare un clock monotono.
+Derivare il budget dal refresh attuale, gestendo cambio monitor e VRR senza
+presumere sempre 16,67 ms. Memoria RSS, CPU e GPU sono metriche parallele.
+
+Il confronto deve includere almeno fluidità stabile, una scena con allocazioni
+JS, primo ingresso in una scena con shader nuovi e caricamento di asset. Conservare
+baseline e candidati nello stesso formato e introdurre soglie di regressione in CI
+solo dopo avere quantificato rumore e stabilità dei runner.
+
+### Decisione su SpiderMonkey, WebRender e librerie native
+
+Non sostituire ora questi componenti. La versione corrente è una baseline
+funzionante, ma non è considerata automaticamente ottimale. Il ramo separato
+`analysis/dependency-review` ha rilevato `mozjs 0.21.0`/SpiderMonkey 140:
+la prima prova sensata è un aggiornamento compatibile nella serie 0.21, isolato e
+coperto da test. Il salto alle serie mozjs più nuove cambia SpiderMonkey e binding,
+ha superficie di migrazione e rischio di correttezza molto maggiori e non dimostra
+da solo un miglioramento dei frame time o la soluzione delle pre-barriere.
+
+WebRender 0.70 è profondamente integrato con Servo: non emerge una sostituzione
+drop-in da fare prima delle misure. Prima confrontare il fork con gli aggiornamenti
+upstream Servo e profilare scene building, render e present; recepire correzioni
+mirate o aggiornare in modo coordinato è preferibile a cambiare renderer.
+Analogamente ANGLE/surfman e driver grafici vanno aggiornati o variati soltanto
+quando tracce e matrice GPU mostrano un problema specifico. GStreamer riguarda
+principalmente media e non è candidato generale per correggere il frame pacing.
+
+Rust può ridurre overhead e rendere più controllabile la shell, ma RAM e fluidità
+dipendono soprattutto da DOM, heap SpiderMonkey, texture, cache, process model e
+driver. “Scritto in Rust” non costituisce un risultato prestazionale: Roves deve
+dimostrarlo contro Chrome con RSS, p95/p99 e frame oltre budget.
+
+### Compressione: priorità finale
+
+Compressione, estrazione e copie restano strumentate e spiegate, ma vengono
+spostate all'ultimo posto della roadmap. Incidono soprattutto su avvio, primo
+accesso e cambio scena. Possono causare scatti durante il gameplay solo se lettura
+o decompressione avvengono nel percorso temporale della scena. I marcatori e il
+buffer circolare stabiliranno se esiste questa correlazione prima di modificarne
+formato, concorrenza o caching.
 
 ## 1. Ritmo dei frame
 
@@ -286,16 +413,17 @@ una modalità diagnostica; non eliminare gli errori per inseguire le prestazioni
 
 ## Ordine operativo rivisto
 
-| Ordine | Lavoro | Ambito | Criterio prima di implementare |
-|---|---|---|---|
-| 1 | Baseline e attribuzione CPU/GPU/I/O | Strumenti e gioco | Tracce riproducibili, cache e risoluzione fissate |
-| 2 | Refresh monitor/vsync | Shell e integrazione Servo | Confermare ritmo rAF e attese present su 60/144+ Hz |
-| 3 | I/O bloccante e copie dei blocchi | Servo net e loader Roves | Confermare worker occupati e memoria di picco nei caricamenti |
-| 4 | Prefetch e pack per livello | Packer/loader e gioco | Scatti correlati alla prima estrazione |
-| 5 | Throttling quando nascosto | Shell desktop | Consumi anomali minimizzato, comportamento audio definito |
-| 6 | Repaint overlay separato | Shell e renderer | Costo contenuto ripetuto su scene statiche con overlay |
-| 7 | Profili, worker e risoluzione | Build/configurazione | Benchmark specifici CPU o GPU limitati |
-| Escluso come tuning | Abilitazione GC incrementale | Correttezza SpiderMonkey/Servo | Pre-barriere corrette prima di qualsiasi abilitazione |
+| Ordine | Lavoro | Criterio di uscita |
+|---|---|---|
+| 1 | Telemetria frame, overlay, JSON/CSV, buffer circolare e marcatori | Overhead misurato; dati correlabili e schema documentato |
+| 2 | Benchmark deterministico Roves/Chrome | Baseline ripetibile su 60 Hz e refresh elevato, CPU/GPU/RSS inclusi |
+| 3 | Refresh monitor, vsync e frame pacing | Riduzione dimostrata di p95/p99 e frame oltre budget |
+| 4 | Attribuzione renderer, GPU, egui e presentazione | Collo di bottiglia identificato prima di bypass o aggiornamenti |
+| 5 | Repaint overlay separato e lavoro superfluo della shell | Vantaggio misurato senza regressioni funzionali |
+| 6 | GC: prima correttezza, poi pause e tuning | Pre-barriere verificate e confronto pause/memoria |
+| 7 | Aggiornamenti mirati mozjs/ANGLE/surfman e profili build | Un componente per volta, benchmark e rollback |
+| 8 | I/O bloccante e caricamenti | Intervenire se i marcatori coincidono con gli scatti |
+| 9 | Compressione, pack e prefetch | Ultimo passo; intervenire solo con correlazione dimostrata |
 
 Le migliori prime patch non sono necessariamente quelle con il maggior numero
 di flag. La scelta deve seguire il collo di bottiglia del gioco rappresentativo.
