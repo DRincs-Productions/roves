@@ -7032,3 +7032,46 @@ an actual macOS runner, and the Windows path end-to-end inside actual GitHub Act
 CI environment differs from an interactive dev session in ways that could still matter — a
 missing user profile registry hive, a different default session type). Pending a `test.yml` run
 on this branch across all three platforms.
+
+**First `test.yml` run (2026-09-16): macOS and Linux green, Windows failed — a different, real
+bug, not the install mechanism.** Both macOS jobs (portable and dmg) and both Linux jobs
+(portable and deb) passed outright, including their launch smoke tests — the `.pkg` bump needed
+no further changes. Both Windows jobs failed, but not at the "install GStreamer" step (that step, and
+`mach bootstrap`, both succeeded) — at `mach build`, *after* a clean Rust compile ("Finished
+`dev` profile ... in 23m 50s"), during `build_commands.py`'s own post-build DLL-copying:
+`ERROR: could not find required GStreamer DLL` for 12 entries (`avcodec-59.dll`,
+`avfilter-8.dll`, `avformat-59.dll`, `avutil-57.dll`, `libcrypto-1_1-x64.dll`, `libjpeg-8.dll`,
+`libogg-0.dll`, `libpng16-16.dll`, `libssl-1_1-x64.dll`, `libvorbis-0.dll`,
+`libvorbisenc-2.dll`, `swresample-4.dll`). Root cause: `python/servo/gstreamer.py`'s
+`GSTREAMER_WIN_DEPENDENCY_LIBS` hardcodes the *exact versioned filenames* of GStreamer's bundled
+third-party dependencies (ffmpeg, OpenSSL, libjpeg, libogg, libpng, libvorbis) as they existed in
+1.22.x — 1.28.7 bundles newer versions of every one of them, under different filenames. This is
+a real content change orthogonal to the install-mechanism rewrite above, and the dependency
+review's own text anticipated exactly this category of gap ("`python/servo/gstreamer.py` e le
+liste plugin sono parte della verifica").
+
+**Fix:** re-installed 1.28.7 locally (same `/CURRENTUSER` method, cleaned up again afterward) and
+diffed its actual `bin/` contents against the old list to get the real current names, rather than
+guessing: `avcodec-61.dll`, `avfilter-10.dll`, `avformat-61.dll`, `avutil-59.dll` (ffmpeg bumped
+its own SONAMEs); `libcrypto-3-x64.dll`, `libssl-3-x64.dll` (OpenSSL 1.1 → 3, same convention);
+`jpeg8.dll`, `ogg-0.dll`, `png16.dll`, `vorbis-0.dll`, `vorbisenc-2.dll` (all four dropped the
+`lib` filename prefix, not just a version bump); `swresample-5.dll`. All 12 renames match exactly
+the 12 CI errors — no more, no less. The other 17 entries in the list (`bz2.dll`, `ffi-7.dll`,
+the `glib`/`gobject`/`gio`/`gmodule` family, `graphene-1.0-0.dll`, `intl-8.dll`,
+`libwinpthread-1.dll`, `nice-10.dll`, `opus-0.dll`, `orc-0.4-0.dll`, `pcre2-8-0.dll`, the
+`theora`/`theoradec`/`theoraenc` trio, `z-1.dll`) are confirmed unchanged, still present under
+the same names. `GSTREAMER_WIN_DEPENDENCY_LIBS_NEEDED_BY_SERVO_DIRECTLY` (this repo's own list,
+added by this same patch) only references names from the unchanged set, so it needed no edit.
+`GSTREAMER_BASE_LIBS`' own `-1.0-0.dll`-suffixed core libraries (`gstreamer-1.0-0.dll` and
+siblings) were also spot-checked against the new `bin/` listing and are unaffected — GStreamer
+keeps that suffix stable as its own ABI convention across the whole 1.x series, unlike the
+bundled third-party libraries above.
+
+**What's still unverified:** whether 1.28.7 introduced any *new* transitive DLL dependency for
+the specific plugin selection this fork copies (as opposed to a rename of an existing one) —
+the code comment on this list says it's normally curated via `dumpbin` plus "the errors that
+appear when starting Servo," neither of which was available here (no local Windows Rust
+toolchain, see `CLAUDE.md`; no compiled `play.exe` to run `dumpbin` against). If one exists, the
+same "`ERROR: could not find`" mechanism will surface it immediately on the next `test.yml` run,
+the same way it caught this. Pending that next run to confirm the Windows jobs are fully green,
+not just past this specific error.
