@@ -27,6 +27,20 @@ Priorità significa ordine di indagine, non approvazione di una versione pronta
 alla distribuzione. Le versioni online sono quelle osservate nelle fonti indicate;
 ricontrollare release, eventuali yanked e compatibilità quando si implementa.
 
+**Stato (2026-09-16): la maggior parte dei candidati di questo documento è stata
+implementata e verificata via CI** — mozjs 0.21.6, GStreamer 1.28.7, mozangle 0.7.0,
+zstd 0.14.0, tikv-jemallocator 0.7.0/0.7.1, egui/egui-winit/egui_glow 0.36.2,
+egui-file-dialog 0.15.0, SDL3 per il gamepad (al posto di gilrs), e Tracy/Perfetto
+(Perfetto era già presente upstream; aggiunta la feature `tracing-tracy`). Le sezioni
+di inventario/analisi-per-candidato che descrivevano questi aggiornamenti come
+proposte sono state rimosse da questo file: la loro implementazione reale, con root
+cause dei problemi trovati e come sono stati risolti, è in
+[`CUSTOMIZATIONS.md`](../CUSTOMIZATIONS.md). Il lavoro ancora aperto (sostituzione
+finestra/event-loop SDL3, mozjs 0.26 major, ICU4X, wgpu fast path, mimalloc, telemetria
+frame Roves) è tracciato con portata reale misurata in [`TODO.md`](../TODO.md), non qui.
+Questo documento resta come registro delle decisioni architetturali e del
+ragionamento che le ha motivate — non più come lista di aggiornamenti da fare.
+
 ## Decisioni confermate: SDL3 e audio Web trasparente
 
 - **SDL3 è da implementare.** L'obiettivo è sostituire progressivamente il
@@ -70,113 +84,6 @@ ricontrollare release, eventuali yanked e compatibilità quando si implementa.
   sottosistemi possibile senza perdere funzionalità.
 
 Riferimento manutenzione: [GStreamer 1.28 release notes](https://gstreamer.freedesktop.org/releases/1.28/).
-
-## Inventario e valutazione
-
-Le versioni correnti sotto sono estratte da `Cargo.lock`, non dedotte dai soli
-range di `Cargo.toml`. Le versioni native GStreamer provengono dal bootstrap.
-
-| Gruppo | Versione Roves | Candidato/verifica | Valutazione |
-|---|---|---|---|
-| SpiderMonkey bindings | mozjs 0.21.0; mozjs_sys 140.13.0-0 | mozjs 0.21.6, che richiede mozjs_sys 140.14.0-0 | Prima candidata: restare nella serie 0.21 e leggere il diff prima di aggiornare |
-| SpiderMonkey salto di serie | Pin workspace `=0.21` | mozjs 0.26.0 richiede mozjs_sys 153.0.0-1 | Migrazione ampia, separata dal patch update e da eventuali lavori sulle barriere GC |
-| Media nativo | macOS bootstrap 1.22.3; Windows bootstrap/CI 1.22.8 | GStreamer stabile 1.28.7 | Priorità alta per pipeline, manutenzione e compatibilità codec; testare il pacchetto intero |
-| Media Rust | gstreamer 0.25.3; glib 0.22.8 | Non selezionato un nuovo target dei binding | Non confondere versioni dei binding con runtime nativo |
-| GUI | egui/egui-winit/egui_glow 0.34.3 | egui 0.36.2 | Candidata media: aggiornamento coordinato e verifica dialoghi/accessibilità |
-| Dialoghi | egui-file-dialog 0.13.0 | La pagina consultata riporta 0.13.0 | Compatibilità con nuova egui da confermare; non presumere che il dialogo accetti 0.36 |
-| Windowing | winit 0.30.13 | Release ufficiale verificata 0.30.13 | Tenere: non c'è un aggiornamento stabile dimostrato dalle fonti consultate |
-| Surface management | surfman 0.13.0 | Docs consultate 0.13.0 | Tenere; sostituirlo richiede preservare interop e condivisione superfici |
-| Renderer web | webrender/webrender_api 0.70.0 | Registry consultato riporta 0.70.0 | Nessun aggiornamento più recente verificato; alcune pagine latest risultano datate |
-| ANGLE wrapper | mozangle 0.6.0 | mozangle 0.7.0 | Candidata media per WebGL, soprattutto Windows; verificare il codice effettivamente compilato |
-| Async runtime | tokio 1.53.1 | Docs consultate 1.53.1 | Tenere: correggere prima I/O bloccante e copie nell'integrazione |
-| Raster images | image 0.25.10 | Docs consultate 0.25.10 | Tenere il contenitore; profilare decoder e feature prima di sostituzioni |
-| Compressione pack | zstd 0.13.3; zstd-sys con zstd 1.5.7 | zstd 0.14.0, dipendenza zstd-safe 8 | Candidata circoscritta: non equivale a un guadagno automatico di decompressione |
-| Allocatore Rust | tikv-jemallocator/tikv-jemalloc-sys 0.6.1 dove selezionati | tikv-jemallocator 0.7.0 | Candidata media con sys coordinato e controlli delle API statistiche |
-| Unicode/layout | ICU4X locid/segmenter 1.5.0, properties 1.5.1 | icu_segmenter 2.3.0 consultato | Migrazione major, bassa priorità prestazionale per giochi canvas; test testuale esteso |
-| GPU APIs | wgpu-core/types 30.0.0; anche serie 29 tramite altre dipendenze | Non scelto un nuovo target | Valutare il gruppo completo, non aggiornare una sola versione guardando il nome wgpu |
-
-Fonti primarie per JS: [mozjs 0.21.6](https://docs.rs/crate/mozjs/0.21.6)
-e [mozjs 0.26.0](https://docs.rs/crate/mozjs/0.26.0).
-Per media: [release notes GStreamer 1.28](https://gstreamer.freedesktop.org/releases/1.28/).
-Per GUI/windowing: [egui 0.36.2](https://docs.rs/crate/egui/0.36.2),
-[release egui](https://github.com/emilk/egui/releases/tag/0.36.2),
-[winit 0.30.13](https://github.com/rust-windowing/winit/releases/tag/v0.30.13),
-[surfman 0.13.0](https://docs.rs/crate/surfman/0.13.0),
-[egui-file-dialog](https://docs.rs/crate/egui-file-dialog/0.13.0).
-Altre verifiche: [WebRender registry](https://crates.io/crates/webrender/versions),
-[tokio 1.53.1](https://docs.rs/crate/tokio/1.53.1),
-[image 0.25.10](https://docs.rs/crate/image/0.25.10),
-[zstd release consultata](https://docs.rs/crate/zstd/latest),
-[jemallocator release consultata](https://docs.rs/crate/tikv-jemallocator/latest),
-[mozangle release consultata](https://docs.rs/crate/mozangle/latest),
-[ICU segmenter release consultata](https://docs.rs/crate/icu_segmenter/latest).
-
-## Aggiornamenti che meritano una prova
-
-### mozjs: patch prima, nuovo motore dopo
-
-Il pin `js = { package = "mozjs", version = "=0.21", ... }` richiede esattamente
-0.21.0, non tutta la serie 0.21.x. Quindi un semplice update del lockfile non
-seleziona 0.21.6: serve una modifica deliberata al requisito e un lockfile coerente.
-Confrontare il codice e le modifiche native tra i due pacchetti; il catalogo delle
-versioni non dimostra da solo quali difetti vengano corretti.
-
-0.26 cambia anche la versione nativa dell'engine. Verificare binding generati,
-rooting/tracing, API JS, compilazione JIT/Wasm e test Web Platform pertinenti.
-Non presumere che aggiornare SpiderMonkey risolva le pre-barriere Servo: il
-commento in `components/script/script_runtime.rs` segnala un problema di
-integrazione. La roadmap GC richiede una verifica indipendente.
-
-### GStreamer: intervenire sulla versione che viene distribuita
-
-`python/servo/platform/macos.py` fissa gli installer 1.22.3; Windows fissa 1.22.8
-in `windows.py` e nel workflow release. Una macchina può avere un runtime diverso:
-registrare la versione realmente installata e quella incorporata nel bundle.
-Aggiornare soltanto il crate Rust non cambia automaticamente questi installer.
-
-La serie 1.28 documenta miglioramenti della decodifica hardware su Apple e
-integrazione D3D12 su Windows, oltre a correzioni; il beneficio dipende da codec,
-hardware e pipeline selezionata. Non attribuire questi vantaggi ai giochi che
-usano solo audio o ai plugin che non vengono distribuiti. Fonte:
-[release notes ufficiali](https://gstreamer.freedesktop.org/releases/1.28/).
-
-La migrazione deve aggiornare URL, asset disponibili, runtime e devel insieme,
-cache/marker, librerie e plugin selezionati, packaging macOS/Windows e CI.
-`python/servo/gstreamer.py` e le liste plugin sono parte della verifica.
-Testare audio Web Audio, video, seek, fine stream, pausa/ripresa, codec distribuiti
-e WebRTC se incluso. Verificare ABI, requisiti GLib/OS e redistribuzione del
-pacchetto. Nessuna specifica vulnerabilità della build Roves è stata accertata
-in questa analisi; le release notes non sostituiscono un audit della build effettiva.
-
-### egui: famiglia coordinata, beneficio della shell
-
-Aggiornare insieme egui, egui-winit, egui_glow ed eventuali emath/epaint risolti,
-con una versione compatibile del file dialog e di AccessKit. I tipi delle diverse
-serie 0.x possono essere incompatibili: evitare due GUI separate per adattare
-un solo widget. Ispezionare le API usate nelle patch della shell e verificare
-splash, dialoghi, clipboard, IME, input, fullscreen e accessibilità.
-
-Le release 0.36.2 documentano correzioni GUI, non una garanzia di aumento degli
-FPS del gioco. Confrontare costo egui con contenuto statico e overlay animato.
-Se la shell è marginale, tenere la versione esistente finché c'è una ragione
-funzionale o di manutenzione per migrare.
-[Changelog ufficiale](https://github.com/emilk/egui/releases/tag/0.36.2).
-
-### zstd e allocatore: esperimenti circoscritti
-
-Il packer usa tar+zstd con lettura/estrazione streaming e conserva già alcuni
-formati compressi in tar non compresso. Un aggiornamento del wrapper zstd va
-confrontato con il codice nativo risolto, i flag e la compatibilità tra pack
-vecchi e nuovi. Il primo esperimento deve misurare pack/estrazione, CPU, RAM e
-avvio freddo/caldo, non FPS su una scena già caricata.
-
-Per jemallocator aggiornare wrapper e sys in modo compatibile. Roves usa API
-specifiche per `mallctl`, statistiche, `usable_size` e funzioni malloc/free:
-non basta sostituire `#[global_allocator]`. Su Windows il percorso corrente è
-specifico della piattaforma; la modifica del ramo jemalloc non copre Windows.
-Registrare throughput, frammentazione/RSS e p99 dei frame. Le allocazioni di
-SpiderMonkey, GStreamer e altre librerie native non seguono necessariamente
-l'allocatore globale Rust.
 
 ## Architettura vincolante: Servo embedded e uniforme — 2026-09-16
 
@@ -285,6 +192,13 @@ Decisione: candidato architetturale serio, ma iniziare con uno spike della shell
 che dimostri presentazione, input, resize, fullscreen e superfici condivise sui
 tre desktop prima di sostituire winit/surfman.
 
+**Stato (2026-09-16):** gamepad (gilrs→SDL3) fatto, senza passare dallo spike qui
+descritto — sostituzione diretta, con l'accortezza reale trovata solo durante
+l'implementazione che `sdl3::init()` richiede di girare sul thread `main()`, non
+un thread dedicato come faceva gilrs (vedi CUSTOMIZATIONS.md). La sostituzione di
+finestra/event-loop/IME/accessibilità descritta sopra **non è stata tentata**:
+portata reale misurata (non stimata) in TODO.md prima di decidere di rimandarla.
+
 ### Audio: GStreamer e Kira
 
 **GStreamer** conserva compatibilità con media Web, codec, streaming e WebRTC.
@@ -328,15 +242,34 @@ ownership corretta delle allocazioni cross-FFI.
 
 ## Piano corretto
 
-1. Telemetria dei frame ed exporter Perfetto; Tracy opzionale.
+Stato per punto (2026-09-16) — dettaglio implementazione in CUSTOMIZATIONS.md,
+lavoro ancora aperto in TODO.md:
+
+1. Telemetria dei frame ed exporter Perfetto; Tracy opzionale. **Perfetto e Tracy
+   fatti** (Perfetto era già upstream; aggiunta la feature `tracing-tracy`). La
+   telemetria Roves con buffer circolare **non è stata iniziata** — è una feature
+   nuova, non implicita in "Tracy e Perfetto" da soli; vedi TODO.md.
 2. Baseline del medesimo fork Servo sui tre desktop con suite di conformità Roves.
-3. Servo Game Profile: pacing, composizione diretta e repaint separati.
-4. Esperimenti isolati su mozjs, mozangle e allocatore.
+   Verifica continua via `test.yml` a ogni push su `patches/**`.
+3. Servo Game Profile: pacing, composizione diretta e repaint separati. **Non
+   iniziato.**
+4. Esperimenti isolati su mozjs, mozangle e allocatore. **Fatti** (mozjs 0.21.6
+   patch-level, mozangle 0.7.0, tikv-jemallocator 0.7.0/0.7.1) — tutti verificati
+   verdi via CI.
 5. Spike SDL3 soltanto come possibile piattaforma interna della shell embedded.
+   **Gamepad (gilrs→SDL3) fatto** con integrazione diretta sul main thread, non lo
+   spike separato qui descritto — vedi CUSTOMIZATIONS.md per il perché (vincolo
+   reale di `sdl3::init()` sul thread `main()`). **Finestra/event-loop non
+   tentati** — portata reale misurata in TODO.md.
 6. Prototipo wgpu/canvas fast path dentro Servo, preservando fallback WebRender.
+   **Non iniziato**, rinviato per esplicita decisione.
 7. Conservare GStreamer per Web Audio/media e misurarne latenza e jitter.
+   **Aggiornamento a 1.28.7 fatto** (con due bug reali trovati e risolti sul lato
+   Windows, vedi CUSTOMIZATIONS.md); misure di latenza/jitter **non fatte**.
 8. Solo dopo evidenze insufficienti da SpiderMonkey, studio V8/JSC come port
    completo; nessun motore JS viene scambiato senza binding e test equivalenti.
+   **Non applicabile ancora** — mozjs resta sulla serie 0.21 (major 0.26 rimandato,
+   portata reale: ~300 file nel motore vendorizzato).
 
 Ogni cambiamento deve produrre lo stesso comportamento osservabile sui tre
 desktop, essere incorporato/versionato nel bundle e avere rollback. I benchmark
@@ -500,12 +433,28 @@ Le versioni npm più recenti non sono state verificate: nessun bump viene propos
 
 ## Piano di esecuzione e verifica
 
-1. Costruire baseline ricostruibile da Servo 0.5.0 + patch Roves, registrando toolchain, target, feature, lockfile e librerie native effettive.
-2. Provare mozjs 0.21.6 in una patch separata: leggere diff, aggiornare pin/lock, test JS/DOM/workers/Wasm e GC pertinente. Non abilitare GC incrementale.
-3. Provare la nuova distribuzione GStreamer in una patch separata per installer/plugin/packaging e testare le app confezionate, non soltanto il link in CI.
-4. Valutare egui con dipendenze compatibili; se bloccata dal dialogo, documentare costo di adattamento invece di forzare il bump.
-5. Provare zstd e allocator separatamente; valutare mozangle su workload e driver WebGL pertinenti.
-6. Investigare deduplicazione/feature solo per il grafo desktop effettivo; rinviare le sostituzioni architetturali salvo nuove prove.
+**Punti 1-5: eseguiti (2026-09-16), ciascuno in patch isolata e verificato verde via
+`test.yml` prima del passo successivo** — dettaglio completo, incluse due
+scoperte reali durante l'implementazione (rinomina DLL GStreamer, dipendenza
+`swscale` mancante, entrambe non previste dall'analisi originale), in
+CUSTOMIZATIONS.md. Punto 6 non ancora affrontato.
+
+1. ~~Costruire baseline ricostruibile da Servo 0.5.0 + patch Roves~~ — baseline
+   già esistente (questo repo), verificata a ogni run CI.
+2. ~~Provare mozjs 0.21.6 in una patch separata~~ — fatto, verde al primo tentativo.
+   GC incrementale non abilitato, come da piano.
+3. ~~Provare la nuova distribuzione GStreamer in una patch separata~~ — fatto, ma
+   non solo un "provare": l'installer Windows di GStreamer 1.28.x non pubblica più
+   coppie MSI, ha richiesto ripensare il meccanismo di installazione non
+   interattiva da zero (vedi CUSTOMIZATIONS.md).
+4. ~~Valutare egui con dipendenze compatibili~~ — fatto (egui-file-dialog 0.15.0 è
+   la prima versione compatibile con egui 0.36); trovato e risolto un vero
+   breaking change (`EguiGlow::run` ora passa `&mut Ui` invece di `&Context`).
+5. ~~Provare zstd e allocator separatamente; valutare mozangle~~ — fatto per tutti
+   e tre, patch isolate, verdi via CI.
+6. Investigare deduplicazione/feature solo per il grafo desktop effettivo;
+   rinviare le sostituzioni architetturali salvo nuove prove. **Non ancora
+   affrontato.**
 
 Per ogni candidato: compilazione sui target interessati, test pertinenti, avvio
 del bundle, input/audio/grafica/salvataggi, p95/p99 dei frame, caricamenti, RSS,
@@ -518,13 +467,22 @@ quando si prepara una release; nessun audit completo è stato eseguito qui.
 Gli aggiornamenti di runtime richiedono patch coerenti con la ricostruzione
 upstream usata dai workflow, oltre ai file della checkout corrente.
 
-## Limiti della verifica attuale
+## Limiti della verifica originale (analisi del 13 settembre 2026)
 
-Sono stati letti manifest, lockfile, call site pertinenti, allocator, packer,
-bootstrap nativo e workflow release. Fonti online primarie sono state consultate
-per i candidati indicati. Alcune pagine latest di WebRender/file-dialog sono
-datate: non sono usate per affermare l'assenza assoluta di altre release.
-Non sono stati eseguiti Cargo resolution, compilazione, audit o benchmark:
-Cargo e un ambiente desktop/GPU non sono disponibili qui. Le compatibilità
-proposte restano da dimostrare; questo branch salva una decisione motivata e un
-piano di prova, non aggiornamenti già validati.
+Al momento di questa analisi erano stati letti manifest, lockfile, call site
+pertinenti, allocator, packer, bootstrap nativo e workflow release, con fonti
+online primarie consultate per i candidati indicati — ma senza Cargo resolution,
+compilazione, audit o benchmark reali (Cargo e un ambiente desktop/GPU non erano
+disponibili in quella sessione).
+
+**Aggiornamento (2026-09-16): la maggior parte dei candidati è stata da allora
+implementata e verificata per davvero**, via `cargo update`/`cargo metadata` per
+la risoluzione delle dipendenze e via `test.yml` (build reale su Windows/macOS/
+Linux + smoke test di lancio) per la compilazione — non più solo una decisione
+motivata sulla carta. Il dettaglio di ogni verifica, incluse le scoperte fatte
+solo durante l'implementazione reale (non prevedibili dalla sola lettura di
+changelog/documentazione), è in CUSTOMIZATIONS.md. Restano senza verifica reale:
+audit di sicurezza del lockfile/componenti nativi, benchmark prestazionali
+(p95/p99 dei frame, latenza/jitter audio, CPU/RAM di pack/estrazione — tutti
+esplicitamente richiesti da questo documento ma non eseguibili senza hardware
+reale), e ovviamente tutto il lavoro ancora aperto elencato in TODO.md.
