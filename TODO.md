@@ -101,17 +101,27 @@ Questa voce pianifica l'integrazione opzionale; non introduce SDK o funzionalit�
 - [ ] **Steam avanzato, opzionale:** valutare classifiche e ulteriori servizi richiesti dai giochi. Obiettivi, statistiche, DLC, overlay e Steam Cloud sono già implementati: concentrare il backlog sulle capability mancanti e sui test reali.
 - [ ] **Aggiornamenti contenuti, opzionali:** progettare aggiornamento/versionamento dei contenuti senza ricreare sempre il bundle, con integrità, rollback e coerenza della cache. Decidere prima se serve un updater completo o basta il meccanismo di aggiornamento della piattaforma store.
 
-### Diagnostica prestazioni: Tracy e Perfetto — da implementare
+### Diagnostica prestazioni: Tracy e Perfetto
 
+- [x] **Perfetto era già presente upstream** (2026-09-16): `tracing`/`tracing-perfetto`
+  sono funzionalità Servo pristine, non un gap Roves — `PerfettoLayer` già collegato in
+  `init_tracing` (`ports/servoshell/lib.rs`), scrive `servo.pftrace`, apribile su
+  ui.perfetto.dev. Esiste anche un profiler Servo separato e già collegato via CLI
+  (`--profile`/`--profiler-trace-path` → `components/profile/time.rs`: CSV, terminale,
+  viewer HTML `TraceDump`). Vedi CUSTOMIZATIONS.md, entry "Tracy: new tracing-tracy feature".
+- [x] **Tracy integrato** (2026-09-16): nuova feature `tracing-tracy` (crate
+  `nagisa/rust_tracy_client` 0.12.0), stesso pattern di `tracing-perfetto` — disattiva per
+  default, richiede `tracing`. `tracy-client-sys` compila da sorgente vendorizzata (`cc`),
+  nessun install di sistema. Non ancora verificato da nessun job CI reale (nessun workflow
+  passa `--features tracing-tracy`/`tracing-perfetto` oggi) — solo compilazione isolata
+  confermata via `cargo metadata`.
 - [ ] Costruire una telemetria Roves comune con clock monotono, frame ID,
   aggregati p50/p95/p99, frame oltre budget e buffer circolare preallocato.
-  Evitare log, allocazioni e serializzazione per ogni frame.
-- [ ] Integrare **Tracy** nelle build developer/profiling per frame, zone CPU/GPU,
-  thread, lock, allocazioni e marcatori di GC, shader, navigazione, asset, audio
-  e presentazione. Misurare l'overhead; non abilitarlo nelle release normali.
-- [ ] Aggiungere un exporter **Perfetto** per timeline correlabili e analisi
-  automatica, mantenendo anche JSON/CSV versionati. Verificare apertura, query e
-  confronto delle tracce Roves/Chrome sullo stesso benchmark.
+  Evitare log, allocazioni e serializzazione per ogni frame. **Non ancora iniziato** —
+  scartato dal passaggio 2026-09-16 per restare a ritmo con il lavoro SDL3 windowing;
+  è una feature Roves genuinamente nuova (nessun hook di frame-time esistente da riusare
+  per un buffer "ultimi N frame" pensato per girare silenziosamente in ogni release), non
+  implicita in "Tracy e Perfetto" da soli.
 - [ ] Nelle release includere soltanto diagnostica Roves leggera, disabilitata
   per default e attivabile esplicitamente dall'utente. Nessun upload automatico;
   omettere URL, percorsi e dati sensibili per default.
@@ -123,6 +133,44 @@ Questa voce pianifica l'integrazione opzionale; non introduce SDK o funzionalit�
 
 Riferimenti: [Tracy](https://github.com/wolfpld/tracy) e
 [Perfetto](https://perfetto.dev/docs/).
+
+### SDL3: gamepad fatto, finestra/event-loop ancora da fare — portata reale misurata
+
+`docs/DEPENDENCY_REVIEW.md` prevede una sostituzione diretta di `winit`+`gilrs` con SDL3.
+Il gamepad (`gilrs`→SDL3) è **fatto** (2026-09-16, vedi CUSTOMIZATIONS.md) — polling sul
+main thread via `App::new_events`/`set_running_control_flow`, dato che `sdl3::init()`
+rifiuta di girare fuori dal thread `main()` (vincolo reale, non solo dei binding Rust).
+La sostituzione di finestra/event-loop **non è stata tentata** in questa sessione: portata
+misurata concretamente prima di iniziare, non stimata — 13 file usano `winit::` (confermato
+via grep), di cui i più grossi sono `desktop/headed_window.rs` (1553 righe, 34 punti
+d'integrazione raw-window-handle/surfman/IME) e `desktop/gui.rs` (820 righe, bridge
+`egui-winit`/`accesskit_winit`). Rimandato per restare a ritmo con il resto del piano
+(Tracy/Perfetto, egui, release, poi mozjs 0.26 major) — stesso trattamento dato a mozjs 0.26:
+non è lavoro rifiutato, è lavoro correttamente scoperto come troppo grande per questa sessione.
+
+- [ ] **Finestra + event loop**: sostituire `winit::event_loop`/`winit::window` con SDL3 in
+  `desktop/app.rs`, `desktop/event_loop.rs`, `desktop/headed_window.rs`,
+  `desktop/headless_window.rs`. Il modello di dispatch di SDL3 (coda eventi centrale, poll
+  loop) è strutturalmente diverso dal pattern `ApplicationHandler` di winit 0.30 — non un
+  cambio di tipo, un cambio di architettura del loop principale.
+- [ ] **GL/surface**: `surfman` crea contesti via `raw-window-handle` dalla `winit::Window`
+  attuale — verificare che la feature `raw-window-handle` di `sdl3` (dietro flag opzionale,
+  vedi Cargo.toml del crate `sdl3`) fornisca un handle compatibile prima di assumere che sia
+  un drop-in.
+- [ ] **Accessibilità**: `egui-winit` porta con sé `accesskit_winit` — non esiste un backend
+  egui-su-SDL3 mantenuto upstream. Serve un bridge AccessKit scritto da zero (non un
+  adattamento). Questo è il singolo pezzo di lavoro più grande e rischioso dell'intera
+  migrazione SDL3 windowing — vedi CUSTOMIZATIONS.md's entry SDL3 gamepad per il dettaglio.
+- [ ] **Tastiera/IME**: `desktop/keyutils.rs` (601 righe) mappa i codici tasto winit → valori
+  DOM/Servo. Da rifare per i codici SDL3, verificando IME (composizione, candidati) che
+  winit gestisce oggi tramite eventi dedicati.
+- [ ] **WebXR**: `desktop/webxr.rs` usa `winit::event_loop::ActiveEventLoop` — verificare cosa
+  serve realmente (probabile: solo un modo di ottenere un handle finestra, non l'intero
+  ciclo eventi).
+- [ ] **Verifica**: nessuna di queste modifiche è verificabile in modo affidabile solo via CI
+  (smoke test di ~15s, nessuna interazione reale) — IME, fullscreen, accessibilità e resize
+  multi-monitor richiedono test manuale su hardware reale per ciascuno dei tre desktop prima
+  di considerare la migrazione conclusa, indipendentemente da quanto la CI risulti verde.
 
 ### Rendering futuro: fast path wgpu — backlog
 
