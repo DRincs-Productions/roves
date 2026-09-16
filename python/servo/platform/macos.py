@@ -16,11 +16,14 @@ from .. import util
 from .base import Base
 from .build_target import BuildTarget
 
-URL_BASE = "https://github.com/servo/servo-build-deps/releases/download/macOS"
-GSTREAMER_PLUGIN_VERSION = "1.22.3"
-GSTREAMER_FILENAME = "gstreamer-1.0-1.22.3-universal.pkg"
+GSTREAMER_PLUGIN_VERSION = "1.28.7"
+# servo/servo-build-deps only ever mirrored up to 1.22.3 for macOS (never updated past it) --
+# fetch straight from the GStreamer project's own official distribution instead, which does
+# publish current universal .pkg installers under the same filename convention.
+URL_BASE = f"https://gstreamer.freedesktop.org/data/pkg/osx/{GSTREAMER_PLUGIN_VERSION}"
+GSTREAMER_FILENAME = f"gstreamer-1.0-{GSTREAMER_PLUGIN_VERSION}-universal.pkg"
 GSTREAMER_URL = f"{URL_BASE}/{GSTREAMER_FILENAME}"
-GSTREAMER_DEVEL_FILENAME = "gstreamer-1.0-devel-1.22.3-universal.pkg"
+GSTREAMER_DEVEL_FILENAME = f"gstreamer-1.0-devel-{GSTREAMER_PLUGIN_VERSION}-universal.pkg"
 GSTREAMER_DEVEL_URL = f"{URL_BASE}/{GSTREAMER_DEVEL_FILENAME}"
 GSTREAMER_ROOT = "/Library/Frameworks/GStreamer.framework/Versions/1.0"
 

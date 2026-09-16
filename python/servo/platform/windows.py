@@ -24,8 +24,12 @@ DEPENDENCIES = {
     "moztools": "4.0",
 }
 
-GSTREAMER_URL = f"{DEPS_URL}/gstreamer-1.0-msvc-x86_64-1.22.8.msi"
-GSTREAMER_DEVEL_URL = f"{DEPS_URL}/gstreamer-1.0-devel-msvc-x86_64-1.22.8.msi"
+GSTREAMER_VERSION = "1.28.7"
+# servo-build-deps only ever mirrored 1.22.8 (as two separate MSIs, runtime + devel) and was
+# never updated past it. From 1.28.7 on, GStreamer's own official Windows distribution is a
+# single Inno Setup installer bundling both -- fetched straight from the GStreamer project
+# instead. See CUSTOMIZATIONS.md for why this is no longer installed via `msiexec /a`.
+GSTREAMER_URL = f"https://gstreamer.freedesktop.org/data/pkg/windows/{GSTREAMER_VERSION}/msvc/gstreamer-1.0-msvc-x86_64-{GSTREAMER_VERSION}.exe"
 DEPENDENCIES_DIR = os.path.join(util.get_target_dir(), "dependencies")
 
 
@@ -180,36 +184,31 @@ class Windows(Base):
             return False
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            libs_msi = os.path.join(temp_dir, GSTREAMER_URL.rsplit("/", maxsplit=1)[-1])
-            devel_msi = os.path.join(temp_dir, GSTREAMER_DEVEL_URL.rsplit("/", maxsplit=1)[-1])
+            installer = os.path.join(temp_dir, GSTREAMER_URL.rsplit("/", maxsplit=1)[-1])
+            util.download_file("GStreamer", GSTREAMER_URL, installer)
 
-            util.download_file("GStreamer libraries", GSTREAMER_URL, libs_msi)
-            util.download_file("GStreamer development support", GSTREAMER_DEVEL_URL, devel_msi)
-
-            print(f"Installing GStreamer packages to {DEPENDENCIES_DIR}...")
+            # Same nested layout the old MSI's `TARGETDIR` admin-install used to produce
+            # (see gstreamer_root() above) -- pointing /DIR straight at it means no change is
+            # needed to how an installed GStreamer gets found afterwards.
+            install_dir = os.path.join(DEPENDENCIES_DIR, "gstreamer", "1.0", "msvc_X86_64")
+            print(f"Installing GStreamer to {install_dir}...")
             os.makedirs(DEPENDENCIES_DIR, exist_ok=True)
 
-            for installer in [libs_msi, devel_msi]:
-                arguments = [
-                    "/a",
-                    f'"{installer} "TARGETDIR="{DEPENDENCIES_DIR}"',  # Install destination
-                    "/qn",  # Quiet mode
+            # /CURRENTUSER installs without requiring admin privileges -- no UAC prompt, unlike
+            # the old MSI `-verb runAs` install this replaces (which is exactly what hung
+            # indefinitely on a non-interactive CI runner, see test.yml/release.yml's own
+            # workaround for that). Confirmed locally: this installer honors /CURRENTUSER and
+            # completes with no elevation prompt at all.
+            subprocess.check_call(
+                [
+                    installer,
+                    "/CURRENTUSER",
+                    "/VERYSILENT",
+                    "/SUPPRESSMSGBOXES",
+                    "/NORESTART",
+                    f'/DIR="{install_dir}"',
                 ]
-                quoted_arguments = ",".join((f"'{arg}'" for arg in arguments))
-                subprocess.check_call(
-                    [
-                        "powershell",
-                        "exit (Start-Process",
-                        "-PassThru",
-                        "-Wait",
-                        "-verb",
-                        "runAs",
-                        "msiexec.exe",
-                        "-ArgumentList",
-                        f"@({quoted_arguments})",
-                        ").ExitCode",
-                    ]
-                )
+            )
 
             assert self.is_gstreamer_installed(target)
             return True

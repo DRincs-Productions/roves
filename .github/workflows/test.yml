@@ -194,16 +194,17 @@ jobs:
           cp ../support/openharmony/entry/src/main/resources/base/media/servo_64.png \
              support/openharmony/entry/src/main/resources/base/media/servo_64.png
 
-      # Windows only: install the real GStreamer runtime+devel MSIs ourselves, directly via
-      # msiexec, to the exact path `./mach bootstrap`'s own installer would use (see
-      # python/servo/platform/windows.py's DEPENDENCIES_DIR — servo-src/target/dependencies
-      # here). We bypass that installer's own `Start-Process -verb runAs` UAC elevation
-      # request, which hangs indefinitely on a non-interactive GH runner with no one to click
-      # through it — this used to be sidestepped entirely by building with
-      # `--media-stack dummy` instead (no GStreamer needed at all), until this build started
-      # needing real audio/video too. Same approach release.yml already uses for its own
-      # real-GStreamer Windows build — see that workflow's own comment for the full
-      # reasoning. `--skip-platform` below then skips mach's own (would-be-hanging) attempt
+      # Windows only: install the real GStreamer runtime+devel ourselves, to the exact path
+      # `./mach bootstrap`'s own installer would use (see python/servo/platform/windows.py's
+      # DEPENDENCIES_DIR — servo-src/target/dependencies here). GStreamer 1.28.7 no longer
+      # ships as an MSI (see CUSTOMIZATIONS.md) — its single Inno Setup installer's own
+      # `/CURRENTUSER` flag installs without requiring admin privileges, so this runs without
+      # any elevation prompt at all (unlike the old MSI `-verb runAs` install this replaces,
+      # which hung indefinitely on a non-interactive GH runner with no one to click through it
+      # — this used to be sidestepped entirely by building with `--media-stack dummy` instead,
+      # until this build started needing real audio/video too). Same approach release.yml
+      # already uses for its own real-GStreamer Windows build — see that workflow's own
+      # comment for the full reasoning. `--skip-platform` below then skips mach's own attempt
       # to install it again; `is_gstreamer_installed()` still finds it at this path
       # independently of that skip, since that check runs as part of the build step itself.
       - name: install GStreamer (Windows, non-interactive)
@@ -212,15 +213,16 @@ jobs:
         working-directory: servo-src
         run: |
           $ErrorActionPreference = "Stop"
-          $depsUrl = "https://github.com/servo/servo-build-deps/releases/download/msvc-deps"
-          $targetDir = Join-Path (Get-Location) "target\dependencies"
-          New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
-          foreach ($name in @("gstreamer-1.0-msvc-x86_64-1.22.8.msi", "gstreamer-1.0-devel-msvc-x86_64-1.22.8.msi")) {
-            $msi = Join-Path $env:RUNNER_TEMP $name
-            Invoke-WebRequest -Uri "$depsUrl/$name" -OutFile $msi
-            $proc = Start-Process msiexec.exe -ArgumentList @("/a", $msi, "TARGETDIR=$targetDir", "/qn") -Wait -PassThru
-            if ($proc.ExitCode -ne 0) { throw "msiexec failed for $name with exit code $($proc.ExitCode)" }
-          }
+          $version = "1.28.7"
+          $name = "gstreamer-1.0-msvc-x86_64-$version.exe"
+          $installer = Join-Path $env:RUNNER_TEMP $name
+          Invoke-WebRequest -Uri "https://gstreamer.freedesktop.org/data/pkg/windows/$version/msvc/$name" -OutFile $installer
+          $installDir = Join-Path (Get-Location) "target\dependencies\gstreamer\1.0\msvc_X86_64"
+          New-Item -ItemType Directory -Force -Path (Split-Path $installDir) | Out-Null
+          $proc = Start-Process -FilePath $installer -ArgumentList @(
+            "/CURRENTUSER", "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=`"$installDir`""
+          ) -Wait -PassThru
+          if ($proc.ExitCode -ne 0) { throw "GStreamer installer failed with exit code $($proc.ExitCode)" }
 
       # IMPORTANT: invoke `./mach`, never `python3 ./mach`. `mach` is a polyglot
       # shell+python script (see its own top comment): run as a shell script, it

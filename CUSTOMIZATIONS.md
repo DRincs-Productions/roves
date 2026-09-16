@@ -6959,3 +6959,76 @@ applies cleanly to a fresh pristine `v0.5.0` extraction (`patch -p1 --dry-run`).
 `cargo build`/`mach build` is not possible on this machine (no working `lld-link`/`libclang`
 locally, see `CLAUDE.md`) — real compile/link verification, and the actual JS/DOM/worker/Wasm
 behavior this touches, is pending a `test.yml` CI run on this branch.
+
+---
+
+## 2026-09-16 — GStreamer runtime 1.22.x → 1.28.7 — Windows install mechanism rebuilt, not just re-pinned
+
+**Files:** `python/servo/platform/macos.py`, `python/servo/platform/windows.py`,
+`.github/workflows/test.yml`, `.github/workflows/release.yml`.
+
+**Patch:** `patches/servo-v0.5.0/0006-media-gstreamer.patch` (regenerated — now also carries
+the `macos.py`/`windows.py` hunks alongside its existing `gstreamer.py` one). The two workflow
+files aren't part of the pristine-download-plus-`patches/` reconstruction (see `CLAUDE.md`),
+so they're edited directly, no patch involved.
+
+**Why this isn't a version-string bump:** `servo/servo-build-deps` — the repo Servo's own
+`macos.py`/`windows.py` download prebuilt GStreamer from — was never updated past 1.22.3
+(macOS)/1.22.8 (Windows); there is no 1.28.7 asset there (verified against its own release/asset
+list via the GitHub API before writing any code). Two separate real discoveries followed:
+
+1. **macOS**: GStreamer's own official distribution
+   (`gstreamer.freedesktop.org/data/pkg/osx/1.28.7/`) still publishes the same
+   `gstreamer-1.0-<version>-universal.pkg` / `-devel-` naming convention `servo-build-deps` used
+   to mirror — `URL_BASE` now points there directly instead, parameterized by
+   `GSTREAMER_PLUGIN_VERSION` so a future bump is a one-line change again. The `.pkg`/
+   `sudo installer -target /` install mechanism itself is unchanged.
+2. **Windows — a real architecture change upstream, not just a new number**: from 1.28.7 on,
+   GStreamer no longer ships Windows as two separate MSIs (runtime + devel). The official
+   distribution (`gstreamer.freedesktop.org/data/pkg/windows/1.28.7/msvc/`) is now a single
+   Inno Setup installer (`gstreamer-1.0-msvc-x86_64-1.28.7.exe`, confirmed via its embedded
+   "Inno Setup" signature) bundling both. This breaks the existing install mechanism outright:
+   the current pinned version is installed via `msiexec /a ... TARGETDIR=... /qn` — MSI's own
+   "administrative install" (extract-only, no real install, no elevation) — specifically chosen
+   to dodge the UAC prompt `mach bootstrap`'s own `Start-Process -verb runAs` install path hangs
+   on in non-interactive CI (see `test.yml`'s pre-existing comment on that finding). `msiexec /a`
+   doesn't apply to a non-MSI `.exe` at all, so this needed a real replacement, not a tweak.
+
+**Windows fix, found by testing locally (this machine's own Windows 11 session, not CI) before
+touching any workflow:** downloaded the real 1.28.7 installer and confirmed
+`/CURRENTUSER /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR="<path>"` installs **without any UAC
+prompt at all** (no `consent.exe` elevation process ever appeared) and completes in well under a
+minute — `/CURRENTUSER` is an Inno Setup switch that installs per-user rather than per-machine,
+which doesn't require admin rights in the first place, unlike the old MSI path's `-verb runAs`.
+The installed layout is flat (`bin/`, `lib/`, `include/`, no per-arch subfolder the old MSI's own
+internal package structure produced) — pointing `/DIR` straight at
+`<DEPENDENCIES_DIR>/gstreamer/1.0/msvc_X86_64` (the exact path `windows.py`'s `gstreamer_root()`
+already looks for) reproduces the same effective location with zero changes needed to that
+lookup logic. Confirmed both `bin/ffi-7.dll` and `lib/pkgconfig/gobject-2.0.pc` — the two files
+`is_gstreamer_installed()` checks for — land exactly where expected. Test install and its
+uninstaller (`unins000.exe`) were both run and cleaned up afterward; nothing was left registered
+on this machine (no Start Menu entry, `Test-Path` on the install dir confirmed removed).
+
+**Changed:** `windows.py`'s `_platform_bootstrap_gstreamer` now downloads the single installer
+and runs it directly (no `msiexec`, no `-verb runAs`/PowerShell `Start-Process ... -verb runAs`
+wrapper) — this also means a real end user running `./mach bootstrap` locally on Windows no
+longer hits a UAC prompt for this step either, a side benefit of the fix, not just a CI
+workaround. `test.yml`/`release.yml`'s own duplicate manual-install steps (there specifically
+*because* `mach bootstrap`'s own path used to hang — see their own updated comments) were
+updated to the same single-installer/`/CURRENTUSER` approach, still run explicitly with
+`--skip-platform` rather than switching to trust `mach bootstrap`'s own now-probably-fine path
+untested — keeping the existing "CI installs it explicitly, visibly, itself" pattern rather than
+betting a first real usage on an unattended code path.
+
+**Not changed:** the `gstreamer`/`glib`/etc. Rust binding crate versions (`gstreamer = { version
+= "0.25", features = ["v1_18"] }` and siblings). GStreamer maintains runtime API/ABI stability
+across the whole 1.x series above whatever minimum a binding's own feature flag (`v1_18` here)
+declares — matching `docs/DEPENDENCY_REVIEW.md`'s own explicit note not to confuse the Rust
+binding version with the native runtime version. No binding bump is needed for this runtime bump.
+
+**Verification:** the `/CURRENTUSER` install behavior above was verified for real, on a real
+Windows machine — not simulated or assumed. What's still unverified: the macOS `.pkg` install on
+an actual macOS runner, and the Windows path end-to-end inside actual GitHub Actions (a real
+CI environment differs from an interactive dev session in ways that could still matter — a
+missing user profile registry hive, a different default session type). Pending a `test.yml` run
+on this branch across all three platforms.
