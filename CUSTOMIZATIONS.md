@@ -7380,3 +7380,71 @@ change above, pending a `test.yml` run — and even a green run only proves this
 (nothing in CI ever builds with `--features tracing-tracy`/`tracing-perfetto` today, so this
 entry doesn't claim the Tracy/Perfetto integration itself was exercised, only that adding the
 feature doesn't break the default build).
+
+---
+
+## 2026-09-16 — egui/egui-winit/egui_glow 0.34.3 → 0.36.2, egui-file-dialog 0.13.0 → 0.15.0
+
+**Files:** `Cargo.toml`, `ports/servoshell/desktop/gui.rs`.
+
+**Patch:** `patches/servo-v0.5.0/0014-root-workspace.patch` (version bumps), `patches/servo-v0.5.0/
+0001-desktop-shell-core.patch` (`gui.rs` section regenerated).
+
+**Why now, not sooner:** originally the plan deferred egui until after the SDL3 windowing/
+event-loop replacement, to avoid migrating `egui-winit` integration code twice. SDL3 windowing
+wasn't attempted this session (see that entry's own scope write-up above) — the window stays on
+`winit` for now, so that reason to wait no longer applies for this pass; proceeding with egui now
+is a real, independently valuable step rather than one that would need redoing.
+
+**`egui-file-dialog`: version bump only, no code change needed.** Checked its own real
+changelog first: 0.14.0's only breaking change was adding a field to `FileDialogConfig` (Roves
+never constructs that struct directly, so unaffected); 0.15.0's only breaking change is the
+`egui` 0.36 bump itself. `0.15.0` is the first version whose own `egui` dependency requirement
+(`^0.36.0`, confirmed via crates.io's dependency listing) actually matches this bump — the
+review document's own caution ("non presumere che il dialogo accetti 0.36") was correct to flag,
+and turned out to require a version jump (`0.13`→`0.15`), not a compatibility gap.
+
+**The one real egui-side breaking change, found by reading `egui`'s own source (`containers/
+panel.rs`, `egui_glow/src/winit.rs`) before touching any code:** `EguiGlow::run`'s callback
+signature changed from `impl FnMut(&egui::Context)` to `impl FnMut(&mut egui::Ui)` — egui 0.36
+removed the `Context`-taking `Panel::show`/`Panel::show_inside` variants for `CentralPanel`/
+`SidePanel`/`TopBottomPanel` entirely (`show_inside` was renamed to `show`; the old top-level
+`show(ctx, ...)` is just gone, not merely renamed), in favor of always handing the whole-window
+`Ui` to the caller directly. This is exactly what a pre-existing comment in `gui.rs` (next to a
+now-removed `#[expect(deprecated)]`) had already predicted: "deprecated in this egui version in
+favor of hand-building a full-window `Ui`."
+
+**Floating/positioned containers (`Window`, `Area`, `Tooltip`) did *not* change** — verified
+each one's real signature individually rather than assuming a blanket rule: `Window::show`,
+`Area::show`, and `Tooltip::always_open` all still take `&Context`/`Context` directly, since
+(unlike docked panels) they're conceptually independent of any parent `Ui`. This is why
+`desktop/dialog.rs`'s own `Dialog::update(&mut self, ctx: &egui::Context)` needed **zero**
+internal changes — only its call site in `gui.rs` (`dialog.update(ctx)` → `dialog.update(ui.ctx())`).
+
+**Fix, applied to all three of `gui.rs`'s `self.context.run(...)` call sites (`update`,
+`update_splash`, `update_content_load_error`):** renamed the closure parameter from `ctx` to
+`ui` (it's genuinely a `Ui` now), removed the now-unfulfillable `#[expect(deprecated)]`
+attributes (the deprecated method they were suppressing a warning for no longer exists at all —
+leaving the attribute would itself become a hard "unfulfilled lint expectation" error), and
+changed `.show(ctx, ...)` to `.show(ui, ...)`. Every other call on the (renamed) parameter was
+checked individually against `Ui`'s and `Context`'s real method lists rather than assumed:
+`pixels_per_point`/`available_rect_before_wrap` exist directly on `Ui`, unchanged; `fonts_mut`/
+`accesskit_node_builder`/`layer_painter`, and `Tooltip::always_open`'s owned-`Context` argument,
+are `Context`-only and now go through `ui.ctx()`.
+
+**Confirmed out of scope:** egui 0.36's other headline breaking change ("Remove `Modifiers` from
+`RawInput`, make it an `egui::Event`") doesn't touch this fork's own code — `EguiGlow::run`
+builds `RawInput` internally via `egui_winit::State::take_egui_input`, and `gui.rs`/
+`headed_window.rs` have zero direct `RawInput`/`.modifiers` references (checked). The three other
+`#[expect(deprecated)]`/`#[allow(deprecated)]` sites in this fork (`desktop/keyutils.rs` ×2,
+`desktop/headed_window.rs` ×1) are about `winit`'s own `Key`/`create_window` deprecations, not
+egui — confirmed by reading each one, left untouched.
+
+**Verification:** `cargo metadata` resolves cleanly — the larger-than-usual `Cargo.lock` diff
+(182 insertions/164 deletions) is `egui`'s own font-shaping dependency stack (`skrifa` 0.40→0.44,
+`glifo` 0.1.1→0.2.0, `harfrust` newly added, `fearless_simd`/`read-fonts` version churn) moving as
+a side effect of egui 0.35's own switch to `harfrust` for kerning/ligatures (see its real
+changelog) — not unrelated collateral. Both regenerated patches apply cleanly to a fresh pristine
+extraction. Actual compile/render correctness (the splash screen, the browser-chrome overlay
+egui draws over each WebView, the save-file dialog, AccessKit) is pending a `test.yml` run — this
+machine has no working `cargo build` locally (see `CLAUDE.md`).

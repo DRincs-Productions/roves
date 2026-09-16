@@ -534,26 +534,33 @@ impl Gui {
         } = self;
 
         let winit_window = headed_window.winit_window();
-        context.run(winit_window, |ctx| {
+        // `EguiGlow::run`'s callback now hands back the whole-window `&mut Ui` directly
+        // (egui 0.36 removed the `Context`-based top-level panel API this used to go
+        // through) rather than a `&Context` — see CUSTOMIZATIONS.md's egui 0.36.2 entry.
+        // Layout methods (`pixels_per_point`, `available_rect_before_wrap`) work on `ui`
+        // directly; genuinely `Context`-only ones (`accesskit_node_builder`,
+        // `layer_painter`, and anything wanting an owned `Context` like
+        // `Tooltip::always_open`) go through `ui.ctx()`.
+        context.run(winit_window, |ui| {
             // Kiosk/embedded fork: never draw the toolbar or tab strip, in windowed
             // mode or fullscreen — this build is meant to look like a native app
             // window, not a browser.
             *toolbar_height = Length::default();
 
             let scale =
-                Scale::<_, DeviceIndependentPixel, DevicePixel>::new(ctx.pixels_per_point());
+                Scale::<_, DeviceIndependentPixel, DevicePixel>::new(ui.pixels_per_point());
 
-            headed_window.for_each_active_dialog(window, |dialog| dialog.update(ctx));
+            headed_window.for_each_active_dialog(window, |dialog| dialog.update(ui.ctx()));
 
             // If the top parts of the GUI changed size, then update the size of the WebView and also
             // the size of its RenderingContext.
-            let available_rect = ctx.available_rect_before_wrap();
+            let available_rect = ui.available_rect_before_wrap();
 
             // Build a graft node for each WebView.
             for (webview_id, webview) in window.webviews() {
                 if let Some(tree_id) = webview.accesskit_tree_id() {
                     let id = egui::Id::new(webview_id);
-                    ctx.accesskit_node_builder(id, |node| {
+                    ui.ctx().accesskit_node_builder(id, |node| {
                         node.set_tree_id(tree_id);
                     });
                 }
@@ -570,7 +577,7 @@ impl Gui {
 
             if let Some(status_text) = &self.status_text {
                 egui::Tooltip::always_open(
-                    ctx.clone(),
+                    ui.ctx().clone(),
                     LayerId::new(Order::Tooltip, Id::new("tooltip")),
                     "tooltip layer".into(),
                     pos2(0.0, available_rect.max.y),
@@ -581,7 +588,7 @@ impl Gui {
             window.repaint_webviews();
 
             if let Some(render_to_parent) = rendering_context.render_to_parent_callback() {
-                ctx.layer_painter(LayerId::background()).add(PaintCallback {
+                ui.ctx().layer_painter(LayerId::background()).add(PaintCallback {
                     rect: available_rect,
                     callback: Arc::new(CallbackFn::new(move |info, painter| {
                         let clip = info.viewport_in_pixels();
@@ -638,7 +645,7 @@ impl Gui {
         // panics with "No fonts available until first call to Context::run()" if called
         // any earlier than the closure itself; confirmed the hard way, on a real build.
         let splash_icon_texture = self.splash_icon_texture.clone();
-        self.context.run(winit_window, |ctx| {
+        self.context.run(winit_window, |ui| {
             // Measured (not guessed) — both so the icon+wordmark row below can be
             // centered exactly, rather than trusting `top_down`'s `Align::Center` to
             // center a nested `ui.horizontal` row on its own, and so the icon can be
@@ -647,7 +654,7 @@ impl Gui {
             // to 128px against an 88px font size — a ratio borrowed from
             // `resources/roves_wordmark.svg`'s lockup that doesn't necessarily hold for
             // Metal Mania's actual glyph metrics at this size).
-            let wordmark_size = ctx.fonts_mut(|fonts| {
+            let wordmark_size = ui.ctx().fonts_mut(|fonts| {
                 fonts
                     .layout_no_wrap(
                         "Roves".to_owned(),
@@ -675,15 +682,13 @@ impl Gui {
             // here without distorting the (also square) source texture.
             let icon = egui::Image::from_texture(&splash_icon_texture)
                 .fit_to_exact_size(egui::Vec2::splat(icon_size));
-            // `Panel::show` (the top-level entry point, as opposed to
-            // `show_inside` for nesting inside another container) is
-            // deprecated in this egui version in favor of hand-building a
-            // full-window `Ui` — not worth the extra internal-API surface
-            // for this deliberately simple splash.
-            #[expect(deprecated)]
+            // egui 0.36 removed the `Context`-based `Panel::show` entirely in favor of
+            // this `Ui`-based one (`EguiGlow::run` now hands back the whole-window `Ui`
+            // directly — see CUSTOMIZATIONS.md's egui 0.36.2 entry) — no longer deprecated,
+            // this *is* the only `show` left.
             egui::CentralPanel::default()
                 .frame(egui::Frame::default().fill(egui::Color32::BLACK))
-                .show(ctx, |ui| {
+                .show(ui, |ui| {
                     ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
                         // Half-height offset for the icon+wordmark row (`icon_size` now
                         // dominates it, being taller than the wordmark) + gap (40px) +
@@ -728,13 +733,13 @@ impl Gui {
             .expect("Could not make RenderingContext current");
         let splash_icon_texture = self.splash_icon_texture.clone();
         let message = message.to_owned();
-        self.context.run(winit_window, |ctx| {
+        self.context.run(winit_window, |ui| {
             let icon = egui::Image::from_texture(&splash_icon_texture)
                 .fit_to_exact_size(egui::Vec2::splat(64.0));
-            #[expect(deprecated)]
+            // See `update_splash`'s own comment: no longer deprecated in egui 0.36.
             egui::CentralPanel::default()
                 .frame(egui::Frame::default().fill(egui::Color32::BLACK))
-                .show(ctx, |ui| {
+                .show(ui, |ui| {
                     ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
                         ui.add_space(ui.available_height() / 3.0);
                         ui.add(icon);
