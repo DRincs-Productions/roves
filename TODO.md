@@ -101,6 +101,29 @@ Questa voce pianifica l'integrazione opzionale; non introduce SDK o funzionalit�
 - [ ] **Steam avanzato, opzionale:** valutare classifiche e ulteriori servizi richiesti dai giochi. Obiettivi, statistiche, DLC, overlay e Steam Cloud sono già implementati: concentrare il backlog sulle capability mancanti e sui test reali.
 - [ ] **Aggiornamenti contenuti, opzionali:** progettare aggiornamento/versionamento dei contenuti senza ricreare sempre il bundle, con integrità, rollback e coerenza della cache. Decidere prima se serve un updater completo o basta il meccanismo di aggiornamento della piattaforma store.
 
+### Diagnostica prestazioni: Tracy e Perfetto — da implementare
+
+- [ ] Costruire una telemetria Roves comune con clock monotono, frame ID,
+  aggregati p50/p95/p99, frame oltre budget e buffer circolare preallocato.
+  Evitare log, allocazioni e serializzazione per ogni frame.
+- [ ] Integrare **Tracy** nelle build developer/profiling per frame, zone CPU/GPU,
+  thread, lock, allocazioni e marcatori di GC, shader, navigazione, asset, audio
+  e presentazione. Misurare l'overhead; non abilitarlo nelle release normali.
+- [ ] Aggiungere un exporter **Perfetto** per timeline correlabili e analisi
+  automatica, mantenendo anche JSON/CSV versionati. Verificare apertura, query e
+  confronto delle tracce Roves/Chrome sullo stesso benchmark.
+- [ ] Nelle release includere soltanto diagnostica Roves leggera, disabilitata
+  per default e attivabile esplicitamente dall'utente. Nessun upload automatico;
+  omettere URL, percorsi e dati sensibili per default.
+- [ ] Aggiungere overlay opzionale e trigger manuale/automatico per congelare gli
+  ultimi secondi intorno a uno scatto. L'overlay deve leggere aggregati esistenti
+  e non modificare il percorso di rendering quando è nascosto.
+- [ ] Eseguire prove A/B con strumentazione spenta, diagnostica release attiva e
+  profiling completo, dichiarando overhead e campioni persi.
+
+Riferimenti: [Tracy](https://github.com/wolfpld/tracy) e
+[Perfetto](https://perfetto.dev/docs/).
+
 ### Rendering futuro: fast path wgpu — backlog
 
 - [ ] Progettare un fast path interno a Servo per il caso di una singola
