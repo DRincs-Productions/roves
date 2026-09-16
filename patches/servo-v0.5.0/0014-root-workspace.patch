@@ -1,5 +1,5 @@
 diff --git a/Cargo.toml b/Cargo.toml
-index 19d4caa07..9ae8c0828 100644
+index 19d4caa..37ae18a 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
 @@ -5,8 +5,7 @@ members = [
@@ -12,6 +12,15 @@ index 19d4caa07..9ae8c0828 100644
  ]
  default-members = ["ports/servoshell"]
  exclude = [".cargo", "support/crown"]
+@@ -141,7 +140,7 @@ inventory = "0.3.24"
+ ipc-channel = "0.22"
+ itertools = "0.15"
+ jni = "0.22"
+-js = { package = "mozjs", version = "=0.21", default-features = false, features = ["intl", "libz-sys"] }
++js = { package = "mozjs", version = "=0.21.6", default-features = false, features = ["intl", "libz-sys"] }
+ k12 = "0.5"
+ keyboard-types = { version = "0.8.3", features = ["serde", "webdriver"] }
+ kurbo = { version = "0.13.1", features = ["euclid"] }
 @@ -246,6 +245,7 @@ swapper = "0.1"
  syn = { version = "2", default-features = false, features = ["clone-impls", "derive", "parsing"] }
  synstructure = "0.13"

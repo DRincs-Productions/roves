@@ -6930,3 +6930,32 @@ bundled into or confused with the isolated per-candidate patches that follow.
 no longer resolves, without bumping any already-locked compatible version, unlike a bare
 `cargo update` which would have moved dozens of unrelated crates to their latest semver-compatible
 release). Verified the resulting diff touches only the entries named above, nothing else.
+
+---
+
+## 2026-09-16 — mozjs 0.21.0 → 0.21.6 (patch-series bump, not the 0.26 major)
+
+**Files:** `Cargo.toml`, `Cargo.lock`.
+
+**Patch:** `patches/servo-v0.5.0/0014-root-workspace.patch` (regenerated — this file already
+carried the workspace-members and `sysinfo` hunks; a third hunk now also carries the `js`
+pin change).
+
+**Why:** first candidate from `docs/DEPENDENCY_REVIEW.md`'s inventory. Upstream pins `js = {
+package = "mozjs", version = "=0.21", ... }` exactly (`=0.21` resolves only `0.21.0`, not the
+whole `0.21.x` series — a plain `cargo update` without touching this pin can't reach 0.21.6),
+which requires `mozjs_sys` `=140.14.0-0` (verified against crates.io's own dependency listing
+for `mozjs` `0.21.6`, not assumed from the version number alone). Same mozjs/SpiderMonkey minor
+generation as before — no rooting/GC/API surface change expected, unlike the separate 0.26
+major-jump candidate the review document deliberately keeps out of this same patch.
+
+**Change:** `Cargo.toml`'s `js` pin narrowed from `=0.21` to `=0.21.6`;
+`cargo update -p mozjs --precise 0.21.6` then resolved `mozjs_sys` to `140.14.0-0` in
+`Cargo.lock` (not the `140.14.0-0-lts` variant cargo also offered — the workspace pin doesn't
+request an LTS SpiderMonkey build, and nothing else here does either).
+
+**Verification:** `cargo update`'s dependency resolution succeeds and the regenerated patch
+applies cleanly to a fresh pristine `v0.5.0` extraction (`patch -p1 --dry-run`). A full
+`cargo build`/`mach build` is not possible on this machine (no working `lld-link`/`libclang`
+locally, see `CLAUDE.md`) — real compile/link verification, and the actual JS/DOM/worker/Wasm
+behavior this touches, is pending a `test.yml` CI run on this branch.
