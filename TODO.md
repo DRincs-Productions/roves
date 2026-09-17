@@ -174,6 +174,30 @@ non è lavoro rifiutato, è lavoro correttamente scoperto come troppo grande per
   egui-su-SDL3 mantenuto upstream. Serve un bridge AccessKit scritto da zero (non un
   adattamento). Questo è il singolo pezzo di lavoro più grande e rischioso dell'intera
   migrazione SDL3 windowing — vedi CUSTOMIZATIONS.md's entry SDL3 gamepad per il dettaglio.
+  **Aggiornamento 2026-09-17, de-risking concreto (nessun codice scritto):** letto il repo
+  `AccessKit/accesskit` reale via API GitHub — `adapters/winit` (267 righe) è un guscio sottile
+  sopra adapter per-OS separati e già indipendenti da winit (`adapters/windows`,
+  `adapters/macos`, `adapters/unix`), ciascuno costruibile a partire da un raw window handle
+  (`raw-window-handle`, feature già presente sul crate `sdl3` — vedi bullet GL/surface sopra) più
+  tre trait (`ActivationHandler`/`ActionHandler`/`DeactivationHandler`) e un
+  `process_event(&mut self, window, event: &WinitWindowEvent)` che inoltra solo poche
+  informazioni specifiche del toolkit (principalmente cambi di focus/stato finestra rilevanti
+  per l'attivazione UI Automation su Windows). Questo riduce il lavoro da "reinventare
+  l'integrazione AccessKit da zero" a "scrivere un guscio equivalente a quello di winit, ma
+  sopra eventi SDL3" — comunque non banale, ma un problema delimitato, non un buco nero.
+- [ ] **`app.rs` è il vero centro di massa, non solo `headed_window.rs`:** esiste già un trait
+  di astrazione `PlatformWindow` (`window.rs:377`) con un'interfaccia ragionevole
+  (resize/fullscreen/cursor/rendering_context/ecc.) — buona notizia, un seam reale già pronto.
+  Cattiva notizia: `desktop/app.rs` (l'`ApplicationHandler` di winit che guida l'intero event
+  loop) fa il downcast a `HeadedWindow` concreto tramite `.as_headed_window()` in **~10 punti**
+  diversi (righe 231/449/519/535/564/582/605/636/671/713), non solo attraverso il trait — cioè
+  il loop eventi stesso è accoppiato al tipo concreto winit-based, non solo la finestra. Una
+  migrazione realistica non può limitarsi a riscrivere `headed_window.rs` dietro il trait
+  esistente: `app.rs` va riscritto in tandem, nello stesso cambiamento. Dato che la decisione
+  presa a inizio sessione è stata "sostituzione diretta" (non convivenza dietro un feature
+  flag), non esiste uno stato intermedio compilabile a metà strada — la migrazione va pianificata
+  come una sequenza di commit sempre verdi che spostano *insieme* app.rs+headed_window.rs, non
+  come conversione file-per-file.
 - [ ] **Tastiera/IME**: `desktop/keyutils.rs` (601 righe) mappa i codici tasto winit → valori
   DOM/Servo. Da rifare per i codici SDL3, verificando IME (composizione, candidati) che
   winit gestisce oggi tramite eventi dedicati.
