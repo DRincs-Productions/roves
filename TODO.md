@@ -185,6 +185,74 @@ non è lavoro rifiutato, è lavoro correttamente scoperto come troppo grande per
   multi-monitor richiedono test manuale su hardware reale per ciascuno dei tre desktop prima
   di considerare la migrazione conclusa, indipendentemente da quanto la CI risulti verde.
 
+### mozjs 0.21 → 0.26 (major): roadmap concreta trovata, porting non tentato
+
+Lavoro iniziato 2026-09-17 su branch dedicato `mozjs-0.26-major` (non mergiato — vedi il
+proprio CLAUDE.md sulla convenzione dei branch per lavoro esplorativo ad alto rischio). Il
+documento di analisi originale stimava "~300 file nel motore" come portata, una cifra
+scoraggiante ma **mai verificata contro il lavoro reale già fatto da Servo upstream**. Prima di
+scrivere qualsiasi codice, ho clonato `servo/servo` (clone parziale, `--filter=blob:none
+--no-checkout`, per avere una vera cronologia git da interrogare — molto più efficace della sola
+API REST di GitHub, che non supporta la ricerca nel codice in modo anonimo) e cercato i commit
+reali che hanno fatto questa esact migrazione su `main`. Trovati.
+
+**`main` di upstream è già su mozjs 0.26.1** (non solo 0.26.0 come nel documento di analisi).
+La cronologia reale tra il nostro baseline `v0.5.0` e `main` (666 commit totali, quasi tutti
+non correlati) contiene **15 commit specifici per la migrazione mozjs**, in quest'ordine:
+
+1. `44684fac27`/`ddd17a9103`/`c58591ae31` — bump patch 0.21.1/0.21.2/0.21.3 (già superati, siamo
+   su 0.21.6 grazie al lavoro del 2026-09-16)
+2. `3d77be2fcc` "Use safe variants of throw_range_error/throw_type_error" — 11 file, spiega i
+   warning di deprecazione già visti nei log CI di questa sessione
+3. `2ea5417a8a` "JSContextify more mozjs APIs" — 7 file
+4. `dfaaf332aa` "complete JSContextify of mozjs" — 12 file
+5. `e695643184`, `b780274a16`, `5b05da3087`, `8067519db8` — piccoli commit satellite
+   (toolchain OHOS, arguments check, disabilita compacting GC di default)
+6. **`a7b65192d4` "Update mozjs to include SpiderMonkey to 153_0esr_RELEASE" — IL bump vero e
+   proprio.** 72 file totali ma solo **11 file `.rs`** (il resto è aspettative WPT/CI config):
+   `components/config/prefs.rs`, `components/script/dom/bindings/{error,principals,
+   structuredclone,utils}.rs`, `components/script/dom/globalscope/globalscope.rs`,
+   `components/script/event_loop/timers.rs`, `components/script/modules/{module_loading,
+   script_module}.rs`, `components/script/runtime/{microtask,script_runtime}.rs` (quest'ultimo
+   si è spostato da `components/script/script_runtime.rs` — motivo del mio primo tentativo di
+   fetch fallito con 404). **Le due parti davvero sostanziali, per ammissione della PR stessa**
+   ("been in the baking for a month"): la job queue dei microtask ora vive dentro SpiderMonkey
+   stesso (elimina l'hook `enqueuePromiseJob`, aggiunge `getHostDefinedGlobal`/
+   `traceNonGCThingMicroTask` a `JobQueueTraps`, rimuove il meccanismo `HostDefinedData`
+   JSClass fatto a mano); il module loading è ora implementato principalmente in SpiderMonkey.
+7. `0358810805` "Drop safe naming from mozjs APIs" (post-bump, 64 file) — cleanup che rimuove i
+   suffissi `_safe` che il commit 2-3 sopra avevano introdotto come passo intermedio
+8. `bcc793f690`, `d8671305ae`, `b74e7392e0` — rifiniture successive (icu4x/webdriver non
+   correlati; `MicrotaksQueue`→`JobQueue` di proprietà di `JSContext`; fix drain state)
+
+**Conflitto con le nostre patch: minimo.** Solo 2 degli 11 file del bump principale hanno una
+patch Roves esistente (`prefs.rs` e `globalscope.rs`, entrambi via
+`0011-storage-and-origin.patch`) — controllati entrambi: `prefs.rs` cambia solo il numero di
+versione Firefox nello User-Agent string (`rv:140.0`→`rv:153.0`), `globalscope.rs` rimuove un
+metodo (`module_tree_for_request_if_loaded`) non toccato dalla nostra patch. Nessun conflitto
+reale previsto lì; gli altri 9 file sono pristine nel nostro fork.
+
+**Perché non ho tentato la porting reale in questa sessione:** anche con la roadmap esatta in
+mano, applicare e verificare correttamente ~100+ file (i 15 commit combinati, oltre ai file WPT/
+config) di un cambio semantico profondo (job queue, incumbent global, module loading spostati
+dentro SpiderMonkey) senza un compilatore locale (vedi CLAUDE.md, nessun `lld-link`/`libclang`
+funzionante su questa macchina) e affidandosi solo a cicli di CI da 25-45 minuti sarebbe
+irresponsabile da precipitare. Questo è il lavoro di ricerca costoso già fatto — chiunque
+riprenda questo branch parte da una lista di commit precisi da studiare/riapplicare via merge a
+tre vie (base = file pristine `v0.5.0`, ours = nostra versione patchata attuale, theirs = la
+stessa versione del file preso da uno di questi 15 commit upstream), non da zero.
+
+- [ ] Applicare in ordine i 15 commit sopra (o il loro effetto netto) via merge a tre vie sui
+  file elencati, cominciando dai commit 2-5 (piccoli, preparatori) prima del bump vero (6).
+- [ ] Bump `Cargo.toml`/`Cargo.lock`: `js = { package = "mozjs", version = "=0.26.1" }` (non
+  0.26.0 — 0.26.1 è l'ultima verificata, pubblicata 2026-09-13, non yanked), verificare la
+  versione `mozjs_sys` risultante via crates.io prima di assumerla.
+- [ ] Non abilitare il GC incrementale come parte di questo bump (voce separata già in questo
+  file, "GC incrementale" — `script_runtime.rs` segnala pre-barriere non corrette, un problema
+  di correttezza indipendente da questa migrazione).
+- [ ] Verifica reale solo via CI (`test.yml`) su tutti e tre i desktop, dato che qui non c'è un
+  compilatore locale funzionante.
+
 ### Rendering futuro: fast path wgpu — backlog
 
 - [ ] Progettare un fast path interno a Servo per il caso di una singola
