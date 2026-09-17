@@ -624,6 +624,9 @@ impl App {
 
         match app_event {
             AppEvent::Waker => (),
+            // Already handled above, before `self.state` was confirmed `Running` -- this
+            // variant always returns early at the top of this function.
+            AppEvent::RedrawRequested(_) => unreachable!(),
             AppEvent::CloseAllWindows => {
                 // See protocols/roves.rs and event_loop.rs's own doc comment on
                 // this variant: this is the only way a `ProtocolHandler` (which

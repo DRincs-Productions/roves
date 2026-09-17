@@ -52,6 +52,7 @@ use {
     objc2_foundation::MainThreadMarker,
 };
 
+use super::geometry::winit_position_to_euclid_point;
 use super::keyutils::keyboard_event_from_winit;
 use crate::desktop::accelerated_gl_media::setup_gl_accelerated_media;
 use crate::desktop::dialog::Dialog;
@@ -939,7 +940,7 @@ impl PlatformWindow for HeadedWindow {
     /// window's own forced/overridden theme (most windows just follow the system one anyway,
     /// so this is right in the common case).
     fn theme(&self) -> servo::Theme {
-        match sdl3::video::VideoSubsystem::get_system_theme() {
+        match sdl3::VideoSubsystem::get_system_theme() {
             sdl3::video::SystemTheme::Dark => servo::Theme::Dark,
             sdl3::video::SystemTheme::Light | sdl3::video::SystemTheme::Unknown => {
                 servo::Theme::Light

@@ -79,7 +79,7 @@ impl SdlEguiGlow {
             ..Default::default()
         };
         let egui::FullOutput { textures_delta, shapes, pixels_per_point, .. } =
-            self.egui_ctx.run(raw_input, run_ui);
+            self.egui_ctx.run_ui(raw_input, run_ui);
         self.shapes = shapes;
         self.pixels_per_point = pixels_per_point;
         self.textures_delta.append(textures_delta);
@@ -90,8 +90,10 @@ impl SdlEguiGlow {
         let mut textures_delta = core::mem::take(&mut self.textures_delta);
 
         #[expect(clippy::iter_over_hash_type)]
-        for (id, image_delta) in textures_delta.set.drain() {
-            self.painter.set_texture(id, &image_delta);
+        for (id, image_deltas) in textures_delta.set.drain() {
+            for image_delta in image_deltas {
+                self.painter.set_texture(id, &image_delta);
+            }
         }
 
         let pixels_per_point = self.pixels_per_point;
@@ -394,7 +396,7 @@ impl Gui {
         rendering_context
             .make_current()
             .expect("Could not make window RenderingContext current");
-        let mut context = SdlEguiGlow::new(rendering_context.glow_gl_api());
+        let context = SdlEguiGlow::new(rendering_context.glow_gl_api());
 
         let mut font_definitions = configure_fonts();
         add_wordmark_font(&mut font_definitions);

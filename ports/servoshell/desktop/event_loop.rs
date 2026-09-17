@@ -259,8 +259,8 @@ impl ServoShellEventLoop {
 
     pub fn run_app(self, app: &mut App) {
         match self {
-            ServoShellEventLoop::Sdl3 { sdl, video, event_subsystem, .. } => {
-                run_sdl3_app(sdl, video, event_subsystem, app);
+            ServoShellEventLoop::Sdl3 { sdl, video, .. } => {
+                run_sdl3_app(sdl, video, app);
             },
             ServoShellEventLoop::Headless(event_loop) => event_loop.run_app(app),
         }
@@ -279,12 +279,7 @@ impl ServoShellEventLoop {
 /// booting, shutdown) — the *rest* of each event's payload (mouse/keyboard/IME/gesture data
 /// `headed_window.rs::handle_winit_window_event` used to consume) is not ported yet. A real
 /// window currently opens and can be closed, but does not yet accept input.
-fn run_sdl3_app(
-    sdl: sdl3::Sdl,
-    video: sdl3::VideoSubsystem,
-    event_subsystem: sdl3::EventSubsystem,
-    app: &mut App,
-) {
+fn run_sdl3_app(sdl: sdl3::Sdl, video: sdl3::VideoSubsystem, app: &mut App) {
     let event_loop = ActiveEventLoop {
         sdl,
         video,
