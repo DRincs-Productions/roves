@@ -142,17 +142,17 @@ polling sul main thread via `App::new_events`/`set_running_control_flow`, dato c
 `sdl3::init()` rifiuta di girare fuori dal thread `main()` (vincolo reale, non solo dei
 binding Rust).
 
-- [ ] **Gamepad disabilitato su macOS, causa non confermata:** `sdl3::init().gamepad()` si
-  blocca indefinitamente su CI macOS (100+ minuti, nemmeno `kill` lo sblocca) — non un errore
-  di compilazione, `mach build`/`mach bundle` completano con successo. Ipotesi principale:
-  `IOHIDManager` dietro un permesso di sistema (Input Monitoring/TCC) che in CI non ha nessuno
-  a cui mostrare/rispondere un prompt — possibile problema reale anche per un utente Mac vero
-  al primo avvio, non solo un artefatto CI. Non confermato: serve un Mac reale interattivo per
-  osservare cosa succede davvero (appare un prompt? risolve l'hang? è legato a uno stato TCC
-  "primo avvio"?). Nel frattempo il gamepad è disattivato specificamente su macOS
-  (`not(target_os = "macos")` aggiunto ai gate esistenti in `running_app_state.rs`/`window.rs`)
-  — un vero gap funzionale rispetto a GilRs su quella piattaforma, da richiudere appena
-  verificata la causa reale.
+- [x] **Gamepad su macOS: fix reale tentato 2026-09-17** (vedi CUSTOMIZATIONS.md) —
+  disabilitato solo il backend IOKit di SDL3 (`SDL_HINT_JOYSTICK_IOKIT=0`, l'unico che passa da
+  `IOHIDManager`/permesso Input Monitoring, sospettato causa dell'hang di 100+ minuti su CI
+  macOS), lasciando attivo il backend MFI (GameController framework di Apple, nessun permesso
+  TCC coinvolto) che copre già i gamepad moderni comuni (Xbox/PlayStation/Switch Pro). Rimossi
+  tutti i gate `not(target_os = "macos")` aggiunti il 2026-09-16 — il gamepad è di nuovo
+  compilato e attivo su macOS come su Windows/Linux. **Non verificabile localmente (nessun Mac
+  reale disponibile)** — verificato solo tramite il prossimo run di `test.yml`: se l'hang
+  scompare, l'ipotesi IOKit era corretta; se persiste, va investigata un'altra causa. Trade-off
+  esplicito accettato: gamepad USB/HID non-MFi restano non supportati su macOS (meglio di
+  nessun supporto affatto, il gap precedente).
 La sostituzione di finestra/event-loop **non è stata tentata** in questa sessione: portata
 misurata concretamente prima di iniziare, non stimata — 13 file usano `winit::` (confermato
 via grep), di cui i più grossi sono `desktop/headed_window.rs` (1553 righe, 34 punti

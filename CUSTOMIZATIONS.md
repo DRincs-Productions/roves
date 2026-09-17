@@ -7384,6 +7384,47 @@ compared to upstream Servo's own GilRs-based build, a real (if narrow) functiona
 
 ---
 
+## 2026-09-17 — SDL3 gamepad on macOS: real fix, not just the carve-out above
+
+**Files:** `ports/servoshell/desktop/gamepad.rs`, `ports/servoshell/desktop/app.rs`,
+`ports/servoshell/running_app_state.rs`, `ports/servoshell/window.rs`.
+
+**Patch:** `patches/servo-v0.5.0/0001-desktop-shell-core.patch` (all four files already lived in
+this patch from the carve-out above; regenerated).
+
+**Follow-up research (no interactive Mac available, still verified only via CI) turned up a
+concrete, narrower fix than the blanket macOS carve-out above.** SDL3 actually ships *two*
+independent gamepad backends on macOS, each behind its own hint:
+`SDL_HINT_JOYSTICK_IOKIT` (default on) opens devices directly via `IOHIDManager`, while
+`SDL_HINT_JOYSTICK_MFI` (also default on, untouched here) goes through Apple's public
+GameController framework instead. Only the IOKit path touches `IOHIDManager`, which is gated by
+the "Input Monitoring" TCC permission — the prime suspect for the indefinite hang on a headless
+CI runner with no session for TCC to prompt against (see the previous entry's hypothesis). MFI
+never touches that permission at all.
+
+**Fix:** `gamepad.rs`'s `init_sdl()` now calls `sdl3::hint::set("SDL_JOYSTICK_IOKIT", "0")`
+before `sdl3::init()`, gated `#[cfg(target_os = "macos")]` (a no-op, harmless everywhere else).
+This disables only the TCC-gated backend; MFI alone still covers every modern
+Xbox/PlayStation/Switch Pro or other MFi-compliant controller. Reverted every
+`not(target_os = "macos")`/`not(any(..., target_os = "macos"))` cfg gate the previous entry
+added back to their pre-carve-out form (`app.rs`, `running_app_state.rs`, `window.rs`) — macOS
+gamepad support is compiled in and enabled again, same as Windows/Linux.
+
+**Trade-off, stated explicitly:** any gamepad that is *not* MFi-compliant (old/exotic USB HID
+controllers with no GameController-framework driver) loses macOS support under this fix, where
+it would have worked (modulo the hang) under the old IOKit-only GilRs-based upstream build. This
+is judged an acceptable, narrow trade-off against "no gamepad support on macOS at all," which is
+what the previous entry's carve-out shipped.
+
+**Verification:** pushed and watched via `test.yml`'s macOS job — this is the entire reason this
+fix could be attempted with no interactive Mac on hand at all: if the IOKit backend really is
+what was hanging, disabling it should let `sdl3::init().gamepad()` return promptly instead of
+hanging for 100+ minutes, and the rest of the smoke test should proceed normally. If this run
+still hangs, the IOKit hypothesis is wrong and this fix doesn't help — see the run this entry's
+own commit triggered for the actual result before trusting this description.
+
+---
+
 ## 2026-09-16 — Tracy: new `tracing-tracy` feature (Perfetto already existed upstream)
 
 **Files:** `Cargo.toml`, `ports/servoshell/Cargo.toml`, `ports/servoshell/lib.rs`.
