@@ -405,7 +405,7 @@ pub(crate) trait PlatformWindow {
     ))]
     fn new_glwindow(
         &self,
-        event_loop: &winit::event_loop::ActiveEventLoop,
+        event_loop: &crate::desktop::event_loop::ActiveEventLoop,
     ) -> Rc<dyn servo::webxr::GlWindow>;
     /// This returns [`RenderingContext`] matching the viewport.
     fn rendering_context(&self) -> Rc<dyn RenderingContext>;

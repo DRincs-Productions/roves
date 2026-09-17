@@ -145,7 +145,7 @@ impl PlatformWindow for HeadlessWindow {
     #[cfg(feature = "webxr")]
     fn new_glwindow(
         &self,
-        _event_loop: &winit::event_loop::ActiveEventLoop,
+        _event_loop: &crate::desktop::event_loop::ActiveEventLoop,
     ) -> Rc<dyn servo::webxr::GlWindow> {
         unimplemented!()
     }

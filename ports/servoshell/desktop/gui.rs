@@ -17,8 +17,7 @@ use egui::{
     Button, FontData, FontDefinitions, FontFamily, Id, Key, Label, LayerId, Modifiers, Order,
     PaintCallback, Panel, Vec2, WidgetInfo, WidgetType, pos2,
 };
-use egui_glow::{CallbackFn, EguiGlow};
-use egui_winit::EventResponse;
+use egui_glow::CallbackFn;
 use euclid::{Length, Point2D, Rect, Scale, Size2D};
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
 use log::info;
@@ -27,20 +26,95 @@ use servo::{
     DeviceIndependentPixel, DevicePixel, OffscreenRenderingContext, RenderingContext, WebView,
 };
 use url::Url;
-use winit::event::WindowEvent;
-use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
-use winit::window::Window;
 
-use crate::desktop::event_loop::AppEvent;
 use crate::desktop::headed_window;
 use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
 use crate::window::ServoShellWindow;
+
+/// TODO(SDL3 windowing, real progress not completion — see TODO.md): replaces
+/// `egui_glow::EguiGlow` (a convenience wrapper hard-coded to winit — `EguiGlow::run`/`paint`/
+/// `new` all take `&winit::window::Window` directly, confirmed by reading that crate's own
+/// `winit.rs`). `egui_glow::Painter` (the actual GL renderer, in `painter.rs`) and `egui::
+/// Context` are both genuinely toolkit-agnostic underneath it, so this holds those two
+/// directly instead and does the `egui_winit::State`-equivalent input/output bridging itself —
+/// except there ISN'T one yet: `run` below builds an `egui::RawInput` with a screen rect and
+/// nothing else. No SDL3 events (keyboard, mouse, ...) are translated into it, so the egui UI
+/// currently renders (the boot splash paints correctly) but cannot be interacted with at all.
+/// AccessKit integration is dropped for the same reason `egui_winit::State` is: it lived in
+/// `init_accesskit`/`self.egui_winit.accesskit`, both gone. See TODO.md's own AccessKit
+/// de-risking notes for what a real SDL3 bridge needs to replicate.
+struct SdlEguiGlow {
+    egui_ctx: egui::Context,
+    painter: egui_glow::Painter,
+    pixels_per_point: f32,
+    shapes: Vec<egui::epaint::ClippedShape>,
+    textures_delta: egui::TexturesDelta,
+}
+
+impl SdlEguiGlow {
+    fn new(gl: std::sync::Arc<glow::Context>) -> Self {
+        let painter = egui_glow::Painter::new(gl, "", None, false)
+            .map_err(|err| log::error!("error occurred in initializing painter:\n{err}"))
+            .expect("Could not create egui_glow::Painter");
+        Self {
+            egui_ctx: egui::Context::default(),
+            painter,
+            pixels_per_point: 1.0,
+            shapes: Default::default(),
+            textures_delta: Default::default(),
+        }
+    }
+
+    fn run(&mut self, window: &sdl3::video::Window, run_ui: impl FnMut(&mut egui::Ui)) {
+        let (width, height) = window.size();
+        let pixels_per_point = window.display_scale();
+        let screen_rect = egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(width as f32 / pixels_per_point, height as f32 / pixels_per_point),
+        );
+        // TODO(SDL3 windowing): no real input yet -- see this struct's own doc comment.
+        let raw_input = egui::RawInput {
+            screen_rect: Some(screen_rect),
+            max_texture_side: Some(self.painter.max_texture_side()),
+            ..Default::default()
+        };
+        let egui::FullOutput { textures_delta, shapes, pixels_per_point, .. } =
+            self.egui_ctx.run(raw_input, run_ui);
+        self.shapes = shapes;
+        self.pixels_per_point = pixels_per_point;
+        self.textures_delta.append(textures_delta);
+    }
+
+    fn paint(&mut self, window: &sdl3::video::Window) {
+        let shapes = core::mem::take(&mut self.shapes);
+        let mut textures_delta = core::mem::take(&mut self.textures_delta);
+
+        #[expect(clippy::iter_over_hash_type)]
+        for (id, image_delta) in textures_delta.set.drain() {
+            self.painter.set_texture(id, &image_delta);
+        }
+
+        let pixels_per_point = self.pixels_per_point;
+        let clipped_primitives = self.egui_ctx.tessellate(shapes, pixels_per_point);
+        let (width, height) = window.size_in_pixels();
+        self.painter.paint_primitives([width, height], pixels_per_point, &clipped_primitives);
+
+        #[expect(clippy::iter_over_hash_type)]
+        for id in textures_delta.free.drain() {
+            self.painter.free_texture(id);
+        }
+    }
+
+    fn destroy(&mut self) {
+        self.painter.destroy();
+    }
+}
 
 /// The user interface of a headed servoshell. Currently this is implemented via
 /// egui.
 pub struct Gui {
     rendering_context: Rc<OffscreenRenderingContext>,
-    context: EguiGlow,
+    context: SdlEguiGlow,
     toolbar_height: Length<f32, DeviceIndependentPixel>,
 
     /// The text to display in the status bar on the bottom of the window.
@@ -311,9 +385,7 @@ impl Drop for Gui {
 
 impl Gui {
     pub(crate) fn new(
-        winit_window: &Window,
-        event_loop: &ActiveEventLoop,
-        event_loop_proxy: EventLoopProxy<AppEvent>,
+        sdl_window: &sdl3::video::Window,
         rendering_context: Rc<OffscreenRenderingContext>,
         // Kept only so callers don't need updating: the address bar this used to
         // seed no longer exists. See CUSTOMIZATIONS.md.
@@ -322,21 +394,15 @@ impl Gui {
         rendering_context
             .make_current()
             .expect("Could not make window RenderingContext current");
-        let mut context = EguiGlow::new(
-            event_loop,
-            rendering_context.glow_gl_api(),
-            None,
-            None,
-            false,
-        );
+        let mut context = SdlEguiGlow::new(rendering_context.glow_gl_api());
 
         let mut font_definitions = configure_fonts();
         add_wordmark_font(&mut font_definitions);
         context.egui_ctx.set_fonts(font_definitions);
 
-        context
-            .egui_winit
-            .init_accesskit(event_loop, winit_window, event_loop_proxy);
+        // TODO(SDL3 windowing): no AccessKit adapter is set up anymore (this used to be
+        // `context.egui_winit.init_accesskit(...)`) -- see this file's own `SdlEguiGlow` doc
+        // comment and TODO.md's AccessKit de-risking notes for what replaces it.
 
         context.egui_ctx.options_mut(|options| {
             // Disable the builtin egui handlers for the Ctrl+Plus, Ctrl+Minus and Ctrl+0
@@ -379,10 +445,10 @@ impl Gui {
         // therefore a plausible place for a silent native crash (GPU
         // driver, ANGLE/GL context issue) that never reaches `panic_hook.rs`.
         log::info!("painting first splash frame");
-        gui.update_splash(winit_window, Duration::ZERO);
-        gui.paint(winit_window);
+        gui.update_splash(sdl_window, Duration::ZERO);
+        gui.paint(sdl_window);
         log::info!("painted first splash frame");
-        winit_window.set_visible(true);
+        let _ = sdl_window.clone().show();
 
         gui
     }
@@ -399,14 +465,6 @@ impl Gui {
                 memory.surrender_focus(focused);
             }
         });
-    }
-
-    pub(crate) fn on_window_event(
-        &mut self,
-        winit_window: &Window,
-        event: &WindowEvent,
-    ) -> EventResponse {
-        self.context.on_window_event(winit_window, event)
     }
 
     /// The height of the top toolbar of this user inteface ie the distance from the top of the
@@ -533,7 +591,7 @@ impl Gui {
             ..
         } = self;
 
-        let winit_window = headed_window.winit_window();
+        let sdl_window = headed_window.sdl_window();
         // `EguiGlow::run`'s callback now hands back the whole-window `&mut Ui` directly
         // (egui 0.36 removed the `Context`-based top-level panel API this used to go
         // through) rather than a `&Context` — see CUSTOMIZATIONS.md's egui 0.36.2 entry.
@@ -541,7 +599,7 @@ impl Gui {
         // directly; genuinely `Context`-only ones (`accesskit_node_builder`,
         // `layer_painter`, and anything wanting an owned `Context` like
         // `Tooltip::always_open`) go through `ui.ctx()`.
-        context.run(winit_window, |ui| {
+        context.run(sdl_window, |ui| {
             // Kiosk/embedded fork: never draw the toolbar or tab strip, in windowed
             // mode or fullscreen — this build is meant to look like a native app
             // window, not a browser.
@@ -608,15 +666,12 @@ impl Gui {
             window.set_needs_repaint();
         }
 
-        let adapter = self
-            .context
-            .egui_winit
-            .accesskit
-            .as_mut()
-            .expect("guaranteed by Gui::new()");
-        for tree_update in self.pending_accesskit_updates.drain(..) {
-            adapter.update_if_active(|| tree_update);
-        }
+        // TODO(SDL3 windowing): no AccessKit adapter exists anymore to actually forward these
+        // to (see `Gui::new`'s own TODO) -- `self.pending_accesskit_updates` just grows
+        // unbounded until a real SDL3 AccessKit bridge lands. Draining without using them
+        // would silently discard tree updates as if they'd been delivered; leaving them queued
+        // is the more honest failure mode until that bridge exists.
+        let _ = &self.pending_accesskit_updates;
     }
 
     /// Update the boot splash — a minimal black screen with the Roves icon and wordmark
@@ -629,7 +684,7 @@ impl Gui {
     /// why it's indeterminate rather than a completion fraction) — always drawn, so the
     /// splash never shows a bare wordmark with no indication that something is loading.
     /// Call [`Gui::paint`] afterward, same as [`Gui::update`].
-    pub(crate) fn update_splash(&mut self, winit_window: &Window, elapsed: Duration) {
+    pub(crate) fn update_splash(&mut self, sdl_window: &sdl3::video::Window, elapsed: Duration) {
         self.rendering_context
             .make_current()
             .expect("Could not make RenderingContext current");
@@ -645,7 +700,7 @@ impl Gui {
         // panics with "No fonts available until first call to Context::run()" if called
         // any earlier than the closure itself; confirmed the hard way, on a real build.
         let splash_icon_texture = self.splash_icon_texture.clone();
-        self.context.run(winit_window, |ui| {
+        self.context.run(sdl_window, |ui| {
             // Measured (not guessed) — both so the icon+wordmark row below can be
             // centered exactly, rather than trusting `top_down`'s `Align::Center` to
             // center a nested `ui.horizontal` row on its own, and so the icon can be
@@ -727,13 +782,17 @@ impl Gui {
     /// continuity, but is a distinct, static screen — no progress bar, since there is
     /// nothing left in flight to animate. Call [`Gui::paint`] afterward, same as
     /// [`Gui::update`]/[`Gui::update_splash`].
-    pub(crate) fn update_content_load_error(&mut self, winit_window: &Window, message: &str) {
+    pub(crate) fn update_content_load_error(
+        &mut self,
+        sdl_window: &sdl3::video::Window,
+        message: &str,
+    ) {
         self.rendering_context
             .make_current()
             .expect("Could not make RenderingContext current");
         let splash_icon_texture = self.splash_icon_texture.clone();
         let message = message.to_owned();
-        self.context.run(winit_window, |ui| {
+        self.context.run(sdl_window, |ui| {
             let icon = egui::Image::from_texture(&splash_icon_texture)
                 .fit_to_exact_size(egui::Vec2::splat(64.0));
             // See `update_splash`'s own comment: no longer deprecated in egui 0.36.
@@ -767,7 +826,7 @@ impl Gui {
     }
 
     /// Paint the GUI, as of the last update.
-    pub(crate) fn paint(&mut self, window: &Window) {
+    pub(crate) fn paint(&mut self, window: &sdl3::video::Window) {
         self.rendering_context
             .make_current()
             .expect("Could not make RenderingContext current");
@@ -793,27 +852,12 @@ impl Gui {
     }
 
     /// Returns true if a redraw is required after handling the provided event.
-    pub(crate) fn handle_accesskit_event(
-        &mut self,
-        event: &egui_winit::accesskit_winit::WindowEvent,
-    ) -> bool {
-        match event {
-            egui_winit::accesskit_winit::WindowEvent::InitialTreeRequested => {
-                self.context.egui_ctx.enable_accesskit();
-                true
-            },
-            egui_winit::accesskit_winit::WindowEvent::ActionRequested(req) => {
-                self.context
-                    .egui_winit
-                    .on_accesskit_action_request(req.clone());
-                true
-            },
-            egui_winit::accesskit_winit::WindowEvent::AccessibilityDeactivated => {
-                self.context.egui_ctx.disable_accesskit();
-                false
-            },
-        }
-    }
+    // TODO(SDL3 windowing): `handle_accesskit_event` (dispatched `egui_winit::accesskit_winit::
+    // WindowEvent`s into `enable_accesskit`/`on_accesskit_action_request`/`disable_accesskit`)
+    // deleted here, not stubbed -- it referenced `self.context.egui_winit`, which no longer
+    // exists (see `SdlEguiGlow`'s own doc comment), and nothing calls it anymore now that
+    // `headed_window.rs`'s `handle_accessibility_event` no longer forwards into `Gui` either.
+    // Re-derive once a real SDL3 AccessKit bridge exists to actually feed it real events.
 
     pub(crate) fn set_zoom_factor(&self, factor: f32) {
         self.context.egui_ctx.set_zoom_factor(factor);

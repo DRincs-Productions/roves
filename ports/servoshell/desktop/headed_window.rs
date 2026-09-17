@@ -31,16 +31,19 @@ use servo::{
     convert_rect_to_css_pixel,
 };
 use url::Url;
-use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize};
-use winit::event::{
-    ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
-};
-use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
+// `PhysicalPosition`/`PhysicalSize` remain real, winit-independent-at-runtime data types
+// used by Servo's own API (`WebView::resize`, etc.) and this file's own `inner_size` field —
+// not tied to a live winit window/event loop, so kept as-is (see geometry.rs's own doc
+// comment on the same point).
+use winit::dpi::{PhysicalPosition, PhysicalSize};
+// TODO(SDL3 windowing): `ElementState`/`KeyEvent`/`MouseButton`/`ModifiersState`/`LogicalKey`/
+// `WinitNamedKey` are only still referenced by this file's now-unreachable pre-migration
+// input-handling methods (`handle_keyboard_input` and friends, `XRWindowPose`'s own key
+// handling) — kept only because deleting carefully-written logic that will need re-deriving
+// anyway seemed worse than an unused-import warning. Drop these once that code is either
+// ported to SDL3 input types or actually deleted.
+use winit::event::{ElementState, KeyEvent, MouseButton, TouchPhase};
 use winit::keyboard::{Key as LogicalKey, ModifiersState, NamedKey as WinitNamedKey};
-#[cfg(target_os = "linux")]
-use winit::platform::wayland::WindowAttributesExtWayland;
-#[cfg(target_os = "windows")]
-use winit::platform::windows::WindowExtWindows;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use winit::window::Icon;
 #[cfg(target_os = "macos")]
@@ -49,11 +52,10 @@ use {
     objc2_foundation::MainThreadMarker,
 };
 
-use super::geometry::{winit_position_to_euclid_point, winit_size_to_euclid_size};
 use super::keyutils::keyboard_event_from_winit;
 use crate::desktop::accelerated_gl_media::setup_gl_accelerated_media;
 use crate::desktop::dialog::Dialog;
-use crate::desktop::event_loop::AppEvent;
+use crate::desktop::event_loop::{ActiveEventLoop, AppEvent, EventLoopProxy, WindowEvent, WindowId};
 use crate::desktop::gui::Gui;
 use crate::desktop::keyutils::CMD_OR_CONTROL;
 use crate::desktop::logging;
@@ -118,7 +120,11 @@ pub struct HeadedWindow {
     // Keep this as the last field of the struct to ensure that the rendering context is
     // dropped first.
     // (https://github.com/servo/servo/issues/36711)
-    winit_window: winit::window::Window,
+    sdl_window: sdl3::video::Window,
+    /// Sends `AppEvent::RedrawRequested` from anywhere, without the caller needing its own
+    /// `&ActiveEventLoop` handle — SDL3 has no push-based redraw-request event of its own (see
+    /// `request_redraw`, and `event_loop.rs`'s own doc comment on that `AppEvent` variant).
+    event_loop_proxy: EventLoopProxy,
     /// The last title set on this window. We need to store this value here, as `winit::Window::title`
     /// is not supported very many platforms.
     last_title: RefCell<String>,
@@ -147,100 +153,82 @@ pub struct HeadedWindow {
 }
 
 impl HeadedWindow {
+    /// TODO(SDL3 windowing, real progress not completion — see TODO.md): several details the
+    /// previous winit-based constructor handled are simplified or dropped here for now, each
+    /// marked at its own call site: window/taskbar icon (`load_icon`/`runtime_window_icon_bytes`
+    /// below are unused, not deleted), Linux taskbar app-id naming, transparent
+    /// (`no_native_titlebar`) windows, and sRGB color space forcing on macOS. None of these
+    /// block a window from opening, showing the boot splash, resizing, or closing — they're
+    /// real, separate follow-up work.
     #[servo::servo_tracing::instrument(level = "debug", name = "HeadedWindow::new", skip_all)]
     pub(crate) fn new(
         servoshell_preferences: &ServoShellPreferences,
         event_loop: &ActiveEventLoop,
-        event_loop_proxy: EventLoopProxy<AppEvent>,
+        event_loop_proxy: EventLoopProxy,
         initial_url: Url,
     ) -> Rc<Self> {
         let no_native_titlebar = servoshell_preferences.no_native_titlebar;
+        let _ = no_native_titlebar; // TODO(SDL3 windowing): transparent windows not ported yet.
         let inner_size = servoshell_preferences.initial_window_size;
-        let window_attr = winit::window::Window::default_attributes()
-            .with_title(INITIAL_WINDOW_TITLE.to_string())
-            .with_decorations(!no_native_titlebar)
-            .with_transparent(no_native_titlebar)
-            .with_inner_size(LogicalSize::new(inner_size.width, inner_size.height))
-            .with_min_inner_size(LogicalSize::new(
-                MIN_WINDOW_INNER_SIZE.width,
-                MIN_WINDOW_INNER_SIZE.height,
-            ))
-            // Must be invisible at startup; accesskit_winit setup needs to
-            // happen before the window is shown for the first time.
-            .with_visible(false);
 
-        // Reopen already in fullscreen if that's how the game was last left running (see
-        // `prefs.rs`'s `start_fullscreen`/`set_fullscreen`'s persistence below) — avoids a
-        // visible windowed-then-fullscreen transition on startup. See CUSTOMIZATIONS.md.
-        let window_attr = if servoshell_preferences.start_fullscreen {
-            let monitor = event_loop
-                .primary_monitor()
-                .or_else(|| event_loop.available_monitors().next());
-            window_attr.with_fullscreen(Some(winit::window::Fullscreen::Borderless(monitor)))
-        } else {
-            window_attr
-        };
-
-        // Set a name so it can be pinned to taskbars in Linux.
-        #[cfg(target_os = "linux")]
-        let window_attr = window_attr.with_name("org.roves.Roves", "Roves");
-
-        #[allow(deprecated)]
-        let winit_window = event_loop
-            .create_window(window_attr)
-            .expect("Failed to create window.");
-
-        #[cfg(any(target_os = "linux", target_os = "windows"))]
-        {
-            // A game-supplied `icon.png` next to the running binary (copied there by
-            // `mach bundle --icon-png`, see `python/servo/post_build_commands.py`) takes
-            // priority over the compile-time default `build.rs` bakes into `OUT_DIR` — see
-            // `runtime_window_icon_bytes`'s own doc comment for why this matters (a
-            // *prebuilt* shell, the one every roves-action base-mode/Packmaster consumer
-            // downloads, is never compiled per-game). Falls back to the compiled-in bytes
-            // (whichever of the game's own `icon.png` or Roves' own `resources/servo_64.png`
-            // existed at compile time — see CUSTOMIZATIONS.md) when no runtime file is
-            // present, e.g. an advanced-mode build or one predating this fallback. Not the
-            // boot splash's icon, which is always Roves-branded regardless (`gui.rs`).
-            let runtime_icon_bytes = runtime_window_icon_bytes();
-            let icon_bytes: &[u8] = runtime_icon_bytes.as_deref().unwrap_or_else(|| {
-                include_bytes!(concat!(env!("OUT_DIR"), "/window_icon.png"))
-            });
-            let icon = load_icon(icon_bytes);
-            // `set_window_icon` only sets `ICON_SMALL` (the title bar icon) —
-            // on Windows, the taskbar/Alt-Tab icon is `ICON_BIG`, a separate
-            // call (`WindowExtWindows::set_taskbar_icon`), or it silently
-            // falls back to the `.exe`'s own resource icon (`build.rs`'s
-            // `winresource` step) instead of this one. Set both explicitly so
-            // they're always the same icon, regardless of platform quirks.
-            #[cfg(target_os = "windows")]
-            winit_window.set_taskbar_icon(Some(icon.clone()));
-            winit_window.set_window_icon(Some(icon));
+        let mut window_builder =
+            event_loop
+                .video()
+                .window(INITIAL_WINDOW_TITLE, inner_size.width, inner_size.height);
+        window_builder
+            .opengl()
+            .resizable()
+            .high_pixel_density()
+            // Must be invisible at startup, same reasoning the old winit code had for
+            // `accesskit_winit` (now gone, see TODO.md) -- there is no content worth showing
+            // before the very first splash frame is painted, further down this function.
+            .hidden();
+        if servoshell_preferences.start_fullscreen {
+            // Reopen already in fullscreen if that's how the game was last left running (see
+            // `prefs.rs`'s `start_fullscreen`/`set_fullscreen`'s persistence below) — avoids a
+            // visible windowed-then-fullscreen transition on startup. See CUSTOMIZATIONS.md.
+            window_builder.fullscreen();
         }
 
-        let window_handle = winit_window
+        let mut sdl_window = window_builder.build().expect("Failed to create window.");
+        let _ = sdl_window.set_minimum_size(MIN_WINDOW_INNER_SIZE.width as u32, MIN_WINDOW_INNER_SIZE.height as u32);
+
+        // TODO(SDL3 windowing): window/taskbar icon loading (`load_icon`,
+        // `runtime_window_icon_bytes`) not ported yet -- needs an `sdl3::surface::Surface`
+        // built from the same RGBA bytes instead of winit's `Icon` type, plus
+        // `Window::set_icon`. Left as compiled-but-unused rather than deleted.
+
+        let window_handle = sdl_window
             .window_handle()
-            .expect("winit window did not have a window handle");
+            .expect("SDL3 window did not have a window handle");
         HeadedWindow::force_srgb_color_space(window_handle.as_raw());
 
-        let monitor = winit_window
-            .current_monitor()
-            .or_else(|| winit_window.available_monitors().nth(0))
-            .expect("No monitor detected");
-
-        let (screen_size, screen_scale) = servoshell_preferences.screen_size_override.map_or_else(
-            || (monitor.size(), winit_window.scale_factor()),
-            |size| (PhysicalSize::new(size.width, size.height), 1.0),
-        );
+        let (screen_size, screen_scale): (Size2D<u32, DevicePixel>, f64) = servoshell_preferences
+            .screen_size_override
+            .map_or_else(
+                || {
+                    let bounds = event_loop
+                        .video()
+                        .get_primary_display()
+                        .and_then(|display| display.get_bounds())
+                        .unwrap_or(sdl3::rect::Rect::new(0, 0, inner_size.width as u32, inner_size.height as u32));
+                    (
+                        Size2D::new(bounds.width(), bounds.height()),
+                        sdl_window.display_scale() as f64,
+                    )
+                },
+                |size| (Size2D::new(size.width, size.height), 1.0),
+            );
         let screen_scale: Scale<f64, DeviceIndependentPixel, DevicePixel> =
             Scale::new(screen_scale);
-        let screen_size = (winit_size_to_euclid_size(screen_size).to_f64() / screen_scale).to_u32();
-        let inner_size = winit_window.inner_size();
+        let screen_size = (screen_size.to_f64() / screen_scale).to_u32();
+        let (inner_width, inner_height) = sdl_window.size_in_pixels();
+        let inner_size = PhysicalSize::new(inner_width, inner_height);
 
-        let display_handle = event_loop
+        let display_handle = sdl_window
             .display_handle()
             .expect("could not get display handle from window");
-        let window_handle = winit_window
+        let window_handle = sdl_window
             .window_handle()
             .expect("could not get window handle from window");
         let window_rendering_context = Rc::new(
@@ -262,17 +250,16 @@ impl HeadedWindow {
 
         let rendering_context = Rc::new(window_rendering_context.offscreen_context(inner_size));
         let gui = RefCell::new(Gui::new(
-            &winit_window,
-            event_loop,
-            event_loop_proxy,
+            &sdl_window,
             rendering_context.clone(),
             initial_url,
         ));
 
-        debug!("Created window {:?}", winit_window.id());
+        debug!("Created window {:?}", sdl_window.id());
         Rc::new(HeadedWindow {
             gui,
-            winit_window,
+            sdl_window,
+            event_loop_proxy,
             webview_relative_mouse_point: Cell::new(Point2D::zero()),
             fullscreen: Cell::new(servoshell_preferences.start_fullscreen),
             config_dir: servoshell_preferences.config_dir.clone(),
@@ -296,8 +283,24 @@ impl HeadedWindow {
         })
     }
 
-    pub(crate) fn winit_window(&self) -> &winit::window::Window {
-        &self.winit_window
+    /// The raw SDL3 window id (`event_loop.rs`'s own `WindowId` type) — distinct from
+    /// `PlatformWindow::id`'s `ServoShellWindowId` (this fork's own cross-platform window
+    /// identity), named differently on purpose so `.id()` never becomes ambiguous between
+    /// this inherent method and that trait one.
+    pub(crate) fn sdl_window_id(&self) -> WindowId {
+        self.sdl_window.id()
+    }
+
+    pub(crate) fn sdl_window(&self) -> &sdl3::video::Window {
+        &self.sdl_window
+    }
+
+    /// SDL3 has no push-based "redraw requested" event of its own — see `event_loop.rs`'s own
+    /// doc comment on `AppEvent::RedrawRequested`, which this sends.
+    pub(crate) fn request_redraw(&self) {
+        let _ = self
+            .event_loop_proxy
+            .send_event(AppEvent::RedrawRequested(self.sdl_window_id()));
     }
 
     /// Paints the boot splash instead of the normal browser UI — used both while a
@@ -312,8 +315,8 @@ impl HeadedWindow {
     /// fractional signal at all) — see `draw_splash_progress_bar`'s own doc comment.
     pub(crate) fn paint_splash(&self, elapsed: Duration) {
         let mut gui = self.gui.borrow_mut();
-        gui.update_splash(&self.winit_window, elapsed);
-        gui.paint(&self.winit_window);
+        gui.update_splash(&self.sdl_window, elapsed);
+        gui.paint(&self.sdl_window);
     }
 
     /// Paints a visible error message instead of handing off to the (in this case
@@ -326,8 +329,8 @@ impl HeadedWindow {
     /// would have painted ever ran.
     pub(crate) fn paint_content_load_error(&self, message: &str) {
         let mut gui = self.gui.borrow_mut();
-        gui.update_content_load_error(&self.winit_window, message);
-        gui.paint(&self.winit_window);
+        gui.update_content_load_error(&self.sdl_window, message);
+        gui.paint(&self.sdl_window);
     }
 
     /// Called once by `App::finish_init`, right as the real `WebView` opens, to keep the
@@ -576,21 +579,15 @@ impl HeadedWindow {
         }
     }
 
-    fn show_ime(&self, control_id: EmbedderControlId, input_method: InputMethodControl) {
+    /// TODO(SDL3 windowing): IME positioning not ported yet — SDL3 exposes this through
+    /// `SDL_SetTextInputArea`/`SDL_StartTextInput` (global, not a `Window` method the way
+    /// winit's `set_ime_allowed`/`set_ime_cursor_area` were), not yet wired up here. The IME
+    /// still works (the OS just doesn't get a cursor-area hint, so its candidate window may
+    /// not appear right at the text caret) — `visible_input_method` bookkeeping (used by
+    /// `WindowEvent::Ime(Disabled)` handling, itself not ported yet either) is kept for when
+    /// that's ported.
+    fn show_ime(&self, control_id: EmbedderControlId, _input_method: InputMethodControl) {
         self.visible_input_method.set(Some(control_id));
-
-        let position = input_method.position();
-        self.winit_window.set_ime_allowed(true);
-        self.winit_window.set_ime_cursor_area(
-            LogicalPosition::new(
-                position.min.x,
-                position.min.y + (self.toolbar_height().0 as i32),
-            ),
-            LogicalSize::new(
-                position.max.x - position.min.x,
-                position.max.y - position.min.y,
-            ),
-        );
     }
 
     pub(crate) fn for_each_active_dialog(
@@ -664,7 +661,20 @@ impl HeadedWindow {
         self.gui.borrow().toolbar_height()
     }
 
-    pub(crate) fn handle_winit_window_event(
+    /// TODO(SDL3 windowing, real progress not completion — see TODO.md): this used to be
+    /// `handle_winit_window_event`, handling ~16 real winit `WindowEvent` variants — keyboard
+    /// input, mouse buttons/motion/wheel, IME composition, modifiers, touch, pinch gesture,
+    /// dropped files, theme/scale-factor changes, egui event forwarding and focus routing (see
+    /// this file's own git history for that full body, or the pristine-vs-patched diff under
+    /// `patches/servo-v0.5.0/0001-desktop-shell-core.patch` from before this migration branch).
+    /// Only resize/close/redraw/focus are ported so far — a real window now opens, shows the
+    /// boot splash, resizes, and closes cleanly, but does not yet accept any input at all.
+    /// `handle_keyboard_input`/`handle_mouse_button_event`/`handle_mouse_move_event`/
+    /// `handle_intercepted_key_bindings`/`show_ime` (further down this file) are all
+    /// unreachable leftovers from that body, kept only because deleting carefully-written
+    /// logic that will need re-deriving anyway seemed worse than a `#[expect(dead_code)]` —
+    /// re-wire them once `WindowEvent` grows the variants they need.
+    pub(crate) fn handle_window_event(
         &self,
         state: Rc<RunningAppState>,
         window: Rc<ServoShellWindow>,
@@ -673,12 +683,13 @@ impl HeadedWindow {
         // Handle resize events first, so that any subsequent redrawing draws onto a buffer of the
         // correct size.
         let mut resized = false;
-        if let WindowEvent::Resized(new_inner_size) = event &&
-            self.inner_size.get() != new_inner_size
-        {
-            self.inner_size.set(new_inner_size);
-            self.window_rendering_context.resize(new_inner_size);
-            resized = true;
+        if let WindowEvent::Resized(width, height) = event {
+            let new_inner_size = PhysicalSize::new(width, height);
+            if self.inner_size.get() != new_inner_size {
+                self.inner_size.set(new_inner_size);
+                self.window_rendering_context.resize(new_inner_size);
+                resized = true;
+            }
         }
 
         // If requested to redraw or resized, repaint as soon as possible, so that new buffer
@@ -699,232 +710,27 @@ impl HeadedWindow {
                         None => {
                             let mut gui = self.gui.borrow_mut();
                             gui.update(&state, &window, self);
-                            gui.paint(&self.winit_window);
+                            gui.paint(&self.sdl_window);
                         },
                     }
                 },
             }
         }
 
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_mouse_position.set(Some(
-                winit_position_to_euclid_point(position).to_f32() / self.hidpi_scale_factor(),
-            ));
-        }
-        let should_forward_mouse_event_to_egui = || {
-            // If a dialog is showing, it always captures all mouse events.
-            if window
-                .active_webview()
-                .is_some_and(|webview| self.has_active_dialog_for_webview(webview.id()))
-            {
-                return true;
-            }
-            // Otherwise, if the cursor is over the egui interface, forward the event.
-            self.last_mouse_position
-                .get()
-                .is_none_or(|point| self.gui.borrow().is_in_egui_toolbar_rect(point))
-        };
-
-        // Handle the event
-        let mut consumed = false;
         match event {
-            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                // Intercept any ScaleFactorChanged events away from EguiGlow::on_window_event, so
-                // we can use our own logic for calculating the scale factor and set egui’s
-                // scale factor to that value manually.
-                let desired_scale_factor = self.hidpi_scale_factor().get();
-                let effective_egui_zoom_factor = desired_scale_factor / scale_factor as f32;
-
-                info!(
-                    "window scale factor changed to {}, setting egui zoom factor to {}",
-                    scale_factor, effective_egui_zoom_factor
-                );
-
-                self.gui
-                    .borrow()
-                    .set_zoom_factor(effective_egui_zoom_factor);
-
-                window.hidpi_scale_factor_changed();
-
-                // Request a winit redraw event, so we can recomposite, update and paint
-                // the GUI, and present the new frame.
-                self.winit_window.request_redraw();
-            },
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Forward | MouseButton::Back,
-                ..
-            } => {
-                // Mouse "back"/"forward" side buttons are swallowed rather than triggering
-                // history navigation, for the same reason the keyboard shortcuts and context
-                // menu entries are disabled: navigating away can silently destroy game state.
-                consumed = true;
-            },
-            WindowEvent::MouseWheel { .. } | WindowEvent::MouseInput { .. }
-                if !should_forward_mouse_event_to_egui() =>
-            {
-                self.gui.borrow().surrender_focus();
-            },
-            WindowEvent::KeyboardInput { .. } if !self.gui.borrow().has_keyboard_focus() => {
-                // Keyboard events should go to the WebView unless some other GUI
-                // component has keyboard focus.
-            },
-            ref event => {
-                let response = self
-                    .gui
-                    .borrow_mut()
-                    .on_window_event(&self.winit_window, event);
-
-                if let WindowEvent::Focused(true) = event {
-                    state.handle_focused(window.clone());
-                }
-
-                if response.repaint && *event != WindowEvent::RedrawRequested {
-                    self.winit_window.request_redraw();
-                }
-
-                // All CursorMoved events, even when forwarded to the WebView, are also
-                // forwarded to Gui (above). This is because egui needs to know when
-                // the mouse is moving in other parts of the view in order to properly
-                // hide tooltips.
-                if let WindowEvent::CursorMoved { .. } = event &&
-                    !should_forward_mouse_event_to_egui()
-                {
-                    consumed = false;
-                } else {
-                    // TODO how do we handle the tab key? (see doc for consumed)
-                    // Note that servo doesn’t yet support tabbing through links and inputs
-                    consumed = response.consumed;
-                }
-            },
-        }
-
-        if !consumed && let Some(webview) = window.active_webview() {
-            match event {
-                WindowEvent::KeyboardInput { event, .. } => {
-                    self.handle_keyboard_input(state, &window, event)
-                },
-                WindowEvent::ModifiersChanged(modifiers) => {
-                    self.modifiers_state.set(modifiers.state())
-                },
-                WindowEvent::MouseInput { state, button, .. } => {
-                    self.handle_mouse_button_event(&webview, button, state);
-                },
-                WindowEvent::CursorMoved { position, .. } => {
-                    self.handle_mouse_move_event(&webview, position);
-                },
-                WindowEvent::CursorLeft { .. } => {
-                    let webview_rect: Rect<_, _> = webview.size().into();
-                    if webview_rect.contains(self.webview_relative_mouse_point.get()) {
-                        webview.notify_input_event(InputEvent::MouseLeftViewport(
-                            MouseLeftViewportEvent::default(),
-                        ));
-                    }
-                },
-                WindowEvent::MouseWheel { delta, .. } => {
-                    let (delta_x, delta_y, mode) = match delta {
-                        MouseScrollDelta::LineDelta(delta_x, delta_y) => (
-                            (delta_x * LINE_WIDTH) as f64,
-                            (delta_y * LINE_HEIGHT) as f64,
-                            WheelMode::DeltaPixel,
-                        ),
-                        MouseScrollDelta::PixelDelta(delta) => {
-                            (delta.x, delta.y, WheelMode::DeltaPixel)
-                        },
-                    };
-
-                    // Create wheel event before snapping to the major axis of movement
-                    let delta = WheelDelta {
-                        x: delta_x,
-                        y: delta_y,
-                        z: 0.0,
-                        mode,
-                    };
-                    let point = self.webview_relative_mouse_point.get();
-                    webview.notify_input_event(InputEvent::Wheel(WheelEvent::new(
-                        delta,
-                        point.into(),
-                    )));
-                },
-                WindowEvent::Touch(touch) => {
-                    webview.notify_input_event(InputEvent::Touch(TouchEvent::new(
-                        winit_phase_to_touch_event_type(touch.phase),
-                        TouchId(touch.id as i32),
-                        DevicePoint::new(touch.location.x as f32, touch.location.y as f32).into(),
-                        TouchPointerType::Touch,
-                    )));
-                },
-                WindowEvent::PinchGesture { delta, .. } => {
-                    webview.adjust_pinch_zoom(
-                        delta as f32 + 1.0,
-                        self.webview_relative_mouse_point.get(),
-                    );
-                },
-                WindowEvent::CloseRequested => {
-                    window.schedule_close();
-                },
-                WindowEvent::ThemeChanged(theme) => {
-                    webview.notify_theme_change(match theme {
-                        winit::window::Theme::Light => Theme::Light,
-                        winit::window::Theme::Dark => Theme::Dark,
-                    });
-                },
-                WindowEvent::Ime(ime) => match ime {
-                    Ime::Enabled => {
-                        webview.notify_input_event(InputEvent::Ime(ImeEvent::Composition(
-                            servo::CompositionEvent {
-                                state: servo::CompositionState::Start,
-                                data: String::new(),
-                            },
-                        )));
-                    },
-                    Ime::Preedit(text, _) => {
-                        webview.notify_input_event(InputEvent::Ime(ImeEvent::Composition(
-                            servo::CompositionEvent {
-                                state: servo::CompositionState::Update,
-                                data: text,
-                            },
-                        )));
-                    },
-                    Ime::Commit(text) => {
-                        webview.notify_input_event(InputEvent::Ime(ImeEvent::Composition(
-                            servo::CompositionEvent {
-                                state: servo::CompositionState::End,
-                                data: text,
-                            },
-                        )));
-                    },
-                    Ime::Disabled => {
-                        // There are two reasons we receive this message from winit:
-                        //
-                        // 1. The user dismissed the IME. In that case we want to inform Servo
-                        //    so it can unfocus the current editable element.
-                        // 2. Servo changed focus and requested that we dismiss the IME, which
-                        //    in turn triggers this message. We know this is the case when we don't
-                        //    expect any IME to be open and shouldn't send any more messages to
-                        //    Servo as it might cause unexpected blurring of the newly focused
-                        //    element.
-                        if self.visible_input_method.take().is_some() {
-                            webview.notify_input_event(InputEvent::Ime(ImeEvent::Dismissed));
-                        }
-                    },
-                },
-                WindowEvent::DroppedFile(dropped_file) => {
-                    if let Ok(url) = Url::from_file_path(&dropped_file) {
-                        webview.load(url);
-                    } else {
-                        log::error!(
-                            "Failed to create URL for dropped file ({})",
-                            dropped_file.display()
-                        );
-                    }
-                },
-                _ => {},
-            }
+            WindowEvent::Focused(true) => state.handle_focused(window.clone()),
+            WindowEvent::CloseRequested => window.schedule_close(),
+            _ => {},
         }
     }
 
-    pub(crate) fn handle_winit_app_event(&self, state: Rc<RunningAppState>, app_event: AppEvent) {
+    /// TODO(SDL3 windowing): no real AccessKit adapter produces `AppEvent::Accessibility`
+    /// events anymore (see `event_loop.rs`'s own doc comment on that variant) — nothing calls
+    /// this yet. Kept, unchanged in shape, as the intended wiring point for a real SDL3-backed
+    /// AccessKit bridge (see TODO.md's de-risking notes on `AccessKit/accesskit`'s per-OS
+    /// adapters).
+    #[expect(dead_code)]
+    pub(crate) fn handle_accessibility_event(&self, state: Rc<RunningAppState>, app_event: AppEvent) {
         if let AppEvent::Accessibility(ref event) = app_event {
             match &event.window_event {
                 egui_winit::accesskit_winit::WindowEvent::InitialTreeRequested => {
@@ -938,14 +744,6 @@ impl HeadedWindow {
                 egui_winit::accesskit_winit::WindowEvent::AccessibilityDeactivated => {
                     state.set_accessibility_active(false);
                 },
-            }
-
-            if self
-                .gui
-                .borrow_mut()
-                .handle_accesskit_event(&event.window_event)
-            {
-                self.winit_window.request_redraw();
             }
         }
     }
@@ -966,9 +764,15 @@ impl PlatformWindow for HeadedWindow {
         // See https://github.com/rust-windowing/winit/issues/2494
         let available_screen_size = screen_size - toolbar_size;
 
+        // TODO(SDL3 windowing): SDL3's `Window::position`/`size` report the client
+        // (decoration-excluded) area, not winit's own `outer_position`/`outer_size` (which
+        // include OS decorations) — same simplification noted on `PlatformWindow::window_rect`
+        // further down. Real for windowed mode, an approximation with a native titlebar.
+        let (x, y) = self.sdl_window.position();
+        let (width, height) = self.sdl_window.size();
         let window_rect = DeviceIntRect::from_origin_and_size(
-            winit_position_to_euclid_point(self.winit_window.outer_position().unwrap_or_default()),
-            winit_size_to_euclid_size(self.winit_window.outer_size()).to_i32(),
+            DeviceIntPoint::new(x, y),
+            DeviceIntSize::new(width as i32, height as i32),
         );
 
         ScreenGeometry {
@@ -979,7 +783,7 @@ impl PlatformWindow for HeadedWindow {
     }
 
     fn device_hidpi_scale_factor(&self) -> Scale<f32, DeviceIndependentPixel, DevicePixel> {
-        Scale::new(self.winit_window.scale_factor() as f32)
+        Scale::new(self.sdl_window.display_scale())
     }
 
     fn hidpi_scale_factor(&self) -> Scale<f32, DeviceIndependentPixel, DevicePixel> {
@@ -1001,7 +805,12 @@ impl PlatformWindow for HeadedWindow {
                 .unwrap_or_else(|| INITIAL_WINDOW_TITLE.to_string())
         });
         if title != *self.last_title.borrow() {
-            self.winit_window.set_title(&title);
+            // `Window`'s mutating methods take `&mut self` even though they just forward to a
+            // plain FFI call on the shared, `Arc`-backed native window — `.clone()` (cheap: an
+            // `Arc` bump, not a real duplicate window) gets an owned, independently-`&mut`-able
+            // handle to call them through, same pattern used throughout this file wherever
+            // `&self` needs to call one of these. See `Window`'s own `#[derive(Clone)]`.
+            let _ = self.sdl_window.clone().set_title(&title);
             *self.last_title.borrow_mut() = title;
         }
 
@@ -1009,19 +818,18 @@ impl PlatformWindow for HeadedWindow {
     }
 
     fn request_repaint(&self, _: &ServoShellWindow) {
-        self.winit_window.request_redraw();
+        self.request_redraw();
     }
 
+    /// TODO(SDL3 windowing): unlike winit's `inner_size()`/`outer_size()`, SDL3's `Window::
+    /// size()` doesn't distinguish the client area from OS decorations — treated as equal here
+    /// (`decoration_size` always zero), same simplification as `screen_geometry`/`window_rect`.
+    /// Loses window-decoration accounting on a native titlebar; harmless with
+    /// `no_native_titlebar` (not ported either — see `HeadedWindow::new`'s own TODO).
     fn request_resize(&self, _: &WebView, new_outer_size: DeviceIntSize) -> Option<DeviceIntSize> {
-        // Allocate space for the window deocrations, but do not let the inner size get
-        // smaller than `MIN_WINDOW_INNER_SIZE` or larger than twice the screen size.
-        let inner_size = self.winit_window.inner_size();
-        let outer_size = self.winit_window.outer_size();
-        let decoration_size: DeviceIntSize = Size2D::new(
-            outer_size.width - inner_size.width,
-            outer_size.height - inner_size.height,
-        )
-        .cast();
+        let (width, height) = self.sdl_window.size();
+        let outer_size = PhysicalSize::new(width, height);
+        let decoration_size = DeviceIntSize::zero();
 
         let screen_size = (self.screen_size.to_f32() * self.hidpi_scale_factor()).to_i32();
         let new_outer_size =
@@ -1034,37 +842,33 @@ impl PlatformWindow for HeadedWindow {
         }
 
         let new_inner_size = new_outer_size - decoration_size;
-        self.winit_window
-            .request_inner_size(PhysicalSize::new(
-                new_inner_size.width,
-                new_inner_size.height,
-            ))
-            .map(|resulting_size| {
-                // `Some` means that winit applied the resize synchronously, in which case it may
-                // not emit a subsequent `WindowEvent::Resized`.
+        let resulting_size = PhysicalSize::new(
+            new_inner_size.width.max(0) as u32,
+            new_inner_size.height.max(0) as u32,
+        );
+        match self.sdl_window.clone().set_size(resulting_size.width, resulting_size.height) {
+            Ok(()) => {
                 if self.inner_size.get() != resulting_size {
                     self.inner_size.set(resulting_size);
                     self.window_rendering_context.resize(resulting_size);
                 }
-
-                DeviceIntSize::new(
+                Some(DeviceIntSize::new(
                     resulting_size.width as i32 + decoration_size.width,
                     resulting_size.height as i32 + decoration_size.height,
-                )
-            })
+                ))
+            },
+            Err(_) => None,
+        }
     }
 
     fn window_rect(&self) -> DeviceIndependentIntRect {
-        let outer_size = self.winit_window.outer_size();
+        let (width, height) = self.sdl_window.size();
         let scale = self.hidpi_scale_factor();
 
-        let outer_size = winit_size_to_euclid_size(outer_size).to_i32();
+        let outer_size = DeviceIntSize::new(width as i32, height as i32);
 
-        let origin = self
-            .winit_window
-            .outer_position()
-            .map(winit_position_to_euclid_point)
-            .unwrap_or_default();
+        let (x, y) = self.sdl_window.position();
+        let origin = DeviceIntPoint::new(x, y);
         convert_rect_to_css_pixel(
             DeviceIntRect::from_origin_and_size(origin, outer_size),
             scale,
@@ -1072,22 +876,19 @@ impl PlatformWindow for HeadedWindow {
     }
 
     fn set_position(&self, point: DeviceIntPoint) {
-        self.winit_window
-            .set_outer_position::<PhysicalPosition<i32>>(PhysicalPosition::new(point.x, point.y))
+        let _ = self
+            .sdl_window
+            .clone()
+            .set_position(sdl3::video::WindowPos::Positioned(point.x), sdl3::video::WindowPos::Positioned(point.y));
     }
 
+    /// TODO(SDL3 windowing): `set_fullscreen`'s own monitor selection (winit's
+    /// `current_monitor()`/`available_monitors()`) isn't ported — SDL3's `set_fullscreen`
+    /// takes a plain `bool` and always uses the window's current display, so there's no
+    /// monitor argument to plumb through in the first place. Simpler than before, not a gap.
     fn set_fullscreen(&self, state: bool) {
-        let monitor = self
-            .winit_window()
-            .current_monitor()
-            .or_else(|| self.winit_window.available_monitors().nth(0))
-            .expect("No monitor detected");
         if self.fullscreen.get() != state {
-            self.winit_window.set_fullscreen(if state {
-                Some(winit::window::Fullscreen::Borderless(Some(monitor)))
-            } else {
-                None
-            });
+            let _ = self.sdl_window.clone().set_fullscreen(state);
             persist_fullscreen_state(self.config_dir.as_deref(), state);
         }
         self.fullscreen.set(state);
@@ -1097,69 +898,28 @@ impl PlatformWindow for HeadedWindow {
         self.fullscreen.get()
     }
 
-    fn set_cursor(&self, cursor: Cursor) {
-        use winit::window::CursorIcon;
-
-        let winit_cursor = match cursor {
-            Cursor::Default => CursorIcon::Default,
-            Cursor::Pointer => CursorIcon::Pointer,
-            Cursor::ContextMenu => CursorIcon::ContextMenu,
-            Cursor::Help => CursorIcon::Help,
-            Cursor::Progress => CursorIcon::Progress,
-            Cursor::Wait => CursorIcon::Wait,
-            Cursor::Cell => CursorIcon::Cell,
-            Cursor::Crosshair => CursorIcon::Crosshair,
-            Cursor::Text => CursorIcon::Text,
-            Cursor::VerticalText => CursorIcon::VerticalText,
-            Cursor::Alias => CursorIcon::Alias,
-            Cursor::Copy => CursorIcon::Copy,
-            Cursor::Move => CursorIcon::Move,
-            Cursor::NoDrop => CursorIcon::NoDrop,
-            Cursor::NotAllowed => CursorIcon::NotAllowed,
-            Cursor::Grab => CursorIcon::Grab,
-            Cursor::Grabbing => CursorIcon::Grabbing,
-            Cursor::EResize => CursorIcon::EResize,
-            Cursor::NResize => CursorIcon::NResize,
-            Cursor::NeResize => CursorIcon::NeResize,
-            Cursor::NwResize => CursorIcon::NwResize,
-            Cursor::SResize => CursorIcon::SResize,
-            Cursor::SeResize => CursorIcon::SeResize,
-            Cursor::SwResize => CursorIcon::SwResize,
-            Cursor::WResize => CursorIcon::WResize,
-            Cursor::EwResize => CursorIcon::EwResize,
-            Cursor::NsResize => CursorIcon::NsResize,
-            Cursor::NeswResize => CursorIcon::NeswResize,
-            Cursor::NwseResize => CursorIcon::NwseResize,
-            Cursor::ColResize => CursorIcon::ColResize,
-            Cursor::RowResize => CursorIcon::RowResize,
-            Cursor::AllScroll => CursorIcon::AllScroll,
-            Cursor::ZoomIn => CursorIcon::ZoomIn,
-            Cursor::ZoomOut => CursorIcon::ZoomOut,
-            Cursor::None => {
-                self.winit_window.set_cursor_visible(false);
-                return;
-            },
-        };
-        self.winit_window.set_cursor(winit_cursor);
-        self.winit_window.set_cursor_visible(true);
-    }
-
     fn id(&self) -> ServoShellWindowId {
-        let id: u64 = self.winit_window.id().into();
+        let id: u64 = self.sdl_window_id().into();
         id.into()
     }
 
+    /// TODO(SDL3 windowing): cursor shape changes not ported yet — `Cursor`'s ~30 named shapes
+    /// need mapping to `sdl3::mouse::SystemCursor` and setting via `Sdl::mouse().set_cursor(..)`
+    /// (a separate, global API in SDL3, not a `Window` method the way winit's `set_cursor` was).
+    /// `Cursor::None` (hide the cursor entirely) is the one real gap this leaves: the cursor
+    /// stays visible where the page/UI would otherwise have hidden it.
+    fn set_cursor(&self, _cursor: Cursor) {}
+
     #[cfg(feature = "webxr")]
     fn new_glwindow(&self, event_loop: &ActiveEventLoop) -> Rc<dyn servo::webxr::GlWindow> {
-        let size = self.winit_window.outer_size();
+        let (width, height) = self.sdl_window.size();
 
-        let window_attr = winit::window::Window::default_attributes()
-            .with_title("Roves XR".to_string())
-            .with_inner_size(size)
-            .with_visible(false);
-
-        let winit_window = event_loop
-            .create_window(window_attr)
+        let sdl_window = event_loop
+            .video()
+            .window("Roves XR", width, height)
+            .opengl()
+            .hidden()
+            .build()
             .expect("Failed to create window.");
 
         let pose = Rc::new(XRWindowPose {
@@ -1167,22 +927,28 @@ impl PlatformWindow for HeadedWindow {
             xr_translation: Cell::new(Vector3D::zero()),
         });
         self.xr_window_poses.borrow_mut().push(pose.clone());
-        Rc::new(XRWindow { winit_window, pose })
+        Rc::new(XRWindow { sdl_window, pose })
     }
 
     fn rendering_context(&self) -> Rc<dyn RenderingContext> {
         self.rendering_context.clone()
     }
 
+    /// TODO(SDL3 windowing): approximated with the *system* theme (`SDL_GetSystemTheme`) —
+    /// unlike winit's `Window::theme()`, SDL3 has no equivalent that accounts for a specific
+    /// window's own forced/overridden theme (most windows just follow the system one anyway,
+    /// so this is right in the common case).
     fn theme(&self) -> servo::Theme {
-        match self.winit_window.theme() {
-            Some(winit::window::Theme::Dark) => servo::Theme::Dark,
-            Some(winit::window::Theme::Light) | None => servo::Theme::Light,
+        match sdl3::video::VideoSubsystem::get_system_theme() {
+            sdl3::video::SystemTheme::Dark => servo::Theme::Dark,
+            sdl3::video::SystemTheme::Light | sdl3::video::SystemTheme::Unknown => {
+                servo::Theme::Light
+            },
         }
     }
 
     fn maximize(&self, _webview: &WebView) {
-        self.winit_window.set_maximized(true);
+        let _ = self.sdl_window.clone().maximize();
     }
 
     /// Handle servoshell key bindings that may have been prevented by the page in the active webview.
@@ -1215,11 +981,11 @@ impl PlatformWindow for HeadedWindow {
     }
 
     fn focus(&self) {
-        self.winit_window.focus_window();
+        let _ = self.sdl_window.clone().raise();
     }
 
     fn has_platform_focus(&self) -> bool {
-        self.winit_window.has_focus()
+        self.sdl_window.has_input_focus()
     }
 
     fn show_embedder_control(&self, webview_id: WebViewId, embedder_control: EmbedderControl) {
@@ -1264,7 +1030,8 @@ impl PlatformWindow for HeadedWindow {
     fn hide_embedder_control(&self, webview_id: WebViewId, embedder_control_id: EmbedderControlId) {
         if self.visible_input_method.get() == Some(embedder_control_id) {
             self.visible_input_method.set(None);
-            self.winit_window.set_ime_allowed(false);
+            // TODO(SDL3 windowing): see `show_ime`'s own TODO -- disabling IME here isn't
+            // ported yet either (`SDL_StopTextInput`, not yet wired up).
             return;
         }
         self.remove_dialog(webview_id, embedder_control_id);
@@ -1383,7 +1150,7 @@ fn load_icon(icon_bytes: &[u8]) -> Icon {
 
 #[cfg(feature = "webxr")]
 struct XRWindow {
-    winit_window: winit::window::Window,
+    sdl_window: sdl3::video::Window,
     pose: Rc<XRWindowPose>,
 }
 
@@ -1399,13 +1166,13 @@ impl servo::webxr::GlWindow for XRWindow {
         device: &mut surfman::Device,
         _context: &mut surfman::Context,
     ) -> servo::webxr::GlWindowRenderTarget {
-        self.winit_window.set_visible(true);
+        let _ = self.sdl_window.clone().show();
         let window_handle = self
-            .winit_window
+            .sdl_window
             .window_handle()
             .expect("could not get window handle from window");
-        let size = self.winit_window.inner_size();
-        let size = Size2D::new(size.width as i32, size.height as i32);
+        let (width, height) = self.sdl_window.size();
+        let size = Size2D::new(width as i32, height as i32);
         let native_widget = device
             .connection()
             .create_native_widget_from_window_handle(window_handle, size)
@@ -1437,7 +1204,7 @@ impl servo::webxr::GlWindow for XRWindow {
     }
 
     fn display_handle(&self) -> raw_window_handle::DisplayHandle<'_> {
-        self.winit_window
+        self.sdl_window
             .display_handle()
             .expect("Every window should have a display handle")
     }
