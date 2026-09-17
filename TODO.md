@@ -142,24 +142,33 @@ polling sul main thread via `App::new_events`/`set_running_control_flow`, dato c
 `sdl3::init()` rifiuta di girare fuori dal thread `main()` (vincolo reale, non solo dei
 binding Rust).
 
-- [x] **Gamepad su macOS: fix reale tentato 2026-09-17** (vedi CUSTOMIZATIONS.md) —
-  disabilitato solo il backend IOKit di SDL3 (`SDL_HINT_JOYSTICK_IOKIT=0`, l'unico che passa da
-  `IOHIDManager`/permesso Input Monitoring, sospettato causa dell'hang di 100+ minuti su CI
-  macOS), lasciando attivo il backend MFI (GameController framework di Apple, nessun permesso
-  TCC coinvolto) che copre già i gamepad moderni comuni (Xbox/PlayStation/Switch Pro). Rimossi
-  tutti i gate `not(target_os = "macos")` aggiunti il 2026-09-16 — il gamepad è di nuovo
-  compilato e attivo su macOS come su Windows/Linux. **Non verificabile localmente (nessun Mac
-  reale disponibile)** — verificato solo tramite il prossimo run di `test.yml`: se l'hang
-  scompare, l'ipotesi IOKit era corretta; se persiste, va investigata un'altra causa. Trade-off
-  esplicito accettato: gamepad USB/HID non-MFi restano non supportati su macOS (meglio di
-  nessun supporto affatto, il gap precedente).
-La sostituzione di finestra/event-loop **non è stata tentata** in questa sessione: portata
-misurata concretamente prima di iniziare, non stimata — 13 file usano `winit::` (confermato
-via grep), di cui i più grossi sono `desktop/headed_window.rs` (1553 righe, 34 punti
-d'integrazione raw-window-handle/surfman/IME) e `desktop/gui.rs` (820 righe, bridge
-`egui-winit`/`accesskit_winit`). Rimandato per restare a ritmo con il resto del piano
-(Tracy/Perfetto, egui, release, poi mozjs 0.26 major) — stesso trattamento dato a mozjs 0.26:
-non è lavoro rifiutato, è lavoro correttamente scoperto come troppo grande per questa sessione.
+- [ ] **Gamepad disabilitato su macOS, causa ancora non confermata — un'ipotesi già esclusa:**
+  `sdl3::init().gamepad()` si blocca indefinitamente su CI macOS (confermato: un intero run ha
+  bruciato le 6 ore di timeout di default di GitHub Actions prima di essere cancellato
+  forzatamente — non 100 minuti come stimato inizialmente) — non un errore di compilazione,
+  `mach build`/`mach bundle` completano con successo; il processo lanciato dallo smoke test non
+  risponde nemmeno a `SIGTERM`. **Tentativo 2026-09-17: disabilitare solo il backend IOKit di
+  SDL3 (`SDL_HINT_JOYSTICK_IOKIT=0`), lasciando attivo MFI — confermato via CI che NON risolve
+  l'hang** (stesso identico comportamento, revertito lo stesso giorno — vedi CUSTOMIZATIONS.md
+  per l'analisi completa del log). L'ipotesi IOKit-specifica è quindi esclusa, non solo non
+  confermata: o anche MFI soffre della stessa classe di problema su un runner headless, o la
+  causa reale è più a monte (`SDL_Init` stesso, o l'enumerazione del subsystem gamepad in
+  generale, bloccati in attesa di un CFRunLoop/NSApplication che un lancio headless non pompa
+  mai mai). Serve un Mac reale interattivo per osservare cosa succede davvero, oppure un
+  esperimento mirato e a basso costo (un workflow minimo che isola solo `sdl3::init().gamepad()`
+  senza il resto della build dell'engine, così un tentativo sbagliato costa minuti di CI e non
+  ore). Nel frattempo il gamepad resta disattivato specificamente su macOS (gate
+  `not(target_os = "macos")` su `app.rs`/`running_app_state.rs`/`window.rs`) — un vero gap
+  funzionale rispetto a GilRs su quella piattaforma, da richiudere appena verificata la causa
+  reale.
+
+**Aggiornamento 2026-09-17/18 — la sostituzione di finestra/event-loop È STATA iniziata**, su un
+branch dedicato `sdl3-windowing` (non mergiato su `main` — vedi CUSTOMIZATIONS.md per il dettaglio
+completo). Non più "non tentata": creazione finestra, loop eventi centrale e bridge egui/GL
+portati a SDL3 con codice reale; primo giro di CI ha trovato 10 errori di compilazione, tutti
+corretti; un secondo giro di CI ha trovato altri errori (in corso di diagnosi). Nessun input
+(tastiera/mouse/touch) ancora funzionante — gap dichiarato, non un problema nascosto. Chi riprende
+questo lavoro parta da quel branch, non da zero.
 
 - [ ] **Finestra + event loop**: sostituire `winit::event_loop`/`winit::window` con SDL3 in
   `desktop/app.rs`, `desktop/event_loop.rs`, `desktop/headed_window.rs`,
