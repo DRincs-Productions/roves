@@ -599,8 +599,7 @@ impl HeadedWindow {
             return;
         }
 
-        // If a µ¨¥zºè¯
-â¶)à²Ö§uªÝ¢ëiºÐk¢G§¦*^dialog is open, clear any Servo cursor. TODO: This should restore the
+        // If a dialog is open, clear any Servo cursor. TODO: This should restore the
         // cursor too, when all dialogs close. In general, we need a better cursor
         // management strategy.
         self.set_cursor(Cursor::Default);
@@ -1281,7 +1280,7 @@ impl XRWindowPose {
         match input.event.key {
             Key::Character(ref k) => match &**k {
                 "w" => z = -NORMAL_TRANSLATE,
-    µ¨¥Â¸­yêë¢°k¢G§¦*^            "W" => z = -QUICK_TRANSLATE,
+                "W" => z = -QUICK_TRANSLATE,
                 "s" => z = NORMAL_TRANSLATE,
                 "S" => z = QUICK_TRANSLATE,
                 "a" => x = -NORMAL_TRANSLATE,
