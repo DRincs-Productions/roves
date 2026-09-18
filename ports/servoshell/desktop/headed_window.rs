@@ -599,7 +599,8 @@ impl HeadedWindow {
             return;
         }
 
-        // If a dialog is open, clear any Servo cursor. TODO: This should restore the
+        // If a µ¨¥zºè¯
+â¶)à²Ö§uªÝ¢ëiºÐk¢G§¦*^dialog is open, clear any Servo cursor. TODO: This should restore the
         // cursor too, when all dialogs close. In general, we need a better cursor
         // management strategy.
         self.set_cursor(Cursor::Default);
@@ -771,7 +772,14 @@ impl HeadedWindow {
                     }
                 }
             },
-            _ => {},
+            // Resize/redraw are handled before this dispatch so the rendering context is
+            // already up to date. Losing focus currently needs no additional Servo-side
+            // action, but spelling these variants out keeps this match exhaustive: adding a
+            // new translated SDL event must also add its real handling here instead of being
+            // silently swallowed by a catch-all arm.
+            WindowEvent::Resized(..) |
+            WindowEvent::RedrawRequested |
+            WindowEvent::Focused(false) => {},
         }
     }
 
@@ -1273,7 +1281,7 @@ impl XRWindowPose {
         match input.event.key {
             Key::Character(ref k) => match &**k {
                 "w" => z = -NORMAL_TRANSLATE,
-                "W" => z = -QUICK_TRANSLATE,
+    µ¨¥Â¸­yêë¢°k¢G§¦*^            "W" => z = -QUICK_TRANSLATE,
                 "s" => z = NORMAL_TRANSLATE,
                 "S" => z = QUICK_TRANSLATE,
                 "a" => x = -NORMAL_TRANSLATE,
