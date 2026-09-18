@@ -7715,3 +7715,14 @@ The follow-up compiler pass exposed the same exhaustiveness requirement in
 `desktop/tracing.rs`'s log-target mapping. Added stable SDL3-specific targets for every new
 keyboard and mouse variant; this keeps event tracing useful instead of hiding the variants behind
 a wildcard.
+
+## 2026-09-18 — Bound SDL3 CI concurrency and macOS smoke-test shutdown
+
+**File:** `.github/workflows/test.yml`.
+
+SDL3/Cocoa smoke runs could remain blocked in the native event pump after the workflow sent a
+normal termination signal, leaving macOS jobs (and several superseded workflow runs) alive for
+hours. The smoke test now gives the process five seconds to exit and then sends a forced kill
+before waiting. The workflow also uses a branch-scoped concurrency group with
+`cancel-in-progress`, so a newer SDL3 checkpoint automatically supersedes an older eight-job
+matrix instead of consuming both sets of runners.

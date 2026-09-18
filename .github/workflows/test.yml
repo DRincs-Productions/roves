@@ -22,6 +22,13 @@ on:
       - '.github/workflows/test.yml'
   workflow_dispatch: {}
 
+# A new SDL3 checkpoint supersedes the previous one. Without this, every push keeps an entire
+# eight-job Servo matrix alive (including macOS smoke tests), wasting runner time and obscuring
+# which commit is authoritative.
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   SERVO_TAG: '0.5.0'
   TEST_RELEASE_TAG: 'test'
@@ -443,6 +450,14 @@ jobs:
           if kill -0 "$PID" 2>/dev/null; then
             STILL_RUNNING=true
             kill "$PID"
+            # SDL3/Cocoa can keep the app alive while the main thread is inside the native event
+            # pump. Do not let wait pin a macOS runner indefinitely: allow a short graceful
+            # shutdown, then force-terminate the disposable smoke-test process.
+            for _ in 1 2 3 4 5; do
+              kill -0 "$PID" 2>/dev/null || break
+              sleep 1
+            done
+            kill -0 "$PID" 2>/dev/null && kill -9 "$PID"
             wait "$PID" 2>/dev/null
           else
             STILL_RUNNING=false
