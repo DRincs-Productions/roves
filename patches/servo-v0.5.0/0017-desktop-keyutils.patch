@@ -1,0 +1,336 @@
+diff --git a/ports/servoshell/desktop/keyutils.rs b/ports/servoshell/desktop/keyutils.rs
+--- a/ports/servoshell/desktop/keyutils.rs
++++ b/ports/servoshell/desktop/keyutils.rs
+@@ -0,0 +1,332 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++use keyboard_types::{Code, Key, KeyState, Location, Modifiers, NamedKey};
++use sdl3::keyboard::{Keycode, Mod, Scancode};
++use servo::KeyboardEvent;
++
++// Some shortcuts use Cmd on Mac and Control on other systems.
++#[cfg(target_os = "macos")]
++pub const CMD_OR_CONTROL: Modifiers = Modifiers::META;
++#[cfg(not(target_os = "macos"))]
++pub const CMD_OR_CONTROL: Modifiers = Modifiers::CONTROL;
++
++// Some shortcuts use Cmd on Mac and Alt on other systems.
++#[cfg(target_os = "macos")]
++pub const CMD_OR_ALT: Modifiers = Modifiers::META;
++#[cfg(not(target_os = "macos"))]
++pub const CMD_OR_ALT: Modifiers = Modifiers::ALT;
++
++/// TODO(SDL3 windowing, real progress not completion — see TODO.md): covers the keys that
++/// actually matter for gameplay and this fork's own keyboard shortcuts (letters, digits,
++/// navigation, function keys, common punctuation, modifiers) — not the exhaustive ~300-variant
++/// match the previous winit-based version had (TV remote keys, launcher keys, etc., which SDL3
++/// itself barely reports on desktop anyway). Anything not covered falls back to
++/// `Code::Unidentified`/`Key::Named(NamedKey::Unidentified)`, the same fallback the old code
++/// already used for keys winit itself didn't recognize.
++fn code_from_scancode(scancode: Option<Scancode>) -> Code {
++    let Some(scancode) = scancode else {
++        return Code::Unidentified;
++    };
++    match scancode {
++        Scancode::A => Code::KeyA,
++        Scancode::B => Code::KeyB,
++        Scancode::C => Code::KeyC,
++        Scancode::D => Code::KeyD,
++        Scancode::E => Code::KeyE,
++        Scancode::F => Code::KeyF,
++        Scancode::G => Code::KeyG,
++        Scancode::H => Code::KeyH,
++        Scancode::I => Code::KeyI,
++        Scancode::J => Code::KeyJ,
++        Scancode::K => Code::KeyK,
++        Scancode::L => Code::KeyL,
++        Scancode::M => Code::KeyM,
++        Scancode::N => Code::KeyN,
++        Scancode::O => Code::KeyO,
++        Scancode::P => Code::KeyP,
++        Scancode::Q => Code::KeyQ,
++        Scancode::R => Code::KeyR,
++        Scancode::S => Code::KeyS,
++        Scancode::T => Code::KeyT,
++        Scancode::U => Code::KeyU,
++        Scancode::V => Code::KeyV,
++        Scancode::W => Code::KeyW,
++        Scancode::X => Code::KeyX,
++        Scancode::Y => Code::KeyY,
++        Scancode::Z => Code::KeyZ,
++        Scancode::_0 => Code::Digit0,
++        Scancode::_1 => Code::Digit1,
++        Scancode::_2 => Code::Digit2,
++        Scancode::_3 => Code::Digit3,
++        Scancode::_4 => Code::Digit4,
++        Scancode::_5 => Code::Digit5,
++        Scancode::_6 => Code::Digit6,
++        Scancode::_7 => Code::Digit7,
++        Scancode::_8 => Code::Digit8,
++        Scancode::_9 => Code::Digit9,
++        Scancode::Return => Code::Enter,
++        Scancode::Escape => Code::Escape,
++        Scancode::Backspace => Code::Backspace,
++        Scancode::Tab => Code::Tab,
++        Scancode::Space => Code::Space,
++        Scancode::Minus => Code::Minus,
++        Scancode::Equals => Code::Equal,
++        Scancode::LeftBracket => Code::BracketLeft,
++        Scancode::RightBracket => Code::BracketRight,
++        Scancode::Backslash => Code::Backslash,
++        Scancode::Semicolon => Code::Semicolon,
++        Scancode::Apostrophe => Code::Quote,
++        Scancode::Grave => Code::Backquote,
++        Scancode::Comma => Code::Comma,
++        Scancode::Period => Code::Period,
++        Scancode::Slash => Code::Slash,
++        Scancode::CapsLock => Code::CapsLock,
++        Scancode::F1 => Code::F1,
++        Scancode::F2 => Code::F2,
++        Scancode::F3 => Code::F3,
++        Scancode::F4 => Code::F4,
++        Scancode::F5 => Code::F5,
++        Scancode::F6 => Code::F6,
++        Scancode::F7 => Code::F7,
++        Scancode::F8 => Code::F8,
++        Scancode::F9 => Code::F9,
++        Scancode::F10 => Code::F10,
++        Scancode::F11 => Code::F11,
++        Scancode::F12 => Code::F12,
++        Scancode::F13 => Code::F13,
++        Scancode::F14 => Code::F14,
++        Scancode::F15 => Code::F15,
++        Scancode::F16 => Code::F16,
++        Scancode::F17 => Code::F17,
++        Scancode::F18 => Code::F18,
++        Scancode::F19 => Code::F19,
++        Scancode::F20 => Code::F20,
++        Scancode::F21 => Code::F21,
++        Scancode::F22 => Code::F22,
++        Scancode::F23 => Code::F23,
++        Scancode::F24 => Code::F24,
++        Scancode::PrintScreen => Code::PrintScreen,
++        Scancode::ScrollLock => Code::ScrollLock,
++        Scancode::Pause => Code::Pause,
++        Scancode::Insert => Code::Insert,
++        Scancode::Home => Code::Home,
++        Scancode::PageUp => Code::PageUp,
++        Scancode::Delete => Code::Delete,
++        Scancode::End => Code::End,
++        Scancode::PageDown => Code::PageDown,
++        Scancode::Right => Code::ArrowRight,
++        Scancode::Left => Code::ArrowLeft,
++        Scancode::Down => Code::ArrowDown,
++        Scancode::Up => Code::ArrowUp,
++        Scancode::NumLockClear => Code::NumLock,
++        Scancode::KpDivide => Code::NumpadDivide,
++        Scancode::KpMultiply => Code::NumpadMultiply,
++        Scancode::KpMinus => Code::NumpadSubtract,
++        Scancode::KpPlus => Code::NumpadAdd,
++        Scancode::KpEnter => Code::NumpadEnter,
++        Scancode::Kp0 => Code::Numpad0,
++        Scancode::Kp1 => Code::Numpad1,
++        Scancode::Kp2 => Code::Numpad2,
++        Scancode::Kp3 => Code::Numpad3,
++        Scancode::Kp4 => Code::Numpad4,
++        Scancode::Kp5 => Code::Numpad5,
++        Scancode::Kp6 => Code::Numpad6,
++        Scancode::Kp7 => Code::Numpad7,
++        Scancode::Kp8 => Code::Numpad8,
++        Scancode::Kp9 => Code::Numpad9,
++        Scancode::KpPeriod => Code::NumpadDecimal,
++        Scancode::KpEquals => Code::NumpadEqual,
++        Scancode::KpComma => Code::NumpadComma,
++        Scancode::Application => Code::ContextMenu,
++        Scancode::Cut => Code::Cut,
++        Scancode::Copy => Code::Copy,
++        Scancode::Paste => Code::Paste,
++        Scancode::Find => Code::Find,
++        Scancode::Mute => Code::AudioVolumeMute,
++        Scancode::VolumeUp => Code::AudioVolumeUp,
++        Scancode::VolumeDown => Code::AudioVolumeDown,
++        Scancode::LCtrl => Code::ControlLeft,
++        Scancode::LShift => Code::ShiftLeft,
++        Scancode::LAlt => Code::AltLeft,
++        Scancode::LGui => Code::MetaLeft,
++        Scancode::RCtrl => Code::ControlRight,
++        Scancode::RShift => Code::ShiftRight,
++        Scancode::RAlt => Code::AltRight,
++        Scancode::RGui => Code::MetaRight,
++        _ => Code::Unidentified,
++    }
++}
++
++fn location_from_scancode(scancode: Option<Scancode>) -> Location {
++    match scancode {
++        Some(
++            Scancode::LCtrl | Scancode::LShift | Scancode::LAlt | Scancode::LGui,
++        ) => Location::Left,
++        Some(
++            Scancode::RCtrl | Scancode::RShift | Scancode::RAlt | Scancode::RGui,
++        ) => Location::Right,
++        Some(
++            Scancode::Kp0 |
++            Scancode::Kp1 |
++            Scancode::Kp2 |
++            Scancode::Kp3 |
++            Scancode::Kp4 |
++            Scancode::Kp5 |
++            Scancode::Kp6 |
++            Scancode::Kp7 |
++            Scancode::Kp8 |
++            Scancode::Kp9 |
++            Scancode::KpDivide |
++            Scancode::KpMultiply |
++            Scancode::KpMinus |
++            Scancode::KpPlus |
++            Scancode::KpEnter |
++            Scancode::KpPeriod |
++            Scancode::KpEquals |
++            Scancode::KpComma,
++        ) => Location::Numpad,
++        _ => Location::Standard,
++    }
++}
++
++/// TODO(SDL3 windowing): `Key::Character` is derived from `Keycode`'s own fixed identity here,
++/// not from SDL3's separate `TextInput` event (the real, layout/shift-aware composed text) —
++/// simpler, but means a shifted symbol key (e.g. Shift+1 producing "!" on a US layout) reports
++/// the unshifted character here; the actual DOM `keypress`/`input` text a page sees still comes
++/// through correctly regardless, since that's driven by `TextInput`, not this. Named keys map
++/// on a best-effort basis; unrecognized keycodes fall back to `NamedKey::Unidentified`.
++fn key_from_keycode(keycode: Option<Keycode>) -> Key {
++    let Some(keycode) = keycode else {
++        return Key::Named(NamedKey::Unidentified);
++    };
++    match keycode {
++        Keycode::A => Key::Character("a".to_owned()),
++        Keycode::B => Key::Character("b".to_owned()),
++        Keycode::C => Key::Character("c".to_owned()),
++        Keycode::D => Key::Character("d".to_owned()),
++        Keycode::E => Key::Character("e".to_owned()),
++        Keycode::F => Key::Character("f".to_owned()),
++        Keycode::G => Key::Character("g".to_owned()),
++        Keycode::H => Key::Character("h".to_owned()),
++        Keycode::I => Key::Character("i".to_owned()),
++        Keycode::J => Key::Character("j".to_owned()),
++        Keycode::K => Key::Character("k".to_owned()),
++        Keycode::L => Key::Character("l".to_owned()),
++        Keycode::M => Key::Character("m".to_owned()),
++        Keycode::N => Key::Character("n".to_owned()),
++        Keycode::O => Key::Character("o".to_owned()),
++        Keycode::P => Key::Character("p".to_owned()),
++        Keycode::Q => Key::Character("q".to_owned()),
++        Keycode::R => Key::Character("r".to_owned()),
++        Keycode::S => Key::Character("s".to_owned()),
++        Keycode::T => Key::Character("t".to_owned()),
++        Keycode::U => Key::Character("u".to_owned()),
++        Keycode::V => Key::Character("v".to_owned()),
++        Keycode::W => Key::Character("w".to_owned()),
++        Keycode::X => Key::Character("x".to_owned()),
++        Keycode::Y => Key::Character("y".to_owned()),
++        Keycode::Z => Key::Character("z".to_owned()),
++        Keycode::_0 => Key::Character("0".to_owned()),
++        Keycode::_1 => Key::Character("1".to_owned()),
++        Keycode::_2 => Key::Character("2".to_owned()),
++        Keycode::_3 => Key::Character("3".to_owned()),
++        Keycode::_4 => Key::Character("4".to_owned()),
++        Keycode::_5 => Key::Character("5".to_owned()),
++        Keycode::_6 => Key::Character("6".to_owned()),
++        Keycode::_7 => Key::Character("7".to_owned()),
++        Keycode::_8 => Key::Character("8".to_owned()),
++        Keycode::_9 => Key::Character("9".to_owned()),
++        Keycode::Minus => Key::Character("-".to_owned()),
++        Keycode::Equals => Key::Character("=".to_owned()),
++        Keycode::LeftBracket => Key::Character("[".to_owned()),
++        Keycode::RightBracket => Key::Character("]".to_owned()),
++        Keycode::Backslash => Key::Character("\\".to_owned()),
++        Keycode::Semicolon => Key::Character(";".to_owned()),
++        Keycode::Apostrophe => Key::Character("'".to_owned()),
++        Keycode::Grave => Key::Character("`".to_owned()),
++        Keycode::Comma => Key::Character(",".to_owned()),
++        Keycode::Period => Key::Character(".".to_owned()),
++        Keycode::Slash => Key::Character("/".to_owned()),
++        Keycode::Space => Key::Character(" ".to_owned()),
++        Keycode::Return | Keycode::KpEnter => Key::Named(NamedKey::Enter),
++        Keycode::Escape => Key::Named(NamedKey::Escape),
++        Keycode::Backspace => Key::Named(NamedKey::Backspace),
++        Keycode::Tab => Key::Named(NamedKey::Tab),
++        Keycode::CapsLock => Key::Named(NamedKey::CapsLock),
++        Keycode::F1 => Key::Named(NamedKey::F1),
++        Keycode::F2 => Key::Named(NamedKey::F2),
++        Keycode::F3 => Key::Named(NamedKey::F3),
++        Keycode::F4 => Key::Named(NamedKey::F4),
++        Keycode::F5 => Key::Named(NamedKey::F5),
++        Keycode::F6 => Key::Named(NamedKey::F6),
++        Keycode::F7 => Key::Named(NamedKey::F7),
++        Keycode::F8 => Key::Named(NamedKey::F8),
++        Keycode::F9 => Key::Named(NamedKey::F9),
++        Keycode::F10 => Key::Named(NamedKey::F10),
++        Keycode::F11 => Key::Named(NamedKey::F11),
++        Keycode::F12 => Key::Named(NamedKey::F12),
++        Keycode::PrintScreen => Key::Named(NamedKey::PrintScreen),
++        Keycode::ScrollLock => Key::Named(NamedKey::ScrollLock),
++        Keycode::Pause => Key::Named(NamedKey::Pause),
++        Keycode::Insert => Key::Named(NamedKey::Insert),
++        Keycode::Home => Key::Named(NamedKey::Home),
++        Keycode::PageUp => Key::Named(NamedKey::PageUp),
++        Keycode::Delete => Key::Named(NamedKey::Delete),
++        Keycode::End => Key::Named(NamedKey::End),
++        Keycode::PageDown => Key::Named(NamedKey::PageDown),
++        Keycode::Right => Key::Named(NamedKey::ArrowRight),
++        Keycode::Left => Key::Named(NamedKey::ArrowLeft),
++        Keycode::Down => Key::Named(NamedKey::ArrowDown),
++        Keycode::Up => Key::Named(NamedKey::ArrowUp),
++        Keycode::LCtrl | Keycode::RCtrl => Key::Named(NamedKey::Control),
++        Keycode::LShift | Keycode::RShift => Key::Named(NamedKey::Shift),
++        Keycode::LAlt | Keycode::RAlt => Key::Named(NamedKey::Alt),
++        Keycode::LGui | Keycode::RGui => Key::Named(NamedKey::Meta),
++        Keycode::Application => Key::Named(NamedKey::ContextMenu),
++        Keycode::Cut => Key::Named(NamedKey::Cut),
++        Keycode::Copy => Key::Named(NamedKey::Copy),
++        Keycode::Paste => Key::Named(NamedKey::Paste),
++        Keycode::Find => Key::Named(NamedKey::Find),
++        Keycode::Mute => Key::Named(NamedKey::AudioVolumeMute),
++        Keycode::VolumeUp => Key::Named(NamedKey::AudioVolumeUp),
++        Keycode::VolumeDown => Key::Named(NamedKey::AudioVolumeDown),
++        _ => Key::Named(NamedKey::Unidentified),
++    }
++}
++
++fn keyboard_modifiers_from_sdl_mod(keymod: Mod) -> Modifiers {
++    let mut modifiers = Modifiers::empty();
++    modifiers.set(
++        Modifiers::CONTROL,
++        keymod.intersects(Mod::LCTRLMOD | Mod::RCTRLMOD),
++    );
++    modifiers.set(
++        Modifiers::SHIFT,
++        keymod.intersects(Mod::LSHIFTMOD | Mod::RSHIFTMOD),
++    );
++    modifiers.set(Modifiers::ALT, keymod.intersects(Mod::LALTMOD | Mod::RALTMOD));
++    modifiers.set(Modifiers::META, keymod.intersects(Mod::LGUIMOD | Mod::RGUIMOD));
++    modifiers
++}
++
++/// Builds a DOM-shaped [`KeyboardEvent`] from the raw fields of an `sdl3::event::Event::
++/// KeyDown`/`KeyUp` — the SDL3-windowing equivalent of the old `keyboard_event_from_winit`.
++pub fn keyboard_event_from_sdl(
++    keycode: Option<Keycode>,
++    scancode: Option<Scancode>,
++    keymod: Mod,
++    pressed: bool,
++    repeat: bool,
++) -> KeyboardEvent {
++    KeyboardEvent::new_without_event(
++        if pressed { KeyState::Down } else { KeyState::Up },
++        key_from_keycode(keycode),
++        code_from_scancode(scancode),
++        location_from_scancode(scancode),
++        keyboard_modifiers_from_sdl_mod(keymod),
++        false,
++        repeat,
++    )
++}

@@ -69,19 +69,49 @@ impl ActiveEventLoop {
 /// This module's own stand-in for the subset of `winit::event::WindowEvent` that
 /// `app.rs`/`headed_window.rs` actually consume — see `translate_sdl_event` for the mapping.
 ///
-/// TODO(SDL3 windowing, real progress not completion): winit's `WindowEvent` has ~16 variants
-/// in real use here (`grep -n "WindowEvent::" ports/servoshell/desktop/headed_window.rs`) —
-/// mouse buttons/motion/wheel, keyboard input, IME composition, modifiers, touch, pinch
-/// gesture, dropped files, theme/scale-factor changes. Only the handful needed to open a
-/// window, show the boot splash, and close cleanly are ported so far. Porting the rest is
-/// mechanical (`sdl3::event::Event` already carries equivalent data for nearly all of them —
-/// see this module's own research notes in TODO.md) but is real, separate work.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// TODO(SDL3 windowing, real progress not completion): touch, pinch gesture, dropped files,
+/// theme/scale-factor changes, and IME composition are not ported yet — everything else a
+/// desktop game actually needs (keyboard, mouse motion/buttons/wheel, resize, close, redraw,
+/// focus) now is. See TODO.md for the remaining list.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum WindowEvent {
     Resized(u32, u32),
     CloseRequested,
     RedrawRequested,
     Focused(bool),
+    KeyDown {
+        keycode: Option<sdl3::keyboard::Keycode>,
+        scancode: Option<sdl3::keyboard::Scancode>,
+        keymod: sdl3::keyboard::Mod,
+        repeat: bool,
+    },
+    KeyUp {
+        keycode: Option<sdl3::keyboard::Keycode>,
+        scancode: Option<sdl3::keyboard::Scancode>,
+        keymod: sdl3::keyboard::Mod,
+    },
+    MouseMotion {
+        x: f32,
+        y: f32,
+    },
+    MouseButtonDown {
+        button: sdl3::mouse::MouseButton,
+        x: f32,
+        y: f32,
+    },
+    MouseButtonUp {
+        button: sdl3::mouse::MouseButton,
+        x: f32,
+        y: f32,
+    },
+    MouseWheel {
+        x: f32,
+        y: f32,
+    },
+    /// SDL3 has no separate "cursor left the window" window-subevent the way winit does —
+    /// this is synthesized in `run_sdl3_app` from `SDL_EVENT_WINDOW_MOUSE_LEAVE` (a real
+    /// `Window` sub-event, see `translate_sdl_event`).
+    CursorLeft,
 }
 
 /// Translates one real (non-user) SDL3 event into this module's own `WindowEvent`, alongside
@@ -100,9 +130,28 @@ fn translate_sdl_event(event: sdl3::event::Event) -> Option<(WindowId, WindowEve
                 SdlWindowEvent::Exposed => WindowEvent::RedrawRequested,
                 SdlWindowEvent::FocusGained => WindowEvent::Focused(true),
                 SdlWindowEvent::FocusLost => WindowEvent::Focused(false),
+                SdlWindowEvent::MouseLeave => WindowEvent::CursorLeft,
                 _ => return None,
             };
             Some((window_id, window_event))
+        },
+        SdlEvent::KeyDown { window_id, keycode, scancode, keymod, repeat, .. } => {
+            Some((window_id, WindowEvent::KeyDown { keycode, scancode, keymod, repeat }))
+        },
+        SdlEvent::KeyUp { window_id, keycode, scancode, keymod, .. } => {
+            Some((window_id, WindowEvent::KeyUp { keycode, scancode, keymod }))
+        },
+        SdlEvent::MouseMotion { window_id, x, y, .. } => {
+            Some((window_id, WindowEvent::MouseMotion { x, y }))
+        },
+        SdlEvent::MouseButtonDown { window_id, mouse_btn, x, y, .. } => {
+            Some((window_id, WindowEvent::MouseButtonDown { button: mouse_btn, x, y }))
+        },
+        SdlEvent::MouseButtonUp { window_id, mouse_btn, x, y, .. } => {
+            Some((window_id, WindowEvent::MouseButtonUp { button: mouse_btn, x, y }))
+        },
+        SdlEvent::MouseWheel { window_id, x, y, .. } => {
+            Some((window_id, WindowEvent::MouseWheel { x, y }))
         },
         _ => None,
     }

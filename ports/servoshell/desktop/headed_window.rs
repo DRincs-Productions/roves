@@ -31,18 +31,19 @@ use servo::{
     convert_rect_to_css_pixel,
 };
 use url::Url;
-// `PhysicalPosition`/`PhysicalSize` remain real, winit-independent-at-runtime data types
-// used by Servo's own API (`WebView::resize`, etc.) and this file's own `inner_size` field —
-// not tied to a live winit window/event loop, so kept as-is (see geometry.rs's own doc
-// comment on the same point).
-use winit::dpi::{PhysicalPosition, PhysicalSize};
-// TODO(SDL3 windowing): `ElementState`/`KeyEvent`/`MouseButton`/`ModifiersState`/`LogicalKey`/
-// `WinitNamedKey` are only still referenced by this file's now-unreachable pre-migration
-// input-handling methods (`handle_keyboard_input` and friends, `XRWindowPose`'s own key
-// handling) — kept only because deleting carefully-written logic that will need re-deriving
-// anyway seemed worse than an unused-import warning. Drop these once that code is either
-// ported to SDL3 input types or actually deleted.
-use winit::event::{ElementState, KeyEvent, MouseButton, TouchPhase};
+// `PhysicalSize` remains a real, winit-independent-at-runtime data type used by Servo's own
+// API (`WebView::resize`, etc.) and this file's own `inner_size` field — not tied to a live
+// winit window/event loop, so kept as-is (see geometry.rs's own doc comment on the same point).
+use sdl3::mouse::MouseButton as SdlMouseButton;
+use winit::dpi::PhysicalSize;
+// TODO(SDL3 windowing): `ElementState`/`KeyEvent`/`ModifiersState`/`LogicalKey`/`WinitNamedKey`/
+// `TouchPhase` are only still referenced by `XRWindowPose`'s own keyboard-driven camera control
+// (WebXR, deferred together with the rest of that port — see `handle_keyboard_input`'s own
+// TODO) and `winit_phase_to_touch_event_type` (unreachable now that real touch events aren't
+// ported yet either) — kept only because deleting carefully-written logic that will need
+// re-deriving anyway seemed worse than an unused-import warning. Drop these once that code is
+// either ported to SDL3 input types or actually deleted.
+use winit::event::{ElementState, KeyEvent, TouchPhase};
 use winit::keyboard::{Key as LogicalKey, ModifiersState, NamedKey as WinitNamedKey};
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use winit::window::Icon;
@@ -52,8 +53,7 @@ use {
     objc2_foundation::MainThreadMarker,
 };
 
-use super::geometry::winit_position_to_euclid_point;
-use super::keyutils::keyboard_event_from_winit;
+use super::keyutils::keyboard_event_from_sdl;
 use crate::desktop::accelerated_gl_media::setup_gl_accelerated_media;
 use crate::desktop::dialog::Dialog;
 use crate::desktop::event_loop::{ActiveEventLoop, AppEvent, EventLoopProxy, WindowEvent, WindowId};
@@ -356,14 +356,19 @@ impl HeadedWindow {
         Some(Instant::now() + SPLASH_ANIMATION_TICK)
     }
 
+    /// TODO(SDL3 windowing): `XRWindowPose::handle_xr_rotation`/`handle_xr_translation`
+    /// (WebXR camera control from the keyboard) are not wired up here — they still take
+    /// winit's own `KeyEvent`/`ModifiersState`, unrelated to this SDL3-sourced event. WebXR
+    /// itself needs its own SDL3 port regardless (`desktop/webxr.rs`'s `XRWindow` already is
+    /// one, but nothing drives it yet) — deferred together, not an oversight specific to this
+    /// function.
     fn handle_keyboard_input(
         &self,
         state: Rc<RunningAppState>,
         window: &Rc<ServoShellWindow>,
-        winit_event: KeyEvent,
+        keyboard_event: KeyboardEvent,
     ) {
         // First, handle servoshell key bindings that are not overridable by, or visible to, the page.
-        let keyboard_event = keyboard_event_from_winit(&winit_event, self.modifiers_state.get());
         if self.handle_intercepted_key_bindings(state, window, &keyboard_event) {
             return;
         }
@@ -373,11 +378,6 @@ impl HeadedWindow {
             return;
         };
 
-        for xr_window_pose in self.xr_window_poses.borrow().iter() {
-            xr_window_pose.handle_xr_rotation(&winit_event, self.modifiers_state.get());
-            xr_window_pose.handle_xr_translation(&keyboard_event);
-        }
-
         let id = webview.notify_input_event(InputEvent::Keyboard(keyboard_event.clone()));
         self.pending_keyboard_events
             .borrow_mut()
@@ -385,12 +385,7 @@ impl HeadedWindow {
     }
 
     /// Helper function to handle a click
-    fn handle_mouse_button_event(
-        &self,
-        webview: &WebView,
-        button: MouseButton,
-        action: ElementState,
-    ) {
+    fn handle_mouse_button_event(&self, webview: &WebView, button: SdlMouseButton, pressed: bool) {
         // `point` can be outside viewport, such as at toolbar with negative y-coordinate.
         let point = self.webview_relative_mouse_point.get();
         let webview_rect: Rect<_, _> = webview.size().into();
@@ -403,25 +398,22 @@ impl HeadedWindow {
             .as_ref()
             .is_some_and(|touch_event_simulator| {
                 touch_event_simulator
-                    .maybe_consume_move_button_event(webview, button, action, point)
+                    .maybe_consume_move_button_event(webview, button, pressed, point)
             })
         {
             return;
         }
 
-        let mouse_button = match &button {
-            MouseButton::Left => ServoMouseButton::Left,
-            MouseButton::Right => ServoMouseButton::Right,
-            MouseButton::Middle => ServoMouseButton::Middle,
-            MouseButton::Back => ServoMouseButton::Back,
-            MouseButton::Forward => ServoMouseButton::Forward,
-            MouseButton::Other(value) => ServoMouseButton::Other(*value),
+        let mouse_button = match button {
+            SdlMouseButton::Left => ServoMouseButton::Left,
+            SdlMouseButton::Right => ServoMouseButton::Right,
+            SdlMouseButton::Middle => ServoMouseButton::Middle,
+            SdlMouseButton::X1 => ServoMouseButton::Back,
+            SdlMouseButton::X2 => ServoMouseButton::Forward,
+            SdlMouseButton::Unknown => ServoMouseButton::Other(0),
         };
 
-        let action = match action {
-            ElementState::Pressed => MouseButtonAction::Down,
-            ElementState::Released => MouseButtonAction::Up,
-        };
+        let action = if pressed { MouseButtonAction::Down } else { MouseButtonAction::Up };
 
         webview.notify_input_event(InputEvent::MouseButton(MouseButtonEvent::new(
             action,
@@ -431,8 +423,8 @@ impl HeadedWindow {
     }
 
     /// Helper function to handle mouse move events.
-    fn handle_mouse_move_event(&self, webview: &WebView, position: PhysicalPosition<f64>) {
-        let mut point = winit_position_to_euclid_point(position).to_f32();
+    fn handle_mouse_move_event(&self, webview: &WebView, x: f32, y: f32) {
+        let mut point = Point2D::<f32, DevicePixel>::new(x, y);
         point.y -= (self.toolbar_height() * self.hidpi_scale_factor()).0;
 
         let previous_point = self.webview_relative_mouse_point.get();
@@ -721,6 +713,64 @@ impl HeadedWindow {
         match event {
             WindowEvent::Focused(true) => state.handle_focused(window.clone()),
             WindowEvent::CloseRequested => window.schedule_close(),
+            // TODO(SDL3 windowing): no egui input is wired up yet on this branch (see
+            // `gui.rs`'s own `SdlEguiGlow` doc comment) -- so unlike the old winit-based
+            // dispatch, there's no "does egui have keyboard/mouse focus, forward there
+            // instead" check to make yet. Every event below always goes straight to the
+            // active `WebView`. Revisit once egui input exists and can plausibly claim focus
+            // (a dialog, a text field in the toolbar, ...).
+            WindowEvent::KeyDown { keycode, scancode, keymod, repeat } => {
+                let keyboard_event =
+                    keyboard_event_from_sdl(keycode, scancode, keymod, true, repeat);
+                self.handle_keyboard_input(state, &window, keyboard_event);
+            },
+            WindowEvent::KeyUp { keycode, scancode, keymod } => {
+                let keyboard_event =
+                    keyboard_event_from_sdl(keycode, scancode, keymod, false, false);
+                self.handle_keyboard_input(state, &window, keyboard_event);
+            },
+            WindowEvent::MouseMotion { x, y } => {
+                if let Some(webview) = window.active_webview() {
+                    self.handle_mouse_move_event(&webview, x, y);
+                }
+            },
+            WindowEvent::MouseButtonDown { button, .. } => {
+                if let Some(webview) = window.active_webview() {
+                    self.handle_mouse_button_event(&webview, button, true);
+                }
+            },
+            WindowEvent::MouseButtonUp { button, .. } => {
+                if let Some(webview) = window.active_webview() {
+                    self.handle_mouse_button_event(&webview, button, false);
+                }
+            },
+            // TODO(SDL3 windowing): scroll direction (whether `y` needs negating to match the
+            // DOM's own deltaY convention) is unverified — no real device to check against.
+            WindowEvent::MouseWheel { x, y } => {
+                if let Some(webview) = window.active_webview() {
+                    let delta = WheelDelta {
+                        x: (x * LINE_WIDTH) as f64,
+                        y: (y * LINE_HEIGHT) as f64,
+                        z: 0.0,
+                        mode: WheelMode::DeltaPixel,
+                    };
+                    let point = self.webview_relative_mouse_point.get();
+                    webview.notify_input_event(InputEvent::Wheel(WheelEvent::new(
+                        delta,
+                        point.into(),
+                    )));
+                }
+            },
+            WindowEvent::CursorLeft => {
+                if let Some(webview) = window.active_webview() {
+                    let webview_rect: Rect<_, _> = webview.size().into();
+                    if webview_rect.contains(self.webview_relative_mouse_point.get()) {
+                        webview.notify_input_event(InputEvent::MouseLeftViewport(
+                            MouseLeftViewportEvent::default(),
+                        ));
+                    }
+                }
+            },
             _ => {},
         }
     }
@@ -1272,15 +1322,15 @@ impl TouchEventSimulator {
     fn maybe_consume_move_button_event(
         &self,
         webview: &WebView,
-        button: MouseButton,
-        action: ElementState,
+        button: SdlMouseButton,
+        pressed: bool,
         point: DevicePoint,
     ) -> bool {
-        if button != MouseButton::Left {
+        if button != SdlMouseButton::Left {
             return false;
         }
 
-        if action == ElementState::Pressed && !self.left_mouse_button_down.get() {
+        if pressed && !self.left_mouse_button_down.get() {
             webview.notify_input_event(InputEvent::Touch(TouchEvent::new(
                 TouchEventType::Down,
                 TouchId(0),
@@ -1288,7 +1338,7 @@ impl TouchEventSimulator {
                 TouchPointerType::Touch,
             )));
             self.left_mouse_button_down.set(true);
-        } else if action == ElementState::Released {
+        } else if !pressed {
             webview.notify_input_event(InputEvent::Touch(TouchEvent::new(
                 TouchEventType::Up,
                 TouchId(0),

@@ -1523,7 +1523,7 @@ diff --git a/ports/servoshell/desktop/dialog.rs b/ports/servoshell/desktop/dialo
 diff --git a/ports/servoshell/desktop/event_loop.rs b/ports/servoshell/desktop/event_loop.rs
 --- a/ports/servoshell/desktop/event_loop.rs
 +++ b/ports/servoshell/desktop/event_loop.rs
-@@ -3,23 +3,203 @@
+@@ -3,23 +3,252 @@
   * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
  
  //! An event loop implementation that works in headless mode.
@@ -1600,19 +1600,49 @@ diff --git a/ports/servoshell/desktop/event_loop.rs b/ports/servoshell/desktop/e
 +/// This module's own stand-in for the subset of `winit::event::WindowEvent` that
 +/// `app.rs`/`headed_window.rs` actually consume — see `translate_sdl_event` for the mapping.
 +///
-+/// TODO(SDL3 windowing, real progress not completion): winit's `WindowEvent` has ~16 variants
-+/// in real use here (`grep -n "WindowEvent::" ports/servoshell/desktop/headed_window.rs`) —
-+/// mouse buttons/motion/wheel, keyboard input, IME composition, modifiers, touch, pinch
-+/// gesture, dropped files, theme/scale-factor changes. Only the handful needed to open a
-+/// window, show the boot splash, and close cleanly are ported so far. Porting the rest is
-+/// mechanical (`sdl3::event::Event` already carries equivalent data for nearly all of them —
-+/// see this module's own research notes in TODO.md) but is real, separate work.
-+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++/// TODO(SDL3 windowing, real progress not completion): touch, pinch gesture, dropped files,
++/// theme/scale-factor changes, and IME composition are not ported yet — everything else a
++/// desktop game actually needs (keyboard, mouse motion/buttons/wheel, resize, close, redraw,
++/// focus) now is. See TODO.md for the remaining list.
++#[derive(Debug, Clone, Copy, PartialEq)]
 +pub(crate) enum WindowEvent {
 +    Resized(u32, u32),
 +    CloseRequested,
 +    RedrawRequested,
 +    Focused(bool),
++    KeyDown {
++        keycode: Option<sdl3::keyboard::Keycode>,
++        scancode: Option<sdl3::keyboard::Scancode>,
++        keymod: sdl3::keyboard::Mod,
++        repeat: bool,
++    },
++    KeyUp {
++        keycode: Option<sdl3::keyboard::Keycode>,
++        scancode: Option<sdl3::keyboard::Scancode>,
++        keymod: sdl3::keyboard::Mod,
++    },
++    MouseMotion {
++        x: f32,
++        y: f32,
++    },
++    MouseButtonDown {
++        button: sdl3::mouse::MouseButton,
++        x: f32,
++        y: f32,
++    },
++    MouseButtonUp {
++        button: sdl3::mouse::MouseButton,
++        x: f32,
++        y: f32,
++    },
++    MouseWheel {
++        x: f32,
++        y: f32,
++    },
++    /// SDL3 has no separate "cursor left the window" window-subevent the way winit does —
++    /// this is synthesized in `run_sdl3_app` from `SDL_EVENT_WINDOW_MOUSE_LEAVE` (a real
++    /// `Window` sub-event, see `translate_sdl_event`).
++    CursorLeft,
 +}
 +
 +/// Translates one real (non-user) SDL3 event into this module's own `WindowEvent`, alongside
@@ -1631,9 +1661,28 @@ diff --git a/ports/servoshell/desktop/event_loop.rs b/ports/servoshell/desktop/e
 +                SdlWindowEvent::Exposed => WindowEvent::RedrawRequested,
 +                SdlWindowEvent::FocusGained => WindowEvent::Focused(true),
 +                SdlWindowEvent::FocusLost => WindowEvent::Focused(false),
++                SdlWindowEvent::MouseLeave => WindowEvent::CursorLeft,
 +                _ => return None,
 +            };
 +            Some((window_id, window_event))
++        },
++        SdlEvent::KeyDown { window_id, keycode, scancode, keymod, repeat, .. } => {
++            Some((window_id, WindowEvent::KeyDown { keycode, scancode, keymod, repeat }))
++        },
++        SdlEvent::KeyUp { window_id, keycode, scancode, keymod, .. } => {
++            Some((window_id, WindowEvent::KeyUp { keycode, scancode, keymod }))
++        },
++        SdlEvent::MouseMotion { window_id, x, y, .. } => {
++            Some((window_id, WindowEvent::MouseMotion { x, y }))
++        },
++        SdlEvent::MouseButtonDown { window_id, mouse_btn, x, y, .. } => {
++            Some((window_id, WindowEvent::MouseButtonDown { button: mouse_btn, x, y }))
++        },
++        SdlEvent::MouseButtonUp { window_id, mouse_btn, x, y, .. } => {
++            Some((window_id, WindowEvent::MouseButtonUp { button: mouse_btn, x, y }))
++        },
++        SdlEvent::MouseWheel { window_id, x, y, .. } => {
++            Some((window_id, WindowEvent::MouseWheel { x, y }))
 +        },
 +        _ => None,
 +    }
@@ -1735,7 +1784,7 @@ diff --git a/ports/servoshell/desktop/event_loop.rs b/ports/servoshell/desktop/e
  }
  
  impl From<egui_winit::accesskit_winit::Event> for AppEvent {
-@@ -29,12 +209,16 @@
+@@ -29,12 +258,16 @@
  }
  
  /// A headed or headless event loop. Headless event loops are necessary for environments without a
@@ -1756,7 +1805,7 @@ diff --git a/ports/servoshell/desktop/event_loop.rs b/ports/servoshell/desktop/e
      /// A fake event loop which contains a signalling flag used to ensure
      /// that pending events get processed in a timely fashion, and a condition
      /// variable to allow waiting on that flag changing state.
-@@ -47,51 +231,114 @@
+@@ -47,51 +280,114 @@
      }
  
      pub(crate) fn headed() -> ServoShellEventLoop {
@@ -1888,7 +1937,7 @@ diff --git a/ports/servoshell/desktop/event_loop.rs b/ports/servoshell/desktop/e
          HeadedEventLoopWaker { proxy }
      }
  }
-@@ -99,7 +346,7 @@
+@@ -99,7 +395,7 @@
  impl EventLoopWaker for HeadedEventLoopWaker {
      fn wake(&self) {
          // Kick the OS event loop awake.
@@ -1897,7 +1946,7 @@ diff --git a/ports/servoshell/desktop/event_loop.rs b/ports/servoshell/desktop/e
              warn!("Failed to wake up event loop ({}).", err);
          }
      }
-@@ -113,8 +360,8 @@
+@@ -113,8 +409,8 @@
  /// loop just loops over a condvar to simulate a real windowing system event loop.
  #[derive(Default)]
  pub(crate) struct HeadlessEventLoop {
@@ -3524,7 +3573,7 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
  
  use euclid::{Angle, Length, Point2D, Rect, Rotation3D, Scale, Size2D, UnknownUnit, Vector3D};
  use keyboard_types::ShortcutMatcher;
-@@ -29,14 +31,19 @@
+@@ -29,14 +31,20 @@
      convert_rect_to_css_pixel,
  };
  use url::Url;
@@ -3533,32 +3582,32 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
 -    ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
 -};
 -use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
-+// `PhysicalPosition`/`PhysicalSize` remain real, winit-independent-at-runtime data types
-+// used by Servo's own API (`WebView::resize`, etc.) and this file's own `inner_size` field —
-+// not tied to a live winit window/event loop, so kept as-is (see geometry.rs's own doc
-+// comment on the same point).
-+use winit::dpi::{PhysicalPosition, PhysicalSize};
-+// TODO(SDL3 windowing): `ElementState`/`KeyEvent`/`MouseButton`/`ModifiersState`/`LogicalKey`/
-+// `WinitNamedKey` are only still referenced by this file's now-unreachable pre-migration
-+// input-handling methods (`handle_keyboard_input` and friends, `XRWindowPose`'s own key
-+// handling) — kept only because deleting carefully-written logic that will need re-deriving
-+// anyway seemed worse than an unused-import warning. Drop these once that code is either
-+// ported to SDL3 input types or actually deleted.
-+use winit::event::{ElementState, KeyEvent, MouseButton, TouchPhase};
++// `PhysicalSize` remains a real, winit-independent-at-runtime data type used by Servo's own
++// API (`WebView::resize`, etc.) and this file's own `inner_size` field — not tied to a live
++// winit window/event loop, so kept as-is (see geometry.rs's own doc comment on the same point).
++use sdl3::mouse::MouseButton as SdlMouseButton;
++use winit::dpi::PhysicalSize;
++// TODO(SDL3 windowing): `ElementState`/`KeyEvent`/`ModifiersState`/`LogicalKey`/`WinitNamedKey`/
++// `TouchPhase` are only still referenced by `XRWindowPose`'s own keyboard-driven camera control
++// (WebXR, deferred together with the rest of that port — see `handle_keyboard_input`'s own
++// TODO) and `winit_phase_to_touch_event_type` (unreachable now that real touch events aren't
++// ported yet either) — kept only because deleting carefully-written logic that will need
++// re-deriving anyway seemed worse than an unused-import warning. Drop these once that code is
++// either ported to SDL3 input types or actually deleted.
++use winit::event::{ElementState, KeyEvent, TouchPhase};
  use winit::keyboard::{Key as LogicalKey, ModifiersState, NamedKey as WinitNamedKey};
 -#[cfg(target_os = "linux")]
 -use winit::platform::wayland::WindowAttributesExtWayland;
  #[cfg(any(target_os = "linux", target_os = "windows"))]
  use winit::window::Icon;
  #[cfg(target_os = "macos")]
-@@ -45,13 +52,14 @@
+@@ -45,13 +53,13 @@
      objc2_foundation::MainThreadMarker,
  };
  
 -use super::geometry::{winit_position_to_euclid_point, winit_size_to_euclid_size};
 -use super::keyutils::{CMD_OR_ALT, keyboard_event_from_winit};
-+use super::geometry::winit_position_to_euclid_point;
-+use super::keyutils::keyboard_event_from_winit;
++use super::keyutils::keyboard_event_from_sdl;
  use crate::desktop::accelerated_gl_media::setup_gl_accelerated_media;
  use crate::desktop::dialog::Dialog;
 -use crate::desktop::event_loop::AppEvent;
@@ -3792,7 +3841,7 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
              inner_size: Cell::new(inner_size),
              screen_size,
              device_pixel_ratio_override: servoshell_preferences.device_pixel_ratio_override,
-@@ -211,14 +276,84 @@
+@@ -211,24 +276,99 @@
              pending_keyboard_events: Default::default(),
              rendering_context,
              last_title: RefCell::new(String::from(INITIAL_WINDOW_TITLE)),
@@ -3806,6 +3855,8 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
  
 -    pub(crate) fn winit_window(&self) -> &winit::window::Window {
 -        &self.winit_window
+-    }
+-
 +    /// The raw SDL3 window id (`event_loop.rs`'s own `WindowId` type) — distinct from
 +    /// `PlatformWindow::id`'s `ServoShellWindowId` (this fork's own cross-platform window
 +    /// identity), named differently on purpose so `.id()` never becomes ambiguous between
@@ -3876,10 +3927,99 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
 +            return None;
 +        }
 +        Some(Instant::now() + SPLASH_ANIMATION_TICK)
++    }
++
++    /// TODO(SDL3 windowing): `XRWindowPose::handle_xr_rotation`/`handle_xr_translation`
++    /// (WebXR camera control from the keyboard) are not wired up here — they still take
++    /// winit's own `KeyEvent`/`ModifiersState`, unrelated to this SDL3-sourced event. WebXR
++    /// itself needs its own SDL3 port regardless (`desktop/webxr.rs`'s `XRWindow` already is
++    /// one, but nothing drives it yet) — deferred together, not an oversight specific to this
++    /// function.
+     fn handle_keyboard_input(
+         &self,
+         state: Rc<RunningAppState>,
+         window: &Rc<ServoShellWindow>,
+-        winit_event: KeyEvent,
++        keyboard_event: KeyboardEvent,
+     ) {
+         // First, handle servoshell key bindings that are not overridable by, or visible to, the page.
+-        let keyboard_event = keyboard_event_from_winit(&winit_event, self.modifiers_state.get());
+         if self.handle_intercepted_key_bindings(state, window, &keyboard_event) {
+             return;
+         }
+@@ -238,11 +378,6 @@
+             return;
+         };
+ 
+-        for xr_window_pose in self.xr_window_poses.borrow().iter() {
+-            xr_window_pose.handle_xr_rotation(&winit_event, self.modifiers_state.get());
+-            xr_window_pose.handle_xr_translation(&keyboard_event);
+-        }
+-
+         let id = webview.notify_input_event(InputEvent::Keyboard(keyboard_event.clone()));
+         self.pending_keyboard_events
+             .borrow_mut()
+@@ -250,12 +385,7 @@
      }
  
-     fn handle_keyboard_input(
-@@ -381,28 +516,9 @@
+     /// Helper function to handle a click
+-    fn handle_mouse_button_event(
+-        &self,
+-        webview: &WebView,
+-        button: MouseButton,
+-        action: ElementState,
+-    ) {
++    fn handle_mouse_button_event(&self, webview: &WebView, button: SdlMouseButton, pressed: bool) {
+         // `point` can be outside viewport, such as at toolbar with negative y-coordinate.
+         let point = self.webview_relative_mouse_point.get();
+         let webview_rect: Rect<_, _> = webview.size().into();
+@@ -268,25 +398,22 @@
+             .as_ref()
+             .is_some_and(|touch_event_simulator| {
+                 touch_event_simulator
+-                    .maybe_consume_move_button_event(webview, button, action, point)
++                    .maybe_consume_move_button_event(webview, button, pressed, point)
+             })
+         {
+             return;
+         }
+ 
+-        let mouse_button = match &button {
+-            MouseButton::Left => ServoMouseButton::Left,
+-            MouseButton::Right => ServoMouseButton::Right,
+-            MouseButton::Middle => ServoMouseButton::Middle,
+-            MouseButton::Back => ServoMouseButton::Back,
+-            MouseButton::Forward => ServoMouseButton::Forward,
+-            MouseButton::Other(value) => ServoMouseButton::Other(*value),
++        let mouse_button = match button {
++            SdlMouseButton::Left => ServoMouseButton::Left,
++            SdlMouseButton::Right => ServoMouseButton::Right,
++            SdlMouseButton::Middle => ServoMouseButton::Middle,
++            SdlMouseButton::X1 => ServoMouseButton::Back,
++            SdlMouseButton::X2 => ServoMouseButton::Forward,
++            SdlMouseButton::Unknown => ServoMouseButton::Other(0),
+         };
+ 
+-        let action = match action {
+-            ElementState::Pressed => MouseButtonAction::Down,
+-            ElementState::Released => MouseButtonAction::Up,
+-        };
++        let action = if pressed { MouseButtonAction::Down } else { MouseButtonAction::Up };
+ 
+         webview.notify_input_event(InputEvent::MouseButton(MouseButtonEvent::new(
+             action,
+@@ -296,8 +423,8 @@
+     }
+ 
+     /// Helper function to handle mouse move events.
+-    fn handle_mouse_move_event(&self, webview: &WebView, position: PhysicalPosition<f64>) {
+-        let mut point = winit_position_to_euclid_point(position).to_f32();
++    fn handle_mouse_move_event(&self, webview: &WebView, x: f32, y: f32) {
++        let mut point = Point2D::<f32, DevicePixel>::new(x, y);
+         point.y -= (self.toolbar_height() * self.hidpi_scale_factor()).0;
+ 
+         let previous_point = self.webview_relative_mouse_point.get();
+@@ -381,28 +508,9 @@
              .shortcut(Modifiers::CONTROL, Key::Named(NamedKey::F12), || {
                  active_webview.toggle_webrender_debugging(WebRenderDebugOption::Profiler);
              })
@@ -3911,7 +4051,7 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
              .optional_shortcut(
                  self.get_fullscreen(),
                  Modifiers::empty(),
-@@ -464,21 +580,15 @@
+@@ -464,21 +572,15 @@
          }
      }
  
@@ -3941,7 +4081,7 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
      }
  
      pub(crate) fn for_each_active_dialog(
-@@ -512,6 +622,27 @@
+@@ -512,6 +614,27 @@
              .push(dialog)
      }
  
@@ -3969,7 +4109,7 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
      fn remove_dialog(&self, webview_id: WebViewId, embedder_control_id: EmbedderControlId) {
          let mut dialogs = self.dialogs.borrow_mut();
          if let Some(dialogs) = dialogs.get_mut(&webview_id) {
-@@ -531,7 +662,20 @@
+@@ -531,7 +654,20 @@
          self.gui.borrow().toolbar_height()
      }
  
@@ -3991,7 +4131,7 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
          &self,
          state: Rc<RunningAppState>,
          window: Rc<ServoShellWindow>,
-@@ -540,247 +684,54 @@
+@@ -540,247 +676,112 @@
          // Handle resize events first, so that any subsequent redrawing draws onto a buffer of the
          // correct size.
          let mut resized = false;
@@ -4034,16 +4174,33 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
 -                .is_some_and(|webview| self.has_active_dialog_for_webview(webview.id()))
 -            {
 -                return true;
--            }
++            let still_loading = self.page_load_splash_since.get().filter(|since| {
++                !state.is_initial_page_loaded() && since.elapsed() < MAX_PAGE_LOAD_SPLASH_DURATION
++            });
++            match still_loading {
++                Some(since) => self.paint_splash(since.elapsed()),
++                None => {
++                    self.page_load_splash_since.set(None);
++                    match logging::content_load_error() {
++                        Some(message) => self.paint_content_load_error(&message),
++                        None => {
++                            let mut gui = self.gui.borrow_mut();
++                            gui.update(&state, &window, self);
++                            gui.paint(&self.sdl_window);
++                        },
++                    }
++                },
+             }
 -            // Otherwise, if the cursor is over the egui interface, forward the event.
 -            self.last_mouse_position
 -                .get()
 -                .is_none_or(|point| self.gui.borrow().is_in_egui_toolbar_rect(point))
 -        };
--
++        }
+ 
 -        // Handle the event
 -        let mut consumed = false;
--        match event {
+         match event {
 -            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
 -                // Intercept any ScaleFactorChanged events away from EguiGlow::on_window_event, so
 -                // we can use our own logic for calculating the scale factor and set egui’s
@@ -4073,7 +4230,19 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
 -            } => {
 -                window.queue_user_interface_command(UserInterfaceCommand::Forward);
 -                consumed = true;
--            },
++            WindowEvent::Focused(true) => state.handle_focused(window.clone()),
++            WindowEvent::CloseRequested => window.schedule_close(),
++            // TODO(SDL3 windowing): no egui input is wired up yet on this branch (see
++            // `gui.rs`'s own `SdlEguiGlow` doc comment) -- so unlike the old winit-based
++            // dispatch, there's no "does egui have keyboard/mouse focus, forward there
++            // instead" check to make yet. Every event below always goes straight to the
++            // active `WebView`. Revisit once egui input exists and can plausibly claim focus
++            // (a dialog, a text field in the toolbar, ...).
++            WindowEvent::KeyDown { keycode, scancode, keymod, repeat } => {
++                let keyboard_event =
++                    keyboard_event_from_sdl(keycode, scancode, keymod, true, repeat);
++                self.handle_keyboard_input(state, &window, keyboard_event);
+             },
 -            WindowEvent::MouseInput {
 -                state: ElementState::Pressed,
 -                button: MouseButton::Back,
@@ -4081,7 +4250,11 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
 -            } => {
 -                window.queue_user_interface_command(UserInterfaceCommand::Back);
 -                consumed = true;
--            },
++            WindowEvent::KeyUp { keycode, scancode, keymod } => {
++                let keyboard_event =
++                    keyboard_event_from_sdl(keycode, scancode, keymod, false, false);
++                self.handle_keyboard_input(state, &window, keyboard_event);
+             },
 -            WindowEvent::MouseWheel { .. } | WindowEvent::MouseInput { .. }
 -                if !should_forward_mouse_event_to_egui() =>
 -            {
@@ -4099,11 +4272,18 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
 -
 -                if let WindowEvent::Focused(true) = event {
 -                    state.handle_focused(window.clone());
--                }
++            WindowEvent::MouseMotion { x, y } => {
++                if let Some(webview) = window.active_webview() {
++                    self.handle_mouse_move_event(&webview, x, y);
+                 }
 -
 -                if response.repaint && *event != WindowEvent::RedrawRequested {
 -                    self.winit_window.request_redraw();
--                }
++            },
++            WindowEvent::MouseButtonDown { button, .. } => {
++                if let Some(webview) = window.active_webview() {
++                    self.handle_mouse_button_event(&webview, button, true);
+                 }
 -
 -                // All CursorMoved events, even when forwarded to the WebView, are also
 -                // forwarded to Gui (above). This is because egui needs to know when
@@ -4117,8 +4297,12 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
 -                    // TODO how do we handle the tab key? (see doc for consumed)
 -                    // Note that servo doesn’t yet support tabbing through links and inputs
 -                    consumed = response.consumed;
--                }
--            },
++            },
++            WindowEvent::MouseButtonUp { button, .. } => {
++                if let Some(webview) = window.active_webview() {
++                    self.handle_mouse_button_event(&webview, button, false);
+                 }
+             },
 -        }
 -
 -        if !consumed && let Some(webview) = window.active_webview() {
@@ -4152,34 +4336,28 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
 -                        ),
 -                        MouseScrollDelta::PixelDelta(delta) => {
 -                            (delta.x, delta.y, WheelMode::DeltaPixel)
-+            let still_loading = self.page_load_splash_since.get().filter(|since| {
-+                !state.is_initial_page_loaded() && since.elapsed() < MAX_PAGE_LOAD_SPLASH_DURATION
-+            });
-+            match still_loading {
-+                Some(since) => self.paint_splash(since.elapsed()),
-+                None => {
-+                    self.page_load_splash_since.set(None);
-+                    match logging::content_load_error() {
-+                        Some(message) => self.paint_content_load_error(&message),
-+                        None => {
-+                            let mut gui = self.gui.borrow_mut();
-+                            gui.update(&state, &window, self);
-+                            gui.paint(&self.sdl_window);
-                         },
+-                        },
 -                    };
 -
 -                    // Create wheel event before snapping to the major axis of movement
--                    let delta = WheelDelta {
++            // TODO(SDL3 windowing): scroll direction (whether `y` needs negating to match the
++            // DOM's own deltaY convention) is unverified — no real device to check against.
++            WindowEvent::MouseWheel { x, y } => {
++                if let Some(webview) = window.active_webview() {
+                     let delta = WheelDelta {
 -                        x: delta_x,
 -                        y: delta_y,
--                        z: 0.0,
++                        x: (x * LINE_WIDTH) as f64,
++                        y: (y * LINE_HEIGHT) as f64,
+                         z: 0.0,
 -                        mode,
--                    };
--                    let point = self.webview_relative_mouse_point.get();
--                    webview.notify_input_event(InputEvent::Wheel(WheelEvent::new(
--                        delta,
--                        point.into(),
--                    )));
++                        mode: WheelMode::DeltaPixel,
+                     };
+                     let point = self.webview_relative_mouse_point.get();
+                     webview.notify_input_event(InputEvent::Wheel(WheelEvent::new(
+                         delta,
+                         point.into(),
+                     )));
 -                },
 -                WindowEvent::Touch(touch) => {
 -                    webview.notify_input_event(InputEvent::Touch(TouchEvent::new(
@@ -4252,17 +4430,23 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
 -                            "Failed to create URL for dropped file ({})",
 -                            dropped_file.display()
 -                        );
++                }
++            },
++            WindowEvent::CursorLeft => {
++                if let Some(webview) = window.active_webview() {
++                    let webview_rect: Rect<_, _> = webview.size().into();
++                    if webview_rect.contains(self.webview_relative_mouse_point.get()) {
++                        webview.notify_input_event(InputEvent::MouseLeftViewport(
++                            MouseLeftViewportEvent::default(),
++                        ));
                      }
-                 },
+-                },
 -                _ => {},
-             }
-         }
-+
-+        match event {
-+            WindowEvent::Focused(true) => state.handle_focused(window.clone()),
-+            WindowEvent::CloseRequested => window.schedule_close(),
+-            }
++                }
++            },
 +            _ => {},
-+        }
+         }
      }
  
 -    pub(crate) fn handle_winit_app_event(&self, state: Rc<RunningAppState>, app_event: AppEvent) {
@@ -4276,7 +4460,7 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
          if let AppEvent::Accessibility(ref event) = app_event {
              match &event.window_event {
                  egui_winit::accesskit_winit::WindowEvent::InitialTreeRequested => {
-@@ -795,14 +746,6 @@
+@@ -795,14 +796,6 @@
                      state.set_accessibility_active(false);
                  },
              }
@@ -4291,7 +4475,7 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
          }
      }
  }
-@@ -822,9 +765,15 @@
+@@ -822,9 +815,15 @@
          // See https://github.com/rust-windowing/winit/issues/2494
          let available_screen_size = screen_size - toolbar_size;
  
@@ -4309,7 +4493,7 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
          );
  
          ScreenGeometry {
-@@ -835,7 +784,7 @@
+@@ -835,7 +834,7 @@
      }
  
      fn device_hidpi_scale_factor(&self) -> Scale<f32, DeviceIndependentPixel, DevicePixel> {
@@ -4318,7 +4502,7 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
      }
  
      fn hidpi_scale_factor(&self) -> Scale<f32, DeviceIndependentPixel, DevicePixel> {
-@@ -845,17 +794,24 @@
+@@ -845,17 +844,24 @@
      }
  
      fn update_user_interface_state(&self, _: &RunningAppState, window: &ServoShellWindow) -> bool {
@@ -4353,7 +4537,7 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
              *self.last_title.borrow_mut() = title;
          }
  
-@@ -863,19 +819,18 @@
+@@ -863,19 +869,18 @@
      }
  
      fn request_repaint(&self, _: &ServoShellWindow) {
@@ -4382,7 +4566,7 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
  
          let screen_size = (self.screen_size.to_f32() * self.hidpi_scale_factor()).to_i32();
          let new_outer_size =
-@@ -888,37 +843,33 @@
+@@ -888,37 +893,33 @@
          }
  
          let new_inner_size = new_outer_size - decoration_size;
@@ -4435,7 +4619,7 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
          convert_rect_to_css_pixel(
              DeviceIntRect::from_origin_and_size(origin, outer_size),
              scale,
-@@ -926,22 +877,20 @@
+@@ -926,22 +927,20 @@
      }
  
      fn set_position(&self, point: DeviceIntPoint) {
@@ -4468,7 +4652,7 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
          }
          self.fullscreen.set(state);
      }
-@@ -950,69 +899,28 @@
+@@ -950,69 +949,28 @@
          self.fullscreen.get()
      }
  
@@ -4553,7 +4737,7 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
              .expect("Failed to create window.");
  
          let pose = Rc::new(XRWindowPose {
-@@ -1020,22 +928,28 @@
+@@ -1020,22 +978,28 @@
              xr_translation: Cell::new(Vector3D::zero()),
          });
          self.xr_window_poses.borrow_mut().push(pose.clone());
@@ -4587,7 +4771,7 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
      }
  
      /// Handle servoshell key bindings that may have been prevented by the page in the active webview.
-@@ -1064,19 +978,15 @@
+@@ -1064,19 +1028,15 @@
              })
              .shortcut(CMD_OR_CONTROL, '0', || {
                  webview.set_page_zoom(1.0);
@@ -4609,7 +4793,7 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
      }
  
      fn show_embedder_control(&self, webview_id: WebViewId, embedder_control: EmbedderControl) {
-@@ -1110,8 +1020,10 @@
+@@ -1110,8 +1070,10 @@
                  self.add_dialog(webview_id, Dialog::new_simple_dialog(simple_dialog));
              },
              EmbedderControl::ContextMenu(prompt) => {
@@ -4622,7 +4806,7 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
              },
          }
      }
-@@ -1119,7 +1031,8 @@
+@@ -1119,7 +1081,8 @@
      fn hide_embedder_control(&self, webview_id: WebViewId, embedder_control_id: EmbedderControlId) {
          if self.visible_input_method.get() == Some(embedder_control_id) {
              self.visible_input_method.set(None);
@@ -4632,7 +4816,7 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
              return;
          }
          self.remove_dialog(webview_id, embedder_control_id);
-@@ -1171,6 +1084,32 @@
+@@ -1171,6 +1134,32 @@
      }
  }
  
@@ -4665,7 +4849,7 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
  fn winit_phase_to_touch_event_type(phase: TouchPhase) -> TouchEventType {
      match phase {
          TouchPhase::Started => TouchEventType::Down,
-@@ -1180,6 +1119,21 @@
+@@ -1180,6 +1169,21 @@
      }
  }
  
@@ -4687,7 +4871,7 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
  #[cfg(any(target_os = "linux", target_os = "windows"))]
  fn load_icon(icon_bytes: &[u8]) -> Icon {
      let (icon_rgba, icon_width, icon_height) = {
-@@ -1197,7 +1151,7 @@
+@@ -1197,7 +1201,7 @@
  
  #[cfg(feature = "webxr")]
  struct XRWindow {
@@ -4696,7 +4880,7 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
      pose: Rc<XRWindowPose>,
  }
  
-@@ -1213,13 +1167,13 @@
+@@ -1213,13 +1217,13 @@
          device: &mut surfman::Device,
          _context: &mut surfman::Context,
      ) -> servo::webxr::GlWindowRenderTarget {
@@ -4714,7 +4898,7 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
          let native_widget = device
              .connection()
              .create_native_widget_from_window_handle(window_handle, size)
-@@ -1251,7 +1205,7 @@
+@@ -1251,7 +1255,7 @@
      }
  
      fn display_handle(&self) -> raw_window_handle::DisplayHandle<'_> {
@@ -4723,6 +4907,35 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
              .display_handle()
              .expect("Every window should have a display handle")
      }
+@@ -1318,15 +1322,15 @@
+     fn maybe_consume_move_button_event(
+         &self,
+         webview: &WebView,
+-        button: MouseButton,
+-        action: ElementState,
++        button: SdlMouseButton,
++        pressed: bool,
+         point: DevicePoint,
+     ) -> bool {
+-        if button != MouseButton::Left {
++        if button != SdlMouseButton::Left {
+             return false;
+         }
+ 
+-        if action == ElementState::Pressed && !self.left_mouse_button_down.get() {
++        if pressed && !self.left_mouse_button_down.get() {
+             webview.notify_input_event(InputEvent::Touch(TouchEvent::new(
+                 TouchEventType::Down,
+                 TouchId(0),
+@@ -1334,7 +1338,7 @@
+                 TouchPointerType::Touch,
+             )));
+             self.left_mouse_button_down.set(true);
+-        } else if action == ElementState::Released {
++        } else if !pressed {
+             webview.notify_input_event(InputEvent::Touch(TouchEvent::new(
+                 TouchEventType::Up,
+                 TouchId(0),
 diff --git a/ports/servoshell/desktop/headless_window.rs b/ports/servoshell/desktop/headless_window.rs
 --- a/ports/servoshell/desktop/headless_window.rs
 +++ b/ports/servoshell/desktop/headless_window.rs
