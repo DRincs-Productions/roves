@@ -7659,3 +7659,41 @@ type, trait bound, and method signature above was verified by hand against the v
 `egui_glow` crates' own source, not by an actual build. A real `test.yml` run against this branch
 is the first genuine compiler feedback this change will get — expect real errors on the first
 attempt; this entry describes intent and design, not a confirmed-working result.
+
+---
+
+## 2026-09-18 — SDL3 windowing: first genuinely green compile (Linux + Windows)
+
+**Files:** `patches/servo-v0.5.0/0014-root-workspace.patch`, `ports/servoshell/desktop/
+gamepad.rs`, `ports/servoshell/desktop/app.rs`, `ports/servoshell/running_app_state.rs`,
+`ports/servoshell/window.rs`.
+
+**Two real CI rounds after the entry above, `desktop/app.rs`/`event_loop.rs`/`headed_window.rs`/
+`gui.rs` (as described there) compile cleanly on Linux and Windows** — confirmed by a real
+`test.yml` run, not by hand-verification. Round 1 (10 compiler errors, all fixed, see git
+history) and round 2 (down to just `no method named window_handle/display_handle found for
+struct sdl3::video::Window`, persisting despite `raw-window-handle` genuinely being a correctly
+resolved feature in this repo's own `Cargo.lock`/`cargo metadata` output) led to the real root
+cause: **`patches/servo-v0.5.0/0014-root-workspace.patch` — the patch that actually carries the
+root `Cargo.toml` into `test.yml`'s pristine-download-plus-patches reconstruction, a *separate*
+file from `0001-desktop-shell-core.patch` — had never been regenerated after the
+`raw-window-handle` feature was added to `Cargo.toml` earlier.** CI's reconstructed manifest kept
+requesting `sdl3` with only `build-from-source-static`, so the feature genuinely never activated
+in the environment that mattered, no matter how correct the committed `Cargo.lock` was. A
+worthwhile lesson for next time: this repo's local `Cargo.toml`/`Cargo.lock` state is not what CI
+builds against at all — only `patches/servo-v0.5.0/*.patch` is, and every root-level dependency
+change needs its *own* patch regenerated (`0014` for `Cargo.toml`, not `0001`, which only covers
+`ports/servoshell/*`).
+
+**Also re-disabled gamepad on macOS on this branch** (mirroring `main`'s own 2026-09-17/18 revert
+— see that entry for the full story: the narrower IOKit-only fix was confirmed via a real 6-hour
+CI hang *not* to work, and was reverted on `main`). This branch had inherited the IOKit-only
+version from before that revert happened on `main`; left as-is, it would have wasted another full
+6-hour CI timeout on macOS for a hang already known and unrelated to the SDL3 windowing work
+itself. Re-apply once (if) the gamepad-on-macOS problem gets a real fix.
+
+**Not yet known: whether macOS compiles too** — the CI round that found the `0014` fix already
+had a macOS job running against the *previous* (IOKit-fix-still-present) commit, which will very
+likely also hit the same hang this entry's second fix just avoided for future runs; that
+specific run's macOS result is therefore not meaningful and wasn't waited on. The next full run
+(with both fixes in place) is the one to check for a real macOS compile signal.

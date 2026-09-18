@@ -29,7 +29,7 @@ use crate::desktop::tracing::trace_winit_event;
 use crate::parser::get_default_url;
 use crate::prefs::ServoShellPreferences;
 use crate::running_app_state::RunningAppState;
-#[cfg(feature = "gamepad")]
+#[cfg(all(feature = "gamepad", not(target_os = "macos")))]
 use crate::running_app_state::ServoshellGamepadDelegate;
 
 /// Intercepts `<a download>` clicks on `blob:`/`data:` URLs (a game's save export, e.g.
@@ -434,7 +434,7 @@ impl App {
             self.preferences.clone(),
             // Headed-only, same as everything else keyed off `event_loop_proxy` here — no
             // window to receive gamepad input in headless mode.
-            #[cfg(feature = "gamepad")]
+            #[cfg(all(feature = "gamepad", not(target_os = "macos")))]
             self.event_loop_proxy
                 .as_ref()
                 .map(|_| ServoshellGamepadDelegate::new())
@@ -522,7 +522,7 @@ impl App {
                 // GilRs-backed implementation (its own dedicated background thread, woken
                 // independently of winit's control flow), this has to be driven from here —
                 // `set_running_control_flow` below is what keeps this tick recurring.
-                #[cfg(feature = "gamepad")]
+                #[cfg(all(feature = "gamepad", not(target_os = "macos")))]
                 if let Some(gamepad_delegate) = state.gamepad_delegate() {
                     gamepad_delegate.poll(state);
                 }
@@ -721,7 +721,7 @@ fn set_running_control_flow(event_loop: &ActiveEventLoop, state: &RunningAppStat
                 .splash_animation_wake_deadline(state)
         })
         .min();
-    #[cfg(feature = "gamepad")]
+    #[cfg(all(feature = "gamepad", not(target_os = "macos")))]
     if state.gamepad_delegate().is_some() {
         let gamepad_deadline = Instant::now() + crate::desktop::gamepad::GAMEPAD_POLL_INTERVAL;
         next_wake = Some(next_wake.map_or(gamepad_deadline, |deadline| deadline.min(gamepad_deadline)));

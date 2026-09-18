@@ -110,7 +110,7 @@ impl ServoShellWindow {
                 .user_content_manager(state.user_content_manager.clone())
                 .delegate(state.clone());
 
-        #[cfg(all(feature = "gamepad", not(any(target_os = "android", target_env = "ohos"))))]
+        #[cfg(all(feature = "gamepad", not(any(target_os = "android", target_env = "ohos", target_os = "macos"))))]
         if let Some(gamepad_delegate) = state.gamepad_delegate() {
             webview_builder = webview_builder.gamepad_delegate(gamepad_delegate);
         }

@@ -72,21 +72,6 @@ impl ServoshellGamepadDelegate {
     }
 
     fn init_sdl() -> Option<SdlGamepadState> {
-        // macOS only: SDL has two independent gamepad backends there -- the classic one
-        // (`SDL_HINT_JOYSTICK_IOKIT`), which opens devices directly via `IOHIDManager`, and a
-        // newer one (`SDL_HINT_JOYSTICK_MFI`, on by default, left untouched here) built on
-        // Apple's public GameController framework. `IOHIDManager` device access is gated by
-        // the "Input Monitoring" TCC permission, and on a headless CI runner (no logged-in
-        // session for TCC to prompt against) requesting it hangs `sdl3::init().gamepad()`
-        // indefinitely instead of failing fast -- confirmed by this hanging for 100+ minutes
-        // on GitHub Actions' macOS runners (see CUSTOMIZATIONS.md's SDL3 gamepad entry).
-        // Disabling just the IOKit backend avoids that TCC-gated codepath entirely; MFI alone
-        // still covers every common modern gamepad (Xbox/PlayStation/Switch Pro and other
-        // MFi-compliant controllers) without ever touching `IOHIDManager`, so real macOS
-        // players keep working gamepad support instead of losing it outright.
-        #[cfg(target_os = "macos")]
-        sdl3::hint::set("SDL_JOYSTICK_IOKIT", "0");
-
         let sdl_context = match sdl3::init() {
             Ok(context) => context,
             Err(error) => {

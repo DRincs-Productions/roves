@@ -172,6 +172,15 @@ compilatore ancora ottenuta al momento di scrivere questa nota (questa macchina 
 pristine fresca, ma questo è tutto ciò che è stato verificato finora; il primo run reale di
 `test.yml` su questo branch darà il primo riscontro vero del compilatore.
 
+**Aggiornamento 2026-09-18 — primo compile verde reale (Linux + Windows), confermato via CI**,
+dopo due round di errori reali diagnosticati e corretti (vedi CUSTOMIZATIONS.md per il dettaglio
+completo, inclusa la causa radice del secondo round: `0014-root-workspace.patch`, non
+`0001-desktop-shell-core.patch`, è ciò che porta il `Cargo.toml` di root dentro la ricostruzione
+pristine+patch di `test.yml` — dimenticato di rigenerare dopo aver aggiunto la feature
+`raw-window-handle`, non un bug di Cargo). macOS non ancora confermato — il gamepad è stato
+ridisattivato su questo branch anche (allineato al revert fatto su `main` lo stesso giorno) per
+non sprecare altre 6 ore di CI sullo stesso hang non ancora risolto.
+
 - [x] **Finestra + event loop**: sostituito `winit::event_loop`/`winit::window` con SDL3 in
   `desktop/app.rs`/`desktop/event_loop.rs`/`desktop/headed_window.rs` — creazione finestra e
   loop eventi centrale fatti; **traduzione eventi ancora parziale** (solo Resized/
