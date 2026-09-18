@@ -1,8 +1,7 @@
 diff --git a/Cargo.toml b/Cargo.toml
-index 19d4caa..abe1c78 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
-@@ -5,8 +5,7 @@ members = [
+@@ -5,8 +5,7 @@
      "components/xpath",
      "ffi/capi",
      "ports/servoshell",
@@ -12,7 +11,7 @@ index 19d4caa..abe1c78 100644
  ]
  default-members = ["ports/servoshell"]
  exclude = [".cargo", "support/crown"]
-@@ -79,10 +78,10 @@ dwrote = "0.11.5"
+@@ -79,10 +78,10 @@
  ecdsa = "0.17"
  ed25519-dalek = { version = "3.0", features = ["alloc", "pkcs8", "rand_core", "zeroize"] }
  ed448-goldilocks = "=0.14.0-pre.15"
@@ -27,7 +26,7 @@ index 19d4caa..abe1c78 100644
  elliptic-curve = { version = "0.14", features = ["pkcs8"] }
  encoding_rs = { version = "0.8", features = ["serde"] }
  env_filter = "0.1.4"
-@@ -99,7 +98,6 @@ futures-core = { version = "0.3", default-features = false }
+@@ -99,7 +98,6 @@
  futures-intrusive = "0.5"
  futures-util = { version = "0.3", default-features = false }
  gaol = "0.2.1"
@@ -35,7 +34,7 @@ index 19d4caa..abe1c78 100644
  gleam = "0.15"
  glib = "0.22"
  glib-sys = "0.22"
-@@ -141,7 +139,7 @@ inventory = "0.3.24"
+@@ -141,7 +139,7 @@
  ipc-channel = "0.22"
  itertools = "0.15"
  jni = "0.22"
@@ -44,7 +43,7 @@ index 19d4caa..abe1c78 100644
  k12 = "0.5"
  keyboard-types = { version = "0.8.3", features = ["serde", "webdriver"] }
  kurbo = { version = "0.13.1", features = ["euclid"] }
-@@ -155,7 +153,7 @@ mime = "0.3.13"
+@@ -155,7 +153,7 @@
  mime_guess = "2.0.5"
  ml-dsa = { version = "0.1", features = ["zeroize"] }
  ml-kem = { version = "0.3", features = ["getrandom", "pkcs8", "zeroize"] }
@@ -53,7 +52,7 @@ index 19d4caa..abe1c78 100644
  napi-derive-ohos = "1.2.0"
  napi-ohos = "1.2.0"
  nix = "0.30"
-@@ -216,6 +214,13 @@ rustc-hash = "2.1.2"
+@@ -216,6 +214,18 @@
  rustls = { version = "0.23", default-features = false, features = ["logging", "std", "tls12"] }
  rustls-pki-types = "1.14"
  rustls-platform-verifier = "0.7.0"
@@ -63,11 +62,16 @@ index 19d4caa..abe1c78 100644
 +# self-contained/versioned by Roves, the same reasoning `docs/DEPENDENCY_REVIEW.md` already
 +# applies to the rest of the embedded engine, and avoids a second native-installer saga on top
 +# of GStreamer's (see CUSTOMIZATIONS.md).
-+sdl3 = { version = "0.20", default-features = false, features = ["build-from-source-static"] }
++# `raw-window-handle`: lets `sdl3::video::Window` implement `HasWindowHandle`/`HasDisplayHandle`
++# (confirmed real, per-platform implementations in the crate's own source, not just a
++# feature-flag guess) -- `surfman`'s GL context creation needs exactly this trait, the same way
++# it currently gets it from `winit::window::Window`. Part of the SDL3 windowing/event-loop
++# migration (see TODO.md) -- unused until `headed_window.rs` actually switches its window type.
++sdl3 = { version = "0.20", default-features = false, features = ["build-from-source-static", "raw-window-handle"] }
  sea-query = { version = "1.0.1", default-features = false, features = ["backend-sqlite", "derive"] }
  sea-query-rusqlite = "0.8.0"
  selectors = { version = "0.40" }
-@@ -246,11 +251,12 @@ swapper = "0.1"
+@@ -246,11 +256,12 @@
  syn = { version = "2", default-features = false, features = ["clone-impls", "derive", "parsing"] }
  synstructure = "0.13"
  sys-locale = "0.3"
@@ -82,7 +86,7 @@ index 19d4caa..abe1c78 100644
  time = { package = "time", version = "0.3", features = ["large-dates", "local-offset", "serde"] }
  tokio = "1"
  tokio-rustls = { version = "0.26", default-features = false, features = ["logging"] }
-@@ -260,6 +266,7 @@ tower = { version = "0.5", default-features = false, features = ["util"] }
+@@ -260,6 +271,7 @@
  tracing = "0.1.44"
  tracing-perfetto = "0.1.5"
  tracing-subscriber = "0.3.23"
