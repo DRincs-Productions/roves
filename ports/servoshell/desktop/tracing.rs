@@ -56,6 +56,13 @@ mod from_sdl3 {
                 Self::CloseRequested => target!("WindowEvent(CloseRequested)"),
                 Self::RedrawRequested => target!("RedrawRequested"),
                 Self::Focused(..) => target!("WindowEvent(Focused)"),
+                Self::KeyDown { .. } => target!("WindowEvent(KeyDown)"),
+                Self::KeyUp { .. } => target!("WindowEvent(KeyUp)"),
+                Self::MouseMotion { .. } => target!("WindowEvent(MouseMotion)"),
+                Self::MouseButtonDown { .. } => target!("WindowEvent(MouseButtonDown)"),
+                Self::MouseButtonUp { .. } => target!("WindowEvent(MouseButtonUp)"),
+                Self::MouseWheel { .. } => target!("WindowEvent(MouseWheel)"),
+                Self::CursorLeft => target!("WindowEvent(CursorLeft)"),
             }
         }
     }

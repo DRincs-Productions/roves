@@ -7710,3 +7710,8 @@ input variants. Replaced the catch-all with explicit no-op arms for `Resized`,
 loss has no Servo-side action yet. This makes future translated SDL3 events fail loudly until
 their dispatch is considered, while unblocking the same build error seen on all three desktop
 platforms in Actions run 35394065037.
+
+The follow-up compiler pass exposed the same exhaustiveness requirement in
+`desktop/tracing.rs`'s log-target mapping. Added stable SDL3-specific targets for every new
+keyboard and mouse variant; this keeps event tracing useful instead of hiding the variants behind
+a wildcard.

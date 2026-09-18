@@ -5158,7 +5158,7 @@ diff --git a/ports/servoshell/desktop/tracing.rs b/ports/servoshell/desktop/trac
  
      macro_rules! target {
          ($($name:literal)+) => {
-@@ -39,66 +35,27 @@
+@@ -39,66 +35,34 @@
          };
      }
  
@@ -5234,6 +5234,13 @@ diff --git a/ports/servoshell/desktop/tracing.rs b/ports/servoshell/desktop/trac
 +                Self::CloseRequested => target!("WindowEvent(CloseRequested)"),
                  Self::RedrawRequested => target!("RedrawRequested"),
 +                Self::Focused(..) => target!("WindowEvent(Focused)"),
++                Self::KeyDown { .. } => target!("WindowEvent(KeyDown)"),
++                Self::KeyUp { .. } => target!("WindowEvent(KeyUp)"),
++                Self::MouseMotion { .. } => target!("WindowEvent(MouseMotion)"),
++                Self::MouseButtonDown { .. } => target!("WindowEvent(MouseButtonDown)"),
++                Self::MouseButtonUp { .. } => target!("WindowEvent(MouseButtonUp)"),
++                Self::MouseWheel { .. } => target!("WindowEvent(MouseWheel)"),
++                Self::CursorLeft => target!("WindowEvent(CursorLeft)"),
              }
          }
      }
