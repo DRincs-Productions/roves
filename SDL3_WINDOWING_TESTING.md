@@ -43,8 +43,8 @@ gap funzionali reali:
 - **Touch**: portato da SDL3 a Servo con ID stabili; richiede prova hardware multi-touch.
 - **Gesture/pinch**: non portati.
 - **File drop**: collegato da SDL3 al caricamento del file URL; richiede ancora prova hardware.
-- **IME** (composizione testo per cinese/giapponese/coreano e simili): non portato — vedi
-  `headed_window.rs`'s `show_ime`, ora uno stub vuoto.
+- **IME**: start/stop, area candidati, pre-edit e commit sono portati; composizione CJK e dead
+  key richiedono verifica hardware.
 - **AccessKit/accessibilità**: rimosso interamente insieme a `egui_winit` — nessun bridge
   sostitutivo scritto ancora (c'è però una roadmap concreta in `TODO.md`, non un buco nero).
 - **Icona finestra/taskbar**: non portata (funzione minore, ma reale).

@@ -69,8 +69,8 @@ impl ActiveEventLoop {
 /// This module's own stand-in for the subset of `winit::event::WindowEvent` that
 /// `app.rs`/`headed_window.rs` actually consume — see `translate_sdl_event` for the mapping.
 ///
-/// TODO(SDL3 windowing, real progress not completion): pinch gesture,
-/// theme/scale-factor changes, and IME composition are not ported yet — everything else a
+/// TODO(SDL3 windowing, real progress not completion): pinch gesture and
+/// theme/scale-factor changes are not ported yet — everything else a
 /// desktop game actually needs (keyboard, mouse motion/buttons/wheel, resize, close, redraw,
 /// focus) now is. See TODO.md for the remaining list.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -131,6 +131,8 @@ pub(crate) enum WindowEvent {
         x: f32,
         y: f32,
     },
+    ImePreedit(String),
+    ImeCommit(String),
 }
 
 /// Translates one real (non-user) SDL3 event into this module's own `WindowEvent`, alongside
@@ -159,6 +161,12 @@ fn translate_sdl_event(event: sdl3::event::Event) -> Option<(WindowId, WindowEve
         },
         SdlEvent::KeyUp { window_id, keycode, scancode, keymod, .. } => {
             Some((window_id, WindowEvent::KeyUp { keycode, scancode, keymod }))
+        },
+        SdlEvent::TextEditing { window_id, text, .. } => {
+            Some((window_id, WindowEvent::ImePreedit(text)))
+        },
+        SdlEvent::TextInput { window_id, text, .. } => {
+            Some((window_id, WindowEvent::ImeCommit(text)))
         },
         SdlEvent::MouseMotion { window_id, x, y, .. } => {
             Some((window_id, WindowEvent::MouseMotion { x, y }))

@@ -7794,3 +7794,17 @@ toolbar offset before Servo receives a touch input event. SDL uses 64-bit finger
 Servo exposes 32-bit opaque touch ids, so the desktop window keeps an active-id map instead of
 silently truncating values; mappings are released on up/cancel. The gate requires all four SDL
 finger variants. Android and OpenHarmony retain their independent native input paths.
+
+
+## 2026-09-19 — SDL3 desktop text input and IME composition
+
+**Files:** `ports/servoshell/desktop/{event_loop.rs,headed_window.rs,tracing.rs}`,
+`patches/servo-v0.5.0/0021-sdl3-ime.patch`, `support/check_sdl3_windowing_contracts.py`,
+`SDL3_MIGRATION_STATUS.md`, and `SDL3_WINDOWING_TESTING.md`.
+
+The desktop input-method control now starts and stops SDL3 text input and supplies the editable
+rectangle used to place the platform candidate UI. SDL `TextEditing` and `TextInput` events are
+routed as Servo composition update/commit events; because SDL has no separate start event, the
+window synthesizes exactly one composition start before a pre-edit or direct commit. Programmatic
+hide resets the state without reporting a user dismissal. Hardware verification remains required
+for CJK candidate UI and dead keys. Android and OpenHarmony input implementations are unchanged.

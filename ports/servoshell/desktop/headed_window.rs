@@ -113,6 +113,8 @@ pub struct HeadedWindow {
     /// `&ActiveEventLoop` handle — SDL3 has no push-based redraw-request event of its own (see
     /// `request_redraw`, and `event_loop.rs`'s own doc comment on that `AppEvent` variant).
     event_loop_proxy: EventLoopProxy,
+    /// SDL3 text-input controller for the video subsystem that owns `sdl_window`.
+    text_input: sdl3::keyboard::TextInputUtil,
     /// The last title set on this window. We need to store this value here, as `winit::Window::title`
     /// is not supported very many platforms.
     last_title: RefCell<String>,
@@ -125,6 +127,8 @@ pub struct HeadedWindow {
     /// The [`EmbedderControlId`] of the currently showing [`InputMethod`] interfaces,
     /// if one is showing.
     visible_input_method: Cell<Option<EmbedderControlId>>,
+    /// Whether a synthetic Servo composition Start has been emitted for the current SDL IME.
+    ime_composing: Cell<bool>,
     /// The position of the mouse cursor after the most recent `MouseMove` event.
     last_mouse_position: Cell<Option<Point2D<f32, DeviceIndependentPixel>>>,
     /// Stable Servo identifiers for SDL3's 64-bit finger ids. Keeping an explicit map avoids
@@ -252,6 +256,7 @@ impl HeadedWindow {
             gui,
             sdl_window,
             event_loop_proxy,
+            text_input: event_loop.video().text_input(),
             webview_relative_mouse_point: Cell::new(Point2D::zero()),
             fullscreen: Cell::new(servoshell_preferences.start_fullscreen),
             config_dir: servoshell_preferences.config_dir.clone(),
@@ -269,6 +274,7 @@ impl HeadedWindow {
             window_title_override: servoshell_preferences.window_title_override.clone(),
             dialogs: Default::default(),
             visible_input_method: Default::default(),
+            ime_composing: Cell::new(false),
             last_mouse_position: Default::default(),
             active_touch_ids: Default::default(),
             next_touch_id: Cell::new(0),
@@ -607,8 +613,19 @@ impl HeadedWindow {
     /// not appear right at the text caret) — `visible_input_method` bookkeeping (used by
     /// `WindowEvent::Ime(Disabled)` handling, itself not ported yet either) is kept for when
     /// that's ported.
-    fn show_ime(&self, control_id: EmbedderControlId, _input_method: InputMethodControl) {
+    fn show_ime(&self, control_id: EmbedderControlId, input_method: InputMethodControl) {
         self.visible_input_method.set(Some(control_id));
+        self.ime_composing.set(false);
+
+        let position = input_method.position();
+        let rect = sdl3::rect::Rect::new(
+            position.min.x,
+            position.min.y + self.toolbar_height().0 as i32,
+            (position.max.x - position.min.x).max(1) as u32,
+            (position.max.y - position.min.y).max(1) as u32,
+        );
+        self.text_input.set_rect(&self.sdl_window, rect, 0);
+        self.text_input.start(&self.sdl_window);
     }
 
     pub(crate) fn for_each_active_dialog(
@@ -756,6 +773,42 @@ impl HeadedWindow {
                 let keyboard_event =
                     keyboard_event_from_sdl(keycode, scancode, keymod, false, false);
                 self.handle_keyboard_input(state, &window, keyboard_event);
+            },
+            WindowEvent::ImePreedit(text) => {
+                if let Some(webview) = window.active_webview() {
+                    if !self.ime_composing.replace(true) {
+                        webview.notify_input_event(InputEvent::Ime(ImeEvent::Composition(
+                            servo::CompositionEvent {
+                                state: servo::CompositionState::Start,
+                                data: String::new(),
+                            },
+                        )));
+                    }
+                    webview.notify_input_event(InputEvent::Ime(ImeEvent::Composition(
+                        servo::CompositionEvent {
+                            state: servo::CompositionState::Update,
+                            data: text,
+                        },
+                    )));
+                }
+            },
+            WindowEvent::ImeCommit(text) => {
+                if let Some(webview) = window.active_webview() {
+                    if !self.ime_composing.replace(false) {
+                        webview.notify_input_event(InputEvent::Ime(ImeEvent::Composition(
+                            servo::CompositionEvent {
+                                state: servo::CompositionState::Start,
+                                data: String::new(),
+                            },
+                        )));
+                    }
+                    webview.notify_input_event(InputEvent::Ime(ImeEvent::Composition(
+                        servo::CompositionEvent {
+                            state: servo::CompositionState::End,
+                            data: text,
+                        },
+                    )));
+                }
             },
             WindowEvent::MouseMotion { x, y } => {
                 if let Some(webview) = window.active_webview() {
@@ -1107,8 +1160,8 @@ impl PlatformWindow for HeadedWindow {
     fn hide_embedder_control(&self, webview_id: WebViewId, embedder_control_id: EmbedderControlId) {
         if self.visible_input_method.get() == Some(embedder_control_id) {
             self.visible_input_method.set(None);
-            // TODO(SDL3 windowing): see `show_ime`'s own TODO -- disabling IME here isn't
-            // ported yet either (`SDL_StopTextInput`, not yet wired up).
+            self.ime_composing.set(false);
+            self.text_input.stop(&self.sdl_window);
             return;
         }
         self.remove_dialog(webview_id, embedder_control_id);

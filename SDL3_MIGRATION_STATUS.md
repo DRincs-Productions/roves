@@ -38,7 +38,8 @@ funzioni desktop elencate sotto hanno copertura automatica o una verifica hardwa
 ## Da fare
 
 - [ ] Completare input egui: testo, clipboard, modifier, pointer e consumo eventi.
-- [ ] Implementare testo SDL3 e IME: composizione, candidati e rettangolo editor.
+- [x] Implementare testo SDL3 e IME: start/stop, pre-edit, commit e rettangolo candidati.
+- [ ] Verificare IME CJK e dead key su hardware reale.
 - [x] Portare touch SDL3 con ID stabili e coordinate normalizzate → pixel.
 - [ ] Portare gesture multi-touch/pinch.
 - [x] Portare il file drop SDL3 e la navigazione al file URL.

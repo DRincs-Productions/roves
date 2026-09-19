@@ -65,6 +65,8 @@ def main() -> None:
     assert "Touch" in translated_variants, "SDL3 touch translation is missing"
     for event_name in ("FingerDown", "FingerMotion", "FingerUp", "FingerCanceled"):
         assert event_name in translated, f"SDL3 {event_name} translation is missing"
+    for event_name in ("TextEditing", "TextInput"):
+        assert event_name in translated, f"SDL3 {event_name} translation is missing"
 
     keyboard_factory = braced_body(keyutils_source, "pub fn keyboard_event_from_sdl")
     assert re.search(

@@ -64,6 +64,8 @@ mod from_sdl3 {
                 Self::CursorLeft => target!("WindowEvent(CursorLeft)"),
                 Self::DroppedFile(..) => target!("WindowEvent(DroppedFile)"),
                 Self::Touch { .. } => target!("WindowEvent(Touch)"),
+                Self::ImePreedit(..) => target!("WindowEvent(ImePreedit)"),
+                Self::ImeCommit(..) => target!("WindowEvent(ImeCommit)"),
             }
         }
     }
