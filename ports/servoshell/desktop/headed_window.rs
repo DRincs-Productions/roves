@@ -32,7 +32,10 @@ use servo::{
 };
 use url::Url;
 use dpi::PhysicalSize;
-use sdl3::mouse::MouseButton as SdlMouseButton;
+use sdl3::mouse::{Cursor as SdlCursor, MouseButton as SdlMouseButton, MouseUtil, SystemCursor};
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use sdl3::{pixels::PixelFormat, surface::Surface};
+use sdl3::video::WindowFlags;
 #[cfg(target_os = "macos")]
 use {
     objc2_app_kit::{NSColorSpace, NSView},
@@ -115,6 +118,10 @@ pub struct HeadedWindow {
     event_loop_proxy: EventLoopProxy,
     /// SDL3 text-input controller for the video subsystem that owns `sdl_window`.
     text_input: sdl3::keyboard::TextInputUtil,
+    /// SDL's cursor visibility API is global to the mouse subsystem. The active cursor object
+    /// must be retained for as long as SDL may use its native handle.
+    mouse: MouseUtil,
+    active_cursor: RefCell<Option<SdlCursor>>,
     /// The last title set on this window. We need to store this value here, as `winit::Window::title`
     /// is not supported very many platforms.
     last_title: RefCell<String>,
@@ -149,13 +156,9 @@ pub struct HeadedWindow {
 }
 
 impl HeadedWindow {
-    /// TODO(SDL3 windowing, real progress not completion — see TODO.md): several details the
-    /// previous winit-based constructor handled are simplified or dropped here for now, each
-    /// marked at its own call site: window/taskbar icon (`load_icon`/`runtime_window_icon_bytes`
-    /// below are unused, not deleted), Linux taskbar app-id naming, transparent
-    /// (`no_native_titlebar`) windows, and sRGB color space forcing on macOS. None of these
-    /// block a window from opening, showing the boot splash, resizing, or closing — they're
-    /// real, separate follow-up work.
+    /// SDL3-backed desktop window construction. Linux taskbar app-id naming is still a separate
+    /// follow-up; icon selection and transparent/borderless `no_native_titlebar` windows are
+    /// handled below, while macOS keeps its platform-specific sRGB correction.
     #[servo::servo_tracing::instrument(level = "debug", name = "HeadedWindow::new", skip_all)]
     pub(crate) fn new(
         servoshell_preferences: &ServoShellPreferences,
@@ -164,7 +167,6 @@ impl HeadedWindow {
         initial_url: Url,
     ) -> Rc<Self> {
         let no_native_titlebar = servoshell_preferences.no_native_titlebar;
-        let _ = no_native_titlebar; // TODO(SDL3 windowing): transparent windows not ported yet.
         let inner_size = servoshell_preferences.initial_window_size;
 
         let mut window_builder =
@@ -185,14 +187,20 @@ impl HeadedWindow {
             // visible windowed-then-fullscreen transition on startup. See CUSTOMIZATIONS.md.
             window_builder.fullscreen();
         }
+        if no_native_titlebar {
+            let flags =
+                window_builder.flags() | WindowFlags::BORDERLESS | WindowFlags::TRANSPARENT;
+            window_builder.set_flags(flags);
+        }
 
         let mut sdl_window = window_builder.build().expect("Failed to create window.");
-        let _ = sdl_window.set_minimum_size(MIN_WINDOW_INNER_SIZE.width as u32, MIN_WINDOW_INNER_SIZE.height as u32);
+        let _ = sdl_window.set_minimum_size(
+            MIN_WINDOW_INNER_SIZE.width as u32,
+            MIN_WINDOW_INNER_SIZE.height as u32,
+        );
 
-        // TODO(SDL3 windowing): window/taskbar icon loading (`load_icon`,
-        // `runtime_window_icon_bytes`) not ported yet -- needs an `sdl3::surface::Surface`
-        // built from the same RGBA bytes instead of winit's `Icon` type, plus
-        // `Window::set_icon`. Left as compiled-but-unused rather than deleted.
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        set_window_icon(&mut sdl_window);
 
         let window_handle = sdl_window
             .window_handle()
@@ -257,6 +265,8 @@ impl HeadedWindow {
             sdl_window,
             event_loop_proxy,
             text_input: event_loop.video().text_input(),
+            mouse: event_loop.sdl().mouse(),
+            active_cursor: RefCell::new(None),
             webview_relative_mouse_point: Cell::new(Point2D::zero()),
             fullscreen: Cell::new(servoshell_preferences.start_fullscreen),
             config_dir: servoshell_preferences.config_dir.clone(),
@@ -866,6 +876,14 @@ impl HeadedWindow {
                     self.handle_touch_event(&webview, phase, finger_id, x, y);
                 }
             },
+            WindowEvent::PinchGesture { delta } => {
+                if let Some(webview) = window.active_webview() {
+                    webview.adjust_pinch_zoom(
+                        delta + 1.0,
+                        self.webview_relative_mouse_point.get(),
+                    );
+                }
+            },
             // Resize/redraw are handled before this dispatch so the rendering context is
             // already up to date. Losing focus currently needs no additional Servo-side
             // action, but spelling these variants out keeps this match exhaustive: adding a
@@ -1033,12 +1051,41 @@ impl PlatformWindow for HeadedWindow {
         id.into()
     }
 
-    /// TODO(SDL3 windowing): cursor shape changes not ported yet — `Cursor`'s ~30 named shapes
-    /// need mapping to `sdl3::mouse::SystemCursor` and setting via `Sdl::mouse().set_cursor(..)`
-    /// (a separate, global API in SDL3, not a `Window` method the way winit's `set_cursor` was).
-    /// `Cursor::None` (hide the cursor entirely) is the one real gap this leaves: the cursor
-    /// stays visible where the page/UI would otherwise have hidden it.
-    fn set_cursor(&self, _cursor: Cursor) {}
+    fn set_cursor(&self, cursor: Cursor) {
+        let system_cursor = match cursor {
+            Cursor::None => {
+                self.mouse.show_cursor(false);
+                return;
+            },
+            Cursor::Text | Cursor::VerticalText => SystemCursor::IBeam,
+            Cursor::Wait => SystemCursor::Wait,
+            Cursor::Progress => SystemCursor::WaitArrow,
+            Cursor::Crosshair | Cursor::Cell => SystemCursor::Crosshair,
+            Cursor::Pointer | Cursor::ContextMenu | Cursor::Help | Cursor::Alias |
+            Cursor::Copy | Cursor::Grab | Cursor::Grabbing | Cursor::ZoomIn |
+            Cursor::ZoomOut => SystemCursor::Hand,
+            Cursor::EResize | Cursor::WResize | Cursor::EwResize | Cursor::ColResize => {
+                SystemCursor::SizeWE
+            },
+            Cursor::NResize | Cursor::SResize | Cursor::NsResize | Cursor::RowResize => {
+                SystemCursor::SizeNS
+            },
+            Cursor::NeResize | Cursor::SwResize | Cursor::NeswResize => SystemCursor::SizeNESW,
+            Cursor::NwResize | Cursor::SeResize | Cursor::NwseResize => SystemCursor::SizeNWSE,
+            Cursor::Move | Cursor::AllScroll => SystemCursor::SizeAll,
+            Cursor::NoDrop | Cursor::NotAllowed => SystemCursor::No,
+            Cursor::Default => SystemCursor::Arrow,
+        };
+
+        self.mouse.show_cursor(true);
+        match SdlCursor::from_system(system_cursor) {
+            Ok(native_cursor) => {
+                native_cursor.set();
+                *self.active_cursor.borrow_mut() = Some(native_cursor);
+            },
+            Err(error) => log::warn!("Could not create SDL3 system cursor: {error}"),
+        }
+    }
 
     #[cfg(feature = "webxr")]
     fn new_glwindow(&self, event_loop: &ActiveEventLoop) -> Rc<dyn servo::webxr::GlWindow> {
@@ -1252,6 +1299,35 @@ fn runtime_window_icon_bytes() -> Option<Vec<u8>> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
     std::fs::read(dir.join("icon.png")).ok()
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn set_window_icon(window: &mut sdl3::video::Window) {
+    let bytes = runtime_window_icon_bytes()
+        .unwrap_or_else(|| include_bytes!(concat!(env!("OUT_DIR"), "/window_icon.png")).to_vec());
+    let image = match image::load_from_memory(&bytes) {
+        Ok(image) => image.to_rgba8(),
+        Err(error) => {
+            log::warn!("Could not decode the SDL3 window icon: {error}");
+            return;
+        },
+    };
+    let (width, height) = image.dimensions();
+    let mut pixels = image.into_raw();
+    match Surface::from_data(
+        pixels.as_mut_slice(),
+        width,
+        height,
+        width.saturating_mul(4),
+        PixelFormat::RGBA32,
+    ) {
+        Ok(surface) => {
+            if !window.set_icon(surface) {
+                log::warn!("SDL3 rejected the decoded window icon");
+            }
+        },
+        Err(error) => log::warn!("Could not create the SDL3 window icon surface: {error}"),
+    }
 }
 
 #[cfg(feature = "webxr")]

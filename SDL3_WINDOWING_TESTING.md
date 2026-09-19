@@ -36,19 +36,24 @@ Tastiera e mouse di base sono ora tradotti dagli eventi SDL3 e inoltrati al `Web
 compila questo percorso, ma non genera ancora eventi sintetici contro una finestra reale. Restano
 gap funzionali reali:
 
-- **Tastiera**: la mappatura SDL3 → DOM/Servo esiste; layout non-US, dead key e testo composto
-  richiedono ancora test e completamento tramite `TextInput`/IME.
+- **Tastiera**: la mappatura SDL3 → DOM/Servo e il percorso `TextInput`/IME esistono; layout
+  non-US, dead key e testo composto richiedono ancora verifica hardware.
 - **Mouse**: movimento, click e rotellina arrivano al gioco; l'inoltro alla UI egui è ancora
   incompleto.
 - **Touch**: portato da SDL3 a Servo con ID stabili; richiede prova hardware multi-touch.
-- **Gesture/pinch**: non portati.
+- **Gesture/pinch**: portati alla finestra focalizzata (o più recentemente usata); direzione e
+  sensibilità richiedono verifica su trackpad/touchscreen reale.
 - **File drop**: collegato da SDL3 al caricamento del file URL; richiede ancora prova hardware.
 - **IME**: start/stop, area candidati, pre-edit e commit sono portati; composizione CJK e dead
   key richiedono verifica hardware.
+- **Cursore**: visibilità e forme Servo sono mappate sui cursori di sistema SDL3; hover,
+  trascinamento, resize e cursore nascosto richiedono ancora verifica hardware.
 - **AccessKit/accessibilità**: rimosso interamente insieme a `egui_winit` — nessun bridge
   sostitutivo scritto ancora (c'è però una roadmap concreta in `TODO.md`, non un buco nero).
-- **Icona finestra/taskbar**: non portata (funzione minore, ma reale).
-- **Finestre trasparenti** (`no_native_titlebar`): non portate.
+- **Icona finestra/taskbar**: portata con fallback compilato e override runtime `icon.png`;
+  richiede verifica visiva su Linux e Windows.
+- **Finestre trasparenti** (`no_native_titlebar`): portate con flag SDL3 trasparente e borderless;
+  richiedono verifica col compositor reale dei tre sistemi.
 
 In pratica la baseline è avviabile e l'input gameplay essenziale è cablato, ma non è ancora
 corretto dichiarare conclusa la sostituzione di winit finché IME, egui, AccessKit e i residui di
@@ -115,9 +120,13 @@ può notare:
   sistema, minimizza/massimizza, fullscreen (ingresso e uscita, anche con la scorciatoia da
   tastiera del gioco), multi-monitor (spostare la finestra tra schermi con DPI diversi),
   chiusura pulita (nessun processo residuo).
+- **Branding/decorazioni**: icona corretta in finestra e taskbar (incluso override `icon.png`),
+  e rendering/comandi finestra corretti con `no_native_titlebar`.
 - **Input**: ogni tasto rilevante per il gioco, combinazioni/scorciatoie (copia/incolla, zoom,
   gli shortcut definiti in `handle_intercepted_key_bindings`), click sinistro/destro/centrale,
-  rotellina, drag, hover (tooltip egui).
+  rotellina, drag, hover (tooltip egui), cursore nascosto e forme pointer/testo/resize/not-allowed.
+- **Gesture**: pinch-in/pinch-out su trackpad o touchscreen, verificando centro e direzione dello
+  zoom anche dopo aver cambiato finestra/focus.
 - **IME**: aprire un campo di testo con una lingua che richiede composizione (es. giapponese) e
   verificare che appaia la finestra di composizione nella posizione corretta.
 - **Accessibilità**: screen reader (VoiceOver su macOS, Narrator su Windows, Orca su Linux) —

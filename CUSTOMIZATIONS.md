@@ -7808,3 +7808,40 @@ routed as Servo composition update/commit events; because SDL has no separate st
 window synthesizes exactly one composition start before a pre-edit or direct commit. Programmatic
 hide resets the state without reporting a user dismissal. Hardware verification remains required
 for CJK candidate UI and dead keys. Android and OpenHarmony input implementations are unchanged.
+
+
+## 2026-09-19 — SDL3 desktop system cursors
+
+**Files:** `ports/servoshell/desktop/headed_window.rs`,
+`patches/servo-v0.5.0/0022-sdl3-cursor.patch`, `SDL3_MIGRATION_STATUS.md`, and
+`SDL3_WINDOWING_TESTING.md`, plus `support/check_sdl3_windowing_contracts.py`.
+
+Servo cursor requests now control SDL3 cursor visibility and map every Servo cursor category to
+the nearest SDL system cursor. The created native cursor is retained by the desktop window so SDL
+never observes a destroyed handle; changing to `Cursor::None` hides it through `MouseUtil`.
+This is desktop-only and leaves the independent Android and OpenHarmony paths unchanged.
+
+
+## 2026-09-19 — SDL3 desktop pinch gestures
+
+**Files:** `ports/servoshell/desktop/{event_loop.rs,headed_window.rs,tracing.rs}`,
+`patches/servo-v0.5.0/0023-sdl3-pinch.patch`, `support/check_sdl3_windowing_contracts.py`,
+`SDL3_MIGRATION_STATUS.md`, and `SDL3_WINDOWING_TESTING.md`.
+
+SDL `MultiGesture` distance changes now drive Servo pinch zoom around the last mouse point. SDL
+does not attach a window id to this event, so the desktop event loop explicitly targets the
+focused window and falls back to the most recently addressed window. This preserves multi-window
+routing without changing Android or OpenHarmony's independent gesture implementations.
+
+
+## 2026-09-19 — SDL3 desktop icon and transparent window flags
+
+**Files:** `ports/servoshell/desktop/headed_window.rs`,
+`patches/servo-v0.5.0/0024-sdl3-window-icon-transparency.patch`,
+`support/check_sdl3_windowing_contracts.py`, `SDL3_MIGRATION_STATUS.md`, and
+`SDL3_WINDOWING_TESTING.md`.
+
+Linux and Windows now decode the per-game runtime `icon.png` (falling back to the compiled Roves
+icon), wrap its RGBA storage in an SDL surface, and install it before the window is shown. The
+`no_native_titlebar` preference again creates a borderless transparent window via SDL flags,
+matching the previous winit behavior. Mobile window creation and icons remain untouched.

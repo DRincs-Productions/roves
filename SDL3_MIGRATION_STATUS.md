@@ -41,9 +41,11 @@ funzioni desktop elencate sotto hanno copertura automatica o una verifica hardwa
 - [x] Implementare testo SDL3 e IME: start/stop, pre-edit, commit e rettangolo candidati.
 - [ ] Verificare IME CJK e dead key su hardware reale.
 - [x] Portare touch SDL3 con ID stabili e coordinate normalizzate → pixel.
-- [ ] Portare gesture multi-touch/pinch.
+- [x] Portare gesture multi-touch/pinch, instradate alla finestra desktop attiva.
 - [x] Portare il file drop SDL3 e la navigazione al file URL.
-- [ ] Completare DPI/display-change, tema, cursori, icona e finestra trasparente.
+- [x] Portare visibilità e forme del cursore al backend SDL3.
+- [x] Portare icona runtime/taskbar e finestra trasparente/borderless a SDL3.
+- [ ] Completare DPI/display-change e notifiche tema.
 - [ ] Implementare un adapter AccessKit indipendente da winit.
 - [ ] Aggiungere unit test Rust per mapping tasti/eventi e test Xvfb per il ciclo finestra.
 - [ ] Eseguire la checklist hardware di `SDL3_WINDOWING_TESTING.md` sui tre sistemi.

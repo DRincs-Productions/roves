@@ -1,0 +1,101 @@
+diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/desktop/headed_window.rs
+index 1a0c5a0..92c5ef8 100644
+--- a/ports/servoshell/desktop/headed_window.rs
++++ b/ports/servoshell/desktop/headed_window.rs
+@@ -33,6 +33,9 @@ use servo::{
+ use url::Url;
+ use dpi::PhysicalSize;
+ use sdl3::mouse::{Cursor as SdlCursor, MouseButton as SdlMouseButton, MouseUtil, SystemCursor};
++#[cfg(any(target_os = "linux", target_os = "windows"))]
++use sdl3::{pixels::PixelFormat, surface::Surface};
++use sdl3::video::WindowFlags;
+ #[cfg(target_os = "macos")]
+ use {
+     objc2_app_kit::{NSColorSpace, NSView},
+@@ -153,13 +156,9 @@ pub struct HeadedWindow {
+ }
+ 
+ impl HeadedWindow {
+-    /// TODO(SDL3 windowing, real progress not completion — see TODO.md): several details the
+-    /// previous winit-based constructor handled are simplified or dropped here for now, each
+-    /// marked at its own call site: window/taskbar icon (`load_icon`/`runtime_window_icon_bytes`
+-    /// below are unused, not deleted), Linux taskbar app-id naming, transparent
+-    /// (`no_native_titlebar`) windows, and sRGB color space forcing on macOS. None of these
+-    /// block a window from opening, showing the boot splash, resizing, or closing — they're
+-    /// real, separate follow-up work.
++    /// SDL3-backed desktop window construction. Linux taskbar app-id naming is still a separate
++    /// follow-up; icon selection and transparent/borderless `no_native_titlebar` windows are
++    /// handled below, while macOS keeps its platform-specific sRGB correction.
+     #[servo::servo_tracing::instrument(level = "debug", name = "HeadedWindow::new", skip_all)]
+     pub(crate) fn new(
+         servoshell_preferences: &ServoShellPreferences,
+@@ -168,7 +167,6 @@ impl HeadedWindow {
+         initial_url: Url,
+     ) -> Rc<Self> {
+         let no_native_titlebar = servoshell_preferences.no_native_titlebar;
+-        let _ = no_native_titlebar; // TODO(SDL3 windowing): transparent windows not ported yet.
+         let inner_size = servoshell_preferences.initial_window_size;
+ 
+         let mut window_builder =
+@@ -189,14 +187,20 @@ impl HeadedWindow {
+             // visible windowed-then-fullscreen transition on startup. See CUSTOMIZATIONS.md.
+             window_builder.fullscreen();
+         }
++        if no_native_titlebar {
++            let flags =
++                window_builder.flags() | WindowFlags::BORDERLESS | WindowFlags::TRANSPARENT;
++            window_builder.set_flags(flags);
++        }
+ 
+         let mut sdl_window = window_builder.build().expect("Failed to create window.");
+-        let _ = sdl_window.set_minimum_size(MIN_WINDOW_INNER_SIZE.width as u32, MIN_WINDOW_INNER_SIZE.height as u32);
++        let _ = sdl_window.set_minimum_size(
++            MIN_WINDOW_INNER_SIZE.width as u32,
++            MIN_WINDOW_INNER_SIZE.height as u32,
++        );
+ 
+-        // TODO(SDL3 windowing): window/taskbar icon loading (`load_icon`,
+-        // `runtime_window_icon_bytes`) not ported yet -- needs an `sdl3::surface::Surface`
+-        // built from the same RGBA bytes instead of winit's `Icon` type, plus
+-        // `Window::set_icon`. Left as compiled-but-unused rather than deleted.
++        #[cfg(any(target_os = "linux", target_os = "windows"))]
++        set_window_icon(&mut sdl_window);
+ 
+         let window_handle = sdl_window
+             .window_handle()
+@@ -1297,6 +1301,35 @@ fn runtime_window_icon_bytes() -> Option<Vec<u8>> {
+     std::fs::read(dir.join("icon.png")).ok()
+ }
+ 
++#[cfg(any(target_os = "linux", target_os = "windows"))]
++fn set_window_icon(window: &mut sdl3::video::Window) {
++    let bytes = runtime_window_icon_bytes()
++        .unwrap_or_else(|| include_bytes!(concat!(env!("OUT_DIR"), "/window_icon.png")).to_vec());
++    let image = match image::load_from_memory(&bytes) {
++        Ok(image) => image.to_rgba8(),
++        Err(error) => {
++            log::warn!("Could not decode the SDL3 window icon: {error}");
++            return;
++        },
++    };
++    let (width, height) = image.dimensions();
++    let mut pixels = image.into_raw();
++    match Surface::from_data(
++        pixels.as_mut_slice(),
++        width,
++        height,
++        width.saturating_mul(4),
++        PixelFormat::RGBA32,
++    ) {
++        Ok(surface) => {
++            if !window.set_icon(surface) {
++                log::warn!("SDL3 rejected the decoded window icon");
++            }
++        },
++        Err(error) => log::warn!("Could not create the SDL3 window icon surface: {error}"),
++    }
++}
++
+ #[cfg(feature = "webxr")]
+ struct XRWindow {
+     sdl_window: sdl3::video::Window,

@@ -67,6 +67,19 @@ def main() -> None:
         assert event_name in translated, f"SDL3 {event_name} translation is missing"
     for event_name in ("TextEditing", "TextInput"):
         assert event_name in translated, f"SDL3 {event_name} translation is missing"
+    assert "MultiGesture" in translated, "SDL3 pinch gesture translation is missing"
+    assert "focused_window_id.or(last_window_id)" in event_source, (
+        "window-less SDL3 gestures must be routed to an active desktop window"
+    )
+
+    cursor_handler = braced_body(headed_source, "fn set_cursor")
+    assert "self.mouse.show_cursor(false)" in cursor_handler, "Cursor::None must hide the cursor"
+    assert "SdlCursor::from_system" in cursor_handler, "SDL3 system cursor mapping is missing"
+    assert "*self.active_cursor.borrow_mut() = Some(native_cursor)" in cursor_handler, (
+        "SDL3 cursor must be retained while its native handle is active"
+    )
+    assert "WindowFlags::TRANSPARENT" in headed_source, "transparent SDL3 windows are missing"
+    assert "set_window_icon(&mut sdl_window)" in headed_source, "SDL3 window icon is not installed"
 
     keyboard_factory = braced_body(keyutils_source, "pub fn keyboard_event_from_sdl")
     assert re.search(
