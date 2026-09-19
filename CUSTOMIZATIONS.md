@@ -7726,3 +7726,14 @@ hours. The smoke test now gives the process five seconds to exit and then sends 
 before waiting. The workflow also uses a branch-scoped concurrency group with
 `cancel-in-progress`, so a newer SDL3 checkpoint automatically supersedes an older eight-job
 matrix instead of consuming both sets of runners.
+
+## 2026-09-19 — Fast SDL3 event-contract gate before the build matrix
+
+**Files:** `support/check_sdl3_windowing_contracts.py`, `.github/workflows/test.yml`,
+`SDL3_WINDOWING_TESTING.md`.
+
+Added a dependency-free structural test that checks exhaustive `WindowEvent` tracing and dispatch,
+the required gameplay input translations, and unified-patch syntax. `test.yml` runs this gate
+before creating the rolling release or starting the expensive platform matrix. The testing guide
+now records the verified green baseline and defines the remaining unit, virtual-display,
+packaging, and real-hardware layers needed to call the SDL3 migration complete.

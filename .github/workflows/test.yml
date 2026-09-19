@@ -19,6 +19,7 @@ on:
     paths:
       - 'patches/**'
       - 'test-page/**'
+      - 'support/check_sdl3_windowing_contracts.py'
       - '.github/workflows/test.yml'
   workflow_dispatch: {}
 
@@ -34,8 +35,18 @@ env:
   TEST_RELEASE_TAG: 'test'
 
 jobs:
+  # Seconds rather than tens of runner-hours: reject malformed patches and incomplete SDL3
+  # event wiring before starting the cross-platform Servo build matrix.
+  sdl3-windowing-contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: validate SDL3 event and patch contracts
+        run: python3 support/check_sdl3_windowing_contracts.py
+
   # ── Create the rolling "test" release exactly once before the matrix starts ────
   ensure-test-release:
+    needs: sdl3-windowing-contracts
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -717,6 +728,7 @@ jobs:
   # this was validated against) -- extend to Windows/macOS once this first pass is
   # proven out for real by a green run.
   steam-emulator-smoke-test:
+    needs: sdl3-windowing-contracts
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

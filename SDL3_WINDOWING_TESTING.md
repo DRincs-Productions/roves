@@ -18,24 +18,28 @@ Il branch `sdl3-windowing` sostituisce `winit` con SDL3 per finestra ed event lo
 in ~15 secondi su un runner headless (nessun monitor, nessuna sessione grafica reale, nessuna
 interazione umana) — non verifica se la finestra è realmente utilizzabile.
 
-## Stato compilazione (CI), per riferimento — non è quello che serve testare qui
+## Stato compilazione e smoke test
 
-- Linux: compila ✅ (confermato via CI reale, 2026-09-18)
-- Windows: compila ✅ (confermato via CI reale, 2026-09-18)
-- macOS: da verificare — l'ultimo run CI è rimasto bloccato oltre il tempo normale (~85+ minuti
-  contro i ~20-25 minuti tipici); non è chiaro se sia un hang reale (come quello già noto e
-  irrisolto del gamepad, ora ignorato per questa settimana su richiesta) o solo lentezza. Non
-  investigato ulteriormente per risparmiare budget — prima cosa da controllare quando si riprende
-  in mano il branch.
+La run GitHub Actions 35401939171 del 18 settembre 2026 è verde su tutta la matrice:
+
+- Linux portable e `.deb` ✅
+- Windows portable e `.msi` ✅
+- macOS portable e `.dmg` ✅
+- variante Steam + smoke test Xvfb ✅
+
+Questo prova applicazione delle patch, compilazione, bundle e sopravvivenza del processo durante
+lo smoke test. Non prova la correttezza semantica dell'input.
 
 ## Perché la compilazione pulita NON significa "funziona"
 
-**Zero input è stato portato a SDL3 finora.** Tutto quello che segue è un gap reale, non un
-dettaglio minore:
+Tastiera e mouse di base sono ora tradotti dagli eventi SDL3 e inoltrati al `WebView`; la CI
+compila questo percorso, ma non genera ancora eventi sintetici contro una finestra reale. Restano
+gap funzionali reali:
 
-- **Tastiera**: nessun evento tasto arriva al gioco. `desktop/keyutils.rs` (mappatura codici
-  tasto winit → DOM/Servo) non è stato toccato — va rifatto per i codici SDL3.
-- **Mouse**: nessun click, movimento o rotellina arriva al gioco o alla UI egui.
+- **Tastiera**: la mappatura SDL3 → DOM/Servo esiste; layout non-US, dead key e testo composto
+  richiedono ancora test e completamento tramite `TextInput`/IME.
+- **Mouse**: movimento, click e rotellina arrivano al gioco; l'inoltro alla UI egui è ancora
+  incompleto.
 - **Touch/gesture**: non portati.
 - **IME** (composizione testo per cinese/giapponese/coreano e simili): non portato — vedi
   `headed_window.rs`'s `show_ime`, ora uno stub vuoto.
@@ -44,10 +48,60 @@ dettaglio minore:
 - **Icona finestra/taskbar**: non portata (funzione minore, ma reale).
 - **Finestre trasparenti** (`no_native_titlebar`): non portate.
 
-In pratica: oggi, su qualsiasi piattaforma, una finestra SDL3 si apre, mostra lo splash animato
-di avvio, si ridimensiona, e si chiude — ma non è possibile giocarci, cliccare, scrivere, o
-usare l'interfaccia egui in alcun modo. Questo è esattamente il tipo di rottura che una CI
-headless da 15 secondi non può notare, perché non manda mai un vero evento tastiera/mouse.
+In pratica la baseline è avviabile e l'input gameplay essenziale è cablato, ma non è ancora
+corretto dichiarare conclusa la sostituzione di winit finché IME, egui, AccessKit e i residui di
+dipendenza non sono stati eliminati.
+
+## Piramide di test da costruire
+
+### Livello 1 — contratti statici, a ogni push
+
+Implementato in `support/check_sdl3_windowing_contracts.py` e nel job
+`sdl3-windowing-contracts`:
+
+- ogni variante `WindowEvent` deve avere un target di tracing esplicito;
+- ogni variante deve comparire nel dispatch della finestra;
+- tastiera e mouse gameplay devono restare presenti nella traduzione SDL3;
+- `0001-desktop-shell-core.patch` deve essere sintatticamente valido.
+
+Questo livello deve restare privo di dipendenze e terminare in pochi secondi, prima della matrice
+Servo.
+
+### Livello 2 — unit test Rust su Linux
+
+Da aggiungere man mano che i componenti vengono separati dall'event loop nativo:
+
+- tabella `Scancode`/`Keycode` → `keyboard_types::{Code, Key, Location, Modifiers}`;
+- conversione coordinate mouse con toolbar e HiDPI;
+- direzione e unità della rotellina;
+- conversione `TextInput`/`TextEditing` in eventi IME;
+- traduzione touch/finger e gesture;
+- conversione SDL3 → `egui::Event`;
+- transizioni focus, fullscreen e richiesta redraw.
+
+Questi test non devono creare una finestra: le conversioni vanno mantenute come funzioni pure.
+
+### Livello 3 — integrazione virtual-display su Linux
+
+Da eseguire con Xvfb e un piccolo harness SDL3:
+
+- avvio della pagina diagnostica;
+- injection SDL di key down/up, movimento, click e wheel;
+- conferma nel DOM che ordine, coordinate, tasto e modificatori siano corretti;
+- resize e redraw senza crash o frame nero permanente;
+- file drop su una fixture temporanea;
+- apertura/chiusura IME almeno a livello di protocollo SDL.
+
+### Livello 4 — matrice packaging
+
+È il workflow `test.yml` esistente: Linux portable/deb, Windows portable/MSI, macOS
+portable/DMG e Steam. Va eseguito dopo i contratti veloci e ai checkpoint significativi, non per
+ogni micro-correzione.
+
+### Livello 5 — hardware reale
+
+Resta obbligatorio per IME reale, screen reader, DPI/multi-monitor, fullscreen, gesture e gamepad.
+Queste verifiche non sono sostituibili in modo affidabile dai runner GitHub hosted.
 
 ## Cosa serve testare a mano, per piattaforma, una volta che l'input sarà portato
 
