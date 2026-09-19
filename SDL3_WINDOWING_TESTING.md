@@ -79,9 +79,11 @@ Servo.
 
 ### Livello 2 — unit test Rust su Linux
 
-Da aggiungere man mano che i componenti vengono separati dall'event loop nativo:
+Da aggiungere man mano che i componenti vengono separati dall'event loop nativo. Il primo gruppo
+è ora presente in `desktop/keyutils.rs`:
 
-- tabella `Scancode`/`Keycode` → `keyboard_types::{Code, Key, Location, Modifiers}`;
+- [x] campioni rappresentativi `Scancode`/`Keycode` → `Code`, `Key`, `Location`, modifier,
+  repeat e fallback non identificato;
 - conversione coordinate mouse con toolbar e HiDPI;
 - direzione e unità della rotellina;
 - conversione `TextInput`/`TextEditing` in eventi IME;

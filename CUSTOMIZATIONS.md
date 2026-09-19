@@ -7859,3 +7859,15 @@ logical resize event. Display and ICC-profile changes refresh the current displa
 scale. Because SDL3 0.20 has no dedicated system-theme event, the desktop window compares the
 current system theme during normal event dispatch and notifies the active webview on change.
 Android and OpenHarmony continue to use their existing native display and theme paths.
+
+
+## 2026-09-19 — SDL3 keyboard mapping unit tests
+
+**Files:** `ports/servoshell/desktop/keyutils.rs`,
+`patches/servo-v0.5.0/0026-sdl3-keyboard-tests.patch`, `SDL3_MIGRATION_STATUS.md`, and
+`SDL3_WINDOWING_TESTING.md`.
+
+Pure Rust tests now cover representative character/scancode mapping, DOM key state and location,
+combined SDL modifiers, repeat versus composition semantics, keypad handling, and unidentified
+fallbacks. They do not initialize SDL video and therefore do not alter or depend on mobile EGL
+backends.

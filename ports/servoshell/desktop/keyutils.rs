@@ -330,3 +330,57 @@ pub fn keyboard_event_from_sdl(
         false,
     )
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_character_code_modifiers_and_repeat() {
+        let event = keyboard_event_from_sdl(
+            Some(Keycode::A),
+            Some(Scancode::A),
+            Mod::LCTRLMOD | Mod::RSHIFTMOD,
+            true,
+            true,
+        )
+        .event;
+
+        assert_eq!(event.state, KeyState::Down);
+        assert_eq!(event.key, Key::Character("a".to_owned()));
+        assert_eq!(event.code, Code::KeyA);
+        assert_eq!(event.location, Location::Standard);
+        assert!(event.modifiers.contains(Modifiers::CONTROL));
+        assert!(event.modifiers.contains(Modifiers::SHIFT));
+        assert!(event.repeat);
+        assert!(!event.is_composing);
+    }
+
+    #[test]
+    fn maps_keypad_location_and_key_release() {
+        let event = keyboard_event_from_sdl(
+            Some(Keycode::KpEnter),
+            Some(Scancode::KpEnter),
+            Mod::NOMOD,
+            false,
+            false,
+        )
+        .event;
+
+        assert_eq!(event.state, KeyState::Up);
+        assert_eq!(event.key, Key::Named(NamedKey::Enter));
+        assert_eq!(event.code, Code::NumpadEnter);
+        assert_eq!(event.location, Location::Numpad);
+        assert!(event.modifiers.is_empty());
+    }
+
+    #[test]
+    fn missing_sdl_codes_use_dom_unidentified_fallbacks() {
+        let event = keyboard_event_from_sdl(None, None, Mod::NOMOD, true, false).event;
+
+        assert_eq!(event.key, Key::Named(NamedKey::Unidentified));
+        assert_eq!(event.code, Code::Unidentified);
+        assert_eq!(event.location, Location::Standard);
+    }
+}
