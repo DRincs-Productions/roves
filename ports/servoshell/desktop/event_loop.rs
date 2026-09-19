@@ -69,11 +69,11 @@ impl ActiveEventLoop {
 /// This module's own stand-in for the subset of `winit::event::WindowEvent` that
 /// `app.rs`/`headed_window.rs` actually consume — see `translate_sdl_event` for the mapping.
 ///
-/// TODO(SDL3 windowing, real progress not completion): touch, pinch gesture, dropped files,
+/// TODO(SDL3 windowing, real progress not completion): touch, pinch gesture,
 /// theme/scale-factor changes, and IME composition are not ported yet — everything else a
 /// desktop game actually needs (keyboard, mouse motion/buttons/wheel, resize, close, redraw,
 /// focus) now is. See TODO.md for the remaining list.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum WindowEvent {
     Resized(u32, u32),
     CloseRequested,
@@ -112,6 +112,9 @@ pub(crate) enum WindowEvent {
     /// this is synthesized in `run_sdl3_app` from `SDL_EVENT_WINDOW_MOUSE_LEAVE` (a real
     /// `Window` sub-event, see `translate_sdl_event`).
     CursorLeft,
+    /// A file dropped onto this SDL3 window. The path stays a UTF-8 string until dispatch;
+    /// `HeadedWindow` performs URL conversion and reports invalid paths without panicking.
+    DroppedFile(String),
 }
 
 /// Translates one real (non-user) SDL3 event into this module's own `WindowEvent`, alongside
@@ -152,6 +155,9 @@ fn translate_sdl_event(event: sdl3::event::Event) -> Option<(WindowId, WindowEve
         },
         SdlEvent::MouseWheel { window_id, x, y, .. } => {
             Some((window_id, WindowEvent::MouseWheel { x, y }))
+        },
+        SdlEvent::DropFile { window_id, filename, .. } => {
+            Some((window_id, WindowEvent::DroppedFile(filename)))
         },
         _ => None,
     }

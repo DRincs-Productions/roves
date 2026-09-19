@@ -41,6 +41,7 @@ gap funzionali reali:
 - **Mouse**: movimento, click e rotellina arrivano al gioco; l'inoltro alla UI egui è ancora
   incompleto.
 - **Touch/gesture**: non portati.
+- **File drop**: collegato da SDL3 al caricamento del file URL; richiede ancora prova hardware.
 - **IME** (composizione testo per cinese/giapponese/coreano e simili): non portato — vedi
   `headed_window.rs`'s `show_ime`, ora uno stub vuoto.
 - **AccessKit/accessibilità**: rimosso interamente insieme a `egui_winit` — nessun bridge

@@ -659,8 +659,8 @@ impl HeadedWindow {
         // Handle resize events first, so that any subsequent redrawing draws onto a buffer of the
         // correct size.
         let mut resized = false;
-        if let WindowEvent::Resized(width, height) = event {
-            let new_inner_size = PhysicalSize::new(width, height);
+        if let WindowEvent::Resized(width, height) = &event {
+            let new_inner_size = PhysicalSize::new(*width, *height);
             if self.inner_size.get() != new_inner_size {
                 self.inner_size.set(new_inner_size);
                 self.window_rendering_context.resize(new_inner_size);
@@ -751,6 +751,15 @@ impl HeadedWindow {
                         webview.notify_input_event(InputEvent::MouseLeftViewport(
                             MouseLeftViewportEvent::default(),
                         ));
+                    }
+                }
+            },
+            WindowEvent::DroppedFile(path) => {
+                if let Some(webview) = window.active_webview() {
+                    if let Ok(url) = Url::from_file_path(&path) {
+                        webview.load(url);
+                    } else {
+                        log::error!("Failed to create URL for dropped file ({path})");
                     }
                 }
             },

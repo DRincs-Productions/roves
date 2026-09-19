@@ -61,6 +61,7 @@ def main() -> None:
     }
     translated_variants = set(re.findall(r"WindowEvent::([A-Z][A-Za-z0-9_]*)", translated))
     assert gameplay_events <= translated_variants, "SDL3 gameplay input translation is incomplete"
+    assert "DroppedFile" in translated_variants, "SDL3 dropped-file translation is missing"
 
     keyboard_factory = braced_body(keyutils_source, "pub fn keyboard_event_from_sdl")
     assert re.search(

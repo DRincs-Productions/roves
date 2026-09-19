@@ -7765,3 +7765,18 @@ are now `repeat, false`, and the fast contract gate asserts this exact semantic 
 **Mobile compatibility constraint:** this migration remains desktop-only. Android and OpenHarmony
 keep their independent EGL/native-window event paths; no mobile module or target-specific dependency
 is removed by this checkpoint. Shared-code follow-ups must preserve those backends explicitly.
+
+
+## 2026-09-19 — SDL3 desktop file-drop routing
+
+**Files:** `ports/servoshell/desktop/{event_loop.rs,headed_window.rs,tracing.rs}`,
+`patches/servo-v0.5.0/0019-sdl3-file-drop.patch`,
+`support/check_sdl3_windowing_contracts.py`, `SDL3_MIGRATION_STATUS.md`, and
+`SDL3_WINDOWING_TESTING.md`.
+
+SDL3 `DropFile` events now retain their target window, enter the exhaustive desktop
+`WindowEvent` pipeline, and load a valid local file URL in the active webview. Invalid paths are
+logged instead of panicking. Making the event payload own a `String` required removing `Copy`
+from the desktop-only event enum and borrowing the preliminary resize check. The structural gate
+now requires dropped-file translation and exhaustive handling/tracing. Android and OpenHarmony
+event paths are unchanged.

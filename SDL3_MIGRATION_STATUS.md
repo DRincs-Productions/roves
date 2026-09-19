@@ -39,7 +39,8 @@ funzioni desktop elencate sotto hanno copertura automatica o una verifica hardwa
 
 - [ ] Completare input egui: testo, clipboard, modifier, pointer e consumo eventi.
 - [ ] Implementare testo SDL3 e IME: composizione, candidati e rettangolo editor.
-- [ ] Portare touch, gesture e file drop.
+- [ ] Portare touch e gesture.
+- [x] Portare il file drop SDL3 e la navigazione al file URL.
 - [ ] Completare DPI/display-change, tema, cursori, icona e finestra trasparente.
 - [ ] Implementare un adapter AccessKit indipendente da winit.
 - [ ] Aggiungere unit test Rust per mapping tasti/eventi e test Xvfb per il ciclo finestra.
