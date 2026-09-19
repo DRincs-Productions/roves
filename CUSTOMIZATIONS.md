@@ -7737,3 +7737,31 @@ the required gameplay input translations, and unified-patch syntax. `test.yml` r
 before creating the rolling release or starting the expensive platform matrix. The testing guide
 now records the verified green baseline and defines the remaining unit, virtual-display,
 packaging, and real-hardware layers needed to call the SDL3 migration complete.
+
+
+## 2026-09-19 — Remove compiled winit/egui-winit residue from servoshell
+
+**Files:** `Cargo.toml`, `ports/servoshell/Cargo.toml`, `ports/servoshell/desktop/{app.rs,
+event_loop.rs,geometry.rs,headed_window.rs,headless_window.rs,mod.rs,tracing.rs,keyutils.rs}`,
+`patches/servo-v0.5.0/0018-sdl3-remove-winit-residue.patch`,
+`support/check_sdl3_windowing_contracts.py`, and `SDL3_MIGRATION_STATUS.md`.
+
+Removed the desktop shell's direct `winit` and `egui-winit` dependencies and disabled
+`egui_glow` default features, so using its standalone `Painter` no longer pulls the winit
+convenience integration back into the binary. `PhysicalSize` now comes from Servo's existing
+`dpi` dependency; the unused winit geometry module, touch converter, icon constructor, and dead
+AccessKit event route were removed. Accessibility remains an explicit migration item: deleting
+an event variant that had no producer avoids pretending it worked while the SDL3-native adapter
+is still to be implemented.
+
+WebXR keyboard camera control is no longer stranded on winit types. Both translation and arrow-key
+rotation consume the same Servo `KeyboardEvent` produced by the SDL3 key translator, including
+Shift acceleration, before the event is sent to page content.
+
+The same review found that `keyboard_event_from_sdl` passed its final two booleans in reverse
+order: SDL's `repeat` flag became `is_composing`, while DOM repeat was always false. The arguments
+are now `repeat, false`, and the fast contract gate asserts this exact semantic ordering.
+
+**Mobile compatibility constraint:** this migration remains desktop-only. Android and OpenHarmony
+keep their independent EGL/native-window event paths; no mobile module or target-specific dependency
+is removed by this checkpoint. Shared-code follow-ups must preserve those backends explicitly.

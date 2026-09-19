@@ -80,8 +80,7 @@ ed25519-dalek = { version = "3.0", features = ["alloc", "pkcs8", "rand_core", "z
 ed448-goldilocks = "=0.14.0-pre.15"
 egui = "0.36.2"
 egui-file-dialog = "0.15.0"
-egui-winit = { version = "0.36.2", default-features = false }
-egui_glow = "0.36.2"
+egui_glow = { version = "0.36.2", default-features = false }
 elliptic-curve = { version = "0.14", features = ["pkcs8"] }
 encoding_rs = { version = "0.8", features = ["serde"] }
 env_filter = "0.1.4"

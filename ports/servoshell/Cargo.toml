@@ -130,8 +130,7 @@ base64 = { workspace = true }
 dirs = { workspace = true }
 egui = { workspace = true }
 egui-file-dialog = { workspace = true }
-egui-winit = { workspace = true, features = ["accesskit", "clipboard", "wayland"] }
-egui_glow = { workspace = true, features = ["winit"] }
+egui_glow = { workspace = true }
 glow = { workspace = true }
 sdl3 = { workspace = true }
 serde_json = { workspace = true }
@@ -140,7 +139,6 @@ servo-allocator = { workspace = true }
 steamworks = { version = "0.13", optional = true }
 surfman = { workspace = true, features = ["sm-raw-window-handle-06", "sm-x11"] }
 sysinfo = { workspace = true }
-winit = { workspace = true }
 
 [target.'cfg(any(all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))'.dependencies]
 signal-hook-registry = { workspace = true }

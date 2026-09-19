@@ -188,14 +188,6 @@ pub enum AppEvent {
     /// into the same window-event handling a real `WindowEvent::RedrawRequested` would have —
     /// see `App::dispatch_user_event`.
     RedrawRequested(WindowId),
-    // TODO(SDL3 windowing): this still names `egui_winit`'s `accesskit_winit::Event` type —
-    // the *type* is deliberately kept for now (see TODO.md's AccessKit de-risking note: it's
-    // just a plain action-request/tree-request payload, not something that itself needs a
-    // live winit window), but the `accesskit_winit::Adapter` that actually *produces* these by
-    // watching a winit window is gone along with the rest of winit — nothing constructs this
-    // variant anywhere yet. A real SDL3-backed AccessKit adapter (see TODO.md) needs to send
-    // an equivalent event here before accessibility support works again.
-    Accessibility(egui_winit::accesskit_winit::Event),
     /// Requested by `protocols::roves::RovesProtocolHandler` (the `roves:` scheme's
     /// `exit`/`close_window` command — see `@drincs/roves-api`'s `process.exit()`) from
     /// whatever thread is servicing that `fetch()`. `RunningAppState`/`ServoShellWindow`
@@ -235,7 +227,6 @@ impl std::fmt::Debug for AppEvent {
             AppEvent::RedrawRequested(window_id) => {
                 f.debug_tuple("RedrawRequested").field(window_id).finish()
             },
-            AppEvent::Accessibility(event) => f.debug_tuple("Accessibility").field(event).finish(),
             AppEvent::CloseAllWindows => write!(f, "CloseAllWindows"),
             AppEvent::BootProgress(progress) => f.debug_tuple("BootProgress").field(progress).finish(),
             AppEvent::BootReady => write!(f, "BootReady"),
@@ -248,12 +239,6 @@ impl std::fmt::Debug for AppEvent {
                 .field("data_len", &data.len())
                 .finish(),
         }
-    }
-}
-
-impl From<egui_winit::accesskit_winit::Event> for AppEvent {
-    fn from(event: egui_winit::accesskit_winit::Event) -> AppEvent {
-        AppEvent::Accessibility(event)
     }
 }
 

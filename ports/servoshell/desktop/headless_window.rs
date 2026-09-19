@@ -18,7 +18,7 @@ use servo::{
     DevicePixel, RenderingContext, ScreenGeometry, SoftwareRenderingContext, WebView,
     convert_rect_to_css_pixel,
 };
-use winit::dpi::PhysicalSize;
+use dpi::PhysicalSize;
 
 use crate::prefs::ServoShellPreferences;
 use crate::window::{MIN_WINDOW_INNER_SIZE, PlatformWindow, ServoShellWindow, ServoShellWindowId};

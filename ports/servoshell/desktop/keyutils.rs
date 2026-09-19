@@ -326,7 +326,7 @@ pub fn keyboard_event_from_sdl(
         code_from_scancode(scancode),
         location_from_scancode(scancode),
         keyboard_modifiers_from_sdl_mod(keymod),
-        false,
         repeat,
+        false,
     )
 }

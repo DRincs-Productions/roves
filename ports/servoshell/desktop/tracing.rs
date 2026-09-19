@@ -40,7 +40,6 @@ mod from_sdl3 {
             match self {
                 Self::Waker => target!("UserEvent(Waker)"),
                 Self::RedrawRequested(..) => target!("RedrawRequested"),
-                Self::Accessibility(..) => target!("UserEvent(Accessibility)"),
                 Self::CloseAllWindows => target!("UserEvent(CloseAllWindows)"),
                 Self::BootProgress(..) => target!("UserEvent(BootProgress)"),
                 Self::BootReady => target!("UserEvent(BootReady)"),

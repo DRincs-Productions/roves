@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-//! A winit window implementation.
+//! An SDL3 window implementation.
 
 #![deny(clippy::panic)]
 #![deny(clippy::unwrap_used)]
@@ -31,22 +31,8 @@ use servo::{
     convert_rect_to_css_pixel,
 };
 use url::Url;
-// `PhysicalSize` remains a real, winit-independent-at-runtime data type used by Servo's own
-// API (`WebView::resize`, etc.) and this file's own `inner_size` field — not tied to a live
-// winit window/event loop, so kept as-is (see geometry.rs's own doc comment on the same point).
+use dpi::PhysicalSize;
 use sdl3::mouse::MouseButton as SdlMouseButton;
-use winit::dpi::PhysicalSize;
-// TODO(SDL3 windowing): `ElementState`/`KeyEvent`/`ModifiersState`/`LogicalKey`/`WinitNamedKey`/
-// `TouchPhase` are only still referenced by `XRWindowPose`'s own keyboard-driven camera control
-// (WebXR, deferred together with the rest of that port — see `handle_keyboard_input`'s own
-// TODO) and `winit_phase_to_touch_event_type` (unreachable now that real touch events aren't
-// ported yet either) — kept only because deleting carefully-written logic that will need
-// re-deriving anyway seemed worse than an unused-import warning. Drop these once that code is
-// either ported to SDL3 input types or actually deleted.
-use winit::event::{ElementState, KeyEvent, TouchPhase};
-use winit::keyboard::{Key as LogicalKey, ModifiersState, NamedKey as WinitNamedKey};
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-use winit::window::Icon;
 #[cfg(target_os = "macos")]
 use {
     objc2_app_kit::{NSColorSpace, NSView},
@@ -103,7 +89,6 @@ pub struct HeadedWindow {
     config_dir: Option<PathBuf>,
     device_pixel_ratio_override: Option<f32>,
     xr_window_poses: RefCell<Vec<Rc<XRWindowPose>>>,
-    modifiers_state: Cell<ModifiersState>,
     /// The `RenderingContext` of Servo itself. This is used to render Servo results
     /// temporarily until they can be blitted into the egui scene.
     rendering_context: Rc<OffscreenRenderingContext>,
@@ -268,7 +253,6 @@ impl HeadedWindow {
             screen_size,
             device_pixel_ratio_override: servoshell_preferences.device_pixel_ratio_override,
             xr_window_poses: RefCell::new(vec![]),
-            modifiers_state: Cell::new(ModifiersState::empty()),
             window_rendering_context,
             touch_event_simulator: servoshell_preferences
                 .simulate_touch_events
@@ -356,18 +340,17 @@ impl HeadedWindow {
         Some(Instant::now() + SPLASH_ANIMATION_TICK)
     }
 
-    /// TODO(SDL3 windowing): `XRWindowPose::handle_xr_rotation`/`handle_xr_translation`
-    /// (WebXR camera control from the keyboard) are not wired up here — they still take
-    /// winit's own `KeyEvent`/`ModifiersState`, unrelated to this SDL3-sourced event. WebXR
-    /// itself needs its own SDL3 port regardless (`desktop/webxr.rs`'s `XRWindow` already is
-    /// one, but nothing drives it yet) — deferred together, not an oversight specific to this
-    /// function.
     fn handle_keyboard_input(
         &self,
         state: Rc<RunningAppState>,
         window: &Rc<ServoShellWindow>,
         keyboard_event: KeyboardEvent,
     ) {
+        for pose in self.xr_window_poses.borrow().iter() {
+            pose.handle_xr_rotation(&keyboard_event);
+            pose.handle_xr_translation(&keyboard_event);
+        }
+
         // First, handle servoshell key bindings that are not overridable by, or visible to, the page.
         if self.handle_intercepted_key_bindings(state, window, &keyboard_event) {
             return;
@@ -782,29 +765,6 @@ impl HeadedWindow {
         }
     }
 
-    /// TODO(SDL3 windowing): no real AccessKit adapter produces `AppEvent::Accessibility`
-    /// events anymore (see `event_loop.rs`'s own doc comment on that variant) — nothing calls
-    /// this yet. Kept, unchanged in shape, as the intended wiring point for a real SDL3-backed
-    /// AccessKit bridge (see TODO.md's de-risking notes on `AccessKit/accesskit`'s per-OS
-    /// adapters).
-    #[expect(dead_code)]
-    pub(crate) fn handle_accessibility_event(&self, state: Rc<RunningAppState>, app_event: AppEvent) {
-        if let AppEvent::Accessibility(ref event) = app_event {
-            match &event.window_event {
-                egui_winit::accesskit_winit::WindowEvent::InitialTreeRequested => {
-                    state.set_accessibility_active(true);
-                },
-                egui_winit::accesskit_winit::WindowEvent::ActionRequested(req) => {
-                    if req.target_tree != accesskit::TreeId::ROOT {
-                        // TODO(#4344): Forward action to Servo
-                    }
-                },
-                egui_winit::accesskit_winit::WindowEvent::AccessibilityDeactivated => {
-                    state.set_accessibility_active(false);
-                },
-            }
-        }
-    }
 }
 
 impl PlatformWindow for HeadedWindow {
@@ -1167,15 +1127,6 @@ fn persist_fullscreen_state(config_dir: Option<&Path>, fullscreen: bool) {
     }
 }
 
-fn winit_phase_to_touch_event_type(phase: TouchPhase) -> TouchEventType {
-    match phase {
-        TouchPhase::Started => TouchEventType::Down,
-        TouchPhase::Moved => TouchEventType::Move,
-        TouchPhase::Ended => TouchEventType::Up,
-        TouchPhase::Cancelled => TouchEventType::Cancel,
-    }
-}
-
 /// A game-supplied window icon, if `mach bundle --icon-png` copied one next to this exact
 /// binary (see `python/servo/post_build_commands.py`) — checked at every launch, not baked
 /// in at compile time, specifically so a *prebuilt* shell (downloaded, never compiled
@@ -1189,21 +1140,6 @@ fn runtime_window_icon_bytes() -> Option<Vec<u8>> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
     std::fs::read(dir.join("icon.png")).ok()
-}
-
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-fn load_icon(icon_bytes: &[u8]) -> Icon {
-    let (icon_rgba, icon_width, icon_height) = {
-        use image::{GenericImageView, Pixel};
-        let image = image::load_from_memory(icon_bytes).expect("Failed to load icon");
-        let (width, height) = image.dimensions();
-        let mut rgba = Vec::with_capacity((width * height) as usize * 4);
-        for (_, _, pixel) in image.pixels() {
-            rgba.extend_from_slice(&pixel.to_rgba().0);
-        }
-        (rgba, width, height)
-    };
-    Icon::from_rgba(icon_rgba, icon_width, icon_height).expect("Failed to load icon")
 }
 
 #[cfg(feature = "webxr")]
@@ -1296,20 +1232,20 @@ impl XRWindowPose {
         self.xr_translation.set(vec);
     }
 
-    fn handle_xr_rotation(&self, input: &KeyEvent, modifiers: ModifiersState) {
-        if input.state != ElementState::Pressed {
+    fn handle_xr_rotation(&self, input: &KeyboardEvent) {
+        if input.event.state != KeyState::Down {
             return;
         }
         let mut x = 0.0;
         let mut y = 0.0;
-        match input.logical_key {
-            LogicalKey::Named(WinitNamedKey::ArrowUp) => x = 1.0,
-            LogicalKey::Named(WinitNamedKey::ArrowDown) => x = -1.0,
-            LogicalKey::Named(WinitNamedKey::ArrowLeft) => y = 1.0,
-            LogicalKey::Named(WinitNamedKey::ArrowRight) => y = -1.0,
+        match input.event.key {
+            Key::Named(NamedKey::ArrowUp) => x = 1.0,
+            Key::Named(NamedKey::ArrowDown) => x = -1.0,
+            Key::Named(NamedKey::ArrowLeft) => y = 1.0,
+            Key::Named(NamedKey::ArrowRight) => y = -1.0,
             _ => return,
-        };
-        if modifiers.shift_key() {
+        }
+        if input.event.modifiers.contains(Modifiers::SHIFT) {
             x *= 10.0;
             y *= 10.0;
         }
