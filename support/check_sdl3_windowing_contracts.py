@@ -71,6 +71,9 @@ def main() -> None:
     assert "focused_window_id.or(last_window_id)" in event_source, (
         "window-less SDL3 gestures must be routed to an active desktop window"
     )
+    assert "PixelSizeChanged" in translated, "SDL3 physical-pixel resize translation is missing"
+    assert "DisplayChanged" in translated, "SDL3 display-change translation is missing"
+    assert "last_theme.replace(theme)" in headed_source, "SDL3 system theme changes are not synced"
 
     cursor_handler = braced_body(headed_source, "fn set_cursor")
     assert "self.mouse.show_cursor(false)" in cursor_handler, "Cursor::None must hide the cursor"

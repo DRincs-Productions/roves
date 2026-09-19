@@ -67,6 +67,7 @@ mod from_sdl3 {
                 Self::ImePreedit(..) => target!("WindowEvent(ImePreedit)"),
                 Self::ImeCommit(..) => target!("WindowEvent(ImeCommit)"),
                 Self::PinchGesture { .. } => target!("WindowEvent(PinchGesture)"),
+                Self::DisplayChanged => target!("WindowEvent(DisplayChanged)"),
             }
         }
     }

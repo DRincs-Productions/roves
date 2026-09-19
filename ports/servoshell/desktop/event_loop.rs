@@ -69,10 +69,8 @@ impl ActiveEventLoop {
 /// This module's own stand-in for the subset of `winit::event::WindowEvent` that
 /// `app.rs`/`headed_window.rs` actually consume — see `translate_sdl_event` for the mapping.
 ///
-/// TODO(SDL3 windowing, real progress not completion): theme/scale-factor changes are not
-/// ported yet — everything else a
-/// desktop game actually needs (keyboard, mouse motion/buttons/wheel, resize, close, redraw,
-/// focus) now is. See TODO.md for the remaining list.
+/// Desktop input and window-state events translated from SDL3. Events SDL exposes without a
+/// target window (notably `MultiGesture`) are assigned by `run_sdl3_app` before dispatch.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum TouchPhase {
     Down,
@@ -136,6 +134,8 @@ pub(crate) enum WindowEvent {
     /// SDL3 reports multi-touch gestures globally, without a window id. The event loop routes
     /// them to the focused (or most recently targeted) desktop window before constructing this.
     PinchGesture { delta: f32 },
+    /// The window moved to another display or its display characteristics changed.
+    DisplayChanged,
 }
 
 /// Translates one real (non-user) SDL3 event into this module's own `WindowEvent`, alongside
@@ -152,6 +152,12 @@ fn translate_sdl_event(
             let window_event = match win_event {
                 SdlWindowEvent::Resized(width, height) => {
                     WindowEvent::Resized(width.max(0) as u32, height.max(0) as u32)
+                },
+                SdlWindowEvent::PixelSizeChanged(width, height) => {
+                    WindowEvent::Resized(width.max(0) as u32, height.max(0) as u32)
+                },
+                SdlWindowEvent::DisplayChanged(_) | SdlWindowEvent::ICCProfChanged => {
+                    WindowEvent::DisplayChanged
                 },
                 SdlWindowEvent::CloseRequested => WindowEvent::CloseRequested,
                 SdlWindowEvent::Exposed => WindowEvent::RedrawRequested,

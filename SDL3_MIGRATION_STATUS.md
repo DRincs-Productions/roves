@@ -45,7 +45,7 @@ funzioni desktop elencate sotto hanno copertura automatica o una verifica hardwa
 - [x] Portare il file drop SDL3 e la navigazione al file URL.
 - [x] Portare visibilità e forme del cursore al backend SDL3.
 - [x] Portare icona runtime/taskbar e finestra trasparente/borderless a SDL3.
-- [ ] Completare DPI/display-change e notifiche tema.
+- [x] Portare resize in pixel, cambio display/DPI e notifiche tema.
 - [ ] Implementare un adapter AccessKit indipendente da winit.
 - [ ] Aggiungere unit test Rust per mapping tasti/eventi e test Xvfb per il ciclo finestra.
 - [ ] Eseguire la checklist hardware di `SDL3_WINDOWING_TESTING.md` sui tre sistemi.

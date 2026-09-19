@@ -7845,3 +7845,17 @@ Linux and Windows now decode the per-game runtime `icon.png` (falling back to th
 icon), wrap its RGBA storage in an SDL surface, and install it before the window is shown. The
 `no_native_titlebar` preference again creates a borderless transparent window via SDL flags,
 matching the previous winit behavior. Mobile window creation and icons remain untouched.
+
+
+## 2026-09-19 — SDL3 desktop DPI, display and theme synchronization
+
+**Files:** `ports/servoshell/desktop/{event_loop.rs,headed_window.rs,tracing.rs}`,
+`patches/servo-v0.5.0/0025-sdl3-display-theme.patch`,
+`support/check_sdl3_windowing_contracts.py`, `SDL3_MIGRATION_STATUS.md`, and
+`SDL3_WINDOWING_TESTING.md`.
+
+Physical-pixel size changes now resize the rendering surface rather than relying only on SDL's
+logical resize event. Display and ICC-profile changes refresh the current display geometry and
+scale. Because SDL3 0.20 has no dedicated system-theme event, the desktop window compares the
+current system theme during normal event dispatch and notifies the active webview on change.
+Android and OpenHarmony continue to use their existing native display and theme paths.

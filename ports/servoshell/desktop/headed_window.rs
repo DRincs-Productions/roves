@@ -60,6 +60,13 @@ use crate::window::{
 
 pub(crate) const INITIAL_WINDOW_TITLE: &str = "Roves";
 
+fn current_sdl_theme() -> Theme {
+    match sdl3::VideoSubsystem::get_system_theme() {
+        sdl3::video::SystemTheme::Dark => Theme::Dark,
+        sdl3::video::SystemTheme::Light | sdl3::video::SystemTheme::Unknown => Theme::Light,
+    }
+}
+
 /// How often the boot splash's indeterminate progress-bar animation (`gui.rs`'s
 /// `draw_splash_progress_bar`) advances, whether it's holding for `app.rs`'s
 /// `MIN_SPLASH_DURATION`/waiting on boot extraction, or covering a still-loading real
@@ -81,7 +88,8 @@ pub struct HeadedWindow {
     /// The egui interface that is responsible for showing the user interface elements of
     /// this headed `Window`.
     gui: RefCell<Gui>,
-    screen_size: Size2D<u32, DeviceIndependentPixel>,
+    screen_size: Cell<Size2D<u32, DeviceIndependentPixel>>,
+    last_theme: Cell<Theme>,
     webview_relative_mouse_point: Cell<Point2D<f32, DevicePixel>>,
     /// The inner size of the window in physical pixels which excludes OS decorations.
     /// It equals viewport size + (0, toolbar height).
@@ -271,7 +279,8 @@ impl HeadedWindow {
             fullscreen: Cell::new(servoshell_preferences.start_fullscreen),
             config_dir: servoshell_preferences.config_dir.clone(),
             inner_size: Cell::new(inner_size),
-            screen_size,
+            screen_size: Cell::new(screen_size),
+            last_theme: Cell::new(current_sdl_theme()),
             device_pixel_ratio_override: servoshell_preferences.device_pixel_ratio_override,
             xr_window_poses: RefCell::new(vec![]),
             window_rendering_context,
@@ -728,6 +737,13 @@ impl HeadedWindow {
         window: Rc<ServoShellWindow>,
         event: WindowEvent,
     ) {
+        let theme = current_sdl_theme();
+        if self.last_theme.replace(theme) != theme {
+            if let Some(webview) = window.active_webview() {
+                webview.notify_theme_change(theme);
+            }
+        }
+
         // Handle resize events first, so that any subsequent redrawing draws onto a buffer of the
         // correct size.
         let mut resized = false;
@@ -884,6 +900,21 @@ impl HeadedWindow {
                     );
                 }
             },
+            WindowEvent::DisplayChanged => {
+                if let Ok(bounds) = self
+                    .sdl_window
+                    .get_display()
+                    .and_then(|display| display.get_bounds())
+                {
+                    let scale = Scale::<f32, DeviceIndependentPixel, DevicePixel>::new(
+                        self.sdl_window.display_scale(),
+                    );
+                    self.screen_size.set(
+                        (Size2D::new(bounds.width(), bounds.height()).to_f32() / scale).to_u32(),
+                    );
+                }
+                self.request_redraw();
+            },
             // Resize/redraw are handled before this dispatch so the rendering context is
             // already up to date. Losing focus currently needs no additional Servo-side
             // action, but spelling these variants out keeps this match exhaustive: adding a
@@ -905,7 +936,7 @@ impl PlatformWindow for HeadedWindow {
     fn screen_geometry(&self) -> ScreenGeometry {
         let hidpi_factor = self.hidpi_scale_factor();
         let toolbar_size = Size2D::new(0.0, (self.toolbar_height() * self.hidpi_scale_factor()).0);
-        let screen_size = self.screen_size.to_f32() * hidpi_factor;
+        let screen_size = self.screen_size.get().to_f32() * hidpi_factor;
 
         // FIXME: In reality, this should subtract screen space used by the system interface
         // elements, but it is difficult to get this value with `winit` currently. See:
@@ -979,7 +1010,8 @@ impl PlatformWindow for HeadedWindow {
         let outer_size = PhysicalSize::new(width, height);
         let decoration_size = DeviceIntSize::zero();
 
-        let screen_size = (self.screen_size.to_f32() * self.hidpi_scale_factor()).to_i32();
+        let screen_size =
+            (self.screen_size.get().to_f32() * self.hidpi_scale_factor()).to_i32();
         let new_outer_size =
             new_outer_size.clamp(MIN_WINDOW_INNER_SIZE + decoration_size, screen_size * 2);
 
@@ -1116,12 +1148,7 @@ impl PlatformWindow for HeadedWindow {
     /// window's own forced/overridden theme (most windows just follow the system one anyway,
     /// so this is right in the common case).
     fn theme(&self) -> servo::Theme {
-        match sdl3::VideoSubsystem::get_system_theme() {
-            sdl3::video::SystemTheme::Dark => servo::Theme::Dark,
-            sdl3::video::SystemTheme::Light | sdl3::video::SystemTheme::Unknown => {
-                servo::Theme::Light
-            },
-        }
+        current_sdl_theme()
     }
 
     fn maximize(&self, _webview: &WebView) {

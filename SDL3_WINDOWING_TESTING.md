@@ -54,6 +54,9 @@ gap funzionali reali:
   richiede verifica visiva su Linux e Windows.
 - **Finestre trasparenti** (`no_native_titlebar`): portate con flag SDL3 trasparente e borderless;
   richiedono verifica col compositor reale dei tre sistemi.
+- **DPI/display/tema**: `PixelSizeChanged` ridimensiona il buffer fisico, il cambio display
+  aggiorna geometria e scala, e il tema di sistema viene sincronizzato; richiede verifica
+  multi-monitor e cambio tema su sessione grafica reale.
 
 In pratica la baseline è avviabile e l'input gameplay essenziale è cablato, ma non è ancora
 corretto dichiarare conclusa la sostituzione di winit finché IME, egui, AccessKit e i residui di
