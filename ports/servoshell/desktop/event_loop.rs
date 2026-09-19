@@ -69,10 +69,18 @@ impl ActiveEventLoop {
 /// This module's own stand-in for the subset of `winit::event::WindowEvent` that
 /// `app.rs`/`headed_window.rs` actually consume — see `translate_sdl_event` for the mapping.
 ///
-/// TODO(SDL3 windowing, real progress not completion): touch, pinch gesture,
+/// TODO(SDL3 windowing, real progress not completion): pinch gesture,
 /// theme/scale-factor changes, and IME composition are not ported yet — everything else a
 /// desktop game actually needs (keyboard, mouse motion/buttons/wheel, resize, close, redraw,
 /// focus) now is. See TODO.md for the remaining list.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum TouchPhase {
+    Down,
+    Move,
+    Up,
+    Cancel,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum WindowEvent {
     Resized(u32, u32),
@@ -115,6 +123,14 @@ pub(crate) enum WindowEvent {
     /// A file dropped onto this SDL3 window. The path stays a UTF-8 string until dispatch;
     /// `HeadedWindow` performs URL conversion and reports invalid paths without panicking.
     DroppedFile(String),
+    /// SDL3 finger coordinates are normalized to the target window; conversion to physical
+    /// webview pixels happens in `HeadedWindow`, which owns the current window dimensions.
+    Touch {
+        phase: TouchPhase,
+        finger_id: u64,
+        x: f32,
+        y: f32,
+    },
 }
 
 /// Translates one real (non-user) SDL3 event into this module's own `WindowEvent`, alongside
@@ -158,6 +174,38 @@ fn translate_sdl_event(event: sdl3::event::Event) -> Option<(WindowId, WindowEve
         },
         SdlEvent::DropFile { window_id, filename, .. } => {
             Some((window_id, WindowEvent::DroppedFile(filename)))
+        },
+        SdlEvent::FingerDown { window_id, finger_id, x, y, .. } => {
+            Some((window_id, WindowEvent::Touch {
+                phase: TouchPhase::Down,
+                finger_id,
+                x,
+                y,
+            }))
+        },
+        SdlEvent::FingerMotion { window_id, finger_id, x, y, .. } => {
+            Some((window_id, WindowEvent::Touch {
+                phase: TouchPhase::Move,
+                finger_id,
+                x,
+                y,
+            }))
+        },
+        SdlEvent::FingerUp { window_id, finger_id, x, y, .. } => {
+            Some((window_id, WindowEvent::Touch {
+                phase: TouchPhase::Up,
+                finger_id,
+                x,
+                y,
+            }))
+        },
+        SdlEvent::FingerCanceled { window_id, finger_id, x, y, .. } => {
+            Some((window_id, WindowEvent::Touch {
+                phase: TouchPhase::Cancel,
+                finger_id,
+                x,
+                y,
+            }))
         },
         _ => None,
     }

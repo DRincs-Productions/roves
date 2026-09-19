@@ -63,6 +63,7 @@ mod from_sdl3 {
                 Self::MouseWheel { .. } => target!("WindowEvent(MouseWheel)"),
                 Self::CursorLeft => target!("WindowEvent(CursorLeft)"),
                 Self::DroppedFile(..) => target!("WindowEvent(DroppedFile)"),
+                Self::Touch { .. } => target!("WindowEvent(Touch)"),
             }
         }
     }

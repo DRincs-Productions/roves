@@ -40,7 +40,8 @@ gap funzionali reali:
   richiedono ancora test e completamento tramite `TextInput`/IME.
 - **Mouse**: movimento, click e rotellina arrivano al gioco; l'inoltro alla UI egui è ancora
   incompleto.
-- **Touch/gesture**: non portati.
+- **Touch**: portato da SDL3 a Servo con ID stabili; richiede prova hardware multi-touch.
+- **Gesture/pinch**: non portati.
 - **File drop**: collegato da SDL3 al caricamento del file URL; richiede ancora prova hardware.
 - **IME** (composizione testo per cinese/giapponese/coreano e simili): non portato — vedi
   `headed_window.rs`'s `show_ime`, ora uno stub vuoto.

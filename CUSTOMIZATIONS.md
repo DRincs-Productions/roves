@@ -7780,3 +7780,17 @@ logged instead of panicking. Making the event payload own a `String` required re
 from the desktop-only event enum and borrowing the preliminary resize check. The structural gate
 now requires dropped-file translation and exhaustive handling/tracing. Android and OpenHarmony
 event paths are unchanged.
+
+
+## 2026-09-19 — SDL3 desktop touch routing
+
+**Files:** `ports/servoshell/desktop/{event_loop.rs,headed_window.rs,tracing.rs}`,
+`patches/servo-v0.5.0/0020-sdl3-touch.patch`, `support/check_sdl3_windowing_contracts.py`,
+`SDL3_MIGRATION_STATUS.md`, and `SDL3_WINDOWING_TESTING.md`.
+
+Finger down, motion, up, and cancellation events now flow through the exhaustive SDL3 desktop
+event pipeline. SDL normalized coordinates are converted with the current physical window size and
+toolbar offset before Servo receives a touch input event. SDL uses 64-bit finger identifiers while
+Servo exposes 32-bit opaque touch ids, so the desktop window keeps an active-id map instead of
+silently truncating values; mappings are released on up/cancel. The gate requires all four SDL
+finger variants. Android and OpenHarmony retain their independent native input paths.

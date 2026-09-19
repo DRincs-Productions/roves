@@ -42,7 +42,9 @@ use {
 use super::keyutils::keyboard_event_from_sdl;
 use crate::desktop::accelerated_gl_media::setup_gl_accelerated_media;
 use crate::desktop::dialog::Dialog;
-use crate::desktop::event_loop::{ActiveEventLoop, AppEvent, EventLoopProxy, WindowEvent, WindowId};
+use crate::desktop::event_loop::{
+    ActiveEventLoop, AppEvent, EventLoopProxy, TouchPhase, WindowEvent, WindowId,
+};
 use crate::desktop::gui::Gui;
 use crate::desktop::keyutils::CMD_OR_CONTROL;
 use crate::desktop::logging;
@@ -125,6 +127,10 @@ pub struct HeadedWindow {
     visible_input_method: Cell<Option<EmbedderControlId>>,
     /// The position of the mouse cursor after the most recent `MouseMove` event.
     last_mouse_position: Cell<Option<Point2D<f32, DeviceIndependentPixel>>>,
+    /// Stable Servo identifiers for SDL3's 64-bit finger ids. Keeping an explicit map avoids
+    /// truncating ids to Servo's i32 `TouchId` and releases entries on Up/Cancel.
+    active_touch_ids: RefCell<HashMap<u64, TouchId>>,
+    next_touch_id: Cell<i32>,
     /// Set by `App::finish_init` (see `app.rs`) the moment the real `WebView` opens, and
     /// cleared once its initial page reaches `LoadStatus::Complete` or
     /// `MAX_PAGE_LOAD_SPLASH_DURATION` elapses, whichever comes first -- see
@@ -264,6 +270,8 @@ impl HeadedWindow {
             dialogs: Default::default(),
             visible_input_method: Default::default(),
             last_mouse_position: Default::default(),
+            active_touch_ids: Default::default(),
+            next_touch_id: Cell::new(0),
             page_load_splash_since: Cell::new(None),
         })
     }
@@ -434,6 +442,43 @@ impl HeadedWindow {
         }
 
         webview.notify_input_event(InputEvent::MouseMove(MouseMoveEvent::new(point.into())));
+    }
+
+    fn handle_touch_event(
+        &self,
+        webview: &WebView,
+        phase: TouchPhase,
+        finger_id: u64,
+        x: f32,
+        y: f32,
+    ) {
+        let mut active_ids = self.active_touch_ids.borrow_mut();
+        let touch_id = active_ids.get(&finger_id).copied().unwrap_or_else(|| {
+            let touch_id = TouchId(self.next_touch_id.get());
+            self.next_touch_id.set(self.next_touch_id.get().wrapping_add(1));
+            active_ids.insert(finger_id, touch_id);
+            touch_id
+        });
+        if matches!(phase, TouchPhase::Up | TouchPhase::Cancel) {
+            active_ids.remove(&finger_id);
+        }
+        drop(active_ids);
+
+        let (width, height) = self.sdl_window.size_in_pixels();
+        let mut point = Point2D::<f32, DevicePixel>::new(x * width as f32, y * height as f32);
+        point.y -= (self.toolbar_height() * self.hidpi_scale_factor()).0;
+        let event_type = match phase {
+            TouchPhase::Down => TouchEventType::Down,
+            TouchPhase::Move => TouchEventType::Move,
+            TouchPhase::Up => TouchEventType::Up,
+            TouchPhase::Cancel => TouchEventType::Cancel,
+        };
+        webview.notify_input_event(InputEvent::Touch(TouchEvent::new(
+            event_type,
+            touch_id,
+            point.into(),
+            TouchPointerType::Touch,
+        )));
     }
 
     /// Handle key events before sending them to Servo.
@@ -761,6 +806,11 @@ impl HeadedWindow {
                     } else {
                         log::error!("Failed to create URL for dropped file ({path})");
                     }
+                }
+            },
+            WindowEvent::Touch { phase, finger_id, x, y } => {
+                if let Some(webview) = window.active_webview() {
+                    self.handle_touch_event(&webview, phase, finger_id, x, y);
                 }
             },
             // Resize/redraw are handled before this dispatch so the rendering context is
