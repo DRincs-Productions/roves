@@ -38,8 +38,8 @@ gap funzionali reali:
 
 - **Tastiera**: la mappatura SDL3 → DOM/Servo e il percorso `TextInput`/IME esistono; layout
   non-US, dead key e testo composto richiedono ancora verifica hardware.
-- **Mouse**: movimento, click e rotellina arrivano al gioco; l'inoltro alla UI egui è ancora
-  incompleto.
+- **Mouse**: movimento, click, rotellina, uscita e focus arrivano sia a egui sia al gioco; egui
+  può consumarli quando usa il puntatore. Richiede verifica interattiva di dialoghi e hover.
 - **Touch**: portato da SDL3 a Servo con ID stabili; richiede prova hardware multi-touch.
 - **Gesture/pinch**: portati alla finestra focalizzata (o più recentemente usata); direzione e
   sensibilità richiedono verifica su trackpad/touchscreen reale.

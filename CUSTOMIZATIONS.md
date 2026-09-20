@@ -7871,3 +7871,17 @@ Pure Rust tests now cover representative character/scancode mapping, DOM key sta
 combined SDL modifiers, repeat versus composition semantics, keypad handling, and unidentified
 fallbacks. They do not initialize SDL video and therefore do not alter or depend on mobile EGL
 backends.
+
+
+## 2026-09-20 — WIP SDL3 egui pointer input bridge
+
+**Files:** `ports/servoshell/desktop/{gui.rs,headed_window.rs}`,
+`patches/servo-v0.5.0/0027-sdl3-egui-pointer.patch`,
+`support/check_sdl3_windowing_contracts.py`, `SDL3_MIGRATION_STATUS.md`, and
+`SDL3_WINDOWING_TESTING.md`.
+
+The local egui backend now queues SDL mouse movement, buttons, wheel, pointer-leave, and window
+focus into `egui::RawInput`. Coordinates are converted to egui points using the current SDL
+display scale. Events claimed by egui no longer leak into the active Servo webview; every queued
+event requests a redraw. Keyboard, text, and clipboard bridging intentionally remain a separate
+checkpoint. Android and OpenHarmony are unchanged.

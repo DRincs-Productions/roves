@@ -737,6 +737,17 @@ impl HeadedWindow {
         window: Rc<ServoShellWindow>,
         event: WindowEvent,
     ) {
+        if let Some(consumed) = self
+            .gui
+            .borrow_mut()
+            .handle_pointer_event(&event, self.hidpi_scale_factor().0)
+        {
+            self.request_redraw();
+            if consumed {
+                return;
+            }
+        }
+
         let theme = current_sdl_theme();
         if self.last_theme.replace(theme) != theme {
             if let Some(webview) = window.active_webview() {

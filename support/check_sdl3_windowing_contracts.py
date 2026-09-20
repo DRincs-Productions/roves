@@ -12,6 +12,7 @@ EVENT_LOOP = ROOT / "ports/servoshell/desktop/event_loop.rs"
 HEADED_WINDOW = ROOT / "ports/servoshell/desktop/headed_window.rs"
 TRACING = ROOT / "ports/servoshell/desktop/tracing.rs"
 KEYUTILS = ROOT / "ports/servoshell/desktop/keyutils.rs"
+GUI = ROOT / "ports/servoshell/desktop/gui.rs"
 PATCH = ROOT / "patches/servo-v0.5.0/0001-desktop-shell-core.patch"
 
 
@@ -39,6 +40,7 @@ def main() -> None:
     headed_source = HEADED_WINDOW.read_text(encoding="utf-8")
     tracing_source = TRACING.read_text(encoding="utf-8")
     keyutils_source = KEYUTILS.read_text(encoding="utf-8")
+    gui_source = GUI.read_text(encoding="utf-8")
     variants = enum_variants(event_source, "WindowEvent")
     assert variants, "WindowEvent has no detected variants"
 
@@ -83,6 +85,9 @@ def main() -> None:
     )
     assert "WindowFlags::TRANSPARENT" in headed_source, "transparent SDL3 windows are missing"
     assert "set_window_icon(&mut sdl_window)" in headed_source, "SDL3 window icon is not installed"
+    for egui_event in ("PointerMoved", "PointerButton", "MouseWheel", "PointerGone", "WindowFocused"):
+        assert f"egui::Event::{egui_event}" in gui_source, f"egui {egui_event} bridge is missing"
+    assert "if consumed" in handler, "egui-consumed pointer events must not reach Servo"
 
     keyboard_factory = braced_body(keyutils_source, "pub fn keyboard_event_from_sdl")
     assert re.search(

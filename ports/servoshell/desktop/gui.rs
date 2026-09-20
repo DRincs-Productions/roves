@@ -27,6 +27,7 @@ use servo::{
 };
 use url::Url;
 
+use crate::desktop::event_loop::WindowEvent;
 use crate::desktop::headed_window;
 use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
 use crate::window::ServoShellWindow;
@@ -49,6 +50,10 @@ struct SdlEguiGlow {
     pixels_per_point: f32,
     shapes: Vec<egui::epaint::ClippedShape>,
     textures_delta: egui::TexturesDelta,
+    pending_events: Vec<egui::Event>,
+    pointer_pos: Option<egui::Pos2>,
+    modifiers: egui::Modifiers,
+    focused: bool,
 }
 
 impl SdlEguiGlow {
@@ -62,6 +67,71 @@ impl SdlEguiGlow {
             pixels_per_point: 1.0,
             shapes: Default::default(),
             textures_delta: Default::default(),
+            pending_events: Default::default(),
+            pointer_pos: None,
+            modifiers: Default::default(),
+            focused: true,
+        }
+    }
+
+    fn handle_pointer_event(&mut self, event: &WindowEvent, pixels_per_point: f32) -> Option<bool> {
+        let pointer_pos = |x: f32, y: f32| {
+            egui::pos2(
+                x / pixels_per_point.max(f32::EPSILON),
+                y / pixels_per_point.max(f32::EPSILON),
+            )
+        };
+        match event {
+            WindowEvent::MouseMotion { x, y } => {
+                let pos = pointer_pos(*x, *y);
+                self.pointer_pos = Some(pos);
+                self.pending_events.push(egui::Event::PointerMoved(pos));
+                Some(self.egui_ctx.egui_is_using_pointer())
+            },
+            WindowEvent::MouseButtonDown { button, x, y } |
+            WindowEvent::MouseButtonUp { button, x, y } => {
+                let button = match button {
+                    sdl3::mouse::MouseButton::Left => egui::PointerButton::Primary,
+                    sdl3::mouse::MouseButton::Right => egui::PointerButton::Secondary,
+                    sdl3::mouse::MouseButton::Middle => egui::PointerButton::Middle,
+                    sdl3::mouse::MouseButton::X1 => egui::PointerButton::Extra1,
+                    sdl3::mouse::MouseButton::X2 => egui::PointerButton::Extra2,
+                    sdl3::mouse::MouseButton::Unknown => return Some(false),
+                };
+                let pos = pointer_pos(*x, *y);
+                self.pointer_pos = Some(pos);
+                self.pending_events.push(egui::Event::PointerMoved(pos));
+                self.pending_events.push(egui::Event::PointerButton {
+                    pos,
+                    button,
+                    pressed: matches!(event, WindowEvent::MouseButtonDown { .. }),
+                    modifiers: self.modifiers,
+                });
+                Some(self.egui_ctx.egui_wants_pointer_input())
+            },
+            WindowEvent::MouseWheel { x, y } => {
+                self.pending_events.push(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    delta: egui::vec2(*x, *y),
+                    phase: egui::TouchPhase::Move,
+                    modifiers: self.modifiers,
+                });
+                Some(self.egui_ctx.egui_wants_pointer_input())
+            },
+            WindowEvent::CursorLeft => {
+                self.pointer_pos = None;
+                self.pending_events.push(egui::Event::PointerGone);
+                Some(false)
+            },
+            WindowEvent::Focused(focused) => {
+                self.focused = *focused;
+                if !*focused {
+                    self.modifiers = Default::default();
+                }
+                self.pending_events.push(egui::Event::WindowFocused(*focused));
+                Some(false)
+            },
+            _ => None,
         }
     }
 
@@ -76,6 +146,9 @@ impl SdlEguiGlow {
         let raw_input = egui::RawInput {
             screen_rect: Some(screen_rect),
             max_texture_side: Some(self.painter.max_texture_side()),
+            events: core::mem::take(&mut self.pending_events),
+            modifiers: self.modifiers,
+            focused: self.focused,
             ..Default::default()
         };
         let egui::FullOutput { textures_delta, shapes, pixels_per_point, .. } =
@@ -386,6 +459,14 @@ impl Drop for Gui {
 }
 
 impl Gui {
+    pub(crate) fn handle_pointer_event(
+        &mut self,
+        event: &WindowEvent,
+        pixels_per_point: f32,
+    ) -> Option<bool> {
+        self.context.handle_pointer_event(event, pixels_per_point)
+    }
+
     pub(crate) fn new(
         sdl_window: &sdl3::video::Window,
         rendering_context: Rc<OffscreenRenderingContext>,
