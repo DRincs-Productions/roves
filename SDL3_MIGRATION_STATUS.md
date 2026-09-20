@@ -47,7 +47,8 @@ funzioni desktop elencate sotto hanno copertura automatica o una verifica hardwa
 - [x] Portare visibilità e forme del cursore al backend SDL3.
 - [x] Portare icona runtime/taskbar e finestra trasparente/borderless a SDL3.
 - [x] Portare resize in pixel, cambio display/DPI e notifiche tema.
-- [ ] Implementare un adapter AccessKit indipendente da winit.
+- [x] Implementare un adapter AccessKit indipendente da winit per Windows/macOS/Unix.
+- [ ] Verificare l'adapter AccessKit con screen reader reali sui tre desktop.
 - [x] Aggiungere unit test Rust per mapping tasti/modifier/repeat/location/fallback SDL3.
 - [x] Aggiungere test Xvfb dedicati al ciclo finestra (window discovery, pointer, key, resize).
 - [x] Aggiungere unit test puri per la conversione tastiera/modifier SDL3 → egui.

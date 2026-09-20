@@ -50,7 +50,9 @@ gap funzionali reali:
   key richiedono verifica hardware.
 - **Cursore**: visibilità e forme Servo sono mappate sui cursori di sistema SDL3; hover,
   trascinamento, resize e cursore nascosto richiedono ancora verifica hardware.
-- **AccessKit/accessibilità**: rimosso interamente insieme a `egui_winit` — nessun bridge
+- **AccessKit/accessibilità**: adapter SDL3 nativo presente per Windows/macOS/Unix; inoltra
+  attivazione, azioni, disattivazione, focus, bounds e aggiornamenti albero senza `winit`. La
+  verifica con screen reader reali resta obbligatoria.
   sostitutivo scritto ancora (c'è però una roadmap concreta in `TODO.md`, non un buco nero).
 - **Icona finestra/taskbar**: portata con fallback compilato e override runtime `icon.png`;
   richiede verifica visiva su Linux e Windows.

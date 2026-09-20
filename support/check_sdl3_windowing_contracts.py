@@ -13,6 +13,7 @@ HEADED_WINDOW = ROOT / "ports/servoshell/desktop/headed_window.rs"
 TRACING = ROOT / "ports/servoshell/desktop/tracing.rs"
 KEYUTILS = ROOT / "ports/servoshell/desktop/keyutils.rs"
 GUI = ROOT / "ports/servoshell/desktop/gui.rs"
+ACCESSIBILITY = ROOT / "ports/servoshell/desktop/accessibility.rs"
 PATCH = ROOT / "patches/servo-v0.5.0/0001-desktop-shell-core.patch"
 
 
@@ -41,6 +42,7 @@ def main() -> None:
     tracing_source = TRACING.read_text(encoding="utf-8")
     keyutils_source = KEYUTILS.read_text(encoding="utf-8")
     gui_source = GUI.read_text(encoding="utf-8")
+    accessibility_source = ACCESSIBILITY.read_text(encoding="utf-8")
     variants = enum_variants(event_source, "WindowEvent")
     assert variants, "WindowEvent has no detected variants"
 
@@ -91,6 +93,10 @@ def main() -> None:
         assert f"egui::Event::{egui_event}" in gui_source, f"egui {egui_event} bridge is missing"
     assert "set_clipboard_text" in gui_source, "egui clipboard output is missing"
     assert "mod sdl_egui_input_tests" in gui_source, "egui SDL mapping tests are missing"
+    assert "SdlAccessKit" in gui_source, "SDL3 AccessKit adapter is not connected to egui"
+    for backend in ("accesskit_windows", "accesskit_macos", "accesskit_unix"):
+        assert backend in accessibility_source, f"{backend} backend is missing"
+    assert "use accesskit_winit" not in accessibility_source, "AccessKit adapter must stay winit-free"
     assert "if consumed" in handler, "egui-consumed pointer events must not reach Servo"
 
     keyboard_factory = braced_body(keyutils_source, "pub fn keyboard_event_from_sdl")

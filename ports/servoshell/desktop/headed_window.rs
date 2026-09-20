@@ -263,6 +263,7 @@ impl HeadedWindow {
         let rendering_context = Rc::new(window_rendering_context.offscreen_context(inner_size));
         let gui = RefCell::new(Gui::new(
             &sdl_window,
+            event_loop_proxy.clone(),
             rendering_context.clone(),
             initial_url,
         ));
@@ -737,6 +738,9 @@ impl HeadedWindow {
         window: Rc<ServoShellWindow>,
         event: WindowEvent,
     ) {
+        self.gui
+            .borrow_mut()
+            .handle_accessibility_window_event(&self.sdl_window, &event);
         if let Some(consumed) = self
             .gui
             .borrow_mut()

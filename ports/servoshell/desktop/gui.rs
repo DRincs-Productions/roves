@@ -27,7 +27,8 @@ use servo::{
 };
 use url::Url;
 
-use crate::desktop::event_loop::WindowEvent;
+use crate::desktop::accessibility::{AccessibilityEvent, SdlAccessKit};
+use crate::desktop::event_loop::{EventLoopProxy, WindowEvent};
 use crate::desktop::headed_window;
 use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
 use crate::window::ServoShellWindow;
@@ -400,6 +401,7 @@ impl SdlEguiGlow {
 pub struct Gui {
     rendering_context: Rc<OffscreenRenderingContext>,
     context: SdlEguiGlow,
+    accesskit: SdlAccessKit,
     toolbar_height: Length<f32, DeviceIndependentPixel>,
 
     /// The text to display in the status bar on the bottom of the window.
@@ -680,8 +682,17 @@ impl Gui {
         self.context.handle_pointer_event(event, pixels_per_point)
     }
 
+    pub(crate) fn handle_accessibility_window_event(
+        &mut self,
+        window: &sdl3::video::Window,
+        event: &WindowEvent,
+    ) {
+        self.accesskit.process_window_event(window, event);
+    }
+
     pub(crate) fn new(
         sdl_window: &sdl3::video::Window,
+        event_loop_proxy: EventLoopProxy,
         rendering_context: Rc<OffscreenRenderingContext>,
         // Kept only so callers don't need updating: the address bar this used to
         // seed no longer exists. See CUSTOMIZATIONS.md.
@@ -694,14 +705,11 @@ impl Gui {
             rendering_context.glow_gl_api(),
             sdl_window.subsystem().clipboard(),
         );
+        let accesskit = SdlAccessKit::new(sdl_window, event_loop_proxy);
 
         let mut font_definitions = configure_fonts();
         add_wordmark_font(&mut font_definitions);
         context.egui_ctx.set_fonts(font_definitions);
-
-        // TODO(SDL3 windowing): no AccessKit adapter is set up anymore (this used to be
-        // `context.egui_winit.init_accesskit(...)`) -- see this file's own `SdlEguiGlow` doc
-        // comment and TODO.md's AccessKit de-risking notes for what replaces it.
 
         context.egui_ctx.options_mut(|options| {
             // Disable the builtin egui handlers for the Ctrl+Plus, Ctrl+Minus and Ctrl+0
@@ -722,6 +730,7 @@ impl Gui {
         let mut gui = Self {
             rendering_context,
             context,
+            accesskit,
             toolbar_height: Default::default(),
             status_text: None,
             pending_accesskit_updates: vec![],
@@ -880,6 +889,24 @@ impl Gui {
         window: &ServoShellWindow,
         headed_window: &headed_window::HeadedWindow,
     ) {
+        let accessibility_events: Vec<_> = self.accesskit.drain_events().collect();
+        for event in accessibility_events {
+            match event {
+                AccessibilityEvent::InitialTreeRequested => {
+                    self.context.egui_ctx.enable_accesskit();
+                    state.set_accessibility_active(true);
+                },
+                AccessibilityEvent::ActionRequested(request) => {
+                    self.context
+                        .pending_events
+                        .push(egui::Event::AccessKitActionRequest(request));
+                },
+                AccessibilityEvent::Deactivated => {
+                    self.context.egui_ctx.disable_accesskit();
+                    state.set_accessibility_active(false);
+                },
+            }
+        }
         self.rendering_context
             .make_current()
             .expect("Could not make RenderingContext current");
@@ -965,12 +992,9 @@ impl Gui {
             window.set_needs_repaint();
         }
 
-        // TODO(SDL3 windowing): no AccessKit adapter exists anymore to actually forward these
-        // to (see `Gui::new`'s own TODO) -- `self.pending_accesskit_updates` just grows
-        // unbounded until a real SDL3 AccessKit bridge lands. Draining without using them
-        // would silently discard tree updates as if they'd been delivered; leaving them queued
-        // is the more honest failure mode until that bridge exists.
-        let _ = &self.pending_accesskit_updates;
+        for tree_update in self.pending_accesskit_updates.drain(..) {
+            self.accesskit.update_if_active(tree_update);
+        }
     }
 
     /// Update the boot splash — a minimal black screen with the Roves icon and wordmark

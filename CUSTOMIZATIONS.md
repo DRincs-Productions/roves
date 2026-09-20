@@ -7922,3 +7922,17 @@ The existing Linux packaging smoke now shares its Xvfb display with a small xdot
 requires a visible SDL3 window, injects pointer and keyboard input, resizes it, and verifies that
 the application remains alive. This extends the existing build rather than adding another costly
 Servo compilation job. Mobile workflows and sources are unchanged.
+
+
+## 2026-09-20 — Native SDL3 AccessKit adapter
+
+**Files:** `ports/servoshell/desktop/{accessibility.rs,gui.rs,headed_window.rs,mod.rs}`,
+`ports/servoshell/Cargo.toml`, `Cargo.toml`,
+`patches/servo-v0.5.0/0030-sdl3-accesskit-adapter.patch`, and SDL3 tracking documents.
+
+Desktop accessibility no longer depends on `accesskit_winit`. A small SDL3 shell constructs the
+native AccessKit adapter from the SDL raw window handle: subclassed HWND on Windows, subclassed
+NSView on macOS, and AT-SPI on Unix. Thread-safe callbacks wake the SDL event loop; egui receives
+action requests and Servo receives activation state, while queued tree updates are finally
+drained into the native adapter. Android and OpenHarmony dependency blocks and code paths are
+unchanged. Screen-reader hardware validation remains outstanding.

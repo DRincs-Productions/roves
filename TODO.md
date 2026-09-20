@@ -193,16 +193,16 @@ non sprecare altre 6 ore di CI sullo stesso hang non ancora risolto.
   `HasWindowHandle`/`HasDisplayHandle` per Windows/macOS/iOS/Android, e `WindowRenderingContext::
   new` di surfman li accetta senza nessuna modifica: era già completamente agnostico rispetto al
   windowing toolkit.
-- [ ] **Accessibilità**: `egui-winit` porta con sé `accesskit_winit` — non esiste un backend
+- [x] **Accessibilità**: `egui-winit` porta con sé `accesskit_winit` — non esiste un backend
   egui-su-SDL3 mantenuto upstream. Serve un bridge AccessKit scritto da zero (non un
   adattamento). Questo è il singolo pezzo di lavoro più grande e rischioso dell'intera
   migrazione SDL3 windowing — vedi CUSTOMIZATIONS.md's entry SDL3 gamepad per il dettaglio.
   **Aggiornamento 2026-09-17, seconda parte — rimosso interamente, non ancora ricostruito:**
   `gui.rs`'s `SdlEguiGlow` (vedi bullet sopra) non ha alcun bridge AccessKit — `egui_winit::
   State`/`init_accesskit`/l'adapter erano l'unico punto in cui viveva, ed è sparito insieme al
-  resto di `egui_winit`. `Gui::handle_accesskit_event` e la coda `pending_accesskit_updates`
-  restano ma non hanno più nulla a cui essere inoltrati. Il de-risking concreto sotto resta
-  valido come roadmap per quando questo pezzo verrà davvero affrontato.
+  resto di `egui_winit`. Il nuovo `desktop/accessibility.rs` collega direttamente gli adapter
+  Windows/macOS/Unix ai raw handle SDL3, risveglia l'event loop SDL e inoltra la coda
+  `pending_accesskit_updates`. Resta necessaria la verifica hardware con screen reader reali.
   **De-risking concreto (nessun codice scritto):** letto il repo
   `AccessKit/accesskit` reale via API GitHub — `adapters/winit` (267 righe) è un guscio sottile
   sopra adapter per-OS separati e già indipendenti da winit (`adapters/windows`,
