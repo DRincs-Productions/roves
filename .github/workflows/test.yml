@@ -368,7 +368,20 @@ jobs:
         if: matrix.os_name == 'linux' && matrix.package_mode == 'portable'
         shell: bash
         working-directory: servo-src
-        run: ./mach test-unit -p servoshell
+        # Re-emit output as ::notice::/::error:: annotations (same reasoning as the
+        # smoke-test step below): raw step logs need repo-admin auth to fetch via the
+        # API, but annotations are readable anonymously -- see CLAUDE.md's own note on
+        # diagnosing a CI failure without `gh`/a token on hand.
+        run: |
+          set +e
+          ./mach test-unit -p servoshell > /tmp/test-unit.log 2>&1
+          STATUS=$?
+          cat /tmp/test-unit.log
+          if [ $STATUS -ne 0 ]; then
+            echo "::error::mach test-unit -p servoshell failed (exit $STATUS)"
+            tail -c 20000 /tmp/test-unit.log | while IFS= read -r line; do echo "::notice::$line"; done
+            exit $STATUS
+          fi
 
       # `mach bundle` (see ../CUSTOMIZATIONS.md) is what actually builds the
       # single play.exe/play.app/play executable — this step's only job is
