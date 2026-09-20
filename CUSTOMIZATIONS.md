@@ -7946,3 +7946,12 @@ unchanged. Screen-reader hardware validation remains outstanding.
 egui 0.36 carries modifier state on keyboard and wheel events and no longer exposes the old
 global `RawInput.modifiers` field. The SDL bridge now uses only those event-local modifiers,
 fixing the compiler error reached by the first full egui-input CI run.
+
+
+## 2026-09-20 — SDL3 windowing final automated matrix
+
+GitHub Actions run `35505191605` is green in all eight jobs at commit `26335a6`: contract gate,
+Steam/Xvfb smoke, Linux portable/deb, Windows portable/MSI, and macOS portable/DMG. This verifies
+the complete egui input bridge and native AccessKit adapter compile and launch across the desktop
+matrix. IME, screen readers, touch/gesture, multi-monitor DPI, transparency and visual cursor/icon
+behavior still require the documented real-hardware checklist; mobile support remains unchanged.

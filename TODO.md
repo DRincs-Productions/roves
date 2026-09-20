@@ -218,12 +218,10 @@ non sprecare altre 6 ore di CI sullo stesso hang non ancora risolto.
   confermata e già affrontata nell'implementazione del 2026-09-17: `app.rs` e
   `headed_window.rs` sono stati riscritti insieme, nello stesso passaggio, esattamente come
   previsto qui (i ~10 punti di downcast `.as_headed_window()` restano, ora contro i tipi SDL3).
-- [ ] **Tastiera/IME**: `desktop/keyutils.rs` (601 righe) mappa i codici tasto winit → valori
-  DOM/Servo. Da rifare per i codici SDL3, verificando IME (composizione, candidati) che
-  winit gestisce oggi tramite eventi dedicati.
-- [ ] **WebXR**: `desktop/webxr.rs` usa `winit::event_loop::ActiveEventLoop` — verificare cosa
-  serve realmente (probabile: solo un modo di ottenere un handle finestra, non l'intero
-  ciclo eventi).
+- [x] **Tastiera/IME**: `desktop/keyutils.rs` usa codici SDL3 per i valori DOM/Servo; il ciclo
+  finestra inoltra pre-edit/commit e controlla l'area candidati. CJK/dead key restano hardware.
+- [x] **WebXR**: i controlli tastiera WebXR usano gli eventi Servo/SDL3 e non richiedono più
+  `winit::event_loop::ActiveEventLoop`.
 - [ ] **Verifica**: nessuna di queste modifiche è verificabile in modo affidabile solo via CI
   (smoke test di ~15s, nessuna interazione reale) — IME, fullscreen, accessibilità e resize
   multi-monitor richiedono test manuale su hardware reale per ciascuno dei tre desktop prima

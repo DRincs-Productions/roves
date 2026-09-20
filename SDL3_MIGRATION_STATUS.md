@@ -27,13 +27,15 @@ funzioni desktop elencate sotto hanno copertura automatica o una verifica hardwa
 - [x] Arresto bounded dello smoke test macOS e cancellazione CI delle run obsolete.
 - [x] Gate rapido `support/check_sdl3_windowing_contracts.py` prima delle build costose.
 - [x] Baseline verde completa: GitHub Actions run `35401939171`.
+- [x] Matrice SDL3 finale verde dopo input egui, Xvfb e AccessKit: run `35505191605`, commit
+  `26335a63005707fa6783cca63ee1b281b15cc30e`.
 - [x] Eliminati i residui compilati di `winit` e `egui-winit` da `ports/servoshell`.
 - [x] Portati i controlli tastiera WebXR ai tipi evento Servo/SDL3.
 - [x] Rimossi helper e moduli winit irraggiungibili.
 
 ## In corso
 
-- [ ] Verificare in CI la compilazione senza le feature winit transitive di egui.
+- [x] Verificare in CI la compilazione senza le feature winit transitive di egui.
 - [x] Input egui: pointer, click, wheel, focus, tastiera, testo/IME, modifier, clipboard e consumo.
 
 ## Da fare
@@ -53,7 +55,7 @@ funzioni desktop elencate sotto hanno copertura automatica o una verifica hardwa
 - [x] Aggiungere test Xvfb dedicati al ciclo finestra (window discovery, pointer, key, resize).
 - [x] Aggiungere unit test puri per la conversione tastiera/modifier SDL3 → egui.
 - [ ] Eseguire la checklist hardware di `SDL3_WINDOWING_TESTING.md` sui tre sistemi.
-- [ ] Rendere verde la matrice finale e annotare qui run e commit conclusivi.
+- [x] Rendere verde la matrice finale e annotare qui run e commit conclusivi.
 
 ## Regole di verifica per ogni checkpoint
 

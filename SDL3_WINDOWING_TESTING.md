@@ -32,9 +32,8 @@ lo smoke test. Non prova la correttezza semantica dell'input.
 
 ## Perché la compilazione pulita NON significa "funziona"
 
-Tastiera e mouse di base sono ora tradotti dagli eventi SDL3 e inoltrati al `WebView`; la CI
-compila questo percorso, ma non genera ancora eventi sintetici contro una finestra reale. Restano
-gap funzionali reali:
+Tastiera e mouse di base sono ora tradotti dagli eventi SDL3 e inoltrati al `WebView`; lo smoke
+Xvfb genera anche eventi sintetici contro una finestra reale. Restano gap di validazione hardware:
 
 - **Tastiera**: la mappatura SDL3 → DOM/Servo e il percorso `TextInput`/IME esistono; layout
   non-US, dead key e testo composto richiedono ancora verifica hardware.
@@ -53,7 +52,6 @@ gap funzionali reali:
 - **AccessKit/accessibilità**: adapter SDL3 nativo presente per Windows/macOS/Unix; inoltra
   attivazione, azioni, disattivazione, focus, bounds e aggiornamenti albero senza `winit`. La
   verifica con screen reader reali resta obbligatoria.
-  sostitutivo scritto ancora (c'è però una roadmap concreta in `TODO.md`, non un buco nero).
 - **Icona finestra/taskbar**: portata con fallback compilato e override runtime `icon.png`;
   richiede verifica visiva su Linux e Windows.
 - **Finestre trasparenti** (`no_native_titlebar`): portate con flag SDL3 trasparente e borderless;
@@ -62,9 +60,9 @@ gap funzionali reali:
   aggiorna geometria e scala, e il tema di sistema viene sincronizzato; richiede verifica
   multi-monitor e cambio tema su sessione grafica reale.
 
-In pratica la baseline è avviabile e l'input gameplay essenziale è cablato, ma non è ancora
-corretto dichiarare conclusa la sostituzione di winit finché IME, egui, AccessKit e i residui di
-dipendenza non sono stati eliminati.
+La sostituzione automatizzabile di winit è ora completa e la matrice multipiattaforma è verde.
+Rimangono le verifiche hardware elencate sotto: non bloccano la compilazione, ma sono necessarie
+prima di dichiarare il comportamento desktop validato su dispositivi reali.
 
 ## Piramide di test da costruire
 
@@ -127,11 +125,10 @@ ogni micro-correzione.
 Resta obbligatorio per IME reale, screen reader, DPI/multi-monitor, fullscreen, gesture e gamepad.
 Queste verifiche non sono sostituibili in modo affidabile dai runner GitHub hosted.
 
-## Cosa serve testare a mano, per piattaforma, una volta che l'input sarà portato
+## Cosa serve testare a mano, per piattaforma
 
-Questa lista è pensata per DOPO che tastiera/mouse/touch/IME saranno reimplementati — è
-l'elenco di regressioni plausibili che solo un umano (o un'AI con accesso reale allo schermo)
-può notare:
+Tastiera/mouse/touch/IME sono implementati; questo è l'elenco di regressioni plausibili che solo
+un umano (o un'AI con accesso reale allo schermo e all'hardware) può notare:
 
 - **Finestra**: apertura, resize (anche trascinando i bordi), ridimensionamento da tastiera/
   sistema, minimizza/massimizza, fullscreen (ingresso e uscita, anche con la scorciatoia da
@@ -166,11 +163,9 @@ utente vera, può rivelare.
 ## Come riprendere questo lavoro
 
 1. Branch: `sdl3-windowing` (non mergiato su `main`).
-2. Leggere `CUSTOMIZATIONS.md`, le entry datate 2026-09-17/18 (sezione SDL3 windowing), per il
+2. Leggere `CUSTOMIZATIONS.md`, le entry datate 2026-09-17/20 (sezione SDL3 windowing), per il
    dettaglio tecnico di ogni file toccato.
-3. Leggere `TODO.md`, sezione SDL3, per la roadmap di cosa manca (inclusa la parte AccessKit,
-   già scoperta/derisked ma non implementata).
-4. Verificare prima di tutto lo stato di compilazione macOS (vedi sopra).
-5. Implementare l'input (tastiera/mouse/touch/IME) — il pezzo di lavoro più grande rimasto.
-6. Solo dopo, procedere con i test manuali elencati sopra, su hardware reale per ciascuna delle
+3. Leggere `TODO.md`, sezione SDL3, per la storia tecnica e i vincoli ancora hardware.
+4. Usare la run verde `35505191605` come baseline automatizzata.
+5. Procedere con i test manuali elencati sopra, su hardware reale per ciascuna delle
    tre piattaforme desktop.
