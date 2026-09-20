@@ -8002,3 +8002,33 @@ Fixed the way Cargo's own error message suggests: added an empty `[workspace]` t
 own manifest, making it its own workspace root so Cargo never looks past it regardless of what
 sits above. Verified the regenerated patch applies cleanly to a fresh, independently-extracted
 pristine `v0.5.0` copy.
+
+---
+
+## 2026-09-20 — Fix a self-inflicted `0001-desktop-shell-core.patch` regression from the merge
+
+**File:** `patches/servo-v0.5.0/0001-desktop-shell-core.patch`.
+
+Merging `sdl3-windowing` into `main` hit a conflict in this patch file (both branches had
+touched it independently). Rather than hand-merge a unified diff — already known to be the
+wrong move, see this file's own "never hand-merge a patch" discipline — it was regenerated from
+the final merged *working tree* against pristine `v0.5.0`. That was itself the mistake: several
+of the files this patch covers (`app.rs`, `event_loop.rs`, `headed_window.rs`, `headless_window.rs`,
+`mod.rs`, `tracing.rs`, `keyutils.rs`) are *also* incrementally modified by later, separately
+numbered patches (`0017`–`0032`). The working tree already reflects *all* of those later patches
+applied on top — so a diff generated straight from it against pristine silently folded 0018–0032's
+own changes into `0001` too, duplicating them. `patch --dry-run` on `0001` alone couldn't catch
+this (it's a perfectly valid diff in isolation); it only surfaced as `0018` failing to apply
+("Reversed (or previously applied) patch detected" / hunk-context mismatches) in a real
+sequential apply — first in CI (`test.yml` run `35516179207` on `main`, all 8 jobs failing
+identically at "download + patch Servo source"), then reproduced locally.
+
+**Lesson: verifying one regenerated patch's own `--dry-run` is not sufficient when other patches
+in the sequence touch the same files — the only real check is a full, in-order sequential apply
+of every patch in `patches/servo-v0.5.0/` against a fresh pristine extraction**, exactly what
+`test.yml` itself does. Fixed by restoring `0001` to `origin/sdl3-windowing`'s own version (the
+one already proven correct by that branch's real green CI run `35513998387`) instead of
+regenerating it — a merge conflict in a patch file should be resolved by picking the side already
+verified to work in the full chain, not by re-deriving a "combined" version. Re-verified with a
+complete sequential `patch -p1` of all 32 patches against a fresh pristine `v0.5.0` extraction:
+all applied cleanly.
