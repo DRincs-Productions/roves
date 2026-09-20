@@ -1,5 +1,9 @@
 name: 'Build Servo Test Binaries (from source, with local patches)'
 
+# Note: this workflow only triggers on pushes touching the paths listed below, so an empty
+# commit does NOT retrigger it (unlike release.yml/android.yml/ios.yml) -- a real change
+# somewhere in patches/**, test-page/**, or this file itself is needed.
+#
 # This workflow builds Servo *from source* — pristine upstream tag + our own patches/
 # applied on top — purely to smoke-test local customizations (see ../CUSTOMIZATIONS.md) on
 # real Windows/Linux/macOS machines, without needing to compile Servo (a very heavy,
