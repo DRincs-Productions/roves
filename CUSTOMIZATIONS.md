@@ -7976,3 +7976,32 @@ Fixed by installing nextest on (only) the `ubuntu-24.04`/`linux`/`portable` leg 
 matrix entry builds the same patched source, and these tests don't create a window or touch SDL
 video (confirmed by the CUSTOMIZATIONS.md entries that added them), so they're safe to run
 headless. The other five legs keep `--skip-nextest` to avoid paying that cost six times over.
+
+---
+
+## 2026-09-20 — `support/crown/Cargo.toml`: make crown its own standalone workspace
+
+**File:** `support/crown/Cargo.toml`, `patches/servo-v0.5.0/0032-crown-standalone-workspace.patch`.
+
+The first real CI run of the new `mach test-unit -p servoshell` step (added above) failed before
+ever reaching servoshell's own tests, at `mach test-unit`'s own unconditional preliminary step of
+testing `crown` (Servo's custom rustc-lint tool) first: `cargo nextest run` inside
+`support/crown` errored with "current package believes it's in a workspace when it's not",
+naming `/home/runner/work/roves/roves/Cargo.toml` — **this repo's own real root `Cargo.toml`,
+one level above `servo-src/`** (where `test.yml` downloads and patches a fresh pristine copy to
+build from) — as the wrongly-detected workspace.
+
+Root cause: this repo tracks the full patched Servo source directly at its own root (see
+`CLAUDE.md`), so its checkout has a real `Cargo.toml` sitting one directory above the freshly
+reconstructed `servo-src/` tree `test.yml` builds. `servo-src/Cargo.toml` (root) already excludes
+`support/crown` from the workspace (`workspace.exclude`, pristine upstream behavior, unchanged
+here) — but `exclude` only stops *that* workspace from claiming crown; it doesn't stop Cargo's
+manifest search from continuing further up looking for some *other* ancestor workspace when
+invoked directly from `support/crown` (exactly what `mach test-unit` does). In a plain checkout
+there's nothing further up to find, so upstream never hits this — this is purely a consequence of
+this repo's own directory layout in CI, not a bug in the SDL3 patches.
+
+Fixed the way Cargo's own error message suggests: added an empty `[workspace]` table to crown's
+own manifest, making it its own workspace root so Cargo never looks past it regardless of what
+sits above. Verified the regenerated patch applies cleanly to a fresh, independently-extracted
+pristine `v0.5.0` copy.
