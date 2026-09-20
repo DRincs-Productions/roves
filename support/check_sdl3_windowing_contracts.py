@@ -87,6 +87,9 @@ def main() -> None:
     assert "set_window_icon(&mut sdl_window)" in headed_source, "SDL3 window icon is not installed"
     for egui_event in ("PointerMoved", "PointerButton", "MouseWheel", "PointerGone", "WindowFocused"):
         assert f"egui::Event::{egui_event}" in gui_source, f"egui {egui_event} bridge is missing"
+    for egui_event in ("Key", "Ime", "Copy", "Cut", "Paste"):
+        assert f"egui::Event::{egui_event}" in gui_source, f"egui {egui_event} bridge is missing"
+    assert "set_clipboard_text" in gui_source, "egui clipboard output is missing"
     assert "if consumed" in handler, "egui-consumed pointer events must not reach Servo"
 
     keyboard_factory = braced_body(keyutils_source, "pub fn keyboard_event_from_sdl")

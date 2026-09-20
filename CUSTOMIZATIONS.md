@@ -7885,3 +7885,17 @@ focus into `egui::RawInput`. Coordinates are converted to egui points using the 
 display scale. Events claimed by egui no longer leak into the active Servo webview; every queued
 event requests a redraw. Keyboard, text, and clipboard bridging intentionally remain a separate
 checkpoint. Android and OpenHarmony are unchanged.
+
+
+## 2026-09-20 — SDL3 egui keyboard, IME and clipboard bridge
+
+**Files:** `ports/servoshell/desktop/{gui.rs,headed_window.rs}`,
+`patches/servo-v0.5.0/0028-sdl3-egui-keyboard-clipboard.patch`,
+`support/check_sdl3_windowing_contracts.py`, `SDL3_MIGRATION_STATUS.md`, and
+`SDL3_WINDOWING_TESTING.md`.
+
+SDL keyboard events now update egui modifiers and key state; SDL text-editing/input events feed
+egui IME pre-edit and commit. Copy, cut, and paste use SDL's platform clipboard, and egui copy
+output is written back through the same API. Keyboard shortcuts are consumed only while egui
+wants keyboard input, except Tab which follows egui's standard focus-navigation behavior. Mobile
+input paths remain unchanged.

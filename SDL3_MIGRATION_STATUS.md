@@ -34,12 +34,11 @@ funzioni desktop elencate sotto hanno copertura automatica o una verifica hardwa
 ## In corso
 
 - [ ] Verificare in CI la compilazione senza le feature winit transitive di egui.
-- [ ] Input egui: pointer, click, wheel, focus e consumo eventi implementati; tastiera/testo e
-  clipboard ancora da portare.
+- [x] Input egui: pointer, click, wheel, focus, tastiera, testo/IME, modifier, clipboard e consumo.
 
 ## Da fare
 
-- [ ] Completare input egui: tastiera, testo, modifier e clipboard.
+- [x] Completare input egui: testo, clipboard, modifier, pointer e consumo eventi.
 - [x] Implementare testo SDL3 e IME: start/stop, pre-edit, commit e rettangolo candidati.
 - [ ] Verificare IME CJK e dead key su hardware reale.
 - [x] Portare touch SDL3 con ID stabili e coordinate normalizzate → pixel.

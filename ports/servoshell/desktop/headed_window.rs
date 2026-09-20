@@ -747,6 +747,12 @@ impl HeadedWindow {
                 return;
             }
         }
+        if let Some(consumed) = self.gui.borrow_mut().handle_keyboard_event(&event) {
+            self.request_redraw();
+            if consumed {
+                return;
+            }
+        }
 
         let theme = current_sdl_theme();
         if self.last_theme.replace(theme) != theme {
