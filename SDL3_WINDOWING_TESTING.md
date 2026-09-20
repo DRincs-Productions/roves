@@ -93,6 +93,9 @@ Da aggiungere man mano che i componenti vengono separati dall'event loop nativo.
 - conversione SDL3 → `egui::Event`;
 - transizioni focus, fullscreen e richiesta redraw.
 
+La conversione tastiera/modifier SDL3 → egui ha ora test puri accanto alle funzioni di mapping
+in `desktop/gui.rs`; non inizializza il sottosistema video e resta esclusa dai target mobile.
+
 Questi test non devono creare una finestra: le conversioni vanno mantenute come funzioni pure.
 
 ### Livello 3 — integrazione virtual-display su Linux

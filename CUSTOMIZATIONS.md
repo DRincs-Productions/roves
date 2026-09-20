@@ -7899,3 +7899,15 @@ egui IME pre-edit and commit. Copy, cut, and paste use SDL's platform clipboard,
 output is written back through the same API. Keyboard shortcuts are consumed only while egui
 wants keyboard input, except Tab which follows egui's standard focus-navigation behavior. Mobile
 input paths remain unchanged.
+
+
+## 2026-09-20 — SDL3 egui mapping unit tests
+
+**Files:** `ports/servoshell/desktop/gui.rs`,
+`patches/servo-v0.5.0/0029-sdl3-egui-input-tests.patch`,
+`support/check_sdl3_windowing_contracts.py`, `SDL3_MIGRATION_STATUS.md`, and
+`SDL3_WINDOWING_TESTING.md`.
+
+Pure unit tests now pin representative navigation, printable, keypad, function-key, unsupported
+key and combined-modifier conversions used by the SDL3 egui bridge. They do not create a window
+or initialize SDL video; Android and OpenHarmony remain outside this desktop-only module.

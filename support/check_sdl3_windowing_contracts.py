@@ -90,6 +90,7 @@ def main() -> None:
     for egui_event in ("Key", "Ime", "Copy", "Cut", "Paste"):
         assert f"egui::Event::{egui_event}" in gui_source, f"egui {egui_event} bridge is missing"
     assert "set_clipboard_text" in gui_source, "egui clipboard output is missing"
+    assert "mod sdl_egui_input_tests" in gui_source, "egui SDL mapping tests are missing"
     assert "if consumed" in handler, "egui-consumed pointer events must not reach Servo"
 
     keyboard_factory = braced_body(keyutils_source, "pub fn keyboard_event_from_sdl")
