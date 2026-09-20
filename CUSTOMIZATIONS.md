@@ -7955,3 +7955,24 @@ Steam/Xvfb smoke, Linux portable/deb, Windows portable/MSI, and macOS portable/D
 the complete egui input bridge and native AccessKit adapter compile and launch across the desktop
 matrix. IME, screen readers, touch/gesture, multi-monitor DPI, transparency and visual cursor/icon
 behavior still require the documented real-hardware checklist; mobile support remains unchanged.
+
+---
+
+## 2026-09-20 — Actually run the SDL3 unit tests in CI (pre-merge review of the branch)
+
+**File:** `.github/workflows/test.yml`.
+
+The 2026-09-19/20 entries above added real `#[cfg(test)]` unit tests for SDL3 keyboard mapping
+(`0026-sdl3-keyboard-tests.patch`) and the egui input bridge (`0029-sdl3-egui-input-tests.patch`),
+but nothing in this workflow ever compiled or executed them: `mach build` only builds the binary,
+never test targets, and `support/check_sdl3_windowing_contracts.py`'s gate only checks source
+text (exhaustiveness, argument order, patch syntax), not real `cargo`/`rustc` behavior. Every
+matrix leg also passed `mach bootstrap --skip-nextest`, so `cargo nextest` (what `mach test-unit`
+shells out to) wasn't even installed anywhere. Found while reviewing this branch before merging
+to `main`.
+
+Fixed by installing nextest on (only) the `ubuntu-24.04`/`linux`/`portable` leg and running
+`./mach test-unit -p servoshell` there right after `mach build` — one leg is enough since every
+matrix entry builds the same patched source, and these tests don't create a window or touch SDL
+video (confirmed by the CUSTOMIZATIONS.md entries that added them), so they're safe to run
+headless. The other five legs keep `--skip-nextest` to avoid paying that cost six times over.

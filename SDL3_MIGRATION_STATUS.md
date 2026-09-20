@@ -37,6 +37,9 @@ funzioni desktop elencate sotto hanno copertura automatica o una verifica hardwa
 
 - [x] Verificare in CI la compilazione senza le feature winit transitive di egui.
 - [x] Input egui: pointer, click, wheel, focus, tastiera, testo/IME, modifier, clipboard e consumo.
+- [ ] Verificare in CI che `mach test-unit -p servoshell` esegua davvero (non solo compili) gli
+  unit test SDL3/egui aggiunti sopra — step appena aggiunto a `test.yml`, non ancora confermato
+  da una run verde.
 
 ## Da fare
 

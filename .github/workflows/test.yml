@@ -294,10 +294,17 @@ jobs:
         # cause. mach bootstrap itself is normally done in well under a minute.
         timeout-minutes: 15
         run: |
+          # nextest is only needed on the one leg that actually runs `mach test-unit`
+          # below (see "run servoshell unit tests") -- skip installing it everywhere
+          # else to keep bootstrap fast on the other 5 matrix entries.
+          NEXTEST_FLAG=--skip-nextest
+          if [ "${{ matrix.os_name }}" = "linux" ] && [ "${{ matrix.package_mode }}" = "portable" ]; then
+            NEXTEST_FLAG=
+          fi
           if [ "${{ matrix.os_name }}" = "windows" ]; then
-            ./mach bootstrap --force --yes --skip-lints --skip-nextest --skip-platform
+            ./mach bootstrap --force --yes --skip-lints $NEXTEST_FLAG --skip-platform
           else
-            ./mach bootstrap --force --yes --skip-lints --skip-nextest
+            ./mach bootstrap --force --yes --skip-lints $NEXTEST_FLAG
           fi
           # dpkg-dev ships preinstalled on the ubuntu-24.04 runner image, but `mach bundle
           # --deb` (see the assemble step below) hard-depends on dpkg-deb from it, so check
@@ -346,6 +353,22 @@ jobs:
         shell: bash
         working-directory: servo-src
         run: ./mach build --features steam
+
+      # The SDL3 windowing migration (see ../CUSTOMIZATIONS.md's 2026-09-19/20 entries)
+      # added real `#[cfg(test)]` unit tests for keyboard/mouse/IME mapping
+      # (0026-sdl3-keyboard-tests.patch, 0029-sdl3-egui-input-tests.patch) but nothing
+      # in this workflow ever actually compiled or ran them -- `mach build` only builds
+      # the binary, never test targets, and `check_sdl3_windowing_contracts.py`'s gate
+      # only checks source text, not real `cargo`/`rustc` behavior. Run them for real on
+      # one leg (Linux portable -- cheapest, and every leg already reuses the same
+      # patched source and dependency graph, so one is enough to catch a real
+      # regression). These tests don't create a window or touch SDL video (see the
+      # CUSTOMIZATIONS.md entries above), so they're safe to run headless here.
+      - name: run servoshell unit tests (SDL3 keyboard/egui-input mapping)
+        if: matrix.os_name == 'linux' && matrix.package_mode == 'portable'
+        shell: bash
+        working-directory: servo-src
+        run: ./mach test-unit -p servoshell
 
       # `mach bundle` (see ../CUSTOMIZATIONS.md) is what actually builds the
       # single play.exe/play.app/play executable — this step's only job is
