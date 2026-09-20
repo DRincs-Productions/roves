@@ -7936,3 +7936,13 @@ NSView on macOS, and AT-SPI on Unix. Thread-safe callbacks wake the SDL event lo
 action requests and Servo receives activation state, while queued tree updates are finally
 drained into the native adapter. Android and OpenHarmony dependency blocks and code paths are
 unchanged. Screen-reader hardware validation remains outstanding.
+
+
+## 2026-09-20 — egui 0.36 RawInput modifier fix
+
+**Files:** `ports/servoshell/desktop/gui.rs` and
+`patches/servo-v0.5.0/0031-egui-raw-input-modifiers.patch`.
+
+egui 0.36 carries modifier state on keyboard and wheel events and no longer exposes the old
+global `RawInput.modifiers` field. The SDL bridge now uses only those event-local modifiers,
+fixing the compiler error reached by the first full egui-input CI run.

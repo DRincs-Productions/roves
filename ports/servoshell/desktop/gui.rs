@@ -339,7 +339,6 @@ impl SdlEguiGlow {
             screen_rect: Some(screen_rect),
             max_texture_side: Some(self.painter.max_texture_side()),
             events: core::mem::take(&mut self.pending_events),
-            modifiers: self.modifiers,
             focused: self.focused,
             ..Default::default()
         };
