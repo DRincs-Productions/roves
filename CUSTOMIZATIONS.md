@@ -8032,3 +8032,21 @@ regenerating it — a merge conflict in a patch file should be resolved by picki
 verified to work in the full chain, not by re-deriving a "combined" version. Re-verified with a
 complete sequential `patch -p1` of all 32 patches against a fresh pristine `v0.5.0` extraction:
 all applied cleanly.
+
+---
+
+## 2026-09-20 — Bump the smoke-test post-launch wait again, 15s → 25s
+
+**File:** `.github/workflows/test.yml`.
+
+With `0001` fixed, `test.yml` on `main` (run `35519619799`) still failed, but only on the
+Windows/MSI leg, twice in a row, at the exact same `roves:save_file` parameter-validation
+regression check this same wait was already bumped once for (`10s → 15s`, 2026-09-15 —
+see that entry, whose own reasoning — "confirmed by a real run where exactly this check came
+back empty on 2 of 6 platforms while the process itself launched fine" — is now recurring). The
+process launched fine both times; the `[roves-save-file-autotest]` marker just never showed up
+in `stdout`/`roves.log` within the 15s window. MSI-installed builds cold-start slower than a
+plain portable exe (Windows Defender/SmartScreen scanning a freshly installed binary), and the
+SDL3 windowing migration's own extra startup work (gamepad subsystem init, the new native
+AccessKit adapter) plausibly narrowed this margin further. Bumped both the Linux/macOS and
+Windows smoke-test waits to 25s.

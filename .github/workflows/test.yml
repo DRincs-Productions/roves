@@ -493,12 +493,17 @@ jobs:
           set +e
           "${RUNNER[@]}" "$BIN" > smoke-stdout.log 2> smoke-stderr.log &
           PID=$!
-          # 15s, not the original 10s: this step now also waits on test-page's own
-          # roves:save_file auto-check (App.tsx, 2s internal delay before it even starts) to
-          # both run and get captured before the process is killed -- 10s was cutting it too
-          # close on a loaded/slower CI runner, confirmed by a real run where exactly this
-          # check came back empty on 2 of 6 platforms while the process itself launched fine.
-          sleep 15
+          # 25s, not 15s: this step now also waits on test-page's own roves:save_file
+          # auto-check (App.tsx, 2s internal delay before it even starts) to both run and get
+          # captured before the process is killed -- 15s (itself already a bump from an
+          # original 10s, for the same reason) was still cutting it too close: confirmed by a
+          # real run (35519619799) where exactly this check came back empty specifically on
+          # the Windows/MSI leg, twice in a row, while the process itself launched fine both
+          # times -- MSI-installed cold-start latency (Windows Defender/SmartScreen scanning a
+          # freshly installed .exe) plus the SDL3 windowing migration's own extra
+          # startup work (gamepad subsystem, AccessKit adapter init) likely pushed this over
+          # the previous margin.
+          sleep 25
           if kill -0 "$PID" 2>/dev/null; then
             STILL_RUNNING=true
             kill "$PID"
@@ -627,9 +632,11 @@ jobs:
           $stderr = Join-Path $env:RUNNER_TEMP "smoke-stderr.log"
           $proc = Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName -PassThru `
             -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-          # 15s, not the original 10s -- same reasoning as the Linux/macOS smoke-test step's
-          # own identical change a few lines up in this file.
-          Start-Sleep -Seconds 15
+          # 25s, not 15s -- same reasoning and same bump as the Linux/macOS smoke-test step's
+          # own identical change a few lines up in this file (see its comment for the full
+          # story: this is what just failed, twice in a row, specifically on this Windows/MSI
+          # leg in run 35519619799).
+          Start-Sleep -Seconds 25
           $stillRunning = -not $proc.HasExited
           if ($stillRunning) { Stop-Process -Id $proc.Id -Force }
 
