@@ -7551,3 +7551,454 @@ at a narrower fix should wait for either real interactive Mac access or a much m
 low-risk experiment (e.g. a standalone, minimal SDL3-only smoke-test workflow that isolates
 *just* `sdl3::init().gamepad()` from the rest of the engine build, so a wrong guess costs minutes
 of CI time instead of hours) — tracked in TODO.md.
+
+---
+
+## 2026-09-17 — SDL3 windowing/event-loop: real implementation started (`sdl3-windowing` branch)
+
+**Files:** `Cargo.toml`, `ports/servoshell/desktop/{event_loop,app,gui,headed_window,tracing,
+webxr,headless_window}.rs`, `ports/servoshell/window.rs`, `ports/servoshell/desktop/protocols/
+roves.rs`.
+
+**Not on `main` — lives on a dedicated `sdl3-windowing` branch, deliberately not merged.**
+TODO.md's "Finestra + event loop" section had, until today, only scoping (13 files using
+`winit::`, no code attempted — see the entries above this one). The user explicitly asked for
+real implementation to begin, accepting non-green intermediate commits until the whole slice is
+ready to verify together — this entry documents the first real slice: the entire event-loop and
+control-flow architecture, plus window creation and the egui/GL rendering bridge, ported from
+winit to SDL3. **Real, known gap: no user input works yet** (keyboard, mouse, touch, IME,
+gestures) — a window opens, shows the animated boot splash, resizes, and closes cleanly, but
+cannot otherwise be interacted with. This is explicitly the next slice, not a hidden regression.
+
+**`desktop/event_loop.rs` — full rewrite.** `ServoShellEventLoop`'s `Winit(EventLoop<AppEvent>)`
+variant became `Sdl3 { sdl, video, event_subsystem, proxy }`. Introduced this module's own
+`ActiveEventLoop` (holds the `VideoSubsystem` plus `Cell<ControlFlow>`/`Cell<bool>` exit state),
+`ControlFlow` (`Wait`/`WaitUntil(Instant)`), `WindowId` (a plain `u32` type alias — SDL3 windows
+carry a raw `u32` id, no opaque newtype needed), and `EventLoopProxy` (wraps `Arc<sdl3::event::
+EventSender>` — `EventSender` itself has no public constructor and isn't `Send`, only `Sync`, so
+one is created once on the main thread and shared via `Arc` rather than re-obtained per clone the
+way winit's own, actually-`Clone`, proxy was). `AppEvent` gained a new `RedrawRequested(WindowId)`
+variant: SDL3 has no push-based redraw-request event the way winit does, so `HeadedWindow::
+request_redraw` sends this instead, routed straight back into the same window-event handling a
+real `WindowEvent::RedrawRequested` would have gotten. `run_sdl3_app` (replacing winit's own
+`EventLoop::run_app`) is a plain, explicit loop: `wait_event_timeout`/`wait_event` per
+`ControlFlow`, `is_user_event()`/`as_user_event_type::<AppEvent>()` for custom events, and a new
+`translate_sdl_event` function mapping the handful of `sdl3::event::Event::Window` sub-events
+ported so far (`Resized`, `CloseRequested`, `Exposed`→`RedrawRequested`, `FocusGained`/`Lost`)
+into this module's own, much smaller `WindowEvent` enum — everything else returns `None` and is
+skipped, not translated yet (see the file's own TODO comment for the full ~16-variant list still
+needed, mouse/keyboard/IME/touch/gestures/theme/scale-factor).
+
+**`desktop/app.rs` — `ApplicationHandler<AppEvent>` trait impl converted to three plain inherent
+methods** (`dispatch_new_events`/`dispatch_window_event`/`dispatch_user_event`, called directly
+by `run_sdl3_app` instead of through winit's own trait dispatch) — the actual state-machine logic
+(`AppState::Booting`/`Running` handling, splash-tick driving, gamepad polling) is otherwise
+unchanged, just renamed and re-typed against `event_loop.rs`'s new shim types instead of winit's.
+
+**`desktop/headed_window.rs` — window creation ported for real.** `winit_window: winit::window::
+Window` → `sdl_window: sdl3::video::Window`, built via `VideoSubsystem::window(title, w,
+h).opengl().resizable().high_pixel_density().hidden()` (+ `.fullscreen()` when
+`start_fullscreen`). Confirmed via the vendored `sdl3` crate's own source (not assumed) that
+`sdl3::video::Window` implements both `raw_window_handle::HasWindowHandle` and `HasDisplayHandle`
+with real per-platform implementations (Windows/macOS/iOS/Android, confirmed by reading
+`raw_window_handle.rs` directly) — this is what let `WindowRenderingContext::new(display_handle,
+window_handle, size)` (surfman's own GL-context creation) carry over completely unchanged: it
+already only ever needed a `raw-window-handle` pair, never a concrete winit type. Added the
+`raw-window-handle` feature to the workspace `sdl3` dependency in `Cargo.toml` for this. All of
+`sdl3::video::Window`'s mutating methods (`set_title`, `set_size`, `set_fullscreen`, `maximize`,
+`raise`, ...) take `&mut self` even though they just forward to a plain FFI call on the window's
+own `Arc`-backed shared native handle — `Window` derives `Clone` for exactly this reason (a cheap
+`Arc` bump, not a real duplicate window), so every such call in this file goes through
+`self.sdl_window.clone().the_call(...)`. `HeadedWindow::handle_winit_window_event` (the ~250-line
+dispatch for all ~16 real winit `WindowEvent` variants) is now `handle_window_event`, handling
+only `Resized`/`CloseRequested`/`RedrawRequested`/`Focused` — the old keyboard/mouse/touch/
+gesture/IME/dropped-file handling methods are left in place, unreachable, rather than deleted (a
+`#[expect(dead_code)]` is cheaper to undo than re-deriving carefully-written logic from scratch).
+Several details simplified or dropped for this pass, each flagged with its own TODO at the call
+site: window/taskbar icon loading, Linux taskbar app-id naming, transparent
+(`no_native_titlebar`) windows, IME cursor positioning, cursor shape changes, and the inner-vs-
+outer-size distinction (SDL3's `Window::size()` doesn't distinguish the client area from OS
+decorations the way winit's `inner_size()`/`outer_size()` did — treated as equal, zero
+`decoration_size`, harmless since `no_native_titlebar` isn't ported either).
+
+**`desktop/gui.rs` — `egui_glow::EguiGlow` replaced with a new, local `SdlEguiGlow`.** Confirmed
+by reading `egui_glow`'s own source that `EguiGlow` (in its `winit.rs` module) is a convenience
+wrapper hard-coded to `&winit::window::Window` at the type level (`run`/`paint`/`new` all take it
+directly) — but the two things it actually wraps, `egui_glow::Painter` (the real GL renderer,
+`painter.rs`) and `egui::Context` itself, are both genuinely toolkit-agnostic. `SdlEguiGlow` holds
+those two directly and does the `egui_winit::State`-equivalent input/output bridging itself —
+except, for this pass, there isn't one: `run` builds an `egui::RawInput` with only a screen rect
+(from `sdl_window.size()`/`display_scale()`) and nothing else, so the boot splash renders
+correctly (confirmed by this being the very first thing painted, at construction time) but no
+SDL3 input (keyboard, mouse, ...) is translated into egui at all yet — a real, known gap, not an
+oversight. AccessKit integration (`egui_winit::State::init_accesskit`, the `accesskit_winit::
+Adapter` reachable via `self.context.egui_winit.accesskit`) is gone for the same reason: it lived
+entirely inside the now-removed `egui_winit::State`. `Gui::handle_accesskit_event` and the
+tree-update-forwarding tail of `Gui::update` (which reached into that same adapter) are
+deleted/stubbed rather than reworked, since nothing produces those events anymore regardless —
+see TODO.md's own AccessKit de-risking notes for what a real SDL3 bridge needs to replicate.
+
+**`window.rs`, `webxr.rs`, `headless_window.rs`, `protocols/roves.rs` — mechanical follow-through.**
+`PlatformWindow::new_glwindow`'s `&winit::event_loop::ActiveEventLoop` parameter, and every other
+site naming that type, now name `crate::desktop::event_loop::ActiveEventLoop` instead — no
+behavior change, `webxr.rs`'s own `XRWindow`/`XRWindowPose` secondary-window creation was ported
+to `sdl3::video::Window` the same way the primary window was. `protocols/roves.rs`'s
+`close_proxy: Option<Arc<Mutex<EventLoopProxy<AppEvent>>>>` dropped the now-meaningless generic
+parameter (`EventLoopProxy` isn't generic anymore) — the `Arc<Mutex<..>>` wrapping itself is now
+redundant (the new `EventLoopProxy` is already cheaply `Clone`) but left as-is to minimize this
+pass's blast radius.
+
+**Verification:** both regenerated patches (`0001-desktop-shell-core.patch`,
+`0002-desktop-protocols.patch`) apply cleanly to a fresh, independently-extracted pristine v0.5.0
+download — but this is the *first* time any of this code has been checked by anything resembling
+a compiler: this machine has no working local `cargo build`/`check` (see `CLAUDE.md`), so every
+type, trait bound, and method signature above was verified by hand against the vendored `sdl3`/
+`egui_glow` crates' own source, not by an actual build. A real `test.yml` run against this branch
+is the first genuine compiler feedback this change will get — expect real errors on the first
+attempt; this entry describes intent and design, not a confirmed-working result.
+
+---
+
+## 2026-09-18 — SDL3 windowing: first genuinely green compile (Linux + Windows)
+
+**Files:** `patches/servo-v0.5.0/0014-root-workspace.patch`, `ports/servoshell/desktop/
+gamepad.rs`, `ports/servoshell/desktop/app.rs`, `ports/servoshell/running_app_state.rs`,
+`ports/servoshell/window.rs`.
+
+**Two real CI rounds after the entry above, `desktop/app.rs`/`event_loop.rs`/`headed_window.rs`/
+`gui.rs` (as described there) compile cleanly on Linux and Windows** — confirmed by a real
+`test.yml` run, not by hand-verification. Round 1 (10 compiler errors, all fixed, see git
+history) and round 2 (down to just `no method named window_handle/display_handle found for
+struct sdl3::video::Window`, persisting despite `raw-window-handle` genuinely being a correctly
+resolved feature in this repo's own `Cargo.lock`/`cargo metadata` output) led to the real root
+cause: **`patches/servo-v0.5.0/0014-root-workspace.patch` — the patch that actually carries the
+root `Cargo.toml` into `test.yml`'s pristine-download-plus-patches reconstruction, a *separate*
+file from `0001-desktop-shell-core.patch` — had never been regenerated after the
+`raw-window-handle` feature was added to `Cargo.toml` earlier.** CI's reconstructed manifest kept
+requesting `sdl3` with only `build-from-source-static`, so the feature genuinely never activated
+in the environment that mattered, no matter how correct the committed `Cargo.lock` was. A
+worthwhile lesson for next time: this repo's local `Cargo.toml`/`Cargo.lock` state is not what CI
+builds against at all — only `patches/servo-v0.5.0/*.patch` is, and every root-level dependency
+change needs its *own* patch regenerated (`0014` for `Cargo.toml`, not `0001`, which only covers
+`ports/servoshell/*`).
+
+**Also re-disabled gamepad on macOS on this branch** (mirroring `main`'s own 2026-09-17/18 revert
+— see that entry for the full story: the narrower IOKit-only fix was confirmed via a real 6-hour
+CI hang *not* to work, and was reverted on `main`). This branch had inherited the IOKit-only
+version from before that revert happened on `main`; left as-is, it would have wasted another full
+6-hour CI timeout on macOS for a hang already known and unrelated to the SDL3 windowing work
+itself. Re-apply once (if) the gamepad-on-macOS problem gets a real fix.
+
+**Not yet known: whether macOS compiles too** — the CI round that found the `0014` fix already
+had a macOS job running against the *previous* (IOKit-fix-still-present) commit, which will very
+likely also hit the same hang this entry's second fix just avoided for future runs; that
+specific run's macOS result is therefore not meaningful and wasn't waited on. The next full run
+(with both fixes in place) is the one to check for a real macOS compile signal.
+
+## 2026-09-18 — SDL3 input compile blocker: exhaustive event dispatch
+
+**Files:** `ports/servoshell/desktop/headed_window.rs`,
+`patches/servo-v0.5.0/0001-desktop-shell-core.patch`.
+
+The first CI run after wiring SDL3 keyboard and mouse events stopped in `servoshell` with one
+cross-platform `E0004`: `handle_window_event` did not explicitly cover the newly translated
+input variants. Replaced the catch-all with explicit no-op arms for `Resized`,
+`RedrawRequested`, and `Focused(false)`; resize/redraw are already handled earlier and focus
+loss has no Servo-side action yet. This makes future translated SDL3 events fail loudly until
+their dispatch is considered, while unblocking the same build error seen on all three desktop
+platforms in Actions run 35394065037.
+
+The follow-up compiler pass exposed the same exhaustiveness requirement in
+`desktop/tracing.rs`'s log-target mapping. Added stable SDL3-specific targets for every new
+keyboard and mouse variant; this keeps event tracing useful instead of hiding the variants behind
+a wildcard.
+
+## 2026-09-18 — Bound SDL3 CI concurrency and macOS smoke-test shutdown
+
+**File:** `.github/workflows/test.yml`.
+
+SDL3/Cocoa smoke runs could remain blocked in the native event pump after the workflow sent a
+normal termination signal, leaving macOS jobs (and several superseded workflow runs) alive for
+hours. The smoke test now gives the process five seconds to exit and then sends a forced kill
+before waiting. The workflow also uses a branch-scoped concurrency group with
+`cancel-in-progress`, so a newer SDL3 checkpoint automatically supersedes an older eight-job
+matrix instead of consuming both sets of runners.
+
+## 2026-09-19 — Fast SDL3 event-contract gate before the build matrix
+
+**Files:** `support/check_sdl3_windowing_contracts.py`, `.github/workflows/test.yml`,
+`SDL3_WINDOWING_TESTING.md`.
+
+Added a dependency-free structural test that checks exhaustive `WindowEvent` tracing and dispatch,
+the required gameplay input translations, and unified-patch syntax. `test.yml` runs this gate
+before creating the rolling release or starting the expensive platform matrix. The testing guide
+now records the verified green baseline and defines the remaining unit, virtual-display,
+packaging, and real-hardware layers needed to call the SDL3 migration complete.
+
+
+## 2026-09-19 — Remove compiled winit/egui-winit residue from servoshell
+
+**Files:** `Cargo.toml`, `ports/servoshell/Cargo.toml`, `ports/servoshell/desktop/{app.rs,
+event_loop.rs,geometry.rs,headed_window.rs,headless_window.rs,mod.rs,tracing.rs,keyutils.rs}`,
+`patches/servo-v0.5.0/0018-sdl3-remove-winit-residue.patch`,
+`support/check_sdl3_windowing_contracts.py`, and `SDL3_MIGRATION_STATUS.md`.
+
+Removed the desktop shell's direct `winit` and `egui-winit` dependencies and disabled
+`egui_glow` default features, so using its standalone `Painter` no longer pulls the winit
+convenience integration back into the binary. `PhysicalSize` now comes from Servo's existing
+`dpi` dependency; the unused winit geometry module, touch converter, icon constructor, and dead
+AccessKit event route were removed. Accessibility remains an explicit migration item: deleting
+an event variant that had no producer avoids pretending it worked while the SDL3-native adapter
+is still to be implemented.
+
+WebXR keyboard camera control is no longer stranded on winit types. Both translation and arrow-key
+rotation consume the same Servo `KeyboardEvent` produced by the SDL3 key translator, including
+Shift acceleration, before the event is sent to page content.
+
+The same review found that `keyboard_event_from_sdl` passed its final two booleans in reverse
+order: SDL's `repeat` flag became `is_composing`, while DOM repeat was always false. The arguments
+are now `repeat, false`, and the fast contract gate asserts this exact semantic ordering.
+
+**Mobile compatibility constraint:** this migration remains desktop-only. Android and OpenHarmony
+keep their independent EGL/native-window event paths; no mobile module or target-specific dependency
+is removed by this checkpoint. Shared-code follow-ups must preserve those backends explicitly.
+
+
+## 2026-09-19 — SDL3 desktop file-drop routing
+
+**Files:** `ports/servoshell/desktop/{event_loop.rs,headed_window.rs,tracing.rs}`,
+`patches/servo-v0.5.0/0019-sdl3-file-drop.patch`,
+`support/check_sdl3_windowing_contracts.py`, `SDL3_MIGRATION_STATUS.md`, and
+`SDL3_WINDOWING_TESTING.md`.
+
+SDL3 `DropFile` events now retain their target window, enter the exhaustive desktop
+`WindowEvent` pipeline, and load a valid local file URL in the active webview. Invalid paths are
+logged instead of panicking. Making the event payload own a `String` required removing `Copy`
+from the desktop-only event enum and borrowing the preliminary resize check. The structural gate
+now requires dropped-file translation and exhaustive handling/tracing. Android and OpenHarmony
+event paths are unchanged.
+
+
+## 2026-09-19 — SDL3 desktop touch routing
+
+**Files:** `ports/servoshell/desktop/{event_loop.rs,headed_window.rs,tracing.rs}`,
+`patches/servo-v0.5.0/0020-sdl3-touch.patch`, `support/check_sdl3_windowing_contracts.py`,
+`SDL3_MIGRATION_STATUS.md`, and `SDL3_WINDOWING_TESTING.md`.
+
+Finger down, motion, up, and cancellation events now flow through the exhaustive SDL3 desktop
+event pipeline. SDL normalized coordinates are converted with the current physical window size and
+toolbar offset before Servo receives a touch input event. SDL uses 64-bit finger identifiers while
+Servo exposes 32-bit opaque touch ids, so the desktop window keeps an active-id map instead of
+silently truncating values; mappings are released on up/cancel. The gate requires all four SDL
+finger variants. Android and OpenHarmony retain their independent native input paths.
+
+
+## 2026-09-19 — SDL3 desktop text input and IME composition
+
+**Files:** `ports/servoshell/desktop/{event_loop.rs,headed_window.rs,tracing.rs}`,
+`patches/servo-v0.5.0/0021-sdl3-ime.patch`, `support/check_sdl3_windowing_contracts.py`,
+`SDL3_MIGRATION_STATUS.md`, and `SDL3_WINDOWING_TESTING.md`.
+
+The desktop input-method control now starts and stops SDL3 text input and supplies the editable
+rectangle used to place the platform candidate UI. SDL `TextEditing` and `TextInput` events are
+routed as Servo composition update/commit events; because SDL has no separate start event, the
+window synthesizes exactly one composition start before a pre-edit or direct commit. Programmatic
+hide resets the state without reporting a user dismissal. Hardware verification remains required
+for CJK candidate UI and dead keys. Android and OpenHarmony input implementations are unchanged.
+
+
+## 2026-09-19 — SDL3 desktop system cursors
+
+**Files:** `ports/servoshell/desktop/headed_window.rs`,
+`patches/servo-v0.5.0/0022-sdl3-cursor.patch`, `SDL3_MIGRATION_STATUS.md`, and
+`SDL3_WINDOWING_TESTING.md`, plus `support/check_sdl3_windowing_contracts.py`.
+
+Servo cursor requests now control SDL3 cursor visibility and map every Servo cursor category to
+the nearest SDL system cursor. The created native cursor is retained by the desktop window so SDL
+never observes a destroyed handle; changing to `Cursor::None` hides it through `MouseUtil`.
+This is desktop-only and leaves the independent Android and OpenHarmony paths unchanged.
+
+
+## 2026-09-19 — SDL3 desktop pinch gestures
+
+**Files:** `ports/servoshell/desktop/{event_loop.rs,headed_window.rs,tracing.rs}`,
+`patches/servo-v0.5.0/0023-sdl3-pinch.patch`, `support/check_sdl3_windowing_contracts.py`,
+`SDL3_MIGRATION_STATUS.md`, and `SDL3_WINDOWING_TESTING.md`.
+
+SDL `MultiGesture` distance changes now drive Servo pinch zoom around the last mouse point. SDL
+does not attach a window id to this event, so the desktop event loop explicitly targets the
+focused window and falls back to the most recently addressed window. This preserves multi-window
+routing without changing Android or OpenHarmony's independent gesture implementations.
+
+
+## 2026-09-19 — SDL3 desktop icon and transparent window flags
+
+**Files:** `ports/servoshell/desktop/headed_window.rs`,
+`patches/servo-v0.5.0/0024-sdl3-window-icon-transparency.patch`,
+`support/check_sdl3_windowing_contracts.py`, `SDL3_MIGRATION_STATUS.md`, and
+`SDL3_WINDOWING_TESTING.md`.
+
+Linux and Windows now decode the per-game runtime `icon.png` (falling back to the compiled Roves
+icon), wrap its RGBA storage in an SDL surface, and install it before the window is shown. The
+`no_native_titlebar` preference again creates a borderless transparent window via SDL flags,
+matching the previous winit behavior. Mobile window creation and icons remain untouched.
+
+
+## 2026-09-19 — SDL3 desktop DPI, display and theme synchronization
+
+**Files:** `ports/servoshell/desktop/{event_loop.rs,headed_window.rs,tracing.rs}`,
+`patches/servo-v0.5.0/0025-sdl3-display-theme.patch`,
+`support/check_sdl3_windowing_contracts.py`, `SDL3_MIGRATION_STATUS.md`, and
+`SDL3_WINDOWING_TESTING.md`.
+
+Physical-pixel size changes now resize the rendering surface rather than relying only on SDL's
+logical resize event. Display and ICC-profile changes refresh the current display geometry and
+scale. Because SDL3 0.20 has no dedicated system-theme event, the desktop window compares the
+current system theme during normal event dispatch and notifies the active webview on change.
+Android and OpenHarmony continue to use their existing native display and theme paths.
+
+
+## 2026-09-19 — SDL3 keyboard mapping unit tests
+
+**Files:** `ports/servoshell/desktop/keyutils.rs`,
+`patches/servo-v0.5.0/0026-sdl3-keyboard-tests.patch`, `SDL3_MIGRATION_STATUS.md`, and
+`SDL3_WINDOWING_TESTING.md`.
+
+Pure Rust tests now cover representative character/scancode mapping, DOM key state and location,
+combined SDL modifiers, repeat versus composition semantics, keypad handling, and unidentified
+fallbacks. They do not initialize SDL video and therefore do not alter or depend on mobile EGL
+backends.
+
+
+## 2026-09-20 — WIP SDL3 egui pointer input bridge
+
+**Files:** `ports/servoshell/desktop/{gui.rs,headed_window.rs}`,
+`patches/servo-v0.5.0/0027-sdl3-egui-pointer.patch`,
+`support/check_sdl3_windowing_contracts.py`, `SDL3_MIGRATION_STATUS.md`, and
+`SDL3_WINDOWING_TESTING.md`.
+
+The local egui backend now queues SDL mouse movement, buttons, wheel, pointer-leave, and window
+focus into `egui::RawInput`. Coordinates are converted to egui points using the current SDL
+display scale. Events claimed by egui no longer leak into the active Servo webview; every queued
+event requests a redraw. Keyboard, text, and clipboard bridging intentionally remain a separate
+checkpoint. Android and OpenHarmony are unchanged.
+
+
+## 2026-09-20 — SDL3 egui keyboard, IME and clipboard bridge
+
+**Files:** `ports/servoshell/desktop/{gui.rs,headed_window.rs}`,
+`patches/servo-v0.5.0/0028-sdl3-egui-keyboard-clipboard.patch`,
+`support/check_sdl3_windowing_contracts.py`, `SDL3_MIGRATION_STATUS.md`, and
+`SDL3_WINDOWING_TESTING.md`.
+
+SDL keyboard events now update egui modifiers and key state; SDL text-editing/input events feed
+egui IME pre-edit and commit. Copy, cut, and paste use SDL's platform clipboard, and egui copy
+output is written back through the same API. Keyboard shortcuts are consumed only while egui
+wants keyboard input, except Tab which follows egui's standard focus-navigation behavior. Mobile
+input paths remain unchanged.
+
+
+## 2026-09-20 — SDL3 egui mapping unit tests
+
+**Files:** `ports/servoshell/desktop/gui.rs`,
+`patches/servo-v0.5.0/0029-sdl3-egui-input-tests.patch`,
+`support/check_sdl3_windowing_contracts.py`, `SDL3_MIGRATION_STATUS.md`, and
+`SDL3_WINDOWING_TESTING.md`.
+
+Pure unit tests now pin representative navigation, printable, keypad, function-key, unsupported
+key and combined-modifier conversions used by the SDL3 egui bridge. They do not create a window
+or initialize SDL video; Android and OpenHarmony remain outside this desktop-only module.
+
+
+## 2026-09-20 — SDL3 Xvfb window-cycle smoke
+
+**Files:** `.github/workflows/test.yml`, `support/xvfb_window_cycle_smoke.sh`,
+`SDL3_MIGRATION_STATUS.md`, and `SDL3_WINDOWING_TESTING.md`.
+
+The existing Linux packaging smoke now shares its Xvfb display with a small xdotool probe. It
+requires a visible SDL3 window, injects pointer and keyboard input, resizes it, and verifies that
+the application remains alive. This extends the existing build rather than adding another costly
+Servo compilation job. Mobile workflows and sources are unchanged.
+
+
+## 2026-09-20 — Native SDL3 AccessKit adapter
+
+**Files:** `ports/servoshell/desktop/{accessibility.rs,gui.rs,headed_window.rs,mod.rs}`,
+`ports/servoshell/Cargo.toml`, `Cargo.toml`,
+`patches/servo-v0.5.0/0030-sdl3-accesskit-adapter.patch`, and SDL3 tracking documents.
+
+Desktop accessibility no longer depends on `accesskit_winit`. A small SDL3 shell constructs the
+native AccessKit adapter from the SDL raw window handle: subclassed HWND on Windows, subclassed
+NSView on macOS, and AT-SPI on Unix. Thread-safe callbacks wake the SDL event loop; egui receives
+action requests and Servo receives activation state, while queued tree updates are finally
+drained into the native adapter. Android and OpenHarmony dependency blocks and code paths are
+unchanged. Screen-reader hardware validation remains outstanding.
+
+
+## 2026-09-20 — egui 0.36 RawInput modifier fix
+
+**Files:** `ports/servoshell/desktop/gui.rs` and
+`patches/servo-v0.5.0/0031-egui-raw-input-modifiers.patch`.
+
+egui 0.36 carries modifier state on keyboard and wheel events and no longer exposes the old
+global `RawInput.modifiers` field. The SDL bridge now uses only those event-local modifiers,
+fixing the compiler error reached by the first full egui-input CI run.
+
+
+## 2026-09-20 — SDL3 windowing final automated matrix
+
+GitHub Actions run `35505191605` is green in all eight jobs at commit `26335a6`: contract gate,
+Steam/Xvfb smoke, Linux portable/deb, Windows portable/MSI, and macOS portable/DMG. This verifies
+the complete egui input bridge and native AccessKit adapter compile and launch across the desktop
+matrix. IME, screen readers, touch/gesture, multi-monitor DPI, transparency and visual cursor/icon
+behavior still require the documented real-hardware checklist; mobile support remains unchanged.
+
+---
+
+## 2026-09-20 — Actually run the SDL3 unit tests in CI (pre-merge review of the branch)
+
+**File:** `.github/workflows/test.yml`.
+
+The 2026-09-19/20 entries above added real `#[cfg(test)]` unit tests for SDL3 keyboard mapping
+(`0026-sdl3-keyboard-tests.patch`) and the egui input bridge (`0029-sdl3-egui-input-tests.patch`),
+but nothing in this workflow ever compiled or executed them: `mach build` only builds the binary,
+never test targets, and `support/check_sdl3_windowing_contracts.py`'s gate only checks source
+text (exhaustiveness, argument order, patch syntax), not real `cargo`/`rustc` behavior. Every
+matrix leg also passed `mach bootstrap --skip-nextest`, so `cargo nextest` (what `mach test-unit`
+shells out to) wasn't even installed anywhere. Found while reviewing this branch before merging
+to `main`.
+
+Fixed by installing nextest on (only) the `ubuntu-24.04`/`linux`/`portable` leg and running
+`./mach test-unit -p servoshell` there right after `mach build` — one leg is enough since every
+matrix entry builds the same patched source, and these tests don't create a window or touch SDL
+video (confirmed by the CUSTOMIZATIONS.md entries that added them), so they're safe to run
+headless. The other five legs keep `--skip-nextest` to avoid paying that cost six times over.
+
+---
+
+## 2026-09-20 — `support/crown/Cargo.toml`: make crown its own standalone workspace
+
+**File:** `support/crown/Cargo.toml`, `patches/servo-v0.5.0/0032-crown-standalone-workspace.patch`.
+
+The first real CI run of the new `mach test-unit -p servoshell` step (added above) failed before
+ever reaching servoshell's own tests, at `mach test-unit`'s own unconditional preliminary step of
+testing `crown` (Servo's custom rustc-lint tool) first: `cargo nextest run` inside
+`support/crown` errored with "current package believes it's in a workspace when it's not",
+naming `/home/runner/work/roves/roves/Cargo.toml` — **this repo's own real root `Cargo.toml`,
+one level above `servo-src/`** (where `test.yml` downloads and patches a fresh pristine copy to
+build from) — as the wrongly-detected workspace.
+
+Root cause: this repo tracks the full patched Servo source directly at its own root (see
+`CLAUDE.md`), so its checkout has a real `Cargo.toml` sitting one directory above the freshly
+reconstructed `servo-src/` tree `test.yml` builds. `servo-src/Cargo.toml` (root) already excludes
+`support/crown` from the workspace (`workspace.exclude`, pristine upstream behavior, unchanged
+here) — but `exclude` only stops *that* workspace from claiming crown; it doesn't stop Cargo's
+manifest search from continuing further up looking for some *other* ancestor workspace when
+invoked directly from `support/crown` (exactly what `mach test-unit` does). In a plain checkout
+there's nothing further up to find, so upstream never hits this — this is purely a consequence of
+this repo's own directory layout in CI, not a bug in the SDL3 patches.
+
+Fixed the way Cargo's own error message suggests: added an empty `[workspace]` table to crown's
+own manifest, making it its own workspace root so Cargo never looks past it regardless of what
+sits above. Verified the regenerated patch applies cleanly to a fresh, independently-extracted
+pristine `v0.5.0` copy.

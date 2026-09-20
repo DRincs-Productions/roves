@@ -1,0 +1,271 @@
+diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
+index c448203..c03662a 100644
+--- a/ports/servoshell/desktop/gui.rs
++++ b/ports/servoshell/desktop/gui.rs
+@@ -32,15 +32,112 @@ use crate::desktop::headed_window;
+ use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
+ use crate::window::ServoShellWindow;
+ 
++fn egui_modifiers_from_sdl(keymod: sdl3::keyboard::Mod) -> egui::Modifiers {
++    use sdl3::keyboard::Mod;
++    let alt = keymod.intersects(Mod::LALTMOD | Mod::RALTMOD);
++    let ctrl = keymod.intersects(Mod::LCTRLMOD | Mod::RCTRLMOD);
++    let shift = keymod.intersects(Mod::LSHIFTMOD | Mod::RSHIFTMOD);
++    let mac_cmd = cfg!(target_os = "macos") && keymod.intersects(Mod::LGUIMOD | Mod::RGUIMOD);
++    egui::Modifiers {
++        alt,
++        ctrl,
++        shift,
++        mac_cmd,
++        command: if cfg!(target_os = "macos") { mac_cmd } else { ctrl },
++    }
++}
++
++fn egui_key_from_sdl(keycode: sdl3::keyboard::Keycode) -> Option<egui::Key> {
++    use egui::Key;
++    use sdl3::keyboard::Keycode;
++    Some(match keycode {
++        Keycode::Down => Key::ArrowDown,
++        Keycode::Left => Key::ArrowLeft,
++        Keycode::Right => Key::ArrowRight,
++        Keycode::Up => Key::ArrowUp,
++        Keycode::Escape => Key::Escape,
++        Keycode::Tab => Key::Tab,
++        Keycode::Backspace => Key::Backspace,
++        Keycode::Return | Keycode::KpEnter => Key::Enter,
++        Keycode::Space => Key::Space,
++        Keycode::Insert => Key::Insert,
++        Keycode::Delete => Key::Delete,
++        Keycode::Home => Key::Home,
++        Keycode::End => Key::End,
++        Keycode::PageUp => Key::PageUp,
++        Keycode::PageDown => Key::PageDown,
++        Keycode::Comma | Keycode::KpComma => Key::Comma,
++        Keycode::Backslash => Key::Backslash,
++        Keycode::Slash | Keycode::KpDivide => Key::Slash,
++        Keycode::LeftBracket => Key::OpenBracket,
++        Keycode::RightBracket => Key::CloseBracket,
++        Keycode::Grave => Key::Backtick,
++        Keycode::Minus | Keycode::KpMinus => Key::Minus,
++        Keycode::Period | Keycode::KpPeriod => Key::Period,
++        Keycode::KpPlus => Key::Plus,
++        Keycode::Equals | Keycode::KpEquals => Key::Equals,
++        Keycode::Semicolon => Key::Semicolon,
++        Keycode::Apostrophe => Key::Quote,
++        Keycode::_0 | Keycode::Kp0 => Key::Num0,
++        Keycode::_1 | Keycode::Kp1 => Key::Num1,
++        Keycode::_2 | Keycode::Kp2 => Key::Num2,
++        Keycode::_3 | Keycode::Kp3 => Key::Num3,
++        Keycode::_4 | Keycode::Kp4 => Key::Num4,
++        Keycode::_5 | Keycode::Kp5 => Key::Num5,
++        Keycode::_6 | Keycode::Kp6 => Key::Num6,
++        Keycode::_7 | Keycode::Kp7 => Key::Num7,
++        Keycode::_8 | Keycode::Kp8 => Key::Num8,
++        Keycode::_9 | Keycode::Kp9 => Key::Num9,
++        Keycode::A => Key::A,
++        Keycode::B => Key::B,
++        Keycode::C => Key::C,
++        Keycode::D => Key::D,
++        Keycode::E => Key::E,
++        Keycode::F => Key::F,
++        Keycode::G => Key::G,
++        Keycode::H => Key::H,
++        Keycode::I => Key::I,
++        Keycode::J => Key::J,
++        Keycode::K => Key::K,
++        Keycode::L => Key::L,
++        Keycode::M => Key::M,
++        Keycode::N => Key::N,
++        Keycode::O => Key::O,
++        Keycode::P => Key::P,
++        Keycode::Q => Key::Q,
++        Keycode::R => Key::R,
++        Keycode::S => Key::S,
++        Keycode::T => Key::T,
++        Keycode::U => Key::U,
++        Keycode::V => Key::V,
++        Keycode::W => Key::W,
++        Keycode::X => Key::X,
++        Keycode::Y => Key::Y,
++        Keycode::Z => Key::Z,
++        Keycode::F1 => Key::F1,
++        Keycode::F2 => Key::F2,
++        Keycode::F3 => Key::F3,
++        Keycode::F4 => Key::F4,
++        Keycode::F5 => Key::F5,
++        Keycode::F6 => Key::F6,
++        Keycode::F7 => Key::F7,
++        Keycode::F8 => Key::F8,
++        Keycode::F9 => Key::F9,
++        Keycode::F10 => Key::F10,
++        Keycode::F11 => Key::F11,
++        Keycode::F12 => Key::F12,
++        _ => return None,
++    })
++}
++
+ /// TODO(SDL3 windowing, real progress not completion — see TODO.md): replaces
+ /// `egui_glow::EguiGlow` (a convenience wrapper hard-coded to winit — `EguiGlow::run`/`paint`/
+ /// `new` all take `&winit::window::Window` directly, confirmed by reading that crate's own
+ /// `winit.rs`). `egui_glow::Painter` (the actual GL renderer, in `painter.rs`) and `egui::
+ /// Context` are both genuinely toolkit-agnostic underneath it, so this holds those two
+ /// directly instead and does the `egui_winit::State`-equivalent input/output bridging itself —
+-/// except there ISN'T one yet: `run` below builds an `egui::RawInput` with a screen rect and
+-/// nothing else. No SDL3 events (keyboard, mouse, ...) are translated into it, so the egui UI
+-/// currently renders (the boot splash paints correctly) but cannot be interacted with at all.
++/// `run` below now drains SDL3 pointer, focus, keyboard, text/IME, modifier and clipboard input
++/// accumulated by the bridge methods into `egui::RawInput`.
+ /// AccessKit integration is dropped for the same reason `egui_winit::State` is: it lived in
+ /// `init_accesskit`/`self.egui_winit.accesskit`, both gone. See TODO.md's own AccessKit
+ /// de-risking notes for what a real SDL3 bridge needs to replicate.
+@@ -54,10 +151,14 @@ struct SdlEguiGlow {
+     pointer_pos: Option<egui::Pos2>,
+     modifiers: egui::Modifiers,
+     focused: bool,
++    clipboard: sdl3::clipboard::ClipboardUtil,
+ }
+ 
+ impl SdlEguiGlow {
+-    fn new(gl: std::sync::Arc<glow::Context>) -> Self {
++    fn new(
++        gl: std::sync::Arc<glow::Context>,
++        clipboard: sdl3::clipboard::ClipboardUtil,
++    ) -> Self {
+         let painter = egui_glow::Painter::new(gl, "", None, false)
+             .map_err(|err| log::error!("error occurred in initializing painter:\n{err}"))
+             .expect("Could not create egui_glow::Painter");
+@@ -71,7 +172,66 @@ impl SdlEguiGlow {
+             pointer_pos: None,
+             modifiers: Default::default(),
+             focused: true,
++            clipboard,
++        }
++    }
++
++    fn handle_keyboard_event(&mut self, event: &WindowEvent) -> Option<bool> {
++        let (keycode, keymod, pressed, repeat) = match event {
++            WindowEvent::KeyDown { keycode, keymod, repeat, .. } => {
++                (*keycode, *keymod, true, *repeat)
++            },
++            WindowEvent::KeyUp { keycode, keymod, .. } => (*keycode, *keymod, false, false),
++            WindowEvent::ImePreedit(text) => {
++                self.pending_events.push(egui::Event::Ime(egui::ImeEvent::Preedit {
++                    text: text.clone(),
++                    active_range_chars: None,
++                }));
++                return Some(self.egui_ctx.egui_wants_keyboard_input());
++            },
++            WindowEvent::ImeCommit(text) => {
++                self.pending_events
++                    .push(egui::Event::Ime(egui::ImeEvent::Commit(text.clone())));
++                return Some(self.egui_ctx.egui_wants_keyboard_input());
++            },
++            _ => return None,
++        };
++
++        self.modifiers = egui_modifiers_from_sdl(keymod);
++        let wants_keyboard = self.egui_ctx.egui_wants_keyboard_input();
++        let Some(key) = keycode.and_then(egui_key_from_sdl) else {
++            return Some(wants_keyboard);
++        };
++        if pressed && self.modifiers.command && wants_keyboard {
++            match key {
++                egui::Key::C => {
++                    self.pending_events.push(egui::Event::Copy);
++                    return Some(true);
++                },
++                egui::Key::X => {
++                    self.pending_events.push(egui::Event::Cut);
++                    return Some(true);
++                },
++                egui::Key::V => {
++                    if let Ok(text) = self.clipboard.clipboard_text() {
++                        if !text.is_empty() {
++                            self.pending_events
++                                .push(egui::Event::Paste(text.replace("\r\n", "\n")));
++                        }
++                    }
++                    return Some(true);
++                },
++                _ => {},
++            }
+         }
++        self.pending_events.push(egui::Event::Key {
++            key,
++            physical_key: Some(key),
++            pressed,
++            repeat,
++            modifiers: self.modifiers,
++        });
++        Some(wants_keyboard || key == egui::Key::Tab)
+     }
+ 
+     fn handle_pointer_event(&mut self, event: &WindowEvent, pixels_per_point: f32) -> Option<bool> {
+@@ -151,8 +311,27 @@ impl SdlEguiGlow {
+             focused: self.focused,
+             ..Default::default()
+         };
+-        let egui::FullOutput { textures_delta, shapes, pixels_per_point, .. } =
++        let egui::FullOutput {
++            platform_output,
++            textures_delta,
++            shapes,
++            pixels_per_point,
++            ..
++        } =
+             self.egui_ctx.run_ui(raw_input, run_ui);
++        for command in platform_output.commands {
++            match command {
++                egui::OutputCommand::CopyText(text) => {
++                    if let Err(error) = self.clipboard.set_clipboard_text(&text) {
++                        warn!("Could not copy egui text to the SDL3 clipboard: {error}");
++                    }
++                },
++                egui::OutputCommand::CopyImage(_) => {
++                    warn!("Copying egui images through SDL3 is not supported")
++                },
++                egui::OutputCommand::OpenUrl(_) => {},
++            }
++        }
+         self.shapes = shapes;
+         self.pixels_per_point = pixels_per_point;
+         self.textures_delta.append(textures_delta);
+@@ -459,6 +638,9 @@ impl Drop for Gui {
+ }
+ 
+ impl Gui {
++    pub(crate) fn handle_keyboard_event(&mut self, event: &WindowEvent) -> Option<bool> {
++        self.context.handle_keyboard_event(event)
++    }
+     pub(crate) fn handle_pointer_event(
+         &mut self,
+         event: &WindowEvent,
+@@ -477,7 +659,10 @@ impl Gui {
+         rendering_context
+             .make_current()
+             .expect("Could not make window RenderingContext current");
+-        let context = SdlEguiGlow::new(rendering_context.glow_gl_api());
++        let context = SdlEguiGlow::new(
++            rendering_context.glow_gl_api(),
++            sdl_window.subsystem().clipboard(),
++        );
+ 
+         let mut font_definitions = configure_fonts();
+         add_wordmark_font(&mut font_definitions);
+diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/desktop/headed_window.rs
+index 290bd3c..643ead8 100644
+--- a/ports/servoshell/desktop/headed_window.rs
++++ b/ports/servoshell/desktop/headed_window.rs
+@@ -747,6 +747,12 @@ impl HeadedWindow {
+                 return;
+             }
+         }
++        if let Some(consumed) = self.gui.borrow_mut().handle_keyboard_event(&event) {
++            self.request_redraw();
++            if consumed {
++                return;
++            }
++        }
+ 
+         let theme = current_sdl_theme();
+         if self.last_theme.replace(theme) != theme {

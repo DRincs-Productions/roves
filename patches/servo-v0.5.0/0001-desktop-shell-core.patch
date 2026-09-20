@@ -59,7 +59,7 @@ diff --git a/ports/servoshell/Cargo.toml b/ports/servoshell/Cargo.toml
  url = { workspace = true }
  webdriver_server = { workspace = true }
  
-@@ -115,18 +126,20 @@
+@@ -115,28 +126,33 @@
  surfman = { workspace = true, features = ["sm-angle-default"] }
  
  [target.'cfg(not(any(target_os = "android", target_env = "ohos")))'.dependencies]
@@ -67,9 +67,10 @@ diff --git a/ports/servoshell/Cargo.toml b/ports/servoshell/Cargo.toml
  dirs = { workspace = true }
  egui = { workspace = true }
  egui-file-dialog = { workspace = true }
- egui-winit = { workspace = true, features = ["accesskit", "clipboard", "wayland"] }
- egui_glow = { workspace = true, features = ["winit"] }
+-egui-winit = { workspace = true, features = ["accesskit", "clipboard", "wayland"] }
+-egui_glow = { workspace = true, features = ["winit"] }
 -gilrs = { workspace = true }
++egui_glow = { workspace = true }
  glow = { workspace = true }
 -headers = { workspace = true }
 +sdl3 = { workspace = true }
@@ -78,19 +79,26 @@ diff --git a/ports/servoshell/Cargo.toml b/ports/servoshell/Cargo.toml
  servo-allocator = { workspace = true }
 +steamworks = { version = "0.13", optional = true }
  surfman = { workspace = true, features = ["sm-raw-window-handle-06", "sm-x11"] }
+-winit = { workspace = true }
 +sysinfo = { workspace = true }
- winit = { workspace = true }
  
  [target.'cfg(any(all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))'.dependencies]
-@@ -134,7 +147,7 @@
+ signal-hook-registry = { workspace = true }
  
++[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
++accesskit_unix = { workspace = true }
++
  [target.'cfg(target_os = "windows")'.dependencies]
++accesskit_windows = { workspace = true }
  servo = { workspace = true, features = ["no-wgl"] }
 -windows-sys = { workspace = true, features = ["Win32_Graphics_Gdi", "Win32_System_Console"] }
 +windows-sys = { workspace = true, features = ["Win32_Graphics_Gdi", "Win32_System_Console", "Win32_System_LibraryLoader"] }
  
  [target.'cfg(target_os = "macos")'.dependencies]
++accesskit_macos = { workspace = true }
  objc2-app-kit = { workspace = true, features = [
+     "std",
+     "NSColorSpace",
 diff --git a/ports/servoshell/build.rs b/ports/servoshell/build.rs
 --- a/ports/servoshell/build.rs
 +++ b/ports/servoshell/build.rs
@@ -212,7 +220,7 @@ diff --git a/ports/servoshell/build.rs b/ports/servoshell/build.rs
 diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
 --- a/ports/servoshell/desktop/app.rs
 +++ b/ports/servoshell/desktop/app.rs
-@@ -4,36 +4,118 @@
+@@ -4,36 +4,116 @@
  
  //! Application entry point, runs the event loop.
  
@@ -231,15 +239,19 @@ diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
      EventLoopWaker, Opts, Preferences, ServoBuilder, ServoUrl, UserContentManager, UserScript,
  };
  use url::Url;
- use winit::application::ApplicationHandler;
+-use winit::application::ApplicationHandler;
 -use winit::event::WindowEvent;
-+use winit::event::{StartCause, WindowEvent};
- use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
- use winit::window::WindowId;
- 
- use super::event_loop::AppEvent;
- use crate::desktop::event_loop::ServoShellEventLoop;
+-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
+-use winit::window::WindowId;
+-
+-use super::event_loop::AppEvent;
+-use crate::desktop::event_loop::ServoShellEventLoop;
 -use crate::desktop::headed_window::HeadedWindow;
++
++use crate::desktop::event_loop::{
++    ActiveEventLoop, AppEvent, ControlFlow, EventLoopProxy, ServoShellEventLoop, WindowEvent,
++    WindowId,
++};
 +use crate::desktop::headed_window::{HeadedWindow, SPLASH_ANIMATION_TICK};
  use crate::desktop::headless_window::HeadlessWindow;
  use crate::desktop::protocols;
@@ -336,9 +348,12 @@ diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
      Running(Rc<RunningAppState>),
      ShuttingDown,
  }
-@@ -45,6 +127,28 @@
+@@ -43,8 +123,30 @@
+     preferences: Preferences,
+     servoshell_preferences: ServoShellPreferences,
      waker: Box<dyn EventLoopWaker>,
-     event_loop_proxy: Option<EventLoopProxy<AppEvent>>,
+-    event_loop_proxy: Option<EventLoopProxy<AppEvent>>,
++    event_loop_proxy: Option<EventLoopProxy>,
      initial_url: ServoUrl,
 +    /// A packed-content launch's still-to-run boot extraction (see
 +    /// `bundle_launch.rs`'s `BundledLaunch`), taken (and consumed) by the
@@ -365,7 +380,7 @@ diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
      t_start: Instant,
      t: Instant,
      state: AppState,
-@@ -56,14 +160,9 @@
+@@ -56,14 +158,9 @@
          preferences: Preferences,
          servo_shell_preferences: ServoShellPreferences,
          event_loop: &ServoShellEventLoop,
@@ -382,7 +397,7 @@ diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
          let t = Instant::now();
          App {
              opts,
-@@ -71,15 +170,159 @@
+@@ -71,15 +168,159 @@
              servoshell_preferences: servo_shell_preferences,
              waker: event_loop.create_event_loop_waker(),
              event_loop_proxy: event_loop.event_loop_proxy(),
@@ -447,7 +462,7 @@ diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
 +        // `new_events`/`try_finish_booting`, which take over re-arming this on every
 +        // subsequent tick.
 +        if let Some(headed_window) = platform_window.as_headed_window() {
-+            headed_window.winit_window().request_redraw();
++            headed_window.request_redraw();
 +        }
 +        active_event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + SPLASH_ANIMATION_TICK));
 +
@@ -544,7 +559,7 @@ diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
          let mut protocol_registry = ProtocolRegistry::default();
          let _ = protocol_registry.register(
              "urlinfo",
-@@ -91,6 +334,63 @@
+@@ -91,6 +332,63 @@
              "resource",
              protocols::resource::ResourceProtocolHandler::default(),
          );
@@ -608,7 +623,7 @@ diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
  
          let servo_builder = ServoBuilder::default()
              .opts(self.opts.clone())
-@@ -98,10 +398,9 @@
+@@ -98,10 +396,9 @@
              .protocol_registry(protocol_registry)
              .event_loop_waker(self.waker.clone());
  
@@ -621,7 +636,7 @@ diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
  
          #[cfg(feature = "webxr")]
          servo.register_webxr_registry(super::webxr::XrDiscoveryWebXrRegistry::new_boxed(
-@@ -113,6 +412,12 @@
+@@ -113,6 +410,12 @@
          servo.setup_logging();
  
          let user_content_manager = Rc::new(UserContentManager::new(&servo));
@@ -634,7 +649,7 @@ diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
          for script in load_userscripts(self.servoshell_preferences.userscripts_directory.as_deref())
              .expect("Loading userscripts failed")
          {
-@@ -129,12 +434,21 @@
+@@ -129,12 +432,21 @@
              self.waker.clone(),
              user_content_manager,
              self.preferences.clone(),
@@ -659,10 +674,14 @@ diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
          running_state.open_window(platform_window, self.initial_url.as_url().clone());
  
          self.state = AppState::Running(running_state);
-@@ -184,6 +498,52 @@
-         self.init(Some(event_loop));
+@@ -179,12 +491,55 @@
      }
+ }
  
+-impl ApplicationHandler<AppEvent> for App {
+-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+-        self.init(Some(event_loop));
++impl App {
 +    /// Drives the two periodic ticks the boot splash's animation relies on, neither of
 +    /// which any real `WindowEvent`/`AppEvent` is guaranteed to otherwise deliver
 +    /// promptly (or at all, during an otherwise-silent wait):
@@ -671,18 +690,19 @@ diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
 +    ///   itself — also what transitions to `finish_init` once both extraction and
 +    ///   `MIN_SPLASH_DURATION` are done.
 +    /// - While `Running` with a window whose `page_load_splash_since` is still set (see
-+    ///   `HeadedWindow::splash_animation_wake_deadline`, armed by `window_event`/
-+    ///   `user_event`'s tail): forces that window's next redraw too, both to keep the
++    ///   `HeadedWindow::splash_animation_wake_deadline`, armed by `dispatch_window_event`/
++    ///   `dispatch_user_event`'s tail): forces that window's next redraw too, both to keep the
 +    ///   splash animating and to promptly notice `LoadStatus::Complete` firing with no
 +    ///   further page activity after it.
-+    fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
-+        if !matches!(cause, StartCause::ResumeTimeReached { .. }) {
-+            return;
-+        }
++    ///
++    /// Called once per real wait-timeout tick (SDL3's own equivalent of winit's
++    /// `StartCause::ResumeTimeReached` — the only `StartCause` this ever actually cared
++    /// about, so `run_sdl3_app`'s loop doesn't bother threading a full cause enum through).
++    pub(crate) fn dispatch_new_events(&mut self, event_loop: &ActiveEventLoop) {
 +        match &self.state {
 +            AppState::Booting { window, .. } => {
 +                if let Some(headed_window) = window.as_headed_window() {
-+                    headed_window.winit_window().request_redraw();
++                    headed_window.request_redraw();
 +                }
 +                self.try_finish_booting(event_loop);
 +            },
@@ -700,27 +720,29 @@ diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
 +                    if let Some(headed_window) = window.platform_window().as_headed_window() &&
 +                        headed_window.splash_animation_wake_deadline(state).is_some()
 +                    {
-+                        headed_window.winit_window().request_redraw();
++                        headed_window.request_redraw();
 +                    }
 +                }
 +                set_running_control_flow(event_loop, state);
 +            },
 +            _ => {},
 +        }
-+    }
-+
-     fn window_event(
+     }
+ 
+-    fn window_event(
++    pub(crate) fn dispatch_window_event(
          &mut self,
          event_loop: &ActiveEventLoop,
-@@ -199,9 +559,24 @@
+         window_id: WindowId,
+@@ -199,40 +554,136 @@
          );
          self.t = now;
  
 +        if matches!(self.state, AppState::Booting { .. }) {
 +            if let AppState::Booting { window, extraction_started, .. } = &self.state &&
 +                let Some(headed_window) = window.as_headed_window() &&
-+                headed_window.winit_window().id() == window_id &&
-+                matches!(window_event, WindowEvent::RedrawRequested | WindowEvent::Resized(_))
++                headed_window.sdl_window_id() == window_id &&
++                matches!(window_event, WindowEvent::RedrawRequested | WindowEvent::Resized(..))
 +            {
 +                headed_window.paint_splash(extraction_started.elapsed());
 +            }
@@ -737,7 +759,11 @@ diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
  
          if let Some(window) = state.window(ServoShellWindowId::from(u64::from(window_id))) &&
              let Some(headed_window) = window.platform_window().as_headed_window()
-@@ -212,17 +587,49 @@
+         {
+-            headed_window.handle_winit_window_event(state.clone(), window, window_event);
++            headed_window.handle_window_event(state.clone(), window, window_event);
+         }
+ 
          if !self.pump_servo_event_loop(event_loop.into()) {
              event_loop.exit();
          }
@@ -746,7 +772,17 @@ diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
 +        set_running_control_flow(event_loop, &state);
      }
  
-     fn user_event(&mut self, event_loop: &ActiveEventLoop, app_event: AppEvent) {
+-    fn user_event(&mut self, event_loop: &ActiveEventLoop, app_event: AppEvent) {
++    pub(crate) fn dispatch_user_event(&mut self, event_loop: &ActiveEventLoop, app_event: AppEvent) {
++        // SDL3 has no push-based redraw-request event of its own -- `HeadedWindow::
++        // request_redraw` sends this instead (see `event_loop.rs`'s own doc comment on the
++        // variant), and the only thing to do with it is route straight into the exact same
++        // handling a real `WindowEvent::RedrawRequested` would have gotten.
++        if let AppEvent::RedrawRequested(window_id) = app_event {
++            self.dispatch_window_event(event_loop, window_id, WindowEvent::RedrawRequested);
++            return;
++        }
++
 +        let mut redraw_window = None;
 +        if let AppState::Booting { window, extraction_done, .. } = &mut self.state {
 +            match app_event {
@@ -760,7 +796,7 @@ diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
 +        if let Some(window) = redraw_window &&
 +            let Some(headed_window) = window.as_headed_window()
 +        {
-+            headed_window.winit_window().request_redraw();
++            headed_window.request_redraw();
 +        }
 +        if matches!(self.state, AppState::Booting { .. }) {
 +            self.try_finish_booting(event_loop);
@@ -776,6 +812,15 @@ diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
  
          match app_event {
              AppEvent::Waker => (),
+-            AppEvent::Accessibility(ref event) => {
+-                if let Some(window) =
+-                    state.window(ServoShellWindowId::from(u64::from(event.window_id))) &&
+-                    let Some(headed_window) = window.platform_window().as_headed_window()
+-                {
+-                    headed_window.handle_winit_app_event(state.clone(), app_event);
++            // Already handled above, before `self.state` was confirmed `Running` -- this
++            // variant always returns early at the top of this function.
++            AppEvent::RedrawRequested(_) => unreachable!(),
 +            AppEvent::CloseAllWindows => {
 +                // See protocols/roves.rs and event_loop.rs's own doc comment on
 +                // this variant: this is the only way a `ProtocolHandler` (which
@@ -784,13 +829,6 @@ diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
 +                // itself is `Rc`-based and can't be touched from there directly.
 +                for window in state.windows().values() {
 +                    window.schedule_close();
-+                }
-+            },
-             AppEvent::Accessibility(ref event) => {
-                 if let Some(window) =
-                     state.window(ServoShellWindowId::from(u64::from(event.window_id))) &&
-@@ -231,8 +638,53 @@
-                     headed_window.handle_winit_app_event(state.clone(), app_event);
                  }
              },
 -            AppEvent::Gamepad(event, gamepad_name, gamepad_index) => {
@@ -845,7 +883,7 @@ diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
              },
          }
  
-@@ -240,9 +692,34 @@
+@@ -240,9 +691,34 @@
              event_loop.exit();
          }
  
@@ -1490,24 +1528,282 @@ diff --git a/ports/servoshell/desktop/dialog.rs b/ports/servoshell/desktop/dialo
 diff --git a/ports/servoshell/desktop/event_loop.rs b/ports/servoshell/desktop/event_loop.rs
 --- a/ports/servoshell/desktop/event_loop.rs
 +++ b/ports/servoshell/desktop/event_loop.rs
-@@ -7,19 +7,66 @@
- use std::sync::{Arc, Condvar, Mutex};
- use std::time;
+@@ -3,38 +3,334 @@
+  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
  
+ //! An event loop implementation that works in headless mode.
++//!
++//! SDL3-backed, replacing the previous winit-based implementation (see
++//! CUSTOMIZATIONS.md's SDL3 windowing entry and TODO.md's "Finestra + event loop" section —
++//! this is a work-in-progress migration, not a finished one). The public shape (`AppEvent`,
++//! `ServoShellEventLoop`, `create_event_loop_waker`, `run_app`) is kept as close as possible to
++//! the winit version so `app.rs`/`headed_window.rs`'s own logic needs minimal changes beyond
++//! swapping which concrete types they name — only the actual event-pumping mechanism
++//! underneath changes.
++
++use std::cell::Cell;
++use std::sync::Arc;
++use std::time::{self, Duration, Instant};
+ 
+-use std::sync::{Arc, Condvar, Mutex};
+-use std::time;
+-
 -use gilrs::Event;
  use log::warn;
 -use servo::{EventLoopWaker, GamepadIndex};
+-use winit::event_loop::{EventLoop, EventLoop as WinitEventLoop, EventLoopProxy};
 +use servo::EventLoopWaker;
- use winit::event_loop::{EventLoop, EventLoop as WinitEventLoop, EventLoopProxy};
  
  use super::app::App;
  
 -#[derive(Debug)]
++/// This module's own stand-in for `winit::window::WindowId` — SDL3 windows are identified by a
++/// plain `u32` (`sdl3::video::Window::id()`, and every `sdl3::event::Event` variant that
++/// targets a specific window carries the same `window_id: u32`), so there's no need for a
++/// wrapping newtype the way winit's opaque `WindowId` has.
++pub(crate) type WindowId = u32;
++
++/// This module's own stand-in for `winit::event_loop::ControlFlow`. SDL3 has no equivalent
++/// concept built in — `run_app`'s own loop (see below) reads this via `ActiveEventLoop` after
++/// every dispatched event/tick and computes the actual `wait_event_timeout` duration from it,
++/// the same job winit's own platform backend does internally for `ControlFlow::WaitUntil`.
++#[derive(Clone, Copy, Debug)]
++pub(crate) enum ControlFlow {
++    Wait,
++    WaitUntil(Instant),
++}
++
++/// This module's own stand-in for `winit::event_loop::ActiveEventLoop`. Holds just the two
++/// pieces of live SDL3 state `app.rs`/`headed_window.rs` actually need a handle to: the
++/// `VideoSubsystem` (window/monitor creation — see `HeadedWindow::new`) and the mutable
++/// control-flow/exit state `App`'s dispatch methods set and `run_app`'s loop reads back.
++pub(crate) struct ActiveEventLoop {
++    sdl: sdl3::Sdl,
++    video: sdl3::VideoSubsystem,
++    control_flow: Cell<ControlFlow>,
++    should_exit: Cell<bool>,
++}
++
++impl ActiveEventLoop {
++    pub(crate) fn set_control_flow(&self, control_flow: ControlFlow) {
++        self.control_flow.set(control_flow);
++    }
++
++    pub(crate) fn exit(&self) {
++        self.should_exit.set(true);
++    }
++
++    pub(crate) fn video(&self) -> &sdl3::VideoSubsystem {
++        &self.video
++    }
++
++    pub(crate) fn sdl(&self) -> &sdl3::Sdl {
++        &self.sdl
++    }
++}
++
++/// This module's own stand-in for the subset of `winit::event::WindowEvent` that
++/// `app.rs`/`headed_window.rs` actually consume — see `translate_sdl_event` for the mapping.
++///
++/// Desktop input and window-state events translated from SDL3. Events SDL exposes without a
++/// target window (notably `MultiGesture`) are assigned by `run_sdl3_app` before dispatch.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub(crate) enum TouchPhase {
++    Down,
++    Move,
++    Up,
++    Cancel,
++}
++
++#[derive(Debug, Clone, PartialEq)]
++pub(crate) enum WindowEvent {
++    Resized(u32, u32),
++    CloseRequested,
++    RedrawRequested,
++    Focused(bool),
++    KeyDown {
++        keycode: Option<sdl3::keyboard::Keycode>,
++        scancode: Option<sdl3::keyboard::Scancode>,
++        keymod: sdl3::keyboard::Mod,
++        repeat: bool,
++    },
++    KeyUp {
++        keycode: Option<sdl3::keyboard::Keycode>,
++        scancode: Option<sdl3::keyboard::Scancode>,
++        keymod: sdl3::keyboard::Mod,
++    },
++    MouseMotion {
++        x: f32,
++        y: f32,
++    },
++    MouseButtonDown {
++        button: sdl3::mouse::MouseButton,
++        x: f32,
++        y: f32,
++    },
++    MouseButtonUp {
++        button: sdl3::mouse::MouseButton,
++        x: f32,
++        y: f32,
++    },
++    MouseWheel {
++        x: f32,
++        y: f32,
++    },
++    /// SDL3 has no separate "cursor left the window" window-subevent the way winit does —
++    /// this is synthesized in `run_sdl3_app` from `SDL_EVENT_WINDOW_MOUSE_LEAVE` (a real
++    /// `Window` sub-event, see `translate_sdl_event`).
++    CursorLeft,
++    /// A file dropped onto this SDL3 window. The path stays a UTF-8 string until dispatch;
++    /// `HeadedWindow` performs URL conversion and reports invalid paths without panicking.
++    DroppedFile(String),
++    /// SDL3 finger coordinates are normalized to the target window; conversion to physical
++    /// webview pixels happens in `HeadedWindow`, which owns the current window dimensions.
++    Touch {
++        phase: TouchPhase,
++        finger_id: u64,
++        x: f32,
++        y: f32,
++    },
++    ImePreedit(String),
++    ImeCommit(String),
++    /// SDL3 reports multi-touch gestures globally, without a window id. The event loop routes
++    /// them to the focused (or most recently targeted) desktop window before constructing this.
++    PinchGesture { delta: f32 },
++    /// The window moved to another display or its display characteristics changed.
++    DisplayChanged,
++}
++
++/// Translates one real (non-user) SDL3 event into this module's own `WindowEvent`, alongside
++/// the `WindowId` it targets. Returns `None` for anything not ported yet (see `WindowEvent`'s
++/// own doc comment) — `run_sdl3_app`'s loop simply skips those for now, the same as an app
++/// event handler that doesn't match every variant.
++fn translate_sdl_event(
++    event: sdl3::event::Event,
++    gesture_window_id: Option<WindowId>,
++) -> Option<(WindowId, WindowEvent)> {
++    use sdl3::event::{Event as SdlEvent, WindowEvent as SdlWindowEvent};
++    match event {
++        SdlEvent::Window { window_id, win_event, .. } => {
++            let window_event = match win_event {
++                SdlWindowEvent::Resized(width, height) => {
++                    WindowEvent::Resized(width.max(0) as u32, height.max(0) as u32)
++                },
++                SdlWindowEvent::PixelSizeChanged(width, height) => {
++                    WindowEvent::Resized(width.max(0) as u32, height.max(0) as u32)
++                },
++                SdlWindowEvent::DisplayChanged(_) | SdlWindowEvent::ICCProfChanged => {
++                    WindowEvent::DisplayChanged
++                },
++                SdlWindowEvent::CloseRequested => WindowEvent::CloseRequested,
++                SdlWindowEvent::Exposed => WindowEvent::RedrawRequested,
++                SdlWindowEvent::FocusGained => WindowEvent::Focused(true),
++                SdlWindowEvent::FocusLost => WindowEvent::Focused(false),
++                SdlWindowEvent::MouseLeave => WindowEvent::CursorLeft,
++                _ => return None,
++            };
++            Some((window_id, window_event))
++        },
++        SdlEvent::KeyDown { window_id, keycode, scancode, keymod, repeat, .. } => {
++            Some((window_id, WindowEvent::KeyDown { keycode, scancode, keymod, repeat }))
++        },
++        SdlEvent::KeyUp { window_id, keycode, scancode, keymod, .. } => {
++            Some((window_id, WindowEvent::KeyUp { keycode, scancode, keymod }))
++        },
++        SdlEvent::TextEditing { window_id, text, .. } => {
++            Some((window_id, WindowEvent::ImePreedit(text)))
++        },
++        SdlEvent::TextInput { window_id, text, .. } => {
++            Some((window_id, WindowEvent::ImeCommit(text)))
++        },
++        SdlEvent::MouseMotion { window_id, x, y, .. } => {
++            Some((window_id, WindowEvent::MouseMotion { x, y }))
++        },
++        SdlEvent::MouseButtonDown { window_id, mouse_btn, x, y, .. } => {
++            Some((window_id, WindowEvent::MouseButtonDown { button: mouse_btn, x, y }))
++        },
++        SdlEvent::MouseButtonUp { window_id, mouse_btn, x, y, .. } => {
++            Some((window_id, WindowEvent::MouseButtonUp { button: mouse_btn, x, y }))
++        },
++        SdlEvent::MouseWheel { window_id, x, y, .. } => {
++            Some((window_id, WindowEvent::MouseWheel { x, y }))
++        },
++        SdlEvent::DropFile { window_id, filename, .. } => {
++            Some((window_id, WindowEvent::DroppedFile(filename)))
++        },
++        SdlEvent::FingerDown { window_id, finger_id, x, y, .. } => {
++            Some((window_id, WindowEvent::Touch {
++                phase: TouchPhase::Down,
++                finger_id,
++                x,
++                y,
++            }))
++        },
++        SdlEvent::FingerMotion { window_id, finger_id, x, y, .. } => {
++            Some((window_id, WindowEvent::Touch {
++                phase: TouchPhase::Move,
++                finger_id,
++                x,
++                y,
++            }))
++        },
++        SdlEvent::FingerUp { window_id, finger_id, x, y, .. } => {
++            Some((window_id, WindowEvent::Touch {
++                phase: TouchPhase::Up,
++                finger_id,
++                x,
++                y,
++            }))
++        },
++        SdlEvent::FingerCanceled { window_id, finger_id, x, y, .. } => {
++            Some((window_id, WindowEvent::Touch {
++                phase: TouchPhase::Cancel,
++                finger_id,
++                x,
++                y,
++            }))
++        },
++        SdlEvent::MultiGesture { d_dist, .. } => {
++            gesture_window_id
++                .map(|window_id| (window_id, WindowEvent::PinchGesture { delta: d_dist }))
++        },
++        _ => None,
++    }
++}
++
++/// This module's own stand-in for `winit::event_loop::EventLoopProxy<AppEvent>` — lets any
++/// thread push an `AppEvent` onto the main SDL3 event queue, woken up promptly even if the
++/// main thread is parked in `wait_event_timeout` (`SDL_PushEvent`, which `EventSender` wraps,
++/// is documented thread-safe, same guarantee winit's own proxy makes). `sdl3::event::
++/// EventSender` has no public constructor besides `EventSubsystem::event_sender()`/
++/// `EventPump::event_sender()`, neither of which is itself `Send` — so a single `EventSender`
++/// is created once on the main thread (`ServoShellEventLoop::headed`) and shared via `Arc`
++/// (its own `push_event`/`push_custom_event` only need `&self`) rather than re-obtained per
++/// clone the way winit's own, actually-`Clone`, proxy is.
++#[derive(Clone)]
++pub(crate) struct EventLoopProxy(Arc<sdl3::event::EventSender>);
++
++impl EventLoopProxy {
++    pub(crate) fn send_event(&self, event: AppEvent) -> Result<(), String> {
++        self.0
++            .push_custom_event(event)
++            .map_err(|error| error.to_string())
++    }
++}
++
  pub enum AppEvent {
      /// Another process or thread has kicked the OS event loop with EventLoopWaker.
      Waker,
-     Accessibility(egui_winit::accesskit_winit::Event),
+-    Accessibility(egui_winit::accesskit_winit::Event),
 -    Gamepad(Event, String, GamepadIndex),
++    /// SDL3 has no push-based "redraw requested" event the way winit does — this is `App`'s
++    /// own stand-in, requested via `HeadedWindow::request_redraw` (which owns an
++    /// `EventLoopProxy` clone precisely so it can send this from anywhere, without every
++    /// caller needing its own `&ActiveEventLoop` handle — several of the call sites this
++    /// replaces are `HeadedWindow`'s own methods, not `App`'s). Dispatched by routing straight
++    /// into the same window-event handling a real `WindowEvent::RedrawRequested` would have —
++    /// see `App::dispatch_user_event`.
++    RedrawRequested(WindowId),
 +    /// Requested by `protocols::roves::RovesProtocolHandler` (the `roves:` scheme's
 +    /// `exit`/`close_window` command — see `@drincs/roves-api`'s `process.exit()`) from
 +    /// whatever thread is servicing that `fetch()`. `RunningAppState`/`ServoShellWindow`
@@ -1538,13 +1834,18 @@ diff --git a/ports/servoshell/desktop/event_loop.rs b/ports/servoshell/desktop/e
 +        data: Vec<u8>,
 +        response: tokio::sync::oneshot::Sender<Result<(), String>>,
 +    },
-+}
-+
+ }
+ 
+-impl From<egui_winit::accesskit_winit::Event> for AppEvent {
+-    fn from(event: egui_winit::accesskit_winit::Event) -> AppEvent {
+-        AppEvent::Accessibility(event)
 +impl std::fmt::Debug for AppEvent {
 +    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 +        match self {
 +            AppEvent::Waker => write!(f, "Waker"),
-+            AppEvent::Accessibility(event) => f.debug_tuple("Accessibility").field(event).finish(),
++            AppEvent::RedrawRequested(window_id) => {
++                f.debug_tuple("RedrawRequested").field(window_id).finish()
++            },
 +            AppEvent::CloseAllWindows => write!(f, "CloseAllWindows"),
 +            AppEvent::BootProgress(progress) => f.debug_tuple("BootProgress").field(progress).finish(),
 +            AppEvent::BootReady => write!(f, "BootReady"),
@@ -1557,10 +1858,194 @@ diff --git a/ports/servoshell/desktop/event_loop.rs b/ports/servoshell/desktop/e
 +                .field("data_len", &data.len())
 +                .finish(),
 +        }
-+    }
+     }
  }
  
- impl From<egui_winit::accesskit_winit::Event> for AppEvent {
+ /// A headed or headless event loop. Headless event loops are necessary for environments without a
+-/// display server. Ideally, we could use the headed winit event loop in both modes, but on Linux,
++/// display server. Ideally, we could use the headed SDL3 event loop in both modes, but on Linux,
+ /// the event loop requires a display server, which prevents running servoshell in a console.
+-#[allow(clippy::large_enum_variant)]
+ pub(crate) enum ServoShellEventLoop {
+-    /// A real Winit windowing event loop.
+-    Winit(EventLoop<AppEvent>),
++    /// A real SDL3 windowing event loop.
++    Sdl3 {
++        sdl: sdl3::Sdl,
++        video: sdl3::VideoSubsystem,
++        event_subsystem: sdl3::EventSubsystem,
++        proxy: EventLoopProxy,
++    },
+     /// A fake event loop which contains a signalling flag used to ensure
+     /// that pending events get processed in a timely fashion, and a condition
+     /// variable to allow waiting on that flag changing state.
+@@ -47,51 +343,129 @@
+     }
+ 
+     pub(crate) fn headed() -> ServoShellEventLoop {
+-        ServoShellEventLoop::Winit(
+-            WinitEventLoop::with_user_event()
+-                .build()
+-                .expect("Could not start winit event loop"),
+-        )
++        let sdl = sdl3::init().expect("Could not initialize SDL3");
++        let video = sdl.video().expect("Could not initialize SDL3 video subsystem");
++        let event_subsystem = sdl.event().expect("Could not initialize SDL3 event subsystem");
++        event_subsystem
++            .register_custom_event::<AppEvent>()
++            .expect("Could not register AppEvent as a custom SDL3 event type");
++        let proxy = EventLoopProxy(Arc::new(event_subsystem.event_sender()));
++        ServoShellEventLoop::Sdl3 { sdl, video, event_subsystem, proxy }
+     }
+ }
+ 
+ impl ServoShellEventLoop {
+-    pub(crate) fn event_loop_proxy(&self) -> Option<EventLoopProxy<AppEvent>> {
++    pub(crate) fn event_loop_proxy(&self) -> Option<EventLoopProxy> {
+         match self {
+-            ServoShellEventLoop::Winit(event_loop) => Some(event_loop.create_proxy()),
++            ServoShellEventLoop::Sdl3 { proxy, .. } => Some(proxy.clone()),
+             ServoShellEventLoop::Headless(..) => None,
+         }
+     }
+ 
+     pub fn create_event_loop_waker(&self) -> Box<dyn EventLoopWaker> {
+         match self {
+-            ServoShellEventLoop::Winit(event_loop) => {
+-                Box::new(HeadedEventLoopWaker::new(event_loop))
+-            },
++            ServoShellEventLoop::Sdl3 { proxy, .. } => Box::new(HeadedEventLoopWaker::new(proxy.clone())),
+             ServoShellEventLoop::Headless(data) => Box::new(HeadlessEventLoopWaker(data.clone())),
+         }
+     }
+ 
+     pub fn run_app(self, app: &mut App) {
+         match self {
+-            ServoShellEventLoop::Winit(event_loop) => {
+-                event_loop
+-                    .run_app(app)
+-                    .expect("Failed while running events loop");
++            ServoShellEventLoop::Sdl3 { sdl, video, .. } => {
++                run_sdl3_app(sdl, video, app);
+             },
+             ServoShellEventLoop::Headless(event_loop) => event_loop.run_app(app),
+         }
+     }
+ }
+ 
++/// Drives `app` from a real SDL3 event queue — the SDL3 equivalent of
++/// `winit::event_loop::EventLoop::run_app`. Unlike winit (whose platform backend hides its own
++/// equivalent of this loop), this is plain, explicit code: `wait_event_timeout` blocks the
++/// main thread until either a real event arrives or `control_flow`'s deadline passes (mirroring
++/// `ControlFlow::Wait`/`WaitUntil`), each event is translated and dispatched to `app`, and the
++/// loop exits once `ActiveEventLoop::exit()` has been called.
++///
++/// TODO(SDL3 windowing, real progress not completion — see TODO.md): only enough of SDL3's own
++/// `Event` enum is translated here to drive `App`'s own state machine (window creation,
++/// booting, shutdown) — the *rest* of each event's payload (mouse/keyboard/IME/gesture data
++/// `headed_window.rs::handle_winit_window_event` used to consume) is not ported yet. A real
++/// window currently opens and can be closed, but does not yet accept input.
++fn run_sdl3_app(sdl: sdl3::Sdl, video: sdl3::VideoSubsystem, app: &mut App) {
++    let event_loop = ActiveEventLoop {
++        sdl,
++        video,
++        control_flow: Cell::new(ControlFlow::Wait),
++        should_exit: Cell::new(false),
++    };
++    let mut event_pump = event_loop
++        .sdl()
++        .event_pump()
++        .expect("Could not create SDL3 event pump");
++
++    app.init(Some(&event_loop));
++    app.dispatch_new_events(&event_loop);
++    let mut focused_window_id = None;
++    let mut last_window_id = None;
++
++    loop {
++        if event_loop.should_exit.get() {
++            return;
++        }
++
++        let timeout = match event_loop.control_flow.get() {
++            ControlFlow::Wait => None,
++            ControlFlow::WaitUntil(deadline) => Some(deadline.saturating_duration_since(Instant::now())),
++        };
++        let event = match timeout {
++            Some(timeout) => event_pump.wait_event_timeout(timeout),
++            None => Some(event_pump.wait_event()),
++        };
++
++        let Some(event) = event else {
++            // Timed out waiting for `ControlFlow::WaitUntil`'s deadline -- same as winit's own
++            // `StartCause::ResumeTimeReached`.
++            app.dispatch_new_events(&event_loop);
++            continue;
++        };
++
++        if event.is_user_event() {
++            if let Some(app_event) = event.as_user_event_type::<AppEvent>() {
++                app.dispatch_user_event(&event_loop, app_event);
++            }
++            continue;
++        }
++
++        if let sdl3::event::Event::Window { window_id, win_event, .. } = &event {
++            match win_event {
++                sdl3::event::WindowEvent::FocusGained => focused_window_id = Some(*window_id),
++                sdl3::event::WindowEvent::FocusLost if focused_window_id == Some(*window_id) => {
++                    focused_window_id = None;
++                },
++                _ => {},
++            }
++        }
++
++        if let Some((window_id, window_event)) =
++            translate_sdl_event(event, focused_window_id.or(last_window_id))
++        {
++            last_window_id = Some(window_id);
++            app.dispatch_window_event(&event_loop, window_id, window_event);
++        }
++
++        if event_loop.should_exit.get() {
++            return;
++        }
++    }
++}
++
+ #[derive(Clone)]
+ struct HeadedEventLoopWaker {
+-    proxy: Arc<Mutex<EventLoopProxy<AppEvent>>>,
++    proxy: EventLoopProxy,
+ }
+ 
+ impl HeadedEventLoopWaker {
+-    fn new(event_loop: &EventLoop<AppEvent>) -> HeadedEventLoopWaker {
+-        let proxy = Arc::new(Mutex::new(event_loop.create_proxy()));
++    fn new(proxy: EventLoopProxy) -> HeadedEventLoopWaker {
+         HeadedEventLoopWaker { proxy }
+     }
+ }
+@@ -99,7 +473,7 @@
+ impl EventLoopWaker for HeadedEventLoopWaker {
+     fn wake(&self) {
+         // Kick the OS event loop awake.
+-        if let Err(err) = self.proxy.lock().unwrap().send_event(AppEvent::Waker) {
++        if let Err(err) = self.proxy.send_event(AppEvent::Waker) {
+             warn!("Failed to wake up event loop ({}).", err);
+         }
+     }
+@@ -113,8 +487,8 @@
+ /// loop just loops over a condvar to simulate a real windowing system event loop.
+ #[derive(Default)]
+ pub(crate) struct HeadlessEventLoop {
+-    guard: Arc<Mutex<bool>>,
+-    condvar: Condvar,
++    guard: Arc<std::sync::Mutex<bool>>,
++    condvar: std::sync::Condvar,
+ }
+ 
+ impl HeadlessEventLoop {
 diff --git a/ports/servoshell/desktop/gamepad.rs b/ports/servoshell/desktop/gamepad.rs
 --- a/ports/servoshell/desktop/gamepad.rs
 +++ b/ports/servoshell/desktop/gamepad.rs
@@ -2137,7 +2622,7 @@ diff --git a/ports/servoshell/desktop/gamepad.rs b/ports/servoshell/desktop/game
 diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
 --- a/ports/servoshell/desktop/gui.rs
 +++ b/ports/servoshell/desktop/gui.rs
-@@ -2,23 +2,21 @@
+@@ -2,75 +2,437 @@
   * License, v. 2.0. If a copy of the MPL was not distributed with this
   * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
  
@@ -2161,10 +2646,11 @@ diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
  };
 -#[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
 -use egui::{FontData, FontFamily};
- use egui_glow::{CallbackFn, EguiGlow};
- use egui_winit::EventResponse;
+-use egui_glow::{CallbackFn, EguiGlow};
+-use egui_winit::EventResponse;
++use egui_glow::CallbackFn;
  use euclid::{Length, Point2D, Rect, Scale, Size2D};
-@@ -26,8 +24,7 @@
+ #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
  use log::info;
  use log::warn;
  use servo::{
@@ -2173,9 +2659,386 @@ diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
 +    DeviceIndependentPixel, DevicePixel, OffscreenRenderingContext, RenderingContext, WebView,
  };
  use url::Url;
- use winit::event::WindowEvent;
-@@ -46,31 +43,36 @@
-     context: EguiGlow,
+-use winit::event::WindowEvent;
+-use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
+-use winit::window::Window;
+ 
+-use crate::desktop::event_loop::AppEvent;
++use crate::desktop::accessibility::{AccessibilityEvent, SdlAccessKit};
++use crate::desktop::event_loop::{EventLoopProxy, WindowEvent};
+ use crate::desktop::headed_window;
+ use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
+ use crate::window::ServoShellWindow;
+ 
++fn egui_modifiers_from_sdl(keymod: sdl3::keyboard::Mod) -> egui::Modifiers {
++    use sdl3::keyboard::Mod;
++    let alt = keymod.intersects(Mod::LALTMOD | Mod::RALTMOD);
++    let ctrl = keymod.intersects(Mod::LCTRLMOD | Mod::RCTRLMOD);
++    let shift = keymod.intersects(Mod::LSHIFTMOD | Mod::RSHIFTMOD);
++    let mac_cmd = cfg!(target_os = "macos") && keymod.intersects(Mod::LGUIMOD | Mod::RGUIMOD);
++    egui::Modifiers {
++        alt,
++        ctrl,
++        shift,
++        mac_cmd,
++        command: if cfg!(target_os = "macos") { mac_cmd } else { ctrl },
++    }
++}
++
++fn egui_key_from_sdl(keycode: sdl3::keyboard::Keycode) -> Option<egui::Key> {
++    use egui::Key;
++    use sdl3::keyboard::Keycode;
++    Some(match keycode {
++        Keycode::Down => Key::ArrowDown,
++        Keycode::Left => Key::ArrowLeft,
++        Keycode::Right => Key::ArrowRight,
++        Keycode::Up => Key::ArrowUp,
++        Keycode::Escape => Key::Escape,
++        Keycode::Tab => Key::Tab,
++        Keycode::Backspace => Key::Backspace,
++        Keycode::Return | Keycode::KpEnter => Key::Enter,
++        Keycode::Space => Key::Space,
++        Keycode::Insert => Key::Insert,
++        Keycode::Delete => Key::Delete,
++        Keycode::Home => Key::Home,
++        Keycode::End => Key::End,
++        Keycode::PageUp => Key::PageUp,
++        Keycode::PageDown => Key::PageDown,
++        Keycode::Comma | Keycode::KpComma => Key::Comma,
++        Keycode::Backslash => Key::Backslash,
++        Keycode::Slash | Keycode::KpDivide => Key::Slash,
++        Keycode::LeftBracket => Key::OpenBracket,
++        Keycode::RightBracket => Key::CloseBracket,
++        Keycode::Grave => Key::Backtick,
++        Keycode::Minus | Keycode::KpMinus => Key::Minus,
++        Keycode::Period | Keycode::KpPeriod => Key::Period,
++        Keycode::KpPlus => Key::Plus,
++        Keycode::Equals | Keycode::KpEquals => Key::Equals,
++        Keycode::Semicolon => Key::Semicolon,
++        Keycode::Apostrophe => Key::Quote,
++        Keycode::_0 | Keycode::Kp0 => Key::Num0,
++        Keycode::_1 | Keycode::Kp1 => Key::Num1,
++        Keycode::_2 | Keycode::Kp2 => Key::Num2,
++        Keycode::_3 | Keycode::Kp3 => Key::Num3,
++        Keycode::_4 | Keycode::Kp4 => Key::Num4,
++        Keycode::_5 | Keycode::Kp5 => Key::Num5,
++        Keycode::_6 | Keycode::Kp6 => Key::Num6,
++        Keycode::_7 | Keycode::Kp7 => Key::Num7,
++        Keycode::_8 | Keycode::Kp8 => Key::Num8,
++        Keycode::_9 | Keycode::Kp9 => Key::Num9,
++        Keycode::A => Key::A,
++        Keycode::B => Key::B,
++        Keycode::C => Key::C,
++        Keycode::D => Key::D,
++        Keycode::E => Key::E,
++        Keycode::F => Key::F,
++        Keycode::G => Key::G,
++        Keycode::H => Key::H,
++        Keycode::I => Key::I,
++        Keycode::J => Key::J,
++        Keycode::K => Key::K,
++        Keycode::L => Key::L,
++        Keycode::M => Key::M,
++        Keycode::N => Key::N,
++        Keycode::O => Key::O,
++        Keycode::P => Key::P,
++        Keycode::Q => Key::Q,
++        Keycode::R => Key::R,
++        Keycode::S => Key::S,
++        Keycode::T => Key::T,
++        Keycode::U => Key::U,
++        Keycode::V => Key::V,
++        Keycode::W => Key::W,
++        Keycode::X => Key::X,
++        Keycode::Y => Key::Y,
++        Keycode::Z => Key::Z,
++        Keycode::F1 => Key::F1,
++        Keycode::F2 => Key::F2,
++        Keycode::F3 => Key::F3,
++        Keycode::F4 => Key::F4,
++        Keycode::F5 => Key::F5,
++        Keycode::F6 => Key::F6,
++        Keycode::F7 => Key::F7,
++        Keycode::F8 => Key::F8,
++        Keycode::F9 => Key::F9,
++        Keycode::F10 => Key::F10,
++        Keycode::F11 => Key::F11,
++        Keycode::F12 => Key::F12,
++        _ => return None,
++    })
++}
++
++#[cfg(test)]
++mod sdl_egui_input_tests {
++    use super::{egui_key_from_sdl, egui_modifiers_from_sdl};
++    use egui::Key;
++    use sdl3::keyboard::{Keycode, Mod};
++
++    #[test]
++    fn maps_navigation_printable_keypad_and_function_keys() {
++        assert_eq!(egui_key_from_sdl(Keycode::Left), Some(Key::ArrowLeft));
++        assert_eq!(egui_key_from_sdl(Keycode::A), Some(Key::A));
++        assert_eq!(egui_key_from_sdl(Keycode::KpEnter), Some(Key::Enter));
++        assert_eq!(egui_key_from_sdl(Keycode::F12), Some(Key::F12));
++        assert_eq!(egui_key_from_sdl(Keycode::CapsLock), None);
++    }
++
++    #[test]
++    fn folds_left_and_right_sdl_modifiers() {
++        let modifiers = egui_modifiers_from_sdl(
++            Mod::RALTMOD | Mod::LCTRLMOD | Mod::RSHIFTMOD | Mod::LGUIMOD,
++        );
++        assert!(modifiers.alt);
++        assert!(modifiers.ctrl);
++        assert!(modifiers.shift);
++        assert_eq!(modifiers.mac_cmd, cfg!(target_os = "macos"));
++        assert_eq!(
++            modifiers.command,
++            if cfg!(target_os = "macos") { modifiers.mac_cmd } else { modifiers.ctrl },
++        );
++    }
++}
++
++/// TODO(SDL3 windowing, real progress not completion — see TODO.md): replaces
++/// `egui_glow::EguiGlow` (a convenience wrapper hard-coded to winit — `EguiGlow::run`/`paint`/
++/// `new` all take `&winit::window::Window` directly, confirmed by reading that crate's own
++/// `winit.rs`). `egui_glow::Painter` (the actual GL renderer, in `painter.rs`) and `egui::
++/// Context` are both genuinely toolkit-agnostic underneath it, so this holds those two
++/// directly instead and does the `egui_winit::State`-equivalent input/output bridging itself —
++/// `run` below now drains SDL3 pointer, focus, keyboard, text/IME, modifier and clipboard input
++/// accumulated by the bridge methods into `egui::RawInput`.
++/// AccessKit integration is dropped for the same reason `egui_winit::State` is: it lived in
++/// `init_accesskit`/`self.egui_winit.accesskit`, both gone. See TODO.md's own AccessKit
++/// de-risking notes for what a real SDL3 bridge needs to replicate.
++struct SdlEguiGlow {
++    egui_ctx: egui::Context,
++    painter: egui_glow::Painter,
++    pixels_per_point: f32,
++    shapes: Vec<egui::epaint::ClippedShape>,
++    textures_delta: egui::TexturesDelta,
++    pending_events: Vec<egui::Event>,
++    pointer_pos: Option<egui::Pos2>,
++    modifiers: egui::Modifiers,
++    focused: bool,
++    clipboard: sdl3::clipboard::ClipboardUtil,
++}
++
++impl SdlEguiGlow {
++    fn new(
++        gl: std::sync::Arc<glow::Context>,
++        clipboard: sdl3::clipboard::ClipboardUtil,
++    ) -> Self {
++        let painter = egui_glow::Painter::new(gl, "", None, false)
++            .map_err(|err| log::error!("error occurred in initializing painter:\n{err}"))
++            .expect("Could not create egui_glow::Painter");
++        Self {
++            egui_ctx: egui::Context::default(),
++            painter,
++            pixels_per_point: 1.0,
++            shapes: Default::default(),
++            textures_delta: Default::default(),
++            pending_events: Default::default(),
++            pointer_pos: None,
++            modifiers: Default::default(),
++            focused: true,
++            clipboard,
++        }
++    }
++
++    fn handle_keyboard_event(&mut self, event: &WindowEvent) -> Option<bool> {
++        let (keycode, keymod, pressed, repeat) = match event {
++            WindowEvent::KeyDown { keycode, keymod, repeat, .. } => {
++                (*keycode, *keymod, true, *repeat)
++            },
++            WindowEvent::KeyUp { keycode, keymod, .. } => (*keycode, *keymod, false, false),
++            WindowEvent::ImePreedit(text) => {
++                self.pending_events.push(egui::Event::Ime(egui::ImeEvent::Preedit {
++                    text: text.clone(),
++                    active_range_chars: None,
++                }));
++                return Some(self.egui_ctx.egui_wants_keyboard_input());
++            },
++            WindowEvent::ImeCommit(text) => {
++                self.pending_events
++                    .push(egui::Event::Ime(egui::ImeEvent::Commit(text.clone())));
++                return Some(self.egui_ctx.egui_wants_keyboard_input());
++            },
++            _ => return None,
++        };
++
++        self.modifiers = egui_modifiers_from_sdl(keymod);
++        let wants_keyboard = self.egui_ctx.egui_wants_keyboard_input();
++        let Some(key) = keycode.and_then(egui_key_from_sdl) else {
++            return Some(wants_keyboard);
++        };
++        if pressed && self.modifiers.command && wants_keyboard {
++            match key {
++                egui::Key::C => {
++                    self.pending_events.push(egui::Event::Copy);
++                    return Some(true);
++                },
++                egui::Key::X => {
++                    self.pending_events.push(egui::Event::Cut);
++                    return Some(true);
++                },
++                egui::Key::V => {
++                    if let Ok(text) = self.clipboard.clipboard_text() {
++                        if !text.is_empty() {
++                            self.pending_events
++                                .push(egui::Event::Paste(text.replace("\r\n", "\n")));
++                        }
++                    }
++                    return Some(true);
++                },
++                _ => {},
++            }
++        }
++        self.pending_events.push(egui::Event::Key {
++            key,
++            physical_key: Some(key),
++            pressed,
++            repeat,
++            modifiers: self.modifiers,
++        });
++        Some(wants_keyboard || key == egui::Key::Tab)
++    }
++
++    fn handle_pointer_event(&mut self, event: &WindowEvent, pixels_per_point: f32) -> Option<bool> {
++        let pointer_pos = |x: f32, y: f32| {
++            egui::pos2(
++                x / pixels_per_point.max(f32::EPSILON),
++                y / pixels_per_point.max(f32::EPSILON),
++            )
++        };
++        match event {
++            WindowEvent::MouseMotion { x, y } => {
++                let pos = pointer_pos(*x, *y);
++                self.pointer_pos = Some(pos);
++                self.pending_events.push(egui::Event::PointerMoved(pos));
++                Some(self.egui_ctx.egui_is_using_pointer())
++            },
++            WindowEvent::MouseButtonDown { button, x, y } |
++            WindowEvent::MouseButtonUp { button, x, y } => {
++                let button = match button {
++                    sdl3::mouse::MouseButton::Left => egui::PointerButton::Primary,
++                    sdl3::mouse::MouseButton::Right => egui::PointerButton::Secondary,
++                    sdl3::mouse::MouseButton::Middle => egui::PointerButton::Middle,
++                    sdl3::mouse::MouseButton::X1 => egui::PointerButton::Extra1,
++                    sdl3::mouse::MouseButton::X2 => egui::PointerButton::Extra2,
++                    sdl3::mouse::MouseButton::Unknown => return Some(false),
++                };
++                let pos = pointer_pos(*x, *y);
++                self.pointer_pos = Some(pos);
++                self.pending_events.push(egui::Event::PointerMoved(pos));
++                self.pending_events.push(egui::Event::PointerButton {
++                    pos,
++                    button,
++                    pressed: matches!(event, WindowEvent::MouseButtonDown { .. }),
++                    modifiers: self.modifiers,
++                });
++                Some(self.egui_ctx.egui_wants_pointer_input())
++            },
++            WindowEvent::MouseWheel { x, y } => {
++                self.pending_events.push(egui::Event::MouseWheel {
++                    unit: egui::MouseWheelUnit::Line,
++                    delta: egui::vec2(*x, *y),
++                    phase: egui::TouchPhase::Move,
++                    modifiers: self.modifiers,
++                });
++                Some(self.egui_ctx.egui_wants_pointer_input())
++            },
++            WindowEvent::CursorLeft => {
++                self.pointer_pos = None;
++                self.pending_events.push(egui::Event::PointerGone);
++                Some(false)
++            },
++            WindowEvent::Focused(focused) => {
++                self.focused = *focused;
++                if !*focused {
++                    self.modifiers = Default::default();
++                }
++                self.pending_events.push(egui::Event::WindowFocused(*focused));
++                Some(false)
++            },
++            _ => None,
++        }
++    }
++
++    fn run(&mut self, window: &sdl3::video::Window, run_ui: impl FnMut(&mut egui::Ui)) {
++        let (width, height) = window.size();
++        let pixels_per_point = window.display_scale();
++        let screen_rect = egui::Rect::from_min_size(
++            egui::Pos2::ZERO,
++            egui::vec2(width as f32 / pixels_per_point, height as f32 / pixels_per_point),
++        );
++        // TODO(SDL3 windowing): no real input yet -- see this struct's own doc comment.
++        let raw_input = egui::RawInput {
++            screen_rect: Some(screen_rect),
++            max_texture_side: Some(self.painter.max_texture_side()),
++            events: core::mem::take(&mut self.pending_events),
++            focused: self.focused,
++            ..Default::default()
++        };
++        let egui::FullOutput {
++            platform_output,
++            textures_delta,
++            shapes,
++            pixels_per_point,
++            ..
++        } =
++            self.egui_ctx.run_ui(raw_input, run_ui);
++        for command in platform_output.commands {
++            match command {
++                egui::OutputCommand::CopyText(text) => {
++                    if let Err(error) = self.clipboard.set_clipboard_text(&text) {
++                        warn!("Could not copy egui text to the SDL3 clipboard: {error}");
++                    }
++                },
++                egui::OutputCommand::CopyImage(_) => {
++                    warn!("Copying egui images through SDL3 is not supported")
++                },
++                egui::OutputCommand::OpenUrl(_) => {},
++            }
++        }
++        self.shapes = shapes;
++        self.pixels_per_point = pixels_per_point;
++        self.textures_delta.append(textures_delta);
++    }
++
++    fn paint(&mut self, window: &sdl3::video::Window) {
++        let shapes = core::mem::take(&mut self.shapes);
++        let mut textures_delta = core::mem::take(&mut self.textures_delta);
++
++        #[expect(clippy::iter_over_hash_type)]
++        for (id, image_deltas) in textures_delta.set.drain() {
++            for image_delta in image_deltas {
++                self.painter.set_texture(id, &image_delta);
++            }
++        }
++
++        let pixels_per_point = self.pixels_per_point;
++        let clipped_primitives = self.egui_ctx.tessellate(shapes, pixels_per_point);
++        let (width, height) = window.size_in_pixels();
++        self.painter.paint_primitives([width, height], pixels_per_point, &clipped_primitives);
++
++        #[expect(clippy::iter_over_hash_type)]
++        for id in textures_delta.free.drain() {
++            self.painter.free_texture(id);
++        }
++    }
++
++    fn destroy(&mut self) {
++        self.painter.destroy();
++    }
++}
++
+ /// The user interface of a headed servoshell. Currently this is implemented via
+ /// egui.
+ pub struct Gui {
+     rendering_context: Rc<OffscreenRenderingContext>,
+-    context: EguiGlow,
++    context: SdlEguiGlow,
++    accesskit: SdlAccessKit,
      toolbar_height: Length<f32, DeviceIndependentPixel>,
  
 -    location: String,
@@ -2230,7 +3093,7 @@ diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
  }
  
  fn truncate_with_ellipsis(input: &str, max_length: usize) -> String {
-@@ -175,6 +177,129 @@
+@@ -175,6 +537,129 @@
      FontDefinitions::default()
  }
  
@@ -2360,9 +3223,35 @@ diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
  impl Drop for Gui {
      fn drop(&mut self) {
          self.rendering_context
-@@ -190,7 +315,9 @@
-         event_loop: &ActiveEventLoop,
-         event_loop_proxy: EventLoopProxy<AppEvent>,
+@@ -185,32 +670,46 @@
+ }
+ 
+ impl Gui {
++    pub(crate) fn handle_keyboard_event(&mut self, event: &WindowEvent) -> Option<bool> {
++        self.context.handle_keyboard_event(event)
++    }
++    pub(crate) fn handle_pointer_event(
++        &mut self,
++        event: &WindowEvent,
++        pixels_per_point: f32,
++    ) -> Option<bool> {
++        self.context.handle_pointer_event(event, pixels_per_point)
++    }
++
++    pub(crate) fn handle_accessibility_window_event(
++        &mut self,
++        window: &sdl3::video::Window,
++        event: &WindowEvent,
++    ) {
++        self.accesskit.process_window_event(window, event);
++    }
++
+     pub(crate) fn new(
+-        winit_window: &Window,
+-        event_loop: &ActiveEventLoop,
+-        event_loop_proxy: EventLoopProxy<AppEvent>,
++        sdl_window: &sdl3::video::Window,
++        event_loop_proxy: EventLoopProxy,
          rendering_context: Rc<OffscreenRenderingContext>,
 -        initial_url: Url,
 +        // Kept only so callers don't need updating: the address bar this used to
@@ -2371,23 +3260,32 @@ diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
      ) -> Self {
          rendering_context
              .make_current()
-@@ -203,13 +330,13 @@
-             false,
+             .expect("Could not make window RenderingContext current");
+-        let mut context = EguiGlow::new(
+-            event_loop,
++        let context = SdlEguiGlow::new(
+             rendering_context.glow_gl_api(),
+-            None,
+-            None,
+-            false,
++            sdl_window.subsystem().clipboard(),
          );
++        let accesskit = SdlAccessKit::new(sdl_window, event_loop_proxy);
  
 -        let font_definitions = configure_fonts();
 +        let mut font_definitions = configure_fonts();
 +        add_wordmark_font(&mut font_definitions);
          context.egui_ctx.set_fonts(font_definitions);
  
-         context
-             .egui_winit
-             .init_accesskit(event_loop, winit_window, event_loop_proxy);
+-        context
+-            .egui_winit
+-            .init_accesskit(event_loop, winit_window, event_loop_proxy);
 -        winit_window.set_visible(true);
- 
+-
          context.egui_ctx.options_mut(|options| {
              // Disable the builtin egui handlers for the Ctrl+Plus, Ctrl+Minus and Ctrl+0
-@@ -221,19 +348,43 @@
+             // shortcuts as they don't work well with servoshell's `device-pixel-ratio` CLI argument.
+@@ -221,19 +720,44 @@
              options.fallback_theme = egui::Theme::Light;
          });
  
@@ -2401,6 +3299,7 @@ diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
 +        let mut gui = Self {
              rendering_context,
              context,
++            accesskit,
              toolbar_height: Default::default(),
 -            location: initial_url.to_string(),
 -            location_dirty: false,
@@ -2430,16 +3329,56 @@ diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
 +        // therefore a plausible place for a silent native crash (GPU
 +        // driver, ANGLE/GL context issue) that never reaches `panic_hook.rs`.
 +        log::info!("painting first splash frame");
-+        gui.update_splash(winit_window, Duration::ZERO);
-+        gui.paint(winit_window);
++        gui.update_splash(sdl_window, Duration::ZERO);
++        gui.paint(sdl_window);
 +        log::info!("painted first splash frame");
-+        winit_window.set_visible(true);
++        let _ = sdl_window.clone().show();
 +
 +        gui
      }
  
      pub(crate) fn has_keyboard_focus(&self) -> bool {
-@@ -379,219 +530,37 @@
+@@ -250,14 +774,6 @@
+         });
+     }
+ 
+-    pub(crate) fn on_window_event(
+-        &mut self,
+-        winit_window: &Window,
+-        event: &WindowEvent,
+-    ) -> EventResponse {
+-        self.context.on_window_event(winit_window, event)
+-    }
+-
+     /// The height of the top toolbar of this user inteface ie the distance from the top of the
+     /// window to the position of the `WebView`.
+     pub(crate) fn toolbar_height(&self) -> Length<f32, DeviceIndependentPixel> {
+@@ -372,6 +888,24 @@
+         window: &ServoShellWindow,
+         headed_window: &headed_window::HeadedWindow,
+     ) {
++        let accessibility_events: Vec<_> = self.accesskit.drain_events().collect();
++        for event in accessibility_events {
++            match event {
++                AccessibilityEvent::InitialTreeRequested => {
++                    self.context.egui_ctx.enable_accesskit();
++                    state.set_accessibility_active(true);
++                },
++                AccessibilityEvent::ActionRequested(request) => {
++                    self.context
++                        .pending_events
++                        .push(egui::Event::AccessKitActionRequest(request));
++                },
++                AccessibilityEvent::Deactivated => {
++                    self.context.egui_ctx.disable_accesskit();
++                    state.set_accessibility_active(false);
++                },
++            }
++        }
+         self.rendering_context
+             .make_current()
+             .expect("Could not make RenderingContext current");
+@@ -379,219 +913,37 @@
              rendering_context,
              context,
              toolbar_height,
@@ -2449,7 +3388,7 @@ diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
              ..
          } = self;
  
-         let winit_window = headed_window.winit_window();
+-        let winit_window = headed_window.winit_window();
 -        context.run(winit_window, |ctx| {
 -            load_pending_favicons(ctx, window, favicon_textures);
 -
@@ -2641,6 +3580,7 @@ diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
 -            } else {
 -                *toolbar_height = Length::default();
 -            }
++        let sdl_window = headed_window.sdl_window();
 +        // `EguiGlow::run`'s callback now hands back the whole-window `&mut Ui` directly
 +        // (egui 0.36 removed the `Context`-based top-level panel API this used to go
 +        // through) rather than a `&Context` — see CUSTOMIZATIONS.md's egui 0.36.2 entry.
@@ -2648,7 +3588,7 @@ diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
 +        // directly; genuinely `Context`-only ones (`accesskit_node_builder`,
 +        // `layer_painter`, and anything wanting an owned `Context` like
 +        // `Tooltip::always_open`) go through `ui.ctx()`.
-+        context.run(winit_window, |ui| {
++        context.run(sdl_window, |ui| {
 +            // Kiosk/embedded fork: never draw the toolbar or tab strip, in windowed
 +            // mode or fullscreen — this build is meant to look like a native app
 +            // window, not a browser.
@@ -2675,7 +3615,7 @@ diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
                          node.set_tree_id(tree_id);
                      });
                  }
-@@ -608,7 +577,7 @@
+@@ -608,7 +960,7 @@
  
              if let Some(status_text) = &self.status_text {
                  egui::Tooltip::always_open(
@@ -2684,7 +3624,7 @@ diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
                      LayerId::new(Order::Tooltip, Id::new("tooltip")),
                      "tooltip layer".into(),
                      pos2(0.0, available_rect.max.y),
-@@ -619,7 +588,7 @@
+@@ -619,7 +971,7 @@
              window.repaint_webviews();
  
              if let Some(render_to_parent) = rendering_context.render_to_parent_callback() {
@@ -2693,7 +3633,19 @@ diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
                      rect: available_rect,
                      callback: Arc::new(CallbackFn::new(move |info, painter| {
                          let clip = info.viewport_in_pixels();
-@@ -650,6 +619,153 @@
+@@ -639,19 +991,164 @@
+             window.set_needs_repaint();
+         }
+ 
+-        let adapter = self
+-            .context
+-            .egui_winit
+-            .accesskit
+-            .as_mut()
+-            .expect("guaranteed by Gui::new()");
+         for tree_update in self.pending_accesskit_updates.drain(..) {
+-            adapter.update_if_active(|| tree_update);
++            self.accesskit.update_if_active(tree_update);
          }
      }
  
@@ -2707,7 +3659,7 @@ diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
 +    /// why it's indeterminate rather than a completion fraction) — always drawn, so the
 +    /// splash never shows a bare wordmark with no indication that something is loading.
 +    /// Call [`Gui::paint`] afterward, same as [`Gui::update`].
-+    pub(crate) fn update_splash(&mut self, winit_window: &Window, elapsed: Duration) {
++    pub(crate) fn update_splash(&mut self, sdl_window: &sdl3::video::Window, elapsed: Duration) {
 +        self.rendering_context
 +            .make_current()
 +            .expect("Could not make RenderingContext current");
@@ -2723,7 +3675,7 @@ diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
 +        // panics with "No fonts available until first call to Context::run()" if called
 +        // any earlier than the closure itself; confirmed the hard way, on a real build.
 +        let splash_icon_texture = self.splash_icon_texture.clone();
-+        self.context.run(winit_window, |ui| {
++        self.context.run(sdl_window, |ui| {
 +            // Measured (not guessed) — both so the icon+wordmark row below can be
 +            // centered exactly, rather than trusting `top_down`'s `Align::Center` to
 +            // center a nested `ui.horizontal` row on its own, and so the icon can be
@@ -2805,13 +3757,17 @@ diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
 +    /// continuity, but is a distinct, static screen — no progress bar, since there is
 +    /// nothing left in flight to animate. Call [`Gui::paint`] afterward, same as
 +    /// [`Gui::update`]/[`Gui::update_splash`].
-+    pub(crate) fn update_content_load_error(&mut self, winit_window: &Window, message: &str) {
++    pub(crate) fn update_content_load_error(
++        &mut self,
++        sdl_window: &sdl3::video::Window,
++        message: &str,
++    ) {
 +        self.rendering_context
 +            .make_current()
 +            .expect("Could not make RenderingContext current");
 +        let splash_icon_texture = self.splash_icon_texture.clone();
 +        let message = message.to_owned();
-+        self.context.run(winit_window, |ui| {
++        self.context.run(sdl_window, |ui| {
 +            let icon = egui::Image::from_texture(&splash_icon_texture)
 +                .fit_to_exact_size(egui::Vec2::splat(64.0));
 +            // See `update_splash`'s own comment: no longer deprecated in egui 0.36.
@@ -2845,9 +3801,12 @@ diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
 +    }
 +
      /// Paint the GUI, as of the last update.
-     pub(crate) fn paint(&mut self, window: &Window) {
+-    pub(crate) fn paint(&mut self, window: &Window) {
++    pub(crate) fn paint(&mut self, window: &sdl3::video::Window) {
          self.rendering_context
-@@ -662,43 +778,6 @@
+             .make_current()
+             .expect("Could not make RenderingContext current");
+@@ -662,43 +1159,6 @@
          self.rendering_context.parent_context().present();
      }
  
@@ -2891,7 +3850,7 @@ diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
      fn update_status_text(&mut self, window: &ServoShellWindow) -> bool {
          let state_status = window
              .active_webview()
-@@ -707,27 +786,10 @@
+@@ -707,51 +1167,19 @@
          old_status != self.status_text
      }
  
@@ -2922,7 +3881,37 @@ diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
      }
  
      /// Returns true if a redraw is required after handling the provided event.
-@@ -761,61 +823,3 @@
+-    pub(crate) fn handle_accesskit_event(
+-        &mut self,
+-        event: &egui_winit::accesskit_winit::WindowEvent,
+-    ) -> bool {
+-        match event {
+-            egui_winit::accesskit_winit::WindowEvent::InitialTreeRequested => {
+-                self.context.egui_ctx.enable_accesskit();
+-                true
+-            },
+-            egui_winit::accesskit_winit::WindowEvent::ActionRequested(req) => {
+-                self.context
+-                    .egui_winit
+-                    .on_accesskit_action_request(req.clone());
+-                true
+-            },
+-            egui_winit::accesskit_winit::WindowEvent::AccessibilityDeactivated => {
+-                self.context.egui_ctx.disable_accesskit();
+-                false
+-            },
+-        }
+-    }
++    // TODO(SDL3 windowing): `handle_accesskit_event` (dispatched `egui_winit::accesskit_winit::
++    // WindowEvent`s into `enable_accesskit`/`on_accesskit_action_request`/`disable_accesskit`)
++    // deleted here, not stubbed -- it referenced `self.context.egui_winit`, which no longer
++    // exists (see `SdlEguiGlow`'s own doc comment), and nothing calls it anymore now that
++    // `headed_window.rs`'s `handle_accessibility_event` no longer forwards into `Gui` either.
++    // Re-derive once a real SDL3 AccessKit bridge exists to actually feed it real events.
+ 
+     pub(crate) fn set_zoom_factor(&self, factor: f32) {
+         self.context.egui_ctx.set_zoom_factor(factor);
+@@ -761,61 +1189,3 @@
          self.pending_accesskit_updates.push(tree_update);
      }
  }
@@ -2987,6 +3976,15 @@ diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
 diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/desktop/headed_window.rs
 --- a/ports/servoshell/desktop/headed_window.rs
 +++ b/ports/servoshell/desktop/headed_window.rs
+@@ -2,7 +2,7 @@
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+ 
+-//! A winit window implementation.
++//! An SDL3 window implementation.
+ 
+ #![deny(clippy::panic)]
+ #![deny(clippy::unwrap_used)]
 @@ -10,8 +10,10 @@
  use std::cell::{Cell, RefCell};
  use std::collections::HashMap;
@@ -2999,36 +3997,58 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
  
  use euclid::{Angle, Length, Point2D, Rect, Rotation3D, Scale, Size2D, UnknownUnit, Vector3D};
  use keyboard_types::ShortcutMatcher;
-@@ -37,6 +39,8 @@
- use winit::keyboard::{Key as LogicalKey, ModifiersState, NamedKey as WinitNamedKey};
- #[cfg(target_os = "linux")]
- use winit::platform::wayland::WindowAttributesExtWayland;
-+#[cfg(target_os = "windows")]
-+use winit::platform::windows::WindowExtWindows;
+@@ -29,29 +31,26 @@
+     convert_rect_to_css_pixel,
+ };
+ use url::Url;
+-use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize};
+-use winit::event::{
+-    ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
+-};
+-use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
+-use winit::keyboard::{Key as LogicalKey, ModifiersState, NamedKey as WinitNamedKey};
+-#[cfg(target_os = "linux")]
+-use winit::platform::wayland::WindowAttributesExtWayland;
++use dpi::PhysicalSize;
++use sdl3::mouse::{Cursor as SdlCursor, MouseButton as SdlMouseButton, MouseUtil, SystemCursor};
  #[cfg(any(target_os = "linux", target_os = "windows"))]
- use winit::window::Icon;
+-use winit::window::Icon;
++use sdl3::{pixels::PixelFormat, surface::Surface};
++use sdl3::video::WindowFlags;
  #[cfg(target_os = "macos")]
-@@ -46,12 +50,13 @@
+ use {
+     objc2_app_kit::{NSColorSpace, NSView},
+     objc2_foundation::MainThreadMarker,
  };
  
- use super::geometry::{winit_position_to_euclid_point, winit_size_to_euclid_size};
+-use super::geometry::{winit_position_to_euclid_point, winit_size_to_euclid_size};
 -use super::keyutils::{CMD_OR_ALT, keyboard_event_from_winit};
-+use super::keyutils::keyboard_event_from_winit;
++use super::keyutils::keyboard_event_from_sdl;
  use crate::desktop::accelerated_gl_media::setup_gl_accelerated_media;
  use crate::desktop::dialog::Dialog;
- use crate::desktop::event_loop::AppEvent;
+-use crate::desktop::event_loop::AppEvent;
++use crate::desktop::event_loop::{
++    ActiveEventLoop, AppEvent, EventLoopProxy, TouchPhase, WindowEvent, WindowId,
++};
  use crate::desktop::gui::Gui;
  use crate::desktop::keyutils::CMD_OR_CONTROL;
 +use crate::desktop::logging;
  use crate::prefs::ServoShellPreferences;
  use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
  use crate::window::{
-@@ -59,7 +64,24 @@
+@@ -59,21 +58,50 @@
      ServoShellWindowId,
  };
  
 -pub(crate) const INITIAL_WINDOW_TITLE: &str = "Servo";
 +pub(crate) const INITIAL_WINDOW_TITLE: &str = "Roves";
++
++fn current_sdl_theme() -> Theme {
++    match sdl3::VideoSubsystem::get_system_theme() {
++        sdl3::video::SystemTheme::Dark => Theme::Dark,
++        sdl3::video::SystemTheme::Light | sdl3::video::SystemTheme::Unknown => Theme::Light,
++    }
++}
 +
 +/// How often the boot splash's indeterminate progress-bar animation (`gui.rs`'s
 +/// `draw_splash_progress_bar`) advances, whether it's holding for `app.rs`'s
@@ -3049,7 +4069,13 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
  
  pub struct HeadedWindow {
      /// The egui interface that is responsible for showing the user interface elements of
-@@ -71,6 +93,11 @@
+     /// this headed `Window`.
+     gui: RefCell<Gui>,
+-    screen_size: Size2D<u32, DeviceIndependentPixel>,
++    screen_size: Cell<Size2D<u32, DeviceIndependentPixel>>,
++    last_theme: Cell<Theme>,
+     webview_relative_mouse_point: Cell<Point2D<f32, DevicePixel>>,
+     /// The inner size of the window in physical pixels which excludes OS decorations.
      /// It equals viewport size + (0, toolbar height).
      inner_size: Cell<PhysicalSize<u32>>,
      fullscreen: Cell<bool>,
@@ -3060,8 +4086,26 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
 +    config_dir: Option<PathBuf>,
      device_pixel_ratio_override: Option<f32>,
      xr_window_poses: RefCell<Vec<Rc<XRWindowPose>>>,
-     modifiers_state: Cell<ModifiersState>,
-@@ -95,6 +122,10 @@
+-    modifiers_state: Cell<ModifiersState>,
+     /// The `RenderingContext` of Servo itself. This is used to render Servo results
+     /// temporarily until they can be blitted into the egui scene.
+     rendering_context: Rc<OffscreenRenderingContext>,
+@@ -91,80 +119,128 @@
+     // Keep this as the last field of the struct to ensure that the rendering context is
+     // dropped first.
+     // (https://github.com/servo/servo/issues/36711)
+-    winit_window: winit::window::Window,
++    sdl_window: sdl3::video::Window,
++    /// Sends `AppEvent::RedrawRequested` from anywhere, without the caller needing its own
++    /// `&ActiveEventLoop` handle — SDL3 has no push-based redraw-request event of its own (see
++    /// `request_redraw`, and `event_loop.rs`'s own doc comment on that `AppEvent` variant).
++    event_loop_proxy: EventLoopProxy,
++    /// SDL3 text-input controller for the video subsystem that owns `sdl_window`.
++    text_input: sdl3::keyboard::TextInputUtil,
++    /// SDL's cursor visibility API is global to the mouse subsystem. The active cursor object
++    /// must be retained for as long as SDL may use its native handle.
++    mouse: MouseUtil,
++    active_cursor: RefCell<Option<SdlCursor>>,
      /// The last title set on this window. We need to store this value here, as `winit::Window::title`
      /// is not supported very many platforms.
      last_title: RefCell<String>,
@@ -3072,10 +4116,16 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
      /// The current set of open dialogs.
      dialogs: RefCell<HashMap<WebViewId, Vec<Dialog>>>,
      /// The [`EmbedderControlId`] of the currently showing [`InputMethod`] interfaces,
-@@ -102,6 +133,17 @@
+     /// if one is showing.
      visible_input_method: Cell<Option<EmbedderControlId>>,
++    /// Whether a synthetic Servo composition Start has been emitted for the current SDL IME.
++    ime_composing: Cell<bool>,
      /// The position of the mouse cursor after the most recent `MouseMove` event.
      last_mouse_position: Cell<Option<Point2D<f32, DeviceIndependentPixel>>>,
++    /// Stable Servo identifiers for SDL3's 64-bit finger ids. Keeping an explicit map avoids
++    /// truncating ids to Servo's i32 `TouchId` and releases entries on Up/Cancel.
++    active_touch_ids: RefCell<HashMap<u64, TouchId>>,
++    next_touch_id: Cell<i32>,
 +    /// Set by `App::finish_init` (see `app.rs`) the moment the real `WebView` opens, and
 +    /// cleared once its initial page reaches `LoadStatus::Complete` or
 +    /// `MAX_PAGE_LOAD_SPLASH_DURATION` elapses, whichever comes first -- see
@@ -3090,88 +4140,201 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
  }
  
  impl HeadedWindow {
-@@ -127,9 +169,21 @@
-             // happen before the window is shown for the first time.
-             .with_visible(false);
- 
-+        // Reopen already in fullscreen if that's how the game was last left running (see
-+        // `prefs.rs`'s `start_fullscreen`/`set_fullscreen`'s persistence below) — avoids a
-+        // visible windowed-then-fullscreen transition on startup. See CUSTOMIZATIONS.md.
-+        let window_attr = if servoshell_preferences.start_fullscreen {
-+            let monitor = event_loop
-+                .primary_monitor()
-+                .or_else(|| event_loop.available_monitors().next());
-+            window_attr.with_fullscreen(Some(winit::window::Fullscreen::Borderless(monitor)))
-+        } else {
-+            window_attr
-+        };
-+
-         // Set a name so it can be pinned to taskbars in Linux.
-         #[cfg(target_os = "linux")]
++    /// SDL3-backed desktop window construction. Linux taskbar app-id naming is still a separate
++    /// follow-up; icon selection and transparent/borderless `no_native_titlebar` windows are
++    /// handled below, while macOS keeps its platform-specific sRGB correction.
+     #[servo::servo_tracing::instrument(level = "debug", name = "HeadedWindow::new", skip_all)]
+     pub(crate) fn new(
+         servoshell_preferences: &ServoShellPreferences,
+         event_loop: &ActiveEventLoop,
+-        event_loop_proxy: EventLoopProxy<AppEvent>,
++        event_loop_proxy: EventLoopProxy,
+         initial_url: Url,
+     ) -> Rc<Self> {
+         let no_native_titlebar = servoshell_preferences.no_native_titlebar;
+         let inner_size = servoshell_preferences.initial_window_size;
+-        let window_attr = winit::window::Window::default_attributes()
+-            .with_title(INITIAL_WINDOW_TITLE.to_string())
+-            .with_decorations(!no_native_titlebar)
+-            .with_transparent(no_native_titlebar)
+-            .with_inner_size(LogicalSize::new(inner_size.width, inner_size.height))
+-            .with_min_inner_size(LogicalSize::new(
+-                MIN_WINDOW_INNER_SIZE.width,
+-                MIN_WINDOW_INNER_SIZE.height,
+-            ))
+-            // Must be invisible at startup; accesskit_winit setup needs to
+-            // happen before the window is shown for the first time.
+-            .with_visible(false);
+-
+-        // Set a name so it can be pinned to taskbars in Linux.
+-        #[cfg(target_os = "linux")]
 -        let window_attr = window_attr.with_name("org.servo.Servo", "Servo");
-+        let window_attr = window_attr.with_name("org.roves.Roves", "Roves");
- 
-         #[allow(deprecated)]
-         let winit_window = event_loop
-@@ -138,8 +192,30 @@
+-
+-        #[allow(deprecated)]
+-        let winit_window = event_loop
+-            .create_window(window_attr)
+-            .expect("Failed to create window.");
++
++        let mut window_builder =
++            event_loop
++                .video()
++                .window(INITIAL_WINDOW_TITLE, inner_size.width, inner_size.height);
++        window_builder
++            .opengl()
++            .resizable()
++            .high_pixel_density()
++            // Must be invisible at startup, same reasoning the old winit code had for
++            // `accesskit_winit` (now gone, see TODO.md) -- there is no content worth showing
++            // before the very first splash frame is painted, further down this function.
++            .hidden();
++        if servoshell_preferences.start_fullscreen {
++            // Reopen already in fullscreen if that's how the game was last left running (see
++            // `prefs.rs`'s `start_fullscreen`/`set_fullscreen`'s persistence below) — avoids a
++            // visible windowed-then-fullscreen transition on startup. See CUSTOMIZATIONS.md.
++            window_builder.fullscreen();
++        }
++        if no_native_titlebar {
++            let flags =
++                window_builder.flags() | WindowFlags::BORDERLESS | WindowFlags::TRANSPARENT;
++            window_builder.set_flags(flags);
++        }
++
++        let mut sdl_window = window_builder.build().expect("Failed to create window.");
++        let _ = sdl_window.set_minimum_size(
++            MIN_WINDOW_INNER_SIZE.width as u32,
++            MIN_WINDOW_INNER_SIZE.height as u32,
++        );
  
          #[cfg(any(target_os = "linux", target_os = "windows"))]
-         {
+-        {
 -            let icon_bytes = include_bytes!("../../../resources/servo_64.png");
 -            winit_window.set_window_icon(Some(load_icon(icon_bytes)));
-+            // A game-supplied `icon.png` next to the running binary (copied there by
-+            // `mach bundle --icon-png`, see `python/servo/post_build_commands.py`) takes
-+            // priority over the compile-time default `build.rs` bakes into `OUT_DIR` — see
-+            // `runtime_window_icon_bytes`'s own doc comment for why this matters (a
-+            // *prebuilt* shell, the one every roves-action base-mode/Packmaster consumer
-+            // downloads, is never compiled per-game). Falls back to the compiled-in bytes
-+            // (whichever of the game's own `icon.png` or Roves' own `resources/servo_64.png`
-+            // existed at compile time — see CUSTOMIZATIONS.md) when no runtime file is
-+            // present, e.g. an advanced-mode build or one predating this fallback. Not the
-+            // boot splash's icon, which is always Roves-branded regardless (`gui.rs`).
-+            let runtime_icon_bytes = runtime_window_icon_bytes();
-+            let icon_bytes: &[u8] = runtime_icon_bytes.as_deref().unwrap_or_else(|| {
-+                include_bytes!(concat!(env!("OUT_DIR"), "/window_icon.png"))
-+            });
-+            let icon = load_icon(icon_bytes);
-+            // `set_window_icon` only sets `ICON_SMALL` (the title bar icon) —
-+            // on Windows, the taskbar/Alt-Tab icon is `ICON_BIG`, a separate
-+            // call (`WindowExtWindows::set_taskbar_icon`), or it silently
-+            // falls back to the `.exe`'s own resource icon (`build.rs`'s
-+            // `winresource` step) instead of this one. Set both explicitly so
-+            // they're always the same icon, regardless of platform quirks.
-+            #[cfg(target_os = "windows")]
-+            winit_window.set_taskbar_icon(Some(icon.clone()));
-+            winit_window.set_window_icon(Some(icon));
-         }
+-        }
++        set_window_icon(&mut sdl_window);
  
-         let window_handle = winit_window
-@@ -198,7 +274,8 @@
+-        let window_handle = winit_window
++        let window_handle = sdl_window
+             .window_handle()
+-            .expect("winit window did not have a window handle");
++            .expect("SDL3 window did not have a window handle");
+         HeadedWindow::force_srgb_color_space(window_handle.as_raw());
+ 
+-        let monitor = winit_window
+-            .current_monitor()
+-            .or_else(|| winit_window.available_monitors().nth(0))
+-            .expect("No monitor detected");
+-
+-        let (screen_size, screen_scale) = servoshell_preferences.screen_size_override.map_or_else(
+-            || (monitor.size(), winit_window.scale_factor()),
+-            |size| (PhysicalSize::new(size.width, size.height), 1.0),
+-        );
++        let (screen_size, screen_scale): (Size2D<u32, DevicePixel>, f64) = servoshell_preferences
++            .screen_size_override
++            .map_or_else(
++                || {
++                    let bounds = event_loop
++                        .video()
++                        .get_primary_display()
++                        .and_then(|display| display.get_bounds())
++                        .unwrap_or(sdl3::rect::Rect::new(0, 0, inner_size.width as u32, inner_size.height as u32));
++                    (
++                        Size2D::new(bounds.width(), bounds.height()),
++                        sdl_window.display_scale() as f64,
++                    )
++                },
++                |size| (Size2D::new(size.width, size.height), 1.0),
++            );
+         let screen_scale: Scale<f64, DeviceIndependentPixel, DevicePixel> =
+             Scale::new(screen_scale);
+-        let screen_size = (winit_size_to_euclid_size(screen_size).to_f64() / screen_scale).to_u32();
+-        let inner_size = winit_window.inner_size();
++        let screen_size = (screen_size.to_f64() / screen_scale).to_u32();
++        let (inner_width, inner_height) = sdl_window.size_in_pixels();
++        let inner_size = PhysicalSize::new(inner_width, inner_height);
+ 
+-        let display_handle = event_loop
++        let display_handle = sdl_window
+             .display_handle()
+             .expect("could not get display handle from window");
+-        let window_handle = winit_window
++        let window_handle = sdl_window
+             .window_handle()
+             .expect("could not get window handle from window");
+         let window_rendering_context = Rc::new(
+@@ -186,24 +262,28 @@
+ 
+         let rendering_context = Rc::new(window_rendering_context.offscreen_context(inner_size));
+         let gui = RefCell::new(Gui::new(
+-            &winit_window,
+-            event_loop,
+-            event_loop_proxy,
++            &sdl_window,
++            event_loop_proxy.clone(),
+             rendering_context.clone(),
+             initial_url,
+         ));
+ 
+-        debug!("Created window {:?}", winit_window.id());
++        debug!("Created window {:?}", sdl_window.id());
+         Rc::new(HeadedWindow {
              gui,
-             winit_window,
+-            winit_window,
++            sdl_window,
++            event_loop_proxy,
++            text_input: event_loop.video().text_input(),
++            mouse: event_loop.sdl().mouse(),
++            active_cursor: RefCell::new(None),
              webview_relative_mouse_point: Cell::new(Point2D::zero()),
 -            fullscreen: Cell::new(false),
 +            fullscreen: Cell::new(servoshell_preferences.start_fullscreen),
 +            config_dir: servoshell_preferences.config_dir.clone(),
              inner_size: Cell::new(inner_size),
-             screen_size,
+-            screen_size,
++            screen_size: Cell::new(screen_size),
++            last_theme: Cell::new(current_sdl_theme()),
              device_pixel_ratio_override: servoshell_preferences.device_pixel_ratio_override,
-@@ -211,9 +288,11 @@
+             xr_window_poses: RefCell::new(vec![]),
+-            modifiers_state: Cell::new(ModifiersState::empty()),
+             window_rendering_context,
+             touch_event_simulator: servoshell_preferences
+                 .simulate_touch_events
+@@ -211,24 +291,101 @@
              pending_keyboard_events: Default::default(),
              rendering_context,
              last_title: RefCell::new(String::from(INITIAL_WINDOW_TITLE)),
 +            window_title_override: servoshell_preferences.window_title_override.clone(),
              dialogs: Default::default(),
              visible_input_method: Default::default(),
++            ime_composing: Cell::new(false),
              last_mouse_position: Default::default(),
++            active_touch_ids: Default::default(),
++            next_touch_id: Cell::new(0),
 +            page_load_splash_since: Cell::new(None),
          })
      }
  
-@@ -221,6 +300,58 @@
-         &self.winit_window
-     }
- 
+-    pub(crate) fn winit_window(&self) -> &winit::window::Window {
+-        &self.winit_window
++    /// The raw SDL3 window id (`event_loop.rs`'s own `WindowId` type) — distinct from
++    /// `PlatformWindow::id`'s `ServoShellWindowId` (this fork's own cross-platform window
++    /// identity), named differently on purpose so `.id()` never becomes ambiguous between
++    /// this inherent method and that trait one.
++    pub(crate) fn sdl_window_id(&self) -> WindowId {
++        self.sdl_window.id()
++    }
++
++    pub(crate) fn sdl_window(&self) -> &sdl3::video::Window {
++        &self.sdl_window
++    }
++
++    /// SDL3 has no push-based "redraw requested" event of its own — see `event_loop.rs`'s own
++    /// doc comment on `AppEvent::RedrawRequested`, which this sends.
++    pub(crate) fn request_redraw(&self) {
++        let _ = self
++            .event_loop_proxy
++            .send_event(AppEvent::RedrawRequested(self.sdl_window_id()));
++    }
++
 +    /// Paints the boot splash instead of the normal browser UI — used both while a
 +    /// packed-content launch's boot extraction is still running on a background thread
 +    /// (`AppState::Booting` in `app.rs`, before there's a `RunningAppState`/webview to
@@ -3184,8 +4347,8 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
 +    /// fractional signal at all) — see `draw_splash_progress_bar`'s own doc comment.
 +    pub(crate) fn paint_splash(&self, elapsed: Duration) {
 +        let mut gui = self.gui.borrow_mut();
-+        gui.update_splash(&self.winit_window, elapsed);
-+        gui.paint(&self.winit_window);
++        gui.update_splash(&self.sdl_window, elapsed);
++        gui.paint(&self.sdl_window);
 +    }
 +
 +    /// Paints a visible error message instead of handing off to the (in this case
@@ -3198,8 +4361,8 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
 +    /// would have painted ever ran.
 +    pub(crate) fn paint_content_load_error(&self, message: &str) {
 +        let mut gui = self.gui.borrow_mut();
-+        gui.update_content_load_error(&self.winit_window, message);
-+        gui.paint(&self.winit_window);
++        gui.update_content_load_error(&self.sdl_window, message);
++        gui.paint(&self.sdl_window);
 +    }
 +
 +    /// Called once by `App::finish_init`, right as the real `WebView` opens, to keep the
@@ -3222,12 +4385,142 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
 +            return None;
 +        }
 +        Some(Instant::now() + SPLASH_ANIMATION_TICK)
-+    }
-+
+     }
+ 
      fn handle_keyboard_input(
          &self,
          state: Rc<RunningAppState>,
-@@ -381,28 +512,9 @@
+         window: &Rc<ServoShellWindow>,
+-        winit_event: KeyEvent,
++        keyboard_event: KeyboardEvent,
+     ) {
++        for pose in self.xr_window_poses.borrow().iter() {
++            pose.handle_xr_rotation(&keyboard_event);
++            pose.handle_xr_translation(&keyboard_event);
++        }
++
+         // First, handle servoshell key bindings that are not overridable by, or visible to, the page.
+-        let keyboard_event = keyboard_event_from_winit(&winit_event, self.modifiers_state.get());
+         if self.handle_intercepted_key_bindings(state, window, &keyboard_event) {
+             return;
+         }
+@@ -238,11 +395,6 @@
+             return;
+         };
+ 
+-        for xr_window_pose in self.xr_window_poses.borrow().iter() {
+-            xr_window_pose.handle_xr_rotation(&winit_event, self.modifiers_state.get());
+-            xr_window_pose.handle_xr_translation(&keyboard_event);
+-        }
+-
+         let id = webview.notify_input_event(InputEvent::Keyboard(keyboard_event.clone()));
+         self.pending_keyboard_events
+             .borrow_mut()
+@@ -250,12 +402,7 @@
+     }
+ 
+     /// Helper function to handle a click
+-    fn handle_mouse_button_event(
+-        &self,
+-        webview: &WebView,
+-        button: MouseButton,
+-        action: ElementState,
+-    ) {
++    fn handle_mouse_button_event(&self, webview: &WebView, button: SdlMouseButton, pressed: bool) {
+         // `point` can be outside viewport, such as at toolbar with negative y-coordinate.
+         let point = self.webview_relative_mouse_point.get();
+         let webview_rect: Rect<_, _> = webview.size().into();
+@@ -268,25 +415,22 @@
+             .as_ref()
+             .is_some_and(|touch_event_simulator| {
+                 touch_event_simulator
+-                    .maybe_consume_move_button_event(webview, button, action, point)
++                    .maybe_consume_move_button_event(webview, button, pressed, point)
+             })
+         {
+             return;
+         }
+ 
+-        let mouse_button = match &button {
+-            MouseButton::Left => ServoMouseButton::Left,
+-            MouseButton::Right => ServoMouseButton::Right,
+-            MouseButton::Middle => ServoMouseButton::Middle,
+-            MouseButton::Back => ServoMouseButton::Back,
+-            MouseButton::Forward => ServoMouseButton::Forward,
+-            MouseButton::Other(value) => ServoMouseButton::Other(*value),
++        let mouse_button = match button {
++            SdlMouseButton::Left => ServoMouseButton::Left,
++            SdlMouseButton::Right => ServoMouseButton::Right,
++            SdlMouseButton::Middle => ServoMouseButton::Middle,
++            SdlMouseButton::X1 => ServoMouseButton::Back,
++            SdlMouseButton::X2 => ServoMouseButton::Forward,
++            SdlMouseButton::Unknown => ServoMouseButton::Other(0),
+         };
+ 
+-        let action = match action {
+-            ElementState::Pressed => MouseButtonAction::Down,
+-            ElementState::Released => MouseButtonAction::Up,
+-        };
++        let action = if pressed { MouseButtonAction::Down } else { MouseButtonAction::Up };
+ 
+         webview.notify_input_event(InputEvent::MouseButton(MouseButtonEvent::new(
+             action,
+@@ -296,8 +440,8 @@
+     }
+ 
+     /// Helper function to handle mouse move events.
+-    fn handle_mouse_move_event(&self, webview: &WebView, position: PhysicalPosition<f64>) {
+-        let mut point = winit_position_to_euclid_point(position).to_f32();
++    fn handle_mouse_move_event(&self, webview: &WebView, x: f32, y: f32) {
++        let mut point = Point2D::<f32, DevicePixel>::new(x, y);
+         point.y -= (self.toolbar_height() * self.hidpi_scale_factor()).0;
+ 
+         let previous_point = self.webview_relative_mouse_point.get();
+@@ -326,6 +470,43 @@
+         webview.notify_input_event(InputEvent::MouseMove(MouseMoveEvent::new(point.into())));
+     }
+ 
++    fn handle_touch_event(
++        &self,
++        webview: &WebView,
++        phase: TouchPhase,
++        finger_id: u64,
++        x: f32,
++        y: f32,
++    ) {
++        let mut active_ids = self.active_touch_ids.borrow_mut();
++        let touch_id = active_ids.get(&finger_id).copied().unwrap_or_else(|| {
++            let touch_id = TouchId(self.next_touch_id.get());
++            self.next_touch_id.set(self.next_touch_id.get().wrapping_add(1));
++            active_ids.insert(finger_id, touch_id);
++            touch_id
++        });
++        if matches!(phase, TouchPhase::Up | TouchPhase::Cancel) {
++            active_ids.remove(&finger_id);
++        }
++        drop(active_ids);
++
++        let (width, height) = self.sdl_window.size_in_pixels();
++        let mut point = Point2D::<f32, DevicePixel>::new(x * width as f32, y * height as f32);
++        point.y -= (self.toolbar_height() * self.hidpi_scale_factor()).0;
++        let event_type = match phase {
++            TouchPhase::Down => TouchEventType::Down,
++            TouchPhase::Move => TouchEventType::Move,
++            TouchPhase::Up => TouchEventType::Up,
++            TouchPhase::Cancel => TouchEventType::Cancel,
++        };
++        webview.notify_input_event(InputEvent::Touch(TouchEvent::new(
++            event_type,
++            touch_id,
++            point.into(),
++            TouchPointerType::Touch,
++        )));
++    }
++
+     /// Handle key events before sending them to Servo.
+     fn handle_intercepted_key_bindings(
+         &self,
+@@ -381,28 +562,9 @@
              .shortcut(Modifiers::CONTROL, Key::Named(NamedKey::F12), || {
                  active_webview.toggle_webrender_debugging(WebRenderDebugOption::Profiler);
              })
@@ -3259,7 +4552,44 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
              .optional_shortcut(
                  self.get_fullscreen(),
                  Modifiers::empty(),
-@@ -512,6 +624,27 @@
+@@ -464,21 +626,26 @@
+         }
+     }
+ 
++    /// TODO(SDL3 windowing): IME positioning not ported yet — SDL3 exposes this through
++    /// `SDL_SetTextInputArea`/`SDL_StartTextInput` (global, not a `Window` method the way
++    /// winit's `set_ime_allowed`/`set_ime_cursor_area` were), not yet wired up here. The IME
++    /// still works (the OS just doesn't get a cursor-area hint, so its candidate window may
++    /// not appear right at the text caret) — `visible_input_method` bookkeeping (used by
++    /// `WindowEvent::Ime(Disabled)` handling, itself not ported yet either) is kept for when
++    /// that's ported.
+     fn show_ime(&self, control_id: EmbedderControlId, input_method: InputMethodControl) {
+         self.visible_input_method.set(Some(control_id));
++        self.ime_composing.set(false);
+ 
+         let position = input_method.position();
+-        self.winit_window.set_ime_allowed(true);
+-        self.winit_window.set_ime_cursor_area(
+-            LogicalPosition::new(
+-                position.min.x,
+-                position.min.y + (self.toolbar_height().0 as i32),
+-            ),
+-            LogicalSize::new(
+-                position.max.x - position.min.x,
+-                position.max.y - position.min.y,
+-            ),
++        let rect = sdl3::rect::Rect::new(
++            position.min.x,
++            position.min.y + self.toolbar_height().0 as i32,
++            (position.max.x - position.min.x).max(1) as u32,
++            (position.max.y - position.min.y).max(1) as u32,
+         );
++        self.text_input.set_rect(&self.sdl_window, rect, 0);
++        self.text_input.start(&self.sdl_window);
+     }
+ 
+     pub(crate) fn for_each_active_dialog(
+@@ -512,6 +679,27 @@
              .push(dialog)
      }
  
@@ -3287,7 +4617,73 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
      fn remove_dialog(&self, webview_id: WebViewId, embedder_control_id: EmbedderControlId) {
          let mut dialogs = self.dialogs.borrow_mut();
          if let Some(dialogs) = dialogs.get_mut(&webview_id) {
-@@ -549,11 +682,28 @@
+@@ -531,280 +719,234 @@
+         self.gui.borrow().toolbar_height()
+     }
+ 
+-    pub(crate) fn handle_winit_window_event(
++    /// TODO(SDL3 windowing, real progress not completion — see TODO.md): this used to be
++    /// `handle_winit_window_event`, handling ~16 real winit `WindowEvent` variants — keyboard
++    /// input, mouse buttons/motion/wheel, IME composition, modifiers, touch, pinch gesture,
++    /// dropped files, theme/scale-factor changes, egui event forwarding and focus routing (see
++    /// this file's own git history for that full body, or the pristine-vs-patched diff under
++    /// `patches/servo-v0.5.0/0001-desktop-shell-core.patch` from before this migration branch).
++    /// Only resize/close/redraw/focus are ported so far — a real window now opens, shows the
++    /// boot splash, resizes, and closes cleanly, but does not yet accept any input at all.
++    /// `handle_keyboard_input`/`handle_mouse_button_event`/`handle_mouse_move_event`/
++    /// `handle_intercepted_key_bindings`/`show_ime` (further down this file) are all
++    /// unreachable leftovers from that body, kept only because deleting carefully-written
++    /// logic that will need re-deriving anyway seemed worse than a `#[expect(dead_code)]` —
++    /// re-wire them once `WindowEvent` grows the variants they need.
++    pub(crate) fn handle_window_event(
+         &self,
+         state: Rc<RunningAppState>,
+         window: Rc<ServoShellWindow>,
+         event: WindowEvent,
+     ) {
++        self.gui
++            .borrow_mut()
++            .handle_accessibility_window_event(&self.sdl_window, &event);
++        if let Some(consumed) = self
++            .gui
++            .borrow_mut()
++            .handle_pointer_event(&event, self.hidpi_scale_factor().0)
++        {
++            self.request_redraw();
++            if consumed {
++                return;
++            }
++        }
++        if let Some(consumed) = self.gui.borrow_mut().handle_keyboard_event(&event) {
++            self.request_redraw();
++            if consumed {
++                return;
++            }
++        }
++
++        let theme = current_sdl_theme();
++        if self.last_theme.replace(theme) != theme {
++            if let Some(webview) = window.active_webview() {
++                webview.notify_theme_change(theme);
++            }
++        }
++
+         // Handle resize events first, so that any subsequent redrawing draws onto a buffer of the
+         // correct size.
+         let mut resized = false;
+-        if let WindowEvent::Resized(new_inner_size) = event &&
+-            self.inner_size.get() != new_inner_size
+-        {
+-            self.inner_size.set(new_inner_size);
+-            self.window_rendering_context.resize(new_inner_size);
+-            resized = true;
++        if let WindowEvent::Resized(width, height) = &event {
++            let new_inner_size = PhysicalSize::new(*width, *height);
++            if self.inner_size.get() != new_inner_size {
++                self.inner_size.set(new_inner_size);
++                self.window_rendering_context.resize(new_inner_size);
++                resized = true;
++            }
          }
  
          // If requested to redraw or resized, repaint as soon as possible, so that new buffer
@@ -3300,6 +4696,20 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
 -            let mut gui = self.gui.borrow_mut();
 -            gui.update(&state, &window, self);
 -            gui.paint(&self.winit_window);
+-        }
+-
+-        if let WindowEvent::CursorMoved { position, .. } = event {
+-            self.last_mouse_position.set(Some(
+-                winit_position_to_euclid_point(position).to_f32() / self.hidpi_scale_factor(),
+-            ));
+-        }
+-        let should_forward_mouse_event_to_egui = || {
+-            // If a dialog is showing, it always captures all mouse events.
+-            if window
+-                .active_webview()
+-                .is_some_and(|webview| self.has_active_dialog_for_webview(webview.id()))
+-            {
+-                return true;
 +            let still_loading = self.page_load_splash_since.get().filter(|since| {
 +                !state.is_initial_page_loaded() && since.elapsed() < MAX_PAGE_LOAD_SPLASH_DURATION
 +            });
@@ -3312,18 +4722,45 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
 +                        None => {
 +                            let mut gui = self.gui.borrow_mut();
 +                            gui.update(&state, &window, self);
-+                            gui.paint(&self.winit_window);
++                            gui.paint(&self.sdl_window);
 +                        },
 +                    }
 +                },
-+            }
-         }
+             }
+-            // Otherwise, if the cursor is over the egui interface, forward the event.
+-            self.last_mouse_position
+-                .get()
+-                .is_none_or(|point| self.gui.borrow().is_in_egui_toolbar_rect(point))
+-        };
++        }
  
-         if let WindowEvent::CursorMoved { position, .. } = event {
-@@ -602,18 +752,12 @@
-             },
-             WindowEvent::MouseInput {
-                 state: ElementState::Pressed,
+-        // Handle the event
+-        let mut consumed = false;
+         match event {
+-            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+-                // Intercept any ScaleFactorChanged events away from EguiGlow::on_window_event, so
+-                // we can use our own logic for calculating the scale factor and set egui’s
+-                // scale factor to that value manually.
+-                let desired_scale_factor = self.hidpi_scale_factor().get();
+-                let effective_egui_zoom_factor = desired_scale_factor / scale_factor as f32;
+-
+-                info!(
+-                    "window scale factor changed to {}, setting egui zoom factor to {}",
+-                    scale_factor, effective_egui_zoom_factor
+-                );
+-
+-                self.gui
+-                    .borrow()
+-                    .set_zoom_factor(effective_egui_zoom_factor);
+-
+-                window.hidpi_scale_factor_changed();
+-
+-                // Request a winit redraw event, so we can recomposite, update and paint
+-                // the GUI, and present the new frame.
+-                self.winit_window.request_redraw();
+-            },
+-            WindowEvent::MouseInput {
+-                state: ElementState::Pressed,
 -                button: MouseButton::Forward,
 -                ..
 -            } => {
@@ -3333,17 +4770,365 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
 -            WindowEvent::MouseInput {
 -                state: ElementState::Pressed,
 -                button: MouseButton::Back,
-+                button: MouseButton::Forward | MouseButton::Back,
-                 ..
-             } => {
+-                ..
+-            } => {
 -                window.queue_user_interface_command(UserInterfaceCommand::Back);
-+                // Mouse "back"/"forward" side buttons are swallowed rather than triggering
-+                // history navigation, for the same reason the keyboard shortcuts and context
-+                // menu entries are disabled: navigating away can silently destroy game state.
-                 consumed = true;
+-                consumed = true;
+-            },
+-            WindowEvent::MouseWheel { .. } | WindowEvent::MouseInput { .. }
+-                if !should_forward_mouse_event_to_egui() =>
+-            {
+-                self.gui.borrow().surrender_focus();
+-            },
+-            WindowEvent::KeyboardInput { .. } if !self.gui.borrow().has_keyboard_focus() => {
+-                // Keyboard events should go to the WebView unless some other GUI
+-                // component has keyboard focus.
+-            },
+-            ref event => {
+-                let response = self
+-                    .gui
+-                    .borrow_mut()
+-                    .on_window_event(&self.winit_window, event);
+-
+-                if let WindowEvent::Focused(true) = event {
+-                    state.handle_focused(window.clone());
+-                }
+-
+-                if response.repaint && *event != WindowEvent::RedrawRequested {
+-                    self.winit_window.request_redraw();
+-                }
+-
+-                // All CursorMoved events, even when forwarded to the WebView, are also
+-                // forwarded to Gui (above). This is because egui needs to know when
+-                // the mouse is moving in other parts of the view in order to properly
+-                // hide tooltips.
+-                if let WindowEvent::CursorMoved { .. } = event &&
+-                    !should_forward_mouse_event_to_egui()
+-                {
+-                    consumed = false;
+-                } else {
+-                    // TODO how do we handle the tab key? (see doc for consumed)
+-                    // Note that servo doesn’t yet support tabbing through links and inputs
+-                    consumed = response.consumed;
++            WindowEvent::Focused(true) => state.handle_focused(window.clone()),
++            WindowEvent::CloseRequested => window.schedule_close(),
++            // TODO(SDL3 windowing): no egui input is wired up yet on this branch (see
++            // `gui.rs`'s own `SdlEguiGlow` doc comment) -- so unlike the old winit-based
++            // dispatch, there's no "does egui have keyboard/mouse focus, forward there
++            // instead" check to make yet. Every event below always goes straight to the
++            // active `WebView`. Revisit once egui input exists and can plausibly claim focus
++            // (a dialog, a text field in the toolbar, ...).
++            WindowEvent::KeyDown { keycode, scancode, keymod, repeat } => {
++                let keyboard_event =
++                    keyboard_event_from_sdl(keycode, scancode, keymod, true, repeat);
++                self.handle_keyboard_input(state, &window, keyboard_event);
++            },
++            WindowEvent::KeyUp { keycode, scancode, keymod } => {
++                let keyboard_event =
++                    keyboard_event_from_sdl(keycode, scancode, keymod, false, false);
++                self.handle_keyboard_input(state, &window, keyboard_event);
++            },
++            WindowEvent::ImePreedit(text) => {
++                if let Some(webview) = window.active_webview() {
++                    if !self.ime_composing.replace(true) {
++                        webview.notify_input_event(InputEvent::Ime(ImeEvent::Composition(
++                            servo::CompositionEvent {
++                                state: servo::CompositionState::Start,
++                                data: String::new(),
++                            },
++                        )));
++                    }
++                    webview.notify_input_event(InputEvent::Ime(ImeEvent::Composition(
++                        servo::CompositionEvent {
++                            state: servo::CompositionState::Update,
++                            data: text,
++                        },
++                    )));
+                 }
              },
-             WindowEvent::MouseWheel { .. } | WindowEvent::MouseInput { .. }
-@@ -845,15 +989,17 @@
+-        }
+-
+-        if !consumed && let Some(webview) = window.active_webview() {
+-            match event {
+-                WindowEvent::KeyboardInput { event, .. } => {
+-                    self.handle_keyboard_input(state, &window, event)
+-                },
+-                WindowEvent::ModifiersChanged(modifiers) => {
+-                    self.modifiers_state.set(modifiers.state())
+-                },
+-                WindowEvent::MouseInput { state, button, .. } => {
+-                    self.handle_mouse_button_event(&webview, button, state);
+-                },
+-                WindowEvent::CursorMoved { position, .. } => {
+-                    self.handle_mouse_move_event(&webview, position);
+-                },
+-                WindowEvent::CursorLeft { .. } => {
+-                    let webview_rect: Rect<_, _> = webview.size().into();
+-                    if webview_rect.contains(self.webview_relative_mouse_point.get()) {
+-                        webview.notify_input_event(InputEvent::MouseLeftViewport(
+-                            MouseLeftViewportEvent::default(),
+-                        ));
++            WindowEvent::ImeCommit(text) => {
++                if let Some(webview) = window.active_webview() {
++                    if !self.ime_composing.replace(false) {
++                        webview.notify_input_event(InputEvent::Ime(ImeEvent::Composition(
++                            servo::CompositionEvent {
++                                state: servo::CompositionState::Start,
++                                data: String::new(),
++                            },
++                        )));
+                     }
+-                },
+-                WindowEvent::MouseWheel { delta, .. } => {
+-                    let (delta_x, delta_y, mode) = match delta {
+-                        MouseScrollDelta::LineDelta(delta_x, delta_y) => (
+-                            (delta_x * LINE_WIDTH) as f64,
+-                            (delta_y * LINE_HEIGHT) as f64,
+-                            WheelMode::DeltaPixel,
+-                        ),
+-                        MouseScrollDelta::PixelDelta(delta) => {
+-                            (delta.x, delta.y, WheelMode::DeltaPixel)
++                    webview.notify_input_event(InputEvent::Ime(ImeEvent::Composition(
++                        servo::CompositionEvent {
++                            state: servo::CompositionState::End,
++                            data: text,
+                         },
+-                    };
+-
+-                    // Create wheel event before snapping to the major axis of movement
++                    )));
++                }
++            },
++            WindowEvent::MouseMotion { x, y } => {
++                if let Some(webview) = window.active_webview() {
++                    self.handle_mouse_move_event(&webview, x, y);
++                }
++            },
++            WindowEvent::MouseButtonDown { button, .. } => {
++                if let Some(webview) = window.active_webview() {
++                    self.handle_mouse_button_event(&webview, button, true);
++                }
++            },
++            WindowEvent::MouseButtonUp { button, .. } => {
++                if let Some(webview) = window.active_webview() {
++                    self.handle_mouse_button_event(&webview, button, false);
++                }
++            },
++            // TODO(SDL3 windowing): scroll direction (whether `y` needs negating to match the
++            // DOM's own deltaY convention) is unverified — no real device to check against.
++            WindowEvent::MouseWheel { x, y } => {
++                if let Some(webview) = window.active_webview() {
+                     let delta = WheelDelta {
+-                        x: delta_x,
+-                        y: delta_y,
++                        x: (x * LINE_WIDTH) as f64,
++                        y: (y * LINE_HEIGHT) as f64,
+                         z: 0.0,
+-                        mode,
++                        mode: WheelMode::DeltaPixel,
+                     };
+                     let point = self.webview_relative_mouse_point.get();
+                     webview.notify_input_event(InputEvent::Wheel(WheelEvent::new(
+                         delta,
+                         point.into(),
+                     )));
+-                },
+-                WindowEvent::Touch(touch) => {
+-                    webview.notify_input_event(InputEvent::Touch(TouchEvent::new(
+-                        winit_phase_to_touch_event_type(touch.phase),
+-                        TouchId(touch.id as i32),
+-                        DevicePoint::new(touch.location.x as f32, touch.location.y as f32).into(),
+-                        TouchPointerType::Touch,
+-                    )));
+-                },
+-                WindowEvent::PinchGesture { delta, .. } => {
+-                    webview.adjust_pinch_zoom(
+-                        delta as f32 + 1.0,
+-                        self.webview_relative_mouse_point.get(),
+-                    );
+-                },
+-                WindowEvent::CloseRequested => {
+-                    window.schedule_close();
+-                },
+-                WindowEvent::ThemeChanged(theme) => {
+-                    webview.notify_theme_change(match theme {
+-                        winit::window::Theme::Light => Theme::Light,
+-                        winit::window::Theme::Dark => Theme::Dark,
+-                    });
+-                },
+-                WindowEvent::Ime(ime) => match ime {
+-                    Ime::Enabled => {
+-                        webview.notify_input_event(InputEvent::Ime(ImeEvent::Composition(
+-                            servo::CompositionEvent {
+-                                state: servo::CompositionState::Start,
+-                                data: String::new(),
+-                            },
+-                        )));
+-                    },
+-                    Ime::Preedit(text, _) => {
+-                        webview.notify_input_event(InputEvent::Ime(ImeEvent::Composition(
+-                            servo::CompositionEvent {
+-                                state: servo::CompositionState::Update,
+-                                data: text,
+-                            },
+-                        )));
+-                    },
+-                    Ime::Commit(text) => {
+-                        webview.notify_input_event(InputEvent::Ime(ImeEvent::Composition(
+-                            servo::CompositionEvent {
+-                                state: servo::CompositionState::End,
+-                                data: text,
+-                            },
+-                        )));
+-                    },
+-                    Ime::Disabled => {
+-                        // There are two reasons we receive this message from winit:
+-                        //
+-                        // 1. The user dismissed the IME. In that case we want to inform Servo
+-                        //    so it can unfocus the current editable element.
+-                        // 2. Servo changed focus and requested that we dismiss the IME, which
+-                        //    in turn triggers this message. We know this is the case when we don't
+-                        //    expect any IME to be open and shouldn't send any more messages to
+-                        //    Servo as it might cause unexpected blurring of the newly focused
+-                        //    element.
+-                        if self.visible_input_method.take().is_some() {
+-                            webview.notify_input_event(InputEvent::Ime(ImeEvent::Dismissed));
+-                        }
+-                    },
+-                },
+-                WindowEvent::DroppedFile(dropped_file) => {
+-                    if let Ok(url) = Url::from_file_path(&dropped_file) {
++                }
++            },
++            WindowEvent::CursorLeft => {
++                if let Some(webview) = window.active_webview() {
++                    let webview_rect: Rect<_, _> = webview.size().into();
++                    if webview_rect.contains(self.webview_relative_mouse_point.get()) {
++                        webview.notify_input_event(InputEvent::MouseLeftViewport(
++                            MouseLeftViewportEvent::default(),
++                        ));
++                    }
++                }
++            },
++            WindowEvent::DroppedFile(path) => {
++                if let Some(webview) = window.active_webview() {
++                    if let Ok(url) = Url::from_file_path(&path) {
+                         webview.load(url);
+                     } else {
+-                        log::error!(
+-                            "Failed to create URL for dropped file ({})",
+-                            dropped_file.display()
+-                        );
++                        log::error!("Failed to create URL for dropped file ({path})");
+                     }
+-                },
+-                _ => {},
+-            }
++                }
++            },
++            WindowEvent::Touch { phase, finger_id, x, y } => {
++                if let Some(webview) = window.active_webview() {
++                    self.handle_touch_event(&webview, phase, finger_id, x, y);
++                }
++            },
++            WindowEvent::PinchGesture { delta } => {
++                if let Some(webview) = window.active_webview() {
++                    webview.adjust_pinch_zoom(
++                        delta + 1.0,
++                        self.webview_relative_mouse_point.get(),
++                    );
++                }
++            },
++            WindowEvent::DisplayChanged => {
++                if let Ok(bounds) = self
++                    .sdl_window
++                    .get_display()
++                    .and_then(|display| display.get_bounds())
++                {
++                    let scale = Scale::<f32, DeviceIndependentPixel, DevicePixel>::new(
++                        self.sdl_window.display_scale(),
++                    );
++                    self.screen_size.set(
++                        (Size2D::new(bounds.width(), bounds.height()).to_f32() / scale).to_u32(),
++                    );
++                }
++                self.request_redraw();
++            },
++            // Resize/redraw are handled before this dispatch so the rendering context is
++            // already up to date. Losing focus currently needs no additional Servo-side
++            // action, but spelling these variants out keeps this match exhaustive: adding a
++            // new translated SDL event must also add its real handling here instead of being
++            // silently swallowed by a catch-all arm.
++            WindowEvent::Resized(..) |
++            WindowEvent::RedrawRequested |
++            WindowEvent::Focused(false) => {},
+         }
+     }
+ 
+-    pub(crate) fn handle_winit_app_event(&self, state: Rc<RunningAppState>, app_event: AppEvent) {
+-        if let AppEvent::Accessibility(ref event) = app_event {
+-            match &event.window_event {
+-                egui_winit::accesskit_winit::WindowEvent::InitialTreeRequested => {
+-                    state.set_accessibility_active(true);
+-                },
+-                egui_winit::accesskit_winit::WindowEvent::ActionRequested(req) => {
+-                    if req.target_tree != accesskit::TreeId::ROOT {
+-                        // TODO(#4344): Forward action to Servo
+-                    }
+-                },
+-                egui_winit::accesskit_winit::WindowEvent::AccessibilityDeactivated => {
+-                    state.set_accessibility_active(false);
+-                },
+-            }
+-
+-            if self
+-                .gui
+-                .borrow_mut()
+-                .handle_accesskit_event(&event.window_event)
+-            {
+-                self.winit_window.request_redraw();
+-            }
+-        }
+-    }
+ }
+ 
+ impl PlatformWindow for HeadedWindow {
+@@ -815,16 +957,22 @@
+     fn screen_geometry(&self) -> ScreenGeometry {
+         let hidpi_factor = self.hidpi_scale_factor();
+         let toolbar_size = Size2D::new(0.0, (self.toolbar_height() * self.hidpi_scale_factor()).0);
+-        let screen_size = self.screen_size.to_f32() * hidpi_factor;
++        let screen_size = self.screen_size.get().to_f32() * hidpi_factor;
+ 
+         // FIXME: In reality, this should subtract screen space used by the system interface
+         // elements, but it is difficult to get this value with `winit` currently. See:
+         // See https://github.com/rust-windowing/winit/issues/2494
+         let available_screen_size = screen_size - toolbar_size;
+ 
++        // TODO(SDL3 windowing): SDL3's `Window::position`/`size` report the client
++        // (decoration-excluded) area, not winit's own `outer_position`/`outer_size` (which
++        // include OS decorations) — same simplification noted on `PlatformWindow::window_rect`
++        // further down. Real for windowed mode, an approximation with a native titlebar.
++        let (x, y) = self.sdl_window.position();
++        let (width, height) = self.sdl_window.size();
+         let window_rect = DeviceIntRect::from_origin_and_size(
+-            winit_position_to_euclid_point(self.winit_window.outer_position().unwrap_or_default()),
+-            winit_size_to_euclid_size(self.winit_window.outer_size()).to_i32(),
++            DeviceIntPoint::new(x, y),
++            DeviceIntSize::new(width as i32, height as i32),
+         );
+ 
+         ScreenGeometry {
+@@ -835,7 +983,7 @@
+     }
+ 
+     fn device_hidpi_scale_factor(&self) -> Scale<f32, DeviceIndependentPixel, DevicePixel> {
+-        Scale::new(self.winit_window.scale_factor() as f32)
++        Scale::new(self.sdl_window.display_scale())
+     }
+ 
+     fn hidpi_scale_factor(&self) -> Scale<f32, DeviceIndependentPixel, DevicePixel> {
+@@ -845,17 +993,24 @@
      }
  
      fn update_user_interface_state(&self, _: &RunningAppState, window: &ServoShellWindow) -> bool {
@@ -3368,26 +5153,276 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
 +                .unwrap_or_else(|| INITIAL_WINDOW_TITLE.to_string())
 +        });
          if title != *self.last_title.borrow() {
-             self.winit_window.set_title(&title);
+-            self.winit_window.set_title(&title);
++            // `Window`'s mutating methods take `&mut self` even though they just forward to a
++            // plain FFI call on the shared, `Arc`-backed native window — `.clone()` (cheap: an
++            // `Arc` bump, not a real duplicate window) gets an owned, independently-`&mut`-able
++            // handle to call them through, same pattern used throughout this file wherever
++            // `&self` needs to call one of these. See `Window`'s own `#[derive(Clone)]`.
++            let _ = self.sdl_window.clone().set_title(&title);
              *self.last_title.borrow_mut() = title;
-@@ -942,6 +1088,7 @@
-             } else {
-                 None
-             });
+         }
+ 
+@@ -863,21 +1018,21 @@
+     }
+ 
+     fn request_repaint(&self, _: &ServoShellWindow) {
+-        self.winit_window.request_redraw();
++        self.request_redraw();
+     }
+ 
++    /// TODO(SDL3 windowing): unlike winit's `inner_size()`/`outer_size()`, SDL3's `Window::
++    /// size()` doesn't distinguish the client area from OS decorations — treated as equal here
++    /// (`decoration_size` always zero), same simplification as `screen_geometry`/`window_rect`.
++    /// Loses window-decoration accounting on a native titlebar; harmless with
++    /// `no_native_titlebar` (not ported either — see `HeadedWindow::new`'s own TODO).
+     fn request_resize(&self, _: &WebView, new_outer_size: DeviceIntSize) -> Option<DeviceIntSize> {
+-        // Allocate space for the window deocrations, but do not let the inner size get
+-        // smaller than `MIN_WINDOW_INNER_SIZE` or larger than twice the screen size.
+-        let inner_size = self.winit_window.inner_size();
+-        let outer_size = self.winit_window.outer_size();
+-        let decoration_size: DeviceIntSize = Size2D::new(
+-            outer_size.width - inner_size.width,
+-            outer_size.height - inner_size.height,
+-        )
+-        .cast();
++        let (width, height) = self.sdl_window.size();
++        let outer_size = PhysicalSize::new(width, height);
++        let decoration_size = DeviceIntSize::zero();
+ 
+-        let screen_size = (self.screen_size.to_f32() * self.hidpi_scale_factor()).to_i32();
++        let screen_size =
++            (self.screen_size.get().to_f32() * self.hidpi_scale_factor()).to_i32();
+         let new_outer_size =
+             new_outer_size.clamp(MIN_WINDOW_INNER_SIZE + decoration_size, screen_size * 2);
+ 
+@@ -888,37 +1043,33 @@
+         }
+ 
+         let new_inner_size = new_outer_size - decoration_size;
+-        self.winit_window
+-            .request_inner_size(PhysicalSize::new(
+-                new_inner_size.width,
+-                new_inner_size.height,
+-            ))
+-            .map(|resulting_size| {
+-                // `Some` means that winit applied the resize synchronously, in which case it may
+-                // not emit a subsequent `WindowEvent::Resized`.
++        let resulting_size = PhysicalSize::new(
++            new_inner_size.width.max(0) as u32,
++            new_inner_size.height.max(0) as u32,
++        );
++        match self.sdl_window.clone().set_size(resulting_size.width, resulting_size.height) {
++            Ok(()) => {
+                 if self.inner_size.get() != resulting_size {
+                     self.inner_size.set(resulting_size);
+                     self.window_rendering_context.resize(resulting_size);
+                 }
+-
+-                DeviceIntSize::new(
++                Some(DeviceIntSize::new(
+                     resulting_size.width as i32 + decoration_size.width,
+                     resulting_size.height as i32 + decoration_size.height,
+-                )
+-            })
++                ))
++            },
++            Err(_) => None,
++        }
+     }
+ 
+     fn window_rect(&self) -> DeviceIndependentIntRect {
+-        let outer_size = self.winit_window.outer_size();
++        let (width, height) = self.sdl_window.size();
+         let scale = self.hidpi_scale_factor();
+ 
+-        let outer_size = winit_size_to_euclid_size(outer_size).to_i32();
++        let outer_size = DeviceIntSize::new(width as i32, height as i32);
+ 
+-        let origin = self
+-            .winit_window
+-            .outer_position()
+-            .map(winit_position_to_euclid_point)
+-            .unwrap_or_default();
++        let (x, y) = self.sdl_window.position();
++        let origin = DeviceIntPoint::new(x, y);
+         convert_rect_to_css_pixel(
+             DeviceIntRect::from_origin_and_size(origin, outer_size),
+             scale,
+@@ -926,22 +1077,20 @@
+     }
+ 
+     fn set_position(&self, point: DeviceIntPoint) {
+-        self.winit_window
+-            .set_outer_position::<PhysicalPosition<i32>>(PhysicalPosition::new(point.x, point.y))
++        let _ = self
++            .sdl_window
++            .clone()
++            .set_position(sdl3::video::WindowPos::Positioned(point.x), sdl3::video::WindowPos::Positioned(point.y));
+     }
+ 
++    /// TODO(SDL3 windowing): `set_fullscreen`'s own monitor selection (winit's
++    /// `current_monitor()`/`available_monitors()`) isn't ported — SDL3's `set_fullscreen`
++    /// takes a plain `bool` and always uses the window's current display, so there's no
++    /// monitor argument to plumb through in the first place. Simpler than before, not a gap.
+     fn set_fullscreen(&self, state: bool) {
+-        let monitor = self
+-            .winit_window()
+-            .current_monitor()
+-            .or_else(|| self.winit_window.available_monitors().nth(0))
+-            .expect("No monitor detected");
+         if self.fullscreen.get() != state {
+-            self.winit_window.set_fullscreen(if state {
+-                Some(winit::window::Fullscreen::Borderless(Some(monitor)))
+-            } else {
+-                None
+-            });
++            let _ = self.sdl_window.clone().set_fullscreen(state);
 +            persist_fullscreen_state(self.config_dir.as_deref(), state);
          }
          self.fullscreen.set(state);
      }
-@@ -1007,7 +1154,7 @@
-         let size = self.winit_window.outer_size();
+@@ -950,69 +1099,57 @@
+         self.fullscreen.get()
+     }
  
-         let window_attr = winit::window::Window::default_attributes()
+-    fn set_cursor(&self, cursor: Cursor) {
+-        use winit::window::CursorIcon;
++    fn id(&self) -> ServoShellWindowId {
++        let id: u64 = self.sdl_window_id().into();
++        id.into()
++    }
+ 
+-        let winit_cursor = match cursor {
+-            Cursor::Default => CursorIcon::Default,
+-            Cursor::Pointer => CursorIcon::Pointer,
+-            Cursor::ContextMenu => CursorIcon::ContextMenu,
+-            Cursor::Help => CursorIcon::Help,
+-            Cursor::Progress => CursorIcon::Progress,
+-            Cursor::Wait => CursorIcon::Wait,
+-            Cursor::Cell => CursorIcon::Cell,
+-            Cursor::Crosshair => CursorIcon::Crosshair,
+-            Cursor::Text => CursorIcon::Text,
+-            Cursor::VerticalText => CursorIcon::VerticalText,
+-            Cursor::Alias => CursorIcon::Alias,
+-            Cursor::Copy => CursorIcon::Copy,
+-            Cursor::Move => CursorIcon::Move,
+-            Cursor::NoDrop => CursorIcon::NoDrop,
+-            Cursor::NotAllowed => CursorIcon::NotAllowed,
+-            Cursor::Grab => CursorIcon::Grab,
+-            Cursor::Grabbing => CursorIcon::Grabbing,
+-            Cursor::EResize => CursorIcon::EResize,
+-            Cursor::NResize => CursorIcon::NResize,
+-            Cursor::NeResize => CursorIcon::NeResize,
+-            Cursor::NwResize => CursorIcon::NwResize,
+-            Cursor::SResize => CursorIcon::SResize,
+-            Cursor::SeResize => CursorIcon::SeResize,
+-            Cursor::SwResize => CursorIcon::SwResize,
+-            Cursor::WResize => CursorIcon::WResize,
+-            Cursor::EwResize => CursorIcon::EwResize,
+-            Cursor::NsResize => CursorIcon::NsResize,
+-            Cursor::NeswResize => CursorIcon::NeswResize,
+-            Cursor::NwseResize => CursorIcon::NwseResize,
+-            Cursor::ColResize => CursorIcon::ColResize,
+-            Cursor::RowResize => CursorIcon::RowResize,
+-            Cursor::AllScroll => CursorIcon::AllScroll,
+-            Cursor::ZoomIn => CursorIcon::ZoomIn,
+-            Cursor::ZoomOut => CursorIcon::ZoomOut,
++    fn set_cursor(&self, cursor: Cursor) {
++        let system_cursor = match cursor {
+             Cursor::None => {
+-                self.winit_window.set_cursor_visible(false);
++                self.mouse.show_cursor(false);
+                 return;
+             },
++            Cursor::Text | Cursor::VerticalText => SystemCursor::IBeam,
++            Cursor::Wait => SystemCursor::Wait,
++            Cursor::Progress => SystemCursor::WaitArrow,
++            Cursor::Crosshair | Cursor::Cell => SystemCursor::Crosshair,
++            Cursor::Pointer | Cursor::ContextMenu | Cursor::Help | Cursor::Alias |
++            Cursor::Copy | Cursor::Grab | Cursor::Grabbing | Cursor::ZoomIn |
++            Cursor::ZoomOut => SystemCursor::Hand,
++            Cursor::EResize | Cursor::WResize | Cursor::EwResize | Cursor::ColResize => {
++                SystemCursor::SizeWE
++            },
++            Cursor::NResize | Cursor::SResize | Cursor::NsResize | Cursor::RowResize => {
++                SystemCursor::SizeNS
++            },
++            Cursor::NeResize | Cursor::SwResize | Cursor::NeswResize => SystemCursor::SizeNESW,
++            Cursor::NwResize | Cursor::SeResize | Cursor::NwseResize => SystemCursor::SizeNWSE,
++            Cursor::Move | Cursor::AllScroll => SystemCursor::SizeAll,
++            Cursor::NoDrop | Cursor::NotAllowed => SystemCursor::No,
++            Cursor::Default => SystemCursor::Arrow,
+         };
+-        self.winit_window.set_cursor(winit_cursor);
+-        self.winit_window.set_cursor_visible(true);
+-    }
+ 
+-    fn id(&self) -> ServoShellWindowId {
+-        let id: u64 = self.winit_window.id().into();
+-        id.into()
++        self.mouse.show_cursor(true);
++        match SdlCursor::from_system(system_cursor) {
++            Ok(native_cursor) => {
++                native_cursor.set();
++                *self.active_cursor.borrow_mut() = Some(native_cursor);
++            },
++            Err(error) => log::warn!("Could not create SDL3 system cursor: {error}"),
++        }
+     }
+ 
+     #[cfg(feature = "webxr")]
+     fn new_glwindow(&self, event_loop: &ActiveEventLoop) -> Rc<dyn servo::webxr::GlWindow> {
+-        let size = self.winit_window.outer_size();
+-
+-        let window_attr = winit::window::Window::default_attributes()
 -            .with_title("Servo XR".to_string())
-+            .with_title("Roves XR".to_string())
-             .with_inner_size(size)
-             .with_visible(false);
+-            .with_inner_size(size)
+-            .with_visible(false);
++        let (width, height) = self.sdl_window.size();
  
-@@ -1064,10 +1211,6 @@
+-        let winit_window = event_loop
+-            .create_window(window_attr)
++        let sdl_window = event_loop
++            .video()
++            .window("Roves XR", width, height)
++            .opengl()
++            .hidden()
++            .build()
+             .expect("Failed to create window.");
+ 
+         let pose = Rc::new(XRWindowPose {
+@@ -1020,22 +1157,23 @@
+             xr_translation: Cell::new(Vector3D::zero()),
+         });
+         self.xr_window_poses.borrow_mut().push(pose.clone());
+-        Rc::new(XRWindow { winit_window, pose })
++        Rc::new(XRWindow { sdl_window, pose })
+     }
+ 
+     fn rendering_context(&self) -> Rc<dyn RenderingContext> {
+         self.rendering_context.clone()
+     }
+ 
++    /// TODO(SDL3 windowing): approximated with the *system* theme (`SDL_GetSystemTheme`) —
++    /// unlike winit's `Window::theme()`, SDL3 has no equivalent that accounts for a specific
++    /// window's own forced/overridden theme (most windows just follow the system one anyway,
++    /// so this is right in the common case).
+     fn theme(&self) -> servo::Theme {
+-        match self.winit_window.theme() {
+-            Some(winit::window::Theme::Dark) => servo::Theme::Dark,
+-            Some(winit::window::Theme::Light) | None => servo::Theme::Light,
+-        }
++        current_sdl_theme()
+     }
+ 
+     fn maximize(&self, _webview: &WebView) {
+-        self.winit_window.set_maximized(true);
++        let _ = self.sdl_window.clone().maximize();
+     }
+ 
+     /// Handle servoshell key bindings that may have been prevented by the page in the active webview.
+@@ -1064,19 +1202,15 @@
              })
              .shortcut(CMD_OR_CONTROL, '0', || {
                  webview.set_page_zoom(1.0);
@@ -3398,7 +5433,18 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
              });
      }
  
-@@ -1110,8 +1253,10 @@
+     fn focus(&self) {
+-        self.winit_window.focus_window();
++        let _ = self.sdl_window.clone().raise();
+     }
+ 
+     fn has_platform_focus(&self) -> bool {
+-        self.winit_window.has_focus()
++        self.sdl_window.has_input_focus()
+     }
+ 
+     fn show_embedder_control(&self, webview_id: WebViewId, embedder_control: EmbedderControl) {
+@@ -1110,8 +1244,10 @@
                  self.add_dialog(webview_id, Dialog::new_simple_dialog(simple_dialog));
              },
              EmbedderControl::ContextMenu(prompt) => {
@@ -3411,10 +5457,26 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
              },
          }
      }
-@@ -1171,6 +1316,32 @@
+@@ -1119,7 +1255,8 @@
+     fn hide_embedder_control(&self, webview_id: WebViewId, embedder_control_id: EmbedderControlId) {
+         if self.visible_input_method.get() == Some(embedder_control_id) {
+             self.visible_input_method.set(None);
+-            self.winit_window.set_ime_allowed(false);
++            self.ime_composing.set(false);
++            self.text_input.stop(&self.sdl_window);
+             return;
+         }
+         self.remove_dialog(webview_id, embedder_control_id);
+@@ -1171,33 +1308,79 @@
      }
  }
  
+-fn winit_phase_to_touch_event_type(phase: TouchPhase) -> TouchEventType {
+-    match phase {
+-        TouchPhase::Started => TouchEventType::Down,
+-        TouchPhase::Moved => TouchEventType::Move,
+-        TouchPhase::Ended => TouchEventType::Up,
+-        TouchPhase::Cancelled => TouchEventType::Cancel,
 +/// Persists fullscreen state across launches as a marker file's mere existence — no JSON,
 +/// matching `support/content-packer/src/extract.rs`'s own marker-file convention — so
 +/// `prefs.rs`'s `start_fullscreen` can read it back with a plain `Path::exists()` check next
@@ -3438,13 +5500,6 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
 +    };
 +    if let Err(error) = result {
 +        log::warn!("persisting fullscreen state to {marker:?}: {error}");
-+    }
-+}
-+
- fn winit_phase_to_touch_event_type(phase: TouchPhase) -> TouchEventType {
-     match phase {
-         TouchPhase::Started => TouchEventType::Down,
-@@ -1180,6 +1351,21 @@
      }
  }
  
@@ -3456,16 +5511,167 @@ diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/deskto
 +/// itself was built (Roves' own icon, absent a `--icon-png` passed to that build). `None`
 +/// when no such file exists, or `current_exe()` itself fails — never a hard error, since the
 +/// compile-time default is always a safe fallback.
-+#[cfg(any(target_os = "linux", target_os = "windows"))]
+ #[cfg(any(target_os = "linux", target_os = "windows"))]
+-fn load_icon(icon_bytes: &[u8]) -> Icon {
+-    let (icon_rgba, icon_width, icon_height) = {
+-        use image::{GenericImageView, Pixel};
+-        let image = image::load_from_memory(icon_bytes).expect("Failed to load icon");
+-        let (width, height) = image.dimensions();
+-        let mut rgba = Vec::with_capacity((width * height) as usize * 4);
+-        for (_, _, pixel) in image.pixels() {
+-            rgba.extend_from_slice(&pixel.to_rgba().0);
+-        }
+-        (rgba, width, height)
 +fn runtime_window_icon_bytes() -> Option<Vec<u8>> {
 +    let exe = std::env::current_exe().ok()?;
 +    let dir = exe.parent()?;
 +    std::fs::read(dir.join("icon.png")).ok()
 +}
 +
- #[cfg(any(target_os = "linux", target_os = "windows"))]
- fn load_icon(icon_bytes: &[u8]) -> Icon {
-     let (icon_rgba, icon_width, icon_height) = {
++#[cfg(any(target_os = "linux", target_os = "windows"))]
++fn set_window_icon(window: &mut sdl3::video::Window) {
++    let bytes = runtime_window_icon_bytes()
++        .unwrap_or_else(|| include_bytes!(concat!(env!("OUT_DIR"), "/window_icon.png")).to_vec());
++    let image = match image::load_from_memory(&bytes) {
++        Ok(image) => image.to_rgba8(),
++        Err(error) => {
++            log::warn!("Could not decode the SDL3 window icon: {error}");
++            return;
++        },
+     };
+-    Icon::from_rgba(icon_rgba, icon_width, icon_height).expect("Failed to load icon")
++    let (width, height) = image.dimensions();
++    let mut pixels = image.into_raw();
++    match Surface::from_data(
++        pixels.as_mut_slice(),
++        width,
++        height,
++        width.saturating_mul(4),
++        PixelFormat::RGBA32,
++    ) {
++        Ok(surface) => {
++            if !window.set_icon(surface) {
++                log::warn!("SDL3 rejected the decoded window icon");
++            }
++        },
++        Err(error) => log::warn!("Could not create the SDL3 window icon surface: {error}"),
++    }
+ }
+ 
+ #[cfg(feature = "webxr")]
+ struct XRWindow {
+-    winit_window: winit::window::Window,
++    sdl_window: sdl3::video::Window,
+     pose: Rc<XRWindowPose>,
+ }
+ 
+@@ -1213,13 +1396,13 @@
+         device: &mut surfman::Device,
+         _context: &mut surfman::Context,
+     ) -> servo::webxr::GlWindowRenderTarget {
+-        self.winit_window.set_visible(true);
++        let _ = self.sdl_window.clone().show();
+         let window_handle = self
+-            .winit_window
++            .sdl_window
+             .window_handle()
+             .expect("could not get window handle from window");
+-        let size = self.winit_window.inner_size();
+-        let size = Size2D::new(size.width as i32, size.height as i32);
++        let (width, height) = self.sdl_window.size();
++        let size = Size2D::new(width as i32, height as i32);
+         let native_widget = device
+             .connection()
+             .create_native_widget_from_window_handle(window_handle, size)
+@@ -1251,7 +1434,7 @@
+     }
+ 
+     fn display_handle(&self) -> raw_window_handle::DisplayHandle<'_> {
+-        self.winit_window
++        self.sdl_window
+             .display_handle()
+             .expect("Every window should have a display handle")
+     }
+@@ -1285,20 +1468,20 @@
+         self.xr_translation.set(vec);
+     }
+ 
+-    fn handle_xr_rotation(&self, input: &KeyEvent, modifiers: ModifiersState) {
+-        if input.state != ElementState::Pressed {
++    fn handle_xr_rotation(&self, input: &KeyboardEvent) {
++        if input.event.state != KeyState::Down {
+             return;
+         }
+         let mut x = 0.0;
+         let mut y = 0.0;
+-        match input.logical_key {
+-            LogicalKey::Named(WinitNamedKey::ArrowUp) => x = 1.0,
+-            LogicalKey::Named(WinitNamedKey::ArrowDown) => x = -1.0,
+-            LogicalKey::Named(WinitNamedKey::ArrowLeft) => y = 1.0,
+-            LogicalKey::Named(WinitNamedKey::ArrowRight) => y = -1.0,
++        match input.event.key {
++            Key::Named(NamedKey::ArrowUp) => x = 1.0,
++            Key::Named(NamedKey::ArrowDown) => x = -1.0,
++            Key::Named(NamedKey::ArrowLeft) => y = 1.0,
++            Key::Named(NamedKey::ArrowRight) => y = -1.0,
+             _ => return,
+-        };
+-        if modifiers.shift_key() {
++        }
++        if input.event.modifiers.contains(Modifiers::SHIFT) {
+             x *= 10.0;
+             y *= 10.0;
+         }
+@@ -1318,15 +1501,15 @@
+     fn maybe_consume_move_button_event(
+         &self,
+         webview: &WebView,
+-        button: MouseButton,
+-        action: ElementState,
++        button: SdlMouseButton,
++        pressed: bool,
+         point: DevicePoint,
+     ) -> bool {
+-        if button != MouseButton::Left {
++        if button != SdlMouseButton::Left {
+             return false;
+         }
+ 
+-        if action == ElementState::Pressed && !self.left_mouse_button_down.get() {
++        if pressed && !self.left_mouse_button_down.get() {
+             webview.notify_input_event(InputEvent::Touch(TouchEvent::new(
+                 TouchEventType::Down,
+                 TouchId(0),
+@@ -1334,7 +1517,7 @@
+                 TouchPointerType::Touch,
+             )));
+             self.left_mouse_button_down.set(true);
+-        } else if action == ElementState::Released {
++        } else if !pressed {
+             webview.notify_input_event(InputEvent::Touch(TouchEvent::new(
+                 TouchEventType::Up,
+                 TouchId(0),
+diff --git a/ports/servoshell/desktop/headless_window.rs b/ports/servoshell/desktop/headless_window.rs
+--- a/ports/servoshell/desktop/headless_window.rs
++++ b/ports/servoshell/desktop/headless_window.rs
+@@ -18,7 +18,7 @@
+     DevicePixel, RenderingContext, ScreenGeometry, SoftwareRenderingContext, WebView,
+     convert_rect_to_css_pixel,
+ };
+-use winit::dpi::PhysicalSize;
++use dpi::PhysicalSize;
+ 
+ use crate::prefs::ServoShellPreferences;
+ use crate::window::{MIN_WINDOW_INNER_SIZE, PlatformWindow, ServoShellWindow, ServoShellWindowId};
+@@ -145,7 +145,7 @@
+     #[cfg(feature = "webxr")]
+     fn new_glwindow(
+         &self,
+-        _event_loop: &winit::event_loop::ActiveEventLoop,
++        _event_loop: &crate::desktop::event_loop::ActiveEventLoop,
+     ) -> Rc<dyn servo::webxr::GlWindow> {
+         unimplemented!()
+     }
 diff --git a/ports/servoshell/desktop/logging.rs b/ports/servoshell/desktop/logging.rs
 --- a/ports/servoshell/desktop/logging.rs
 +++ b/ports/servoshell/desktop/logging.rs
@@ -3613,15 +5819,20 @@ diff --git a/ports/servoshell/desktop/logging.rs b/ports/servoshell/desktop/logg
 diff --git a/ports/servoshell/desktop/mod.rs b/ports/servoshell/desktop/mod.rs
 --- a/ports/servoshell/desktop/mod.rs
 +++ b/ports/servoshell/desktop/mod.rs
-@@ -6,6 +6,7 @@
+@@ -5,17 +5,19 @@
+ //! Contains files specific to the servoshell app for Desktop systems.
  
  mod accelerated_gl_media;
++mod accessibility;
  pub(crate) mod app;
 +mod bundle_launch;
  pub(crate) mod cli;
  pub(crate) mod dialog;
  pub(crate) mod event_loop;
-@@ -16,6 +17,7 @@
+ #[cfg(feature = "gamepad")]
+ pub(crate) mod gamepad;
+-pub mod geometry;
+ mod gui;
  pub(crate) mod headed_window;
  mod headless_window;
  mod keyutils;
@@ -3632,21 +5843,147 @@ diff --git a/ports/servoshell/desktop/mod.rs b/ports/servoshell/desktop/mod.rs
 diff --git a/ports/servoshell/desktop/tracing.rs b/ports/servoshell/desktop/tracing.rs
 --- a/ports/servoshell/desktop/tracing.rs
 +++ b/ports/servoshell/desktop/tracing.rs
-@@ -53,7 +53,10 @@
-                 Self::DeviceEvent { .. } => target!("DeviceEvent"),
-                 Self::UserEvent(AppEvent::Waker) => target!("UserEvent(Waker)"),
-                 Self::UserEvent(AppEvent::Accessibility(..)) => target!("UserEvent(Accessibility)"),
+@@ -2,18 +2,14 @@
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+ 
+-/// Log an event from winit ([winit::event::Event]) at trace level.
++/// Log an event from the SDL3-backed event loop (see `desktop/event_loop.rs`) at trace level.
+ /// - To disable tracing: RUST_LOG='servoshell<winit@=off'
+ /// - To enable tracing: RUST_LOG='servoshell<winit@'
+-/// - Recommended filters when tracing is enabled:
+-///   - servoshell<winit@DeviceEvent=off
+-///   - servoshell<winit@MainEventsCleared=off
+-///   - servoshell<winit@NewEvents(WaitCancelled)=off
+-///   - servoshell<winit@RedrawEventsCleared=off
+-///   - servoshell<winit@RedrawRequested=off
+-///   - servoshell<winit@UserEvent(Waker)=off
+-///   - servoshell<winit@WindowEvent(AxisMotion)=off
+-///   - servoshell<winit@WindowEvent(CursorMoved)=off
++///
++/// TODO(SDL3 windowing): the `<winit@` log-target prefix is kept as-is rather than renamed to
++/// `<sdl3@` purely to avoid a drive-by rename of every filter example above and in any
++/// downstream docs/scripts that already reference it -- revisit once the SDL3 migration is far
++/// enough along that "winit" reads as actively misleading rather than just a legacy name.
+ macro_rules! trace_winit_event {
+     // This macro only exists to put the docs in the same file as the target prefix,
+     // so the macro definition is always the same.
+@@ -29,9 +25,9 @@
+     fn log_target(&self) -> &'static str;
+ }
+ 
+-mod from_winit {
++mod from_sdl3 {
+     use super::LogTarget;
+-    use crate::desktop::event_loop::AppEvent;
++    use crate::desktop::event_loop::{AppEvent, WindowEvent};
+ 
+     macro_rules! target {
+         ($($name:literal)+) => {
+@@ -39,66 +35,39 @@
+         };
+     }
+ 
+-    impl LogTarget for winit::event::Event<AppEvent> {
++    impl LogTarget for AppEvent {
+         fn log_target(&self) -> &'static str {
+-            use winit::event::StartCause;
+             match self {
+-                Self::NewEvents(start_cause) => match start_cause {
+-                    StartCause::ResumeTimeReached { .. } => target!("NewEvents(ResumeTimeReached)"),
+-                    StartCause::WaitCancelled { .. } => target!("NewEvents(WaitCancelled)"),
+-                    StartCause::Poll => target!("NewEvents(Poll)"),
+-                    StartCause::Init => target!("NewEvents(Init)"),
+-                },
+-                Self::WindowEvent { event, .. } => event.log_target(),
+-                Self::DeviceEvent { .. } => target!("DeviceEvent"),
+-                Self::UserEvent(AppEvent::Waker) => target!("UserEvent(Waker)"),
+-                Self::UserEvent(AppEvent::Accessibility(..)) => target!("UserEvent(Accessibility)"),
 -                Self::UserEvent(AppEvent::Gamepad(..)) => target!("UserEvent(Gamepad)"),
-+                Self::UserEvent(AppEvent::CloseAllWindows) => target!("UserEvent(CloseAllWindows)"),
-+                Self::UserEvent(AppEvent::BootProgress(..)) => target!("UserEvent(BootProgress)"),
-+                Self::UserEvent(AppEvent::BootReady) => target!("UserEvent(BootReady)"),
-+                Self::UserEvent(AppEvent::SaveFileDialog { .. }) => target!("UserEvent(SaveFileDialog)"),
-                 Self::Suspended => target!("Suspended"),
-                 Self::Resumed => target!("Resumed"),
-                 Self::AboutToWait => target!("AboutToWait"),
+-                Self::Suspended => target!("Suspended"),
+-                Self::Resumed => target!("Resumed"),
+-                Self::AboutToWait => target!("AboutToWait"),
+-                Self::LoopExiting => target!("LoopExiting"),
+-                Self::MemoryWarning => target!("MemoryWarning"),
++                Self::Waker => target!("UserEvent(Waker)"),
++                Self::RedrawRequested(..) => target!("RedrawRequested"),
++                Self::CloseAllWindows => target!("UserEvent(CloseAllWindows)"),
++                Self::BootProgress(..) => target!("UserEvent(BootProgress)"),
++                Self::BootReady => target!("UserEvent(BootReady)"),
++                Self::SaveFileDialog { .. } => target!("UserEvent(SaveFileDialog)"),
+             }
+         }
+     }
+ 
+-    impl LogTarget for winit::event::WindowEvent {
++    impl LogTarget for WindowEvent {
+         fn log_target(&self) -> &'static str {
+-            macro_rules! target_variant {
+-                ($name:literal) => {
+-                    target!("WindowEvent(" $name ")")
+-                };
+-            }
+             match self {
+-                Self::ActivationTokenDone { .. } => target!("ActivationTokenDone"),
+-                Self::Resized(..) => target_variant!("Resized"),
+-                Self::Moved(..) => target_variant!("Moved"),
+-                Self::CloseRequested => target_variant!("CloseRequested"),
+-                Self::Destroyed => target_variant!("Destroyed"),
+-                Self::DroppedFile(..) => target_variant!("DroppedFile"),
+-                Self::HoveredFile(..) => target_variant!("HoveredFile"),
+-                Self::HoveredFileCancelled => target_variant!("HoveredFileCancelled"),
+-                Self::Focused(..) => target_variant!("Focused"),
+-                Self::KeyboardInput { .. } => target_variant!("KeyboardInput"),
+-                Self::ModifiersChanged(..) => target_variant!("ModifiersChanged"),
+-                Self::Ime(..) => target_variant!("Ime"),
+-                Self::CursorMoved { .. } => target_variant!("CursorMoved"),
+-                Self::CursorEntered { .. } => target_variant!("CursorEntered"),
+-                Self::CursorLeft { .. } => target_variant!("CursorLeft"),
+-                Self::MouseWheel { .. } => target_variant!("MouseWheel"),
+-                Self::MouseInput { .. } => target_variant!("MouseInput"),
+-                Self::PanGesture { .. } => target_variant!("PanGesture"),
+-                Self::PinchGesture { .. } => target_variant!("PinchGesture"),
+-                Self::DoubleTapGesture { .. } => target_variant!("DoubleTapGesture"),
+-                Self::RotationGesture { .. } => target_variant!("RotationGesture"),
+-                Self::TouchpadPressure { .. } => target_variant!("TouchpadPressure"),
+-                Self::AxisMotion { .. } => target_variant!("AxisMotion"),
+-                Self::Touch(..) => target_variant!("Touch"),
+-                Self::ScaleFactorChanged { .. } => target_variant!("ScaleFactorChanged"),
+-                Self::ThemeChanged(..) => target_variant!("ThemeChanged"),
+-                Self::Occluded(..) => target_variant!("Occluded"),
++                Self::Resized(..) => target!("WindowEvent(Resized)"),
++                Self::CloseRequested => target!("WindowEvent(CloseRequested)"),
+                 Self::RedrawRequested => target!("RedrawRequested"),
++                Self::Focused(..) => target!("WindowEvent(Focused)"),
++                Self::KeyDown { .. } => target!("WindowEvent(KeyDown)"),
++                Self::KeyUp { .. } => target!("WindowEvent(KeyUp)"),
++                Self::MouseMotion { .. } => target!("WindowEvent(MouseMotion)"),
++                Self::MouseButtonDown { .. } => target!("WindowEvent(MouseButtonDown)"),
++                Self::MouseButtonUp { .. } => target!("WindowEvent(MouseButtonUp)"),
++                Self::MouseWheel { .. } => target!("WindowEvent(MouseWheel)"),
++                Self::CursorLeft => target!("WindowEvent(CursorLeft)"),
++                Self::DroppedFile(..) => target!("WindowEvent(DroppedFile)"),
++                Self::Touch { .. } => target!("WindowEvent(Touch)"),
++                Self::ImePreedit(..) => target!("WindowEvent(ImePreedit)"),
++                Self::ImeCommit(..) => target!("WindowEvent(ImeCommit)"),
++                Self::PinchGesture { .. } => target!("WindowEvent(PinchGesture)"),
++                Self::DisplayChanged => target!("WindowEvent(DisplayChanged)"),
+             }
+         }
+     }
 diff --git a/ports/servoshell/desktop/webxr.rs b/ports/servoshell/desktop/webxr.rs
 --- a/ports/servoshell/desktop/webxr.rs
 +++ b/ports/servoshell/desktop/webxr.rs
+@@ -11,8 +11,8 @@
+ #[cfg(target_os = "windows")]
+ use servo::webxr::{OpenXrAppInfo, OpenXrDiscovery};
+ use servo::{Preferences, pref, prefs};
+-use winit::event_loop::ActiveEventLoop;
+ 
++use crate::desktop::event_loop::ActiveEventLoop;
+ use crate::window::PlatformWindow;
+ 
+ enum XrDiscovery {
 @@ -40,7 +40,7 @@
          let xr_discovery = if preferences.dom_webxr_openxr_enabled {
              #[cfg(target_os = "windows")]
@@ -4170,3 +6507,12 @@ diff --git a/ports/servoshell/window.rs b/ports/servoshell/window.rs
          ))]
          if let Some(gamepad_delegate) = state.gamepad_delegate() {
              webview_builder = webview_builder.gamepad_delegate(gamepad_delegate);
+@@ -408,7 +408,7 @@
+     ))]
+     fn new_glwindow(
+         &self,
+-        event_loop: &winit::event_loop::ActiveEventLoop,
++        event_loop: &crate::desktop::event_loop::ActiveEventLoop,
+     ) -> Rc<dyn servo::webxr::GlWindow>;
+     /// This returns [`RenderingContext`] matching the viewport.
+     fn rendering_context(&self) -> Rc<dyn RenderingContext>;

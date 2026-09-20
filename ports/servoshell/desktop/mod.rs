@@ -5,6 +5,7 @@
 //! Contains files specific to the servoshell app for Desktop systems.
 
 mod accelerated_gl_media;
+mod accessibility;
 pub(crate) mod app;
 mod bundle_launch;
 pub(crate) mod cli;
@@ -12,7 +13,6 @@ pub(crate) mod dialog;
 pub(crate) mod event_loop;
 #[cfg(feature = "gamepad")]
 pub(crate) mod gamepad;
-pub mod geometry;
 mod gui;
 pub(crate) mod headed_window;
 mod headless_window;

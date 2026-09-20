@@ -1,0 +1,109 @@
+diff --git a/ports/servoshell/desktop/event_loop.rs b/ports/servoshell/desktop/event_loop.rs
+index 33db0b2..3db0aab 100644
+--- a/ports/servoshell/desktop/event_loop.rs
++++ b/ports/servoshell/desktop/event_loop.rs
+@@ -69,8 +69,8 @@ impl ActiveEventLoop {
+ /// This module's own stand-in for the subset of `winit::event::WindowEvent` that
+ /// `app.rs`/`headed_window.rs` actually consume — see `translate_sdl_event` for the mapping.
+ ///
+-/// TODO(SDL3 windowing, real progress not completion): pinch gesture and
+-/// theme/scale-factor changes are not ported yet — everything else a
++/// TODO(SDL3 windowing, real progress not completion): theme/scale-factor changes are not
++/// ported yet — everything else a
+ /// desktop game actually needs (keyboard, mouse motion/buttons/wheel, resize, close, redraw,
+ /// focus) now is. See TODO.md for the remaining list.
+ #[derive(Debug, Clone, Copy, PartialEq)]
+@@ -133,13 +133,19 @@ pub(crate) enum WindowEvent {
+     },
+     ImePreedit(String),
+     ImeCommit(String),
++    /// SDL3 reports multi-touch gestures globally, without a window id. The event loop routes
++    /// them to the focused (or most recently targeted) desktop window before constructing this.
++    PinchGesture { delta: f32 },
+ }
+ 
+ /// Translates one real (non-user) SDL3 event into this module's own `WindowEvent`, alongside
+ /// the `WindowId` it targets. Returns `None` for anything not ported yet (see `WindowEvent`'s
+ /// own doc comment) — `run_sdl3_app`'s loop simply skips those for now, the same as an app
+ /// event handler that doesn't match every variant.
+-fn translate_sdl_event(event: sdl3::event::Event) -> Option<(WindowId, WindowEvent)> {
++fn translate_sdl_event(
++    event: sdl3::event::Event,
++    gesture_window_id: Option<WindowId>,
++) -> Option<(WindowId, WindowEvent)> {
+     use sdl3::event::{Event as SdlEvent, WindowEvent as SdlWindowEvent};
+     match event {
+         SdlEvent::Window { window_id, win_event, .. } => {
+@@ -215,6 +221,10 @@ fn translate_sdl_event(event: sdl3::event::Event) -> Option<(WindowId, WindowEve
+                 y,
+             }))
+         },
++        SdlEvent::MultiGesture { d_dist, .. } => {
++            gesture_window_id
++                .map(|window_id| (window_id, WindowEvent::PinchGesture { delta: d_dist }))
++        },
+         _ => None,
+     }
+ }
+@@ -389,6 +399,8 @@ fn run_sdl3_app(sdl: sdl3::Sdl, video: sdl3::VideoSubsystem, app: &mut App) {
+ 
+     app.init(Some(&event_loop));
+     app.dispatch_new_events(&event_loop);
++    let mut focused_window_id = None;
++    let mut last_window_id = None;
+ 
+     loop {
+         if event_loop.should_exit.get() {
+@@ -418,7 +430,20 @@ fn run_sdl3_app(sdl: sdl3::Sdl, video: sdl3::VideoSubsystem, app: &mut App) {
+             continue;
+         }
+ 
+-        if let Some((window_id, window_event)) = translate_sdl_event(event) {
++        if let sdl3::event::Event::Window { window_id, win_event, .. } = &event {
++            match win_event {
++                sdl3::event::WindowEvent::FocusGained => focused_window_id = Some(*window_id),
++                sdl3::event::WindowEvent::FocusLost if focused_window_id == Some(*window_id) => {
++                    focused_window_id = None;
++                },
++                _ => {},
++            }
++        }
++
++        if let Some((window_id, window_event)) =
++            translate_sdl_event(event, focused_window_id.or(last_window_id))
++        {
++            last_window_id = Some(window_id);
+             app.dispatch_window_event(&event_loop, window_id, window_event);
+         }
+ 
+diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/desktop/headed_window.rs
+index 8b07eee..1a0c5a0 100644
+--- a/ports/servoshell/desktop/headed_window.rs
++++ b/ports/servoshell/desktop/headed_window.rs
+@@ -872,6 +872,14 @@ impl HeadedWindow {
+                     self.handle_touch_event(&webview, phase, finger_id, x, y);
+                 }
+             },
++            WindowEvent::PinchGesture { delta } => {
++                if let Some(webview) = window.active_webview() {
++                    webview.adjust_pinch_zoom(
++                        delta + 1.0,
++                        self.webview_relative_mouse_point.get(),
++                    );
++                }
++            },
+             // Resize/redraw are handled before this dispatch so the rendering context is
+             // already up to date. Losing focus currently needs no additional Servo-side
+             // action, but spelling these variants out keeps this match exhaustive: adding a
+diff --git a/ports/servoshell/desktop/tracing.rs b/ports/servoshell/desktop/tracing.rs
+index 91fb092..9a3af86 100644
+--- a/ports/servoshell/desktop/tracing.rs
++++ b/ports/servoshell/desktop/tracing.rs
+@@ -66,6 +66,7 @@ mod from_sdl3 {
+                 Self::Touch { .. } => target!("WindowEvent(Touch)"),
+                 Self::ImePreedit(..) => target!("WindowEvent(ImePreedit)"),
+                 Self::ImeCommit(..) => target!("WindowEvent(ImeCommit)"),
++                Self::PinchGesture { .. } => target!("WindowEvent(PinchGesture)"),
+             }
+         }
+     }

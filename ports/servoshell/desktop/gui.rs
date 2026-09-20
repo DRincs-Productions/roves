@@ -17,8 +17,7 @@ use egui::{
     Button, FontData, FontDefinitions, FontFamily, Id, Key, Label, LayerId, Modifiers, Order,
     PaintCallback, Panel, Vec2, WidgetInfo, WidgetType, pos2,
 };
-use egui_glow::{CallbackFn, EguiGlow};
-use egui_winit::EventResponse;
+use egui_glow::CallbackFn;
 use euclid::{Length, Point2D, Rect, Scale, Size2D};
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
 use log::info;
@@ -27,20 +26,381 @@ use servo::{
     DeviceIndependentPixel, DevicePixel, OffscreenRenderingContext, RenderingContext, WebView,
 };
 use url::Url;
-use winit::event::WindowEvent;
-use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
-use winit::window::Window;
 
-use crate::desktop::event_loop::AppEvent;
+use crate::desktop::accessibility::{AccessibilityEvent, SdlAccessKit};
+use crate::desktop::event_loop::{EventLoopProxy, WindowEvent};
 use crate::desktop::headed_window;
 use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
 use crate::window::ServoShellWindow;
+
+fn egui_modifiers_from_sdl(keymod: sdl3::keyboard::Mod) -> egui::Modifiers {
+    use sdl3::keyboard::Mod;
+    let alt = keymod.intersects(Mod::LALTMOD | Mod::RALTMOD);
+    let ctrl = keymod.intersects(Mod::LCTRLMOD | Mod::RCTRLMOD);
+    let shift = keymod.intersects(Mod::LSHIFTMOD | Mod::RSHIFTMOD);
+    let mac_cmd = cfg!(target_os = "macos") && keymod.intersects(Mod::LGUIMOD | Mod::RGUIMOD);
+    egui::Modifiers {
+        alt,
+        ctrl,
+        shift,
+        mac_cmd,
+        command: if cfg!(target_os = "macos") { mac_cmd } else { ctrl },
+    }
+}
+
+fn egui_key_from_sdl(keycode: sdl3::keyboard::Keycode) -> Option<egui::Key> {
+    use egui::Key;
+    use sdl3::keyboard::Keycode;
+    Some(match keycode {
+        Keycode::Down => Key::ArrowDown,
+        Keycode::Left => Key::ArrowLeft,
+        Keycode::Right => Key::ArrowRight,
+        Keycode::Up => Key::ArrowUp,
+        Keycode::Escape => Key::Escape,
+        Keycode::Tab => Key::Tab,
+        Keycode::Backspace => Key::Backspace,
+        Keycode::Return | Keycode::KpEnter => Key::Enter,
+        Keycode::Space => Key::Space,
+        Keycode::Insert => Key::Insert,
+        Keycode::Delete => Key::Delete,
+        Keycode::Home => Key::Home,
+        Keycode::End => Key::End,
+        Keycode::PageUp => Key::PageUp,
+        Keycode::PageDown => Key::PageDown,
+        Keycode::Comma | Keycode::KpComma => Key::Comma,
+        Keycode::Backslash => Key::Backslash,
+        Keycode::Slash | Keycode::KpDivide => Key::Slash,
+        Keycode::LeftBracket => Key::OpenBracket,
+        Keycode::RightBracket => Key::CloseBracket,
+        Keycode::Grave => Key::Backtick,
+        Keycode::Minus | Keycode::KpMinus => Key::Minus,
+        Keycode::Period | Keycode::KpPeriod => Key::Period,
+        Keycode::KpPlus => Key::Plus,
+        Keycode::Equals | Keycode::KpEquals => Key::Equals,
+        Keycode::Semicolon => Key::Semicolon,
+        Keycode::Apostrophe => Key::Quote,
+        Keycode::_0 | Keycode::Kp0 => Key::Num0,
+        Keycode::_1 | Keycode::Kp1 => Key::Num1,
+        Keycode::_2 | Keycode::Kp2 => Key::Num2,
+        Keycode::_3 | Keycode::Kp3 => Key::Num3,
+        Keycode::_4 | Keycode::Kp4 => Key::Num4,
+        Keycode::_5 | Keycode::Kp5 => Key::Num5,
+        Keycode::_6 | Keycode::Kp6 => Key::Num6,
+        Keycode::_7 | Keycode::Kp7 => Key::Num7,
+        Keycode::_8 | Keycode::Kp8 => Key::Num8,
+        Keycode::_9 | Keycode::Kp9 => Key::Num9,
+        Keycode::A => Key::A,
+        Keycode::B => Key::B,
+        Keycode::C => Key::C,
+        Keycode::D => Key::D,
+        Keycode::E => Key::E,
+        Keycode::F => Key::F,
+        Keycode::G => Key::G,
+        Keycode::H => Key::H,
+        Keycode::I => Key::I,
+        Keycode::J => Key::J,
+        Keycode::K => Key::K,
+        Keycode::L => Key::L,
+        Keycode::M => Key::M,
+        Keycode::N => Key::N,
+        Keycode::O => Key::O,
+        Keycode::P => Key::P,
+        Keycode::Q => Key::Q,
+        Keycode::R => Key::R,
+        Keycode::S => Key::S,
+        Keycode::T => Key::T,
+        Keycode::U => Key::U,
+        Keycode::V => Key::V,
+        Keycode::W => Key::W,
+        Keycode::X => Key::X,
+        Keycode::Y => Key::Y,
+        Keycode::Z => Key::Z,
+        Keycode::F1 => Key::F1,
+        Keycode::F2 => Key::F2,
+        Keycode::F3 => Key::F3,
+        Keycode::F4 => Key::F4,
+        Keycode::F5 => Key::F5,
+        Keycode::F6 => Key::F6,
+        Keycode::F7 => Key::F7,
+        Keycode::F8 => Key::F8,
+        Keycode::F9 => Key::F9,
+        Keycode::F10 => Key::F10,
+        Keycode::F11 => Key::F11,
+        Keycode::F12 => Key::F12,
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+mod sdl_egui_input_tests {
+    use super::{egui_key_from_sdl, egui_modifiers_from_sdl};
+    use egui::Key;
+    use sdl3::keyboard::{Keycode, Mod};
+
+    #[test]
+    fn maps_navigation_printable_keypad_and_function_keys() {
+        assert_eq!(egui_key_from_sdl(Keycode::Left), Some(Key::ArrowLeft));
+        assert_eq!(egui_key_from_sdl(Keycode::A), Some(Key::A));
+        assert_eq!(egui_key_from_sdl(Keycode::KpEnter), Some(Key::Enter));
+        assert_eq!(egui_key_from_sdl(Keycode::F12), Some(Key::F12));
+        assert_eq!(egui_key_from_sdl(Keycode::CapsLock), None);
+    }
+
+    #[test]
+    fn folds_left_and_right_sdl_modifiers() {
+        let modifiers = egui_modifiers_from_sdl(
+            Mod::RALTMOD | Mod::LCTRLMOD | Mod::RSHIFTMOD | Mod::LGUIMOD,
+        );
+        assert!(modifiers.alt);
+        assert!(modifiers.ctrl);
+        assert!(modifiers.shift);
+        assert_eq!(modifiers.mac_cmd, cfg!(target_os = "macos"));
+        assert_eq!(
+            modifiers.command,
+            if cfg!(target_os = "macos") { modifiers.mac_cmd } else { modifiers.ctrl },
+        );
+    }
+}
+
+/// TODO(SDL3 windowing, real progress not completion — see TODO.md): replaces
+/// `egui_glow::EguiGlow` (a convenience wrapper hard-coded to winit — `EguiGlow::run`/`paint`/
+/// `new` all take `&winit::window::Window` directly, confirmed by reading that crate's own
+/// `winit.rs`). `egui_glow::Painter` (the actual GL renderer, in `painter.rs`) and `egui::
+/// Context` are both genuinely toolkit-agnostic underneath it, so this holds those two
+/// directly instead and does the `egui_winit::State`-equivalent input/output bridging itself —
+/// `run` below now drains SDL3 pointer, focus, keyboard, text/IME, modifier and clipboard input
+/// accumulated by the bridge methods into `egui::RawInput`.
+/// AccessKit integration is dropped for the same reason `egui_winit::State` is: it lived in
+/// `init_accesskit`/`self.egui_winit.accesskit`, both gone. See TODO.md's own AccessKit
+/// de-risking notes for what a real SDL3 bridge needs to replicate.
+struct SdlEguiGlow {
+    egui_ctx: egui::Context,
+    painter: egui_glow::Painter,
+    pixels_per_point: f32,
+    shapes: Vec<egui::epaint::ClippedShape>,
+    textures_delta: egui::TexturesDelta,
+    pending_events: Vec<egui::Event>,
+    pointer_pos: Option<egui::Pos2>,
+    modifiers: egui::Modifiers,
+    focused: bool,
+    clipboard: sdl3::clipboard::ClipboardUtil,
+}
+
+impl SdlEguiGlow {
+    fn new(
+        gl: std::sync::Arc<glow::Context>,
+        clipboard: sdl3::clipboard::ClipboardUtil,
+    ) -> Self {
+        let painter = egui_glow::Painter::new(gl, "", None, false)
+            .map_err(|err| log::error!("error occurred in initializing painter:\n{err}"))
+            .expect("Could not create egui_glow::Painter");
+        Self {
+            egui_ctx: egui::Context::default(),
+            painter,
+            pixels_per_point: 1.0,
+            shapes: Default::default(),
+            textures_delta: Default::default(),
+            pending_events: Default::default(),
+            pointer_pos: None,
+            modifiers: Default::default(),
+            focused: true,
+            clipboard,
+        }
+    }
+
+    fn handle_keyboard_event(&mut self, event: &WindowEvent) -> Option<bool> {
+        let (keycode, keymod, pressed, repeat) = match event {
+            WindowEvent::KeyDown { keycode, keymod, repeat, .. } => {
+                (*keycode, *keymod, true, *repeat)
+            },
+            WindowEvent::KeyUp { keycode, keymod, .. } => (*keycode, *keymod, false, false),
+            WindowEvent::ImePreedit(text) => {
+                self.pending_events.push(egui::Event::Ime(egui::ImeEvent::Preedit {
+                    text: text.clone(),
+                    active_range_chars: None,
+                }));
+                return Some(self.egui_ctx.egui_wants_keyboard_input());
+            },
+            WindowEvent::ImeCommit(text) => {
+                self.pending_events
+                    .push(egui::Event::Ime(egui::ImeEvent::Commit(text.clone())));
+                return Some(self.egui_ctx.egui_wants_keyboard_input());
+            },
+            _ => return None,
+        };
+
+        self.modifiers = egui_modifiers_from_sdl(keymod);
+        let wants_keyboard = self.egui_ctx.egui_wants_keyboard_input();
+        let Some(key) = keycode.and_then(egui_key_from_sdl) else {
+            return Some(wants_keyboard);
+        };
+        if pressed && self.modifiers.command && wants_keyboard {
+            match key {
+                egui::Key::C => {
+                    self.pending_events.push(egui::Event::Copy);
+                    return Some(true);
+                },
+                egui::Key::X => {
+                    self.pending_events.push(egui::Event::Cut);
+                    return Some(true);
+                },
+                egui::Key::V => {
+                    if let Ok(text) = self.clipboard.clipboard_text() {
+                        if !text.is_empty() {
+                            self.pending_events
+                                .push(egui::Event::Paste(text.replace("\r\n", "\n")));
+                        }
+                    }
+                    return Some(true);
+                },
+                _ => {},
+            }
+        }
+        self.pending_events.push(egui::Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed,
+            repeat,
+            modifiers: self.modifiers,
+        });
+        Some(wants_keyboard || key == egui::Key::Tab)
+    }
+
+    fn handle_pointer_event(&mut self, event: &WindowEvent, pixels_per_point: f32) -> Option<bool> {
+        let pointer_pos = |x: f32, y: f32| {
+            egui::pos2(
+                x / pixels_per_point.max(f32::EPSILON),
+                y / pixels_per_point.max(f32::EPSILON),
+            )
+        };
+        match event {
+            WindowEvent::MouseMotion { x, y } => {
+                let pos = pointer_pos(*x, *y);
+                self.pointer_pos = Some(pos);
+                self.pending_events.push(egui::Event::PointerMoved(pos));
+                Some(self.egui_ctx.egui_is_using_pointer())
+            },
+            WindowEvent::MouseButtonDown { button, x, y } |
+            WindowEvent::MouseButtonUp { button, x, y } => {
+                let button = match button {
+                    sdl3::mouse::MouseButton::Left => egui::PointerButton::Primary,
+                    sdl3::mouse::MouseButton::Right => egui::PointerButton::Secondary,
+                    sdl3::mouse::MouseButton::Middle => egui::PointerButton::Middle,
+                    sdl3::mouse::MouseButton::X1 => egui::PointerButton::Extra1,
+                    sdl3::mouse::MouseButton::X2 => egui::PointerButton::Extra2,
+                    sdl3::mouse::MouseButton::Unknown => return Some(false),
+                };
+                let pos = pointer_pos(*x, *y);
+                self.pointer_pos = Some(pos);
+                self.pending_events.push(egui::Event::PointerMoved(pos));
+                self.pending_events.push(egui::Event::PointerButton {
+                    pos,
+                    button,
+                    pressed: matches!(event, WindowEvent::MouseButtonDown { .. }),
+                    modifiers: self.modifiers,
+                });
+                Some(self.egui_ctx.egui_wants_pointer_input())
+            },
+            WindowEvent::MouseWheel { x, y } => {
+                self.pending_events.push(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    delta: egui::vec2(*x, *y),
+                    phase: egui::TouchPhase::Move,
+                    modifiers: self.modifiers,
+                });
+                Some(self.egui_ctx.egui_wants_pointer_input())
+            },
+            WindowEvent::CursorLeft => {
+                self.pointer_pos = None;
+                self.pending_events.push(egui::Event::PointerGone);
+                Some(false)
+            },
+            WindowEvent::Focused(focused) => {
+                self.focused = *focused;
+                if !*focused {
+                    self.modifiers = Default::default();
+                }
+                self.pending_events.push(egui::Event::WindowFocused(*focused));
+                Some(false)
+            },
+            _ => None,
+        }
+    }
+
+    fn run(&mut self, window: &sdl3::video::Window, run_ui: impl FnMut(&mut egui::Ui)) {
+        let (width, height) = window.size();
+        let pixels_per_point = window.display_scale();
+        let screen_rect = egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(width as f32 / pixels_per_point, height as f32 / pixels_per_point),
+        );
+        // TODO(SDL3 windowing): no real input yet -- see this struct's own doc comment.
+        let raw_input = egui::RawInput {
+            screen_rect: Some(screen_rect),
+            max_texture_side: Some(self.painter.max_texture_side()),
+            events: core::mem::take(&mut self.pending_events),
+            focused: self.focused,
+            ..Default::default()
+        };
+        let egui::FullOutput {
+            platform_output,
+            textures_delta,
+            shapes,
+            pixels_per_point,
+            ..
+        } =
+            self.egui_ctx.run_ui(raw_input, run_ui);
+        for command in platform_output.commands {
+            match command {
+                egui::OutputCommand::CopyText(text) => {
+                    if let Err(error) = self.clipboard.set_clipboard_text(&text) {
+                        warn!("Could not copy egui text to the SDL3 clipboard: {error}");
+                    }
+                },
+                egui::OutputCommand::CopyImage(_) => {
+                    warn!("Copying egui images through SDL3 is not supported")
+                },
+                egui::OutputCommand::OpenUrl(_) => {},
+            }
+        }
+        self.shapes = shapes;
+        self.pixels_per_point = pixels_per_point;
+        self.textures_delta.append(textures_delta);
+    }
+
+    fn paint(&mut self, window: &sdl3::video::Window) {
+        let shapes = core::mem::take(&mut self.shapes);
+        let mut textures_delta = core::mem::take(&mut self.textures_delta);
+
+        #[expect(clippy::iter_over_hash_type)]
+        for (id, image_deltas) in textures_delta.set.drain() {
+            for image_delta in image_deltas {
+                self.painter.set_texture(id, &image_delta);
+            }
+        }
+
+        let pixels_per_point = self.pixels_per_point;
+        let clipped_primitives = self.egui_ctx.tessellate(shapes, pixels_per_point);
+        let (width, height) = window.size_in_pixels();
+        self.painter.paint_primitives([width, height], pixels_per_point, &clipped_primitives);
+
+        #[expect(clippy::iter_over_hash_type)]
+        for id in textures_delta.free.drain() {
+            self.painter.free_texture(id);
+        }
+    }
+
+    fn destroy(&mut self) {
+        self.painter.destroy();
+    }
+}
 
 /// The user interface of a headed servoshell. Currently this is implemented via
 /// egui.
 pub struct Gui {
     rendering_context: Rc<OffscreenRenderingContext>,
-    context: EguiGlow,
+    context: SdlEguiGlow,
+    accesskit: SdlAccessKit,
     toolbar_height: Length<f32, DeviceIndependentPixel>,
 
     /// The text to display in the status bar on the bottom of the window.
@@ -310,10 +670,28 @@ impl Drop for Gui {
 }
 
 impl Gui {
+    pub(crate) fn handle_keyboard_event(&mut self, event: &WindowEvent) -> Option<bool> {
+        self.context.handle_keyboard_event(event)
+    }
+    pub(crate) fn handle_pointer_event(
+        &mut self,
+        event: &WindowEvent,
+        pixels_per_point: f32,
+    ) -> Option<bool> {
+        self.context.handle_pointer_event(event, pixels_per_point)
+    }
+
+    pub(crate) fn handle_accessibility_window_event(
+        &mut self,
+        window: &sdl3::video::Window,
+        event: &WindowEvent,
+    ) {
+        self.accesskit.process_window_event(window, event);
+    }
+
     pub(crate) fn new(
-        winit_window: &Window,
-        event_loop: &ActiveEventLoop,
-        event_loop_proxy: EventLoopProxy<AppEvent>,
+        sdl_window: &sdl3::video::Window,
+        event_loop_proxy: EventLoopProxy,
         rendering_context: Rc<OffscreenRenderingContext>,
         // Kept only so callers don't need updating: the address bar this used to
         // seed no longer exists. See CUSTOMIZATIONS.md.
@@ -322,21 +700,15 @@ impl Gui {
         rendering_context
             .make_current()
             .expect("Could not make window RenderingContext current");
-        let mut context = EguiGlow::new(
-            event_loop,
+        let context = SdlEguiGlow::new(
             rendering_context.glow_gl_api(),
-            None,
-            None,
-            false,
+            sdl_window.subsystem().clipboard(),
         );
+        let accesskit = SdlAccessKit::new(sdl_window, event_loop_proxy);
 
         let mut font_definitions = configure_fonts();
         add_wordmark_font(&mut font_definitions);
         context.egui_ctx.set_fonts(font_definitions);
-
-        context
-            .egui_winit
-            .init_accesskit(event_loop, winit_window, event_loop_proxy);
 
         context.egui_ctx.options_mut(|options| {
             // Disable the builtin egui handlers for the Ctrl+Plus, Ctrl+Minus and Ctrl+0
@@ -357,6 +729,7 @@ impl Gui {
         let mut gui = Self {
             rendering_context,
             context,
+            accesskit,
             toolbar_height: Default::default(),
             status_text: None,
             pending_accesskit_updates: vec![],
@@ -379,10 +752,10 @@ impl Gui {
         // therefore a plausible place for a silent native crash (GPU
         // driver, ANGLE/GL context issue) that never reaches `panic_hook.rs`.
         log::info!("painting first splash frame");
-        gui.update_splash(winit_window, Duration::ZERO);
-        gui.paint(winit_window);
+        gui.update_splash(sdl_window, Duration::ZERO);
+        gui.paint(sdl_window);
         log::info!("painted first splash frame");
-        winit_window.set_visible(true);
+        let _ = sdl_window.clone().show();
 
         gui
     }
@@ -399,14 +772,6 @@ impl Gui {
                 memory.surrender_focus(focused);
             }
         });
-    }
-
-    pub(crate) fn on_window_event(
-        &mut self,
-        winit_window: &Window,
-        event: &WindowEvent,
-    ) -> EventResponse {
-        self.context.on_window_event(winit_window, event)
     }
 
     /// The height of the top toolbar of this user inteface ie the distance from the top of the
@@ -523,6 +888,24 @@ impl Gui {
         window: &ServoShellWindow,
         headed_window: &headed_window::HeadedWindow,
     ) {
+        let accessibility_events: Vec<_> = self.accesskit.drain_events().collect();
+        for event in accessibility_events {
+            match event {
+                AccessibilityEvent::InitialTreeRequested => {
+                    self.context.egui_ctx.enable_accesskit();
+                    state.set_accessibility_active(true);
+                },
+                AccessibilityEvent::ActionRequested(request) => {
+                    self.context
+                        .pending_events
+                        .push(egui::Event::AccessKitActionRequest(request));
+                },
+                AccessibilityEvent::Deactivated => {
+                    self.context.egui_ctx.disable_accesskit();
+                    state.set_accessibility_active(false);
+                },
+            }
+        }
         self.rendering_context
             .make_current()
             .expect("Could not make RenderingContext current");
@@ -533,7 +916,7 @@ impl Gui {
             ..
         } = self;
 
-        let winit_window = headed_window.winit_window();
+        let sdl_window = headed_window.sdl_window();
         // `EguiGlow::run`'s callback now hands back the whole-window `&mut Ui` directly
         // (egui 0.36 removed the `Context`-based top-level panel API this used to go
         // through) rather than a `&Context` — see CUSTOMIZATIONS.md's egui 0.36.2 entry.
@@ -541,7 +924,7 @@ impl Gui {
         // directly; genuinely `Context`-only ones (`accesskit_node_builder`,
         // `layer_painter`, and anything wanting an owned `Context` like
         // `Tooltip::always_open`) go through `ui.ctx()`.
-        context.run(winit_window, |ui| {
+        context.run(sdl_window, |ui| {
             // Kiosk/embedded fork: never draw the toolbar or tab strip, in windowed
             // mode or fullscreen — this build is meant to look like a native app
             // window, not a browser.
@@ -608,14 +991,8 @@ impl Gui {
             window.set_needs_repaint();
         }
 
-        let adapter = self
-            .context
-            .egui_winit
-            .accesskit
-            .as_mut()
-            .expect("guaranteed by Gui::new()");
         for tree_update in self.pending_accesskit_updates.drain(..) {
-            adapter.update_if_active(|| tree_update);
+            self.accesskit.update_if_active(tree_update);
         }
     }
 
@@ -629,7 +1006,7 @@ impl Gui {
     /// why it's indeterminate rather than a completion fraction) — always drawn, so the
     /// splash never shows a bare wordmark with no indication that something is loading.
     /// Call [`Gui::paint`] afterward, same as [`Gui::update`].
-    pub(crate) fn update_splash(&mut self, winit_window: &Window, elapsed: Duration) {
+    pub(crate) fn update_splash(&mut self, sdl_window: &sdl3::video::Window, elapsed: Duration) {
         self.rendering_context
             .make_current()
             .expect("Could not make RenderingContext current");
@@ -645,7 +1022,7 @@ impl Gui {
         // panics with "No fonts available until first call to Context::run()" if called
         // any earlier than the closure itself; confirmed the hard way, on a real build.
         let splash_icon_texture = self.splash_icon_texture.clone();
-        self.context.run(winit_window, |ui| {
+        self.context.run(sdl_window, |ui| {
             // Measured (not guessed) — both so the icon+wordmark row below can be
             // centered exactly, rather than trusting `top_down`'s `Align::Center` to
             // center a nested `ui.horizontal` row on its own, and so the icon can be
@@ -727,13 +1104,17 @@ impl Gui {
     /// continuity, but is a distinct, static screen — no progress bar, since there is
     /// nothing left in flight to animate. Call [`Gui::paint`] afterward, same as
     /// [`Gui::update`]/[`Gui::update_splash`].
-    pub(crate) fn update_content_load_error(&mut self, winit_window: &Window, message: &str) {
+    pub(crate) fn update_content_load_error(
+        &mut self,
+        sdl_window: &sdl3::video::Window,
+        message: &str,
+    ) {
         self.rendering_context
             .make_current()
             .expect("Could not make RenderingContext current");
         let splash_icon_texture = self.splash_icon_texture.clone();
         let message = message.to_owned();
-        self.context.run(winit_window, |ui| {
+        self.context.run(sdl_window, |ui| {
             let icon = egui::Image::from_texture(&splash_icon_texture)
                 .fit_to_exact_size(egui::Vec2::splat(64.0));
             // See `update_splash`'s own comment: no longer deprecated in egui 0.36.
@@ -767,7 +1148,7 @@ impl Gui {
     }
 
     /// Paint the GUI, as of the last update.
-    pub(crate) fn paint(&mut self, window: &Window) {
+    pub(crate) fn paint(&mut self, window: &sdl3::video::Window) {
         self.rendering_context
             .make_current()
             .expect("Could not make RenderingContext current");
@@ -793,27 +1174,12 @@ impl Gui {
     }
 
     /// Returns true if a redraw is required after handling the provided event.
-    pub(crate) fn handle_accesskit_event(
-        &mut self,
-        event: &egui_winit::accesskit_winit::WindowEvent,
-    ) -> bool {
-        match event {
-            egui_winit::accesskit_winit::WindowEvent::InitialTreeRequested => {
-                self.context.egui_ctx.enable_accesskit();
-                true
-            },
-            egui_winit::accesskit_winit::WindowEvent::ActionRequested(req) => {
-                self.context
-                    .egui_winit
-                    .on_accesskit_action_request(req.clone());
-                true
-            },
-            egui_winit::accesskit_winit::WindowEvent::AccessibilityDeactivated => {
-                self.context.egui_ctx.disable_accesskit();
-                false
-            },
-        }
-    }
+    // TODO(SDL3 windowing): `handle_accesskit_event` (dispatched `egui_winit::accesskit_winit::
+    // WindowEvent`s into `enable_accesskit`/`on_accesskit_action_request`/`disable_accesskit`)
+    // deleted here, not stubbed -- it referenced `self.context.egui_winit`, which no longer
+    // exists (see `SdlEguiGlow`'s own doc comment), and nothing calls it anymore now that
+    // `headed_window.rs`'s `handle_accessibility_event` no longer forwards into `Gui` either.
+    // Re-derive once a real SDL3 AccessKit bridge exists to actually feed it real events.
 
     pub(crate) fn set_zoom_factor(&self, factor: f32) {
         self.context.egui_ctx.set_zoom_factor(factor);

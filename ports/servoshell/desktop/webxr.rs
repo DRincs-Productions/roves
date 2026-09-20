@@ -11,8 +11,8 @@ use servo::webxr::{GlWindowDiscovery, WebXrRegistry};
 #[cfg(target_os = "windows")]
 use servo::webxr::{OpenXrAppInfo, OpenXrDiscovery};
 use servo::{Preferences, pref, prefs};
-use winit::event_loop::ActiveEventLoop;
 
+use crate::desktop::event_loop::ActiveEventLoop;
 use crate::window::PlatformWindow;
 
 enum XrDiscovery {

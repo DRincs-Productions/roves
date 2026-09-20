@@ -130,8 +130,7 @@ base64 = { workspace = true }
 dirs = { workspace = true }
 egui = { workspace = true }
 egui-file-dialog = { workspace = true }
-egui-winit = { workspace = true, features = ["accesskit", "clipboard", "wayland"] }
-egui_glow = { workspace = true, features = ["winit"] }
+egui_glow = { workspace = true }
 glow = { workspace = true }
 sdl3 = { workspace = true }
 serde_json = { workspace = true }
@@ -140,16 +139,20 @@ servo-allocator = { workspace = true }
 steamworks = { version = "0.13", optional = true }
 surfman = { workspace = true, features = ["sm-raw-window-handle-06", "sm-x11"] }
 sysinfo = { workspace = true }
-winit = { workspace = true }
 
 [target.'cfg(any(all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))'.dependencies]
 signal-hook-registry = { workspace = true }
 
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+accesskit_unix = { workspace = true }
+
 [target.'cfg(target_os = "windows")'.dependencies]
+accesskit_windows = { workspace = true }
 servo = { workspace = true, features = ["no-wgl"] }
 windows-sys = { workspace = true, features = ["Win32_Graphics_Gdi", "Win32_System_Console", "Win32_System_LibraryLoader"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+accesskit_macos = { workspace = true }
 objc2-app-kit = { workspace = true, features = [
     "std",
     "NSColorSpace",

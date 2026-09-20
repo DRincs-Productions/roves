@@ -19,16 +19,34 @@ on:
     paths:
       - 'patches/**'
       - 'test-page/**'
+      - 'support/check_sdl3_windowing_contracts.py'
       - '.github/workflows/test.yml'
   workflow_dispatch: {}
+
+# A new SDL3 checkpoint supersedes the previous one. Without this, every push keeps an entire
+# eight-job Servo matrix alive (including macOS smoke tests), wasting runner time and obscuring
+# which commit is authoritative.
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   SERVO_TAG: '0.5.0'
   TEST_RELEASE_TAG: 'test'
 
 jobs:
+  # Seconds rather than tens of runner-hours: reject malformed patches and incomplete SDL3
+  # event wiring before starting the cross-platform Servo build matrix.
+  sdl3-windowing-contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: validate SDL3 event and patch contracts
+        run: python3 support/check_sdl3_windowing_contracts.py
+
   # ── Create the rolling "test" release exactly once before the matrix starts ────
   ensure-test-release:
+    needs: sdl3-windowing-contracts
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -276,10 +294,17 @@ jobs:
         # cause. mach bootstrap itself is normally done in well under a minute.
         timeout-minutes: 15
         run: |
+          # nextest is only needed on the one leg that actually runs `mach test-unit`
+          # below (see "run servoshell unit tests") -- skip installing it everywhere
+          # else to keep bootstrap fast on the other 5 matrix entries.
+          NEXTEST_FLAG=--skip-nextest
+          if [ "${{ matrix.os_name }}" = "linux" ] && [ "${{ matrix.package_mode }}" = "portable" ]; then
+            NEXTEST_FLAG=
+          fi
           if [ "${{ matrix.os_name }}" = "windows" ]; then
-            ./mach bootstrap --force --yes --skip-lints --skip-nextest --skip-platform
+            ./mach bootstrap --force --yes --skip-lints $NEXTEST_FLAG --skip-platform
           else
-            ./mach bootstrap --force --yes --skip-lints --skip-nextest
+            ./mach bootstrap --force --yes --skip-lints $NEXTEST_FLAG
           fi
           # dpkg-dev ships preinstalled on the ubuntu-24.04 runner image, but `mach bundle
           # --deb` (see the assemble step below) hard-depends on dpkg-deb from it, so check
@@ -328,6 +353,35 @@ jobs:
         shell: bash
         working-directory: servo-src
         run: ./mach build --features steam
+
+      # The SDL3 windowing migration (see ../CUSTOMIZATIONS.md's 2026-09-19/20 entries)
+      # added real `#[cfg(test)]` unit tests for keyboard/mouse/IME mapping
+      # (0026-sdl3-keyboard-tests.patch, 0029-sdl3-egui-input-tests.patch) but nothing
+      # in this workflow ever actually compiled or ran them -- `mach build` only builds
+      # the binary, never test targets, and `check_sdl3_windowing_contracts.py`'s gate
+      # only checks source text, not real `cargo`/`rustc` behavior. Run them for real on
+      # one leg (Linux portable -- cheapest, and every leg already reuses the same
+      # patched source and dependency graph, so one is enough to catch a real
+      # regression). These tests don't create a window or touch SDL video (see the
+      # CUSTOMIZATIONS.md entries above), so they're safe to run headless here.
+      - name: run servoshell unit tests (SDL3 keyboard/egui-input mapping)
+        if: matrix.os_name == 'linux' && matrix.package_mode == 'portable'
+        shell: bash
+        working-directory: servo-src
+        # Re-emit output as ::notice::/::error:: annotations (same reasoning as the
+        # smoke-test step below): raw step logs need repo-admin auth to fetch via the
+        # API, but annotations are readable anonymously -- see CLAUDE.md's own note on
+        # diagnosing a CI failure without `gh`/a token on hand.
+        run: |
+          set +e
+          ./mach test-unit -p servoshell > /tmp/test-unit.log 2>&1
+          STATUS=$?
+          cat /tmp/test-unit.log
+          if [ $STATUS -ne 0 ]; then
+            echo "::error::mach test-unit -p servoshell failed (exit $STATUS)"
+            tail -c 20000 /tmp/test-unit.log | while IFS= read -r line; do echo "::notice::$line"; done
+            exit $STATUS
+          fi
 
       # `mach bundle` (see ../CUSTOMIZATIONS.md) is what actually builds the
       # single play.exe/play.app/play executable — this step's only job is
@@ -389,8 +443,9 @@ jobs:
         shell: bash
         run: |
           if [ "${{ matrix.os_name }}" = "linux" ]; then
-            sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb
-            RUNNER=(xvfb-run -a --server-args="-screen 0 1280x720x24")
+            sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb xdotool
+            chmod +x support/xvfb_window_cycle_smoke.sh
+            RUNNER=(support/xvfb_window_cycle_smoke.sh)
             if [ "${{ matrix.package_mode }}" = "deb" ]; then
               # A real .deb, unlike --msi/--dmg's "wrap the same portable output" — the
               # binary only exists once actually installed (see post_build_commands.py's
@@ -443,6 +498,14 @@ jobs:
           if kill -0 "$PID" 2>/dev/null; then
             STILL_RUNNING=true
             kill "$PID"
+            # SDL3/Cocoa can keep the app alive while the main thread is inside the native event
+            # pump. Do not let wait pin a macOS runner indefinitely: allow a short graceful
+            # shutdown, then force-terminate the disposable smoke-test process.
+            for _ in 1 2 3 4 5; do
+              kill -0 "$PID" 2>/dev/null || break
+              sleep 1
+            done
+            kill -0 "$PID" 2>/dev/null && kill -9 "$PID"
             wait "$PID" 2>/dev/null
           else
             STILL_RUNNING=false
@@ -454,6 +517,12 @@ jobs:
           [ "$STILL_RUNNING" = false ] && echo "exit code: $EXIT_CODE"
           echo "--- stdout ---"; cat smoke-stdout.log
           echo "--- stderr ---"; cat smoke-stderr.log
+
+          if [ "${{ matrix.os_name }}" = "linux" ] &&
+             ! grep -q '\[roves-xvfb-window-cycle\] ok' smoke-stdout.log; then
+            echo "::error::SDL3 Xvfb window/input/resize cycle did not complete"
+            exit 1
+          fi
 
           CACHE_ROOT="$HOME/.cache"
           [ "${{ matrix.os_name }}" = "macos" ] && CACHE_ROOT="$HOME/Library/Caches"
@@ -702,6 +771,7 @@ jobs:
   # this was validated against) -- extend to Windows/macOS once this first pass is
   # proven out for real by a green run.
   steam-emulator-smoke-test:
+    needs: sdl3-windowing-contracts
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

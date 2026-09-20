@@ -1,0 +1,415 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index a14ce0a..21f5ac7 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -30,6 +30,9 @@ rust-version = "1.88.0"
+ [workspace.dependencies]
+ accesskit = { version = "0.24.0", features = ["serde"] }
+ accesskit_consumer = "0.35.0"
++accesskit_macos = "0.26.0"
++accesskit_unix = "0.21.0"
++accesskit_windows = "0.32.1"
+ aes = { version = "0.9", features = ["zeroize"] }
+ aes-gcm = { version = "0.11", features = ["hazmat", "zeroize"] }
+ aes-kw = { version = "0.3", features = ["zeroize"] }
+diff --git a/ports/servoshell/Cargo.toml b/ports/servoshell/Cargo.toml
+index 900ffc1..0f8e2ee 100644
+--- a/ports/servoshell/Cargo.toml
++++ b/ports/servoshell/Cargo.toml
+@@ -143,11 +143,16 @@ sysinfo = { workspace = true }
+ [target.'cfg(any(all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))'.dependencies]
+ signal-hook-registry = { workspace = true }
+ 
++[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
++accesskit_unix = { workspace = true }
++
+ [target.'cfg(target_os = "windows")'.dependencies]
++accesskit_windows = { workspace = true }
+ servo = { workspace = true, features = ["no-wgl"] }
+ windows-sys = { workspace = true, features = ["Win32_Graphics_Gdi", "Win32_System_Console", "Win32_System_LibraryLoader"] }
+ 
+ [target.'cfg(target_os = "macos")'.dependencies]
++accesskit_macos = { workspace = true }
+ objc2-app-kit = { workspace = true, features = [
+     "std",
+     "NSColorSpace",
+diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
+index 14f1224..660cf5d 100644
+--- a/ports/servoshell/desktop/gui.rs
++++ b/ports/servoshell/desktop/gui.rs
+@@ -27,7 +27,8 @@ use servo::{
+ };
+ use url::Url;
+ 
+-use crate::desktop::event_loop::WindowEvent;
++use crate::desktop::accessibility::{AccessibilityEvent, SdlAccessKit};
++use crate::desktop::event_loop::{EventLoopProxy, WindowEvent};
+ use crate::desktop::headed_window;
+ use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
+ use crate::window::ServoShellWindow;
+@@ -400,6 +401,7 @@ impl SdlEguiGlow {
+ pub struct Gui {
+     rendering_context: Rc<OffscreenRenderingContext>,
+     context: SdlEguiGlow,
++    accesskit: SdlAccessKit,
+     toolbar_height: Length<f32, DeviceIndependentPixel>,
+ 
+     /// The text to display in the status bar on the bottom of the window.
+@@ -680,8 +682,17 @@ impl Gui {
+         self.context.handle_pointer_event(event, pixels_per_point)
+     }
+ 
++    pub(crate) fn handle_accessibility_window_event(
++        &mut self,
++        window: &sdl3::video::Window,
++        event: &WindowEvent,
++    ) {
++        self.accesskit.process_window_event(window, event);
++    }
++
+     pub(crate) fn new(
+         sdl_window: &sdl3::video::Window,
++        event_loop_proxy: EventLoopProxy,
+         rendering_context: Rc<OffscreenRenderingContext>,
+         // Kept only so callers don't need updating: the address bar this used to
+         // seed no longer exists. See CUSTOMIZATIONS.md.
+@@ -694,15 +705,12 @@ impl Gui {
+             rendering_context.glow_gl_api(),
+             sdl_window.subsystem().clipboard(),
+         );
++        let accesskit = SdlAccessKit::new(sdl_window, event_loop_proxy);
+ 
+         let mut font_definitions = configure_fonts();
+         add_wordmark_font(&mut font_definitions);
+         context.egui_ctx.set_fonts(font_definitions);
+ 
+-        // TODO(SDL3 windowing): no AccessKit adapter is set up anymore (this used to be
+-        // `context.egui_winit.init_accesskit(...)`) -- see this file's own `SdlEguiGlow` doc
+-        // comment and TODO.md's AccessKit de-risking notes for what replaces it.
+-
+         context.egui_ctx.options_mut(|options| {
+             // Disable the builtin egui handlers for the Ctrl+Plus, Ctrl+Minus and Ctrl+0
+             // shortcuts as they don't work well with servoshell's `device-pixel-ratio` CLI argument.
+@@ -722,6 +730,7 @@ impl Gui {
+         let mut gui = Self {
+             rendering_context,
+             context,
++            accesskit,
+             toolbar_height: Default::default(),
+             status_text: None,
+             pending_accesskit_updates: vec![],
+@@ -880,6 +889,24 @@ impl Gui {
+         window: &ServoShellWindow,
+         headed_window: &headed_window::HeadedWindow,
+     ) {
++        let accessibility_events: Vec<_> = self.accesskit.drain_events().collect();
++        for event in accessibility_events {
++            match event {
++                AccessibilityEvent::InitialTreeRequested => {
++                    self.context.egui_ctx.enable_accesskit();
++                    state.set_accessibility_active(true);
++                },
++                AccessibilityEvent::ActionRequested(request) => {
++                    self.context
++                        .pending_events
++                        .push(egui::Event::AccessKitActionRequest(request));
++                },
++                AccessibilityEvent::Deactivated => {
++                    self.context.egui_ctx.disable_accesskit();
++                    state.set_accessibility_active(false);
++                },
++            }
++        }
+         self.rendering_context
+             .make_current()
+             .expect("Could not make RenderingContext current");
+@@ -965,12 +992,9 @@ impl Gui {
+             window.set_needs_repaint();
+         }
+ 
+-        // TODO(SDL3 windowing): no AccessKit adapter exists anymore to actually forward these
+-        // to (see `Gui::new`'s own TODO) -- `self.pending_accesskit_updates` just grows
+-        // unbounded until a real SDL3 AccessKit bridge lands. Draining without using them
+-        // would silently discard tree updates as if they'd been delivered; leaving them queued
+-        // is the more honest failure mode until that bridge exists.
+-        let _ = &self.pending_accesskit_updates;
++        for tree_update in self.pending_accesskit_updates.drain(..) {
++            self.accesskit.update_if_active(tree_update);
++        }
+     }
+ 
+     /// Update the boot splash — a minimal black screen with the Roves icon and wordmark
+diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/desktop/headed_window.rs
+index 643ead8..8d29cc3 100644
+--- a/ports/servoshell/desktop/headed_window.rs
++++ b/ports/servoshell/desktop/headed_window.rs
+@@ -263,6 +263,7 @@ impl HeadedWindow {
+         let rendering_context = Rc::new(window_rendering_context.offscreen_context(inner_size));
+         let gui = RefCell::new(Gui::new(
+             &sdl_window,
++            event_loop_proxy.clone(),
+             rendering_context.clone(),
+             initial_url,
+         ));
+@@ -737,6 +738,9 @@ impl HeadedWindow {
+         window: Rc<ServoShellWindow>,
+         event: WindowEvent,
+     ) {
++        self.gui
++            .borrow_mut()
++            .handle_accessibility_window_event(&self.sdl_window, &event);
+         if let Some(consumed) = self
+             .gui
+             .borrow_mut()
+diff --git a/ports/servoshell/desktop/mod.rs b/ports/servoshell/desktop/mod.rs
+index fbe1218..3d29ed7 100644
+--- a/ports/servoshell/desktop/mod.rs
++++ b/ports/servoshell/desktop/mod.rs
+@@ -5,6 +5,7 @@
+ //! Contains files specific to the servoshell app for Desktop systems.
+ 
+ mod accelerated_gl_media;
++mod accessibility;
+ pub(crate) mod app;
+ mod bundle_launch;
+ pub(crate) mod cli;
+diff --git a/ports/servoshell/desktop/accessibility.rs b/ports/servoshell/desktop/accessibility.rs
+new file mode 100644
+index 0000000..15f3224
+--- /dev/null
++++ b/ports/servoshell/desktop/accessibility.rs
+@@ -0,0 +1,233 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! AccessKit's platform adapters do not depend on winit. This module supplies the small SDL3
++//! shell which `accesskit_winit` used to provide: native-handle construction, focus/bounds event
++//! forwarding, and thread-safe delivery of activation/action/deactivation requests.
++
++use std::sync::mpsc::{self, Receiver, Sender};
++
++use accesskit::{
++    ActionHandler, ActionRequest, ActivationHandler, DeactivationHandler, TreeUpdate,
++};
++
++use crate::desktop::event_loop::{AppEvent, EventLoopProxy, WindowEvent, WindowId};
++
++#[derive(Debug)]
++pub(crate) enum AccessibilityEvent {
++    InitialTreeRequested,
++    ActionRequested(ActionRequest),
++    Deactivated,
++}
++
++#[derive(Clone)]
++struct EventSender {
++    sender: Sender<AccessibilityEvent>,
++    event_loop_proxy: EventLoopProxy,
++    window_id: WindowId,
++}
++
++impl EventSender {
++    fn send(&self, event: AccessibilityEvent) {
++        self.sender.send(event).ok();
++        self.event_loop_proxy
++            .send_event(AppEvent::RedrawRequested(self.window_id))
++            .ok();
++    }
++}
++
++impl ActivationHandler for EventSender {
++    fn request_initial_tree(&mut self) -> Option<TreeUpdate> {
++        self.send(AccessibilityEvent::InitialTreeRequested);
++        None
++    }
++}
++
++impl ActionHandler for EventSender {
++    fn do_action(&mut self, request: ActionRequest) {
++        self.send(AccessibilityEvent::ActionRequested(request));
++    }
++}
++
++impl DeactivationHandler for EventSender {
++    fn deactivate_accessibility(&mut self) {
++        self.send(AccessibilityEvent::Deactivated);
++    }
++}
++
++pub(crate) struct SdlAccessKit {
++    adapter: platform::Adapter,
++    events: Receiver<AccessibilityEvent>,
++}
++
++impl SdlAccessKit {
++    pub(crate) fn new(
++        window: &sdl3::video::Window,
++        event_loop_proxy: EventLoopProxy,
++    ) -> Self {
++        let (sender, events) = mpsc::channel();
++        let sender = EventSender {
++            sender,
++            event_loop_proxy,
++            window_id: window.id(),
++        };
++        let adapter = platform::Adapter::new(
++            window,
++            sender.clone(),
++            sender.clone(),
++            sender,
++        );
++        Self { adapter, events }
++    }
++
++    pub(crate) fn process_window_event(
++        &mut self,
++        window: &sdl3::video::Window,
++        event: &WindowEvent,
++    ) {
++        self.adapter.process_window_event(window, event);
++    }
++
++    pub(crate) fn update_if_active(&mut self, update: TreeUpdate) {
++        self.adapter.update_if_active(|| update);
++    }
++
++    pub(crate) fn drain_events(&mut self) -> impl Iterator<Item = AccessibilityEvent> + '_ {
++        self.events.try_iter()
++    }
++}
++
++#[cfg(target_os = "windows")]
++mod platform {
++    use accesskit::{ActionHandler, ActivationHandler, DeactivationHandler, TreeUpdate};
++    use accesskit_windows::{HWND, SubclassingAdapter};
++    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
++
++    use crate::desktop::event_loop::WindowEvent;
++
++    pub(super) struct Adapter(SubclassingAdapter);
++
++    impl Adapter {
++        pub(super) fn new(
++            window: &sdl3::video::Window,
++            activation: impl 'static + ActivationHandler,
++            action: impl 'static + ActionHandler + Send,
++            _deactivation: impl 'static + DeactivationHandler,
++        ) -> Self {
++            let RawWindowHandle::Win32(handle) = window.window_handle().unwrap().as_raw() else {
++                unreachable!("SDL3 returned a non-Win32 handle on Windows")
++            };
++            Self(SubclassingAdapter::new(
++                HWND(handle.hwnd.get() as *mut _),
++                activation,
++                action,
++            ))
++        }
++
++        pub(super) fn process_window_event(
++            &mut self,
++            _window: &sdl3::video::Window,
++            _event: &WindowEvent,
++        ) {
++        }
++
++        pub(super) fn update_if_active(&mut self, update: impl FnOnce() -> TreeUpdate) {
++            if let Some(events) = self.0.update_if_active(update) {
++                events.raise();
++            }
++        }
++    }
++}
++
++#[cfg(target_os = "macos")]
++mod platform {
++    use accesskit::{ActionHandler, ActivationHandler, DeactivationHandler, TreeUpdate};
++    use accesskit_macos::SubclassingAdapter;
++    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
++
++    use crate::desktop::event_loop::WindowEvent;
++
++    pub(super) struct Adapter(SubclassingAdapter);
++
++    impl Adapter {
++        pub(super) fn new(
++            window: &sdl3::video::Window,
++            activation: impl 'static + ActivationHandler,
++            action: impl 'static + ActionHandler,
++            _deactivation: impl 'static + DeactivationHandler,
++        ) -> Self {
++            let RawWindowHandle::AppKit(handle) = window.window_handle().unwrap().as_raw() else {
++                unreachable!("SDL3 returned a non-AppKit handle on macOS")
++            };
++            Self(unsafe { SubclassingAdapter::new(handle.ns_view.as_ptr(), activation, action) })
++        }
++
++        pub(super) fn process_window_event(
++            &mut self,
++            _window: &sdl3::video::Window,
++            event: &WindowEvent,
++        ) {
++            if let WindowEvent::Focused(focused) = event &&
++                let Some(events) = self.0.update_view_focus_state(*focused)
++            {
++                events.raise();
++            }
++        }
++
++        pub(super) fn update_if_active(&mut self, update: impl FnOnce() -> TreeUpdate) {
++            if let Some(events) = self.0.update_if_active(update) {
++                events.raise();
++            }
++        }
++    }
++}
++
++#[cfg(any(target_os = "linux", target_os = "freebsd"))]
++mod platform {
++    use accesskit::{ActionHandler, ActivationHandler, DeactivationHandler, Rect, TreeUpdate};
++    use accesskit_unix::Adapter as UnixAdapter;
++
++    use crate::desktop::event_loop::WindowEvent;
++
++    pub(super) struct Adapter(UnixAdapter);
++
++    impl Adapter {
++        pub(super) fn new(
++            window: &sdl3::video::Window,
++            activation: impl 'static + ActivationHandler + Send,
++            action: impl 'static + ActionHandler + Send,
++            deactivation: impl 'static + DeactivationHandler + Send,
++        ) -> Self {
++            let mut adapter = Self(UnixAdapter::new(activation, action, deactivation));
++            adapter.update_bounds(window);
++            adapter
++        }
++
++        fn update_bounds(&mut self, window: &sdl3::video::Window) {
++            let (x, y) = window.position();
++            let (width, height) = window.size();
++            let bounds = Rect::from_origin_size(
++                (f64::from(x), f64::from(y)),
++                (f64::from(width), f64::from(height)),
++            );
++            self.0.set_root_window_bounds(bounds, bounds);
++        }
++
++        pub(super) fn process_window_event(
++            &mut self,
++            window: &sdl3::video::Window,
++            event: &WindowEvent,
++        ) {
++            match event {
++                WindowEvent::Resized(..) => self.update_bounds(window),
++                WindowEvent::Focused(focused) => self.0.update_window_focus_state(*focused),
++                _ => {},
++            }
++        }
++
++        pub(super) fn update_if_active(&mut self, update: impl FnOnce() -> TreeUpdate) {
++            self.0.update_if_active(update);
++        }
++    }
++}
+

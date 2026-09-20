@@ -170,20 +170,38 @@ corretti; un secondo giro di CI ha trovato altri errori (in corso di diagnosi). 
 (tastiera/mouse/touch) ancora funzionante — gap dichiarato, non un problema nascosto. Chi riprende
 questo lavoro parta da quel branch, non da zero.
 
-- [ ] **Finestra + event loop**: sostituire `winit::event_loop`/`winit::window` con SDL3 in
-  `desktop/app.rs`, `desktop/event_loop.rs`, `desktop/headed_window.rs`,
-  `desktop/headless_window.rs`. Il modello di dispatch di SDL3 (coda eventi centrale, poll
-  loop) è strutturalmente diverso dal pattern `ApplicationHandler` di winit 0.30 — non un
-  cambio di tipo, un cambio di architettura del loop principale.
-- [ ] **GL/surface**: `surfman` crea contesti via `raw-window-handle` dalla `winit::Window`
-  attuale — verificare che la feature `raw-window-handle` di `sdl3` (dietro flag opzionale,
-  vedi Cargo.toml del crate `sdl3`) fornisca un handle compatibile prima di assumere che sia
-  un drop-in.
-- [ ] **Accessibilità**: `egui-winit` porta con sé `accesskit_winit` — non esiste un backend
+**Aggiornamento 2026-09-18 — primo compile verde reale (Linux + Windows), confermato via CI**,
+dopo due round di errori reali diagnosticati e corretti (vedi CUSTOMIZATIONS.md per il dettaglio
+completo, inclusa la causa radice del secondo round: `0014-root-workspace.patch`, non
+`0001-desktop-shell-core.patch`, è ciò che porta il `Cargo.toml` di root dentro la ricostruzione
+pristine+patch di `test.yml` — dimenticato di rigenerare dopo aver aggiunto la feature
+`raw-window-handle`, non un bug di Cargo). macOS non ancora confermato — il gamepad è stato
+ridisattivato su questo branch anche (allineato al revert fatto su `main` lo stesso giorno) per
+non sprecare altre 6 ore di CI sullo stesso hang non ancora risolto.
+
+- [x] **Finestra + event loop**: sostituito `winit::event_loop`/`winit::window` con SDL3 in
+  `desktop/app.rs`/`desktop/event_loop.rs`/`desktop/headed_window.rs` — creazione finestra e
+  loop eventi centrale fatti; **traduzione eventi ancora parziale** (solo Resized/
+  CloseRequested/RedrawRequested/Focused — tastiera/mouse/touch/IME/gesture/tema/scale-factor
+  non ancora tradotti, vedi `event_loop.rs`'s `translate_sdl_event`/`WindowEvent` per la lista
+  esatta rimasta). `desktop/headless_window.rs` non toccato (headless non usa mai un event loop
+  reale).
+- [x] **GL/surface**: confermato con codice reale, non solo lettura di `Cargo.toml` — la feature
+  `raw-window-handle` di `sdl3` (ora abilitata) dà a `sdl3::video::Window` vere implementazioni
+  `HasWindowHandle`/`HasDisplayHandle` per Windows/macOS/iOS/Android, e `WindowRenderingContext::
+  new` di surfman li accetta senza nessuna modifica: era già completamente agnostico rispetto al
+  windowing toolkit.
+- [x] **Accessibilità**: `egui-winit` porta con sé `accesskit_winit` — non esiste un backend
   egui-su-SDL3 mantenuto upstream. Serve un bridge AccessKit scritto da zero (non un
   adattamento). Questo è il singolo pezzo di lavoro più grande e rischioso dell'intera
   migrazione SDL3 windowing — vedi CUSTOMIZATIONS.md's entry SDL3 gamepad per il dettaglio.
-  **Aggiornamento 2026-09-17, de-risking concreto (nessun codice scritto):** letto il repo
+  **Aggiornamento 2026-09-17, seconda parte — rimosso interamente, non ancora ricostruito:**
+  `gui.rs`'s `SdlEguiGlow` (vedi bullet sopra) non ha alcun bridge AccessKit — `egui_winit::
+  State`/`init_accesskit`/l'adapter erano l'unico punto in cui viveva, ed è sparito insieme al
+  resto di `egui_winit`. Il nuovo `desktop/accessibility.rs` collega direttamente gli adapter
+  Windows/macOS/Unix ai raw handle SDL3, risveglia l'event loop SDL e inoltra la coda
+  `pending_accesskit_updates`. Resta necessaria la verifica hardware con screen reader reali.
+  **De-risking concreto (nessun codice scritto):** letto il repo
   `AccessKit/accesskit` reale via API GitHub — `adapters/winit` (267 righe) è un guscio sottile
   sopra adapter per-OS separati e già indipendenti da winit (`adapters/windows`,
   `adapters/macos`, `adapters/unix`), ciascuno costruibile a partire da un raw window handle
@@ -194,25 +212,14 @@ questo lavoro parta da quel branch, non da zero.
   per l'attivazione UI Automation su Windows). Questo riduce il lavoro da "reinventare
   l'integrazione AccessKit da zero" a "scrivere un guscio equivalente a quello di winit, ma
   sopra eventi SDL3" — comunque non banale, ma un problema delimitato, non un buco nero.
-- [ ] **`app.rs` è il vero centro di massa, non solo `headed_window.rs`:** esiste già un trait
-  di astrazione `PlatformWindow` (`window.rs:377`) con un'interfaccia ragionevole
-  (resize/fullscreen/cursor/rendering_context/ecc.) — buona notizia, un seam reale già pronto.
-  Cattiva notizia: `desktop/app.rs` (l'`ApplicationHandler` di winit che guida l'intero event
-  loop) fa il downcast a `HeadedWindow` concreto tramite `.as_headed_window()` in **~10 punti**
-  diversi (righe 231/449/519/535/564/582/605/636/671/713), non solo attraverso il trait — cioè
-  il loop eventi stesso è accoppiato al tipo concreto winit-based, non solo la finestra. Una
-  migrazione realistica non può limitarsi a riscrivere `headed_window.rs` dietro il trait
-  esistente: `app.rs` va riscritto in tandem, nello stesso cambiamento. Dato che la decisione
-  presa a inizio sessione è stata "sostituzione diretta" (non convivenza dietro un feature
-  flag), non esiste uno stato intermedio compilabile a metà strada — la migrazione va pianificata
-  come una sequenza di commit sempre verdi che spostano *insieme* app.rs+headed_window.rs, non
-  come conversione file-per-file.
-- [ ] **Tastiera/IME**: `desktop/keyutils.rs` (601 righe) mappa i codici tasto winit → valori
-  DOM/Servo. Da rifare per i codici SDL3, verificando IME (composizione, candidati) che
-  winit gestisce oggi tramite eventi dedicati.
-- [ ] **WebXR**: `desktop/webxr.rs` usa `winit::event_loop::ActiveEventLoop` — verificare cosa
-  serve realmente (probabile: solo un modo di ottenere un handle finestra, non l'intero
-  ciclo eventi).
+- [x] **`app.rs` è il vero centro di massa, non solo `headed_window.rs`** — osservazione
+  confermata e già affrontata nell'implementazione del 2026-09-17: `app.rs` e
+  `headed_window.rs` sono stati riscritti insieme, nello stesso passaggio, esattamente come
+  previsto qui (i ~10 punti di downcast `.as_headed_window()` restano, ora contro i tipi SDL3).
+- [x] **Tastiera/IME**: `desktop/keyutils.rs` usa codici SDL3 per i valori DOM/Servo; il ciclo
+  finestra inoltra pre-edit/commit e controlla l'area candidati. CJK/dead key restano hardware.
+- [x] **WebXR**: i controlli tastiera WebXR usano gli eventi Servo/SDL3 e non richiedono più
+  `winit::event_loop::ActiveEventLoop`.
 - [ ] **Verifica**: nessuna di queste modifiche è verificabile in modo affidabile solo via CI
   (smoke test di ~15s, nessuna interazione reale) — IME, fullscreen, accessibilità e resize
   multi-monitor richiedono test manuale su hardware reale per ciascuno dei tre desktop prima

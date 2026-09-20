@@ -1,5 +1,4 @@
 diff --git a/ports/servoshell/desktop/protocols/mod.rs b/ports/servoshell/desktop/protocols/mod.rs
-index 434826f5b..0744c2ce7 100644
 --- a/ports/servoshell/desktop/protocols/mod.rs
 +++ b/ports/servoshell/desktop/protocols/mod.rs
 @@ -2,6 +2,13 @@
@@ -17,8 +16,7 @@ index 434826f5b..0744c2ce7 100644
 +pub(crate) mod steam;
  pub(crate) mod urlinfo;
 diff --git a/ports/servoshell/desktop/protocols/roves.rs b/ports/servoshell/desktop/protocols/roves.rs
-new file mode 100644
---- /dev/null
+--- a/ports/servoshell/desktop/protocols/roves.rs
 +++ b/ports/servoshell/desktop/protocols/roves.rs
 @@ -0,0 +1,251 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
@@ -45,15 +43,15 @@ new file mode 100644
 +    DoneChannel, FetchContext, NetworkError, ProtocolHandler, Request, ResourceFetchTiming,
 +    Response, ResponseBody,
 +};
-+use winit::event_loop::EventLoopProxy;
-+
-+use crate::desktop::event_loop::AppEvent;
++use crate::desktop::event_loop::{AppEvent, EventLoopProxy};
 +
 +pub struct RovesProtocolHandler {
 +    /// `None` in headless mode, where there's no window to close and no
-+    /// winit event loop to send this through in the first place (see
-+    /// `ServoShellEventLoop::event_loop_proxy`).
-+    close_proxy: Option<Arc<Mutex<EventLoopProxy<AppEvent>>>>,
++    /// event loop to send this through in the first place (see
++    /// `ServoShellEventLoop::event_loop_proxy`). The `Arc<Mutex<..>>` wrapping predates
++    /// `EventLoopProxy` itself being cheaply `Clone`-able (it wraps an `Arc` internally
++    /// now) -- kept as-is here to minimize this pass's blast radius.
++    close_proxy: Option<Arc<Mutex<EventLoopProxy>>>,
 +    /// The directory packed game content was (or would be) extracted into —
 +    /// the same directory `FileProtocolHandler` serves from — if this launch
 +    /// is a packed-content one at all. `None` for a dev `--url` launch, which
@@ -63,7 +61,7 @@ new file mode 100644
 +
 +impl RovesProtocolHandler {
 +    pub fn new(
-+        close_proxy: Option<Arc<Mutex<EventLoopProxy<AppEvent>>>>,
++        close_proxy: Option<Arc<Mutex<EventLoopProxy>>>,
 +        content_cache_dir: Option<PathBuf>,
 +    ) -> Self {
 +        Self { close_proxy, content_cache_dir }
@@ -273,9 +271,7 @@ new file mode 100644
 +    response
 +}
 diff --git a/ports/servoshell/desktop/protocols/saves.rs b/ports/servoshell/desktop/protocols/saves.rs
-new file mode 100644
-index 000000000..51ad7c5e5
---- /dev/null
+--- a/ports/servoshell/desktop/protocols/saves.rs
 +++ b/ports/servoshell/desktop/protocols/saves.rs
 @@ -0,0 +1,427 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
@@ -706,9 +702,7 @@ index 000000000..51ad7c5e5
 +    response
 +}
 diff --git a/ports/servoshell/desktop/protocols/steam.rs b/ports/servoshell/desktop/protocols/steam.rs
-new file mode 100644
-index 000000000..d4cbf6e67
---- /dev/null
+--- a/ports/servoshell/desktop/protocols/steam.rs
 +++ b/ports/servoshell/desktop/protocols/steam.rs
 @@ -0,0 +1,179 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public

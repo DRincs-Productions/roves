@@ -30,6 +30,9 @@ rust-version = "1.88.0"
 [workspace.dependencies]
 accesskit = { version = "0.24.0", features = ["serde"] }
 accesskit_consumer = "0.35.0"
+accesskit_macos = "0.26.0"
+accesskit_unix = "0.21.0"
+accesskit_windows = "0.32.1"
 aes = { version = "0.9", features = ["zeroize"] }
 aes-gcm = { version = "0.11", features = ["hazmat", "zeroize"] }
 aes-kw = { version = "0.3", features = ["zeroize"] }
@@ -80,8 +83,7 @@ ed25519-dalek = { version = "3.0", features = ["alloc", "pkcs8", "rand_core", "z
 ed448-goldilocks = "=0.14.0-pre.15"
 egui = "0.36.2"
 egui-file-dialog = "0.15.0"
-egui-winit = { version = "0.36.2", default-features = false }
-egui_glow = "0.36.2"
+egui_glow = { version = "0.36.2", default-features = false }
 elliptic-curve = { version = "0.14", features = ["pkcs8"] }
 encoding_rs = { version = "0.8", features = ["serde"] }
 env_filter = "0.1.4"
@@ -220,7 +222,12 @@ rustls-platform-verifier = "0.7.0"
 # self-contained/versioned by Roves, the same reasoning `docs/DEPENDENCY_REVIEW.md` already
 # applies to the rest of the embedded engine, and avoids a second native-installer saga on top
 # of GStreamer's (see CUSTOMIZATIONS.md).
-sdl3 = { version = "0.20", default-features = false, features = ["build-from-source-static"] }
+# `raw-window-handle`: lets `sdl3::video::Window` implement `HasWindowHandle`/`HasDisplayHandle`
+# (confirmed real, per-platform implementations in the crate's own source, not just a
+# feature-flag guess) -- `surfman`'s GL context creation needs exactly this trait, the same way
+# it currently gets it from `winit::window::Window`. Part of the SDL3 windowing/event-loop
+# migration (see TODO.md) -- unused until `headed_window.rs` actually switches its window type.
+sdl3 = { version = "0.20", default-features = false, features = ["build-from-source-static", "raw-window-handle"] }
 sea-query = { version = "1.0.1", default-features = false, features = ["backend-sqlite", "derive"] }
 sea-query-rusqlite = "0.8.0"
 selectors = { version = "0.40" }

@@ -22,15 +22,15 @@ use servo::protocol_handler::{
     DoneChannel, FetchContext, NetworkError, ProtocolHandler, Request, ResourceFetchTiming,
     Response, ResponseBody,
 };
-use winit::event_loop::EventLoopProxy;
-
-use crate::desktop::event_loop::AppEvent;
+use crate::desktop::event_loop::{AppEvent, EventLoopProxy};
 
 pub struct RovesProtocolHandler {
     /// `None` in headless mode, where there's no window to close and no
-    /// winit event loop to send this through in the first place (see
-    /// `ServoShellEventLoop::event_loop_proxy`).
-    close_proxy: Option<Arc<Mutex<EventLoopProxy<AppEvent>>>>,
+    /// event loop to send this through in the first place (see
+    /// `ServoShellEventLoop::event_loop_proxy`). The `Arc<Mutex<..>>` wrapping predates
+    /// `EventLoopProxy` itself being cheaply `Clone`-able (it wraps an `Arc` internally
+    /// now) -- kept as-is here to minimize this pass's blast radius.
+    close_proxy: Option<Arc<Mutex<EventLoopProxy>>>,
     /// The directory packed game content was (or would be) extracted into —
     /// the same directory `FileProtocolHandler` serves from — if this launch
     /// is a packed-content one at all. `None` for a dev `--url` launch, which
@@ -40,7 +40,7 @@ pub struct RovesProtocolHandler {
 
 impl RovesProtocolHandler {
     pub fn new(
-        close_proxy: Option<Arc<Mutex<EventLoopProxy<AppEvent>>>>,
+        close_proxy: Option<Arc<Mutex<EventLoopProxy>>>,
         content_cache_dir: Option<PathBuf>,
     ) -> Self {
         Self { close_proxy, content_cache_dir }

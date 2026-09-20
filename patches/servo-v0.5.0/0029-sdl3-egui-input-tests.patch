@@ -1,0 +1,42 @@
+diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
+index c03662a..14f1224 100644
+--- a/ports/servoshell/desktop/gui.rs
++++ b/ports/servoshell/desktop/gui.rs
+@@ -130,6 +130,37 @@ fn egui_key_from_sdl(keycode: sdl3::keyboard::Keycode) -> Option<egui::Key> {
+     })
+ }
+ 
++#[cfg(test)]
++mod sdl_egui_input_tests {
++    use super::{egui_key_from_sdl, egui_modifiers_from_sdl};
++    use egui::Key;
++    use sdl3::keyboard::{Keycode, Mod};
++
++    #[test]
++    fn maps_navigation_printable_keypad_and_function_keys() {
++        assert_eq!(egui_key_from_sdl(Keycode::Left), Some(Key::ArrowLeft));
++        assert_eq!(egui_key_from_sdl(Keycode::A), Some(Key::A));
++        assert_eq!(egui_key_from_sdl(Keycode::KpEnter), Some(Key::Enter));
++        assert_eq!(egui_key_from_sdl(Keycode::F12), Some(Key::F12));
++        assert_eq!(egui_key_from_sdl(Keycode::CapsLock), None);
++    }
++
++    #[test]
++    fn folds_left_and_right_sdl_modifiers() {
++        let modifiers = egui_modifiers_from_sdl(
++            Mod::RALTMOD | Mod::LCTRLMOD | Mod::RSHIFTMOD | Mod::LGUIMOD,
++        );
++        assert!(modifiers.alt);
++        assert!(modifiers.ctrl);
++        assert!(modifiers.shift);
++        assert_eq!(modifiers.mac_cmd, cfg!(target_os = "macos"));
++        assert_eq!(
++            modifiers.command,
++            if cfg!(target_os = "macos") { modifiers.mac_cmd } else { modifiers.ctrl },
++        );
++    }
++}
++
+ /// TODO(SDL3 windowing, real progress not completion — see TODO.md): replaces
+ /// `egui_glow::EguiGlow` (a convenience wrapper hard-coded to winit — `EguiGlow::run`/`paint`/
+ /// `new` all take `&winit::window::Window` directly, confirmed by reading that crate's own

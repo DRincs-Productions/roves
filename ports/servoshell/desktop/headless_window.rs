@@ -18,7 +18,7 @@ use servo::{
     DevicePixel, RenderingContext, ScreenGeometry, SoftwareRenderingContext, WebView,
     convert_rect_to_css_pixel,
 };
-use winit::dpi::PhysicalSize;
+use dpi::PhysicalSize;
 
 use crate::prefs::ServoShellPreferences;
 use crate::window::{MIN_WINDOW_INNER_SIZE, PlatformWindow, ServoShellWindow, ServoShellWindowId};
@@ -145,7 +145,7 @@ impl PlatformWindow for HeadlessWindow {
     #[cfg(feature = "webxr")]
     fn new_glwindow(
         &self,
-        _event_loop: &winit::event_loop::ActiveEventLoop,
+        _event_loop: &crate::desktop::event_loop::ActiveEventLoop,
     ) -> Rc<dyn servo::webxr::GlWindow> {
         unimplemented!()
     }

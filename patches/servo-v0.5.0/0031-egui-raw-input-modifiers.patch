@@ -1,0 +1,12 @@
+diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
+index 660cf5d..849f199 100644
+--- a/ports/servoshell/desktop/gui.rs
++++ b/ports/servoshell/desktop/gui.rs
+@@ -339,7 +339,6 @@ impl SdlEguiGlow {
+             screen_rect: Some(screen_rect),
+             max_texture_side: Some(self.painter.max_texture_side()),
+             events: core::mem::take(&mut self.pending_events),
+-            modifiers: self.modifiers,
+             focused: self.focused,
+             ..Default::default()
+         };

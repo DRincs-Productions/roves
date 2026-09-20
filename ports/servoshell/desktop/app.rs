@@ -17,13 +17,11 @@ use servo::{
     EventLoopWaker, Opts, Preferences, ServoBuilder, ServoUrl, UserContentManager, UserScript,
 };
 use url::Url;
-use winit::application::ApplicationHandler;
-use winit::event::{StartCause, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
-use winit::window::WindowId;
 
-use super::event_loop::AppEvent;
-use crate::desktop::event_loop::ServoShellEventLoop;
+use crate::desktop::event_loop::{
+    ActiveEventLoop, AppEvent, ControlFlow, EventLoopProxy, ServoShellEventLoop, WindowEvent,
+    WindowId,
+};
 use crate::desktop::headed_window::{HeadedWindow, SPLASH_ANIMATION_TICK};
 use crate::desktop::headless_window::HeadlessWindow;
 use crate::desktop::protocols;
@@ -125,7 +123,7 @@ pub struct App {
     preferences: Preferences,
     servoshell_preferences: ServoShellPreferences,
     waker: Box<dyn EventLoopWaker>,
-    event_loop_proxy: Option<EventLoopProxy<AppEvent>>,
+    event_loop_proxy: Option<EventLoopProxy>,
     initial_url: ServoUrl,
     /// A packed-content launch's still-to-run boot extraction (see
     /// `bundle_launch.rs`'s `BundledLaunch`), taken (and consumed) by the
@@ -229,7 +227,7 @@ impl App {
         // `new_events`/`try_finish_booting`, which take over re-arming this on every
         // subsequent tick.
         if let Some(headed_window) = platform_window.as_headed_window() {
-            headed_window.winit_window().request_redraw();
+            headed_window.request_redraw();
         }
         active_event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + SPLASH_ANIMATION_TICK));
 
@@ -493,11 +491,7 @@ impl App {
     }
 }
 
-impl ApplicationHandler<AppEvent> for App {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        self.init(Some(event_loop));
-    }
-
+impl App {
     /// Drives the two periodic ticks the boot splash's animation relies on, neither of
     /// which any real `WindowEvent`/`AppEvent` is guaranteed to otherwise deliver
     /// promptly (or at all, during an otherwise-silent wait):
@@ -506,18 +500,19 @@ impl ApplicationHandler<AppEvent> for App {
     ///   itself — also what transitions to `finish_init` once both extraction and
     ///   `MIN_SPLASH_DURATION` are done.
     /// - While `Running` with a window whose `page_load_splash_since` is still set (see
-    ///   `HeadedWindow::splash_animation_wake_deadline`, armed by `window_event`/
-    ///   `user_event`'s tail): forces that window's next redraw too, both to keep the
+    ///   `HeadedWindow::splash_animation_wake_deadline`, armed by `dispatch_window_event`/
+    ///   `dispatch_user_event`'s tail): forces that window's next redraw too, both to keep the
     ///   splash animating and to promptly notice `LoadStatus::Complete` firing with no
     ///   further page activity after it.
-    fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
-        if !matches!(cause, StartCause::ResumeTimeReached { .. }) {
-            return;
-        }
+    ///
+    /// Called once per real wait-timeout tick (SDL3's own equivalent of winit's
+    /// `StartCause::ResumeTimeReached` — the only `StartCause` this ever actually cared
+    /// about, so `run_sdl3_app`'s loop doesn't bother threading a full cause enum through).
+    pub(crate) fn dispatch_new_events(&mut self, event_loop: &ActiveEventLoop) {
         match &self.state {
             AppState::Booting { window, .. } => {
                 if let Some(headed_window) = window.as_headed_window() {
-                    headed_window.winit_window().request_redraw();
+                    headed_window.request_redraw();
                 }
                 self.try_finish_booting(event_loop);
             },
@@ -535,7 +530,7 @@ impl ApplicationHandler<AppEvent> for App {
                     if let Some(headed_window) = window.platform_window().as_headed_window() &&
                         headed_window.splash_animation_wake_deadline(state).is_some()
                     {
-                        headed_window.winit_window().request_redraw();
+                        headed_window.request_redraw();
                     }
                 }
                 set_running_control_flow(event_loop, state);
@@ -544,7 +539,7 @@ impl ApplicationHandler<AppEvent> for App {
         }
     }
 
-    fn window_event(
+    pub(crate) fn dispatch_window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
         window_id: WindowId,
@@ -562,8 +557,8 @@ impl ApplicationHandler<AppEvent> for App {
         if matches!(self.state, AppState::Booting { .. }) {
             if let AppState::Booting { window, extraction_started, .. } = &self.state &&
                 let Some(headed_window) = window.as_headed_window() &&
-                headed_window.winit_window().id() == window_id &&
-                matches!(window_event, WindowEvent::RedrawRequested | WindowEvent::Resized(_))
+                headed_window.sdl_window_id() == window_id &&
+                matches!(window_event, WindowEvent::RedrawRequested | WindowEvent::Resized(..))
             {
                 headed_window.paint_splash(extraction_started.elapsed());
             }
@@ -581,7 +576,7 @@ impl ApplicationHandler<AppEvent> for App {
         if let Some(window) = state.window(ServoShellWindowId::from(u64::from(window_id))) &&
             let Some(headed_window) = window.platform_window().as_headed_window()
         {
-            headed_window.handle_winit_window_event(state.clone(), window, window_event);
+            headed_window.handle_window_event(state.clone(), window, window_event);
         }
 
         if !self.pump_servo_event_loop(event_loop.into()) {
@@ -590,7 +585,16 @@ impl ApplicationHandler<AppEvent> for App {
         set_running_control_flow(event_loop, &state);
     }
 
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, app_event: AppEvent) {
+    pub(crate) fn dispatch_user_event(&mut self, event_loop: &ActiveEventLoop, app_event: AppEvent) {
+        // SDL3 has no push-based redraw-request event of its own -- `HeadedWindow::
+        // request_redraw` sends this instead (see `event_loop.rs`'s own doc comment on the
+        // variant), and the only thing to do with it is route straight into the exact same
+        // handling a real `WindowEvent::RedrawRequested` would have gotten.
+        if let AppEvent::RedrawRequested(window_id) = app_event {
+            self.dispatch_window_event(event_loop, window_id, WindowEvent::RedrawRequested);
+            return;
+        }
+
         let mut redraw_window = None;
         if let AppState::Booting { window, extraction_done, .. } = &mut self.state {
             match app_event {
@@ -604,7 +608,7 @@ impl ApplicationHandler<AppEvent> for App {
         if let Some(window) = redraw_window &&
             let Some(headed_window) = window.as_headed_window()
         {
-            headed_window.winit_window().request_redraw();
+            headed_window.request_redraw();
         }
         if matches!(self.state, AppState::Booting { .. }) {
             self.try_finish_booting(event_loop);
@@ -620,6 +624,9 @@ impl ApplicationHandler<AppEvent> for App {
 
         match app_event {
             AppEvent::Waker => (),
+            // Already handled above, before `self.state` was confirmed `Running` -- this
+            // variant always returns early at the top of this function.
+            AppEvent::RedrawRequested(_) => unreachable!(),
             AppEvent::CloseAllWindows => {
                 // See protocols/roves.rs and event_loop.rs's own doc comment on
                 // this variant: this is the only way a `ProtocolHandler` (which
@@ -628,14 +635,6 @@ impl ApplicationHandler<AppEvent> for App {
                 // itself is `Rc`-based and can't be touched from there directly.
                 for window in state.windows().values() {
                     window.schedule_close();
-                }
-            },
-            AppEvent::Accessibility(ref event) => {
-                if let Some(window) =
-                    state.window(ServoShellWindowId::from(u64::from(event.window_id))) &&
-                    let Some(headed_window) = window.platform_window().as_headed_window()
-                {
-                    headed_window.handle_winit_app_event(state.clone(), app_event);
                 }
             },
             // Already acted on above, while `self.state` was still `Booting` -- a no-op

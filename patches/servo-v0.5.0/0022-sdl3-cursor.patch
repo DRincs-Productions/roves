@@ -1,0 +1,81 @@
+diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/desktop/headed_window.rs
+index f5dc0b7..8b07eee 100644
+--- a/ports/servoshell/desktop/headed_window.rs
++++ b/ports/servoshell/desktop/headed_window.rs
+@@ -32,7 +32,7 @@ use servo::{
+ };
+ use url::Url;
+ use dpi::PhysicalSize;
+-use sdl3::mouse::MouseButton as SdlMouseButton;
++use sdl3::mouse::{Cursor as SdlCursor, MouseButton as SdlMouseButton, MouseUtil, SystemCursor};
+ #[cfg(target_os = "macos")]
+ use {
+     objc2_app_kit::{NSColorSpace, NSView},
+@@ -115,6 +115,10 @@ pub struct HeadedWindow {
+     event_loop_proxy: EventLoopProxy,
+     /// SDL3 text-input controller for the video subsystem that owns `sdl_window`.
+     text_input: sdl3::keyboard::TextInputUtil,
++    /// SDL's cursor visibility API is global to the mouse subsystem. The active cursor object
++    /// must be retained for as long as SDL may use its native handle.
++    mouse: MouseUtil,
++    active_cursor: RefCell<Option<SdlCursor>>,
+     /// The last title set on this window. We need to store this value here, as `winit::Window::title`
+     /// is not supported very many platforms.
+     last_title: RefCell<String>,
+@@ -257,6 +261,8 @@ impl HeadedWindow {
+             sdl_window,
+             event_loop_proxy,
+             text_input: event_loop.video().text_input(),
++            mouse: event_loop.sdl().mouse(),
++            active_cursor: RefCell::new(None),
+             webview_relative_mouse_point: Cell::new(Point2D::zero()),
+             fullscreen: Cell::new(servoshell_preferences.start_fullscreen),
+             config_dir: servoshell_preferences.config_dir.clone(),
+@@ -1033,12 +1039,41 @@ impl PlatformWindow for HeadedWindow {
+         id.into()
+     }
+ 
+-    /// TODO(SDL3 windowing): cursor shape changes not ported yet — `Cursor`'s ~30 named shapes
+-    /// need mapping to `sdl3::mouse::SystemCursor` and setting via `Sdl::mouse().set_cursor(..)`
+-    /// (a separate, global API in SDL3, not a `Window` method the way winit's `set_cursor` was).
+-    /// `Cursor::None` (hide the cursor entirely) is the one real gap this leaves: the cursor
+-    /// stays visible where the page/UI would otherwise have hidden it.
+-    fn set_cursor(&self, _cursor: Cursor) {}
++    fn set_cursor(&self, cursor: Cursor) {
++        let system_cursor = match cursor {
++            Cursor::None => {
++                self.mouse.show_cursor(false);
++                return;
++            },
++            Cursor::Text | Cursor::VerticalText => SystemCursor::IBeam,
++            Cursor::Wait => SystemCursor::Wait,
++            Cursor::Progress => SystemCursor::WaitArrow,
++            Cursor::Crosshair | Cursor::Cell => SystemCursor::Crosshair,
++            Cursor::Pointer | Cursor::ContextMenu | Cursor::Help | Cursor::Alias |
++            Cursor::Copy | Cursor::Grab | Cursor::Grabbing | Cursor::ZoomIn |
++            Cursor::ZoomOut => SystemCursor::Hand,
++            Cursor::EResize | Cursor::WResize | Cursor::EwResize | Cursor::ColResize => {
++                SystemCursor::SizeWE
++            },
++            Cursor::NResize | Cursor::SResize | Cursor::NsResize | Cursor::RowResize => {
++                SystemCursor::SizeNS
++            },
++            Cursor::NeResize | Cursor::SwResize | Cursor::NeswResize => SystemCursor::SizeNESW,
++            Cursor::NwResize | Cursor::SeResize | Cursor::NwseResize => SystemCursor::SizeNWSE,
++            Cursor::Move | Cursor::AllScroll => SystemCursor::SizeAll,
++            Cursor::NoDrop | Cursor::NotAllowed => SystemCursor::No,
++            Cursor::Default => SystemCursor::Arrow,
++        };
++
++        self.mouse.show_cursor(true);
++        match SdlCursor::from_system(system_cursor) {
++            Ok(native_cursor) => {
++                native_cursor.set();
++                *self.active_cursor.borrow_mut() = Some(native_cursor);
++            },
++            Err(error) => log::warn!("Could not create SDL3 system cursor: {error}"),
++        }
++    }
+ 
+     #[cfg(feature = "webxr")]
+     fn new_glwindow(&self, event_loop: &ActiveEventLoop) -> Rc<dyn servo::webxr::GlWindow> {
