@@ -109,6 +109,11 @@ Da eseguire con Xvfb e un piccolo harness SDL3:
 - file drop su una fixture temporanea;
 - apertura/chiusura IME almeno a livello di protocollo SDL.
 
+Lo smoke Linux della matrice usa ora `support/xvfb_window_cycle_smoke.sh`: individua la finestra
+SDL3 reale sotto Xvfb, inietta movimento/click e Tab/Escape con `xdotool`, forza un resize e
+verifica che il processo sopravviva. Le verifiche DOM dettagliate, file-drop e protocollo IME
+restano da aggiungere.
+
 ### Livello 4 — matrice packaging
 
 È il workflow `test.yml` esistente: Linux portable/deb, Windows portable/MSI, macOS

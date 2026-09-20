@@ -49,7 +49,7 @@ funzioni desktop elencate sotto hanno copertura automatica o una verifica hardwa
 - [x] Portare resize in pixel, cambio display/DPI e notifiche tema.
 - [ ] Implementare un adapter AccessKit indipendente da winit.
 - [x] Aggiungere unit test Rust per mapping tasti/modifier/repeat/location/fallback SDL3.
-- [ ] Aggiungere test Xvfb dedicati al ciclo finestra.
+- [x] Aggiungere test Xvfb dedicati al ciclo finestra (window discovery, pointer, key, resize).
 - [x] Aggiungere unit test puri per la conversione tastiera/modifier SDL3 → egui.
 - [ ] Eseguire la checklist hardware di `SDL3_WINDOWING_TESTING.md` sui tre sistemi.
 - [ ] Rendere verde la matrice finale e annotare qui run e commit conclusivi.

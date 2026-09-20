@@ -407,8 +407,9 @@ jobs:
         shell: bash
         run: |
           if [ "${{ matrix.os_name }}" = "linux" ]; then
-            sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb
-            RUNNER=(xvfb-run -a --server-args="-screen 0 1280x720x24")
+            sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb xdotool
+            chmod +x support/xvfb_window_cycle_smoke.sh
+            RUNNER=(support/xvfb_window_cycle_smoke.sh)
             if [ "${{ matrix.package_mode }}" = "deb" ]; then
               # A real .deb, unlike --msi/--dmg's "wrap the same portable output" — the
               # binary only exists once actually installed (see post_build_commands.py's
@@ -480,6 +481,12 @@ jobs:
           [ "$STILL_RUNNING" = false ] && echo "exit code: $EXIT_CODE"
           echo "--- stdout ---"; cat smoke-stdout.log
           echo "--- stderr ---"; cat smoke-stderr.log
+
+          if [ "${{ matrix.os_name }}" = "linux" ] &&
+             ! grep -q '\[roves-xvfb-window-cycle\] ok' smoke-stdout.log; then
+            echo "::error::SDL3 Xvfb window/input/resize cycle did not complete"
+            exit 1
+          fi
 
           CACHE_ROOT="$HOME/.cache"
           [ "${{ matrix.os_name }}" = "macos" ] && CACHE_ROOT="$HOME/Library/Caches"

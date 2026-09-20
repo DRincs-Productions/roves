@@ -7911,3 +7911,14 @@ input paths remain unchanged.
 Pure unit tests now pin representative navigation, printable, keypad, function-key, unsupported
 key and combined-modifier conversions used by the SDL3 egui bridge. They do not create a window
 or initialize SDL video; Android and OpenHarmony remain outside this desktop-only module.
+
+
+## 2026-09-20 — SDL3 Xvfb window-cycle smoke
+
+**Files:** `.github/workflows/test.yml`, `support/xvfb_window_cycle_smoke.sh`,
+`SDL3_MIGRATION_STATUS.md`, and `SDL3_WINDOWING_TESTING.md`.
+
+The existing Linux packaging smoke now shares its Xvfb display with a small xdotool probe. It
+requires a visible SDL3 window, injects pointer and keyboard input, resizes it, and verifies that
+the application remains alive. This extends the existing build rather than adding another costly
+Servo compilation job. Mobile workflows and sources are unchanged.
