@@ -8078,3 +8078,56 @@ Per `CLAUDE.md`'s delete-and-republish loop: deleted the partial `v0.4.24` GitHu
 6 assets uploaded — Linux and Windows, both plain and `_steam`, succeeded before the two macOS
 jobs got stuck) and the `v0.4.24` tag, both locally and on the remote, then re-tagged and
 re-pushed after this fix landed on `main`.
+
+---
+
+## 2026-09-20/21 — Fix a real "Not Responding" freeze with WebGL/canvas content
+
+**Files:** `ports/servoshell/desktop/headed_window.rs`,
+`patches/servo-v0.5.0/0033-sdl3-redraw-coalescing.patch`.
+
+**Found via real user testing of `v0.4.24` on Windows** — exactly the real-hardware feedback
+`SDL3_WINDOWING_TESTING.md` was written to collect. Reported symptom: a built game (a
+`pixi-vn-react-template` visual novel) had frequent slowdowns and the window would go "Not
+Responding" — but only reproducibly when the page used WebGL-heavy canvas content (PixiJS or
+Three.js); without it, only minor slowdowns (e.g. during scroll) ever showed up.
+
+**Root cause: `HeadedWindow::request_redraw` had no coalescing.** SDL3 has no push-based
+"redraw requested" event of its own — this codebase's own stand-in sends `AppEvent::
+RedrawRequested` via `SDL_PushEvent`, unconditionally, on every single call. winit's own
+`Window::request_redraw`, which this replaced, explicitly does **not** work that way — "Winit
+will aggregate duplicate redraw requests into a single event, to help avoid duplicating
+rendering work" (see rust-windowing/winit#1041, "Rethinking RedrawRequested") — and the rest of
+this codebase's event-dispatch logic (inherited unchanged from the winit era, see the
+2026-09-17 entry above) relies on that guarantee: `App::dispatch_window_event`/
+`dispatch_user_event` (app.rs) both call `pump_servo_event_loop` after handling *any* event,
+including a `RedrawRequested` itself — and if the active `WebView` has more content ready to
+paint (which a continuously-animating WebGL canvas driven by `requestAnimationFrame` always
+does), that pump can call `request_redraw` again before the current one has even finished being
+processed. With no coalescing, each dispatched redraw could queue another, unbounded — an
+event-generates-more-events feedback loop with no backpressure, flooding the SDL event queue
+faster than the main thread could drain it. Confirmed by direct code reading (not just
+inference): `dispatch_window_event` line 582's `pump_servo_event_loop` call, `dispatch_user_event`
+line 593's `RedrawRequested` handling (which calls `dispatch_window_event`, re-entering the same
+path) and its own, separate, unconditional `pump_servo_event_loop` call at line 690.
+
+Plain DOM/CSS content without WebGL doesn't drive anywhere near this invalidation rate (redraws
+only on real layout/paint changes, e.g. scroll), which is why the same underlying gap only
+showed up as occasional minor slowdowns there, not a full freeze.
+
+**Fix:** added `RedrawCoalescer`, a small helper (`request()`/`mark_dispatched()` over a single
+`Cell<bool>`) that reproduces winit's own coalescing contract by hand — `request_redraw` now
+only pushes a new SDL event if one isn't already pending; the pending flag is cleared the moment
+`handle_window_event` recognizes it's handling a `RedrawRequested`, so a genuine new need
+discovered while handling it (or in the `pump_servo_event_loop` call right after) still queues
+correctly. Added 5 unit tests (`redraw_coalescer_tests` in `headed_window.rs`) covering the
+exact sequence that used to flood the queue (`request` → `mark_dispatched` → `request` →
+`request` again should coalesce the second one). These run for real in CI via the `mach
+test-unit` step added in the 2026-09-20 entry above.
+
+**Related, not fixed here:** `HeadedEventLoopWaker::wake()` (event_loop.rs) has the same kind of
+unconditional `SDL_PushEvent` with no coalescing, for `AppEvent::Waker` — Servo's own
+`EventLoopWaker` trait can call this as often as it likes, and every dispatched `Waker` also
+triggers a `pump_servo_event_loop` call the same way `RedrawRequested` did. Each `Waker` dispatch
+is cheap on its own (the handler is a no-op), so this wasn't implicated in the reported freeze,
+but it's the same architectural gap and worth coalescing too if it ever turns out to matter.

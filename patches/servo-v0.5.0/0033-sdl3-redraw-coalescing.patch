@@ -1,0 +1,136 @@
+diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/desktop/headed_window.rs
+--- a/ports/servoshell/desktop/headed_window.rs
++++ b/ports/servoshell/desktop/headed_window.rs
+@@ -84,6 +84,83 @@
+ /// Roves-branded hang.
+ const MAX_PAGE_LOAD_SPLASH_DURATION: Duration = Duration::from_secs(8);
+ 
++/// Coalesces repeated redraw requests into at most one pending push at a time, reproducing
++/// winit's own `Window::request_redraw` guarantee ("Winit will aggregate duplicate redraw
++/// requests into a single event, to help avoid duplicating rendering work" — see
++/// rust-windowing/winit#1041, "Rethinking RedrawRequested") by hand, since the SDL3 backend has
++/// no equivalent built in.
++///
++/// Without this, a continuously-repainting page (any WebGL/canvas content driven by
++/// `requestAnimationFrame`, e.g. PixiJS/Three.js) can push `AppEvent::RedrawRequested` onto the
++/// SDL event queue faster than the main thread can drain it: `App::dispatch_window_event`/
++/// `dispatch_user_event` (see app.rs) both pump Servo's own event loop after handling any event,
++/// which can itself call `request_redraw` again if the `WebView` has more content ready — so
++/// dispatching one redraw can queue another, unbounded, with no backpressure. Observed for real
++/// as the whole window going "Not Responding" on Windows.
++#[derive(Default)]
++struct RedrawCoalescer(Cell<bool>);
++
++impl RedrawCoalescer {
++    /// Call when a redraw is wanted. Returns `true` the caller should actually push a new event
++    /// now (nothing was already pending); `false` if a request is already queued and this call
++    /// was coalesced away — the caller should do nothing, the already-pending one covers it.
++    fn request(&self) -> bool {
++        !self.0.replace(true)
++    }
++
++    /// Call once the pending request has actually been dispatched/handled, so the next
++    /// `request()` pushes a fresh event again instead of being coalesced against a stale one.
++    fn mark_dispatched(&self) {
++        self.0.set(false);
++    }
++}
++
++#[cfg(test)]
++mod redraw_coalescer_tests {
++    use super::RedrawCoalescer;
++
++    #[test]
++    fn first_request_is_not_coalesced() {
++        let coalescer = RedrawCoalescer::default();
++        assert!(coalescer.request());
++    }
++
++    #[test]
++    fn repeated_requests_before_dispatch_are_coalesced() {
++        let coalescer = RedrawCoalescer::default();
++        assert!(coalescer.request());
++        assert!(!coalescer.request());
++        assert!(!coalescer.request());
++    }
++
++    #[test]
++    fn request_after_dispatch_is_not_coalesced() {
++        let coalescer = RedrawCoalescer::default();
++        assert!(coalescer.request());
++        coalescer.mark_dispatched();
++        assert!(coalescer.request());
++    }
++
++    #[test]
++    fn mark_dispatched_without_a_pending_request_is_a_no_op() {
++        let coalescer = RedrawCoalescer::default();
++        coalescer.mark_dispatched();
++        assert!(coalescer.request());
++    }
++
++    #[test]
++    fn dispatch_then_two_more_requests_only_the_first_pushes() {
++        // Mirrors the real sequence that used to flood the SDL event queue: handle a redraw,
++        // which along the way (pump_servo_event_loop) may call request_redraw more than once
++        // before the next event is actually dispatched.
++        let coalescer = RedrawCoalescer::default();
++        assert!(coalescer.request());
++        coalescer.mark_dispatched();
++        assert!(coalescer.request());
++        assert!(!coalescer.request());
++    }
++}
++
+ pub struct HeadedWindow {
+     /// The egui interface that is responsible for showing the user interface elements of
+     /// this headed `Window`.
+@@ -161,6 +238,9 @@
+     /// through for however long the page took to paint anything of its own -- read by a
+     /// user as "splash, then a black screen, then the game".
+     page_load_splash_since: Cell<Option<Instant>>,
++    /// Coalesces `request_redraw` calls for this window — see `RedrawCoalescer`'s own doc
++    /// comment for why this exists.
++    redraw_pending: RedrawCoalescer,
+ }
+ 
+ impl HeadedWindow {
+@@ -299,6 +379,7 @@
+             active_touch_ids: Default::default(),
+             next_touch_id: Cell::new(0),
+             page_load_splash_since: Cell::new(None),
++            redraw_pending: RedrawCoalescer::default(),
+         })
+     }
+ 
+@@ -315,8 +396,13 @@
+     }
+ 
+     /// SDL3 has no push-based "redraw requested" event of its own — see `event_loop.rs`'s own
+-    /// doc comment on `AppEvent::RedrawRequested`, which this sends.
++    /// doc comment on `AppEvent::RedrawRequested`, which this sends. Coalesced via
++    /// `redraw_pending` (see that field's own doc comment) — safe to call as often as needed,
++    /// same contract as winit's own `Window::request_redraw`.
+     pub(crate) fn request_redraw(&self) {
++        if !self.redraw_pending.request() {
++            return;
++        }
+         let _ = self
+             .event_loop_proxy
+             .send_event(AppEvent::RedrawRequested(self.sdl_window_id()));
+@@ -738,6 +824,15 @@
+         window: Rc<ServoShellWindow>,
+         event: WindowEvent,
+     ) {
++        // Clear the coalescing flag as soon as this redraw is recognized as being handled, not
++        // after painting -- so that if handling it (directly, or via the `pump_servo_event_loop`
++        // call `App::dispatch_window_event` makes right after this returns) discovers there's
++        // already more to paint, `request_redraw` correctly queues a fresh event instead of
++        // treating one as still pending. See `redraw_pending`'s own doc comment.
++        if event == WindowEvent::RedrawRequested {
++            self.redraw_pending.mark_dispatched();
++        }
++
+         self.gui
+             .borrow_mut()
+             .handle_accessibility_window_event(&self.sdl_window, &event);

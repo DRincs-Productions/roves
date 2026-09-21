@@ -150,6 +150,18 @@ un umano (o un'AI con accesso reale allo schermo e all'hardware) può notare:
 - **Gamepad**: su Windows/Linux (macOS è escluso a prescindere, vedi sopra) — verificare che i
   controller funzionino ancora dopo la migrazione a SDL3 (già portato prima di questo branch,
   ma va riverificato qui dato quanto è cambiato intorno).
+- **Reattività con contenuto WebGL/canvas continuo** (PixiJS, Three.js, o qualsiasi pagina che
+  usa `requestAnimationFrame` in modo continuo): un utente reale ha segnalato la finestra
+  "non risponde" su Windows proprio in questo scenario in `v0.4.24` — causa root confermata
+  (vedi `CUSTOMIZATIONS.md`'s entry 2026-09-20/21): `request_redraw` non deduplicava le
+  richieste, a differenza della garanzia di winit, creando un ciclo di auto-amplificazione sotto
+  invalidazione continua. Corretto in `v0.4.25`/`main` con `RedrawCoalescer`, con unit test che
+  verificano la logica di coalescing — ma la CI headless non può confermare che il freeze reale
+  sia davvero sparito. **Da riverificare a mano**: aprire una pagina con animazione WebGL/canvas
+  continua e osservare per qualche minuto che la finestra resti reattiva (resize, input, nessun
+  "non risponde"), su Windows in particolare (dove è stato segnalato), ma idealmente anche
+  macOS/Linux dato che il bug era nella logica dell'event loop condivisa, non in codice
+  Windows-specifico.
 
 ## Perché macOS specificamente ha bisogno di un umano
 
