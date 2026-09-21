@@ -8165,3 +8165,33 @@ needed to clear the flag and didn't — not something a pure unit test can catch
 most of `App`'s state machine and a real SDL window. Re-verified the same way as the previous
 entry: a complete sequential `patch -p1` of all 34 patches against a fresh pristine `v0.5.0`
 extraction.
+
+---
+
+## 2026-09-21 — Fix the "Test save export" diagnostic button's own `InvalidOrigin` error
+
+**File:** `test-page/src/App.tsx`. Not a patch — `test-page/` is this repo's own content, not
+derived from upstream Servo (see `CLAUDE.md`).
+
+**Found via real user testing, same session as the two entries above.** Clicking "Test save
+export" on the diagnostic page reproduced exactly the `Could not load the requested page:
+InvalidOrigin` error `app.rs`'s `DOWNLOAD_INTERCEPT_SCRIPT` (see its own extensive doc comment,
+2026-09-15) exists specifically to prevent.
+
+Root cause was in the test page itself, not the engine: `testSaveExport` created an `<a
+download>` element and called `.click()` on it directly, **without ever appending it to the
+document**. A detached element's synthetic click event has no ancestor chain to propagate
+through — `DOWNLOAD_INTERCEPT_SCRIPT`'s listener is `document.addEventListener('click', ...,
+true)` (document-level, capture phase), which only ever sees events whose target is connected
+to the document tree at dispatch time. With the element detached, the listener never fired,
+`event.preventDefault()` never ran, and the click fell through to Servo's normal top-level
+navigation handling for a bare `<a href="blob:...">` click — landing on exactly the
+`InvalidOrigin` failure the interceptor was built to avoid.
+
+Fixed by appending the element to `document.body` before `.click()` and removing it right after
+— the standard, widely-documented pattern for triggering a programmatic download reliably (also
+needed for real downloads in some real browsers, for the same underlying reason). Real games are
+very likely unaffected: `@drincs/roves-api` itself has no `<a download>`/`.click()` code of its
+own (confirmed by searching its source) — that pattern lives in each game's own UI code, which
+would need to make the same "forgot to attach it" mistake independently to hit this. This was
+specific to how the diagnostic test page happened to be written.

@@ -163,7 +163,15 @@ export default function App() {
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = "roves-test-export.json";
+    // Must be attached to the document before click(): a detached element's synthetic click
+    // event has no ancestor chain to bubble/capture through, so app.rs's download-intercept
+    // userscript (a document-level, capture-phase click listener) never sees it -- the click
+    // falls through to a real top-level navigation to the blob: URL instead, which fails with
+    // "Could not load the requested page: InvalidOrigin" (see that script's own doc comment for
+    // why). Confirmed for real: this button reproduced exactly that error before this fix.
+    document.body.appendChild(a);
     a.click();
+    a.remove();
   };
 
   const quitApp = async () => {
