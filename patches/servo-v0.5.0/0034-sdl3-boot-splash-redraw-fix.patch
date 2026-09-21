@@ -1,0 +1,48 @@
+diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/desktop/headed_window.rs
+--- a/ports/servoshell/desktop/headed_window.rs
++++ b/ports/servoshell/desktop/headed_window.rs
+@@ -408,6 +408,19 @@
+             .send_event(AppEvent::RedrawRequested(self.sdl_window_id()));
+     }
+ 
++    /// Marks a dispatched `WindowEvent::RedrawRequested` as handled, so the next
++    /// `request_redraw` call pushes a fresh event instead of being coalesced away. Normally
++    /// called by `handle_window_event` itself (the `AppState::Running` dispatch path) — but
++    /// `App::dispatch_window_event`'s `AppState::Booting` branch (app.rs) paints the boot splash
++    /// directly and never calls `handle_window_event` at all, so it has to call this itself.
++    /// Without it, the boot splash's animation freezes after its very first frame: the one
++    /// initial `request_redraw` from `App::init` sets the flag and is never cleared, so every
++    /// later per-tick `request_redraw` from `dispatch_new_events`/`try_finish_booting` gets
++    /// silently coalesced away.
++    pub(crate) fn mark_redraw_dispatched(&self) {
++        self.redraw_pending.mark_dispatched();
++    }
++
+     /// Paints the boot splash instead of the normal browser UI — used both while a
+     /// packed-content launch's boot extraction is still running on a background thread
+     /// (`AppState::Booting` in `app.rs`, before there's a `RunningAppState`/webview to
+diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
+--- a/ports/servoshell/desktop/app.rs
++++ b/ports/servoshell/desktop/app.rs
+@@ -557,10 +557,18 @@
+         if matches!(self.state, AppState::Booting { .. }) {
+             if let AppState::Booting { window, extraction_started, .. } = &self.state &&
+                 let Some(headed_window) = window.as_headed_window() &&
+-                headed_window.sdl_window_id() == window_id &&
+-                matches!(window_event, WindowEvent::RedrawRequested | WindowEvent::Resized(..))
++                headed_window.sdl_window_id() == window_id
+             {
+-                headed_window.paint_splash(extraction_started.elapsed());
++                // This branch never calls `handle_window_event` (there's no `RunningAppState`/
++                // `WebView` yet to hand it), so it has to clear the redraw-coalescing flag
++                // itself -- see `mark_redraw_dispatched`'s own doc comment for why skipping
++                // this freezes the boot splash's animation after its first frame.
++                if window_event == WindowEvent::RedrawRequested {
++                    headed_window.mark_redraw_dispatched();
++                }
++                if matches!(window_event, WindowEvent::RedrawRequested | WindowEvent::Resized(..)) {
++                    headed_window.paint_splash(extraction_started.elapsed());
++                }
+             }
+             self.try_finish_booting(event_loop);
+             return;

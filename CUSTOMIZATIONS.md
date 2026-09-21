@@ -8131,3 +8131,37 @@ unconditional `SDL_PushEvent` with no coalescing, for `AppEvent::Waker` — Serv
 triggers a `pump_servo_event_loop` call the same way `RedrawRequested` did. Each `Waker` dispatch
 is cheap on its own (the handler is a no-op), so this wasn't implicated in the reported freeze,
 but it's the same architectural gap and worth coalescing too if it ever turns out to matter.
+
+---
+
+## 2026-09-21 — Fix the boot splash animation freezing (follow-up to the redraw-coalescing fix)
+
+**Files:** `ports/servoshell/desktop/headed_window.rs`, `ports/servoshell/desktop/app.rs`,
+`patches/servo-v0.5.0/0034-sdl3-boot-splash-redraw-fix.patch`.
+
+**Found via real user testing again, immediately after the entry above** (the WebGL freeze fix
+was confirmed working — "sembra funzionare molto bene adesso" — but the boot splash's animated
+progress bar had stopped animating, staying frozen after its first frame). Self-inflicted
+regression from that same fix.
+
+Root cause: `RedrawCoalescer`'s pending flag is only ever cleared by `HeadedWindow::
+handle_window_event` — but `App::dispatch_window_event`'s `AppState::Booting` branch (there is
+no `RunningAppState`/`WebView` yet during boot) never calls `handle_window_event` at all; it
+calls `HeadedWindow::paint_splash` directly and returns early. So the *one* `request_redraw`
+call `App::init` makes to show the splash's first frame set the flag and it was never cleared —
+every subsequent per-tick `request_redraw` from `dispatch_new_events`/`try_finish_booting` (see
+the `SPLASH_ANIMATION_TICK` machinery, unchanged from the winit era) got silently coalesced away,
+so `paint_splash` never ran again after the first frame.
+
+Fixed by adding `HeadedWindow::mark_redraw_dispatched` (thin wrapper over `RedrawCoalescer::
+mark_dispatched`) and calling it from the `Booting` branch itself whenever the dispatched event
+is genuinely a `RedrawRequested` (not `Resized`, which reaches the same branch but isn't gated
+by the coalescer). The `AppState::Running` path is unaffected — it already goes through
+`handle_window_event`, which already clears the flag correctly.
+
+Not covered by a new automated test: unlike the coalescing logic itself (which stayed correct
+and is what `redraw_coalescer_tests` verifies), this was a *wiring* bug — one call site that
+needed to clear the flag and didn't — not something a pure unit test can catch without mocking
+most of `App`'s state machine and a real SDL window. Re-verified the same way as the previous
+entry: a complete sequential `patch -p1` of all 34 patches against a fresh pristine `v0.5.0`
+extraction.

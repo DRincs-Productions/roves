@@ -408,6 +408,19 @@ impl HeadedWindow {
             .send_event(AppEvent::RedrawRequested(self.sdl_window_id()));
     }
 
+    /// Marks a dispatched `WindowEvent::RedrawRequested` as handled, so the next
+    /// `request_redraw` call pushes a fresh event instead of being coalesced away. Normally
+    /// called by `handle_window_event` itself (the `AppState::Running` dispatch path) — but
+    /// `App::dispatch_window_event`'s `AppState::Booting` branch (app.rs) paints the boot splash
+    /// directly and never calls `handle_window_event` at all, so it has to call this itself.
+    /// Without it, the boot splash's animation freezes after its very first frame: the one
+    /// initial `request_redraw` from `App::init` sets the flag and is never cleared, so every
+    /// later per-tick `request_redraw` from `dispatch_new_events`/`try_finish_booting` gets
+    /// silently coalesced away.
+    pub(crate) fn mark_redraw_dispatched(&self) {
+        self.redraw_pending.mark_dispatched();
+    }
+
     /// Paints the boot splash instead of the normal browser UI — used both while a
     /// packed-content launch's boot extraction is still running on a background thread
     /// (`AppState::Booting` in `app.rs`, before there's a `RunningAppState`/webview to

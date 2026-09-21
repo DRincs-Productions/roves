@@ -557,10 +557,18 @@ impl App {
         if matches!(self.state, AppState::Booting { .. }) {
             if let AppState::Booting { window, extraction_started, .. } = &self.state &&
                 let Some(headed_window) = window.as_headed_window() &&
-                headed_window.sdl_window_id() == window_id &&
-                matches!(window_event, WindowEvent::RedrawRequested | WindowEvent::Resized(..))
+                headed_window.sdl_window_id() == window_id
             {
-                headed_window.paint_splash(extraction_started.elapsed());
+                // This branch never calls `handle_window_event` (there's no `RunningAppState`/
+                // `WebView` yet to hand it), so it has to clear the redraw-coalescing flag
+                // itself -- see `mark_redraw_dispatched`'s own doc comment for why skipping
+                // this freezes the boot splash's animation after its first frame.
+                if window_event == WindowEvent::RedrawRequested {
+                    headed_window.mark_redraw_dispatched();
+                }
+                if matches!(window_event, WindowEvent::RedrawRequested | WindowEvent::Resized(..)) {
+                    headed_window.paint_splash(extraction_started.elapsed());
+                }
             }
             self.try_finish_booting(event_loop);
             return;
