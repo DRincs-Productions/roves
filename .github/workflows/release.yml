@@ -287,6 +287,17 @@ jobs:
           if kill -0 "$PID" 2>/dev/null; then
             STILL_RUNNING=true
             kill "$PID"
+            # SDL3/Cocoa can keep the app alive while the main thread is inside the native event
+            # pump. Do not let wait pin a macOS runner indefinitely: allow a short graceful
+            # shutdown, then force-terminate the disposable smoke-test process. (See test.yml's
+            # own identical fix, 2026-09-18 -- release.yml had its own separate copy of this
+            # step that never got the same fix, and hit the exact same 6-hour hang for real in
+            # run 35523567174.)
+            for _ in 1 2 3 4 5; do
+              kill -0 "$PID" 2>/dev/null || break
+              sleep 1
+            done
+            kill -0 "$PID" 2>/dev/null && kill -9 "$PID"
             wait "$PID" 2>/dev/null
           else
             STILL_RUNNING=false

@@ -8050,3 +8050,31 @@ plain portable exe (Windows Defender/SmartScreen scanning a freshly installed bi
 SDL3 windowing migration's own extra startup work (gamepad subsystem init, the new native
 AccessKit adapter) plausibly narrowed this margin further. Bumped both the Linux/macOS and
 Windows smoke-test waits to 25s.
+
+---
+
+## 2026-09-20 — Port `release.yml`'s macOS smoke-test hang fix from `test.yml`
+
+**File:** `.github/workflows/release.yml`.
+
+Cutting `v0.4.24` (the first release built from the merged `sdl3-windowing` code) hit the exact
+same 6-hour macOS smoke-test hang documented in `test.yml`'s own 2026-09-18 entry ("Bound SDL3
+CI concurrency and macOS smoke-test shutdown") — but that fix was only ever applied to
+`test.yml`. `release.yml` has its own separate, un-synced copy of this smoke-test step, still
+using the old unbounded `kill "$PID"; wait "$PID"`, which SDL3/Cocoa can leave hanging forever
+if the app's main thread is parked inside the native event pump when `SIGTERM` arrives. Run
+`35523567174`'s two macOS legs (plain and `_steam`) both ran the full GitHub Actions default
+6-hour job timeout before being force-cancelled, confirmed via the jobs API (`started_at`/
+`completed_at` exactly 6h00m apart, both stuck at the "smoke test — launch the bundle..." step).
+
+Ported the identical fix: SIGTERM, then a bounded 5-second poll loop, then `SIGKILL` if still
+alive, before `wait`. Also confirms `test.yml` and `release.yml` need to be checked together
+whenever one of them gets a shell-script-level CI robustness fix like this — they duplicate this
+exact step rather than sharing it, so a fix in one silently doesn't apply to the other unless
+someone remembers to port it by hand. Worth factoring into a shared script/action at some point
+(not done here, to keep this fix minimal and unblock the release).
+
+Per `CLAUDE.md`'s delete-and-republish loop: deleted the partial `v0.4.24` GitHub Release (4 of
+6 assets uploaded — Linux and Windows, both plain and `_steam`, succeeded before the two macOS
+jobs got stuck) and the `v0.4.24` tag, both locally and on the remote, then re-tagged and
+re-pushed after this fix landed on `main`.
