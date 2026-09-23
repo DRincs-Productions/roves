@@ -35,6 +35,8 @@ Il confronto con Chrome dovrà misurare l'incremento causato dalla pagina, non s
 - Aggiunti test unitari per i tre stati della cadenza (idle, controller aperto, aptica pendente) ed estesa la descrizione del relativo step CI.
 - Corretto il bridge SDL3/egui: la richiesta del frame successivo usa ora il `repaint_delay` dell'output corrente invece dello stato globale del contesto.
 - Aggiunti test per repaint immediato, repaint differito e assenza di repaint pianificato.
+- Aggiunte alla pagina diagnostica tre fixture deterministiche selezionabili via query string: pagina vuota, PixiJS statico con un solo render e ticker fermo, PixiJS animato.
+- Le fixture prestazionali escludono i pannelli diagnostici normali, il loop `requestAnimationFrame` del gamepad, i probe FPS e i timer Steam, evitando che il benchmark misuri la pagina di test invece del runtime.
 
 ## In corso
 
@@ -122,3 +124,10 @@ Il confronto con Chrome dovrà misurare l'incremento causato dalla pagina, non s
 - Le workflow desktop Servo, Android e iOS relative al commit pubblicato sono terminate con successo.
 - Confermato il requisito di compatibilità: il gioco deve poter usare potenzialmente tutto ciò che userebbe in Chrome; nessuna feature web verrà rimossa dal profilo predefinito per ottenere artificialmente numeri migliori.
 - Ordinati i prossimi interventi: benchmark diagnostico, fast path di rendering, gamepad event-driven, deadline egui differite, callback Steam adattive e studio dei pool di thread.
+
+### 2026-09-23 — Fixture di benchmark riproducibili
+
+- `?perf=blank`: baseline del runtime senza contenuto animato.
+- `?perf=pixi-static`: inizializza PixiJS, disegna una scena una volta, ferma esplicitamente il ticker e non pianifica altri frame.
+- `?perf=pixi-animated`: stessa scena e stessa dimensione, con ticker PixiJS attivo, per misurare frame pacing e costo per frame.
+- La normale pagina diagnostica resta invariata per i test manuali funzionali; le fixture usano un ramo minimale che non monta i suoi timer e probe.

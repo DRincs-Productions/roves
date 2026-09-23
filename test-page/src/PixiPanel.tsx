@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from "react";
  * (`@drincs/pixi-vn`, built on PixiJS) depends on — if this doesn't render or
  * throws, Servo's canvas/WebGL support is the first thing to suspect.
  */
-export default function PixiPanel() {
+export default function PixiPanel({ animated = true }: { animated?: boolean }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState("Not started.");
   const [fps, setFps] = useState<number | null>(null);
@@ -23,7 +23,13 @@ export default function PixiPanel() {
     (async () => {
       try {
         app = new Application();
-        await app.init({ width: 300, height: 200, background: "#111", antialias: true });
+        await app.init({
+          width: 300,
+          height: 200,
+          background: "#111",
+          antialias: true,
+          autoStart: animated,
+        });
         if (cancelled) {
           app.destroy(true);
           return;
@@ -33,15 +39,28 @@ export default function PixiPanel() {
         const box = new Graphics().rect(-40, -40, 80, 80).fill(0x66ccff);
         box.position.set(150, 100);
         app.stage.addChild(box);
-        app.ticker.add((ticker) => {
-          box.rotation += 0.05 * ticker.deltaTime;
-        });
+        if (animated) {
+          app.ticker.add((ticker) => {
+            box.rotation += 0.05 * ticker.deltaTime;
+          });
+        } else {
+          // The idle benchmark must not leave Pixi's ticker or a page-level rAF running.
+          // Draw exactly one frame after constructing the scene, then stay completely still.
+          app.stop();
+          app.render();
+        }
 
-        setStatus(`ok — renderer: ${app.renderer.type === RendererType.WEBGL ? "webgl" : "webgpu"}`);
+        setStatus(
+          `ok — renderer: ${app.renderer.type === RendererType.WEBGL ? "webgl" : "webgpu"}; ${
+            animated ? "animated ticker" : "single frame, ticker stopped"
+          }`,
+        );
         // Rendering without throwing doesn't rule out a crawling software
         // fallback (see TODO.md's GPU-verification item) — surface the
         // actual frame rate too, not just "it worked".
-        fpsInterval = window.setInterval(() => setFps(app?.ticker.FPS ?? null), 500);
+        if (animated) {
+          fpsInterval = window.setInterval(() => setFps(app?.ticker.FPS ?? null), 500);
+        }
       } catch (error) {
         setStatus(`FAILED — ${String(error)}`);
       }
@@ -52,7 +71,7 @@ export default function PixiPanel() {
       if (fpsInterval !== undefined) window.clearInterval(fpsInterval);
       app?.destroy(true);
     };
-  }, []);
+  }, [animated]);
 
   return (
     <div>

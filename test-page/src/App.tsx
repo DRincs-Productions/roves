@@ -8,6 +8,7 @@ import GamepadPanel from "./GamepadPanel.tsx";
 import GpuInfoPanel from "./GpuInfoPanel.tsx";
 import IndexedDbButton from "./IndexedDbButton.tsx";
 import PixiPanel from "./PixiPanel.tsx";
+import PerformanceFixture, { performanceFixtureMode } from "./PerformanceFixture.tsx";
 import SavesButton from "./SavesButton.tsx";
 import StorageButton from "./StorageButton.tsx";
 import ThreePanel from "./ThreePanel.tsx";
@@ -75,6 +76,11 @@ const SAVE_FILE_AUTOTEST_MARKER = "[roves-save-file-autotest]";
  * toggled view rather than a native `<dialog>`.
  */
 export default function App() {
+  const performanceMode = performanceFixtureMode(window.location.search);
+  if (performanceMode) {
+    return <PerformanceFixture mode={performanceMode} />;
+  }
+
   const [steamResult, setSteamResult] = useState("Click a button above.");
   const [exitStatus, setExitStatus] = useState<string | null>(null);
   const [renderTest, setRenderTest] = useState<RenderTest>("none");
@@ -241,7 +247,7 @@ export default function App() {
         {steamResult}
       </pre>
 
-      {renderTest === "pixi" && <PixiPanel />}
+      {renderTest === "pixi" && <PixiPanel animated />}
       {renderTest === "three" && <ThreePanel />}
 
       <div style={{ display: "flex", gap: "1.5rem", flexWrap: "wrap", justifyContent: "center" }}>

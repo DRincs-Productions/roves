@@ -371,6 +371,16 @@ location per platform, and a real incident this was built to catch).
 
 [`.github/workflows/test.yml`]: .github/workflows/test.yml
 
+### Repeatable performance fixtures
+
+The bundled diagnostic page also exposes deliberately minimal comparison workloads through
+`?perf=blank`, `?perf=pixi-static`, and `?perf=pixi-animated`. Run the same built page, window
+size, warm-up and sampling interval in Roves and Chrome. The static PixiJS fixture renders one
+frame and stops its ticker; unlike the normal diagnostic page, these fixtures omit gamepad
+polling, FPS probes, Steam checks and other page-level timers that would contaminate an idle
+measurement. The measurement plan and current findings are tracked in
+[`ROVES_PERFORMANCE.md`](./ROVES_PERFORMANCE.md).
+
 [Tauri]: https://v2.tauri.app/distribute/
 
 ## Relationship to upstream Servo
