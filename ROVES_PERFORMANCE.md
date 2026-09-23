@@ -6,9 +6,9 @@ Ridurre CPU e memoria dei giochi eseguiti con Roves, con particolare attenzione 
 
 ## Stato
 
-- Fase corrente: analisi iniziale
-- Modifiche al codice runtime: polling gamepad adattivo in verifica
-- Ottimizzazioni confermate: nessuna
+- Fase corrente: baseline diagnostica e progettazione del fast path di rendering
+- Modifiche al codice runtime: polling gamepad adattivo e scheduling repaint egui pubblicati su `main`
+- Ottimizzazioni confermate: riduzione percepibile del consumo nel test reale dell'utente; CI desktop/mobile verde
 
 ## Criteri di misura da definire
 
@@ -38,10 +38,12 @@ Il confronto con Chrome dovrà misurare l'incremento causato dalla pagina, non s
 
 ## In corso
 
-- Stabilire se il consumo CPU inattivo proviene dal polling gamepad, da richieste di frame ancora attive, da WebRender/compositor, da egui o da thread secondari.
-- Determinare quali feature inizializzano risorse anche quando il gioco non le usa.
-- Analizzare il costo di memoria di thread pool, WebRender, SpiderMonkey, WebGPU/WebXR e cache.
-- Preparare una matrice di benchmark riproducibile Roves/Chrome.
+- Preparare una matrice di benchmark riproducibile Roves/Chrome e contatori diagnostici per wake-up, redraw, paint e present.
+- Progettare un fast path di rendering per il caso normale del gioco, riducendo il passaggio off-screen -> egui -> finestra senza perdere dialoghi, accessibilità o compatibilità web.
+- Valutare l'integrazione degli eventi gamepad nell'event pump SDL principale per eliminare anche il polling hot-plug inattivo a 1 Hz.
+- Completare lo scheduling delle richieste egui differite tramite una deadline del loop eventi.
+- Rendere adattivo il polling delle callback Steam nelle sole build `steam`.
+- Analizzare il costo di memoria di thread pool, WebRender, SpiderMonkey, WebGPU/WebXR e cache senza ridurre le API disponibili al gioco.
 
 ## Ipotesi da verificare
 
@@ -56,6 +58,23 @@ Il confronto con Chrome dovrà misurare l'incremento causato dalla pagina, non s
 | Media | Cache e heap non vengono ridotti dopo il caricamento | RSS elevato dopo GC e idle prolungato | Da misurare |
 | Bassa | Lo splash continua oltre la fase prevista | Wake-up a circa 30 FPS oltre gli 8 secondi | Da verificare |
 
+## Interventi candidati ordinati
+
+1. **Fast path di rendering del gioco.** Oggi Servo disegna in un contesto off-screen, il risultato viene composto nella scena egui e infine presentato nella finestra. Verificare se il caso senza dialoghi o overlay può evitare lavoro e buffer intermedi, conservando un percorso compatibile per le UI native.
+2. **Eventi gamepad senza polling idle.** Convogliare hot-plug e input attraverso l'event pump SDL principale, se i vincoli SDL e la gestione multi-window lo consentono, eliminando la deadline periodica quando non esiste attività.
+3. **Deadline egui differite.** Memorizzare il `repaint_delay` finito e includerlo nel `ControlFlow::WaitUntil`, così animazioni e cursori restano corretti senza trasformare un repaint futuro in un loop immediato.
+4. **Callback Steam adattive.** Ridurre i wake-up del thread `run_callbacks()` quando l'integrazione Steam non ha lavoro sensibile alla latenza, limitatamente alle build compilate con la feature `steam`.
+5. **Modularità senza perdita di compatibilità Chrome.** Un gioco Roves può potenzialmente usare qualunque API disponibile in Chrome. Le capacità predefinite non vanno quindi rimosse o ridotte globalmente. La modularità già disponibile può essere migliorata con profili o opzioni esplicite di build, mantenendo come default il runtime completo e misurando separatamente il costo reale di ogni feature.
+6. **Dimensionamento dei pool di thread.** Valutare preset o euristiche per layout, worker generici, runtime async e WebRender solo dopo misure di RSS e frame time; privilegiare il runtime completo e non sacrificare fluidità o compatibilità per ridurre la memoria nominale.
+
+## Strategia di esecuzione
+
+1. Aggiungere una baseline diagnostica ripetibile con pagina vuota, PixiJS statico e PixiJS animato.
+2. Registrare wake-up, redraw, paint, present, RSS, thread e frame time dopo un warm-up definito.
+3. Usare la CI per test funzionali, contratti del loop eventi e applicabilità delle patch; non imporre soglie prestazionali rigide sui runner GitHub condivisi.
+4. Analizzare e prototipare il fast path di rendering come intervento a maggiore impatto potenziale.
+5. Affrontare in seguito gamepad event-driven, deadline egui, Steam e pool di thread in commit isolati e misurabili.
+
 ## Prossimi passi di analisi
 
 1. Costruire una pagina minima vuota e una scena PixiJS deterministica senza ticker.
@@ -69,7 +88,9 @@ Il confronto con Chrome dovrà misurare l'incremento causato dalla pagina, non s
 
 - Non verranno applicate ottimizzazioni prima di avere baseline e profiling per thread.
 - CPU e RAM saranno trattate separatamente: una riduzione dei wake-up non implica necessariamente una riduzione del footprint.
-- Le funzioni da gioco (gamepad, Steam, WebGPU) non saranno rimosse globalmente senza una strategia opt-in/opt-out compatibile.
+- Il runtime predefinito deve continuare a permettere al gioco di usare potenzialmente tutte le capacità web disponibili, come in Chrome.
+- Le funzioni da gioco e web (gamepad, Steam quando richiesto, WebGPU, WebXR, clipboard e altre API) non saranno rimosse globalmente. Eventuali profili minimali saranno espliciti e alternativi al runtime completo.
+- La modularità esistente verrà sfruttata per esperimenti A/B e distribuzioni consapevoli, non come scorciatoia per dichiarare risolto il consumo del runtime completo.
 
 ## Registro
 
@@ -94,3 +115,10 @@ Il confronto con Chrome dovrà misurare l'incremento causato dalla pagina, non s
 - Solo un ritardo zero accoda immediatamente un altro redraw; richieste differite non vengono trasformate in un loop immediato.
 - Aggiunti tre test unitari inclusi nello step CI di `servoshell`.
 - Resta da misurare la frequenza reale di `paint/present` con una scena PixiJS inattiva.
+
+### 2026-09-23 — Riscontro reale e piano successivo
+
+- L'utente ha confermato che il runtime funziona sensibilmente meglio dopo polling gamepad adattivo e correzione del repaint egui.
+- Le workflow desktop Servo, Android e iOS relative al commit pubblicato sono terminate con successo.
+- Confermato il requisito di compatibilità: il gioco deve poter usare potenzialmente tutto ciò che userebbe in Chrome; nessuna feature web verrà rimossa dal profilo predefinito per ottenere artificialmente numeri migliori.
+- Ordinati i prossimi interventi: benchmark diagnostico, fast path di rendering, gamepad event-driven, deadline egui differite, callback Steam adattive e studio dei pool di thread.
