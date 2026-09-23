@@ -37,6 +37,7 @@ Il confronto con Chrome dovrà misurare l'incremento causato dalla pagina, non s
 - Aggiunti test per repaint immediato, repaint differito e assenza di repaint pianificato.
 - Aggiunte alla pagina diagnostica tre fixture deterministiche selezionabili via query string: pagina vuota, PixiJS statico con un solo render e ticker fermo, PixiJS animato.
 - Le fixture prestazionali escludono i pannelli diagnostici normali, il loop `requestAnimationFrame` del gamepad, i probe FPS e i timer Steam, evitando che il benchmark misuri la pagina di test invece del runtime.
+- Aggiunti contatori shell opt-in (`ROVES_PERF_LOG_INTERVAL_MS`) per distinguere eventi reali, timeout del loop, redraw accodati/coalesciati, paint WebView e presentazioni finali.
 
 ## In corso
 
@@ -131,3 +132,10 @@ Il confronto con Chrome dovrà misurare l'incremento causato dalla pagina, non s
 - `?perf=pixi-static`: inizializza PixiJS, disegna una scena una volta, ferma esplicitamente il ticker e non pianifica altri frame.
 - `?perf=pixi-animated`: stessa scena e stessa dimensione, con ticker PixiJS attivo, per misurare frame pacing e costo per frame.
 - La normale pagina diagnostica resta invariata per i test manuali funzionali; le fixture usano un ramo minimale che non monta i suoi timer e probe.
+
+### 2026-09-23 — Contatori diagnostici del runtime
+
+- `ROVES_PERF_LOG_INTERVAL_MS=<millisecondi>` abilita righe aggregate `[roves-perf]` in `roves.log`.
+- I contatori separano wake-up da evento e da timeout, richieste redraw realmente accodate e coalesciate, dispatch redraw, paint WebView e presentazioni della finestra.
+- La diagnostica è spenta per default, non crea thread o timer e non modifica lo scheduling del gioco.
+- La CI verifica parsing della configurazione e reset atomico degli snapshot; le soglie CPU/RAM restano escluse dai runner condivisi.

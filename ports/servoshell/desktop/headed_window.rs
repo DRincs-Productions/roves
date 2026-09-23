@@ -400,7 +400,9 @@ impl HeadedWindow {
     /// `redraw_pending` (see that field's own doc comment) — safe to call as often as needed,
     /// same contract as winit's own `Window::request_redraw`.
     pub(crate) fn request_redraw(&self) {
-        if !self.redraw_pending.request() {
+        let queued = self.redraw_pending.request();
+        super::performance::record_redraw_request(queued);
+        if !queued {
             return;
         }
         let _ = self
@@ -418,6 +420,7 @@ impl HeadedWindow {
     /// later per-tick `request_redraw` from `dispatch_new_events`/`try_finish_booting` gets
     /// silently coalesced away.
     pub(crate) fn mark_redraw_dispatched(&self) {
+        super::performance::record_redraw_dispatched();
         self.redraw_pending.mark_dispatched();
     }
 
@@ -843,7 +846,7 @@ impl HeadedWindow {
         // already more to paint, `request_redraw` correctly queues a fresh event instead of
         // treating one as still pending. See `redraw_pending`'s own doc comment.
         if event == WindowEvent::RedrawRequested {
-            self.redraw_pending.mark_dispatched();
+            self.mark_redraw_dispatched();
         }
 
         self.gui

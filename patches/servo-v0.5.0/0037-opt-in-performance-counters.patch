@@ -1,0 +1,295 @@
+diff --git a/.github/workflows/test.yml b/.github/workflows/test.yml
+index 30aaded..ee348ac 100644
+--- a/.github/workflows/test.yml
++++ b/.github/workflows/test.yml
+@@ -360,7 +360,8 @@ jobs:
+ 
+       # The SDL3 windowing migration (see ../CUSTOMIZATIONS.md's 2026-09-19/20 entries)
+       # added real `#[cfg(test)]` unit tests for keyboard/mouse/IME mapping, the adaptive
+-      # gamepad polling cadence, and immediate-vs-delayed egui repaint decisions
++      # gamepad polling cadence, immediate-vs-delayed egui repaint decisions, and the
++      # opt-in performance-counter parser/reset contract
+       # (0026-sdl3-keyboard-tests.patch, 0029-sdl3-egui-input-tests.patch) but nothing
+       # in this workflow ever actually compiled or ran them -- `mach build` only builds
+       # the binary, never test targets, and `check_sdl3_windowing_contracts.py`'s gate
+diff --git a/ports/servoshell/desktop/event_loop.rs b/ports/servoshell/desktop/event_loop.rs
+index f800a68..e03e821 100644
+--- a/ports/servoshell/desktop/event_loop.rs
++++ b/ports/servoshell/desktop/event_loop.rs
+@@ -422,6 +422,8 @@ fn run_sdl3_app(sdl: sdl3::Sdl, video: sdl3::VideoSubsystem, app: &mut App) {
+             None => Some(event_pump.wait_event()),
+         };
+ 
++        super::performance::record_event_loop_wake(event.is_none());
++
+         let Some(event) = event else {
+             // Timed out waiting for `ControlFlow::WaitUntil`'s deadline -- same as winit's own
+             // `StartCause::ResumeTimeReached`.
+diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
+index 23a845c..c02d792 100644
+--- a/ports/servoshell/desktop/gui.rs
++++ b/ports/servoshell/desktop/gui.rs
+@@ -1189,6 +1189,7 @@ impl Gui {
+             .parent_context()
+             .prepare_for_rendering();
+         self.context.paint(window);
++        super::performance::record_window_present();
+         self.rendering_context.parent_context().present();
+     }
+ 
+diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/desktop/headed_window.rs
+index 8482c55..dee4edb 100644
+--- a/ports/servoshell/desktop/headed_window.rs
++++ b/ports/servoshell/desktop/headed_window.rs
+@@ -400,7 +400,9 @@ impl HeadedWindow {
+     /// `redraw_pending` (see that field's own doc comment) — safe to call as often as needed,
+     /// same contract as winit's own `Window::request_redraw`.
+     pub(crate) fn request_redraw(&self) {
+-        if !self.redraw_pending.request() {
++        let queued = self.redraw_pending.request();
++        super::performance::record_redraw_request(queued);
++        if !queued {
+             return;
+         }
+         let _ = self
+@@ -418,6 +420,7 @@ impl HeadedWindow {
+     /// later per-tick `request_redraw` from `dispatch_new_events`/`try_finish_booting` gets
+     /// silently coalesced away.
+     pub(crate) fn mark_redraw_dispatched(&self) {
++        super::performance::record_redraw_dispatched();
+         self.redraw_pending.mark_dispatched();
+     }
+ 
+@@ -843,7 +846,7 @@ impl HeadedWindow {
+         // already more to paint, `request_redraw` correctly queues a fresh event instead of
+         // treating one as still pending. See `redraw_pending`'s own doc comment.
+         if event == WindowEvent::RedrawRequested {
+-            self.redraw_pending.mark_dispatched();
++            self.mark_redraw_dispatched();
+         }
+ 
+         self.gui
+diff --git a/ports/servoshell/desktop/mod.rs b/ports/servoshell/desktop/mod.rs
+index 3d29ed7..67f8bf4 100644
+--- a/ports/servoshell/desktop/mod.rs
++++ b/ports/servoshell/desktop/mod.rs
+@@ -18,6 +18,7 @@ pub(crate) mod headed_window;
+ mod headless_window;
+ mod keyutils;
+ mod logging;
++pub(crate) mod performance;
+ mod protocols;
+ mod tracing;
+ #[cfg(feature = "webxr")]
+diff --git a/ports/servoshell/window.rs b/ports/servoshell/window.rs
+index 9ecc2ce..e6736f4 100644
+--- a/ports/servoshell/window.rs
++++ b/ports/servoshell/window.rs
+@@ -137,6 +137,7 @@ impl ServoShellWindow {
+             return;
+         };
+ 
++        crate::desktop::performance::record_webview_paint();
+         self.platform_window()
+             .rendering_context()
+             .make_current()
+diff --git a/ports/servoshell/desktop/performance.rs b/ports/servoshell/desktop/performance.rs
+new file mode 100644
+index 0000000..1be5c28
+--- /dev/null
++++ b/ports/servoshell/desktop/performance.rs
+@@ -0,0 +1,193 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! Opt-in counters for diagnosing shell overhead on real game builds.
++//!
++//! Set `ROVES_PERF_LOG_INTERVAL_MS` to a positive interval (for example `10000`) to emit one
++//! aggregate `[roves-perf]` line per interval. When the variable is absent or invalid, recording
++//! is disabled after a single environment lookup; no timer or background thread is created.
++
++use std::sync::atomic::{AtomicU64, Ordering};
++use std::sync::{Mutex, OnceLock};
++use std::time::{Duration, Instant};
++
++const PERF_LOG_INTERVAL_ENV: &str = "ROVES_PERF_LOG_INTERVAL_MS";
++
++#[derive(Default)]
++struct Counts {
++    real_events: AtomicU64,
++    wait_timeouts: AtomicU64,
++    redraw_queued: AtomicU64,
++    redraw_coalesced: AtomicU64,
++    redraw_dispatched: AtomicU64,
++    webview_paints: AtomicU64,
++    window_presents: AtomicU64,
++}
++
++impl Counts {
++    fn take(&self) -> Snapshot {
++        Snapshot {
++            real_events: self.real_events.swap(0, Ordering::Relaxed),
++            wait_timeouts: self.wait_timeouts.swap(0, Ordering::Relaxed),
++            redraw_queued: self.redraw_queued.swap(0, Ordering::Relaxed),
++            redraw_coalesced: self.redraw_coalesced.swap(0, Ordering::Relaxed),
++            redraw_dispatched: self.redraw_dispatched.swap(0, Ordering::Relaxed),
++            webview_paints: self.webview_paints.swap(0, Ordering::Relaxed),
++            window_presents: self.window_presents.swap(0, Ordering::Relaxed),
++        }
++    }
++}
++
++#[derive(Debug, Default, PartialEq, Eq)]
++struct Snapshot {
++    real_events: u64,
++    wait_timeouts: u64,
++    redraw_queued: u64,
++    redraw_coalesced: u64,
++    redraw_dispatched: u64,
++    webview_paints: u64,
++    window_presents: u64,
++}
++
++struct PerformanceCounters {
++    interval: Duration,
++    last_report: Mutex<Instant>,
++    counts: Counts,
++}
++
++static COUNTERS: OnceLock<Option<PerformanceCounters>> = OnceLock::new();
++
++fn parse_interval(value: Option<&str>) -> Option<Duration> {
++    let milliseconds = value?.parse::<u64>().ok()?;
++    (milliseconds > 0).then(|| Duration::from_millis(milliseconds))
++}
++
++fn counters() -> Option<&'static PerformanceCounters> {
++    COUNTERS
++        .get_or_init(|| {
++            parse_interval(std::env::var(PERF_LOG_INTERVAL_ENV).ok().as_deref()).map(|interval| {
++                log::info!(
++                    "[roves-perf] enabled interval_ms={}",
++                    interval.as_millis()
++                );
++                PerformanceCounters {
++                    interval,
++                    last_report: Mutex::new(Instant::now()),
++                    counts: Counts::default(),
++                }
++            })
++        })
++        .as_ref()
++}
++
++fn report_if_due(counters: &PerformanceCounters) {
++    let now = Instant::now();
++    let Ok(mut last_report) = counters.last_report.try_lock() else {
++        return;
++    };
++    let elapsed = now.saturating_duration_since(*last_report);
++    if elapsed < counters.interval {
++        return;
++    }
++    *last_report = now;
++    let counts = counters.counts.take();
++    log::info!(
++        "[roves-perf] interval_ms={} real_events={} wait_timeouts={} redraw_queued={} redraw_coalesced={} redraw_dispatched={} webview_paints={} window_presents={}",
++        elapsed.as_millis(),
++        counts.real_events,
++        counts.wait_timeouts,
++        counts.redraw_queued,
++        counts.redraw_coalesced,
++        counts.redraw_dispatched,
++        counts.webview_paints,
++        counts.window_presents,
++    );
++}
++
++pub(crate) fn record_event_loop_wake(timed_out: bool) {
++    let Some(counters) = counters() else {
++        return;
++    };
++    let counter = if timed_out {
++        &counters.counts.wait_timeouts
++    } else {
++        &counters.counts.real_events
++    };
++    counter.fetch_add(1, Ordering::Relaxed);
++    report_if_due(counters);
++}
++
++pub(crate) fn record_redraw_request(queued: bool) {
++    let Some(counters) = counters() else {
++        return;
++    };
++    let counter = if queued {
++        &counters.counts.redraw_queued
++    } else {
++        &counters.counts.redraw_coalesced
++    };
++    counter.fetch_add(1, Ordering::Relaxed);
++}
++
++pub(crate) fn record_redraw_dispatched() {
++    if let Some(counters) = counters() {
++        counters
++            .counts
++            .redraw_dispatched
++            .fetch_add(1, Ordering::Relaxed);
++    }
++}
++
++pub(crate) fn record_webview_paint() {
++    if let Some(counters) = counters() {
++        counters
++            .counts
++            .webview_paints
++            .fetch_add(1, Ordering::Relaxed);
++    }
++}
++
++pub(crate) fn record_window_present() {
++    if let Some(counters) = counters() {
++        counters
++            .counts
++            .window_presents
++            .fetch_add(1, Ordering::Relaxed);
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::{Counts, Snapshot, parse_interval};
++    use std::sync::atomic::Ordering;
++    use std::time::Duration;
++
++    #[test]
++    fn missing_invalid_and_zero_intervals_disable_diagnostics() {
++        assert_eq!(parse_interval(None), None);
++        assert_eq!(parse_interval(Some("invalid")), None);
++        assert_eq!(parse_interval(Some("0")), None);
++    }
++
++    #[test]
++    fn positive_interval_is_accepted_in_milliseconds() {
++        assert_eq!(parse_interval(Some("10000")), Some(Duration::from_secs(10)));
++    }
++
++    #[test]
++    fn taking_a_snapshot_resets_every_counter() {
++        let counts = Counts::default();
++        counts.real_events.store(2, Ordering::Relaxed);
++        counts.window_presents.store(3, Ordering::Relaxed);
++        assert_eq!(
++            counts.take(),
++            Snapshot {
++                real_events: 2,
++                window_presents: 3,
++                ..Snapshot::default()
++            }
++        );
++        assert_eq!(counts.take(), Snapshot::default());
++    }
++}
+

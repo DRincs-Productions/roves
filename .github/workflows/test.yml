@@ -360,7 +360,8 @@ jobs:
 
       # The SDL3 windowing migration (see ../CUSTOMIZATIONS.md's 2026-09-19/20 entries)
       # added real `#[cfg(test)]` unit tests for keyboard/mouse/IME mapping, the adaptive
-      # gamepad polling cadence, and immediate-vs-delayed egui repaint decisions
+      # gamepad polling cadence, immediate-vs-delayed egui repaint decisions, and the
+      # opt-in performance-counter parser/reset contract
       # (0026-sdl3-keyboard-tests.patch, 0029-sdl3-egui-input-tests.patch) but nothing
       # in this workflow ever actually compiled or ran them -- `mach build` only builds
       # the binary, never test targets, and `check_sdl3_windowing_contracts.py`'s gate

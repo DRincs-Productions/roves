@@ -381,6 +381,11 @@ polling, FPS probes, Steam checks and other page-level timers that would contami
 measurement. The measurement plan and current findings are tracked in
 [`ROVES_PERFORMANCE.md`](./ROVES_PERFORMANCE.md).
 
+For shell-side counts, launch a desktop build with `ROVES_PERF_LOG_INTERVAL_MS=10000` (or another
+positive interval). The normal `roves.log` then receives aggregate `[roves-perf]` lines for SDL
+events/timeouts, redraw requests and coalescing, WebView paints, and final window presents. The
+diagnostic is disabled by default and does not create a sampling timer or background thread.
+
 [Tauri]: https://v2.tauri.app/distribute/
 
 ## Relationship to upstream Servo

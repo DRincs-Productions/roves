@@ -1189,6 +1189,7 @@ impl Gui {
             .parent_context()
             .prepare_for_rendering();
         self.context.paint(window);
+        super::performance::record_window_present();
         self.rendering_context.parent_context().present();
     }
 

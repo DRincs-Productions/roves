@@ -137,6 +137,7 @@ impl ServoShellWindow {
             return;
         };
 
+        crate::desktop::performance::record_webview_paint();
         self.platform_window()
             .rendering_context()
             .make_current()

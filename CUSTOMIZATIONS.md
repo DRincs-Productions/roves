@@ -18,6 +18,31 @@ they must stay in sync with reality).
 
 ---
 
+## 2026-09-23 — Opt-in shell performance counters
+
+**Files:** `ports/servoshell/desktop/performance.rs`,
+`ports/servoshell/desktop/{mod,event_loop,headed_window,gui}.rs`,
+`ports/servoshell/window.rs`, `.github/workflows/test.yml`.
+
+**Patch:** `patches/servo-v0.5.0/0037-opt-in-performance-counters.patch`.
+
+**Problem:** CPU comparisons could observe total process usage but could not distinguish an SDL
+deadline wake-up from a real event, a queued/coalesced redraw, a WebView paint, or a final window
+present. Optimizing the off-screen -> egui -> window path without those counts would make it easy
+to attribute an improvement to the wrong layer.
+
+**Change:** setting `ROVES_PERF_LOG_INTERVAL_MS` to a positive interval enables aggregate
+`[roves-perf]` log lines containing real events, wait timeouts, queued and coalesced redraws,
+dispatched redraws, WebView paints, and window presents. The feature creates no timer or thread;
+reports are emitted opportunistically by the existing SDL event loop. With the variable absent
+or invalid, configuration is checked once and all recording calls return immediately.
+
+Pure unit tests cover disabled/invalid/zero intervals, millisecond parsing, and atomic snapshot
+reset. They run in the existing Linux `mach test-unit -p servoshell` CI step. These counters are
+diagnostic only: they do not impose performance thresholds on shared GitHub runners.
+
+---
+
 ## 2026-09-22 — Honor per-frame egui repaint output
 
 **Files:** `ports/servoshell/desktop/gui.rs`, `.github/workflows/test.yml`.

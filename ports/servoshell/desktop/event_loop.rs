@@ -422,6 +422,8 @@ fn run_sdl3_app(sdl: sdl3::Sdl, video: sdl3::VideoSubsystem, app: &mut App) {
             None => Some(event_pump.wait_event()),
         };
 
+        super::performance::record_event_loop_wake(event.is_none());
+
         let Some(event) = event else {
             // Timed out waiting for `ControlFlow::WaitUntil`'s deadline -- same as winit's own
             // `StartCause::ResumeTimeReached`.
