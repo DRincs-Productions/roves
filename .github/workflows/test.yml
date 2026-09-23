@@ -359,7 +359,8 @@ jobs:
         run: ./mach build --features steam
 
       # The SDL3 windowing migration (see ../CUSTOMIZATIONS.md's 2026-09-19/20 entries)
-      # added real `#[cfg(test)]` unit tests for keyboard/mouse/IME mapping
+      # added real `#[cfg(test)]` unit tests for keyboard/mouse/IME mapping and the adaptive
+      # gamepad polling cadence
       # (0026-sdl3-keyboard-tests.patch, 0029-sdl3-egui-input-tests.patch) but nothing
       # in this workflow ever actually compiled or ran them -- `mach build` only builds
       # the binary, never test targets, and `check_sdl3_windowing_contracts.py`'s gate
@@ -368,7 +369,7 @@ jobs:
       # patched source and dependency graph, so one is enough to catch a real
       # regression). These tests don't create a window or touch SDL video (see the
       # CUSTOMIZATIONS.md entries above), so they're safe to run headless here.
-      - name: run servoshell unit tests (SDL3 keyboard/egui-input mapping)
+      - name: run servoshell unit tests (SDL3 input and polling)
         if: matrix.os_name == 'linux' && matrix.package_mode == 'portable'
         shell: bash
         working-directory: servo-src

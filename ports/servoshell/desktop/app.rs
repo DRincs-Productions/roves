@@ -705,9 +705,9 @@ impl App {
 
 /// Sets `control_flow` to keep the event loop ticking at `SPLASH_ANIMATION_TICK` if any
 /// window's boot splash is still covering its still-loading real page (see
-/// `HeadedWindow::splash_animation_wake_deadline`), or at `GAMEPAD_POLL_INTERVAL` while a
-/// gamepad delegate exists (see `gamepad.rs` — SDL has to be polled from this same thread on
-/// some fixed cadence, unlike GilRs' own dedicated background thread) — otherwise, fully idle
+/// `HeadedWindow::splash_animation_wake_deadline`), or at the delegate's adaptive gamepad poll
+/// interval (see `gamepad.rs` — SDL has to be polled from this same thread, but hot-plug discovery
+/// can run less often than input from an active controller) — otherwise, fully idle
 /// (`ControlFlow::Wait`) until the next real event. Shared by `window_event`/`user_event`'s
 /// `Running` tails, and by `new_events`' own `Running` arm (which is what actually polls).
 fn set_running_control_flow(event_loop: &ActiveEventLoop, state: &RunningAppState) {
@@ -722,8 +722,8 @@ fn set_running_control_flow(event_loop: &ActiveEventLoop, state: &RunningAppStat
         })
         .min();
     #[cfg(all(feature = "gamepad", not(target_os = "macos")))]
-    if state.gamepad_delegate().is_some() {
-        let gamepad_deadline = Instant::now() + crate::desktop::gamepad::GAMEPAD_POLL_INTERVAL;
+    if let Some(gamepad_delegate) = state.gamepad_delegate() {
+        let gamepad_deadline = Instant::now() + gamepad_delegate.poll_interval();
         next_wake = Some(next_wake.map_or(gamepad_deadline, |deadline| deadline.min(gamepad_deadline)));
     }
     event_loop.set_control_flow(next_wake.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));

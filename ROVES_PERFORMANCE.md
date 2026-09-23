@@ -7,7 +7,7 @@ Ridurre CPU e memoria dei giochi eseguiti con Roves, con particolare attenzione 
 ## Stato
 
 - Fase corrente: analisi iniziale
-- Modifiche al codice runtime: nessuna
+- Modifiche al codice runtime: polling gamepad adattivo in verifica
 - Ottimizzazioni confermate: nessuna
 
 ## Criteri di misura da definire
@@ -31,6 +31,8 @@ Il confronto con Chrome dovrà misurare l'incremento causato dalla pagina, non s
 - Individuati i pool configurati di default: layout, worker generici, runtime async e WebRender; possono aumentare thread e memoria di base.
 - Verificato che il repaint della WebView esegue paint e present; le richieste di redraw sono coalesciate per evitare accodamento illimitato.
 - Separata l'animazione dello splash, limitata alla fase di caricamento, dal consumo persistente a gioco avviato.
+- Implementato il primo intervento isolato: polling gamepad a 1 secondo quando non esistono controller aperti o effetti aptici pendenti; la cadenza torna a 100 ms durante l'uso attivo.
+- Aggiunti test unitari per i tre stati della cadenza (idle, controller aperto, aptica pendente) ed estesa la descrizione del relativo step CI.
 
 ## In corso
 
@@ -43,7 +45,7 @@ Il confronto con Chrome dovrà misurare l'incremento causato dalla pagina, non s
 
 | Priorità | Ipotesi | Segnale atteso | Stato |
 | --- | --- | --- | --- |
-| Alta | Polling gamepad ogni 100 ms impedisce l'idle profondo | Wake-up regolari del main thread; CPU ridotta senza feature gamepad | Da misurare |
+| Alta | Polling gamepad ogni 100 ms impedisce l'idle profondo | Wake-up regolari del main thread; CPU ridotta con polling adattivo | Correzione in verifica |
 | Alta | La pagina mantiene callback `requestAnimationFrame` o repaint indiretti anche senza ticker Pixi espliciti | Redraw/present continui; contatore RAF o repaint non nullo | Da misurare |
 | Alta | Feature inutilizzate (`webgpu`, `webxr`, gamepad) aumentano il footprint iniziale | RSS/thread inferiori in build minimali A/B | Da misurare |
 | Media | WebRender o il compositor presenta frame invariati | Present regolari senza variazioni della display list | Da misurare |
@@ -75,3 +77,10 @@ Il confronto con Chrome dovrà misurare l'incremento causato dalla pagina, non s
 - Creato il registro.
 - Identificati i primi candidati nel loop SDL3, nelle feature predefinite e nei pool di thread.
 - Nessuna modifica funzionale effettuata.
+
+### 2026-09-22 — Polling gamepad adattivo
+
+- Ridotta da 10 Hz a 1 Hz la sola scansione hot-plug quando non è presente un controller attivo.
+- Conservata la cadenza di 10 Hz quando un controller è aperto o esiste un effetto aptico pendente.
+- Aggiunti test unitari eseguiti dallo step `mach test-unit -p servoshell` della CI.
+- Da misurare il guadagno CPU effettivo e verificare la latenza hot-plug massima di circa un secondo.

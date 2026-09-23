@@ -26,7 +26,42 @@ use crate::running_app_state::RunningAppState;
 /// that first called `main()`, unlike GilRs, which was happy running on its own dedicated
 /// background thread -- see `CUSTOMIZATIONS.md`'s SDL3 gamepad entry for why. Polling is driven
 /// from `App::new_events`/`set_running_control_flow` instead.
-pub(crate) const GAMEPAD_POLL_INTERVAL: Duration = Duration::from_millis(100);
+pub(crate) const ACTIVE_GAMEPAD_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Hot-plug discovery does not need the input cadence used by an active controller. Keeping the
+/// 100ms timer armed before any controller is connected needlessly wakes an otherwise-idle game
+/// ten times per second.
+const IDLE_GAMEPAD_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+fn gamepad_poll_interval(has_open_gamepads: bool, has_pending_haptics: bool) -> Duration {
+    if has_open_gamepads || has_pending_haptics {
+        ACTIVE_GAMEPAD_POLL_INTERVAL
+    } else {
+        IDLE_GAMEPAD_POLL_INTERVAL
+    }
+}
+
+#[cfg(test)]
+mod poll_interval_tests {
+    use super::{
+        ACTIVE_GAMEPAD_POLL_INTERVAL, IDLE_GAMEPAD_POLL_INTERVAL, gamepad_poll_interval,
+    };
+
+    #[test]
+    fn idle_without_a_controller_uses_the_hotplug_interval() {
+        assert_eq!(gamepad_poll_interval(false, false), IDLE_GAMEPAD_POLL_INTERVAL);
+    }
+
+    #[test]
+    fn an_open_controller_uses_the_input_interval() {
+        assert_eq!(gamepad_poll_interval(true, false), ACTIVE_GAMEPAD_POLL_INTERVAL);
+    }
+
+    #[test]
+    fn pending_haptics_keep_the_input_interval_active() {
+        assert_eq!(gamepad_poll_interval(false, true), ACTIVE_GAMEPAD_POLL_INTERVAL);
+    }
+}
 
 /// A rumble request whose `start_delay` hasn't elapsed yet. SDL's `set_rumble` has no delay
 /// parameter of its own (unlike GilRs' `Replay` scheduling), so the delay is emulated here by
@@ -69,6 +104,19 @@ impl ServoshellGamepadDelegate {
             receiver: rx,
             sdl_state: RefCell::new(Self::init_sdl()),
         }
+    }
+
+    /// Use a low-frequency hot-plug probe while no controller is active, then restore the original
+    /// input cadence as soon as a controller is opened or a delayed haptic effect is pending.
+    pub(crate) fn poll_interval(&self) -> Duration {
+        let sdl_state = self.sdl_state.borrow();
+        let Some(sdl_state) = sdl_state.as_ref() else {
+            return IDLE_GAMEPAD_POLL_INTERVAL;
+        };
+        gamepad_poll_interval(
+            !sdl_state.open_gamepads.is_empty(),
+            !sdl_state.pending_haptic_effects.is_empty(),
+        )
     }
 
     fn init_sdl() -> Option<SdlGamepadState> {

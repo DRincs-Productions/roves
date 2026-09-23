@@ -18,6 +18,35 @@ they must stay in sync with reality).
 
 ---
 
+## 2026-09-22 — Adaptive SDL3 gamepad polling while idle
+
+**Files:** `ports/servoshell/desktop/gamepad.rs`, `ports/servoshell/desktop/app.rs`,
+`.github/workflows/test.yml`.
+
+**Patch:** `patches/servo-v0.5.0/0035-adaptive-gamepad-polling.patch`.
+
+**Problem:** desktop builds enable gamepad support by default. The SDL3 integration therefore
+armed a 100ms `WaitUntil` deadline for the main event loop for the entire lifetime of every game,
+even before any controller was connected. That prevented a visually and logically idle game from
+remaining asleep for longer than 100ms.
+
+**Change:** gamepad polling now uses a 1-second hot-plug interval while there are no open
+controllers or delayed haptic effects. It immediately retains/returns to the existing 100ms input
+interval whenever either condition is active. This preserves the established input and rumble
+cadence while reducing no-controller main-thread wake-ups from ten per second to one. Hot-plug
+detection can consequently take up to roughly one second from the idle state, an intentional
+latency/power tradeoff.
+
+The interval decision is a pure helper covered by unit tests for idle, connected-controller, and
+pending-haptics states. The existing Linux `mach test-unit -p servoshell` CI step runs these tests;
+its label and comment now describe the broader SDL3 input/polling coverage.
+
+**Verification path:** patch dry-run, SDL3 contract check, unit tests, and the full
+reconstructed-source CI build/smoke matrix. The CPU improvement still requires an A/B measurement
+on a release build and remains tracked in `ROVES_PERFORMANCE.md`.
+
+---
+
 ## 2026-09-04 — Migrate baseline from Servo v0.4.0 to v0.5.0
 
 **Files:** effectively the whole tree — see the mapping table below for exactly which files
