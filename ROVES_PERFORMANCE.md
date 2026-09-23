@@ -33,6 +33,8 @@ Il confronto con Chrome dovrà misurare l'incremento causato dalla pagina, non s
 - Separata l'animazione dello splash, limitata alla fase di caricamento, dal consumo persistente a gioco avviato.
 - Implementato il primo intervento isolato: polling gamepad a 1 secondo quando non esistono controller aperti o effetti aptici pendenti; la cadenza torna a 100 ms durante l'uso attivo.
 - Aggiunti test unitari per i tre stati della cadenza (idle, controller aperto, aptica pendente) ed estesa la descrizione del relativo step CI.
+- Corretto il bridge SDL3/egui: la richiesta del frame successivo usa ora il `repaint_delay` dell'output corrente invece dello stato globale del contesto.
+- Aggiunti test per repaint immediato, repaint differito e assenza di repaint pianificato.
 
 ## In corso
 
@@ -49,7 +51,7 @@ Il confronto con Chrome dovrà misurare l'incremento causato dalla pagina, non s
 | Alta | La pagina mantiene callback `requestAnimationFrame` o repaint indiretti anche senza ticker Pixi espliciti | Redraw/present continui; contatore RAF o repaint non nullo | Da misurare |
 | Alta | Feature inutilizzate (`webgpu`, `webxr`, gamepad) aumentano il footprint iniziale | RSS/thread inferiori in build minimali A/B | Da misurare |
 | Media | WebRender o il compositor presenta frame invariati | Present regolari senza variazioni della display list | Da misurare |
-| Media | Egui richiede repaint persistenti | `has_requested_repaint()` resta vero dopo il caricamento | Da misurare |
+| Media | Egui richiede repaint persistenti | `has_requested_repaint()` resta vero dopo il caricamento | Correzione in verifica |
 | Media | Pool di thread sovradimensionati per un runtime single-game | Molti thread inattivi con stack/allocator residenti | Da misurare |
 | Media | Cache e heap non vengono ridotti dopo il caricamento | RSS elevato dopo GC e idle prolungato | Da misurare |
 | Bassa | Lo splash continua oltre la fase prevista | Wake-up a circa 30 FPS oltre gli 8 secondi | Da verificare |
@@ -84,3 +86,11 @@ Il confronto con Chrome dovrà misurare l'incremento causato dalla pagina, non s
 - Conservata la cadenza di 10 Hz quando un controller è aperto o esiste un effetto aptico pendente.
 - Aggiunti test unitari eseguiti dallo step `mach test-unit -p servoshell` della CI.
 - Da misurare il guadagno CPU effettivo e verificare la latenza hot-plug massima di circa un secondo.
+
+### 2026-09-22 — Decisione repaint egui per frame
+
+- Eliminata la decisione basata su `Context::has_requested_repaint()` dopo la chiusura del frame.
+- Il bridge legge ora `ViewportOutput::repaint_delay` prodotto dal frame corrente.
+- Solo un ritardo zero accoda immediatamente un altro redraw; richieste differite non vengono trasformate in un loop immediato.
+- Aggiunti tre test unitari inclusi nello step CI di `servoshell`.
+- Resta da misurare la frequenza reale di `paint/present` con una scena PixiJS inattiva.

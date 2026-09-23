@@ -18,6 +18,33 @@ they must stay in sync with reality).
 
 ---
 
+## 2026-09-22 — Honor per-frame egui repaint output
+
+**Files:** `ports/servoshell/desktop/gui.rs`, `.github/workflows/test.yml`.
+
+**Patch:** `patches/servo-v0.5.0/0036-egui-frame-repaint-output.patch`.
+
+**Problem:** the custom SDL3 egui bridge discarded `FullOutput::viewport_output`, including the
+root viewport's `repaint_delay`. After finishing a frame it instead queried
+`Context::has_requested_repaint()`, a context-level state that is not the backend scheduling
+output for that completed frame. In particular, a delayed repaint must not be converted into an
+immediate redraw loop.
+
+**Change:** `SdlEguiGlow::run` returns the root viewport's `repaint_delay` (or `Duration::MAX`
+when none is present). `Gui::update` queues an immediate next frame only for a zero delay. This
+keeps genuine egui animations working while allowing static content to remain idle and prevents a
+delayed request from being promoted to immediate continuous repainting. Delayed scheduling itself
+remains outside the current bridge; normal SDL/input/WebView events still repaint the UI.
+
+The decision helper has unit coverage for zero, finite non-zero, and unscheduled (`MAX`) delays.
+Those tests run in the existing Linux `mach test-unit -p servoshell` CI step.
+
+**Verification path:** patch dry-run, SDL3 contract check, unit tests, and the full
+reconstructed-source CI build/smoke matrix. Runtime `paint/present` frequency remains to be measured
+against the inactive PixiJS reproduction and is tracked in `ROVES_PERFORMANCE.md`.
+
+---
+
 ## 2026-09-22 — Adaptive SDL3 gamepad polling while idle
 
 **Files:** `ports/servoshell/desktop/gamepad.rs`, `ports/servoshell/desktop/app.rs`,

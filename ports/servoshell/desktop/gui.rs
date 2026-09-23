@@ -15,7 +15,7 @@ use egui::text::{CCursor, CCursorRange};
 use egui::text_edit::TextEditState;
 use egui::{
     Button, FontData, FontDefinitions, FontFamily, Id, Key, Label, LayerId, Modifiers, Order,
-    PaintCallback, Panel, Vec2, WidgetInfo, WidgetType, pos2,
+    PaintCallback, Panel, Vec2, ViewportId, WidgetInfo, WidgetType, pos2,
 };
 use egui_glow::CallbackFn;
 use euclid::{Length, Point2D, Rect, Scale, Size2D};
@@ -186,6 +186,32 @@ struct SdlEguiGlow {
     clipboard: sdl3::clipboard::ClipboardUtil,
 }
 
+fn needs_immediate_repaint(repaint_delay: Duration) -> bool {
+    repaint_delay.is_zero()
+}
+
+#[cfg(test)]
+mod repaint_tests {
+    use std::time::Duration;
+
+    use super::needs_immediate_repaint;
+
+    #[test]
+    fn zero_delay_requests_the_next_frame() {
+        assert!(needs_immediate_repaint(Duration::ZERO));
+    }
+
+    #[test]
+    fn delayed_repaint_does_not_create_an_immediate_redraw_loop() {
+        assert!(!needs_immediate_repaint(Duration::from_millis(16)));
+    }
+
+    #[test]
+    fn no_scheduled_repaint_stays_idle() {
+        assert!(!needs_immediate_repaint(Duration::MAX));
+    }
+}
+
 impl SdlEguiGlow {
     fn new(
         gl: std::sync::Arc<glow::Context>,
@@ -327,7 +353,11 @@ impl SdlEguiGlow {
         }
     }
 
-    fn run(&mut self, window: &sdl3::video::Window, run_ui: impl FnMut(&mut egui::Ui)) {
+    fn run(
+        &mut self,
+        window: &sdl3::video::Window,
+        run_ui: impl FnMut(&mut egui::Ui),
+    ) -> Duration {
         let (width, height) = window.size();
         let pixels_per_point = window.display_scale();
         let screen_rect = egui::Rect::from_min_size(
@@ -347,7 +377,7 @@ impl SdlEguiGlow {
             textures_delta,
             shapes,
             pixels_per_point,
-            ..
+            viewport_output,
         } =
             self.egui_ctx.run_ui(raw_input, run_ui);
         for command in platform_output.commands {
@@ -366,6 +396,9 @@ impl SdlEguiGlow {
         self.shapes = shapes;
         self.pixels_per_point = pixels_per_point;
         self.textures_delta.append(textures_delta);
+        viewport_output
+            .get(&ViewportId::ROOT)
+            .map_or(Duration::MAX, |output| output.repaint_delay)
     }
 
     fn paint(&mut self, window: &sdl3::video::Window) {
@@ -924,7 +957,7 @@ impl Gui {
         // directly; genuinely `Context`-only ones (`accesskit_node_builder`,
         // `layer_painter`, and anything wanting an owned `Context` like
         // `Tooltip::always_open`) go through `ui.ctx()`.
-        context.run(sdl_window, |ui| {
+        let repaint_delay = context.run(sdl_window, |ui| {
             // Kiosk/embedded fork: never draw the toolbar or tab strip, in windowed
             // mode or fullscreen — this build is meant to look like a native app
             // window, not a browser.
@@ -987,7 +1020,7 @@ impl Gui {
 
         // If any egui widget requested a repaint, also request a repaint for our
         // containing window. This allows egui widget to animate on their own.
-        if self.context.egui_ctx.has_requested_repaint() {
+        if needs_immediate_repaint(repaint_delay) {
             window.set_needs_repaint();
         }
 
