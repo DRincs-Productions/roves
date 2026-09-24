@@ -759,10 +759,10 @@ impl HeadedWindow {
             return;
         };
         let mut dialogs = self.dialogs.borrow_mut();
-        let Some(dialogs) = dialogs.get_mut(&active_webview.id()) else {
+        let Some(active_dialogs) = dialogs.get_mut(&active_webview.id()) else {
             return;
         };
-        if dialogs.is_empty() {
+        if active_dialogs.is_empty() {
             return;
         }
 
@@ -770,15 +770,31 @@ impl HeadedWindow {
         // cursor too, when all dialogs close. In general, we need a better cursor
         // management strategy.
         self.set_cursor(Cursor::Default);
-        dialogs.retain_mut(callback);
+        active_dialogs.retain_mut(callback);
+        dialogs.retain(|_, dialogs| !dialogs.is_empty());
+        let still_has_dialogs = !dialogs.is_empty();
+        drop(dialogs);
+        if !still_has_dialogs {
+            self.stop_text_input_if_unused();
+        }
     }
 
     fn add_dialog(&self, webview_id: WebViewId, dialog: Dialog) {
+        // SDL3 does not emit `TextInput` by default. Dialogs can contain egui TextEdits
+        // (save-file name, prompt and authentication fields), so enable the same text-input
+        // stream Servo enables for focused page inputs while any native overlay is open.
+        self.text_input.start(&self.sdl_window);
         self.dialogs
             .borrow_mut()
             .entry(webview_id)
             .or_default()
             .push(dialog)
+    }
+
+    fn stop_text_input_if_unused(&self) {
+        if self.visible_input_method.get().is_none() && self.dialogs.borrow().is_empty() {
+            self.text_input.stop(&self.sdl_window);
+        }
     }
 
     /// The `AppEvent::SaveFileDialog` side of `App::user_event`'s handling for it — see that
@@ -808,6 +824,11 @@ impl HeadedWindow {
             dialogs.retain(|dialog| dialog.embedder_control_id() != Some(embedder_control_id));
         }
         dialogs.retain(|_, dialogs| !dialogs.is_empty());
+        let still_has_dialogs = !dialogs.is_empty();
+        drop(dialogs);
+        if !still_has_dialogs {
+            self.stop_text_input_if_unused();
+        }
     }
 
     fn has_active_dialog_for_webview(&self, webview_id: WebViewId) -> bool {
@@ -1367,7 +1388,7 @@ impl PlatformWindow for HeadedWindow {
         if self.visible_input_method.get() == Some(embedder_control_id) {
             self.visible_input_method.set(None);
             self.ime_composing.set(false);
-            self.text_input.stop(&self.sdl_window);
+            self.stop_text_input_if_unused();
             return;
         }
         self.remove_dialog(webview_id, embedder_control_id);

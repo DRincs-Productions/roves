@@ -131,10 +131,17 @@ fn egui_key_from_sdl(keycode: sdl3::keyboard::Keycode) -> Option<egui::Key> {
     })
 }
 
+/// SDL's `TextInput` event is the layout/shift/IME-aware text produced for a key press.
+/// For an ordinary egui `TextEdit` this must be `Event::Text`; `ImeEvent::Commit` is only
+/// meaningful as the end of a composition and does not insert normal keyboard input.
+fn egui_text_event_from_sdl(text: &str) -> egui::Event {
+    egui::Event::Text(text.to_owned())
+}
+
 #[cfg(test)]
 mod sdl_egui_input_tests {
-    use super::{egui_key_from_sdl, egui_modifiers_from_sdl};
-    use egui::Key;
+    use super::{egui_key_from_sdl, egui_modifiers_from_sdl, egui_text_event_from_sdl};
+    use egui::{Event, Key};
     use sdl3::keyboard::{Keycode, Mod};
 
     #[test]
@@ -158,6 +165,14 @@ mod sdl_egui_input_tests {
         assert_eq!(
             modifiers.command,
             if cfg!(target_os = "macos") { modifiers.mac_cmd } else { modifiers.ctrl },
+        );
+    }
+
+    #[test]
+    fn maps_sdl_text_input_to_text_edit_input() {
+        assert_eq!(
+            egui_text_event_from_sdl("Save 42.json"),
+            Event::Text("Save 42.json".to_owned()),
         );
     }
 }
@@ -248,8 +263,7 @@ impl SdlEguiGlow {
                 return Some(self.egui_ctx.egui_wants_keyboard_input());
             },
             WindowEvent::ImeCommit(text) => {
-                self.pending_events
-                    .push(egui::Event::Ime(egui::ImeEvent::Commit(text.clone())));
+                self.pending_events.push(egui_text_event_from_sdl(text));
                 return Some(self.egui_ctx.egui_wants_keyboard_input());
             },
             _ => return None,

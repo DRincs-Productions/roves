@@ -8311,3 +8311,30 @@ separate protocol-validation coverage.
 The failing diagnostic uses no `@drincs/roves-api` save-export function: it creates the Blob and
 anchor directly. Searching the package source also found no matching download implementation,
 so this failure belongs to Roves' desktop interception layer, not the npm library.
+
+---
+
+## 2026-09-24 — Restore typing in SDL3 egui dialogs
+
+**Files:** `ports/servoshell/desktop/gui.rs`, `ports/servoshell/desktop/headed_window.rs`,
+`ports/servoshell/desktop/event_loop.rs`, `support/check_sdl3_windowing_contracts.py`; patch
+`patches/servo-v0.5.0/0039-sdl3-egui-dialog-text-input.patch` contains the three upstream-tree
+files under `ports/`.
+
+Real Windows testing of the repaired save-export path exposed the next independent failure:
+the egui Save File dialog opened and its filename field accepted mouse focus, but typing did
+nothing. The SDL3 bridge had two complementary gaps. Opening an egui dialog did not call
+`SDL_StartTextInput`, so SDL was not required to emit `TextInput`; and when one did arrive,
+the GUI bridge converted it to `egui::ImeEvent::Commit`, which is not the ordinary text event
+an egui `TextEdit` uses for normal typing.
+
+Opening any egui dialog now starts SDL text input. Once the last dialog closes, it stops only
+when Servo itself has no active page input method, avoiding disruption of an HTML input that
+still owns the text-input stream. SDL `TextInput` is now delivered to egui as `Event::Text`,
+while the same internal event continues down Servo's existing composition-commit path when
+egui does not consume it. `TextEditing` remains egui IME preedit input.
+
+CI coverage has two layers: a Rust unit test asserts that layout-aware SDL text becomes exactly
+`Event::Text`, and the fast SDL3 contract job asserts that dialogs start text input and that the
+guarded stop path preserves a page-owned input method. The existing packaged smoke matrix runs
+the servoshell unit tests on Linux portable and applies patch 0039 on every platform.

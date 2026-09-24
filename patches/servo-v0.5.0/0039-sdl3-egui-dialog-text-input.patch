@@ -1,0 +1,138 @@
+diff --git a/ports/servoshell/desktop/event_loop.rs b/ports/servoshell/desktop/event_loop.rs
+index e03e821..7e58d89 100644
+--- a/ports/servoshell/desktop/event_loop.rs
++++ b/ports/servoshell/desktop/event_loop.rs
+@@ -129,7 +129,10 @@ pub(crate) enum WindowEvent {
+         x: f32,
+         y: f32,
+     },
++    /// SDL `TextEditing`: an in-progress IME composition.
+     ImePreedit(String),
++    /// SDL `TextInput`: committed, layout-aware text. Servo consumes this as an IME commit;
++    /// the egui overlay consumes the same value as ordinary `Event::Text` input.
+     ImeCommit(String),
+     /// SDL3 reports multi-touch gestures globally, without a window id. The event loop routes
+     /// them to the focused (or most recently targeted) desktop window before constructing this.
+diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
+index c02d792..c397288 100644
+--- a/ports/servoshell/desktop/gui.rs
++++ b/ports/servoshell/desktop/gui.rs
+@@ -131,10 +131,17 @@ fn egui_key_from_sdl(keycode: sdl3::keyboard::Keycode) -> Option<egui::Key> {
+     })
+ }
+ 
++/// SDL's `TextInput` event is the layout/shift/IME-aware text produced for a key press.
++/// For an ordinary egui `TextEdit` this must be `Event::Text`; `ImeEvent::Commit` is only
++/// meaningful as the end of a composition and does not insert normal keyboard input.
++fn egui_text_event_from_sdl(text: &str) -> egui::Event {
++    egui::Event::Text(text.to_owned())
++}
++
+ #[cfg(test)]
+ mod sdl_egui_input_tests {
+-    use super::{egui_key_from_sdl, egui_modifiers_from_sdl};
+-    use egui::Key;
++    use super::{egui_key_from_sdl, egui_modifiers_from_sdl, egui_text_event_from_sdl};
++    use egui::{Event, Key};
+     use sdl3::keyboard::{Keycode, Mod};
+ 
+     #[test]
+@@ -160,6 +167,14 @@ mod sdl_egui_input_tests {
+             if cfg!(target_os = "macos") { modifiers.mac_cmd } else { modifiers.ctrl },
+         );
+     }
++
++    #[test]
++    fn maps_sdl_text_input_to_text_edit_input() {
++        assert_eq!(
++            egui_text_event_from_sdl("Save 42.json"),
++            Event::Text("Save 42.json".to_owned()),
++        );
++    }
+ }
+ 
+ /// TODO(SDL3 windowing, real progress not completion — see TODO.md): replaces
+@@ -248,8 +263,7 @@ impl SdlEguiGlow {
+                 return Some(self.egui_ctx.egui_wants_keyboard_input());
+             },
+             WindowEvent::ImeCommit(text) => {
+-                self.pending_events
+-                    .push(egui::Event::Ime(egui::ImeEvent::Commit(text.clone())));
++                self.pending_events.push(egui_text_event_from_sdl(text));
+                 return Some(self.egui_ctx.egui_wants_keyboard_input());
+             },
+             _ => return None,
+diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/desktop/headed_window.rs
+index dee4edb..20609c3 100644
+--- a/ports/servoshell/desktop/headed_window.rs
++++ b/ports/servoshell/desktop/headed_window.rs
+@@ -759,10 +759,10 @@ impl HeadedWindow {
+             return;
+         };
+         let mut dialogs = self.dialogs.borrow_mut();
+-        let Some(dialogs) = dialogs.get_mut(&active_webview.id()) else {
++        let Some(active_dialogs) = dialogs.get_mut(&active_webview.id()) else {
+             return;
+         };
+-        if dialogs.is_empty() {
++        if active_dialogs.is_empty() {
+             return;
+         }
+ 
+@@ -770,10 +770,20 @@ impl HeadedWindow {
+         // cursor too, when all dialogs close. In general, we need a better cursor
+         // management strategy.
+         self.set_cursor(Cursor::Default);
+-        dialogs.retain_mut(callback);
++        active_dialogs.retain_mut(callback);
++        dialogs.retain(|_, dialogs| !dialogs.is_empty());
++        let still_has_dialogs = !dialogs.is_empty();
++        drop(dialogs);
++        if !still_has_dialogs {
++            self.stop_text_input_if_unused();
++        }
+     }
+ 
+     fn add_dialog(&self, webview_id: WebViewId, dialog: Dialog) {
++        // SDL3 does not emit `TextInput` by default. Dialogs can contain egui TextEdits
++        // (save-file name, prompt and authentication fields), so enable the same text-input
++        // stream Servo enables for focused page inputs while any native overlay is open.
++        self.text_input.start(&self.sdl_window);
+         self.dialogs
+             .borrow_mut()
+             .entry(webview_id)
+@@ -781,6 +791,12 @@ impl HeadedWindow {
+             .push(dialog)
+     }
+ 
++    fn stop_text_input_if_unused(&self) {
++        if self.visible_input_method.get().is_none() && self.dialogs.borrow().is_empty() {
++            self.text_input.stop(&self.sdl_window);
++        }
++    }
++
+     /// The `AppEvent::SaveFileDialog` side of `App::user_event`'s handling for it — see that
+     /// variant's own doc comment. Unlike every other `add_dialog` call site in this file,
+     /// this one doesn't originate from an `EmbedderControl`/script-thread request tied to a
+@@ -808,6 +824,11 @@ impl HeadedWindow {
+             dialogs.retain(|dialog| dialog.embedder_control_id() != Some(embedder_control_id));
+         }
+         dialogs.retain(|_, dialogs| !dialogs.is_empty());
++        let still_has_dialogs = !dialogs.is_empty();
++        drop(dialogs);
++        if !still_has_dialogs {
++            self.stop_text_input_if_unused();
++        }
+     }
+ 
+     fn has_active_dialog_for_webview(&self, webview_id: WebViewId) -> bool {
+@@ -1367,7 +1388,7 @@ impl PlatformWindow for HeadedWindow {
+         if self.visible_input_method.get() == Some(embedder_control_id) {
+             self.visible_input_method.set(None);
+             self.ime_composing.set(false);
+-            self.text_input.stop(&self.sdl_window);
++            self.stop_text_input_if_unused();
+             return;
+         }
+         self.remove_dialog(webview_id, embedder_control_id);
+

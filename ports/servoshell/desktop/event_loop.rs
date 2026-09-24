@@ -129,7 +129,10 @@ pub(crate) enum WindowEvent {
         x: f32,
         y: f32,
     },
+    /// SDL `TextEditing`: an in-progress IME composition.
     ImePreedit(String),
+    /// SDL `TextInput`: committed, layout-aware text. Servo consumes this as an IME commit;
+    /// the egui overlay consumes the same value as ordinary `Event::Text` input.
     ImeCommit(String),
     /// SDL3 reports multi-touch gestures globally, without a window id. The event loop routes
     /// them to the focused (or most recently targeted) desktop window before constructing this.

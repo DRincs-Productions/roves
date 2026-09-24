@@ -91,6 +91,17 @@ def main() -> None:
         assert f"egui::Event::{egui_event}" in gui_source, f"egui {egui_event} bridge is missing"
     for egui_event in ("Key", "Ime", "Copy", "Cut", "Paste"):
         assert f"egui::Event::{egui_event}" in gui_source, f"egui {egui_event} bridge is missing"
+    assert "egui::Event::Text(text.to_owned())" in gui_source, (
+        "SDL TextInput must become egui Event::Text so dialog TextEdits accept typing"
+    )
+    add_dialog = braced_body(headed_source, "fn add_dialog")
+    assert "self.text_input.start(&self.sdl_window)" in add_dialog, (
+        "opening an egui dialog must start SDL text input"
+    )
+    stop_text_input = braced_body(headed_source, "fn stop_text_input_if_unused")
+    assert "self.visible_input_method.get().is_none()" in stop_text_input
+    assert "self.dialogs.borrow().is_empty()" in stop_text_input
+    assert "self.text_input.stop(&self.sdl_window)" in stop_text_input
     assert "set_clipboard_text" in gui_source, "egui clipboard output is missing"
     assert "mod sdl_egui_input_tests" in gui_source, "egui SDL mapping tests are missing"
     assert "SdlAccessKit" in gui_source, "SDL3 AccessKit adapter is not connected to egui"
