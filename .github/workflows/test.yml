@@ -488,6 +488,10 @@ jobs:
           fi
           chmod +x "$BIN" || true
 
+          SAVE_EXPORT_PATH="$RUNNER_TEMP/roves-save-export-autotest.txt"
+          rm -f "$SAVE_EXPORT_PATH"
+          export ROVES_SAVE_FILE_AUTOTEST_PATH="$SAVE_EXPORT_PATH"
+
           # `set -e` (this shell's default) would otherwise abort the whole step the
           # instant the launched process has already exited — right when this step most
           # needs to print diagnostics instead of silently vanishing into a bare "Process
@@ -572,6 +576,17 @@ jobs:
             echo "roves:save_file parameter-validation check passed: $SAVE_FILE_LINE"
           fi
 
+          if [ ! -f "$SAVE_EXPORT_PATH" ]; then
+            echo "::error::save export did not create $SAVE_EXPORT_PATH"
+            exit 1
+          elif [ "$(cat "$SAVE_EXPORT_PATH")" != "roves-save-export-autotest" ]; then
+            echo "::error::save export wrote unexpected bytes"
+            od -An -tx1 "$SAVE_EXPORT_PATH" || true
+            exit 1
+          else
+            echo "save export end-to-end check passed: $SAVE_EXPORT_PATH"
+          fi
+
           [ -n "${MOUNT_DIR:-}" ] && hdiutil detach "$MOUNT_DIR" 2>/dev/null
 
           if [ "$STILL_RUNNING" = false ]; then
@@ -632,6 +647,9 @@ jobs:
 
           $stdout = Join-Path $env:RUNNER_TEMP "smoke-stdout.log"
           $stderr = Join-Path $env:RUNNER_TEMP "smoke-stderr.log"
+          $saveExportPath = Join-Path $env:RUNNER_TEMP "roves-save-export-autotest.txt"
+          Remove-Item $saveExportPath -Force -ErrorAction SilentlyContinue
+          $env:ROVES_SAVE_FILE_AUTOTEST_PATH = $saveExportPath
           $proc = Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName -PassThru `
             -RedirectStandardOutput $stdout -RedirectStandardError $stderr
           # 25s, not 15s -- same reasoning and same bump as the Linux/macOS smoke-test step's
@@ -681,6 +699,17 @@ jobs:
           } else {
             Write-Host "roves:save_file parameter-validation check passed: $($saveFileLine.Line)"
           }
+
+          if (-not (Test-Path $saveExportPath)) {
+            Write-Host "::error::save export did not create $saveExportPath"
+            exit 1
+          }
+          $saveExportContent = [System.IO.File]::ReadAllText($saveExportPath)
+          if ($saveExportContent -ne "roves-save-export-autotest`n") {
+            Write-Host "::error::save export wrote unexpected bytes: $([Convert]::ToHexString([System.IO.File]::ReadAllBytes($saveExportPath)))"
+            exit 1
+          }
+          Write-Host "save export end-to-end check passed: $saveExportPath"
 
           if (-not $stillRunning) {
             # Also emitted as ::notice:: annotations, not just plain Write-Host: annotations

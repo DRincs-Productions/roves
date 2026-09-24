@@ -245,7 +245,8 @@ Separately, letting a player export/import a save as a plain file (`<a download>
 both transparently on every platform (a native "Save As"/"Open" dialog on desktop, a
 player-visible folder and native document picker on Android/iOS). See the wiki's
 [Save-game storage](https://github.com/DRincs-Productions/roves-wiki/blob/main/content/docs/integrations/saves.mdx)
-page for the pattern.
+page for the pattern. Desktop also intercepts programmatic `anchor.click()` downloads and
+retains the original Blob before Servo can try to navigate to its opaque-origin `blob:` URL.
 
 ## Getting started
 

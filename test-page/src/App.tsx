@@ -26,14 +26,31 @@ const STEAM_AUTOTEST_STAT_NAME = "test_stat";
 const STEAM_AUTOTEST_STAT_VALUE = 42;
 const STEAM_AUTOTEST_MARKER = "[roves-steam-autotest]";
 
-// Regression coverage for the `roves:save_file` command (../../CUSTOMIZATIONS.md's 2026-09-15
-// desktop save export/import entry) that doesn't require a human to click through a native
-// "Save As" dialog -- CI has no way to automate that part, so this only exercises the
-// parameter-validation path, which returns before `protocols/roves.rs` ever reaches
-// `AppEvent::SaveFileDialog`/shows any UI at all. The real end-to-end path (a save actually
-// landing on disk) still needs the manual "Test save export" button below, clicked by a human
-// after downloading a build from the "test" release.
+// Regression coverage for the `roves:save_file` command. CI sets a test-only host environment
+// variable; the injected bridge exposes the matching window flag and writes this exact payload
+// to the requested CI path instead of opening an unautomatable native picker. The same effect
+// also retains the fast parameter-validation check.
 const SAVE_FILE_AUTOTEST_MARKER = "[roves-save-file-autotest]";
+const SAVE_FILE_AUTOTEST_CONTENT = "roves-save-export-autotest\n";
+
+declare global {
+  interface Window {
+    __ROVES_SAVE_FILE_AUTOTEST__?: boolean;
+  }
+}
+
+function downloadBlob(content: BlobPart, filename: string, type = "application/octet-stream") {
+  const blob = new Blob([content], { type });
+  const a = document.createElement("a");
+  const url = URL.createObjectURL(blob);
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // The injected bridge has already retained the Blob synchronously when click() returns.
+  URL.revokeObjectURL(url);
+}
 
 /**
  * Manual diagnostic page for ../../.github/workflows/test.yml's build-from-source
@@ -144,6 +161,9 @@ export default function App() {
   // all) should fail fast with a 4xx-shaped NetworkError, not hang or crash the page.
   useEffect(() => {
     const timer = setTimeout(async () => {
+      if (window.__ROVES_SAVE_FILE_AUTOTEST__) {
+        downloadBlob(SAVE_FILE_AUTOTEST_CONTENT, "roves-save-export-autotest.txt", "text/plain");
+      }
       const result: Record<string, unknown> = {};
       try {
         const response = await fetch("roves:save_file");
@@ -157,27 +177,16 @@ export default function App() {
     return () => clearTimeout(timer);
   }, []);
 
-  // Manual only (see the file doc comment) -- actually exercises the full round trip a human
-  // tester needs to click through: the download-intercept userscript (app.rs) catches this
+  // Manually exercises the normal player round trip: the download-intercept userscript catches this
   // `<a download>` click, reads the Blob back out, and calls `roves:save_file`, which pops a
-  // real native "Save As" dialog (`Dialog::SaveFile` in dialog.rs). CI can't automate picking
-  // a destination in that dialog, so this can only ever be a manual check.
+  // real native "Save As" dialog (`Dialog::SaveFile` in dialog.rs). CI exercises the same JS
+  // and protocol path, replacing only the final picker with a deterministic output path.
   const testSaveExport = () => {
-    const blob = new Blob([JSON.stringify({ hello: "from the test page", at: new Date().toISOString() })], {
-      type: "application/json",
-    });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "roves-test-export.json";
-    // Must be attached to the document before click(): a detached element's synthetic click
-    // event has no ancestor chain to bubble/capture through, so app.rs's download-intercept
-    // userscript (a document-level, capture-phase click listener) never sees it -- the click
-    // falls through to a real top-level navigation to the blob: URL instead, which fails with
-    // "Could not load the requested page: InvalidOrigin" (see that script's own doc comment for
-    // why). Confirmed for real: this button reproduced exactly that error before this fix.
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+    downloadBlob(
+      JSON.stringify({ hello: "from the test page", at: new Date().toISOString() }),
+      "roves-test-export.json",
+      "application/json",
+    );
   };
 
   const quitApp = async () => {

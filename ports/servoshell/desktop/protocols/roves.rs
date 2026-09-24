@@ -24,6 +24,12 @@ use servo::protocol_handler::{
 };
 use crate::desktop::event_loop::{AppEvent, EventLoopProxy};
 
+/// Test-only escape hatch used by the packaged-binary smoke tests. When set, a
+/// `roves:save_file` request writes to this exact path instead of opening the
+/// native picker. Normal launches never set it, so players always keep the
+/// interactive "Save As" flow.
+pub(crate) const SAVE_FILE_AUTOTEST_PATH_ENV: &str = "ROVES_SAVE_FILE_AUTOTEST_PATH";
+
 pub struct RovesProtocolHandler {
     /// `None` in headless mode, where there's no window to close and no
     /// event loop to send this through in the first place (see
@@ -73,6 +79,13 @@ impl RovesProtocolHandler {
         suggested_name: String,
         data: Vec<u8>,
     ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> {
+        if let Some(path) = std::env::var_os(SAVE_FILE_AUTOTEST_PATH_ENV) {
+            return Box::pin(std::future::ready(
+                std::fs::write(PathBuf::from(path), data)
+                    .map_err(|error| format!("Failed to write save-file autotest output: {error}")),
+            ));
+        }
+
         let Some(proxy) = self.close_proxy.clone() else {
             return Box::pin(std::future::ready(Err(
                 "No window to show a save dialog in (headless mode)".to_owned(),

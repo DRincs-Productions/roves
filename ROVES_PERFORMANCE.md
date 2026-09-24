@@ -139,3 +139,9 @@ Il confronto con Chrome dovrà misurare l'incremento causato dalla pagina, non s
 - I contatori separano wake-up da evento e da timeout, richieste redraw realmente accodate e coalesciate, dispatch redraw, paint WebView e presentazioni della finestra.
 - La diagnostica è spenta per default, non crea thread o timer e non modifica lo scheduling del gioco.
 - La CI verifica parsing della configurazione e reset atomico degli snapshot; le soglie CPU/RAM restano escluse dai runner condivisi.
+
+### 2026-09-24 — Verifica CI e pausa per regressione salvataggi
+
+- La CI completa dei contatori diagnostici è verde su Linux, macOS e Windows, incluse le varianti installer e portabili.
+- Il miglioramento percepito delle prestazioni è stato confermato nuovamente dall'utente.
+- Il lavoro prestazionale successivo resta il fast path di rendering; la correzione indipendente dei salvataggi viene mantenuta in un commit separato per non confondere misure e regressioni.

@@ -54,23 +54,69 @@ use crate::running_app_state::ServoshellGamepadDelegate;
 /// has anything resembling a native file-picker to prompt with mid-download).
 const DOWNLOAD_INTERCEPT_SCRIPT: &str = r#"
 (function() {
-  document.addEventListener('click', function(event) {
-    var a = event.target && event.target.closest && event.target.closest('a[download]');
-    if (!a) return;
-    var href = a.getAttribute('href') || '';
-    if (href.indexOf('blob:') !== 0 && href.indexOf('data:') !== 0) return;
-    event.preventDefault();
-    var fileName = a.getAttribute('download') || 'download';
-    function post(dataUrl) {
-      var base64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
-      fetch('roves:save_file?filename=' + encodeURIComponent(fileName) + '&data=' + encodeURIComponent(base64));
+  var blobs = new Map();
+  var createObjectURL = URL.createObjectURL.bind(URL);
+  var revokeObjectURL = URL.revokeObjectURL.bind(URL);
+  URL.createObjectURL = function(blob) {
+    var url = createObjectURL(blob);
+    blobs.set(url, blob);
+    return url;
+  };
+  URL.revokeObjectURL = function(url) {
+    blobs.delete(String(url));
+    return revokeObjectURL(url);
+  };
+
+  function anchorFrom(node) {
+    while (node) {
+      if (node.tagName && String(node.tagName).toLowerCase() === 'a' && node.hasAttribute('download')) return node;
+      node = node.parentNode;
     }
-    if (href.indexOf('data:') === 0) { post(href); return; }
-    fetch(href).then(function(r) { return r.blob(); }).then(function(blob) {
-      var reader = new FileReader();
-      reader.onloadend = function() { post(reader.result); };
-      reader.readAsDataURL(blob);
-    });
+    return null;
+  }
+
+  function postBlob(a, blob) {
+    var fileName = a.getAttribute('download') || 'download';
+    var reader = new FileReader();
+    reader.onloadend = function() {
+      var dataUrl = String(reader.result || '');
+      var comma = dataUrl.indexOf(',');
+      if (comma < 0) return;
+      var base64 = dataUrl.slice(comma + 1);
+      fetch('roves:save_file?filename=' + encodeURIComponent(fileName) + '&data=' + encodeURIComponent(base64));
+    };
+    reader.readAsDataURL(blob);
+  }
+
+  function intercept(a) {
+    if (!a) return false;
+    var href = a.href || a.getAttribute('href') || '';
+    if (href.indexOf('blob:') === 0) {
+      var blob = blobs.get(href);
+      if (blob) {
+        postBlob(a, blob);
+      } else {
+        fetch(href).then(function(r) { return r.blob(); }).then(function(value) { postBlob(a, value); });
+      }
+      return true;
+    }
+    if (href.indexOf('data:') === 0) {
+      fetch(href).then(function(r) { return r.blob(); }).then(function(value) { postBlob(a, value); });
+      return true;
+    }
+    return false;
+  }
+
+  var nativeAnchorClick = HTMLAnchorElement.prototype.click;
+  HTMLAnchorElement.prototype.click = function() {
+    if (intercept(this)) return;
+    return nativeAnchorClick.call(this);
+  };
+
+  document.addEventListener('click', function(event) {
+    if (!intercept(anchorFrom(event.target))) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
   }, true);
 })();
 "#;
@@ -415,6 +461,11 @@ impl App {
         // navigation as soon as `<head>` exists (see `dom::userscripts::load_script`), before
         // the page's own scripts.
         user_content_manager.add_script(Rc::new(UserScript::from("window.__ROVES__ = true;")));
+        if env::var_os(protocols::roves::SAVE_FILE_AUTOTEST_PATH_ENV).is_some() {
+            user_content_manager.add_script(Rc::new(UserScript::from(
+                "window.__ROVES_SAVE_FILE_AUTOTEST__ = true;",
+            )));
+        }
         user_content_manager.add_script(Rc::new(UserScript::from(DOWNLOAD_INTERCEPT_SCRIPT)));
         for script in load_userscripts(self.servoshell_preferences.userscripts_directory.as_deref())
             .expect("Loading userscripts failed")
