@@ -9,6 +9,9 @@ Ridurre CPU e memoria dei giochi eseguiti con Roves, con particolare attenzione 
 - Fase corrente: baseline diagnostica e progettazione del fast path di rendering
 - Modifiche al codice runtime: polling gamepad adattivo e scheduling repaint egui pubblicati su `main`
 - Ottimizzazioni confermate: riduzione percepibile del consumo nel test reale dell'utente; CI desktop/mobile verde
+- Analisi fast path completata in `docs/FAST_PATH_RENDERING.md`: egui resta il piano overlay;
+  percorso A salta painter/tessellazione mantenendo l'off-screen, percorso B introduce una
+  presentazione differita per rendere direttamente sul framebuffer della finestra.
 
 ## Criteri di misura da definire
 
@@ -38,6 +41,8 @@ Il confronto con Chrome dovrà misurare l'incremento causato dalla pagina, non s
 - Aggiunte alla pagina diagnostica tre fixture deterministiche selezionabili via query string: pagina vuota, PixiJS statico con un solo render e ticker fermo, PixiJS animato.
 - Le fixture prestazionali escludono i pannelli diagnostici normali, il loop `requestAnimationFrame` del gamepad, i probe FPS e i timer Steam, evitando che il benchmark misuri la pagina di test invece del runtime.
 - Aggiunti contatori shell opt-in (`ROVES_PERF_LOG_INTERVAL_MS`) per distinguere eventi reali, timeout del loop, redraw accodati/coalesciati, paint WebView e presentazioni finali.
+- Estesi i contatori con run/tessellazione/paint egui, blit del framebuffer e present diretti o
+  composti; aggiunta una decisione fast-path pura che richiede tutte le condizioni di sicurezza.
 
 ## In corso
 
@@ -145,3 +150,15 @@ Il confronto con Chrome dovrà misurare l'incremento causato dalla pagina, non s
 - La CI completa dei contatori diagnostici è verde su Linux, macOS e Windows, incluse le varianti installer e portabili.
 - Il miglioramento percepito delle prestazioni è stato confermato nuovamente dall'utente.
 - Il lavoro prestazionale successivo resta il fast path di rendering; la correzione indipendente dei salvataggi viene mantenuta in un commit separato per non confondere misure e regressioni.
+
+### 2026-09-24 — Analisi del fast path e verifica toolkit UI
+
+- Confermato che la libreria UI modernizzata era egui stesso: `0.34.3 → 0.36.2`, con
+  `egui-file-dialog 0.13 → 0.15`; non è presente un toolkit sostitutivo installato nel runtime.
+- Confermata la decisione di non riscrivere splash, dialoghi, input e AccessKit in un altro
+  toolkit: ciò non eliminerebbe il costo del percorso WebRender/off-screen.
+- Mappato il frame corrente: WebRender off-screen → callback/blit egui → painter egui → present.
+- Definite due fasi: bypass del painter egui conservando l'off-screen, poi WebView diretta con
+  `present()` differito per eliminare anche framebuffer e blit intermedi.
+- Completati contatori direct/composited e decisione fast-path pura con fallback testati.
+- Prossimo commit prestazionale: esperimento opt-in `ROVES_DIRECT_PRESENT=1` per il percorso A.

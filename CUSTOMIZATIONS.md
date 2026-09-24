@@ -8338,3 +8338,29 @@ CI coverage has two layers: a Rust unit test asserts that layout-aware SDL text 
 `Event::Text`, and the fast SDL3 contract job asserts that dialogs start text input and that the
 guarded stop path preserves a page-owned input method. The existing packaged smoke matrix runs
 the servoshell unit tests on Linux portable and applies patch 0039 on every platform.
+
+---
+
+## 2026-09-24 — Instrument and gate the desktop rendering fast path
+
+**Files:** `ports/servoshell/desktop/performance.rs`, `ports/servoshell/desktop/gui.rs`;
+documentation in `docs/FAST_PATH_RENDERING.md` and `ROVES_PERFORMANCE.md`; patch
+`patches/servo-v0.5.0/0040-fast-path-instrumentation.patch` contains the two upstream-tree
+files under `ports/`.
+
+The normal kiosk frame still runs WebRender into an `OffscreenRenderingContext`, registers its
+full-window blit as an egui background callback, tessellates and paints egui, then presents the
+window even though toolbar and tabs are disabled. The architecture analysis documents two
+separate experiments: first bypass egui's painter while retaining the off-screen framebuffer;
+then, only if justified by measurement, give the WebView a deferred-present window context to
+remove the framebuffer and blit too. Egui remains the overlay plane for splash, errors, dialogs
+and accessibility; replacing the toolkit would not remove the WebRender composition cost.
+
+The opt-in `[roves-perf]` snapshot now distinguishes egui runs, tessellations and paints,
+framebuffer blits, composed presents and future direct presents. Like the existing counters,
+all increments are skipped after the cached environment check when diagnostics are disabled;
+no timer or per-frame log was added. A pure `can_direct_present` decision requires every
+conservative safety condition (one WebView, full-window content, no dialog/status/focus,
+AccessKit idle and no pending texture work), with one unit test that independently falsifies
+each condition. Runtime selection is deliberately not enabled by this patch: the following
+opt-in prototype can now be evaluated with explicit A/B evidence and a tested fallback gate.

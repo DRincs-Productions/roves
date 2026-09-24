@@ -205,11 +205,41 @@ fn needs_immediate_repaint(repaint_delay: Duration) -> bool {
     repaint_delay.is_zero()
 }
 
+#[derive(Clone, Copy)]
+struct DirectPresentConditions {
+    single_webview: bool,
+    full_window: bool,
+    no_dialogs: bool,
+    no_status_overlay: bool,
+    no_egui_focus: bool,
+    accessibility_idle: bool,
+    textures_idle: bool,
+}
+
+fn can_direct_present(conditions: DirectPresentConditions) -> bool {
+    let DirectPresentConditions {
+        single_webview,
+        full_window,
+        no_dialogs,
+        no_status_overlay,
+        no_egui_focus,
+        accessibility_idle,
+        textures_idle,
+    } = conditions;
+    single_webview &&
+        full_window &&
+        no_dialogs &&
+        no_status_overlay &&
+        no_egui_focus &&
+        accessibility_idle &&
+        textures_idle
+}
+
 #[cfg(test)]
 mod repaint_tests {
     use std::time::Duration;
 
-    use super::needs_immediate_repaint;
+    use super::{DirectPresentConditions, can_direct_present, needs_immediate_repaint};
 
     #[test]
     fn zero_delay_requests_the_next_frame() {
@@ -224,6 +254,32 @@ mod repaint_tests {
     #[test]
     fn no_scheduled_repaint_stays_idle() {
         assert!(!needs_immediate_repaint(Duration::MAX));
+    }
+
+    #[test]
+    fn direct_present_requires_every_safety_condition() {
+        let all_safe = DirectPresentConditions {
+            single_webview: true,
+            full_window: true,
+            no_dialogs: true,
+            no_status_overlay: true,
+            no_egui_focus: true,
+            accessibility_idle: true,
+            textures_idle: true,
+        };
+        assert!(can_direct_present(all_safe));
+
+        for unsafe_conditions in [
+            DirectPresentConditions { single_webview: false, ..all_safe },
+            DirectPresentConditions { full_window: false, ..all_safe },
+            DirectPresentConditions { no_dialogs: false, ..all_safe },
+            DirectPresentConditions { no_status_overlay: false, ..all_safe },
+            DirectPresentConditions { no_egui_focus: false, ..all_safe },
+            DirectPresentConditions { accessibility_idle: false, ..all_safe },
+            DirectPresentConditions { textures_idle: false, ..all_safe },
+        ] {
+            assert!(!can_direct_present(unsafe_conditions));
+        }
     }
 }
 
@@ -372,6 +428,7 @@ impl SdlEguiGlow {
         window: &sdl3::video::Window,
         run_ui: impl FnMut(&mut egui::Ui),
     ) -> Duration {
+        super::performance::record_egui_run();
         let (width, height) = window.size();
         let pixels_per_point = window.display_scale();
         let screen_rect = egui::Rect::from_min_size(
@@ -427,9 +484,11 @@ impl SdlEguiGlow {
         }
 
         let pixels_per_point = self.pixels_per_point;
+        super::performance::record_egui_tessellation();
         let clipped_primitives = self.egui_ctx.tessellate(shapes, pixels_per_point);
         let (width, height) = window.size_in_pixels();
         self.painter.paint_primitives([width, height], pixels_per_point, &clipped_primitives);
+        super::performance::record_egui_paint();
 
         #[expect(clippy::iter_over_hash_type)]
         for id in textures_delta.free.drain() {
@@ -1021,6 +1080,7 @@ impl Gui {
                 ui.ctx().layer_painter(LayerId::background()).add(PaintCallback {
                     rect: available_rect,
                     callback: Arc::new(CallbackFn::new(move |info, painter| {
+                        super::performance::record_framebuffer_blit();
                         let clip = info.viewport_in_pixels();
                         let rect_in_parent = Rect::new(
                             Point2D::new(clip.left_px, clip.from_bottom_px),
@@ -1203,6 +1263,7 @@ impl Gui {
             .parent_context()
             .prepare_for_rendering();
         self.context.paint(window);
+        super::performance::record_composited_present();
         super::performance::record_window_present();
         self.rendering_context.parent_context().present();
     }

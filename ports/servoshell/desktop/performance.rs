@@ -22,6 +22,12 @@ struct Counts {
     redraw_coalesced: AtomicU64,
     redraw_dispatched: AtomicU64,
     webview_paints: AtomicU64,
+    egui_runs: AtomicU64,
+    egui_tessellations: AtomicU64,
+    egui_paints: AtomicU64,
+    framebuffer_blits: AtomicU64,
+    composited_presents: AtomicU64,
+    direct_presents: AtomicU64,
     window_presents: AtomicU64,
 }
 
@@ -34,6 +40,12 @@ impl Counts {
             redraw_coalesced: self.redraw_coalesced.swap(0, Ordering::Relaxed),
             redraw_dispatched: self.redraw_dispatched.swap(0, Ordering::Relaxed),
             webview_paints: self.webview_paints.swap(0, Ordering::Relaxed),
+            egui_runs: self.egui_runs.swap(0, Ordering::Relaxed),
+            egui_tessellations: self.egui_tessellations.swap(0, Ordering::Relaxed),
+            egui_paints: self.egui_paints.swap(0, Ordering::Relaxed),
+            framebuffer_blits: self.framebuffer_blits.swap(0, Ordering::Relaxed),
+            composited_presents: self.composited_presents.swap(0, Ordering::Relaxed),
+            direct_presents: self.direct_presents.swap(0, Ordering::Relaxed),
             window_presents: self.window_presents.swap(0, Ordering::Relaxed),
         }
     }
@@ -47,6 +59,12 @@ struct Snapshot {
     redraw_coalesced: u64,
     redraw_dispatched: u64,
     webview_paints: u64,
+    egui_runs: u64,
+    egui_tessellations: u64,
+    egui_paints: u64,
+    framebuffer_blits: u64,
+    composited_presents: u64,
+    direct_presents: u64,
     window_presents: u64,
 }
 
@@ -93,7 +111,7 @@ fn report_if_due(counters: &PerformanceCounters) {
     *last_report = now;
     let counts = counters.counts.take();
     log::info!(
-        "[roves-perf] interval_ms={} real_events={} wait_timeouts={} redraw_queued={} redraw_coalesced={} redraw_dispatched={} webview_paints={} window_presents={}",
+        "[roves-perf] interval_ms={} real_events={} wait_timeouts={} redraw_queued={} redraw_coalesced={} redraw_dispatched={} webview_paints={} egui_runs={} egui_tessellations={} egui_paints={} framebuffer_blits={} composited_presents={} direct_presents={} window_presents={}",
         elapsed.as_millis(),
         counts.real_events,
         counts.wait_timeouts,
@@ -101,6 +119,12 @@ fn report_if_due(counters: &PerformanceCounters) {
         counts.redraw_coalesced,
         counts.redraw_dispatched,
         counts.webview_paints,
+        counts.egui_runs,
+        counts.egui_tessellations,
+        counts.egui_paints,
+        counts.framebuffer_blits,
+        counts.composited_presents,
+        counts.direct_presents,
         counts.window_presents,
     );
 }
@@ -157,6 +181,47 @@ pub(crate) fn record_window_present() {
     }
 }
 
+fn increment(counter: &AtomicU64) {
+    counter.fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn record_egui_run() {
+    if let Some(counters) = counters() {
+        increment(&counters.counts.egui_runs);
+    }
+}
+
+pub(crate) fn record_egui_tessellation() {
+    if let Some(counters) = counters() {
+        increment(&counters.counts.egui_tessellations);
+    }
+}
+
+pub(crate) fn record_egui_paint() {
+    if let Some(counters) = counters() {
+        increment(&counters.counts.egui_paints);
+    }
+}
+
+pub(crate) fn record_framebuffer_blit() {
+    if let Some(counters) = counters() {
+        increment(&counters.counts.framebuffer_blits);
+    }
+}
+
+pub(crate) fn record_composited_present() {
+    if let Some(counters) = counters() {
+        increment(&counters.counts.composited_presents);
+    }
+}
+
+#[expect(dead_code, reason = "used by the opt-in direct-present prototype in the next phase")]
+pub(crate) fn record_direct_present() {
+    if let Some(counters) = counters() {
+        increment(&counters.counts.direct_presents);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Counts, Snapshot, parse_interval};
@@ -180,11 +245,15 @@ mod tests {
         let counts = Counts::default();
         counts.real_events.store(2, Ordering::Relaxed);
         counts.window_presents.store(3, Ordering::Relaxed);
+        counts.egui_runs.store(4, Ordering::Relaxed);
+        counts.framebuffer_blits.store(5, Ordering::Relaxed);
         assert_eq!(
             counts.take(),
             Snapshot {
                 real_events: 2,
                 window_presents: 3,
+                egui_runs: 4,
+                framebuffer_blits: 5,
                 ..Snapshot::default()
             }
         );

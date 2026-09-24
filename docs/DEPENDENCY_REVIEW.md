@@ -385,6 +385,12 @@ sostituzioni architetturali più adatte al problema.
 | image → decoder specifico per formato | Solo dopo profiling | Preservare formati, animazioni, colore/alpha e limiti; il pacchetto usa già decoder specializzati come dipendenze |
 
 Le alternative sono valutazioni d'integrazione, non risultati di benchmark.
+
+Aggiornamento 2026-09-24: egui è già stato modernizzato alla versione `0.36.2` e il backend
+winit è stato rimpiazzato dal bridge SDL3 locale. Non è stato installato un secondo toolkit UI.
+L'analisi del percorso diretto è ora in [`FAST_PATH_RENDERING.md`](FAST_PATH_RENDERING.md): egui
+rimane disponibile per gli overlay, mentre i frame ordinari del gioco potranno saltarne il pass.
+
 Fonti per le capacità dichiarate: [mimalloc Rust](https://docs.rs/crate/mimalloc/latest),
 [LZ4 streaming](https://docs.rs/lz4_flex/latest/lz4_flex/),
 [surfman e condivisione superfici](https://docs.rs/crate/surfman/0.13.0),
