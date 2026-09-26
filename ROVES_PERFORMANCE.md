@@ -6,14 +6,15 @@ Ridurre CPU e memoria dei giochi eseguiti con Roves, con particolare attenzione 
 
 ## Stato
 
-- Fase corrente: fast path A implementato opt-in; verifica CI e misure A/B
-- Modifiche al codice runtime: polling gamepad adattivo e scheduling repaint egui pubblicati su `main`
+- Fase corrente: fast path A implementato opt-in; misure A/B su hardware reale da eseguire
+- Modifiche al codice runtime: polling gamepad adattivo, scheduling repaint egui e fast path A pubblicati su `main`
 - Ottimizzazioni confermate: riduzione percepibile del consumo nel test reale dell'utente; CI desktop/mobile verde
 - Analisi fast path completata in `docs/FAST_PATH_RENDERING.md`: egui resta il piano overlay;
   percorso A salta painter/tessellazione mantenendo l'off-screen, percorso B introduce una
   presentazione differita per rendere direttamente sul framebuffer della finestra.
-- Ultimo commit pronto e verificato: `89fc060` (`perf: prepare direct rendering fast path`),
-  con workflow GitHub Actions `35987823977` completamente verde.
+- Baseline preparatoria: `89fc060`, verificata dal workflow `35987823977`.
+- Implementazione fast path A: `9309c3cd07d`, con verifica desktop nel
+  [workflow 36247696891](https://github.com/DRincs-Productions/roves/actions/runs/36247696891).
 
 ## Criteri di misura da definire
 
@@ -205,3 +206,12 @@ Il confronto con Chrome dovrà misurare l'incremento causato dalla pagina, non s
 - Patch sequenziale `0041-direct-present-fast-path.patch`, limitata ai file Servo.
 - Nessuna modifica alla superficie build/bundle, Packmaster o roves-action. Fast path B e
   rimozione dell'off-screen rimandati; nessun guadagno CPU/RAM dichiarato senza misure reali.
+
+#### Evidenza funzionale dai log CI
+
+Lo smoke test Linux DEB del commit `9309c3cd07d` ha completato con successo avvio,
+ciclo finestra/input/resize SDL3, salvataggio e controllo del percorso diretto. Un intervallo
+riporta `egui_runs=2`, `egui_tessellations=0`, `egui_paints=0`, `framebuffer_blits=2`,
+`composited_presents=0`, `direct_presents=2`, `window_presents=2`: egui continua a eseguire
+l'update, ma il percorso diretto salta davvero tessellazione e paint. Questo prova il contratto
+funzionale; non misura il guadagno CPU, RAM o frame-time.
