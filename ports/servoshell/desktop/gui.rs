@@ -205,6 +205,11 @@ fn needs_immediate_repaint(repaint_delay: Duration) -> bool {
     repaint_delay.is_zero()
 }
 
+// Deliberately strict: unset, non-Unicode and unrecognized values keep the default path.
+fn parse_direct_present(value: Option<&str>) -> bool {
+    value == Some("1")
+}
+
 #[derive(Clone, Copy)]
 struct DirectPresentConditions {
     single_webview: bool,
@@ -216,7 +221,7 @@ struct DirectPresentConditions {
     textures_idle: bool,
 }
 
-fn can_direct_present(conditions: DirectPresentConditions) -> bool {
+fn can_direct_present(enabled: bool, conditions: DirectPresentConditions) -> bool {
     let DirectPresentConditions {
         single_webview,
         full_window,
@@ -226,20 +231,39 @@ fn can_direct_present(conditions: DirectPresentConditions) -> bool {
         accessibility_idle,
         textures_idle,
     } = conditions;
-    single_webview &&
-        full_window &&
-        no_dialogs &&
-        no_status_overlay &&
-        no_egui_focus &&
-        accessibility_idle &&
-        textures_idle
+    enabled
+        && single_webview
+        && full_window
+        && no_dialogs
+        && no_status_overlay
+        && no_egui_focus
+        && accessibility_idle
+        && textures_idle
 }
 
 #[cfg(test)]
 mod repaint_tests {
     use std::time::Duration;
 
-    use super::{DirectPresentConditions, can_direct_present, needs_immediate_repaint};
+    use super::{
+        DirectPresentConditions, can_direct_present, needs_immediate_repaint, parse_direct_present,
+    };
+
+    #[test]
+    fn direct_present_is_explicitly_opt_in() {
+        assert!(parse_direct_present(Some("1")));
+        for value in [
+            None,
+            Some(""),
+            Some("0"),
+            Some("true"),
+            Some(" 1"),
+            Some("1 "),
+            Some("2"),
+        ] {
+            assert!(!parse_direct_present(value));
+        }
+    }
 
     #[test]
     fn zero_delay_requests_the_next_frame() {
@@ -267,7 +291,8 @@ mod repaint_tests {
             accessibility_idle: true,
             textures_idle: true,
         };
-        assert!(can_direct_present(all_safe));
+        assert!(can_direct_present(true, all_safe));
+        assert!(!can_direct_present(false, all_safe));
 
         for unsafe_conditions in [
             DirectPresentConditions { single_webview: false, ..all_safe },
@@ -278,7 +303,7 @@ mod repaint_tests {
             DirectPresentConditions { accessibility_idle: false, ..all_safe },
             DirectPresentConditions { textures_idle: false, ..all_safe },
         ] {
-            assert!(!can_direct_present(unsafe_conditions));
+            assert!(!can_direct_present(true, unsafe_conditions));
         }
     }
 }
@@ -507,6 +532,9 @@ pub struct Gui {
     rendering_context: Rc<OffscreenRenderingContext>,
     context: SdlEguiGlow,
     accesskit: SdlAccessKit,
+    direct_present_enabled: bool,
+    // Consumed by paint; only a normal, overlay-free update can populate it.
+    direct_present_size: Option<(u32, u32)>,
     toolbar_height: Length<f32, DeviceIndependentPixel>,
 
     /// The text to display in the status bar on the bottom of the window.
@@ -836,6 +864,10 @@ impl Gui {
             rendering_context,
             context,
             accesskit,
+            direct_present_enabled: parse_direct_present(
+                std::env::var("ROVES_DIRECT_PRESENT").ok().as_deref(),
+            ),
+            direct_present_size: None,
             toolbar_height: Default::default(),
             status_text: None,
             pending_accesskit_updates: vec![],
@@ -995,6 +1027,7 @@ impl Gui {
         headed_window: &headed_window::HeadedWindow,
     ) {
         let accessibility_events: Vec<_> = self.accesskit.drain_events().collect();
+        self.direct_present_size = None;
         for event in accessibility_events {
             match event {
                 AccessibilityEvent::InitialTreeRequested => {
@@ -1023,6 +1056,8 @@ impl Gui {
         } = self;
 
         let sdl_window = headed_window.sdl_window();
+        let had_dialog = std::cell::Cell::new(false);
+        let mut full_window = false;
         // `EguiGlow::run`'s callback now hands back the whole-window `&mut Ui` directly
         // (egui 0.36 removed the `Context`-based top-level panel API this used to go
         // through) rather than a `&Context` — see CUSTOMIZATIONS.md's egui 0.36.2 entry.
@@ -1039,7 +1074,11 @@ impl Gui {
             let scale =
                 Scale::<_, DeviceIndependentPixel, DevicePixel>::new(ui.pixels_per_point());
 
-            headed_window.for_each_active_dialog(window, |dialog| dialog.update(ui.ctx()));
+            headed_window.for_each_active_dialog(window, |dialog| {
+                // Even a dialog closed during this update has shapes in this frame.
+                had_dialog.set(true);
+                dialog.update(ui.ctx())
+            });
 
             // If the top parts of the GUI changed size, then update the size of the WebView and also
             // the size of its RenderingContext.
@@ -1076,6 +1115,16 @@ impl Gui {
 
             window.repaint_webviews();
 
+            let (width, height) = sdl_window.size_in_pixels();
+            full_window = width > 0
+                && height > 0
+                && available_rect.min == egui::Pos2::ZERO
+                && size == Size2D::new(width as f32, height as f32)
+                && rendering_context.size() == PhysicalSize::new(width, height)
+                && window
+                    .active_webview()
+                    .is_some_and(|webview| webview.size() == size);
+
             if let Some(render_to_parent) = rendering_context.render_to_parent_callback() {
                 ui.ctx().layer_painter(LayerId::background()).add(PaintCallback {
                     rect: available_rect,
@@ -1091,6 +1140,24 @@ impl Gui {
                 });
             }
         });
+
+        if can_direct_present(
+            self.direct_present_enabled,
+            DirectPresentConditions {
+                single_webview: window.webview_ids().len() == 1
+                    && window.active_webview().is_some(),
+                full_window,
+                no_dialogs: !had_dialog.get(),
+                no_status_overlay: self.status_text.is_none(),
+                no_egui_focus: !self.context.egui_ctx.egui_wants_keyboard_input()
+                    && !self.context.egui_ctx.egui_is_using_pointer(),
+                accessibility_idle: !state.accessibility_active()
+                    && self.pending_accesskit_updates.is_empty(),
+                textures_idle: self.context.textures_delta.is_empty(),
+            },
+        ) {
+            self.direct_present_size = Some(sdl_window.size_in_pixels());
+        }
 
         // If any egui widget requested a repaint, also request a repaint for our
         // containing window. This allows egui widget to animate on their own.
@@ -1114,6 +1181,7 @@ impl Gui {
     /// splash never shows a bare wordmark with no indication that something is loading.
     /// Call [`Gui::paint`] afterward, same as [`Gui::update`].
     pub(crate) fn update_splash(&mut self, sdl_window: &sdl3::video::Window, elapsed: Duration) {
+        self.direct_present_size = None;
         self.rendering_context
             .make_current()
             .expect("Could not make RenderingContext current");
@@ -1216,6 +1284,7 @@ impl Gui {
         sdl_window: &sdl3::video::Window,
         message: &str,
     ) {
+        self.direct_present_size = None;
         self.rendering_context
             .make_current()
             .expect("Could not make RenderingContext current");
@@ -1262,8 +1331,22 @@ impl Gui {
         self.rendering_context
             .parent_context()
             .prepare_for_rendering();
-        self.context.paint(window);
-        super::performance::record_composited_present();
+        if self.direct_present_size.take() == Some(window.size_in_pixels())
+            && self.context.textures_delta.is_empty()
+            && let Some(render_to_parent) = self.rendering_context.render_to_parent_callback()
+        {
+            let (width, height) = window.size_in_pixels();
+            render_to_parent(
+                self.context.painter.gl(),
+                Rect::new(Point2D::origin(), Size2D::new(width as i32, height as i32)),
+            );
+            self.context.shapes.clear();
+            super::performance::record_framebuffer_blit();
+            super::performance::record_direct_present();
+        } else {
+            self.context.paint(window);
+            super::performance::record_composited_present();
+        }
         super::performance::record_window_present();
         self.rendering_context.parent_context().present();
     }

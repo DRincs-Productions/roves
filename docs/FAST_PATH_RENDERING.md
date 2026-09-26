@@ -33,6 +33,10 @@ richiesto dal gioco.
 
 ## Fast path A: presentazione diretta dell'off-screen
 
+Implementato, disabilitato per default. Solo il valore esatto `ROVES_DIRECT_PRESENT=1`
+abilita il percorso; valori assenti, non Unicode o diversi da `1` lo disabilitano.
+La configurazione viene letta alla creazione della GUI.
+
 Primo esperimento, a rischio contenuto:
 
 - Servo continua a usare l'attuale `OffscreenRenderingContext`.
@@ -54,7 +58,7 @@ Il percorso A è ammesso solo quando:
 - non esiste alcun `Dialog` attivo;
 - splash e schermata di errore sono disattivati;
 - non esistono status tooltip o focus egui;
-- AccessKit non richiede un aggiornamento dell'albero;
+- AccessKit è inattivo e non ci sono aggiornamenti pendenti;
 - non ci sono texture egui da caricare o liberare.
 
 Se una condizione cambia, il fallback composto deve essere immediato e non richiedere la
@@ -108,7 +112,7 @@ fallback, non impone soglie temporali sui runner condivisi.
 
 1. Estendere i contatori per distinguere frame diretti e composti. **Completato.**
 2. Estrarre una decisione pura per il fast path con test unitari. **Completato.**
-3. Implementare il fast path A dietro `ROVES_DIRECT_PRESENT=1` per misure A/B.
+3. Implementare il fast path A dietro `ROVES_DIRECT_PRESENT=1` per misure A/B. **Completato.**
 4. Misurare se il painter egui incide materialmente su CPU/GPU frame time.
 5. Solo con un risultato positivo, prototipare il contesto a presentazione differita del fast
    path B.
@@ -116,4 +120,20 @@ fallback, non impone soglie temporali sui runner condivisi.
 
 I contatori aggiunti sono inattivi insieme al resto della diagnostica quando
 `ROVES_PERF_LOG_INTERVAL_MS` non è impostata; non introducono quindi timer o logging nelle build
-normali. `direct_presents` rimarrà zero finché il prototipo opt-in del punto 3 non viene attivato.
+normali. Un frame diretto incrementa `direct_presents`, `framebuffer_blits` e
+`window_presents`; il fallback incrementa `composited_presents`. `egui_runs` continua a crescere
+anche nel percorso diretto; `egui_tessellations` e `egui_paints` contano solo i frame composti.
+
+### Verifica automatica del percorso A
+
+Gli unit test coprono il parsing rigoroso, l'opzione disabilitata e ogni condizione di fallback.
+Gli smoke test desktop avviano i bundle reali con `ROVES_DIRECT_PRESENT=1` e
+`ROVES_PERF_LOG_INTERVAL_MS=1000` e falliscono senza almeno un intervallo con
+`direct_presents > 0`. Restano i controlli di avvio, salvataggio e ciclo finestra SDL3.
+Non sono imposte soglie CPU, RAM o frame-time sui runner condivisi.
+
+La decisione usa l'output egui corrente, include le texture da caricare e liberare e viene
+consumata dal paint. Splash ed errori la azzerano; anche un dialogo appena chiuso mantiene il
+frame composto. Un resize tra update e paint o un callback di blit indisponibile conserva il
+fallback nello stesso frame. Il percorso B resta da implementare. I test manuali della matrice
+sopra e le misure A/B su hardware reale restano necessari prima di valutare un cambio del default.

@@ -6,7 +6,7 @@ Ridurre CPU e memoria dei giochi eseguiti con Roves, con particolare attenzione 
 
 ## Stato
 
-- Fase corrente: implementazione del fast path A di rendering, da proseguire in Codex
+- Fase corrente: fast path A implementato opt-in; verifica CI e misure A/B
 - Modifiche al codice runtime: polling gamepad adattivo e scheduling repaint egui pubblicati su `main`
 - Ottimizzazioni confermate: riduzione percepibile del consumo nel test reale dell'utente; CI desktop/mobile verde
 - Analisi fast path completata in `docs/FAST_PATH_RENDERING.md`: egui resta il piano overlay;
@@ -48,14 +48,6 @@ Il confronto con Chrome dovrà misurare l'incremento causato dalla pagina, non s
 
 ## In corso
 
-- Implementare il fast path A opt-in tramite `ROVES_DIRECT_PRESENT=1`: mantenere il rendering
-  Servo off-screen ma, quando le condizioni conservative sono soddisfatte, eseguire direttamente
-  blit e present senza tessellazione e paint egui.
-- Aggiungere test unitari per il parsing dell'opzione e conservare i test della decisione pura
-  fast-path/fallback già presenti in `ports/servoshell/desktop/gui.rs`.
-- Estendere lo smoke test CI desktop: avviare una build con `ROVES_DIRECT_PRESENT=1` e
-  `ROVES_PERF_LOG_INTERVAL_MS=1000`, quindi richiedere almeno un log con
-  `direct_presents > 0`; non introdurre soglie temporali CPU/RAM sui runner condivisi.
 - Preparare una matrice di benchmark riproducibile Roves/Chrome per misurare separatamente CPU,
   RAM e costo del painter egui dopo l'implementazione.
 - Valutare l'integrazione degli eventi gamepad nell'event pump SDL principale per eliminare anche il polling hot-plug inattivo a 1 Hz.
@@ -198,3 +190,18 @@ Il confronto con Chrome dovrà misurare l'incremento causato dalla pagina, non s
   superficie build/bundle.
 - Eseguire commit e push diretti su `main` (già autorizzati), osservare la CI fino al termine e
   correggere autonomamente eventuali errori prima di considerare concluso il lavoro.
+
+### 2026-09-26 — Fast path A opt-in
+
+- Implementato `ROVES_DIRECT_PRESENT=1`, con parsing rigoroso e default disabilitato.
+- `Gui::update` continua a eseguire egui e drenare input/dialoghi/AccessKit; il paint diretto
+  mantiene l'off-screen, esegue il blit e un solo present, senza tessellazione né painter egui.
+- La decisione per frame richiede WebView unica a piena finestra, assenza di dialoghi/status/focus,
+  AccessKit inattivo e nessuna texture pendente; splash, errori e ogni condizione mancante
+  conservano il percorso composto nello stesso frame.
+- Contatori diretti: `direct_presents`, `framebuffer_blits`, `window_presents`; fallback:
+  `composited_presents`. Test unitari del parsing e delle condizioni, smoke CI desktop con
+  intervallo diagnostico di 1000 ms e obbligo di osservare `direct_presents > 0`.
+- Patch sequenziale `0041-direct-present-fast-path.patch`, limitata ai file Servo.
+- Nessuna modifica alla superficie build/bundle, Packmaster o roves-action. Fast path B e
+  rimozione dell'off-screen rimandati; nessun guadagno CPU/RAM dichiarato senza misure reali.

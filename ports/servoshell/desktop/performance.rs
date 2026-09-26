@@ -215,7 +215,6 @@ pub(crate) fn record_composited_present() {
     }
 }
 
-#[expect(dead_code, reason = "used by the opt-in direct-present prototype in the next phase")]
 pub(crate) fn record_direct_present() {
     if let Some(counters) = counters() {
         increment(&counters.counts.direct_presents);

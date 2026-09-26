@@ -491,6 +491,8 @@ jobs:
           SAVE_EXPORT_PATH="$RUNNER_TEMP/roves-save-export-autotest.txt"
           rm -f "$SAVE_EXPORT_PATH"
           export ROVES_SAVE_FILE_AUTOTEST_PATH="$SAVE_EXPORT_PATH"
+          export ROVES_DIRECT_PRESENT=1
+          export ROVES_PERF_LOG_INTERVAL_MS=1000
 
           # `set -e` (this shell's default) would otherwise abort the whole step the
           # instant the launched process has already exited — right when this step most
@@ -565,6 +567,10 @@ jobs:
           # human, see the manual button in the same file.
           FILES=(smoke-stdout.log)
           [ -n "$LOG" ] && FILES+=("$LOG")
+          if ! grep -hE '\[roves-perf\].* direct_presents=[1-9][0-9]*([[:space:]]|$)' "${FILES[@]}"; then
+            echo "::error::opt-in fast path produced no interval with direct_presents > 0"
+            exit 1
+          fi
           SAVE_FILE_LINE=$(grep -h '\[roves-save-file-autotest\]' "${FILES[@]}" 2>/dev/null | tail -1)
           if [ -z "$SAVE_FILE_LINE" ]; then
             echo "::error::no [roves-save-file-autotest] result line found — test-page's roves:save_file check never completed"
@@ -650,6 +656,8 @@ jobs:
           $saveExportPath = Join-Path $env:RUNNER_TEMP "roves-save-export-autotest.txt"
           Remove-Item $saveExportPath -Force -ErrorAction SilentlyContinue
           $env:ROVES_SAVE_FILE_AUTOTEST_PATH = $saveExportPath
+          $env:ROVES_DIRECT_PRESENT = "1"
+          $env:ROVES_PERF_LOG_INTERVAL_MS = "1000"
           $proc = Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName -PassThru `
             -RedirectStandardOutput $stdout -RedirectStandardError $stderr
           # 25s, not 15s -- same reasoning and same bump as the Linux/macOS smoke-test step's
@@ -688,6 +696,13 @@ jobs:
           # smoke-test step's own equivalent check a few lines up in this file.
           $saveFileFiles = @($stdout)
           if ($log) { $saveFileFiles += $log.FullName }
+          $directPresentLines = Get-Content $saveFileFiles -ErrorAction SilentlyContinue |
+            Select-String -Pattern '\[roves-perf\].* direct_presents=[1-9][0-9]*(\s|$)'
+          if (-not $directPresentLines) {
+            Write-Host "::error::opt-in fast path produced no interval with direct_presents > 0"
+            exit 1
+          }
+          $directPresentLines | ForEach-Object { Write-Host $_.Line }
           $saveFileLine = Get-Content $saveFileFiles -ErrorAction SilentlyContinue |
             Select-String -Pattern '\[roves-save-file-autotest\]' | Select-Object -Last 1
           if (-not $saveFileLine) {

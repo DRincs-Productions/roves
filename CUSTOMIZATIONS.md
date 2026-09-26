@@ -18,6 +18,32 @@ they must stay in sync with reality).
 
 ---
 
+## 2026-09-26 — Opt-in direct presentation (fast path A)
+
+**Servo files:** `ports/servoshell/desktop/gui.rs`, `ports/servoshell/desktop/performance.rs`.
+**Patch:** `patches/servo-v0.5.0/0041-direct-present-fast-path.patch` (after 0001–0040).
+
+`Gui` reads the strict `ROVES_DIRECT_PRESENT=1` opt-in once. Normal updates still run egui,
+paint Servo off-screen and retain the composed callback. A per-frame decision requires one
+active full-window WebView, no dialog drawn (including one closed during this update), no
+status overlay or egui focus/pointer interaction, inactive AccessKit with no pending updates,
+and no egui texture uploads/frees. Splash/error updates reset the decision. Paint consumes it,
+rechecks window size and texture idleness, then uses the existing off-screen blit callback and
+one window present. If any condition fails or the callback is unavailable, egui tessellation
+and paint execute immediately using the current frame's output. No framebuffer is removed.
+
+The direct branch records framebuffer blits, direct presents and window presents; the composed
+branch keeps its counters. `performance.rs` removes the now-obsolete dead-code expectation on
+`record_direct_present`. Unit tests cover strict parsing and disabled/unsafe decisions.
+
+**Roves-only files (excluded from the Servo patch):** `.github/workflows/test.yml` enables the
+opt-in and 1000 ms counters in all desktop launch smoke tests and requires a positive direct
+present interval, without CPU/RAM/frame-time thresholds. `docs/FAST_PATH_RENDERING.md`,
+`ROVES_PERFORMANCE.md`, `README.md` and the sibling wiki's `content/docs/shell.mdx` document
+activation, fallback, counters and remaining hardware measurements. No build/bundle API change.
+
+---
+
 ## 2026-09-23 — Opt-in shell performance counters
 
 **Files:** `ports/servoshell/desktop/performance.rs`,
