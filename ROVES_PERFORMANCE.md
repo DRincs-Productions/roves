@@ -6,12 +6,14 @@ Ridurre CPU e memoria dei giochi eseguiti con Roves, con particolare attenzione 
 
 ## Stato
 
-- Fase corrente: baseline diagnostica e progettazione del fast path di rendering
+- Fase corrente: implementazione del fast path A di rendering, da proseguire in Codex
 - Modifiche al codice runtime: polling gamepad adattivo e scheduling repaint egui pubblicati su `main`
 - Ottimizzazioni confermate: riduzione percepibile del consumo nel test reale dell'utente; CI desktop/mobile verde
 - Analisi fast path completata in `docs/FAST_PATH_RENDERING.md`: egui resta il piano overlay;
   percorso A salta painter/tessellazione mantenendo l'off-screen, percorso B introduce una
   presentazione differita per rendere direttamente sul framebuffer della finestra.
+- Ultimo commit pronto e verificato: `89fc060` (`perf: prepare direct rendering fast path`),
+  con workflow GitHub Actions `35987823977` completamente verde.
 
 ## Criteri di misura da definire
 
@@ -46,8 +48,16 @@ Il confronto con Chrome dovrà misurare l'incremento causato dalla pagina, non s
 
 ## In corso
 
-- Preparare una matrice di benchmark riproducibile Roves/Chrome e contatori diagnostici per wake-up, redraw, paint e present.
-- Progettare un fast path di rendering per il caso normale del gioco, riducendo il passaggio off-screen -> egui -> finestra senza perdere dialoghi, accessibilità o compatibilità web.
+- Implementare il fast path A opt-in tramite `ROVES_DIRECT_PRESENT=1`: mantenere il rendering
+  Servo off-screen ma, quando le condizioni conservative sono soddisfatte, eseguire direttamente
+  blit e present senza tessellazione e paint egui.
+- Aggiungere test unitari per il parsing dell'opzione e conservare i test della decisione pura
+  fast-path/fallback già presenti in `ports/servoshell/desktop/gui.rs`.
+- Estendere lo smoke test CI desktop: avviare una build con `ROVES_DIRECT_PRESENT=1` e
+  `ROVES_PERF_LOG_INTERVAL_MS=1000`, quindi richiedere almeno un log con
+  `direct_presents > 0`; non introdurre soglie temporali CPU/RAM sui runner condivisi.
+- Preparare una matrice di benchmark riproducibile Roves/Chrome per misurare separatamente CPU,
+  RAM e costo del painter egui dopo l'implementazione.
 - Valutare l'integrazione degli eventi gamepad nell'event pump SDL principale per eliminare anche il polling hot-plug inattivo a 1 Hz.
 - Completare lo scheduling delle richieste egui differite tramite una deadline del loop eventi.
 - Rendere adattivo il polling delle callback Steam nelle sole build `steam`.
@@ -162,3 +172,29 @@ Il confronto con Chrome dovrà misurare l'incremento causato dalla pagina, non s
   `present()` differito per eliminare anche framebuffer e blit intermedi.
 - Completati contatori direct/composited e decisione fast-path pura con fallback testati.
 - Prossimo commit prestazionale: esperimento opt-in `ROVES_DIRECT_PRESENT=1` per il percorso A.
+
+### 2026-09-26 — Handoff delle prestazioni a Codex
+
+- Il lavoro prosegue dal commit `89fc060b05913b3f8bf7210c374b644001aeae93` su `main`.
+- Implementare soltanto il fast path A in questa fase; il fast path B con rendering diretto nel
+  framebuffer della finestra rimane un esperimento successivo, subordinato alle misure A/B.
+- Il percorso deve essere disattivato per default e attivabile con
+  `ROVES_DIRECT_PRESENT=1`. Il fallback composto esistente deve avvenire nello stesso frame se
+  manca anche una sola condizione di sicurezza: WebView unica e full-window, nessun dialogo o
+  status overlay, nessun focus egui, AccessKit inattivo e nessuna texture egui pendente.
+- `Gui::update` deve continuare a eseguire egui per drenare input, dialoghi e AccessKit. Solo il
+  pass di tessellazione/paint viene saltato nel fast path A; l'off-screen e il blit restano.
+- La presentazione diretta deve incrementare `direct_presents`, `framebuffer_blits` e
+  `window_presents`; il fallback deve continuare a incrementare `composited_presents`.
+- Aggiungere unit test e uno smoke test CI reale che fallisca se l'opzione è attiva ma nessuna
+  presentazione diretta viene osservata nei log diagnostici.
+- Prima di modificare leggere integralmente `CLAUDE.md`. Ogni modifica ai file Servo deve avere
+  una voce in `CUSTOMIZATIONS.md` e la nuova patch sequenziale
+  `patches/servo-v0.5.0/0041-*.patch`, applicabile alla sorgente upstream pulita. La patch non
+  deve contenere workflow o documenti specifici di Roves.
+- Aggiornare `docs/FAST_PATH_RENDERING.md`, questo registro, README e pagina wiki pertinente.
+  Il cambiamento interno opt-in non aggiunge un flag `mach bundle`, quindi non richiede una
+  nuova opzione Packmaster né modifiche a `roves-action`, salvo variazioni effettive della
+  superficie build/bundle.
+- Eseguire commit e push diretti su `main` (già autorizzati), osservare la CI fino al termine e
+  correggere autonomamente eventuali errori prima di considerare concluso il lavoro.
