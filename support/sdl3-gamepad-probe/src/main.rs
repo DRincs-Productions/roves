@@ -5,6 +5,13 @@ use sdl3::gamepad::{Axis, Button};
 use sdl3::joystick::{JoystickType, VirtualJoystickDescription};
 
 fn main() {
+    // The CI probe has no foreground window, so allow SDL to deliver its
+    // synthesized joystick events while running in the background.
+    assert!(
+        sdl3::hint::set("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1"),
+        "enable joystick events for the headless CI runner"
+    );
+
     eprintln!("probe start: {:?}", SystemTime::now());
 
     eprintln!("before sdl3::init");

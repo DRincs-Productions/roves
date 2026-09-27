@@ -1,19 +1,18 @@
 diff --git a/support/sdl3-gamepad-probe/src/main.rs b/support/sdl3-gamepad-probe/src/main.rs
-index bff3e3d663e..cf99be2942c 100644
+index cf99be2942c..7c1aad101dc 100644
 --- a/support/sdl3-gamepad-probe/src/main.rs
 +++ b/support/sdl3-gamepad-probe/src/main.rs
-@@ -106,6 +106,14 @@ fn main() {
-         .set_virtual_axis(Axis::LeftX.to_ll().0 as u32, 12_345)
-         .expect("set virtual gamepad axis");
-     joystick_subsystem.update();
-+    gamepad_subsystem.update();
-+    eprintln!(
-+        "virtual joystick axis state: {}; gamepad axis state: {}",
-+        joystick
-+            .axis(Axis::LeftX.to_ll().0 as u32)
-+            .expect("read virtual joystick axis"),
-+        gamepad.axis(Axis::LeftX)
+@@ -5,6 +5,13 @@ use sdl3::gamepad::{Axis, Button};
+ use sdl3::joystick::{JoystickType, VirtualJoystickDescription};
+ 
+ fn main() {
++    // The CI probe has no foreground window, so allow SDL to deliver its
++    // synthesized joystick events while running in the background.
++    assert!(
++        sdl3::hint::set("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1"),
++        "enable joystick events for the headless CI runner"
 +    );
-     let axis_events: Vec<_> = event_pump.poll_iter().collect();
-     eprintln!("events after virtual axis input: {axis_events:?}");
-     assert!(
++
+     eprintln!("probe start: {:?}", SystemTime::now());
+ 
+     eprintln!("before sdl3::init");
