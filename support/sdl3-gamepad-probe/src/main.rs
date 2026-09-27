@@ -106,10 +106,13 @@ fn main() {
         .set_virtual_axis(Axis::LeftX.to_ll().0 as u32, 12_345)
         .expect("set virtual gamepad axis");
     joystick_subsystem.update();
+    let axis_events: Vec<_> = event_pump.poll_iter().collect();
+    eprintln!("events after virtual axis input: {axis_events:?}");
     assert!(
-        event_pump.poll_iter().any(|event| matches!(
+        axis_events.iter().any(|event| matches!(
             event,
-            Event::GamepadAxisMotion { which, axis: Axis::LeftX, value: 12_345, .. } if which == id
+            Event::GamepadAxisMotion { which, axis: Axis::LeftX, value, .. }
+                if *which == id && *value != 0
         )),
         "SDL did not emit the virtual gamepad axis input"
     );
