@@ -147,12 +147,12 @@ hardware ancora aperta (IME CJK/dead key, screen reader, ecc.).
 - [ ] **Gamepad disabilitato su macOS, causa non confermata:** il runtime completo aveva
   `sdl3::init().gamepad()` bloccato su una precedente CI macOS (un run ha raggiunto le 6 ore);
   una variante che disabilitava solo IOKit non ha risolto il problema, come documentato in
-  `CUSTOMIZATIONS.md`. Il 2026-09-27 il nuovo probe isolato, con la versione SDL3 del lockfile,
-  ha completato `sdl3::init()`, `Sdl::gamepad()` e `Sdl::event_pump()` in pochi millisecondi su
-  `macos-26-arm64`. L'hang non si riproduce nel probe minimo; il gate resta disabilitato finché
-  non vengono verificati nel runtime completo e su un Mac reale connessione, input, disconnessione
-  e arresto. Il runtime inizializza SDL anche per la finestra prima del delegate gamepad: il probe
-  minimo non replica ancora questa sequenza. Rivedere `SDL3_WINDOWING_TESTING.md` e la patch `0042`.
+  `CUSTOMIZATIONS.md`. Il 2026-09-27 il probe isolato ha superato `sdl3::init()`,
+  `Sdl::gamepad()` e `Sdl::event_pump()` su `macos-26-arm64`; il blocco non si riproduce nel caso
+  minimo. Il test successivo aggiunge un gamepad virtuale con l'API di SDL3 e verifica gli eventi
+  di connessione, asse, pulsante e disconnessione su CI macOS/Windows/Linux. Questo copre SDL ma
+  non ancora il bridge verso Servo: verificare input Web e lifecycle nel runtime completo, poi
+  ripetere le prove su un Mac reale prima di rimuovere il gate `not(target_os = "macos")`.
 ## Rendering futuro: fast path wgpu — backlog
 
 - [ ] Progettare un fast path interno a Servo per il caso di una singola

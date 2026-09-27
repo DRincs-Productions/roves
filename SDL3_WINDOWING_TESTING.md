@@ -55,20 +55,19 @@ vera sessione grafica sui runner GitHub Actions. È plausibile che SDL3 windowin
 problemi simili (creazione finestra, focus, fullscreen) che solo un Mac reale, con una sessione
 utente vera, può rivelare.
 
-### Probe CI isolato per il gamepad SDL3
+### Probe CI SDL3 e gamepad virtuale
 
-`support/sdl3-gamepad-probe/` isola `sdl3::init()`, `Sdl::gamepad()` e `Sdl::event_pump()` usando
-la stessa versione SDL3 del manifest principale. Il job macOS registra i confini delle chiamate
-e arresta il processo dopo 90 secondi; l'ultima riga `before ...` identifica la chiamata che non
-ha restituito il controllo. Il job Ã¨ consultivo (`continue-on-error`): il blocco storico Ã¨ una
-diagnosi da seguire, non deve interrompere la matrice completa di compilazione. Un esito positivo
-su runner CI non basta da solo a riabilitare il gamepad nell'app macOS: completare connessione,
-disconnessione, input e shutdown su un Mac con sessione grafica reale.
+`support/sdl3-gamepad-probe/` usa la versione SDL3 bloccata dal manifest e compilata da sorgente,
+come la shell. Il probe registra i passaggi di inizializzazione e testa un dispositivo virtuale
+creato con l'API joysticks di SDL3: deve comparire come gamepad, aprirsi con
+`GamepadSubsystem::open`, generare un evento per l'asse e il pulsante simulati, e poi generare
+l'evento di rimozione. La CI esegue il probe su macOS, Windows e Linux senza controller fisico o
+driver virtuale di terze parti. Un watchdog termina il solo processo SDL dopo 90 secondi.
 
-Il 27 settembre 2026 il probe ha superato tutte e tre le chiamate in pochi millisecondi sul
-runner `macos-26-arm64`. L'hang non si riproduce nel caso minimo. Il probe non inizializza ancora
-prima il contesto finestra SDL3, come fa la shell prima di creare il delegate gamepad: questo
-resta il confronto successivo se il problema nel runtime completo ricompare.
+Il 27 settembre 2026 il probe di sola inizializzazione ha superato tutte e tre le chiamate in
+pochi millisecondi su `macos-26-arm64`. L'hang non si riproduce nel caso minimo. Questo test
+virtuale estende la verifica al rilevamento e agli eventi SDL; non copre ancora il bridge degli
+eventi da Servo al Gamepad API del Web né ripete il lifecycle della shell su hardware macOS reale.
 ## Come riprendere questo lavoro
 
 1. Leggere `CUSTOMIZATIONS.md`, le entry dal 2026-09-17 in poi (sezione SDL3 windowing), per il

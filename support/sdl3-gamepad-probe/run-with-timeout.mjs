@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { platform } from "node:os";
 
 const executable = process.argv[2];
 if (!executable) {
@@ -12,7 +13,10 @@ if (!Number.isFinite(timeoutMs) || timeoutMs < 1) {
   process.exit(2);
 }
 
-const child = spawn(executable, process.argv.slice(3), { stdio: "inherit" });
+const executablePath = platform() === "win32" && !executable.endsWith(".exe")
+  ? `${executable}.exe`
+  : executable;
+const child = spawn(executablePath, process.argv.slice(3), { stdio: "inherit" });
 let timedOut = false;
 const timer = setTimeout(() => {
   timedOut = true;

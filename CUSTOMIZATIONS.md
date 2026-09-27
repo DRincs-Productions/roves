@@ -2,28 +2,31 @@
 
 ## 2026-09-27 — Isolate the SDL3 gamepad initialization probe on macOS
 
-**Servo files:** `support/sdl3-gamepad-probe/` (standalone pinned SDL3 crate and timeout runner).
+**Servo files:** `support/sdl3-gamepad-probe/` (standalone pinned SDL3 crate, virtual-gamepad
+exercise, and timeout runner).
 **Patch:** `patches/servo-v0.5.0/0042-sdl3-macos-gamepad-probe.patch`.
 **Roves-only files:** `.github/workflows/test.yml`, `SDL3_WINDOWING_TESTING.md`, `README.md`, and
 the sibling wiki's `content/docs/shell.mdx`.
 
 The macOS gamepad hang had no low-cost way to distinguish `sdl3::init()`, gamepad subsystem
-initialization, and event-pump creation. The new standalone probe uses the same SDL3 crate
-version and static source build as the shell, logs immediately before and after each call, and
-runs in its own macOS CI job. A Node wrapper kills the probe process after 90 seconds without
-stopping the runner or full build matrix. The job is advisory because this hang is already a
-known issue; its log narrows the failing call for follow-up. The shell's macOS gamepad gate stays
-closed until controller connect, input, disconnect and shutdown pass on a real Mac session.
+initialization, and event-pump creation, or to test SDL's gamepad event path without physical
+hardware. The standalone probe uses the same SDL3 crate version and static source build as the
+shell, logs each initialization boundary, then attaches a native virtual SDL gamepad, opens it
+through `GamepadSubsystem`, sets an axis and button, and checks add/input/remove events. It runs
+on macOS, Windows, and Linux in a focused CI matrix. A Node wrapper kills only the probe process
+after 90 seconds without stopping the runner or full build matrix. Its results test SDL virtual
+device support and event delivery; the shell's macOS gamepad gate stays closed until controller
+input also passes through Servo on a real Mac session.
 
 The probe crate builds independently with `cargo build --release --manifest-path
 support/sdl3-gamepad-probe/Cargo.toml`. CI compiles it before applying the runtime timeout, so a
 slow native build cannot be mistaken for the SDL initialization hang.
 
-**CI result (2026-09-27):** the probe and complete source-build matrix passed. On
-`macos-26-arm64`, all three SDL calls returned in a few milliseconds. This does not reproduce
-the earlier full-runtime hang; the probe does not yet initialize the shell's window/event
-subsystems before constructing the gamepad delegate. Keep the macOS gamepad gate closed and
-compare that lifecycle on a real Mac or in a follow-up probe before changing runtime behavior.
+**CI result (2026-09-27):** the initialization-only version of the probe and complete
+source-build matrix passed. On `macos-26-arm64`, all three SDL initialization calls returned in
+a few milliseconds. The virtual-device lifecycle is added as a follow-up to test discovery,
+axis/button input and disconnect across desktop runners. Neither probe initializes Servo's Web
+gamepad bridge; keep the macOS runtime gate closed until end-to-end input passes on a real Mac.
 
 ---
 
