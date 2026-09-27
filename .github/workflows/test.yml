@@ -440,6 +440,21 @@ jobs:
             exit $STATUS
           fi
 
+      - name: run layout unit tests (ICU4X line breaking)
+        if: matrix.os_name == 'linux' && matrix.package_mode == 'portable'
+        shell: bash
+        working-directory: servo-src
+        run: |
+          set +e
+          ./mach test-unit -p servo-layout > /tmp/test-layout.log 2>&1
+          STATUS=$?
+          cat /tmp/test-layout.log
+          if [ $STATUS -ne 0 ]; then
+            echo "::error::mach test-unit -p servo-layout failed (exit $STATUS)"
+            tail -c 20000 /tmp/test-layout.log | while IFS= read -r line; do echo "::notice::$line"; done
+            exit $STATUS
+          fi
+
       # `mach bundle` (see ../CUSTOMIZATIONS.md) is what actually builds the
       # single play.exe/play.app/play executable — this step's only job is
       # to hand it the diagnostic page built above (test-page/dist, copied

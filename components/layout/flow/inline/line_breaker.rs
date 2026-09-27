@@ -35,6 +35,10 @@ impl LineBreaker {
     fn linebreaks_in_range_after_current_offset(&self, text_range: Range<usize>) -> Range<usize> {
         assert!(text_range.start <= text_range.end);
 
+        if self.linebreaks.is_empty() {
+            return 0..0;
+        }
+
         let mut linebreaks_range = self.current_offset..self.linebreaks.len();
 
         while self.linebreaks[linebreaks_range.start] < text_range.start &&
@@ -121,5 +125,33 @@ mod test {
             linebreaker.advance_to_linebreaks_in_range(2..0);
         })
         .expect_err("Reversed range should cause an assertion failure.");
+    }
+
+    #[test]
+    fn empty_text_has_no_line_breaks_and_empty_ranges_are_safe() {
+        let mut linebreaker = LineBreaker::new("", LineBreakOptions::default());
+        assert!(linebreaker.linebreaks.is_empty());
+        assert!(
+            linebreaker
+                .linebreaks_in_range_after_current_offset(0..0)
+                .is_empty()
+        );
+        assert!(linebreaker.advance_to_linebreaks_in_range(0..0).is_empty());
+    }
+
+    #[test]
+    fn unicode_line_breaks_never_split_a_combining_sequence() {
+        let text = "e\u{0301}漢字 👩‍👩‍👧‍👦";
+        let linebreaker = LineBreaker::new(text, LineBreakOptions::default());
+
+        assert!(linebreaker.linebreaks.contains(&text.len()));
+        assert!(
+            linebreaker
+                .linebreaks
+                .iter()
+                .all(|offset| text.is_char_boundary(*offset))
+        );
+        // UAX #14 prohibits a line break before a combining mark.
+        assert!(!linebreaker.linebreaks.contains(&1));
     }
 }

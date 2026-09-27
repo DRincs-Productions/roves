@@ -1,5 +1,16 @@
 # Customizations over upstream Servo
 
+## 2026-09-27 — Exercise ICU4X line breaking on Unicode boundaries
+
+**Servo files:** `components/layout/flow/inline/line_breaker.rs`.
+**Patch:** `patches/servo-v0.5.0/0044-icu4x-line-breaker-empty-unicode-tests.patch`.
+**Roves-only files:** `.github/workflows/test.yml`.
+
+The ICU4X-backed line breaker could index an empty breakpoint vector when asked for a range in
+empty text. It now returns an empty range safely. Tests cover empty text, multibyte UTF-8,
+combining marks, CJK and an emoji ZWJ sequence. The Linux portable CI leg runs the `servo-layout`
+unit suite in addition to the existing SDL shell tests.
+
 ## 2026-09-27 — Test SDL3 gamepad input mapping
 
 **Servo files:** `ports/servoshell/desktop/gamepad.rs`.

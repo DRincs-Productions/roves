@@ -66,8 +66,9 @@ implementazione Unicode perché una divergenza qui può alterare testo Web osser
 ## Stato e test
 
 La CI SDL verifica applicazione delle patch Servo pulito, contratti sorgente, probe SDL virtuale
-su tre sistemi desktop, suite unit test `servoshell` e bundle/package smoke test. La matrice di
-packaging può essere più lenta dei test preliminari; vedi il run collegato al commit più recente.
+su tre sistemi desktop, suite unit test `servoshell`, suite `servo-layout` con casi ICU4X e
+bundle/package smoke test. La matrice di packaging può essere più lenta dei test preliminari;
+vedi il run collegato al commit più recente.
 La CI headless non sostituisce le prove di finestra, Web Gamepad API, DPI, IME, accessibilità,
 XR o GPU su hardware reale. Nessun obiettivo di rimozione condizionale si considera completato
 finché mancano benchmark e confronto di parità previsti nel piano.
