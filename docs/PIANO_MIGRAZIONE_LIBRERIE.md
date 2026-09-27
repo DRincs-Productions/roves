@@ -2,6 +2,8 @@
 
 Aggiornato il 27 settembre 2026. Destinatario: Codex che implementerà modifiche nel fork. Ambito: librerie e infrastruttura di Roves, non dipendenze delle applicazioni ospitate.
 
+L'inventario dei consumatori e delle dipendenze attive è in [`docs/AUDIT_MIGRAZIONE_LIBRERIE.md`](./AUDIT_MIGRAZIONE_LIBRERIE.md); aggiornarlo con le evidenze raccolte da ogni tranche.
+
 ## Prima di eseguire
 
 Questo documento è un piano, **non un ordine di sostituire tutte le librerie**. Leggere lo stato attuale in `Cargo.toml`, `TODO.md`, `CUSTOMIZATIONS.md`, `docs/DEPENDENCY_REVIEW.md` e `SDL3_WINDOWING_TESTING.md` prima di ogni fase. Il codice cambia: non usare versioni o numeri di riga qui come fonte definitiva. Lavorare in incrementi isolati e reversibili, confrontando il comportamento prima/dopo sullo stesso carico. Per modifiche al motore seguire la procedura del repository per `CUSTOMIZATIONS.md` e le patch riproducibili in `patches/`; verificare che la CI costruisca davvero la stessa sorgente modificata. Separare sempre compilazione, smoke test headless e prova interattiva su hardware.
