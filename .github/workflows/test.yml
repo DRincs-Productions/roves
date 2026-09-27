@@ -440,7 +440,7 @@ jobs:
             exit $STATUS
           fi
 
-      - name: run layout unit tests (ICU4X line breaking)
+      - name: run layout unit tests (ICU4X Unicode equivalence)
         if: matrix.os_name == 'linux' && matrix.package_mode == 'portable'
         shell: bash
         working-directory: servo-src

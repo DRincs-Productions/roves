@@ -1,5 +1,16 @@
 # Customizations over upstream Servo
 
+## 2026-09-27 — Use ICU4X general categories for CSS first-letter
+
+**Servo files:** `components/layout/flow/inline/construct.rs`.
+**Patch:** `patches/servo-v0.5.0/0045-icu4x-first-letter-categories.patch`.
+**Roves-only files:** `.github/workflows/test.yml`.
+
+The `::first-letter` range classifier now reads ICU4X general categories, which layout already
+ships for other Unicode properties. The former `unicode_categories` runtime dependency is now
+dev-only; an exhaustive scalar-value test compares every category group used by the classifier
+against the former implementation. CI runs that comparison in the Linux portable layout suite.
+
 ## 2026-09-27 — Exercise ICU4X line breaking on Unicode boundaries
 
 **Servo files:** `components/layout/flow/inline/line_breaker.rs`.

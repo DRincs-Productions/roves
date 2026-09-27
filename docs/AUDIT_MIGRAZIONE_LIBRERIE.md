@@ -44,9 +44,10 @@ consumatore, mantenendo `surfman` come baseline.
 - `unicode-bidi` resta usato per livelli e riordino bidirezionale nel layout e per classi bidi
   negli input. Sostituirlo non è parte di questo audit.
 - `unicode-segmentation` è usato da `components/shared/base/rope.rs` per confini grapheme;
-  `unicode_categories` è usato nel costruttore inline per categorie di caratteri. Questi servizi
-  non sono la stessa API del line/word breaking ICU4X, quindi non sono duplicati rimovibili per
-  semplice cambio di manifest.
+  resta distinto dal line/word breaking ICU4X. `unicode_categories` era usato solo dal classificatore
+  `::first-letter`: è stato sostituito con i gruppi General_Category di ICU4X e spostato tra le
+  dipendenze di sviluppo per un confronto esaustivo di tutti i valori scalari Unicode. La suite
+  `servo-layout` in CI verifica la parità prima di rimuovere la crate dal runtime.
 - `encoding_rs` è usato dal percorso encoding Web e da `tendril`; conservarlo.
 
 La prossima migrazione sensata richiede un servizio duplicato dimostrato e casi di equivalenza
