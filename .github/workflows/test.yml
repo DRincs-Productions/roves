@@ -372,6 +372,27 @@ jobs:
             timeout 120 sudo apt-get install -y --no-install-recommends dpkg-dev
           fi
 
+      - name: verify surfman X11 feature is Linux-only
+        shell: bash
+        working-directory: servo-src
+        run: |
+          case "${{ matrix.os_name }}" in
+            linux) target=x86_64-unknown-linux-gnu; expects_x11=yes ;;
+            windows) target=x86_64-pc-windows-msvc; expects_x11=no ;;
+            macos) target=x86_64-apple-darwin; expects_x11=no ;;
+            *) echo "::error::unexpected target OS: ${{ matrix.os_name }}"; exit 1 ;;
+          esac
+          cargo tree --locked -p servoshell --target "$target" -e features -i surfman > /tmp/surfman-features.txt
+          if [ "$expects_x11" = yes ]; then
+            grep -Fq 'surfman feature "sm-x11"' /tmp/surfman-features.txt || {
+              echo "::error::Linux servoshell graph is missing surfman sm-x11"; exit 1;
+            }
+          else
+            if grep -Fq 'surfman feature "sm-x11"' /tmp/surfman-features.txt; then
+              echo "::error::non-Linux servoshell graph enables surfman sm-x11"; exit 1
+            fi
+          fi
+
       # windows-latest ships WiX Toolset v3 preinstalled (see
       # actions/runner-images), with $WIX pointing at its install root — but
       # its bin/ (candle.exe/light.exe, which `mach bundle --msi` shells out

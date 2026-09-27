@@ -137,11 +137,14 @@ serde_json = { workspace = true }
 # For optional feature servo-allocator/use-system-allocator and servo-allocator/allocation-tracking
 servo-allocator = { workspace = true }
 steamworks = { version = "0.13", optional = true }
-surfman = { workspace = true, features = ["sm-raw-window-handle-06", "sm-x11"] }
+surfman = { workspace = true, features = ["sm-raw-window-handle-06"] }
 sysinfo = { workspace = true }
 
 [target.'cfg(any(all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))'.dependencies]
 signal-hook-registry = { workspace = true }
+
+[target.'cfg(all(target_os = "linux", not(target_env = "ohos")))'.dependencies]
+surfman = { workspace = true, features = ["sm-x11"] }
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 accesskit_unix = { workspace = true }

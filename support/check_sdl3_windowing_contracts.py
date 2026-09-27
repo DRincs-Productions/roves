@@ -102,7 +102,9 @@ def main() -> None:
     assert "#[cfg(target_os = \"windows\")]" in accelerated_media_source
     assert "#[cfg(all(target_os = \"linux\", not(target_env = \"ohos\")))]" in accelerated_media_source
     assert "initialize_gl_accelerated_media" in accelerated_media_source
-    assert "surfman = { workspace = true, features = [\"sm-raw-window-handle-06\", \"sm-x11\"] }" in servoshell_manifest
+    assert 'surfman = { workspace = true, features = ["sm-raw-window-handle-06"] }' in servoshell_manifest
+    assert '[target.\'cfg(all(target_os = "linux", not(target_env = "ohos")))\'.dependencies]' in servoshell_manifest
+    assert 'surfman = { workspace = true, features = ["sm-x11"] }' in servoshell_manifest
     assert "egui::Event::Text(text.to_owned())" in gui_source, (
         "SDL TextInput must become egui Event::Text so dialog TextEdits accept typing"
     )

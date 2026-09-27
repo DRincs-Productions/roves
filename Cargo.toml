@@ -380,7 +380,7 @@ webdriver_server = { package = "servo-webdriver-server", version = "=0.5.0", pat
 webgl = { package = "servo-webgl", version = "=0.5.0", path = "components/webgl", default-features = false }
 webgpu = { package = "servo-webgpu", version = "=0.5.0", path = "components/webgpu" }
 webgpu_traits = { package = "servo-webgpu-traits", version = "=0.5.0", path = "components/shared/webgpu" }
-webxr = { package = "servo-webxr", version = "=0.5.0", path = "components/webxr" }
+webxr = { package = "servo-webxr", version = "=0.5.0", path = "components/webxr", default-features = false }
 webxr-api = { package = "servo-webxr-api", version = "=0.5.0", path = "components/shared/webxr" }
 xpath = { package = "servo-xpath", version = "=0.5.0", path = "components/xpath" }
 # End workspace-version dependencies - Don't change this comment, we grep for it in scripts!

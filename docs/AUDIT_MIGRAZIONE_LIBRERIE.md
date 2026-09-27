@@ -35,8 +35,8 @@ x86_64-pc-windows-msvc`) conferma i consumer `servo-paint`, `servo-paint-api`, `
 `servo-webxr` e `servoshell`. La dipendenza diretta desktop di `servoshell` non è ridondante:
 `desktop/accelerated_gl_media.rs` legge il context EGL e il display nativo di surfman per inizializzare
 i media accelerati su Windows/Linux; su macOS il bridge è un no-op. La CI ora protegge esplicitamente
-questa interop e le feature raw-window-handle/X11 del manifest. La dipendenza Android/OHOS è in una
-sezione target separata.
+questa interop e la feature raw-window-handle del manifest. La dipendenza Android/OHOS è in una sezione target separata.
+La patch 0045 restringe `surfman/sm-x11` a Linux, inclusi paint e WebXR; il controllo `cargo tree` della matrice desktop verifica che Linux lo mantenga e che Windows/macOS non lo abilitino. `surfman` resta nel grafo dei target che usano i context grafici e non viene rimosso.
 
 L'audit non identifica un consumatore isolato che possa perdere la dipendenza senza cambiare
 prima l'interfaccia condivisa di rendering. Non è stato raccolto un benchmark GPU o una misura

@@ -1,0 +1,55 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -380,7 +380,7 @@ webdriver_server = { package = "servo-webdriver-server", version = "=0.5.0", pat
+ webgl = { package = "servo-webgl", version = "=0.5.0", path = "components/webgl", default-features = false }
+ webgpu = { package = "servo-webgpu", version = "=0.5.0", path = "components/webgpu" }
+ webgpu_traits = { package = "servo-webgpu-traits", version = "=0.5.0", path = "components/shared/webgpu" }
+-webxr = { package = "servo-webxr", version = "=0.5.0", path = "components/webxr" }
++webxr = { package = "servo-webxr", version = "=0.5.0", path = "components/webxr", default-features = false }
+ webxr-api = { package = "servo-webxr-api", version = "=0.5.0", path = "components/shared/webxr" }
+ xpath = { package = "servo-xpath", version = "=0.5.0", path = "components/xpath" }
+ # End workspace-version dependencies - Don't change this comment, we grep for it in scripts!
+--- a/components/servo/Cargo.toml
++++ b/components/servo/Cargo.toml
+@@ -154,7 +154,9 @@ webxr = { workspace = true, optional = true }
+
+ [target.'cfg(not(any(target_os = "android", target_env = "ohos")))'.dependencies]
+ arboard = { workspace = true, optional = true }
+-webxr = { workspace = true, optional = true, features = ["glwindow", "headless"] }
++
++[target.'cfg(target_os = "linux")'.dependencies]
++webxr = { workspace = true, optional = true, features = ["glwindow", "headless", "x11"] }
+
+ [target.'cfg(all(not(target_os = "windows"), not(target_os = "ios"), not(target_os = "android"), not(target_env = "ohos"), not(target_arch = "arm"), not(target_arch = "aarch64"), not(target_arch="riscv32"), not(target_arch="riscv64")))'.dependencies]
+ gaol = { workspace = true }
+--- a/components/shared/paint/Cargo.toml
++++ b/components/shared/paint/Cargo.toml
+@@ -44,6 +44,9 @@ smallvec = { workspace = true }
+ strum = { workspace = true }
+ stylo = { workspace = true }
+ stylo_traits = { workspace = true }
+-surfman = { workspace = true, features = ["sm-x11"] }
++surfman = { workspace = true }
+ tracing = { workspace = true, optional = true }
+ webrender_api = { workspace = true }
++
++[target.'cfg(target_os = "linux")'.dependencies]
++surfman = { workspace = true, features = ["sm-x11"] }
+--- a/ports/servoshell/Cargo.toml
++++ b/ports/servoshell/Cargo.toml
+@@ -137,12 +137,15 @@ serde_json = { workspace = true }
+ # For optional feature servo-allocator/use-system-allocator and servo-allocator/allocation-tracking
+ servo-allocator = { workspace = true }
+ steamworks = { version = "0.13", optional = true }
+-surfman = { workspace = true, features = ["sm-raw-window-handle-06", "sm-x11"] }
++surfman = { workspace = true, features = ["sm-raw-window-handle-06"] }
+ sysinfo = { workspace = true }
+
+ [target.'cfg(any(all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))'.dependencies]
+ signal-hook-registry = { workspace = true }
+
++[target.'cfg(all(target_os = "linux", not(target_env = "ohos")))'.dependencies]
++surfman = { workspace = true, features = ["sm-x11"] }
++
+ [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+ accesskit_unix = { workspace = true }

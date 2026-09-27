@@ -1,4 +1,14 @@
 # Customizations over upstream Servo
+## 2026-09-27 - Limit surfman X11 support to Linux
+
+**Servo files:** root `Cargo.toml`, `components/servo/Cargo.toml`, `components/shared/paint/Cargo.toml`, and `ports/servoshell/Cargo.toml`.
+**Patch:** `patches/servo-v0.5.0/0045-surfman-linux-x11-only.patch`.
+**Roves-only files:** `.github/workflows/test.yml`, `docs/AUDIT_MIGRAZIONE_LIBRERIE.md`.
+
+The X11 backend feature was enabled unconditionally by shared paint and shell dependencies, and the `servo-webxr` default feature propagated it to every target. The workspace now disables WebXR defaults and enables its X11 feature only on Linux; paint and servoshell likewise request `surfman/sm-x11` only on Linux. Linux retains the backend it needs, while Windows and macOS no longer compile or carry the X11 feature.
+
+The CI checks the effective `servoshell` feature graph on Linux, Windows, and macOS, then continues through each platform's existing package build and smoke tests. Local `cargo tree --locked` checks confirmed the expected feature graph on all three targets. This narrows an unnecessary backend feature; it does not remove `surfman`, which remains required by rendering, WebGL/WebXR, and accelerated media paths.
+
 
 ## 2026-09-27 — Exercise ICU4X line breaking on Unicode boundaries
 
