@@ -30,6 +30,14 @@ manifest mostrano un uso condiviso, non limitato alla finestra desktop.
 | WebXR | `servo-webxr`, `surfman_layer_manager.rs`, backend OpenXR | Layer/surface XR e adapter grafico OpenXR | Dispositivo/runtime XR disponibile e verifica di ogni backend |
 | Mobile e headless | paint API condivisa e contesto software Servo | Context software/offscreen oltre ai backend desktop | Build e smoke test per Android/OHOS e modalità headless |
 
+Il grafo Cargo Windows (`cargo tree --locked -i surfman -p servoshell --target
+x86_64-pc-windows-msvc`) conferma i consumer `servo-paint`, `servo-paint-api`, `servo-webgl`,
+`servo-webxr` e `servoshell`. La dipendenza diretta desktop di `servoshell` non è ridondante:
+`desktop/accelerated_gl_media.rs` legge il context EGL e il display nativo di surfman per inizializzare
+i media accelerati su Windows/Linux; su macOS il bridge è un no-op. La CI ora protegge esplicitamente
+questa interop e le feature raw-window-handle/X11 del manifest. La dipendenza Android/OHOS è in una
+sezione target separata.
+
 L'audit non identifica un consumatore isolato che possa perdere la dipendenza senza cambiare
 prima l'interfaccia condivisa di rendering. Non è stato raccolto un benchmark GPU o una misura
 di latenza; quindi non c'è evidenza per iniziare un nuovo backend SDL/wgpu né per dichiarare una
