@@ -54,8 +54,8 @@ consumatore, mantenendo `surfman` come baseline.
 - `unicode-segmentation` è usato da `components/shared/base/rope.rs` per confini grapheme;
   resta distinto dal line/word breaking ICU4X. `unicode_categories` è usato solo dal classificatore
   `::first-letter`. Un confronto esaustivo di sette gruppi General_Category, con ICU4X 1.5.1 e
-  `unicode_categories` 0.1.1, ha trovato 22.523 differenze fra i valori scalari validi: ICU4X
-  riconosce molte assegnazioni Unicode successive che la tabella della crate più vecchia tratta
+  `unicode_categories` 0.1.1, ha trovato 22.523 disaccordi carattere/gruppo: ICU4X riconosce
+  molte assegnazioni Unicode successive che la tabella della crate più vecchia tratta
   come non assegnate. Siccome ciò cambia il range Web esposto da `::first-letter`, la migrazione è
   stata annullata e la dipendenza runtime resta. Ripetere il confronto insieme a un futuro upgrade
   della versione dati prima di riaprire la sostituzione.
