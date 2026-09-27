@@ -106,6 +106,14 @@ fn main() {
         .set_virtual_axis(Axis::LeftX.to_ll().0 as u32, 12_345)
         .expect("set virtual gamepad axis");
     joystick_subsystem.update();
+    gamepad_subsystem.update();
+    eprintln!(
+        "virtual joystick axis state: {}; gamepad axis state: {}",
+        joystick
+            .axis(Axis::LeftX.to_ll().0 as u32)
+            .expect("read virtual joystick axis"),
+        gamepad.axis(Axis::LeftX)
+    );
     let axis_events: Vec<_> = event_pump.poll_iter().collect();
     eprintln!("events after virtual axis input: {axis_events:?}");
     assert!(

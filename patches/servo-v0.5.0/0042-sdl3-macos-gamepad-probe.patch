@@ -1,20 +1,19 @@
 diff --git a/support/sdl3-gamepad-probe/src/main.rs b/support/sdl3-gamepad-probe/src/main.rs
-index 0a4b63a01b9..bff3e3d663e 100644
+index bff3e3d663e..cf99be2942c 100644
 --- a/support/sdl3-gamepad-probe/src/main.rs
 +++ b/support/sdl3-gamepad-probe/src/main.rs
-@@ -106,10 +106,13 @@ fn main() {
+@@ -106,6 +106,14 @@ fn main() {
          .set_virtual_axis(Axis::LeftX.to_ll().0 as u32, 12_345)
          .expect("set virtual gamepad axis");
      joystick_subsystem.update();
-+    let axis_events: Vec<_> = event_pump.poll_iter().collect();
-+    eprintln!("events after virtual axis input: {axis_events:?}");
++    gamepad_subsystem.update();
++    eprintln!(
++        "virtual joystick axis state: {}; gamepad axis state: {}",
++        joystick
++            .axis(Axis::LeftX.to_ll().0 as u32)
++            .expect("read virtual joystick axis"),
++        gamepad.axis(Axis::LeftX)
++    );
+     let axis_events: Vec<_> = event_pump.poll_iter().collect();
+     eprintln!("events after virtual axis input: {axis_events:?}");
      assert!(
--        event_pump.poll_iter().any(|event| matches!(
-+        axis_events.iter().any(|event| matches!(
-             event,
--            Event::GamepadAxisMotion { which, axis: Axis::LeftX, value: 12_345, .. } if which == id
-+            Event::GamepadAxisMotion { which, axis: Axis::LeftX, value, .. }
-+                if *which == id && *value != 0
-         )),
-         "SDL did not emit the virtual gamepad axis input"
-     );
