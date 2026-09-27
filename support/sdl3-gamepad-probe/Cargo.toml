@@ -6,5 +6,10 @@ publish = false
 
 [workspace]
 
-[dependencies]
+[target.'cfg(not(target_os = "linux"))'.dependencies]
 sdl3 = { version = "0.20", default-features = false, features = ["build-from-source-static"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The runner only tests SDL's joystick/gamepad API. A console build avoids making its
+# SDL-from-source build depend on X11 or Wayland development packages.
+sdl3 = { version = "0.20", default-features = false, features = ["build-from-source-static", "build-from-source-unix-console"] }

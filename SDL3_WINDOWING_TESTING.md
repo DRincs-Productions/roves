@@ -63,6 +63,7 @@ creato con l'API joysticks di SDL3: deve comparire come gamepad, aprirsi con
 `GamepadSubsystem::open`, generare un evento per l'asse e il pulsante simulati, e poi generare
 l'evento di rimozione. La CI esegue il probe su macOS, Windows e Linux senza controller fisico o
 driver virtuale di terze parti. Un watchdog termina il solo processo SDL dopo 90 secondi.
+Il probe Linux usa la build console di SDL3 per non dipendere da header grafici nel runner.
 
 Il 27 settembre 2026 il probe di sola inizializzazione ha superato tutte e tre le chiamate in
 pochi millisecondi su `macos-26-arm64`. L'hang non si riproduce nel caso minimo. Questo test

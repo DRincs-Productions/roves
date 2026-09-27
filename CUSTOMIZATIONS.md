@@ -18,6 +18,10 @@ after 90 seconds without stopping the runner or full build matrix. Its results t
 device support and event delivery; the shell's macOS gamepad gate stays closed until controller
 input also passes through Servo on a real Mac session.
 
+On the Linux probe target, the standalone manifest enables SDL3's Unix console build because
+the test needs joystick/gamepad support but no display server. This avoids adding X11/Wayland
+development libraries to the focused runner.
+
 The probe crate builds independently with `cargo build --release --manifest-path
 support/sdl3-gamepad-probe/Cargo.toml`. CI compiles it before applying the runtime timeout, so a
 slow native build cannot be mistaken for the SDL initialization hang.
