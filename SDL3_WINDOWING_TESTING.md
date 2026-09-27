@@ -64,6 +64,9 @@ creato con l'API joysticks di SDL3: deve comparire come gamepad, aprirsi con
 l'evento di rimozione. La CI esegue il probe su macOS, Windows e Linux senza controller fisico o
 driver virtuale di terze parti. Un watchdog termina il solo processo SDL dopo 90 secondi.
 Il probe Linux usa la build console di SDL3 per non dipendere da header grafici nel runner.
+I test unitari di `servoshell::desktop::gamepad` coprono separatamente la conversione
+SDL→Servo: indici dei pulsanti standard, quattro assi, segno Y, estremi degli assi e trigger
+analogici. La CI li esegue con la suite di test del crate; non simulano una WebView reale.
 
 Il 27 settembre 2026 il probe di sola inizializzazione ha superato tutte e tre le chiamate in
 pochi millisecondi su `macos-26-arm64`. L'hang non si riproduce nel caso minimo. Questo test

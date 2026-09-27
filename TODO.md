@@ -150,9 +150,10 @@ hardware ancora aperta (IME CJK/dead key, screen reader, ecc.).
   `CUSTOMIZATIONS.md`. Il 2026-09-27 il probe isolato ha superato `sdl3::init()`,
   `Sdl::gamepad()` e `Sdl::event_pump()` su `macos-26-arm64`; il blocco non si riproduce nel caso
   minimo. Il test successivo aggiunge un gamepad virtuale con l'API di SDL3 e verifica gli eventi
-  di connessione, asse, pulsante e disconnessione su CI macOS/Windows/Linux. Questo copre SDL ma
-  non ancora il bridge verso Servo: verificare input Web e lifecycle nel runtime completo, poi
-  ripetere le prove su un Mac reale prima di rimuovere il gate `not(target_os = "macos")`.
+  di connessione, asse, pulsante e disconnessione su CI macOS/Windows/Linux. I test del bridge
+  verificano ora la mappatura SDL→Servo per pulsanti standard, assi, trigger e valori limite.
+  Restano da verificare input Web e lifecycle nel runtime completo, poi ripetere le prove su un
+  Mac reale prima di rimuovere il gate `not(target_os = "macos")`.
 ## Rendering futuro: fast path wgpu — backlog
 
 - [ ] Progettare un fast path interno a Servo per il caso di una singola

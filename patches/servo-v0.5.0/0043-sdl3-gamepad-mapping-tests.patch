@@ -1,0 +1,225 @@
+--- a/ports/servoshell/desktop/gamepad.rs
++++ b/ports/servoshell/desktop/gamepad.rs
+@@ -41,25 +41,143 @@ fn gamepad_poll_interval(has_open_gamepads: bool, has_pending_haptics: bool) ->
+     }
+ }
+ 
++fn map_gamepad_axis(axis: Axis, value: i16) -> GamepadUpdateType {
++    match axis {
++        Axis::TriggerLeft | Axis::TriggerRight => {
++            let mapped_index = if axis == Axis::TriggerLeft { 6 } else { 7 };
++            let axis_value = value.max(0) as f64 / i16::MAX as f64;
++            GamepadUpdateType::Button(mapped_index, axis_value)
++        },
++        Axis::LeftX | Axis::LeftY | Axis::RightX | Axis::RightY => {
++            let mapped_axis = match axis {
++                Axis::LeftX => 0,
++                Axis::LeftY => 1,
++                Axis::RightX => 2,
++                Axis::RightY => 3,
++                _ => unreachable!(),
++            };
++            let axis_value = value as f64
++                / if value < 0 {
++                    -(i16::MIN as f64)
++                } else {
++                    i16::MAX as f64
++                };
++            GamepadUpdateType::Axis(mapped_axis, axis_value)
++        },
++    }
++}
++
+ #[cfg(test)]
+ mod poll_interval_tests {
+-    use super::{
+-        ACTIVE_GAMEPAD_POLL_INTERVAL, IDLE_GAMEPAD_POLL_INTERVAL, gamepad_poll_interval,
+-    };
++    use super::{ACTIVE_GAMEPAD_POLL_INTERVAL, IDLE_GAMEPAD_POLL_INTERVAL, gamepad_poll_interval};
+ 
+     #[test]
+     fn idle_without_a_controller_uses_the_hotplug_interval() {
+-        assert_eq!(gamepad_poll_interval(false, false), IDLE_GAMEPAD_POLL_INTERVAL);
++        assert_eq!(
++            gamepad_poll_interval(false, false),
++            IDLE_GAMEPAD_POLL_INTERVAL
++        );
+     }
+ 
+     #[test]
+     fn an_open_controller_uses_the_input_interval() {
+-        assert_eq!(gamepad_poll_interval(true, false), ACTIVE_GAMEPAD_POLL_INTERVAL);
++        assert_eq!(
++            gamepad_poll_interval(true, false),
++            ACTIVE_GAMEPAD_POLL_INTERVAL
++        );
+     }
+ 
+     #[test]
+     fn pending_haptics_keep_the_input_interval_active() {
+-        assert_eq!(gamepad_poll_interval(false, true), ACTIVE_GAMEPAD_POLL_INTERVAL);
++        assert_eq!(
++            gamepad_poll_interval(false, true),
++            ACTIVE_GAMEPAD_POLL_INTERVAL
++        );
++    }
++}
++
++#[cfg(test)]
++mod mapping_tests {
++    use super::{Axis, Button, GamepadUpdateType, ServoshellGamepadDelegate, map_gamepad_axis};
++
++    #[test]
++    fn maps_standard_buttons_and_ignores_non_standard_buttons() {
++        let standard = [
++            (Button::South, 0),
++            (Button::East, 1),
++            (Button::West, 2),
++            (Button::North, 3),
++            (Button::LeftShoulder, 4),
++            (Button::RightShoulder, 5),
++            (Button::Back, 8),
++            (Button::Start, 9),
++            (Button::LeftStick, 10),
++            (Button::RightStick, 11),
++            (Button::DPadUp, 12),
++            (Button::DPadDown, 13),
++            (Button::DPadLeft, 14),
++            (Button::DPadRight, 15),
++            (Button::Guide, 16),
++        ];
++
++        for (button, expected_index) in standard {
++            assert_eq!(
++                ServoshellGamepadDelegate::map_gamepad_button(button),
++                expected_index
++            );
++        }
++        assert_eq!(
++            ServoshellGamepadDelegate::map_gamepad_button(Button::Misc1),
++            17
++        );
++    }
++
++    #[test]
++    fn maps_standard_axes_and_preserves_downward_positive_y() {
++        let axes = [
++            (Axis::LeftX, 0),
++            (Axis::LeftY, 1),
++            (Axis::RightX, 2),
++            (Axis::RightY, 3),
++        ];
++
++        for (axis, expected_index) in axes {
++            assert!(
++                matches!(map_gamepad_axis(axis, 0), GamepadUpdateType::Axis(index, _) if index == expected_index)
++            );
++        }
++
++        // The SDL Y axis follows the Web Gamepad convention: positive means down.
++        let update = map_gamepad_axis(Axis::LeftY, 16_384);
++        assert!(matches!(update, GamepadUpdateType::Axis(1, value) if value > 0.0));
++    }
++
++    #[test]
++    fn maps_axis_extremes_to_the_standard_range() {
++        assert!(
++            matches!(map_gamepad_axis(Axis::LeftX, i16::MIN), GamepadUpdateType::Axis(0, value) if value == -1.0)
++        );
++        assert!(
++            matches!(map_gamepad_axis(Axis::LeftX, i16::MAX), GamepadUpdateType::Axis(0, value) if value == 1.0)
++        );
++    }
++
++    #[test]
++    fn clamps_trigger_values_to_zero_through_one() {
++        for raw in [i16::MIN, 0, i16::MAX] {
++            assert!(
++                matches!(map_gamepad_axis(Axis::TriggerLeft, raw), GamepadUpdateType::Button(6, value) if (0.0..=1.0).contains(&value))
++            );
++            assert!(
++                matches!(map_gamepad_axis(Axis::TriggerRight, raw), GamepadUpdateType::Button(7, value) if (0.0..=1.0).contains(&value))
++            );
++        }
++        assert!(
++            matches!(map_gamepad_axis(Axis::TriggerLeft, i16::MIN), GamepadUpdateType::Button(6, value) if value == 0.0)
++        );
++        assert!(
++            matches!(map_gamepad_axis(Axis::TriggerRight, i16::MAX), GamepadUpdateType::Button(7, value) if value == 1.0)
++        );
+     }
+ }
+ 
+@@ -171,7 +289,9 @@ impl ServoshellGamepadDelegate {
+                             continue;
+                         },
+                     };
+-                    let name = gamepad.name().unwrap_or_else(|| "Unknown Gamepad".to_owned());
++                    let name = gamepad
++                        .name()
++                        .unwrap_or_else(|| "Unknown Gamepad".to_owned());
+                     sdl_state.open_gamepads.insert(which, gamepad);
+                     let index = GamepadIndex(which.raw() as usize);
+                     Self::dispatch(state, event, name, index);
+@@ -181,9 +301,9 @@ impl ServoshellGamepadDelegate {
+                     let index = GamepadIndex(which.raw() as usize);
+                     Self::dispatch(state, event, String::new(), index);
+                 },
+-                Event::GamepadAxisMotion { which, .. } |
+-                Event::GamepadButtonDown { which, .. } |
+-                Event::GamepadButtonUp { which, .. } => {
++                Event::GamepadAxisMotion { which, .. }
++                | Event::GamepadButtonDown { which, .. }
++                | Event::GamepadButtonUp { which, .. } => {
+                     let name = sdl_state
+                         .open_gamepads
+                         .get(&which)
+@@ -246,8 +366,9 @@ impl ServoshellGamepadDelegate {
+     }
+ 
+     fn dispatch(state: &RunningAppState, event: Event, name: String, index: GamepadIndex) {
+-        let Some(active_webview) =
+-            state.focused_window().and_then(|window| window.active_webview())
++        let Some(active_webview) = state
++            .focused_window()
++            .and_then(|window| window.active_webview())
+         else {
+             return;
+         };
+@@ -283,35 +404,7 @@ impl ServoshellGamepadDelegate {
+                 }
+             },
+             Event::GamepadAxisMotion { axis, value, .. } => {
+-                match axis {
+-                    // The analog triggers: SDL reports these as axes (0..=32767), but the
+-                    // Gamepad spec's "Standard Gamepad" represents them as buttons 6/7 with an
+-                    // analog value -- same convention the old GilRs code already used.
+-                    Axis::TriggerLeft | Axis::TriggerRight => {
+-                        let mapped_index = if axis == Axis::TriggerLeft { 6 } else { 7 };
+-                        let axis_value = (value.max(0) as f64) / (i16::MAX as f64);
+-                        let update_type = GamepadUpdateType::Button(mapped_index, axis_value);
+-                        gamepad_event = Some(GamepadEvent::Updated(index, update_type));
+-                    },
+-                    // Map axis index and value to represent Standard Gamepad axis
+-                    // <https://www.w3.org/TR/gamepad/#dfn-represents-a-standard-gamepad-axis>
+-                    Axis::LeftX | Axis::LeftY | Axis::RightX | Axis::RightY => {
+-                        let mapped_axis: usize = match axis {
+-                            Axis::LeftX => 0,
+-                            Axis::LeftY => 1,
+-                            Axis::RightX => 2,
+-                            Axis::RightY => 3,
+-                            _ => unreachable!(),
+-                        };
+-                        // Unlike GilRs (whose Y axes are inverted relative to the spec, see the
+-                        // old code's own comment), SDL's Y axes already follow the Gamepad
+-                        // spec's convention directly (down is positive) -- no sign flip needed.
+-                        let axis_value = value as f64 /
+-                            if value < 0 { -(i16::MIN as f64) } else { i16::MAX as f64 };
+-                        let update_type = GamepadUpdateType::Axis(mapped_axis, axis_value);
+-                        gamepad_event = Some(GamepadEvent::Updated(index, update_type));
+-                    },
+-                }
++                gamepad_event = Some(GamepadEvent::Updated(index, map_gamepad_axis(axis, value)));
+             },
+             Event::GamepadAdded { .. } => {
+                 let bounds = GamepadInputBounds {

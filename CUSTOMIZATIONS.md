@@ -1,5 +1,17 @@
 # Customizations over upstream Servo
 
+## 2026-09-27 — Test SDL3 gamepad input mapping
+
+**Servo files:** `ports/servoshell/desktop/gamepad.rs`.
+**Patch:** `patches/servo-v0.5.0/0043-sdl3-gamepad-mapping-tests.patch`.
+**Roves-only files:** `TODO.md` and `SDL3_WINDOWING_TESTING.md`.
+
+Extracted SDL axis and trigger conversion into a pure helper used by the runtime bridge. Unit
+tests now check all Standard Gamepad button indices, ignored non-standard buttons, all four axis
+indices, positive-down Y behavior, axis endpoints, and analog trigger clamping. The tests run
+with servoshell's existing cross-platform unit-test step. They verify mapping logic, not delivery
+to a live WebView; hardware checks and the macOS runtime gate remain open.
+
 ## 2026-09-27 — Isolate the SDL3 gamepad initialization probe on macOS
 
 **Servo files:** `support/sdl3-gamepad-probe/` (standalone pinned SDL3 crate, virtual-gamepad
