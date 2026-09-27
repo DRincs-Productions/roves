@@ -14,6 +14,8 @@ TRACING = ROOT / "ports/servoshell/desktop/tracing.rs"
 KEYUTILS = ROOT / "ports/servoshell/desktop/keyutils.rs"
 GUI = ROOT / "ports/servoshell/desktop/gui.rs"
 ACCESSIBILITY = ROOT / "ports/servoshell/desktop/accessibility.rs"
+ACCELERATED_GL_MEDIA = ROOT / "ports/servoshell/desktop/accelerated_gl_media.rs"
+SERVOSHELL_MANIFEST = ROOT / "ports/servoshell/Cargo.toml"
 PATCH = ROOT / "patches/servo-v0.5.0/0001-desktop-shell-core.patch"
 
 
@@ -43,6 +45,8 @@ def main() -> None:
     keyutils_source = KEYUTILS.read_text(encoding="utf-8")
     gui_source = GUI.read_text(encoding="utf-8")
     accessibility_source = ACCESSIBILITY.read_text(encoding="utf-8")
+    accelerated_media_source = ACCELERATED_GL_MEDIA.read_text(encoding="utf-8")
+    servoshell_manifest = SERVOSHELL_MANIFEST.read_text(encoding="utf-8")
     variants = enum_variants(event_source, "WindowEvent")
     assert variants, "WindowEvent has no detected variants"
 
@@ -91,6 +95,14 @@ def main() -> None:
         assert f"egui::Event::{egui_event}" in gui_source, f"egui {egui_event} bridge is missing"
     for egui_event in ("Key", "Ime", "Copy", "Cut", "Paste"):
         assert f"egui::Event::{egui_event}" in gui_source, f"egui {egui_event} bridge is missing"
+
+    # surfman is still required by native accelerated-media interop on Windows/Linux.
+    # Keep this explicit so an attempted dependency removal cannot silently disable it.
+    assert "setup_gl_accelerated_media(details.0, details.1)" in headed_source
+    assert "#[cfg(target_os = \"windows\")]" in accelerated_media_source
+    assert "#[cfg(all(target_os = \"linux\", not(target_env = \"ohos\")))]" in accelerated_media_source
+    assert "initialize_gl_accelerated_media" in accelerated_media_source
+    assert "surfman = { workspace = true, features = [\"sm-raw-window-handle-06\", \"sm-x11\"] }" in servoshell_manifest
     assert "egui::Event::Text(text.to_owned())" in gui_source, (
         "SDL TextInput must become egui Event::Text so dialog TextEdits accept typing"
     )
