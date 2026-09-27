@@ -1,9 +1,9 @@
---- a/components/layout/flow/inline/construct.rs
+﻿--- a/components/layout/flow/inline/construct.rs
 +++ b/components/layout/flow/inline/construct.rs
 @@ -6,7 +6,7 @@ use std::borrow::Cow;
  use std::cell::LazyCell;
  use std::ops::{ControlFlow, Range};
- 
+
 -use icu_properties::BidiClass;
 +use icu_properties::{maps, BidiClass, GeneralCategoryGroup as GcGroup};
  use layout_api::{LayoutNode, SharedSelection};
@@ -14,11 +14,11 @@
  use style::selector_parser::PseudoElement;
  use unicode_bidi::Level;
 -use unicode_categories::UnicodeCategories;
- 
+
  use super::text_run::TextRun;
  use super::{
 @@ -626,30 +625,40 @@ fn first_letter_range(text: &str) -> Range<usize> {
- 
+
      let mut start = 0;
      let mut state = State::Start;
 +    let general_category = maps::general_category();
@@ -101,6 +101,6 @@
 +            assert_eq!(GcGroup::DashPunctuation.contains(category), character.is_punctuation_dash(), "dash punctuation U+{scalar:04X}");
 +        }
 +    }
- 
+
      fn assert_first_letter_eq(text: &str, expected: &str) {
          let range = first_letter_range(text);
