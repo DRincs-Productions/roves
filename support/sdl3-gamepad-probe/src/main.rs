@@ -1,6 +1,6 @@
 use std::time::SystemTime;
 
-use sdl3::Event;
+use sdl3::event::Event;
 use sdl3::gamepad::{Axis, Button};
 use sdl3::joystick::{JoystickType, VirtualJoystickDescription};
 
@@ -96,7 +96,9 @@ fn main() {
         .expect("open virtual SDL joystick");
     eprintln!(
         "virtual SDL gamepad attached and opened: {}",
-        gamepad.name()
+        gamepad
+            .name()
+            .unwrap_or_else(|| "Unknown gamepad".to_owned())
     );
 
     eprintln!("before virtual gamepad axis input");

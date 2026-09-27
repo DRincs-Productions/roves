@@ -1,16 +1,23 @@
-diff --git a/support/sdl3-gamepad-probe/Cargo.toml b/support/sdl3-gamepad-probe/Cargo.toml
-index 1ea21838973..ec1ccd33753 100644
---- a/support/sdl3-gamepad-probe/Cargo.toml
-+++ b/support/sdl3-gamepad-probe/Cargo.toml
-@@ -6,5 +6,10 @@ publish = false
+diff --git a/support/sdl3-gamepad-probe/src/main.rs b/support/sdl3-gamepad-probe/src/main.rs
+index f05e92912d7..0a4b63a01b9 100644
+--- a/support/sdl3-gamepad-probe/src/main.rs
++++ b/support/sdl3-gamepad-probe/src/main.rs
+@@ -1,6 +1,6 @@
+ use std::time::SystemTime;
  
- [workspace]
+-use sdl3::Event;
++use sdl3::event::Event;
+ use sdl3::gamepad::{Axis, Button};
+ use sdl3::joystick::{JoystickType, VirtualJoystickDescription};
  
--[dependencies]
-+[target.'cfg(not(target_os = "linux"))'.dependencies]
- sdl3 = { version = "0.20", default-features = false, features = ["build-from-source-static"] }
-+
-+[target.'cfg(target_os = "linux")'.dependencies]
-+# The runner only tests SDL's joystick/gamepad API. A console build avoids making its
-+# SDL-from-source build depend on X11 or Wayland development packages.
-+sdl3 = { version = "0.20", default-features = false, features = ["build-from-source-static", "build-from-source-unix-console"] }
+@@ -96,7 +96,9 @@ fn main() {
+         .expect("open virtual SDL joystick");
+     eprintln!(
+         "virtual SDL gamepad attached and opened: {}",
+-        gamepad.name()
++        gamepad
++            .name()
++            .unwrap_or_else(|| "Unknown gamepad".to_owned())
+     );
+ 
+     eprintln!("before virtual gamepad axis input");
