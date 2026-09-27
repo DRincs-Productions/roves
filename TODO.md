@@ -144,17 +144,15 @@ mergiata su `main` (rilasciata da `v0.4.24` in poi) — vedi `CUSTOMIZATIONS.md`
 completo e [`SDL3_WINDOWING_TESTING.md`](./SDL3_WINDOWING_TESTING.md) per la checklist di verifica
 hardware ancora aperta (IME CJK/dead key, screen reader, ecc.).
 
-- [ ] **Gamepad disabilitato su macOS, causa non confermata:** `sdl3::init().gamepad()` si blocca
-  indefinitamente su CI macOS (un run ha bruciato le 6 ore di timeout di GitHub Actions prima di
-  essere cancellato forzatamente). Un'ipotesi (disabilitare solo il backend IOKit) è stata provata
-  e confermata via CI **non** risolvere l'hang — vedi `CUSTOMIZATIONS.md` per l'analisi completa.
-  Serve un Mac reale interattivo per osservare cosa succede davvero, oppure un esperimento mirato
-  a basso costo (un workflow minimo che isola solo `sdl3::init().gamepad()` dal resto della build,
-  così un tentativo sbagliato costa minuti di CI e non ore). Nel frattempo il gamepad resta
-  disattivato specificamente su macOS (gate `not(target_os = "macos")` in `app.rs`/
-  `running_app_state.rs`/`window.rs`) — un vero gap funzionale rispetto a GilRs su quella
-  piattaforma.
-
+- [ ] **Gamepad disabilitato su macOS, causa non confermata:** il runtime completo aveva
+  `sdl3::init().gamepad()` bloccato su una precedente CI macOS (un run ha raggiunto le 6 ore);
+  una variante che disabilitava solo IOKit non ha risolto il problema, come documentato in
+  `CUSTOMIZATIONS.md`. Il 2026-09-27 il nuovo probe isolato, con la versione SDL3 del lockfile,
+  ha completato `sdl3::init()`, `Sdl::gamepad()` e `Sdl::event_pump()` in pochi millisecondi su
+  `macos-26-arm64`. L'hang non si riproduce nel probe minimo; il gate resta disabilitato finché
+  non vengono verificati nel runtime completo e su un Mac reale connessione, input, disconnessione
+  e arresto. Il runtime inizializza SDL anche per la finestra prima del delegate gamepad: il probe
+  minimo non replica ancora questa sequenza. Rivedere `SDL3_WINDOWING_TESTING.md` e la patch `0042`.
 ## Rendering futuro: fast path wgpu — backlog
 
 - [ ] Progettare un fast path interno a Servo per il caso di una singola

@@ -19,6 +19,12 @@ The probe crate builds independently with `cargo build --release --manifest-path
 support/sdl3-gamepad-probe/Cargo.toml`. CI compiles it before applying the runtime timeout, so a
 slow native build cannot be mistaken for the SDL initialization hang.
 
+**CI result (2026-09-27):** the probe and complete source-build matrix passed. On
+`macos-26-arm64`, all three SDL calls returned in a few milliseconds. This does not reproduce
+the earlier full-runtime hang; the probe does not yet initialize the shell's window/event
+subsystems before constructing the gamepad delegate. Keep the macOS gamepad gate closed and
+compare that lifecycle on a real Mac or in a follow-up probe before changing runtime behavior.
+
 ---
 
 Baseline: Servo `v0.5.0` (<https://github.com/servo/servo/archive/refs/tags/v0.5.0.zip>) — see

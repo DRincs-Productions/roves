@@ -65,6 +65,10 @@ diagnosi da seguire, non deve interrompere la matrice completa di compilazione. 
 su runner CI non basta da solo a riabilitare il gamepad nell'app macOS: completare connessione,
 disconnessione, input e shutdown su un Mac con sessione grafica reale.
 
+Il 27 settembre 2026 il probe ha superato tutte e tre le chiamate in pochi millisecondi sul
+runner `macos-26-arm64`. L'hang non si riproduce nel caso minimo. Il probe non inizializza ancora
+prima il contesto finestra SDL3, come fa la shell prima di creare il delegate gamepad: questo
+resta il confronto successivo se il problema nel runtime completo ricompare.
 ## Come riprendere questo lavoro
 
 1. Leggere `CUSTOMIZATIONS.md`, le entry dal 2026-09-17 in poi (sezione SDL3 windowing), per il
