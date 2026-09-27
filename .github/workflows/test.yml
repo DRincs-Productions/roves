@@ -23,6 +23,7 @@ on:
     paths:
       - 'patches/**'
       - 'test-page/**'
+      - 'support/sdl3-gamepad-probe/**'
       - 'support/check_sdl3_windowing_contracts.py'
       - '.github/workflows/test.yml'
   workflow_dispatch: {}
@@ -47,6 +48,21 @@ jobs:
       - uses: actions/checkout@v4
       - name: validate SDL3 event and patch contracts
         run: python3 support/check_sdl3_windowing_contracts.py
+
+  # Keep the known macOS gamepad hang cheap to diagnose. This probe builds the
+  # same pinned SDL3 crate in isolation, logs each initialization boundary, and
+  # kills only the probe process if an SDL call stops returning.
+  sdl3-macos-gamepad-probe:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - name: compile isolated SDL3 probe
+        run: cargo build --release --manifest-path support/sdl3-gamepad-probe/Cargo.toml --target-dir target/sdl3-gamepad-probe
+      - name: probe SDL3 initialization with a 90-second runtime limit
+        run: node support/sdl3-gamepad-probe/run-with-timeout.mjs target/sdl3-gamepad-probe/release/sdl3-gamepad-probe
 
   # ── Create the rolling "test" release exactly once before the matrix starts ────
   ensure-test-release:

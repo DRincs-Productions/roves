@@ -1,0 +1,10 @@
+[package]
+name = "sdl3-gamepad-probe"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+sdl3 = { version = "0.20", default-features = false, features = ["build-from-source-static"] }

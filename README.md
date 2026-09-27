@@ -403,3 +403,5 @@ Roves tracks a pinned upstream Servo release plus a small set of targeted patche
 a newer Servo release are meant to happen. All credit for the underlying engine goes to the
 [Servo Project](https://github.com/servo/servo) and its contributors; issues specific to
 this fork's own customizations should stay local to this repository rather than upstream.
+The SDL3 macOS gamepad initialization probe and remaining hardware checks are documented in
+[`SDL3_WINDOWING_TESTING.md`](./SDL3_WINDOWING_TESTING.md).

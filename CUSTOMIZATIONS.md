@@ -1,5 +1,26 @@
 # Customizations over upstream Servo
 
+## 2026-09-27 — Isolate the SDL3 gamepad initialization probe on macOS
+
+**Servo files:** `support/sdl3-gamepad-probe/` (standalone pinned SDL3 crate and timeout runner).
+**Patch:** `patches/servo-v0.5.0/0042-sdl3-macos-gamepad-probe.patch`.
+**Roves-only files:** `.github/workflows/test.yml`, `SDL3_WINDOWING_TESTING.md`, `README.md`, and
+the sibling wiki's `content/docs/shell.mdx`.
+
+The macOS gamepad hang had no low-cost way to distinguish `sdl3::init()`, gamepad subsystem
+initialization, and event-pump creation. The new standalone probe uses the same SDL3 crate
+version and static source build as the shell, logs immediately before and after each call, and
+runs in its own macOS CI job. A Node wrapper kills the probe process after 90 seconds without
+stopping the runner or full build matrix. The job is advisory because this hang is already a
+known issue; its log narrows the failing call for follow-up. The shell's macOS gamepad gate stays
+closed until controller connect, input, disconnect and shutdown pass on a real Mac session.
+
+The probe crate builds independently with `cargo build --release --manifest-path
+support/sdl3-gamepad-probe/Cargo.toml`. CI compiles it before applying the runtime timeout, so a
+slow native build cannot be mistaken for the SDL initialization hang.
+
+---
+
 Baseline: Servo `v0.5.0` (<https://github.com/servo/servo/archive/refs/tags/v0.5.0.zip>) — see
 the 2026-09-04 migration entry below for the upgrade from the previous `v0.4.0` baseline, and
 for why the entries below it still say `patches/servo-v0.4.0/...`: those are the historical

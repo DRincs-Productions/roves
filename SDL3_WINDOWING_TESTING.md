@@ -55,6 +55,16 @@ vera sessione grafica sui runner GitHub Actions. È plausibile che SDL3 windowin
 problemi simili (creazione finestra, focus, fullscreen) che solo un Mac reale, con una sessione
 utente vera, può rivelare.
 
+### Probe CI isolato per il gamepad SDL3
+
+`support/sdl3-gamepad-probe/` isola `sdl3::init()`, `Sdl::gamepad()` e `Sdl::event_pump()` usando
+la stessa versione SDL3 del manifest principale. Il job macOS registra i confini delle chiamate
+e arresta il processo dopo 90 secondi; l'ultima riga `before ...` identifica la chiamata che non
+ha restituito il controllo. Il job Ã¨ consultivo (`continue-on-error`): il blocco storico Ã¨ una
+diagnosi da seguire, non deve interrompere la matrice completa di compilazione. Un esito positivo
+su runner CI non basta da solo a riabilitare il gamepad nell'app macOS: completare connessione,
+disconnessione, input e shutdown su un Mac con sessione grafica reale.
+
 ## Come riprendere questo lavoro
 
 1. Leggere `CUSTOMIZATIONS.md`, le entry dal 2026-09-17 in poi (sezione SDL3 windowing), per il
