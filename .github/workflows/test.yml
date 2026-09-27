@@ -932,6 +932,12 @@ jobs:
           cd servo-src
           chmod +x mach
           for p in "${patches[@]}"; do
+            case $(basename "$p") in
+              0042-sdl3-macos-gamepad-probe.patch)
+                echo "Skipping repository-only $(basename "$p") in the upstream source overlay."
+                continue
+                ;;
+            esac
             echo "Applying $(basename "$p")..."
             patch -p1 < "../$p"
           done
