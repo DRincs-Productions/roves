@@ -40,8 +40,25 @@ env:
   TEST_RELEASE_TAG: 'test'
 
 jobs:
-  # Seconds rather than tens of runner-hours: reject malformed patches and incomplete SDL3
-  # event wiring before starting the cross-platform Servo build matrix.
+  # Validate the patch series against a clean copy of the pinned Servo release.
+  validate-servo-patches:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: check local patches apply to pristine Servo
+        shell: bash
+        run: |
+          curl -fsSL -o servo-src.zip "https://github.com/servo/servo/archive/refs/tags/v${SERVO_TAG}.zip"
+          unzip -q servo-src.zip -d servo-src-tmp
+          mv "servo-src-tmp/servo-${SERVO_TAG}" servo-src
+          shopt -s nullglob
+          patches=(patches/servo-v${SERVO_TAG}/*.patch)
+          for p in "${patches[@]}"; do
+            echo "Checking $(basename "$p")..."
+            patch --dry-run --batch --forward -p1 -d servo-src < "$p"
+          done
+
+  # Check SDL3 event and native virtual-gamepad contracts independently.
   sdl3-windowing-contracts:
     runs-on: ubuntu-latest
     steps:
@@ -68,7 +85,7 @@ jobs:
 
   # ── Create the rolling "test" release exactly once before the matrix starts ────
   ensure-test-release:
-    needs: sdl3-windowing-contracts
+    needs: [validate-servo-patches, sdl3-windowing-contracts]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -88,7 +105,7 @@ jobs:
 
   # ── Build Servo from source (pristine tag + our patches) and upload per platform ─
   build-and-publish:
-    needs: ensure-test-release
+    needs: [ensure-test-release, sdl3-gamepad-probe]
     permissions:
       contents: write
     strategy:
@@ -846,7 +863,7 @@ jobs:
   # this was validated against) -- extend to Windows/macOS once this first pass is
   # proven out for real by a green run.
   steam-emulator-smoke-test:
-    needs: sdl3-windowing-contracts
+    needs: [validate-servo-patches, sdl3-windowing-contracts, sdl3-gamepad-probe]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
