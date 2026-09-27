@@ -40,12 +40,12 @@ env:
   TEST_RELEASE_TAG: 'test'
 
 jobs:
-  # Validate the patch series against a clean copy of the pinned Servo release.
+  # Validate the full ordered patch series against a clean pinned Servo release.
   validate-servo-patches:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: check local patches apply to pristine Servo
+      - name: apply local patches to pristine Servo
         shell: bash
         run: |
           curl -fsSL -o servo-src.zip "https://github.com/servo/servo/archive/refs/tags/v${SERVO_TAG}.zip"
@@ -54,8 +54,8 @@ jobs:
           shopt -s nullglob
           patches=(patches/servo-v${SERVO_TAG}/*.patch)
           for p in "${patches[@]}"; do
-            echo "Checking $(basename "$p")..."
-            patch --dry-run --batch --forward -p1 -d servo-src < "$p"
+            echo "Applying $(basename "$p")..."
+            patch --batch --forward -p1 -d servo-src < "$p"
           done
 
   # Check SDL3 event and native virtual-gamepad contracts independently.
