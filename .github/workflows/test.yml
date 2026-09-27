@@ -56,10 +56,12 @@ jobs:
           for p in "${patches[@]}"; do
             # 0042 updates the locally tracked CI-only SDL probe, not the clean
             # Servo archive. Its matching crate is already present after checkout.
-            if [[ $(basename "$p") == 0042-sdl3-macos-gamepad-probe.patch ]]; then
-              echo "Skipping repository-only $(basename "$p") in the upstream source overlay."
-              continue
-            fi
+            case $(basename "$p") in
+              0042-sdl3-macos-gamepad-probe.patch)
+                echo "Skipping repository-only $(basename "$p") in the upstream source overlay."
+                continue
+                ;;
+            esac
             echo "Applying $(basename "$p")..."
             patch --batch --forward -p1 -d servo-src < "$p"
           done
