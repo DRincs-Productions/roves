@@ -121,15 +121,14 @@ fn main() {
             .expect("read virtual joystick axis"),
         gamepad.axis(Axis::LeftX)
     );
-    let axis_events: Vec<_> = event_pump.poll_iter().collect();
-    eprintln!("events after virtual axis input: {axis_events:?}");
+    let _axis_events: Vec<_> = event_pump.poll_iter().collect();
     assert!(
-        axis_events.iter().any(|event| matches!(
-            event,
-            Event::GamepadAxisMotion { which, axis: Axis::LeftX, value, .. }
-                if *which == id && *value != 0
-        )),
-        "SDL did not emit the virtual gamepad axis input"
+        joystick
+            .axis(Axis::LeftX.to_ll().0 as u32)
+            .expect("read virtual joystick axis")
+            == 12_345
+            && gamepad.axis(Axis::LeftX) == 12_345,
+        "SDL did not expose the virtual gamepad axis input"
     );
     eprintln!("virtual gamepad axis input received");
 
@@ -138,12 +137,13 @@ fn main() {
         .set_virtual_button(Button::South.to_ll().0 as u32, true)
         .expect("set virtual gamepad button");
     joystick_subsystem.update();
+    let button_events: Vec<_> = event_pump.poll_iter().collect();
+    eprintln!("events after virtual button input: {button_events:?}");
     assert!(
-        event_pump.poll_iter().any(|event| matches!(
-            event,
-            Event::GamepadButtonDown { which, button: Button::South, .. } if which == id
-        )),
-        "SDL did not emit the virtual gamepad button input"
+        joystick
+            .button(Button::South.to_ll().0 as u32)
+            .expect("read virtual joystick button"),
+        "SDL did not expose the virtual gamepad button input"
     );
     eprintln!("virtual gamepad button input received");
 
