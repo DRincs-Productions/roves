@@ -6,7 +6,7 @@ use std::borrow::Cow;
 use std::cell::LazyCell;
 use std::ops::{ControlFlow, Range};
 
-use icu_properties::{maps, BidiClass, GeneralCategoryGroup as GcGroup};
+use icu_properties::BidiClass;
 use layout_api::{LayoutNode, SharedSelection};
 use servo_base::text::{RangeAny, Utf32CodeUnits};
 use style::computed_values::direction::T as Direction;
@@ -14,6 +14,7 @@ use style::computed_values::white_space_collapse::T as WhiteSpaceCollapse;
 use style::dom::NodeInfo;
 use style::selector_parser::PseudoElement;
 use unicode_bidi::Level;
+use unicode_categories::UnicodeCategories;
 
 use super::text_run::TextRun;
 use super::{
@@ -625,40 +626,30 @@ fn first_letter_range(text: &str) -> Range<usize> {
 
     let mut start = 0;
     let mut state = State::Start;
-    let general_category = maps::general_category();
     for (index, character) in text.char_indices() {
-        let category = general_category.get(character);
         match &mut state {
             State::Start => {
-                if GcGroup::Letter.contains(category) ||
-                    GcGroup::Number.contains(category) ||
-                    GcGroup::Symbol.contains(category)
-                {
+                if character.is_letter() || character.is_number() || character.is_symbol() {
                     start = index;
                     state = State::Lns;
-                } else if GcGroup::Punctuation.contains(category) {
+                } else if character.is_punctuation() {
                     start = index;
                     state = State::PrecedingPunctuation
                 }
             },
             State::PrecedingPunctuation => {
-                if GcGroup::Letter.contains(category) ||
-                    GcGroup::Number.contains(category) ||
-                    GcGroup::Symbol.contains(category)
-                {
+                if character.is_letter() || character.is_number() || character.is_symbol() {
                     state = State::Lns;
-                } else if !GcGroup::SpaceSeparator.contains(category) &&
-                    !GcGroup::Punctuation.contains(category)
-                {
+                } else if !character.is_separator_space() && !character.is_punctuation() {
                     return 0..0;
                 }
             },
             State::Lns => {
                 // TODO: Implement support for intervening spaces
                 // <https://drafts.csswg.org/css-pseudo/#first-letter-pattern>
-                if GcGroup::Punctuation.contains(category) &&
-                    !GcGroup::OpenPunctuation.contains(category) &&
-                    !GcGroup::DashPunctuation.contains(category)
+                if character.is_punctuation() &&
+                    !character.is_punctuation_open() &&
+                    !character.is_punctuation_dash()
                 {
                     state = State::TrailingPunctuation;
                 } else {
@@ -668,9 +659,9 @@ fn first_letter_range(text: &str) -> Range<usize> {
             State::TrailingPunctuation => {
                 // TODO: Implement support for intervening spaces
                 // <https://drafts.csswg.org/css-pseudo/#first-letter-pattern>
-                if GcGroup::Punctuation.contains(category) &&
-                    !GcGroup::OpenPunctuation.contains(category) &&
-                    !GcGroup::DashPunctuation.contains(category)
+                if character.is_punctuation() &&
+                    !character.is_punctuation_open() &&
+                    !character.is_punctuation_dash()
                 {
                     continue;
                 } else {
@@ -689,25 +680,6 @@ fn first_letter_range(text: &str) -> Range<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use unicode_categories::UnicodeCategories;
-
-    #[test]
-    fn icu_general_category_groups_match_previous_unicode_categories() {
-        let general_category = maps::general_category();
-        for scalar in 0..=char::MAX as u32 {
-            let Some(character) = char::from_u32(scalar) else {
-                continue;
-            };
-            let category = general_category.get(character);
-            assert_eq!(GcGroup::Letter.contains(category), character.is_letter(), "letter U+{scalar:04X}");
-            assert_eq!(GcGroup::Number.contains(category), character.is_number(), "number U+{scalar:04X}");
-            assert_eq!(GcGroup::Symbol.contains(category), character.is_symbol(), "symbol U+{scalar:04X}");
-            assert_eq!(GcGroup::Punctuation.contains(category), character.is_punctuation(), "punctuation U+{scalar:04X}");
-            assert_eq!(GcGroup::SpaceSeparator.contains(category), character.is_separator_space(), "space U+{scalar:04X}");
-            assert_eq!(GcGroup::OpenPunctuation.contains(category), character.is_punctuation_open(), "open punctuation U+{scalar:04X}");
-            assert_eq!(GcGroup::DashPunctuation.contains(category), character.is_punctuation_dash(), "dash punctuation U+{scalar:04X}");
-        }
-    }
 
     fn assert_first_letter_eq(text: &str, expected: &str) {
         let range = first_letter_range(text);
