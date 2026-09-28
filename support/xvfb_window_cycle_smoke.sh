@@ -47,9 +47,11 @@ fi
 # Exercise real X11/SDL3 delivery without depending on pixels. These operations cover pointer
 # movement/click, wheel, keyboard focus/input and a resize/redraw cycle; with the test page loaded,
 # each one also produces a "[roves-input]" line the workflow asserts on.
+# Clicks go through XTEST (no --window): with --window xdotool uses XSendEvent, whose synthetic
+# button events SDL3 ignores (keys still arrive that way).
 xdotool mousemove --window "$window_id" 40 40
-xdotool click --window "$window_id" 1
-xdotool click --window "$window_id" 5
+xdotool click 1
+xdotool click 5
 xdotool key --window "$window_id" Tab a Escape
 xdotool windowsize "$window_id" 960 640
 sleep 1
