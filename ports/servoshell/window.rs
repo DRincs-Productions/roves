@@ -138,6 +138,9 @@ impl ServoShellWindow {
         };
 
         crate::desktop::performance::record_webview_paint();
+        let _timer = crate::desktop::performance::time_phase(
+            crate::desktop::performance::Phase::WebViewPaint,
+        );
         self.platform_window()
             .rendering_context()
             .make_current()

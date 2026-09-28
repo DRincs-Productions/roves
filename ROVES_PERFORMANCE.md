@@ -215,3 +215,14 @@ riporta `egui_runs=2`, `egui_tessellations=0`, `egui_paints=0`, `framebuffer_bli
 `composited_presents=0`, `direct_presents=2`, `window_presents=2`: egui continua a eseguire
 l'update, ma il percorso diretto salta davvero tessellazione e paint. Questo prova il contratto
 funzionale; non misura il guadagno CPU, RAM o frame-time.
+
+### 2026-09-28 — Tempi per fase nella diagnostica opt-in
+
+- Con `ROVES_PERF_LOG_INTERVAL_MS` attivo, ogni intervallo emette anche una riga
+  `[roves-perf-time]` con tempo totale e massimo (µs) di `webview_paint`, `egui_run`,
+  `shell_paint` (blit off-screen più eventuale paint egui) e `present`.
+- Serve al passo 4 di `docs/FAST_PATH_RENDERING.md`: confrontare `ROVES_DIRECT_PRESENT=1` con il
+  percorso composto separando il costo del painter egui da blit e swap. Tempi wall-clock lato
+  CPU: il lavoro GPU asincrono emerge soprattutto in `present` con VSync.
+- Patch `0046-shell-phase-timings.patch`; smoke CI desktop richiede la riga e la stampa, senza
+  soglie. Le misure A/B vanno raccolte su hardware reale con build release.

@@ -39,8 +39,9 @@ questa interop e la feature raw-window-handle del manifest. La dipendenza Androi
 La patch 0045 restringe `surfman/sm-x11` a Linux, inclusi paint e WebXR; il controllo `cargo tree` della matrice desktop verifica che Linux lo mantenga e che Windows/macOS non lo abilitino. `surfman` resta nel grafo dei target che usano i context grafici e non viene rimosso.
 
 L'audit non identifica un consumatore isolato che possa perdere la dipendenza senza cambiare
-prima l'interfaccia condivisa di rendering. Non è stato raccolto un benchmark GPU o una misura
-di latenza; quindi non c'è evidenza per iniziare un nuovo backend SDL/wgpu né per dichiarare una
+prima l'interfaccia condivisa di rendering. La shell registra ora i tempi per fase WebView paint, egui, shell paint e present
+(`[roves-perf-time]`, patch 0046), ma non è ancora stato raccolto un benchmark GPU o una misura
+di latenza su hardware reale; quindi non c'è evidenza per iniziare un nuovo backend SDL/wgpu né per dichiarare una
 parità. Il lavoro corretto resta misurare il percorso offscreen→present e prototipare un solo
 consumatore, mantenendo `surfman` come baseline.
 

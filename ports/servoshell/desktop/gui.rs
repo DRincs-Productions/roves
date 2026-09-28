@@ -454,6 +454,7 @@ impl SdlEguiGlow {
         run_ui: impl FnMut(&mut egui::Ui),
     ) -> Duration {
         super::performance::record_egui_run();
+        let _timer = super::performance::time_phase(super::performance::Phase::EguiRun);
         let (width, height) = window.size();
         let pixels_per_point = window.display_scale();
         let screen_rect = egui::Rect::from_min_size(
@@ -1325,6 +1326,8 @@ impl Gui {
 
     /// Paint the GUI, as of the last update.
     pub(crate) fn paint(&mut self, window: &sdl3::video::Window) {
+        let shell_paint_timer =
+            super::performance::time_phase(super::performance::Phase::ShellPaint);
         self.rendering_context
             .make_current()
             .expect("Could not make RenderingContext current");
@@ -1347,7 +1350,9 @@ impl Gui {
             self.context.paint(window);
             super::performance::record_composited_present();
         }
+        drop(shell_paint_timer);
         super::performance::record_window_present();
+        let _timer = super::performance::time_phase(super::performance::Phase::Present);
         self.rendering_context.parent_context().present();
     }
 

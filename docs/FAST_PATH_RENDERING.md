@@ -91,7 +91,9 @@ I contatori `[roves-perf]` vanno estesi con:
 - `direct_presents` e `composited_presents`;
 - `egui_runs`, `egui_tessellations` e `egui_paints`;
 - `framebuffer_blits`;
-- tempo CPU aggregato di WebView paint, egui update/paint e present;
+- tempo CPU aggregato di WebView paint, egui update/paint e present; **Completato** come riga
+  `[roves-perf-time]` (totale e massimo in µs per `webview_paint`, `egui_run`, `shell_paint`,
+  `present`; tempo wall-clock lato CPU, il lavoro GPU asincrono emerge soprattutto in `present`);
 - dimensione e numero dei framebuffer permanenti.
 
 Le fixture restano `?perf=blank`, `?perf=pixi-static` e `?perf=pixi-animated`. Il confronto deve
@@ -113,7 +115,8 @@ fallback, non impone soglie temporali sui runner condivisi.
 1. Estendere i contatori per distinguere frame diretti e composti. **Completato.**
 2. Estrarre una decisione pura per il fast path con test unitari. **Completato.**
 3. Implementare il fast path A dietro `ROVES_DIRECT_PRESENT=1` per misure A/B. **Completato.**
-4. Misurare se il painter egui incide materialmente su CPU/GPU frame time.
+4. Misurare se il painter egui incide materialmente su CPU/GPU frame time. Strumentazione pronta
+   (`[roves-perf-time]`); mancano le misure su hardware reale.
 5. Solo con un risultato positivo, prototipare il contesto a presentazione differita del fast
    path B.
 6. Rendere predefinito un percorso soltanto dopo smoke test completi e misure su hardware reale.

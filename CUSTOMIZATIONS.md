@@ -1,4 +1,35 @@
 # Customizations over upstream Servo
+## 2026-09-28 — Per-phase shell timings in the opt-in perf diagnostics
+
+**Servo files:** `ports/servoshell/desktop/performance.rs`, `ports/servoshell/desktop/gui.rs`,
+`ports/servoshell/window.rs`.
+**Patch:** `patches/servo-v0.5.0/0046-shell-phase-timings.patch` (after 0001–0045).
+**Roves-only files:** `.github/workflows/test.yml`, `README.md`, `ROVES_PERFORMANCE.md`,
+`docs/FAST_PATH_RENDERING.md`, `docs/AUDIT_MIGRAZIONE_LIBRERIE.md`, sibling wiki
+`content/docs/shell.mdx`.
+
+The `[roves-perf]` counters said *how often* each stage ran but not *how long* it took, so the
+fast-path A/B comparison (`docs/FAST_PATH_RENDERING.md` step 4) had no way to separate the egui
+painter's cost from the blit or the swap. `performance.rs` now has a `PhaseTimer` drop guard
+(`time_phase(Phase)`, `None` without reading the clock when diagnostics are off) that adds
+wall-clock nanoseconds into per-interval total/max atomics. Four scopes are timed:
+`WebViewPaint` (`ServoShellWindow::repaint_webviews`: make-current, `WebView::paint`, off-screen
+present), `EguiRun` (`SdlEguiGlow::run`), `ShellPaint` (`Gui::paint` up to the window swap, direct
+or composed branch) and `Present` (the final `parent_context().present()`). Each report interval
+logs one extra `[roves-perf-time]` line with `<phase>_us` and `<phase>_max_us`. The existing
+`[roves-perf]` line is unchanged, so its parsers keep working. A unit test covers
+aggregation and reset.
+
+The patch is diffed against pristine + 0001–0045, not against this repo's `HEAD`: it also
+carries one rustfmt-only rewrap of a gamepad `#[cfg(all(...))]` in `window.rs`. That rewrap
+was already in the repo but no patch had it, so patched CI sources had drifted cosmetically.
+
+`test.yml`'s desktop smoke tests now also require a `[roves-perf-time]` line and print it,
+still with no time thresholds on shared runners. Same commit series: the 0045 surfman
+feature check dropped `cargo tree --locked`, which failed on every platform because `patches/`
+carries no `Cargo.lock` diff and the reconstructed source still has upstream's lockfile. No
+build/bundle flag change: nothing to mirror in `roves-action` or Packmaster.
+
 ## 2026-09-27 - Limit surfman X11 support to Linux
 
 **Servo files:** root `Cargo.toml`, `components/servo/Cargo.toml`, `components/shared/paint/Cargo.toml`, and `ports/servoshell/Cargo.toml`.

@@ -5,14 +5,73 @@
 //! Opt-in counters for diagnosing shell overhead on real game builds.
 //!
 //! Set `ROVES_PERF_LOG_INTERVAL_MS` to a positive interval (for example `10000`) to emit one
-//! aggregate `[roves-perf]` line per interval. When the variable is absent or invalid, recording
-//! is disabled after a single environment lookup; no timer or background thread is created.
+//! aggregate `[roves-perf]` line per interval, plus a `[roves-perf-time]` line with per-phase
+//! wall-clock totals and maxima (WebView paint, egui run, shell paint, window present). When the
+//! variable is absent or invalid, recording is disabled after a single environment lookup; no
+//! timer or background thread is created.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const PERF_LOG_INTERVAL_ENV: &str = "ROVES_PERF_LOG_INTERVAL_MS";
+
+#[derive(Default)]
+struct PhaseTime {
+    total_ns: AtomicU64,
+    max_ns: AtomicU64,
+}
+
+impl PhaseTime {
+    fn record(&self, duration: Duration) {
+        let nanoseconds = u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX);
+        self.total_ns.fetch_add(nanoseconds, Ordering::Relaxed);
+        self.max_ns.fetch_max(nanoseconds, Ordering::Relaxed);
+    }
+
+    fn take(&self) -> PhaseSnapshot {
+        PhaseSnapshot {
+            total_us: self.total_ns.swap(0, Ordering::Relaxed) / 1_000,
+            max_us: self.max_ns.swap(0, Ordering::Relaxed) / 1_000,
+        }
+    }
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct PhaseSnapshot {
+    total_us: u64,
+    max_us: u64,
+}
+
+/// Shell phases whose wall-clock time on the calling thread is aggregated per interval. GL calls
+/// are asynchronous, so GPU work mostly surfaces in whichever phase blocks on it (usually
+/// `Present`, when the driver throttles on VSync or a full swap queue).
+#[derive(Clone, Copy)]
+pub(crate) enum Phase {
+    WebViewPaint,
+    EguiRun,
+    ShellPaint,
+    Present,
+}
+
+#[derive(Default)]
+struct Phases {
+    webview_paint: PhaseTime,
+    egui_run: PhaseTime,
+    shell_paint: PhaseTime,
+    present: PhaseTime,
+}
+
+impl Phases {
+    fn get(&self, phase: Phase) -> &PhaseTime {
+        match phase {
+            Phase::WebViewPaint => &self.webview_paint,
+            Phase::EguiRun => &self.egui_run,
+            Phase::ShellPaint => &self.shell_paint,
+            Phase::Present => &self.present,
+        }
+    }
+}
 
 #[derive(Default)]
 struct Counts {
@@ -72,6 +131,7 @@ struct PerformanceCounters {
     interval: Duration,
     last_report: Mutex<Instant>,
     counts: Counts,
+    phases: Phases,
 }
 
 static COUNTERS: OnceLock<Option<PerformanceCounters>> = OnceLock::new();
@@ -93,6 +153,7 @@ fn counters() -> Option<&'static PerformanceCounters> {
                     interval,
                     last_report: Mutex::new(Instant::now()),
                     counts: Counts::default(),
+                    phases: Phases::default(),
                 }
             })
         })
@@ -110,6 +171,10 @@ fn report_if_due(counters: &PerformanceCounters) {
     }
     *last_report = now;
     let counts = counters.counts.take();
+    let webview_paint = counters.phases.webview_paint.take();
+    let egui_run = counters.phases.egui_run.take();
+    let shell_paint = counters.phases.shell_paint.take();
+    let present = counters.phases.present.take();
     log::info!(
         "[roves-perf] interval_ms={} real_events={} wait_timeouts={} redraw_queued={} redraw_coalesced={} redraw_dispatched={} webview_paints={} egui_runs={} egui_tessellations={} egui_paints={} framebuffer_blits={} composited_presents={} direct_presents={} window_presents={}",
         elapsed.as_millis(),
@@ -127,6 +192,39 @@ fn report_if_due(counters: &PerformanceCounters) {
         counts.direct_presents,
         counts.window_presents,
     );
+    log::info!(
+        "[roves-perf-time] interval_ms={} webview_paint_us={} webview_paint_max_us={} egui_run_us={} egui_run_max_us={} shell_paint_us={} shell_paint_max_us={} present_us={} present_max_us={}",
+        elapsed.as_millis(),
+        webview_paint.total_us,
+        webview_paint.max_us,
+        egui_run.total_us,
+        egui_run.max_us,
+        shell_paint.total_us,
+        shell_paint.max_us,
+        present.total_us,
+        present.max_us,
+    );
+}
+
+/// Records the wall-clock time until it is dropped into `phase`'s per-interval total and
+/// maximum. Bind it to a named variable (`let _timer = ...`), not `_`, which drops at once.
+pub(crate) struct PhaseTimer {
+    phase: &'static PhaseTime,
+    started: Instant,
+}
+
+impl Drop for PhaseTimer {
+    fn drop(&mut self) {
+        self.phase.record(self.started.elapsed());
+    }
+}
+
+/// Starts timing `phase`, or returns `None` without reading the clock when diagnostics are off.
+pub(crate) fn time_phase(phase: Phase) -> Option<PhaseTimer> {
+    counters().map(|counters| PhaseTimer {
+        phase: counters.phases.get(phase),
+        started: Instant::now(),
+    })
 }
 
 pub(crate) fn record_event_loop_wake(timed_out: bool) {
@@ -223,7 +321,7 @@ pub(crate) fn record_direct_present() {
 
 #[cfg(test)]
 mod tests {
-    use super::{Counts, Snapshot, parse_interval};
+    use super::{Counts, PhaseSnapshot, PhaseTime, Snapshot, parse_interval};
     use std::sync::atomic::Ordering;
     use std::time::Duration;
 
@@ -257,5 +355,21 @@ mod tests {
             }
         );
         assert_eq!(counts.take(), Snapshot::default());
+    }
+
+    #[test]
+    fn phase_time_aggregates_total_and_max_then_resets() {
+        let phase = PhaseTime::default();
+        phase.record(Duration::from_micros(300));
+        phase.record(Duration::from_micros(1_200));
+        phase.record(Duration::from_micros(500));
+        assert_eq!(
+            phase.take(),
+            PhaseSnapshot {
+                total_us: 2_000,
+                max_us: 1_200,
+            }
+        );
+        assert_eq!(phase.take(), PhaseSnapshot::default());
     }
 }

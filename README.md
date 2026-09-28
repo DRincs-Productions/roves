@@ -384,8 +384,10 @@ measurement. The measurement plan and current findings are tracked in
 
 For shell-side counts, launch a desktop build with `ROVES_PERF_LOG_INTERVAL_MS=10000` (or another
 positive interval). The normal `roves.log` then receives aggregate `[roves-perf]` lines for SDL
-events/timeouts, redraw requests and coalescing, WebView paints, and final window presents. The
-diagnostic is disabled by default and does not create a sampling timer or background thread.
+events/timeouts, redraw requests and coalescing, WebView paints, and final window presents, plus
+`[roves-perf-time]` lines with total/max microseconds spent in WebView paint, egui update, shell
+paint and window present. The diagnostic is disabled by default and does not create a sampling
+timer or background thread.
 
 Desktop builds also offer the experimental fast path A with `ROVES_DIRECT_PRESENT=1` (off by
 default; only the exact value `1` enables it). With one full-window WebView and no dialogs,
