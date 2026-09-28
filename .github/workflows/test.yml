@@ -382,7 +382,9 @@ jobs:
             macos) target=x86_64-apple-darwin; expects_x11=no ;;
             *) echo "::error::unexpected target OS: ${{ matrix.os_name }}"; exit 1 ;;
           esac
-          cargo tree --locked -p servoshell --target "$target" -e features -i surfman > /tmp/surfman-features.txt
+          # No --locked: patches/ carries no Cargo.lock diff, so servo-src's lockfile is
+          # still pristine upstream's and `mach build` below re-resolves it anyway.
+          cargo tree -p servoshell --target "$target" -e features -i surfman > /tmp/surfman-features.txt
           if [ "$expects_x11" = yes ]; then
             grep -Fq 'surfman feature "sm-x11"' /tmp/surfman-features.txt || {
               echo "::error::Linux servoshell graph is missing surfman sm-x11"; exit 1;
