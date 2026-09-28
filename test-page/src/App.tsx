@@ -6,6 +6,7 @@ import DiagnosticsPanel from "./DiagnosticsPanel.tsx";
 import FullscreenButton from "./FullscreenButton.tsx";
 import GamepadPanel from "./GamepadPanel.tsx";
 import GpuInfoPanel from "./GpuInfoPanel.tsx";
+import InputPanel from "./InputPanel.tsx";
 import IndexedDbButton from "./IndexedDbButton.tsx";
 import PixiPanel from "./PixiPanel.tsx";
 import PerformanceFixture, { performanceFixtureMode } from "./PerformanceFixture.tsx";
@@ -275,6 +276,7 @@ export default function App() {
       </div>
 
       <GpuInfoPanel />
+      <InputPanel />
       <GamepadPanel />
 
       <DiagnosticsPanel />

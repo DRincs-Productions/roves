@@ -72,6 +72,30 @@ Il 27 settembre 2026 il probe di sola inizializzazione ha superato tutte e tre l
 pochi millisecondi su `macos-26-arm64`. L'hang non si riproduce nel caso minimo. Questo test
 virtuale estende la verifica al rilevamento e agli eventi SDL; non copre ancora il bridge degli
 eventi da Servo al Gamepad API del Web né ripete il lifecycle della shell su hardware macOS reale.
+
+### Input end-to-end nella test-page (2026-09-28)
+
+La sezione **Input** della test-page (`test-page/src/InputPanel.tsx`) mostra i tasti e i pulsanti
+del mouse premuti e lo storico di tastiera, mouse, rotellina e gamepad (pulsanti e assi via Web
+Gamepad API). Ogni evento viene scritto in console come `[roves-input] kind=...`, quindi finisce in
+stdout e in `roves.log`, e la CI verifica che l'input arrivi davvero alla pagina:
+
+- **Linux:** lo script Xvfb aspetta `[roves-input] ready`, poi xdotool invia clic, rotellina e
+  tasti; la CI richiede `keydown`, `mousedown`, `wheel` e `gamepadbuttondown`.
+- **Windows:** lo smoke test richiede `gamepadbuttondown` dal gamepad virtuale.
+- **macOS:** secondo avvio con `ROVES_MACOS_GAMEPAD=1` e `ROVES_TEST_VIRTUAL_GAMEPAD=1`. Deve
+  completare l'init del gamepad (`[roves-gamepad] SDL gamepad subsystem ready`) e consegnare
+  `gamepadbuttondown` alla pagina. `support/macos_input_smoke.swift` invia anche clic, rotellina e
+  tasto come CGEvent; questi controlli per ora danno solo un avviso, perché dipendono dai permessi
+  TCC del runner.
+
+Su Windows la stessa sezione serve per la prova manuale: premere tasti, cliccare, scorrere e
+usare un controller, controllando che ogni azione compaia nello storico.
+
+`ROVES_TEST_VIRTUAL_GAMEPAD=1` è solo per la CI: la shell collega un gamepad virtuale SDL e ne
+alterna per circa 60 secondi il pulsante South e lo stick sinistro. Il percorso IOKit HID di un
+controller fisico su macOS resta non verificato.
+
 ## Come riprendere questo lavoro
 
 1. Leggere `CUSTOMIZATIONS.md`, le entry dal 2026-09-17 in poi (sezione SDL3 windowing), per il

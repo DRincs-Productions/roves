@@ -406,4 +406,6 @@ a newer Servo release are meant to happen. All credit for the underlying engine 
 [Servo Project](https://github.com/servo/servo) and its contributors; issues specific to
 this fork's own customizations should stay local to this repository rather than upstream.
 The SDL3 virtual gamepad CI probe and remaining hardware checks are documented in
-[`SDL3_WINDOWING_TESTING.md`](./SDL3_WINDOWING_TESTING.md).
+[`SDL3_WINDOWING_TESTING.md`](./SDL3_WINDOWING_TESTING.md). On macOS, gamepad support is off by
+default and can be tried experimentally by launching with `ROVES_MACOS_GAMEPAD=1`; the test
+page's Input section shows every key, mouse button and gamepad event the page receives.

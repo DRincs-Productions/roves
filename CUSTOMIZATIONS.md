@@ -1,4 +1,47 @@
 # Customizations over upstream Servo
+## 2026-09-28 — macOS gamepad as a runtime opt-in, virtual gamepad test hook, input CI
+
+**Servo files:** `ports/servoshell/desktop/gamepad.rs`, `ports/servoshell/desktop/app.rs`,
+`ports/servoshell/running_app_state.rs`, `ports/servoshell/window.rs`.
+**Patch:** `patches/servo-v0.5.0/0047-macos-gamepad-opt-in-virtual-test.patch` (after 0001–0046).
+**Roves-only files:** `test-page/src/InputPanel.tsx`, `test-page/src/App.tsx`,
+`support/xvfb_window_cycle_smoke.sh`, `support/macos_input_smoke.swift`,
+`.github/workflows/test.yml`, `SDL3_WINDOWING_TESTING.md`, `TODO.md`, `README.md`, sibling wiki
+`content/docs/shell.mdx`.
+
+**Why:** the macOS gamepad exclusion was a compile-time `not(target_os = "macos")`, so no CI or
+user could test it without a special build. The isolated probe no longer reproduces the historical
+`sdl3::init().gamepad()` hang, but nothing had exercised the full shell or the Web Gamepad API
+bridge on any OS. The user can only test by hand on Windows, so macOS evidence has to come from CI.
+
+**Change:**
+- Every gamepad `cfg` drops `target_os = "macos"`. `desktop::gamepad::runtime_enabled()` returns
+  `true` everywhere except macOS, where the delegate is only created with the exact value
+  `ROVES_MACOS_GAMEPAD=1`. The default behavior on every platform is unchanged.
+- `init_sdl` logs `[roves-gamepad] initializing …` / `… ready`, which makes a hang identifiable
+  from logs.
+- With the exact value `ROVES_TEST_VIRTUAL_GAMEPAD=1` (CI only), init sets
+  `SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS=1`, attaches an SDL virtual gamepad (same description as
+  `support/sdl3-gamepad-probe`) and, from `poll`, toggles its South button and left stick X every
+  500 ms for 60 s. Field order in `VirtualGamepadTest` closes the joystick before detaching the
+  device. Without the variable, none of this runs.
+- The comment rewrites and rustfmt-only `cfg` rewraps in `running_app_state.rs` were already in
+  the repo but in no patch, so the patch is diffed against pristine + 0001–0046 and carries them
+  too.
+
+**CI:**
+- Test-page `InputPanel` logs `[roves-input] kind=…` for key, mouse, wheel and gamepad
+  button/axis edges.
+- Linux: the Xvfb script now waits for `[roves-input] ready`, sends click, wheel and keys, and
+  the step requires `keydown`/`mousedown`/`wheel`/`gamepadbuttondown` in the page.
+- Windows: requires `gamepadbuttondown`.
+- macOS portable: a new step relaunches with both variables and requires gamepad init to complete
+  plus a page-level `gamepadbuttondown`. It also posts CGEvent mouse/wheel/key input (warning-only
+  until the runner's TCC post-event permission is known).
+
+A physical controller (IOKit HID) on a real Mac remains unverified. No build/bundle flag change:
+nothing to mirror in `roves-action` or Packmaster.
+
 ## 2026-09-28 — Per-phase shell timings in the opt-in perf diagnostics
 
 **Servo files:** `ports/servoshell/desktop/performance.rs`, `ports/servoshell/desktop/gui.rs`,

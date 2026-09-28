@@ -33,11 +33,24 @@ if [ -z "$window_id" ]; then
   fi
 fi
 
-# Exercise real X11/SDL3 delivery without depending on pixels or application content. These
-# operations cover pointer movement/click, keyboard focus/input and a resize/redraw cycle.
+# Wait for the page's input listeners (test-page InputPanel logs "[roves-input] ready" to stdout)
+# when the caller says where stdout goes, so the synthetic input below reaches the page instead of
+# racing its load. Without ROVES_INPUT_READY_LOG this keeps the original window-only behavior.
+if [ -n "${ROVES_INPUT_READY_LOG:-}" ]; then
+  for _ in $(seq 1 100); do
+    grep -q '\[roves-input\] ready' "$ROVES_INPUT_READY_LOG" 2>/dev/null && break
+    kill -0 "$app_pid" 2>/dev/null || break
+    sleep 0.2
+  done
+fi
+
+# Exercise real X11/SDL3 delivery without depending on pixels. These operations cover pointer
+# movement/click, wheel, keyboard focus/input and a resize/redraw cycle; with the test page loaded,
+# each one also produces a "[roves-input]" line the workflow asserts on.
 xdotool mousemove --window "$window_id" 40 40
 xdotool click --window "$window_id" 1
-xdotool key --window "$window_id" Tab Escape
+xdotool click --window "$window_id" 5
+xdotool key --window "$window_id" Tab a Escape
 xdotool windowsize "$window_id" 960 640
 sleep 1
 kill -0 "$app_pid"

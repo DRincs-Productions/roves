@@ -10,8 +10,10 @@ use std::time::{Duration, Instant};
 use log::{debug, warn};
 use sdl3::event::Event;
 use sdl3::gamepad::{Axis, Button, Gamepad};
-use sdl3::joystick::JoystickId;
-use sdl3::{EventPump, GamepadSubsystem};
+use sdl3::joystick::{
+    Joystick, JoystickId, JoystickType, VirtualJoystickConnection, VirtualJoystickDescription,
+};
+use sdl3::{EventPump, GamepadSubsystem, JoystickSubsystem};
 use servo::{
     GamepadDelegate, GamepadEvent, GamepadHapticEffectRequest, GamepadHapticEffectRequestType,
     GamepadHapticEffectType, GamepadIndex, GamepadInputBounds, GamepadSupportedHapticEffects,
@@ -32,6 +34,115 @@ pub(crate) const ACTIVE_GAMEPAD_POLL_INTERVAL: Duration = Duration::from_millis(
 /// 100ms timer armed before any controller is connected needlessly wakes an otherwise-idle game
 /// ten times per second.
 const IDLE_GAMEPAD_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+/// macOS keeps SDL gamepad support off by default: `sdl3::init().gamepad()` once hung the shell
+/// there (see `CUSTOMIZATIONS.md`'s SDL3 gamepad entries). The exact value `1` opts in at runtime,
+/// so CI can exercise it with a timeout and a real Mac can try it without a special build.
+const MACOS_GAMEPAD_ENV: &str = "ROVES_MACOS_GAMEPAD";
+
+/// CI-only: the exact value `1` attaches an SDL virtual gamepad and keeps toggling its South
+/// button and left stick for a while, so a smoke test without a physical controller can prove
+/// SDL -> Servo -> Web Gamepad API delivery all the way into the page.
+const VIRTUAL_GAMEPAD_ENV: &str = "ROVES_TEST_VIRTUAL_GAMEPAD";
+const VIRTUAL_GAMEPAD_TOGGLE_INTERVAL: Duration = Duration::from_millis(500);
+const VIRTUAL_GAMEPAD_ACTIVE_FOR: Duration = Duration::from_secs(60);
+
+fn env_flag_is_one(value: Option<std::ffi::OsString>) -> bool {
+    value.as_deref() == Some(std::ffi::OsStr::new("1"))
+}
+
+/// Whether the SDL gamepad delegate should be created at all on this platform.
+pub(crate) fn runtime_enabled() -> bool {
+    !cfg!(target_os = "macos") || env_flag_is_one(std::env::var_os(MACOS_GAMEPAD_ENV))
+}
+
+/// Drives the `ROVES_TEST_VIRTUAL_GAMEPAD=1` virtual device. Field order is drop order: close the
+/// opened joystick, then detach the virtual device, then release the subsystem reference.
+struct VirtualGamepadTest {
+    joystick: Joystick,
+    _connection: VirtualJoystickConnection,
+    joystick_subsystem: JoystickSubsystem,
+    started: Instant,
+    last_toggle: Instant,
+    pressed: bool,
+}
+
+impl VirtualGamepadTest {
+    fn attach(sdl_context: &sdl3::Sdl) -> Option<Self> {
+        let joystick_subsystem = sdl_context
+            .joystick()
+            .inspect_err(|error| warn!("Virtual gamepad: no SDL joystick subsystem ({error})"))
+            .ok()?;
+        let description = VirtualJoystickDescription::new()
+            .name("Roves CI Virtual Gamepad")
+            .joystick_type(JoystickType::Gamepad)
+            .with_axes([
+                Axis::LeftX,
+                Axis::LeftY,
+                Axis::RightX,
+                Axis::RightY,
+                Axis::TriggerLeft,
+                Axis::TriggerRight,
+            ])
+            .with_buttons([
+                Button::South,
+                Button::East,
+                Button::West,
+                Button::North,
+                Button::Back,
+                Button::Guide,
+                Button::Start,
+                Button::LeftStick,
+                Button::RightStick,
+                Button::LeftShoulder,
+                Button::RightShoulder,
+                Button::DPadUp,
+                Button::DPadDown,
+                Button::DPadLeft,
+                Button::DPadRight,
+            ]);
+        let connection = joystick_subsystem
+            .attach_virtual_joystick(description)
+            .inspect_err(|error| warn!("Virtual gamepad: attach failed ({error})"))
+            .ok()?;
+        let joystick = joystick_subsystem
+            .open(connection.id())
+            .inspect_err(|error| warn!("Virtual gamepad: open failed ({error})"))
+            .ok()?;
+        log::info!("[roves-virtual-gamepad] attached id={}", connection.id());
+        let now = Instant::now();
+        Some(Self {
+            joystick,
+            _connection: connection,
+            joystick_subsystem,
+            started: now,
+            last_toggle: now,
+            pressed: false,
+        })
+    }
+
+    fn drive(&mut self, now: Instant) {
+        if now.saturating_duration_since(self.started) > VIRTUAL_GAMEPAD_ACTIVE_FOR ||
+            now.saturating_duration_since(self.last_toggle) < VIRTUAL_GAMEPAD_TOGGLE_INTERVAL
+        {
+            return;
+        }
+        self.last_toggle = now;
+        self.pressed = !self.pressed;
+        let axis = if self.pressed { 30_000 } else { 0 };
+        if let Err(error) = self
+            .joystick
+            .set_virtual_button(Button::South.to_ll().0 as u32, self.pressed)
+            .and_then(|()| {
+                self.joystick
+                    .set_virtual_axis(Axis::LeftX.to_ll().0 as u32, axis)
+            })
+        {
+            warn!("Virtual gamepad: input update failed ({error})");
+        }
+        self.joystick_subsystem.update();
+    }
+}
 
 fn gamepad_poll_interval(has_open_gamepads: bool, has_pending_haptics: bool) -> Duration {
     if has_open_gamepads || has_pending_haptics {
@@ -204,6 +315,7 @@ struct SdlGamepadState {
     event_pump: EventPump,
     open_gamepads: HashMap<JoystickId, Gamepad>,
     pending_haptic_effects: HashMap<usize, PendingHapticEffect>,
+    virtual_test: Option<VirtualGamepadTest>,
 }
 
 pub(crate) struct ServoshellGamepadDelegate {
@@ -238,6 +350,15 @@ impl ServoshellGamepadDelegate {
     }
 
     fn init_sdl() -> Option<SdlGamepadState> {
+        let virtual_test_requested = env_flag_is_one(std::env::var_os(VIRTUAL_GAMEPAD_ENV));
+        if virtual_test_requested {
+            // CI windows are often unfocused (especially on macOS runners); SDL drops joystick
+            // events for background apps unless told otherwise.
+            if !sdl3::hint::set("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1") {
+                warn!("Virtual gamepad: could not allow background joystick events");
+            }
+        }
+        log::info!("[roves-gamepad] initializing SDL gamepad subsystem");
         let sdl_context = match sdl3::init() {
             Ok(context) => context,
             Err(error) => {
@@ -259,12 +380,17 @@ impl ServoshellGamepadDelegate {
                 return None;
             },
         };
+        log::info!("[roves-gamepad] SDL gamepad subsystem ready");
+        let virtual_test = virtual_test_requested
+            .then(|| VirtualGamepadTest::attach(&sdl_context))
+            .flatten();
         Some(SdlGamepadState {
             _sdl_context: sdl_context,
             gamepad_subsystem,
             event_pump,
             open_gamepads: HashMap::new(),
             pending_haptic_effects: HashMap::new(),
+            virtual_test,
         })
     }
 
@@ -275,6 +401,10 @@ impl ServoshellGamepadDelegate {
         let Some(sdl_state) = sdl_state.as_mut() else {
             return;
         };
+
+        if let Some(virtual_test) = sdl_state.virtual_test.as_mut() {
+            virtual_test.drive(Instant::now());
+        }
 
         // Devices already connected before the first poll still produce their own
         // `Event::GamepadAdded` here, so unlike GilRs (whose `Gilrs::new()` doesn't emit

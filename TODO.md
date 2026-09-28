@@ -152,8 +152,13 @@ hardware ancora aperta (IME CJK/dead key, screen reader, ecc.).
   minimo. Il test successivo aggiunge un gamepad virtuale con l'API di SDL3 e verifica gli eventi
   di connessione, asse, pulsante e disconnessione su CI macOS/Windows/Linux. I test del bridge
   verificano ora la mappatura SDL→Servo per pulsanti standard, assi, trigger e valori limite.
-  Restano da verificare input Web e lifecycle nel runtime completo, poi ripetere le prove su un
-  Mac reale prima di rimuovere il gate `not(target_os = "macos")`.
+  Il 2026-09-28 (patch 0047) il gate di compilazione è diventato un opt-in a runtime
+  `ROVES_MACOS_GAMEPAD=1`, sempre spento per default, e `ROVES_TEST_VIRTUAL_GAMEPAD=1` fa
+  collegare alla shell un gamepad virtuale SDL. La CI macOS lancia il runtime completo con
+  entrambi e verifica il completamento dell'init e la consegna dei pulsanti alla Web Gamepad API
+  della test-page. Linux e Windows fanno la stessa verifica nello smoke test principale. Resta
+  da provare un controller fisico (IOKit HID) su un Mac reale prima di attivarlo per default:
+  l'utente non ha un Mac, quindi il punto resta aperto.
 ## Rendering futuro: fast path wgpu — backlog
 
 - [ ] Progettare un fast path interno a Servo per il caso di una singola
