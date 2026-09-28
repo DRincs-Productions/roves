@@ -81,6 +81,11 @@ l'errore finiva in un `warn!`. Corretto con la patch 0049: il loop principale in
 gamepad al delegate. La voce "Gamepad su Windows/Linux" qui sotto va quindi riprovata sulla
 prossima release.
 
+Esito CI dopo le patch 0049–0052: Linux e Windows ricevono nella pagina i pulsanti del gamepad
+virtuale. Su macOS 1 run su 4 si è bloccato il thread principale subito dopo la prima pressione
+virtuale, prima che la pagina caricasse. Da allora il gamepad virtuale preme solo dopo il
+caricamento (patch 0053) e lo step macOS è solo informativo.
+
 La sezione **Input** della test-page (`test-page/src/InputPanel.tsx`) mostra i tasti e i pulsanti
 del mouse premuti e lo storico di tastiera, mouse, rotellina e gamepad (pulsanti e assi via Web
 Gamepad API). Ogni evento viene scritto in console come `[roves-input] kind=...`, quindi finisce in

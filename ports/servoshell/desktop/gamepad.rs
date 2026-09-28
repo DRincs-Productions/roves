@@ -66,6 +66,10 @@ struct VirtualGamepadTest {
     last_toggle: Instant,
     pressed: bool,
     toggles: u32,
+    /// Set once a page has loaded (see `announce_connected_gamepads`): real players press
+    /// buttons on a loaded game, and on macOS a run that pressed before any WebView existed
+    /// was also the one where the main thread stalled.
+    armed: bool,
 }
 
 impl VirtualGamepadTest {
@@ -120,10 +124,26 @@ impl VirtualGamepadTest {
             last_toggle: now,
             pressed: false,
             toggles: 0,
+            armed: false,
         })
     }
 
+    /// Start toggling now; the `VIRTUAL_GAMEPAD_ACTIVE_FOR` window starts here too.
+    fn arm(&mut self) {
+        if self.armed {
+            return;
+        }
+        let now = Instant::now();
+        self.armed = true;
+        self.started = now;
+        self.last_toggle = now;
+        log::info!("[roves-virtual-gamepad] armed after page load");
+    }
+
     fn drive(&mut self, now: Instant) {
+        if !self.armed {
+            return;
+        }
         if now.saturating_duration_since(self.started) > VIRTUAL_GAMEPAD_ACTIVE_FOR ||
             now.saturating_duration_since(self.last_toggle) < VIRTUAL_GAMEPAD_TOGGLE_INTERVAL
         {
@@ -531,6 +551,9 @@ impl ServoshellGamepadDelegate {
             .collect();
         by_old_slot.sort_by_key(|(slot, _)| *slot);
         let ids: Vec<JoystickId> = by_old_slot.into_iter().map(|(_, id)| id).collect();
+        if let Some(virtual_test) = sdl_state.virtual_test.as_mut() {
+            virtual_test.arm();
+        }
         for (id, slot) in compacted_slots(&ids) {
             sdl_state.slots.insert(id, slot);
             let name = sdl_state

@@ -158,7 +158,11 @@ hardware ancora aperta (IME CJK/dead key, screen reader, ecc.).
   entrambi e verifica il completamento dell'init e la consegna dei pulsanti alla Web Gamepad API
   della test-page. Linux e Windows fanno la stessa verifica nello smoke test principale. Resta
   da provare un controller fisico (IOKit HID) su un Mac reale prima di attivarlo per default:
-  l'utente non ha un Mac, quindi il punto resta aperto.
+  l'utente non ha un Mac, quindi il punto resta aperto. Aggiornamento 2026-09-28 sera: Linux e Windows ricevono
+  in CI i pulsanti del gamepad virtuale nella pagina (patch 0049–0051). Su macOS 1 run su 4 ha
+  riprodotto il blocco del thread principale subito dopo la prima pressione virtuale, prima del
+  caricamento della pagina: il gamepad macOS resta spento per default e lo step CI macOS è solo
+  informativo (patch 0053).
 ## Rendering futuro: fast path wgpu — backlog
 
 - [ ] Progettare un fast path interno a Servo per il caso di una singola
