@@ -1,4 +1,36 @@
 # Customizations over upstream Servo
+## 2026-09-28 — Fix: gamepad index mismatch and re-announce on page load
+
+**Servo files:** `ports/servoshell/desktop/gamepad.rs`, `ports/servoshell/running_app_state.rs`.
+**Patch:** `patches/servo-v0.5.0/0050-gamepad-navigator-slots.patch` (after 0001–0049).
+
+With 0049 in place, the macOS CI step showed the virtual gamepad initializing and connecting,
+but no button press ever reached the page. There were two causes, both inherited from the
+GilRs → SDL3 port.
+
+1. **Index mismatch.** Servo stores a new gamepad in the lowest free
+   `navigator.getGamepads()` slot, whatever index the embedder sends (see
+   `handle_gamepad_connect`: "the GilRs index is currently unused"). Later `Updated`/`Disconnected`
+   events and haptic requests are looked up by the embedder's index, though. The shell sent
+   `which.raw()`, the SDL instance ID, which starts above 0 and only grows (the CI virtual pad
+   was id 3). GilRs IDs started at 0 and happened to match; SDL's never do. Button/axis updates
+   and rumble were therefore always dropped.
+   - The delegate now keeps `slots: HashMap<JoystickId, usize>`, filled with the same
+     lowest-free-slot rule (`lowest_free_slot`).
+   - Every event and both haptic lookups use it.
+2. **Gamepad connected before the page loaded.** A new document starts with an empty gamepad
+   list, and Servo ignores updates for unknown gamepads. So a controller that was already
+   connected when the game's page loaded (the normal case: plugged in before launch) never
+   worked until reconnected.
+   - `RunningAppState::notify_load_status_changed(Complete)` now calls
+     `announce_connected_gamepads`. It compacts slots to `0..n` (`compacted_slots`) and sends
+     `Connected` for each open pad.
+   - Known edge case: a pad whose original `Connected` reached the new document while it was
+     still loading gets a duplicate entry.
+
+Unit tests cover `lowest_free_slot` and `compacted_slots`. End-to-end verification is the
+existing smoke-test `gamepadbuttondown` checks, on all three desktops.
+
 ## 2026-09-28 — Fix: gamepad input never initialized under SDL3 (single EventPump)
 
 **Servo files:** `ports/servoshell/desktop/gamepad.rs`, `ports/servoshell/desktop/app.rs`,

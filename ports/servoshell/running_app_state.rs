@@ -794,6 +794,14 @@ impl WebViewDelegate for RunningAppState {
         self.window_for_webview(&webview).set_needs_update();
 
         if status == LoadStatus::Complete {
+            // A new document knows no gamepads yet; see `announce_connected_gamepads`.
+            #[cfg(all(
+                feature = "gamepad",
+                not(any(target_os = "android", target_env = "ohos"))
+            ))]
+            if let Some(gamepad_delegate) = self.gamepad_delegate() {
+                gamepad_delegate.announce_connected_gamepads(self);
+            }
             if self.initial_webview_id.get() == Some(webview.id()) {
                 self.initial_load_complete.set(true);
             }

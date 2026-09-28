@@ -1,0 +1,227 @@
+--- a/ports/servoshell/desktop/gamepad.rs
++++ b/ports/servoshell/desktop/gamepad.rs
+@@ -144,6 +144,47 @@
+     }
+ }
+ 
++/// The lowest slot not in `used`: the same rule as Servo's `Navigator::select_gamepad_index`, so
++/// the shell and the page agree on each gamepad's index as long as they see the same connects and
++/// disconnects in the same order.
++fn lowest_free_slot(used: impl Iterator<Item = usize> + Clone) -> usize {
++    (0..)
++        .find(|slot| !used.clone().any(|taken| taken == *slot))
++        .expect("an unbounded range always has a free slot")
++}
++
++/// Dense slots `0..n` for already-sorted keys, for re-announcing to a fresh document (whose
++/// `navigator.getGamepads()` starts empty and fills from 0).
++fn compacted_slots<K: Copy>(sorted_keys: &[K]) -> Vec<(K, usize)> {
++    sorted_keys
++        .iter()
++        .enumerate()
++        .map(|(slot, key)| (*key, slot))
++        .collect()
++}
++
++#[cfg(test)]
++mod slot_tests {
++    use super::{compacted_slots, lowest_free_slot};
++
++    #[test]
++    fn first_gamepad_gets_slot_zero_whatever_its_sdl_id() {
++        assert_eq!(lowest_free_slot(std::iter::empty()), 0);
++    }
++
++    #[test]
++    fn reuses_the_lowest_slot_freed_by_a_disconnect() {
++        assert_eq!(lowest_free_slot([0, 2].into_iter()), 1);
++        assert_eq!(lowest_free_slot([1, 2].into_iter()), 0);
++        assert_eq!(lowest_free_slot([0, 1].into_iter()), 2);
++    }
++
++    #[test]
++    fn compaction_numbers_from_zero_in_order() {
++        assert_eq!(compacted_slots(&[7u32, 9, 12]), vec![(7, 0), (9, 1), (12, 2)]);
++    }
++}
++
+ fn gamepad_poll_interval(has_open_gamepads: bool, has_pending_haptics: bool) -> Duration {
+     if has_open_gamepads || has_pending_haptics {
+         ACTIVE_GAMEPAD_POLL_INTERVAL
+@@ -315,6 +356,10 @@
+     _sdl_context: sdl3::Sdl,
+     gamepad_subsystem: GamepadSubsystem,
+     open_gamepads: HashMap<JoystickId, Gamepad>,
++    /// `navigator.getGamepads()` slot of each open gamepad. Servo hands every new gamepad the
++    /// lowest free slot page-side and indexes later updates and haptic requests by it, while
++    /// SDL instance IDs start above 0 and only grow, so the SDL ID cannot be used directly.
++    slots: HashMap<JoystickId, usize>,
+     pending_haptic_effects: HashMap<usize, PendingHapticEffect>,
+     virtual_test: Option<VirtualGamepadTest>,
+ }
+@@ -382,6 +427,7 @@
+             _sdl_context: sdl_context,
+             gamepad_subsystem,
+             open_gamepads: HashMap::new(),
++            slots: HashMap::new(),
+             pending_haptic_effects: HashMap::new(),
+             virtual_test,
+         })
+@@ -421,32 +467,73 @@
+                 let name = gamepad
+                     .name()
+                     .unwrap_or_else(|| "Unknown Gamepad".to_owned());
+-                log::info!("[roves-gamepad] connected id={which} name={name:?}");
++                let slot = lowest_free_slot(sdl_state.slots.values().copied());
++                log::info!("[roves-gamepad] connected id={which} slot={slot} name={name:?}");
+                 sdl_state.open_gamepads.insert(which, gamepad);
+-                let index = GamepadIndex(which.raw() as usize);
+-                Self::dispatch(state, event, name, index);
++                sdl_state.slots.insert(which, slot);
++                Self::dispatch(state, event, name, GamepadIndex(slot));
+             },
+             Event::GamepadRemoved { which, .. } => {
+                 log::info!("[roves-gamepad] disconnected id={which}");
+                 sdl_state.open_gamepads.remove(&which);
+-                let index = GamepadIndex(which.raw() as usize);
+-                Self::dispatch(state, event, String::new(), index);
++                if let Some(slot) = sdl_state.slots.remove(&which) {
++                    Self::dispatch(state, event, String::new(), GamepadIndex(slot));
++                }
+             },
+             Event::GamepadAxisMotion { which, .. } |
+             Event::GamepadButtonDown { which, .. } |
+             Event::GamepadButtonUp { which, .. } => {
++                let Some(&slot) = sdl_state.slots.get(&which) else {
++                    return;
++                };
+                 let name = sdl_state
+                     .open_gamepads
+                     .get(&which)
+                     .and_then(|gamepad| gamepad.name())
+                     .unwrap_or_default();
+-                let index = GamepadIndex(which.raw() as usize);
+-                Self::dispatch(state, event, name, index);
++                Self::dispatch(state, event, name, GamepadIndex(slot));
+             },
+             _ => {},
+         }
+     }
+ 
++    /// Announce every open gamepad to the active page again, in dense slots from 0. Called when
++    /// a top-level load completes: a new document starts with an empty `navigator.getGamepads()`
++    /// and Servo drops updates for gamepads it has not been told about, so a controller plugged
++    /// in before the game loaded (or connected while the previous document was showing) would
++    /// otherwise never work until reconnected.
++    pub(crate) fn announce_connected_gamepads(&self, state: &RunningAppState) {
++        let mut sdl_state = self.sdl_state.borrow_mut();
++        let Some(sdl_state) = sdl_state.as_mut() else {
++            return;
++        };
++        let mut by_old_slot: Vec<(usize, JoystickId)> = sdl_state
++            .slots
++            .iter()
++            .map(|(&id, &slot)| (slot, id))
++            .collect();
++        by_old_slot.sort_by_key(|(slot, _)| *slot);
++        let ids: Vec<JoystickId> = by_old_slot.into_iter().map(|(_, id)| id).collect();
++        for (id, slot) in compacted_slots(&ids) {
++            sdl_state.slots.insert(id, slot);
++            let name = sdl_state
++                .open_gamepads
++                .get(&id)
++                .and_then(|gamepad| gamepad.name())
++                .unwrap_or_else(|| "Unknown Gamepad".to_owned());
++            log::info!("[roves-gamepad] announced id={id} slot={slot} to the loaded page");
++            Self::dispatch(
++                state,
++                Event::GamepadAdded {
++                    timestamp: 0,
++                    which: id,
++                },
++                name,
++                GamepadIndex(slot),
++            );
++        }
++    }
++
+     /// Drive the CI virtual gamepad and fire due haptic effect requests. Called from
+     /// `App::new_events` (main thread only — see this module's own doc comment). Input events
+     /// arrive separately through [`Self::handle_sdl_event`].
+@@ -492,7 +579,7 @@
+             match request.request_type() {
+                 GamepadHapticEffectRequestType::Play(effect_type) => {
+                     Self::play_haptic_effect(
+-                        &sdl_state.open_gamepads,
++                        &sdl_state.slots,
+                         &mut sdl_state.pending_haptic_effects,
+                         &effect_type.clone(),
+                         request,
+@@ -501,6 +588,7 @@
+                 GamepadHapticEffectRequestType::Stop => {
+                     Self::stop_haptic_effect(
+                         &mut sdl_state.open_gamepads,
++                        &sdl_state.slots,
+                         &mut sdl_state.pending_haptic_effects,
+                         request,
+                     );
+@@ -606,7 +694,7 @@
+     }
+ 
+     fn play_haptic_effect(
+-        open_gamepads: &HashMap<JoystickId, Gamepad>,
++        slots: &HashMap<JoystickId, usize>,
+         pending_haptic_effects: &mut HashMap<usize, PendingHapticEffect>,
+         effect_type: &GamepadHapticEffectType,
+         request: GamepadHapticEffectRequest,
+@@ -614,10 +702,7 @@
+         let index = request.gamepad_index();
+         let GamepadHapticEffectType::DualRumble(params) = effect_type;
+ 
+-        let Some((&joystick_id, _)) = open_gamepads
+-            .iter()
+-            .find(|(id, _)| id.raw() as usize == index)
+-        else {
++        let Some((&joystick_id, _)) = slots.iter().find(|(_, slot)| **slot == index) else {
+             debug!("Couldn't find connected gamepad to play haptic effect on");
+             request.failed();
+             return;
+@@ -643,6 +728,7 @@
+ 
+     fn stop_haptic_effect(
+         open_gamepads: &mut HashMap<JoystickId, Gamepad>,
++        slots: &HashMap<JoystickId, usize>,
+         pending_haptic_effects: &mut HashMap<usize, PendingHapticEffect>,
+         request: GamepadHapticEffectRequest,
+     ) {
+@@ -655,9 +741,10 @@
+             return;
+         }
+ 
+-        let Some(gamepad) = open_gamepads
+-            .values_mut()
+-            .find(|gamepad| gamepad.id().map(|id| id.raw() as usize) == Ok(index))
++        let Some(gamepad) = slots
++            .iter()
++            .find(|(_, slot)| **slot == index)
++            .and_then(|(id, _)| open_gamepads.get_mut(id))
+         else {
+             request.failed();
+             return;
+--- a/ports/servoshell/running_app_state.rs
++++ b/ports/servoshell/running_app_state.rs
+@@ -794,6 +794,14 @@
+         self.window_for_webview(&webview).set_needs_update();
+ 
+         if status == LoadStatus::Complete {
++            // A new document knows no gamepads yet; see `announce_connected_gamepads`.
++            #[cfg(all(
++                feature = "gamepad",
++                not(any(target_os = "android", target_env = "ohos"))
++            ))]
++            if let Some(gamepad_delegate) = self.gamepad_delegate() {
++                gamepad_delegate.announce_connected_gamepads(self);
++            }
+             if self.initial_webview_id.get() == Some(webview.id()) {
+                 self.initial_load_complete.set(true);
+             }
