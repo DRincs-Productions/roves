@@ -15,11 +15,15 @@ path = "lib.rs"
 [features]
 allocation-tracking = ["backtrace", "dep:rustc-hash", "log"]
 use-system-allocator = ["libc"]
+# Opt-in mimalloc global allocator (Roves). Mutually exclusive with use-system-allocator.
+use-mimalloc = ["dep:mimalloc", "dep:libmimalloc-sys"]
 
 [dependencies]
 backtrace = { workspace = true, optional = true }
 log = { workspace = true, optional = true }
 rustc-hash = { workspace = true, optional = true }
+libmimalloc-sys = { version = "0.1.49", optional = true, default-features = false, features = ["extended"] }
+mimalloc = { version = "0.1.52", optional = true, default-features = false }
 
 [target.'cfg(not(any(windows, target_env = "ohos")))'.dependencies]
 libc = { workspace = true, optional = true }

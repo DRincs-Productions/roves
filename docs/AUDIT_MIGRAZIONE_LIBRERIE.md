@@ -100,6 +100,12 @@ modificare quei percorsi basandosi sulla sola CI verde.
   della versione dati prima di riaprire la sostituzione.
 - `encoding_rs` è usato dal percorso encoding Web e da `tendril`; conservarlo.
 
+**Decisione 2026-09-28 (maintainer):** nessuna ulteriore sostituzione verso ICU4X, non è
+prioritaria. Anche la rimozione dell'"internazionalizzazione" Rust è stata valutata e scartata:
+qui ICU4X non serve a etichette tradotte (Roves non ne ha) ma al layout del testo Web
+(a capo, confini di parola, proprietà Unicode per i font); toglierlo romperebbe il testo HTML
+dei giochi. Le crate restano come sono.
+
 La prossima migrazione sensata richiede un servizio duplicato dimostrato e casi di equivalenza
 che includano grapheme combining, emoji ZWJ, RTL, CJK e boundary. Non è stata cambiata alcuna
 implementazione Unicode perché una divergenza qui può alterare testo Web osservabile.
@@ -110,6 +116,11 @@ implementazione Unicode perché una divergenza qui può alterare testo Web osser
   `malloc/realloc/free` su alcuni target. Windows/OHOS hanno già percorsi `System`; non esiste
   in questo checkout una misura che attribuisca un problema di memoria o frame time a jemalloc.
   Non aggiungere mimalloc senza workload misurato e test dell'ownership FFI.
+  **Aggiornamento 2026-09-28:** su richiesta del maintainer la fase 5 è avviata come opzione di
+  build `--features mimalloc` (patch 0048), spenta per default. Sostituisce l'intera superficie
+  (`usable_size`, `libc_compat`, `heap_reports` via `mi_process_info`) e resta mutuamente
+  esclusiva con `use-system-allocator`. `perf-ab.yml` pubblica le build Windows System/mimalloc
+  per il confronto. Il default cambia solo con misure ripetibili (`ROVES_PERFORMANCE.md`).
 - `servoshell` usa `env_logger` per output tradizionale, configurazione e file di log speciali;
   tracing è una feature separata per subscriber e layer Tracy/Perfetto. Non è stata trovata una
   doppia inizializzazione dimostrata che giustifichi la rimozione di `env_logger`. La mappa

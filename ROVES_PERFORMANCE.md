@@ -226,3 +226,35 @@ funzionale; non misura il guadagno CPU, RAM o frame-time.
   CPU: il lavoro GPU asincrono emerge soprattutto in `present` con VSync.
 - Patch `0046-shell-phase-timings.patch`; smoke CI desktop richiede la riga e la stampa, senza
   soglie. Le misure A/B vanno raccolte su hardware reale con build release.
+
+### 2026-09-28 — Procedura di misura su Windows (fast path A e allocatore)
+
+Build: scaricare dal pre-release `perf-ab` i due zip `roves_perf_windows_system.zip` e
+`roves_perf_windows_mimalloc.zip`. Sono build release con la test-page come contenuto e
+differiscono solo per l'allocatore. In alternativa si può usare un gioco reale costruito con la
+release corrente.
+
+Per ogni combinazione, da PowerShell nella cartella di `play.exe`:
+
+```powershell
+$env:ROVES_PERF_LOG_INTERVAL_MS = '1000'
+# fast path A: aggiungere $env:ROVES_DIRECT_PRESENT = '1' (rimuovere con Remove-Item Env:ROVES_DIRECT_PRESENT)
+.\play.exe
+```
+
+1. Aprire il link `pixi-animated` della test-page, attendere 10 s di warm-up e lasciare girare
+   60 s senza toccare la finestra, sempre alla stessa dimensione.
+2. Chiudere e copiare `%LOCALAPPDATA%\<gioco o roves>\roves.log`: viene sovrascritto a ogni avvio.
+3. Ripetere almeno 3 volte per combinazione: system, system + direct present, mimalloc.
+4. Riportare GPU, driver, risoluzione, refresh e le righe `[roves-perf]`/`[roves-perf-time]`.
+   Per memoria e CPU annotare anche working set e CPU% di `play.exe` dal Task Manager
+   (dettagli) a fine sessione.
+
+Decisioni che dipendono dai numeri:
+
+- **Fast path B:** conviene se `shell_paint` (blit + eventuale egui) pesa rispetto a
+  `webview_paint` + `present`.
+- **egui:** conta la differenza di `shell_paint`/`egui_run` fra percorso composto e percorso
+  diretto.
+- **mimalloc:** diventa default solo con un miglioramento ripetibile di memoria o frame time,
+  senza regressioni.

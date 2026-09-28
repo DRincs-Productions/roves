@@ -1,0 +1,197 @@
+name: 'Perf A/B builds (Windows)'
+
+# Builds two Windows *release* bundles of this repo's own source that differ only in the global
+# allocator — `System` (the Windows default, HeapAlloc) and the opt-in `--features mimalloc` —
+# both with test-page/ as content, and publishes them to the rolling "perf-ab" pre-release as
+# roves_perf_windows_system.zip / roves_perf_windows_mimalloc.zip.
+#
+# Why a separate workflow: test.yml builds debug bundles (numbers from a debug build are not
+# representative), and release.yml publishes versioned engine shells that must not grow
+# experimental variants. The maintainer can only measure by hand on Windows, so only Windows is
+# built. See docs/PIANO_MIGRAZIONE_LIBRERIE.md (phase 5) and ROVES_PERFORMANCE.md for the
+# measurement procedure; this workflow imposes no performance thresholds.
+#
+# Triggered by pushing a tag matching perf-ab-* (e.g. perf-ab-20260928), or manually.
+
+on:
+  push:
+    tags:
+      - 'perf-ab-*'
+  workflow_dispatch:
+
+concurrency:
+  group: perf-ab
+  cancel-in-progress: true
+
+env:
+  PACKAGE_NAME: 'roves'
+  SERVO_TAG: '0.5.0'
+  RELEASE_TAG: 'perf-ab'
+
+jobs:
+  prepare-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: recreate the rolling perf-ab pre-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release delete "$RELEASE_TAG" --yes --cleanup-tag 2>/dev/null || true
+          cat > notes.md <<EOF
+          Allocator A/B builds for Windows, from commit ${{ github.sha }}. Not a Roves release:
+          nothing downstream consumes these.
+
+          Both are optimized release builds with the diagnostic test page as content, identical
+          except for the global allocator:
+
+          | Asset | Allocator |
+          | --- | --- |
+          | \`roves_perf_windows_system.zip\` | Windows default (\`System\`, HeapAlloc) |
+          | \`roves_perf_windows_mimalloc.zip\` | mimalloc (\`--features mimalloc\`) |
+
+          Measure each with the same fixture, window size, warm-up and duration; see
+          ROVES_PERFORMANCE.md.
+          EOF
+          gh release create "$RELEASE_TAG" --target "${{ github.sha }}" --prerelease \
+            --title "Perf A/B builds (Windows allocator)" --notes-file notes.md
+
+  build:
+    needs: prepare-release
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - allocator: system
+            build_features: ''
+          - allocator: mimalloc
+            build_features: '--features mimalloc'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same reasoning as release.yml: mach's command loader imports WPT tooling from tests/wpt/.
+      - name: fetch tests/wpt/tests/tools (mach's command loader needs it to exist)
+        shell: bash
+        run: |
+          rm -rf /tmp/wpt-tools-src
+          git init -q /tmp/wpt-tools-src
+          git -C /tmp/wpt-tools-src remote add origin https://github.com/servo/servo.git
+          git -C /tmp/wpt-tools-src config core.sparseCheckout true
+          git -C /tmp/wpt-tools-src sparse-checkout init --cone
+          git -C /tmp/wpt-tools-src sparse-checkout set tests/wpt/tests/tools
+          git -C /tmp/wpt-tools-src fetch --depth 1 --filter=blob:none origin "v${SERVO_TAG}"
+          git -C /tmp/wpt-tools-src checkout FETCH_HEAD
+          mkdir -p tests/wpt
+          cp -r /tmp/wpt-tools-src/tests/wpt/tests tests/wpt/tests
+          rm -rf /tmp/wpt-tools-src
+
+      - name: setup python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: setup uv (needed by ./mach)
+        uses: astral-sh/setup-uv@v5
+
+      - name: setup node (for test-page/)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: build test-page
+        shell: bash
+        working-directory: test-page
+        run: |
+          npm install
+          npm run build
+
+      - name: prefetch pinned rust toolchain
+        shell: bash
+        run: rustup show
+
+      # Same non-interactive GStreamer install as release.yml (see its comment).
+      - name: install GStreamer (non-interactive)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = "1.28.7"
+          $name = "gstreamer-1.0-msvc-x86_64-$version.exe"
+          $installer = Join-Path $env:RUNNER_TEMP $name
+          Invoke-WebRequest -Uri "https://gstreamer.freedesktop.org/data/pkg/windows/$version/msvc/$name" -OutFile $installer
+          $installDir = Join-Path (Get-Location) "target\dependencies\gstreamer\1.0\msvc_X86_64"
+          New-Item -ItemType Directory -Force -Path (Split-Path $installDir) | Out-Null
+          $proc = Start-Process -FilePath $installer -ArgumentList @(
+            "/CURRENTUSER", "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=`"$installDir`""
+          ) -Wait -PassThru
+          if ($proc.ExitCode -ne 0) { throw "GStreamer installer failed with exit code $($proc.ExitCode)" }
+
+      - name: mach bootstrap (installs build dependencies)
+        shell: bash
+        timeout-minutes: 15
+        run: ./mach bootstrap --force --yes --skip-lints --skip-nextest --skip-platform
+
+      - name: mach build (release)
+        shell: bash
+        run: ./mach build --release ${{ matrix.build_features }}
+
+      - name: assemble bundle
+        shell: bash
+        run: ./mach bundle --release --content-dir test-page/dist --output release --diagnostic-script
+
+      # Launch check only: which allocator is linked is not observable from outside the process,
+      # so this proves each bundle starts and emits the perf diagnostics the measurement needs.
+      # Published as a pre-release so GitHub's "latest release" (Packmaster's update banner)
+      # never points at it.
+      - name: smoke test — launch the bundle with perf diagnostics
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path release -Filter play.exe -Recurse | Select-Object -First 1
+          if (-not $exe) { Write-Error "no play.exe found under release/"; exit 1 }
+          $stdout = Join-Path $env:RUNNER_TEMP "smoke-stdout.log"
+          $stderr = Join-Path $env:RUNNER_TEMP "smoke-stderr.log"
+          $env:ROVES_PERF_LOG_INTERVAL_MS = "1000"
+          $proc = Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName -PassThru `
+            -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          Start-Sleep -Seconds 20
+          $stillRunning = -not $proc.HasExited
+          if ($stillRunning) { Stop-Process -Id $proc.Id -Force }
+          $log = Get-ChildItem -Path "$env:LOCALAPPDATA" -Filter roves.log -Recurse -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if ($log) { Get-Content $log.FullName | Select-String -Pattern '\[roves-perf' | Select-Object -Last 4 | ForEach-Object { Write-Host "::notice::$($_.Line)" } }
+          if (-not $stillRunning) {
+            Get-Content $stderr -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "::notice::$_" }
+            Write-Host "::error::bundle exited on its own within 20s"
+            exit 1
+          }
+          if (-not ($log -and (Select-String -Path $log.FullName -Pattern '\[roves-perf-time\]' -Quiet))) {
+            Write-Host "::error::no [roves-perf-time] line in roves.log"
+            exit 1
+          }
+
+      - name: zip bundle
+        shell: pwsh
+        run: |
+          $zip = "roves_perf_windows_${{ matrix.allocator }}.zip"
+          for ($attempt = 1; $attempt -le 5; $attempt++) {
+            try { Rename-Item -Path release -NewName $env:PACKAGE_NAME -ErrorAction Stop; break }
+            catch { if ($attempt -eq 5) { throw }; Start-Sleep -Seconds ($attempt * 2) }
+          }
+          Compress-Archive -Path $env:PACKAGE_NAME -DestinationPath $zip
+          echo "ZIP=$zip" >> $env:GITHUB_ENV
+
+      - name: upload to the perf-ab pre-release
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          for attempt in 1 2 3; do
+            gh release upload "$RELEASE_TAG" "$ZIP" --clobber && exit 0
+            sleep $((attempt * 10))
+          done
+          exit 1

@@ -67,6 +67,9 @@ webxr = ["servo/webxr"]
 # ../../../../src-tauri/Cargo.toml. Exposes a `steam:` protocol scheme to web
 # content; see desktop/protocols/steam.rs.
 steam = ["dep:steamworks"]
+# Opt-in mimalloc global allocator (Roves), for allocator A/B measurements; see
+# components/allocator/lib.rs. Off by default: every target keeps its existing allocator.
+mimalloc = ["servo-allocator/use-mimalloc"]
 
 [dependencies]
 accesskit = { workspace = true }

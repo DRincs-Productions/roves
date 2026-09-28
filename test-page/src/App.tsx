@@ -275,6 +275,14 @@ export default function App() {
         </div>
       </div>
 
+      {/* Repeatable workloads for [roves-perf]/[roves-perf-time] measurements (PerformanceFixture). */}
+      <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", justifyContent: "center" }}>
+        <span>Performance fixtures:</span>
+        <a href="?perf=blank" style={{ color: "#8ab4f8" }}>blank</a>
+        <a href="?perf=pixi-static" style={{ color: "#8ab4f8" }}>pixi-static</a>
+        <a href="?perf=pixi-animated" style={{ color: "#8ab4f8" }}>pixi-animated</a>
+      </div>
+
       <GpuInfoPanel />
       <InputPanel />
       <GamepadPanel />

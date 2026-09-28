@@ -58,7 +58,12 @@ pub static enclosing_size: Option<EnclosingSizeFn> = Some(crate::enclosing_size_
 #[cfg(not(feature = "allocation-tracking"))]
 pub static enclosing_size: Option<EnclosingSizeFn> = None;
 
-#[cfg(not(any(windows, feature = "use-system-allocator", target_env = "ohos")))]
+#[cfg(not(any(
+    windows,
+    feature = "use-system-allocator",
+    feature = "use-mimalloc",
+    target_env = "ohos"
+)))]
 mod platform {
     use std::ffi::CStr;
     use std::mem::size_of_val;
@@ -149,6 +154,7 @@ mod platform {
 
 #[cfg(all(
     not(windows),
+    not(feature = "use-mimalloc"),
     any(feature = "use-system-allocator", target_env = "ohos")
 ))]
 mod platform {
@@ -187,7 +193,7 @@ mod platform {
     }
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(feature = "use-mimalloc")))]
 mod platform {
     pub use std::alloc::System as Allocator;
     use std::os::raw::c_void;
@@ -217,5 +223,75 @@ mod platform {
 
     pub fn heap_reports() -> Vec<crate::HeapReport> {
         Vec::new()
+    }
+}
+
+#[cfg(all(feature = "use-mimalloc", feature = "use-system-allocator"))]
+compile_error!("servo-allocator: `use-mimalloc` and `use-system-allocator` are mutually exclusive");
+
+/// Opt-in mimalloc (Roves), for allocator A/B measurements; off by default on every target.
+/// Every entry point below goes through mimalloc too, so memory crossing FFI (FreeType's
+/// `libc_compat` hooks) is always freed or resized by the allocator that created it, and
+/// `usable_size` is only ever asked about blocks mimalloc owns.
+#[cfg(feature = "use-mimalloc")]
+mod platform {
+    use std::os::raw::c_void;
+    use std::ptr;
+
+    pub use mimalloc::MiMalloc as Allocator;
+
+    /// Get the size of a heap block.
+    ///
+    /// # Safety
+    ///
+    /// Passing a non-heap allocated pointer to this function results in undefined behavior.
+    pub unsafe extern "C" fn usable_size(ptr: *const c_void) -> usize {
+        let size = unsafe { libmimalloc_sys::mi_usable_size(ptr) };
+        #[cfg(feature = "allocation-tracking")]
+        crate::ALLOC.note_allocation(ptr, size);
+        size
+    }
+
+    /// Memory allocation APIs compatible with libc
+    pub mod libc_compat {
+        pub use libmimalloc_sys::{mi_free as free, mi_malloc as malloc, mi_realloc as realloc};
+    }
+
+    pub fn heap_reports() -> Vec<crate::HeapReport> {
+        let mut current_rss = 0;
+        let mut peak_rss = 0;
+        let mut current_commit = 0;
+        let mut peak_commit = 0;
+        // mimalloc skips every null output pointer.
+        unsafe {
+            libmimalloc_sys::mi_process_info(
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                &mut current_rss,
+                &mut peak_rss,
+                &mut current_commit,
+                &mut peak_commit,
+                ptr::null_mut(),
+            )
+        };
+        vec![
+            crate::HeapReport {
+                path: "mimalloc-current-commit",
+                size: Some(current_commit),
+            },
+            crate::HeapReport {
+                path: "mimalloc-peak-commit",
+                size: Some(peak_commit),
+            },
+            crate::HeapReport {
+                path: "mimalloc-current-rss",
+                size: Some(current_rss),
+            },
+            crate::HeapReport {
+                path: "mimalloc-peak-rss",
+                size: Some(peak_rss),
+            },
+        ]
     }
 }

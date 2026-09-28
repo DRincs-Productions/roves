@@ -1,4 +1,41 @@
 # Customizations over upstream Servo
+## 2026-09-28 — Opt-in mimalloc global allocator
+
+**Servo files:** `components/allocator/Cargo.toml`, `components/allocator/lib.rs`,
+`ports/servoshell/Cargo.toml`.
+**Patch:** `patches/servo-v0.5.0/0048-opt-in-mimalloc-allocator.patch` (after 0001–0047).
+**Roves-only files:** `.github/workflows/perf-ab.yml`, `test-page/src/App.tsx` (fixture links),
+`README.md`, `ROVES_PERFORMANCE.md`, `docs/AUDIT_MIGRAZIONE_LIBRERIE.md`, sibling wiki
+`content/docs/shell.mdx`.
+
+Library migration plan, phase 5, started at the maintainer's request. Windows, the only
+platform the maintainer can measure on, uses `System` (HeapAlloc), not jemalloc.
+
+- **New feature and dependencies:** `servo-allocator` gains a `use-mimalloc` feature
+  (`mimalloc` 0.1.52, plus `libmimalloc-sys` 0.1.49 with `extended`). servoshell exposes it as
+  `--features mimalloc`. It is off by default, so every target keeps its existing allocator.
+- **New `platform` module:** swaps the whole allocator surface, not just `#[global_allocator]`:
+  - `Allocator = MiMalloc`;
+  - `usable_size` via `mi_usable_size`;
+  - `libc_compat::{malloc, realloc, free}` via `mi_*`, so FreeType's FFI memory is allocated,
+    resized and freed by the same allocator;
+  - `heap_reports` from `mi_process_info`: current/peak commit and RSS. NULL outputs are
+    skipped by mimalloc.
+- **Mutual exclusion:** the existing jemalloc, system and Windows modules are excluded when the
+  feature is on. A `compile_error!` rejects combining it with `use-system-allocator`.
+- **Lockfile:** `mach build` has no `--locked`, so the optional dependencies are resolved into
+  `Cargo.lock` at build time. No local cargo was available to regenerate the committed lockfile.
+
+**CI:** `test.yml` builds default features only, so the mimalloc path is compiled and
+smoke-tested only by `perf-ab.yml`. That workflow (tag `perf-ab-*` or manual) builds two Windows
+release bundles with the test page, `system` and `mimalloc`, and publishes them to the rolling
+`perf-ab` pre-release. It is a pre-release so GitHub's "latest release", which Packmaster's
+banner reads, never points at it.
+
+**Build surface:** no new `mach` flag. `roves-action` already forwards arbitrary features in
+advanced mode, and Packmaster never compiles, so neither needs a change. Promotion to default
+only follows repeatable measurements, per the plan.
+
 ## 2026-09-28 — macOS gamepad as a runtime opt-in, virtual gamepad test hook, input CI
 
 **Servo files:** `ports/servoshell/desktop/gamepad.rs`, `ports/servoshell/desktop/app.rs`,

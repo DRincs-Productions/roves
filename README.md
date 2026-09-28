@@ -382,6 +382,10 @@ polling, FPS probes, Steam checks and other page-level timers that would contami
 measurement. The measurement plan and current findings are tracked in
 [`ROVES_PERFORMANCE.md`](./ROVES_PERFORMANCE.md).
 
+An experimental `./mach build --features mimalloc` swaps the global allocator for mimalloc (default:
+system allocator on Windows, jemalloc elsewhere) for allocator A/B measurements. The `perf-ab.yml`
+workflow publishes Windows release builds of both to the `perf-ab` pre-release.
+
 For shell-side counts, launch a desktop build with `ROVES_PERF_LOG_INTERVAL_MS=10000` (or another
 positive interval). The normal `roves.log` then receives aggregate `[roves-perf]` lines for SDL
 events/timeouts, redraw requests and coalescing, WebView paints, and final window presents, plus
