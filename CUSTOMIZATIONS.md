@@ -1,4 +1,16 @@
 # Customizations over upstream Servo
+## 2026-09-28 — Gamepad dispatch breadcrumb (diagnostics)
+
+**Servo file:** `ports/servoshell/desktop/gamepad.rs`.
+**Patch:** `patches/servo-v0.5.0/0052-gamepad-dispatch-drop-breadcrumb.patch` (after 0001–0051).
+**Roves-only:** `test-page/src/InputPanel.tsx` (30 s of per-second `[roves-input] probe` lines
+with rAF poll count and `navigator.getGamepads()` summary), `.github/workflows/test.yml`.
+
+After 0051, CI showed virtual toggles and `[roves-gamepad] button down … slot=0` reaching
+`dispatch`, yet the page never saw a Gamepad API button press. `dispatch` now logs when it
+drops an event for lack of an active WebView, and the test page reports what the Gamepad API
+actually exposes, so the next run shows on which side delivery stops.
+
 ## 2026-09-28 — Gamepad periodic work on every event-loop wake
 
 **Servo files:** `ports/servoshell/desktop/gamepad.rs`, `ports/servoshell/desktop/app.rs`,

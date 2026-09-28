@@ -1,0 +1,10 @@
+--- a/ports/servoshell/desktop/gamepad.rs
++++ b/ports/servoshell/desktop/gamepad.rs
+@@ -633,6 +633,7 @@ impl ServoshellGamepadDelegate {
+             .focused_window()
+             .and_then(|window| window.active_webview())
+         else {
++            log::info!("[roves-gamepad] dropped {index:?} event: no active webview");
+             return;
+         };
+         Self::handle_gamepad_events(event, name, index, active_webview);

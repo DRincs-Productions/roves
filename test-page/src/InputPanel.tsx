@@ -116,6 +116,29 @@ export default function InputPanel() {
     };
     frameId = requestAnimationFrame(poll);
 
+    // Diagnostics for CI: once a second for the first 30s, what the Gamepad API exposes and
+    // whether the rAF poll above is actually running.
+    let polls = 0;
+    const countPoll = () => {
+      polls += 1;
+      countFrameId = requestAnimationFrame(countPoll);
+    };
+    let countFrameId = requestAnimationFrame(countPoll);
+    let probes = 0;
+    const probeTimer = window.setInterval(() => {
+      probes += 1;
+      const pads =
+        "getGamepads" in navigator
+          ? navigator
+              .getGamepads()
+              .filter((pad): pad is Gamepad => pad !== null)
+              .map((pad) => `${pad.index}:${pad.connected ? "c" : "d"}:${pad.buttons.filter((b) => b.pressed).length}`)
+              .join(",")
+          : "no-api";
+      console.log(`${INPUT_MARKER} probe #${probes} rafPolls=${polls} gamepads=[${pads}]`);
+      if (probes >= 30) window.clearInterval(probeTimer);
+    }, 1000);
+
     console.log(`${INPUT_MARKER} ready`);
 
     return () => {
@@ -129,6 +152,8 @@ export default function InputPanel() {
       window.removeEventListener("gamepadconnected", onGamepadConnected);
       window.removeEventListener("gamepaddisconnected", onGamepadDisconnected);
       if (frameId !== undefined) cancelAnimationFrame(frameId);
+      cancelAnimationFrame(countFrameId);
+      window.clearInterval(probeTimer);
     };
   }, []);
 
