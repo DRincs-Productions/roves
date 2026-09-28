@@ -13,7 +13,7 @@ use sdl3::gamepad::{Axis, Button, Gamepad};
 use sdl3::joystick::{
     Joystick, JoystickId, JoystickType, VirtualJoystickConnection, VirtualJoystickDescription,
 };
-use sdl3::{EventPump, GamepadSubsystem, JoystickSubsystem};
+use sdl3::{GamepadSubsystem, JoystickSubsystem};
 use servo::{
     GamepadDelegate, GamepadEvent, GamepadHapticEffectRequest, GamepadHapticEffectRequestType,
     GamepadHapticEffectType, GamepadIndex, GamepadInputBounds, GamepadSupportedHapticEffects,
@@ -308,11 +308,12 @@ struct PendingHapticEffect {
 }
 
 struct SdlGamepadState {
-    // Kept alive alongside the subsystems/event pump borrowed from it; never read directly
-    // again after `init_sdl`.
+    // Kept alive alongside the subsystems borrowed from it; never read directly again after
+    // `init_sdl`. There is deliberately no `EventPump` here: sdl3-rs allows only one per
+    // process and SDL has a single event queue, both owned by `event_loop.rs`, which forwards
+    // gamepad events to [`ServoshellGamepadDelegate::handle_sdl_event`].
     _sdl_context: sdl3::Sdl,
     gamepad_subsystem: GamepadSubsystem,
-    event_pump: EventPump,
     open_gamepads: HashMap<JoystickId, Gamepad>,
     pending_haptic_effects: HashMap<usize, PendingHapticEffect>,
     virtual_test: Option<VirtualGamepadTest>,
@@ -373,13 +374,6 @@ impl ServoshellGamepadDelegate {
                 return None;
             },
         };
-        let event_pump = match sdl_context.event_pump() {
-            Ok(pump) => pump,
-            Err(error) => {
-                warn!("Error creating SDL event pump for gamepad input ({error})");
-                return None;
-            },
-        };
         log::info!("[roves-gamepad] SDL gamepad subsystem ready");
         let virtual_test = virtual_test_requested
             .then(|| VirtualGamepadTest::attach(&sdl_context))
@@ -387,16 +381,76 @@ impl ServoshellGamepadDelegate {
         Some(SdlGamepadState {
             _sdl_context: sdl_context,
             gamepad_subsystem,
-            event_pump,
             open_gamepads: HashMap::new(),
             pending_haptic_effects: HashMap::new(),
             virtual_test,
         })
     }
 
-    /// Drain any pending SDL gamepad activity and haptic effect requests. Called from
-    /// `App::new_events` (main thread only — see this module's own doc comment).
-    pub(crate) fn poll(&self, state: &RunningAppState) {
+    /// Whether `event` belongs to this delegate. `event_loop.rs` owns the process's only SDL
+    /// `EventPump` and hands these over via [`Self::handle_sdl_event`].
+    pub(crate) fn is_gamepad_event(event: &Event) -> bool {
+        matches!(
+            event,
+            Event::GamepadAdded { .. } |
+                Event::GamepadRemoved { .. } |
+                Event::GamepadAxisMotion { .. } |
+                Event::GamepadButtonDown { .. } |
+                Event::GamepadButtonUp { .. }
+        )
+    }
+
+    /// Forward one SDL gamepad event to Servo. Devices already connected at startup still
+    /// produce their own `Event::GamepadAdded` once the gamepad subsystem is initialized, so
+    /// unlike GilRs (whose `Gilrs::new()` doesn't emit `Connected` for pre-existing devices),
+    /// no separate startup enumeration is needed.
+    pub(crate) fn handle_sdl_event(&self, state: &RunningAppState, event: Event) {
+        let mut sdl_state = self.sdl_state.borrow_mut();
+        let Some(sdl_state) = sdl_state.as_mut() else {
+            return;
+        };
+        match event {
+            Event::GamepadAdded { which, .. } => {
+                let gamepad = match sdl_state.gamepad_subsystem.open(which) {
+                    Ok(gamepad) => gamepad,
+                    Err(error) => {
+                        warn!("Error opening gamepad {which} ({error})");
+                        return;
+                    },
+                };
+                let name = gamepad
+                    .name()
+                    .unwrap_or_else(|| "Unknown Gamepad".to_owned());
+                log::info!("[roves-gamepad] connected id={which} name={name:?}");
+                sdl_state.open_gamepads.insert(which, gamepad);
+                let index = GamepadIndex(which.raw() as usize);
+                Self::dispatch(state, event, name, index);
+            },
+            Event::GamepadRemoved { which, .. } => {
+                log::info!("[roves-gamepad] disconnected id={which}");
+                sdl_state.open_gamepads.remove(&which);
+                let index = GamepadIndex(which.raw() as usize);
+                Self::dispatch(state, event, String::new(), index);
+            },
+            Event::GamepadAxisMotion { which, .. } |
+            Event::GamepadButtonDown { which, .. } |
+            Event::GamepadButtonUp { which, .. } => {
+                let name = sdl_state
+                    .open_gamepads
+                    .get(&which)
+                    .and_then(|gamepad| gamepad.name())
+                    .unwrap_or_default();
+                let index = GamepadIndex(which.raw() as usize);
+                Self::dispatch(state, event, name, index);
+            },
+            _ => {},
+        }
+    }
+
+    /// Drive the CI virtual gamepad and fire due haptic effect requests. Called from
+    /// `App::new_events` (main thread only — see this module's own doc comment). Input events
+    /// arrive separately through [`Self::handle_sdl_event`].
+    pub(crate) fn poll(&self, _state: &RunningAppState) {
         let mut sdl_state = self.sdl_state.borrow_mut();
         let Some(sdl_state) = sdl_state.as_mut() else {
             return;
@@ -404,46 +458,6 @@ impl ServoshellGamepadDelegate {
 
         if let Some(virtual_test) = sdl_state.virtual_test.as_mut() {
             virtual_test.drive(Instant::now());
-        }
-
-        // Devices already connected before the first poll still produce their own
-        // `Event::GamepadAdded` here, so unlike GilRs (whose `Gilrs::new()` doesn't emit
-        // `Connected` for pre-existing devices), no separate startup enumeration is needed.
-        while let Some(event) = sdl_state.event_pump.poll_event() {
-            match event {
-                Event::GamepadAdded { which, .. } => {
-                    let gamepad = match sdl_state.gamepad_subsystem.open(which) {
-                        Ok(gamepad) => gamepad,
-                        Err(error) => {
-                            warn!("Error opening gamepad {which} ({error})");
-                            continue;
-                        },
-                    };
-                    let name = gamepad
-                        .name()
-                        .unwrap_or_else(|| "Unknown Gamepad".to_owned());
-                    sdl_state.open_gamepads.insert(which, gamepad);
-                    let index = GamepadIndex(which.raw() as usize);
-                    Self::dispatch(state, event, name, index);
-                },
-                Event::GamepadRemoved { which, .. } => {
-                    sdl_state.open_gamepads.remove(&which);
-                    let index = GamepadIndex(which.raw() as usize);
-                    Self::dispatch(state, event, String::new(), index);
-                },
-                Event::GamepadAxisMotion { which, .. }
-                | Event::GamepadButtonDown { which, .. }
-                | Event::GamepadButtonUp { which, .. } => {
-                    let name = sdl_state
-                        .open_gamepads
-                        .get(&which)
-                        .and_then(|gamepad| gamepad.name())
-                        .unwrap_or_default();
-                    let index = GamepadIndex(which.raw() as usize);
-                    Self::dispatch(state, event, name, index);
-                },
-                _ => {},
-            }
         }
 
         let now = Instant::now();

@@ -75,6 +75,12 @@ eventi da Servo al Gamepad API del Web né ripete il lifecycle della shell su ha
 
 ### Input end-to-end nella test-page (2026-09-28)
 
+**Bug trovato dal primo run:** fino a `v0.5.1` compresa il gamepad non si inizializzava su nessuna
+piattaforma. Il delegate apriva un secondo `EventPump` SDL, e sdl3-rs ne permette uno solo:
+l'errore finiva in un `warn!`. Corretto con la patch 0049: il loop principale inoltra gli eventi
+gamepad al delegate. La voce "Gamepad su Windows/Linux" qui sotto va quindi riprovata sulla
+prossima release.
+
 La sezione **Input** della test-page (`test-page/src/InputPanel.tsx`) mostra i tasti e i pulsanti
 del mouse premuti e lo storico di tastiera, mouse, rotellina e gamepad (pulsanti e assi via Web
 Gamepad API). Ogni evento viene scritto in console come `[roves-input] kind=...`, quindi finisce in

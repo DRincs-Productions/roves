@@ -1,4 +1,38 @@
 # Customizations over upstream Servo
+## 2026-09-28 — Fix: gamepad input never initialized under SDL3 (single EventPump)
+
+**Servo files:** `ports/servoshell/desktop/gamepad.rs`, `ports/servoshell/desktop/app.rs`,
+`ports/servoshell/desktop/event_loop.rs`.
+**Patch:** `patches/servo-v0.5.0/0049-single-sdl-event-pump-for-gamepad.patch` (after 0001–0048).
+
+**Bug:** `run_sdl3_app` creates the process's `EventPump` before `App::init`, and sdl3-rs allows
+only one `EventPump` alive at a time. `ServoshellGamepadDelegate::init_sdl` then called
+`sdl_context.event_pump()` itself, got "an `EventPump` instance is already alive", logged a
+`warn!` and returned `None`. Gamepad support was silently disabled on every desktop platform in
+every SDL3-based shell release up to and including `v0.5.1`. Even with two pumps, SDL has a
+single event queue, so they would have stolen each other's events.
+
+**Found by:** the new macOS CI step (`ROVES_MACOS_GAMEPAD=1` + virtual gamepad, 0047). The log
+showed `[roves-gamepad] initializing …` but never `… ready`, while keyboard input kept arriving,
+which means the main thread was alive and init had failed rather than hung. So this is not the
+historical macOS hang.
+
+**Fix:**
+- The delegate no longer owns an `EventPump`.
+- `run_sdl3_app` forwards gamepad events
+  (`ServoshellGamepadDelegate::is_gamepad_event`) to the new `App::dispatch_gamepad_event`, which
+  mirrors `dispatch_window_event`. That calls the new `handle_sdl_event`, which contains the old
+  drain loop's per-event logic, then pumps Servo's event loop.
+- `poll` now only drives the CI virtual gamepad and due haptic effects.
+- Connect/disconnect log `[roves-gamepad] connected …`/`disconnected …`.
+
+**Verification:** only CI. Every desktop smoke test now requires a page-level
+`gamepadbuttondown` from the virtual gamepad, and the macOS step also requires `… ready`.
+
+The macOS synthetic-input script now clicks twice, because the first click on an inactive
+window only activates it. Keyboard and wheel CGEvents already reached the page on the first run,
+with `CGPreflightPostEventAccess()` true.
+
 ## 2026-09-28 — Opt-in mimalloc global allocator
 
 **Servo files:** `components/allocator/Cargo.toml`, `components/allocator/lib.rs`,

@@ -55,6 +55,10 @@ post(CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition:
 post(CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left))
 post(CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left))
 usleep(300_000)
+// The first click may only activate the window (macOS does not pass it through by default).
+post(CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left))
+post(CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left))
+usleep(300_000)
 post(CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: -3, wheel2: 0, wheel3: 0))
 // Virtual key 0 is the "A" key on ANSI layouts.
 post(CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true))

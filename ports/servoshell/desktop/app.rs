@@ -569,11 +569,10 @@ impl App {
                 self.try_finish_booting(event_loop);
             },
             AppState::Running(state) => {
-                // SDL only allows gamepad polling from this thread (the one `main()` was
-                // called on — see `gamepad.rs`'s own doc comment), so unlike the old
-                // GilRs-backed implementation (its own dedicated background thread, woken
-                // independently of winit's control flow), this has to be driven from here —
-                // `set_running_control_flow` below is what keeps this tick recurring.
+                // Gamepad input arrives through `dispatch_gamepad_event`; this tick only drives
+                // delayed haptic effects and the CI virtual gamepad. SDL only allows these calls
+                // from this thread (see `gamepad.rs`'s doc comment); `set_running_control_flow`
+                // below keeps the tick recurring.
                 #[cfg(feature = "gamepad")]
                 if let Some(gamepad_delegate) = state.gamepad_delegate() {
                     gamepad_delegate.poll(state);
@@ -639,6 +638,29 @@ impl App {
             headed_window.handle_window_event(state.clone(), window, window_event);
         }
 
+        if !self.pump_servo_event_loop(event_loop.into()) {
+            event_loop.exit();
+        }
+        set_running_control_flow(event_loop, &state);
+    }
+
+    /// SDL gamepad events arrive through `run_sdl3_app`'s `EventPump`, the only one sdl3-rs
+    /// allows per process (the gamepad delegate used to create its own and silently failed),
+    /// and are handed to the gamepad delegate here, mirroring `dispatch_window_event`.
+    #[cfg(feature = "gamepad")]
+    pub(crate) fn dispatch_gamepad_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        event: sdl3::event::Event,
+    ) {
+        let AppState::Running(state) = &self.state else {
+            return;
+        };
+        let state = state.clone();
+        let Some(gamepad_delegate) = state.gamepad_delegate() else {
+            return;
+        };
+        gamepad_delegate.handle_sdl_event(&state, event);
         if !self.pump_servo_event_loop(event_loop.into()) {
             event_loop.exit();
         }

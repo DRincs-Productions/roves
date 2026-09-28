@@ -451,6 +451,12 @@ fn run_sdl3_app(sdl: sdl3::Sdl, video: sdl3::VideoSubsystem, app: &mut App) {
             }
         }
 
+        #[cfg(feature = "gamepad")]
+        if crate::desktop::gamepad::ServoshellGamepadDelegate::is_gamepad_event(&event) {
+            app.dispatch_gamepad_event(&event_loop, event);
+            continue;
+        }
+
         if let Some((window_id, window_event)) =
             translate_sdl_event(event, focused_window_id.or(last_window_id))
         {
