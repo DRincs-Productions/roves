@@ -38,7 +38,9 @@ build/bundle flag change: nothing to mirror in `roves-action` or Packmaster.
 
 The X11 backend feature was enabled unconditionally by shared paint and shell dependencies, and the `servo-webxr` default feature propagated it to every target. The workspace now disables WebXR defaults and enables its X11 feature only on Linux; paint and servoshell likewise request `surfman/sm-x11` only on Linux. Linux retains the backend it needs, while Windows and macOS no longer compile or carry the X11 feature.
 
-The CI checks the effective `servoshell` feature graph on Linux, Windows, and macOS, then continues through each platform's existing package build and smoke tests. Local `cargo tree --locked` checks confirmed the expected feature graph on all three targets. This narrows an unnecessary backend feature; it does not remove `surfman`, which remains required by rendering, WebGL/WebXR, and accelerated media paths.
+**Fix (2026-09-28):** the first version of this patch moved `components/servo`'s whole `webxr` dependency to a `cfg(target_os = "linux")` block. That left macOS (and any other non-Linux, non-Windows desktop) without `webxr` at all, so `components/servo/lib.rs`'s `webxr::glwindow` re-export failed to compile. It also applied to OpenHarmony, whose `target_os` is `"linux"`. The original `not(android/ohos)` block with `glwindow`/`headless` is restored; a separate `all(target_os = "linux", not(target_env = "ohos"))` block now only adds `x11`.
+
+The CI checks the effective `servoshell` feature graph on Linux, Windows, and macOS, then continues through each platform's existing package build and smoke tests. Local `cargo tree --locked` checks were reported as confirming the expected feature graph on all three targets, but they did not catch the missing macOS `webxr` dependency: only the macOS CI build did. This narrows an unnecessary backend feature; it does not remove `surfman`, which remains required by rendering, WebGL/WebXR, and accelerated media paths.
 
 
 ## 2026-09-27 — Exercise ICU4X line breaking on Unicode boundaries
