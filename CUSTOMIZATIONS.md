@@ -1,4 +1,19 @@
 # Customizations over upstream Servo
+## 2026-09-28 — Gamepad dispatch falls back to the single window
+
+**Servo file:** `ports/servoshell/desktop/gamepad.rs`.
+**Patch:** `patches/servo-v0.5.0/0054-gamepad-dispatch-single-window-fallback.patch` (after 0001–0053).
+
+`ServoshellGamepadDelegate::dispatch` targeted `state.focused_window()`, which is only set once
+the window has had platform focus (at creation or on a later focus event). On the macOS CI
+runner the page loaded while the window had no focus, so the load-time announcement and every
+later button press were logged as `dropped … no active webview`. The same would happen to a
+player who switches to another app while the game is still starting.
+
+Roves opens a single window, so `dispatch` now falls back to it when none is focused. SDL still
+drops joystick input for background apps by default, so an unfocused game does not start
+reacting to a controller; only the connection announcement is no longer lost.
+
 ## 2026-09-28 — Virtual gamepad armed after page load; macOS gamepad CI step informational
 
 **Servo file:** `ports/servoshell/desktop/gamepad.rs`.

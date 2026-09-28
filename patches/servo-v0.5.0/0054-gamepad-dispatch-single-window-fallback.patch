@@ -1,0 +1,20 @@
+--- a/ports/servoshell/desktop/gamepad.rs
++++ b/ports/servoshell/desktop/gamepad.rs
+@@ -652,10 +652,14 @@ impl ServoshellGamepadDelegate {
+     }
+ 
+     fn dispatch(state: &RunningAppState, event: Event, name: String, index: GamepadIndex) {
+-        let Some(active_webview) = state
++        // `focused_window` is only set once the window has had platform focus. A game window can
++        // finish loading without ever getting it (seen on the macOS CI runner), which used to drop
++        // the load-time announcement and every later update. Roves opens a single window, so
++        // fall back to it.
++        let window = state
+             .focused_window()
+-            .and_then(|window| window.active_webview())
+-        else {
++            .or_else(|| state.windows().values().next().cloned());
++        let Some(active_webview) = window.and_then(|window| window.active_webview()) else {
+             log::info!("[roves-gamepad] dropped {index:?} event: no active webview");
+             return;
+         };
