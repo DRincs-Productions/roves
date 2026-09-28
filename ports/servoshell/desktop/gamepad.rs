@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
@@ -65,6 +65,7 @@ struct VirtualGamepadTest {
     started: Instant,
     last_toggle: Instant,
     pressed: bool,
+    toggles: u32,
 }
 
 impl VirtualGamepadTest {
@@ -118,6 +119,7 @@ impl VirtualGamepadTest {
             started: now,
             last_toggle: now,
             pressed: false,
+            toggles: 0,
         })
     }
 
@@ -129,6 +131,10 @@ impl VirtualGamepadTest {
         }
         self.last_toggle = now;
         self.pressed = !self.pressed;
+        self.toggles += 1;
+        if self.toggles <= 4 {
+            log::info!("[roves-virtual-gamepad] toggle #{} pressed={}", self.toggles, self.pressed);
+        }
         let axis = if self.pressed { 30_000 } else { 0 };
         if let Err(error) = self
             .joystick
@@ -360,6 +366,8 @@ struct SdlGamepadState {
     /// lowest free slot page-side and indexes later updates and haptic requests by it, while
     /// SDL instance IDs start above 0 and only grow, so the SDL ID cannot be used directly.
     slots: HashMap<JoystickId, usize>,
+    /// Only the first few button presses are logged, as a delivery breadcrumb.
+    logged_buttons: u8,
     pending_haptic_effects: HashMap<usize, PendingHapticEffect>,
     virtual_test: Option<VirtualGamepadTest>,
 }
@@ -370,6 +378,8 @@ pub(crate) struct ServoshellGamepadDelegate {
     // `None` if SDL failed to initialize (e.g. no gamepad support on this platform/environment)
     // -- `poll` and haptic handling then silently no-op instead of panicking.
     sdl_state: RefCell<Option<SdlGamepadState>>,
+    /// When `poll` last ran; see [`Self::poll_if_due`].
+    last_poll: Cell<Option<Instant>>,
 }
 
 impl ServoshellGamepadDelegate {
@@ -379,6 +389,7 @@ impl ServoshellGamepadDelegate {
             sender: tx,
             receiver: rx,
             sdl_state: RefCell::new(Self::init_sdl()),
+            last_poll: Cell::new(None),
         }
     }
 
@@ -428,6 +439,7 @@ impl ServoshellGamepadDelegate {
             gamepad_subsystem,
             open_gamepads: HashMap::new(),
             slots: HashMap::new(),
+            logged_buttons: 0,
             pending_haptic_effects: HashMap::new(),
             virtual_test,
         })
@@ -486,6 +498,11 @@ impl ServoshellGamepadDelegate {
                 let Some(&slot) = sdl_state.slots.get(&which) else {
                     return;
                 };
+                if matches!(event, Event::GamepadButtonDown { .. }) && sdl_state.logged_buttons < 4
+                {
+                    sdl_state.logged_buttons += 1;
+                    log::info!("[roves-gamepad] button down id={which} slot={slot}");
+                }
                 let name = sdl_state
                     .open_gamepads
                     .get(&which)
@@ -534,10 +551,24 @@ impl ServoshellGamepadDelegate {
         }
     }
 
+    /// [`Self::poll`] if at least [`Self::poll_interval`] has passed since it last ran. Called on
+    /// every event-loop wake: `App::dispatch_new_events` only runs when a wait *times out*, which
+    /// a page that keeps producing events (animation, redraws) can postpone indefinitely,
+    /// starving delayed haptics and the CI virtual gamepad.
+    pub(crate) fn poll_if_due(&self, state: &RunningAppState) {
+        let due = self.last_poll.get().is_none_or(|last| {
+            Instant::now().saturating_duration_since(last) >= self.poll_interval()
+        });
+        if due {
+            self.poll(state);
+        }
+    }
+
     /// Drive the CI virtual gamepad and fire due haptic effect requests. Called from
     /// `App::new_events` (main thread only — see this module's own doc comment). Input events
     /// arrive separately through [`Self::handle_sdl_event`].
     pub(crate) fn poll(&self, _state: &RunningAppState) {
+        self.last_poll.set(Some(Instant::now()));
         let mut sdl_state = self.sdl_state.borrow_mut();
         let Some(sdl_state) = sdl_state.as_mut() else {
             return;

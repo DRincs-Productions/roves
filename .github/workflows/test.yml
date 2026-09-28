@@ -678,6 +678,8 @@ jobs:
             for kind in keydown mousedown wheel gamepadbuttondown; do
               if ! grep -hq "\[roves-input\] kind=$kind " "${INPUT_FILES[@]}"; then
                 echo "::error::synthetic $kind never reached the page as a DOM event (no [roves-input] kind=$kind line)"
+                grep -h -i '\[roves-gamepad\]\|\[roves-virtual-gamepad\]\|gamepad.*error\|error.*gamepad' \
+                  "${INPUT_FILES[@]}" | sort -u | head -20 | while IFS= read -r line; do echo "::notice::$line"; done
                 exit 1
               fi
             done
@@ -903,6 +905,9 @@ jobs:
             Select-String -Pattern '\[roves-input\] kind=gamepadbuttondown '
           if (-not $gamepadLines) {
             Write-Host "::error::the virtual SDL gamepad never reached the page as a Gamepad API button press"
+            Get-Content $saveFileFiles -ErrorAction SilentlyContinue |
+              Select-String -Pattern '\[roves-gamepad\]|\[roves-virtual-gamepad\]|gamepad.*error|error.*gamepad' |
+              Select-Object -First 20 | ForEach-Object { Write-Host "::notice::$($_.Line)" }
             exit 1
           }
           $gamepadLines | Select-Object -First 3 | ForEach-Object { Write-Host $_.Line }

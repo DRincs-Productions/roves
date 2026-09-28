@@ -427,6 +427,9 @@ fn run_sdl3_app(sdl: sdl3::Sdl, video: sdl3::VideoSubsystem, app: &mut App) {
 
         super::performance::record_event_loop_wake(event.is_none());
 
+        #[cfg(feature = "gamepad")]
+        app.poll_gamepad_if_due();
+
         let Some(event) = event else {
             // Timed out waiting for `ControlFlow::WaitUntil`'s deadline -- same as winit's own
             // `StartCause::ResumeTimeReached`.

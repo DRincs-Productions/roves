@@ -1,4 +1,28 @@
 # Customizations over upstream Servo
+## 2026-09-28 — Gamepad periodic work on every event-loop wake
+
+**Servo files:** `ports/servoshell/desktop/gamepad.rs`, `ports/servoshell/desktop/app.rs`,
+`ports/servoshell/desktop/event_loop.rs`.
+**Patch:** `patches/servo-v0.5.0/0051-gamepad-poll-on-every-wake.patch` (after 0001–0050).
+
+With 0049/0050, CI showed the virtual gamepad connected (slot 0) and announced to the loaded
+page, but still no button press reached it. `ServoshellGamepadDelegate::poll`, which drives
+delayed haptic effects and the CI virtual gamepad's toggles, only ran from
+`App::dispatch_new_events`, and that only runs when `wait_event_timeout` actually *times out*.
+A page that keeps producing events, such as the test page's animation and redraw requests, can
+postpone that indefinitely.
+
+**Change:**
+- New `poll_if_due`, which runs `poll` once `poll_interval()` has elapsed since the last run.
+  `poll` records `last_poll`.
+- New `App::poll_gamepad_if_due`, called on every wake in `run_sdl3_app`.
+- Rate-limited breadcrumbs: the first 4 virtual toggles (`[roves-virtual-gamepad] toggle #…`)
+  and the first 4 delivered button-downs (`[roves-gamepad] button down …`).
+- The Linux/Windows smoke failures now re-emit gamepad log lines as annotations.
+
+This affects real controllers only through haptics timing: input itself already arrives via
+`dispatch_gamepad_event`.
+
 ## 2026-09-28 — Fix: gamepad index mismatch and re-announce on page load
 
 **Servo files:** `ports/servoshell/desktop/gamepad.rs`, `ports/servoshell/running_app_state.rs`.

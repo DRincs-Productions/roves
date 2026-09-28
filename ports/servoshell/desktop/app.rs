@@ -667,6 +667,17 @@ impl App {
         set_running_control_flow(event_loop, &state);
     }
 
+    /// Runs the gamepad delegate's periodic work (CI virtual gamepad, delayed haptics) when it is
+    /// due, on every event-loop wake; see `ServoshellGamepadDelegate::poll_if_due`.
+    #[cfg(feature = "gamepad")]
+    pub(crate) fn poll_gamepad_if_due(&self) {
+        if let AppState::Running(state) = &self.state &&
+            let Some(gamepad_delegate) = state.gamepad_delegate()
+        {
+            gamepad_delegate.poll_if_due(state);
+        }
+    }
+
     pub(crate) fn dispatch_user_event(&mut self, event_loop: &ActiveEventLoop, app_event: AppEvent) {
         // SDL3 has no push-based redraw-request event of its own -- `HeadedWindow::
         // request_redraw` sends this instead (see `event_loop.rs`'s own doc comment on the
