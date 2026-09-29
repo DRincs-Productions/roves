@@ -22,6 +22,13 @@ produces exactly one compact verdict annotation (`clean`, or the specific failur
 the one final tally — 5 annotations for 4 samples, comfortably under the cap. The full grep
 output is still in the step's plain stdout for anyone who opens the raw log.
 
+**Result (`4cd2ab3`, 2026-09-29):** `4/4 clean, 0/4 looked like the historical pre-ready stall`.
+Combined with the single clean run right after 0053, that is 5 consecutive clean samples where
+the historical stall used to reproduce 1 run in 4. The stall has not recurred since 0053, but
+this is still CI evidence, not a physical controller on a real Mac (IOKit HID) — the user doesn't
+have one — so macOS gamepad support stays off by default and the step stays informational-only.
+Any future push touching `patches/**`/`test-page/**` resamples another 4 runs automatically.
+
 ## 2026-09-29 — Clipboard shortcuts reach page keyboard handlers
 
 **Servo file:** `ports/servoshell/desktop/headed_window.rs`.

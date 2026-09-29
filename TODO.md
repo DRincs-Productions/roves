@@ -166,9 +166,14 @@ hardware ancora aperta (IME CJK/dead key, screen reader, ecc.).
   risultato pulito, ma un solo run verde non basta con uno stallo storicamente 1/4: lo step ora
   lancia il bundle 4 volte nello stesso job e riporta `N/4 clean, M/4 stalled` (vedi
   CUSTOMIZATIONS.md del 2026-09-29), per raccogliere prove reali senza dipendere da push ripetuti
-  (il workflow non si riattiva su commit vuoti). Resta aperto finché non arriva pulito su più
-  campioni consecutivi, e comunque serve un controller fisico su un Mac reale prima di attivarlo
-  per default.
+  (il workflow non si riattiva su commit vuoti). **Aggiornamento 2026-09-29:** il run campionato
+  (`4cd2ab3`) ha dato **4/4 clean, 0/4 stalled** — sommato al run singolo precedente, 5 campioni
+  consecutivi puliti dopo il fix 0053, contro l'1/4 osservato prima. Lo stallo non si è più
+  riprodotto, ma lo step resta informational-only e il gamepad macOS resta spento per default:
+  5 campioni CI non sostituiscono un controller fisico (IOKit HID) su un Mac reale, che l'utente
+  non ha. Prossimo passo, se si vuole più confidenza prima di un eventuale controller reale:
+  ripetere il campionamento 4x su un secondo run futuro (qualunque prossimo push a
+  `patches/**`/`test-page/**` lo farà automaticamente) per accumulare altri campioni nel tempo.
 ## Rendering futuro: fast path wgpu — backlog
 
 - [ ] Progettare un fast path interno a Servo per il caso di una singola
