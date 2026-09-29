@@ -1,4 +1,17 @@
 # Customizations over upstream Servo
+## 2026-09-29 — Clipboard shortcuts reach page keyboard handlers
+
+**Servo file:** `ports/servoshell/desktop/headed_window.rs`.
+**Patch:** `patches/servo-v0.5.0/0055-page-observes-clipboard-shortcuts.patch` (after 0001–0054).
+
+The shell previously intercepted Ctrl/Cmd+C, X and V before sending a keyboard event to the active
+WebView. This kept the browser clipboard action working, but scripts and the diagnostic Input
+panel could not observe those key combinations. The shell now sends the ordinary keyboard event
+first and performs Servo's copy/cut/paste action only after Servo reports that the page did not
+prevent or consume the event. Unit tests cover the three actions and reject key-up, unmodified and
+Alt-modified inputs; `check_sdl3_windowing_contracts.py` checks that interception and default-action
+ordering stay intact. The patch-series CI compiles and runs the servoshell unit tests on Linux.
+
 ## 2026-09-28 — Gamepad dispatch falls back to the single window
 
 **Servo file:** `ports/servoshell/desktop/gamepad.rs`.
