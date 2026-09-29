@@ -10,7 +10,9 @@ panel could not observe those key combinations. The shell now sends the ordinary
 first and performs Servo's copy/cut/paste action only after Servo reports that the page did not
 prevent or consume the event. Unit tests cover the three actions and reject key-up, unmodified and
 Alt-modified inputs; `check_sdl3_windowing_contracts.py` checks that interception and default-action
-ordering stay intact. The patch-series CI compiles and runs the servoshell unit tests on Linux.
+ordering stay intact. The Linux Xvfb smoke test also sends synthetic Ctrl+C/X/V and checks that
+each modified `keydown` reaches the page. The patch-series CI compiles and runs the servoshell unit
+tests on Linux.
 
 ## 2026-09-28 — Gamepad dispatch falls back to the single window
 

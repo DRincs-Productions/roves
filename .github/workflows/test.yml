@@ -24,6 +24,7 @@ on:
       - 'patches/**'
       - 'test-page/**'
       - 'support/sdl3-gamepad-probe/**'
+      - 'support/xvfb_window_cycle_smoke.sh'
       - 'support/check_sdl3_windowing_contracts.py'
       - '.github/workflows/test.yml'
   workflow_dispatch: {}
@@ -680,6 +681,12 @@ jobs:
                 echo "::error::synthetic $kind never reached the page as a DOM event (no [roves-input] kind=$kind line)"
                 grep -h -i '\[roves-gamepad\]\|\[roves-virtual-gamepad\]\|\[roves-input\] probe\|gamepad.*error\|error.*gamepad' \
                   "${INPUT_FILES[@]}" | sort -u | head -40 | while IFS= read -r line; do echo "::notice::$line"; done
+                exit 1
+              fi
+            done
+            for combo in 'key="c" code=KeyC mods=Ctrl' 'key="x" code=KeyX mods=Ctrl' 'key="v" code=KeyV mods=Ctrl'; do
+              if ! grep -hqF "[roves-input] kind=keydown $combo" "${INPUT_FILES[@]}"; then
+                echo "::error::page did not receive modified keydown: $combo"
                 exit 1
               fi
             done

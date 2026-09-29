@@ -53,6 +53,7 @@ xdotool mousemove --window "$window_id" 40 40
 xdotool click 1
 xdotool click 5
 xdotool key --window "$window_id" Tab a Escape
+xdotool key --window "$window_id" ctrl+c ctrl+x ctrl+v
 xdotool windowsize "$window_id" 960 640
 sleep 1
 kill -0 "$app_pid"
