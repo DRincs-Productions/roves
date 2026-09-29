@@ -163,9 +163,18 @@ Lacune reali, nessuna delle quali riguarda l'avvio da bundle di un gioco:
 
 Una migrazione a `tracing` non risolverebbe nessuna duplicazione, perché non ce ne sono;
 toccherebbe cinque inizializzazioni in tre piattaforme e il forwarding al constellation. Secondo il
-piano (fase 6) resta quindi **non avviata**. Se servisse, le correzioni mirate sono locali: 1
-(inizializzare `RovesLogger` o un filtro `info` anche negli avvii CLI) e 3 (un layer fmt verso
-`roves.log` quando `tracing` è attiva), senza rimuovere `env_logger`.
+piano (fase 6) resta quindi **non avviata**, salvo le correzioni mirate locali già chiuse o
+valutate:
+
+- **Fix 1 (chiuso 2026-09-29):** il gate del logger anticipato era troppo ampio (qualunque argv
+  non vuoto, non solo i figli `--content-process`), quindi un avvio CLI con flag qualsiasi perdeva
+  sia il logger anticipato sia il default `info`. Ristretto a `is_content_process_reexec` — vedi
+  CUSTOMIZATIONS.md della stessa data e la patch 0056. Non richiede `tracing`.
+- **Fix 3 (valutato, non applicato):** un layer fmt verso `roves.log` quando `tracing` è attiva
+  richiederebbe abilitare il compat layer `tracing-log`/`LogTracer` che `lib.rs` evita
+  esplicitamente perché romperebbe `FromScriptLogger`/`FromEmberLogger`. Non è una correzione
+  locale a basso rischio come il fix 1: tocca un compromesso già documentato nel codice. Non
+  applicato senza una richiesta esplicita a fronte di quel trade-off.
 
 ## Stato e test
 

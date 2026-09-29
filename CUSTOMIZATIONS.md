@@ -1,4 +1,26 @@
 # Customizations over upstream Servo
+## 2026-09-29 — Narrow the early file logger's content-process gate
+
+**Servo file:** `ports/servoshell/desktop/cli.rs`.
+**Patch:** `patches/servo-v0.5.0/0056-cli-content-process-logging-gate.patch` (after 0001–0055).
+
+`docs/AUDIT_MIGRAZIONE_LIBRERIE.md`'s logging map (28/9) flagged a real gap: the early file
+logger (`logging.rs`, `info` default) was gated on the same "argv is empty" check
+`resolve_bundled_launch_args` uses for its own, unrelated reason (only a genuine double-click
+launch may have its args substituted from `launch.json`). Piggy-backing the logger on that
+broader check meant *any* invocation with *any* argument — a developer running the shipped
+binary with flags, a Steam launch-options override, not just Servo's own `--content-process`
+multiprocess children — got no early logger and fell through to `Servo::setup_logging`'s bare
+`error`-only default instead of this module's `info` default.
+
+The gate is now `is_content_process_reexec`, true only when the first arg is exactly
+`--content-process` (the two-arg re-exec `setup_common` in
+`components/constellation/sandboxing.rs` always produces). Every other invocation — CLI flags,
+dev testing, Steam launch overrides — now gets the early file logger and its `info` default.
+Four unit tests cover no-args, a real content-process re-exec, ordinary CLI flags, and
+`--content-process` appearing somewhere other than the first argument (not a re-exec). Runs in
+the existing `mach test-unit -p servoshell` CI step, no workflow change needed.
+
 ## 2026-09-29 — Sample the macOS gamepad stall 4x per CI run instead of per push
 
 **Roves-only:** `.github/workflows/test.yml`, `TODO.md`.

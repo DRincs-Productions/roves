@@ -21,18 +21,31 @@ pub fn main() {
     // is `#![windows_subsystem = "windows"]`, so there's no console to see
     // stderr in even if something did print to it). See `logging.rs`.
     //
-    // Gated on the same "real argv is empty" check `resolve_bundled_launch_args`
-    // itself uses (see `peek_game_name_for_logging`'s doc comment) — critically,
-    // this excludes Servo's own multiprocess content-process children, which
-    // re-exec *themselves* with `--content-process <token>` in argv. Each one
-    // installing its own truncating file logger would race every other
-    // process (including the main one) writing to that same file, each
-    // wiping out whatever the others had already logged. Content processes
-    // fall through to `Servo::setup_logging`'s content-process counterpart
-    // (`set_logger`) exactly as before this module existed — unchanged, not
-    // a regression, since the whole point of this early file logger is
-    // diagnosing a launch that never gets that far in the first place.
-    if env::args().nth(1).is_none() {
+    // Gated narrowly on Servo's own multiprocess content-process children,
+    // which re-exec *themselves* with exactly `--content-process <token>` as
+    // their only two args (see `components/constellation/sandboxing.rs`'s
+    // `setup_common`, and `ports/servoshell/prefs.rs`'s `content_process`
+    // field). Each one installing its own truncating file logger would race
+    // every other process (including the main one) writing to that same
+    // file, each wiping out whatever the others had already logged. Content
+    // processes fall through to `Servo::setup_logging`'s content-process
+    // counterpart (`set_logger`) exactly as before this module existed —
+    // unchanged, not a regression, since the whole point of this early file
+    // logger is diagnosing a launch that never gets that far in the first
+    // place.
+    //
+    // Deliberately *not* the same "real argv is empty" check
+    // `resolve_bundled_launch_args` below uses for its own, unrelated reason
+    // (only a genuine double-click launch may have its args substituted from
+    // `launch.json`) — piggy-backing the logger on that broader check used to
+    // mean any invocation with *any* argument at all (a developer running the
+    // shipped binary from a terminal with flags, a Steam launch-options
+    // override, ...) got no early logger and fell back to
+    // `Servo::setup_logging`'s bare `error`-only default filter instead of
+    // this module's `info` default — losing exactly the diagnostics this
+    // module exists to provide, for every CLI invocation that wasn't a
+    // no-args double-click.
+    if !is_content_process_reexec(env::args()) {
         let log_dir =
             roves_content_packer::extract::game_data_dir(peek_game_name_for_logging().as_deref());
         logging::init(&log_dir);
@@ -135,4 +148,54 @@ pub fn main() {
     }
 
     crate::platform::deinit(clean_shutdown)
+}
+
+/// True only for Servo's own multiprocess content-process children, which always re-exec
+/// *themselves* with exactly `--content-process <token>` as their sole two args (see
+/// `components/constellation/sandboxing.rs`'s `setup_common`). Anything else — no args, a
+/// developer's own flags, a Steam launch-options override, an unrelated bundled launch — must
+/// install the early file logger in `main` above; see that call site's comment for why this
+/// check is intentionally narrower than `resolve_bundled_launch_args`'s own "argv is empty" gate.
+fn is_content_process_reexec<I: IntoIterator<Item = String>>(args: I) -> bool {
+    args.into_iter().nth(1).as_deref() == Some("--content-process")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_content_process_reexec;
+
+    fn args(rest: &[&str]) -> Vec<String> {
+        std::iter::once("play".to_string())
+            .chain(rest.iter().map(|s| s.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn no_args_is_not_a_content_process() {
+        assert!(!is_content_process_reexec(args(&[])));
+    }
+
+    #[test]
+    fn content_process_reexec_is_detected() {
+        assert!(is_content_process_reexec(args(&[
+            "--content-process",
+            "servo-ipc-channel.abcdefg"
+        ])));
+    }
+
+    #[test]
+    fn ordinary_cli_flags_are_not_a_content_process() {
+        assert!(!is_content_process_reexec(args(&["--headless"])));
+        assert!(!is_content_process_reexec(args(&["file:///game/index.html"])));
+    }
+
+    #[test]
+    fn content_process_must_be_the_first_argument() {
+        // Real re-execs always put it first (`setup_common` builds argv as exactly these two
+        // args); an occurrence anywhere else is some other flag's value, not a re-exec.
+        assert!(!is_content_process_reexec(args(&[
+            "--headless",
+            "--content-process"
+        ])));
+    }
 }
