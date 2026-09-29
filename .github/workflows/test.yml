@@ -464,6 +464,35 @@ jobs:
             exit $STATUS
           fi
 
+      # V8 migration Phase 1 (docs/V8_MIGRATION.md, CUSTOMIZATIONS.md's 2026-09-29 entry):
+      # components/roves-v8 is a standalone workspace crate, not wired into the production
+      # script engine, so it needs its own leg rather than piggybacking on servoshell's. Plain
+      # `cargo test`, not `./mach test-unit`: `mach test-unit -p <anything>`
+      # (python/servo/testing_commands.py's `test_unit`) unconditionally runs `support/crown`'s
+      # own lint test suite first regardless of `-p`, and returns early without ever reaching
+      # the requested package if that fails — crown is Servo's DOM-safety/rooting lint, entirely
+      # unrelated to this crate (no rooting exists here yet), so there's no reason to depend on
+      # it passing just to test roves-v8. One of roves-v8's 5 tests deliberately creates a
+      # second V8 isolate only after the first is dropped — holding two alive at once on one
+      # thread is invalid and crashes the whole process with an unrecoverable V8-internal error,
+      # not a catchable test failure (see that doc's Phase 1 status note) — if this step ever
+      # hangs or dies without a normal PASS/FAIL line, that's the first thing to suspect in
+      # whatever change triggered it.
+      - name: run roves-v8 unit tests (V8 migration Phase 1)
+        if: matrix.os_name == 'linux' && matrix.package_mode == 'portable'
+        shell: bash
+        working-directory: servo-src
+        run: |
+          set +e
+          cargo test -p roves-v8 > /tmp/test-roves-v8.log 2>&1
+          STATUS=$?
+          cat /tmp/test-roves-v8.log
+          if [ $STATUS -ne 0 ]; then
+            echo "::error::cargo test -p roves-v8 failed (exit $STATUS)"
+            tail -c 20000 /tmp/test-roves-v8.log | while IFS= read -r line; do echo "::notice::$line"; done
+            exit $STATUS
+          fi
+
       - name: run layout unit tests (ICU4X line breaking)
         if: matrix.os_name == 'linux' && matrix.package_mode == 'portable'
         shell: bash

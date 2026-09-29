@@ -1,0 +1,21 @@
+[package]
+name = "roves-v8"
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+publish = false
+description = "Internal V8 JavaScript engine integration for Roves — Phase 1 of the SpiderMonkey-to-V8 migration (see ../../docs/V8_MIGRATION.md). Not part of Servo's or Roves's public API surface, and not wired into the production script engine yet."
+
+[lib]
+name = "roves_v8"
+path = "src/lib.rs"
+
+[dependencies]
+v8 = "152.2.0"
+
+[features]
+# See ../../docs/V8_MIGRATION.md's "Console-oriented requirement: JIT-less" — a first-class
+# supported configuration from the start, not an afterthought bolted on before a console port.
+# Applies the "--jitless" V8 flag before platform/isolate creation; does not change which V8
+# binary is linked (rusty_v8's prebuilt archives support both modes in the same build).
+jitless = []

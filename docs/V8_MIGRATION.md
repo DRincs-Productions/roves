@@ -239,6 +239,35 @@ Conversely, do not keep SpiderMonkey as a permanent fallback merely to make inte
 
 Checkpoint: CI builds the new crate and its smoke tests without changing the production script engine yet.
 
+**Status (2026-09-29): done, verified locally.** `components/roves-v8` exists with a minimal
+`Runtime` (isolate + one-shot context per `eval` call), 5 passing unit tests (basic expression,
+string concatenation, thrown exception message, syntax error, and a second `Runtime` after the
+first is dropped). `v8` 152.2.0 pinned as the dependency; `jitless` is a Cargo feature that
+applies `--jitless` before platform init (not yet exercised by a dedicated test/CI leg — that's
+follow-up work, not done here). No `v8::*` type appears in the crate's public API (`Runtime`,
+`ScriptResult = Result<String, String>`).
+
+Two real findings from writing this, worth knowing before touching this crate again:
+
+- **This `v8` crate version's scopes are pinned, not plain references.** `HandleScope::new`/
+  `TryCatch::new` produce a `!Unpin` value that must be pinned in place before use — calling
+  them directly and taking `&mut` of the result (the classic older rusty_v8 pattern) does not
+  compile. Use the `v8::scope!`/`v8::tc_scope!` macros (see this crate's own `src/scope.rs`);
+  they handle the `Pin`/`.init()` dance and bind a `&mut PinnedRef<...>` you can pass around
+  normally. `ContextScope::new` does not need this treatment itself, but its first argument must
+  already be one of these pinned handles.
+- **Only one V8 isolate may be "entered" per OS thread at a time** (see the `v8` crate's own
+  `isolate.rs` doc comment on `OwnedIsolate`) — sharing one across threads, or holding more than
+  one alive on a single thread, needs the `Locker`/`Unlocker` API, which this phase does not use.
+  This was found by a test that created two `Runtime`s (two isolates) alive simultaneously on
+  one thread and crashed the whole test process with a fatal, unrecoverable V8 error (not a
+  catchable panic) — not a flake, and not specific to parallel `cargo test`: it reproduced
+  identically under `--test-threads=1`. Fixed by making that test sequential (create, use, drop,
+  create the next). This is not a Phase 1 limitation to route around later — it matches Roves's
+  actual production model (one game, one isolate, one process) — but any future API on
+  `Runtime`/a successor type must not assume isolates are freely shareable across threads
+  without explicit locking.
+
 ### Phase 2 — fundamental value/conversion layer
 
 Implement the primitives needed by generated bindings:

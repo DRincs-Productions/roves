@@ -1,4 +1,39 @@
 # Customizations over upstream Servo
+## 2026-09-29 — V8 migration Phase 1: introduce `components/roves-v8`
+
+**Roves-only:** new crate `components/roves-v8/` (`Cargo.toml`, `src/lib.rs`), root `Cargo.toml`
+workspace `members` entry, `Cargo.lock`. No Servo file touched, no patch needed.
+
+Phase 1 of `docs/V8_MIGRATION.md`: a new, non-published, isolated workspace crate owning V8
+platform/isolate/context lifecycle, not wired into Servo's production script engine yet. `v8`
+152.2.0 pinned as its only dependency. Public surface is deliberately narrow — `Runtime` (an
+isolate) and `Runtime::eval(&mut self, &str) -> Result<String, String>` — no `v8::*` type
+escapes, per the migration plan's hard architectural rule. A `jitless` Cargo feature applies
+`--jitless` before platform init (console-oriented requirement from the plan; not yet exercised
+by a dedicated CI leg). 5 unit tests cover basic evaluation, string concatenation, a thrown
+exception's message, a syntax error, and a second `Runtime` after the first is dropped — all
+verified locally (`cargo test -p roves-v8`, 24-minute full `mach build` also verified clean
+first, see this file's own "confirm local Windows build toolchain works" note nearby).
+
+Two real findings while writing it — both written up in full in `docs/V8_MIGRATION.md`'s Phase 1
+status note, since a future implementer touching this crate needs them, not just this changelog:
+this `v8` crate version's scopes are pinned (`!Unpin`) and need the `v8::scope!`/`v8::tc_scope!`
+macros, not the classic older rusty_v8 pattern of taking `&mut` of a freshly-constructed scope
+directly; and only one V8 isolate may be "entered" per OS thread at a time (confirmed via a real
+crash — a fatal, unrecoverable V8 error, not a catchable panic — when a test held two isolates
+alive at once on one thread; fixed by making that test sequential, which also matches Roves's
+actual one-isolate-per-process production model).
+
+**CI leg added in the same change** (touches `.github/workflows/test.yml` itself, so it does
+retrigger the workflow): `cargo test -p roves-v8`, deliberately **not** `./mach test-unit -p
+roves-v8` — `python/servo/testing_commands.py`'s `test_unit` unconditionally runs
+`support/crown`'s own lint test suite first, regardless of `-p`, and returns early without ever
+reaching the requested package if that fails. Found by actually trying `./mach test-unit -p
+roves-v8` locally: it failed on pre-existing `crown` compile-fail test failures entirely
+unrelated to this crate (no rooting exists in `roves-v8` yet — nothing for crown to lint), never
+even reaching `roves-v8`'s own tests. Plain `cargo test -p roves-v8` has no such dependency and
+is what's actually verified (locally and now in CI).
+
 ## 2026-09-29 — perf-ab: automatic system/mimalloc comparison + Phase 0 V8 inventory
 
 **Roves-only:** `.github/workflows/perf-ab.yml`, `docs/V8_MIGRATION_PHASE0_INVENTORY.md`.
