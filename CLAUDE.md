@@ -36,9 +36,13 @@ for confirmation at each step:
   change is verified — don't wait for a "go ahead" before pushing. Applies to every sibling
   repo in this ecosystem, not just this one.
 - **Run whatever CI/CD is needed to verify a fix.** Push branches/tags, trigger runs, and
-  watch them to completion as part of normal iteration — this is the real verification path
-  given this machine's local toolchain gaps (no working `cargo build` on Windows here, see
-  "Diagnosing a failure without `gh`/a token on hand" below).
+  watch them to completion as part of normal iteration — CI remains the cross-platform
+  authority (Linux/macOS builds still aren't possible on this Windows machine), but as of
+  2026-09-29 a local Windows `cargo build`/`./mach build` toolchain is set up and confirmed
+  working (LLVM/clang/`lld-link.exe`/`libclang.dll`, MSVC Build Tools, real GStreamer,
+  `depot_tools` — see "Diagnosing a failure without `gh`/a token on hand" below for the
+  remaining CI-only gap). Alternate between a local build for fast iteration on Windows-only
+  changes and CI for anything cross-platform or for final verification.
 - **Iterate the fix → push → watch CI → fix loop independently** rather than stopping to
   report every intermediate failure — the user prefers being handed the end result (a green
   CI run, a cut release, a working artifact/APK link) over a play-by-play. Report honestly
@@ -449,11 +453,12 @@ alone is touched by more than a dozen old patches; one early failure there poiso
    upstream's stock binary — see TODO.md #1) — but only *after* step 6, since those workflows
    look for `patches/servo-v${SERVO_TAG}/*.patch` and will fail outright if that directory
    doesn't exist yet for the new tag.
-8. **Verify via CI, not (only) a local build** — this repo's own local-build story on Windows
-   is broken independent of any of this (no `lld-link.exe`/`libclang`, see the toolchain gaps
-   noted elsewhere in this file), so `./mach build --release` locally may simply not be an
-   option. Push to a branch and either wait for `test.yml`'s own path-triggered run (touching
-   `patches/**` triggers it) or watch a manual `workflow_dispatch` run — it exercises the real
+8. **Verify via CI too, not only a local build** — a local Windows `cargo build`/`./mach build`
+   toolchain is set up and confirmed working as of 2026-09-29 (LLVM `lld-link.exe`/`libclang`,
+   MSVC Build Tools, real GStreamer, `depot_tools`), so `./mach build --release` locally is a
+   real option for fast iteration on this one platform. It still doesn't replace CI: push to a
+   branch and either wait for `test.yml`'s own path-triggered run (touching `patches/**`
+   triggers it) or watch a manual `workflow_dispatch` run — it exercises the real
    reconstruction path (download pristine + apply `patches/servo-v<new>/` + `mach build` +
    `mach bundle`) end to end, across all 3 platforms, which is a stronger check than anything
    achievable locally on one machine anyway. Don't stop at "it compiled" — a clean compile
