@@ -250,6 +250,17 @@ $env:ROVES_PERF_LOG_INTERVAL_MS = '1000'
    Per memoria e CPU annotare anche working set e CPU% di `play.exe` dal Task Manager
    (dettagli) a fine sessione.
 
+### 2026-09-29 — Confronto automatico system/mimalloc in CI (early warning)
+
+`perf-ab.yml` ha ora un job `compare` che media `shell_paint_us`/`present_us` su ogni build e
+stampa la differenza percentuale come annotazione, avvisando (senza bloccare) solo oltre 2x.
+Primo risultato (`b292957a2fd`, runner Windows condivisi GitHub): `shell_paint_us_avg`
+system=2197.2 mimalloc=2792.9 (+27.1%), `present_us_avg` system=22943.9 mimalloc=29223.8
+(+27.4%). Sotto la soglia di allerta, e comunque **non sostituisce** la misura su hardware reale:
+un runner condiviso senza GPU dedicata introduce rumore che può spiegare da solo una differenza
+di questa entità in entrambe le direzioni. Serve solo a intercettare regressioni grossolane
+(crash, hang, differenze di ordini di grandezza) automaticamente a ogni run `perf-ab`.
+
 Decisioni che dipendono dai numeri:
 
 - **Fast path B:** conviene se `shell_paint` (blit + eventuale egui) pesa rispetto a
