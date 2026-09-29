@@ -1,4 +1,30 @@
 # Customizations over upstream Servo
+## 2026-09-29 — perf-ab: automatic system/mimalloc comparison + Phase 0 V8 inventory
+
+**Roves-only:** `.github/workflows/perf-ab.yml`, `docs/V8_MIGRATION_PHASE0_INVENTORY.md`.
+
+Two independent additions from the same session:
+
+- **perf-ab `compare` job.** The A/B workflow built both allocator variants and smoke-tested
+  that each one *starts*, but nothing compared their `[roves-perf-time]` numbers automatically —
+  the maintainer had to download both zips and run `ROVES_PERFORMANCE.md`'s manual procedure to
+  learn anything quantitative. The Windows smoke-test step now also averages
+  `shell_paint_us`/`present_us` across every interval it observed into
+  `perf-summary-<allocator>.json`, uploaded as a build artifact. A new `compare` job (needs
+  `build`, runs on cheap `ubuntu-latest`) downloads both, prints the deltas as a single
+  `::notice::`, and warns (not fails) if either phase differs by more than 2x — explicitly
+  labeled as an early-warning signal for gross regressions, not a replacement for the hardware
+  measurement the plan (`docs/PIANO_MIGRAZIONE_LIBRERIE.md`, phase 5) actually requires before
+  promoting mimalloc to default: GitHub's Windows runners are shared/virtualized VMs with no
+  dedicated GPU.
+- **V8 migration Phase 0 inventory.** `docs/V8_MIGRATION.md`'s own Phase 0 (read-only SpiderMonkey
+  usage inventory, no code changes) is done and written up in
+  `docs/V8_MIGRATION_PHASE0_INVENTORY.md` — Cargo dependency chain, rooting/GC counts by crate,
+  the WebIDL codegen entry point (`components/script_bindings/codegen/codegen.py`), feature/cfg
+  list, and existing test coverage (notably: no `-p script`/`script_bindings` CI leg exists
+  today, and no GC stress-test harness exists anywhere in the repo — Phase 3 starts from zero on
+  that front). Purely additive documentation; no runtime/build code touched.
+
 ## 2026-09-29 — Narrow the early file logger's content-process gate
 
 **Servo file:** `ports/servoshell/desktop/cli.rs`.

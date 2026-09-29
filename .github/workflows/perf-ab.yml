@@ -12,6 +12,14 @@ name: 'Perf A/B builds (Windows)'
 # measurement procedure; this workflow imposes no performance thresholds.
 #
 # Triggered by pushing a tag matching perf-ab-* (e.g. perf-ab-20260928), or manually.
+#
+# `compare` (added 2026-09-29) is an early-warning signal, not a substitute for the manual
+# hardware measurement in ROVES_PERFORMANCE.md: GitHub's Windows runners are shared/virtualized
+# VMs with no dedicated GPU, so absolute numbers here do not reflect real hardware. It exists to
+# catch gross regressions (a crash, a hang, an order-of-magnitude timing change) between the two
+# allocator variants automatically on every perf-ab run, so a real problem doesn't sit
+# undiscovered until someone happens to run the manual procedure. It imposes no pass/fail
+# threshold — same reasoning as the rest of this workflow — and only prints a comparison.
 
 on:
   push:
@@ -173,6 +181,37 @@ jobs:
             exit 1
           }
 
+          # Early-warning summary (see the note at the top of this file): average shell_paint_us
+          # and present_us across every [roves-perf-time] interval this run emitted, so `compare`
+          # below has a single number per allocator instead of raw log lines. Not a substitute for
+          # the manual hardware measurement in ROVES_PERFORMANCE.md.
+          $timeLines = Select-String -Path $log.FullName -Pattern '\[roves-perf-time\]'
+          $shellPaint = @()
+          $present = @()
+          foreach ($m in $timeLines) {
+            if ($m.Line -match 'shell_paint_us=(\d+)') { $shellPaint += [int]$Matches[1] }
+            if ($m.Line -match 'present_us=(\d+)') { $present += [int]$Matches[1] }
+          }
+          if ($shellPaint.Count -eq 0 -or $present.Count -eq 0) {
+            Write-Host "::error::could not parse shell_paint_us/present_us out of any [roves-perf-time] line"
+            exit 1
+          }
+          $summary = [ordered]@{
+            allocator = "${{ matrix.allocator }}"
+            samples = $shellPaint.Count
+            shell_paint_us_avg = [math]::Round(($shellPaint | Measure-Object -Average).Average, 1)
+            present_us_avg = [math]::Round(($present | Measure-Object -Average).Average, 1)
+          }
+          $summary | ConvertTo-Json | Set-Content -Path "perf-summary-${{ matrix.allocator }}.json"
+          Write-Host "::notice::$(${summary} | ConvertTo-Json -Compress)"
+
+      - name: upload perf summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-summary-${{ matrix.allocator }}
+          path: perf-summary-${{ matrix.allocator }}.json
+          retention-days: 14
+
       - name: zip bundle
         shell: pwsh
         run: |
@@ -195,3 +234,53 @@ jobs:
             sleep $((attempt * 10))
           done
           exit 1
+
+  compare:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: perf-summary-*
+          merge-multiple: true
+
+      - name: compare allocator summaries
+        shell: bash
+        run: |
+          SYSTEM=$(cat perf-summary-system.json)
+          MIMALLOC=$(cat perf-summary-mimalloc.json)
+          echo "system:   $SYSTEM"
+          echo "mimalloc: $MIMALLOC"
+
+          extract() { echo "$1" | grep -o "\"$2\": *[0-9.]*" | grep -o '[0-9.]*$'; }
+          sys_shell=$(extract "$SYSTEM" shell_paint_us_avg)
+          sys_present=$(extract "$SYSTEM" present_us_avg)
+          mi_shell=$(extract "$MIMALLOC" shell_paint_us_avg)
+          mi_present=$(extract "$MIMALLOC" present_us_avg)
+
+          # Percent difference, mimalloc relative to system. Uses awk for float math (bash has
+          # none); guards against a zero baseline instead of dividing by it.
+          pct_diff() {
+            awk -v a="$1" -v b="$2" 'BEGIN {
+              if (a == 0) { print "n/a (baseline is 0)"; exit }
+              printf "%.1f%%", ((b - a) / a) * 100
+            }'
+          }
+          shell_pct=$(pct_diff "$sys_shell" "$mi_shell")
+          present_pct=$(pct_diff "$sys_present" "$mi_present")
+
+          echo "::notice::perf-ab compare — shell_paint_us_avg: system=$sys_shell mimalloc=$mi_shell ($shell_pct); present_us_avg: system=$sys_present mimalloc=$mi_present ($present_pct)"
+          echo "::notice::CI runners are shared/virtualized with no dedicated GPU — this is an early-warning signal for gross regressions (crash, hang, order-of-magnitude change), not the hardware measurement ROVES_PERFORMANCE.md requires before promoting mimalloc to default."
+
+          # Early warning only: flag a large swing so it doesn't sit unnoticed, without gating the
+          # build (no threshold is a real perf requirement on a shared CI runner).
+          for pct in "$shell_pct" "$present_pct"; do
+            case "$pct" in
+              -*) abs=${pct#-} ;;
+              *) abs=$pct ;;
+            esac
+            abs=${abs%\%}
+            if [ -n "$abs" ] && awk -v a="$abs" 'BEGIN { exit !(a > 100) }'; then
+              echo "::warning::perf-ab: mimalloc differs from system by more than 2x on a phase timing ($pct) — worth a look, even accounting for CI noise"
+            fi
+          done
