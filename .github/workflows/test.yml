@@ -774,6 +774,13 @@ jobs:
       # virtual button press, before the page loaded; see CUSTOMIZATIONS.md's 0053 entry). macOS
       # gamepad support stays off by default, so its result must not gate the build. Read the
       # step's annotations for the outcome.
+      #
+      # Repeats the launch 4 times in the same job (instead of relying on 4 separate pushes) so a
+      # single CI run produces a statistically useful sample of the intermittent stall — pushing 4
+      # times to gather the same evidence would burn 4x the CI minutes across all matrix legs for
+      # no reason, and this workflow only retriggers on a real patches/**/test-page/** change, not
+      # on an empty commit (see the note at the top of this file), so repeated pushes aren't a
+      # cheap way to resample this anyway.
       - name: macOS opt-in gamepad and synthetic input (ROVES_MACOS_GAMEPAD=1)
         if: matrix.os_name == 'macos' && matrix.package_mode == 'portable'
         continue-on-error: true
@@ -783,45 +790,69 @@ jobs:
           export ROVES_MACOS_GAMEPAD=1
           export ROVES_TEST_VIRTUAL_GAMEPAD=1
           set +e
-          "$BIN" > mac-input-stdout.log 2> mac-input-stderr.log &
-          PID=$!
-          for _ in $(seq 1 100); do
-            grep -q '\[roves-input\] ready' mac-input-stdout.log 2>/dev/null && break
-            kill -0 "$PID" 2>/dev/null || break
-            sleep 0.3
-          done
-          swift support/macos_input_smoke.swift "$PID" 2>&1 | tee mac-input-swift.log
-          sleep 8
-          STILL_RUNNING=false
-          kill -0 "$PID" 2>/dev/null && STILL_RUNNING=true
-          kill "$PID" 2>/dev/null
-          for _ in 1 2 3 4 5; do kill -0 "$PID" 2>/dev/null || break; sleep 1; done
-          kill -9 "$PID" 2>/dev/null
 
-          LOG=$(find "$HOME/Library/Caches" -iname roves.log 2>/dev/null -exec ls -t {} + 2>/dev/null | head -1)
-          FILES=(mac-input-stdout.log)
-          [ -n "$LOG" ] && FILES+=("$LOG")
-          echo "--- stderr ---"; tail -n 50 mac-input-stderr.log
-          echo "--- gamepad/input lines ---"
-          grep -h -i '\[roves-gamepad\]\|\[roves-virtual-gamepad\]\|\[roves-input\]\|\[roves-macos-input\]\|error.*gamepad\|gamepad.*error' \
-            "${FILES[@]}" mac-input-swift.log 2>/dev/null | sort -u | tee mac-input-summary.txt
-          while IFS= read -r line; do echo "::notice::$line"; done < mac-input-summary.txt
+          RUNS=4
+          PASS_COUNT=0
+          STALL_COUNT=0
+          for i in $(seq 1 "$RUNS"); do
+            echo "=== macOS gamepad sample $i/$RUNS ==="
+            OUT="mac-input-stdout-$i.log"
+            ERR="mac-input-stderr-$i.log"
+            SWIFT="mac-input-swift-$i.log"
+            "$BIN" > "$OUT" 2> "$ERR" &
+            PID=$!
+            STALLED_BEFORE_READY=true
+            for _ in $(seq 1 100); do
+              if grep -q '\[roves-input\] ready' "$OUT" 2>/dev/null; then
+                STALLED_BEFORE_READY=false
+                break
+              fi
+              kill -0 "$PID" 2>/dev/null || break
+              sleep 0.3
+            done
+            swift support/macos_input_smoke.swift "$PID" 2>&1 | tee "$SWIFT"
+            sleep 8
+            STILL_RUNNING=false
+            kill -0 "$PID" 2>/dev/null && STILL_RUNNING=true
+            kill "$PID" 2>/dev/null
+            for _ in 1 2 3 4 5; do kill -0 "$PID" 2>/dev/null || break; sleep 1; done
+            kill -9 "$PID" 2>/dev/null
 
-          FAIL=0
-          if [ "$STILL_RUNNING" != true ]; then
-            echo "::error::play exited early with ROVES_MACOS_GAMEPAD=1"; FAIL=1
-          fi
-          if ! grep -hq '\[roves-gamepad\] SDL gamepad subsystem ready' "${FILES[@]}"; then
-            echo "::error::SDL gamepad init never completed on macOS (the historical hang?)"; FAIL=1
-          fi
-          if ! grep -hq '\[roves-input\] kind=gamepadbuttondown ' "${FILES[@]}"; then
-            echo "::error::the virtual SDL gamepad never reached the page as a Gamepad API button press on macOS"; FAIL=1
-          fi
-          for kind in mousedown wheel keydown; do
-            if ! grep -hq "\[roves-input\] kind=$kind " "${FILES[@]}"; then
-              echo "::warning::macOS synthetic $kind did not reach the page (see [roves-macos-input] preflight above)"
+            LOG=$(find "$HOME/Library/Caches" -iname roves.log 2>/dev/null -exec ls -t {} + 2>/dev/null | head -1)
+            FILES=("$OUT")
+            [ -n "$LOG" ] && FILES+=("$LOG")
+            echo "--- stderr (sample $i) ---"; tail -n 50 "$ERR"
+            echo "--- gamepad/input lines (sample $i) ---"
+            grep -h -i '\[roves-gamepad\]\|\[roves-virtual-gamepad\]\|\[roves-input\]\|\[roves-macos-input\]\|error.*gamepad\|gamepad.*error' \
+              "${FILES[@]}" "$SWIFT" 2>/dev/null | sort -u | tee "mac-input-summary-$i.txt"
+            while IFS= read -r line; do echo "::notice::sample $i: $line"; done < "mac-input-summary-$i.txt"
+
+            SAMPLE_FAIL=0
+            if [ "$STILL_RUNNING" != true ] && [ "$STALLED_BEFORE_READY" = true ]; then
+              echo "::error::sample $i: play stalled before [roves-input] ready and then exited/was killed — looks like the historical stall, not a clean init failure"
+              STALL_COUNT=$((STALL_COUNT + 1))
+              SAMPLE_FAIL=1
+            elif [ "$STILL_RUNNING" != true ]; then
+              echo "::error::sample $i: play exited early with ROVES_MACOS_GAMEPAD=1"
+              SAMPLE_FAIL=1
             fi
+            if ! grep -hq '\[roves-gamepad\] SDL gamepad subsystem ready' "${FILES[@]}"; then
+              echo "::error::sample $i: SDL gamepad init never completed on macOS (the historical hang?)"
+              SAMPLE_FAIL=1
+            fi
+            if ! grep -hq '\[roves-input\] kind=gamepadbuttondown ' "${FILES[@]}"; then
+              echo "::error::sample $i: the virtual SDL gamepad never reached the page as a Gamepad API button press on macOS"
+              SAMPLE_FAIL=1
+            fi
+            for kind in mousedown wheel keydown; do
+              if ! grep -hq "\[roves-input\] kind=$kind " "${FILES[@]}"; then
+                echo "::warning::sample $i: macOS synthetic $kind did not reach the page (see [roves-macos-input] preflight above)"
+              fi
+            done
+            [ "$SAMPLE_FAIL" -eq 0 ] && PASS_COUNT=$((PASS_COUNT + 1))
           done
+
+          echo "::notice::macOS gamepad samples: $PASS_COUNT/$RUNS clean, $STALL_COUNT/$RUNS looked like the historical pre-ready stall"
           exit $FAIL
 
       - name: smoke test — launch the bundle and check it doesn't crash (Windows)

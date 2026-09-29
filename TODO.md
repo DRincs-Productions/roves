@@ -162,7 +162,13 @@ hardware ancora aperta (IME CJK/dead key, screen reader, ecc.).
   in CI i pulsanti del gamepad virtuale nella pagina (patch 0049–0051). Su macOS 1 run su 4 ha
   riprodotto il blocco del thread principale subito dopo la prima pressione virtuale, prima del
   caricamento della pagina: il gamepad macOS resta spento per default e lo step CI macOS è solo
-  informativo (patch 0053).
+  informativo (patch 0053). Il primo run su `main` dopo questo fix (`a5d3638`, 2026-09-29) è
+  risultato pulito, ma un solo run verde non basta con uno stallo storicamente 1/4: lo step ora
+  lancia il bundle 4 volte nello stesso job e riporta `N/4 clean, M/4 stalled` (vedi
+  CUSTOMIZATIONS.md del 2026-09-29), per raccogliere prove reali senza dipendere da push ripetuti
+  (il workflow non si riattiva su commit vuoti). Resta aperto finché non arriva pulito su più
+  campioni consecutivi, e comunque serve un controller fisico su un Mac reale prima di attivarlo
+  per default.
 ## Rendering futuro: fast path wgpu — backlog
 
 - [ ] Progettare un fast path interno a Servo per il caso di una singola

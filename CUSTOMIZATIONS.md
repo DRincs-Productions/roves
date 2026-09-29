@@ -1,4 +1,19 @@
 # Customizations over upstream Servo
+## 2026-09-29 — Sample the macOS gamepad stall 4x per CI run instead of per push
+
+**Roves-only:** `.github/workflows/test.yml`, `TODO.md`.
+
+Following up on 0053 (arm the CI virtual gamepad only after page load): the first run on `main`
+after that fix (`a5d3638`) was clean. But the historical stall was already known to be
+intermittent (1 run in 4, see the 2026-09-28 entry below), so a single green run is not enough
+evidence either way, and this workflow only retriggers on a real change under `patches/**` /
+`test-page/**` (not on an empty commit — see the note at the top of `test.yml`), so resampling by
+pushing repeatedly isn't cheap. The macOS opt-in gamepad step now launches the bundle 4 times in
+the same job, tallies how many looked like the pre-`ready` stall specifically (distinguished from
+an ordinary early exit) versus a clean run, and reports `N/4 clean, M/4 stalled` as a single
+`::notice::`. Still `continue-on-error`; still does not gate the build. macOS gamepad support
+stays off by default until this comes back clean across repeated samples.
+
 ## 2026-09-29 — Clipboard shortcuts reach page keyboard handlers
 
 **Servo file:** `ports/servoshell/desktop/headed_window.rs`.
