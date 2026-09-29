@@ -825,31 +825,39 @@ jobs:
             echo "--- gamepad/input lines (sample $i) ---"
             grep -h -i '\[roves-gamepad\]\|\[roves-virtual-gamepad\]\|\[roves-input\]\|\[roves-macos-input\]\|error.*gamepad\|gamepad.*error' \
               "${FILES[@]}" "$SWIFT" 2>/dev/null | sort -u | tee "mac-input-summary-$i.txt"
-            while IFS= read -r line; do echo "::notice::sample $i: $line"; done < "mac-input-summary-$i.txt"
+            # Plain stdout only above (not `::notice::`/`::error::`): GitHub Actions caps
+            # annotations at 10 per step, and this loop's own log lines alone would blow past
+            # that across 4 samples, silently dropping later samples and the final tally below.
+            # Each sample gets exactly one compact verdict annotation instead; the full log
+            # lines are still in the step's plain output for anyone who opens it.
 
-            SAMPLE_FAIL=0
+            SAMPLE_VERDICT="clean"
             if [ "$STILL_RUNNING" != true ] && [ "$STALLED_BEFORE_READY" = true ]; then
-              echo "::error::sample $i: play stalled before [roves-input] ready and then exited/was killed — looks like the historical stall, not a clean init failure"
+              SAMPLE_VERDICT="stalled before [roves-input] ready (looks like the historical stall)"
               STALL_COUNT=$((STALL_COUNT + 1))
-              SAMPLE_FAIL=1
             elif [ "$STILL_RUNNING" != true ]; then
-              echo "::error::sample $i: play exited early with ROVES_MACOS_GAMEPAD=1"
-              SAMPLE_FAIL=1
+              SAMPLE_VERDICT="play exited early with ROVES_MACOS_GAMEPAD=1"
+            elif ! grep -hq '\[roves-gamepad\] SDL gamepad subsystem ready' "${FILES[@]}"; then
+              SAMPLE_VERDICT="SDL gamepad init never completed (the historical hang?)"
+            elif ! grep -hq '\[roves-input\] kind=gamepadbuttondown ' "${FILES[@]}"; then
+              SAMPLE_VERDICT="virtual SDL gamepad never reached the page as a Gamepad API button press"
             fi
-            if ! grep -hq '\[roves-gamepad\] SDL gamepad subsystem ready' "${FILES[@]}"; then
-              echo "::error::sample $i: SDL gamepad init never completed on macOS (the historical hang?)"
-              SAMPLE_FAIL=1
-            fi
-            if ! grep -hq '\[roves-input\] kind=gamepadbuttondown ' "${FILES[@]}"; then
-              echo "::error::sample $i: the virtual SDL gamepad never reached the page as a Gamepad API button press on macOS"
-              SAMPLE_FAIL=1
-            fi
+            MISSING_KINDS=""
             for kind in mousedown wheel keydown; do
               if ! grep -hq "\[roves-input\] kind=$kind " "${FILES[@]}"; then
-                echo "::warning::sample $i: macOS synthetic $kind did not reach the page (see [roves-macos-input] preflight above)"
+                MISSING_KINDS="$MISSING_KINDS $kind"
               fi
             done
-            [ "$SAMPLE_FAIL" -eq 0 ] && PASS_COUNT=$((PASS_COUNT + 1))
+            if [ "$SAMPLE_VERDICT" = "clean" ]; then
+              PASS_COUNT=$((PASS_COUNT + 1))
+              if [ -n "$MISSING_KINDS" ]; then
+                echo "::warning::sample $i: clean gamepad delivery, but synthetic$MISSING_KINDS did not reach the page (see [roves-macos-input] preflight above)"
+              else
+                echo "::notice::sample $i: clean"
+              fi
+            else
+              echo "::error::sample $i: $SAMPLE_VERDICT"
+            fi
           done
 
           echo "::notice::macOS gamepad samples: $PASS_COUNT/$RUNS clean, $STALL_COUNT/$RUNS looked like the historical pre-ready stall"

@@ -14,6 +14,14 @@ an ordinary early exit) versus a clean run, and reports `N/4 clean, M/4 stalled`
 `::notice::`. Still `continue-on-error`; still does not gate the build. macOS gamepad support
 stays off by default until this comes back clean across repeated samples.
 
+**Fix (same day):** the first version emitted one `::notice::`/`::error::` per matched log line
+per sample. GitHub Actions caps annotations at 10 per step; across 4 samples this silently
+dropped every sample after the first, including the final `N/4` tally — the run
+(`2ce4a328f86`) showed only `sample 1`'s raw log lines and never the summary. Each sample now
+produces exactly one compact verdict annotation (`clean`, or the specific failure reason), plus
+the one final tally — 5 annotations for 4 samples, comfortably under the cap. The full grep
+output is still in the step's plain stdout for anyone who opens the raw log.
+
 ## 2026-09-29 — Clipboard shortcuts reach page keyboard handlers
 
 **Servo file:** `ports/servoshell/desktop/headed_window.rs`.
