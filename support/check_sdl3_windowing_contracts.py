@@ -130,6 +130,22 @@ def main() -> None:
         keyboard_factory,
     ), "KeyboardEvent repeat/is_composing arguments are swapped"
 
+    intercepted_keys = braced_body(headed_source, "fn handle_intercepted_key_bindings")
+    for key in "CXV":
+        assert f".shortcut(CMD_OR_CONTROL, '{key}'" not in intercepted_keys, (
+            f"Ctrl/Cmd+{key} must reach the page before its clipboard default action"
+        )
+    editing_action = braced_body(headed_source, "fn editing_action_from_keyboard_event")
+    for key in "CXV":
+        assert f".shortcut(CMD_OR_CONTROL, '{key}'" in editing_action, (
+            f"Ctrl/Cmd+{key} clipboard default action is missing"
+        )
+    input_result_handler = braced_body(headed_source, "fn notify_input_event_handled")
+    assert "editing_action_from_keyboard_event(&keyboard_event)" in input_result_handler
+    assert input_result_handler.index("DefaultPrevented | InputEventResult::Consumed") < (
+        input_result_handler.index("editing_action_from_keyboard_event(&keyboard_event)")
+    ), "page-cancelled clipboard shortcuts must not run their default action"
+
     subprocess.run(
         ["git", "apply", "--numstat", str(PATCH)],
         cwd=ROOT,

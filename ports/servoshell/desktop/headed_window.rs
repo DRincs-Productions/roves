@@ -60,6 +60,100 @@ use crate::window::{
 
 pub(crate) const INITIAL_WINDOW_TITLE: &str = "Roves";
 
+fn editing_action_from_keyboard_event(
+    keyboard_event: &KeyboardEvent,
+) -> Option<servo::EditingActionEvent> {
+    if keyboard_event.event.state != KeyState::Down {
+        return None;
+    }
+
+    let mut action = None;
+    ShortcutMatcher::from_event(keyboard_event.event.clone())
+        .shortcut(CMD_OR_CONTROL, 'X', || {
+            action = Some(servo::EditingActionEvent::Cut);
+        })
+        .shortcut(CMD_OR_CONTROL, 'C', || {
+            action = Some(servo::EditingActionEvent::Copy);
+        })
+        .shortcut(CMD_OR_CONTROL, 'V', || {
+            action = Some(servo::EditingActionEvent::Paste);
+        })
+        .otherwise(|| {});
+    action
+}
+
+#[cfg(test)]
+mod editing_action_shortcut_tests {
+    use super::editing_action_from_keyboard_event;
+    use crate::desktop::keyutils::keyboard_event_from_sdl;
+    use sdl3::keyboard::{Keycode, Mod, Scancode};
+
+    fn keyboard_event(
+        key: Keycode,
+        code: Scancode,
+        modifiers: Mod,
+        pressed: bool,
+    ) -> servo::KeyboardEvent {
+        keyboard_event_from_sdl(Some(key), Some(code), modifiers, pressed, false)
+    }
+
+    #[test]
+    fn control_copy_cut_and_paste_are_default_actions() {
+        assert!(matches!(
+            editing_action_from_keyboard_event(&keyboard_event(
+                Keycode::C,
+                Scancode::C,
+                Mod::LCTRLMOD,
+                true,
+            )),
+            Some(servo::EditingActionEvent::Copy)
+        ));
+        assert!(matches!(
+            editing_action_from_keyboard_event(&keyboard_event(
+                Keycode::X,
+                Scancode::X,
+                Mod::LCTRLMOD,
+                true,
+            )),
+            Some(servo::EditingActionEvent::Cut)
+        ));
+        assert!(matches!(
+            editing_action_from_keyboard_event(&keyboard_event(
+                Keycode::V,
+                Scancode::V,
+                Mod::LCTRLMOD,
+                true,
+            )),
+            Some(servo::EditingActionEvent::Paste)
+        ));
+    }
+
+    #[test]
+    fn clipboard_actions_require_command_or_control_and_key_down() {
+        assert!(editing_action_from_keyboard_event(&keyboard_event(
+            Keycode::C,
+            Scancode::C,
+            Mod::NOMOD,
+            true,
+        ))
+        .is_none());
+        assert!(editing_action_from_keyboard_event(&keyboard_event(
+            Keycode::C,
+            Scancode::C,
+            Mod::LCTRLMOD,
+            false,
+        ))
+        .is_none());
+        assert!(editing_action_from_keyboard_event(&keyboard_event(
+            Keycode::V,
+            Scancode::V,
+            Mod::LALTMOD,
+            true,
+        ))
+        .is_none());
+    }
+}
+
 fn current_sdl_theme() -> Theme {
     match sdl3::VideoSubsystem::get_system_theme() {
         sdl3::video::SystemTheme::Dark => Theme::Dark,
@@ -638,19 +732,6 @@ impl HeadedWindow {
                     Duration::from_millis(rate),
                     Duration::from_secs(duration),
                 );
-            })
-            .shortcut(CMD_OR_CONTROL, 'X', || {
-                active_webview
-                    .notify_input_event(InputEvent::EditingAction(servo::EditingActionEvent::Cut));
-            })
-            .shortcut(CMD_OR_CONTROL, 'C', || {
-                active_webview
-                    .notify_input_event(InputEvent::EditingAction(servo::EditingActionEvent::Copy));
-            })
-            .shortcut(CMD_OR_CONTROL, 'V', || {
-                active_webview.notify_input_event(InputEvent::EditingAction(
-                    servo::EditingActionEvent::Paste,
-                ));
             })
             .shortcut(Modifiers::CONTROL, Key::Named(NamedKey::F9), || {
                 active_webview.capture_webrender();
@@ -1320,6 +1401,12 @@ impl PlatformWindow for HeadedWindow {
         };
         if result.intersects(InputEventResult::DefaultPrevented | InputEventResult::Consumed) {
             return;
+        }
+
+        // Let the page observe Ctrl/Cmd+C/X/V first. If it doesn't cancel the key event,
+        // perform Servo's clipboard action afterward, matching the usual browser event order.
+        if let Some(action) = editing_action_from_keyboard_event(&keyboard_event) {
+            webview.notify_input_event(InputEvent::EditingAction(action));
         }
 
         ShortcutMatcher::from_event(keyboard_event.event)
