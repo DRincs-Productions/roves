@@ -170,6 +170,86 @@ impl Runtime {
         }
     }
 
+    /// Same as [`Runtime::eval_value`], but if the result is a `Promise`, drives V8's microtask
+    /// queue (`Isolate::perform_microtask_checkpoint`) until it settles and returns the resolved
+    /// value, or the rejection's message. A non-`Promise` result returns immediately, same as
+    /// `eval_value`. Bounded (see `MAX_MICROTASK_CHECKPOINTS`) so a promise this crate has no
+    /// event loop to ever settle (e.g. one waiting on a timer) fails loudly instead of hanging.
+    ///
+    /// Microtask pumping happens *outside* any handle/context scope: `perform_microtask_checkpoint`
+    /// needs `&mut self.isolate` directly, which a live scope already borrows. Each loop
+    /// iteration opens and closes its own short-lived scope purely to read the promise's current
+    /// state — see this module's own top doc comment on why this file favors small, repeated
+    /// scope blocks over trying to share one across an operation like this.
+    pub fn eval_resolved(&mut self, source: &str) -> Result<Value, String> {
+        enum Outcome {
+            Value(Value),
+            Promise(v8::Global<v8::Promise>),
+        }
+
+        let outcome = {
+            let context_handle = &self.context;
+            v8::scope!(let scope, &mut self.isolate);
+            let context = v8::Local::new(scope, context_handle);
+            let scope = &mut v8::ContextScope::new(scope, context);
+            v8::tc_scope!(let try_catch, scope);
+
+            let Some(code) = v8::String::new(try_catch, source) else {
+                return Err("source contained invalid UTF-16/UTF-8".to_string());
+            };
+            let Some(script) = v8::Script::compile(try_catch, code, None) else {
+                let message = match try_catch.exception() {
+                    Some(exception) => exception.to_rust_string_lossy(try_catch),
+                    None => "unknown script error (no exception object captured)".to_string(),
+                };
+                return Err(message);
+            };
+            match script.run(try_catch) {
+                Some(value) => match v8::Local::<v8::Promise>::try_from(value) {
+                    Ok(promise) => Outcome::Promise(v8::Global::new(try_catch, promise)),
+                    Err(_) => Outcome::Value(native_value(try_catch, value)),
+                },
+                None => {
+                    let message = match try_catch.exception() {
+                        Some(exception) => exception.to_rust_string_lossy(try_catch),
+                        None => {
+                            "unknown script error (no exception object captured)".to_string()
+                        },
+                    };
+                    return Err(message);
+                },
+            }
+        };
+
+        let promise_global = match outcome {
+            Outcome::Value(value) => return Ok(value),
+            Outcome::Promise(promise) => promise,
+        };
+
+        const MAX_MICROTASK_CHECKPOINTS: u32 = 10_000;
+        for _ in 0..MAX_MICROTASK_CHECKPOINTS {
+            self.isolate.perform_microtask_checkpoint();
+
+            let context_handle = &self.context;
+            v8::scope!(let scope, &mut self.isolate);
+            let context = v8::Local::new(scope, context_handle);
+            let scope = &mut v8::ContextScope::new(scope, context);
+            let promise = v8::Local::new(scope, &promise_global);
+            match promise.state() {
+                v8::PromiseState::Pending => continue,
+                v8::PromiseState::Fulfilled => {
+                    let result = promise.result(scope);
+                    return Ok(native_value(scope, result));
+                },
+                v8::PromiseState::Rejected => {
+                    let result = promise.result(scope);
+                    return Err(result.to_rust_string_lossy(scope));
+                },
+            }
+        }
+        Err("promise did not settle within the microtask pump budget".to_string())
+    }
+
     /// Stores `value` as a JS value in this isolate and returns a [`Handle`] that outlives this
     /// call — see [`Handle`]'s own doc comment.
     pub fn store(&mut self, value: &Value) -> Handle {
@@ -418,5 +498,49 @@ mod tests {
         let mut runtime = Runtime::new();
         runtime.define_native_function("double", double).unwrap();
         assert_eq!(runtime.eval("double(21)").unwrap(), "42");
+    }
+
+    #[test]
+    fn eval_resolved_passes_through_a_non_promise_value() {
+        let mut runtime = Runtime::new();
+        assert_eq!(
+            runtime.eval_resolved("1 + 2").unwrap(),
+            Value::Number(3.0)
+        );
+    }
+
+    #[test]
+    fn eval_resolved_returns_an_already_resolved_promise() {
+        let mut runtime = Runtime::new();
+        assert_eq!(
+            runtime.eval_resolved("Promise.resolve(42)").unwrap(),
+            Value::Number(42.0)
+        );
+    }
+
+    #[test]
+    fn eval_resolved_pumps_microtasks_for_a_chained_then() {
+        // Unlike Promise.resolve(42) (already fulfilled the instant it's created), this
+        // promise only settles once its .then callback actually runs as a microtask -- this
+        // is the case that needs the perform_microtask_checkpoint loop, not just a state read.
+        let mut runtime = Runtime::new();
+        assert_eq!(
+            runtime
+                .eval_resolved("Promise.resolve(1).then(v => v + 1)")
+                .unwrap(),
+            Value::Number(2.0)
+        );
+    }
+
+    #[test]
+    fn eval_resolved_reports_a_rejected_promise() {
+        let mut runtime = Runtime::new();
+        let err = runtime
+            .eval_resolved("Promise.reject(new Error('roves-v8 promise rejection'))")
+            .unwrap_err();
+        assert!(
+            err.contains("roves-v8 promise rejection"),
+            "expected the rejection message in the error, got: {err}"
+        );
     }
 }
