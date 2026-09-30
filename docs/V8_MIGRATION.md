@@ -284,6 +284,48 @@ Implement the primitives needed by generated bindings:
 
 Add `serde_v8` for appropriate Roves-native data paths, not as the DOM binding implementation.
 
+**Status (2026-09-30): partially done, verified locally — first checkpoint.** Done so far, all
+in `components/roves-v8/src/lib.rs`, all covered by unit tests (10/10 passing via
+`cargo test -p roves-v8`):
+
+- **Primitive value conversion.** A public `Value` enum (`Undefined`/`Null`/`Bool`/`Number`/
+  `String`/`Bytes`/`Object`) plus `Runtime::eval_value` (like `eval`, but returns `Value` instead
+  of a debug string). `Object` is deliberately a one-way read-only marker in this phase — no
+  structural property access yet, that's Phase 4's WebIDL-bindings job.
+- **ArrayBuffer/TypedArray**, scoped to the one case Phase 2 needs: `Value::Bytes(Vec<u8>)`
+  round-trips through a JS `Uint8Array`.
+- **Persistent references.** A `Handle` type backed by `v8::Global<v8::Value>` (isolate-scoped,
+  not context-scoped), with `Runtime::store`/`Runtime::load`.
+- **Callbacks**, restricted to non-capturing function pointers: `Runtime::define_native_function`
+  registers a `fn(&[Value]) -> Value` as a JS-callable global function, using V8's `External`-data
+  mechanism to smuggle the pointer through `Function::builder(...).data(...)` (this `v8` crate
+  version's `Function::new`/`builder` require the callback closure itself to carry no captured
+  state — see `NativeFunction`'s own doc comment in the crate).
+- **Exceptions**: already covered by Phase 1's `eval`/`tc_scope!` pattern; `eval_value` reuses it.
+
+**Not yet done, deliberately deferred to a follow-up checkpoint** (still Phase 2 scope per this
+plan, kept separate to stay a small, reviewable, coherent change rather than one large
+unvalidated addition — see "Guidance for Codex/implementers" below): Promise/microtask
+integration, and module primitives (ES module compile/instantiate/evaluate).
+
+Two real findings from this checkpoint, worth knowing before extending this crate further:
+
+- **`Runtime` needs exactly one persistent context for its whole lifetime, not a throwaway one
+  per method call.** The first version of `eval_value`/`store`/`load`/`define_native_function`
+  each created its own brand-new `v8::Context` internally (copying Phase 1's `eval`, which does
+  the same thing safely because it never needs to share state with another call). That's wrong
+  once one method's job is to make something visible to a *later, separate* call:
+  `define_native_function("double", ...)` installed the function onto one throwaway context's
+  global object, which was already gone by the time a later `eval("double(21)")` created its own
+  new, unrelated context — caught by a real test failure (`ReferenceError: double is not
+  defined`), not a hunch. Fixed by giving `Runtime` a `context: v8::Global<v8::Context>` field,
+  created once in `Runtime::new()`, entered via `v8::Local::new(scope, &self.context)` by every
+  method. This matches how a real JS realm actually works (one global object for its whole
+  lifetime) and is what Roves's production usage needs anyway — not a Phase-2-only workaround.
+- **`FunctionCallbackArguments::data()` returns a plain `Local<'_, Value>` directly, not
+  `Option<Local<'_, Value>>`** — easy to guess wrong (and did, on the first pass) since "was any
+  data provided" reads like an `Option` question; it isn't one in this crate version.
+
 ### Phase 3 — GC/DOM ownership
 
 - Replace SpiderMonkey rooting/tracing assumptions with V8 ownership.

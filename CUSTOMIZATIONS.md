@@ -1,4 +1,25 @@
 # Customizations over upstream Servo
+## 2026-09-30 — V8 migration Phase 2 (first checkpoint): value conversion, handles, callbacks
+
+**Servo file:** `components/roves-v8/src/lib.rs`.
+**Patch:** `patches/servo-v0.5.0/0058-roves-v8-phase2-values.patch` (after 0001–0057).
+
+First checkpoint of `docs/V8_MIGRATION.md`'s Phase 2 (fundamental value/conversion layer), on top
+of Phase 1's `Runtime`/`eval`. Adds: a public `Value` enum (`Undefined`/`Null`/`Bool`/`Number`/
+`String`/`Bytes`/`Object`) and `Runtime::eval_value` returning it; `Value::Bytes` round-tripping
+through a JS `Uint8Array`; a `Handle` type backed by `v8::Global<v8::Value>` with `Runtime::store`/
+`load` for references that outlive a single call; and `Runtime::define_native_function`, which
+registers a plain `fn(&[Value]) -> Value` as a JS-callable global function via V8's `External`-data
+mechanism. All 10 unit tests pass (`cargo test -p roves-v8`, verified locally). Full write-up,
+including two real findings from getting this to actually work, is in `docs/V8_MIGRATION.md`'s new
+Phase 2 status note (not duplicated here) — the short version: `Runtime` needed a persistent
+context shared across all its methods instead of a throwaway one per call (a function registered
+in one call was invisible to a later `eval`, caught by a real `ReferenceError` test failure, not a
+hunch), and `FunctionCallbackArguments::data()` returns a plain `Local<Value>`, not an `Option`.
+
+Promise/microtask integration and ES module primitives are still Phase 2 scope per the plan but
+deliberately deferred to their own follow-up checkpoint, to keep this one reviewable.
+
 ## 2026-09-29 — V8 migration Phase 1: introduce `components/roves-v8`
 
 **Servo files:** root `Cargo.toml` (workspace `members` entry), new crate
