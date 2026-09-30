@@ -1,4 +1,22 @@
 # Customizations over upstream Servo
+## 2026-09-30 — V8 migration Phase 3 (third checkpoint): cycle safety
+
+**Servo file:** `components/roves-v8/src/lib.rs`.
+**Patch:** `patches/servo-v0.5.0/0063-roves-v8-phase3-cycles.patch` (after 0001–0062).
+
+`Runtime::link(on, property, other)` sets a plain JS property linking two `Handle`-referenced
+values — deliberately a plain JS property, not an extra Rust-side `v8::Global` cross-reference:
+V8's own tracing GC already collects cycles among ordinary JS object graphs correctly (the whole
+point of tracing over reference counting); an extra `Global` on the Rust side is the only way
+this ownership model could still leak a cycle. New stress test: two `create_wrapped` objects
+link to each other in both directions, both external `Handle`s are dropped, forcing GC confirms
+both sides get collected — not leaked, not double-collected. Passed on the first attempt, no new
+API findings this round. 1 new test (26 total, all passing).
+
+Directly closes the "cycles between wrapped objects" gap the first Phase 3 checkpoint's entry
+flagged as untested. The one remaining open item for "wrapper identity" is reusing the same
+wrapper across two `create_wrapped` calls for the same conceptual object — not attempted.
+
 ## 2026-09-30 — V8 migration Phase 3 (second checkpoint): typed JS-to-Rust read-back
 
 **Servo file:** `components/roves-v8/src/lib.rs`.

@@ -1,0 +1,76 @@
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index c1c57235f10..17c4ba708e5 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -504,6 +504,36 @@ impl Runtime {
+             .map(|reference| unsafe { &*(reference as *const T) })
+     }
+ 
++    /// Sets `property` on the JS object `on` points at to the JS value `other` points at.
++    /// Exists to build real reference graphs between wrapped (or plain) JS values — in
++    /// particular, this crate's own cycle stress test uses it to make two `create_wrapped`
++    /// objects reference each other, the same shape a real DOM has everywhere (a parent
++    /// referencing a child that references its parent back, an event listener closing over a
++    /// node, ...). Deliberately a plain JS property, not an extra `v8::Global` cross-reference
++    /// on the Rust side: V8's own tracing GC already collects cycles among ordinary JS object
++    /// graphs correctly (that's the entire point of tracing over reference counting) — the only
++    /// way this phase's ownership model could still leak a cycle is by adding a *Rust-side*
++    /// strong reference on top, which this method doesn't.
++    pub fn link(&mut self, on: &Handle, property: &str, other: &Handle) -> Result<(), String> {
++        let context_handle = &self.context;
++        v8::scope!(let scope, &mut self.isolate);
++        let context = v8::Local::new(scope, context_handle);
++        let scope = &mut v8::ContextScope::new(scope, context);
++
++        let on_value = v8::Local::new(scope, &on.0);
++        let Ok(object) = v8::Local::<v8::Object>::try_from(on_value) else {
++            return Err("`on` does not point at a JS object".to_string());
++        };
++        let Some(key) = v8::String::new(scope, property) else {
++            return Err(format!("{property:?} is not valid as a property name string"));
++        };
++        let other_value = v8::Local::new(scope, &other.0);
++        if object.set(scope, key.into(), other_value) != Some(true) {
++            return Err(format!("failed to set property {property:?}"));
++        }
++        Ok(())
++    }
++
+     /// Forces a full garbage collection cycle — test-only (see `ensure_platform_initialized`'s
+     /// own comment on why `--expose-gc` isn't set outside `#[cfg(test)]`). Exists so this
+     /// crate's own GC stress tests don't have to rely on GC happening to run on its own schedule
+@@ -1001,4 +1031,34 @@ mod tests {
+         assert_eq!(runtime.get_wrapped::<i32>(&a), Some(&1));
+         assert_eq!(runtime.get_wrapped::<i32>(&b), Some(&2));
+     }
++
++    #[test]
++    fn wrapped_objects_referencing_each_other_do_not_leak_the_cycle() {
++        // A naive design where cross-references between wrapped objects are held as extra
++        // v8::Global handles on the Rust side would leak this forever (each side's strong
++        // reference keeps the other alive, even with no external reference at all). `link`
++        // deliberately uses a plain JS property instead -- this test proves that choice
++        // actually avoids the leak, not just that it's the design.
++        let mut runtime = Runtime::new();
++        let counter = Arc::new(AtomicUsize::new(0));
++
++        let a = runtime.create_wrapped(DropCounter(counter.clone()));
++        let b = runtime.create_wrapped(DropCounter(counter.clone()));
++        runtime.link(&a, "other", &b).unwrap();
++        runtime.link(&b, "other", &a).unwrap();
++        drop(a);
++        drop(b);
++
++        for _ in 0..20 {
++            runtime.force_full_gc_for_testing();
++            if counter.load(Ordering::SeqCst) == 2 {
++                break;
++            }
++        }
++        assert_eq!(
++            counter.load(Ordering::SeqCst),
++            2,
++            "both sides of the reference cycle should be collected, not leaked"
++        );
++    }
+ }

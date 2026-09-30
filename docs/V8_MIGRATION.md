@@ -399,11 +399,16 @@ non-wrapped handle, two distinct wrapped objects staying distinct. 25/25 tests p
   JS-to-Rust read-back half (the second checkpoint above), but nothing yet ensures wrapping the
   same conceptual object twice reuses the first wrapper instead of creating a second, independent
   one — that half is still open.
-- **Cycles between multiple wrapped objects referencing each other are untested.** Real DOM
-  graphs have exactly this shape (a parent referencing children referencing their parent, event
-  listeners closing over nodes, etc.) — this ownership model hasn't been stressed against it, and
-  a naive design here can leak (if cross-references are naively kept as strong `Global`s) or
-  collect prematurely (if naively left as raw pointers with no reference at all).
+- **Cycles between wrapped objects: now tested (third checkpoint, 2026-09-30).**
+  `Runtime::link(on, property, other)` sets a plain JS property linking two `Handle`s —
+  deliberately not an extra Rust-side `v8::Global` cross-reference, since V8's own tracing GC
+  already collects cycles among ordinary JS object graphs correctly (the entire point of tracing
+  over reference counting); an extra `Global` on the Rust side is the only way this model could
+  still leak a cycle. A stress test links two `create_wrapped` objects to each other in both
+  directions, drops both external `Handle`s, and confirms both sides get collected once GC runs
+  — not leaked, not double-collected. 26/26 tests pass. This was a real risk worth actually
+  testing, not assuming away: a naive design keeping cross-references as extra strong `Global`s
+  would have leaked this exact shape forever.
 - **`JSTraceable`/`jstraceable_derive` removal itself** — not attempted; still present and doing
   its job for the current SpiderMonkey-based production path, unaffected by any of this checkpoint.
 
