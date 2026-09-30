@@ -436,6 +436,35 @@ Suggested validation progression:
 13. Workers;
 14. WebAssembly.
 
+**Status (2026-09-30): first checkpoint done, verified locally and in CI.**
+`Runtime::set_global_property(name, &Handle)` prototypes validation-progression milestone #2
+("global/window exposure") entirely within `components/roves-v8` — a wrapped Rust struct exposed
+as `globalThis.window`, with a property on it readable from real JS (`window.name`), built
+entirely from Phase 2/3's existing primitives (`create_wrapped`, `link`, `eval_value`). 1 new
+test, 27/27 total passing.
+
+**Real scale finding, worth internalizing before going further:** inspecting a real local
+build's generated output (`target/debug/build/servo-script-bindings-*/out/Bindings/` after a
+plain `./mach build`) found **522 generated binding files** — one per WebIDL interface — and
+**~700 lines even for the simplest one checked** (`ConsoleBinding.rs`). This is the concrete
+number behind the plan's own warning against "a single giant rewrite": adapting `codegen.py`
+wholesale in one sitting is not a realistic scope for a single change, or likely even a single
+session. The approach going forward is deliberate: prototype each remaining
+validation-progression milestone (`document`/basic DOM objects; element creation/properties/
+events; DOM-level callbacks/exceptions — distinct from Phase 2's own script-level callbacks/
+exceptions, already done; Promise APIs at the DOM level; modules/dynamic import; fetch/storage;
+Canvas; WebGL; WebGPU; audio/media; Workers; WebAssembly) as a temporary, `roves-v8`-only
+experiment first (explicitly sanctioned by this document: "manually implementing DOM APIs one by
+one... as temporary experiments used to validate the runtime"), validating the underlying
+primitive each milestone actually needs, before any of it touches
+`components/script`/`components/script_bindings`/`codegen.py` — the real, separate,
+materially-higher-risk undertaking (production code the current SpiderMonkey build also
+depends on) this groundwork is meant to de-risk, not replace.
+
+**Not yet done:** everything else in the validation-progression list above; the actual
+`codegen.py` adaptation itself (not started); anything resembling a real DOM object graph
+(`document`, elements, event dispatch).
+
 ### Phase 5 — real game validation
 
 Run representative Roves games/workloads, including at minimum:

@@ -1,0 +1,66 @@
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 17c4ba708e5..62586805573 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -534,6 +534,32 @@ impl Runtime {
+         Ok(())
+     }
+ 
++    /// Exposes `handle`'s value as a named property of this [`Runtime`]'s global object —
++    /// e.g. `set_global_property("window", handle)` makes `handle`'s value reachable from
++    /// script as `globalThis.window`/bare `window`. This is Phase 4's first validation
++    /// milestone per `docs/V8_MIGRATION.md` ("global/window exposure"), prototyped here as a
++    /// temporary experiment entirely within `roves-v8` — the plan document explicitly allows
++    /// "manually implementing DOM APIs one by one... as temporary experiments used to validate
++    /// the runtime" — rather than by touching `components/script_bindings/codegen.py` or any
++    /// other production Servo file, which stays completely untouched by this and everything else
++    /// in this crate so far.
++    pub fn set_global_property(&mut self, name: &str, handle: &Handle) -> Result<(), String> {
++        let context_handle = &self.context;
++        v8::scope!(let scope, &mut self.isolate);
++        let context = v8::Local::new(scope, context_handle);
++        let scope = &mut v8::ContextScope::new(scope, context);
++
++        let global = context.global(scope);
++        let Some(key) = v8::String::new(scope, name) else {
++            return Err(format!("{name:?} is not valid as a global property name string"));
++        };
++        let value = v8::Local::new(scope, &handle.0);
++        if global.set(scope, key.into(), value) != Some(true) {
++            return Err(format!("failed to set global property {name:?}"));
++        }
++        Ok(())
++    }
++
+     /// Forces a full garbage collection cycle — test-only (see `ensure_platform_initialized`'s
+     /// own comment on why `--expose-gc` isn't set outside `#[cfg(test)]`). Exists so this
+     /// crate's own GC stress tests don't have to rely on GC happening to run on its own schedule
+@@ -1061,4 +1087,28 @@ mod tests {
+             "both sides of the reference cycle should be collected, not leaked"
+         );
+     }
++
++    #[test]
++    fn set_global_property_exposes_a_wrapped_object_as_window() {
++        // Phase 4's first validation milestone ("global/window exposure", see
++        // docs/V8_MIGRATION.md) -- a Rust-backed object reachable from script as `window`, with
++        // a property on it also readable, built entirely from this crate's own Phase 2/3
++        // primitives (create_wrapped, link, set_global_property), no codegen involved.
++        struct FakeWindow;
++
++        let mut runtime = Runtime::new();
++        let window = runtime.create_wrapped(FakeWindow);
++        let name = runtime.store(&Value::String("Roves".to_string()));
++        runtime.link(&window, "name", &name).unwrap();
++        runtime.set_global_property("window", &window).unwrap();
++
++        assert_eq!(
++            runtime.eval_value("window.name").unwrap(),
++            Value::String("Roves".to_string())
++        );
++        assert_eq!(
++            runtime.eval_value("typeof window").unwrap(),
++            Value::String("object".to_string())
++        );
++    }
+ }

@@ -1,4 +1,27 @@
 # Customizations over upstream Servo
+## 2026-09-30 — V8 migration Phase 4 (first checkpoint): global/window exposure prototype
+
+**Servo file:** `components/roves-v8/src/lib.rs`.
+**Patch:** `patches/servo-v0.5.0/0064-roves-v8-phase4-global-exposure.patch` (after 0001–0063).
+
+`Runtime::set_global_property(name, &Handle)` exposes a `Handle`'s value as a named property of
+the global object (e.g. `globalThis.window`) — prototyping Phase 4's own first "suggested
+validation progression" milestone, entirely within `roves-v8`, zero changes to
+`components/script`/`components/script_bindings`/`codegen.py`. Built on existing Phase 2/3
+primitives only (`create_wrapped`, `link`, `eval_value`) — no new unsafe/FFI surface. 1 new test
+(27 total, all passing): a wrapped `FakeWindow` struct linked to a `"name"` property, exposed as
+`window`, verified via `window.name` and `typeof window` from real JS.
+
+**Why prototype instead of adapting `codegen.py` directly:** inspecting a real local build's
+`OUT_DIR` (`target/debug/build/servo-script-bindings-*/out/Bindings/`) found **522 generated
+binding files**, ~700 lines even for the simplest one inspected (`ConsoleBinding.rs`). Rewriting
+the generator wholesale in one sitting isn't realistic or what the plan asks for ("migrate
+interfaces incrementally by dependency groups"). Each remaining validation-progression milestone
+(document/DOM objects, element creation/events, DOM-level callbacks/exceptions, Promise APIs,
+modules, fetch/storage, Canvas, WebGL, WebGPU, audio/media, Workers, WebAssembly) gets the same
+treatment first — prototyped inside `roves-v8`, validated, before any of it touches production
+code. See `docs/V8_MIGRATION.md`'s new Phase 4 status note for the full list.
+
 ## 2026-09-30 — V8 migration Phase 3 (third checkpoint): cycle safety
 
 **Servo file:** `components/roves-v8/src/lib.rs`.
