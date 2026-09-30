@@ -1,4 +1,20 @@
 # Customizations over upstream Servo
+## 2026-09-30 — V8 migration Phase 4 (fourth checkpoint): property setters
+
+**Servo file:** `components/roves-v8/src/lib.rs`.
+**Patch:** `patches/servo-v0.5.0/0067-roves-v8-phase4-property-setters.patch` (after 0001–0066).
+
+`PropertySetter` + `Runtime::define_settable_property` adds settable attributes on top of the
+read-only `define_property` from the previous checkpoint, reusing its instance-template-based
+receiver fix. Both callbacks' fn pointers are bundled into one deliberately-leaked
+`Box<(PropertyGetter, PropertySetter)>` behind a single `External`, since
+`AccessorConfiguration` only has one shared `data` slot for both callbacks — a small, bounded
+allocation per property *definition* (not per instance), an accepted tradeoff for this prototype
+phase, matching the reasoning already applied to `wrapped_finalizers`' own unbounded `Vec`. 2 new
+tests, 38 total, all passing: reading the initial value, and assigning from JS then verifying the
+change reads back correctly from JS *and* is reflected on the Rust side via `get_wrapped` —
+proving the setter mutates the actual wrapped value, not a copy. No new API findings this round.
+
 ## 2026-09-30 — V8 migration Phase 4 (third checkpoint): property accessors
 
 **Servo file:** `components/roves-v8/src/lib.rs`.

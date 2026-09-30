@@ -488,12 +488,20 @@ hierarchy despite that per-instance installation — a property defined on a par
 correctly inherits to child interfaces' instances, matching `instanceof`, confirmed by an initial
 test that assumed the opposite and failed. 5 new tests, 36/36 total passing.
 
+**Fourth checkpoint (2026-09-30): property setters.** `PropertySetter` +
+`Runtime::define_settable_property` adds settable attributes on the same instance-template
+foundation. Both callbacks' fn pointers share one deliberately-leaked
+`Box<(PropertyGetter, PropertySetter)>` behind a single `External` (`AccessorConfiguration` has
+only one shared `data` slot) — a small, bounded, per-property-definition cost, not per-instance.
+2 new tests, 38/38 total passing, including a check that a JS-side assignment is reflected back
+on the Rust side via `get_wrapped`, not just readable again from JS.
+
 **Not yet done:** everything else in the validation-progression list (`document`/basic DOM
 objects beyond bare interface identity; element creation/properties/events; DOM-level callbacks/
 exceptions; Promise APIs at the DOM level; modules/dynamic import; fetch/storage; Canvas; WebGL;
-WebGPU; audio/media; Workers; WebAssembly); settable accessors (setters) and callable methods on
-an interface (only read-only properties exist so far); anything like `proxyhandler.rs`'s
-indexed/named property interception; the actual `codegen.py`/production support-module
+WebGPU; audio/media; Workers; WebAssembly); callable methods on an interface (properties only so
+far); anything like `proxyhandler.rs`'s indexed/named property interception; the actual
+`codegen.py`/production support-module
 adaptation itself (not started).
 
 ### Phase 5 — real game validation

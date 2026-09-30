@@ -1,0 +1,209 @@
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index bd2a775e87d..0ec7eabc0ad 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -124,6 +124,12 @@ pub type NativeFunction = fn(&[Value]) -> Value;
+ /// under the hood.
+ pub type PropertyGetter = fn(&dyn std::any::Any) -> Value;
+ 
++/// A settable accessor's setter, registered via [`Runtime::define_settable_property`] alongside
++/// a [`PropertyGetter`] — mutates whatever Rust value the instance actually wraps, the same way
++/// [`PropertyGetter`] reads it (downcast-checked, not a blind cast). Same plain-function-pointer
++/// restriction as [`PropertyGetter`]/[`NativeFunction`], for the same reason.
++pub type PropertySetter = fn(&mut dyn std::any::Any, &Value);
++
+ impl Runtime {
+     /// Creates a new isolate, initializing the V8 platform first if this is the first
+     /// [`Runtime`] in the process.
+@@ -648,6 +654,109 @@ impl Runtime {
+         Ok(())
+     }
+ 
++    /// Same as [`Runtime::define_property`], but also settable from JS — `setter` mutates the
++    /// wrapped Rust value in place when JS assigns to the property (e.g. `node.nodeValue = x`).
++    /// Both callbacks receive the property's holder the same, already-fixed way (installed on
++    /// the interface's instance template — see [`Runtime::define_property`]'s own doc comment on
++    /// why a plain prototype-template accessor doesn't work in this `v8` crate version), and
++    /// inherit across `define_interface`'s `parent` relationship the same way.
++    pub fn define_settable_property(
++        &mut self,
++        interface: &Interface,
++        name: &str,
++        getter: PropertyGetter,
++        setter: PropertySetter,
++    ) -> Result<(), String> {
++        let context_handle = &self.context;
++        v8::scope!(let scope, &mut self.isolate);
++        let context = v8::Local::new(scope, context_handle);
++        let scope = &mut v8::ContextScope::new(scope, context);
++
++        let template = v8::Local::new(scope, &interface.0);
++        let instance_template = template.instance_template(scope);
++
++        let Some(key) = v8::String::new(scope, name) else {
++            return Err(format!("{name:?} is not valid as a property name string"));
++        };
++        // AccessorConfiguration has one shared `data` for both callbacks, but each needs its own
++        // fn pointer -- bundled as a tuple behind one External instead of two separate ones.
++        // Deliberately leaked (`Box::into_raw`, never freed): this allocation is one small,
++        // 'static, fixed-size pair of fn pointers per *property definition* (not per instance),
++        // so in practice a bounded, small number of these ever exist for the lifetime of the
++        // process -- acceptable for this prototype phase, same tradeoff already made for
++        // `wrapped_finalizers`' own unbounded `Vec` (see that field's doc comment). A real
++        // production version would need a proper registry with the same lifetime as the
++        // `Interface` itself instead.
++        let callbacks = Box::new((getter, setter));
++        let external_data = v8::External::new(scope, Box::into_raw(callbacks) as *mut std::ffi::c_void);
++
++        let configuration = v8::AccessorConfiguration::new(
++            |scope: &mut v8::PinScope,
++             _key: v8::Local<v8::Name>,
++             args: v8::PropertyCallbackArguments,
++             mut retval: v8::ReturnValue<v8::Value>| {
++                let data = args.data();
++                let Ok(external) = v8::Local::<v8::External>::try_from(data) else {
++                    return;
++                };
++                // SAFETY: `external`'s value is exactly the `Box<(PropertyGetter,
++                // PropertySetter)>` pointer stored below, cast back to its original type; the
++                // getter callback only ever reads through this shared reference.
++                let (getter, _setter) =
++                    unsafe { &*(external.value() as *const (PropertyGetter, PropertySetter)) };
++
++                let holder = args.holder();
++                if holder.internal_field_count() < 1 {
++                    return;
++                }
++                let raw = unsafe {
++                    holder.get_aligned_pointer_from_internal_field(0, WRAPPED_POINTER_TAG)
++                } as *mut Box<dyn std::any::Any>;
++                if raw.is_null() {
++                    return;
++                }
++                let boxed_any: &Box<dyn std::any::Any> = unsafe { &*raw };
++                let value = getter(boxed_any.as_ref());
++                retval.set(v8_value(scope, &value));
++            },
++        )
++        .setter(
++            |_scope: &mut v8::PinScope,
++             _key: v8::Local<v8::Name>,
++             new_value: v8::Local<v8::Value>,
++             args: v8::PropertyCallbackArguments,
++             _retval: v8::ReturnValue<()>| {
++                let data = args.data();
++                let Ok(external) = v8::Local::<v8::External>::try_from(data) else {
++                    return;
++                };
++                // SAFETY: same reasoning as the getter closure above.
++                let (_getter, setter) =
++                    unsafe { &*(external.value() as *const (PropertyGetter, PropertySetter)) };
++
++                let holder = args.holder();
++                if holder.internal_field_count() < 1 {
++                    return;
++                }
++                let raw = unsafe {
++                    holder.get_aligned_pointer_from_internal_field(0, WRAPPED_POINTER_TAG)
++                } as *mut Box<dyn std::any::Any>;
++                if raw.is_null() {
++                    return;
++                }
++                // SAFETY: `holder` is the sole owner of this internal field's data and this is
++                // the only live reference to it for the duration of this callback -- V8 does not
++                // re-enter a property setter for the same object concurrently.
++                let boxed_any: &mut Box<dyn std::any::Any> = unsafe { &mut *raw };
++                let new_value = native_value(_scope, new_value);
++                setter(boxed_any.as_mut(), &new_value);
++            },
++        )
++        .data(external_data.into());
++        instance_template.set_accessor_with_configuration(key.into(), configuration);
++        Ok(())
++    }
++
+     /// Reads back the Rust value a live [`Handle`] from [`Runtime::create_wrapped`] points at,
+     /// checking that it's actually a `T` (not just trusting the caller) via `Any::downcast_ref`
+     /// on the same `Box<dyn Any>` `create_wrapped` stored — returns `None` on a type mismatch
+@@ -1554,4 +1663,81 @@ mod tests {
+             Value::String("DIV".to_string())
+         );
+     }
++
++    #[test]
++    fn define_settable_property_reads_the_initial_value() {
++        struct Node {
++            value: String,
++        }
++        fn get_value(this: &dyn std::any::Any) -> Value {
++            match this.downcast_ref::<Node>() {
++                Some(node) => Value::String(node.value.clone()),
++                None => Value::Undefined,
++            }
++        }
++        fn set_value(this: &mut dyn std::any::Any, new_value: &Value) {
++            if let (Some(node), Value::String(s)) = (this.downcast_mut::<Node>(), new_value) {
++                node.value = s.clone();
++            }
++        }
++
++        let mut runtime = Runtime::new();
++        let node_interface = runtime.define_interface("Node", None);
++        runtime
++            .define_settable_property(&node_interface, "nodeValue", get_value, set_value)
++            .unwrap();
++        let node = runtime.create_instance(
++            &node_interface,
++            Node {
++                value: "hello".to_string(),
++            },
++        );
++        runtime.set_global_property("node", &node).unwrap();
++
++        assert_eq!(
++            runtime.eval_value("node.nodeValue").unwrap(),
++            Value::String("hello".to_string())
++        );
++    }
++
++    #[test]
++    fn define_settable_property_mutates_the_wrapped_value() {
++        struct Node {
++            value: String,
++        }
++        fn get_value(this: &dyn std::any::Any) -> Value {
++            match this.downcast_ref::<Node>() {
++                Some(node) => Value::String(node.value.clone()),
++                None => Value::Undefined,
++            }
++        }
++        fn set_value(this: &mut dyn std::any::Any, new_value: &Value) {
++            if let (Some(node), Value::String(s)) = (this.downcast_mut::<Node>(), new_value) {
++                node.value = s.clone();
++            }
++        }
++
++        let mut runtime = Runtime::new();
++        let node_interface = runtime.define_interface("Node", None);
++        runtime
++            .define_settable_property(&node_interface, "nodeValue", get_value, set_value)
++            .unwrap();
++        let node = runtime.create_instance(
++            &node_interface,
++            Node {
++                value: "hello".to_string(),
++            },
++        );
++        runtime.set_global_property("node", &node).unwrap();
++
++        // Assigning from JS must both take effect (read back via a later access) and be
++        // reflected on the Rust side (read back via get_wrapped), proving the setter actually
++        // mutated the same wrapped value the getter/get_wrapped read from, not a copy.
++        runtime.eval("node.nodeValue = 'world'").unwrap();
++        assert_eq!(
++            runtime.eval_value("node.nodeValue").unwrap(),
++            Value::String("world".to_string())
++        );
++        assert_eq!(runtime.get_wrapped::<Node>(&node).unwrap().value, "world");
++    }
+ }
