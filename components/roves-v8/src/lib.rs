@@ -250,6 +250,123 @@ impl Runtime {
         Err("promise did not settle within the microtask pump budget".to_string())
     }
 
+    /// Compiles, instantiates and evaluates `source` as an ES module (as opposed to [`eval`]/
+    /// [`eval_value`]'s classic script), returning its completion value or an error.
+    ///
+    /// Only supports a **self-contained module with no imports** — `import`/dynamic `import()`
+    /// resolution is deliberately out of scope for this phase (see
+    /// `unreachable_resolve_module_callback`'s own doc comment). This still exercises the real
+    /// primitives a later phase's module loader needs: compiling module source distinctly from
+    /// a classic script, instantiation (which is where import resolution would normally happen),
+    /// and evaluation. Module evaluation always produces a `Promise` under the hood (per the
+    /// spec's top-level-await semantics) even when nothing in the module actually awaits
+    /// anything, so this pumps microtasks exactly like [`Runtime::eval_resolved`] to get at the
+    /// real completion value or propagate a rejection.
+    ///
+    /// [`eval`]: Runtime::eval
+    /// [`eval_value`]: Runtime::eval_value
+    pub fn eval_module(&mut self, source: &str) -> Result<Value, String> {
+        let promise_value = {
+            let context_handle = &self.context;
+            v8::scope!(let scope, &mut self.isolate);
+            let context = v8::Local::new(scope, context_handle);
+            let scope = &mut v8::ContextScope::new(scope, context);
+            v8::tc_scope!(let try_catch, scope);
+
+            let Some(code) = v8::String::new(try_catch, source) else {
+                return Err("source contained invalid UTF-16/UTF-8".to_string());
+            };
+            // A module's ScriptOrigin must have `is_module = true` -- unlike a classic script
+            // (eval/eval_value/eval_resolved above, where `None` is fine), V8 asserts this at
+            // compile time and fatally aborts the whole process (not a catchable exception) if
+            // it's missing, found by actually hitting that abort while getting this to work.
+            let resource_name = v8::String::new(try_catch, "roves-v8-module")
+                .map(Into::into)
+                .unwrap_or_else(|| v8::undefined(try_catch).into());
+            let origin = v8::ScriptOrigin::new(
+                try_catch,
+                resource_name,
+                0,
+                0,
+                false,
+                0,
+                None,
+                false,
+                false,
+                true,
+                None,
+            );
+            let mut compiler_source = v8::script_compiler::Source::new(code, Some(&origin));
+            let Some(module) =
+                v8::script_compiler::compile_module(try_catch, &mut compiler_source)
+            else {
+                let message = match try_catch.exception() {
+                    Some(exception) => exception.to_rust_string_lossy(try_catch),
+                    None => "unknown module compile error".to_string(),
+                };
+                return Err(message);
+            };
+
+            match module.instantiate_module(try_catch, unreachable_resolve_module_callback) {
+                Some(true) => {},
+                _ => {
+                    let message = if module.get_status() == v8::ModuleStatus::Errored {
+                        module.get_exception().to_rust_string_lossy(try_catch)
+                    } else {
+                        "module instantiation failed (does it have an unsupported import?)"
+                            .to_string()
+                    };
+                    return Err(message);
+                },
+            }
+
+            match module.evaluate(try_catch) {
+                Some(value) => v8::Global::new(try_catch, value),
+                None => {
+                    let message = if module.get_status() == v8::ModuleStatus::Errored {
+                        module.get_exception().to_rust_string_lossy(try_catch)
+                    } else {
+                        let message = match try_catch.exception() {
+                            Some(exception) => exception.to_rust_string_lossy(try_catch),
+                            None => "unknown module evaluation error".to_string(),
+                        };
+                        message
+                    };
+                    return Err(message);
+                },
+            }
+        };
+
+        const MAX_MICROTASK_CHECKPOINTS: u32 = 10_000;
+        for _ in 0..MAX_MICROTASK_CHECKPOINTS {
+            self.isolate.perform_microtask_checkpoint();
+
+            let context_handle = &self.context;
+            v8::scope!(let scope, &mut self.isolate);
+            let context = v8::Local::new(scope, context_handle);
+            let scope = &mut v8::ContextScope::new(scope, context);
+            let value = v8::Local::new(scope, &promise_value);
+
+            let Ok(promise) = v8::Local::<v8::Promise>::try_from(value) else {
+                // Not a Promise at all -- some V8 configurations may complete module
+                // evaluation synchronously without wrapping it. Return the value directly.
+                return Ok(native_value(scope, value));
+            };
+            match promise.state() {
+                v8::PromiseState::Pending => continue,
+                v8::PromiseState::Fulfilled => {
+                    let result = promise.result(scope);
+                    return Ok(native_value(scope, result));
+                },
+                v8::PromiseState::Rejected => {
+                    let result = promise.result(scope);
+                    return Err(result.to_rust_string_lossy(scope));
+                },
+            }
+        }
+        Err("module evaluation did not settle within the microtask pump budget".to_string())
+    }
+
     /// Stores `value` as a JS value in this isolate and returns a [`Handle`] that outlives this
     /// call — see [`Handle`]'s own doc comment.
     pub fn store(&mut self, value: &Value) -> Handle {
@@ -332,6 +449,26 @@ impl Default for Runtime {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Passed to `Module::instantiate_module` by [`Runtime::eval_module`], which only supports a
+/// self-contained module with no imports (see that method's own doc comment on why) — so this
+/// should never actually run. Written as an ordinary Rust fn with the "logical" signature the
+/// `v8` crate's own doc comment on `ResolveModuleCallback` describes; despite that type's raw
+/// form being an `unsafe extern "C" fn` with a platform-specific ABI (an extra leading out-param
+/// on Windows), the crate's `MapFnTo`/`MapFnFrom` machinery generates that wrapper automatically
+/// from a plain closure/fn like this one — writing the raw ABI by hand isn't necessary and (as
+/// found while getting this to compile) isn't even accepted where a `MapFnTo` bound is expected.
+fn unreachable_resolve_module_callback<'s>(
+    _context: v8::Local<'s, v8::Context>,
+    _specifier: v8::Local<'s, v8::String>,
+    _import_attributes: v8::Local<'s, v8::FixedArray>,
+    _referrer: v8::Local<'s, v8::Module>,
+) -> Option<v8::Local<'s, v8::Module>> {
+    unreachable!(
+        "roves-v8's eval_module only supports import-free modules in this phase; \
+         see docs/V8_MIGRATION.md's Phase 2 status note"
+    )
 }
 
 /// Converts a `v8::Local<Value>` into this crate's engine-neutral [`Value`] — see [`Value`]'s
@@ -541,6 +678,40 @@ mod tests {
         assert!(
             err.contains("roves-v8 promise rejection"),
             "expected the rejection message in the error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn eval_module_runs_a_self_contained_module() {
+        let mut runtime = Runtime::new();
+        runtime
+            .eval_module("globalThis.moduleRan = 42;")
+            .unwrap();
+        assert_eq!(
+            runtime.eval_value("globalThis.moduleRan").unwrap(),
+            Value::Number(42.0)
+        );
+    }
+
+    #[test]
+    fn eval_module_reports_a_thrown_exception() {
+        let mut runtime = Runtime::new();
+        let err = runtime
+            .eval_module("throw new Error('roves-v8 module error')")
+            .unwrap_err();
+        assert!(
+            err.contains("roves-v8 module error"),
+            "expected the thrown message in the error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn eval_module_reports_a_syntax_error() {
+        let mut runtime = Runtime::new();
+        assert!(
+            runtime
+                .eval_module("this is not valid javascript (((")
+                .is_err()
         );
     }
 }
