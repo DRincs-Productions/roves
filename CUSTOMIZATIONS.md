@@ -1,4 +1,42 @@
 # Customizations over upstream Servo
+## 2026-09-30 — V8 migration Phase 2 (third checkpoint): ES module primitives — Phase 2 complete
+
+**Servo file:** `components/roves-v8/src/lib.rs`.
+**Patch:** `patches/servo-v0.5.0/0060-roves-v8-phase2-modules.patch` (after 0001–0059).
+
+`Runtime::eval_module` compiles, instantiates and evaluates a self-contained ES module — no
+import support in this phase, deliberately: import resolution is a Rust fn
+(`unreachable_resolve_module_callback`) that should never actually run, matching the plain 4-arg
+"logical" signature the `v8` crate's own doc comment on `ResolveModuleCallback` describes. Module
+evaluation always produces a `Promise` under the hood (spec top-level-await semantics even
+without an actual `await`), so this reuses `eval_resolved`'s microtask-pump pattern to get the
+real completion value or propagate a rejection. 3 new tests (17 total, all passing): a
+self-contained module whose top-level assigns a global (verified via a later `eval_value`), a
+thrown exception, a syntax error.
+
+Two real findings from getting this to compile/work, both the kind that would otherwise cost
+real time on a second attempt:
+
+- **A raw `unsafe extern "C" fn` matching `ResolveModuleCallback`'s actual (platform-specific)
+  ABI does *not* satisfy `Module::instantiate_module`'s `impl MapFnTo<ResolveModuleCallback<'s>>`
+  bound.** The crate's own doc comment says end users should write a plain closure/fn with the
+  "logical" 4-arg signature and let `MapFnTo`/`MapFnFrom` generate the real ABI wrapper — this
+  was tried the other way first (writing the raw, `cfg`-gated-for-Windows ABI by hand) and
+  rejected outright by the compiler with an unsatisfied-trait-bound error, not a subtle bug.
+- **A module's `ScriptOrigin` must have `is_module: true`, or V8 fatally aborts the entire
+  process** ("Invalid ScriptOrigin: is_module must be true") — not a catchable `Result`/exception
+  like every other error path in this crate so far. `v8::script_compiler::Source::new(code,
+  None)` (the same `None` that's fine for a classic script in `eval`/`eval_value`) triggers this;
+  a module needs a real `ScriptOrigin::new(..., is_module: true, ...)` passed as `Some(&origin)`.
+
+**Phase 2 is now complete per `docs/V8_MIGRATION.md`'s own checklist** (strings; numbers/
+booleans/null/undefined; objects/functions; persistent/weak references; exceptions; callbacks;
+ArrayBuffer/TypedArray; Promise/microtasks; module primitives) — see that file's Phase 2 status
+note for the one caveat worth remembering: "objects/functions" and "persistent/weak references"
+are covered only at the level this phase's own primitives need (`Value::Object` as a one-way
+read-only marker, `Handle`/`v8::Global` as strong references) — full structural property access
+and true weak-handle semantics are Phase 3's GC/DOM ownership job, not a gap here.
+
 ## 2026-09-30 — V8 migration Phase 2 (second checkpoint): Promise/microtask integration
 
 **Servo file:** `components/roves-v8/src/lib.rs`.

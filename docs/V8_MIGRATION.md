@@ -310,11 +310,24 @@ in `components/roves-v8/src/lib.rs`, all covered by unit tests (10/10 passing vi
   closes its own short-lived scope just to read the promise's current state. 4 tests cover
   pass-through, an already-settled promise, a chained `.then` that needs an actual pump (not
   just a state read), and a rejection.
+- **Module primitives** (third checkpoint, 2026-09-30): `Runtime::eval_module` compiles,
+  instantiates and evaluates a self-contained ES module (no import support — resolution is a
+  never-called Rust fn matching the plain 4-arg logical signature the `v8` crate's own doc
+  comment describes, not a raw platform-ABI `extern "C" fn`, which `MapFnTo` rejects outright).
+  A module's `ScriptOrigin` needs `is_module: true` or V8 fatally aborts the process — not a
+  catchable error like everything else in this crate. Module evaluation always produces a
+  `Promise` (spec top-level-await semantics), so this reuses `eval_resolved`'s pump loop. 3
+  tests: a module whose top-level assigns a global (checked via a later `eval_value`), a thrown
+  exception, a syntax error.
 
-**Not yet done, deliberately deferred to a follow-up checkpoint** (still Phase 2 scope per this
-plan, kept separate to stay a small, reviewable, coherent change rather than one large
-unvalidated addition — see "Guidance for Codex/implementers" below): module primitives (ES
-module compile/instantiate/evaluate).
+**Phase 2 is complete** as of the third checkpoint above — every item in this section's own
+checklist (strings; numbers/booleans/null/undefined; objects/functions; persistent/weak
+references; exceptions; callbacks; ArrayBuffer/TypedArray; Promise/microtasks; module
+primitives) has at least the coverage this phase needs. One caveat worth remembering before
+Phase 3: "objects/functions" and "persistent/weak references" are covered only at the level
+`Value::Object` (a one-way read-only marker) and `Handle`/`v8::Global` (strong references) need —
+full structural property access and true weak-handle semantics are Phase 3's GC/DOM ownership
+job, not something this phase left half-done.
 
 Two real findings from this checkpoint, worth knowing before extending this crate further:
 
