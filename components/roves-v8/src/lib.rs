@@ -408,6 +408,13 @@ impl Runtime {
     /// `Handle` (and any other JS-side reference — none exist yet since nothing stores this
     /// object anywhere JS code can reach) to make it eligible for collection.
     pub fn create_wrapped<T: 'static>(&mut self, value: T) -> Handle {
+        // Boxed as `Box<dyn Any>` (double-boxed: the inner `Box<dyn Any>` is a fat pointer, and
+        // an internal field can only hold a thin one, so `Box::into_raw` is taken of the *outer*
+        // box instead — a plain, thin pointer to heap memory holding that fat pointer struct).
+        // This is what lets `get_wrapped` check the requested type against the actual one at
+        // read-back instead of trusting the caller — see that method's own doc comment.
+        let boxed_any: Box<dyn std::any::Any> = Box::new(value);
+
         let (global_value, raw) = {
             let context_handle = &self.context;
             v8::scope!(let scope, &mut self.isolate);
@@ -420,7 +427,7 @@ impl Runtime {
                 .new_instance(scope)
                 .expect("a freshly created ObjectTemplate instance should never fail");
 
-            let raw = Box::into_raw(Box::new(value));
+            let raw = Box::into_raw(Box::new(boxed_any));
             object.set_aligned_pointer_in_internal_field(
                 0,
                 raw as *const std::ffi::c_void,
@@ -444,6 +451,57 @@ impl Runtime {
         self.wrapped_finalizers.push(weak);
 
         Handle(global_value)
+    }
+
+    /// Reads back the Rust value a live [`Handle`] from [`Runtime::create_wrapped`] points at,
+    /// checking that it's actually a `T` (not just trusting the caller) via `Any::downcast_ref`
+    /// on the same `Box<dyn Any>` `create_wrapped` stored — returns `None` on a type mismatch
+    /// instead of the memory-unsafe behavior a naive raw-pointer cast would have. Also `None` if
+    /// `handle` doesn't point at a `create_wrapped`-created object at all (e.g. a plain `Value`
+    /// from [`Runtime::store`]).
+    ///
+    /// This is only the JS-to-Rust half of wrapper identity — nothing here yet ensures wrapping
+    /// the *same* conceptual value twice reuses the first wrapper instead of creating a second,
+    /// independent one; see `docs/V8_MIGRATION.md`'s Phase 3 status note.
+    ///
+    /// # Safety requirement this relies on
+    ///
+    /// The returned reference borrows from `handle`, not from `self` alone — passing a `handle`
+    /// that isn't actually keeping the object alive (there is no such way to construct one
+    /// outside this crate) would be unsound; a live `Handle` argument is what guarantees the
+    /// finalizer in `create_wrapped` hasn't run yet.
+    pub fn get_wrapped<'h, T: 'static>(&mut self, handle: &'h Handle) -> Option<&'h T> {
+        let context_handle = &self.context;
+        v8::scope!(let scope, &mut self.isolate);
+        let context = v8::Local::new(scope, context_handle);
+        let scope = &mut v8::ContextScope::new(scope, context);
+
+        let value = v8::Local::new(scope, &handle.0);
+        let object = v8::Local::<v8::Object>::try_from(value).ok()?;
+        if object.internal_field_count() < 1 {
+            return None;
+        }
+        // SAFETY: this field is only ever set by `create_wrapped`, always via
+        // `set_aligned_pointer_in_internal_field` with this exact `WRAPPED_POINTER_TAG`, so a
+        // non-null result always points at a live `Box<Box<dyn Any>>` this same crate allocated.
+        let raw = unsafe {
+            object.get_aligned_pointer_from_internal_field(0, WRAPPED_POINTER_TAG)
+        } as *mut Box<dyn std::any::Any>;
+        if raw.is_null() {
+            return None;
+        }
+        // SAFETY: `raw` is non-null and was produced by `create_wrapped` as described above;
+        // `handle` being alive (a live `Global`, per this method's own doc comment) guarantees
+        // the guaranteed finalizer that would free it hasn't run.
+        let boxed_any: &Box<dyn std::any::Any> = unsafe { &*raw };
+        // Re-borrowed through a raw pointer to extend the lifetime to `'h`: `downcast_ref`'s
+        // natural return type borrows from the local `&*raw` above, not from `handle`, but the
+        // data it points to genuinely lives as long as `handle` does (same safety argument as
+        // the `unsafe` block above), so this is sound, not just a way to dodge the borrow
+        // checker.
+        boxed_any
+            .downcast_ref::<T>()
+            .map(|reference| unsafe { &*(reference as *const T) })
     }
 
     /// Forces a full garbage collection cycle — test-only (see `ensure_platform_initialized`'s
@@ -909,5 +967,38 @@ mod tests {
         }
         assert_eq!(int_counter.load(Ordering::SeqCst), 1);
         assert_eq!(string_counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn get_wrapped_reads_back_the_right_value() {
+        let mut runtime = Runtime::new();
+        let handle = runtime.create_wrapped(42i32);
+        assert_eq!(runtime.get_wrapped::<i32>(&handle), Some(&42));
+    }
+
+    #[test]
+    fn get_wrapped_rejects_a_type_mismatch() {
+        let mut runtime = Runtime::new();
+        let handle = runtime.create_wrapped(42i32);
+        // Asking for the wrong type must return None, not read 4 bytes of an i32 as if they
+        // were something else -- this is exactly what the Box<dyn Any> + downcast_ref check
+        // in get_wrapped exists to prevent.
+        assert_eq!(runtime.get_wrapped::<String>(&handle), None);
+    }
+
+    #[test]
+    fn get_wrapped_returns_none_for_a_non_wrapped_handle() {
+        let mut runtime = Runtime::new();
+        let handle = runtime.store(&Value::Number(42.0));
+        assert_eq!(runtime.get_wrapped::<i32>(&handle), None);
+    }
+
+    #[test]
+    fn get_wrapped_distinguishes_two_different_wrapped_objects() {
+        let mut runtime = Runtime::new();
+        let a = runtime.create_wrapped(1i32);
+        let b = runtime.create_wrapped(2i32);
+        assert_eq!(runtime.get_wrapped::<i32>(&a), Some(&1));
+        assert_eq!(runtime.get_wrapped::<i32>(&b), Some(&2));
     }
 }
