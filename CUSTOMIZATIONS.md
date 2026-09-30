@@ -1,8 +1,17 @@
 # Customizations over upstream Servo
 ## 2026-09-29 — V8 migration Phase 1: introduce `components/roves-v8`
 
-**Roves-only:** new crate `components/roves-v8/` (`Cargo.toml`, `src/lib.rs`), root `Cargo.toml`
-workspace `members` entry, `Cargo.lock`. No Servo file touched, no patch needed.
+**Servo files:** root `Cargo.toml` (workspace `members` entry), new crate
+`components/roves-v8/` (`Cargo.toml`, `src/lib.rs`) — both live inside the vendored Servo tree,
+so despite being wholly new/Roves-authored content they need a patch like any other change here
+(a new file is a valid unified-diff hunk, `--- /dev/null` / `+++ b/...`). Corrected same day: the
+first version of this entry said "no patch needed" reasoning that new files aren't "a Servo file
+touched" — wrong. `test.yml`'s CI reconstructs from a pristine download plus `patches/`, not from
+this repo's working tree, so a change with no patch is invisible to it regardless of whether the
+file is new or modified; this was caught by CI itself failing with `error: package ID
+specification 'roves-v8' did not match any packages` (see the fix note at the end of this entry).
+**Patch:** `patches/servo-v0.5.0/0057-roves-v8-crate.patch` (after 0001–0056). **Roves-only:**
+`Cargo.lock`.
 
 Phase 1 of `docs/V8_MIGRATION.md`: a new, non-published, isolated workspace crate owning V8
 platform/isolate/context lifecycle, not wired into Servo's production script engine yet. `v8`
