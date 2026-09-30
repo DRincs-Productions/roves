@@ -71,6 +71,10 @@ pub enum Value {
 /// itself to work.
 pub struct Handle(v8::Global<v8::Value>);
 
+/// A named JS interface (constructor + prototype chain), created via
+/// [`Runtime::define_interface`] — see that method's own doc comment.
+pub struct Interface(v8::Global<v8::FunctionTemplate>);
+
 /// A single, isolated V8 execution environment: one [`v8::OwnedIsolate`] plus one persistent
 /// JS realm (`context`), shared by every [`Runtime`] method — a global installed by
 /// [`Runtime::define_native_function`] is only visible to a later [`Runtime::eval`] call because
@@ -437,6 +441,18 @@ impl Runtime {
             (v8::Global::new(scope, object_value), raw)
         };
 
+        self.install_guaranteed_finalizer(global_value, raw)
+    }
+
+    /// Shared by [`create_wrapped`][Self::create_wrapped] and
+    /// [`create_instance`][Self::create_instance]: installs the guaranteed finalizer that drops
+    /// `raw` (a `Box<Box<dyn Any>>`, produced identically by both callers) exactly once, when V8
+    /// collects `global_value`, and returns the strong [`Handle`] keeping it alive until then.
+    fn install_guaranteed_finalizer(
+        &mut self,
+        global_value: v8::Global<v8::Value>,
+        raw: *mut Box<dyn std::any::Any>,
+    ) -> Handle {
         let weak = v8::Weak::with_guaranteed_finalizer(
             &mut self.isolate,
             &global_value,
@@ -451,6 +467,96 @@ impl Runtime {
         self.wrapped_finalizers.push(weak);
 
         Handle(global_value)
+    }
+
+    /// Defines a named JS interface — a constructor function exposed on the global object (e.g.
+    /// `window.Node`), backed by a `v8::FunctionTemplate`, optionally inheriting from `parent`'s
+    /// prototype chain via `FunctionTemplate::inherit` ("the function's prototype.__proto__ is
+    /// set to the parent function's prototype", per that method's own doc comment — exactly the
+    /// WebIDL interface-inheritance shape, e.g. `Element` inheriting from `Node`). Instances are
+    /// created with [`Runtime::create_instance`], not by calling the constructor from JS (no
+    /// constructor body is wired up in this prototype).
+    ///
+    /// This is the foundational primitive real DOM interfaces are built on that neither
+    /// [`create_wrapped`][Self::create_wrapped] nor Phase 3's other primitives provide: JS-visible
+    /// interface identity via the prototype chain (`instanceof`), not just Rust-side type
+    /// checking via [`Runtime::get_wrapped`]. Prototyped here, inside `roves-v8`, before touching
+    /// `components/script_bindings` for real — see `docs/V8_MIGRATION.md`'s Phase 4 status note
+    /// on why: the production support modules a real interface needs
+    /// (`interface.rs`/`proxyhandler.rs`/`finalize.rs`) are mutually interdependent around
+    /// SpiderMonkey's `JSClass`-based object model, so no single one of them can be swapped for a
+    /// V8 equivalent in isolation — this prototype is where that V8-side foundation gets designed
+    /// and validated first.
+    pub fn define_interface(&mut self, name: &str, parent: Option<&Interface>) -> Interface {
+        let context_handle = &self.context;
+        v8::scope!(let scope, &mut self.isolate);
+        let context = v8::Local::new(scope, context_handle);
+        let scope = &mut v8::ContextScope::new(scope, context);
+
+        // No real constructor behavior yet -- instances are made via `create_instance`, not by
+        // calling this from JS. A no-op body is still required: `FunctionTemplate` has no
+        // "callback-less" constructor.
+        let template = v8::FunctionTemplate::builder(
+            |_scope: &mut v8::PinScope,
+             _args: v8::FunctionCallbackArguments,
+             _retval: v8::ReturnValue| {},
+        )
+        .build(scope);
+        template.instance_template(scope).set_internal_field_count(1);
+
+        if let Some(parent) = parent {
+            let parent_template = v8::Local::new(scope, &parent.0);
+            template.inherit(parent_template);
+        }
+
+        if let Some(class_name) = v8::String::new(scope, name) {
+            template.set_class_name(class_name);
+        }
+
+        // Exposes the constructor on the global object, matching how a real DOM interface is
+        // JS-visible (e.g. `window.Node`) -- even though, in this prototype, calling it as a
+        // constructor from JS wouldn't do anything useful yet.
+        if let (Some(function), Some(key)) =
+            (template.get_function(scope), v8::String::new(scope, name))
+        {
+            let global = context.global(scope);
+            let _ = global.set(scope, key.into(), function.into());
+        }
+
+        Interface(v8::Global::new(scope, template))
+    }
+
+    /// Creates an instance of `interface`, reflecting `value` into it exactly like
+    /// [`Runtime::create_wrapped`] (same ownership/finalization lifecycle, same
+    /// [`Runtime::get_wrapped`] read-back) — but the instance's `[[Prototype]]` is
+    /// `interface`'s prototype object, so `instanceof` and the prototype chain work from JS,
+    /// which a plain `create_wrapped` object doesn't have.
+    pub fn create_instance<T: 'static>(&mut self, interface: &Interface, value: T) -> Handle {
+        let boxed_any: Box<dyn std::any::Any> = Box::new(value);
+
+        let (global_value, raw) = {
+            let context_handle = &self.context;
+            v8::scope!(let scope, &mut self.isolate);
+            let context = v8::Local::new(scope, context_handle);
+            let scope = &mut v8::ContextScope::new(scope, context);
+
+            let template = v8::Local::new(scope, &interface.0);
+            let instance_template = template.instance_template(scope);
+            let object = instance_template
+                .new_instance(scope)
+                .expect("a freshly created ObjectTemplate instance should never fail");
+
+            let raw = Box::into_raw(Box::new(boxed_any));
+            object.set_aligned_pointer_in_internal_field(
+                0,
+                raw as *const std::ffi::c_void,
+                WRAPPED_POINTER_TAG,
+            );
+            let object_value: v8::Local<v8::Value> = object.into();
+            (v8::Global::new(scope, object_value), raw)
+        };
+
+        self.install_guaranteed_finalizer(global_value, raw)
     }
 
     /// Reads back the Rust value a live [`Handle`] from [`Runtime::create_wrapped`] points at,
@@ -1110,5 +1216,91 @@ mod tests {
             runtime.eval_value("typeof window").unwrap(),
             Value::String("object".to_string())
         );
+    }
+
+    #[test]
+    fn define_interface_exposes_a_constructor_on_the_global_object() {
+        let mut runtime = Runtime::new();
+        runtime.define_interface("Node", None);
+        assert_eq!(
+            runtime.eval_value("typeof Node").unwrap(),
+            Value::String("function".to_string())
+        );
+    }
+
+    #[test]
+    fn create_instance_has_the_interfaces_prototype() {
+        struct Node;
+        let mut runtime = Runtime::new();
+        let node_interface = runtime.define_interface("Node", None);
+        let node = runtime.create_instance(&node_interface, Node);
+        runtime.set_global_property("node", &node).unwrap();
+
+        assert_eq!(
+            runtime.eval_value("node instanceof Node").unwrap(),
+            Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn create_instance_participates_in_prototype_inheritance() {
+        // The real WebIDL shape this prototypes: `Element` inheriting from `Node`, e.g.
+        // `document.createElement(...) instanceof Node` must be true, not just
+        // `instanceof Element`.
+        struct Element;
+        let mut runtime = Runtime::new();
+        let node_interface = runtime.define_interface("Node", None);
+        let element_interface = runtime.define_interface("Element", Some(&node_interface));
+        let element = runtime.create_instance(&element_interface, Element);
+        runtime.set_global_property("element", &element).unwrap();
+
+        assert_eq!(
+            runtime.eval_value("element instanceof Element").unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            runtime.eval_value("element instanceof Node").unwrap(),
+            Value::Bool(true),
+            "an Element instance must also be a Node instance, via the prototype chain"
+        );
+    }
+
+    #[test]
+    fn create_instance_is_not_an_instance_of_an_unrelated_interface() {
+        struct Node;
+        struct Event;
+        let mut runtime = Runtime::new();
+        let node_interface = runtime.define_interface("Node", None);
+        let _event_interface = runtime.define_interface("Event", None);
+        let node = runtime.create_instance(&node_interface, Node);
+        runtime.set_global_property("node", &node).unwrap();
+        let _ = Event; // silence unused-field warning; Event is never instantiated in this test
+
+        assert_eq!(
+            runtime.eval_value("node instanceof Event").unwrap(),
+            Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn create_instance_still_supports_typed_read_back_and_gc() {
+        // create_instance must keep everything create_wrapped already provides: typed
+        // get_wrapped read-back and guaranteed-finalizer GC cleanup -- gaining a prototype
+        // chain shouldn't cost either.
+        let mut runtime = Runtime::new();
+        let counter = Arc::new(AtomicUsize::new(0));
+        let node_interface = runtime.define_interface("Node", None);
+
+        let node = runtime.create_instance(&node_interface, (7i32, DropCounter(counter.clone())));
+        assert_eq!(runtime.get_wrapped::<(i32, DropCounter)>(&node).unwrap().0, 7);
+
+        drop(node);
+        for _ in 0..20 {
+            runtime.force_full_gc_for_testing();
+            if counter.load(Ordering::SeqCst) == 1 {
+                break;
+            }
+        }
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
 }
