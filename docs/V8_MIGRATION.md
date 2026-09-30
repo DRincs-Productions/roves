@@ -461,9 +461,28 @@ primitive each milestone actually needs, before any of it touches
 materially-higher-risk undertaking (production code the current SpiderMonkey build also
 depends on) this groundwork is meant to de-risk, not replace.
 
-**Not yet done:** everything else in the validation-progression list above; the actual
-`codegen.py` adaptation itself (not started); anything resembling a real DOM object graph
-(`document`, elements, event dispatch).
+**Second checkpoint (2026-09-30): interface/prototype-chain foundation.** Prompted by a real
+finding while scoping the actual `codegen.py` work: production `components/script_bindings`'s
+support modules (`interface.rs`, `proxyhandler.rs`, `finalize.rs`) are mutually interdependent
+around SpiderMonkey's `JSClass`-based object model — none can be swapped for a V8 equivalent in
+isolation (a `finalize.rs` callback is invoked *by* the same `JSClass` machinery `interface.rs`
+uses to create the object in the first place). The maintainer's call: keep building the
+foundation inside `roves-v8` at increasing fidelity before touching production code. `Interface` +
+`Runtime::define_interface(name, parent)` creates a `v8::FunctionTemplate` constructor,
+optionally inheriting via `FunctionTemplate::inherit` — WebIDL's own interface-inheritance shape
+(`Element` inheriting from `Node`) — exposed as a named global constructor (`window.Node`).
+`Runtime::create_instance<T>(&Interface, value)` creates an instance whose `[[Prototype]]` comes
+from the interface, so `instanceof` and the prototype chain work from JS, with the same
+ownership/finalization/typed-read-back guarantees `create_wrapped` already had. 5 tests, 32/32
+total passing, including `instanceof` walking a real inheritance chain.
+
+**Not yet done:** everything else in the validation-progression list (`document`/basic DOM
+objects beyond bare interface identity; element creation/properties/events; DOM-level callbacks/
+exceptions; Promise APIs at the DOM level; modules/dynamic import; fetch/storage; Canvas; WebGL;
+WebGPU; audio/media; Workers; WebAssembly); property accessors/getters-setters on an interface
+(interfaces currently have no properties or methods beyond bare identity); anything like
+`proxyhandler.rs`'s indexed/named property interception; the actual `codegen.py`/production
+support-module adaptation itself (not started).
 
 ### Phase 5 — real game validation
 

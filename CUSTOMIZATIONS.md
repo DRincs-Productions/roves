@@ -1,4 +1,35 @@
 # Customizations over upstream Servo
+## 2026-09-30 — V8 migration Phase 4 (second checkpoint): interface/prototype-chain foundation
+
+**Servo file:** `components/roves-v8/src/lib.rs`.
+**Patch:** `patches/servo-v0.5.0/0065-roves-v8-phase4-interfaces.patch` (after 0001–0064).
+
+Followed up on a real finding while scoping this checkpoint: production
+`components/script_bindings`'s support modules (`interface.rs`, `proxyhandler.rs`,
+`finalize.rs`) are mutually interdependent around SpiderMonkey's `JSClass`-based object model —
+none of them can be swapped for a V8 equivalent in isolation (e.g. `finalize.rs`'s finalizer
+callbacks are invoked *by* the same `JSClass` machinery `interface.rs` uses to create objects in
+the first place). Per the maintainer's own call, the foundation keeps getting prototyped inside
+`roves-v8` at increasing fidelity before any of it touches production code.
+
+`Interface` + `Runtime::define_interface(name, parent)` creates a `v8::FunctionTemplate`
+constructor, optionally inheriting via `FunctionTemplate::inherit` — exactly WebIDL's interface
+inheritance shape (e.g. `Element` inheriting from `Node`) — exposed as a named constructor on
+the global object (`window.Node`), matching how a real DOM interface is JS-visible.
+`Runtime::create_instance<T>(&Interface, value)` creates an instance whose `[[Prototype]]` comes
+from the interface, so `instanceof`/the prototype chain work from JS, unlike `create_wrapped`'s
+flat objects — same ownership/finalization lifecycle and `get_wrapped` read-back, refactored
+into a shared private `install_guaranteed_finalizer` helper. 5 new tests (32 total, all
+passing): constructor exposed as a global function, direct `instanceof`, `instanceof` walking an
+inheritance chain, a negative check against an unrelated interface, and confirmation that gaining
+a prototype chain costs nothing from `get_wrapped`/GC finalization. No new API findings this
+round — matched the real `v8` API on the first attempt.
+
+This is the foundational primitive real DOM interfaces need that neither `create_wrapped` nor
+Phase 3's other primitives provide: JS-visible interface identity, not just Rust-side type
+checking. Still entirely prototyped inside `roves-v8`; zero changes to
+`components/script`/`components/script_bindings`.
+
 ## 2026-09-30 — V8 migration Phase 4 (first checkpoint): global/window exposure prototype
 
 **Servo file:** `components/roves-v8/src/lib.rs`.
