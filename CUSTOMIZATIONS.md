@@ -1,4 +1,35 @@
 # Customizations over upstream Servo
+## 2026-09-30 — V8 migration Phase 4 (fifth checkpoint): callable methods
+
+**Servo file:** `components/roves-v8/src/lib.rs`.
+**Patch:** `patches/servo-v0.5.0/0068-roves-v8-phase4-methods.patch` (after 0001–0067).
+
+`NativeMethod` + `Runtime::define_method` adds callable methods (`node.someMethod(1, 2)`) on an
+interface's **prototype** template — unlike the accessor checkpoints, this works cleanly on the
+shared prototype because `v8::FunctionCallbackArguments::this()` gives the real receiver
+directly; `PropertyCallbackArguments` only has `.holder()`, the source of the earlier accessor
+bug. A real, structural difference in how V8 dispatches property accessors versus function
+calls, not a stylistic choice.
+
+**Real bug found and fixed along the way:** `define_interface` was eagerly calling
+`template.get_function(scope)` to expose the constructor globally (e.g. `window.Node`) —
+`get_function` materializes the actual prototype JS object from `prototype_template`'s contents
+**at that moment**. Every later `define_method` call for the same interface added to the
+template but had no effect on the already-materialized prototype object — every method test
+failed with `"X is not a function"`. Not a subtle edge case: V8 templates aren't fully
+"late-bound" the way one might assume, and this is exactly the kind of assumption worth writing
+down for whoever touches this crate's interface/template code next. Fixed by deferring
+constructor exposure to the first `create_instance` call for that interface, by which point real
+usage has finished defining all its members — `Interface` now carries its `name` and a one-shot
+`constructor_exposed` flag to support this. This also meant fixing 4 existing tests that checked
+`instanceof SomeInterface` in JS without ever having called `create_instance` for that specific
+interface (since exposure is now per-interface and lazy) — each needed a throwaway
+`create_instance` call so the bare interface-name identifier resolves at all.
+
+3 new tests plus adjustments to 5 existing ones — 41 total, all passing. With properties
+(readable and settable) and methods now both covered, Phase 4's core "interface member"
+primitives are complete at the `roves-v8` prototype level.
+
 ## 2026-09-30 — V8 migration Phase 4 (fourth checkpoint): property setters
 
 **Servo file:** `components/roves-v8/src/lib.rs`.

@@ -496,11 +496,26 @@ only one shared `data` slot) — a small, bounded, per-property-definition cost,
 2 new tests, 38/38 total passing, including a check that a JS-side assignment is reflected back
 on the Rust side via `get_wrapped`, not just readable again from JS.
 
+**Fifth checkpoint (2026-09-30): callable methods.** `NativeMethod` + `Runtime::define_method`
+adds callable methods on an interface's **prototype** template — cleanly, on the shared
+prototype, because `FunctionCallbackArguments::this()` gives the real receiver directly
+(`PropertyCallbackArguments` only has `.holder()`, the source of the earlier accessor bug).
+Real bug found and fixed: `define_interface` was eagerly calling `get_function()` to expose the
+constructor globally, which materializes the actual prototype object from the template's
+contents *at that moment* — later `define_method` calls had no effect on that already-frozen
+object, every method test failing with `"X is not a function"`. V8 templates aren't fully
+"late-bound" the way one might assume. Fixed by deferring constructor exposure to the first
+`create_instance` call per interface, which also required fixing 4 existing tests that checked
+`instanceof SomeInterface` without ever instantiating that interface. 3 new tests plus 5
+adjusted, 41/41 total passing. With properties (readable and settable) and methods now both
+covered, Phase 4's core "interface member" primitives are complete at the `roves-v8` prototype
+level.
+
 **Not yet done:** everything else in the validation-progression list (`document`/basic DOM
 objects beyond bare interface identity; element creation/properties/events; DOM-level callbacks/
 exceptions; Promise APIs at the DOM level; modules/dynamic import; fetch/storage; Canvas; WebGL;
-WebGPU; audio/media; Workers; WebAssembly); callable methods on an interface (properties only so
-far); anything like `proxyhandler.rs`'s indexed/named property interception; the actual
+WebGPU; audio/media; Workers; WebAssembly); anything like `proxyhandler.rs`'s indexed/named
+property interception; the actual
 `codegen.py`/production support-module
 adaptation itself (not started).
 

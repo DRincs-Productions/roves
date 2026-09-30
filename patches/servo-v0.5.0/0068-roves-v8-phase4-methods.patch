@@ -1,0 +1,405 @@
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 0ec7eabc0ad..efb5f7ae7ec 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -73,7 +73,14 @@ pub struct Handle(v8::Global<v8::Value>);
+ 
+ /// A named JS interface (constructor + prototype chain), created via
+ /// [`Runtime::define_interface`] — see that method's own doc comment.
+-pub struct Interface(v8::Global<v8::FunctionTemplate>);
++pub struct Interface {
++    template: v8::Global<v8::FunctionTemplate>,
++    name: String,
++    /// Set once the constructor has actually been exposed on the global object (lazily, at the
++    /// first [`Runtime::create_instance`] call — see that method's own doc comment on why this
++    /// can't happen eagerly in [`Runtime::define_interface`]).
++    constructor_exposed: std::cell::Cell<bool>,
++}
+ 
+ /// A single, isolated V8 execution environment: one [`v8::OwnedIsolate`] plus one persistent
+ /// JS realm (`context`), shared by every [`Runtime`] method — a global installed by
+@@ -130,6 +137,12 @@ pub type PropertyGetter = fn(&dyn std::any::Any) -> Value;
+ /// restriction as [`PropertyGetter`]/[`NativeFunction`], for the same reason.
+ pub type PropertySetter = fn(&mut dyn std::any::Any, &Value);
+ 
++/// A callable method, registered via [`Runtime::define_method`]: receives the wrapped Rust value
++/// of whichever instance it was called on (`node.someMethod()`) plus its JS arguments already
++/// converted to [`Value`], and returns a [`Value`]. Same plain-function-pointer restriction as
++/// this crate's other callback types, for the same reason.
++pub type NativeMethod = fn(&dyn std::any::Any, &[Value]) -> Value;
++
+ impl Runtime {
+     /// Creates a new isolate, initializing the V8 platform first if this is the first
+     /// [`Runtime`] in the process.
+@@ -520,7 +533,7 @@ impl Runtime {
+         template.instance_template(scope).set_internal_field_count(1);
+ 
+         if let Some(parent) = parent {
+-            let parent_template = v8::Local::new(scope, &parent.0);
++            let parent_template = v8::Local::new(scope, &parent.template);
+             template.inherit(parent_template);
+         }
+ 
+@@ -528,17 +541,23 @@ impl Runtime {
+             template.set_class_name(class_name);
+         }
+ 
+-        // Exposes the constructor on the global object, matching how a real DOM interface is
+-        // JS-visible (e.g. `window.Node`) -- even though, in this prototype, calling it as a
+-        // constructor from JS wouldn't do anything useful yet.
+-        if let (Some(function), Some(key)) =
+-            (template.get_function(scope), v8::String::new(scope, name))
+-        {
+-            let global = context.global(scope);
+-            let _ = global.set(scope, key.into(), function.into());
++        // Deliberately NOT calling `template.get_function(scope)` here to expose the constructor
++        // eagerly -- found by hitting a real bug: `get_function` materializes the actual
++        // prototype JS object from `prototype_template`'s *current* contents immediately, and
++        // later mutations to `prototype_template` (e.g. a `define_method` call after this
++        // `define_interface` call returns) do NOT retroactively update that already-materialized
++        // object. Every `define_method` test failed with "is not a function" until this was
++        // deferred to `create_instance`, by which point real usage has already finished defining
++        // the interface's members. `instance_template`-based accessors don't have this problem
++        // (nothing forces an early snapshot of the instance template), which is why the earlier
++        // `define_property` checkpoint never hit it.
++        let _ = context;
++
++        Interface {
++            template: v8::Global::new(scope, template),
++            name: name.to_string(),
++            constructor_exposed: std::cell::Cell::new(false),
+         }
+-
+-        Interface(v8::Global::new(scope, template))
+     }
+ 
+     /// Creates an instance of `interface`, reflecting `value` into it exactly like
+@@ -555,7 +574,26 @@ impl Runtime {
+             let context = v8::Local::new(scope, context_handle);
+             let scope = &mut v8::ContextScope::new(scope, context);
+ 
+-            let template = v8::Local::new(scope, &interface.0);
++            let template = v8::Local::new(scope, &interface.template);
++
++            // Exposes the constructor on the global object (e.g. `window.Node`), matching how a
++            // real DOM interface is JS-visible -- deferred to here, rather than done eagerly in
++            // `define_interface`, because `get_function` materializes the actual prototype
++            // object from whatever `prototype_template` contains *right now*; doing this in
++            // `define_interface` would freeze the prototype before later `define_method`/
++            // `define_property` calls for this same interface ever ran. See `define_interface`'s
++            // own doc comment for the real bug this was found by. Only done once per interface
++            // (`constructor_exposed`) -- harmless to repeat, but pointless after the first time.
++            if !interface.constructor_exposed.get() {
++                if let (Some(function), Some(key)) =
++                    (template.get_function(scope), v8::String::new(scope, &interface.name))
++                {
++                    let global = context.global(scope);
++                    let _ = global.set(scope, key.into(), function.into());
++                }
++                interface.constructor_exposed.set(true);
++            }
++
+             let instance_template = template.instance_template(scope);
+             let object = instance_template
+                 .new_instance(scope)
+@@ -607,7 +645,7 @@ impl Runtime {
+         let context = v8::Local::new(scope, context_handle);
+         let scope = &mut v8::ContextScope::new(scope, context);
+ 
+-        let template = v8::Local::new(scope, &interface.0);
++        let template = v8::Local::new(scope, &interface.template);
+         let instance_template = template.instance_template(scope);
+ 
+         let Some(key) = v8::String::new(scope, name) else {
+@@ -672,7 +710,7 @@ impl Runtime {
+         let context = v8::Local::new(scope, context_handle);
+         let scope = &mut v8::ContextScope::new(scope, context);
+ 
+-        let template = v8::Local::new(scope, &interface.0);
++        let template = v8::Local::new(scope, &interface.template);
+         let instance_template = template.instance_template(scope);
+ 
+         let Some(key) = v8::String::new(scope, name) else {
+@@ -757,6 +795,76 @@ impl Runtime {
+         Ok(())
+     }
+ 
++    /// Defines a callable method named `name` on `interface`'s prototype (e.g.
++    /// `node.someMethod(1, 2)`) — installed on the **prototype** template, unlike
++    /// [`Runtime::define_property`]/[`Runtime::define_settable_property`]: a regular function
++    /// callback's [`v8::FunctionCallbackArguments::this`] gives the actual receiver directly, so
++    /// methods don't need the instance-template workaround accessors do (see
++    /// [`Runtime::define_property`]'s own doc comment on why that workaround exists at all) — a
++    /// real, structural difference between how V8 dispatches property accessors versus function
++    /// calls, not a stylistic choice.
++    pub fn define_method(
++        &mut self,
++        interface: &Interface,
++        name: &str,
++        method: NativeMethod,
++    ) -> Result<(), String> {
++        let context_handle = &self.context;
++        v8::scope!(let scope, &mut self.isolate);
++        let context = v8::Local::new(scope, context_handle);
++        let scope = &mut v8::ContextScope::new(scope, context);
++
++        let template = v8::Local::new(scope, &interface.template);
++        let prototype_template = template.prototype_template(scope);
++
++        let Some(key) = v8::String::new(scope, name) else {
++            return Err(format!("{name:?} is not valid as a method name string"));
++        };
++        let external_data = v8::External::new(scope, method as *mut std::ffi::c_void);
++
++        let function_template = v8::FunctionTemplate::builder(
++            |scope: &mut v8::PinScope,
++             args: v8::FunctionCallbackArguments,
++             mut retval: v8::ReturnValue| {
++                let data = args.data();
++                let Ok(external) = v8::Local::<v8::External>::try_from(data) else {
++                    return;
++                };
++                // SAFETY: `external`'s value is exactly the `NativeMethod` pointer
++                // `define_method` stored below, cast back to its original type.
++                let method: NativeMethod = unsafe { std::mem::transmute(external.value()) };
++
++                let this = args.this();
++                if this.internal_field_count() < 1 {
++                    return;
++                }
++                // SAFETY: same reasoning as `get_wrapped`/`define_property` -- this field is
++                // only ever set by `create_wrapped`/`create_instance`, always via
++                // `set_aligned_pointer_in_internal_field` with this exact `WRAPPED_POINTER_TAG`.
++                let raw = unsafe {
++                    this.get_aligned_pointer_from_internal_field(0, WRAPPED_POINTER_TAG)
++                } as *mut Box<dyn std::any::Any>;
++                if raw.is_null() {
++                    return;
++                }
++                let boxed_any: &Box<dyn std::any::Any> = unsafe { &*raw };
++
++                let mut arguments = Vec::with_capacity(args.length() as usize);
++                for i in 0..args.length() {
++                    arguments.push(native_value(scope, args.get(i)));
++                }
++                let result = method(boxed_any.as_ref(), &arguments);
++                retval.set(v8_value(scope, &result));
++            },
++        )
++        .data(external_data.into())
++        .build(scope);
++
++        let function_value: v8::Local<v8::Data> = function_template.into();
++        prototype_template.set(key.into(), function_value);
++        Ok(())
++    }
++
+     /// Reads back the Rust value a live [`Handle`] from [`Runtime::create_wrapped`] points at,
+     /// checking that it's actually a `T` (not just trusting the caller) via `Any::downcast_ref`
+     /// on the same `Box<dyn Any>` `create_wrapped` stored — returns `None` on a type mismatch
+@@ -1418,8 +1526,15 @@ mod tests {
+ 
+     #[test]
+     fn define_interface_exposes_a_constructor_on_the_global_object() {
++        // The constructor is only actually exposed on the global object once the first
++        // instance is created (see create_instance's own doc comment on why: exposing it
++        // eagerly in define_interface would freeze the prototype before any later
++        // define_method/define_property calls for this interface ever ran) -- so this test
++        // creates one, even though it doesn't otherwise need it, purely to trigger that.
++        struct Node;
+         let mut runtime = Runtime::new();
+-        runtime.define_interface("Node", None);
++        let node_interface = runtime.define_interface("Node", None);
++        runtime.create_instance(&node_interface, Node);
+         assert_eq!(
+             runtime.eval_value("typeof Node").unwrap(),
+             Value::String("function".to_string())
+@@ -1445,10 +1560,16 @@ mod tests {
+         // The real WebIDL shape this prototypes: `Element` inheriting from `Node`, e.g.
+         // `document.createElement(...) instanceof Node` must be true, not just
+         // `instanceof Element`.
++        struct Node;
+         struct Element;
+         let mut runtime = Runtime::new();
+         let node_interface = runtime.define_interface("Node", None);
+         let element_interface = runtime.define_interface("Element", Some(&node_interface));
++        // `Node`'s own constructor is only exposed on the global object at its own first
++        // create_instance call (see create_instance's own doc comment on why that's deferred) --
++        // this throwaway instance exists purely so the JS-side `instanceof Node` check below has
++        // a `Node` identifier to resolve at all.
++        runtime.create_instance(&node_interface, Node);
+         let element = runtime.create_instance(&element_interface, Element);
+         runtime.set_global_property("element", &element).unwrap();
+ 
+@@ -1469,10 +1590,12 @@ mod tests {
+         struct Event;
+         let mut runtime = Runtime::new();
+         let node_interface = runtime.define_interface("Node", None);
+-        let _event_interface = runtime.define_interface("Event", None);
++        let event_interface = runtime.define_interface("Event", None);
+         let node = runtime.create_instance(&node_interface, Node);
+         runtime.set_global_property("node", &node).unwrap();
+-        let _ = Event; // silence unused-field warning; Event is never instantiated in this test
++        // Throwaway instance purely to expose `Event` on the global object -- see the sibling
++        // test's own comment on why.
++        runtime.create_instance(&event_interface, Event);
+ 
+         assert_eq!(
+             runtime.eval_value("node instanceof Event").unwrap(),
+@@ -1582,6 +1705,7 @@ mod tests {
+ 
+     #[test]
+     fn define_property_on_its_own_interface_works_alongside_instanceof() {
++        struct Node;
+         struct Element {
+             tag: String,
+         }
+@@ -1598,6 +1722,10 @@ mod tests {
+         runtime
+             .define_property(&element_interface, "tagName", tag_name)
+             .unwrap();
++        // Throwaway instance purely to expose `Node` on the global object for the `instanceof`
++        // check below -- see create_instance's own doc comment on why exposure is per-interface
++        // and deferred to first instantiation.
++        runtime.create_instance(&node_interface, Node);
+ 
+         let element = runtime.create_instance(
+             &element_interface,
+@@ -1640,11 +1768,16 @@ mod tests {
+             }
+         }
+ 
++        struct Node;
+         let mut runtime = Runtime::new();
+         let node_interface = runtime.define_interface("Node", None);
+         runtime
+             .define_property(&node_interface, "tagName", tag_name)
+             .unwrap();
++        // Throwaway instance purely to expose `Node` on the global object for the `instanceof`
++        // check below -- see create_instance's own doc comment on why exposure is per-interface
++        // and deferred to first instantiation.
++        runtime.create_instance(&node_interface, Node);
+         let element_interface = runtime.define_interface("Element", Some(&node_interface));
+         let element = runtime.create_instance(
+             &element_interface,
+@@ -1740,4 +1873,120 @@ mod tests {
+         );
+         assert_eq!(runtime.get_wrapped::<Node>(&node).unwrap().value, "world");
+     }
++
++    #[test]
++    fn define_method_is_callable_with_arguments_from_js() {
++        struct Node {
++            name: String,
++        }
++        fn greet(this: &dyn std::any::Any, args: &[Value]) -> Value {
++            let node = match this.downcast_ref::<Node>() {
++                Some(node) => node,
++                None => return Value::Undefined,
++            };
++            let greeting = match args.first() {
++                Some(Value::String(s)) => s.clone(),
++                _ => "Hello".to_string(),
++            };
++            Value::String(format!("{greeting}, {}!", node.name))
++        }
++
++        let mut runtime = Runtime::new();
++        let node_interface = runtime.define_interface("Node", None);
++        runtime
++            .define_method(&node_interface, "greet", greet)
++            .unwrap();
++        let node = runtime.create_instance(
++            &node_interface,
++            Node {
++                name: "World".to_string(),
++            },
++        );
++        runtime.set_global_property("node", &node).unwrap();
++
++        assert_eq!(
++            runtime.eval_value("node.greet('Hi')").unwrap(),
++            Value::String("Hi, World!".to_string())
++        );
++        assert_eq!(
++            runtime.eval_value("node.greet()").unwrap(),
++            Value::String("Hello, World!".to_string())
++        );
++    }
++
++    #[test]
++    fn define_method_is_inherited_from_a_parent_interface() {
++        struct Element {
++            tag: String,
++        }
++        fn describe(this: &dyn std::any::Any, _args: &[Value]) -> Value {
++            match this.downcast_ref::<Element>() {
++                Some(element) => Value::String(format!("<{}>", element.tag)),
++                None => Value::Undefined,
++            }
++        }
++
++        let mut runtime = Runtime::new();
++        let node_interface = runtime.define_interface("Node", None);
++        runtime
++            .define_method(&node_interface, "describe", describe)
++            .unwrap();
++        let element_interface = runtime.define_interface("Element", Some(&node_interface));
++        let element = runtime.create_instance(
++            &element_interface,
++            Element {
++                tag: "DIV".to_string(),
++            },
++        );
++        runtime.set_global_property("element", &element).unwrap();
++
++        // Methods live on the prototype template, so they inherit via the normal JS prototype
++        // chain -- no surprise here the way there was for instance-template-based accessors.
++        assert_eq!(
++            runtime.eval_value("element.describe()").unwrap(),
++            Value::String("<DIV>".to_string())
++        );
++    }
++
++    #[test]
++    fn define_method_is_shared_by_every_instance_of_the_interface() {
++        struct Node {
++            name: String,
++        }
++        fn get_name(this: &dyn std::any::Any, _args: &[Value]) -> Value {
++            match this.downcast_ref::<Node>() {
++                Some(node) => Value::String(node.name.clone()),
++                None => Value::Undefined,
++            }
++        }
++
++        let mut runtime = Runtime::new();
++        let node_interface = runtime.define_interface("Node", None);
++        runtime
++            .define_method(&node_interface, "getName", get_name)
++            .unwrap();
++        let a = runtime.create_instance(
++            &node_interface,
++            Node {
++                name: "A".to_string(),
++            },
++        );
++        let b = runtime.create_instance(
++            &node_interface,
++            Node {
++                name: "B".to_string(),
++            },
++        );
++        runtime.set_global_property("a", &a).unwrap();
++        runtime.set_global_property("b", &b).unwrap();
++
++        assert_eq!(
++            runtime.eval_value("a.getName()").unwrap(),
++            Value::String("A".to_string())
++        );
++        assert_eq!(
++            runtime.eval_value("b.getName()").unwrap(),
++            Value::String("B".to_string())
++        );
++    }
+ }
