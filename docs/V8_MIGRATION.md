@@ -302,11 +302,19 @@ in `components/roves-v8/src/lib.rs`, all covered by unit tests (10/10 passing vi
   version's `Function::new`/`builder` require the callback closure itself to carry no captured
   state — see `NativeFunction`'s own doc comment in the crate).
 - **Exceptions**: already covered by Phase 1's `eval`/`tc_scope!` pattern; `eval_value` reuses it.
+- **Promise/microtasks** (second checkpoint, 2026-09-30): `Runtime::eval_resolved` — like
+  `eval_value`, but if the result is a `Promise`, drives `Isolate::perform_microtask_checkpoint`
+  in a bounded loop (10,000 checkpoints) until it settles, returning the resolved value or the
+  rejection's message. Pumping happens outside any live handle/context scope, since that call
+  needs `&mut Isolate` directly and a scope already borrows it — each loop iteration opens and
+  closes its own short-lived scope just to read the promise's current state. 4 tests cover
+  pass-through, an already-settled promise, a chained `.then` that needs an actual pump (not
+  just a state read), and a rejection.
 
 **Not yet done, deliberately deferred to a follow-up checkpoint** (still Phase 2 scope per this
 plan, kept separate to stay a small, reviewable, coherent change rather than one large
-unvalidated addition — see "Guidance for Codex/implementers" below): Promise/microtask
-integration, and module primitives (ES module compile/instantiate/evaluate).
+unvalidated addition — see "Guidance for Codex/implementers" below): module primitives (ES
+module compile/instantiate/evaluate).
 
 Two real findings from this checkpoint, worth knowing before extending this crate further:
 

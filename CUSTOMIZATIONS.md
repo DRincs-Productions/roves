@@ -1,4 +1,25 @@
 # Customizations over upstream Servo
+## 2026-09-30 — V8 migration Phase 2 (second checkpoint): Promise/microtask integration
+
+**Servo file:** `components/roves-v8/src/lib.rs`.
+**Patch:** `patches/servo-v0.5.0/0059-roves-v8-phase2-promises.patch` (after 0001–0058).
+
+`Runtime::eval_resolved`: like `eval_value`, but if the result is a `Promise`, drives V8's
+microtask queue (`Isolate::perform_microtask_checkpoint`) in a bounded loop until it settles,
+returning the resolved value or the rejection's message. Bounded (10,000 checkpoints) so a
+promise this crate has no event loop to ever settle (e.g. one waiting on a timer) fails loudly
+instead of hanging forever. Microtask pumping happens outside any live handle/context scope —
+`perform_microtask_checkpoint` needs `&mut self.isolate` directly, which a scope already borrows
+— so each loop iteration opens and closes its own short-lived scope purely to read the promise's
+current state. 4 new tests (14 total, all passing): pass-through for a non-`Promise` value, an
+already-resolved `Promise.resolve(42)` (settles synchronously — no pump needed to observe that),
+a chained `.then` that only settles once its callback actually runs as a microtask (the case that
+actually needs the pump loop, not just a state read), and a rejected promise.
+
+Promise/microtask integration was the first of Phase 2's two remaining "not yet done" items from
+the previous checkpoint entry below; module primitives (ES module compile/instantiate/evaluate)
+are still outstanding.
+
 ## 2026-09-30 — V8 migration Phase 2 (first checkpoint): value conversion, handles, callbacks
 
 **Servo file:** `components/roves-v8/src/lib.rs`.
