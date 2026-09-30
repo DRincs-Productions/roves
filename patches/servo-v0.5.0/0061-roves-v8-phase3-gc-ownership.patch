@@ -1,0 +1,246 @@
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 5a560d81ec8..2a625f134ba 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -29,6 +29,14 @@ fn ensure_platform_initialized() {
+         #[cfg(feature = "jitless")]
+         v8::V8::set_flags_from_string("--jitless");
+ 
++        // `Isolate::request_garbage_collection_for_testing` (used by this crate's own GC
++        // stress tests, see docs/V8_MIGRATION.md's Phase 3 status note) only works if
++        // `--expose-gc` was set here first — it "has a strong negative impact on garbage
++        // collection performance" per its own doc comment, so this only applies to `cargo test`
++        // builds, never a real embedding.
++        #[cfg(test)]
++        v8::V8::set_flags_from_string("--expose-gc");
++
+         let platform = v8::new_default_platform(0, false).make_shared();
+         v8::V8::initialize_platform(platform);
+         v8::V8::initialize();
+@@ -72,8 +80,23 @@ pub struct Handle(v8::Global<v8::Value>);
+ pub struct Runtime {
+     isolate: v8::OwnedIsolate,
+     context: v8::Global<v8::Context>,
++    /// Keeps every [`Runtime::create_wrapped`] finalizer armed — see the `v8` crate's own doc
++    /// comment on `Weak`: "finalization callbacks are tied to the lifetime of a `Weak<T>`, and
++    /// will not be called after the `Weak<T>` is dropped." A `Weak` that already fired stays in
++    /// this list forever (a real bookkeeping cost this phase's own stress test measures but
++    /// doesn't try to solve — see `docs/V8_MIGRATION.md`'s Phase 3 status note).
++    wrapped_finalizers: Vec<v8::Weak<v8::Value>>,
+ }
+ 
++/// Tag passed to `set_aligned_pointer_in_internal_field`/`get_aligned_pointer_from_internal_field`
++/// — required by the API. V8's sandboxed external-pointer table only accepts a small range of
++/// tag values (found by hitting "Fatal error in ToExternalPointerTag: the provided tag is
++/// outside the allowed range" with an arbitrary `0xC0DE` on the first attempt); `0` is what the
++/// `v8` crate's own `tests/test_api.rs` uses for its single-tag internal-field examples, and this
++/// crate likewise only has one kind of tagged pointer so far, so there's no need for a distinct
++/// value per type yet.
++const WRAPPED_POINTER_TAG: u16 = 0;
++
+ /// The result of running a script: either its final expression's string representation, or the
+ /// message from an uncaught exception (syntax error or a thrown value). Deliberately a plain
+ /// `Result<String, String>` — see this module's own doc comment on why no `v8::*` type escapes.
+@@ -99,7 +122,11 @@ impl Runtime {
+             let context = v8::Context::new(scope, Default::default());
+             v8::Global::new(scope, context)
+         };
+-        Runtime { isolate, context }
++        Runtime {
++            isolate,
++            context,
++            wrapped_finalizers: Vec::new(),
++        }
+     }
+ 
+     /// Compiles and runs `source` as a classic (non-module) script in this [`Runtime`]'s one
+@@ -367,6 +394,68 @@ impl Runtime {
+         Err("module evaluation did not settle within the microtask pump budget".to_string())
+     }
+ 
++    /// Reflects `value` into a fresh JS object, transferring ownership of it to that object's
++    /// JS lifetime: `value` is dropped exactly once, when V8 collects the wrapper — never
++    /// before, never after — via a *guaranteed* finalizer (`v8::Weak::with_guaranteed_finalizer`,
++    /// which the crate itself documents as "guaranteed to be called before the isolate is
++    /// destroyed," unlike a regular weak-handle finalizer that only fires "on a best effort
++    /// basis"). This is Phase 3's ownership primitive per `docs/V8_MIGRATION.md`: a later
++    /// WebIDL-generated DOM reflector (Phase 4) builds its property/method access layer on top
++    /// of this same lifecycle; this phase only needs the lifecycle itself to be correct, which
++    /// is what its own stress tests check.
++    ///
++    /// Returns a strong [`Handle`] keeping the object (and so `value`) alive. Drop every
++    /// `Handle` (and any other JS-side reference — none exist yet since nothing stores this
++    /// object anywhere JS code can reach) to make it eligible for collection.
++    pub fn create_wrapped<T: 'static>(&mut self, value: T) -> Handle {
++        let (global_value, raw) = {
++            let context_handle = &self.context;
++            v8::scope!(let scope, &mut self.isolate);
++            let context = v8::Local::new(scope, context_handle);
++            let scope = &mut v8::ContextScope::new(scope, context);
++
++            let template = v8::ObjectTemplate::new(scope);
++            template.set_internal_field_count(1);
++            let object = template
++                .new_instance(scope)
++                .expect("a freshly created ObjectTemplate instance should never fail");
++
++            let raw = Box::into_raw(Box::new(value));
++            object.set_aligned_pointer_in_internal_field(
++                0,
++                raw as *const std::ffi::c_void,
++                WRAPPED_POINTER_TAG,
++            );
++            let object_value: v8::Local<v8::Value> = object.into();
++            (v8::Global::new(scope, object_value), raw)
++        };
++
++        let weak = v8::Weak::with_guaranteed_finalizer(
++            &mut self.isolate,
++            &global_value,
++            Box::new(move || {
++                // SAFETY: `raw` was created by `Box::into_raw` a few lines above and is reachable
++                // from exactly one place afterward (this closure) -- V8 guarantees this finalizer
++                // runs at most once, and only after nothing JS-reachable points at the wrapper
++                // anymore, so nothing else can read `raw` concurrently or afterward.
++                drop(unsafe { Box::from_raw(raw) });
++            }),
++        );
++        self.wrapped_finalizers.push(weak);
++
++        Handle(global_value)
++    }
++
++    /// Forces a full garbage collection cycle — test-only (see `ensure_platform_initialized`'s
++    /// own comment on why `--expose-gc` isn't set outside `#[cfg(test)]`). Exists so this
++    /// crate's own GC stress tests don't have to rely on GC happening to run on its own schedule
++    /// within a test's short lifetime.
++    #[cfg(test)]
++    fn force_full_gc_for_testing(&mut self) {
++        self.isolate
++            .request_garbage_collection_for_testing(v8::GarbageCollectionType::Full);
++    }
++
+     /// Stores `value` as a JS value in this isolate and returns a [`Handle`] that outlives this
+     /// call — see [`Handle`]'s own doc comment.
+     pub fn store(&mut self, value: &Value) -> Handle {
+@@ -531,7 +620,21 @@ fn v8_value<'s>(scope: &v8::PinScope<'s, '_>, value: &Value) -> v8::Local<'s, v8
+ 
+ #[cfg(test)]
+ mod tests {
+-    use super::{NativeFunction, Runtime, Value};
++    use std::sync::Arc;
++    use std::sync::atomic::{AtomicUsize, Ordering};
++
++    use super::{Handle, NativeFunction, Runtime, Value};
++
++    /// Increments a shared counter when dropped — used by the `create_wrapped` GC stress tests
++    /// below to observe exactly how many wrapped values actually got dropped, and how many
++    /// times each (a double-drop would show up as a count too high, not just "ran").
++    struct DropCounter(Arc<AtomicUsize>);
++
++    impl Drop for DropCounter {
++        fn drop(&mut self) {
++            self.0.fetch_add(1, Ordering::SeqCst);
++        }
++    }
+ 
+     #[test]
+     fn evaluates_a_basic_expression() {
+@@ -714,4 +817,97 @@ mod tests {
+                 .is_err()
+         );
+     }
++
++    #[test]
++    fn create_wrapped_keeps_the_value_alive_while_the_handle_lives() {
++        let mut runtime = Runtime::new();
++        let counter = Arc::new(AtomicUsize::new(0));
++        let handle = runtime.create_wrapped(DropCounter(counter.clone()));
++        // A GC right now must not collect it -- the returned Handle is still a live, strong
++        // reference.
++        runtime.force_full_gc_for_testing();
++        assert_eq!(counter.load(Ordering::SeqCst), 0);
++        drop(handle);
++    }
++
++    #[test]
++    fn create_wrapped_drops_the_value_exactly_once_when_collected() {
++        let mut runtime = Runtime::new();
++        let counter = Arc::new(AtomicUsize::new(0));
++        let handle = runtime.create_wrapped(DropCounter(counter.clone()));
++        drop(handle); // the only strong reference -- now eligible for collection
++
++        let mut collected = false;
++        for _ in 0..20 {
++            runtime.force_full_gc_for_testing();
++            if counter.load(Ordering::SeqCst) > 0 {
++                collected = true;
++                break;
++            }
++        }
++        assert!(collected, "value was never collected within 20 full GC cycles");
++        assert_eq!(
++            counter.load(Ordering::SeqCst),
++            1,
++            "value must be dropped exactly once, not zero or more than once"
++        );
++    }
++
++    #[test]
++    fn create_wrapped_stress_many_objects_all_get_collected_exactly_once() {
++        let mut runtime = Runtime::new();
++        let counter = Arc::new(AtomicUsize::new(0));
++        const COUNT: usize = 200;
++        {
++            let handles: Vec<Handle> = (0..COUNT)
++                .map(|_| runtime.create_wrapped(DropCounter(counter.clone())))
++                .collect();
++            assert_eq!(counter.load(Ordering::SeqCst), 0);
++            drop(handles);
++        }
++
++        for _ in 0..30 {
++            runtime.force_full_gc_for_testing();
++            if counter.load(Ordering::SeqCst) as usize == COUNT {
++                break;
++            }
++        }
++        assert_eq!(
++            counter.load(Ordering::SeqCst) as usize,
++            COUNT,
++            "every one of {COUNT} wrapped objects should eventually be collected exactly once"
++        );
++    }
++
++    #[test]
++    fn create_wrapped_of_different_types_coexist_independently() {
++        // No read-back API exists yet (deliberately Phase 4/WebIDL-bindings scope, see
++        // create_wrapped's own doc comment) -- this only exercises that wrapping unrelated
++        // types in the same Runtime doesn't panic or corrupt each other's finalizer.
++        let mut runtime = Runtime::new();
++        let int_counter = Arc::new(AtomicUsize::new(0));
++        let string_counter = Arc::new(AtomicUsize::new(0));
++
++        struct TaggedDrop(Arc<AtomicUsize>);
++        impl Drop for TaggedDrop {
++            fn drop(&mut self) {
++                self.0.fetch_add(1, Ordering::SeqCst);
++            }
++        }
++
++        let a = runtime.create_wrapped((42i32, TaggedDrop(int_counter.clone())));
++        let b = runtime.create_wrapped(("hello".to_string(), TaggedDrop(string_counter.clone())));
++        drop(a);
++        drop(b);
++
++        for _ in 0..20 {
++            runtime.force_full_gc_for_testing();
++            if int_counter.load(Ordering::SeqCst) == 1 && string_counter.load(Ordering::SeqCst) == 1
++            {
++                break;
++            }
++        }
++        assert_eq!(int_counter.load(Ordering::SeqCst), 1);
++        assert_eq!(string_counter.load(Ordering::SeqCst), 1);
++    }
+ }

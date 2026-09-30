@@ -1,4 +1,47 @@
 # Customizations over upstream Servo
+## 2026-09-30 — V8 migration Phase 3 (first checkpoint): GC/ownership prototype
+
+**Servo file:** `components/roves-v8/src/lib.rs`.
+**Patch:** `patches/servo-v0.5.0/0061-roves-v8-phase3-gc-ownership.patch` (after 0001–0060).
+
+First checkpoint of Phase 3 (GC/DOM ownership) — entirely within `components/roves-v8`, does not
+touch `components/script`/`components/script_bindings` (SpiderMonkey's own rooting/tracing) yet.
+`Runtime::create_wrapped<T>` reflects a Rust value into a fresh JS object via an internal field
+pointer (`Box::into_raw`), and installs a `v8::Weak` with a *guaranteed* finalizer that drops the
+Box when V8 collects the wrapper — ownership transfers fully to the JS object's lifetime, dropped
+exactly once, never before, never after. `Runtime::force_full_gc_for_testing` (test-only) calls
+`Isolate::request_garbage_collection_for_testing`, gated behind `--expose-gc`, itself only set
+under `#[cfg(test)]` since it has a real, documented performance cost not worth paying outside
+tests.
+
+This directly addresses `docs/V8_MIGRATION.md`'s own warning against trusting a simple script to
+prove DOM lifetime correctness: 4 new tests (21 total, all passing) are real GC stress tests, not
+script-execution tests — a value stays alive while its `Handle` exists, drops exactly once after
+the `Handle` is dropped and GC is forced (retried up to 20 times, since GC timing isn't
+deterministic), a 200-object stress test verifying every one is collected exactly once, and two
+differently-typed wrapped objects coexisting without corrupting each other's finalizer.
+
+Two real findings from getting this to compile/pass:
+
+- **An ambiguous `.into()` needs an explicit target type** when calling `Global::new(scope,
+  object.into())` — the compiler can't infer which `Handle`-implementing type `.into()` should
+  produce (`Local<Object>` itself already implements `Handle` directly, `Local<Value>` also
+  would). Fixed with `let object_value: v8::Local<v8::Value> = object.into();` on its own line.
+- **V8's sandboxed external-pointer table only accepts a narrow range of internal-field tag
+  values.** An arbitrary `u16` (`0xC0DE`, chosen for no real reason) fatally aborted the entire
+  process — `Fatal error in ToExternalPointerTag: the provided tag is outside the allowed range`
+  — not a catchable error. `0`, the value the `v8` crate's own `tests/test_api.rs` uses for its
+  internal-field examples, works; this crate only has one kind of tagged pointer so far anyway.
+
+**Not yet done** (Phase 3's checklist has more left): SpiderMonkey rooting/tracing assumptions in
+`components/script`/`components/script_bindings` themselves haven't been touched at all — this
+checkpoint is purely additive within `roves-v8`. Wrapper identity ("the same Rust object always
+yields the same JS wrapper") only exists in the Rust-to-JS creation direction; there's no
+JS-to-Rust read-back yet, and nothing yet ensures wrapping the same conceptual object twice
+reuses the first wrapper. Cycles between multiple wrapped objects referencing each other are
+untested — real DOM graphs have exactly this shape, and this ownership model hasn't been
+stressed against it yet.
+
 ## 2026-09-30 — V8 migration Phase 2 (third checkpoint): ES module primitives — Phase 2 complete
 
 **Servo file:** `components/roves-v8/src/lib.rs`.

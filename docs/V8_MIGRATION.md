@@ -356,6 +356,47 @@ Two real findings from this checkpoint, worth knowing before extending this crat
 
 Do not proceed on the assumption that a successful simple script proves DOM lifetime correctness.
 
+**Status (2026-09-30): first checkpoint done, verified locally and in CI.**
+`components/roves-v8/src/lib.rs` gained `Runtime::create_wrapped<T: 'static>(value: T) -> Handle`:
+reflects a Rust value into a fresh JS object via an internal field pointer, with a `v8::Weak` +
+*guaranteed* finalizer that drops it exactly once, when V8 collects the wrapper — this phase's
+actual ownership primitive, addressing the warning right above ("do not proceed on the
+assumption that a successful simple script proves DOM lifetime correctness") with real GC stress
+tests rather than script-execution tests: a value staying alive while its `Handle` exists, a
+value dropping exactly once after its `Handle` is dropped and GC is forced, a 200-object stress
+run verifying every one is collected exactly once, and two differently-typed wrapped objects
+coexisting without corrupting each other's finalizer. `Runtime::force_full_gc_for_testing`
+(test-only, gated behind `--expose-gc`, itself `#[cfg(test)]`-only for its documented perf cost)
+makes this deterministic enough to test instead of hoping GC happens to run within a test's short
+lifetime. 21/21 tests pass locally (`cargo test -p roves-v8`) and in CI.
+
+Two real findings, worth knowing before extending this further: an ambiguous `.into()` call
+needs an explicit `Local<Value>` type annotation when multiple `Handle`-implementing target types
+are possible; and V8's sandboxed external-pointer table only accepts a narrow range of
+internal-field tag values — an arbitrary one (`0xC0DE`) fatally aborts the whole process
+(`ToExternalPointerTag: the provided tag is outside the allowed range`), not a catchable error —
+`0` (matching the `v8` crate's own test suite) works.
+
+**Not yet done — this phase's checklist has more left:**
+
+- **SpiderMonkey rooting/tracing assumptions in `components/script`/`components/script_bindings`
+  themselves haven't been touched at all.** This checkpoint is purely additive within
+  `roves-v8` — the real, much larger task this phase is ultimately about (replacing `JSTraceable`
+  and friends across the ~133+6+2 files `docs/V8_MIGRATION_PHASE0_INVENTORY.md` counted) hasn't
+  started. This checkpoint validates the *ownership primitive* those files would eventually be
+  rewritten to use, not the rewrite itself.
+- **Wrapper identity** ("the same Rust object always yields the same JS wrapper") only exists in
+  the Rust-to-JS creation direction. There's no JS-to-Rust read-back yet (an internal-field
+  pointer can be *set*, nothing yet reads it back out), and nothing ensures wrapping the same
+  conceptual object twice reuses the first wrapper instead of creating a second, independent one.
+- **Cycles between multiple wrapped objects referencing each other are untested.** Real DOM
+  graphs have exactly this shape (a parent referencing children referencing their parent, event
+  listeners closing over nodes, etc.) — this ownership model hasn't been stressed against it, and
+  a naive design here can leak (if cross-references are naively kept as strong `Global`s) or
+  collect prematurely (if naively left as raw pointers with no reference at all).
+- **`JSTraceable`/`jstraceable_derive` removal itself** — not attempted; still present and doing
+  its job for the current SpiderMonkey-based production path, unaffected by any of this checkpoint.
+
 ### Phase 4 — WebIDL generator and DOM bindings
 
 - Adapt generated bindings to V8.
