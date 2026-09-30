@@ -1,4 +1,32 @@
 # Customizations over upstream Servo
+## 2026-09-30 — V8 migration Phase 4 (third checkpoint): property accessors
+
+**Servo file:** `components/roves-v8/src/lib.rs`.
+**Patch:** `patches/servo-v0.5.0/0066-roves-v8-phase4-property-getters.patch` (after 0001–0065).
+
+`PropertyGetter` + `Runtime::define_property` adds a read-only accessor computed live from an
+instance's wrapped Rust data (`v8::AccessorConfiguration` + the same `External`-data pattern
+already used by `define_native_function`). 5 new tests net, 36 total, all passing.
+
+Two real findings, both discovered by writing tests that check actual values rather than just
+"it compiles" — exactly the kind of surprise `docs/V8_MIGRATION.md` warns a simple script won't
+catch:
+
+- **Bug:** this `v8` crate version's `PropertyCallbackArguments` has no way to recover the actual
+  receiver in an accessor callback — only `.holder()`, which for an accessor installed on a
+  *shared prototype* template returns the prototype object itself (no internal field), not the
+  instance. Every property read silently returned `Undefined` instead of erroring or crashing —
+  caught only because the getter tests expected a real value and got `Undefined`, a genuinely
+  sneaky failure mode with no crash to point at it. Fixed by installing the accessor on the
+  interface's **instance template** instead, so `holder()` correctly equals the instance.
+- **Pleasant surprise:** despite that per-instance-template installation, V8's
+  `FunctionTemplate::inherit` still propagates these accessors down the interface inheritance
+  chain — a property defined on a parent interface correctly appears, and correctly reads
+  per-instance data, on a child interface's instances. An initial test written to assert the
+  *opposite* (assuming this wouldn't work, given the instance-template fix) failed, which is how
+  this was actually discovered rather than assumed. Property accessors inherit across
+  `define_interface`'s `parent` relationship exactly like `instanceof` does.
+
 ## 2026-09-30 — V8 migration Phase 4 (second checkpoint): interface/prototype-chain foundation
 
 **Servo file:** `components/roves-v8/src/lib.rs`.

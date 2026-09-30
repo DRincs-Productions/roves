@@ -476,13 +476,25 @@ from the interface, so `instanceof` and the prototype chain work from JS, with t
 ownership/finalization/typed-read-back guarantees `create_wrapped` already had. 5 tests, 32/32
 total passing, including `instanceof` walking a real inheritance chain.
 
+**Third checkpoint (2026-09-30): property accessors.** `PropertyGetter` +
+`Runtime::define_property` adds a read-only accessor computed live from an instance's wrapped
+Rust data. Two real findings, both caught by testing actual values rather than assuming
+behavior: this `v8` crate version's `PropertyCallbackArguments` has no way to recover the actual
+receiver in an accessor callback (only `.holder()`, which returns the *prototype* object for an
+accessor installed on a shared prototype template — every read silently returned `Undefined`,
+fixed by installing on the interface's instance template instead); and, a pleasant surprise, V8's
+`FunctionTemplate::inherit` still propagates instance-template accessors down the interface
+hierarchy despite that per-instance installation — a property defined on a parent interface
+correctly inherits to child interfaces' instances, matching `instanceof`, confirmed by an initial
+test that assumed the opposite and failed. 5 new tests, 36/36 total passing.
+
 **Not yet done:** everything else in the validation-progression list (`document`/basic DOM
 objects beyond bare interface identity; element creation/properties/events; DOM-level callbacks/
 exceptions; Promise APIs at the DOM level; modules/dynamic import; fetch/storage; Canvas; WebGL;
-WebGPU; audio/media; Workers; WebAssembly); property accessors/getters-setters on an interface
-(interfaces currently have no properties or methods beyond bare identity); anything like
-`proxyhandler.rs`'s indexed/named property interception; the actual `codegen.py`/production
-support-module adaptation itself (not started).
+WebGPU; audio/media; Workers; WebAssembly); settable accessors (setters) and callable methods on
+an interface (only read-only properties exist so far); anything like `proxyhandler.rs`'s
+indexed/named property interception; the actual `codegen.py`/production support-module
+adaptation itself (not started).
 
 ### Phase 5 — real game validation
 

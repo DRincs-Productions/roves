@@ -1,0 +1,274 @@
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 2f0b1166600..bd2a775e87d 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -115,6 +115,15 @@ pub type ScriptResult = Result<String, String>;
+ /// `docs/V8_MIGRATION.md`'s Phase 2 status note for why that's a distinct, harder follow-up.
+ pub type NativeFunction = fn(&[Value]) -> Value;
+ 
++/// A read-only accessor's getter, registered via [`Runtime::define_property`]: reads whatever
++/// Rust value an instance of the interface it's defined on actually wraps (already
++/// downcast-checked the same way [`Runtime::get_wrapped`] is — see this crate's top doc comment
++/// on why a raw pointer cast isn't used instead) and converts it to an engine-neutral [`Value`]
++/// to return to JS. A plain function pointer, not an arbitrary closure, for the same reason
++/// [`NativeFunction`] is: V8's accessor callback machinery requires a non-capturing closure/fn
++/// under the hood.
++pub type PropertyGetter = fn(&dyn std::any::Any) -> Value;
++
+ impl Runtime {
+     /// Creates a new isolate, initializing the V8 platform first if this is the first
+     /// [`Runtime`] in the process.
+@@ -559,6 +568,86 @@ impl Runtime {
+         self.install_guaranteed_finalizer(global_value, raw)
+     }
+ 
++    /// Defines a read-only accessor property named `name`, computed by calling `getter` on the
++    /// wrapped Rust value of whichever instance JS reads it from (e.g. `node.nodeName`), not a
++    /// value stored once and left static like [`Runtime::link`]'s plain property — the real
++    /// WebIDL "attribute" shape a DOM interface needs.
++    ///
++    /// Installed on `interface`'s **instance template**, not its prototype template — found by
++    /// hitting a real, silent bug: this `v8` crate version has no way to recover the actual
++    /// receiver (`this`) inside a property accessor callback, only
++    /// [`v8::PropertyCallbackArguments::holder`], which for an accessor defined on a *shared*
++    /// prototype object returns that prototype object itself (with no internal field, since only
++    /// instances have one), not the instance the property was actually read from — every read
++    /// silently returned `undefined` instead of erroring, caught only by the getter tests
++    /// expecting a real value and getting `Undefined`. Defining the accessor directly on the
++    /// instance template sidesteps this: `holder()` for it is the instance itself, since the
++    /// property lives directly on it rather than on a shared prototype object. Despite that, a
++    /// property defined this way on a parent interface (via [`Runtime::define_interface`]'s
++    /// `parent`) *is* still visible on a child interface's instances — V8's
++    /// `FunctionTemplate::inherit` propagates instance-template accessors down the same
++    /// inheritance relationship it wires the prototype chain through, confirmed by
++    /// `define_property_is_inherited_from_a_parent_interface`'s own test (an earlier version of
++    /// that test assumed the opposite and failed, which is how this was actually found rather
++    /// than assumed).
++    pub fn define_property(
++        &mut self,
++        interface: &Interface,
++        name: &str,
++        getter: PropertyGetter,
++    ) -> Result<(), String> {
++        let context_handle = &self.context;
++        v8::scope!(let scope, &mut self.isolate);
++        let context = v8::Local::new(scope, context_handle);
++        let scope = &mut v8::ContextScope::new(scope, context);
++
++        let template = v8::Local::new(scope, &interface.0);
++        let instance_template = template.instance_template(scope);
++
++        let Some(key) = v8::String::new(scope, name) else {
++            return Err(format!("{name:?} is not valid as a property name string"));
++        };
++        let external_data = v8::External::new(scope, getter as *mut std::ffi::c_void);
++
++        let configuration = v8::AccessorConfiguration::new(
++            |scope: &mut v8::PinScope,
++             _key: v8::Local<v8::Name>,
++             args: v8::PropertyCallbackArguments,
++             mut retval: v8::ReturnValue<v8::Value>| {
++                let data = args.data();
++                let Ok(external) = v8::Local::<v8::External>::try_from(data) else {
++                    return;
++                };
++                // SAFETY: `external`'s value is exactly the `PropertyGetter` pointer
++                // `define_property` stored below, cast back to its original type.
++                let getter: PropertyGetter = unsafe { std::mem::transmute(external.value()) };
++
++                let holder = args.holder();
++                if holder.internal_field_count() < 1 {
++                    return;
++                }
++                // SAFETY: same reasoning as `get_wrapped` -- this field is only ever set by
++                // `create_wrapped`/`create_instance`, always via
++                // `set_aligned_pointer_in_internal_field` with this exact `WRAPPED_POINTER_TAG`.
++                let raw = unsafe {
++                    holder.get_aligned_pointer_from_internal_field(0, WRAPPED_POINTER_TAG)
++                } as *mut Box<dyn std::any::Any>;
++                if raw.is_null() {
++                    return;
++                }
++                // SAFETY: the instance is `holder` itself, alive for the duration of this
++                // callback (V8 guarantees the receiver outlives its own property access), so the
++                // guaranteed finalizer that would free `raw` cannot have run yet.
++                let boxed_any: &Box<dyn std::any::Any> = unsafe { &*raw };
++                let value = getter(boxed_any.as_ref());
++                retval.set(v8_value(scope, &value));
++            },
++        )
++        .data(external_data.into());
++        instance_template.set_accessor_with_configuration(key.into(), configuration);
++        Ok(())
++    }
++
+     /// Reads back the Rust value a live [`Handle`] from [`Runtime::create_wrapped`] points at,
+     /// checking that it's actually a `T` (not just trusting the caller) via `Any::downcast_ref`
+     /// on the same `Box<dyn Any>` `create_wrapped` stored — returns `None` on a type mismatch
+@@ -1303,4 +1392,166 @@ mod tests {
+         }
+         assert_eq!(counter.load(Ordering::SeqCst), 1);
+     }
++
++    #[test]
++    fn define_property_computes_a_live_getter_from_wrapped_data() {
++        // The real WebIDL "attribute" shape: node.nodeName reads Rust-side state live, not a
++        // snapshot stored once like `link`'s plain property.
++        struct Node {
++            name: String,
++        }
++
++        fn node_name(this: &dyn std::any::Any) -> Value {
++            match this.downcast_ref::<Node>() {
++                Some(node) => Value::String(node.name.clone()),
++                None => Value::Undefined,
++            }
++        }
++
++        let mut runtime = Runtime::new();
++        let node_interface = runtime.define_interface("Node", None);
++        runtime
++            .define_property(&node_interface, "nodeName", node_name)
++            .unwrap();
++
++        let node = runtime.create_instance(
++            &node_interface,
++            Node {
++                name: "DIV".to_string(),
++            },
++        );
++        runtime.set_global_property("node", &node).unwrap();
++
++        assert_eq!(
++            runtime.eval_value("node.nodeName").unwrap(),
++            Value::String("DIV".to_string())
++        );
++    }
++
++    #[test]
++    fn define_property_is_shared_by_every_instance_of_the_interface() {
++        struct Node {
++            name: String,
++        }
++        fn node_name(this: &dyn std::any::Any) -> Value {
++            match this.downcast_ref::<Node>() {
++                Some(node) => Value::String(node.name.clone()),
++                None => Value::Undefined,
++            }
++        }
++
++        let mut runtime = Runtime::new();
++        let node_interface = runtime.define_interface("Node", None);
++        runtime
++            .define_property(&node_interface, "nodeName", node_name)
++            .unwrap();
++
++        let a = runtime.create_instance(
++            &node_interface,
++            Node {
++                name: "DIV".to_string(),
++            },
++        );
++        let b = runtime.create_instance(
++            &node_interface,
++            Node {
++                name: "SPAN".to_string(),
++            },
++        );
++        runtime.set_global_property("a", &a).unwrap();
++        runtime.set_global_property("b", &b).unwrap();
++
++        assert_eq!(
++            runtime.eval_value("a.nodeName").unwrap(),
++            Value::String("DIV".to_string())
++        );
++        assert_eq!(
++            runtime.eval_value("b.nodeName").unwrap(),
++            Value::String("SPAN".to_string())
++        );
++    }
++
++    #[test]
++    fn define_property_on_its_own_interface_works_alongside_instanceof() {
++        struct Element {
++            tag: String,
++        }
++        fn tag_name(this: &dyn std::any::Any) -> Value {
++            match this.downcast_ref::<Element>() {
++                Some(element) => Value::String(element.tag.clone()),
++                None => Value::Undefined,
++            }
++        }
++
++        let mut runtime = Runtime::new();
++        let node_interface = runtime.define_interface("Node", None);
++        let element_interface = runtime.define_interface("Element", Some(&node_interface));
++        runtime
++            .define_property(&element_interface, "tagName", tag_name)
++            .unwrap();
++
++        let element = runtime.create_instance(
++            &element_interface,
++            Element {
++                tag: "DIV".to_string(),
++            },
++        );
++        runtime.set_global_property("element", &element).unwrap();
++
++        assert_eq!(
++            runtime.eval_value("element.tagName").unwrap(),
++            Value::String("DIV".to_string())
++        );
++        // instanceof still sees Element's inheritance from Node (that's prototype-chain-based,
++        // unaffected by the instance-template limitation below).
++        assert_eq!(
++            runtime.eval_value("element instanceof Node").unwrap(),
++            Value::Bool(true)
++        );
++    }
++
++    #[test]
++    fn define_property_is_inherited_from_a_parent_interface() {
++        // A genuine surprise found by testing rather than assuming (the first version of this
++        // test asserted the opposite and failed): despite accessors being installed on the
++        // *instance* template rather than the prototype template (see define_property's own doc
++        // comment on why), V8's `FunctionTemplate::inherit` propagates instance-template
++        // accessors down to child interfaces too, not just the prototype chain `instanceof`
++        // relies on. A property defined on a parent interface (`Node`) is visible on a child
++        // interface's instances (`Element`) -- and, checked here with a getter that actually
++        // downcasts rather than a constant, reads that specific instance's own wrapped data
++        // correctly, not stale or wrong data from elsewhere.
++        struct Element {
++            tag: String,
++        }
++        fn tag_name(this: &dyn std::any::Any) -> Value {
++            match this.downcast_ref::<Element>() {
++                Some(element) => Value::String(element.tag.clone()),
++                None => Value::Undefined,
++            }
++        }
++
++        let mut runtime = Runtime::new();
++        let node_interface = runtime.define_interface("Node", None);
++        runtime
++            .define_property(&node_interface, "tagName", tag_name)
++            .unwrap();
++        let element_interface = runtime.define_interface("Element", Some(&node_interface));
++        let element = runtime.create_instance(
++            &element_interface,
++            Element {
++                tag: "DIV".to_string(),
++            },
++        );
++        runtime.set_global_property("element", &element).unwrap();
++
++        assert_eq!(
++            runtime.eval_value("element instanceof Node").unwrap(),
++            Value::Bool(true)
++        );
++        assert_eq!(
++            runtime.eval_value("element.tagName").unwrap(),
++            Value::String("DIV".to_string())
++        );
++    }
+ }
