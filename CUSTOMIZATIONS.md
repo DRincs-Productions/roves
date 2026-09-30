@@ -1,4 +1,26 @@
 # Customizations over upstream Servo
+## 2026-09-30 — V8 migration Phase 3 (second checkpoint): typed JS-to-Rust read-back
+
+**Servo file:** `components/roves-v8/src/lib.rs`.
+**Patch:** `patches/servo-v0.5.0/0062-roves-v8-phase3-typed-readback.patch` (after 0001–0061).
+
+`Runtime::get_wrapped<T>(&Handle) -> Option<&T>` reads back the value a
+`create_wrapped`-created object points at. `create_wrapped` now stores a `Box<dyn
+std::any::Any>` (double-boxed: the outer `Box::into_raw` gives a thin pointer to the
+fat-pointer `Box<dyn Any>` struct — an internal field can only hold a thin pointer) instead
+of a raw `Box<T>`, so `get_wrapped` can check the requested type against the actual one via
+`Any::downcast_ref` instead of trusting the caller and casting blindly — `None` on a type
+mismatch or a handle that isn't a wrapped object at all. The returned reference's lifetime is
+tied to the `&Handle` argument via an explicit unsafe re-borrow (`downcast_ref`'s natural
+lifetime borrows from a local temporary, not from `handle`) — sound because a live `Handle`
+argument is exactly what guarantees `create_wrapped`'s guaranteed finalizer hasn't freed the
+data yet. 4 new tests (25 total, all passing): reads back the right value, rejects a type
+mismatch, `None` for a non-wrapped handle, and distinguishes two different wrapped objects.
+
+Closes part of the "wrapper identity" gap the previous checkpoint's entry called out:
+JS-to-Rust read-back now exists and is type-safe. Still open: reusing the same wrapper across
+two `create_wrapped` calls for the same conceptual object, and cycles between wrapped objects.
+
 ## 2026-09-30 — V8 migration Phase 3 (first checkpoint): GC/ownership prototype
 
 **Servo file:** `components/roves-v8/src/lib.rs`.

@@ -377,18 +377,28 @@ internal-field tag values — an arbitrary one (`0xC0DE`) fatally aborts the who
 (`ToExternalPointerTag: the provided tag is outside the allowed range`), not a catchable error —
 `0` (matching the `v8` crate's own test suite) works.
 
+**Second checkpoint (2026-09-30): typed JS-to-Rust read-back.** `Runtime::get_wrapped<T>(&Handle)
+-> Option<&T>` reads back a `create_wrapped`-created value, now stored as a `Box<dyn
+std::any::Any>` (double-boxed so an internal field, which can only hold a thin pointer, can hold
+it) instead of a raw `Box<T>` — `get_wrapped` checks the requested type against the actual one
+via `Any::downcast_ref`, returning `None` on a mismatch instead of a memory-unsafe blind cast.
+The returned reference's lifetime is tied to the `&Handle` argument via an explicit unsafe
+re-borrow, sound because a live `Handle` is exactly what guarantees the guaranteed finalizer
+hasn't freed the data yet. 4 tests: correct read-back, a rejected type mismatch, `None` for a
+non-wrapped handle, two distinct wrapped objects staying distinct. 25/25 tests pass.
+
 **Not yet done — this phase's checklist has more left:**
 
 - **SpiderMonkey rooting/tracing assumptions in `components/script`/`components/script_bindings`
-  themselves haven't been touched at all.** This checkpoint is purely additive within
+  themselves haven't been touched at all.** Both checkpoints so far are purely additive within
   `roves-v8` — the real, much larger task this phase is ultimately about (replacing `JSTraceable`
   and friends across the ~133+6+2 files `docs/V8_MIGRATION_PHASE0_INVENTORY.md` counted) hasn't
-  started. This checkpoint validates the *ownership primitive* those files would eventually be
+  started. These checkpoints validate the *ownership primitives* those files would eventually be
   rewritten to use, not the rewrite itself.
-- **Wrapper identity** ("the same Rust object always yields the same JS wrapper") only exists in
-  the Rust-to-JS creation direction. There's no JS-to-Rust read-back yet (an internal-field
-  pointer can be *set*, nothing yet reads it back out), and nothing ensures wrapping the same
-  conceptual object twice reuses the first wrapper instead of creating a second, independent one.
+- **Wrapper identity** ("the same Rust object always yields the same JS wrapper") now has its
+  JS-to-Rust read-back half (the second checkpoint above), but nothing yet ensures wrapping the
+  same conceptual object twice reuses the first wrapper instead of creating a second, independent
+  one — that half is still open.
 - **Cycles between multiple wrapped objects referencing each other are untested.** Real DOM
   graphs have exactly this shape (a parent referencing children referencing their parent, event
   listeners closing over nodes, etc.) — this ownership model hasn't been stressed against it, and
