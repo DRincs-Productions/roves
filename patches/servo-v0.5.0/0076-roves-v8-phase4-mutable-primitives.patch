@@ -40,7 +40,7 @@ index 6cfc682582d..06a06d9c54c 100644
 +        include!(concat!(env!("OUT_DIR"), "/MutablePrimitivesV8Binding.rs"));
 +    }
  }
- 
+
  use std::sync::Once;
 @@ -117,6 +121,7 @@ pub struct Runtime {
      /// Keeps callbacks armed until they have actually completed. An empty weak handle
@@ -48,12 +48,12 @@ index 6cfc682582d..06a06d9c54c 100644
      wrapped_finalizers: Vec<WrappedFinalizer>,
 +    primitive_setters: Vec<*mut PrimitiveSetterData>,
  }
- 
+
  struct WrappedFinalizer {
 @@ -124,6 +129,16 @@ struct WrappedFinalizer {
      completed: std::rc::Rc<std::cell::Cell<bool>>,
  }
- 
+
 +impl Drop for Runtime {
 +    fn drop(&mut self) {
 +        // The isolate drops after this method returns; release callback data only once V8 can
@@ -70,7 +70,7 @@ index 6cfc682582d..06a06d9c54c 100644
 @@ -166,6 +181,25 @@ pub type PropertySetter = fn(&mut dyn std::any::Any, &Value);
  /// the resulting UTF-16 code units, including lone surrogates.
  pub type DomStringSetter = fn(&mut dyn std::any::Any, Vec<u16>);
- 
+
 +/// A setter for primitive WebIDL attributes after JavaScript coercion.
 +pub type WebIdlPrimitiveSetter = fn(&mut dyn std::any::Any, &Value);
 +
@@ -100,7 +100,7 @@ index 6cfc682582d..06a06d9c54c 100644
 +            primitive_setters: Vec::new(),
          }
      }
- 
+
 @@ -679,7 +714,7 @@ impl Runtime {
          name: &str,
          getter: PropertyGetter,
@@ -108,7 +108,7 @@ index 6cfc682582d..06a06d9c54c 100644
 -        self.define_attribute(interface, name, getter, None, None)
 +        self.define_attribute(interface, name, getter, None, None, None)
      }
- 
+
      /// Defines a prototype attribute with both a getter and a setter. Callback functions
 @@ -691,7 +726,7 @@ impl Runtime {
          getter: PropertyGetter,
@@ -117,7 +117,7 @@ index 6cfc682582d..06a06d9c54c 100644
 -        self.define_attribute(interface, name, getter, Some(setter), None)
 +        self.define_attribute(interface, name, getter, Some(setter), None, None)
      }
- 
+
      /// Defines a WebIDL DOMString attribute with JavaScript ToString conversion.
 @@ -702,7 +737,20 @@ impl Runtime {
          getter: PropertyGetter,
@@ -139,7 +139,7 @@ index 6cfc682582d..06a06d9c54c 100644
 +    ) -> Result<(), String> {
 +        self.define_attribute(interface, name, getter, None, None, Some((setter, conversion)))
      }
- 
+
      fn define_attribute(
 @@ -712,6 +760,7 @@ impl Runtime {
          getter: PropertyGetter,
@@ -207,7 +207,7 @@ index 6cfc682582d..06a06d9c54c 100644
 @@ -2400,6 +2497,38 @@ mod tests {
          }
      }
- 
+
 +    #[cfg(feature = "webidl-pilot")]
 +    #[test]
 +    fn generated_mutable_primitive_attributes_follow_webidl_conversion() {
@@ -325,7 +325,7 @@ index 71cc001699d..89f7ed8f96c 100644
  {trait_methods}
 -{trait_setters}
  }}
- 
+
  /// Typed binding generated from {name}.webidl. The private interface prevents
 diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
 index dd4de8d07bb..b2889036631 100644
@@ -334,7 +334,7 @@ index dd4de8d07bb..b2889036631 100644
 @@ -43,6 +43,21 @@ class V8GeneratorTests(unittest.TestCase):
              self.assertIn("fn set_Value(&mut self, value: Vec<u16>);", source)
              self.assertIn("runtime.define_domstring_property(&interface, \"value\"", source)
- 
+
 +    def test_mutable_numeric_and_boolean_attributes_generate_typed_setters(self):
 +        with tempfile.TemporaryDirectory() as directory:
 +            root = Path(directory)
@@ -355,10 +355,9 @@ index dd4de8d07bb..b2889036631 100644
              path = Path(directory) / "Unsupported.webidl"
 @@ -51,7 +66,7 @@ class V8GeneratorTests(unittest.TestCase):
                  generate(path, Path(directory) / "output")
- 
+
      def test_unsupported_members_never_silently_disappear(self):
 -        for member in ["attribute boolean valid;", "readonly attribute float value;", "readonly attribute unsigned long long value;", "readonly attribute boolean? value;", "undefined run();", "static readonly attribute boolean valid;", "[GetterThrows] readonly attribute boolean valid;"]:
 +        for member in ["readonly attribute float value;", "readonly attribute unsigned long long value;", "readonly attribute boolean? value;", "undefined run();", "static readonly attribute boolean valid;", "[GetterThrows] readonly attribute boolean valid;", "attribute byte value;"]:
              with self.subTest(member=member):
                  self.assert_unsupported("interface Unsupported { " + member + " };")
- 
