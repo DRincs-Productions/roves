@@ -9293,6 +9293,7 @@ dependencies = [
  "phf_codegen",
  "phf_shared",
  "regex",
+ "roves-v8",
  "serde_json",
  "servo-base",
  "servo-config",

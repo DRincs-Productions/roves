@@ -4,7 +4,7 @@ on:
   push:
     paths:
       - 'components/roves-v8/**'
-      - 'components/script_bindings/codegen/**'
+      - 'components/script_bindings/**'
       - '.github/workflows/v8.yml'
   workflow_dispatch: {}
 
@@ -33,9 +33,14 @@ jobs:
           mkdir -p "$RUNNER_TEMP/roves-v8/src"
           cp components/roves-v8/Cargo.toml components/roves-v8/Cargo.lock "$RUNNER_TEMP/roves-v8/"
           cp -R components/roves-v8/src/. "$RUNNER_TEMP/roves-v8/src/"
+          cp -R components/roves-v8/tests "$RUNNER_TEMP/roves-v8/tests"
+          cp -R components/script_bindings "$RUNNER_TEMP/script_bindings"
           if [ -f components/roves-v8/build.rs ]; then
             cp components/roves-v8/build.rs "$RUNNER_TEMP/roves-v8/"
           fi
+      - name: test V8 WebIDL generator contracts
+        shell: bash
+        run: python -m unittest discover -s components/script_bindings/codegen -p test_v8.py
       - name: test runtime and compile-fail safety contracts
         shell: bash
         env:
@@ -45,5 +50,11 @@ jobs:
           args=()
           if [ "$V8_TEST_MODE" = jitless ]; then
             args+=(--features jitless)
+          fi
+          cargo test --locked "${args[@]}"
+          if [ "$V8_TEST_MODE" = jitless ]; then
+            args=(--features webidl-pilot,jitless)
+          else
+            args=(--features webidl-pilot)
           fi
           cargo test --locked "${args[@]}"

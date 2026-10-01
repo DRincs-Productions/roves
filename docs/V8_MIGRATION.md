@@ -529,13 +529,26 @@ and JIT-less modes, include GC finalization and prototype-chain holder lookup. T
 read-only interception primitive, not full WebIDL collection semantics; register handlers before
 any instance or descendant materializes templates. Production codegen remains untouched.
 
-**Not yet done:** everything else in the validation-progression list (`document`/basic DOM
-objects beyond bare interface identity; element creation/properties/events; DOM-level callbacks/
-exceptions; Promise APIs at the DOM level; modules/dynamic import; fetch/storage; Canvas; WebGL;
-WebGPU; audio/media; Workers; WebAssembly); complete `proxyhandler.rs`-equivalent indexed/named
-property interception (only indexed reads prototyped); the actual
-`codegen.py`/production support-module
-adaptation itself (not started).
+**Seventh checkpoint (2026-10-01): first generated WebIDL interface.** An opt-in V8 backend
+now consumes Servo's real WebIDL parser AST and generates a typed `ValidityState` binding for
+the actual `components/script_bindings/webidls/ValidityState.webidl` (11 readonly boolean
+attributes). It installs accessors on the interface prototype with receiver signatures, exposes
+the prototype/tag and a non-enumerable global interface property, and rejects unsupported
+interface/member shapes instead of silently omitting them. The opt-in
+`servo-script-bindings/v8-bindings-pilot` feature compiles the generated binding while the
+default SpiderMonkey generator remains unchanged. Local generator tests and a full Windows
+`mach build -p servo-script-bindings --features v8-bindings-pilot,js/jit --locked` passed;
+runtime integration tests cover all 11 getters and descriptors in normal and JIT-less modes.
+This is generator/backend groundwork, not a production DOM binding: its native trait is not yet
+implemented by Servo's DOM, and no production runtime selects V8. Only Window-exposed interfaces
+are accepted by this pilot. CI runs generator and runtime tests across Windows, Linux and macOS.
+
+**Not yet done:** production use of V8; binding existing Servo DOM implementations to generated
+wrappers; remaining WebIDL types, members, inheritance and interfaces; complete
+`proxyhandler.rs`-equivalent indexed/named property semantics (only indexed reads prototyped);
+replacement of SpiderMonkey rooting/tracing in production; `document`/DOM events and callbacks;
+Promise APIs at the DOM level; modules/dynamic import; fetch/storage; Canvas; WebGL; WebGPU;
+audio/media; Workers; WebAssembly; and the Phase 5 real game validation matrix.
 
 ### Phase 5 — real game validation
 

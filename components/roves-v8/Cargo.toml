@@ -19,3 +19,6 @@ v8 = "=152.2.0"
 # Applies the "--jitless" V8 flag before platform/isolate creation; does not change which V8
 # binary is linked (rusty_v8's prebuilt archives support both modes in the same build).
 jitless = []
+
+# Temporary opt-in slice of the real WebIDL generator. Production remains unchanged.
+webidl-pilot = []

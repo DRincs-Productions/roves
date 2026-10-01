@@ -15,6 +15,15 @@
 //! generated types being awkward to name in a function signature. A handful of duplicated lines
 //! is a fine trade against fighting that.
 
+extern crate self as roves_v8;
+
+#[cfg(feature = "webidl-pilot")]
+pub mod webidl {
+    pub mod validity_state {
+        include!(concat!(env!("OUT_DIR"), "/ValidityStateV8Binding.rs"));
+    }
+}
+
 use std::sync::Once;
 
 static V8_PLATFORM_INIT: Once = Once::new();
@@ -98,8 +107,6 @@ pub struct Runtime {
     /// Keeps callbacks armed until they have actually completed. An empty weak handle
     /// alone is insufficient: first-pass GC may clear it before second-pass finalization.
     wrapped_finalizers: Vec<WrappedFinalizer>,
-    /// Stable callback allocations live until after isolate disposal (fields drop in order).
-    property_callbacks: Vec<Box<(PropertyGetter, PropertySetter)>>,
 }
 
 struct WrappedFinalizer {
@@ -172,7 +179,6 @@ impl Runtime {
             isolate,
             context,
             wrapped_finalizers: Vec::new(),
-            property_callbacks: Vec::new(),
         }
     }
 
@@ -541,13 +547,14 @@ impl Runtime {
         let context = v8::Local::new(scope, context_handle);
         let scope = &mut v8::ContextScope::new(scope, context);
 
-        // No real constructor behavior yet -- instances are made via `create_instance`, not by
-        // calling this from JS. A no-op body is still required: `FunctionTemplate` has no
-        // "callback-less" constructor.
+        // Nonconstructible WebIDL interfaces throw on both calls and construction.
+        // Native instances are created by create_instance without invoking this function.
         let template = v8::FunctionTemplate::builder(
-            |_scope: &mut v8::PinScope,
+            |scope: &mut v8::PinScope,
              _args: v8::FunctionCallbackArguments,
-             _retval: v8::ReturnValue| {},
+             _retval: v8::ReturnValue| {
+                throw_type_error(scope, "Illegal constructor");
+             },
         )
         .build(scope);
         template.instance_template(scope).set_internal_field_count(1);
@@ -559,7 +566,13 @@ impl Runtime {
 
         if let Some(class_name) = v8::String::new(scope, name) {
             template.set_class_name(class_name);
+            let tag = v8::Symbol::get_to_string_tag(scope);
+            template.prototype_template(scope).set_with_attr(
+                tag.into(), class_name.into(),
+                v8::PropertyAttribute::READ_ONLY | v8::PropertyAttribute::DONT_ENUM,
+            );
         }
+        template.read_only_prototype();
 
         // Deliberately NOT calling `template.get_function(scope)` here to expose the constructor
         // eagerly -- found by hitting a real bug: `get_function` materializes the actual
@@ -586,16 +599,35 @@ impl Runtime {
         }
     }
 
+    /// Finalizes registration and exposes a nonconstructible interface constructor even
+    /// before any native instance exists. All members must be registered first.
+    pub fn expose_interface(&mut self, interface: &Interface) -> Result<(), String> {
+        if interface.constructor_exposed.get() { return Ok(()); }
+        interface.materialized.set(true);
+        for ancestor in &interface.ancestors { ancestor.set(true); }
+        let context_handle = &self.context;
+        v8::scope!(let scope, &mut self.isolate);
+        let context = v8::Local::new(scope, context_handle);
+        let scope = &mut v8::ContextScope::new(scope, context);
+        let template = v8::Local::new(scope, &interface.template);
+        let function = template.get_function(scope).ok_or("failed to materialize interface")?;
+        let key = v8::String::new(scope, &interface.name).ok_or("invalid interface name")?;
+        if context.global(scope).define_own_property(
+            scope, key.into(), function.into(), v8::PropertyAttribute::DONT_ENUM,
+        ) != Some(true) {
+            return Err("failed to expose interface".into());
+        }
+        interface.constructor_exposed.set(true);
+        Ok(())
+    }
+
     /// Creates an instance of `interface`, reflecting `value` into it exactly like
     /// [`Runtime::create_wrapped`] (same ownership/finalization lifecycle, same
     /// [`Runtime::get_wrapped`] read-back) — but the instance's `[[Prototype]]` is
     /// `interface`'s prototype object, so `instanceof` and the prototype chain work from JS,
     /// which a plain `create_wrapped` object doesn't have.
     pub fn create_instance<T: 'static>(&mut self, interface: &Interface, value: T) -> Handle {
-        interface.materialized.set(true);
-        for ancestor in &interface.ancestors {
-            ancestor.set(true);
-        }
+        self.expose_interface(interface).expect("failed to expose native interface");
         let boxed_any: Box<dyn std::any::Any> = Box::new(value);
 
         let (global_value, raw) = {
@@ -605,24 +637,6 @@ impl Runtime {
             let scope = &mut v8::ContextScope::new(scope, context);
 
             let template = v8::Local::new(scope, &interface.template);
-
-            // Exposes the constructor on the global object (e.g. `window.Node`), matching how a
-            // real DOM interface is JS-visible -- deferred to here, rather than done eagerly in
-            // `define_interface`, because `get_function` materializes the actual prototype
-            // object from whatever `prototype_template` contains *right now*; doing this in
-            // `define_interface` would freeze the prototype before later `define_method`/
-            // `define_property` calls for this same interface ever ran. See `define_interface`'s
-            // own doc comment for the real bug this was found by. Only done once per interface
-            // (`constructor_exposed`) -- harmless to repeat, but pointless after the first time.
-            if !interface.constructor_exposed.get() {
-                if let (Some(function), Some(key)) =
-                    (template.get_function(scope), v8::String::new(scope, &interface.name))
-                {
-                    let global = context.global(scope);
-                    let _ = global.set(scope, key.into(), function.into());
-                }
-                interface.constructor_exposed.set(true);
-            }
 
             let instance_template = template.instance_template(scope);
             let object = instance_template
@@ -642,95 +656,20 @@ impl Runtime {
         self.install_guaranteed_finalizer(global_value, raw)
     }
 
-    /// Defines a read-only accessor property named `name`, computed by calling `getter` on the
-    /// wrapped Rust value of whichever instance JS reads it from (e.g. `node.nodeName`), not a
-    /// value stored once and left static like [`Runtime::link`]'s plain property — the real
-    /// WebIDL "attribute" shape a DOM interface needs.
-    ///
-    /// Installed on `interface`'s **instance template**, not its prototype template — found by
-    /// hitting a real, silent bug: this `v8` crate version has no way to recover the actual
-    /// receiver (`this`) inside a property accessor callback, only
-    /// [`v8::PropertyCallbackArguments::holder`], which for an accessor defined on a *shared*
-    /// prototype object returns that prototype object itself (with no internal field, since only
-    /// instances have one), not the instance the property was actually read from — every read
-    /// silently returned `undefined` instead of erroring, caught only by the getter tests
-    /// expecting a real value and getting `Undefined`. Defining the accessor directly on the
-    /// instance template sidesteps this: `holder()` for it is the instance itself, since the
-    /// property lives directly on it rather than on a shared prototype object. Despite that, a
-    /// property defined this way on a parent interface (via [`Runtime::define_interface`]'s
-    /// `parent`) *is* still visible on a child interface's instances — V8's
-    /// `FunctionTemplate::inherit` propagates instance-template accessors down the same
-    /// inheritance relationship it wires the prototype chain through, confirmed by
-    /// `define_property_is_inherited_from_a_parent_interface`'s own test (an earlier version of
-    /// that test assumed the opposite and failed, which is how this was actually found rather
-    /// than assumed).
+    /// Defines a read-only WebIDL-style attribute on the interface prototype.
+    /// Function-template accessors receive the actual `this` and enforce the interface
+    /// signature, unlike PropertyCallbackArguments-based instance accessors.
     pub fn define_property(
         &mut self,
         interface: &Interface,
         name: &str,
         getter: PropertyGetter,
     ) -> Result<(), String> {
-        if interface.materialized.get() {
-            return Err("interface members must be defined before creating instances or descendants".into());
-        }
-        let context_handle = &self.context;
-        v8::scope!(let scope, &mut self.isolate);
-        let context = v8::Local::new(scope, context_handle);
-        let scope = &mut v8::ContextScope::new(scope, context);
-
-        let template = v8::Local::new(scope, &interface.template);
-        let instance_template = template.instance_template(scope);
-
-        let Some(key) = v8::String::new(scope, name) else {
-            return Err(format!("{name:?} is not valid as a property name string"));
-        };
-        let external_data = v8::External::new(scope, getter as *mut std::ffi::c_void);
-
-        let configuration = v8::AccessorConfiguration::new(
-            |scope: &mut v8::PinScope,
-             _key: v8::Local<v8::Name>,
-             args: v8::PropertyCallbackArguments,
-             mut retval: v8::ReturnValue<v8::Value>| {
-                let data = args.data();
-                let Ok(external) = v8::Local::<v8::External>::try_from(data) else {
-                    return;
-                };
-                // SAFETY: `external`'s value is exactly the `PropertyGetter` pointer
-                // `define_property` stored below, cast back to its original type.
-                let getter: PropertyGetter = unsafe { std::mem::transmute(external.value()) };
-
-                let holder = args.holder();
-                if holder.internal_field_count() < 1 {
-                    return;
-                }
-                // SAFETY: same reasoning as `get_wrapped` -- this field is only ever set by
-                // `create_wrapped`/`create_instance`, always via
-                // `set_aligned_pointer_in_internal_field` with this exact `WRAPPED_POINTER_TAG`.
-                let raw = unsafe {
-                    holder.get_aligned_pointer_from_internal_field(0, WRAPPED_POINTER_TAG)
-                } as *mut Box<dyn std::any::Any>;
-                if raw.is_null() {
-                    return;
-                }
-                // SAFETY: the instance is `holder` itself, alive for the duration of this
-                // callback (V8 guarantees the receiver outlives its own property access), so the
-                // guaranteed finalizer that would free `raw` cannot have run yet.
-                let boxed_any: &Box<dyn std::any::Any> = unsafe { &*raw };
-                let value = getter(boxed_any.as_ref());
-                retval.set(v8_value(scope, &value));
-            },
-        )
-        .data(external_data.into());
-        instance_template.set_accessor_with_configuration(key.into(), configuration);
-        Ok(())
+        self.define_attribute(interface, name, getter, None)
     }
 
-    /// Same as [`Runtime::define_property`], but also settable from JS — `setter` mutates the
-    /// wrapped Rust value in place when JS assigns to the property (e.g. `node.nodeValue = x`).
-    /// Both callbacks receive the property's holder the same, already-fixed way (installed on
-    /// the interface's instance template — see [`Runtime::define_property`]'s own doc comment on
-    /// why a plain prototype-template accessor doesn't work in this `v8` crate version), and
-    /// inherit across `define_interface`'s `parent` relationship the same way.
+    /// Defines a prototype attribute with both a getter and a setter. Callback functions
+    /// each carry their own pointer data; no shared tuple allocation is needed.
     pub fn define_settable_property(
         &mut self,
         interface: &Interface,
@@ -738,6 +677,16 @@ impl Runtime {
         getter: PropertyGetter,
         setter: PropertySetter,
     ) -> Result<(), String> {
+        self.define_attribute(interface, name, getter, Some(setter))
+    }
+
+    fn define_attribute(
+        &mut self,
+        interface: &Interface,
+        name: &str,
+        getter: PropertyGetter,
+        setter: Option<PropertySetter>,
+    ) -> Result<(), String> {
         if interface.materialized.get() {
             return Err("interface members must be defined before creating instances or descendants".into());
         }
@@ -745,97 +694,87 @@ impl Runtime {
         v8::scope!(let scope, &mut self.isolate);
         let context = v8::Local::new(scope, context_handle);
         let scope = &mut v8::ContextScope::new(scope, context);
-
         let template = v8::Local::new(scope, &interface.template);
-        let instance_template = template.instance_template(scope);
-
-        let Some(key) = v8::String::new(scope, name) else {
-            return Err(format!("{name:?} is not valid as a property name string"));
-        };
-        // AccessorConfiguration has one shared `data` for both callbacks, but each needs its own
-        // fn pointer -- bundled as a tuple behind one External instead of two separate ones.
-        // The runtime owns these stable boxes until after isolate disposal; no leak is
-        // required to make the shared External data outlive every accessor invocation.
-        let callbacks = Box::new((getter, setter));
-        let pointer = callbacks.as_ref() as *const (PropertyGetter, PropertySetter);
-        let external_data = v8::External::new(scope, pointer as *mut std::ffi::c_void);
-        self.property_callbacks.push(callbacks);
-
-        let configuration = v8::AccessorConfiguration::new(
+        let signature = v8::Signature::new(scope, template);
+        let key = v8::String::new(scope, name).ok_or("invalid attribute name")?;
+        let getter_data = v8::External::new(scope, getter as *mut std::ffi::c_void);
+        let getter_template = v8::FunctionTemplate::builder(
             |scope: &mut v8::PinScope,
-             _key: v8::Local<v8::Name>,
-             args: v8::PropertyCallbackArguments,
-             mut retval: v8::ReturnValue<v8::Value>| {
-                let data = args.data();
-                let Ok(external) = v8::Local::<v8::External>::try_from(data) else {
-                    return;
-                };
-                // SAFETY: `external`'s value is exactly the `Box<(PropertyGetter,
-                // PropertySetter)>` pointer stored below, cast back to its original type; the
-                // getter callback only ever reads through this shared reference.
-                let (getter, _setter) =
-                    unsafe { &*(external.value() as *const (PropertyGetter, PropertySetter)) };
-
-                let holder = args.holder();
-                if holder.internal_field_count() < 1 {
+             args: v8::FunctionCallbackArguments,
+             mut retval: v8::ReturnValue| {
+                let external = v8::Local::<v8::External>::try_from(args.data()).unwrap();
+                // SAFETY: data is the PropertyGetter function pointer installed above.
+                let getter: PropertyGetter = unsafe { std::mem::transmute(external.value()) };
+                let this = args.this();
+                // The signature rejects foreign receivers before this callback runs.
+                // A valid receiver still needs initialized native data (JS constructors
+                // for nonconstructible interfaces are rejected separately).
+                if this.internal_field_count() < 1 {
+                    throw_type_error(scope, "Illegal invocation");
                     return;
                 }
                 let raw = unsafe {
-                    holder.get_aligned_pointer_from_internal_field(0, WRAPPED_POINTER_TAG)
+                    this.get_aligned_pointer_from_internal_field(0, WRAPPED_POINTER_TAG)
                 } as *mut Box<dyn std::any::Any>;
                 if raw.is_null() {
+                    throw_type_error(scope, "Illegal invocation");
                     return;
                 }
-                let boxed_any: &Box<dyn std::any::Any> = unsafe { &*raw };
-                let value = getter(boxed_any.as_ref());
+                // SAFETY: our instance owns this Box; its live local handle prevents GC.
+                let value = getter(unsafe { (&*raw).as_ref() });
                 retval.set(v8_value(scope, &value));
             },
         )
-        .setter(
-            |_scope: &mut v8::PinScope,
-             _key: v8::Local<v8::Name>,
-             new_value: v8::Local<v8::Value>,
-             args: v8::PropertyCallbackArguments,
-             _retval: v8::ReturnValue<()>| {
-                let data = args.data();
-                let Ok(external) = v8::Local::<v8::External>::try_from(data) else {
-                    return;
-                };
-                // SAFETY: same reasoning as the getter closure above.
-                let (_getter, setter) =
-                    unsafe { &*(external.value() as *const (PropertyGetter, PropertySetter)) };
-
-                let holder = args.holder();
-                if holder.internal_field_count() < 1 {
-                    return;
-                }
-                let raw = unsafe {
-                    holder.get_aligned_pointer_from_internal_field(0, WRAPPED_POINTER_TAG)
-                } as *mut Box<dyn std::any::Any>;
-                if raw.is_null() {
-                    return;
-                }
-                // SAFETY: `holder` is the sole owner of this internal field's data and this is
-                // the only live reference to it for the duration of this callback -- V8 does not
-                // re-enter a property setter for the same object concurrently.
-                let boxed_any: &mut Box<dyn std::any::Any> = unsafe { &mut *raw };
-                let new_value = native_value(_scope, new_value);
-                setter(boxed_any.as_mut(), &new_value);
-            },
-        )
-        .data(external_data.into());
-        instance_template.set_accessor_with_configuration(key.into(), configuration);
+        .data(getter_data.into())
+        .signature(signature)
+        .constructor_behavior(v8::ConstructorBehavior::Throw)
+        .build(scope);
+        let getter_name = v8::String::new(scope, &format!("get {name}")).unwrap();
+        getter_template.set_class_name(getter_name);
+        let setter_template = setter.map(|setter| {
+            let setter_data = v8::External::new(scope, setter as *mut std::ffi::c_void);
+            let function = v8::FunctionTemplate::builder(
+                |scope: &mut v8::PinScope,
+                 args: v8::FunctionCallbackArguments,
+                 _retval: v8::ReturnValue| {
+                    let external = v8::Local::<v8::External>::try_from(args.data()).unwrap();
+                    // SAFETY: data is exactly the PropertySetter function pointer.
+                    let setter: PropertySetter = unsafe { std::mem::transmute(external.value()) };
+                    let this = args.this();
+                    if this.internal_field_count() < 1 {
+                        throw_type_error(scope, "Illegal invocation");
+                        return;
+                    }
+                    let raw = unsafe {
+                        this.get_aligned_pointer_from_internal_field(0, WRAPPED_POINTER_TAG)
+                    } as *mut Box<dyn std::any::Any>;
+                    if raw.is_null() {
+                        throw_type_error(scope, "Illegal invocation");
+                        return;
+                    }
+                    let value = native_value(scope, args.get(0));
+                    // SAFETY: JS execution exclusively borrows Runtime; get_wrapped cannot
+                    // have an outstanding shared reference during this callback.
+                    setter(unsafe { (&mut *raw).as_mut() }, &value);
+                },
+            )
+            .data(setter_data.into())
+            .signature(signature)
+            .length(1)
+            .constructor_behavior(v8::ConstructorBehavior::Throw)
+            .build(scope);
+            let setter_name = v8::String::new(scope, &format!("set {name}")).unwrap();
+            function.set_class_name(setter_name);
+            function
+        });
+        template.prototype_template(scope).set_accessor_property(
+            key.into(), Some(getter_template), setter_template, v8::PropertyAttribute::NONE,
+        );
         Ok(())
     }
 
-    /// Defines a callable method named `name` on `interface`'s prototype (e.g.
-    /// `node.someMethod(1, 2)`) — installed on the **prototype** template, unlike
-    /// [`Runtime::define_property`]/[`Runtime::define_settable_property`]: a regular function
-    /// callback's [`v8::FunctionCallbackArguments::this`] gives the actual receiver directly, so
-    /// methods don't need the instance-template workaround accessors do (see
-    /// [`Runtime::define_property`]'s own doc comment on why that workaround exists at all) — a
-    /// real, structural difference between how V8 dispatches property accessors versus function
-    /// calls, not a stylistic choice.
+    /// Defines a nonconstructible method on the interface prototype, with a signature
+    /// enforcing valid receivers (including interface inheritance).
     pub fn define_method(
         &mut self,
         interface: &Interface,
@@ -851,6 +790,7 @@ impl Runtime {
         let scope = &mut v8::ContextScope::new(scope, context);
 
         let template = v8::Local::new(scope, &interface.template);
+        let signature = v8::Signature::new(scope, template);
         let prototype_template = template.prototype_template(scope);
 
         let Some(key) = v8::String::new(scope, name) else {
@@ -894,6 +834,8 @@ impl Runtime {
             },
         )
         .data(external_data.into())
+        .signature(signature)
+        .constructor_behavior(v8::ConstructorBehavior::Throw)
         .build(scope);
 
         let function_value: v8::Local<v8::Data> = function_template.into();
@@ -1200,6 +1142,12 @@ fn unreachable_resolve_module_callback<'s>(
         "roves-v8's eval_module only supports import-free modules in this phase; \
          see docs/V8_MIGRATION.md's Phase 2 status note"
     )
+}
+
+fn throw_type_error(scope: &mut v8::PinScope, message: &str) {
+    let message = v8::String::new(scope, message).unwrap();
+    let exception = v8::Exception::type_error(scope, message);
+    scope.throw_exception(exception);
 }
 
 /// Converts a `v8::Local<Value>` into this crate's engine-neutral [`Value`] — see [`Value`]'s
@@ -2289,6 +2237,43 @@ mod tests {
             assert_eq!(runtime.get_wrapped::<i32>(&live), Some(&123));
             drop(next);
             runtime.force_full_gc_for_testing();
+        }
+    }
+
+
+    #[test]
+    fn prototype_attributes_have_webidl_descriptors_and_check_receivers() {
+        fn getter(this: &dyn std::any::Any) -> Value {
+            Value::Number(*this.downcast_ref::<i32>().unwrap() as f64)
+        }
+        fn setter(this: &mut dyn std::any::Any, value: &Value) {
+            if let Value::Number(value) = value { *this.downcast_mut::<i32>().unwrap() = *value as i32; }
+        }
+        let mut runtime = Runtime::new();
+        let interface = runtime.define_interface("Native", None);
+        runtime.define_settable_property(&interface, "value", getter, setter).unwrap();
+        let node = runtime.create_instance(&interface, 3_i32);
+        runtime.set_global_property("node", &node).unwrap();
+        assert_eq!(runtime.eval("Object.hasOwn(node, 'value')").unwrap(), "false");
+        assert_eq!(runtime.eval("const d = Object.getOwnPropertyDescriptor(Native.prototype, 'value'); [d.get.name, d.get.length, d.set.name, d.set.length, d.enumerable, d.configurable].join(',')").unwrap(), "get value,0,set value,1,true,true");
+        assert_eq!(runtime.eval("d.get.call(node)").unwrap(), "3");
+        runtime.eval("d.set.call(node, 9)").unwrap();
+        assert_eq!(runtime.get_wrapped::<i32>(&node), Some(&9));
+        for expression in ["d.get.call({})", "d.set.call({}, 1)", "d.get.call(Object.create(node))", "new d.get()"] {
+            assert!(runtime.eval(expression).unwrap_err().contains("TypeError"), "{expression}");
+        }
+    }
+
+    #[test]
+    fn interfaces_without_constructors_and_foreign_method_receivers_throw() {
+        fn method(_: &dyn std::any::Any, _: &[Value]) -> Value { Value::Undefined }
+        let mut runtime = Runtime::new();
+        let interface = runtime.define_interface("Native", None);
+        runtime.define_method(&interface, "method", method).unwrap();
+        let node = runtime.create_instance(&interface, ());
+        runtime.set_global_property("node", &node).unwrap();
+        for expression in ["Native()", "new Native()", "node.method.call({})", "new node.method()"] {
+            assert!(runtime.eval(expression).unwrap_err().contains("TypeError"), "{expression}");
         }
     }
 

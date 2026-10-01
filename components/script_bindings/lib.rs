@@ -15,6 +15,14 @@ extern crate log;
 #[macro_use]
 extern crate malloc_size_of_derive;
 
+/// Temporary opt-in generated V8 backend, not the production DOM engine.
+#[cfg(feature = "v8-bindings-pilot")]
+pub mod v8_bindings {
+    pub mod validity_state {
+        include!(concat!(env!("OUT_DIR"), "/ValidityStateV8Binding.rs"));
+    }
+}
+
 pub mod assert;
 pub mod callback;
 pub mod cell;

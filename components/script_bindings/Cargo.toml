@@ -20,6 +20,7 @@ name = "script_bindings"
 path = "lib.rs"
 
 [dependencies]
+roves-v8 = { path = "../roves-v8", optional = true }
 atomic_refcell = { workspace = true }
 bitflags = { workspace = true }
 crossbeam-channel = { workspace = true }
@@ -67,6 +68,8 @@ path = "benches/dom_partial_eq.rs"
 harness = false
 
 [features]
+# Temporary real-WebIDL V8 binding pilot; production engine migration is separate.
+v8-bindings-pilot = ["dep:roves-v8"]
 bluetooth = []
 gamepad = []
 testbinding = []

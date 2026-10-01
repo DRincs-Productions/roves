@@ -1,4 +1,27 @@
 # Customizations over upstream Servo
+## 2026-10-01 - V8 migration Phase 4: generated WebIDL pilot
+
+**Servo files:** root `Cargo.lock`; `components/roves-v8/{Cargo.toml,build.rs,src/lib.rs,tests/webidl.rs}`;
+`components/script_bindings/{Cargo.toml,build.rs,lib.rs,codegen/codegen.py,codegen/run_v8.py,codegen/test_v8.py}`.
+**Patch:** `0071-roves-v8-phase4-webidl-pilot.patch` after 0001-0070.
+**Repository tooling:** `.github/workflows/v8.yml` now exercises generator contracts and the
+WebIDL integration test in normal and JIT-less runtime configurations on Windows, Linux and macOS.
+
+Added an explicit opt-in `webidl-pilot` feature to `roves-v8` and
+`v8-bindings-pilot` to `servo-script-bindings`. The new backend parses the actual Servo
+`ValidityState.webidl` with Servo's existing WebIDL parser and generates typed native getter
+bindings; unsupported interface or member shapes fail closed, including interfaces not exposed
+to Window. The pilot installs the WebIDL interface prototype and non-enumerable global property,
+with readonly boolean attributes and the expected property descriptors. Servo's existing default
+SpiderMonkey generator output remains unchanged; enabling the pilot compiles the generated V8
+binding as an additional opt-in path and does not switch production runtime or provide a native
+`ValidityState` implementation.
+
+Four Python generator contract tests and two real-WebIDL runtime integration tests pass. The
+runtime suite passes with and without JIT-less mode; a full Windows `mach build` of
+`servo-script-bindings` with `v8-bindings-pilot` also succeeded. Cross-platform CI is triggered
+for this checkpoint and must be tracked to completion before treating it as verified there.
+
 ## 2026-10-01 - V8 ownership safety and continuous JIT-less verification
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `Cargo.toml`, isolated `Cargo.lock`.

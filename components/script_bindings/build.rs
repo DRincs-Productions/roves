@@ -38,6 +38,16 @@ fn main() {
         std::process::exit(1)
     }
 
+    if env::var_os("CARGO_FEATURE_V8_BINDINGS_PILOT").is_some() {
+        let status = find_python()
+            .arg("codegen/run_v8.py")
+            .arg("webidls/ValidityState.webidl")
+            .arg(out_dir.join("ValidityStateV8Binding.rs"))
+            .env("PYTHONDONTWRITEBYTECODE", "1")
+            .status().expect("run V8 WebIDL pilot generator");
+        assert!(status.success(), "V8 WebIDL pilot generation failed");
+    }
+
     println!("Binding generation completed in {:?}", start.elapsed());
 
     let json = out_dir.join("InterfaceObjectMapData.json");

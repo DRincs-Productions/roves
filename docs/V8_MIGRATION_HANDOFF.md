@@ -27,6 +27,35 @@ l'utente ha deciso, e qual è la prossima decisione in sospeso.
    la stessa cura che si userebbe in produzione, solo isolato in una crate separata per
    sicurezza. 41 unit test, tutti verificati sia in locale (`cargo test -p roves-v8`) sia in CI.
 
+## Stato aggiornato — 2026-10-01
+
+Le sezioni storiche qui sotto documentano le decisioni e i checkpoint precedenti; se divergono
+da questo blocco, fa fede lo stato attuale. L'utente ha richiesto autonomia continuativa: modificare,
+testare localmente, avviare CI, correggere i fallimenti e proseguire fino al completamento dei
+criteri in `V8_MIGRATION.md`.
+
+Il checkpoint 7 avvia l'integrazione vera con `components/script_bindings`: un backend opt-in
+usa il parser WebIDL esistente e genera `ValidityState` dalla definizione Servo reale, senza
+toccare l'output predefinito del generatore SpiderMonkey. `v8-bindings-pilot` compila la binding
+generata come percorso aggiuntivo; non collega ancora un'implementazione DOM nativa e non
+seleziona V8 in produzione. Sono passati localmente quattro test Python, 51 unit test runtime,
+due integrazioni WebIDL e due doctest in configurazione JIT-less, oltre a una build Windows
+completa di `servo-script-bindings` con il pilot attivo. La matrice CI specifica e la CI completa
+Servo vanno seguite sui commit aggiornati.
+
+`codegen.py` è stato esteso solo con la classe opt-in `CGV8BindingRoot`; il percorso SpiderMonkey
+predefinito è rimasto senza modifiche di output (1.441 file generati confrontati prima dell'ultimo
+controllo di esposizione). Il pilot accetta solo interfacce esposte a Window, readonly boolean
+instance attributes senza attributi estesi, e senza ereditarietà/costruttore. Tutte le altre forme
+falliscono esplicitamente. Patch overlay corrispondente: `0071-roves-v8-phase4-webidl-pilot.patch`.
+Il file `CLAUDE.md` è stato rinominato in `AGENTS.md`.
+
+Prossimo lavoro autonomo: finalizzare e verificare l'overlay 0071 da una copia Servo pristine,
+eseguire nuovamente i test runtime normali/JIT-less e la build `mach`, committare e pushare,
+attendere entrambe le CI e correggere gli eventuali errori. Poi estendere il generatore incrementando
+la copertura WebIDL e collegando tipi nativi Servo, senza dichiarare completata la migrazione finché
+le fasi e la validazione dei giochi in `V8_MIGRATION.md` non sono concluse.
+
 ## Stato reale, in breve
 
 - **Fase 1 (isolate/context/eval)**: completa.
