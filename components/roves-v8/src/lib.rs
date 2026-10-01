@@ -162,6 +162,10 @@ pub type PropertyGetter = fn(&dyn std::any::Any) -> Value;
 /// restriction as [`PropertyGetter`]/[`NativeFunction`], for the same reason.
 pub type PropertySetter = fn(&mut dyn std::any::Any, &Value);
 
+/// A WebIDL DOMString setter. JavaScript string conversion runs in the runtime and preserves
+/// the resulting UTF-16 code units, including lone surrogates.
+pub type DomStringSetter = fn(&mut dyn std::any::Any, Vec<u16>);
+
 /// A callable method, registered via [`Runtime::define_method`]: receives the wrapped Rust value
 /// of whichever instance it was called on (`node.someMethod()`) plus its JS arguments already
 /// converted to [`Value`], and returns a [`Value`]. Same plain-function-pointer restriction as
@@ -675,7 +679,7 @@ impl Runtime {
         name: &str,
         getter: PropertyGetter,
     ) -> Result<(), String> {
-        self.define_attribute(interface, name, getter, None)
+        self.define_attribute(interface, name, getter, None, None)
     }
 
     /// Defines a prototype attribute with both a getter and a setter. Callback functions
@@ -687,7 +691,18 @@ impl Runtime {
         getter: PropertyGetter,
         setter: PropertySetter,
     ) -> Result<(), String> {
-        self.define_attribute(interface, name, getter, Some(setter))
+        self.define_attribute(interface, name, getter, Some(setter), None)
+    }
+
+    /// Defines a WebIDL DOMString attribute with JavaScript ToString conversion.
+    pub fn define_domstring_property(
+        &mut self,
+        interface: &Interface,
+        name: &str,
+        getter: PropertyGetter,
+        setter: DomStringSetter,
+    ) -> Result<(), String> {
+        self.define_attribute(interface, name, getter, None, Some(setter))
     }
 
     fn define_attribute(
@@ -696,6 +711,7 @@ impl Runtime {
         name: &str,
         getter: PropertyGetter,
         setter: Option<PropertySetter>,
+        domstring_setter: Option<DomStringSetter>,
     ) -> Result<(), String> {
         if interface.materialized.get() {
             return Err("interface members must be defined before creating instances or descendants".into());
@@ -741,14 +757,13 @@ impl Runtime {
         .build(scope);
         let getter_name = v8::String::new(scope, &format!("get {name}")).unwrap();
         getter_template.set_class_name(getter_name);
-        let setter_template = setter.map(|setter| {
+        let setter_template = if let Some(setter) = setter {
             let setter_data = v8::External::new(scope, setter as *mut std::ffi::c_void);
-            let function = v8::FunctionTemplate::builder(
+            Some(v8::FunctionTemplate::builder(
                 |scope: &mut v8::PinScope,
                  args: v8::FunctionCallbackArguments,
                  _retval: v8::ReturnValue| {
                     let external = v8::Local::<v8::External>::try_from(args.data()).unwrap();
-                    // SAFETY: data is exactly the PropertySetter function pointer.
                     let setter: PropertySetter = unsafe { std::mem::transmute(external.value()) };
                     let this = args.this();
                     if this.internal_field_count() < 1 {
@@ -763,8 +778,8 @@ impl Runtime {
                         return;
                     }
                     let value = native_value(scope, args.get(0));
-                    // SAFETY: JS execution exclusively borrows Runtime; get_wrapped cannot
-                    // have an outstanding shared reference during this callback.
+                    // SAFETY: JavaScript exclusively borrows Runtime during this callback, so
+                    // no shared native getter reference can overlap the mutable borrow.
                     setter(unsafe { (&mut *raw).as_mut() }, &value);
                 },
             )
@@ -772,7 +787,45 @@ impl Runtime {
             .signature(signature)
             .length(1)
             .constructor_behavior(v8::ConstructorBehavior::Throw)
-            .build(scope);
+            .build(scope))
+        } else {
+            domstring_setter.map(|setter| {
+                let setter_data = v8::External::new(scope, setter as *mut std::ffi::c_void);
+                v8::FunctionTemplate::builder(
+                    |scope: &mut v8::PinScope,
+                     args: v8::FunctionCallbackArguments,
+                     _retval: v8::ReturnValue| {
+                        let external = v8::Local::<v8::External>::try_from(args.data()).unwrap();
+                        let setter: DomStringSetter =
+                            unsafe { std::mem::transmute(external.value()) };
+                        let this = args.this();
+                        if this.internal_field_count() < 1 {
+                            throw_type_error(scope, "Illegal invocation");
+                            return;
+                        }
+                        let raw = unsafe {
+                            this.get_aligned_pointer_from_internal_field(0, WRAPPED_POINTER_TAG)
+                        } as *mut Box<dyn std::any::Any>;
+                        if raw.is_null() {
+                            throw_type_error(scope, "Illegal invocation");
+                            return;
+                        }
+                        let Some(string) = args.get(0).to_string(scope) else { return; };
+                        let mut units = vec![0; string.length()];
+                        string.write_v2(scope, 0, &mut units, v8::WriteFlags::empty());
+                        // The ToString operation above may execute user code, so take the
+                        // mutable native borrow only after conversion has completed.
+                        setter(unsafe { (&mut *raw).as_mut() }, units);
+                    },
+                )
+                .data(setter_data.into())
+                .signature(signature)
+                .length(1)
+                .constructor_behavior(v8::ConstructorBehavior::Throw)
+                .build(scope)
+            })
+        };
+        let setter_template = setter_template.map(|function| {
             let setter_name = v8::String::new(scope, &format!("set {name}")).unwrap();
             function.set_class_name(setter_name);
             function
@@ -1339,6 +1392,9 @@ mod tests {
             fn Value(&self) -> Vec<u16> {
                 self.0.clone()
             }
+            fn set_Value(&mut self, value: Vec<u16>) {
+                self.0 = value;
+            }
         }
 
         let mut runtime = Runtime::new();
@@ -1347,9 +1403,29 @@ mod tests {
         let state = binding.create(&mut runtime, NativeString(units.clone()));
         runtime.set_global_property("state", &state).unwrap();
         assert_eq!(runtime.eval_value("state.value").unwrap(), Value::Utf16String(units));
-        assert_eq!(runtime.eval_value("state.value.charCodeAt(0)").unwrap(), Value::Number(0xD800 as f64));
-        assert_eq!(runtime.eval_value("state.value.charCodeAt(1)").unwrap(), Value::Number(65.0));
-        assert_eq!(runtime.eval_value("state.value.charCodeAt(2)").unwrap(), Value::Number(0xDC00 as f64));
+        assert_eq!(
+            runtime.eval_value("state.value.charCodeAt(0)").unwrap(),
+            Value::Number(0xD800 as f64)
+        );
+        assert_eq!(
+            runtime.eval_value("state.value.charCodeAt(1)").unwrap(),
+            Value::Number(65.0)
+        );
+        assert_eq!(
+            runtime.eval_value("state.value.charCodeAt(2)").unwrap(),
+            Value::Number(0xDC00 as f64)
+        );
+        runtime.eval("state.value = 42").unwrap();
+        assert_eq!(runtime.eval_value("state.value").unwrap(), Value::String("42".into()));
+        runtime.eval("state.value = '\\ud800x\\udc00'").unwrap();
+        assert_eq!(
+            runtime.eval_value("state.value").unwrap(),
+            Value::Utf16String(vec![0xD800, b'x' as u16, 0xDC00])
+        );
+        assert!(runtime
+            .eval("state.value = Symbol('no string conversion')")
+            .unwrap_err()
+            .contains("TypeError"));
     }
 
     #[test]

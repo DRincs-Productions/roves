@@ -571,6 +571,15 @@ boundary without borrowing Servo's SpiderMonkey-rooted `DOMString` implementatio
 tests pass in default, normal V8 pilot and JIT-less V8 pilot modes; six Python generator tests pass.
 Cross-platform CI is pending.
 
+**Eleventh checkpoint (2026-10-01): mutable DOMString attributes.** The opt-in WebIDL backend
+also generates a setter for mutable `DOMString` attributes. `roves-v8` applies JavaScript
+`ToString` in the V8 callback, then passes UTF-16 code units to the generated native trait, so
+ordinary non-string values convert according to JavaScript and lone surrogates survive. Converting
+a Symbol raises the expected JavaScript `TypeError`. Other mutable WebIDL types continue to fail
+closed pending their precise WebIDL conversion semantics. The fixture exercises native read/write
+round trips; local normal and JIT-less tests pass. This remains an isolated pilot path and does not
+attach SpiderMonkey-rooted DOMString values to V8 or activate V8 in production.
+
 **Not yet done:** production use of V8; binding existing Servo DOM implementations to generated
 wrappers; remaining WebIDL types, members, inheritance and interfaces; complete
 `proxyhandler.rs`-equivalent indexed/named property semantics (only indexed reads prototyped);

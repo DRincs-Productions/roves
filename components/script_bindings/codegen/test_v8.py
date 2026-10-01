@@ -35,12 +35,13 @@ class V8GeneratorTests(unittest.TestCase):
             root = Path(directory)
             webidl = root / "StringOnly.webidl"
             webidl.write_text(
-                "[Exposed=Window] interface StringOnly { readonly attribute DOMString value; };",
+                "[Exposed=Window] interface StringOnly { attribute DOMString value; };",
                 encoding="utf-8",
             )
             source = generate(webidl, root / "out")
             self.assertIn("fn Value(&self) -> Vec<u16>;", source)
-            self.assertIn("Value::Utf16String(native.Value())", source)
+            self.assertIn("fn set_Value(&mut self, value: Vec<u16>);", source)
+            self.assertIn("runtime.define_domstring_property(&interface, \"value\"", source)
 
     def assert_unsupported(self, contents):
         with tempfile.TemporaryDirectory() as directory:

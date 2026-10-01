@@ -406,6 +406,21 @@ jobs:
         shell: pwsh
         run: echo "$env:WIX\bin" >> $env:GITHUB_PATH
 
+      # mozjs_sys builds its configure probes with `-fuse-ld=lld`. Recent
+      # macos-latest ARM images may not expose Homebrew's lld on PATH, even
+      # when Xcode's clang is available, so make the required linker explicit.
+      - name: ensure LLVM lld is available (macOS)
+        if: matrix.os_name == 'macos'
+        shell: bash
+        run: |
+          LLVM_PREFIX="$(brew --prefix llvm 2>/dev/null || true)"
+          if [ -z "$LLVM_PREFIX" ] || [ ! -x "$LLVM_PREFIX/bin/ld.lld" ]; then
+            brew install llvm
+            LLVM_PREFIX="$(brew --prefix llvm)"
+          fi
+          echo "$LLVM_PREFIX/bin" >> "$GITHUB_PATH"
+          "$LLVM_PREFIX/bin/ld.lld" --version
+
       # Debug build, not --release: this workflow exists to smoke-test behavior
       # (e.g. "are the tabs really gone?"), not to ship an optimized binary. Debug
       # compiles noticeably faster, which matters since this runs on every push.

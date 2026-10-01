@@ -1,8 +1,7 @@
 # V8 migration — handoff (2026-10-01)
 
-Questo file esiste perché la sessione precedente ha esaurito il budget di contesto a metà
-lavoro. Leggilo per intero prima di continuare: dice esattamente cosa è stato fatto, cosa
-l'utente ha deciso, e qual è la prossima decisione in sospeso.
+Questo file è il punto di ripresa operativo della migrazione V8. Lo stato corrente riportato
+qui prevale sulle note storiche più sotto.
 
 ## Documenti da leggere, in ordine
 
@@ -18,7 +17,7 @@ l'utente ha deciso, e qual è la prossima decisione in sospeso.
    in ordine cronologico inverso (la più recente in cima). Le entry dal 2026-09-29 in poi (cerca
    "V8 migration") coprono tutto il lavoro di questa migrazione, checkpoint per checkpoint, con i
    bug reali trovati e come sono stati corretti.
-4. **[`../patches/servo-v0.5.0/`](../patches/servo-v0.5.0/)** — patch numerate `0057` → `0068`,
+4. **[`../patches/servo-v0.5.0/`](../patches/servo-v0.5.0/)** — patch numerate `0001` → `0074`,
    una per checkpoint, applicabili a un checkout pulito del tag Servo pristine (vedi
    `../AGENTS.md` per come funziona il meccanismo patch/vendoring di questo repo).
 5. **[`../components/roves-v8/src/lib.rs`](../components/roves-v8/src/lib.rs)** — il codice
@@ -57,12 +56,15 @@ readonly boolean/`double`/`unsigned long`/`DOMString` senza attributi estesi, e 
 ereditarietà/costruttore. Tutte le altre forme falliscono esplicitamente. Patch overlay: 0071
 aggiunge la prima interfaccia, 0072 aggiunge i numerici, 0073 collega l'adapter nativo Screen,
 0074 aggiunge le stringhe UTF-16 lossless.
-Il file `CLAUDE.md` è stato rinominato in `AGENTS.md`.
+Il file `CLAUDE.md` è stato rinominato in `AGENTS.md`, entry point condiviso per tutti gli agenti.
 
-Prossimo lavoro autonomo: finalizzare 0074, verificare l'overlay dal checkpoint 0073, committare e
-pushare. Attendere la CI V8, la validazione patch e la CI completa; correggere ogni errore e poi
-proseguire con conversioni e forme WebIDL, wrapper/realm e runtime production. La migrazione resta
-in corso finché tutte le fasi e la validazione giochi in `V8_MIGRATION.md` non sono concluse.
+Checkpoint 10 (`0074`, commit `9412dfe`) e checkpoint 11 (mutabili DOMString, in sviluppo locale)
+sono dettagliati sopra e nel piano. La CI del commit 9412dfe è verde per matrice V8 (6/6), Android,
+iOS e validazione overlay; un job macOS DMG è fallito perché il runner ARM non esponeva `ld.lld`
+richiesto da `mozjs_sys`; la correzione di provisioning è inclusa nel workflow corrente. Dopo la
+patch 0075, proseguire con le conversioni WebIDL e poi wrapper/realm solo quando l'ownership è
+validata. Il pilot non è il runtime di produzione; il piano resta aperto fino a tutti i criteri di
+`V8_MIGRATION.md`.
 
 ## Stato reale, in breve
 

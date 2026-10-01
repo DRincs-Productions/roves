@@ -1,4 +1,32 @@
 # Customizations over upstream Servo
+## 2026-10-01 - macOS CI linker provisioning for Servo builds
+
+**File:** `.github/workflows/test.yml` (repository CI only; no upstream source overlay patch).
+
+The `macos-latest` ARM runner failed its Servo debug build because `mozjs_sys` invokes clang with
+`-fuse-ld=lld`, while Homebrew's `ld.lld` was not on PATH. The macOS matrix now ensures Homebrew
+LLVM/LLD is installed and places its `bin` directory on `GITHUB_PATH` before the build. This fixes
+the toolchain prerequisite; the workflow run after this update verifies both macOS packaging modes.
+The run that exposed the issue passed patch overlay, V8 6/6, Android and iOS; macOS DMG failed at
+the linker probe, and other bundle jobs were still running when the fix was prepared.
+
+## 2026-10-01 - V8 migration Phase 4: mutable DOMString attributes
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `components/roves-v8/tests/webidl/Utf16StringState.webidl`;
+`components/script_bindings/codegen/{codegen.py,test_v8.py}`.
+**Patch:** `0075-roves-v8-phase4-mutable-domstring.patch` after 0001-0074.
+
+The opt-in WebIDL pilot now generates setters for mutable `DOMString` attributes. The V8 runtime
+applies JavaScript `ToString` before calling a native UTF-16 setter, retaining lone surrogates;
+Symbol conversion remains a JavaScript TypeError. Other mutable WebIDL types fail closed until
+their exact conversion rules are implemented. A generated fixture tests JS number conversion,
+surrogate code-unit preservation and Symbol failure. No production Servo reflector is replaced.
+
+Local verification: 53 unit + 3 WebIDL integration + 2 doctests pass with both normal and
+JIT-less pilot V8; 52 unit + 2 doctests pass without the pilot; six Python generator tests pass.
+The prior checkpoint's cross-platform V8, Android, iOS and overlay checks passed. The full Servo
+build/bundle matrix was still running when this entry was written.
+
 ## 2026-10-01 - V8 migration Phase 4: lossless WebIDL DOMString values
 
 **Servo files:** `components/roves-v8/{build.rs,src/lib.rs,tests/webidl/Utf16StringState.webidl}`;
