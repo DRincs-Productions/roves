@@ -1,4 +1,22 @@
 # Customizations over upstream Servo
+## 2026-10-01 - V8 migration Phase 4: mutable primitive WebIDL attributes
+
+**Servo files:** `components/roves-v8/{build.rs,src/lib.rs,tests/webidl/MutablePrimitives.webidl}`;
+`components/script_bindings/codegen/{codegen.py,test_v8.py}`.
+**Patch:** `0076-roves-v8-phase4-mutable-primitives.patch` after 0001-0075.
+
+The opt-in generator now emits setters for mutable `boolean`, `double`, and `unsigned long`
+attributes alongside `DOMString`. V8 performs truthiness/ToNumber conversion before any mutable
+native borrow; `unsigned long` applies truncation and modulo 2³², and Symbol-to-number throws
+without changing native state. Callback metadata is owned by `Runtime` until its isolate drops.
+
+Local verification: 54 unit + 3 WebIDL integration + 2 doctests pass in normal and JIT-less pilot
+modes; seven Python generator tests pass. `git diff --check` passes. The full Servo smoke workflow
+on 31c2ae6 timed out twice while `mach bootstrap` downloaded hundreds of apt dependencies (the
+second attempt was still fetching Qt/OpenCV); the Steam build/smoke steps were never reached. The
+job now enables setup-uv's cache and gives first-time dependency provisioning 45 minutes.
+
+## 2026-10-01 - macOS CI linker provisioning for Servo builds
 ## 2026-10-01 - macOS CI linker provisioning for Servo builds
 
 **File:** `.github/workflows/test.yml` (repository CI only; no upstream source overlay patch).

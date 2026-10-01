@@ -571,6 +571,15 @@ boundary without borrowing Servo's SpiderMonkey-rooted `DOMString` implementatio
 tests pass in default, normal V8 pilot and JIT-less V8 pilot modes; six Python generator tests pass.
 Cross-platform CI is pending.
 
+**Twelfth checkpoint (2026-10-01): mutable primitive attributes.** The opt-in WebIDL backend
+now generates setters for `boolean`, `double`, and `unsigned long` in addition to mutable
+`DOMString`. Boolean uses JavaScript truthiness; numeric inputs use JavaScript `ToNumber`, and
+`unsigned long` applies WebIDL's modulo-2³² conversion (including negative and out-of-range
+values). Conversion completes before borrowing native state, so user-defined coercion hooks may
+run safely; conversion failures such as Symbol-to-number leave the native value untouched.
+Generated fixture and runtime tests cover these semantics; local normal and JIT-less V8 tests and
+seven Python generator tests pass. This remains an isolated pilot, not production DOM binding.
+
 **Eleventh checkpoint (2026-10-01): mutable DOMString attributes.** The opt-in WebIDL backend
 also generates a setter for mutable `DOMString` attributes. `roves-v8` applies JavaScript
 `ToString` in the V8 callback, then passes UTF-16 code units to the generated native trait, so

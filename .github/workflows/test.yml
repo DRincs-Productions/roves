@@ -347,8 +347,8 @@ jobs:
         # Backstop beyond the apt-timer fix above: caps how long a genuine hang here (this
         # exact step, on this exact matrix entry, silently ran for a full hour before being
         # investigated and cancelled by hand) can consume the job, regardless of the exact
-        # cause. mach bootstrap itself is normally done in well under a minute.
-        timeout-minutes: 15
+        # cause. The first apt cache fill can take longer on a cold runner.
+        timeout-minutes: 45
         run: |
           # nextest is only needed on the one leg that actually runs `mach test-unit`
           # below (see "run servoshell unit tests") -- skip installing it everywhere
@@ -1153,6 +1153,8 @@ jobs:
 
       - name: setup uv (needed by ./mach, see servo/README.md)
         uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
 
       - name: setup node (for test-page/)
         uses: actions/setup-node@v4
@@ -1231,7 +1233,7 @@ jobs:
         working-directory: servo-src
         env:
           DEBIAN_FRONTEND: noninteractive
-        timeout-minutes: 15
+        timeout-minutes: 45
         run: ./mach bootstrap --force --yes --skip-lints --skip-nextest
 
       - name: mach build (debug, --features steam)

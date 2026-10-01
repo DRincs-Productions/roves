@@ -43,6 +43,21 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn("fn set_Value(&mut self, value: Vec<u16>);", source)
             self.assertIn("runtime.define_domstring_property(&interface, \"value\"", source)
 
+    def test_mutable_numeric_and_boolean_attributes_generate_typed_setters(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            webidl = root / "Mutable.webidl"
+            webidl.write_text(
+                "[Exposed=Window] interface Mutable { attribute boolean enabled; attribute double ratio; attribute unsigned long count; };",
+                encoding="utf-8",
+            )
+            source = generate(webidl, root / "out")
+            self.assertEqual(source.count("runtime.define_webidl_primitive_property("), 3)
+            self.assertIn("PrimitiveConversion::Boolean", source)
+            self.assertIn("PrimitiveConversion::Double", source)
+            self.assertIn("PrimitiveConversion::UnsignedLong", source)
+            self.assertIn("fn set_Count(&mut self, value: u32);", source)
+
     def assert_unsupported(self, contents):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "Unsupported.webidl"
@@ -51,7 +66,7 @@ class V8GeneratorTests(unittest.TestCase):
                 generate(path, Path(directory) / "output")
 
     def test_unsupported_members_never_silently_disappear(self):
-        for member in ["attribute boolean valid;", "readonly attribute float value;", "readonly attribute unsigned long long value;", "readonly attribute boolean? value;", "undefined run();", "static readonly attribute boolean valid;", "[GetterThrows] readonly attribute boolean valid;"]:
+        for member in ["readonly attribute float value;", "readonly attribute unsigned long long value;", "readonly attribute boolean? value;", "undefined run();", "static readonly attribute boolean valid;", "[GetterThrows] readonly attribute boolean valid;", "attribute byte value;"]:
             with self.subTest(member=member):
                 self.assert_unsupported("interface Unsupported { " + member + " };")
 

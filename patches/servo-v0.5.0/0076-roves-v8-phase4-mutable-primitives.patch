@@ -1,0 +1,364 @@
+diff --git a/components/roves-v8/build.rs b/components/roves-v8/build.rs
+index 922c99dd7ad..735f5aa328e 100644
+--- a/components/roves-v8/build.rs
++++ b/components/roves-v8/build.rs
+@@ -21,6 +21,10 @@ fn main() {
+         "cargo:rerun-if-changed={}",
+         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/webidl/Utf16StringState.webidl").display()
+     );
++    println!(
++        "cargo:rerun-if-changed={}",
++        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/webidl/MutablePrimitives.webidl").display()
++    );
+     let python = env::var("PYTHON").unwrap_or_else(|_| {
+         ["python3", "python"].into_iter().find(|name| {
+             Command::new(name).arg("--version").output().is_ok_and(|output| output.status.success())
+@@ -50,4 +54,13 @@ fn main() {
+         .status()
+         .expect("run UTF-16 WebIDL fixture generator");
+     assert!(status.success(), "UTF-16 WebIDL fixture generation failed");
++    let output = out_dir.join("MutablePrimitivesV8Binding.rs");
++    let status = Command::new(&python)
++        .arg(bindings.join("codegen/run_v8.py"))
++        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/webidl/MutablePrimitives.webidl"))
++        .arg(output)
++        .env("PYTHONDONTWRITEBYTECODE", "1")
++        .status()
++        .expect("run mutable primitive WebIDL fixture generator");
++    assert!(status.success(), "mutable primitive WebIDL fixture generation failed");
+ }
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 6cfc682582d..06a06d9c54c 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -29,6 +29,10 @@ pub mod webidl {
+     pub mod validity_state {
+         include!(concat!(env!("OUT_DIR"), "/ValidityStateV8Binding.rs"));
+     }
++    #[cfg(test)]
++    pub mod mutable_primitives {
++        include!(concat!(env!("OUT_DIR"), "/MutablePrimitivesV8Binding.rs"));
++    }
+ }
+ 
+ use std::sync::Once;
+@@ -117,6 +121,7 @@ pub struct Runtime {
+     /// Keeps callbacks armed until they have actually completed. An empty weak handle
+     /// alone is insufficient: first-pass GC may clear it before second-pass finalization.
+     wrapped_finalizers: Vec<WrappedFinalizer>,
++    primitive_setters: Vec<*mut PrimitiveSetterData>,
+ }
+ 
+ struct WrappedFinalizer {
+@@ -124,6 +129,16 @@ struct WrappedFinalizer {
+     completed: std::rc::Rc<std::cell::Cell<bool>>,
+ }
+ 
++impl Drop for Runtime {
++    fn drop(&mut self) {
++        // The isolate drops after this method returns; release callback data only once V8 can
++        // no longer invoke templates referring to it.
++        for data in self.primitive_setters.drain(..) {
++            unsafe { drop(Box::from_raw(data)); }
++        }
++    }
++}
++
+ /// Tag passed to `set_aligned_pointer_in_internal_field`/`get_aligned_pointer_from_internal_field`
+ /// ? required by the API. V8's sandboxed external-pointer table only accepts a small range of
+ /// tag values (found by hitting "Fatal error in ToExternalPointerTag: the provided tag is
+@@ -166,6 +181,25 @@ pub type PropertySetter = fn(&mut dyn std::any::Any, &Value);
+ /// the resulting UTF-16 code units, including lone surrogates.
+ pub type DomStringSetter = fn(&mut dyn std::any::Any, Vec<u16>);
+ 
++/// A setter for primitive WebIDL attributes after JavaScript coercion.
++pub type WebIdlPrimitiveSetter = fn(&mut dyn std::any::Any, &Value);
++
++/// JavaScript-to-WebIDL coercion requested by a generated primitive attribute setter.
++#[derive(Clone, Copy)]
++pub enum PrimitiveConversion {
++    Boolean,
++    Double,
++    UnsignedLong,
++}
++
++#[repr(C)]
++// Kept alive for the lifetime of the runtime: V8's FunctionTemplate External stores only a raw
++// pointer, while the interface template may outlive every individual instance.
++struct PrimitiveSetterData {
++    setter: WebIdlPrimitiveSetter,
++    conversion: PrimitiveConversion,
++}
++
+ /// A callable method, registered via [`Runtime::define_method`]: receives the wrapped Rust value
+ /// of whichever instance it was called on (`node.someMethod()`) plus its JS arguments already
+ /// converted to [`Value`], and returns a [`Value`]. Same plain-function-pointer restriction as
+@@ -193,6 +227,7 @@ impl Runtime {
+             isolate,
+             context,
+             wrapped_finalizers: Vec::new(),
++            primitive_setters: Vec::new(),
+         }
+     }
+ 
+@@ -679,7 +714,7 @@ impl Runtime {
+         name: &str,
+         getter: PropertyGetter,
+     ) -> Result<(), String> {
+-        self.define_attribute(interface, name, getter, None, None)
++        self.define_attribute(interface, name, getter, None, None, None)
+     }
+ 
+     /// Defines a prototype attribute with both a getter and a setter. Callback functions
+@@ -691,7 +726,7 @@ impl Runtime {
+         getter: PropertyGetter,
+         setter: PropertySetter,
+     ) -> Result<(), String> {
+-        self.define_attribute(interface, name, getter, Some(setter), None)
++        self.define_attribute(interface, name, getter, Some(setter), None, None)
+     }
+ 
+     /// Defines a WebIDL DOMString attribute with JavaScript ToString conversion.
+@@ -702,7 +737,20 @@ impl Runtime {
+         getter: PropertyGetter,
+         setter: DomStringSetter,
+     ) -> Result<(), String> {
+-        self.define_attribute(interface, name, getter, None, Some(setter))
++        self.define_attribute(interface, name, getter, None, Some(setter), None)
++    }
++
++    /// Defines a settable primitive attribute whose conversion follows WebIDL's boolean or
++    /// numeric conversion rules before native state is mutably borrowed.
++    pub fn define_webidl_primitive_property(
++        &mut self,
++        interface: &Interface,
++        name: &str,
++        getter: PropertyGetter,
++        setter: WebIdlPrimitiveSetter,
++        conversion: PrimitiveConversion,
++    ) -> Result<(), String> {
++        self.define_attribute(interface, name, getter, None, None, Some((setter, conversion)))
+     }
+ 
+     fn define_attribute(
+@@ -712,6 +760,7 @@ impl Runtime {
+         getter: PropertyGetter,
+         setter: Option<PropertySetter>,
+         domstring_setter: Option<DomStringSetter>,
++        primitive_setter: Option<(WebIdlPrimitiveSetter, PrimitiveConversion)>,
+     ) -> Result<(), String> {
+         if interface.materialized.get() {
+             return Err("interface members must be defined before creating instances or descendants".into());
+@@ -788,6 +837,54 @@ impl Runtime {
+             .length(1)
+             .constructor_behavior(v8::ConstructorBehavior::Throw)
+             .build(scope))
++        } else if let Some((setter, conversion)) = primitive_setter {
++            let setter_data = Box::into_raw(Box::new(PrimitiveSetterData { setter, conversion }));
++            self.primitive_setters.push(setter_data);
++            let external = v8::External::new(scope, setter_data.cast());
++            Some(v8::FunctionTemplate::builder(
++                |scope: &mut v8::PinScope,
++                 args: v8::FunctionCallbackArguments,
++                 _retval: v8::ReturnValue| {
++                    let external = v8::Local::<v8::External>::try_from(args.data()).unwrap();
++                    let data = unsafe { &*(external.value() as *const PrimitiveSetterData) };
++                    let this = args.this();
++                    if this.internal_field_count() < 1 {
++                        throw_type_error(scope, "Illegal invocation");
++                        return;
++                    }
++                    let raw = unsafe { this.get_aligned_pointer_from_internal_field(0, WRAPPED_POINTER_TAG) }
++                        as *mut Box<dyn std::any::Any>;
++                    if raw.is_null() {
++                        throw_type_error(scope, "Illegal invocation");
++                        return;
++                    }
++                    let value = args.get(0);
++                    let converted = match data.conversion {
++                        PrimitiveConversion::Boolean => Value::Bool(value.boolean_value(scope)),
++                        PrimitiveConversion::Double => {
++                            let Some(number) = value.number_value(scope) else { return; };
++                            Value::Number(number)
++                        }
++                        PrimitiveConversion::UnsignedLong => {
++                            let Some(number) = value.number_value(scope) else { return; };
++                            if !number.is_finite() || number == 0.0 {
++                                Value::Number(0.0)
++                            } else {
++                                let integer = number.trunc();
++                                let modulo = integer.rem_euclid(4_294_967_296.0);
++                                Value::Number(modulo)
++                            }
++                        }
++                    };
++                    // Numeric conversion may call user-defined valueOf/toString code.
++                    (data.setter)(unsafe { (&mut *raw).as_mut() }, &converted);
++                },
++            )
++            .data(external.into())
++            .signature(signature)
++            .length(1)
++            .constructor_behavior(v8::ConstructorBehavior::Throw)
++            .build(scope))
+         } else {
+             domstring_setter.map(|setter| {
+                 let setter_data = v8::External::new(scope, setter as *mut std::ffi::c_void);
+@@ -2400,6 +2497,38 @@ mod tests {
+         }
+     }
+ 
++    #[cfg(feature = "webidl-pilot")]
++    #[test]
++    fn generated_mutable_primitive_attributes_follow_webidl_conversion() {
++        use crate::webidl::mutable_primitives::{MutablePrimitivesBinding, MutablePrimitivesNative};
++        #[derive(Default)]
++        struct State { enabled: bool, ratio: f64, count: u32 }
++        #[allow(non_snake_case)]
++        impl MutablePrimitivesNative for State {
++            fn Enabled(&self) -> bool { self.enabled }
++            fn set_Enabled(&mut self, value: bool) { self.enabled = value; }
++            fn Ratio(&self) -> f64 { self.ratio }
++            fn set_Ratio(&mut self, value: f64) { self.ratio = value; }
++            fn Count(&self) -> u32 { self.count }
++            fn set_Count(&mut self, value: u32) { self.count = value; }
++        }
++        let mut runtime = Runtime::new();
++        let binding = MutablePrimitivesBinding::<State>::install(&mut runtime).unwrap();
++        let handle = binding.create(&mut runtime, State::default());
++        runtime.set_global_property("state", &handle).unwrap();
++        runtime.eval("state.enabled = 'false'; state.ratio = '2.5'; state.count = -1").unwrap();
++        let native = runtime.get_wrapped::<State>(&handle).unwrap();
++        assert!(native.enabled);
++        assert_eq!(native.ratio, 2.5);
++        assert_eq!(native.count, u32::MAX);
++        runtime.eval("state.enabled = 0; state.ratio = {}; state.count = 4294967297").unwrap();
++        let native = runtime.get_wrapped::<State>(&handle).unwrap();
++        assert!(!native.enabled);
++        assert!(native.ratio.is_nan());
++        assert_eq!(native.count, 1);
++        assert!(runtime.eval("state.count = Symbol() ").is_err());
++    }
++
+     #[test]
+     fn interfaces_without_constructors_and_foreign_method_receivers_throw() {
+         fn method(_: &dyn std::any::Any, _: &[Value]) -> Value { Value::Undefined }
+diff --git a/components/roves-v8/tests/webidl/MutablePrimitives.webidl b/components/roves-v8/tests/webidl/MutablePrimitives.webidl
+new file mode 100644
+index 00000000000..437776ca00c
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/MutablePrimitives.webidl
+@@ -0,0 +1,6 @@
++[Exposed=Window]
++interface MutablePrimitives {
++  attribute boolean enabled;
++  attribute double ratio;
++  attribute unsigned long count;
++};
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index 71cc001699d..89f7ed8f96c 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8250,17 +8250,21 @@ class CGV8BindingRoot(CGThing):
+             else:
+                 raise TypeError(f"V8 backend unsupported attribute type: {name}.{member.identifier.name}: {member.type}")
+             setter = not member.readonly
+-            if setter and not member.type.isDOMString():
+-                raise TypeError(f"V8 backend only supports mutable DOMString attributes: {name}.{member.identifier.name}")
++            conversion = None
++            if member.type.isBoolean():
++                conversion = "Boolean"
++            elif member.type.isFloat() and member.type.name == "Double":
++                conversion = "Double"
++            elif member.type.isInteger() and member.type.name == "UnsignedLong":
++                conversion = "UnsignedLong"
++            if setter and not member.type.isDOMString() and conversion is None:
++                raise TypeError(f"V8 backend does not support mutable attribute type: {name}.{member.identifier.name}")
+             attributes.append((member.identifier.name, MakeNativeName(member.identifier.name), rust_type, value_expr, setter))
+         trait_methods = "\n".join(f"    fn {native}(&self) -> {rust_type};"
+-                                   for _, native, rust_type, _, _ in attributes)
+-        trait_setters = "\n".join(
+-            f"    fn set_{native}(&mut self, value: {rust_type});"
+-            for _, native, rust_type, _, setter in attributes if setter
+-        )
++                                   + (f"\n    fn set_{native}(&mut self, value: {rust_type});" if setter else "")
++                                   for _, native, rust_type, _, setter in attributes)
+         registrations_list = []
+-        for idl, native, _, value_expr, setter in attributes:
++        for idl, native, rust_type, value_expr, setter in attributes:
+             getter = (
+                 f'|native| {{\n'
+                 f'            let native = native.downcast_ref::<T>().expect("typed {name} wrapper");\n'
+@@ -8269,13 +8273,22 @@ class CGV8BindingRoot(CGThing):
+             )
+             if setter:
+                 setter_native = f"set_{native}"
+-                registrations_list.append(
+-                    f'        runtime.define_domstring_property(&interface, "{idl}", {getter}, '
+-                    f'|native, value| {{\n'
+-                    f'            let native = native.downcast_mut::<T>().expect("typed {name} wrapper");\n'
+-                    f'            native.{setter_native}(value);\n'
+-                    f'        }})?;'
+-                )
++                conversion = ("Boolean" if rust_type == "bool" else "Double" if rust_type == "f64" else "UnsignedLong" if rust_type == "u32" else None)
++                if conversion is None:
++                    registrations_list.append(
++                        f'        runtime.define_domstring_property(&interface, "{idl}", {getter}, '
++                        f'|native, value| {{ native.downcast_mut::<T>().expect("typed {name} wrapper").{setter_native}(value); }})?;'
++                    )
++                else:
++                    value_variant = "Bool" if conversion == "Boolean" else "Number"
++                    registrations_list.append(
++                        f'        runtime.define_webidl_primitive_property(&interface, "{idl}", {getter}, '
++                        f'|native, value| {{\n'
++                        f'            let native = native.downcast_mut::<T>().expect("typed {name} wrapper");\n'
++                        f'            let Value::{value_variant}(value) = value else {{ unreachable!("typed WebIDL conversion") }};\n'
++                        f'            native.{setter_native}(*value as {rust_type});\n'
++                        f'        }}, roves_v8::PrimitiveConversion::{conversion})?;'
++                    )
+             else:
+                 registrations_list.append(
+                     f'        runtime.define_property(&interface, "{idl}", {getter})?;'
+@@ -8286,7 +8299,6 @@ class CGV8BindingRoot(CGThing):
+ #[allow(non_snake_case)]
+ pub trait {name}Native: 'static {{
+ {trait_methods}
+-{trait_setters}
+ }}
+ 
+ /// Typed binding generated from {name}.webidl. The private interface prevents
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index dd4de8d07bb..b2889036631 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -43,6 +43,21 @@ class V8GeneratorTests(unittest.TestCase):
+             self.assertIn("fn set_Value(&mut self, value: Vec<u16>);", source)
+             self.assertIn("runtime.define_domstring_property(&interface, \"value\"", source)
+ 
++    def test_mutable_numeric_and_boolean_attributes_generate_typed_setters(self):
++        with tempfile.TemporaryDirectory() as directory:
++            root = Path(directory)
++            webidl = root / "Mutable.webidl"
++            webidl.write_text(
++                "[Exposed=Window] interface Mutable { attribute boolean enabled; attribute double ratio; attribute unsigned long count; };",
++                encoding="utf-8",
++            )
++            source = generate(webidl, root / "out")
++            self.assertEqual(source.count("runtime.define_webidl_primitive_property("), 3)
++            self.assertIn("PrimitiveConversion::Boolean", source)
++            self.assertIn("PrimitiveConversion::Double", source)
++            self.assertIn("PrimitiveConversion::UnsignedLong", source)
++            self.assertIn("fn set_Count(&mut self, value: u32);", source)
++
+     def assert_unsupported(self, contents):
+         with tempfile.TemporaryDirectory() as directory:
+             path = Path(directory) / "Unsupported.webidl"
+@@ -51,7 +66,7 @@ class V8GeneratorTests(unittest.TestCase):
+                 generate(path, Path(directory) / "output")
+ 
+     def test_unsupported_members_never_silently_disappear(self):
+-        for member in ["attribute boolean valid;", "readonly attribute float value;", "readonly attribute unsigned long long value;", "readonly attribute boolean? value;", "undefined run();", "static readonly attribute boolean valid;", "[GetterThrows] readonly attribute boolean valid;"]:
++        for member in ["readonly attribute float value;", "readonly attribute unsigned long long value;", "readonly attribute boolean? value;", "undefined run();", "static readonly attribute boolean valid;", "[GetterThrows] readonly attribute boolean valid;", "attribute byte value;"]:
+             with self.subTest(member=member):
+                 self.assert_unsupported("interface Unsupported { " + member + " };")
+ 

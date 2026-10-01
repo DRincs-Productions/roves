@@ -29,6 +29,10 @@ pub mod webidl {
     pub mod validity_state {
         include!(concat!(env!("OUT_DIR"), "/ValidityStateV8Binding.rs"));
     }
+    #[cfg(test)]
+    pub mod mutable_primitives {
+        include!(concat!(env!("OUT_DIR"), "/MutablePrimitivesV8Binding.rs"));
+    }
 }
 
 use std::sync::Once;
@@ -117,11 +121,22 @@ pub struct Runtime {
     /// Keeps callbacks armed until they have actually completed. An empty weak handle
     /// alone is insufficient: first-pass GC may clear it before second-pass finalization.
     wrapped_finalizers: Vec<WrappedFinalizer>,
+    primitive_setters: Vec<*mut PrimitiveSetterData>,
 }
 
 struct WrappedFinalizer {
     _weak: v8::Weak<v8::Value>,
     completed: std::rc::Rc<std::cell::Cell<bool>>,
+}
+
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        // The isolate drops after this method returns; release callback data only once V8 can
+        // no longer invoke templates referring to it.
+        for data in self.primitive_setters.drain(..) {
+            unsafe { drop(Box::from_raw(data)); }
+        }
+    }
 }
 
 /// Tag passed to `set_aligned_pointer_in_internal_field`/`get_aligned_pointer_from_internal_field`
@@ -166,6 +181,25 @@ pub type PropertySetter = fn(&mut dyn std::any::Any, &Value);
 /// the resulting UTF-16 code units, including lone surrogates.
 pub type DomStringSetter = fn(&mut dyn std::any::Any, Vec<u16>);
 
+/// A setter for primitive WebIDL attributes after JavaScript coercion.
+pub type WebIdlPrimitiveSetter = fn(&mut dyn std::any::Any, &Value);
+
+/// JavaScript-to-WebIDL coercion requested by a generated primitive attribute setter.
+#[derive(Clone, Copy)]
+pub enum PrimitiveConversion {
+    Boolean,
+    Double,
+    UnsignedLong,
+}
+
+#[repr(C)]
+// Kept alive for the lifetime of the runtime: V8's FunctionTemplate External stores only a raw
+// pointer, while the interface template may outlive every individual instance.
+struct PrimitiveSetterData {
+    setter: WebIdlPrimitiveSetter,
+    conversion: PrimitiveConversion,
+}
+
 /// A callable method, registered via [`Runtime::define_method`]: receives the wrapped Rust value
 /// of whichever instance it was called on (`node.someMethod()`) plus its JS arguments already
 /// converted to [`Value`], and returns a [`Value`]. Same plain-function-pointer restriction as
@@ -193,6 +227,7 @@ impl Runtime {
             isolate,
             context,
             wrapped_finalizers: Vec::new(),
+            primitive_setters: Vec::new(),
         }
     }
 
@@ -679,7 +714,7 @@ impl Runtime {
         name: &str,
         getter: PropertyGetter,
     ) -> Result<(), String> {
-        self.define_attribute(interface, name, getter, None, None)
+        self.define_attribute(interface, name, getter, None, None, None)
     }
 
     /// Defines a prototype attribute with both a getter and a setter. Callback functions
@@ -691,7 +726,7 @@ impl Runtime {
         getter: PropertyGetter,
         setter: PropertySetter,
     ) -> Result<(), String> {
-        self.define_attribute(interface, name, getter, Some(setter), None)
+        self.define_attribute(interface, name, getter, Some(setter), None, None)
     }
 
     /// Defines a WebIDL DOMString attribute with JavaScript ToString conversion.
@@ -702,7 +737,20 @@ impl Runtime {
         getter: PropertyGetter,
         setter: DomStringSetter,
     ) -> Result<(), String> {
-        self.define_attribute(interface, name, getter, None, Some(setter))
+        self.define_attribute(interface, name, getter, None, Some(setter), None)
+    }
+
+    /// Defines a settable primitive attribute whose conversion follows WebIDL's boolean or
+    /// numeric conversion rules before native state is mutably borrowed.
+    pub fn define_webidl_primitive_property(
+        &mut self,
+        interface: &Interface,
+        name: &str,
+        getter: PropertyGetter,
+        setter: WebIdlPrimitiveSetter,
+        conversion: PrimitiveConversion,
+    ) -> Result<(), String> {
+        self.define_attribute(interface, name, getter, None, None, Some((setter, conversion)))
     }
 
     fn define_attribute(
@@ -712,6 +760,7 @@ impl Runtime {
         getter: PropertyGetter,
         setter: Option<PropertySetter>,
         domstring_setter: Option<DomStringSetter>,
+        primitive_setter: Option<(WebIdlPrimitiveSetter, PrimitiveConversion)>,
     ) -> Result<(), String> {
         if interface.materialized.get() {
             return Err("interface members must be defined before creating instances or descendants".into());
@@ -784,6 +833,54 @@ impl Runtime {
                 },
             )
             .data(setter_data.into())
+            .signature(signature)
+            .length(1)
+            .constructor_behavior(v8::ConstructorBehavior::Throw)
+            .build(scope))
+        } else if let Some((setter, conversion)) = primitive_setter {
+            let setter_data = Box::into_raw(Box::new(PrimitiveSetterData { setter, conversion }));
+            self.primitive_setters.push(setter_data);
+            let external = v8::External::new(scope, setter_data.cast());
+            Some(v8::FunctionTemplate::builder(
+                |scope: &mut v8::PinScope,
+                 args: v8::FunctionCallbackArguments,
+                 _retval: v8::ReturnValue| {
+                    let external = v8::Local::<v8::External>::try_from(args.data()).unwrap();
+                    let data = unsafe { &*(external.value() as *const PrimitiveSetterData) };
+                    let this = args.this();
+                    if this.internal_field_count() < 1 {
+                        throw_type_error(scope, "Illegal invocation");
+                        return;
+                    }
+                    let raw = unsafe { this.get_aligned_pointer_from_internal_field(0, WRAPPED_POINTER_TAG) }
+                        as *mut Box<dyn std::any::Any>;
+                    if raw.is_null() {
+                        throw_type_error(scope, "Illegal invocation");
+                        return;
+                    }
+                    let value = args.get(0);
+                    let converted = match data.conversion {
+                        PrimitiveConversion::Boolean => Value::Bool(value.boolean_value(scope)),
+                        PrimitiveConversion::Double => {
+                            let Some(number) = value.number_value(scope) else { return; };
+                            Value::Number(number)
+                        }
+                        PrimitiveConversion::UnsignedLong => {
+                            let Some(number) = value.number_value(scope) else { return; };
+                            if !number.is_finite() || number == 0.0 {
+                                Value::Number(0.0)
+                            } else {
+                                let integer = number.trunc();
+                                let modulo = integer.rem_euclid(4_294_967_296.0);
+                                Value::Number(modulo)
+                            }
+                        }
+                    };
+                    // Numeric conversion may call user-defined valueOf/toString code.
+                    (data.setter)(unsafe { (&mut *raw).as_mut() }, &converted);
+                },
+            )
+            .data(external.into())
             .signature(signature)
             .length(1)
             .constructor_behavior(v8::ConstructorBehavior::Throw)
@@ -2398,6 +2495,38 @@ mod tests {
         for expression in ["d.get.call({})", "d.set.call({}, 1)", "d.get.call(Object.create(node))", "new d.get()"] {
             assert!(runtime.eval(expression).unwrap_err().contains("TypeError"), "{expression}");
         }
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_mutable_primitive_attributes_follow_webidl_conversion() {
+        use crate::webidl::mutable_primitives::{MutablePrimitivesBinding, MutablePrimitivesNative};
+        #[derive(Default)]
+        struct State { enabled: bool, ratio: f64, count: u32 }
+        #[allow(non_snake_case)]
+        impl MutablePrimitivesNative for State {
+            fn Enabled(&self) -> bool { self.enabled }
+            fn set_Enabled(&mut self, value: bool) { self.enabled = value; }
+            fn Ratio(&self) -> f64 { self.ratio }
+            fn set_Ratio(&mut self, value: f64) { self.ratio = value; }
+            fn Count(&self) -> u32 { self.count }
+            fn set_Count(&mut self, value: u32) { self.count = value; }
+        }
+        let mut runtime = Runtime::new();
+        let binding = MutablePrimitivesBinding::<State>::install(&mut runtime).unwrap();
+        let handle = binding.create(&mut runtime, State::default());
+        runtime.set_global_property("state", &handle).unwrap();
+        runtime.eval("state.enabled = 'false'; state.ratio = '2.5'; state.count = -1").unwrap();
+        let native = runtime.get_wrapped::<State>(&handle).unwrap();
+        assert!(native.enabled);
+        assert_eq!(native.ratio, 2.5);
+        assert_eq!(native.count, u32::MAX);
+        runtime.eval("state.enabled = 0; state.ratio = {}; state.count = 4294967297").unwrap();
+        let native = runtime.get_wrapped::<State>(&handle).unwrap();
+        assert!(!native.enabled);
+        assert!(native.ratio.is_nan());
+        assert_eq!(native.count, 1);
+        assert!(runtime.eval("state.count = Symbol() ").is_err());
     }
 
     #[test]

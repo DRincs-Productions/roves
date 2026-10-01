@@ -8250,17 +8250,21 @@ class CGV8BindingRoot(CGThing):
             else:
                 raise TypeError(f"V8 backend unsupported attribute type: {name}.{member.identifier.name}: {member.type}")
             setter = not member.readonly
-            if setter and not member.type.isDOMString():
-                raise TypeError(f"V8 backend only supports mutable DOMString attributes: {name}.{member.identifier.name}")
+            conversion = None
+            if member.type.isBoolean():
+                conversion = "Boolean"
+            elif member.type.isFloat() and member.type.name == "Double":
+                conversion = "Double"
+            elif member.type.isInteger() and member.type.name == "UnsignedLong":
+                conversion = "UnsignedLong"
+            if setter and not member.type.isDOMString() and conversion is None:
+                raise TypeError(f"V8 backend does not support mutable attribute type: {name}.{member.identifier.name}")
             attributes.append((member.identifier.name, MakeNativeName(member.identifier.name), rust_type, value_expr, setter))
         trait_methods = "\n".join(f"    fn {native}(&self) -> {rust_type};"
-                                   for _, native, rust_type, _, _ in attributes)
-        trait_setters = "\n".join(
-            f"    fn set_{native}(&mut self, value: {rust_type});"
-            for _, native, rust_type, _, setter in attributes if setter
-        )
+                                   + (f"\n    fn set_{native}(&mut self, value: {rust_type});" if setter else "")
+                                   for _, native, rust_type, _, setter in attributes)
         registrations_list = []
-        for idl, native, _, value_expr, setter in attributes:
+        for idl, native, rust_type, value_expr, setter in attributes:
             getter = (
                 f'|native| {{\n'
                 f'            let native = native.downcast_ref::<T>().expect("typed {name} wrapper");\n'
@@ -8269,13 +8273,22 @@ class CGV8BindingRoot(CGThing):
             )
             if setter:
                 setter_native = f"set_{native}"
-                registrations_list.append(
-                    f'        runtime.define_domstring_property(&interface, "{idl}", {getter}, '
-                    f'|native, value| {{\n'
-                    f'            let native = native.downcast_mut::<T>().expect("typed {name} wrapper");\n'
-                    f'            native.{setter_native}(value);\n'
-                    f'        }})?;'
-                )
+                conversion = ("Boolean" if rust_type == "bool" else "Double" if rust_type == "f64" else "UnsignedLong" if rust_type == "u32" else None)
+                if conversion is None:
+                    registrations_list.append(
+                        f'        runtime.define_domstring_property(&interface, "{idl}", {getter}, '
+                        f'|native, value| {{ native.downcast_mut::<T>().expect("typed {name} wrapper").{setter_native}(value); }})?;'
+                    )
+                else:
+                    value_variant = "Bool" if conversion == "Boolean" else "Number"
+                    registrations_list.append(
+                        f'        runtime.define_webidl_primitive_property(&interface, "{idl}", {getter}, '
+                        f'|native, value| {{\n'
+                        f'            let native = native.downcast_mut::<T>().expect("typed {name} wrapper");\n'
+                        f'            let Value::{value_variant}(value) = value else {{ unreachable!("typed WebIDL conversion") }};\n'
+                        f'            native.{setter_native}(*value as {rust_type});\n'
+                        f'        }}, roves_v8::PrimitiveConversion::{conversion})?;'
+                    )
             else:
                 registrations_list.append(
                     f'        runtime.define_property(&interface, "{idl}", {getter})?;'
@@ -8286,7 +8299,6 @@ class CGV8BindingRoot(CGThing):
 #[allow(non_snake_case)]
 pub trait {name}Native: 'static {{
 {trait_methods}
-{trait_setters}
 }}
 
 /// Typed binding generated from {name}.webidl. The private interface prevents

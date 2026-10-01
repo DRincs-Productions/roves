@@ -17,7 +17,7 @@ qui prevale sulle note storiche più sotto.
    in ordine cronologico inverso (la più recente in cima). Le entry dal 2026-09-29 in poi (cerca
    "V8 migration") coprono tutto il lavoro di questa migrazione, checkpoint per checkpoint, con i
    bug reali trovati e come sono stati corretti.
-4. **[`../patches/servo-v0.5.0/`](../patches/servo-v0.5.0/)** — patch numerate `0001` → `0074`,
+4. **[`../patches/servo-v0.5.0/`](../patches/servo-v0.5.0/)** — patch numerate `0001` → `0076`,
    una per checkpoint, applicabili a un checkout pulito del tag Servo pristine (vedi
    `../AGENTS.md` per come funziona il meccanismo patch/vendoring di questo repo).
 5. **[`../components/roves-v8/src/lib.rs`](../components/roves-v8/src/lib.rs)** — il codice
@@ -33,6 +33,8 @@ da questo blocco, fa fede lo stato attuale. L'utente ha richiesto autonomia cont
 testare localmente, avviare CI, correggere i fallimenti e proseguire fino al completamento dei
 criteri in `V8_MIGRATION.md`.
 
+Il checkpoint 12 aggiunge setter WebIDL mutabili `boolean`, `double` e `unsigned long`, con conversione prima del borrow mutabile e modulo 2^32. Passano 54 unit test, tre integrazioni WebIDL e due doctest sia normali sia JIT-less, oltre a sette test Python. Patch 0076: la CI di overlay e la matrice multipiattaforma sono in attesa.
+
 Il checkpoint 7 avvia l'integrazione vera con `components/script_bindings`: un backend opt-in
 usa il parser WebIDL esistente e genera `ValidityState` dalla definizione Servo reale, senza
 toccare l'output predefinito del generatore SpiderMonkey. Il checkpoint 8 aggiunge anche
@@ -47,7 +49,7 @@ Windows complete di `servo-script-bindings` e `servo-script` con i feature pilot
 nei checkpoint precedenti. Per compilare `servo-script` è servito `AWS_LC_SYS_NO_ASM=1` perché
 NASM non è installato localmente. La matrice V8 6/6 e l'overlay fino a 0072 sono verdi. Per il
 commit e521bf0, `validate-servo-patches` (inclusa 0073) è passato; il workflow completo Servo è
-ancora in esecuzione. Il workflow V8 multipiattaforma sarà riattivato dal checkpoint 0074.
+ancora in esecuzione. La matrice V8, Android e iOS del checkpoint precedente è verde. Il job Steam della CI Servo per 31c2ae6 è scaduto due volte nel bootstrap apt mentre scaricava centinaia di dipendenze; non ha raggiunto build e smoke test. È stata aggiunta la cache uv e il bootstrap ha ora 45 minuti.
 
 `codegen.py` è stato esteso solo con la classe opt-in `CGV8BindingRoot`; il percorso SpiderMonkey
 predefinito è rimasto senza modifiche di output (1.441 file generati confrontati prima dell'ultimo
