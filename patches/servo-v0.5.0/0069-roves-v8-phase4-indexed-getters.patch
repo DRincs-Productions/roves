@@ -1,0 +1,241 @@
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index efb5f7ae7ec..85a10456c44 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -143,6 +143,12 @@ pub type PropertySetter = fn(&mut dyn std::any::Any, &Value);
+ /// this crate's other callback types, for the same reason.
+ pub type NativeMethod = fn(&dyn std::any::Any, &[Value]) -> Value;
+ 
++/// An indexed-property read interceptor. `Some(value)` handles the index (including
++/// `Some(Value::Undefined)`); `None` lets normal JS own/prototype lookup continue.
++/// This is a primitive for future WebIDL collection bindings, not a complete implementation
++/// of their query, enumeration, descriptor, assignment or deletion semantics.
++pub type IndexedPropertyGetter = fn(&dyn std::any::Any, u32) -> Option<Value>;
++
+ impl Runtime {
+     /// Creates a new isolate, initializing the V8 platform first if this is the first
+     /// [`Runtime`] in the process.
+@@ -865,6 +871,72 @@ impl Runtime {
+         Ok(())
+     }
+ 
++    /// Installs an indexed read interceptor on the interface's instance template.
++    /// Register before creating instances of this interface or any descendant; materialized
++    /// V8 templates cannot be mutated. The guard detects direct instantiation only.
++    /// V8 supplies canonical array indices as `u32`; named properties such as `"01"`,
++    /// negative numbers and `2**32 - 1` remain normal JS properties. The holder is the
++    /// wrapped instance even when lookup starts on an object inheriting from it.
++    /// Unlike accessors, V8 does not propagate this handler through FunctionTemplate::inherit;
++    /// register it explicitly on each derived interface that needs indexed reads.
++    /// Only reads are intercepted: this intentionally does not promise full WebIDL
++    /// legacy-platform-object semantics or return object wrappers through `Value::Object`.
++    pub fn define_indexed_property_getter(
++        &mut self,
++        interface: &Interface,
++        getter: IndexedPropertyGetter,
++    ) -> Result<(), String> {
++        if interface.constructor_exposed.get() {
++            return Err("indexed getter must be defined before creating instances".to_string());
++        }
++        let context_handle = &self.context;
++        v8::scope!(let scope, &mut self.isolate);
++        let context = v8::Local::new(scope, context_handle);
++        let scope = &mut v8::ContextScope::new(scope, context);
++        let template = v8::Local::new(scope, &interface.template);
++        let external_data = v8::External::new(scope, getter as *mut std::ffi::c_void);
++        let configuration = v8::IndexedPropertyHandlerConfiguration::new()
++            .getter(
++                |scope: &mut v8::PinScope,
++                 index: u32,
++                 args: v8::PropertyCallbackArguments,
++                 mut retval: v8::ReturnValue<v8::Value>| {
++                    let Ok(external) = v8::Local::<v8::External>::try_from(args.data()) else {
++                        return v8::Intercepted::kNo;
++                    };
++                    // SAFETY: this External contains exactly the function pointer supplied
++                    // above, which remains valid for the lifetime of the template.
++                    let getter: IndexedPropertyGetter =
++                        unsafe { std::mem::transmute(external.value()) };
++                    let holder = args.holder();
++                    if holder.internal_field_count() < 1 {
++                        return v8::Intercepted::kNo;
++                    }
++                    // SAFETY: only create_instance installs this field, using this tag and
++                    // a Box<Box<dyn Any>>. The local holder keeps its finalizer from running.
++                    let raw = unsafe {
++                        holder.get_aligned_pointer_from_internal_field(0, WRAPPED_POINTER_TAG)
++                    } as *mut Box<dyn std::any::Any>;
++                    if raw.is_null() {
++                        return v8::Intercepted::kNo;
++                    }
++                    let boxed_any = unsafe { &*raw };
++                    match getter(boxed_any.as_ref(), index) {
++                        Some(value) => {
++                            retval.set(v8_value(scope, &value));
++                            v8::Intercepted::kYes
++                        },
++                        None => v8::Intercepted::kNo,
++                    }
++                },
++            )
++            .data(external_data.into());
++        template
++            .instance_template(scope)
++            .set_indexed_property_handler(configuration);
++        Ok(())
++    }
++
+     /// Reads back the Rust value a live [`Handle`] from [`Runtime::create_wrapped`] points at,
+     /// checking that it's actually a `T` (not just trusting the caller) via `Any::downcast_ref`
+     /// on the same `Box<dyn Any>` `create_wrapped` stored — returns `None` on a type mismatch
+@@ -1989,4 +2061,150 @@ mod tests {
+             Value::String("B".to_string())
+         );
+     }
++
++    fn collection_getter(this: &dyn std::any::Any, index: u32) -> Option<Value> {
++        this.downcast_ref::<Vec<Value>>()?
++            .get(index as usize)
++            .cloned()
++    }
++
++    #[test]
++    fn indexed_getter_reads_each_instances_native_data() {
++        let mut runtime = Runtime::new();
++        let interface = runtime.define_interface("Collection", None);
++        runtime
++            .define_indexed_property_getter(&interface, collection_getter)
++            .unwrap();
++        let a = runtime.create_instance(&interface, vec![Value::String("A".into())]);
++        let b = runtime.create_instance(&interface, vec![Value::String("B".into())]);
++        runtime.set_global_property("a", &a).unwrap();
++        runtime.set_global_property("b", &b).unwrap();
++        assert_eq!(runtime.eval("a[0] + b['0']").unwrap(), "AB");
++        assert_eq!(runtime.eval_value("a[1]").unwrap(), Value::Undefined);
++        assert_eq!(runtime.eval("a instanceof Collection").unwrap(), "true");
++    }
++
++    #[test]
++    fn indexed_getter_distinguishes_undefined_from_unhandled_lookup() {
++        let mut runtime = Runtime::new();
++        let interface = runtime.define_interface("Collection", None);
++        runtime
++            .define_indexed_property_getter(&interface, collection_getter)
++            .unwrap();
++        let collection = runtime.create_instance(&interface, vec![Value::Undefined]);
++        runtime
++            .set_global_property("collection", &collection)
++            .unwrap();
++        runtime
++            .eval("Collection.prototype[0] = 'masked'; Collection.prototype[1] = 'fallback'")
++            .unwrap();
++        assert_eq!(
++            runtime.eval_value("collection[0]").unwrap(),
++            Value::Undefined
++        );
++        assert_eq!(runtime.eval("collection[1]").unwrap(), "fallback");
++        assert_eq!(
++            runtime.eval("Object.create(collection)[1]").unwrap(),
++            "fallback"
++        );
++        runtime.eval("collection[2] = 'own'").unwrap();
++        assert_eq!(runtime.eval("collection[2]").unwrap(), "own");
++    }
++
++    #[test]
++    fn indexed_getter_leaves_noncanonical_indices_as_named_properties() {
++        let mut runtime = Runtime::new();
++        let interface = runtime.define_interface("Collection", None);
++        fn getter(_: &dyn std::any::Any, index: u32) -> Option<Value> {
++            Some(Value::Number(index as f64))
++        }
++        runtime
++            .define_indexed_property_getter(&interface, getter)
++            .unwrap();
++        let collection = runtime.create_instance(&interface, ());
++        runtime
++            .set_global_property("collection", &collection)
++            .unwrap();
++        assert_eq!(
++            runtime.eval("collection[4294967294]").unwrap(),
++            "4294967294"
++        );
++        assert_eq!(runtime.eval(
++            "['01', '-1', '1.5', '4294967295', 'label'].every(k => { collection[k] = 'named'; return collection[k] === 'named'; })"
++        ).unwrap(), "true");
++    }
++
++    #[test]
++    fn indexed_getter_on_derived_interface_keeps_wrapper_finalization() {
++        use std::sync::{
++            Arc,
++            atomic::{AtomicUsize, Ordering},
++        };
++        struct Collection(Arc<AtomicUsize>);
++        impl Drop for Collection {
++            fn drop(&mut self) {
++                self.0.fetch_add(1, Ordering::SeqCst);
++            }
++        }
++        fn getter(this: &dyn std::any::Any, index: u32) -> Option<Value> {
++            this.downcast_ref::<Collection>()?;
++            (index == 0).then_some(Value::String("inherited".into()))
++        }
++        let mut runtime = Runtime::new();
++        let parent = runtime.define_interface("Collection", None);
++        runtime
++            .define_indexed_property_getter(&parent, getter)
++            .unwrap();
++        let child = runtime.define_interface("ChildCollection", Some(&parent));
++        // FunctionTemplate::inherit does not copy indexed interceptors, unlike accessors.
++        runtime
++            .define_indexed_property_getter(&child, getter)
++            .unwrap();
++        let drops = Arc::new(AtomicUsize::new(0));
++        let collection = runtime.create_instance(&child, Collection(drops.clone()));
++        runtime
++            .set_global_property("collection", &collection)
++            .unwrap();
++        assert_eq!(runtime.eval("collection[0]").unwrap(), "inherited");
++        assert_eq!(
++            runtime.eval("Object.create(collection)[0]").unwrap(),
++            "inherited"
++        );
++        drop(collection);
++        runtime.force_full_gc_for_testing();
++        assert_eq!(drops.load(Ordering::SeqCst), 0);
++        runtime.eval("delete globalThis.collection").unwrap();
++        runtime.force_full_gc_for_testing();
++        assert_eq!(drops.load(Ordering::SeqCst), 1);
++        runtime.force_full_gc_for_testing();
++        assert_eq!(drops.load(Ordering::SeqCst), 1);
++    }
++
++    #[test]
++    fn indexed_getter_rejects_registration_after_instance_creation() {
++        let mut runtime = Runtime::new();
++        let interface = runtime.define_interface("Collection", None);
++        let _collection = runtime.create_instance(&interface, ());
++        assert!(
++            runtime
++                .define_indexed_property_getter(&interface, collection_getter)
++                .is_err()
++        );
++    }
++
++    #[test]
++    fn indexed_getter_requires_explicit_registration_on_derived_interfaces() {
++        let mut runtime = Runtime::new();
++        let parent = runtime.define_interface("Collection", None);
++        runtime
++            .define_indexed_property_getter(&parent, collection_getter)
++            .unwrap();
++        let child = runtime.define_interface("ChildCollection", Some(&parent));
++        let base = runtime.create_instance(&parent, vec![Value::String("base".into())]);
++        let derived = runtime.create_instance(&child, vec![Value::String("derived".into())]);
++        runtime.set_global_property("base", &base).unwrap();
++        runtime.set_global_property("derived", &derived).unwrap();
++        assert_eq!(runtime.eval("base[0]").unwrap(), "base");
++        assert_eq!(runtime.eval_value("derived[0]").unwrap(), Value::Undefined);
++    }
+ }

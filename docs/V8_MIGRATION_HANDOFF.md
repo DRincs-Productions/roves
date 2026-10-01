@@ -129,3 +129,16 @@ build di produzione ad ogni modifica, non di fretta per "finire" qualcosa.
 - **Autonomia**: l'utente ha dato autonomia piena per questo lavoro — procedere senza chiedere
   conferma a ogni passo, fermarsi solo per blocchi reali o decisioni di scala/rischio come quella
   sopra.
+
+## Continuation checkpoint ? 2026-10-01
+
+The pending choice above is resolved: continue isolated prototyping with indexed read
+interception, before the production generator jump. Added checkpoint 6 in `roves-v8`, patch
+0069, six tests (47 total), passing locally with and without `--features jitless`.
+`FunctionTemplate::inherit` does not propagate indexed interceptors: explicitly register on
+children. This is not a complete collection binding: query/enumeration/descriptors,
+assignment/deletion, named handlers and wrapper-valued results still need implementation.
+Registration must precede creation of any interface/descendant instance; only direct late
+registration is guarded. Production rooting replacement and wrapper reuse also remain open;
+Phase 3 being described as complete above refers only to tested ownership primitives.
+See CUSTOMIZATIONS.md and the Phase 4 status note for the precise scope.

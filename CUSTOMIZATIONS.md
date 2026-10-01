@@ -1,4 +1,29 @@
 # Customizations over upstream Servo
+## 2026-10-01 ? V8 migration Phase 4 (sixth checkpoint): indexed read interception
+
+**Servo file:** `components/roves-v8/src/lib.rs`.
+**Patch:** `patches/servo-v0.5.0/0069-roves-v8-phase4-indexed-getters.patch` (after 0001?0068).
+
+Added `IndexedPropertyGetter` and `Runtime::define_indexed_property_getter` using V8's
+instance-template indexed interceptor. `Some(value)` intercepts a read, including explicit
+`undefined`; `None` falls through to ordinary own/prototype property lookup. Named and
+noncanonical numeric keys remain ordinary properties. This is a temporary binding primitive,
+not a complete NodeList or WebIDL legacy-platform-object implementation: query/enumeration,
+descriptors, setters/deletion, named interception and wrapper-valued results remain open.
+No production script or binding-generator files changed.
+
+**Real finding:** unlike instance-template accessors, `FunctionTemplate::inherit` does not
+propagate indexed interceptors. Derived interfaces must register their handler explicitly;
+a regression test preserves this observation and another validates explicit installation.
+Registration must precede instantiation of the interface or descendants; the current guard
+rejects direct late registration, while descendant materialization remains a caller precondition
+(as with existing template-member APIs). Callback storage adds no per-definition heap allocation.
+
+Six new tests cover per-instance data, absent versus undefined indices, own/prototype fallback,
+canonical index boundaries, derived interfaces, holder lookup through `Object.create`, and
+exactly-once GC finalization. All 47 tests pass locally in normal and JIT-less modes.
+CI verification is tracked separately; local tests do not claim cross-platform validation.
+
 ## 2026-09-30 — V8 migration Phase 4 (fifth checkpoint): callable methods
 
 **Servo file:** `components/roves-v8/src/lib.rs`.

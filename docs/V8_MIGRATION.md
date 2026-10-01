@@ -511,11 +511,21 @@ adjusted, 41/41 total passing. With properties (readable and settable) and metho
 covered, Phase 4's core "interface member" primitives are complete at the `roves-v8` prototype
 level.
 
+**Sixth checkpoint (2026-10-01): indexed read interception.**
+`IndexedPropertyGetter` + `Runtime::define_indexed_property_getter` validates indexed read
+interception on wrapped instances. `Some(Value::Undefined)` handles a supported index;
+`None` permits ordinary own/prototype fallback. Canonical array indices are distinct from named
+keys. Unlike accessors, indexed handlers do not propagate through `FunctionTemplate::inherit`:
+install them explicitly on derived interfaces. Six new tests, 47/47 passing locally in normal
+and JIT-less modes, include GC finalization and prototype-chain holder lookup. This remains a
+read-only interception primitive, not full WebIDL collection semantics; register handlers before
+any instance or descendant materializes templates. Production codegen remains untouched.
+
 **Not yet done:** everything else in the validation-progression list (`document`/basic DOM
 objects beyond bare interface identity; element creation/properties/events; DOM-level callbacks/
 exceptions; Promise APIs at the DOM level; modules/dynamic import; fetch/storage; Canvas; WebGL;
-WebGPU; audio/media; Workers; WebAssembly); anything like `proxyhandler.rs`'s indexed/named
-property interception; the actual
+WebGPU; audio/media; Workers; WebAssembly); complete `proxyhandler.rs`-equivalent indexed/named
+property interception (only indexed reads prototyped); the actual
 `codegen.py`/production support-module
 adaptation itself (not started).
 
