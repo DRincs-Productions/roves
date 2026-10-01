@@ -181,7 +181,7 @@ Il confronto con Chrome dovrà misurare l'incremento causato dalla pagina, non s
   `window_presents`; il fallback deve continuare a incrementare `composited_presents`.
 - Aggiungere unit test e uno smoke test CI reale che fallisca se l'opzione è attiva ma nessuna
   presentazione diretta viene osservata nei log diagnostici.
-- Prima di modificare leggere integralmente `CLAUDE.md`. Ogni modifica ai file Servo deve avere
+- Prima di modificare leggere integralmente `AGENTS.md`. Ogni modifica ai file Servo deve avere
   una voce in `CUSTOMIZATIONS.md` e la nuova patch sequenziale
   `patches/servo-v0.5.0/0041-*.patch`, applicabile alla sorgente upstream pulita. La patch non
   deve contenere workflow o documenti specifici di Roves.

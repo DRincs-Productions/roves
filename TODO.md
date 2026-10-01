@@ -2,7 +2,7 @@
 
 Backlog di lavoro noto ma non ancora fatto sulla copia vendorizzata/patchata di Servo in
 questa cartella. Vedi [`CUSTOMIZATIONS.md`](./CUSTOMIZATIONS.md) per le modifiche già
-applicate (changelog storico completo) e [`CLAUDE.md`](./CLAUDE.md) per il protocollo da
+applicate (changelog storico completo) e [`AGENTS.md`](./AGENTS.md) per il protocollo da
 seguire quando si chiude uno di questi punti (aggiornare `CUSTOMIZATIONS.md` + rigenerare la
 patch nella stessa sessione).
 
@@ -193,7 +193,7 @@ hardware ancora aperta (IME CJK/dead key, screen reader, ecc.).
 
 - [ ] **Aggiornamenti mirati:** valutare mozjs nella serie attuale e runtime nativo GStreamer, poi prove coordinate egui/ANGLE/zstd/allocatore. Analisi separata nella [PR #9](https://github.com/DRincs-Productions/roves/pull/9); nessun bump è già stato applicato.
 - [ ] **Grafo desktop effettivo:** controllare feature e duplicazioni del target scelto prima di rimuovere dipendenze o deduplicare major incompatibili; non trattare tutto il lockfile workspace come contenuto del binario.
-- [ ] **Distribuzione del fork:** verificare che i consumer esterni (`roves-action`, Packmaster) scarichino Roves patchato al tag corretto — vedi anche il pin `roves-ref`/`TARGET_SHELL_VERSION`, va bumped a ogni release rilevante (vedi `CLAUDE.md`).
+- [ ] **Distribuzione del fork:** verificare che i consumer esterni (`roves-action`, Packmaster) scarichino Roves patchato al tag corretto — vedi anche il pin `roves-ref`/`TARGET_SHELL_VERSION`, va bumped a ogni release rilevante (vedi `AGENTS.md`).
 - [ ] **Matrice di regressione:** aggiungere/verificare smoke test delle app confezionate con routing, JS, storage, salvataggi, grafica, audio e API native; separare test della build, test della firma e test sul dispositivo.
 - [ ] **Riproducibilità:** ogni modifica runtime deve essere riproducibile da upstream + patch e mantenere coerenti documentazione, lockfile, bundle e asset CI. Gli aggiornamenti del solo backlog non richiedono una patch del motore.
 - [ ] **Console:** definire priorità e feasibility per i target roadmap prima di considerarli supportati; implementazioni e validazione richiedono gli SDK e ambienti appropriati.

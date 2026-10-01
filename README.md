@@ -18,7 +18,7 @@ Phaser, PixiJS, Three.js, or your own engine, anything that renders to a page) f
 looking and behaving like a native application, not a browser tab.
 
 Roves is a **vendored, patched copy** of a pinned Servo release, not a live Git fork or
-submodule — see [CLAUDE.md](./CLAUDE.md) for why, and [CUSTOMIZATIONS.md] for exactly what
+submodule — see [AGENTS.md](./AGENTS.md) for why, and [CUSTOMIZATIONS.md] for exactly what
 changed on top of pristine upstream Servo and how those changes are carried forward when
 upstream is upgraded.
 
@@ -405,7 +405,7 @@ to observe `direct_presents`; see [the rendering plan](./docs/FAST_PATH_RENDERIN
 ## Relationship to upstream Servo
 
 Roves tracks a pinned upstream Servo release plus a small set of targeted patches — see
-[CUSTOMIZATIONS.md] for the itemized list, and [CLAUDE.md](./CLAUDE.md) for how upgrades to
+[CUSTOMIZATIONS.md] for the itemized list, and [AGENTS.md](./AGENTS.md) for how upgrades to
 a newer Servo release are meant to happen. All credit for the underlying engine goes to the
 [Servo Project](https://github.com/servo/servo) and its contributors; issues specific to
 this fork's own customizations should stay local to this repository rather than upstream.

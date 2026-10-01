@@ -20,7 +20,7 @@ l'utente ha deciso, e qual è la prossima decisione in sospeso.
    bug reali trovati e come sono stati corretti.
 4. **[`../patches/servo-v0.5.0/`](../patches/servo-v0.5.0/)** — patch numerate `0057` → `0068`,
    una per checkpoint, applicabili a un checkout pulito del tag Servo pristine (vedi
-   `../CLAUDE.md` per come funziona il meccanismo patch/vendoring di questo repo).
+   `../AGENTS.md` per come funziona il meccanismo patch/vendoring di questo repo).
 5. **[`../components/roves-v8/src/lib.rs`](../components/roves-v8/src/lib.rs)** — il codice
    vero, un unico file, ~2000 righe, con commenti doc estesi su ogni funzione pubblica e su ogni
    bug reale trovato. **Non è pseudocodice o un prototipo giocattolo scadente** — è scritto con
@@ -112,7 +112,7 @@ build di produzione ad ogni modifica, non di fretta per "finire" qualcosa.
 ## Note operative per chi continua
 
 - **Workflow di verifica**: per ogni modifica a `components/roves-v8/`, genera sempre una patch
-  nuova in `patches/servo-v0.5.0/` (vedi `../CLAUDE.md`, sezione "keep CUSTOMIZATIONS.md and
+  nuova in `patches/servo-v0.5.0/` (vedi `../AGENTS.md`, sezione "keep CUSTOMIZATIONS.md and
   patches up to date") — **anche per file nuovi**, non solo modifiche: è stato un errore reale
   fatto e corretto in questa sessione (vedi CUSTOMIZATIONS.md, entry "V8 migration Phase 1" per
   il dettaglio del fix).

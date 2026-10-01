@@ -1,4 +1,12 @@
 # Customizations over upstream Servo
+## 2026-10-01 - Shared agent instructions
+
+Renamed the repository-only `CLAUDE.md` instruction file to `AGENTS.md`, preserved its
+instructions, recorded the user's autonomous V8 implementation/verification requirement,
+and updated active root documentation and the migration handoff links. Historical changelog
+entries and references to sibling projects' own CLAUDE.md files retain their original names.
+This is repository maintenance; it does not change the pristine Servo source overlay.
+
 ## 2026-10-01 ? V8 migration Phase 4 (sixth checkpoint): indexed read interception
 
 **Servo file:** `components/roves-v8/src/lib.rs`.

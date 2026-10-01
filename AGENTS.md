@@ -1,5 +1,15 @@
 # Servo (vendored, customized)
 
+## Active work: autonomous V8 migration
+
+Read `docs/V8_MIGRATION.md` and `docs/V8_MIGRATION_HANDOFF.md` before continuing the migration.
+The user explicitly requires autonomous implementation, local tests wherever possible,
+CI execution, waiting for results, fixing failures and continuing until every migration
+completion criterion is satisfied. Do not end work at a partial checkpoint or merely after
+starting CI. Keep progress accurate; never describe prototype coverage as production migration.
+This file is the shared instruction entry point for all coding agents.
+
+
 This directory is a **vendored copy** of [Servo](https://github.com/servo/servo), currently
 tracking upstream tag `v0.5.0` (migrated from the original `v0.4.0` import — see
 `CUSTOMIZATIONS.md`'s 2026-09-04 entry for that migration's own write-up) — not a git clone,
@@ -441,7 +451,7 @@ alone is touched by more than a dozen old patches; one early failure there poiso
    Default the former to `true` here, leave the latter alone, and update the entry's field
    list and reasoning to match — don't leave it describing the previous version's set.
 5. Swap the new, merged tree in for this directory — same exclusion list as before (don't
-   touch `.github/`, `CUSTOMIZATIONS.md`, `patches/`, `README.md`, `TODO.md`, `CLAUDE.md`, the
+   touch `.github/`, `CUSTOMIZATIONS.md`, `patches/`, `README.md`, `TODO.md`, `AGENTS.md`, the
    sibling project checkouts, or anything else this repo adds on top of vanilla Servo).
 6. Regenerate `patches/servo-v<new>/` from the merged result (`git diff <pristine-new-tag> --
    <files>`, grouped however makes sense — the v0.5.0 migration grouped by
