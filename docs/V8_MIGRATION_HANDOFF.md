@@ -40,26 +40,29 @@ toccare l'output predefinito del generatore SpiderMonkey. Il checkpoint 8 aggiun
 `Screen.webidl`, con tipi `double` e `unsigned long`. `v8-bindings-pilot` compila le binding
 generate come percorso aggiuntivo; non seleziona V8 in produzione. Il checkpoint 9 collega la
 binding `Screen` al tipo DOM nativo Servo con un adapter opt-in; non installa ancora l'oggetto in
-un realm V8 e non sostituisce il reflector SpiderMonkey. Sono passati localmente cinque test
-Python, 51 unit test runtime, tre integrazioni WebIDL e due doctest sia in modalità normale sia
-JIT-less, oltre a build Windows complete di `servo-script-bindings` e `servo-script` con i feature
-pilot attivi. Per compilare `servo-script` è servito `AWS_LC_SYS_NO_ASM=1` perché NASM non è
-installato localmente. La CI V8 è verde 6/6 e `validate-servo-patches` ha applicato fino a 0072;
-la matrice completa build/bundle del commit f8a4f89 è ancora in esecuzione.
+un realm V8 e non sostituisce il reflector SpiderMonkey. Il checkpoint 10 aggiunge conversione
+UTF-16 lossless e la binding WebIDL `DOMString`, compresi i code unit di surrogate isolate. Sono
+passati localmente sei test Python; 53 unit test runtime, tre integrazioni WebIDL e due doctest
+sia in modalità normale sia JIT-less; e 52 unit test più due doctest senza feature pilot. Build
+Windows complete di `servo-script-bindings` e `servo-script` con i feature pilot erano riuscite
+nei checkpoint precedenti. Per compilare `servo-script` è servito `AWS_LC_SYS_NO_ASM=1` perché
+NASM non è installato localmente. La matrice V8 6/6 e l'overlay fino a 0072 sono verdi. Per il
+commit e521bf0, `validate-servo-patches` (inclusa 0073) è passato; il workflow completo Servo è
+ancora in esecuzione. Il workflow V8 multipiattaforma sarà riattivato dal checkpoint 0074.
 
 `codegen.py` è stato esteso solo con la classe opt-in `CGV8BindingRoot`; il percorso SpiderMonkey
 predefinito è rimasto senza modifiche di output (1.441 file generati confrontati prima dell'ultimo
 controllo di esposizione). Il pilot accetta solo interfacce esposte a Window, attributi di istanza
-readonly boolean/`double`/`unsigned long` senza attributi estesi, e senza ereditarietà/costruttore.
-Tutte le altre forme falliscono esplicitamente. Patch overlay: 0071 aggiunge la prima interfaccia,
-0072 aggiunge i numerici, 0073 collega l'adapter nativo Screen.
+readonly boolean/`double`/`unsigned long`/`DOMString` senza attributi estesi, e senza
+ereditarietà/costruttore. Tutte le altre forme falliscono esplicitamente. Patch overlay: 0071
+aggiunge la prima interfaccia, 0072 aggiunge i numerici, 0073 collega l'adapter nativo Screen,
+0074 aggiunge le stringhe UTF-16 lossless.
 Il file `CLAUDE.md` è stato rinominato in `AGENTS.md`.
 
-Prossimo lavoro autonomo: finalizzare 0073, verificare che ricostruisca i file dal checkpoint
-0072, committare e pushare dopo la CI corrente; seguire la matrice fino al completamento e
-correggere gli eventuali errori. Poi proseguire con conversioni e forme WebIDL, wrapper/realm e
-runtime production, senza dichiarare completata la migrazione finché tutte le fasi e la validazione
-dei giochi in `V8_MIGRATION.md` non sono concluse.
+Prossimo lavoro autonomo: finalizzare 0074, verificare l'overlay dal checkpoint 0073, committare e
+pushare. Attendere la CI V8, la validazione patch e la CI completa; correggere ogni errore e poi
+proseguire con conversioni e forme WebIDL, wrapper/realm e runtime production. La migrazione resta
+in corso finché tutte le fasi e la validazione giochi in `V8_MIGRATION.md` non sono concluse.
 
 ## Stato reale, in breve
 

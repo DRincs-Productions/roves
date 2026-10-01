@@ -8245,6 +8245,8 @@ class CGV8BindingRoot(CGThing):
                 rust_type, value_expr = "f64", "Value::Number(native.{native}())"
             elif member.type.isInteger() and member.type.name == "UnsignedLong":
                 rust_type, value_expr = "u32", "Value::Number(native.{native}() as f64)"
+            elif member.type.isDOMString():
+                rust_type, value_expr = "Vec<u16>", "Value::Utf16String(native.{native}())"
             else:
                 raise TypeError(f"V8 backend unsupported attribute type: {name}.{member.identifier.name}: {member.type}")
             attributes.append((member.identifier.name, MakeNativeName(member.identifier.name), rust_type, value_expr))

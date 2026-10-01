@@ -22,6 +22,10 @@ pub mod webidl {
     pub mod screen {
         include!(concat!(env!("OUT_DIR"), "/ScreenV8Binding.rs"));
     }
+    #[cfg(test)]
+    pub mod utf16_string_state {
+        include!(concat!(env!("OUT_DIR"), "/Utf16StringStateV8Binding.rs"));
+    }
     pub mod validity_state {
         include!(concat!(env!("OUT_DIR"), "/ValidityStateV8Binding.rs"));
     }
@@ -68,6 +72,9 @@ pub enum Value {
     Bool(bool),
     Number(f64),
     String(String),
+    /// A lossless UTF-16 string for JavaScript strings containing unpaired surrogates, which
+    /// Rust's UTF-8 `String` cannot represent. Ordinary scalar-valid strings use `String`.
+    Utf16String(Vec<u16>),
     /// Raw bytes — round-trips through a JS `Uint8Array` (see [`Runtime::eval_value`] and
     /// [`Runtime::store`]). Distinct from `Object` because this phase's own bindgen-primitives
     /// scope explicitly needs ArrayBuffer/TypedArray, not just "some object".
@@ -1165,7 +1172,13 @@ fn native_value<'s>(scope: &v8::PinScope<'s, '_>, value: v8::Local<'s, v8::Value
     } else if value.is_number() {
         Value::Number(value.number_value(scope).unwrap_or(f64::NAN))
     } else if value.is_string() {
-        Value::String(value.to_rust_string_lossy(scope))
+        let string = v8::Local::<v8::String>::try_from(value).unwrap();
+        let mut utf16 = vec![0; string.length()];
+        string.write_v2(scope, 0, &mut utf16, v8::WriteFlags::empty());
+        match std::string::String::from_utf16(&utf16) {
+            Ok(string) => Value::String(string),
+            Err(_) => Value::Utf16String(utf16),
+        }
     } else if value.is_uint8_array() {
         let Ok(view) = v8::Local::<v8::ArrayBufferView>::try_from(value) else {
             return Value::Object;
@@ -1192,6 +1205,13 @@ fn v8_value<'s>(scope: &v8::PinScope<'s, '_>, value: &Value) -> v8::Local<'s, v8
         Value::String(s) => v8::String::new(scope, s)
             .map(Into::into)
             .unwrap_or_else(|| v8::undefined(scope).into()),
+        Value::Utf16String(units) => v8::String::new_from_two_byte(
+            scope,
+            units,
+            v8::NewStringType::Normal,
+        )
+        .map(Into::into)
+        .unwrap_or_else(|| v8::undefined(scope).into()),
         Value::Bytes(bytes) => {
             let buffer = v8::ArrayBuffer::new(scope, bytes.len());
             // SAFETY: `buffer` was just created above with exactly `bytes.len()` bytes backing
@@ -1293,6 +1313,43 @@ mod tests {
             Value::String("hi".to_string())
         );
         assert_eq!(runtime.eval_value("({})").unwrap(), Value::Object);
+    }
+
+    #[test]
+    fn unpaired_surrogates_round_trip_without_loss() {
+        let mut runtime = Runtime::new();
+        let units = vec![0xD800, b'A' as u16, 0xDC00];
+        let handle = runtime.store(&Value::Utf16String(units.clone()));
+        runtime.set_global_property("wide", &handle).unwrap();
+        assert_eq!(runtime.eval_value("wide.length").unwrap(), Value::Number(3.0));
+        assert_eq!(runtime.eval_value("wide.charCodeAt(0)").unwrap(), Value::Number(0xD800 as f64));
+        assert_eq!(runtime.eval_value("wide.charCodeAt(1)").unwrap(), Value::Number(65.0));
+        assert_eq!(runtime.eval_value("wide.charCodeAt(2)").unwrap(), Value::Number(0xDC00 as f64));
+        assert_eq!(runtime.eval_value("wide").unwrap(), Value::Utf16String(units.clone()));
+        assert_eq!(runtime.load(&handle), Value::Utf16String(units));
+    }
+
+    #[test]
+    #[cfg(feature = "webidl-pilot")]
+    fn generated_domstring_binding_preserves_unpaired_surrogates() {
+        use crate::webidl::utf16_string_state::{Utf16StringStateBinding, Utf16StringStateNative};
+
+        struct NativeString(Vec<u16>);
+        impl Utf16StringStateNative for NativeString {
+            fn Value(&self) -> Vec<u16> {
+                self.0.clone()
+            }
+        }
+
+        let mut runtime = Runtime::new();
+        let binding = Utf16StringStateBinding::<NativeString>::install(&mut runtime).unwrap();
+        let units = vec![0xD800, b'A' as u16, 0xDC00];
+        let state = binding.create(&mut runtime, NativeString(units.clone()));
+        runtime.set_global_property("state", &state).unwrap();
+        assert_eq!(runtime.eval_value("state.value").unwrap(), Value::Utf16String(units));
+        assert_eq!(runtime.eval_value("state.value.charCodeAt(0)").unwrap(), Value::Number(0xD800 as f64));
+        assert_eq!(runtime.eval_value("state.value.charCodeAt(1)").unwrap(), Value::Number(65.0));
+        assert_eq!(runtime.eval_value("state.value.charCodeAt(2)").unwrap(), Value::Number(0xDC00 as f64));
     }
 
     #[test]

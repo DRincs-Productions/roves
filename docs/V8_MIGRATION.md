@@ -562,6 +562,15 @@ feature-gated adapter compiles together with `servo-script` on Windows using
 builds). The adapter validates native type compatibility but does not install a V8 object into a
 realm or replace SpiderMonkey's reflector. Cross-platform CI for checkpoints 8 and 9 is pending.
 
+**Tenth checkpoint (2026-10-01): lossless DOMString transport.** The engine-neutral V8 `Value`
+now has a UTF-16 variant for strings with unpaired surrogates; scalar-valid strings continue to
+use Rust `String`. The opt-in generator maps readonly WebIDL `DOMString` attributes to
+`Vec<u16>`/`Value::Utf16String`. A generated fixture and runtime tests check code-unit identity
+through a native getter, `store`/`load`, and JavaScript `charCodeAt`. This preserves the string
+boundary without borrowing Servo's SpiderMonkey-rooted `DOMString` implementation. Local runtime
+tests pass in default, normal V8 pilot and JIT-less V8 pilot modes; six Python generator tests pass.
+Cross-platform CI is pending.
+
 **Not yet done:** production use of V8; binding existing Servo DOM implementations to generated
 wrappers; remaining WebIDL types, members, inheritance and interfaces; complete
 `proxyhandler.rs`-equivalent indexed/named property semantics (only indexed reads prototyped);

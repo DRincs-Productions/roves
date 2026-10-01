@@ -1,4 +1,22 @@
 # Customizations over upstream Servo
+## 2026-10-01 - V8 migration Phase 4: lossless WebIDL DOMString values
+
+**Servo files:** `components/roves-v8/{build.rs,src/lib.rs,tests/webidl/Utf16StringState.webidl}`;
+`components/script_bindings/{codegen/codegen.py,codegen/test_v8.py}`.
+**Patch:** `0074-roves-v8-phase4-utf16-domstring.patch` after 0001-0073.
+
+Added engine-neutral `Value::Utf16String(Vec<u16>)` so V8 strings containing unpaired
+surrogates survive conversion without lossy UTF-8 replacement; normal Unicode strings still use
+`Value::String`. The pilot generator maps readonly WebIDL `DOMString` getters to UTF-16 code units.
+A generated test interface verifies exact code units through a binding getter and JavaScript
+`charCodeAt`, while a store/load regression checks persistent handles. The fixture is deliberately
+separate from Servo's `DOMString`, whose current representation is SpiderMonkey-rooted and cannot
+yet be borrowed as a V8 native string.
+
+Local verification: six Python generator tests; 53 runtime unit, 3 real-WebIDL integration and 2
+doctests with both normal and JIT-less V8 pilot features; 52 unit + 2 doctests without the pilot.
+Cross-platform CI has not yet run for this checkpoint.
+
 ## 2026-10-01 - V8 migration Phase 4: native Screen adapter
 
 **Servo files:** `components/script/Cargo.toml`, `components/script/dom/screen.rs`.

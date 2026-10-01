@@ -17,6 +17,10 @@ fn main() {
     ] {
         println!("cargo:rerun-if-changed={}", bindings.join(path).display());
     }
+    println!(
+        "cargo:rerun-if-changed={}",
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/webidl/Utf16StringState.webidl").display()
+    );
     let python = env::var("PYTHON").unwrap_or_else(|_| {
         ["python3", "python"].into_iter().find(|name| {
             Command::new(name).arg("--version").output().is_ok_and(|output| output.status.success())
@@ -37,4 +41,13 @@ fn main() {
             .expect("run V8 WebIDL generator");
         assert!(status.success(), "V8 WebIDL generation failed for {interface}");
     }
+    let output = out_dir.join("Utf16StringStateV8Binding.rs");
+    let status = Command::new(&python)
+        .arg(bindings.join("codegen/run_v8.py"))
+        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/webidl/Utf16StringState.webidl"))
+        .arg(output)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .status()
+        .expect("run UTF-16 WebIDL fixture generator");
+    assert!(status.success(), "UTF-16 WebIDL fixture generation failed");
 }
