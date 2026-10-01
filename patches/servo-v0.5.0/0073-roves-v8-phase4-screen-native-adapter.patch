@@ -1,0 +1,49 @@
+diff --git a/components/script/Cargo.toml b/components/script/Cargo.toml
+index e858ca53ccb..de9d6e0ebe0 100644
+--- a/components/script/Cargo.toml
++++ b/components/script/Cargo.toml
+@@ -22,6 +22,7 @@ gamepad = ["script_bindings/gamepad", "embedder_traits/gamepad"]
+ jitspew = ['js/jitspew']
+ js_backtrace = []
+ js_jit = ["js/jit"]
++v8-bindings-pilot = ["script_bindings/v8-bindings-pilot"]
+ profilemozjs = ['js/profilemozjs']
+ testbinding = ["script_bindings/testbinding"]
+ tracing = ["dep:tracing", "script_bindings/tracing"]
+diff --git a/components/script/dom/screen.rs b/components/script/dom/screen.rs
+index 8deaf8fa6d8..44a13a474dc 100644
+--- a/components/script/dom/screen.rs
++++ b/components/script/dom/screen.rs
+@@ -75,3 +75,32 @@ impl ScreenMethods<crate::DomTypeHolder> for Screen {
+         24
+     }
+ }
++
++/// Connect Servo's existing native Screen object to the opt-in V8-generated WebIDL contract.
++/// This adapter does not create a V8 object or switch the production SpiderMonkey path.
++#[cfg(feature = "v8-bindings-pilot")]
++impl script_bindings::v8_bindings::screen::ScreenNative for Screen {
++    fn AvailWidth(&self) -> f64 {
++        *<Self as ScreenMethods<crate::DomTypeHolder>>::AvailWidth(self)
++    }
++
++    fn AvailHeight(&self) -> f64 {
++        *<Self as ScreenMethods<crate::DomTypeHolder>>::AvailHeight(self)
++    }
++
++    fn Width(&self) -> f64 {
++        *<Self as ScreenMethods<crate::DomTypeHolder>>::Width(self)
++    }
++
++    fn Height(&self) -> f64 {
++        *<Self as ScreenMethods<crate::DomTypeHolder>>::Height(self)
++    }
++
++    fn ColorDepth(&self) -> u32 {
++        <Self as ScreenMethods<crate::DomTypeHolder>>::ColorDepth(self)
++    }
++
++    fn PixelDepth(&self) -> u32 {
++        <Self as ScreenMethods<crate::DomTypeHolder>>::PixelDepth(self)
++    }
++}

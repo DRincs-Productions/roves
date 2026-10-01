@@ -1,4 +1,18 @@
 # Customizations over upstream Servo
+## 2026-10-01 - V8 migration Phase 4: native Screen adapter
+
+**Servo files:** `components/script/Cargo.toml`, `components/script/dom/screen.rs`.
+**Patch:** `0073-roves-v8-phase4-screen-native-adapter.patch` after 0001-0072.
+
+Forwarded `v8-bindings-pilot` from `servo-script` to `servo-script-bindings` and implemented the
+generated `ScreenNative` interface for Servo's existing `Screen` DOM object behind that opt-in
+feature. Dimensions delegate to the current embedder-backed Screen WebIDL methods; color and pixel
+depth retain Servo's existing values. This checks that generated bindings can target an actual
+Servo native type while leaving the default SpiderMonkey reflector and production engine selected.
+The full `servo-script` crate compiles with the feature enabled on Windows. NASM is absent on this
+machine, so `AWS_LC_SYS_NO_ASM=1` was set for the debug build; the aws-lc-sys build script supports
+that option. CI verification is pending.
+
 ## 2026-10-01 - V8 migration Phase 4: generated numeric WebIDL attributes
 
 **Servo files:** `components/roves-v8/{build.rs,src/lib.rs,tests/webidl.rs}`;

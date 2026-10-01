@@ -552,6 +552,16 @@ normal and JIT-less modes, and `mach build` compiles `servo-script-bindings` wit
 interfaces. This expands generated primitive coverage only; it does not yet implement Servo's
 `Screen` DOM object or wire V8 into production. CI for this checkpoint is pending.
 
+**Ninth checkpoint (2026-10-01): native Screen adapter.** Servo's existing `Screen` DOM type
+now implements the generated `ScreenNative` contract under the opt-in `servo-script`
+`v8-bindings-pilot` feature, forwarded to the binding crate. It delegates the four dimensions to
+the existing embedder-backed DOM methods and preserves Servo's current 24-bit depth values. The
+feature-gated adapter compiles together with `servo-script` on Windows using
+`mach build --no-package -- -p servo-script --features v8-bindings-pilot,js_jit --locked`
+(`AWS_LC_SYS_NO_ASM=1` was needed because NASM is absent locally; this is supported for debug
+builds). The adapter validates native type compatibility but does not install a V8 object into a
+realm or replace SpiderMonkey's reflector. Cross-platform CI for checkpoints 8 and 9 is pending.
+
 **Not yet done:** production use of V8; binding existing Servo DOM implementations to generated
 wrappers; remaining WebIDL types, members, inheritance and interfaces; complete
 `proxyhandler.rs`-equivalent indexed/named property semantics (only indexed reads prototyped);

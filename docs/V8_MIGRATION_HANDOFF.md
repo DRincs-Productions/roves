@@ -38,26 +38,28 @@ Il checkpoint 7 avvia l'integrazione vera con `components/script_bindings`: un b
 usa il parser WebIDL esistente e genera `ValidityState` dalla definizione Servo reale, senza
 toccare l'output predefinito del generatore SpiderMonkey. Il checkpoint 8 aggiunge anche
 `Screen.webidl`, con tipi `double` e `unsigned long`. `v8-bindings-pilot` compila le binding
-generate come percorso aggiuntivo; non collega ancora implementazioni DOM native e non seleziona
-V8 in produzione. Sono passati localmente cinque test Python, 51 unit test runtime, tre
-integrazioni WebIDL e due doctest sia in modalità normale sia JIT-less, oltre a una build Windows
-completa di `servo-script-bindings` con entrambi i binding pilot attivi. La CI multipiattaforma per
-il checkpoint 7 è verde 6/6 e il workflow completo ha applicato tutte le patch fino a 0071; i job
-di bundle Servo sono ancora in esecuzione. La CI di 0072 deve ancora partire.
+generate come percorso aggiuntivo; non seleziona V8 in produzione. Il checkpoint 9 collega la
+binding `Screen` al tipo DOM nativo Servo con un adapter opt-in; non installa ancora l'oggetto in
+un realm V8 e non sostituisce il reflector SpiderMonkey. Sono passati localmente cinque test
+Python, 51 unit test runtime, tre integrazioni WebIDL e due doctest sia in modalità normale sia
+JIT-less, oltre a build Windows complete di `servo-script-bindings` e `servo-script` con i feature
+pilot attivi. Per compilare `servo-script` è servito `AWS_LC_SYS_NO_ASM=1` perché NASM non è
+installato localmente. La CI V8 è verde 6/6 e `validate-servo-patches` ha applicato fino a 0072;
+la matrice completa build/bundle del commit f8a4f89 è ancora in esecuzione.
 
 `codegen.py` è stato esteso solo con la classe opt-in `CGV8BindingRoot`; il percorso SpiderMonkey
 predefinito è rimasto senza modifiche di output (1.441 file generati confrontati prima dell'ultimo
 controllo di esposizione). Il pilot accetta solo interfacce esposte a Window, attributi di istanza
 readonly boolean/`double`/`unsigned long` senza attributi estesi, e senza ereditarietà/costruttore.
 Tutte le altre forme falliscono esplicitamente. Patch overlay: 0071 aggiunge la prima interfaccia,
-0072 aggiunge i numerici.
+0072 aggiunge i numerici, 0073 collega l'adapter nativo Screen.
 Il file `CLAUDE.md` è stato rinominato in `AGENTS.md`.
 
-Prossimo lavoro autonomo: finalizzare e verificare l'overlay 0071 da una copia Servo pristine,
-eseguire nuovamente i test runtime normali/JIT-less e la build `mach`, committare e pushare,
-attendere entrambe le CI e correggere gli eventuali errori. Poi estendere il generatore incrementando
-la copertura WebIDL e collegando tipi nativi Servo, senza dichiarare completata la migrazione finché
-le fasi e la validazione dei giochi in `V8_MIGRATION.md` non sono concluse.
+Prossimo lavoro autonomo: finalizzare 0073, verificare che ricostruisca i file dal checkpoint
+0072, committare e pushare dopo la CI corrente; seguire la matrice fino al completamento e
+correggere gli eventuali errori. Poi proseguire con conversioni e forme WebIDL, wrapper/realm e
+runtime production, senza dichiarare completata la migrazione finché tutte le fasi e la validazione
+dei giochi in `V8_MIGRATION.md` non sono concluse.
 
 ## Stato reale, in breve
 

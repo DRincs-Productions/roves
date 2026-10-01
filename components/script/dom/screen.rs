@@ -75,3 +75,32 @@ impl ScreenMethods<crate::DomTypeHolder> for Screen {
         24
     }
 }
+
+/// Connect Servo's existing native Screen object to the opt-in V8-generated WebIDL contract.
+/// This adapter does not create a V8 object or switch the production SpiderMonkey path.
+#[cfg(feature = "v8-bindings-pilot")]
+impl script_bindings::v8_bindings::screen::ScreenNative for Screen {
+    fn AvailWidth(&self) -> f64 {
+        *<Self as ScreenMethods<crate::DomTypeHolder>>::AvailWidth(self)
+    }
+
+    fn AvailHeight(&self) -> f64 {
+        *<Self as ScreenMethods<crate::DomTypeHolder>>::AvailHeight(self)
+    }
+
+    fn Width(&self) -> f64 {
+        *<Self as ScreenMethods<crate::DomTypeHolder>>::Width(self)
+    }
+
+    fn Height(&self) -> f64 {
+        *<Self as ScreenMethods<crate::DomTypeHolder>>::Height(self)
+    }
+
+    fn ColorDepth(&self) -> u32 {
+        <Self as ScreenMethods<crate::DomTypeHolder>>::ColorDepth(self)
+    }
+
+    fn PixelDepth(&self) -> u32 {
+        <Self as ScreenMethods<crate::DomTypeHolder>>::PixelDepth(self)
+    }
+}
