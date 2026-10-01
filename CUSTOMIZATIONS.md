@@ -4,9 +4,11 @@
 **File:** `.github/workflows/test.yml` (repository CI only; no upstream source overlay patch).
 
 The `macos-latest` ARM runner failed its Servo debug build because `mozjs_sys` invokes clang with
-`-fuse-ld=lld`, while Homebrew's `ld.lld` was not on PATH. The macOS matrix now ensures Homebrew
-LLVM/LLD is installed and places its `bin` directory on `GITHUB_PATH` before the build. This fixes
-the toolchain prerequisite; the workflow run after this update verifies both macOS packaging modes.
+`-fuse-ld=lld`. Homebrew's `llvm` formula does not include the split `lld` formula, and neither
+tool is on PATH by default. The macOS matrix now ensures both formulas are installed and adds both
+binary directories to `GITHUB_PATH` before the build. The first attempted workflow adjustment
+installed `llvm` but checked for `ld.lld` in the wrong formula; the current correction addresses
+that split explicitly.
 The run that exposed the issue passed patch overlay, V8 6/6, Android and iOS; macOS DMG failed at
 the linker probe, and other bundle jobs were still running when the fix was prepared.
 

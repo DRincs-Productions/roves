@@ -60,8 +60,9 @@ Il file `CLAUDE.md` è stato rinominato in `AGENTS.md`, entry point condiviso pe
 
 Checkpoint 10 (`0074`, commit `9412dfe`) e checkpoint 11 (mutabili DOMString, in sviluppo locale)
 sono dettagliati sopra e nel piano. La CI del commit 9412dfe è verde per matrice V8 (6/6), Android,
-iOS e validazione overlay; un job macOS DMG è fallito perché il runner ARM non esponeva `ld.lld`
-richiesto da `mozjs_sys`; la correzione di provisioning è inclusa nel workflow corrente. Dopo la
+iOS e validazione overlay; i bundle macOS sono falliti perché il runner ARM non esponeva `ld.lld`
+richiesto da `mozjs_sys`. Il primo provisioning ha mostrato che Homebrew separa `lld` da `llvm`;
+il workflow ora installa entrambi. Dopo la
 patch 0075, proseguire con le conversioni WebIDL e poi wrapper/realm solo quando l'ownership è
 validata. Il pilot non è il runtime di produzione; il piano resta aperto fino a tutti i criteri di
 `V8_MIGRATION.md`.
