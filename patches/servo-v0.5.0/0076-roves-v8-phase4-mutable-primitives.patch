@@ -28,7 +28,7 @@ index 922c99dd7ad..735f5aa328e 100644
 +    assert!(status.success(), "mutable primitive WebIDL fixture generation failed");
  }
 diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
-index 6cfc682582d..06a06d9c54c 100644
+index 6cfc682582d..ec82819c642 100644
 --- a/components/roves-v8/src/lib.rs
 +++ b/components/roves-v8/src/lib.rs
 @@ -29,6 +29,10 @@ pub mod webidl {
@@ -40,37 +40,12 @@ index 6cfc682582d..06a06d9c54c 100644
 +        include!(concat!(env!("OUT_DIR"), "/MutablePrimitivesV8Binding.rs"));
 +    }
  }
-
+ 
  use std::sync::Once;
-@@ -117,6 +121,7 @@ pub struct Runtime {
-     /// Keeps callbacks armed until they have actually completed. An empty weak handle
-     /// alone is insufficient: first-pass GC may clear it before second-pass finalization.
-     wrapped_finalizers: Vec<WrappedFinalizer>,
-+    primitive_setters: Vec<*mut PrimitiveSetterData>,
- }
-
- struct WrappedFinalizer {
-@@ -124,6 +129,16 @@ struct WrappedFinalizer {
-     completed: std::rc::Rc<std::cell::Cell<bool>>,
- }
-
-+impl Drop for Runtime {
-+    fn drop(&mut self) {
-+        // The isolate drops after this method returns; release callback data only once V8 can
-+        // no longer invoke templates referring to it.
-+        for data in self.primitive_setters.drain(..) {
-+            unsafe { drop(Box::from_raw(data)); }
-+        }
-+    }
-+}
-+
- /// Tag passed to `set_aligned_pointer_in_internal_field`/`get_aligned_pointer_from_internal_field`
- /// ? required by the API. V8's sandboxed external-pointer table only accepts a small range of
- /// tag values (found by hitting "Fatal error in ToExternalPointerTag: the provided tag is
-@@ -166,6 +181,25 @@ pub type PropertySetter = fn(&mut dyn std::any::Any, &Value);
+@@ -166,6 +170,17 @@ pub type PropertySetter = fn(&mut dyn std::any::Any, &Value);
  /// the resulting UTF-16 code units, including lone surrogates.
  pub type DomStringSetter = fn(&mut dyn std::any::Any, Vec<u16>);
-
+ 
 +/// A setter for primitive WebIDL attributes after JavaScript coercion.
 +pub type WebIdlPrimitiveSetter = fn(&mut dyn std::any::Any, &Value);
 +
@@ -82,44 +57,28 @@ index 6cfc682582d..06a06d9c54c 100644
 +    UnsignedLong,
 +}
 +
-+#[repr(C)]
-+// Kept alive for the lifetime of the runtime: V8's FunctionTemplate External stores only a raw
-+// pointer, while the interface template may outlive every individual instance.
-+struct PrimitiveSetterData {
-+    setter: WebIdlPrimitiveSetter,
-+    conversion: PrimitiveConversion,
-+}
-+
  /// A callable method, registered via [`Runtime::define_method`]: receives the wrapped Rust value
  /// of whichever instance it was called on (`node.someMethod()`) plus its JS arguments already
  /// converted to [`Value`], and returns a [`Value`]. Same plain-function-pointer restriction as
-@@ -193,6 +227,7 @@ impl Runtime {
-             isolate,
-             context,
-             wrapped_finalizers: Vec::new(),
-+            primitive_setters: Vec::new(),
-         }
-     }
-
-@@ -679,7 +714,7 @@ impl Runtime {
+@@ -679,7 +694,7 @@ impl Runtime {
          name: &str,
          getter: PropertyGetter,
      ) -> Result<(), String> {
 -        self.define_attribute(interface, name, getter, None, None)
 +        self.define_attribute(interface, name, getter, None, None, None)
      }
-
+ 
      /// Defines a prototype attribute with both a getter and a setter. Callback functions
-@@ -691,7 +726,7 @@ impl Runtime {
+@@ -691,7 +706,7 @@ impl Runtime {
          getter: PropertyGetter,
          setter: PropertySetter,
      ) -> Result<(), String> {
 -        self.define_attribute(interface, name, getter, Some(setter), None)
 +        self.define_attribute(interface, name, getter, Some(setter), None, None)
      }
-
+ 
      /// Defines a WebIDL DOMString attribute with JavaScript ToString conversion.
-@@ -702,7 +737,20 @@ impl Runtime {
+@@ -702,7 +717,20 @@ impl Runtime {
          getter: PropertyGetter,
          setter: DomStringSetter,
      ) -> Result<(), String> {
@@ -139,9 +98,9 @@ index 6cfc682582d..06a06d9c54c 100644
 +    ) -> Result<(), String> {
 +        self.define_attribute(interface, name, getter, None, None, Some((setter, conversion)))
      }
-
+ 
      fn define_attribute(
-@@ -712,6 +760,7 @@ impl Runtime {
+@@ -712,6 +740,7 @@ impl Runtime {
          getter: PropertyGetter,
          setter: Option<PropertySetter>,
          domstring_setter: Option<DomStringSetter>,
@@ -149,65 +108,70 @@ index 6cfc682582d..06a06d9c54c 100644
      ) -> Result<(), String> {
          if interface.materialized.get() {
              return Err("interface members must be defined before creating instances or descendants".into());
-@@ -788,6 +837,54 @@ impl Runtime {
+@@ -788,6 +817,59 @@ impl Runtime {
              .length(1)
              .constructor_behavior(v8::ConstructorBehavior::Throw)
              .build(scope))
 +        } else if let Some((setter, conversion)) = primitive_setter {
-+            let setter_data = Box::into_raw(Box::new(PrimitiveSetterData { setter, conversion }));
-+            self.primitive_setters.push(setter_data);
-+            let external = v8::External::new(scope, setter_data.cast());
-+            Some(v8::FunctionTemplate::builder(
-+                |scope: &mut v8::PinScope,
-+                 args: v8::FunctionCallbackArguments,
-+                 _retval: v8::ReturnValue| {
-+                    let external = v8::Local::<v8::External>::try_from(args.data()).unwrap();
-+                    let data = unsafe { &*(external.value() as *const PrimitiveSetterData) };
-+                    let this = args.this();
-+                    if this.internal_field_count() < 1 {
-+                        throw_type_error(scope, "Illegal invocation");
-+                        return;
-+                    }
-+                    let raw = unsafe { this.get_aligned_pointer_from_internal_field(0, WRAPPED_POINTER_TAG) }
-+                        as *mut Box<dyn std::any::Any>;
-+                    if raw.is_null() {
-+                        throw_type_error(scope, "Illegal invocation");
-+                        return;
-+                    }
-+                    let value = args.get(0);
-+                    let converted = match data.conversion {
-+                        PrimitiveConversion::Boolean => Value::Bool(value.boolean_value(scope)),
-+                        PrimitiveConversion::Double => {
-+                            let Some(number) = value.number_value(scope) else { return; };
-+                            Value::Number(number)
-+                        }
-+                        PrimitiveConversion::UnsignedLong => {
-+                            let Some(number) = value.number_value(scope) else { return; };
-+                            if !number.is_finite() || number == 0.0 {
-+                                Value::Number(0.0)
-+                            } else {
-+                                let integer = number.trunc();
-+                                let modulo = integer.rem_euclid(4_294_967_296.0);
-+                                Value::Number(modulo)
++            let setter_data = v8::External::new(scope, setter as *mut std::ffi::c_void);
++            macro_rules! primitive_setter_template {
++                ($conversion:expr) => {
++                    v8::FunctionTemplate::builder(
++                        |scope: &mut v8::PinScope,
++                         args: v8::FunctionCallbackArguments,
++                         _retval: v8::ReturnValue| {
++                            let external = v8::Local::<v8::External>::try_from(args.data()).unwrap();
++                            let setter: WebIdlPrimitiveSetter = unsafe { std::mem::transmute(external.value()) };
++                            let this = args.this();
++                            if this.internal_field_count() < 1 {
++                                throw_type_error(scope, "Illegal invocation");
++                                return;
 +                            }
-+                        }
-+                    };
-+                    // Numeric conversion may call user-defined valueOf/toString code.
-+                    (data.setter)(unsafe { (&mut *raw).as_mut() }, &converted);
-+                },
-+            )
-+            .data(external.into())
-+            .signature(signature)
-+            .length(1)
-+            .constructor_behavior(v8::ConstructorBehavior::Throw)
-+            .build(scope))
++                            let raw = unsafe { this.get_aligned_pointer_from_internal_field(0, WRAPPED_POINTER_TAG) }
++                                as *mut Box<dyn std::any::Any>;
++                            if raw.is_null() {
++                                throw_type_error(scope, "Illegal invocation");
++                                return;
++                            }
++                            let value = args.get(0);
++                            let converted = match $conversion {
++                                PrimitiveConversion::Boolean => Value::Bool(value.boolean_value(scope)),
++                                PrimitiveConversion::Double => {
++                                    let Some(number) = value.number_value(scope) else { return; };
++                                    Value::Number(number)
++                                }
++                                PrimitiveConversion::UnsignedLong => {
++                                    let Some(number) = value.number_value(scope) else { return; };
++                                    if !number.is_finite() || number == 0.0 {
++                                        Value::Number(0.0)
++                                    } else {
++                                        Value::Number(number.trunc().rem_euclid(4_294_967_296.0))
++                                    }
++                                }
++                            };
++                            // Coercion may run user JavaScript; borrow native state only after it completes.
++                            setter(unsafe { (&mut *raw).as_mut() }, &converted);
++                        },
++                    )
++                    .data(setter_data.into())
++                    .signature(signature)
++                    .length(1)
++                    .constructor_behavior(v8::ConstructorBehavior::Throw)
++                    .build(scope)
++                };
++            }
++            Some(match conversion {
++                PrimitiveConversion::Boolean => primitive_setter_template!(PrimitiveConversion::Boolean),
++                PrimitiveConversion::Double => primitive_setter_template!(PrimitiveConversion::Double),
++                PrimitiveConversion::UnsignedLong => primitive_setter_template!(PrimitiveConversion::UnsignedLong),
++            })
          } else {
              domstring_setter.map(|setter| {
                  let setter_data = v8::External::new(scope, setter as *mut std::ffi::c_void);
-@@ -2400,6 +2497,38 @@ mod tests {
+@@ -2400,6 +2482,38 @@ mod tests {
          }
      }
-
+ 
 +    #[cfg(feature = "webidl-pilot")]
 +    #[test]
 +    fn generated_mutable_primitive_attributes_follow_webidl_conversion() {
@@ -325,7 +289,7 @@ index 71cc001699d..89f7ed8f96c 100644
  {trait_methods}
 -{trait_setters}
  }}
-
+ 
  /// Typed binding generated from {name}.webidl. The private interface prevents
 diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
 index dd4de8d07bb..b2889036631 100644
@@ -334,7 +298,7 @@ index dd4de8d07bb..b2889036631 100644
 @@ -43,6 +43,21 @@ class V8GeneratorTests(unittest.TestCase):
              self.assertIn("fn set_Value(&mut self, value: Vec<u16>);", source)
              self.assertIn("runtime.define_domstring_property(&interface, \"value\"", source)
-
+ 
 +    def test_mutable_numeric_and_boolean_attributes_generate_typed_setters(self):
 +        with tempfile.TemporaryDirectory() as directory:
 +            root = Path(directory)
@@ -355,9 +319,10 @@ index dd4de8d07bb..b2889036631 100644
              path = Path(directory) / "Unsupported.webidl"
 @@ -51,7 +66,7 @@ class V8GeneratorTests(unittest.TestCase):
                  generate(path, Path(directory) / "output")
-
+ 
      def test_unsupported_members_never_silently_disappear(self):
 -        for member in ["attribute boolean valid;", "readonly attribute float value;", "readonly attribute unsigned long long value;", "readonly attribute boolean? value;", "undefined run();", "static readonly attribute boolean valid;", "[GetterThrows] readonly attribute boolean valid;"]:
 +        for member in ["readonly attribute float value;", "readonly attribute unsigned long long value;", "readonly attribute boolean? value;", "undefined run();", "static readonly attribute boolean valid;", "[GetterThrows] readonly attribute boolean valid;", "attribute byte value;"]:
              with self.subTest(member=member):
                  self.assert_unsupported("interface Unsupported { " + member + " };")
+ 

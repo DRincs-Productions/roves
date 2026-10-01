@@ -8,7 +8,7 @@
 The opt-in generator now emits setters for mutable `boolean`, `double`, and `unsigned long`
 attributes alongside `DOMString`. V8 performs truthiness/ToNumber conversion before any mutable
 native borrow; `unsigned long` applies truncation and modulo 2³², and Symbol-to-number throws
-without changing native state. Callback metadata is owned by `Runtime` until its isolate drops.
+without changing native state. Each conversion uses a dedicated non-capturing V8 callback; its `External` carries only the setter function pointer, so no heap callback state outlives registration.
 
 Local verification: 54 unit + 3 WebIDL integration + 2 doctests pass in normal and JIT-less pilot
 modes; seven Python generator tests pass. `git diff --check` passes. The full Servo smoke workflow

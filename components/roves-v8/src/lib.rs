@@ -121,22 +121,11 @@ pub struct Runtime {
     /// Keeps callbacks armed until they have actually completed. An empty weak handle
     /// alone is insufficient: first-pass GC may clear it before second-pass finalization.
     wrapped_finalizers: Vec<WrappedFinalizer>,
-    primitive_setters: Vec<*mut PrimitiveSetterData>,
 }
 
 struct WrappedFinalizer {
     _weak: v8::Weak<v8::Value>,
     completed: std::rc::Rc<std::cell::Cell<bool>>,
-}
-
-impl Drop for Runtime {
-    fn drop(&mut self) {
-        // The isolate drops after this method returns; release callback data only once V8 can
-        // no longer invoke templates referring to it.
-        for data in self.primitive_setters.drain(..) {
-            unsafe { drop(Box::from_raw(data)); }
-        }
-    }
 }
 
 /// Tag passed to `set_aligned_pointer_in_internal_field`/`get_aligned_pointer_from_internal_field`
@@ -192,14 +181,6 @@ pub enum PrimitiveConversion {
     UnsignedLong,
 }
 
-#[repr(C)]
-// Kept alive for the lifetime of the runtime: V8's FunctionTemplate External stores only a raw
-// pointer, while the interface template may outlive every individual instance.
-struct PrimitiveSetterData {
-    setter: WebIdlPrimitiveSetter,
-    conversion: PrimitiveConversion,
-}
-
 /// A callable method, registered via [`Runtime::define_method`]: receives the wrapped Rust value
 /// of whichever instance it was called on (`node.someMethod()`) plus its JS arguments already
 /// converted to [`Value`], and returns a [`Value`]. Same plain-function-pointer restriction as
@@ -227,7 +208,6 @@ impl Runtime {
             isolate,
             context,
             wrapped_finalizers: Vec::new(),
-            primitive_setters: Vec::new(),
         }
     }
 
@@ -838,53 +818,58 @@ impl Runtime {
             .constructor_behavior(v8::ConstructorBehavior::Throw)
             .build(scope))
         } else if let Some((setter, conversion)) = primitive_setter {
-            let setter_data = Box::into_raw(Box::new(PrimitiveSetterData { setter, conversion }));
-            self.primitive_setters.push(setter_data);
-            let external = v8::External::new(scope, setter_data.cast());
-            Some(v8::FunctionTemplate::builder(
-                |scope: &mut v8::PinScope,
-                 args: v8::FunctionCallbackArguments,
-                 _retval: v8::ReturnValue| {
-                    let external = v8::Local::<v8::External>::try_from(args.data()).unwrap();
-                    let data = unsafe { &*(external.value() as *const PrimitiveSetterData) };
-                    let this = args.this();
-                    if this.internal_field_count() < 1 {
-                        throw_type_error(scope, "Illegal invocation");
-                        return;
-                    }
-                    let raw = unsafe { this.get_aligned_pointer_from_internal_field(0, WRAPPED_POINTER_TAG) }
-                        as *mut Box<dyn std::any::Any>;
-                    if raw.is_null() {
-                        throw_type_error(scope, "Illegal invocation");
-                        return;
-                    }
-                    let value = args.get(0);
-                    let converted = match data.conversion {
-                        PrimitiveConversion::Boolean => Value::Bool(value.boolean_value(scope)),
-                        PrimitiveConversion::Double => {
-                            let Some(number) = value.number_value(scope) else { return; };
-                            Value::Number(number)
-                        }
-                        PrimitiveConversion::UnsignedLong => {
-                            let Some(number) = value.number_value(scope) else { return; };
-                            if !number.is_finite() || number == 0.0 {
-                                Value::Number(0.0)
-                            } else {
-                                let integer = number.trunc();
-                                let modulo = integer.rem_euclid(4_294_967_296.0);
-                                Value::Number(modulo)
+            let setter_data = v8::External::new(scope, setter as *mut std::ffi::c_void);
+            macro_rules! primitive_setter_template {
+                ($conversion:expr) => {
+                    v8::FunctionTemplate::builder(
+                        |scope: &mut v8::PinScope,
+                         args: v8::FunctionCallbackArguments,
+                         _retval: v8::ReturnValue| {
+                            let external = v8::Local::<v8::External>::try_from(args.data()).unwrap();
+                            let setter: WebIdlPrimitiveSetter = unsafe { std::mem::transmute(external.value()) };
+                            let this = args.this();
+                            if this.internal_field_count() < 1 {
+                                throw_type_error(scope, "Illegal invocation");
+                                return;
                             }
-                        }
-                    };
-                    // Numeric conversion may call user-defined valueOf/toString code.
-                    (data.setter)(unsafe { (&mut *raw).as_mut() }, &converted);
-                },
-            )
-            .data(external.into())
-            .signature(signature)
-            .length(1)
-            .constructor_behavior(v8::ConstructorBehavior::Throw)
-            .build(scope))
+                            let raw = unsafe { this.get_aligned_pointer_from_internal_field(0, WRAPPED_POINTER_TAG) }
+                                as *mut Box<dyn std::any::Any>;
+                            if raw.is_null() {
+                                throw_type_error(scope, "Illegal invocation");
+                                return;
+                            }
+                            let value = args.get(0);
+                            let converted = match $conversion {
+                                PrimitiveConversion::Boolean => Value::Bool(value.boolean_value(scope)),
+                                PrimitiveConversion::Double => {
+                                    let Some(number) = value.number_value(scope) else { return; };
+                                    Value::Number(number)
+                                }
+                                PrimitiveConversion::UnsignedLong => {
+                                    let Some(number) = value.number_value(scope) else { return; };
+                                    if !number.is_finite() || number == 0.0 {
+                                        Value::Number(0.0)
+                                    } else {
+                                        Value::Number(number.trunc().rem_euclid(4_294_967_296.0))
+                                    }
+                                }
+                            };
+                            // Coercion may run user JavaScript; borrow native state only after it completes.
+                            setter(unsafe { (&mut *raw).as_mut() }, &converted);
+                        },
+                    )
+                    .data(setter_data.into())
+                    .signature(signature)
+                    .length(1)
+                    .constructor_behavior(v8::ConstructorBehavior::Throw)
+                    .build(scope)
+                };
+            }
+            Some(match conversion {
+                PrimitiveConversion::Boolean => primitive_setter_template!(PrimitiveConversion::Boolean),
+                PrimitiveConversion::Double => primitive_setter_template!(PrimitiveConversion::Double),
+                PrimitiveConversion::UnsignedLong => primitive_setter_template!(PrimitiveConversion::UnsignedLong),
+            })
         } else {
             domstring_setter.map(|setter| {
                 let setter_data = v8::External::new(scope, setter as *mut std::ffi::c_void);
