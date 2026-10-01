@@ -49,7 +49,7 @@ Windows complete di `servo-script-bindings` e `servo-script` con i feature pilot
 nei checkpoint precedenti. Per compilare `servo-script` è servito `AWS_LC_SYS_NO_ASM=1` perché
 NASM non è installato localmente. La matrice V8 6/6 e l'overlay fino a 0072 sono verdi. Per il
 commit e521bf0, `validate-servo-patches` (inclusa 0073) è passato; il workflow completo Servo è
-ancora in esecuzione. La matrice V8, Android e iOS del checkpoint precedente è verde. Il job Steam della CI Servo per 31c2ae6 è scaduto due volte nel bootstrap apt mentre scaricava centinaia di dipendenze; non ha raggiunto build e smoke test. È stata aggiunta la cache uv e il bootstrap ha ora 45 minuti.
+ancora in esecuzione. La matrice V8, Android e iOS del checkpoint precedente è verde. Il job Steam della CI Servo per 31c2ae6 ? scaduto due volte nel bootstrap apt: il mirror standard scaricava lentamente e ha installato solo 272 pacchetti in 45 minuti. Il job ora usa il mirror Azure, che ha installato circa 500 pacchetti in 18 minuti in un altro job Linux, pi? la cache uv e il timeout di 45 minuti.
 
 `codegen.py` è stato esteso solo con la classe opt-in `CGV8BindingRoot`; il percorso SpiderMonkey
 predefinito è rimasto senza modifiche di output (1.441 file generati confrontati prima dell'ultimo

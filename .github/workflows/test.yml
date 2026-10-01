@@ -1228,6 +1228,12 @@ jobs:
           done
           echo "::warning::dpkg/apt lock still held after 60s -- proceeding anyway"
 
+      - name: use the Ubuntu mirror used by the successful Linux build jobs
+        shell: bash
+        run: |
+          sudo sed -i 's|archive.ubuntu.com|azure.archive.ubuntu.com|g' /etc/apt/sources.list.d/ubuntu.sources
+          grep -n '^URIs:' /etc/apt/sources.list.d/ubuntu.sources
+
       - name: mach bootstrap (installs build dependencies, real GStreamer)
         shell: bash
         working-directory: servo-src

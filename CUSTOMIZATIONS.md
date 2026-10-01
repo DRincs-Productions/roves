@@ -14,7 +14,7 @@ Local verification: 54 unit + 3 WebIDL integration + 2 doctests pass in normal a
 modes; seven Python generator tests pass. `git diff --check` passes. The full Servo smoke workflow
 on 31c2ae6 timed out twice while `mach bootstrap` downloaded hundreds of apt dependencies (the
 second attempt was still fetching Qt/OpenCV); the Steam build/smoke steps were never reached. The
-job now enables setup-uv's cache and gives first-time dependency provisioning 45 minutes.
+job now enables setup-uv's cache, gives first-time dependency provisioning 45 minutes, and switches Ubuntu apt to the Azure mirror used by the successful Linux bundle jobs. The failed Steam log used archive.ubuntu.com and reached only package 272; the Linux deb job using azure.archive.ubuntu.com installed nearly 500 packages in about 18 minutes.
 
 ## 2026-10-01 - macOS CI linker provisioning for Servo builds
 ## 2026-10-01 - macOS CI linker provisioning for Servo builds
