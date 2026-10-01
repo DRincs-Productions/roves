@@ -19,6 +19,17 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertNotIn("js::", source)
             self.assertNotIn("v8::", source.replace("roves_v8::", ""))
 
+    def test_real_screen_webidl_generates_supported_numeric_types(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            source = generate(ROOT / "webidls/Screen.webidl", output)
+            self.assertEqual(source, generate(ROOT / "webidls/Screen.webidl", output))
+            self.assertEqual(source.count("runtime.define_property("), 6)
+            self.assertIn("fn AvailWidth(&self) -> f64;", source)
+            self.assertIn("fn ColorDepth(&self) -> u32;", source)
+            self.assertIn("Value::Number(native.AvailWidth())", source)
+            self.assertIn("Value::Number(native.ColorDepth() as f64)", source)
+
     def assert_unsupported(self, contents):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "Unsupported.webidl"
@@ -27,7 +38,7 @@ class V8GeneratorTests(unittest.TestCase):
                 generate(path, Path(directory) / "output")
 
     def test_unsupported_members_never_silently_disappear(self):
-        for member in ["attribute boolean valid;", "readonly attribute double value;", "readonly attribute boolean? value;", "undefined run();", "static readonly attribute boolean valid;", "[GetterThrows] readonly attribute boolean valid;"]:
+        for member in ["attribute boolean valid;", "readonly attribute float value;", "readonly attribute unsigned long long value;", "readonly attribute DOMString value;", "readonly attribute boolean? value;", "undefined run();", "static readonly attribute boolean valid;", "[GetterThrows] readonly attribute boolean valid;"]:
             with self.subTest(member=member):
                 self.assert_unsupported("interface Unsupported { " + member + " };")
 

@@ -543,6 +543,15 @@ This is generator/backend groundwork, not a production DOM binding: its native t
 implemented by Servo's DOM, and no production runtime selects V8. Only Window-exposed interfaces
 are accepted by this pilot. CI runs generator and runtime tests across Windows, Linux and macOS.
 
+**Eighth checkpoint (2026-10-01): numeric WebIDL attributes.** The same backend now generates
+both the real `ValidityState.webidl` and `Screen.webidl`. Alongside booleans, it maps WebIDL
+`double` to Rust `f64` and `unsigned long` to `u32`/JavaScript Number. The Screen integration
+test checks all six live values and `instanceof`; unsupported numeric types continue to fail
+closed. Five generator tests and 51 unit + 3 WebIDL integration + 2 doctests pass locally in
+normal and JIT-less modes, and `mach build` compiles `servo-script-bindings` with both generated
+interfaces. This expands generated primitive coverage only; it does not yet implement Servo's
+`Screen` DOM object or wire V8 into production. CI for this checkpoint is pending.
+
 **Not yet done:** production use of V8; binding existing Servo DOM implementations to generated
 wrappers; remaining WebIDL types, members, inheritance and interfaces; complete
 `proxyhandler.rs`-equivalent indexed/named property semantics (only indexed reads prototyped);

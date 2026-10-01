@@ -19,6 +19,9 @@ extern crate self as roves_v8;
 
 #[cfg(feature = "webidl-pilot")]
 pub mod webidl {
+    pub mod screen {
+        include!(concat!(env!("OUT_DIR"), "/ScreenV8Binding.rs"));
+    }
     pub mod validity_state {
         include!(concat!(env!("OUT_DIR"), "/ValidityStateV8Binding.rs"));
     }

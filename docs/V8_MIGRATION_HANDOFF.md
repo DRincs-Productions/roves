@@ -36,18 +36,21 @@ criteri in `V8_MIGRATION.md`.
 
 Il checkpoint 7 avvia l'integrazione vera con `components/script_bindings`: un backend opt-in
 usa il parser WebIDL esistente e genera `ValidityState` dalla definizione Servo reale, senza
-toccare l'output predefinito del generatore SpiderMonkey. `v8-bindings-pilot` compila la binding
-generata come percorso aggiuntivo; non collega ancora un'implementazione DOM nativa e non
-seleziona V8 in produzione. Sono passati localmente quattro test Python, 51 unit test runtime,
-due integrazioni WebIDL e due doctest in configurazione JIT-less, oltre a una build Windows
-completa di `servo-script-bindings` con il pilot attivo. La matrice CI specifica e la CI completa
-Servo vanno seguite sui commit aggiornati.
+toccare l'output predefinito del generatore SpiderMonkey. Il checkpoint 8 aggiunge anche
+`Screen.webidl`, con tipi `double` e `unsigned long`. `v8-bindings-pilot` compila le binding
+generate come percorso aggiuntivo; non collega ancora implementazioni DOM native e non seleziona
+V8 in produzione. Sono passati localmente cinque test Python, 51 unit test runtime, tre
+integrazioni WebIDL e due doctest sia in modalità normale sia JIT-less, oltre a una build Windows
+completa di `servo-script-bindings` con entrambi i binding pilot attivi. La CI multipiattaforma per
+il checkpoint 7 è verde 6/6 e il workflow completo ha applicato tutte le patch fino a 0071; i job
+di bundle Servo sono ancora in esecuzione. La CI di 0072 deve ancora partire.
 
 `codegen.py` è stato esteso solo con la classe opt-in `CGV8BindingRoot`; il percorso SpiderMonkey
 predefinito è rimasto senza modifiche di output (1.441 file generati confrontati prima dell'ultimo
-controllo di esposizione). Il pilot accetta solo interfacce esposte a Window, readonly boolean
-instance attributes senza attributi estesi, e senza ereditarietà/costruttore. Tutte le altre forme
-falliscono esplicitamente. Patch overlay corrispondente: `0071-roves-v8-phase4-webidl-pilot.patch`.
+controllo di esposizione). Il pilot accetta solo interfacce esposte a Window, attributi di istanza
+readonly boolean/`double`/`unsigned long` senza attributi estesi, e senza ereditarietà/costruttore.
+Tutte le altre forme falliscono esplicitamente. Patch overlay: 0071 aggiunge la prima interfaccia,
+0072 aggiunge i numerici.
 Il file `CLAUDE.md` è stato rinominato in `AGENTS.md`.
 
 Prossimo lavoro autonomo: finalizzare e verificare l'overlay 0071 da una copia Servo pristine,

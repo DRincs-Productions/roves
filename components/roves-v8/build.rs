@@ -8,7 +8,13 @@ fn main() {
         return;
     }
     let bindings = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../script_bindings");
-    for path in ["codegen", "webidls/ValidityState.webidl", "third_party/WebIDL/parser", "third_party/ply"] {
+    for path in [
+        "codegen",
+        "webidls/ValidityState.webidl",
+        "webidls/Screen.webidl",
+        "third_party/WebIDL/parser",
+        "third_party/ply",
+    ] {
         println!("cargo:rerun-if-changed={}", bindings.join(path).display());
     }
     let python = env::var("PYTHON").unwrap_or_else(|_| {
@@ -16,12 +22,19 @@ fn main() {
             Command::new(name).arg("--version").output().is_ok_and(|output| output.status.success())
         }).expect("Python 3 is required for the webidl-pilot feature").to_owned()
     });
-    let output = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("ValidityStateV8Binding.rs");
-    let status = Command::new(python)
-        .arg(bindings.join("codegen/run_v8.py"))
-        .arg(bindings.join("webidls/ValidityState.webidl"))
-        .arg(output)
-        .env("PYTHONDONTWRITEBYTECODE", "1")
-        .status().expect("run V8 WebIDL generator");
-    assert!(status.success(), "V8 WebIDL generation failed");
+    let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
+    for (interface, webidl) in [
+        ("ValidityState", "ValidityState.webidl"),
+        ("Screen", "Screen.webidl"),
+    ] {
+        let output = out_dir.join(format!("{interface}V8Binding.rs"));
+        let status = Command::new(&python)
+            .arg(bindings.join("codegen/run_v8.py"))
+            .arg(bindings.join("webidls").join(webidl))
+            .arg(output)
+            .env("PYTHONDONTWRITEBYTECODE", "1")
+            .status()
+            .expect("run V8 WebIDL generator");
+        assert!(status.success(), "V8 WebIDL generation failed for {interface}");
+    }
 }

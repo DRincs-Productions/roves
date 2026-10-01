@@ -1,0 +1,224 @@
+diff --git a/components/roves-v8/build.rs b/components/roves-v8/build.rs
+index ad181936bd4..6698fb44acc 100644
+--- a/components/roves-v8/build.rs
++++ b/components/roves-v8/build.rs
+@@ -8,7 +8,13 @@ fn main() {
+         return;
+     }
+     let bindings = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../script_bindings");
+-    for path in ["codegen", "webidls/ValidityState.webidl", "third_party/WebIDL/parser", "third_party/ply"] {
++    for path in [
++        "codegen",
++        "webidls/ValidityState.webidl",
++        "webidls/Screen.webidl",
++        "third_party/WebIDL/parser",
++        "third_party/ply",
++    ] {
+         println!("cargo:rerun-if-changed={}", bindings.join(path).display());
+     }
+     let python = env::var("PYTHON").unwrap_or_else(|_| {
+@@ -16,12 +22,19 @@ fn main() {
+             Command::new(name).arg("--version").output().is_ok_and(|output| output.status.success())
+         }).expect("Python 3 is required for the webidl-pilot feature").to_owned()
+     });
+-    let output = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("ValidityStateV8Binding.rs");
+-    let status = Command::new(python)
+-        .arg(bindings.join("codegen/run_v8.py"))
+-        .arg(bindings.join("webidls/ValidityState.webidl"))
+-        .arg(output)
+-        .env("PYTHONDONTWRITEBYTECODE", "1")
+-        .status().expect("run V8 WebIDL generator");
+-    assert!(status.success(), "V8 WebIDL generation failed");
++    let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
++    for (interface, webidl) in [
++        ("ValidityState", "ValidityState.webidl"),
++        ("Screen", "Screen.webidl"),
++    ] {
++        let output = out_dir.join(format!("{interface}V8Binding.rs"));
++        let status = Command::new(&python)
++            .arg(bindings.join("codegen/run_v8.py"))
++            .arg(bindings.join("webidls").join(webidl))
++            .arg(output)
++            .env("PYTHONDONTWRITEBYTECODE", "1")
++            .status()
++            .expect("run V8 WebIDL generator");
++        assert!(status.success(), "V8 WebIDL generation failed for {interface}");
++    }
+ }
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 885e927e377..a3451096134 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -19,6 +19,9 @@ extern crate self as roves_v8;
+ 
+ #[cfg(feature = "webidl-pilot")]
+ pub mod webidl {
++    pub mod screen {
++        include!(concat!(env!("OUT_DIR"), "/ScreenV8Binding.rs"));
++    }
+     pub mod validity_state {
+         include!(concat!(env!("OUT_DIR"), "/ValidityStateV8Binding.rs"));
+     }
+diff --git a/components/roves-v8/tests/webidl.rs b/components/roves-v8/tests/webidl.rs
+index e0a77e287eb..88fe30dda5d 100644
+--- a/components/roves-v8/tests/webidl.rs
++++ b/components/roves-v8/tests/webidl.rs
+@@ -2,8 +2,19 @@
+ use std::cell::Cell;
+ use std::rc::Rc;
+ use roves_v8::{Runtime, Value};
++use roves_v8::webidl::screen::{ScreenBinding, ScreenNative};
+ use roves_v8::webidl::validity_state::{ValidityStateBinding, ValidityStateNative};
+ 
++struct TestScreen;
++impl ScreenNative for TestScreen {
++    fn AvailWidth(&self) -> f64 { 1280.5 }
++    fn AvailHeight(&self) -> f64 { 720.25 }
++    fn Width(&self) -> f64 { 1920.0 }
++    fn Height(&self) -> f64 { 1080.0 }
++    fn ColorDepth(&self) -> u32 { 24 }
++    fn PixelDepth(&self) -> u32 { 32 }
++}
++
+ struct State(Rc<Cell<u16>>);
+ macro_rules! getter {
+     ($name:ident, $bit:expr) => { fn $name(&self) -> bool { self.0.get() & (1 << $bit) != 0 } };
+@@ -64,3 +75,18 @@ fn generated_binding_preserves_readonly_descriptors_and_rejects_spoofing() {
+     }
+     assert_eq!(runtime.eval_value("state.valid").unwrap(), Value::Bool(true));
+ }
++
++#[test]
++fn generated_screen_binding_converts_real_webidl_numeric_types() {
++    let mut runtime = Runtime::new();
++    let binding = ScreenBinding::<TestScreen>::install(&mut runtime).unwrap();
++    let screen = binding.create(&mut runtime, TestScreen);
++    runtime.set_global_property("screen", &screen).unwrap();
++    assert_eq!(runtime.eval_value("screen.availWidth").unwrap(), Value::Number(1280.5));
++    assert_eq!(runtime.eval_value("screen.availHeight").unwrap(), Value::Number(720.25));
++    assert_eq!(runtime.eval_value("screen.width").unwrap(), Value::Number(1920.0));
++    assert_eq!(runtime.eval_value("screen.height").unwrap(), Value::Number(1080.0));
++    assert_eq!(runtime.eval_value("screen.colorDepth").unwrap(), Value::Number(24.0));
++    assert_eq!(runtime.eval_value("screen.pixelDepth").unwrap(), Value::Number(32.0));
++    assert_eq!(runtime.eval("screen instanceof Screen").unwrap(), "true");
++}
+diff --git a/components/script_bindings/build.rs b/components/script_bindings/build.rs
+index a9bd3e46243..adf46f75460 100644
+--- a/components/script_bindings/build.rs
++++ b/components/script_bindings/build.rs
+@@ -39,13 +39,19 @@ fn main() {
+     }
+ 
+     if env::var_os("CARGO_FEATURE_V8_BINDINGS_PILOT").is_some() {
+-        let status = find_python()
+-            .arg("codegen/run_v8.py")
+-            .arg("webidls/ValidityState.webidl")
+-            .arg(out_dir.join("ValidityStateV8Binding.rs"))
+-            .env("PYTHONDONTWRITEBYTECODE", "1")
+-            .status().expect("run V8 WebIDL pilot generator");
+-        assert!(status.success(), "V8 WebIDL pilot generation failed");
++        for (interface, webidl) in [
++            ("ValidityState", "ValidityState.webidl"),
++            ("Screen", "Screen.webidl"),
++        ] {
++            let status = find_python()
++                .arg("codegen/run_v8.py")
++                .arg(format!("webidls/{webidl}"))
++                .arg(out_dir.join(format!("{interface}V8Binding.rs")))
++                .env("PYTHONDONTWRITEBYTECODE", "1")
++                .status()
++                .expect("run V8 WebIDL pilot generator");
++            assert!(status.success(), "V8 WebIDL pilot generation failed for {interface}");
++        }
+     }
+ 
+     println!("Binding generation completed in {:?}", start.elapsed());
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index f4514009b95..736d34f9555 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8213,7 +8213,7 @@ pub(crate) fn GetConstructorObject(
+ 
+ 
+ class CGV8BindingRoot(CGThing):
+-    """First V8 backend slice: real, nonconstructible readonly boolean interfaces.
++    """First V8 backend slice: nonconstructible interfaces with readonly primitives.
+ 
+     Fail closed on unsupported WebIDL rather than silently dropping members. This
+     backend is explicitly selected by run_v8.py; SpiderMonkey generation is unchanged.
+@@ -8237,16 +8237,24 @@ class CGV8BindingRoot(CGThing):
+         attributes = []
+         for member in interface.members:
+             if (not member.isAttr() or not member.readonly or member.isStatic()
+-                    or not member.type.isBoolean() or member.type.nullable()
+-                    or member._extendedAttrDict):
++                    or member.type.nullable() or member._extendedAttrDict):
+                 raise TypeError(f"V8 backend unsupported member: {name}.{member.identifier.name}")
+-            attributes.append((member.identifier.name, MakeNativeName(member.identifier.name)))
+-        trait_methods = "\n".join(f"    fn {native}(&self) -> bool;" for _, native in attributes)
++            if member.type.isBoolean():
++                rust_type, value_expr = "bool", "Value::Bool(native.{native}())"
++            elif member.type.isFloat() and member.type.name == "Double":
++                rust_type, value_expr = "f64", "Value::Number(native.{native}())"
++            elif member.type.isInteger() and member.type.name == "UnsignedLong":
++                rust_type, value_expr = "u32", "Value::Number(native.{native}() as f64)"
++            else:
++                raise TypeError(f"V8 backend unsupported attribute type: {name}.{member.identifier.name}: {member.type}")
++            attributes.append((member.identifier.name, MakeNativeName(member.identifier.name), rust_type, value_expr))
++        trait_methods = "\n".join(f"    fn {native}(&self) -> {rust_type};"
++                                   for _, native, rust_type, _ in attributes)
+         registrations = "\n".join(
+             f'        runtime.define_property(&interface, "{idl}", |native| {{\n'
+             f'            let native = native.downcast_ref::<T>().expect("typed {name} wrapper");\n'
+-            f'            Value::Bool(native.{native}())\n'
+-            f'        }})?;' for idl, native in attributes
++            f'            {value_expr.format(native=native)}\n'
++            f'        }})?;' for idl, native, _, value_expr in attributes
+         )
+         return AUTOGENERATED_WARNING_COMMENT + f"""use roves_v8::{{Handle, Interface, Runtime, Value}};
+ 
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index ad11d5acf49..dfd99b72f9e 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -19,6 +19,17 @@ class V8GeneratorTests(unittest.TestCase):
+             self.assertNotIn("js::", source)
+             self.assertNotIn("v8::", source.replace("roves_v8::", ""))
+ 
++    def test_real_screen_webidl_generates_supported_numeric_types(self):
++        with tempfile.TemporaryDirectory() as directory:
++            output = Path(directory)
++            source = generate(ROOT / "webidls/Screen.webidl", output)
++            self.assertEqual(source, generate(ROOT / "webidls/Screen.webidl", output))
++            self.assertEqual(source.count("runtime.define_property("), 6)
++            self.assertIn("fn AvailWidth(&self) -> f64;", source)
++            self.assertIn("fn ColorDepth(&self) -> u32;", source)
++            self.assertIn("Value::Number(native.AvailWidth())", source)
++            self.assertIn("Value::Number(native.ColorDepth() as f64)", source)
++
+     def assert_unsupported(self, contents):
+         with tempfile.TemporaryDirectory() as directory:
+             path = Path(directory) / "Unsupported.webidl"
+@@ -27,7 +38,7 @@ class V8GeneratorTests(unittest.TestCase):
+                 generate(path, Path(directory) / "output")
+ 
+     def test_unsupported_members_never_silently_disappear(self):
+-        for member in ["attribute boolean valid;", "readonly attribute double value;", "readonly attribute boolean? value;", "undefined run();", "static readonly attribute boolean valid;", "[GetterThrows] readonly attribute boolean valid;"]:
++        for member in ["attribute boolean valid;", "readonly attribute float value;", "readonly attribute unsigned long long value;", "readonly attribute DOMString value;", "readonly attribute boolean? value;", "undefined run();", "static readonly attribute boolean valid;", "[GetterThrows] readonly attribute boolean valid;"]:
+             with self.subTest(member=member):
+                 self.assert_unsupported("interface Unsupported { " + member + " };")
+ 
+diff --git a/components/script_bindings/lib.rs b/components/script_bindings/lib.rs
+index f9919ab0901..1c0f8c17ddf 100644
+--- a/components/script_bindings/lib.rs
++++ b/components/script_bindings/lib.rs
+@@ -18,6 +18,9 @@ extern crate malloc_size_of_derive;
+ /// Temporary opt-in generated V8 backend, not the production DOM engine.
+ #[cfg(feature = "v8-bindings-pilot")]
+ pub mod v8_bindings {
++    pub mod screen {
++        include!(concat!(env!("OUT_DIR"), "/ScreenV8Binding.rs"));
++    }
+     pub mod validity_state {
+         include!(concat!(env!("OUT_DIR"), "/ValidityStateV8Binding.rs"));
+     }

@@ -2,7 +2,18 @@
 use std::cell::Cell;
 use std::rc::Rc;
 use roves_v8::{Runtime, Value};
+use roves_v8::webidl::screen::{ScreenBinding, ScreenNative};
 use roves_v8::webidl::validity_state::{ValidityStateBinding, ValidityStateNative};
+
+struct TestScreen;
+impl ScreenNative for TestScreen {
+    fn AvailWidth(&self) -> f64 { 1280.5 }
+    fn AvailHeight(&self) -> f64 { 720.25 }
+    fn Width(&self) -> f64 { 1920.0 }
+    fn Height(&self) -> f64 { 1080.0 }
+    fn ColorDepth(&self) -> u32 { 24 }
+    fn PixelDepth(&self) -> u32 { 32 }
+}
 
 struct State(Rc<Cell<u16>>);
 macro_rules! getter {
@@ -63,4 +74,19 @@ fn generated_binding_preserves_readonly_descriptors_and_rejects_spoofing() {
         assert!(runtime.eval(source).unwrap_err().contains("TypeError"), "{source}");
     }
     assert_eq!(runtime.eval_value("state.valid").unwrap(), Value::Bool(true));
+}
+
+#[test]
+fn generated_screen_binding_converts_real_webidl_numeric_types() {
+    let mut runtime = Runtime::new();
+    let binding = ScreenBinding::<TestScreen>::install(&mut runtime).unwrap();
+    let screen = binding.create(&mut runtime, TestScreen);
+    runtime.set_global_property("screen", &screen).unwrap();
+    assert_eq!(runtime.eval_value("screen.availWidth").unwrap(), Value::Number(1280.5));
+    assert_eq!(runtime.eval_value("screen.availHeight").unwrap(), Value::Number(720.25));
+    assert_eq!(runtime.eval_value("screen.width").unwrap(), Value::Number(1920.0));
+    assert_eq!(runtime.eval_value("screen.height").unwrap(), Value::Number(1080.0));
+    assert_eq!(runtime.eval_value("screen.colorDepth").unwrap(), Value::Number(24.0));
+    assert_eq!(runtime.eval_value("screen.pixelDepth").unwrap(), Value::Number(32.0));
+    assert_eq!(runtime.eval("screen instanceof Screen").unwrap(), "true");
 }

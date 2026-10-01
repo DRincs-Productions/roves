@@ -1,4 +1,20 @@
 # Customizations over upstream Servo
+## 2026-10-01 - V8 migration Phase 4: generated numeric WebIDL attributes
+
+**Servo files:** `components/roves-v8/{build.rs,src/lib.rs,tests/webidl.rs}`;
+`components/script_bindings/{build.rs,lib.rs,codegen/codegen.py,codegen/test_v8.py}`.
+**Patch:** `0072-roves-v8-phase4-webidl-numeric-attributes.patch` after 0001-0071.
+
+Extended the opt-in generator from boolean attributes to the exact primitive numeric types in
+Servo's real `Screen.webidl`: `double` maps to a native `f64` and `unsigned long` to `u32`, both
+exposed as JavaScript Numbers. Both `ValidityState` and `Screen` now generate and compile in the
+isolated V8 runtime and optional `servo-script-bindings` feature. A runtime integration test checks
+all six Screen attributes, their values, and interface identity. Unsupported numeric types remain
+rejected. Local verification: five Python generator tests; 51 runtime unit tests, 3 WebIDL
+integration tests, and 2 doctests in normal and JIT-less modes; complete Windows
+`mach build -p servo-script-bindings --features v8-bindings-pilot,js/jit --locked` succeeded.
+Cross-platform CI for this checkpoint has not yet been triggered.
+
 ## 2026-10-01 - V8 migration Phase 4: generated WebIDL pilot
 
 **Servo files:** root `Cargo.lock`; `components/roves-v8/{Cargo.toml,build.rs,src/lib.rs,tests/webidl.rs}`;
