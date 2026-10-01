@@ -412,6 +412,14 @@ non-wrapped handle, two distinct wrapped objects staying distinct. 25/25 tests p
 - **`JSTraceable`/`jstraceable_derive` removal itself** — not attempted; still present and doing
   its job for the current SpiderMonkey-based production path, unaffected by any of this checkpoint.
 
+**Ownership hardening (2026-10-01):** `get_wrapped` now borrows the runtime as well as
+its handle, preventing overlapping JS mutation or isolate disposal while native data is read
+(two compile-fail doctests). Completed finalizer records are reclaimed on allocation only after
+callback completion; setter callback allocations are runtime-owned rather than leaked. Shared
+materialization flags reject late member registration on ancestors after child instantiation.
+49 unit tests plus 2 compile-fail doctests; isolated normal/JIT-less CI covers all desktop OSes.
+Production tracing replacement and wrapper reuse remain open.
+
 ### Phase 4 — WebIDL generator and DOM bindings
 
 - Adapt generated bindings to V8.

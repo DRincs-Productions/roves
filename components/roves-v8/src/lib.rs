@@ -80,6 +80,10 @@ pub struct Interface {
     /// first [`Runtime::create_instance`] call — see that method's own doc comment on why this
     /// can't happen eagerly in [`Runtime::define_interface`]).
     constructor_exposed: std::cell::Cell<bool>,
+    // Materializing a child also freezes all ancestor templates. Shared flags track
+    // that separately from whether each constructor has been exposed globally.
+    materialized: std::rc::Rc<std::cell::Cell<bool>>,
+    ancestors: Vec<std::rc::Rc<std::cell::Cell<bool>>>,
 }
 
 /// A single, isolated V8 execution environment: one [`v8::OwnedIsolate`] plus one persistent
@@ -91,12 +95,16 @@ pub struct Interface {
 pub struct Runtime {
     isolate: v8::OwnedIsolate,
     context: v8::Global<v8::Context>,
-    /// Keeps every [`Runtime::create_wrapped`] finalizer armed — see the `v8` crate's own doc
-    /// comment on `Weak`: "finalization callbacks are tied to the lifetime of a `Weak<T>`, and
-    /// will not be called after the `Weak<T>` is dropped." A `Weak` that already fired stays in
-    /// this list forever (a real bookkeeping cost this phase's own stress test measures but
-    /// doesn't try to solve — see `docs/V8_MIGRATION.md`'s Phase 3 status note).
-    wrapped_finalizers: Vec<v8::Weak<v8::Value>>,
+    /// Keeps callbacks armed until they have actually completed. An empty weak handle
+    /// alone is insufficient: first-pass GC may clear it before second-pass finalization.
+    wrapped_finalizers: Vec<WrappedFinalizer>,
+    /// Stable callback allocations live until after isolate disposal (fields drop in order).
+    property_callbacks: Vec<Box<(PropertyGetter, PropertySetter)>>,
+}
+
+struct WrappedFinalizer {
+    _weak: v8::Weak<v8::Value>,
+    completed: std::rc::Rc<std::cell::Cell<bool>>,
 }
 
 /// Tag passed to `set_aligned_pointer_in_internal_field`/`get_aligned_pointer_from_internal_field`
@@ -164,6 +172,7 @@ impl Runtime {
             isolate,
             context,
             wrapped_finalizers: Vec::new(),
+            property_callbacks: Vec::new(),
         }
     }
 
@@ -487,6 +496,10 @@ impl Runtime {
         global_value: v8::Global<v8::Value>,
         raw: *mut Box<dyn std::any::Any>,
     ) -> Handle {
+        // Reclaim only completed finalizers, never callbacks waiting for GC's second pass.
+        self.wrapped_finalizers.retain(|entry| !entry.completed.get());
+        let completed = std::rc::Rc::new(std::cell::Cell::new(false));
+        let completion = completed.clone();
         let weak = v8::Weak::with_guaranteed_finalizer(
             &mut self.isolate,
             &global_value,
@@ -496,9 +509,10 @@ impl Runtime {
                 // runs at most once, and only after nothing JS-reachable points at the wrapper
                 // anymore, so nothing else can read `raw` concurrently or afterward.
                 drop(unsafe { Box::from_raw(raw) });
+                completion.set(true);
             }),
         );
-        self.wrapped_finalizers.push(weak);
+        self.wrapped_finalizers.push(WrappedFinalizer { _weak: weak, completed });
 
         Handle(global_value)
     }
@@ -563,6 +577,12 @@ impl Runtime {
             template: v8::Global::new(scope, template),
             name: name.to_string(),
             constructor_exposed: std::cell::Cell::new(false),
+            materialized: std::rc::Rc::new(std::cell::Cell::new(false)),
+            ancestors: parent.map_or_else(Vec::new, |parent| {
+                let mut ancestors = parent.ancestors.clone();
+                ancestors.push(parent.materialized.clone());
+                ancestors
+            }),
         }
     }
 
@@ -572,6 +592,10 @@ impl Runtime {
     /// `interface`'s prototype object, so `instanceof` and the prototype chain work from JS,
     /// which a plain `create_wrapped` object doesn't have.
     pub fn create_instance<T: 'static>(&mut self, interface: &Interface, value: T) -> Handle {
+        interface.materialized.set(true);
+        for ancestor in &interface.ancestors {
+            ancestor.set(true);
+        }
         let boxed_any: Box<dyn std::any::Any> = Box::new(value);
 
         let (global_value, raw) = {
@@ -646,6 +670,9 @@ impl Runtime {
         name: &str,
         getter: PropertyGetter,
     ) -> Result<(), String> {
+        if interface.materialized.get() {
+            return Err("interface members must be defined before creating instances or descendants".into());
+        }
         let context_handle = &self.context;
         v8::scope!(let scope, &mut self.isolate);
         let context = v8::Local::new(scope, context_handle);
@@ -711,6 +738,9 @@ impl Runtime {
         getter: PropertyGetter,
         setter: PropertySetter,
     ) -> Result<(), String> {
+        if interface.materialized.get() {
+            return Err("interface members must be defined before creating instances or descendants".into());
+        }
         let context_handle = &self.context;
         v8::scope!(let scope, &mut self.isolate);
         let context = v8::Local::new(scope, context_handle);
@@ -724,15 +754,12 @@ impl Runtime {
         };
         // AccessorConfiguration has one shared `data` for both callbacks, but each needs its own
         // fn pointer -- bundled as a tuple behind one External instead of two separate ones.
-        // Deliberately leaked (`Box::into_raw`, never freed): this allocation is one small,
-        // 'static, fixed-size pair of fn pointers per *property definition* (not per instance),
-        // so in practice a bounded, small number of these ever exist for the lifetime of the
-        // process -- acceptable for this prototype phase, same tradeoff already made for
-        // `wrapped_finalizers`' own unbounded `Vec` (see that field's doc comment). A real
-        // production version would need a proper registry with the same lifetime as the
-        // `Interface` itself instead.
+        // The runtime owns these stable boxes until after isolate disposal; no leak is
+        // required to make the shared External data outlive every accessor invocation.
         let callbacks = Box::new((getter, setter));
-        let external_data = v8::External::new(scope, Box::into_raw(callbacks) as *mut std::ffi::c_void);
+        let pointer = callbacks.as_ref() as *const (PropertyGetter, PropertySetter);
+        let external_data = v8::External::new(scope, pointer as *mut std::ffi::c_void);
+        self.property_callbacks.push(callbacks);
 
         let configuration = v8::AccessorConfiguration::new(
             |scope: &mut v8::PinScope,
@@ -815,6 +842,9 @@ impl Runtime {
         name: &str,
         method: NativeMethod,
     ) -> Result<(), String> {
+        if interface.materialized.get() {
+            return Err("interface members must be defined before creating instances or descendants".into());
+        }
         let context_handle = &self.context;
         v8::scope!(let scope, &mut self.isolate);
         let context = v8::Local::new(scope, context_handle);
@@ -873,7 +903,7 @@ impl Runtime {
 
     /// Installs an indexed read interceptor on the interface's instance template.
     /// Register before creating instances of this interface or any descendant; materialized
-    /// V8 templates cannot be mutated. The guard detects direct instantiation only.
+    /// V8 templates cannot be mutated. The guard also detects descendant instantiation.
     /// V8 supplies canonical array indices as `u32`; named properties such as `"01"`,
     /// negative numbers and `2**32 - 1` remain normal JS properties. The holder is the
     /// wrapped instance even when lookup starts on an object inheriting from it.
@@ -886,8 +916,8 @@ impl Runtime {
         interface: &Interface,
         getter: IndexedPropertyGetter,
     ) -> Result<(), String> {
-        if interface.constructor_exposed.get() {
-            return Err("indexed getter must be defined before creating instances".to_string());
+        if interface.materialized.get() {
+            return Err("indexed getter must be defined before creating instances or descendants".to_string());
         }
         let context_handle = &self.context;
         v8::scope!(let scope, &mut self.isolate);
@@ -950,11 +980,30 @@ impl Runtime {
     ///
     /// # Safety requirement this relies on
     ///
-    /// The returned reference borrows from `handle`, not from `self` alone — passing a `handle`
+    /// The returned reference borrows from both the runtime and `handle` — passing a `handle`
     /// that isn't actually keeping the object alive (there is no such way to construct one
     /// outside this crate) would be unsound; a live `Handle` argument is what guarantees the
-    /// finalizer in `create_wrapped` hasn't run yet.
-    pub fn get_wrapped<'h, T: 'static>(&mut self, handle: &'h Handle) -> Option<&'h T> {
+    /// finalizer in `create_wrapped` hasn't run yet. Borrowing the runtime also prevents JS
+    /// setters from mutating the data, or isolate disposal from freeing it, while it is read.
+    ///
+    /// ```compile_fail
+    /// use roves_v8::Runtime;
+    /// let mut runtime = Runtime::new();
+    /// let handle = runtime.create_wrapped(String::from("native"));
+    /// let reference = runtime.get_wrapped::<String>(&handle).unwrap();
+    /// runtime.eval("1").unwrap(); // Cannot run JS while native data is borrowed.
+    /// println!("{reference}");
+    /// ```
+    ///
+    /// ```compile_fail
+    /// use roves_v8::Runtime;
+    /// let mut runtime = Runtime::new();
+    /// let handle = runtime.create_wrapped(String::from("native"));
+    /// let reference = runtime.get_wrapped::<String>(&handle).unwrap();
+    /// drop(runtime); // Cannot dispose the isolate while native data is borrowed.
+    /// println!("{reference}");
+    /// ```
+    pub fn get_wrapped<'h, T: 'static>(&'h mut self, handle: &'h Handle) -> Option<&'h T> {
         let context_handle = &self.context;
         v8::scope!(let scope, &mut self.isolate);
         let context = v8::Local::new(scope, context_handle);
@@ -978,14 +1027,9 @@ impl Runtime {
         // `handle` being alive (a live `Global`, per this method's own doc comment) guarantees
         // the guaranteed finalizer that would free it hasn't run.
         let boxed_any: &Box<dyn std::any::Any> = unsafe { &*raw };
-        // Re-borrowed through a raw pointer to extend the lifetime to `'h`: `downcast_ref`'s
-        // natural return type borrows from the local `&*raw` above, not from `handle`, but the
-        // data it points to genuinely lives as long as `handle` does (same safety argument as
-        // the `unsafe` block above), so this is sound, not just a way to dodge the borrow
-        // checker.
-        boxed_any
-            .downcast_ref::<T>()
-            .map(|reference| unsafe { &*(reference as *const T) })
+        // The signature ties this read to both the live handle and an exclusive runtime
+        // borrow. No JS evaluation/setter or isolate disposal can overlap the reference.
+        boxed_any.downcast_ref::<T>()
     }
 
     /// Sets `property` on the JS object `on` points at to the JS value `other` points at.
@@ -2207,4 +2251,45 @@ mod tests {
         assert_eq!(runtime.eval("base[0]").unwrap(), "base");
         assert_eq!(runtime.eval_value("derived[0]").unwrap(), Value::Undefined);
     }
+
+    #[test]
+    fn materializing_a_descendant_rejects_late_members_on_all_ancestors() {
+        fn getter(_: &dyn std::any::Any) -> Value { Value::Undefined }
+        fn setter(_: &mut dyn std::any::Any, _: &Value) {}
+        fn method(_: &dyn std::any::Any, _: &[Value]) -> Value { Value::Undefined }
+        let mut runtime = Runtime::new();
+        let parent = runtime.define_interface("Parent", None);
+        let middle = runtime.define_interface("Middle", Some(&parent));
+        let child = runtime.define_interface("Child", Some(&middle));
+        let _instance = runtime.create_instance(&child, ());
+        for interface in [&parent, &middle, &child] {
+            assert!(runtime.define_property(interface, "read", getter).is_err());
+            assert!(runtime.define_settable_property(interface, "write", getter, setter).is_err());
+            assert!(runtime.define_method(interface, "method", method).is_err());
+            assert!(runtime.define_indexed_property_getter(interface, collection_getter).is_err());
+        }
+        // Instantiating a sibling through a frozen parent is valid; defining its own
+        // members remains possible until the sibling itself is materialized.
+        let sibling = runtime.define_interface("Sibling", Some(&parent));
+        runtime.define_property(&sibling, "read", getter).unwrap();
+        let _sibling = runtime.create_instance(&sibling, ());
+    }
+
+
+    #[test]
+    fn completed_finalizer_records_are_reclaimed_without_disarming_live_wrappers() {
+        let mut runtime = Runtime::new();
+        let live = runtime.create_wrapped(123_i32);
+        for _ in 0..10 {
+            for _ in 0..20 { drop(runtime.create_wrapped(())); }
+            runtime.force_full_gc_for_testing();
+            // The next allocation sweeps completed records, retaining the live one.
+            let next = runtime.create_wrapped(());
+            assert!(runtime.wrapped_finalizers.len() <= 2);
+            assert_eq!(runtime.get_wrapped::<i32>(&live), Some(&123));
+            drop(next);
+            runtime.force_full_gc_for_testing();
+        }
+    }
+
 }

@@ -4,10 +4,10 @@ name: 'Release'
 # "test" build (which reconstructs a tree from a pristine upstream download + patches/, purely
 # to smoke-test that the patch set itself still applies/works). This workflow builds directly
 # from the tagged ref of THIS repo, which already tracks the full patched Servo source (see
-# ../CLAUDE.md) — exactly what a real consumer (e.g. roves-action, pinning its `roves-ref`
+# ../AGENTS.md) — exactly what a real consumer (e.g. roves-action, pinning its `roves-ref`
 # input to one of these tags) would get.
 #
-# Triggered by pushing a tag matching v<major>.<minor>.<patch> (e.g. v0.1.0). See CLAUDE.md's
+# Triggered by pushing a tag matching v<major>.<minor>.<patch> (e.g. v0.1.0). See AGENTS.md's
 # "Cutting a versioned release" section for the full procedure, including how to retry a
 # failed release by deleting and re-pushing the same tag.
 
@@ -32,7 +32,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: |
-          # Self-healing for the retry procedure in CLAUDE.md: if this exact tag was deleted
+          # Self-healing for the retry procedure in AGENTS.md: if this exact tag was deleted
           # and re-pushed after a previous failed attempt, a stale Release object (with
           # partial/no artifacts) may still exist even though the git tag itself is fresh.
           # Start from a clean slate instead of "gh release create" erroring on "already exists".

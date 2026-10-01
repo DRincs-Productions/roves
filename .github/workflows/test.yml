@@ -451,7 +451,7 @@ jobs:
         working-directory: servo-src
         # Re-emit output as ::notice::/::error:: annotations (same reasoning as the
         # smoke-test step below): raw step logs need repo-admin auth to fetch via the
-        # API, but annotations are readable anonymously -- see CLAUDE.md's own note on
+        # API, but annotations are readable anonymously -- see AGENTS.md's own note on
         # diagnosing a CI failure without `gh`/a token on hand.
         run: |
           set +e

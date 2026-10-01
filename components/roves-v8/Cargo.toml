@@ -11,7 +11,7 @@ name = "roves_v8"
 path = "src/lib.rs"
 
 [dependencies]
-v8 = "152.2.0"
+v8 = "=152.2.0"
 
 [features]
 # See ../../docs/V8_MIGRATION.md's "Console-oriented requirement: JIT-less" — a first-class

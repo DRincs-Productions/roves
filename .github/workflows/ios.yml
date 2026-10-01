@@ -9,7 +9,7 @@ name: Build iOS native WKWebView app
 # `xcodegen`/`xcodebuild` directly -- now `mach bundle --ios` does that internally instead.
 #
 # `mach`'s command loader needs `tests/wpt/tests/tools/` to exist even for `bundle` (see
-# CLAUDE.md's own entry on this, and android.yml's identical step) -- unlike before this
+# AGENTS.md's own entry on this, and android.yml's identical step) -- unlike before this
 # change, this workflow now goes through `mach`, so it needs the same workaround.
 #
 # The `ios` job builds unsigned, for the iOS Simulator only (CODE_SIGNING_ALLOWED=NO) -- there
@@ -84,11 +84,11 @@ jobs:
 
       - name: chmod +x mach
         # This repo's own `mach` is tracked as mode 100644 (committed from Windows, where the
-        # exec bit is meaningless) -- see CLAUDE.md's "mach needs chmod +x on Linux/macOS".
+        # exec bit is meaningless) -- see AGENTS.md's "mach needs chmod +x on Linux/macOS".
         run: chmod +x mach
 
       - name: fetch tests/wpt/tests/tools (mach's command loader needs it to exist)
-        # Identical to android.yml's own step of the same name -- see CLAUDE.md's entry on
+        # Identical to android.yml's own step of the same name -- see AGENTS.md's entry on
         # this for the full explanation. Needed here now that this workflow goes through
         # `mach bundle --ios` instead of calling bundle.py/xcodegen/xcodebuild directly.
         run: |

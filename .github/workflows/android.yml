@@ -107,14 +107,14 @@ jobs:
 
       - name: chmod +x mach
         # This repo's own `mach` is tracked as mode 100644 (committed from Windows, where the
-        # exec bit is meaningless) -- see CLAUDE.md's "mach needs chmod +x on Linux/macOS".
+        # exec bit is meaningless) -- see AGENTS.md's "mach needs chmod +x on Linux/macOS".
         run: chmod +x mach
 
       - name: fetch tests/wpt/tests/tools (mach's command loader needs it to exist)
         # Every mach command except `bootstrap` unconditionally imports WPT test tooling that
         # lives under tests/wpt/, a ~1.3GB directory this repo deliberately excludes from git
         # -- without it, `mach bundle` crashes immediately with `ModuleNotFoundError: No
-        # module named 'localpaths'`. See CLAUDE.md's own entry on this for the full
+        # module named 'localpaths'`. See AGENTS.md's own entry on this for the full
         # explanation -- identical to release.yml's own step of the same name.
         run: |
           rm -rf /tmp/wpt-tools-src

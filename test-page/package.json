@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "description": "Manual diagnostic page for servo/.github/workflows/test.yml's build-from-source smoke test — click through the buttons after a --features steam build lands in the \"test\" GitHub release. Not part of the parent project's own npm workspace; see ../CLAUDE.md.",
+  "description": "Manual diagnostic page for servo/.github/workflows/test.yml's build-from-source smoke test — click through the buttons after a --features steam build lands in the \"test\" GitHub release. Not part of the parent project's own npm workspace; see ../AGENTS.md.",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build"

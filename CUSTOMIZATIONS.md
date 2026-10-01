@@ -1,4 +1,29 @@
 # Customizations over upstream Servo
+## 2026-10-01 - V8 ownership safety and continuous JIT-less verification
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `Cargo.toml`, isolated `Cargo.lock`.
+**Patch:** `0070-roves-v8-ownership-safety.patch` after 0001-0069.
+**Repository tooling:** new `.github/workflows/v8.yml`; active documentation references now
+point to AGENTS.md. README and the wiki state that production still uses SpiderMonkey.
+
+`get_wrapped` previously tied its Rust reference only to the Handle. Safe callers could keep
+that shared reference alive while evaluating JS setters, or dispose the Runtime while still
+using it. Its lifetime now borrows the Runtime exclusively as well as the Handle; two compile-fail
+doctests reject both examples. Late template member registration is rejected for every member
+API, including ancestor templates materialized by a descendant, rather than silently dropping
+members or reaching V8's fatal template mutation check. A regression covers three generations.
+
+Setter callback pairs are now owned by stable boxes in the Runtime, disposed after its isolate,
+instead of leaked. Finalizer bookkeeping is swept on allocation only after the guaranteed
+callback has completed: an empty Weak alone would not prove its second-pass callback ran.
+A repeated collection/allocation test preserves live wrappers while bounding retained records.
+
+49 unit tests and 2 compile-fail doctests pass locally in normal mode. JIT-less verification is
+also run before publishing this checkpoint. The independent CI matrix tests Windows/Linux/macOS
+in both modes without waiting for a full Servo build. V8 is exactly pinned at 152.2.0, with an
+isolated lockfile preserving the workspace's runtime dependency versions for reproducible tests.
+This matrix changes no consumer build/bundle flags; roves-action documents its separate role.
+
 ## 2026-10-01 - Shared agent instructions
 
 Renamed the repository-only `CLAUDE.md` instruction file to `AGENTS.md`, preserved its

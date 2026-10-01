@@ -1,0 +1,49 @@
+name: V8 migration checks
+
+on:
+  push:
+    paths:
+      - 'components/roves-v8/**'
+      - 'components/script_bindings/codegen/**'
+      - '.github/workflows/v8.yml'
+  workflow_dispatch: {}
+
+concurrency:
+  group: v8-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  runtime:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest, macos-latest]
+        mode: [normal, jitless]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: isolate the runtime crate from unrelated Servo dependencies
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/roves-v8/src"
+          cp components/roves-v8/Cargo.toml components/roves-v8/Cargo.lock "$RUNNER_TEMP/roves-v8/"
+          cp -R components/roves-v8/src/. "$RUNNER_TEMP/roves-v8/src/"
+          if [ -f components/roves-v8/build.rs ]; then
+            cp components/roves-v8/build.rs "$RUNNER_TEMP/roves-v8/"
+          fi
+      - name: test runtime and compile-fail safety contracts
+        shell: bash
+        env:
+          V8_TEST_MODE: ${{ matrix.mode }}
+        run: |
+          cd "$RUNNER_TEMP/roves-v8"
+          args=()
+          if [ "$V8_TEST_MODE" = jitless ]; then
+            args+=(--features jitless)
+          fi
+          cargo test --locked "${args[@]}"

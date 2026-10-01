@@ -22,6 +22,10 @@ submodule — see [AGENTS.md](./AGENTS.md) for why, and [CUSTOMIZATIONS.md] for 
 changed on top of pristine upstream Servo and how those changes are carried forward when
 upstream is upgraded.
 
+V8 migration is in progress. Current releases still use SpiderMonkey; the isolated
+`roves-v8` runtime is being validated with normal and JIT-less tests while WebIDL and
+DOM ownership are migrated. Shared agent instructions live in [AGENTS.md](./AGENTS.md).
+
 [CUSTOMIZATIONS.md]: ./CUSTOMIZATIONS.md
 
 ## Naming: "Roves" vs. "Servo" vs. `servoshell`

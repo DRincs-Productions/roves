@@ -142,3 +142,13 @@ Registration must precede creation of any interface/descendant instance; only di
 registration is guarded. Production rooting replacement and wrapper reuse also remain open;
 Phase 3 being described as complete above refers only to tested ownership primitives.
 See CUSTOMIZATIONS.md and the Phase 4 status note for the precise scope.
+
+## Autonomous continuation - ownership safety
+
+The user requires continued implementation, local testing, CI and fixes until all migration
+criteria are met. Shared instructions are now AGENTS.md. Ownership hardening in patch 0070
+fixes get_wrapped's runtime lifetime, guards ancestor materialization, owns setter callback
+allocations, and sweeps completed finalizers. 49 unit tests and 2 compile-fail doctests.
+A separate v8.yml matrix runs normal/JIT-less tests on all desktop platforms. Production
+WebIDL migration remains the next implementation step, starting from a small real interface;
+do not claim that prototype ownership coverage completes Phase 3 in production.
