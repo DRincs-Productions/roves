@@ -8239,9 +8239,14 @@ class CGV8BindingRoot(CGThing):
         for member in interface.members:
             if member.isMethod():
                 signatures = member.signatures()
-                if (member.isStatic() or member._extendedAttrDict or len(signatures) != 1
-                        or signatures[0][1]):
-                    raise TypeError(f"V8 backend only supports single-signature, zero-argument operations: {name}.{member.identifier.name}")
+                if member.isStatic() or member._extendedAttrDict or len(signatures) != 1:
+                    raise TypeError(f"V8 backend only supports single-signature instance operations: {name}.{member.identifier.name}")
+                arguments = signatures[0][1]
+                argument_types = []
+                for argument in arguments:
+                    if argument.optional or argument.variadic or argument.type.nullable() or not argument.type.isBoolean():
+                        raise TypeError(f"V8 backend only supports required boolean operation arguments: {name}.{member.identifier.name}")
+                    argument_types.append("bool")
                 return_type = signatures[0][0]
                 if return_type.isUndefined():
                     rust_type, value_expr = "()", "Value::Undefined"
@@ -8253,7 +8258,7 @@ class CGV8BindingRoot(CGThing):
                     rust_type, value_expr = "u32", "Value::Number(native.{native}() as f64)"
                 else:
                     raise TypeError(f"V8 backend unsupported operation return type: {name}.{member.identifier.name}: {return_type}")
-                operations.append((member.identifier.name, MakeNativeName(member.identifier.name), rust_type, value_expr))
+                operations.append((member.identifier.name, MakeNativeName(member.identifier.name), rust_type, value_expr, argument_types))
                 continue
             if (not member.isAttr() or member.isStatic() or member._extendedAttrDict):
                 raise TypeError(f"V8 backend unsupported member: {name}.{member.identifier.name}")
@@ -8307,7 +8312,7 @@ class CGV8BindingRoot(CGThing):
             [f"    fn {native}(&self) -> {rust_type};"
              + (f"\n    fn set_{native}(&mut self, value: {rust_type});" if setter else "")
              for _, native, rust_type, _, setter, _ in attributes]
-            + [f"    fn {native}(&self) -> {rust_type};" for _, native, rust_type, _ in operations]
+            + [f"    fn {native}(&self{', ' + ', '.join('arg' + str(index) + ': ' + argument_type for index, argument_type in enumerate(argument_types)) if argument_types else ''}) -> {rust_type};" for _, native, rust_type, _, argument_types in operations]
         )
         registrations_list = []
         for idl, native, rust_type, value_expr, setter, conversion in attributes:
@@ -8374,16 +8379,24 @@ class CGV8BindingRoot(CGThing):
                 registrations_list.append(
                     f'        runtime.define_property(&interface, "{idl}", {getter})?;'
                 )
-        for idl, native, _, value_expr in operations:
+        for idl, native, _, value_expr, argument_types in operations:
+            argument_conversions = "\n".join(
+                f'            let arg{index} = match args.get({index}).unwrap_or(&Value::Undefined) {{ Value::Undefined | Value::Null => false, Value::Bool(value) => *value, Value::Number(value) => *value != 0.0 && !value.is_nan(), Value::String(value) => !value.is_empty(), Value::Utf16String(value) => !value.is_empty(), Value::Bytes(_) | Value::Object => true }};'
+                for index, _ in enumerate(argument_types)
+            )
+            call_arguments = ", ".join(f"arg{index}" for index, _ in enumerate(argument_types))
             if value_expr == "Value::Undefined":
-                callback = "|_native, _args| Value::Undefined"
+                result_expr = f"native.{native}({call_arguments});\n            Value::Undefined"
             else:
-                callback = (
-                    f'|native, _args| {{\n'
-                    f'            let native = native.downcast_ref::<T>().expect("typed {name} wrapper");\n'
-                    f'            {value_expr.format(native=native)}\n'
-                    f'        }}'
-                )
+                result_expr = value_expr.replace("native.{native}()", f"native.{native}({call_arguments})")
+            callback_args = "args" if argument_types else "_args"
+            callback = (
+                f'|native, {callback_args}| {{\n'
+                + (f'{argument_conversions}\n' if argument_conversions else "")
+                + f'            let native = native.downcast_ref::<T>().expect("typed {name} wrapper");\n'
+                + f'            {result_expr}\n'
+                + f'        }}'
+            )
             registrations_list.append(f'        runtime.define_method(&interface, "{idl}", {callback})?;')
         registrations = "\n".join(registrations_list)
         return AUTOGENERATED_WARNING_COMMENT + f"""use roves_v8::{{Handle, Interface, Runtime, Value}};

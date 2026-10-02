@@ -123,6 +123,27 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn("Value::Number(native.Ratio())", source)
             self.assertIn("Value::Number(native.Count() as f64)", source)
 
+    def test_operations_accept_required_boolean_arguments(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            webidl = root / "Operations.webidl"
+            webidl.write_text(
+                "[Exposed=Window] interface Operations { boolean accepts(boolean value); undefined combine(boolean first, boolean second); };",
+                encoding="utf-8",
+            )
+            source = generate(webidl, root / "out")
+            self.assertIn("fn Accepts(&self, arg0: bool) -> bool;", source)
+            self.assertIn("fn Combine(&self, arg0: bool, arg1: bool) -> ();", source)
+            self.assertIn("args.get(0).unwrap_or(&Value::Undefined)", source)
+            self.assertIn("let arg0 = match args.get(0)", source)
+            self.assertIn("native.Accepts(arg0)", source)
+            self.assertIn("native.Combine(arg0, arg1)", source)
+
+    def test_optional_nullable_and_non_boolean_operation_arguments_fail_closed(self):
+        for signature in ["boolean run(optional boolean value);", "boolean run(boolean? value);", "boolean run(long value);", "boolean run(boolean... values);"]:
+            with self.subTest(signature=signature):
+                self.assert_unsupported("interface Unsupported { " + signature + " };")
+
     def test_nullable_primitive_attributes_use_optional_native_values(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

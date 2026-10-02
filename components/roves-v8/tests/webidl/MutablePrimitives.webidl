@@ -10,4 +10,5 @@ interface MutablePrimitives {
   boolean isEnabled();
   double currentRatio();
   unsigned long currentCount();
+  boolean accepts(boolean value);
 };

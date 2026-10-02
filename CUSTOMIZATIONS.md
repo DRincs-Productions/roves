@@ -1,3 +1,15 @@
+## 2026-10-02 - V8 migration Phase 4: boolean WebIDL operation arguments
+
+**Servo files:** `components/roves-v8/{src/lib.rs,tests/webidl/MutablePrimitives.webidl}`;
+`components/script_bindings/codegen/{codegen.py,test_v8.py}`.
+**Patch:** `0081-roves-v8-phase4-boolean-operation-arguments.patch` after 0001-0080.
+
+The opt-in generator supports required boolean parameters on single-signature instance operations,
+with WebIDL truthiness conversion, `false` for missing arguments, and ignored extra arguments.
+Optional, nullable, variadic, and non-boolean parameters remain explicitly unsupported. Generated
+fixtures test conversion and arity behavior. Local generator, normal/JIT-less runtime, default, and
+integrated binding-crate checks pass. Production bindings remain SpiderMonkey.
+
 # Customizations over upstream Servo
 ## 2026-10-02 - CI: wait for the Steam smoke-test result
 

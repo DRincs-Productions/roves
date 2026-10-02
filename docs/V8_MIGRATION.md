@@ -571,6 +571,16 @@ boundary without borrowing Servo's SpiderMonkey-rooted `DOMString` implementatio
 tests pass in default, normal V8 pilot and JIT-less V8 pilot modes; six Python generator tests pass.
 Cross-platform CI is pending.
 
+**Seventeenth checkpoint (2026-10-02): boolean WebIDL operation arguments.** The pilot generator
+now supports required boolean parameters on otherwise supported single-signature instance
+operations. JavaScript truthiness maps to IDL boolean; omitted arguments become `undefined` and
+convert to false, while extra JS arguments are ignored. Optional, nullable, variadic, and other
+parameter types remain rejected. Generated fixture/runtime tests cover truthiness and arity.
+Local verification passes 13 generator tests, 56 unit + 3 integration + 2 doctests in pilot normal
+and JIT-less configurations, 52 unit + 2 doctests without the pilot, and the integrated
+`servo-script-bindings` check. Patch 0081 and cross-platform CI are pending. This remains pilot
+coverage; production still uses SpiderMonkey.
+
 **Sixteenth checkpoint (2026-10-02): zero-argument WebIDL operations.** The opt-in generator now emits interface methods with no arguments and exactly one signature, returning `undefined`, `boolean`, `double`, or `unsigned long`. Generated methods downcast through the existing engine-neutral native method callback and preserve interface receiver checks. Overloads, arguments, static operations, extended attributes, and other result types fail closed. Runtime tests call generated void and primitive-returning methods from JavaScript. Local verification passes 11 generator tests, 56 unit + 3 integration + 2 doctests in normal and JIT-less pilot configurations, 52 unit + 2 doctests without the pilot, and the integrated `servo-script-bindings` check. Patch 0080 and cross-platform CI are green: V8 matrix 6/6 (37029579196), all six Servo bundles plus Steam and patch validation (37029580090), Android (37029579200), and iOS (37029579293). This remains pilot coverage; production still uses SpiderMonkey.
 
 **Fifteenth checkpoint (2026-10-02): nullable primitive WebIDL attributes.** The opt-in generator and runtime now support `boolean?`, `double?`, and `unsigned long?` with native `Option<T>` values. JavaScript `null` maps directly to IDL null; other values use Boolean or numeric WebIDL conversion, including modulo 2^32 for unsigned long. Conversion runs before native mutation, and Symbol conversion failures preserve the previous value. The generated fixture tests null, string/undefined coercions, modulo conversion, and conversion exceptions. Local verification: 10 generator tests; 56 unit + 3 integration + 2 doctests in normal and JIT-less pilot modes; 52 unit + 2 doctests without the pilot; `cargo check -p servo-script-bindings --features v8-bindings-pilot,js/jit --locked` passes. Patch 0079 is green in the ordered overlay validator. CI passed: V8 matrix 6/6 (37024610041), all six Servo bundles plus Steam and patch validation (37024609945), Android (37024609737), and iOS (37024609529). This remains opt-in pilot coverage; production still uses SpiderMonkey.

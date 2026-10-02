@@ -2621,6 +2621,7 @@ mod tests {
             fn IsEnabled(&self) -> bool { self.enabled }
             fn CurrentRatio(&self) -> f64 { self.ratio }
             fn CurrentCount(&self) -> u32 { self.count }
+            fn Accepts(&self, value: bool) -> bool { value }
         }
         let mut runtime = Runtime::new();
         let binding = MutablePrimitivesBinding::<State>::install(&mut runtime).unwrap();
@@ -2663,6 +2664,11 @@ mod tests {
         assert_eq!(runtime.eval_value("state.isEnabled()").unwrap(), Value::Bool(false));
         assert!(matches!(runtime.eval_value("state.currentRatio()").unwrap(), Value::Number(value) if value.is_nan()));
         assert_eq!(runtime.eval_value("state.currentCount()").unwrap(), Value::Number(1.0));
+        assert_eq!(runtime.eval_value("state.accepts(true)").unwrap(), Value::Bool(true));
+        assert_eq!(runtime.eval_value("state.accepts(1)").unwrap(), Value::Bool(true));
+        assert_eq!(runtime.eval_value("state.accepts(0)").unwrap(), Value::Bool(false));
+        assert_eq!(runtime.eval_value("state.accepts()").unwrap(), Value::Bool(false));
+        assert_eq!(runtime.eval_value("state.accepts(true, false)").unwrap(), Value::Bool(true));
     }
 
     #[cfg(feature = "webidl-pilot")]
