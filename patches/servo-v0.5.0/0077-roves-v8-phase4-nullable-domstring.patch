@@ -1,0 +1,281 @@
+diff --git a/components/roves-v8/build.rs b/components/roves-v8/build.rs
+index 735f5aa328e..d973706fc25 100644
+--- a/components/roves-v8/build.rs
++++ b/components/roves-v8/build.rs
+@@ -25,6 +25,10 @@ fn main() {
+         "cargo:rerun-if-changed={}",
+         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/webidl/MutablePrimitives.webidl").display()
+     );
++    println!(
++        "cargo:rerun-if-changed={}",
++        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/webidl/NullableDomString.webidl").display()
++    );
+     let python = env::var("PYTHON").unwrap_or_else(|_| {
+         ["python3", "python"].into_iter().find(|name| {
+             Command::new(name).arg("--version").output().is_ok_and(|output| output.status.success())
+@@ -63,4 +67,13 @@ fn main() {
+         .status()
+         .expect("run mutable primitive WebIDL fixture generator");
+     assert!(status.success(), "mutable primitive WebIDL fixture generation failed");
++    let output = out_dir.join("NullableDomStringV8Binding.rs");
++    let status = Command::new(&python)
++        .arg(bindings.join("codegen/run_v8.py"))
++        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/webidl/NullableDomString.webidl"))
++        .arg(output)
++        .env("PYTHONDONTWRITEBYTECODE", "1")
++        .status()
++        .expect("run nullable DOMString WebIDL fixture generator");
++    assert!(status.success(), "nullable DOMString WebIDL fixture generation failed");
+ }
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index ec82819c642..7c3de47169f 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -33,6 +33,10 @@ pub mod webidl {
+     pub mod mutable_primitives {
+         include!(concat!(env!("OUT_DIR"), "/MutablePrimitivesV8Binding.rs"));
+     }
++    #[cfg(test)]
++    pub mod nullable_domstring {
++        include!(concat!(env!("OUT_DIR"), "/NullableDomStringV8Binding.rs"));
++    }
+ }
+ 
+ use std::sync::Once;
+@@ -170,6 +174,9 @@ pub type PropertySetter = fn(&mut dyn std::any::Any, &Value);
+ /// the resulting UTF-16 code units, including lone surrogates.
+ pub type DomStringSetter = fn(&mut dyn std::any::Any, Vec<u16>);
+ 
++/// A nullable WebIDL DOMString setter. `None` represents the IDL `null` value.
++pub type NullableDomStringSetter = fn(&mut dyn std::any::Any, Option<Vec<u16>>);
++
+ /// A setter for primitive WebIDL attributes after JavaScript coercion.
+ pub type WebIdlPrimitiveSetter = fn(&mut dyn std::any::Any, &Value);
+ 
+@@ -694,7 +701,7 @@ impl Runtime {
+         name: &str,
+         getter: PropertyGetter,
+     ) -> Result<(), String> {
+-        self.define_attribute(interface, name, getter, None, None, None)
++        self.define_attribute(interface, name, getter, None, None, None, None)
+     }
+ 
+     /// Defines a prototype attribute with both a getter and a setter. Callback functions
+@@ -706,7 +713,7 @@ impl Runtime {
+         getter: PropertyGetter,
+         setter: PropertySetter,
+     ) -> Result<(), String> {
+-        self.define_attribute(interface, name, getter, Some(setter), None, None)
++        self.define_attribute(interface, name, getter, Some(setter), None, None, None)
+     }
+ 
+     /// Defines a WebIDL DOMString attribute with JavaScript ToString conversion.
+@@ -717,7 +724,19 @@ impl Runtime {
+         getter: PropertyGetter,
+         setter: DomStringSetter,
+     ) -> Result<(), String> {
+-        self.define_attribute(interface, name, getter, None, Some(setter), None)
++        self.define_attribute(interface, name, getter, None, Some(setter), None, None)
++    }
++
++    /// Defines a nullable WebIDL DOMString attribute. JavaScript `null` maps to IDL null;
++    /// other values use JavaScript ToString and preserve UTF-16 code units.
++    pub fn define_nullable_domstring_property(
++        &mut self,
++        interface: &Interface,
++        name: &str,
++        getter: PropertyGetter,
++        setter: NullableDomStringSetter,
++    ) -> Result<(), String> {
++        self.define_attribute(interface, name, getter, None, None, Some(setter), None)
+     }
+ 
+     /// Defines a settable primitive attribute whose conversion follows WebIDL's boolean or
+@@ -730,7 +749,7 @@ impl Runtime {
+         setter: WebIdlPrimitiveSetter,
+         conversion: PrimitiveConversion,
+     ) -> Result<(), String> {
+-        self.define_attribute(interface, name, getter, None, None, Some((setter, conversion)))
++        self.define_attribute(interface, name, getter, None, None, None, Some((setter, conversion)))
+     }
+ 
+     fn define_attribute(
+@@ -740,6 +759,7 @@ impl Runtime {
+         getter: PropertyGetter,
+         setter: Option<PropertySetter>,
+         domstring_setter: Option<DomStringSetter>,
++        nullable_domstring_setter: Option<NullableDomStringSetter>,
+         primitive_setter: Option<(WebIdlPrimitiveSetter, PrimitiveConversion)>,
+     ) -> Result<(), String> {
+         if interface.materialized.get() {
+@@ -870,6 +890,43 @@ impl Runtime {
+                 PrimitiveConversion::Double => primitive_setter_template!(PrimitiveConversion::Double),
+                 PrimitiveConversion::UnsignedLong => primitive_setter_template!(PrimitiveConversion::UnsignedLong),
+             })
++        } else if let Some(setter) = nullable_domstring_setter {
++            let setter_data = v8::External::new(scope, setter as *mut std::ffi::c_void);
++            Some(v8::FunctionTemplate::builder(
++                |scope: &mut v8::PinScope,
++                 args: v8::FunctionCallbackArguments,
++                 _retval: v8::ReturnValue| {
++                    let external = v8::Local::<v8::External>::try_from(args.data()).unwrap();
++                    let setter: NullableDomStringSetter = unsafe { std::mem::transmute(external.value()) };
++                    let this = args.this();
++                    if this.internal_field_count() < 1 {
++                        throw_type_error(scope, "Illegal invocation");
++                        return;
++                    }
++                    let raw = unsafe { this.get_aligned_pointer_from_internal_field(0, WRAPPED_POINTER_TAG) }
++                        as *mut Box<dyn std::any::Any>;
++                    if raw.is_null() {
++                        throw_type_error(scope, "Illegal invocation");
++                        return;
++                    }
++                    let value = args.get(0);
++                    let converted = if value.is_null() {
++                        None
++                    } else {
++                        let Some(string) = value.to_string(scope) else { return; };
++                        let mut units = vec![0; string.length()];
++                        string.write_v2(scope, 0, &mut units, v8::WriteFlags::empty());
++                        Some(units)
++                    };
++                    // ToString can run user code or throw; borrow native state only afterwards.
++                    setter(unsafe { (&mut *raw).as_mut() }, converted);
++                },
++            )
++            .data(setter_data.into())
++            .signature(signature)
++            .length(1)
++            .constructor_behavior(v8::ConstructorBehavior::Throw)
++            .build(scope))
+         } else {
+             domstring_setter.map(|setter| {
+                 let setter_data = v8::External::new(scope, setter as *mut std::ffi::c_void);
+@@ -2514,6 +2571,40 @@ mod tests {
+         assert!(runtime.eval("state.count = Symbol() ").is_err());
+     }
+ 
++    #[cfg(feature = "webidl-pilot")]
++    #[test]
++    fn generated_nullable_domstring_preserves_null_and_utf16_semantics() {
++        use crate::webidl::nullable_domstring::{NullableDomStringBinding, NullableDomStringNative};
++        #[derive(Default)]
++        struct State(Option<Vec<u16>>);
++        #[allow(non_snake_case)]
++        impl NullableDomStringNative for State {
++            fn InitialValue(&self) -> Option<Vec<u16>> { None }
++            fn Value(&self) -> Option<Vec<u16>> { self.0.clone() }
++            fn set_Value(&mut self, value: Option<Vec<u16>>) { self.0 = value; }
++        }
++
++        let mut runtime = Runtime::new();
++        let binding = NullableDomStringBinding::<State>::install(&mut runtime).unwrap();
++        let handle = binding.create(&mut runtime, State::default());
++        runtime.set_global_property("state", &handle).unwrap();
++        assert_eq!(runtime.eval_value("state.initialValue").unwrap(), Value::Null);
++        assert_eq!(runtime.eval_value("state.value").unwrap(), Value::Null);
++
++        runtime.eval("state.value = 'hello';").unwrap();
++        assert_eq!(runtime.eval_value("state.value").unwrap(), Value::String("hello".into()));
++        runtime.eval("state.value = '\\uD800x';").unwrap();
++        assert_eq!(runtime.eval_value("state.value.charCodeAt(0)").unwrap(), Value::Number(0xD800 as f64));
++        runtime.eval("state.value = null;").unwrap();
++        assert_eq!(runtime.eval_value("state.value").unwrap(), Value::Null);
++        assert_eq!(runtime.get_wrapped::<State>(&handle).unwrap().0, None);
++
++        runtime.eval("state.value = undefined;").unwrap();
++        assert_eq!(runtime.eval_value("state.value").unwrap(), Value::String("undefined".into()));
++        assert_eq!(runtime.eval("(() => { try { state.value = Symbol(); } catch (e) { return e instanceof TypeError; } })()").unwrap(), "true");
++        assert_eq!(runtime.eval_value("state.value").unwrap(), Value::String("undefined".into()));
++    }
++
+     #[test]
+     fn interfaces_without_constructors_and_foreign_method_receivers_throw() {
+         fn method(_: &dyn std::any::Any, _: &[Value]) -> Value { Value::Undefined }
+diff --git a/components/roves-v8/tests/webidl/NullableDomString.webidl b/components/roves-v8/tests/webidl/NullableDomString.webidl
+new file mode 100644
+index 00000000000..63215c1b41a
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/NullableDomString.webidl
+@@ -0,0 +1,5 @@
++[Exposed=Window]
++interface NullableDomString {
++  readonly attribute DOMString? initialValue;
++  attribute DOMString? value;
++};
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index 89f7ed8f96c..17d3f096c9c 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8237,7 +8237,8 @@ class CGV8BindingRoot(CGThing):
+         attributes = []
+         for member in interface.members:
+             if (not member.isAttr() or member.isStatic()
+-                    or member.type.nullable() or member._extendedAttrDict):
++                    or (member.type.nullable() and not member.type.isDOMString())
++                    or member._extendedAttrDict):
+                 raise TypeError(f"V8 backend unsupported member: {name}.{member.identifier.name}")
+             if member.type.isBoolean():
+                 rust_type, value_expr = "bool", "Value::Bool(native.{native}())"
+@@ -8246,7 +8247,11 @@ class CGV8BindingRoot(CGThing):
+             elif member.type.isInteger() and member.type.name == "UnsignedLong":
+                 rust_type, value_expr = "u32", "Value::Number(native.{native}() as f64)"
+             elif member.type.isDOMString():
+-                rust_type, value_expr = "Vec<u16>", "Value::Utf16String(native.{native}())"
++                if member.type.nullable():
++                    rust_type = "Option<Vec<u16>>"
++                    value_expr = "native.{native}().map(Value::Utf16String).unwrap_or(Value::Null)"
++                else:
++                    rust_type, value_expr = "Vec<u16>", "Value::Utf16String(native.{native}())"
+             else:
+                 raise TypeError(f"V8 backend unsupported attribute type: {name}.{member.identifier.name}: {member.type}")
+             setter = not member.readonly
+@@ -8275,10 +8280,16 @@ class CGV8BindingRoot(CGThing):
+                 setter_native = f"set_{native}"
+                 conversion = ("Boolean" if rust_type == "bool" else "Double" if rust_type == "f64" else "UnsignedLong" if rust_type == "u32" else None)
+                 if conversion is None:
+-                    registrations_list.append(
+-                        f'        runtime.define_domstring_property(&interface, "{idl}", {getter}, '
+-                        f'|native, value| {{ native.downcast_mut::<T>().expect("typed {name} wrapper").{setter_native}(value); }})?;'
+-                    )
++                    if rust_type == "Option<Vec<u16>>":
++                        registrations_list.append(
++                            f'        runtime.define_nullable_domstring_property(&interface, "{idl}", {getter}, '
++                            f'|native, value| {{ native.downcast_mut::<T>().expect("typed {name} wrapper").{setter_native}(value); }})?;'
++                        )
++                    else:
++                        registrations_list.append(
++                            f'        runtime.define_domstring_property(&interface, "{idl}", {getter}, '
++                            f'|native, value| {{ native.downcast_mut::<T>().expect("typed {name} wrapper").{setter_native}(value); }})?;'
++                        )
+                 else:
+                     value_variant = "Bool" if conversion == "Boolean" else "Number"
+                     registrations_list.append(
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index b2889036631..0052c4436c3 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -43,6 +43,22 @@ class V8GeneratorTests(unittest.TestCase):
+             self.assertIn("fn set_Value(&mut self, value: Vec<u16>);", source)
+             self.assertIn("runtime.define_domstring_property(&interface, \"value\"", source)
+ 
++    def test_nullable_domstring_uses_nullable_native_representation(self):
++        with tempfile.TemporaryDirectory() as directory:
++            root = Path(directory)
++            webidl = root / "NullableString.webidl"
++            webidl.write_text(
++                "[Exposed=Window] interface NullableString { readonly attribute DOMString? initialValue; attribute DOMString? value; };",
++                encoding="utf-8",
++            )
++            source = generate(webidl, root / "out")
++            self.assertIn("fn Value(&self) -> Option<Vec<u16>>;", source)
++            self.assertIn("fn InitialValue(&self) -> Option<Vec<u16>>;", source)
++            self.assertIn("fn set_Value(&mut self, value: Option<Vec<u16>>);", source)
++            self.assertIn("unwrap_or(Value::Null)", source)
++            self.assertIn('runtime.define_property(&interface, "initialValue"', source)
++            self.assertIn("runtime.define_nullable_domstring_property(", source)
++
+     def test_mutable_numeric_and_boolean_attributes_generate_typed_setters(self):
+         with tempfile.TemporaryDirectory() as directory:
+             root = Path(directory)

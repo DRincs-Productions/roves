@@ -571,6 +571,15 @@ boundary without borrowing Servo's SpiderMonkey-rooted `DOMString` implementatio
 tests pass in default, normal V8 pilot and JIT-less V8 pilot modes; six Python generator tests pass.
 Cross-platform CI is pending.
 
+**Thirteenth checkpoint (2026-10-02): nullable DOMString attributes.** The opt-in V8 backend
+now accepts nullable `DOMString?` attributes, with native `Option<Vec<u16>>` values and `null`
+represented by `Value::Null`. Mutable setters map JavaScript `null` directly to IDL null and apply
+`ToString` to other values, preserving UTF-16 code units; failed conversions such as `Symbol`
+leave native state unchanged. Local generator tests pass 8/8, and runtime tests pass in normal,
+JIT-less and non-pilot configurations. This remains an opt-in pilot; no production Servo reflector
+or SpiderMonkey path has been replaced. Patch 0077 is being prepared and cross-platform CI is in
+progress.
+
 **Twelfth checkpoint (2026-10-01): mutable primitive attributes.** The opt-in WebIDL backend
 now generates setters for `boolean`, `double`, and `unsigned long` in addition to mutable
 `DOMString`. Boolean uses JavaScript truthiness; numeric inputs use JavaScript `ToNumber`, and

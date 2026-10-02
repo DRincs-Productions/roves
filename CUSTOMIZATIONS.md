@@ -1,4 +1,20 @@
 # Customizations over upstream Servo
+## 2026-10-02 - V8 migration Phase 4: nullable DOMString WebIDL attributes
+
+**Servo files:** `components/roves-v8/{build.rs,src/lib.rs,tests/webidl/NullableDomString.webidl}`;
+`components/script_bindings/codegen/{codegen.py,test_v8.py}`.
+**Patch:** `0077-roves-v8-phase4-nullable-domstring.patch` after 0001-0076.
+
+The opt-in WebIDL generator accepts nullable `DOMString?` attributes and maps them to
+`Option<Vec<u16>>` in the generated native trait. Getters return JavaScript `null` for IDL null;
+setters preserve that null and apply `ToString` to other values while retaining UTF-16 code units.
+The callback completes coercion before mutably borrowing native state, and a thrown conversion
+such as `Symbol()` leaves the prior value intact. A generated fixture tests null, normal and lone
+surrogate strings, `undefined`, and failed Symbol conversion. Local verification: 55 runtime unit
+tests, 3 integration tests and 2 doctests pass with the pilot both normally and JIT-less; all 52
+non-pilot unit tests and 2 doctests pass; 8 generator tests pass. Cross-platform CI is in progress.
+This is still an isolated pilot, not production DOM integration.
+
 ## 2026-10-01 - V8 migration Phase 4: mutable primitive WebIDL attributes
 
 **Servo files:** `components/roves-v8/{build.rs,src/lib.rs,tests/webidl/MutablePrimitives.webidl}`;

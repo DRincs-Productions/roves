@@ -8237,7 +8237,8 @@ class CGV8BindingRoot(CGThing):
         attributes = []
         for member in interface.members:
             if (not member.isAttr() or member.isStatic()
-                    or member.type.nullable() or member._extendedAttrDict):
+                    or (member.type.nullable() and not member.type.isDOMString())
+                    or member._extendedAttrDict):
                 raise TypeError(f"V8 backend unsupported member: {name}.{member.identifier.name}")
             if member.type.isBoolean():
                 rust_type, value_expr = "bool", "Value::Bool(native.{native}())"
@@ -8246,7 +8247,11 @@ class CGV8BindingRoot(CGThing):
             elif member.type.isInteger() and member.type.name == "UnsignedLong":
                 rust_type, value_expr = "u32", "Value::Number(native.{native}() as f64)"
             elif member.type.isDOMString():
-                rust_type, value_expr = "Vec<u16>", "Value::Utf16String(native.{native}())"
+                if member.type.nullable():
+                    rust_type = "Option<Vec<u16>>"
+                    value_expr = "native.{native}().map(Value::Utf16String).unwrap_or(Value::Null)"
+                else:
+                    rust_type, value_expr = "Vec<u16>", "Value::Utf16String(native.{native}())"
             else:
                 raise TypeError(f"V8 backend unsupported attribute type: {name}.{member.identifier.name}: {member.type}")
             setter = not member.readonly
@@ -8275,10 +8280,16 @@ class CGV8BindingRoot(CGThing):
                 setter_native = f"set_{native}"
                 conversion = ("Boolean" if rust_type == "bool" else "Double" if rust_type == "f64" else "UnsignedLong" if rust_type == "u32" else None)
                 if conversion is None:
-                    registrations_list.append(
-                        f'        runtime.define_domstring_property(&interface, "{idl}", {getter}, '
-                        f'|native, value| {{ native.downcast_mut::<T>().expect("typed {name} wrapper").{setter_native}(value); }})?;'
-                    )
+                    if rust_type == "Option<Vec<u16>>":
+                        registrations_list.append(
+                            f'        runtime.define_nullable_domstring_property(&interface, "{idl}", {getter}, '
+                            f'|native, value| {{ native.downcast_mut::<T>().expect("typed {name} wrapper").{setter_native}(value); }})?;'
+                        )
+                    else:
+                        registrations_list.append(
+                            f'        runtime.define_domstring_property(&interface, "{idl}", {getter}, '
+                            f'|native, value| {{ native.downcast_mut::<T>().expect("typed {name} wrapper").{setter_native}(value); }})?;'
+                        )
                 else:
                     value_variant = "Bool" if conversion == "Boolean" else "Number"
                     registrations_list.append(

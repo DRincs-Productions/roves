@@ -43,6 +43,22 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn("fn set_Value(&mut self, value: Vec<u16>);", source)
             self.assertIn("runtime.define_domstring_property(&interface, \"value\"", source)
 
+    def test_nullable_domstring_uses_nullable_native_representation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            webidl = root / "NullableString.webidl"
+            webidl.write_text(
+                "[Exposed=Window] interface NullableString { readonly attribute DOMString? initialValue; attribute DOMString? value; };",
+                encoding="utf-8",
+            )
+            source = generate(webidl, root / "out")
+            self.assertIn("fn Value(&self) -> Option<Vec<u16>>;", source)
+            self.assertIn("fn InitialValue(&self) -> Option<Vec<u16>>;", source)
+            self.assertIn("fn set_Value(&mut self, value: Option<Vec<u16>>);", source)
+            self.assertIn("unwrap_or(Value::Null)", source)
+            self.assertIn('runtime.define_property(&interface, "initialValue"', source)
+            self.assertIn("runtime.define_nullable_domstring_property(", source)
+
     def test_mutable_numeric_and_boolean_attributes_generate_typed_setters(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

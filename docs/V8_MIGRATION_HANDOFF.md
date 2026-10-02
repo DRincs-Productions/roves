@@ -1,4 +1,4 @@
-# V8 migration — handoff (2026-10-01)
+# V8 migration - handoff (2026-10-02)
 
 Questo file è il punto di ripresa operativo della migrazione V8. Lo stato corrente riportato
 qui prevale sulle note storiche più sotto.
@@ -17,23 +17,40 @@ qui prevale sulle note storiche più sotto.
    in ordine cronologico inverso (la più recente in cima). Le entry dal 2026-09-29 in poi (cerca
    "V8 migration") coprono tutto il lavoro di questa migrazione, checkpoint per checkpoint, con i
    bug reali trovati e come sono stati corretti.
-4. **[`../patches/servo-v0.5.0/`](../patches/servo-v0.5.0/)** — patch numerate `0001` → `0076`,
+4. **[`../patches/servo-v0.5.0/`](../patches/servo-v0.5.0/)** — patch numerate `0001` → `0077`,
    una per checkpoint, applicabili a un checkout pulito del tag Servo pristine (vedi
    `../AGENTS.md` per come funziona il meccanismo patch/vendoring di questo repo).
 5. **[`../components/roves-v8/src/lib.rs`](../components/roves-v8/src/lib.rs)** — il codice
    vero, un unico file, ~2000 righe, con commenti doc estesi su ogni funzione pubblica e su ogni
    bug reale trovato. **Non è pseudocodice o un prototipo giocattolo scadente** — è scritto con
    la stessa cura che si userebbe in produzione, solo isolato in una crate separata per
-   sicurezza. 41 unit test, tutti verificati sia in locale (`cargo test -p roves-v8`) sia in CI.
+   sicurezza. 55 unit test e tre integrazioni WebIDL, verificati in locale sia in modalita normale sia JIT-less.
 
-## Stato aggiornato — 2026-10-01
+## Stato aggiornato - 2026-10-02
 
 Le sezioni storiche qui sotto documentano le decisioni e i checkpoint precedenti; se divergono
 da questo blocco, fa fede lo stato attuale. L'utente ha richiesto autonomia continuativa: modificare,
 testare localmente, avviare CI, correggere i fallimenti e proseguire fino al completamento dei
 criteri in `V8_MIGRATION.md`.
 
-Il checkpoint 12 aggiunge setter WebIDL mutabili `boolean`, `double` e `unsigned long`, con conversione prima del borrow mutabile e modulo 2^32. Passano 54 unit test, tre integrazioni WebIDL e due doctest sia normali sia JIT-less, oltre a sette test Python. Patch overlay e matrice V8 6/6, Android, iOS e bundle multipiattaforma erano verdi sul commit precedente. Sul commit `de49cb9`, patch validation, Android, iOS e i bundle salvo Linux deb sono passati; Linux portable ha completato il bootstrap, mentre Linux deb e Steam hanno raggiunto il timeout di 45 minuti scaricando dipendenze apt. Il mirror Azure non ha risolto il problema. Il timeout di bootstrap è stato portato a 90 minuti per questi job; la CI del nuovo commit deve ancora essere eseguita e completata.
+Il checkpoint 13 aggiunge supporto generato per attributi `DOMString?` mutabili: `null` resta
+`null`, gli altri valori passano da JavaScript `ToString`, le stringhe conservano i code unit
+UTF-16 e una conversione `Symbol` fallita non modifica il valore nativo. Passano localmente 55
+test unitari e tre test d'integrazione in modalita normale e JIT-less, due doctest in entrambe,
+e otto test Python del generatore. Patch 0077 e CI del checkpoint sono in preparazione/in corso;
+non e ancora completata la migrazione di produzione.
+
+Il checkpoint 12 aggiunge setter mutabili `boolean`, `double` e `unsigned long`; il checkpoint 11
+aggiunge setter `DOMString`. Sul commit `de49cb9`, patch validation, Android, iOS e i bundle
+salvo Linux deb sono passati; Linux portable ha completato il bootstrap, mentre Linux deb e Steam
+hanno raggiunto il timeout di 45 minuti scaricando dipendenze apt. Il mirror Azure non ha risolto
+il problema. Il commit `dbc6b9d` aumenta a 90 minuti i timeout del bootstrap Linux; la run Servo
+37000099322 e ancora in corso, mentre iOS e Android sono passati.
+
+Il README dichiara gia che le release usano ancora SpiderMonkey e che `roves-v8` e un runtime
+isolato in fase di validazione. Il checkout adiacente `roves-wiki` non e presente, quindi la
+wiki non e stata aggiornata. `roves-action` non e presente; questa modifica CI non cambia flag,
+default o convenzioni di bundle dell'action.
 
 Il checkpoint 7 avvia l'integrazione vera con `components/script_bindings`: un backend opt-in
 usa il parser WebIDL esistente e genera `ValidityState` dalla definizione Servo reale, senza
