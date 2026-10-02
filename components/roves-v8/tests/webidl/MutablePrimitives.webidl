@@ -6,4 +6,8 @@ interface MutablePrimitives {
   attribute boolean? optionalEnabled;
   attribute double? optionalRatio;
   attribute unsigned long? optionalCount;
+  undefined ping();
+  boolean isEnabled();
+  double currentRatio();
+  unsigned long currentCount();
 };

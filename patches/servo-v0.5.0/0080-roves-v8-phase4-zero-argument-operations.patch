@@ -1,0 +1,139 @@
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 721c596626b..bceb1b5815c 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -2617,6 +2617,10 @@ mod tests {
+             fn set_OptionalRatio(&mut self, value: Option<f64>) { self.optional_ratio = value; }
+             fn OptionalCount(&self) -> Option<u32> { self.optional_count }
+             fn set_OptionalCount(&mut self, value: Option<u32>) { self.optional_count = value; }
++            fn Ping(&self) {}
++            fn IsEnabled(&self) -> bool { self.enabled }
++            fn CurrentRatio(&self) -> f64 { self.ratio }
++            fn CurrentCount(&self) -> u32 { self.count }
+         }
+         let mut runtime = Runtime::new();
+         let binding = MutablePrimitivesBinding::<State>::install(&mut runtime).unwrap();
+@@ -2655,6 +2659,10 @@ mod tests {
+         assert_eq!(native.optional_enabled, Some(false));
+         assert!(native.optional_ratio.unwrap().is_nan());
+         assert_eq!(native.optional_count, Some(0));
++        assert_eq!(runtime.eval_value("state.ping()").unwrap(), Value::Undefined);
++        assert_eq!(runtime.eval_value("state.isEnabled()").unwrap(), Value::Bool(false));
++        assert!(matches!(runtime.eval_value("state.currentRatio()").unwrap(), Value::Number(value) if value.is_nan()));
++        assert_eq!(runtime.eval_value("state.currentCount()").unwrap(), Value::Number(1.0));
+     }
+ 
+     #[cfg(feature = "webidl-pilot")]
+diff --git a/components/roves-v8/tests/webidl/MutablePrimitives.webidl b/components/roves-v8/tests/webidl/MutablePrimitives.webidl
+index cef0f6e7624..598fed52ff0 100644
+--- a/components/roves-v8/tests/webidl/MutablePrimitives.webidl
++++ b/components/roves-v8/tests/webidl/MutablePrimitives.webidl
+@@ -6,4 +6,8 @@ interface MutablePrimitives {
+   attribute boolean? optionalEnabled;
+   attribute double? optionalRatio;
+   attribute unsigned long? optionalCount;
++  undefined ping();
++  boolean isEnabled();
++  double currentRatio();
++  unsigned long currentCount();
+ };
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index e26d1eca218..d4bff3f1c93 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8235,7 +8235,26 @@ class CGV8BindingRoot(CGThing):
+         if exposed is None or not ({"Window", "*"} & set(exposed)):
+             raise TypeError(f"V8 pilot only supports interfaces exposed to Window: {name}")
+         attributes = []
++        operations = []
+         for member in interface.members:
++            if member.isMethod():
++                signatures = member.signatures()
++                if (member.isStatic() or member._extendedAttrDict or len(signatures) != 1
++                        or signatures[0][1]):
++                    raise TypeError(f"V8 backend only supports single-signature, zero-argument operations: {name}.{member.identifier.name}")
++                return_type = signatures[0][0]
++                if return_type.isUndefined():
++                    rust_type, value_expr = "()", "Value::Undefined"
++                elif return_type.isBoolean():
++                    rust_type, value_expr = "bool", "Value::Bool(native.{native}())"
++                elif return_type.isFloat() and return_type.name == "Double":
++                    rust_type, value_expr = "f64", "Value::Number(native.{native}())"
++                elif return_type.isInteger() and return_type.name == "UnsignedLong":
++                    rust_type, value_expr = "u32", "Value::Number(native.{native}() as f64)"
++                else:
++                    raise TypeError(f"V8 backend unsupported operation return type: {name}.{member.identifier.name}: {return_type}")
++                operations.append((member.identifier.name, MakeNativeName(member.identifier.name), rust_type, value_expr))
++                continue
+             if (not member.isAttr() or member.isStatic() or member._extendedAttrDict):
+                 raise TypeError(f"V8 backend unsupported member: {name}.{member.identifier.name}")
+             idl_type = member.type.inner if member.type.nullable() else member.type
+@@ -8284,9 +8303,12 @@ class CGV8BindingRoot(CGThing):
+             if setter and not idl_type.isDOMString() and conversion is None:
+                 raise TypeError(f"V8 backend does not support mutable attribute type: {name}.{member.identifier.name}")
+             attributes.append((member.identifier.name, MakeNativeName(member.identifier.name), rust_type, value_expr, setter, conversion))
+-        trait_methods = "\n".join(f"    fn {native}(&self) -> {rust_type};"
+-                                   + (f"\n    fn set_{native}(&mut self, value: {rust_type});" if setter else "")
+-                                   for _, native, rust_type, _, setter, _ in attributes)
++        trait_methods = "\n".join(
++            [f"    fn {native}(&self) -> {rust_type};"
++             + (f"\n    fn set_{native}(&mut self, value: {rust_type});" if setter else "")
++             for _, native, rust_type, _, setter, _ in attributes]
++            + [f"    fn {native}(&self) -> {rust_type};" for _, native, rust_type, _ in operations]
++        )
+         registrations_list = []
+         for idl, native, rust_type, value_expr, setter, conversion in attributes:
+             getter = (
+@@ -8352,6 +8374,17 @@ class CGV8BindingRoot(CGThing):
+                 registrations_list.append(
+                     f'        runtime.define_property(&interface, "{idl}", {getter})?;'
+                 )
++        for idl, native, _, value_expr in operations:
++            if value_expr == "Value::Undefined":
++                callback = "|_native, _args| Value::Undefined"
++            else:
++                callback = (
++                    f'|native, _args| {{\n'
++                    f'            let native = native.downcast_ref::<T>().expect("typed {name} wrapper");\n'
++                    f'            {value_expr.format(native=native)}\n'
++                    f'        }}'
++                )
++            registrations_list.append(f'        runtime.define_method(&interface, "{idl}", {callback})?;')
+         registrations = "\n".join(registrations_list)
+         return AUTOGENERATED_WARNING_COMMENT + f"""use roves_v8::{{Handle, Interface, Runtime, Value}};
+ 
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index 62d324fabd3..b750252298e 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -100,10 +100,29 @@ class V8GeneratorTests(unittest.TestCase):
+                 generate(path, Path(directory) / "output")
+ 
+     def test_unsupported_members_never_silently_disappear(self):
+-        for member in ["readonly attribute float value;", "readonly attribute unsigned long long value;", "undefined run();", "static readonly attribute boolean valid;", "[GetterThrows] readonly attribute boolean valid;", "attribute byte value;"]:
++        for member in ["readonly attribute float value;", "readonly attribute unsigned long long value;", "static readonly attribute boolean valid;", "undefined run(long value);", "[GetterThrows] readonly attribute boolean valid;", "attribute byte value;"]:
+             with self.subTest(member=member):
+                 self.assert_unsupported("interface Unsupported { " + member + " };")
+ 
++    def test_zero_argument_operations_generate_typed_native_methods(self):
++        with tempfile.TemporaryDirectory() as directory:
++            root = Path(directory)
++            webidl = root / "Operations.webidl"
++            webidl.write_text(
++                "[Exposed=Window] interface Operations { undefined reset(); boolean ready(); double ratio(); unsigned long count(); };",
++                encoding="utf-8",
++            )
++            source = generate(webidl, root / "out")
++            self.assertIn("fn Reset(&self) -> ();", source)
++            self.assertIn("fn Ready(&self) -> bool;", source)
++            self.assertIn("fn Ratio(&self) -> f64;", source)
++            self.assertIn("fn Count(&self) -> u32;", source)
++            self.assertIn('runtime.define_method(&interface, "reset"', source)
++            self.assertIn("Value::Undefined", source)
++            self.assertIn("Value::Bool(native.Ready())", source)
++            self.assertIn("Value::Number(native.Ratio())", source)
++            self.assertIn("Value::Number(native.Count() as f64)", source)
++
+     def test_nullable_primitive_attributes_use_optional_native_values(self):
+         with tempfile.TemporaryDirectory() as directory:
+             root = Path(directory)

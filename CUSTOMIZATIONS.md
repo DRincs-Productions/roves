@@ -9,6 +9,18 @@ consumed by `xvfb-run` startup on a loaded runner, terminating Roves just after 
 started and before the WebView loaded the local game page. The page result still fails the smoke
 test if the bounded wait expires or the Steam round trip reports incorrect values.
 
+## 2026-10-02 - V8 migration Phase 4: zero-argument WebIDL operations
+
+**Servo files:** `components/roves-v8/{src/lib.rs,tests/webidl/MutablePrimitives.webidl}`;
+`components/script_bindings/codegen/{codegen.py,test_v8.py}`.
+**Patch:** `0080-roves-v8-phase4-zero-argument-operations.patch` after 0001-0079.
+
+The opt-in generator supports one-signature WebIDL operations with no arguments and return types
+`undefined`, `boolean`, `double`, and `unsigned long`. Generated methods use the existing native
+callback boundary and enforce interface receivers. Overloaded, parameterized, static, extended-
+attribute, or unsupported-return operations are rejected explicitly. Local generator, runtime,
+jitless, default, and integrated binding-crate checks pass. Production bindings remain SpiderMonkey.
+
 ## 2026-10-02 - V8 migration Phase 4: nullable primitive WebIDL attributes
 
 **Servo files:** `components/roves-v8/{src/lib.rs,tests/webidl/MutablePrimitives.webidl}`;

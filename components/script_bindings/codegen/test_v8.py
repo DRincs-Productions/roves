@@ -100,9 +100,28 @@ class V8GeneratorTests(unittest.TestCase):
                 generate(path, Path(directory) / "output")
 
     def test_unsupported_members_never_silently_disappear(self):
-        for member in ["readonly attribute float value;", "readonly attribute unsigned long long value;", "undefined run();", "static readonly attribute boolean valid;", "[GetterThrows] readonly attribute boolean valid;", "attribute byte value;"]:
+        for member in ["readonly attribute float value;", "readonly attribute unsigned long long value;", "static readonly attribute boolean valid;", "undefined run(long value);", "[GetterThrows] readonly attribute boolean valid;", "attribute byte value;"]:
             with self.subTest(member=member):
                 self.assert_unsupported("interface Unsupported { " + member + " };")
+
+    def test_zero_argument_operations_generate_typed_native_methods(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            webidl = root / "Operations.webidl"
+            webidl.write_text(
+                "[Exposed=Window] interface Operations { undefined reset(); boolean ready(); double ratio(); unsigned long count(); };",
+                encoding="utf-8",
+            )
+            source = generate(webidl, root / "out")
+            self.assertIn("fn Reset(&self) -> ();", source)
+            self.assertIn("fn Ready(&self) -> bool;", source)
+            self.assertIn("fn Ratio(&self) -> f64;", source)
+            self.assertIn("fn Count(&self) -> u32;", source)
+            self.assertIn('runtime.define_method(&interface, "reset"', source)
+            self.assertIn("Value::Undefined", source)
+            self.assertIn("Value::Bool(native.Ready())", source)
+            self.assertIn("Value::Number(native.Ratio())", source)
+            self.assertIn("Value::Number(native.Count() as f64)", source)
 
     def test_nullable_primitive_attributes_use_optional_native_values(self):
         with tempfile.TemporaryDirectory() as directory:

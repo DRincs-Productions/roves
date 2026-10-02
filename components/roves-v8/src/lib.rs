@@ -2617,6 +2617,10 @@ mod tests {
             fn set_OptionalRatio(&mut self, value: Option<f64>) { self.optional_ratio = value; }
             fn OptionalCount(&self) -> Option<u32> { self.optional_count }
             fn set_OptionalCount(&mut self, value: Option<u32>) { self.optional_count = value; }
+            fn Ping(&self) {}
+            fn IsEnabled(&self) -> bool { self.enabled }
+            fn CurrentRatio(&self) -> f64 { self.ratio }
+            fn CurrentCount(&self) -> u32 { self.count }
         }
         let mut runtime = Runtime::new();
         let binding = MutablePrimitivesBinding::<State>::install(&mut runtime).unwrap();
@@ -2655,6 +2659,10 @@ mod tests {
         assert_eq!(native.optional_enabled, Some(false));
         assert!(native.optional_ratio.unwrap().is_nan());
         assert_eq!(native.optional_count, Some(0));
+        assert_eq!(runtime.eval_value("state.ping()").unwrap(), Value::Undefined);
+        assert_eq!(runtime.eval_value("state.isEnabled()").unwrap(), Value::Bool(false));
+        assert!(matches!(runtime.eval_value("state.currentRatio()").unwrap(), Value::Number(value) if value.is_nan()));
+        assert_eq!(runtime.eval_value("state.currentCount()").unwrap(), Value::Number(1.0));
     }
 
     #[cfg(feature = "webidl-pilot")]

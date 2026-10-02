@@ -25,7 +25,7 @@ upstream is upgraded.
 V8 migration is in progress. Current releases still use SpiderMonkey; the isolated
 `roves-v8` runtime is being validated with normal and JIT-less tests while WebIDL and
 DOM ownership are migrated. Its opt-in WebIDL pilot currently exercises mutable boolean/numeric
-and DOMString/USVString attributes; it is not the production scripting engine. Shared agent
+DOMString/USVString attributes, and zero-argument primitive-returning operations; it is not the production scripting engine. Shared agent
 instructions live in [AGENTS.md](./AGENTS.md).
 
 [CUSTOMIZATIONS.md]: ./CUSTOMIZATIONS.md
