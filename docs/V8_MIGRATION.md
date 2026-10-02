@@ -571,6 +571,8 @@ boundary without borrowing Servo's SpiderMonkey-rooted `DOMString` implementatio
 tests pass in default, normal V8 pilot and JIT-less V8 pilot modes; six Python generator tests pass.
 Cross-platform CI is pending.
 
+**Fourteenth checkpoint (2026-10-02): `USVString` and nullable `USVString?` attributes.** The opt-in generator emits Rust `String` / `Option<String>` contracts and uses JavaScript string coercion followed by scalar-value conversion, replacing unpaired UTF-16 surrogates with U+FFFD as required for USVString. Nullable `null` remains IDL null; `undefined` and other values use JavaScript `ToString`, and conversion exceptions occur before native mutation. Generated and runtime fixtures cover these cases, including Symbol errors. Local verification passes: 9 Python generator tests; 56 unit + 3 integration + 2 doctests in normal and JIT-less pilot configurations; 52 unit + 2 doctests without the pilot. Patch 0078 and CI are pending. This remains an opt-in pilot; production bindings still use SpiderMonkey.
+
 **Thirteenth checkpoint (2026-10-02): nullable DOMString attributes.** The opt-in V8 backend
 now accepts nullable `DOMString?` attributes, with native `Option<Vec<u16>>` values and `null`
 represented by `Value::Null`. Mutable setters map JavaScript `null` directly to IDL null and apply

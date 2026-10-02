@@ -29,6 +29,10 @@ fn main() {
         "cargo:rerun-if-changed={}",
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/webidl/NullableDomString.webidl").display()
     );
+    println!(
+        "cargo:rerun-if-changed={}",
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/webidl/UsvStrings.webidl").display()
+    );
     let python = env::var("PYTHON").unwrap_or_else(|_| {
         ["python3", "python"].into_iter().find(|name| {
             Command::new(name).arg("--version").output().is_ok_and(|output| output.status.success())
@@ -76,4 +80,13 @@ fn main() {
         .status()
         .expect("run nullable DOMString WebIDL fixture generator");
     assert!(status.success(), "nullable DOMString WebIDL fixture generation failed");
+    let output = out_dir.join("UsvStringsV8Binding.rs");
+    let status = Command::new(&python)
+        .arg(bindings.join("codegen/run_v8.py"))
+        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/webidl/UsvStrings.webidl"))
+        .arg(output)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .status()
+        .expect("run USVString WebIDL fixture generator");
+    assert!(status.success(), "USVString WebIDL fixture generation failed");
 }

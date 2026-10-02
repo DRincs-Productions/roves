@@ -8237,7 +8237,8 @@ class CGV8BindingRoot(CGThing):
         attributes = []
         for member in interface.members:
             if (not member.isAttr() or member.isStatic()
-                    or (member.type.nullable() and not member.type.isDOMString())
+                    or (member.type.nullable()
+                        and not (member.type.isDOMString() or member.type.isUSVString()))
                     or member._extendedAttrDict):
                 raise TypeError(f"V8 backend unsupported member: {name}.{member.identifier.name}")
             if member.type.isBoolean():
@@ -8246,6 +8247,12 @@ class CGV8BindingRoot(CGThing):
                 rust_type, value_expr = "f64", "Value::Number(native.{native}())"
             elif member.type.isInteger() and member.type.name == "UnsignedLong":
                 rust_type, value_expr = "u32", "Value::Number(native.{native}() as f64)"
+            elif member.type.isUSVString():
+                if member.type.nullable():
+                    rust_type = "Option<String>"
+                    value_expr = "native.{native}().map(Value::String).unwrap_or(Value::Null)"
+                else:
+                    rust_type, value_expr = "String", "Value::String(native.{native}())"
             elif member.type.isDOMString():
                 if member.type.nullable():
                     rust_type = "Option<Vec<u16>>"
@@ -8262,14 +8269,16 @@ class CGV8BindingRoot(CGThing):
                 conversion = "Double"
             elif member.type.isInteger() and member.type.name == "UnsignedLong":
                 conversion = "UnsignedLong"
+            elif member.type.isUSVString():
+                conversion = "NullableUsvString" if member.type.nullable() else "UsvString"
             if setter and not member.type.isDOMString() and conversion is None:
                 raise TypeError(f"V8 backend does not support mutable attribute type: {name}.{member.identifier.name}")
-            attributes.append((member.identifier.name, MakeNativeName(member.identifier.name), rust_type, value_expr, setter))
+            attributes.append((member.identifier.name, MakeNativeName(member.identifier.name), rust_type, value_expr, setter, conversion))
         trait_methods = "\n".join(f"    fn {native}(&self) -> {rust_type};"
                                    + (f"\n    fn set_{native}(&mut self, value: {rust_type});" if setter else "")
-                                   for _, native, rust_type, _, setter in attributes)
+                                   for _, native, rust_type, _, setter, _ in attributes)
         registrations_list = []
-        for idl, native, rust_type, value_expr, setter in attributes:
+        for idl, native, rust_type, value_expr, setter, conversion in attributes:
             getter = (
                 f'|native| {{\n'
                 f'            let native = native.downcast_ref::<T>().expect("typed {name} wrapper");\n'
@@ -8278,7 +8287,6 @@ class CGV8BindingRoot(CGThing):
             )
             if setter:
                 setter_native = f"set_{native}"
-                conversion = ("Boolean" if rust_type == "bool" else "Double" if rust_type == "f64" else "UnsignedLong" if rust_type == "u32" else None)
                 if conversion is None:
                     if rust_type == "Option<Vec<u16>>":
                         registrations_list.append(
@@ -8291,13 +8299,32 @@ class CGV8BindingRoot(CGThing):
                             f'|native, value| {{ native.downcast_mut::<T>().expect("typed {name} wrapper").{setter_native}(value); }})?;'
                         )
                 else:
-                    value_variant = "Bool" if conversion == "Boolean" else "Number"
+                    if conversion in {"UsvString", "NullableUsvString"}:
+                        if conversion == "UsvString":
+                            converted = (
+                                'let Value::String(value) = value else { unreachable!("typed WebIDL conversion") };\n'
+                                f'            native.{setter_native}(value.clone());'
+                            )
+                        else:
+                            converted = (
+                                'let value = match value {\n'
+                                '                Value::Null => None,\n'
+                                '                Value::String(value) => Some(value.clone()),\n'
+                                '                _ => unreachable!("typed WebIDL conversion"),\n'
+                                '            };\n'
+                                f'            native.{setter_native}(value);'
+                            )
+                    else:
+                        value_variant = "Bool" if conversion == "Boolean" else "Number"
+                        converted = (
+                            f'let Value::{value_variant}(value) = value else {{ unreachable!("typed WebIDL conversion") }};\n'
+                            f'            native.{setter_native}(*value as {rust_type});'
+                        )
                     registrations_list.append(
                         f'        runtime.define_webidl_primitive_property(&interface, "{idl}", {getter}, '
                         f'|native, value| {{\n'
                         f'            let native = native.downcast_mut::<T>().expect("typed {name} wrapper");\n'
-                        f'            let Value::{value_variant}(value) = value else {{ unreachable!("typed WebIDL conversion") }};\n'
-                        f'            native.{setter_native}(*value as {rust_type});\n'
+                        f'            {converted}\n'
                         f'        }}, roves_v8::PrimitiveConversion::{conversion})?;'
                     )
             else:

@@ -1,0 +1,258 @@
+diff --git a/components/roves-v8/build.rs b/components/roves-v8/build.rs
+index d973706fc25..8f31c9c0aca 100644
+--- a/components/roves-v8/build.rs
++++ b/components/roves-v8/build.rs
+@@ -29,6 +29,10 @@ fn main() {
+         "cargo:rerun-if-changed={}",
+         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/webidl/NullableDomString.webidl").display()
+     );
++    println!(
++        "cargo:rerun-if-changed={}",
++        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/webidl/UsvStrings.webidl").display()
++    );
+     let python = env::var("PYTHON").unwrap_or_else(|_| {
+         ["python3", "python"].into_iter().find(|name| {
+             Command::new(name).arg("--version").output().is_ok_and(|output| output.status.success())
+@@ -76,4 +80,13 @@ fn main() {
+         .status()
+         .expect("run nullable DOMString WebIDL fixture generator");
+     assert!(status.success(), "nullable DOMString WebIDL fixture generation failed");
++    let output = out_dir.join("UsvStringsV8Binding.rs");
++    let status = Command::new(&python)
++        .arg(bindings.join("codegen/run_v8.py"))
++        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/webidl/UsvStrings.webidl"))
++        .arg(output)
++        .env("PYTHONDONTWRITEBYTECODE", "1")
++        .status()
++        .expect("run USVString WebIDL fixture generator");
++    assert!(status.success(), "USVString WebIDL fixture generation failed");
+ }
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 7c3de47169f..79b92ab0b48 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -37,6 +37,10 @@ pub mod webidl {
+     pub mod nullable_domstring {
+         include!(concat!(env!("OUT_DIR"), "/NullableDomStringV8Binding.rs"));
+     }
++    #[cfg(test)]
++    pub mod usv_strings {
++        include!(concat!(env!("OUT_DIR"), "/UsvStringsV8Binding.rs"));
++    }
+ }
+ 
+ use std::sync::Once;
+@@ -186,6 +190,10 @@ pub enum PrimitiveConversion {
+     Boolean,
+     Double,
+     UnsignedLong,
++    /// JavaScript ToString followed by USVString scalar-value conversion.
++    UsvString,
++    /// Nullable USVString: JavaScript null maps to IDL null; other values use ToString.
++    NullableUsvString,
+ }
+ 
+ /// A callable method, registered via [`Runtime::define_method`]: receives the wrapped Rust value
+@@ -873,6 +881,18 @@ impl Runtime {
+                                         Value::Number(number.trunc().rem_euclid(4_294_967_296.0))
+                                     }
+                                 }
++                                PrimitiveConversion::UsvString => {
++                                    let Some(string) = value.to_string(scope) else { return; };
++                                    Value::String(string.to_rust_string_lossy(scope))
++                                }
++                                PrimitiveConversion::NullableUsvString => {
++                                    if value.is_null() {
++                                        Value::Null
++                                    } else {
++                                        let Some(string) = value.to_string(scope) else { return; };
++                                        Value::String(string.to_rust_string_lossy(scope))
++                                    }
++                                }
+                             };
+                             // Coercion may run user JavaScript; borrow native state only after it completes.
+                             setter(unsafe { (&mut *raw).as_mut() }, &converted);
+@@ -889,6 +909,8 @@ impl Runtime {
+                 PrimitiveConversion::Boolean => primitive_setter_template!(PrimitiveConversion::Boolean),
+                 PrimitiveConversion::Double => primitive_setter_template!(PrimitiveConversion::Double),
+                 PrimitiveConversion::UnsignedLong => primitive_setter_template!(PrimitiveConversion::UnsignedLong),
++                PrimitiveConversion::UsvString => primitive_setter_template!(PrimitiveConversion::UsvString),
++                PrimitiveConversion::NullableUsvString => primitive_setter_template!(PrimitiveConversion::NullableUsvString),
+             })
+         } else if let Some(setter) = nullable_domstring_setter {
+             let setter_data = v8::External::new(scope, setter as *mut std::ffi::c_void);
+@@ -2605,6 +2627,42 @@ mod tests {
+         assert_eq!(runtime.eval_value("state.value").unwrap(), Value::String("undefined".into()));
+     }
+ 
++    #[cfg(feature = "webidl-pilot")]
++    #[test]
++    fn generated_usvstring_replaces_unpaired_surrogates_and_preserves_nullable_values() {
++        use crate::webidl::usv_strings::{UsvStringsBinding, UsvStringsNative};
++        #[derive(Default)]
++        struct State { value: String, nullable: Option<String> }
++        #[allow(non_snake_case)]
++        impl UsvStringsNative for State {
++            fn Value(&self) -> String { self.value.clone() }
++            fn set_Value(&mut self, value: String) { self.value = value; }
++            fn Nullable(&self) -> Option<String> { self.nullable.clone() }
++            fn set_Nullable(&mut self, value: Option<String>) { self.nullable = value; }
++            fn InitialValue(&self) -> Option<String> { None }
++        }
++
++        let mut runtime = Runtime::new();
++        let binding = UsvStringsBinding::<State>::install(&mut runtime).unwrap();
++        let handle = binding.create(&mut runtime, State::default());
++        runtime.set_global_property("state", &handle).unwrap();
++        assert_eq!(runtime.eval_value("state.initialValue").unwrap(), Value::Null);
++
++        runtime.eval("state.value = '\\uD800x'; state.nullable = '\\uDC00y';").unwrap();
++        assert_eq!(runtime.eval_value("state.value").unwrap(), Value::String("\u{FFFD}x".into()));
++        assert_eq!(runtime.eval_value("state.nullable").unwrap(), Value::String("\u{FFFD}y".into()));
++        runtime.eval("state.value = { toString() { return '\\uD800'; } };").unwrap();
++        assert_eq!(runtime.eval_value("state.value").unwrap(), Value::String("\u{FFFD}".into()));
++
++        runtime.eval("state.nullable = null;").unwrap();
++        assert_eq!(runtime.eval_value("state.nullable").unwrap(), Value::Null);
++        assert_eq!(runtime.get_wrapped::<State>(&handle).unwrap().nullable, None);
++        runtime.eval("state.nullable = undefined;").unwrap();
++        assert_eq!(runtime.eval_value("state.nullable").unwrap(), Value::String("undefined".into()));
++        assert_eq!(runtime.eval("(() => { try { state.nullable = Symbol(); } catch (e) { return e instanceof TypeError; } })()").unwrap(), "true");
++        assert_eq!(runtime.eval_value("state.nullable").unwrap(), Value::String("undefined".into()));
++    }
++
+     #[test]
+     fn interfaces_without_constructors_and_foreign_method_receivers_throw() {
+         fn method(_: &dyn std::any::Any, _: &[Value]) -> Value { Value::Undefined }
+diff --git a/components/roves-v8/tests/webidl/UsvStrings.webidl b/components/roves-v8/tests/webidl/UsvStrings.webidl
+new file mode 100644
+index 00000000000..d73ae17b382
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/UsvStrings.webidl
+@@ -0,0 +1,6 @@
++[Exposed=Window]
++interface UsvStrings {
++  attribute USVString value;
++  attribute USVString? nullable;
++  readonly attribute USVString? initialValue;
++};
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index 17d3f096c9c..1e63747d012 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8237,7 +8237,8 @@ class CGV8BindingRoot(CGThing):
+         attributes = []
+         for member in interface.members:
+             if (not member.isAttr() or member.isStatic()
+-                    or (member.type.nullable() and not member.type.isDOMString())
++                    or (member.type.nullable()
++                        and not (member.type.isDOMString() or member.type.isUSVString()))
+                     or member._extendedAttrDict):
+                 raise TypeError(f"V8 backend unsupported member: {name}.{member.identifier.name}")
+             if member.type.isBoolean():
+@@ -8246,6 +8247,12 @@ class CGV8BindingRoot(CGThing):
+                 rust_type, value_expr = "f64", "Value::Number(native.{native}())"
+             elif member.type.isInteger() and member.type.name == "UnsignedLong":
+                 rust_type, value_expr = "u32", "Value::Number(native.{native}() as f64)"
++            elif member.type.isUSVString():
++                if member.type.nullable():
++                    rust_type = "Option<String>"
++                    value_expr = "native.{native}().map(Value::String).unwrap_or(Value::Null)"
++                else:
++                    rust_type, value_expr = "String", "Value::String(native.{native}())"
+             elif member.type.isDOMString():
+                 if member.type.nullable():
+                     rust_type = "Option<Vec<u16>>"
+@@ -8262,14 +8269,16 @@ class CGV8BindingRoot(CGThing):
+                 conversion = "Double"
+             elif member.type.isInteger() and member.type.name == "UnsignedLong":
+                 conversion = "UnsignedLong"
++            elif member.type.isUSVString():
++                conversion = "NullableUsvString" if member.type.nullable() else "UsvString"
+             if setter and not member.type.isDOMString() and conversion is None:
+                 raise TypeError(f"V8 backend does not support mutable attribute type: {name}.{member.identifier.name}")
+-            attributes.append((member.identifier.name, MakeNativeName(member.identifier.name), rust_type, value_expr, setter))
++            attributes.append((member.identifier.name, MakeNativeName(member.identifier.name), rust_type, value_expr, setter, conversion))
+         trait_methods = "\n".join(f"    fn {native}(&self) -> {rust_type};"
+                                    + (f"\n    fn set_{native}(&mut self, value: {rust_type});" if setter else "")
+-                                   for _, native, rust_type, _, setter in attributes)
++                                   for _, native, rust_type, _, setter, _ in attributes)
+         registrations_list = []
+-        for idl, native, rust_type, value_expr, setter in attributes:
++        for idl, native, rust_type, value_expr, setter, conversion in attributes:
+             getter = (
+                 f'|native| {{\n'
+                 f'            let native = native.downcast_ref::<T>().expect("typed {name} wrapper");\n'
+@@ -8278,7 +8287,6 @@ class CGV8BindingRoot(CGThing):
+             )
+             if setter:
+                 setter_native = f"set_{native}"
+-                conversion = ("Boolean" if rust_type == "bool" else "Double" if rust_type == "f64" else "UnsignedLong" if rust_type == "u32" else None)
+                 if conversion is None:
+                     if rust_type == "Option<Vec<u16>>":
+                         registrations_list.append(
+@@ -8291,13 +8299,32 @@ class CGV8BindingRoot(CGThing):
+                             f'|native, value| {{ native.downcast_mut::<T>().expect("typed {name} wrapper").{setter_native}(value); }})?;'
+                         )
+                 else:
+-                    value_variant = "Bool" if conversion == "Boolean" else "Number"
++                    if conversion in {"UsvString", "NullableUsvString"}:
++                        if conversion == "UsvString":
++                            converted = (
++                                'let Value::String(value) = value else { unreachable!("typed WebIDL conversion") };\n'
++                                f'            native.{setter_native}(value.clone());'
++                            )
++                        else:
++                            converted = (
++                                'let value = match value {\n'
++                                '                Value::Null => None,\n'
++                                '                Value::String(value) => Some(value.clone()),\n'
++                                '                _ => unreachable!("typed WebIDL conversion"),\n'
++                                '            };\n'
++                                f'            native.{setter_native}(value);'
++                            )
++                    else:
++                        value_variant = "Bool" if conversion == "Boolean" else "Number"
++                        converted = (
++                            f'let Value::{value_variant}(value) = value else {{ unreachable!("typed WebIDL conversion") }};\n'
++                            f'            native.{setter_native}(*value as {rust_type});'
++                        )
+                     registrations_list.append(
+                         f'        runtime.define_webidl_primitive_property(&interface, "{idl}", {getter}, '
+                         f'|native, value| {{\n'
+                         f'            let native = native.downcast_mut::<T>().expect("typed {name} wrapper");\n'
+-                        f'            let Value::{value_variant}(value) = value else {{ unreachable!("typed WebIDL conversion") }};\n'
+-                        f'            native.{setter_native}(*value as {rust_type});\n'
++                        f'            {converted}\n'
+                         f'        }}, roves_v8::PrimitiveConversion::{conversion})?;'
+                     )
+             else:
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index 0052c4436c3..6c4a7b79356 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -59,6 +59,24 @@ class V8GeneratorTests(unittest.TestCase):
+             self.assertIn('runtime.define_property(&interface, "initialValue"', source)
+             self.assertIn("runtime.define_nullable_domstring_property(", source)
+ 
++    def test_usvstring_generates_scalar_string_setters(self):
++        with tempfile.TemporaryDirectory() as directory:
++            root = Path(directory)
++            webidl = root / "UsvStrings.webidl"
++            webidl.write_text(
++                "[Exposed=Window] interface UsvStrings { attribute USVString value; attribute USVString? nullable; readonly attribute USVString? initialValue; };",
++                encoding="utf-8",
++            )
++            source = generate(webidl, root / "out")
++            self.assertIn("fn Value(&self) -> String;", source)
++            self.assertIn("fn set_Value(&mut self, value: String);", source)
++            self.assertIn("fn Nullable(&self) -> Option<String>;", source)
++            self.assertIn("fn set_Nullable(&mut self, value: Option<String>);", source)
++            self.assertIn("fn InitialValue(&self) -> Option<String>;", source)
++            self.assertIn("PrimitiveConversion::UsvString", source)
++            self.assertIn("PrimitiveConversion::NullableUsvString", source)
++            self.assertIn('runtime.define_property(&interface, "initialValue"', source)
++
+     def test_mutable_numeric_and_boolean_attributes_generate_typed_setters(self):
+         with tempfile.TemporaryDirectory() as directory:
+             root = Path(directory)

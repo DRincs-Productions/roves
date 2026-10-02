@@ -59,6 +59,24 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn('runtime.define_property(&interface, "initialValue"', source)
             self.assertIn("runtime.define_nullable_domstring_property(", source)
 
+    def test_usvstring_generates_scalar_string_setters(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            webidl = root / "UsvStrings.webidl"
+            webidl.write_text(
+                "[Exposed=Window] interface UsvStrings { attribute USVString value; attribute USVString? nullable; readonly attribute USVString? initialValue; };",
+                encoding="utf-8",
+            )
+            source = generate(webidl, root / "out")
+            self.assertIn("fn Value(&self) -> String;", source)
+            self.assertIn("fn set_Value(&mut self, value: String);", source)
+            self.assertIn("fn Nullable(&self) -> Option<String>;", source)
+            self.assertIn("fn set_Nullable(&mut self, value: Option<String>);", source)
+            self.assertIn("fn InitialValue(&self) -> Option<String>;", source)
+            self.assertIn("PrimitiveConversion::UsvString", source)
+            self.assertIn("PrimitiveConversion::NullableUsvString", source)
+            self.assertIn('runtime.define_property(&interface, "initialValue"', source)
+
     def test_mutable_numeric_and_boolean_attributes_generate_typed_setters(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

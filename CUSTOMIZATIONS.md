@@ -9,6 +9,20 @@ consumed by `xvfb-run` startup on a loaded runner, terminating Roves just after 
 started and before the WebView loaded the local game page. The page result still fails the smoke
 test if the bounded wait expires or the Steam round trip reports incorrect values.
 
+## 2026-10-02 - V8 migration Phase 4: USVString WebIDL attributes
+
+**Servo files:** `components/roves-v8/{build.rs,src/lib.rs,tests/webidl/UsvStrings.webidl}`;
+`components/script_bindings/codegen/{codegen.py,test_v8.py}`.
+**Patch:** `0078-roves-v8-phase4-usvstring.patch` after 0001-0077.
+
+The opt-in WebIDL generator now supports mutable and readonly `USVString` and nullable
+`USVString?` attributes. JavaScript `ToString` is followed by scalar-value conversion, replacing
+unpaired UTF-16 surrogates with U+FFFD; nullable null stays null, while undefined converts to the
+string "undefined". A failed Symbol conversion leaves native state unchanged. A generated fixture
+verifies these semantics. Local tests pass: 9 generator tests; 56 runtime unit, 3 integration, and
+2 doctests in normal and JIT-less pilot modes; 52 unit and 2 doctests without the pilot. This
+remains isolated pilot coverage, not production DOM integration.
+
 ## 2026-10-02 - V8 migration Phase 4: nullable DOMString WebIDL attributes
 
 **Servo files:** `components/roves-v8/{build.rs,src/lib.rs,tests/webidl/NullableDomString.webidl}`;

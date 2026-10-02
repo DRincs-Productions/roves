@@ -37,6 +37,10 @@ pub mod webidl {
     pub mod nullable_domstring {
         include!(concat!(env!("OUT_DIR"), "/NullableDomStringV8Binding.rs"));
     }
+    #[cfg(test)]
+    pub mod usv_strings {
+        include!(concat!(env!("OUT_DIR"), "/UsvStringsV8Binding.rs"));
+    }
 }
 
 use std::sync::Once;
@@ -186,6 +190,10 @@ pub enum PrimitiveConversion {
     Boolean,
     Double,
     UnsignedLong,
+    /// JavaScript ToString followed by USVString scalar-value conversion.
+    UsvString,
+    /// Nullable USVString: JavaScript null maps to IDL null; other values use ToString.
+    NullableUsvString,
 }
 
 /// A callable method, registered via [`Runtime::define_method`]: receives the wrapped Rust value
@@ -873,6 +881,18 @@ impl Runtime {
                                         Value::Number(number.trunc().rem_euclid(4_294_967_296.0))
                                     }
                                 }
+                                PrimitiveConversion::UsvString => {
+                                    let Some(string) = value.to_string(scope) else { return; };
+                                    Value::String(string.to_rust_string_lossy(scope))
+                                }
+                                PrimitiveConversion::NullableUsvString => {
+                                    if value.is_null() {
+                                        Value::Null
+                                    } else {
+                                        let Some(string) = value.to_string(scope) else { return; };
+                                        Value::String(string.to_rust_string_lossy(scope))
+                                    }
+                                }
                             };
                             // Coercion may run user JavaScript; borrow native state only after it completes.
                             setter(unsafe { (&mut *raw).as_mut() }, &converted);
@@ -889,6 +909,8 @@ impl Runtime {
                 PrimitiveConversion::Boolean => primitive_setter_template!(PrimitiveConversion::Boolean),
                 PrimitiveConversion::Double => primitive_setter_template!(PrimitiveConversion::Double),
                 PrimitiveConversion::UnsignedLong => primitive_setter_template!(PrimitiveConversion::UnsignedLong),
+                PrimitiveConversion::UsvString => primitive_setter_template!(PrimitiveConversion::UsvString),
+                PrimitiveConversion::NullableUsvString => primitive_setter_template!(PrimitiveConversion::NullableUsvString),
             })
         } else if let Some(setter) = nullable_domstring_setter {
             let setter_data = v8::External::new(scope, setter as *mut std::ffi::c_void);
@@ -2603,6 +2625,42 @@ mod tests {
         assert_eq!(runtime.eval_value("state.value").unwrap(), Value::String("undefined".into()));
         assert_eq!(runtime.eval("(() => { try { state.value = Symbol(); } catch (e) { return e instanceof TypeError; } })()").unwrap(), "true");
         assert_eq!(runtime.eval_value("state.value").unwrap(), Value::String("undefined".into()));
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_usvstring_replaces_unpaired_surrogates_and_preserves_nullable_values() {
+        use crate::webidl::usv_strings::{UsvStringsBinding, UsvStringsNative};
+        #[derive(Default)]
+        struct State { value: String, nullable: Option<String> }
+        #[allow(non_snake_case)]
+        impl UsvStringsNative for State {
+            fn Value(&self) -> String { self.value.clone() }
+            fn set_Value(&mut self, value: String) { self.value = value; }
+            fn Nullable(&self) -> Option<String> { self.nullable.clone() }
+            fn set_Nullable(&mut self, value: Option<String>) { self.nullable = value; }
+            fn InitialValue(&self) -> Option<String> { None }
+        }
+
+        let mut runtime = Runtime::new();
+        let binding = UsvStringsBinding::<State>::install(&mut runtime).unwrap();
+        let handle = binding.create(&mut runtime, State::default());
+        runtime.set_global_property("state", &handle).unwrap();
+        assert_eq!(runtime.eval_value("state.initialValue").unwrap(), Value::Null);
+
+        runtime.eval("state.value = '\\uD800x'; state.nullable = '\\uDC00y';").unwrap();
+        assert_eq!(runtime.eval_value("state.value").unwrap(), Value::String("\u{FFFD}x".into()));
+        assert_eq!(runtime.eval_value("state.nullable").unwrap(), Value::String("\u{FFFD}y".into()));
+        runtime.eval("state.value = { toString() { return '\\uD800'; } };").unwrap();
+        assert_eq!(runtime.eval_value("state.value").unwrap(), Value::String("\u{FFFD}".into()));
+
+        runtime.eval("state.nullable = null;").unwrap();
+        assert_eq!(runtime.eval_value("state.nullable").unwrap(), Value::Null);
+        assert_eq!(runtime.get_wrapped::<State>(&handle).unwrap().nullable, None);
+        runtime.eval("state.nullable = undefined;").unwrap();
+        assert_eq!(runtime.eval_value("state.nullable").unwrap(), Value::String("undefined".into()));
+        assert_eq!(runtime.eval("(() => { try { state.nullable = Symbol(); } catch (e) { return e instanceof TypeError; } })()").unwrap(), "true");
+        assert_eq!(runtime.eval_value("state.nullable").unwrap(), Value::String("undefined".into()));
     }
 
     #[test]
