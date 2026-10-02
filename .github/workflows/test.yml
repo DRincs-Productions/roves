@@ -344,11 +344,10 @@ jobs:
         working-directory: servo-src
         env:
           DEBIAN_FRONTEND: noninteractive
-        # Backstop beyond the apt-timer fix above: caps how long a genuine hang here (this
-        # exact step, on this exact matrix entry, silently ran for a full hour before being
-        # investigated and cancelled by hand) can consume the job, regardless of the exact
-        # cause. The first apt cache fill can take longer on a cold runner.
-        timeout-minutes: 45
+        # Backstop beyond the apt-timer fix above. Cold Linux runners can spend a long time
+        # downloading Servo's large native dependency set; keep enough room to finish that
+        # first install while still failing a genuine hang well before the job limit.
+        timeout-minutes: 90
         run: |
           # nextest is only needed on the one leg that actually runs `mach test-unit`
           # below (see "run servoshell unit tests") -- skip installing it everywhere
@@ -1239,7 +1238,7 @@ jobs:
         working-directory: servo-src
         env:
           DEBIAN_FRONTEND: noninteractive
-        timeout-minutes: 45
+        timeout-minutes: 90
         run: ./mach bootstrap --force --yes --skip-lints --skip-nextest
 
       - name: mach build (debug, --features steam)

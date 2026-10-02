@@ -7,14 +7,18 @@
 
 The opt-in generator now emits setters for mutable `boolean`, `double`, and `unsigned long`
 attributes alongside `DOMString`. V8 performs truthiness/ToNumber conversion before any mutable
-native borrow; `unsigned long` applies truncation and modulo 2³², and Symbol-to-number throws
-without changing native state. Each conversion uses a dedicated non-capturing V8 callback; its `External` carries only the setter function pointer, so no heap callback state outlives registration.
+native borrow; `unsigned long` applies truncation and modulo 2^32, and Symbol-to-number throws
+without changing native state. Each conversion uses a dedicated non-capturing V8 callback; its
+`External` carries only the setter function pointer, so no heap callback state outlives
+registration.
 
 Local verification: 54 unit + 3 WebIDL integration + 2 doctests pass in normal and JIT-less pilot
-modes; seven Python generator tests pass. `git diff --check` passes. The full Servo smoke workflow
-on 31c2ae6 timed out twice while `mach bootstrap` downloaded hundreds of apt dependencies (the
-second attempt was still fetching Qt/OpenCV); the Steam build/smoke steps were never reached. The
-job now enables setup-uv's cache, gives first-time dependency provisioning 45 minutes, and switches Ubuntu apt to the Azure mirror used by the successful Linux bundle jobs. The failed Steam log used archive.ubuntu.com and reached only package 272; the Linux deb job using azure.archive.ubuntu.com installed nearly 500 packages in about 18 minutes.
+modes; seven Python generator tests pass. Patch overlay validation and the V8 6/6, Android, iOS,
+and six bundle jobs passed on the preceding source commit. On `de49cb9`, Android, iOS, patch
+validation, and the bundle jobs other than Linux deb passed. Linux deb and Steam each spent the
+full 45-minute bootstrap timeout fetching apt dependencies; the Linux portable job completed.
+Changing Steam's source to Azure did not resolve this, so both Linux bootstrap limits are now 90
+minutes for the next run. The migration remains a pilot and is not production-complete.
 
 ## 2026-10-01 - macOS CI linker provisioning for Servo builds
 ## 2026-10-01 - macOS CI linker provisioning for Servo builds

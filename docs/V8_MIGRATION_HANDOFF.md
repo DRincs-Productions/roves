@@ -33,7 +33,7 @@ da questo blocco, fa fede lo stato attuale. L'utente ha richiesto autonomia cont
 testare localmente, avviare CI, correggere i fallimenti e proseguire fino al completamento dei
 criteri in `V8_MIGRATION.md`.
 
-Il checkpoint 12 aggiunge setter WebIDL mutabili `boolean`, `double` e `unsigned long`, con conversione prima del borrow mutabile e modulo 2^32. Passano 54 unit test, tre integrazioni WebIDL e due doctest sia normali sia JIT-less, oltre a sette test Python. Patch 0076: la CI di overlay e la matrice multipiattaforma sono in attesa.
+Il checkpoint 12 aggiunge setter WebIDL mutabili `boolean`, `double` e `unsigned long`, con conversione prima del borrow mutabile e modulo 2^32. Passano 54 unit test, tre integrazioni WebIDL e due doctest sia normali sia JIT-less, oltre a sette test Python. Patch overlay e matrice V8 6/6, Android, iOS e bundle multipiattaforma erano verdi sul commit precedente. Sul commit `de49cb9`, patch validation, Android, iOS e i bundle salvo Linux deb sono passati; Linux portable ha completato il bootstrap, mentre Linux deb e Steam hanno raggiunto il timeout di 45 minuti scaricando dipendenze apt. Il mirror Azure non ha risolto il problema. Il timeout di bootstrap è stato portato a 90 minuti per questi job; la CI del nuovo commit deve ancora essere eseguita e completata.
 
 Il checkpoint 7 avvia l'integrazione vera con `components/script_bindings`: un backend opt-in
 usa il parser WebIDL esistente e genera `ValidityState` dalla definizione Servo reale, senza
