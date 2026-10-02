@@ -8248,14 +8248,28 @@ class CGV8BindingRoot(CGThing):
                         raise TypeError(f"V8 backend only supports required boolean operation arguments: {name}.{member.identifier.name}")
                     argument_types.append("bool")
                 return_type = signatures[0][0]
-                if return_type.isUndefined():
+                nullable_return = return_type.nullable()
+                result_type = return_type.inner if nullable_return else return_type
+                if result_type.isUndefined() and not nullable_return:
                     rust_type, value_expr = "()", "Value::Undefined"
-                elif return_type.isBoolean():
+                elif result_type.isBoolean() and not nullable_return:
                     rust_type, value_expr = "bool", "Value::Bool(native.{native}())"
-                elif return_type.isFloat() and return_type.name == "Double":
+                elif result_type.isFloat() and result_type.name == "Double" and not nullable_return:
                     rust_type, value_expr = "f64", "Value::Number(native.{native}())"
-                elif return_type.isInteger() and return_type.name == "UnsignedLong":
+                elif result_type.isInteger() and result_type.name == "UnsignedLong" and not nullable_return:
                     rust_type, value_expr = "u32", "Value::Number(native.{native}() as f64)"
+                elif result_type.isDOMString():
+                    rust_type = "Option<Vec<u16>>" if nullable_return else "Vec<u16>"
+                    value_expr = (
+                        "native.{native}().map(Value::Utf16String).unwrap_or(Value::Null)"
+                        if nullable_return else "Value::Utf16String(native.{native}())"
+                    )
+                elif result_type.isUSVString():
+                    rust_type = "Option<String>" if nullable_return else "String"
+                    value_expr = (
+                        "native.{native}().map(Value::String).unwrap_or(Value::Null)"
+                        if nullable_return else "Value::String(native.{native}())"
+                    )
                 else:
                     raise TypeError(f"V8 backend unsupported operation return type: {name}.{member.identifier.name}: {return_type}")
                 operations.append((member.identifier.name, MakeNativeName(member.identifier.name), rust_type, value_expr, argument_types))

@@ -11,4 +11,8 @@ interface MutablePrimitives {
   double currentRatio();
   unsigned long currentCount();
   boolean accepts(boolean value);
+  DOMString currentLabel();
+  DOMString? optionalLabel();
+  USVString currentUsvLabel();
+  USVString? optionalUsvLabel();
 };

@@ -1,3 +1,15 @@
+## 2026-10-02 - V8 migration Phase 4: string-returning WebIDL operations
+
+**Servo files:** `components/roves-v8/{src/lib.rs,tests/webidl/MutablePrimitives.webidl}`;
+`components/script_bindings/codegen/{codegen.py,test_v8.py}`.
+**Patch:** `0082-roves-v8-phase4-string-operation-returns.patch` after 0001-0081.
+
+The opt-in generator maps operation returns `DOMString`, `DOMString?`, `USVString`, and
+`USVString?` to engine-neutral Rust values. DOMString uses UTF-16 code units and preserves lone
+surrogates; USVString uses Rust `String`; nullable returns preserve IDL null. Runtime and
+ generator tests pass in normal, JIT-less, default, and integrated binding-crate checks. Production
+bindings remain SpiderMonkey.
+
 ## 2026-10-02 - V8 migration Phase 4: boolean WebIDL operation arguments
 
 **Servo files:** `components/roves-v8/{src/lib.rs,tests/webidl/MutablePrimitives.webidl}`;

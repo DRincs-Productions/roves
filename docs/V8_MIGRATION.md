@@ -571,6 +571,15 @@ boundary without borrowing Servo's SpiderMonkey-rooted `DOMString` implementatio
 tests pass in default, normal V8 pilot and JIT-less V8 pilot modes; six Python generator tests pass.
 Cross-platform CI is pending.
 
+**Eighteenth checkpoint (2026-10-02): string-returning WebIDL operations.** Supported
+zero-argument operations can now return `DOMString`, `DOMString?`, `USVString`, and
+`USVString?`. DOMString uses UTF-16 code units, preserving lone surrogates through the V8 value
+boundary; USVString uses scalar-valid Rust strings; nullable values preserve IDL null. Generated
+runtime fixtures cover each return shape. Local verification passes 14 generator tests, 56 unit +
+3 integration + 2 doctests in pilot normal and JIT-less configurations, 52 unit + 2 doctests
+without the pilot, and the integrated `servo-script-bindings` check. Patch 0082 and cross-platform
+CI are pending. This remains pilot coverage; production still uses SpiderMonkey.
+
 **Seventeenth checkpoint (2026-10-02): boolean WebIDL operation arguments.** The pilot generator
 now supports required boolean parameters on otherwise supported single-signature instance
 operations. JavaScript truthiness maps to IDL boolean; omitted arguments become `undefined` and

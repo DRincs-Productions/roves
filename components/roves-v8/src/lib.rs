@@ -2622,6 +2622,10 @@ mod tests {
             fn CurrentRatio(&self) -> f64 { self.ratio }
             fn CurrentCount(&self) -> u32 { self.count }
             fn Accepts(&self, value: bool) -> bool { value }
+            fn CurrentLabel(&self) -> Vec<u16> { vec![0xD800, 0x0041] }
+            fn OptionalLabel(&self) -> Option<Vec<u16>> { None }
+            fn CurrentUsvLabel(&self) -> String { "v8 ?".to_owned() }
+            fn OptionalUsvLabel(&self) -> Option<String> { Some("game".to_owned()) }
         }
         let mut runtime = Runtime::new();
         let binding = MutablePrimitivesBinding::<State>::install(&mut runtime).unwrap();
@@ -2669,6 +2673,11 @@ mod tests {
         assert_eq!(runtime.eval_value("state.accepts(0)").unwrap(), Value::Bool(false));
         assert_eq!(runtime.eval_value("state.accepts()").unwrap(), Value::Bool(false));
         assert_eq!(runtime.eval_value("state.accepts(true, false)").unwrap(), Value::Bool(true));
+        assert_eq!(runtime.eval_value("state.currentLabel().charCodeAt(0)").unwrap(), Value::Number(0xD800 as f64));
+        assert_eq!(runtime.eval_value("state.currentLabel().charCodeAt(1)").unwrap(), Value::Number(65.0));
+        assert_eq!(runtime.eval_value("state.optionalLabel()").unwrap(), Value::Null);
+        assert_eq!(runtime.eval_value("state.currentUsvLabel()").unwrap(), Value::String("v8 ?".to_owned()));
+        assert_eq!(runtime.eval_value("state.optionalUsvLabel()").unwrap(), Value::String("game".to_owned()));
     }
 
     #[cfg(feature = "webidl-pilot")]

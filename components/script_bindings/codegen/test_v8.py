@@ -123,6 +123,24 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn("Value::Number(native.Ratio())", source)
             self.assertIn("Value::Number(native.Count() as f64)", source)
 
+    def test_string_operation_returns_preserve_domstring_and_usvstring_types(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            webidl = root / "Operations.webidl"
+            webidl.write_text(
+                "[Exposed=Window] interface Operations { DOMString label(); DOMString? optionalLabel(); USVString usvLabel(); USVString? optionalUsvLabel(); };",
+                encoding="utf-8",
+            )
+            source = generate(webidl, root / "out")
+            self.assertIn("fn Label(&self) -> Vec<u16>;", source)
+            self.assertIn("fn OptionalLabel(&self) -> Option<Vec<u16>>;", source)
+            self.assertIn("fn UsvLabel(&self) -> String;", source)
+            self.assertIn("fn OptionalUsvLabel(&self) -> Option<String>;", source)
+            self.assertIn("Value::Utf16String(native.Label())", source)
+            self.assertIn("map(Value::Utf16String).unwrap_or(Value::Null)", source)
+            self.assertIn("Value::String(native.UsvLabel())", source)
+            self.assertIn("map(Value::String).unwrap_or(Value::Null)", source)
+
     def test_operations_accept_required_boolean_arguments(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
