@@ -1344,7 +1344,21 @@ jobs:
           set +e
           xvfb-run -a --server-args="-screen 0 1280x720x24" "$BIN" > smoke-stdout.log 2> smoke-stderr.log &
           PID=$!
-          sleep 15
+          # xvfb-run itself can take most of 15s to create a display on a loaded runner,
+          # leaving the app almost no time to load the page. Poll for the page-side result
+          # instead, with a bounded 60-second allowance for display and bundle startup.
+          RESULT_LINE=""
+          LOG=""
+          FILES=(smoke-stdout.log)
+          for _ in $(seq 1 60); do
+            LOG=$(find "$HOME/.cache" -iname roves.log 2>/dev/null -exec ls -t {} + 2>/dev/null | head -1)
+            FILES=(smoke-stdout.log)
+            if [ -n "$LOG" ]; then FILES+=("$LOG"); fi
+            RESULT_LINE=$(grep -h '\[roves-steam-autotest\]' "${FILES[@]}" 2>/dev/null | tail -1)
+            [ -n "$RESULT_LINE" ] && break
+            kill -0 "$PID" 2>/dev/null || break
+            sleep 1
+          done
           if kill -0 "$PID" 2>/dev/null; then
             kill "$PID"
             wait "$PID" 2>/dev/null
@@ -1355,11 +1369,8 @@ jobs:
           echo "--- stdout ---"; cat smoke-stdout.log
           echo "--- stderr ---"; cat smoke-stderr.log
 
-          LOG=$(find "$HOME/.cache" -iname roves.log 2>/dev/null -exec ls -t {} + 2>/dev/null | head -1)
-          FILES=(smoke-stdout.log)
           if [ -n "$LOG" ]; then
             echo "--- roves.log ($LOG) ---"; cat "$LOG"
-            FILES+=("$LOG")
           fi
 
           gh_notice() {
@@ -1368,7 +1379,6 @@ jobs:
             echo "::notice::${msg}"
           }
 
-          RESULT_LINE=$(grep -h '\[roves-steam-autotest\]' "${FILES[@]}" 2>/dev/null | tail -1)
           if [ -z "$RESULT_LINE" ]; then
             gh_notice "stdout: $(cat smoke-stdout.log)"
             gh_notice "stderr: $(cat smoke-stderr.log)"

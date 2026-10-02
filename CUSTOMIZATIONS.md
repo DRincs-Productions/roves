@@ -1,4 +1,14 @@
 # Customizations over upstream Servo
+## 2026-10-02 - CI: wait for the Steam smoke-test result
+
+**File:** `.github/workflows/test.yml` (repository CI only; no upstream source overlay patch).
+
+The Steam emulator smoke test now polls for the page's `[roves-steam-autotest]` marker for up to
+60 seconds while the bundle remains alive. A fixed 15-second delay could be almost entirely
+consumed by `xvfb-run` startup on a loaded runner, terminating Roves just after its event loop
+started and before the WebView loaded the local game page. The page result still fails the smoke
+test if the bounded wait expires or the Steam round trip reports incorrect values.
+
 ## 2026-10-02 - V8 migration Phase 4: nullable DOMString WebIDL attributes
 
 **Servo files:** `components/roves-v8/{build.rs,src/lib.rs,tests/webidl/NullableDomString.webidl}`;

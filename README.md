@@ -359,6 +359,8 @@ success was once mistaken for "the bundle works," which cost real debugging time
 [CUSTOMIZATIONS.md]'s launch.json entries) before this check existed. If you're building your
 own release pipeline around `mach bundle` (or `roves-action`, see below), pick whichever
 mode(s) you actually want to ship, the same way that workflow's per-mode `BUNDLE_ARGS` do.
+The Steam emulator job also waits up to 60 seconds for the page's end-to-end result marker,
+so Xvfb startup time does not consume the page-load window.
 
 ### Diagnosing a launch that appears to do nothing
 
