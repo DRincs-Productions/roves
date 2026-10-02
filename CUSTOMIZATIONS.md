@@ -8,7 +8,7 @@ The opt-in WebIDL generator maps `byte`, `octet`, `short`, `unsigned short`, `lo
 `unsigned long long`, and `float` operation results to their corresponding Rust numeric types and
 JavaScript Numbers. Nullable integer and float results use `Option<T>` and map `None` to `null`.
 Generator and runtime fixtures cover signedness, widths, float values, and nullable results. This
-extends only return-value conversion; production bindings remain SpiderMonkey.
+extends only return-value conversion; production bindings remain SpiderMonkey. CI is green: V8 matrix 6/6 (37061193384), six Servo bundles plus Steam and patch validation (37061193356), Android (37061193392), and iOS (37061193362).
 
 ## 2026-10-02 - V8 migration Phase 4: nullable primitive WebIDL operation returns
 

@@ -576,7 +576,7 @@ now return `byte`, `octet`, `short`, `unsigned short`, `long`, `long long`, `uns
 and `float`, in both nullable and non-nullable form. The generated native contract uses the
 matching Rust integer width or `f32`, and all results become JavaScript Numbers; nullable `None`
 becomes `null`. Generator and runtime fixtures cover signedness, width, float and nullable values.
-The normal local pilot suite and 16 generator tests pass. This remains pilot coverage; production
+The local normal/JIT-less pilot and default suites pass (56 unit + 3 integration + 2 doctests per pilot mode; 52 unit + 2 doctests default), as do 16 generator tests and the integrated binding-crate check. Patch 0084 applies cleanly. CI is green: V8 6/6 (37061193384), all six Servo bundles plus Steam and patch validation (37061193356), Android (37061193392), and iOS (37061193362). This remains pilot coverage; production
 still uses SpiderMonkey.
 
 **Nineteenth checkpoint (2026-10-02): nullable primitive WebIDL operation returns.** Supported
