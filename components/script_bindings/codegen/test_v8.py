@@ -100,9 +100,26 @@ class V8GeneratorTests(unittest.TestCase):
                 generate(path, Path(directory) / "output")
 
     def test_unsupported_members_never_silently_disappear(self):
-        for member in ["readonly attribute float value;", "readonly attribute unsigned long long value;", "readonly attribute boolean? value;", "undefined run();", "static readonly attribute boolean valid;", "[GetterThrows] readonly attribute boolean valid;", "attribute byte value;"]:
+        for member in ["readonly attribute float value;", "readonly attribute unsigned long long value;", "undefined run();", "static readonly attribute boolean valid;", "[GetterThrows] readonly attribute boolean valid;", "attribute byte value;"]:
             with self.subTest(member=member):
                 self.assert_unsupported("interface Unsupported { " + member + " };")
+
+    def test_nullable_primitive_attributes_use_optional_native_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            webidl = root / "NullablePrimitives.webidl"
+            webidl.write_text(
+                "[Exposed=Window] interface NullablePrimitives { attribute boolean? enabled; attribute double? ratio; attribute unsigned long? count; };",
+                encoding="utf-8",
+            )
+            source = generate(webidl, root / "out")
+            self.assertIn("fn Enabled(&self) -> Option<bool>;", source)
+            self.assertIn("fn Ratio(&self) -> Option<f64>;", source)
+            self.assertIn("fn Count(&self) -> Option<u32>;", source)
+            self.assertIn("PrimitiveConversion::NullableBoolean", source)
+            self.assertIn("PrimitiveConversion::NullableDouble", source)
+            self.assertIn("PrimitiveConversion::NullableUnsignedLong", source)
+            self.assertIn("Value::Null => None", source)
 
     def test_unsupported_interface_shapes_fail(self):
         self.assert_unsupported("interface Unsupported { constructor(); };")

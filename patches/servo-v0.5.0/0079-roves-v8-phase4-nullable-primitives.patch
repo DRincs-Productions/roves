@@ -1,0 +1,250 @@
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 79b92ab0b48..721c596626b 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -190,6 +190,9 @@ pub enum PrimitiveConversion {
+     Boolean,
+     Double,
+     UnsignedLong,
++    NullableBoolean,
++    NullableDouble,
++    NullableUnsignedLong,
+     /// JavaScript ToString followed by USVString scalar-value conversion.
+     UsvString,
+     /// Nullable USVString: JavaScript null maps to IDL null; other values use ToString.
+@@ -881,6 +884,29 @@ impl Runtime {
+                                         Value::Number(number.trunc().rem_euclid(4_294_967_296.0))
+                                     }
+                                 }
++                                PrimitiveConversion::NullableBoolean => {
++                                    if value.is_null() { Value::Null } else { Value::Bool(value.boolean_value(scope)) }
++                                }
++                                PrimitiveConversion::NullableDouble => {
++                                    if value.is_null() {
++                                        Value::Null
++                                    } else {
++                                        let Some(number) = value.number_value(scope) else { return; };
++                                        Value::Number(number)
++                                    }
++                                }
++                                PrimitiveConversion::NullableUnsignedLong => {
++                                    if value.is_null() {
++                                        Value::Null
++                                    } else {
++                                        let Some(number) = value.number_value(scope) else { return; };
++                                        if !number.is_finite() || number == 0.0 {
++                                            Value::Number(0.0)
++                                        } else {
++                                            Value::Number(number.trunc().rem_euclid(4_294_967_296.0))
++                                        }
++                                    }
++                                }
+                                 PrimitiveConversion::UsvString => {
+                                     let Some(string) = value.to_string(scope) else { return; };
+                                     Value::String(string.to_rust_string_lossy(scope))
+@@ -909,6 +935,9 @@ impl Runtime {
+                 PrimitiveConversion::Boolean => primitive_setter_template!(PrimitiveConversion::Boolean),
+                 PrimitiveConversion::Double => primitive_setter_template!(PrimitiveConversion::Double),
+                 PrimitiveConversion::UnsignedLong => primitive_setter_template!(PrimitiveConversion::UnsignedLong),
++                PrimitiveConversion::NullableBoolean => primitive_setter_template!(PrimitiveConversion::NullableBoolean),
++                PrimitiveConversion::NullableDouble => primitive_setter_template!(PrimitiveConversion::NullableDouble),
++                PrimitiveConversion::NullableUnsignedLong => primitive_setter_template!(PrimitiveConversion::NullableUnsignedLong),
+                 PrimitiveConversion::UsvString => primitive_setter_template!(PrimitiveConversion::UsvString),
+                 PrimitiveConversion::NullableUsvString => primitive_setter_template!(PrimitiveConversion::NullableUsvString),
+             })
+@@ -2566,7 +2595,14 @@ mod tests {
+     fn generated_mutable_primitive_attributes_follow_webidl_conversion() {
+         use crate::webidl::mutable_primitives::{MutablePrimitivesBinding, MutablePrimitivesNative};
+         #[derive(Default)]
+-        struct State { enabled: bool, ratio: f64, count: u32 }
++        struct State {
++            enabled: bool,
++            ratio: f64,
++            count: u32,
++            optional_enabled: Option<bool>,
++            optional_ratio: Option<f64>,
++            optional_count: Option<u32>,
++        }
+         #[allow(non_snake_case)]
+         impl MutablePrimitivesNative for State {
+             fn Enabled(&self) -> bool { self.enabled }
+@@ -2575,6 +2611,12 @@ mod tests {
+             fn set_Ratio(&mut self, value: f64) { self.ratio = value; }
+             fn Count(&self) -> u32 { self.count }
+             fn set_Count(&mut self, value: u32) { self.count = value; }
++            fn OptionalEnabled(&self) -> Option<bool> { self.optional_enabled }
++            fn set_OptionalEnabled(&mut self, value: Option<bool>) { self.optional_enabled = value; }
++            fn OptionalRatio(&self) -> Option<f64> { self.optional_ratio }
++            fn set_OptionalRatio(&mut self, value: Option<f64>) { self.optional_ratio = value; }
++            fn OptionalCount(&self) -> Option<u32> { self.optional_count }
++            fn set_OptionalCount(&mut self, value: Option<u32>) { self.optional_count = value; }
+         }
+         let mut runtime = Runtime::new();
+         let binding = MutablePrimitivesBinding::<State>::install(&mut runtime).unwrap();
+@@ -2591,6 +2633,28 @@ mod tests {
+         assert!(native.ratio.is_nan());
+         assert_eq!(native.count, 1);
+         assert!(runtime.eval("state.count = Symbol() ").is_err());
++
++        assert_eq!(runtime.eval_value("state.optionalEnabled").unwrap(), Value::Null);
++        assert_eq!(runtime.eval_value("state.optionalRatio").unwrap(), Value::Null);
++        assert_eq!(runtime.eval_value("state.optionalCount").unwrap(), Value::Null);
++        runtime.eval("state.optionalEnabled = null; state.optionalRatio = null; state.optionalCount = null;").unwrap();
++        assert_eq!(runtime.get_wrapped::<State>(&handle).unwrap().optional_enabled, None);
++        assert_eq!(runtime.get_wrapped::<State>(&handle).unwrap().optional_ratio, None);
++        assert_eq!(runtime.get_wrapped::<State>(&handle).unwrap().optional_count, None);
++
++        runtime.eval("state.optionalEnabled = 'false'; state.optionalRatio = '3.25'; state.optionalCount = -2;").unwrap();
++        let native = runtime.get_wrapped::<State>(&handle).unwrap();
++        assert_eq!(native.optional_enabled, Some(true));
++        assert_eq!(native.optional_ratio, Some(3.25));
++        assert_eq!(native.optional_count, Some(u32::MAX - 1));
++
++        runtime.eval("state.optionalRatio = Symbol();").unwrap_err();
++        assert_eq!(runtime.get_wrapped::<State>(&handle).unwrap().optional_ratio, Some(3.25));
++        runtime.eval("state.optionalEnabled = undefined; state.optionalRatio = undefined; state.optionalCount = undefined;").unwrap();
++        let native = runtime.get_wrapped::<State>(&handle).unwrap();
++        assert_eq!(native.optional_enabled, Some(false));
++        assert!(native.optional_ratio.unwrap().is_nan());
++        assert_eq!(native.optional_count, Some(0));
+     }
+ 
+     #[cfg(feature = "webidl-pilot")]
+diff --git a/components/roves-v8/tests/webidl/MutablePrimitives.webidl b/components/roves-v8/tests/webidl/MutablePrimitives.webidl
+index 437776ca00c..cef0f6e7624 100644
+--- a/components/roves-v8/tests/webidl/MutablePrimitives.webidl
++++ b/components/roves-v8/tests/webidl/MutablePrimitives.webidl
+@@ -3,4 +3,7 @@ interface MutablePrimitives {
+   attribute boolean enabled;
+   attribute double ratio;
+   attribute unsigned long count;
++  attribute boolean? optionalEnabled;
++  attribute double? optionalRatio;
++  attribute unsigned long? optionalCount;
+ };
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index 1e63747d012..e26d1eca218 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8236,24 +8236,34 @@ class CGV8BindingRoot(CGThing):
+             raise TypeError(f"V8 pilot only supports interfaces exposed to Window: {name}")
+         attributes = []
+         for member in interface.members:
+-            if (not member.isAttr() or member.isStatic()
+-                    or (member.type.nullable()
+-                        and not (member.type.isDOMString() or member.type.isUSVString()))
+-                    or member._extendedAttrDict):
++            if (not member.isAttr() or member.isStatic() or member._extendedAttrDict):
+                 raise TypeError(f"V8 backend unsupported member: {name}.{member.identifier.name}")
+-            if member.type.isBoolean():
+-                rust_type, value_expr = "bool", "Value::Bool(native.{native}())"
+-            elif member.type.isFloat() and member.type.name == "Double":
+-                rust_type, value_expr = "f64", "Value::Number(native.{native}())"
+-            elif member.type.isInteger() and member.type.name == "UnsignedLong":
+-                rust_type, value_expr = "u32", "Value::Number(native.{native}() as f64)"
+-            elif member.type.isUSVString():
++            idl_type = member.type.inner if member.type.nullable() else member.type
++            if idl_type.isBoolean():
++                if member.type.nullable():
++                    rust_type = "Option<bool>"
++                    value_expr = "native.{native}().map(Value::Bool).unwrap_or(Value::Null)"
++                else:
++                    rust_type, value_expr = "bool", "Value::Bool(native.{native}())"
++            elif idl_type.isFloat() and idl_type.name == "Double":
++                if member.type.nullable():
++                    rust_type = "Option<f64>"
++                    value_expr = "native.{native}().map(Value::Number).unwrap_or(Value::Null)"
++                else:
++                    rust_type, value_expr = "f64", "Value::Number(native.{native}())"
++            elif idl_type.isInteger() and idl_type.name == "UnsignedLong":
++                if member.type.nullable():
++                    rust_type = "Option<u32>"
++                    value_expr = "native.{native}().map(|value| Value::Number(value as f64)).unwrap_or(Value::Null)"
++                else:
++                    rust_type, value_expr = "u32", "Value::Number(native.{native}() as f64)"
++            elif idl_type.isUSVString():
+                 if member.type.nullable():
+                     rust_type = "Option<String>"
+                     value_expr = "native.{native}().map(Value::String).unwrap_or(Value::Null)"
+                 else:
+                     rust_type, value_expr = "String", "Value::String(native.{native}())"
+-            elif member.type.isDOMString():
++            elif idl_type.isDOMString():
+                 if member.type.nullable():
+                     rust_type = "Option<Vec<u16>>"
+                     value_expr = "native.{native}().map(Value::Utf16String).unwrap_or(Value::Null)"
+@@ -8263,15 +8273,15 @@ class CGV8BindingRoot(CGThing):
+                 raise TypeError(f"V8 backend unsupported attribute type: {name}.{member.identifier.name}: {member.type}")
+             setter = not member.readonly
+             conversion = None
+-            if member.type.isBoolean():
+-                conversion = "Boolean"
+-            elif member.type.isFloat() and member.type.name == "Double":
+-                conversion = "Double"
+-            elif member.type.isInteger() and member.type.name == "UnsignedLong":
+-                conversion = "UnsignedLong"
+-            elif member.type.isUSVString():
++            if idl_type.isBoolean():
++                conversion = "NullableBoolean" if member.type.nullable() else "Boolean"
++            elif idl_type.isFloat() and idl_type.name == "Double":
++                conversion = "NullableDouble" if member.type.nullable() else "Double"
++            elif idl_type.isInteger() and idl_type.name == "UnsignedLong":
++                conversion = "NullableUnsignedLong" if member.type.nullable() else "UnsignedLong"
++            elif idl_type.isUSVString():
+                 conversion = "NullableUsvString" if member.type.nullable() else "UsvString"
+-            if setter and not member.type.isDOMString() and conversion is None:
++            if setter and not idl_type.isDOMString() and conversion is None:
+                 raise TypeError(f"V8 backend does not support mutable attribute type: {name}.{member.identifier.name}")
+             attributes.append((member.identifier.name, MakeNativeName(member.identifier.name), rust_type, value_expr, setter, conversion))
+         trait_methods = "\n".join(f"    fn {native}(&self) -> {rust_type};"
+@@ -8314,6 +8324,17 @@ class CGV8BindingRoot(CGThing):
+                                 '            };\n'
+                                 f'            native.{setter_native}(value);'
+                             )
++                    elif conversion in {"NullableBoolean", "NullableDouble", "NullableUnsignedLong"}:
++                        value_variant = "Bool" if conversion == "NullableBoolean" else "Number"
++                        primitive_type = {"NullableBoolean": "bool", "NullableDouble": "f64", "NullableUnsignedLong": "u32"}[conversion]
++                        converted = (
++                            f'let value = match value {{\n'
++                            f'                Value::Null => None,\n'
++                            f'                Value::{value_variant}(value) => Some(*value as {primitive_type}),\n'
++                            f'                _ => unreachable!("typed WebIDL conversion"),\n'
++                            f'            }};\n'
++                            f'            native.{setter_native}(value);'
++                        )
+                     else:
+                         value_variant = "Bool" if conversion == "Boolean" else "Number"
+                         converted = (
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index 6c4a7b79356..62d324fabd3 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -100,10 +100,27 @@ class V8GeneratorTests(unittest.TestCase):
+                 generate(path, Path(directory) / "output")
+ 
+     def test_unsupported_members_never_silently_disappear(self):
+-        for member in ["readonly attribute float value;", "readonly attribute unsigned long long value;", "readonly attribute boolean? value;", "undefined run();", "static readonly attribute boolean valid;", "[GetterThrows] readonly attribute boolean valid;", "attribute byte value;"]:
++        for member in ["readonly attribute float value;", "readonly attribute unsigned long long value;", "undefined run();", "static readonly attribute boolean valid;", "[GetterThrows] readonly attribute boolean valid;", "attribute byte value;"]:
+             with self.subTest(member=member):
+                 self.assert_unsupported("interface Unsupported { " + member + " };")
+ 
++    def test_nullable_primitive_attributes_use_optional_native_values(self):
++        with tempfile.TemporaryDirectory() as directory:
++            root = Path(directory)
++            webidl = root / "NullablePrimitives.webidl"
++            webidl.write_text(
++                "[Exposed=Window] interface NullablePrimitives { attribute boolean? enabled; attribute double? ratio; attribute unsigned long? count; };",
++                encoding="utf-8",
++            )
++            source = generate(webidl, root / "out")
++            self.assertIn("fn Enabled(&self) -> Option<bool>;", source)
++            self.assertIn("fn Ratio(&self) -> Option<f64>;", source)
++            self.assertIn("fn Count(&self) -> Option<u32>;", source)
++            self.assertIn("PrimitiveConversion::NullableBoolean", source)
++            self.assertIn("PrimitiveConversion::NullableDouble", source)
++            self.assertIn("PrimitiveConversion::NullableUnsignedLong", source)
++            self.assertIn("Value::Null => None", source)
++
+     def test_unsupported_interface_shapes_fail(self):
+         self.assert_unsupported("interface Unsupported { constructor(); };")
+         self.assert_unsupported("namespace Unsupported { undefined run(); };")

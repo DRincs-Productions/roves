@@ -9,6 +9,19 @@ consumed by `xvfb-run` startup on a loaded runner, terminating Roves just after 
 started and before the WebView loaded the local game page. The page result still fails the smoke
 test if the bounded wait expires or the Steam round trip reports incorrect values.
 
+## 2026-10-02 - V8 migration Phase 4: nullable primitive WebIDL attributes
+
+**Servo files:** `components/roves-v8/{src/lib.rs,tests/webidl/MutablePrimitives.webidl}`;
+`components/script_bindings/codegen/{codegen.py,test_v8.py}`.
+**Patch:** `0079-roves-v8-phase4-nullable-primitives.patch` after 0001-0078.
+
+The opt-in generator accepts nullable `boolean?`, `double?`, and `unsigned long?` attributes and
+uses `Option<T>` in the generated native contract. Setters map JavaScript null to IDL null and
+apply the usual WebIDL boolean/numeric conversion otherwise, including unsigned-long truncation
+and modulo 2^32. Coercion finishes before mutable native state is borrowed, so a Symbol conversion
+exception leaves the existing value unchanged. Local generator, runtime, jitless, default, and
+integrated binding-crate checks pass. This is still pilot coverage, not production DOM binding.
+
 ## 2026-10-02 - V8 migration Phase 4: USVString WebIDL attributes
 
 **Servo files:** `components/roves-v8/{build.rs,src/lib.rs,tests/webidl/UsvStrings.webidl}`;

@@ -190,6 +190,9 @@ pub enum PrimitiveConversion {
     Boolean,
     Double,
     UnsignedLong,
+    NullableBoolean,
+    NullableDouble,
+    NullableUnsignedLong,
     /// JavaScript ToString followed by USVString scalar-value conversion.
     UsvString,
     /// Nullable USVString: JavaScript null maps to IDL null; other values use ToString.
@@ -881,6 +884,29 @@ impl Runtime {
                                         Value::Number(number.trunc().rem_euclid(4_294_967_296.0))
                                     }
                                 }
+                                PrimitiveConversion::NullableBoolean => {
+                                    if value.is_null() { Value::Null } else { Value::Bool(value.boolean_value(scope)) }
+                                }
+                                PrimitiveConversion::NullableDouble => {
+                                    if value.is_null() {
+                                        Value::Null
+                                    } else {
+                                        let Some(number) = value.number_value(scope) else { return; };
+                                        Value::Number(number)
+                                    }
+                                }
+                                PrimitiveConversion::NullableUnsignedLong => {
+                                    if value.is_null() {
+                                        Value::Null
+                                    } else {
+                                        let Some(number) = value.number_value(scope) else { return; };
+                                        if !number.is_finite() || number == 0.0 {
+                                            Value::Number(0.0)
+                                        } else {
+                                            Value::Number(number.trunc().rem_euclid(4_294_967_296.0))
+                                        }
+                                    }
+                                }
                                 PrimitiveConversion::UsvString => {
                                     let Some(string) = value.to_string(scope) else { return; };
                                     Value::String(string.to_rust_string_lossy(scope))
@@ -909,6 +935,9 @@ impl Runtime {
                 PrimitiveConversion::Boolean => primitive_setter_template!(PrimitiveConversion::Boolean),
                 PrimitiveConversion::Double => primitive_setter_template!(PrimitiveConversion::Double),
                 PrimitiveConversion::UnsignedLong => primitive_setter_template!(PrimitiveConversion::UnsignedLong),
+                PrimitiveConversion::NullableBoolean => primitive_setter_template!(PrimitiveConversion::NullableBoolean),
+                PrimitiveConversion::NullableDouble => primitive_setter_template!(PrimitiveConversion::NullableDouble),
+                PrimitiveConversion::NullableUnsignedLong => primitive_setter_template!(PrimitiveConversion::NullableUnsignedLong),
                 PrimitiveConversion::UsvString => primitive_setter_template!(PrimitiveConversion::UsvString),
                 PrimitiveConversion::NullableUsvString => primitive_setter_template!(PrimitiveConversion::NullableUsvString),
             })
@@ -2566,7 +2595,14 @@ mod tests {
     fn generated_mutable_primitive_attributes_follow_webidl_conversion() {
         use crate::webidl::mutable_primitives::{MutablePrimitivesBinding, MutablePrimitivesNative};
         #[derive(Default)]
-        struct State { enabled: bool, ratio: f64, count: u32 }
+        struct State {
+            enabled: bool,
+            ratio: f64,
+            count: u32,
+            optional_enabled: Option<bool>,
+            optional_ratio: Option<f64>,
+            optional_count: Option<u32>,
+        }
         #[allow(non_snake_case)]
         impl MutablePrimitivesNative for State {
             fn Enabled(&self) -> bool { self.enabled }
@@ -2575,6 +2611,12 @@ mod tests {
             fn set_Ratio(&mut self, value: f64) { self.ratio = value; }
             fn Count(&self) -> u32 { self.count }
             fn set_Count(&mut self, value: u32) { self.count = value; }
+            fn OptionalEnabled(&self) -> Option<bool> { self.optional_enabled }
+            fn set_OptionalEnabled(&mut self, value: Option<bool>) { self.optional_enabled = value; }
+            fn OptionalRatio(&self) -> Option<f64> { self.optional_ratio }
+            fn set_OptionalRatio(&mut self, value: Option<f64>) { self.optional_ratio = value; }
+            fn OptionalCount(&self) -> Option<u32> { self.optional_count }
+            fn set_OptionalCount(&mut self, value: Option<u32>) { self.optional_count = value; }
         }
         let mut runtime = Runtime::new();
         let binding = MutablePrimitivesBinding::<State>::install(&mut runtime).unwrap();
@@ -2591,6 +2633,28 @@ mod tests {
         assert!(native.ratio.is_nan());
         assert_eq!(native.count, 1);
         assert!(runtime.eval("state.count = Symbol() ").is_err());
+
+        assert_eq!(runtime.eval_value("state.optionalEnabled").unwrap(), Value::Null);
+        assert_eq!(runtime.eval_value("state.optionalRatio").unwrap(), Value::Null);
+        assert_eq!(runtime.eval_value("state.optionalCount").unwrap(), Value::Null);
+        runtime.eval("state.optionalEnabled = null; state.optionalRatio = null; state.optionalCount = null;").unwrap();
+        assert_eq!(runtime.get_wrapped::<State>(&handle).unwrap().optional_enabled, None);
+        assert_eq!(runtime.get_wrapped::<State>(&handle).unwrap().optional_ratio, None);
+        assert_eq!(runtime.get_wrapped::<State>(&handle).unwrap().optional_count, None);
+
+        runtime.eval("state.optionalEnabled = 'false'; state.optionalRatio = '3.25'; state.optionalCount = -2;").unwrap();
+        let native = runtime.get_wrapped::<State>(&handle).unwrap();
+        assert_eq!(native.optional_enabled, Some(true));
+        assert_eq!(native.optional_ratio, Some(3.25));
+        assert_eq!(native.optional_count, Some(u32::MAX - 1));
+
+        runtime.eval("state.optionalRatio = Symbol();").unwrap_err();
+        assert_eq!(runtime.get_wrapped::<State>(&handle).unwrap().optional_ratio, Some(3.25));
+        runtime.eval("state.optionalEnabled = undefined; state.optionalRatio = undefined; state.optionalCount = undefined;").unwrap();
+        let native = runtime.get_wrapped::<State>(&handle).unwrap();
+        assert_eq!(native.optional_enabled, Some(false));
+        assert!(native.optional_ratio.unwrap().is_nan());
+        assert_eq!(native.optional_count, Some(0));
     }
 
     #[cfg(feature = "webidl-pilot")]

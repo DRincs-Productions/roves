@@ -8236,24 +8236,34 @@ class CGV8BindingRoot(CGThing):
             raise TypeError(f"V8 pilot only supports interfaces exposed to Window: {name}")
         attributes = []
         for member in interface.members:
-            if (not member.isAttr() or member.isStatic()
-                    or (member.type.nullable()
-                        and not (member.type.isDOMString() or member.type.isUSVString()))
-                    or member._extendedAttrDict):
+            if (not member.isAttr() or member.isStatic() or member._extendedAttrDict):
                 raise TypeError(f"V8 backend unsupported member: {name}.{member.identifier.name}")
-            if member.type.isBoolean():
-                rust_type, value_expr = "bool", "Value::Bool(native.{native}())"
-            elif member.type.isFloat() and member.type.name == "Double":
-                rust_type, value_expr = "f64", "Value::Number(native.{native}())"
-            elif member.type.isInteger() and member.type.name == "UnsignedLong":
-                rust_type, value_expr = "u32", "Value::Number(native.{native}() as f64)"
-            elif member.type.isUSVString():
+            idl_type = member.type.inner if member.type.nullable() else member.type
+            if idl_type.isBoolean():
+                if member.type.nullable():
+                    rust_type = "Option<bool>"
+                    value_expr = "native.{native}().map(Value::Bool).unwrap_or(Value::Null)"
+                else:
+                    rust_type, value_expr = "bool", "Value::Bool(native.{native}())"
+            elif idl_type.isFloat() and idl_type.name == "Double":
+                if member.type.nullable():
+                    rust_type = "Option<f64>"
+                    value_expr = "native.{native}().map(Value::Number).unwrap_or(Value::Null)"
+                else:
+                    rust_type, value_expr = "f64", "Value::Number(native.{native}())"
+            elif idl_type.isInteger() and idl_type.name == "UnsignedLong":
+                if member.type.nullable():
+                    rust_type = "Option<u32>"
+                    value_expr = "native.{native}().map(|value| Value::Number(value as f64)).unwrap_or(Value::Null)"
+                else:
+                    rust_type, value_expr = "u32", "Value::Number(native.{native}() as f64)"
+            elif idl_type.isUSVString():
                 if member.type.nullable():
                     rust_type = "Option<String>"
                     value_expr = "native.{native}().map(Value::String).unwrap_or(Value::Null)"
                 else:
                     rust_type, value_expr = "String", "Value::String(native.{native}())"
-            elif member.type.isDOMString():
+            elif idl_type.isDOMString():
                 if member.type.nullable():
                     rust_type = "Option<Vec<u16>>"
                     value_expr = "native.{native}().map(Value::Utf16String).unwrap_or(Value::Null)"
@@ -8263,15 +8273,15 @@ class CGV8BindingRoot(CGThing):
                 raise TypeError(f"V8 backend unsupported attribute type: {name}.{member.identifier.name}: {member.type}")
             setter = not member.readonly
             conversion = None
-            if member.type.isBoolean():
-                conversion = "Boolean"
-            elif member.type.isFloat() and member.type.name == "Double":
-                conversion = "Double"
-            elif member.type.isInteger() and member.type.name == "UnsignedLong":
-                conversion = "UnsignedLong"
-            elif member.type.isUSVString():
+            if idl_type.isBoolean():
+                conversion = "NullableBoolean" if member.type.nullable() else "Boolean"
+            elif idl_type.isFloat() and idl_type.name == "Double":
+                conversion = "NullableDouble" if member.type.nullable() else "Double"
+            elif idl_type.isInteger() and idl_type.name == "UnsignedLong":
+                conversion = "NullableUnsignedLong" if member.type.nullable() else "UnsignedLong"
+            elif idl_type.isUSVString():
                 conversion = "NullableUsvString" if member.type.nullable() else "UsvString"
-            if setter and not member.type.isDOMString() and conversion is None:
+            if setter and not idl_type.isDOMString() and conversion is None:
                 raise TypeError(f"V8 backend does not support mutable attribute type: {name}.{member.identifier.name}")
             attributes.append((member.identifier.name, MakeNativeName(member.identifier.name), rust_type, value_expr, setter, conversion))
         trait_methods = "\n".join(f"    fn {native}(&self) -> {rust_type};"
@@ -8314,6 +8324,17 @@ class CGV8BindingRoot(CGThing):
                                 '            };\n'
                                 f'            native.{setter_native}(value);'
                             )
+                    elif conversion in {"NullableBoolean", "NullableDouble", "NullableUnsignedLong"}:
+                        value_variant = "Bool" if conversion == "NullableBoolean" else "Number"
+                        primitive_type = {"NullableBoolean": "bool", "NullableDouble": "f64", "NullableUnsignedLong": "u32"}[conversion]
+                        converted = (
+                            f'let value = match value {{\n'
+                            f'                Value::Null => None,\n'
+                            f'                Value::{value_variant}(value) => Some(*value as {primitive_type}),\n'
+                            f'                _ => unreachable!("typed WebIDL conversion"),\n'
+                            f'            }};\n'
+                            f'            native.{setter_native}(value);'
+                        )
                     else:
                         value_variant = "Bool" if conversion == "Boolean" else "Number"
                         converted = (
