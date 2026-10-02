@@ -578,7 +578,7 @@ convert to false, while extra JS arguments are ignored. Optional, nullable, vari
 parameter types remain rejected. Generated fixture/runtime tests cover truthiness and arity.
 Local verification passes 13 generator tests, 56 unit + 3 integration + 2 doctests in pilot normal
 and JIT-less configurations, 52 unit + 2 doctests without the pilot, and the integrated
-`servo-script-bindings` check. Patch 0081 and cross-platform CI are pending. This remains pilot
+`servo-script-bindings` check. Patch 0081 and cross-platform CI are green: V8 matrix 6/6 (37036084532), all six Servo bundles plus Steam and patch validation (37036084693), Android (37036084595), and iOS (37036084598). This remains pilot
 coverage; production still uses SpiderMonkey.
 
 **Sixteenth checkpoint (2026-10-02): zero-argument WebIDL operations.** The opt-in generator now emits interface methods with no arguments and exactly one signature, returning `undefined`, `boolean`, `double`, or `unsigned long`. Generated methods downcast through the existing engine-neutral native method callback and preserve interface receiver checks. Overloads, arguments, static operations, extended attributes, and other result types fail closed. Runtime tests call generated void and primitive-returning methods from JavaScript. Local verification passes 11 generator tests, 56 unit + 3 integration + 2 doctests in normal and JIT-less pilot configurations, 52 unit + 2 doctests without the pilot, and the integrated `servo-script-bindings` check. Patch 0080 and cross-platform CI are green: V8 matrix 6/6 (37029579196), all six Servo bundles plus Steam and patch validation (37029580090), Android (37029579200), and iOS (37029579293). This remains pilot coverage; production still uses SpiderMonkey.
