@@ -1,3 +1,15 @@
+## 2026-10-02 - V8 migration Phase 4: nullable primitive WebIDL operation returns
+
+**Servo files:** `components/roves-v8/{src/lib.rs,tests/webidl/MutablePrimitives.webidl}`;
+`components/script_bindings/codegen/{codegen.py,test_v8.py}`.
+**Patch:** `0083-roves-v8-phase4-nullable-primitive-operation-returns.patch` after 0001-0082.
+
+The opt-in generator supports nullable `boolean?`, `double?`, and `unsigned long?` operation
+returns using native `Option<T>`. `Some` maps to the corresponding JS primitive and `None` to
+`null`. Generator and runtime fixtures cover all three types. Local generator, normal/JIT-less
+runtime, default, and integrated binding-crate checks pass. Production bindings remain
+SpiderMonkey.
+
 ## 2026-10-02 - V8 migration Phase 4: string-returning WebIDL operations
 
 **Servo files:** `components/roves-v8/{src/lib.rs,tests/webidl/MutablePrimitives.webidl}`;

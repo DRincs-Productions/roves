@@ -1,0 +1,95 @@
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 8a8ff7d4566..099940cf57d 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -2626,6 +2626,9 @@ mod tests {
+             fn OptionalLabel(&self) -> Option<Vec<u16>> { None }
+             fn CurrentUsvLabel(&self) -> String { "v8 ?".to_owned() }
+             fn OptionalUsvLabel(&self) -> Option<String> { Some("game".to_owned()) }
++            fn OptionalEnabledResult(&self) -> Option<bool> { Some(true) }
++            fn OptionalRatioResult(&self) -> Option<f64> { None }
++            fn OptionalCountResult(&self) -> Option<u32> { Some(u32::MAX) }
+         }
+         let mut runtime = Runtime::new();
+         let binding = MutablePrimitivesBinding::<State>::install(&mut runtime).unwrap();
+@@ -2678,6 +2681,9 @@ mod tests {
+         assert_eq!(runtime.eval_value("state.optionalLabel()").unwrap(), Value::Null);
+         assert_eq!(runtime.eval_value("state.currentUsvLabel()").unwrap(), Value::String("v8 ?".to_owned()));
+         assert_eq!(runtime.eval_value("state.optionalUsvLabel()").unwrap(), Value::String("game".to_owned()));
++        assert_eq!(runtime.eval_value("state.optionalEnabledResult()").unwrap(), Value::Bool(true));
++        assert_eq!(runtime.eval_value("state.optionalRatioResult()").unwrap(), Value::Null);
++        assert_eq!(runtime.eval_value("state.optionalCountResult()").unwrap(), Value::Number(u32::MAX as f64));
+     }
+ 
+     #[cfg(feature = "webidl-pilot")]
+diff --git a/components/roves-v8/tests/webidl/MutablePrimitives.webidl b/components/roves-v8/tests/webidl/MutablePrimitives.webidl
+index 19552d58c8b..4b87795ead5 100644
+--- a/components/roves-v8/tests/webidl/MutablePrimitives.webidl
++++ b/components/roves-v8/tests/webidl/MutablePrimitives.webidl
+@@ -15,4 +15,7 @@ interface MutablePrimitives {
+   DOMString? optionalLabel();
+   USVString currentUsvLabel();
+   USVString? optionalUsvLabel();
++  boolean? optionalEnabledResult();
++  double? optionalRatioResult();
++  unsigned long? optionalCountResult();
+ };
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index b1311fffb4f..a6161dd02e6 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8252,12 +8252,21 @@ class CGV8BindingRoot(CGThing):
+                 result_type = return_type.inner if nullable_return else return_type
+                 if result_type.isUndefined() and not nullable_return:
+                     rust_type, value_expr = "()", "Value::Undefined"
+-                elif result_type.isBoolean() and not nullable_return:
+-                    rust_type, value_expr = "bool", "Value::Bool(native.{native}())"
+-                elif result_type.isFloat() and result_type.name == "Double" and not nullable_return:
+-                    rust_type, value_expr = "f64", "Value::Number(native.{native}())"
+-                elif result_type.isInteger() and result_type.name == "UnsignedLong" and not nullable_return:
+-                    rust_type, value_expr = "u32", "Value::Number(native.{native}() as f64)"
++                elif result_type.isBoolean():
++                    if nullable_return:
++                        rust_type, value_expr = "Option<bool>", "native.{native}().map(Value::Bool).unwrap_or(Value::Null)"
++                    else:
++                        rust_type, value_expr = "bool", "Value::Bool(native.{native}())"
++                elif result_type.isFloat() and result_type.name == "Double":
++                    if nullable_return:
++                        rust_type, value_expr = "Option<f64>", "native.{native}().map(Value::Number).unwrap_or(Value::Null)"
++                    else:
++                        rust_type, value_expr = "f64", "Value::Number(native.{native}())"
++                elif result_type.isInteger() and result_type.name == "UnsignedLong":
++                    if nullable_return:
++                        rust_type, value_expr = "Option<u32>", "native.{native}().map(|value| Value::Number(value as f64)).unwrap_or(Value::Null)"
++                    else:
++                        rust_type, value_expr = "u32", "Value::Number(native.{native}() as f64)"
+                 elif result_type.isDOMString():
+                     rust_type = "Option<Vec<u16>>" if nullable_return else "Vec<u16>"
+                     value_expr = (
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index 0fc438ab40e..21bc921f3cc 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -141,6 +141,22 @@ class V8GeneratorTests(unittest.TestCase):
+             self.assertIn("Value::String(native.UsvLabel())", source)
+             self.assertIn("map(Value::String).unwrap_or(Value::Null)", source)
+ 
++    def test_nullable_primitive_operation_returns_use_optional_native_values(self):
++        with tempfile.TemporaryDirectory() as directory:
++            root = Path(directory)
++            webidl = root / "Operations.webidl"
++            webidl.write_text(
++                "[Exposed=Window] interface Operations { boolean? enabled(); double? ratio(); unsigned long? count(); };",
++                encoding="utf-8",
++            )
++            source = generate(webidl, root / "out")
++            self.assertIn("fn Enabled(&self) -> Option<bool>;", source)
++            self.assertIn("fn Ratio(&self) -> Option<f64>;", source)
++            self.assertIn("fn Count(&self) -> Option<u32>;", source)
++            self.assertIn("map(Value::Bool).unwrap_or(Value::Null)", source)
++            self.assertIn("map(Value::Number).unwrap_or(Value::Null)", source)
++            self.assertIn("map(|value| Value::Number(value as f64)).unwrap_or(Value::Null)", source)
++
+     def test_operations_accept_required_boolean_arguments(self):
+         with tempfile.TemporaryDirectory() as directory:
+             root = Path(directory)

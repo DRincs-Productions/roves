@@ -2626,6 +2626,9 @@ mod tests {
             fn OptionalLabel(&self) -> Option<Vec<u16>> { None }
             fn CurrentUsvLabel(&self) -> String { "v8 ?".to_owned() }
             fn OptionalUsvLabel(&self) -> Option<String> { Some("game".to_owned()) }
+            fn OptionalEnabledResult(&self) -> Option<bool> { Some(true) }
+            fn OptionalRatioResult(&self) -> Option<f64> { None }
+            fn OptionalCountResult(&self) -> Option<u32> { Some(u32::MAX) }
         }
         let mut runtime = Runtime::new();
         let binding = MutablePrimitivesBinding::<State>::install(&mut runtime).unwrap();
@@ -2678,6 +2681,9 @@ mod tests {
         assert_eq!(runtime.eval_value("state.optionalLabel()").unwrap(), Value::Null);
         assert_eq!(runtime.eval_value("state.currentUsvLabel()").unwrap(), Value::String("v8 ?".to_owned()));
         assert_eq!(runtime.eval_value("state.optionalUsvLabel()").unwrap(), Value::String("game".to_owned()));
+        assert_eq!(runtime.eval_value("state.optionalEnabledResult()").unwrap(), Value::Bool(true));
+        assert_eq!(runtime.eval_value("state.optionalRatioResult()").unwrap(), Value::Null);
+        assert_eq!(runtime.eval_value("state.optionalCountResult()").unwrap(), Value::Number(u32::MAX as f64));
     }
 
     #[cfg(feature = "webidl-pilot")]

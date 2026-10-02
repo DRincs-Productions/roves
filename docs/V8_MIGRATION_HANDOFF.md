@@ -33,6 +33,8 @@ da questo blocco, fa fede lo stato attuale. L'utente ha richiesto autonomia cont
 testare localmente, avviare CI, correggere i fallimenti e proseguire fino al completamento dei
 criteri in `V8_MIGRATION.md`.
 
+Il checkpoint 19 aggiunge ritorni `boolean?`, `double?` e `unsigned long?` alle operazioni supportate, con `Option<T>` nativo, `Some` convertito nel primitivo JS e `None` in `null`. Fixture e runtime verificano i tre tipi. Passano 15 test Python, runtime pilot normale/jitless, default e `cargo check` integrato. Patch 0083 e CI sono in attesa.
+
 Il checkpoint 18 supporta i ritorni `DOMString`, `DOMString?`, `USVString` e `USVString?` per le operazioni senza argomenti. `DOMString` conserva i code unit UTF-16, `USVString` usa stringhe Unicode scalari, e i risultati nullable preservano `null`. Passano 14 test Python, i runtime normali/jitless, il default e il `cargo check` integrato. Patch 0082 e CI sono verdi: matrice V8 6/6 (37041208311), sei bundle Servo con Steam e patch validation (37041208274), Android (37041208279), iOS (37041208300).
 
 Il checkpoint 17 aggiunge parametri WebIDL obbligatori di tipo `boolean` alle operazioni a firma singola supportate. La truthiness JavaScript segue la conversione IDL; argomenti omessi diventano `false`, gli argomenti aggiuntivi sono ignorati. Parametri opzionali, nullable, variadici e altri tipi restano rifiutati. Passano 13 test Python, i runtime pilot normale/jitless, il runtime default e il `cargo check` integrato. Patch 0081 e CI sono verdi: matrice V8 6/6 (37036084532), sei bundle Servo con Steam e patch validation (37036084693), Android (37036084595), iOS (37036084598).

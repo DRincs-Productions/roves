@@ -141,6 +141,22 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn("Value::String(native.UsvLabel())", source)
             self.assertIn("map(Value::String).unwrap_or(Value::Null)", source)
 
+    def test_nullable_primitive_operation_returns_use_optional_native_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            webidl = root / "Operations.webidl"
+            webidl.write_text(
+                "[Exposed=Window] interface Operations { boolean? enabled(); double? ratio(); unsigned long? count(); };",
+                encoding="utf-8",
+            )
+            source = generate(webidl, root / "out")
+            self.assertIn("fn Enabled(&self) -> Option<bool>;", source)
+            self.assertIn("fn Ratio(&self) -> Option<f64>;", source)
+            self.assertIn("fn Count(&self) -> Option<u32>;", source)
+            self.assertIn("map(Value::Bool).unwrap_or(Value::Null)", source)
+            self.assertIn("map(Value::Number).unwrap_or(Value::Null)", source)
+            self.assertIn("map(|value| Value::Number(value as f64)).unwrap_or(Value::Null)", source)
+
     def test_operations_accept_required_boolean_arguments(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

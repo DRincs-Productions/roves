@@ -571,6 +571,14 @@ boundary without borrowing Servo's SpiderMonkey-rooted `DOMString` implementatio
 tests pass in default, normal V8 pilot and JIT-less V8 pilot modes; six Python generator tests pass.
 Cross-platform CI is pending.
 
+**Nineteenth checkpoint (2026-10-02): nullable primitive WebIDL operation returns.** Supported
+operations can now return `boolean?`, `double?`, and `unsigned long?`, with native `Option<T>`
+contracts. `Some` maps to the JS primitive and `None` maps to `null`. Generated runtime fixtures
+cover all three types. Local verification passes 15 generator tests, 56 unit + 3 integration + 2
+doctests in pilot normal and JIT-less configurations, 52 unit + 2 doctests without the pilot,
+and the integrated `servo-script-bindings` check. Patch 0083 and cross-platform CI are pending.
+This remains pilot coverage; production still uses SpiderMonkey.
+
 **Eighteenth checkpoint (2026-10-02): string-returning WebIDL operations.** Supported
 zero-argument operations can now return `DOMString`, `DOMString?`, `USVString`, and
 `USVString?`. DOMString uses UTF-16 code units, preserving lone surrogates through the V8 value

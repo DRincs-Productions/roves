@@ -8252,12 +8252,21 @@ class CGV8BindingRoot(CGThing):
                 result_type = return_type.inner if nullable_return else return_type
                 if result_type.isUndefined() and not nullable_return:
                     rust_type, value_expr = "()", "Value::Undefined"
-                elif result_type.isBoolean() and not nullable_return:
-                    rust_type, value_expr = "bool", "Value::Bool(native.{native}())"
-                elif result_type.isFloat() and result_type.name == "Double" and not nullable_return:
-                    rust_type, value_expr = "f64", "Value::Number(native.{native}())"
-                elif result_type.isInteger() and result_type.name == "UnsignedLong" and not nullable_return:
-                    rust_type, value_expr = "u32", "Value::Number(native.{native}() as f64)"
+                elif result_type.isBoolean():
+                    if nullable_return:
+                        rust_type, value_expr = "Option<bool>", "native.{native}().map(Value::Bool).unwrap_or(Value::Null)"
+                    else:
+                        rust_type, value_expr = "bool", "Value::Bool(native.{native}())"
+                elif result_type.isFloat() and result_type.name == "Double":
+                    if nullable_return:
+                        rust_type, value_expr = "Option<f64>", "native.{native}().map(Value::Number).unwrap_or(Value::Null)"
+                    else:
+                        rust_type, value_expr = "f64", "Value::Number(native.{native}())"
+                elif result_type.isInteger() and result_type.name == "UnsignedLong":
+                    if nullable_return:
+                        rust_type, value_expr = "Option<u32>", "native.{native}().map(|value| Value::Number(value as f64)).unwrap_or(Value::Null)"
+                    else:
+                        rust_type, value_expr = "u32", "Value::Number(native.{native}() as f64)"
                 elif result_type.isDOMString():
                     rust_type = "Option<Vec<u16>>" if nullable_return else "Vec<u16>"
                     value_expr = (
