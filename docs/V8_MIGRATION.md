@@ -576,7 +576,7 @@ operations can now return `boolean?`, `double?`, and `unsigned long?`, with nati
 contracts. `Some` maps to the JS primitive and `None` maps to `null`. Generated runtime fixtures
 cover all three types. Local verification passes 15 generator tests, 56 unit + 3 integration + 2
 doctests in pilot normal and JIT-less configurations, 52 unit + 2 doctests without the pilot,
-and the integrated `servo-script-bindings` check. Patch 0083 and cross-platform CI are pending.
+and the integrated `servo-script-bindings` check. Patch 0083 applies cleanly and cross-platform CI is green: V8 matrix 6/6 (37048609736), all six Servo bundles plus Steam and patch validation (37048609764), Android (37048609658), and iOS (37048609889).
 This remains pilot coverage; production still uses SpiderMonkey.
 
 **Eighteenth checkpoint (2026-10-02): string-returning WebIDL operations.** Supported
