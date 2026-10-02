@@ -2629,6 +2629,16 @@ mod tests {
             fn OptionalEnabledResult(&self) -> Option<bool> { Some(true) }
             fn OptionalRatioResult(&self) -> Option<f64> { None }
             fn OptionalCountResult(&self) -> Option<u32> { Some(u32::MAX) }
+            fn SignedByteResult(&self) -> i8 { -7 }
+            fn OctetResult(&self) -> u8 { 250 }
+            fn ShortResult(&self) -> i16 { -300 }
+            fn UnsignedShortResult(&self) -> u16 { 60_000 }
+            fn LongResult(&self) -> i32 { -2_000_000 }
+            fn LongLongResult(&self) -> i64 { i64::MAX }
+            fn UnsignedLongLongResult(&self) -> u64 { u64::MAX }
+            fn FloatResult(&self) -> f32 { 1.25 }
+            fn NullableFloatResult(&self) -> Option<f32> { Some(-2.5) }
+            fn NullableLongLongResult(&self) -> Option<i64> { None }
         }
         let mut runtime = Runtime::new();
         let binding = MutablePrimitivesBinding::<State>::install(&mut runtime).unwrap();
@@ -2684,6 +2694,16 @@ mod tests {
         assert_eq!(runtime.eval_value("state.optionalEnabledResult()").unwrap(), Value::Bool(true));
         assert_eq!(runtime.eval_value("state.optionalRatioResult()").unwrap(), Value::Null);
         assert_eq!(runtime.eval_value("state.optionalCountResult()").unwrap(), Value::Number(u32::MAX as f64));
+        for (expression, expected) in [
+            ("state.signedByteResult()", -7.0), ("state.octetResult()", 250.0),
+            ("state.shortResult()", -300.0), ("state.unsignedShortResult()", 60_000.0),
+            ("state.longResult()", -2_000_000.0), ("state.longLongResult()", i64::MAX as f64),
+            ("state.unsignedLongLongResult()", u64::MAX as f64), ("state.floatResult()", 1.25),
+            ("state.nullableFloatResult()", -2.5),
+        ] {
+            assert_eq!(runtime.eval_value(expression).unwrap(), Value::Number(expected), "{expression}");
+        }
+        assert_eq!(runtime.eval_value("state.nullableLongLongResult()").unwrap(), Value::Null);
     }
 
     #[cfg(feature = "webidl-pilot")]

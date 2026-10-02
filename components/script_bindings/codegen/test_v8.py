@@ -157,6 +157,20 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn("map(Value::Number).unwrap_or(Value::Null)", source)
             self.assertIn("map(|value| Value::Number(value as f64)).unwrap_or(Value::Null)", source)
 
+    def test_integer_and_float_operation_returns_map_to_rust_numbers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            webidl = root / "Numbers.webidl"
+            webidl.write_text(
+                "[Exposed=Window] interface Numbers { byte signedByte(); octet octetValue(); short shortValue(); unsigned short unsignedShortValue(); long longValue(); long long longLongValue(); unsigned long long unsignedLongLongValue(); float floatValue(); float? nullableFloat(); long long? nullableLongLong(); };",
+                encoding="utf-8",
+            )
+            source = generate(webidl, root / "out")
+            for rust_type, method in [("i8", "SignedByte"), ("u8", "OctetValue"), ("i16", "ShortValue"), ("u16", "UnsignedShortValue"), ("i32", "LongValue"), ("i64", "LongLongValue"), ("u64", "UnsignedLongLongValue"), ("f32", "FloatValue"), ("Option<f32>", "NullableFloat"), ("Option<i64>", "NullableLongLong")]:
+                self.assertIn(f"fn {method}(&self) -> {rust_type};", source)
+            self.assertIn("Value::Number(native.FloatValue() as f64)", source)
+            self.assertIn("Value::Number(native.UnsignedLongLongValue() as f64)", source)
+
     def test_operations_accept_required_boolean_arguments(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -1,0 +1,113 @@
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 099940cf57d..288bd596940 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -2629,6 +2629,16 @@ mod tests {
+             fn OptionalEnabledResult(&self) -> Option<bool> { Some(true) }
+             fn OptionalRatioResult(&self) -> Option<f64> { None }
+             fn OptionalCountResult(&self) -> Option<u32> { Some(u32::MAX) }
++            fn SignedByteResult(&self) -> i8 { -7 }
++            fn OctetResult(&self) -> u8 { 250 }
++            fn ShortResult(&self) -> i16 { -300 }
++            fn UnsignedShortResult(&self) -> u16 { 60_000 }
++            fn LongResult(&self) -> i32 { -2_000_000 }
++            fn LongLongResult(&self) -> i64 { i64::MAX }
++            fn UnsignedLongLongResult(&self) -> u64 { u64::MAX }
++            fn FloatResult(&self) -> f32 { 1.25 }
++            fn NullableFloatResult(&self) -> Option<f32> { Some(-2.5) }
++            fn NullableLongLongResult(&self) -> Option<i64> { None }
+         }
+         let mut runtime = Runtime::new();
+         let binding = MutablePrimitivesBinding::<State>::install(&mut runtime).unwrap();
+@@ -2684,6 +2694,16 @@ mod tests {
+         assert_eq!(runtime.eval_value("state.optionalEnabledResult()").unwrap(), Value::Bool(true));
+         assert_eq!(runtime.eval_value("state.optionalRatioResult()").unwrap(), Value::Null);
+         assert_eq!(runtime.eval_value("state.optionalCountResult()").unwrap(), Value::Number(u32::MAX as f64));
++        for (expression, expected) in [
++            ("state.signedByteResult()", -7.0), ("state.octetResult()", 250.0),
++            ("state.shortResult()", -300.0), ("state.unsignedShortResult()", 60_000.0),
++            ("state.longResult()", -2_000_000.0), ("state.longLongResult()", i64::MAX as f64),
++            ("state.unsignedLongLongResult()", u64::MAX as f64), ("state.floatResult()", 1.25),
++            ("state.nullableFloatResult()", -2.5),
++        ] {
++            assert_eq!(runtime.eval_value(expression).unwrap(), Value::Number(expected), "{expression}");
++        }
++        assert_eq!(runtime.eval_value("state.nullableLongLongResult()").unwrap(), Value::Null);
+     }
+ 
+     #[cfg(feature = "webidl-pilot")]
+diff --git a/components/roves-v8/tests/webidl/MutablePrimitives.webidl b/components/roves-v8/tests/webidl/MutablePrimitives.webidl
+index 4b87795ead5..87e14d82e8f 100644
+--- a/components/roves-v8/tests/webidl/MutablePrimitives.webidl
++++ b/components/roves-v8/tests/webidl/MutablePrimitives.webidl
+@@ -18,4 +18,14 @@ interface MutablePrimitives {
+   boolean? optionalEnabledResult();
+   double? optionalRatioResult();
+   unsigned long? optionalCountResult();
++  byte signedByteResult();
++  octet octetResult();
++  short shortResult();
++  unsigned short unsignedShortResult();
++  long longResult();
++  long long longLongResult();
++  unsigned long long unsignedLongLongResult();
++  float floatResult();
++  float? nullableFloatResult();
++  long long? nullableLongLongResult();
+ };
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index a6161dd02e6..260689ac774 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8262,11 +8262,23 @@ class CGV8BindingRoot(CGThing):
+                         rust_type, value_expr = "Option<f64>", "native.{native}().map(Value::Number).unwrap_or(Value::Null)"
+                     else:
+                         rust_type, value_expr = "f64", "Value::Number(native.{native}())"
+-                elif result_type.isInteger() and result_type.name == "UnsignedLong":
++                elif result_type.isFloat() and result_type.name == "Float":
+                     if nullable_return:
+-                        rust_type, value_expr = "Option<u32>", "native.{native}().map(|value| Value::Number(value as f64)).unwrap_or(Value::Null)"
++                        rust_type, value_expr = "Option<f32>", "native.{native}().map(|value| Value::Number(value as f64)).unwrap_or(Value::Null)"
+                     else:
+-                        rust_type, value_expr = "u32", "Value::Number(native.{native}() as f64)"
++                        rust_type, value_expr = "f32", "Value::Number(native.{native}() as f64)"
++                elif result_type.isInteger() and result_type.name in {
++                    "Byte", "Octet", "Short", "UnsignedShort", "Long", "UnsignedLong", "LongLong", "UnsignedLongLong"
++                }:
++                    integer_types = {
++                        "Byte": "i8", "Octet": "u8", "Short": "i16", "UnsignedShort": "u16",
++                        "Long": "i32", "UnsignedLong": "u32", "LongLong": "i64", "UnsignedLongLong": "u64",
++                    }
++                    native_type = integer_types[result_type.name]
++                    if nullable_return:
++                        rust_type, value_expr = f"Option<{native_type}>", "native.{native}().map(|value| Value::Number(value as f64)).unwrap_or(Value::Null)"
++                    else:
++                        rust_type, value_expr = native_type, "Value::Number(native.{native}() as f64)"
+                 elif result_type.isDOMString():
+                     rust_type = "Option<Vec<u16>>" if nullable_return else "Vec<u16>"
+                     value_expr = (
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index 21bc921f3cc..aa13c0a87ac 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -157,6 +157,20 @@ class V8GeneratorTests(unittest.TestCase):
+             self.assertIn("map(Value::Number).unwrap_or(Value::Null)", source)
+             self.assertIn("map(|value| Value::Number(value as f64)).unwrap_or(Value::Null)", source)
+ 
++    def test_integer_and_float_operation_returns_map_to_rust_numbers(self):
++        with tempfile.TemporaryDirectory() as directory:
++            root = Path(directory)
++            webidl = root / "Numbers.webidl"
++            webidl.write_text(
++                "[Exposed=Window] interface Numbers { byte signedByte(); octet octetValue(); short shortValue(); unsigned short unsignedShortValue(); long longValue(); long long longLongValue(); unsigned long long unsignedLongLongValue(); float floatValue(); float? nullableFloat(); long long? nullableLongLong(); };",
++                encoding="utf-8",
++            )
++            source = generate(webidl, root / "out")
++            for rust_type, method in [("i8", "SignedByte"), ("u8", "OctetValue"), ("i16", "ShortValue"), ("u16", "UnsignedShortValue"), ("i32", "LongValue"), ("i64", "LongLongValue"), ("u64", "UnsignedLongLongValue"), ("f32", "FloatValue"), ("Option<f32>", "NullableFloat"), ("Option<i64>", "NullableLongLong")]:
++                self.assertIn(f"fn {method}(&self) -> {rust_type};", source)
++            self.assertIn("Value::Number(native.FloatValue() as f64)", source)
++            self.assertIn("Value::Number(native.UnsignedLongLongValue() as f64)", source)
++
+     def test_operations_accept_required_boolean_arguments(self):
+         with tempfile.TemporaryDirectory() as directory:
+             root = Path(directory)

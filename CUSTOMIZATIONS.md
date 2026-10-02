@@ -1,3 +1,15 @@
+## 2026-10-02 - V8 migration Phase 4: integer and float WebIDL operation returns
+
+**Servo files:** `components/roves-v8/{src/lib.rs,tests/webidl/MutablePrimitives.webidl}`;
+`components/script_bindings/codegen/{codegen.py,test_v8.py}`.
+**Patch:** `0084-roves-v8-phase4-numeric-operation-returns.patch` after 0001-0083.
+
+The opt-in WebIDL generator maps `byte`, `octet`, `short`, `unsigned short`, `long`, `long long`,
+`unsigned long long`, and `float` operation results to their corresponding Rust numeric types and
+JavaScript Numbers. Nullable integer and float results use `Option<T>` and map `None` to `null`.
+Generator and runtime fixtures cover signedness, widths, float values, and nullable results. This
+extends only return-value conversion; production bindings remain SpiderMonkey.
+
 ## 2026-10-02 - V8 migration Phase 4: nullable primitive WebIDL operation returns
 
 **Servo files:** `components/roves-v8/{src/lib.rs,tests/webidl/MutablePrimitives.webidl}`;

@@ -8262,11 +8262,23 @@ class CGV8BindingRoot(CGThing):
                         rust_type, value_expr = "Option<f64>", "native.{native}().map(Value::Number).unwrap_or(Value::Null)"
                     else:
                         rust_type, value_expr = "f64", "Value::Number(native.{native}())"
-                elif result_type.isInteger() and result_type.name == "UnsignedLong":
+                elif result_type.isFloat() and result_type.name == "Float":
                     if nullable_return:
-                        rust_type, value_expr = "Option<u32>", "native.{native}().map(|value| Value::Number(value as f64)).unwrap_or(Value::Null)"
+                        rust_type, value_expr = "Option<f32>", "native.{native}().map(|value| Value::Number(value as f64)).unwrap_or(Value::Null)"
                     else:
-                        rust_type, value_expr = "u32", "Value::Number(native.{native}() as f64)"
+                        rust_type, value_expr = "f32", "Value::Number(native.{native}() as f64)"
+                elif result_type.isInteger() and result_type.name in {
+                    "Byte", "Octet", "Short", "UnsignedShort", "Long", "UnsignedLong", "LongLong", "UnsignedLongLong"
+                }:
+                    integer_types = {
+                        "Byte": "i8", "Octet": "u8", "Short": "i16", "UnsignedShort": "u16",
+                        "Long": "i32", "UnsignedLong": "u32", "LongLong": "i64", "UnsignedLongLong": "u64",
+                    }
+                    native_type = integer_types[result_type.name]
+                    if nullable_return:
+                        rust_type, value_expr = f"Option<{native_type}>", "native.{native}().map(|value| Value::Number(value as f64)).unwrap_or(Value::Null)"
+                    else:
+                        rust_type, value_expr = native_type, "Value::Number(native.{native}() as f64)"
                 elif result_type.isDOMString():
                     rust_type = "Option<Vec<u16>>" if nullable_return else "Vec<u16>"
                     value_expr = (

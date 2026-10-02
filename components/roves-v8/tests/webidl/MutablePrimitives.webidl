@@ -18,4 +18,14 @@ interface MutablePrimitives {
   boolean? optionalEnabledResult();
   double? optionalRatioResult();
   unsigned long? optionalCountResult();
+  byte signedByteResult();
+  octet octetResult();
+  short shortResult();
+  unsigned short unsignedShortResult();
+  long longResult();
+  long long longLongResult();
+  unsigned long long unsignedLongLongResult();
+  float floatResult();
+  float? nullableFloatResult();
+  long long? nullableLongLongResult();
 };

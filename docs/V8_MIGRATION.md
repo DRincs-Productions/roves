@@ -571,6 +571,14 @@ boundary without borrowing Servo's SpiderMonkey-rooted `DOMString` implementatio
 tests pass in default, normal V8 pilot and JIT-less V8 pilot modes; six Python generator tests pass.
 Cross-platform CI is pending.
 
+**Twentieth checkpoint (2026-10-02): numeric WebIDL operation returns.** Supported operations
+now return `byte`, `octet`, `short`, `unsigned short`, `long`, `long long`, `unsigned long long`,
+and `float`, in both nullable and non-nullable form. The generated native contract uses the
+matching Rust integer width or `f32`, and all results become JavaScript Numbers; nullable `None`
+becomes `null`. Generator and runtime fixtures cover signedness, width, float and nullable values.
+The normal local pilot suite and 16 generator tests pass. This remains pilot coverage; production
+still uses SpiderMonkey.
+
 **Nineteenth checkpoint (2026-10-02): nullable primitive WebIDL operation returns.** Supported
 operations can now return `boolean?`, `double?`, and `unsigned long?`, with native `Option<T>`
 contracts. `Some` maps to the JS primitive and `None` maps to `null`. Generated runtime fixtures
