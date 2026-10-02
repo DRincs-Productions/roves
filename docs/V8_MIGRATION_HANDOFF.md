@@ -33,7 +33,7 @@ da questo blocco, fa fede lo stato attuale. L'utente ha richiesto autonomia cont
 testare localmente, avviare CI, correggere i fallimenti e proseguire fino al completamento dei
 criteri in `V8_MIGRATION.md`.
 
-Il checkpoint 14 aggiunge `USVString` e `USVString?` al generatore opt-in: i valori diventano `String`/`Option<String>` dopo la conversione scalar-value (i surrogate isolati sono sostituiti da U+FFFD); `null` nullable resta `null`. Passano localmente 56 unit test, 3 integrazioni e 2 doctest con pilot normale e jitless; 52 unit test + 2 doctest senza pilot; 9 test Python. Patch 0078 e CI sono da avviare dopo la registrazione del checkpoint. La produzione resta SpiderMonkey.
+Il checkpoint 14 aggiunge `USVString` e `USVString?` al generatore opt-in: i valori diventano `String`/`Option<String>` dopo la conversione scalar-value (i surrogate isolati sono sostituiti da U+FFFD); `null` nullable resta `null`. Passano localmente 56 unit test, 3 integrazioni e 2 doctest con pilot normale e jitless; 52 unit test + 2 doctest senza pilot; 9 test Python. La patch 0078 e la CI sono verdi: matrice V8 6/6 (run 37016952782), Servo completo con sei bundle, Steam e overlay (37016951496), Android (37016951470), iOS (37016951542). La produzione resta SpiderMonkey.
 
 Il checkpoint 13 aggiunge `DOMString?` mutabile, preservando i code unit UTF-16 e `null`. Patch 0077 e CI sono verdi: run Servo 37009800175, Android 37009800200 e iOS 37009800118. La matrice V8 6/6 del commit sorgente 0077 era verde nel run 37004723223. Il test Steam attende ora il marker della pagina invece di un ritardo fisso.
 
