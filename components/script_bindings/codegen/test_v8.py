@@ -270,8 +270,28 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn("Value::Missing => roves_v8::WebIdlOptionalArgument::Present(None)", source)
             self.assertIn("Value::Null => roves_v8::WebIdlOptionalArgument::Present(None)", source)
 
+    def test_optional_explicit_string_defaults_generate_safe_native_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            webidl = root / "StringDefaults.webidl"
+            source_idl = (
+                '[Exposed=Window] interface StringDefaults { '
+                'DOMString dom(optional DOMString value = "line\\nquote"); '
+                'USVString usv(optional USVString value = "rocket ' + chr(0x1F680) + '"); '
+                'DOMString unicode(optional DOMString value = "rocket ' + chr(0x1F680) + '"); '
+                'DOMString? nullable(optional DOMString? value = "seed"); '
+                'DOMString bytes(optional ByteString value = "abc"); };'
+            )
+            webidl.write_text(source_idl, encoding="utf-8")
+            source = generate(webidl, root / "out")
+            self.assertIn("Present(vec![108u16, 105u16, 110u16, 101u16, 92u16, 110u16", source)
+            self.assertIn('Present("\\u{72}\\u{6f}\\u{63}\\u{6b}\\u{65}\\u{74}\\u{20}\\u{1f680}".to_owned())', source)
+            self.assertIn("Present(vec![114u16, 111u16, 99u16, 107u16, 101u16, 116u16, 32u16, 55357u16, 56960u16])", source)
+            self.assertIn("Present(Some(vec![115u16, 101u16, 101u16, 100u16]))", source)
+            self.assertIn("Present(vec![97u8, 98u8, 99u8])", source)
+
     def test_optional_explicit_defaults_variadics_and_unsupported_types_fail_closed(self):
-        for signature in ["double run(optional DOMString value = \"text\");", "double run(double... values);", "double run(object value);"]:
+        for signature in ["double run(double... values);", "double run(object value);"]:
             with self.subTest(signature=signature):
                 self.assert_unsupported("interface Unsupported { " + signature + " };")
 

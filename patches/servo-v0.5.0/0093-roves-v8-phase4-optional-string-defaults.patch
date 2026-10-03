@@ -1,0 +1,192 @@
+diff --git a/components/roves-v8/build.rs b/components/roves-v8/build.rs
+index 251065c6dfa..1122b25eccb 100644
+--- a/components/roves-v8/build.rs
++++ b/components/roves-v8/build.rs
+@@ -53,6 +53,10 @@ fn main() {
+         "cargo:rerun-if-changed={}",
+         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/webidl/OptionalDefaults.webidl").display()
+     );
++    println!(
++        "cargo:rerun-if-changed={}",
++        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/webidl/OptionalStringDefaults.webidl").display()
++    );
+     let python = env::var("PYTHON").unwrap_or_else(|_| {
+         ["python3", "python"].into_iter().find(|name| {
+             Command::new(name).arg("--version").output().is_ok_and(|output| output.status.success())
+@@ -154,4 +158,13 @@ fn main() {
+         .status()
+         .expect("run optional default WebIDL fixture generator");
+     assert!(status.success(), "optional default WebIDL fixture generation failed");
++    let output = out_dir.join("OptionalStringDefaultsV8Binding.rs");
++    let status = Command::new(&python)
++        .arg(bindings.join("codegen/run_v8.py"))
++        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/webidl/OptionalStringDefaults.webidl"))
++        .arg(output)
++        .env("PYTHONDONTWRITEBYTECODE", "1")
++        .status()
++        .expect("run optional string default WebIDL fixture generator");
++    assert!(status.success(), "optional string default WebIDL fixture generation failed");
+ }
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index aabccc79dfd..579e2bda316 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -61,6 +61,10 @@ pub mod webidl {
+     pub mod optional_defaults {
+         include!(concat!(env!("OUT_DIR"), "/OptionalDefaultsV8Binding.rs"));
+     }
++    #[cfg(test)]
++    pub mod optional_string_defaults {
++        include!(concat!(env!("OUT_DIR"), "/OptionalStringDefaultsV8Binding.rs"));
++    }
+ }
+ 
+ use std::sync::Once;
+@@ -3292,6 +3296,66 @@ mod tests {
+         assert_eq!(runtime.eval_value("defaults.nullableValueDefault(4)").unwrap(), Value::Number(4.0));
+     }
+ 
++    #[cfg(feature = "webidl-pilot")]
++    #[test]
++    fn generated_optional_string_defaults_preserve_domstring_usvstring_and_bytestring() {
++        use crate::webidl::optional_string_defaults::{
++            OptionalStringDefaultsBinding, OptionalStringDefaultsNative,
++        };
++        use crate::WebIdlOptionalArgument;
++        struct StringDefaults;
++        #[allow(non_snake_case)]
++        impl OptionalStringDefaultsNative for StringDefaults {
++            fn Dom(&self, value: WebIdlOptionalArgument<Vec<u16>>) -> Vec<u16> {
++                match value {
++                    WebIdlOptionalArgument::Missing => Vec::new(),
++                    WebIdlOptionalArgument::Present(value) => value,
++                }
++            }
++            fn Usv(&self, value: WebIdlOptionalArgument<String>) -> String {
++                match value {
++                    WebIdlOptionalArgument::Missing => String::new(),
++                    WebIdlOptionalArgument::Present(value) => value,
++                }
++            }
++            fn Unicode(&self, value: WebIdlOptionalArgument<Vec<u16>>) -> Vec<u16> {
++                match value {
++                    WebIdlOptionalArgument::Missing => Vec::new(),
++                    WebIdlOptionalArgument::Present(value) => value,
++                }
++            }
++            fn Nullable(&self, value: WebIdlOptionalArgument<Option<Vec<u16>>>) -> Option<Vec<u16>> {
++                match value {
++                    WebIdlOptionalArgument::Missing => None,
++                    WebIdlOptionalArgument::Present(value) => value,
++                }
++            }
++            fn Bytes(&self, value: WebIdlOptionalArgument<Vec<u8>>) -> Vec<u16> {
++                match value {
++                    WebIdlOptionalArgument::Missing => Vec::new(),
++                    WebIdlOptionalArgument::Present(value) => value.into_iter().map(u16::from).collect(),
++                }
++            }
++        }
++        let mut runtime = Runtime::new();
++        let binding = OptionalStringDefaultsBinding::<StringDefaults>::install(&mut runtime).unwrap();
++        let handle = binding.create(&mut runtime, StringDefaults);
++        runtime.set_global_property("defaults", &handle).unwrap();
++        let escaped_dom = Value::String("line\\nquote".into());
++        assert_eq!(runtime.eval_value("defaults.dom()").unwrap(), escaped_dom);
++        assert_eq!(runtime.eval_value("defaults.dom(undefined)").unwrap(), Value::String("line\\nquote".into()));
++        assert_eq!(runtime.eval_value("defaults.dom('explicit')").unwrap(), Value::String("explicit".into()));
++        assert_eq!(runtime.eval_value("defaults.usv()").unwrap(), Value::String("rocket \u{1f680}".into()));
++        assert_eq!(runtime.eval_value("defaults.unicode()").unwrap(), Value::String("rocket \u{1f680}".into()));
++        assert_eq!(runtime.eval_value("defaults.nullable()").unwrap(), Value::String("seed".into()));
++        assert_eq!(runtime.eval_value("defaults.nullable(undefined)").unwrap(), Value::String("seed".into()));
++        assert_eq!(runtime.eval_value("defaults.nullable(null)").unwrap(), Value::Null);
++        assert_eq!(runtime.eval_value("defaults.nullable('explicit')").unwrap(), Value::String("explicit".into()));
++        assert_eq!(runtime.eval_value("defaults.bytes()").unwrap(), Value::String("abc".into()));
++        assert_eq!(runtime.eval_value("defaults.bytes(undefined)").unwrap(), Value::String("abc".into()));
++        assert_eq!(runtime.eval_value("defaults.bytes('XYZ')").unwrap(), Value::String("XYZ".into()));
++    }
++
+     #[cfg(feature = "webidl-pilot")]
+     #[test]
+     fn generated_nullable_domstring_preserves_null_and_utf16_semantics() {
+diff --git a/components/roves-v8/tests/webidl/OptionalStringDefaults.webidl b/components/roves-v8/tests/webidl/OptionalStringDefaults.webidl
+new file mode 100644
+index 00000000000..8117b0e5b6b
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/OptionalStringDefaults.webidl
+@@ -0,0 +1,7 @@
++[Exposed=Window] interface OptionalStringDefaults {
++  DOMString dom(optional DOMString value = "line\nquote");
++  USVString usv(optional USVString value = "rocket 🚀");
++  DOMString unicode(optional DOMString value = "rocket 🚀");
++  DOMString? nullable(optional DOMString? value = "seed");
++  DOMString bytes(optional ByteString value = "abc");
++};
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index 4ed85fbb5bb..71c396c2b5e 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8322,6 +8322,29 @@ class CGV8BindingRoot(CGThing):
+                                     default_expression = float_default("f32")
+                                 elif ty.name == "UnrestrictedDouble":
+                                     default_expression = float_default("f64")
++                            elif ty.isDOMString() and default_type.isDOMString():
++                                utf16 = default_value.value.encode("utf-16-le", "surrogatepass")
++                                units = [int.from_bytes(utf16[index:index + 2], "little") for index in range(0, len(utf16), 2)]
++                                default_expression = "vec![" + ", ".join(f"{unit}u16" for unit in units) + "]"
++                            elif ty.isUSVString() and default_type.isDOMString():
++                                scalar_values = []
++                                index = 0
++                                string_value = default_value.value
++                                while index < len(string_value):
++                                    codepoint = ord(string_value[index])
++                                    if 0xD800 <= codepoint <= 0xDBFF and index + 1 < len(string_value):
++                                        low = ord(string_value[index + 1])
++                                        if 0xDC00 <= low <= 0xDFFF:
++                                            codepoint = 0x10000 + ((codepoint - 0xD800) << 10) + (low - 0xDC00)
++                                            index += 1
++                                    if 0xD800 <= codepoint <= 0xDFFF:
++                                        codepoint = 0xFFFD
++                                    scalar_values.append(codepoint)
++                                    index += 1
++                                rust_literal = '"' + "".join(f"\\u{{{codepoint:x}}}" for codepoint in scalar_values) + '"'
++                                default_expression = f"{rust_literal}.to_owned()"
++                            elif ty.isByteString() and default_type.isByteString():
++                                default_expression = "vec![" + ", ".join(f"{ord(char)}u8" for char in default_value.value) + "]"
+                         if default_expression is None:
+                             raise TypeError(f"V8 backend unsupported explicit default for {name}.{member.identifier.name}: {default_value}")
+                     if ty.isBoolean():
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index f441fd8ebb1..8408948cba3 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -270,8 +270,28 @@ class V8GeneratorTests(unittest.TestCase):
+             self.assertIn("Value::Missing => roves_v8::WebIdlOptionalArgument::Present(None)", source)
+             self.assertIn("Value::Null => roves_v8::WebIdlOptionalArgument::Present(None)", source)
+ 
++    def test_optional_explicit_string_defaults_generate_safe_native_values(self):
++        with tempfile.TemporaryDirectory() as directory:
++            root = Path(directory)
++            webidl = root / "StringDefaults.webidl"
++            source_idl = (
++                '[Exposed=Window] interface StringDefaults { '
++                'DOMString dom(optional DOMString value = "line\\nquote"); '
++                'USVString usv(optional USVString value = "rocket ' + chr(0x1F680) + '"); '
++                'DOMString unicode(optional DOMString value = "rocket ' + chr(0x1F680) + '"); '
++                'DOMString? nullable(optional DOMString? value = "seed"); '
++                'DOMString bytes(optional ByteString value = "abc"); };'
++            )
++            webidl.write_text(source_idl, encoding="utf-8")
++            source = generate(webidl, root / "out")
++            self.assertIn("Present(vec![108u16, 105u16, 110u16, 101u16, 92u16, 110u16", source)
++            self.assertIn('Present("\\u{72}\\u{6f}\\u{63}\\u{6b}\\u{65}\\u{74}\\u{20}\\u{1f680}".to_owned())', source)
++            self.assertIn("Present(vec![114u16, 111u16, 99u16, 107u16, 101u16, 116u16, 32u16, 55357u16, 56960u16])", source)
++            self.assertIn("Present(Some(vec![115u16, 101u16, 101u16, 100u16]))", source)
++            self.assertIn("Present(vec![97u8, 98u8, 99u8])", source)
++
+     def test_optional_explicit_defaults_variadics_and_unsupported_types_fail_closed(self):
+-        for signature in ["double run(optional DOMString value = \"text\");", "double run(double... values);", "double run(object value);"]:
++        for signature in ["double run(double... values);", "double run(object value);"]:
+             with self.subTest(signature=signature):
+                 self.assert_unsupported("interface Unsupported { " + signature + " };")
+ 

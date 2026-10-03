@@ -620,6 +620,17 @@ Android ([37147150994](https://github.com/DRincs-Productions/roves/actions/runs/
 ([37147151023](https://github.com/DRincs-Productions/roves/actions/runs/37147151023)). This remains
 pilot-only; production still uses SpiderMonkey.
 
+**Twenty-ninth checkpoint (2026-10-03): optional WebIDL string defaults.**
+The opt-in generator emits optional defaults for DOMString, USVString and ByteString. DOMString
+defaults become exact UTF-16 code units, USVString defaults become scalar-valid Rust strings, and
+ASCII ByteString defaults become bytes; nullable string defaults preserve omission versus null.
+Runtime fixtures cover a literal backslash, a supplementary Unicode character, null and explicit
+argument values. Local verification passes 24 generator tests, 62 unit + 3 integration + 2 doctests
+in both normal and JIT-less pilot modes, 52 default unit + 2 doctests, and the integrated
+servo-script check. Patch 0093 applies to the CP28 source snapshot; wiki build passes all 82 pages
+and commit 462ed36 is published. Cross-platform CI is pending; this remains pilot-only and
+production still uses SpiderMonkey.
+
 **Twenty-eighth checkpoint (2026-10-03): optional WebIDL arguments with explicit primitive defaults.**
 The pilot applies explicit boolean, integer and floating-point defaults when an optional argument
 is omitted or explicitly undefined; supplied values retain ordinary WebIDL conversion, including
@@ -629,8 +640,9 @@ remain fail-closed. Generator and runtime tests cover false, zero, signed/unsign
 finite and unrestricted floats, nullable null and nullable non-null defaults. Local verification
 passes 23 generator tests, 61 unit + 3 integration + 2 doctests in normal and JIT-less pilot modes,
 52 default unit + 2 doctests, and the integrated servo-script check. Patch 0092 applies to the CP27
-source snapshot; wiki build passes all 82 pages. Cross-platform CI is pending. This remains pilot-only;
-production still uses SpiderMonkey.
+source snapshot; wiki build passes all 82 pages. CI is green: V8 matrix
+(37151335289), Servo bundles/Steam/SDL3/pristine patch validation (37151335249), Android
+(37151335284), and iOS (37151335248). This remains pilot-only; production still uses SpiderMonkey.
 
 **Twenty-fifth checkpoint (2026-10-03): nullable WebIDL operation arguments.** Required nullable
 boolean, numeric, `DOMString`, and `USVString` arguments now generate `Option<T>` native contracts.

@@ -1,3 +1,19 @@
+## 2026-10-03 - V8 migration Phase 4: optional WebIDL string defaults
+
+**Servo files:** components/roves-v8/{build.rs,src/lib.rs,tests/webidl/OptionalStringDefaults.webidl};
+components/script_bindings/codegen/{codegen.py,test_v8.py}.
+**Patch:** 0093-roves-v8-phase4-optional-string-defaults.patch after 0001-0092.
+
+The pilot generates native defaults for optional DOMString, USVString and ByteString operation
+arguments. DOMString is emitted as UTF-16 units, USVString as escaped scalar-valid Rust text, and
+the WebIDL ASCII-only ByteString default as bytes. Nullable string defaults preserve missing,
+null and present-value states. Generator/runtime tests cover backslash literals, supplementary
+Unicode, default and explicit inputs. Local verification passes 24 generator tests; 62 unit + 3
+WebIDL integration + 2 doctests in normal and JIT-less pilot modes; 52 unit + 2 doctests without
+the feature; and the integrated servo-script check. Patch 0093 applies to the CP28 source snapshot.
+The wiki production build passes all 82 pages; commit 462ed36 is published. Cross-platform CI is
+pending.
+
 ## 2026-10-03 - V8 migration Phase 4: optional WebIDL operation defaults
 
 **Servo files:** components/roves-v8/{build.rs,src/lib.rs,tests/webidl/OptionalDefaults.webidl};
@@ -13,7 +29,8 @@ finite wrappers. String, dictionary and other unsupported defaults remain fail-c
 verification passes 23 generator tests; 61 unit + 3 WebIDL integration + 2 doctests in normal and
 JIT-less pilot modes; 52 unit + 2 doctests without the feature; and the integrated servo-script
 check. Patch 0092 applies cleanly to the CP27 source snapshot. The wiki production build passes
-all 82 pages; cross-platform CI is pending.
+all 82 pages. Cross-platform CI is green: V8 37151335289, Servo with six bundle targets plus
+Steam, SDL3 and pristine patch validation 37151335249, Android 37151335284, and iOS 37151335248.
 
 ## 2026-10-03 - V8 migration Phase 4: ByteString WebIDL operation arguments
 

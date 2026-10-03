@@ -61,6 +61,10 @@ pub mod webidl {
     pub mod optional_defaults {
         include!(concat!(env!("OUT_DIR"), "/OptionalDefaultsV8Binding.rs"));
     }
+    #[cfg(test)]
+    pub mod optional_string_defaults {
+        include!(concat!(env!("OUT_DIR"), "/OptionalStringDefaultsV8Binding.rs"));
+    }
 }
 
 use std::sync::Once;
@@ -3290,6 +3294,66 @@ mod tests {
         assert_eq!(runtime.eval_value("defaults.nullableValueDefault(undefined)").unwrap(), Value::Number(3.0));
         assert_eq!(runtime.eval_value("defaults.nullableValueDefault(null)").unwrap(), Value::Number(-1.0));
         assert_eq!(runtime.eval_value("defaults.nullableValueDefault(4)").unwrap(), Value::Number(4.0));
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_optional_string_defaults_preserve_domstring_usvstring_and_bytestring() {
+        use crate::webidl::optional_string_defaults::{
+            OptionalStringDefaultsBinding, OptionalStringDefaultsNative,
+        };
+        use crate::WebIdlOptionalArgument;
+        struct StringDefaults;
+        #[allow(non_snake_case)]
+        impl OptionalStringDefaultsNative for StringDefaults {
+            fn Dom(&self, value: WebIdlOptionalArgument<Vec<u16>>) -> Vec<u16> {
+                match value {
+                    WebIdlOptionalArgument::Missing => Vec::new(),
+                    WebIdlOptionalArgument::Present(value) => value,
+                }
+            }
+            fn Usv(&self, value: WebIdlOptionalArgument<String>) -> String {
+                match value {
+                    WebIdlOptionalArgument::Missing => String::new(),
+                    WebIdlOptionalArgument::Present(value) => value,
+                }
+            }
+            fn Unicode(&self, value: WebIdlOptionalArgument<Vec<u16>>) -> Vec<u16> {
+                match value {
+                    WebIdlOptionalArgument::Missing => Vec::new(),
+                    WebIdlOptionalArgument::Present(value) => value,
+                }
+            }
+            fn Nullable(&self, value: WebIdlOptionalArgument<Option<Vec<u16>>>) -> Option<Vec<u16>> {
+                match value {
+                    WebIdlOptionalArgument::Missing => None,
+                    WebIdlOptionalArgument::Present(value) => value,
+                }
+            }
+            fn Bytes(&self, value: WebIdlOptionalArgument<Vec<u8>>) -> Vec<u16> {
+                match value {
+                    WebIdlOptionalArgument::Missing => Vec::new(),
+                    WebIdlOptionalArgument::Present(value) => value.into_iter().map(u16::from).collect(),
+                }
+            }
+        }
+        let mut runtime = Runtime::new();
+        let binding = OptionalStringDefaultsBinding::<StringDefaults>::install(&mut runtime).unwrap();
+        let handle = binding.create(&mut runtime, StringDefaults);
+        runtime.set_global_property("defaults", &handle).unwrap();
+        let escaped_dom = Value::String("line\\nquote".into());
+        assert_eq!(runtime.eval_value("defaults.dom()").unwrap(), escaped_dom);
+        assert_eq!(runtime.eval_value("defaults.dom(undefined)").unwrap(), Value::String("line\\nquote".into()));
+        assert_eq!(runtime.eval_value("defaults.dom('explicit')").unwrap(), Value::String("explicit".into()));
+        assert_eq!(runtime.eval_value("defaults.usv()").unwrap(), Value::String("rocket \u{1f680}".into()));
+        assert_eq!(runtime.eval_value("defaults.unicode()").unwrap(), Value::String("rocket \u{1f680}".into()));
+        assert_eq!(runtime.eval_value("defaults.nullable()").unwrap(), Value::String("seed".into()));
+        assert_eq!(runtime.eval_value("defaults.nullable(undefined)").unwrap(), Value::String("seed".into()));
+        assert_eq!(runtime.eval_value("defaults.nullable(null)").unwrap(), Value::Null);
+        assert_eq!(runtime.eval_value("defaults.nullable('explicit')").unwrap(), Value::String("explicit".into()));
+        assert_eq!(runtime.eval_value("defaults.bytes()").unwrap(), Value::String("abc".into()));
+        assert_eq!(runtime.eval_value("defaults.bytes(undefined)").unwrap(), Value::String("abc".into()));
+        assert_eq!(runtime.eval_value("defaults.bytes('XYZ')").unwrap(), Value::String("XYZ".into()));
     }
 
     #[cfg(feature = "webidl-pilot")]

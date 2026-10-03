@@ -8322,6 +8322,29 @@ class CGV8BindingRoot(CGThing):
                                     default_expression = float_default("f32")
                                 elif ty.name == "UnrestrictedDouble":
                                     default_expression = float_default("f64")
+                            elif ty.isDOMString() and default_type.isDOMString():
+                                utf16 = default_value.value.encode("utf-16-le", "surrogatepass")
+                                units = [int.from_bytes(utf16[index:index + 2], "little") for index in range(0, len(utf16), 2)]
+                                default_expression = "vec![" + ", ".join(f"{unit}u16" for unit in units) + "]"
+                            elif ty.isUSVString() and default_type.isDOMString():
+                                scalar_values = []
+                                index = 0
+                                string_value = default_value.value
+                                while index < len(string_value):
+                                    codepoint = ord(string_value[index])
+                                    if 0xD800 <= codepoint <= 0xDBFF and index + 1 < len(string_value):
+                                        low = ord(string_value[index + 1])
+                                        if 0xDC00 <= low <= 0xDFFF:
+                                            codepoint = 0x10000 + ((codepoint - 0xD800) << 10) + (low - 0xDC00)
+                                            index += 1
+                                    if 0xD800 <= codepoint <= 0xDFFF:
+                                        codepoint = 0xFFFD
+                                    scalar_values.append(codepoint)
+                                    index += 1
+                                rust_literal = '"' + "".join(f"\\u{{{codepoint:x}}}" for codepoint in scalar_values) + '"'
+                                default_expression = f"{rust_literal}.to_owned()"
+                            elif ty.isByteString() and default_type.isByteString():
+                                default_expression = "vec![" + ", ".join(f"{ord(char)}u8" for char in default_value.value) + "]"
                         if default_expression is None:
                             raise TypeError(f"V8 backend unsupported explicit default for {name}.{member.identifier.name}: {default_value}")
                     if ty.isBoolean():
