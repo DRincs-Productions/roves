@@ -1,3 +1,19 @@
+## 2026-10-03 - V8 migration Phase 4: WebIDL string operation arguments
+
+**Servo files:** `components/roves-v8/{build.rs,src/lib.rs,tests/webidl/StringOperations.webidl}`;
+`components/script_bindings/codegen/{codegen.py,test_v8.py}`.
+**Patch:** `0088-roves-v8-phase4-string-operation-arguments.patch` after 0001-0087.
+
+The opt-in binding now accepts required `DOMString` and `USVString` operation arguments.
+DOMString reaches native Rust as lossless UTF-16 code units (`Vec<u16>`); USVString is converted
+to scalar-valid `String`, replacing unpaired surrogates with U+FFFD. JavaScript ToString runs
+before native dispatch; Symbol throws TypeError, and exceptions raised by user `toString` hooks
+are rethrown unchanged. Omitted required string arguments follow WebIDL conversion of
+`undefined` to the string "undefined". Optional, nullable and ByteString arguments still fail
+closed. 19 generator tests, 57 pilot unit + 3 integration + 2 doctests in normal and JIT-less
+modes, 52 default unit + 2 doctests, and the integrated `servo-script` check pass locally.
+Cross-platform CI has not yet run for this checkpoint. Production still uses SpiderMonkey.
+
 ## 2026-10-03 - V8 migration Phase 4: integer and float WebIDL operation arguments
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `components/roves-v8/tests/webidl/MutablePrimitives.webidl`; `components/script_bindings/codegen/{codegen.py,test_v8.py}`.
@@ -8,9 +24,10 @@ The opt-in binding now converts required arguments of every WebIDL integer width
 signed reinterpretation; non-finite integer inputs become zero. Restricted float rounds to f32 and
 throws TypeError if conversion is non-finite, while unrestricted float retains NaN and infinities.
 Runtime fixtures test wrapping at signed and unsigned boundaries, 64-bit values and float overflow.
-Optional, nullable and string arguments remain fail-closed. Local normal/JIT-less/default runtime
-suites, generator tests and integrated `servo-script` compilation pass. Patch 0087 applies cleanly;
-CI is pending. Production still uses SpiderMonkey, and the wiki checkout is absent.
+Optional and nullable arguments remain fail-closed. Local normal/JIT-less/default runtime suites,
+generator tests and integrated `servo-script` compilation pass. Patch 0087 applies cleanly. CI is
+green: V8 6/6 (37132532003), all six Servo bundles plus Steam and patch validation (37132531959),
+Android (37132531996), and iOS (37132532177). Production still uses SpiderMonkey.
 
 ## 2026-10-03 - V8 migration Phase 4: required numeric WebIDL operation arguments
 

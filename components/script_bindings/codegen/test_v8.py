@@ -100,7 +100,7 @@ class V8GeneratorTests(unittest.TestCase):
                 generate(path, Path(directory) / "output")
 
     def test_unsupported_members_never_silently_disappear(self):
-        for member in ["readonly attribute float value;", "readonly attribute unsigned long long value;", "static readonly attribute boolean valid;", "undefined run(DOMString value);", "[GetterThrows] readonly attribute boolean valid;", "attribute byte value;"]:
+        for member in ["readonly attribute float value;", "readonly attribute unsigned long long value;", "static readonly attribute boolean valid;", "[GetterThrows] readonly attribute boolean valid;", "attribute byte value;"]:
             with self.subTest(member=member):
                 self.assert_unsupported("interface Unsupported { " + member + " };")
 
@@ -203,13 +203,27 @@ class V8GeneratorTests(unittest.TestCase):
             for conversion in ["Byte", "Octet", "Short", "UnsignedShort", "Long", "LongLong", "UnsignedLong", "UnsignedLongLong", "Float", "UnrestrictedFloat", "Double", "UnrestrictedDouble"]:
                 self.assertIn(f"WebIdlArgumentConversion::{conversion}", source)
 
+    def test_required_string_operation_arguments_generate_domstring_and_usvstring_coercions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            webidl = root / "StringOperations.webidl"
+            webidl.write_text(
+                "[Exposed=Window] interface StringOperations { DOMString echoDom(DOMString value); USVString echoUsv(USVString value); };",
+                encoding="utf-8",
+            )
+            source = generate(webidl, root / "out")
+            self.assertIn("fn EchoDom(&self, arg0: Vec<u16>) -> Vec<u16>;", source)
+            self.assertIn("fn EchoUsv(&self, arg0: String) -> String;", source)
+            self.assertIn("WebIdlArgumentConversion::DomString", source)
+            self.assertIn("WebIdlArgumentConversion::UsvString", source)
+
     def test_optional_nullable_and_non_numeric_operation_arguments_fail_closed(self):
-        for signature in ["double run(optional double value);", "double run(double? value);", "double run(DOMString value);"]:
+        for signature in ["double run(optional double value);", "double run(double? value);", "double run(ByteString value);"]:
             with self.subTest(signature=signature):
                 self.assert_unsupported("interface Unsupported { " + signature + " };")
 
     def test_optional_nullable_and_non_boolean_operation_arguments_fail_closed(self):
-        for signature in ["boolean run(optional boolean value);", "boolean run(boolean? value);", "boolean run(DOMString value);", "boolean run(boolean... values);"]:
+        for signature in ["boolean run(optional boolean value);", "boolean run(boolean? value);", "boolean run(ByteString value);", "boolean run(boolean... values);"]:
             with self.subTest(signature=signature):
                 self.assert_unsupported("interface Unsupported { " + signature + " };")
 

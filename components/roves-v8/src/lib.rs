@@ -41,6 +41,10 @@ pub mod webidl {
     pub mod usv_strings {
         include!(concat!(env!("OUT_DIR"), "/UsvStringsV8Binding.rs"));
     }
+    #[cfg(test)]
+    pub mod string_operations {
+        include!(concat!(env!("OUT_DIR"), "/StringOperationsV8Binding.rs"));
+    }
 }
 
 use std::sync::Once;
@@ -246,6 +250,8 @@ pub enum WebIdlArgumentConversion {
     Double,
     UnrestrictedDouble,
     UnsignedLong,
+    DomString,
+    UsvString,
 }
 
 fn convert_webidl_integer(number: f64, bits: u32, signed: bool) -> f64 {
@@ -1173,6 +1179,9 @@ impl Runtime {
                 }
                 let boxed_any: &Box<dyn std::any::Any> = unsafe { &*raw };
 
+                // WebIDL's ToNumber/ToString conversions can run user code and throw. Preserve
+                // that exact exception across the native callback boundary instead of returning
+                // undefined when rusty_v8 reports the failed conversion as `None`.
                 let argument_count = if config.conversions.is_empty() {
                     args.length() as usize
                 } else {
@@ -1240,6 +1249,52 @@ impl Runtime {
                         Some(WebIdlArgumentConversion::UnsignedLong) => {
                             let Some(number) = argument.number_value(scope) else { return; };
                             Value::Number(convert_webidl_integer(number, 32, false))
+                        }
+                        Some(WebIdlArgumentConversion::DomString) => {
+                            if argument.is_symbol() {
+                                throw_type_error(scope, "Cannot convert a Symbol value to a string");
+                                return;
+                            }
+                            let result = {
+                                v8::tc_scope!(let tc_scope, scope);
+                                let scope = tc_scope;
+                                match argument.to_string(scope) {
+                                    Some(string) => {
+                                        let mut utf16 = vec![0; string.length()];
+                                        string.write_v2(scope, 0, &mut utf16, v8::WriteFlags::empty());
+                                        Ok(Value::Utf16String(utf16))
+                                    }
+                                    None => Err(scope.exception()),
+                                }
+                            };
+                            match result {
+                                Ok(value) => value,
+                                Err(Some(exception)) => { scope.throw_exception(exception); return; }
+                                Err(None) => return,
+                            }
+                        }
+                        Some(WebIdlArgumentConversion::UsvString) => {
+                            if argument.is_symbol() {
+                                throw_type_error(scope, "Cannot convert a Symbol value to a string");
+                                return;
+                            }
+                            let result = {
+                                v8::tc_scope!(let tc_scope, scope);
+                                let scope = tc_scope;
+                                match argument.to_string(scope) {
+                                    Some(string) => {
+                                        let mut utf16 = vec![0; string.length()];
+                                        string.write_v2(scope, 0, &mut utf16, v8::WriteFlags::empty());
+                                        Ok(Value::String(String::from_utf16_lossy(&utf16)))
+                                    }
+                                    None => Err(scope.exception()),
+                                }
+                            };
+                            match result {
+                                Ok(value) => value,
+                                Err(Some(exception)) => { scope.throw_exception(exception); return; }
+                                Err(None) => return,
+                            }
                         }
                     };
                     arguments.push(converted);
@@ -2916,6 +2971,31 @@ mod tests {
         assert!(runtime.eval("Number.isNaN(state.optionalUnrestrictedRatioResult())").unwrap() == "true");
         assert!(runtime.eval("state.currentUnrestrictedFloat() === Infinity").unwrap() == "true");
         assert!(runtime.eval("Number.isNaN(state.optionalUnrestrictedFloatResult())").unwrap() == "true");
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_required_string_operation_arguments_preserve_webidl_semantics() {
+        use crate::webidl::string_operations::{StringOperationsBinding, StringOperationsNative};
+        struct EchoStrings;
+        #[allow(non_snake_case)]
+        impl StringOperationsNative for EchoStrings {
+            fn EchoDom(&self, value: Vec<u16>) -> Vec<u16> { value }
+            fn EchoUsv(&self, value: String) -> String { value }
+        }
+
+        let mut runtime = Runtime::new();
+        let binding = StringOperationsBinding::<EchoStrings>::install(&mut runtime).unwrap();
+        let handle = binding.create(&mut runtime, EchoStrings);
+        runtime.set_global_property("strings", &handle).unwrap();
+        assert_eq!(runtime.eval_value("strings.echoDom(123)").unwrap(), Value::String("123".into()));
+        assert_eq!(runtime.eval_value("strings.echoDom({ toString() { return 'coerced'; } })").unwrap(), Value::String("coerced".into()));
+        runtime.eval("globalThis.lone = '\\uD800';").unwrap();
+        assert_eq!(runtime.eval_value("strings.echoDom(lone.charAt(0))").unwrap(), Value::Utf16String(vec![0xD800]));
+        assert_eq!(runtime.eval_value("strings.echoUsv(lone.charAt(0))").unwrap(), Value::String("\u{FFFD}".into()));
+        assert_eq!(runtime.eval_value("strings.echoDom()").unwrap(), Value::String("undefined".into()));
+        assert_eq!(runtime.eval("(() => { try { strings.echoUsv(Symbol()); } catch (e) { return e instanceof TypeError; } })()").unwrap(), "true");
+        assert_eq!(runtime.eval("(() => { try { strings.echoDom({ toString() { throw new RangeError('coercion'); } }); } catch (e) { return e instanceof RangeError && e.message === 'coercion'; } })()").unwrap(), "true");
     }
 
     #[cfg(feature = "webidl-pilot")]

@@ -1,4 +1,4 @@
-# V8 migration - handoff (2026-10-02)
+# V8 migration - handoff (2026-10-03)
 
 Questo file è il punto di ripresa operativo della migrazione V8. Lo stato corrente riportato
 qui prevale sulle note storiche più sotto.
@@ -17,7 +17,7 @@ qui prevale sulle note storiche più sotto.
    in ordine cronologico inverso (la più recente in cima). Le entry dal 2026-09-29 in poi (cerca
    "V8 migration") coprono tutto il lavoro di questa migrazione, checkpoint per checkpoint, con i
    bug reali trovati e come sono stati corretti.
-4. **[`../patches/servo-v0.5.0/`](../patches/servo-v0.5.0/)** — patch numerate `0001` → `0086`,
+4. **[`../patches/servo-v0.5.0/`](../patches/servo-v0.5.0/)** — patch numerate `0001` → `0088`,
    una per checkpoint, applicabili a un checkout pulito del tag Servo pristine (vedi
    `../AGENTS.md` per come funziona il meccanismo patch/vendoring di questo repo).
 5. **[`../components/roves-v8/src/lib.rs`](../components/roves-v8/src/lib.rs)** — il codice
@@ -33,18 +33,13 @@ da questo blocco, fa fede lo stato attuale. L'utente ha richiesto autonomia cont
 testare localmente, avviare CI, correggere i fallimenti e proseguire fino al completamento dei
 criteri in `V8_MIGRATION.md`.
 
-Il checkpoint 19 aggiunge ritorni `boolean?`, `double?` e `unsigned long?` alle operazioni supportate, con `Option<T>` nativo, `Some` convertito nel primitivo JS e `None` in `null`. Fixture e runtime verificano i tre tipi. Passano 15 test Python, runtime pilot normale/jitless, default e `cargo check` integrato. Patch 0083 si applica pulitamente. CI verde: V8 6/6 (37048609736), sei bundle Servo con Steam e patch validation (37048609764), Android (37048609658), iOS (37048609889).
+Il checkpoint 24 aggiunge argomenti obbligatori `DOMString`/`USVString` alle operazioni: `Vec<u16>` lossless per DOMString, `String` scalar-valid per USVString, ToString prima del callback, TypeError su Symbol e propagazione dell'eccezione originale se un hook utente lancia. Argomento omesso diventa la stringa `undefined`. Patch 0088 applica pulitamente. Verifiche locali: 19 test Python; pilot normale/JIT-less ciascuno con 57 unit + 3 integrazioni + 2 doctest; default 52 unit + 2 doctest; check integrato `servo-script` verde. CI cross-platform da avviare dopo il push.
 
-Il checkpoint 23 aggiunge argomenti numerici obbligatori WebIDL per ogni larghezza intera (`byte` fino a `unsigned long long`), oltre a `float` e `unrestricted float`. Le conversioni intere applicano ToNumber, troncamento, modulo 2^N e reinterpretazione con segno; NaN/infinito diventano zero. `float` rifiuta conversioni f32 non finite, `unrestricted float` le conserva. Passano 18 test Python, 56 unit + 3 integrazioni + 2 doctest in pilot normale e JIT-less, 52 unit + 2 doctest default e `cargo check` integrato. Patch 0087 applica pulitamente; CI pendenti. Produzione ancora SpiderMonkey.
+Il checkpoint 23 e stato pubblicato con commit `09ffe10fdcf`; patch 0087 e la CI sono verdi. Aggiunge conversioni degli argomenti numerici WebIDL interi e `float`/`unrestricted float`. Verifica locale: 18 test Python, pilot normale/JIT-less, default e cargo check integrato; run V8 37132532003, Servo 37132531959, Android 37132531996, iOS 37132532177.
 
-Il checkpoint 22 e stato pubblicato su `main` con commit `323649b84f7`; la patch 0086 e presente e si applica pulitamente alla base del checkpoint precedente. Aggiunge coercioni per argomenti richiesti WebIDL `double`, `unrestricted double` e `unsigned long`, accanto a `boolean`. ToNumber avviene in V8 prima della chiamata nativa; `double` rifiuta valori non finiti, `unrestricted double` li conserva e `unsigned long` applica il modulo WebIDL. Argomenti omessi e conversioni da Symbol falliscono prima di entrare nel callback nativo. I tipi optional/nullable e le stringhe sono ancora rifiutati dal generatore.
+Il checkpoint 22 e pubblicato con commit `323649b84f7` e patch 0086; aggiunge argomenti richiesti `double`, `unrestricted double` e `unsigned long`. Omissione e conversioni da Symbol falliscono prima del callback. Passano 18 test Python, runtime normale/JIT-less/default e check integrato; CI verde: V8 37117775121, Servo 37117775170, Android 37117775250, iOS 37117775238. Produzione resta SpiderMonkey.
 
-Verifica locale: 18 test Python; `cargo test -p roves-v8 --features webidl-pilot` e variante `webidl-pilot,jitless` passano entrambe con 56 unit + 3 integrazioni + 2 doctest; il default passa con 52 unit + 2 doctest. `AWS_LC_SYS_NO_ASM=1 cargo check -p servo-script --features v8-bindings-pilot,js_jit --offline --locked` passa (warning preesistenti SpiderMonkey). `git diff --check` e apply-check patch verdi.
-
-CI del commit 323649b84f7 tutta verde: V8 6/6 (run [37117775121](https://github.com/DRincs-Productions/roves/actions/runs/37117775121)); Android ([37117775250](https://github.com/DRincs-Productions/roves/actions/runs/37117775250)); iOS ([37117775238](https://github.com/DRincs-Productions/roves/actions/runs/37117775238)); sei bundle Servo piu Steam, patch validation e SDL3 checks ([37117775170](https://github.com/DRincs-Productions/roves/actions/runs/37117775170)). Tutti i job sono `success` al controllo odierno (2026-10-03 Europe/Rome).
-
-Il checkout `roves-wiki` non e disponibile localmente; aggiornare la wiki se diventa disponibile. Il lavoro resta pilot opt-in: produzione usa SpiderMonkey.
-
+Verifica CP23: `cargo test -p roves-v8 --features webidl-pilot` e la variante `webidl-pilot,jitless` passano con 56 unit + 3 integrazioni + 2 doctest ciascuna; il default passa con 52 unit + 2 doctest. `AWS_LC_SYS_NO_ASM=1 cargo check -p servo-script --features v8-bindings-pilot,js_jit --offline --locked` passa. Patch 0087 si applica pulitamente.
 Il checkpoint 21 corregge la distinzione tra tipi floating-point WebIDL ristretti (`float`/`double`, nativi `FiniteF32/F64`) e `unrestricted float/double`, che conservano NaN e infinito. I tipi finiti non possono essere costruiti con valori non finiti; gli attributi mutabili `double` ora generano TypeError prima di cambiare stato se ToNumber produce NaN o infinito. L-adapter Screen usa il contratto finito sotto feature pilot. Passano 16 test Python, runtime normale/JIT-less/default e `cargo check` integrato di `servo-script`; patch 0085 e CI verdi: V8 6/6 (37108919478), sei bundle Servo con Steam e patch validation (37108919488), Android (37108919483), iOS (37108919477). Wiki non aggiornabile perché checkout `roves-wiki` assente.
 
 Il checkpoint 20 estende i ritorni numerici delle operazioni a `byte`, `octet`, `short`, `unsigned short`, `long`, `long long`, `unsigned long long` e `float`, inclusi `float?` e `long long?`. I numeri WebIDL si mappano al tipo Rust corrispondente e a JavaScript Number; `Option<T>::None` diventa `null`. Passano 16 test Python, 56 unit + 3 integrazioni + 2 doctest in pilot normale e JIT-less, 52 unit + 2 doctest default e `cargo check` integrato. Patch 0084 si applica pulitamente. CI verde: V8 6/6 (37061193384), sei bundle Servo più Steam e patch validation (37061193356), Android (37061193392), iOS (37061193362). Il checkout `roves-wiki` manca, quindi non è stato possibile aggiornare la wiki.

@@ -579,7 +579,18 @@ reject non-finite results (including finite f64 values that overflow f32), while
 float preserves them. Fixture tests cover 8/16/32/64-bit boundaries, float conversion and errors.
 Local verification passes 18 generator tests, 56 unit + 3 WebIDL integration + 2 doctests in normal
 and JIT-less pilot modes, 52 unit + 2 doctests default, and the integrated `servo-script` check.
-Patch 0087 applies cleanly; cross-platform CI is pending. Production remains SpiderMonkey.
+Patch 0087 applies cleanly. CI is green: V8 6/6 (37132532003), all six Servo bundles plus Steam and patch validation (37132531959), Android (37132531996), and iOS (37132532177). Production remains SpiderMonkey.
+
+**Twenty-fourth checkpoint (2026-10-03): string WebIDL operation arguments.** The opt-in
+generator accepts required `DOMString` and `USVString` operation arguments. DOMString is passed to
+native Rust as lossless UTF-16 code units (`Vec<u16>`); USVString becomes a scalar-valid `String`,
+replacing unpaired surrogates with U+FFFD. JavaScript ToString conversion runs before native
+dispatch, Symbol throws TypeError, and exceptions raised by user `toString` hooks are rethrown
+unchanged. Omitted required strings convert `undefined` to the string `"undefined"`. Optional,
+nullable, and ByteString arguments remain fail-closed. Local verification passes 19 generator
+tests, 57 unit + 3 integration + 2 doctests in normal and JIT-less pilot modes, 52 default unit +
+2 doctests, and the integrated `servo-script` check. Patch 0088 applies cleanly; cross-platform CI
+is pending. Production still uses SpiderMonkey.
 
 **Twenty-second checkpoint (2026-10-03): required numeric WebIDL operation arguments.**
 The opt-in generator now accepts required `double`, `unrestricted double`, and `unsigned long`
