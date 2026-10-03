@@ -57,6 +57,10 @@ pub mod webidl {
     pub mod bytestring_operations {
         include!(concat!(env!("OUT_DIR"), "/ByteStringOperationsV8Binding.rs"));
     }
+    #[cfg(test)]
+    pub mod optional_defaults {
+        include!(concat!(env!("OUT_DIR"), "/OptionalDefaultsV8Binding.rs"));
+    }
 }
 
 use std::sync::Once;
@@ -3223,6 +3227,69 @@ mod tests {
         assert!(runtime.eval("values.echo('\\uD800')").unwrap_err().contains("TypeError"));
         assert!(runtime.eval("values.echo(Symbol())").unwrap_err().contains("TypeError"));
         assert_eq!(runtime.eval("(() => { try { values.echo({ toString() { throw new RangeError('bytes'); } }); } catch (e) { return e instanceof RangeError && e.message === 'bytes'; } })()").unwrap(), "true");
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_optional_defaults_apply_only_to_missing_or_undefined_arguments() {
+        use crate::webidl::optional_defaults::{OptionalDefaultsBinding, OptionalDefaultsNative};
+        use crate::{FiniteF64, WebIdlOptionalArgument};
+        struct Defaults;
+        #[allow(non_snake_case)]
+        impl OptionalDefaultsNative for Defaults {
+            fn BooleanDefault(&self, value: WebIdlOptionalArgument<bool>) -> i32 {
+                match value { WebIdlOptionalArgument::Missing => -1, WebIdlOptionalArgument::Present(value) => i32::from(value) }
+            }
+            fn IntegerDefault(&self, value: WebIdlOptionalArgument<i32>) -> i32 {
+                match value { WebIdlOptionalArgument::Missing => -1, WebIdlOptionalArgument::Present(value) => value }
+            }
+            fn UnsignedDefault(&self, value: WebIdlOptionalArgument<u32>) -> u32 {
+                match value { WebIdlOptionalArgument::Missing => u32::MAX, WebIdlOptionalArgument::Present(value) => value }
+            }
+            fn FiniteFloatDefault(&self, value: WebIdlOptionalArgument<crate::FiniteF32>) -> crate::FiniteF32 {
+                match value { WebIdlOptionalArgument::Missing => crate::FiniteF32::new(-1.0).unwrap(), WebIdlOptionalArgument::Present(value) => value }
+            }
+            fn FiniteDefault(&self, value: WebIdlOptionalArgument<FiniteF64>) -> FiniteF64 {
+                match value { WebIdlOptionalArgument::Missing => FiniteF64::new(-1.0).unwrap(), WebIdlOptionalArgument::Present(value) => value }
+            }
+            fn UnrestrictedFloatDefault(&self, value: WebIdlOptionalArgument<f32>) -> f32 {
+                match value { WebIdlOptionalArgument::Missing => f32::NEG_INFINITY, WebIdlOptionalArgument::Present(value) => value }
+            }
+            fn InfinityDefault(&self, value: WebIdlOptionalArgument<f64>) -> f64 {
+                match value { WebIdlOptionalArgument::Missing => f64::NEG_INFINITY, WebIdlOptionalArgument::Present(value) => value }
+            }
+            fn NullableDefault(&self, value: WebIdlOptionalArgument<Option<i32>>) -> i32 {
+                match value { WebIdlOptionalArgument::Missing => -2, WebIdlOptionalArgument::Present(None) => -1, WebIdlOptionalArgument::Present(Some(value)) => value }
+            }
+            fn NullableValueDefault(&self, value: WebIdlOptionalArgument<Option<i32>>) -> i32 {
+                match value { WebIdlOptionalArgument::Missing => -2, WebIdlOptionalArgument::Present(None) => -1, WebIdlOptionalArgument::Present(Some(value)) => value }
+            }
+        }
+        let mut runtime = Runtime::new();
+        let binding = OptionalDefaultsBinding::<Defaults>::install(&mut runtime).unwrap();
+        let handle = binding.create(&mut runtime, Defaults);
+        runtime.set_global_property("defaults", &handle).unwrap();
+        assert_eq!(runtime.eval_value("defaults.booleanDefault()").unwrap(), Value::Number(0.0));
+        assert_eq!(runtime.eval_value("defaults.booleanDefault(undefined)").unwrap(), Value::Number(0.0));
+        assert_eq!(runtime.eval_value("defaults.booleanDefault(true)").unwrap(), Value::Number(1.0));
+        assert_eq!(runtime.eval_value("defaults.booleanDefault(null)").unwrap(), Value::Number(0.0));
+        assert_eq!(runtime.eval_value("defaults.integerDefault()").unwrap(), Value::Number(0.0));
+        assert_eq!(runtime.eval_value("defaults.integerDefault(undefined)").unwrap(), Value::Number(0.0));
+        assert_eq!(runtime.eval_value("defaults.integerDefault(9)").unwrap(), Value::Number(9.0));
+        assert_eq!(runtime.eval_value("defaults.integerDefault(null)").unwrap(), Value::Number(0.0));
+        assert_eq!(runtime.eval_value("defaults.unsignedDefault()").unwrap(), Value::Number(6.0));
+        assert_eq!(runtime.eval_value("defaults.finiteFloatDefault()").unwrap(), Value::Number(2.5));
+        assert_eq!(runtime.eval_value("defaults.finiteDefault()").unwrap(), Value::Number(1.5));
+        assert_eq!(runtime.eval_value("defaults.unrestrictedFloatDefault()").unwrap(), Value::Number(2.5));
+        assert_eq!(runtime.eval_value("defaults.infinityDefault() ").unwrap(), Value::Number(f64::INFINITY));
+        assert_eq!(runtime.eval_value("defaults.nullableDefault()").unwrap(), Value::Number(-1.0));
+        assert_eq!(runtime.eval_value("defaults.nullableDefault(undefined)").unwrap(), Value::Number(-1.0));
+        assert_eq!(runtime.eval_value("defaults.nullableDefault(null)").unwrap(), Value::Number(-1.0));
+        assert_eq!(runtime.eval_value("defaults.nullableDefault(4)").unwrap(), Value::Number(4.0));
+        assert_eq!(runtime.eval_value("defaults.nullableValueDefault()").unwrap(), Value::Number(3.0));
+        assert_eq!(runtime.eval_value("defaults.nullableValueDefault(undefined)").unwrap(), Value::Number(3.0));
+        assert_eq!(runtime.eval_value("defaults.nullableValueDefault(null)").unwrap(), Value::Number(-1.0));
+        assert_eq!(runtime.eval_value("defaults.nullableValueDefault(4)").unwrap(), Value::Number(4.0));
     }
 
     #[cfg(feature = "webidl-pilot")]

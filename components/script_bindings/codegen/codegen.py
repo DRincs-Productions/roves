@@ -37,6 +37,7 @@ from configuration import (
 )
 from WebIDL import (
     BuiltinTypes,
+    IDLValue,
     IDLArgument,
     IDLAttribute,
     IDLBuiltinType,
@@ -8243,7 +8244,7 @@ class CGV8BindingRoot(CGThing):
                     raise TypeError(f"V8 backend only supports single-signature instance operations: {name}.{member.identifier.name}")
                 arguments = signatures[0][1]
                 argument_types = []
-                def add_argument_type(rust_type, conversion, match_arm, nullable, optional):
+                def add_argument_type(rust_type, conversion, match_arm, nullable, optional, default_expression=None):
                     pattern, expression = match_arm.split(" => ", 1)
                     if nullable:
                         rust_type = f"Option<{rust_type}>"
@@ -8251,28 +8252,80 @@ class CGV8BindingRoot(CGThing):
                     if optional:
                         rust_type = f"roves_v8::WebIdlOptionalArgument<{rust_type}>"
                         if nullable:
+                            missing = (
+                                "roves_v8::WebIdlOptionalArgument::Present(None)"
+                                if default_expression == "None"
+                                else f"roves_v8::WebIdlOptionalArgument::Present(Some({default_expression}))"
+                                if default_expression is not None
+                                else "roves_v8::WebIdlOptionalArgument::Missing"
+                            )
                             match_arm = (
-                                "Value::Missing => roves_v8::WebIdlOptionalArgument::Missing, "
+                                f"Value::Missing => {missing}, "
                                 "Value::Null => roves_v8::WebIdlOptionalArgument::Present(None), "
                                 f"{pattern} => roves_v8::WebIdlOptionalArgument::Present(Some({expression}))"
                             )
                         else:
+                            missing = (
+                                f"roves_v8::WebIdlOptionalArgument::Present({default_expression})"
+                                if default_expression is not None
+                                else "roves_v8::WebIdlOptionalArgument::Missing"
+                            )
                             match_arm = (
-                                "Value::Missing => roves_v8::WebIdlOptionalArgument::Missing, "
+                                f"Value::Missing => {missing}, "
                                 f"{pattern} => roves_v8::WebIdlOptionalArgument::Present({expression})"
                             )
                     argument_types.append((rust_type, conversion, match_arm, nullable, optional))
 
                 for argument in arguments:
                     ty = argument.type
-                    if argument.variadic or (argument.optional and argument.defaultValue):
-                        raise TypeError(f"V8 backend only supports optional arguments without explicit defaults: {name}.{member.identifier.name}")
+                    default_value = argument.defaultValue
+                    if argument.variadic:
+                        raise TypeError(f"V8 backend does not support variadic arguments: {name}.{member.identifier.name}")
+                    if default_value is not None and not argument.optional:
+                        raise TypeError(f"V8 backend received a default for a required argument: {name}.{member.identifier.name}")
                     optional = argument.optional
                     nullable = ty.nullable()
                     if nullable:
                         ty = ty.inner
+                    default_expression = None
+                    if default_value is not None:
+                        if isinstance(default_value, IDLNullValue):
+                            if not nullable:
+                                raise TypeError(f"V8 backend null default requires a nullable type: {name}.{member.identifier.name}")
+                            default_expression = "None"
+                        elif isinstance(default_value, IDLValue):
+                            default_type = default_value.type
+                            value = default_value.value
+                            if ty.isBoolean() and default_type.isBoolean():
+                                default_expression = "true" if value else "false"
+                            elif ty.isInteger() and default_type.isInteger():
+                                rust_type = {
+                                    "Byte": "i8", "Octet": "u8", "Short": "i16", "UnsignedShort": "u16",
+                                    "Long": "i32", "UnsignedLong": "u32", "LongLong": "i64", "UnsignedLongLong": "u64",
+                                }.get(ty.name)
+                                if rust_type is not None:
+                                    default_expression = f"{value}{rust_type}"
+                            elif ty.isFloat() and default_type.isFloat():
+                                def float_default(rust_type):
+                                    if value != value:
+                                        return f"{rust_type}::NAN"
+                                    if value == float("inf"):
+                                        return f"{rust_type}::INFINITY"
+                                    if value == float("-inf"):
+                                        return f"{rust_type}::NEG_INFINITY"
+                                    return f"{value!r}{rust_type}"
+                                if ty.name == "Float":
+                                    default_expression = f"roves_v8::FiniteF32::new({float_default('f32')}).expect(\"WebIDL float default is finite\")"
+                                elif ty.name == "Double":
+                                    default_expression = f"roves_v8::FiniteF64::new({float_default('f64')}).expect(\"WebIDL double default is finite\")"
+                                elif ty.name == "UnrestrictedFloat":
+                                    default_expression = float_default("f32")
+                                elif ty.name == "UnrestrictedDouble":
+                                    default_expression = float_default("f64")
+                        if default_expression is None:
+                            raise TypeError(f"V8 backend unsupported explicit default for {name}.{member.identifier.name}: {default_value}")
                     if ty.isBoolean():
-                        add_argument_type("bool", "Boolean", "Value::Bool(value) => *value", nullable, optional)
+                        add_argument_type("bool", "Boolean", "Value::Bool(value) => *value", nullable, optional, default_expression)
                     elif ty.isInteger() and ty.name in {
                         "Byte", "Octet", "Short", "UnsignedShort", "Long", "UnsignedLong",
                         "LongLong", "UnsignedLongLong",
@@ -8284,21 +8337,21 @@ class CGV8BindingRoot(CGThing):
                             "LongLong": ("i64", "LongLong"), "UnsignedLongLong": ("u64", "UnsignedLongLong"),
                         }
                         rust_type, conversion = integer_arguments[ty.name]
-                        add_argument_type(rust_type, conversion, f"Value::Number(value) => *value as {rust_type}", nullable, optional)
+                        add_argument_type(rust_type, conversion, f"Value::Number(value) => *value as {rust_type}", nullable, optional, default_expression)
                     elif ty.isFloat() and ty.name == "Float":
-                        add_argument_type("roves_v8::FiniteF32", "Float", "Value::Number(value) => roves_v8::FiniteF32::new(*value as f32).expect(\"runtime validated finite float\")", nullable, optional)
+                        add_argument_type("roves_v8::FiniteF32", "Float", "Value::Number(value) => roves_v8::FiniteF32::new(*value as f32).expect(\"runtime validated finite float\")", nullable, optional, default_expression)
                     elif ty.isFloat() and ty.name == "UnrestrictedFloat":
-                        add_argument_type("f32", "UnrestrictedFloat", "Value::Number(value) => *value as f32", nullable, optional)
+                        add_argument_type("f32", "UnrestrictedFloat", "Value::Number(value) => *value as f32", nullable, optional, default_expression)
                     elif ty.isFloat() and ty.name == "Double":
-                        add_argument_type("roves_v8::FiniteF64", "Double", "Value::Number(value) => roves_v8::FiniteF64::new(*value).expect(\"runtime validated finite double\")", nullable, optional)
+                        add_argument_type("roves_v8::FiniteF64", "Double", "Value::Number(value) => roves_v8::FiniteF64::new(*value).expect(\"runtime validated finite double\")", nullable, optional, default_expression)
                     elif ty.isFloat() and ty.name == "UnrestrictedDouble":
-                        add_argument_type("f64", "UnrestrictedDouble", "Value::Number(value) => *value", nullable, optional)
+                        add_argument_type("f64", "UnrestrictedDouble", "Value::Number(value) => *value", nullable, optional, default_expression)
                     elif ty.isByteString():
-                        add_argument_type("Vec<u8>", "ByteString", "Value::ByteString(value) => value.clone()", nullable, optional)
+                        add_argument_type("Vec<u8>", "ByteString", "Value::ByteString(value) => value.clone()", nullable, optional, default_expression)
                     elif ty.isDOMString():
-                        add_argument_type("Vec<u16>", "DomString", "Value::Utf16String(value) => value.clone()", nullable, optional)
+                        add_argument_type("Vec<u16>", "DomString", "Value::Utf16String(value) => value.clone()", nullable, optional, default_expression)
                     elif ty.isUSVString():
-                        add_argument_type("String", "UsvString", "Value::String(value) => value.clone()", nullable, optional)
+                        add_argument_type("String", "UsvString", "Value::String(value) => value.clone()", nullable, optional, default_expression)
                     elif ty.isInteger() and ty.name == "UnsignedLong":
                         add_argument_type("u32", "UnsignedLong", "Value::Number(value) => *value as u32", nullable, optional)
                     else:

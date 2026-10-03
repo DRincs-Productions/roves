@@ -26,7 +26,7 @@ V8 migration is in progress. Current releases still use SpiderMonkey; the isolat
 `roves-v8` runtime is being validated with normal and JIT-less tests while WebIDL and
 DOM ownership are migrated. Its opt-in WebIDL pilot currently exercises mutable boolean/numeric
 DOMString/USVString attributes and return values, primitive and nullable primitive operation
-returns (including the WebIDL integer widths and finite versus unrestricted floating-point semantics), and required/optional boolean, numeric and string WebIDL operation parameters with coercion, including nullable forms, optional missing values distinct from null, ByteString's 0–255 code-unit validation, all integer widths, finite/unrestricted floats, and UTF-16-preserving `DOMString` versus scalar-valid `USVString`; it is not the production scripting engine. Shared agent instructions live in [AGENTS.md](./AGENTS.md).
+returns (including the WebIDL integer widths and finite versus unrestricted floating-point semantics), and required/optional boolean, numeric and string WebIDL operation parameters with coercion, including nullable forms, optional missing values distinct from null, explicit boolean/numeric defaults including false, zero, finite floats and unrestricted infinities, ByteString's 0–255 code-unit validation, all integer widths, finite/unrestricted floats, and UTF-16-preserving `DOMString` versus scalar-valid `USVString`; it is not the production scripting engine. Shared agent instructions live in [AGENTS.md](./AGENTS.md).
 
 [CUSTOMIZATIONS.md]: ./CUSTOMIZATIONS.md
 

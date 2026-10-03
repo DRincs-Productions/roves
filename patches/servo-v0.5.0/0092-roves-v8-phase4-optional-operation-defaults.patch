@@ -1,0 +1,301 @@
+diff --git a/components/roves-v8/build.rs b/components/roves-v8/build.rs
+index cc20a646f0d..251065c6dfa 100644
+--- a/components/roves-v8/build.rs
++++ b/components/roves-v8/build.rs
+@@ -49,6 +49,10 @@ fn main() {
+         "cargo:rerun-if-changed={}",
+         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/webidl/ByteStringOperations.webidl").display()
+     );
++    println!(
++        "cargo:rerun-if-changed={}",
++        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/webidl/OptionalDefaults.webidl").display()
++    );
+     let python = env::var("PYTHON").unwrap_or_else(|_| {
+         ["python3", "python"].into_iter().find(|name| {
+             Command::new(name).arg("--version").output().is_ok_and(|output| output.status.success())
+@@ -141,4 +145,13 @@ fn main() {
+         .status()
+         .expect("run ByteString operation WebIDL fixture generator");
+     assert!(status.success(), "ByteString operation WebIDL fixture generation failed");
++    let output = out_dir.join("OptionalDefaultsV8Binding.rs");
++    let status = Command::new(&python)
++        .arg(bindings.join("codegen/run_v8.py"))
++        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/webidl/OptionalDefaults.webidl"))
++        .arg(output)
++        .env("PYTHONDONTWRITEBYTECODE", "1")
++        .status()
++        .expect("run optional default WebIDL fixture generator");
++    assert!(status.success(), "optional default WebIDL fixture generation failed");
+ }
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 4024437e69e..aabccc79dfd 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -57,6 +57,10 @@ pub mod webidl {
+     pub mod bytestring_operations {
+         include!(concat!(env!("OUT_DIR"), "/ByteStringOperationsV8Binding.rs"));
+     }
++    #[cfg(test)]
++    pub mod optional_defaults {
++        include!(concat!(env!("OUT_DIR"), "/OptionalDefaultsV8Binding.rs"));
++    }
+ }
+ 
+ use std::sync::Once;
+@@ -3225,6 +3229,69 @@ mod tests {
+         assert_eq!(runtime.eval("(() => { try { values.echo({ toString() { throw new RangeError('bytes'); } }); } catch (e) { return e instanceof RangeError && e.message === 'bytes'; } })()").unwrap(), "true");
+     }
+ 
++    #[cfg(feature = "webidl-pilot")]
++    #[test]
++    fn generated_optional_defaults_apply_only_to_missing_or_undefined_arguments() {
++        use crate::webidl::optional_defaults::{OptionalDefaultsBinding, OptionalDefaultsNative};
++        use crate::{FiniteF64, WebIdlOptionalArgument};
++        struct Defaults;
++        #[allow(non_snake_case)]
++        impl OptionalDefaultsNative for Defaults {
++            fn BooleanDefault(&self, value: WebIdlOptionalArgument<bool>) -> i32 {
++                match value { WebIdlOptionalArgument::Missing => -1, WebIdlOptionalArgument::Present(value) => i32::from(value) }
++            }
++            fn IntegerDefault(&self, value: WebIdlOptionalArgument<i32>) -> i32 {
++                match value { WebIdlOptionalArgument::Missing => -1, WebIdlOptionalArgument::Present(value) => value }
++            }
++            fn UnsignedDefault(&self, value: WebIdlOptionalArgument<u32>) -> u32 {
++                match value { WebIdlOptionalArgument::Missing => u32::MAX, WebIdlOptionalArgument::Present(value) => value }
++            }
++            fn FiniteFloatDefault(&self, value: WebIdlOptionalArgument<crate::FiniteF32>) -> crate::FiniteF32 {
++                match value { WebIdlOptionalArgument::Missing => crate::FiniteF32::new(-1.0).unwrap(), WebIdlOptionalArgument::Present(value) => value }
++            }
++            fn FiniteDefault(&self, value: WebIdlOptionalArgument<FiniteF64>) -> FiniteF64 {
++                match value { WebIdlOptionalArgument::Missing => FiniteF64::new(-1.0).unwrap(), WebIdlOptionalArgument::Present(value) => value }
++            }
++            fn UnrestrictedFloatDefault(&self, value: WebIdlOptionalArgument<f32>) -> f32 {
++                match value { WebIdlOptionalArgument::Missing => f32::NEG_INFINITY, WebIdlOptionalArgument::Present(value) => value }
++            }
++            fn InfinityDefault(&self, value: WebIdlOptionalArgument<f64>) -> f64 {
++                match value { WebIdlOptionalArgument::Missing => f64::NEG_INFINITY, WebIdlOptionalArgument::Present(value) => value }
++            }
++            fn NullableDefault(&self, value: WebIdlOptionalArgument<Option<i32>>) -> i32 {
++                match value { WebIdlOptionalArgument::Missing => -2, WebIdlOptionalArgument::Present(None) => -1, WebIdlOptionalArgument::Present(Some(value)) => value }
++            }
++            fn NullableValueDefault(&self, value: WebIdlOptionalArgument<Option<i32>>) -> i32 {
++                match value { WebIdlOptionalArgument::Missing => -2, WebIdlOptionalArgument::Present(None) => -1, WebIdlOptionalArgument::Present(Some(value)) => value }
++            }
++        }
++        let mut runtime = Runtime::new();
++        let binding = OptionalDefaultsBinding::<Defaults>::install(&mut runtime).unwrap();
++        let handle = binding.create(&mut runtime, Defaults);
++        runtime.set_global_property("defaults", &handle).unwrap();
++        assert_eq!(runtime.eval_value("defaults.booleanDefault()").unwrap(), Value::Number(0.0));
++        assert_eq!(runtime.eval_value("defaults.booleanDefault(undefined)").unwrap(), Value::Number(0.0));
++        assert_eq!(runtime.eval_value("defaults.booleanDefault(true)").unwrap(), Value::Number(1.0));
++        assert_eq!(runtime.eval_value("defaults.booleanDefault(null)").unwrap(), Value::Number(0.0));
++        assert_eq!(runtime.eval_value("defaults.integerDefault()").unwrap(), Value::Number(0.0));
++        assert_eq!(runtime.eval_value("defaults.integerDefault(undefined)").unwrap(), Value::Number(0.0));
++        assert_eq!(runtime.eval_value("defaults.integerDefault(9)").unwrap(), Value::Number(9.0));
++        assert_eq!(runtime.eval_value("defaults.integerDefault(null)").unwrap(), Value::Number(0.0));
++        assert_eq!(runtime.eval_value("defaults.unsignedDefault()").unwrap(), Value::Number(6.0));
++        assert_eq!(runtime.eval_value("defaults.finiteFloatDefault()").unwrap(), Value::Number(2.5));
++        assert_eq!(runtime.eval_value("defaults.finiteDefault()").unwrap(), Value::Number(1.5));
++        assert_eq!(runtime.eval_value("defaults.unrestrictedFloatDefault()").unwrap(), Value::Number(2.5));
++        assert_eq!(runtime.eval_value("defaults.infinityDefault() ").unwrap(), Value::Number(f64::INFINITY));
++        assert_eq!(runtime.eval_value("defaults.nullableDefault()").unwrap(), Value::Number(-1.0));
++        assert_eq!(runtime.eval_value("defaults.nullableDefault(undefined)").unwrap(), Value::Number(-1.0));
++        assert_eq!(runtime.eval_value("defaults.nullableDefault(null)").unwrap(), Value::Number(-1.0));
++        assert_eq!(runtime.eval_value("defaults.nullableDefault(4)").unwrap(), Value::Number(4.0));
++        assert_eq!(runtime.eval_value("defaults.nullableValueDefault()").unwrap(), Value::Number(3.0));
++        assert_eq!(runtime.eval_value("defaults.nullableValueDefault(undefined)").unwrap(), Value::Number(3.0));
++        assert_eq!(runtime.eval_value("defaults.nullableValueDefault(null)").unwrap(), Value::Number(-1.0));
++        assert_eq!(runtime.eval_value("defaults.nullableValueDefault(4)").unwrap(), Value::Number(4.0));
++    }
++
+     #[cfg(feature = "webidl-pilot")]
+     #[test]
+     fn generated_nullable_domstring_preserves_null_and_utf16_semantics() {
+diff --git a/components/roves-v8/tests/webidl/OptionalDefaults.webidl b/components/roves-v8/tests/webidl/OptionalDefaults.webidl
+new file mode 100644
+index 00000000000..b4b8c68f2ea
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/OptionalDefaults.webidl
+@@ -0,0 +1,11 @@
++[Exposed=Window] interface OptionalDefaults {
++  long booleanDefault(optional boolean value = false);
++  long integerDefault(optional long value = 0);
++  unsigned long unsignedDefault(optional unsigned long value = 6);
++  float finiteFloatDefault(optional float value = 2.5);
++  double finiteDefault(optional double value = 1.5);
++  unrestricted float unrestrictedFloatDefault(optional unrestricted float value = 2.5);
++  unrestricted double infinityDefault(optional unrestricted double value = Infinity);
++  long nullableDefault(optional long? value = null);
++  long nullableValueDefault(optional long? value = 3);
++};
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index 49b45eca425..4ed85fbb5bb 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -37,6 +37,7 @@ from configuration import (
+ )
+ from WebIDL import (
+     BuiltinTypes,
++    IDLValue,
+     IDLArgument,
+     IDLAttribute,
+     IDLBuiltinType,
+@@ -8243,7 +8244,7 @@ class CGV8BindingRoot(CGThing):
+                     raise TypeError(f"V8 backend only supports single-signature instance operations: {name}.{member.identifier.name}")
+                 arguments = signatures[0][1]
+                 argument_types = []
+-                def add_argument_type(rust_type, conversion, match_arm, nullable, optional):
++                def add_argument_type(rust_type, conversion, match_arm, nullable, optional, default_expression=None):
+                     pattern, expression = match_arm.split(" => ", 1)
+                     if nullable:
+                         rust_type = f"Option<{rust_type}>"
+@@ -8251,28 +8252,80 @@ class CGV8BindingRoot(CGThing):
+                     if optional:
+                         rust_type = f"roves_v8::WebIdlOptionalArgument<{rust_type}>"
+                         if nullable:
++                            missing = (
++                                "roves_v8::WebIdlOptionalArgument::Present(None)"
++                                if default_expression == "None"
++                                else f"roves_v8::WebIdlOptionalArgument::Present(Some({default_expression}))"
++                                if default_expression is not None
++                                else "roves_v8::WebIdlOptionalArgument::Missing"
++                            )
+                             match_arm = (
+-                                "Value::Missing => roves_v8::WebIdlOptionalArgument::Missing, "
++                                f"Value::Missing => {missing}, "
+                                 "Value::Null => roves_v8::WebIdlOptionalArgument::Present(None), "
+                                 f"{pattern} => roves_v8::WebIdlOptionalArgument::Present(Some({expression}))"
+                             )
+                         else:
++                            missing = (
++                                f"roves_v8::WebIdlOptionalArgument::Present({default_expression})"
++                                if default_expression is not None
++                                else "roves_v8::WebIdlOptionalArgument::Missing"
++                            )
+                             match_arm = (
+-                                "Value::Missing => roves_v8::WebIdlOptionalArgument::Missing, "
++                                f"Value::Missing => {missing}, "
+                                 f"{pattern} => roves_v8::WebIdlOptionalArgument::Present({expression})"
+                             )
+                     argument_types.append((rust_type, conversion, match_arm, nullable, optional))
+ 
+                 for argument in arguments:
+                     ty = argument.type
+-                    if argument.variadic or (argument.optional and argument.defaultValue):
+-                        raise TypeError(f"V8 backend only supports optional arguments without explicit defaults: {name}.{member.identifier.name}")
++                    default_value = argument.defaultValue
++                    if argument.variadic:
++                        raise TypeError(f"V8 backend does not support variadic arguments: {name}.{member.identifier.name}")
++                    if default_value is not None and not argument.optional:
++                        raise TypeError(f"V8 backend received a default for a required argument: {name}.{member.identifier.name}")
+                     optional = argument.optional
+                     nullable = ty.nullable()
+                     if nullable:
+                         ty = ty.inner
++                    default_expression = None
++                    if default_value is not None:
++                        if isinstance(default_value, IDLNullValue):
++                            if not nullable:
++                                raise TypeError(f"V8 backend null default requires a nullable type: {name}.{member.identifier.name}")
++                            default_expression = "None"
++                        elif isinstance(default_value, IDLValue):
++                            default_type = default_value.type
++                            value = default_value.value
++                            if ty.isBoolean() and default_type.isBoolean():
++                                default_expression = "true" if value else "false"
++                            elif ty.isInteger() and default_type.isInteger():
++                                rust_type = {
++                                    "Byte": "i8", "Octet": "u8", "Short": "i16", "UnsignedShort": "u16",
++                                    "Long": "i32", "UnsignedLong": "u32", "LongLong": "i64", "UnsignedLongLong": "u64",
++                                }.get(ty.name)
++                                if rust_type is not None:
++                                    default_expression = f"{value}{rust_type}"
++                            elif ty.isFloat() and default_type.isFloat():
++                                def float_default(rust_type):
++                                    if value != value:
++                                        return f"{rust_type}::NAN"
++                                    if value == float("inf"):
++                                        return f"{rust_type}::INFINITY"
++                                    if value == float("-inf"):
++                                        return f"{rust_type}::NEG_INFINITY"
++                                    return f"{value!r}{rust_type}"
++                                if ty.name == "Float":
++                                    default_expression = f"roves_v8::FiniteF32::new({float_default('f32')}).expect(\"WebIDL float default is finite\")"
++                                elif ty.name == "Double":
++                                    default_expression = f"roves_v8::FiniteF64::new({float_default('f64')}).expect(\"WebIDL double default is finite\")"
++                                elif ty.name == "UnrestrictedFloat":
++                                    default_expression = float_default("f32")
++                                elif ty.name == "UnrestrictedDouble":
++                                    default_expression = float_default("f64")
++                        if default_expression is None:
++                            raise TypeError(f"V8 backend unsupported explicit default for {name}.{member.identifier.name}: {default_value}")
+                     if ty.isBoolean():
+-                        add_argument_type("bool", "Boolean", "Value::Bool(value) => *value", nullable, optional)
++                        add_argument_type("bool", "Boolean", "Value::Bool(value) => *value", nullable, optional, default_expression)
+                     elif ty.isInteger() and ty.name in {
+                         "Byte", "Octet", "Short", "UnsignedShort", "Long", "UnsignedLong",
+                         "LongLong", "UnsignedLongLong",
+@@ -8284,21 +8337,21 @@ class CGV8BindingRoot(CGThing):
+                             "LongLong": ("i64", "LongLong"), "UnsignedLongLong": ("u64", "UnsignedLongLong"),
+                         }
+                         rust_type, conversion = integer_arguments[ty.name]
+-                        add_argument_type(rust_type, conversion, f"Value::Number(value) => *value as {rust_type}", nullable, optional)
++                        add_argument_type(rust_type, conversion, f"Value::Number(value) => *value as {rust_type}", nullable, optional, default_expression)
+                     elif ty.isFloat() and ty.name == "Float":
+-                        add_argument_type("roves_v8::FiniteF32", "Float", "Value::Number(value) => roves_v8::FiniteF32::new(*value as f32).expect(\"runtime validated finite float\")", nullable, optional)
++                        add_argument_type("roves_v8::FiniteF32", "Float", "Value::Number(value) => roves_v8::FiniteF32::new(*value as f32).expect(\"runtime validated finite float\")", nullable, optional, default_expression)
+                     elif ty.isFloat() and ty.name == "UnrestrictedFloat":
+-                        add_argument_type("f32", "UnrestrictedFloat", "Value::Number(value) => *value as f32", nullable, optional)
++                        add_argument_type("f32", "UnrestrictedFloat", "Value::Number(value) => *value as f32", nullable, optional, default_expression)
+                     elif ty.isFloat() and ty.name == "Double":
+-                        add_argument_type("roves_v8::FiniteF64", "Double", "Value::Number(value) => roves_v8::FiniteF64::new(*value).expect(\"runtime validated finite double\")", nullable, optional)
++                        add_argument_type("roves_v8::FiniteF64", "Double", "Value::Number(value) => roves_v8::FiniteF64::new(*value).expect(\"runtime validated finite double\")", nullable, optional, default_expression)
+                     elif ty.isFloat() and ty.name == "UnrestrictedDouble":
+-                        add_argument_type("f64", "UnrestrictedDouble", "Value::Number(value) => *value", nullable, optional)
++                        add_argument_type("f64", "UnrestrictedDouble", "Value::Number(value) => *value", nullable, optional, default_expression)
+                     elif ty.isByteString():
+-                        add_argument_type("Vec<u8>", "ByteString", "Value::ByteString(value) => value.clone()", nullable, optional)
++                        add_argument_type("Vec<u8>", "ByteString", "Value::ByteString(value) => value.clone()", nullable, optional, default_expression)
+                     elif ty.isDOMString():
+-                        add_argument_type("Vec<u16>", "DomString", "Value::Utf16String(value) => value.clone()", nullable, optional)
++                        add_argument_type("Vec<u16>", "DomString", "Value::Utf16String(value) => value.clone()", nullable, optional, default_expression)
+                     elif ty.isUSVString():
+-                        add_argument_type("String", "UsvString", "Value::String(value) => value.clone()", nullable, optional)
++                        add_argument_type("String", "UsvString", "Value::String(value) => value.clone()", nullable, optional, default_expression)
+                     elif ty.isInteger() and ty.name == "UnsignedLong":
+                         add_argument_type("u32", "UnsignedLong", "Value::Number(value) => *value as u32", nullable, optional)
+                     else:
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index ddf59219f49..f441fd8ebb1 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -251,8 +251,27 @@ class V8GeneratorTests(unittest.TestCase):
+             self.assertIn("WebIdlOptionalArgument::Present(None)", source)
+             self.assertIn("define_webidl_method_with_argument_flags", source)
+ 
++    def test_optional_explicit_primitive_defaults_are_emitted_without_truthiness_loss(self):
++        with tempfile.TemporaryDirectory() as directory:
++            root = Path(directory)
++            webidl = root / "DefaultOperations.webidl"
++            webidl.write_text(
++                "[Exposed=Window] interface DefaultOperations { boolean flag(optional boolean value = false); long count(optional long value = 0); unsigned long size(optional unsigned long value = 6); float single(optional float value = 2.5); double ratio(optional double value = 1.5); unrestricted float unrestrictedSingle(optional unrestricted float value = 2.5); unrestricted double infinity(optional unrestricted double value = Infinity); boolean? nullableFlag(optional boolean? value = null); };",
++                encoding="utf-8",
++            )
++            source = generate(webidl, root / "out")
++            self.assertIn("Present(false)", source)
++            self.assertIn("Present(0i32)", source)
++            self.assertIn("Present(6u32)", source)
++            self.assertIn("Present(roves_v8::FiniteF32::new(2.5f32)", source)
++            self.assertIn("Present(roves_v8::FiniteF64::new(1.5f64)", source)
++            self.assertIn("Present(2.5f32)", source)
++            self.assertIn("Present(f64::INFINITY)", source)
++            self.assertIn("Value::Missing => roves_v8::WebIdlOptionalArgument::Present(None)", source)
++            self.assertIn("Value::Null => roves_v8::WebIdlOptionalArgument::Present(None)", source)
++
+     def test_optional_explicit_defaults_variadics_and_unsupported_types_fail_closed(self):
+-        for signature in ["double run(optional double value = 1);", "double run(double... values);", "double run(object value);"]:
++        for signature in ["double run(optional DOMString value = \"text\");", "double run(double... values);", "double run(object value);"]:
+             with self.subTest(signature=signature):
+                 self.assert_unsupported("interface Unsupported { " + signature + " };")
+ 

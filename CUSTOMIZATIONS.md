@@ -1,3 +1,20 @@
+## 2026-10-03 - V8 migration Phase 4: optional WebIDL operation defaults
+
+**Servo files:** components/roves-v8/{build.rs,src/lib.rs,tests/webidl/OptionalDefaults.webidl};
+components/script_bindings/codegen/{codegen.py,test_v8.py}.
+**Patch:** 0092-roves-v8-phase4-optional-operation-defaults.patch after 0001-0091.
+
+The opt-in generator emits typed defaults for optional boolean, integer and floating-point
+operation arguments, including nullable null and non-null values. Missing and explicit
+undefined select the declared default; explicit values continue through normal WebIDL
+conversion (null still converts normally for non-nullable arguments and remains null for
+nullable arguments). Floating special values use Rust constants; finite types retain their
+finite wrappers. String, dictionary and other unsupported defaults remain fail-closed. Local
+verification passes 23 generator tests; 61 unit + 3 WebIDL integration + 2 doctests in normal and
+JIT-less pilot modes; 52 unit + 2 doctests without the feature; and the integrated servo-script
+check. Patch 0092 applies cleanly to the CP27 source snapshot. The wiki production build passes
+all 82 pages; cross-platform CI is pending.
+
 ## 2026-10-03 - V8 migration Phase 4: ByteString WebIDL operation arguments
 
 **Servo files:** `components/roves-v8/{build.rs,src/lib.rs,tests/webidl/ByteStringOperations.webidl}`;
@@ -9,8 +26,9 @@ arguments, mapping native values to `Vec<u8>`. Runtime ToString conversion check
 are all at most 255 and throws TypeError otherwise; Symbol and user coercion exceptions propagate.
 Defaults and variadics remain fail-closed. Local verification passes 22 generator tests, 60 unit +
 3 integration + 2 doctests in normal and JIT-less pilot modes, 52 default unit + 2 doctests, and
-the integrated `servo-script` check. Patch overlay validation and cross-platform CI are pending.
-Production still uses SpiderMonkey.
+the integrated `servo-script` check. Patch 0091 applies cleanly. CI is green: V8 (37147151024), all
+Servo bundles plus Steam and patch validation (37147151005), Android (37147150994), and iOS
+(37147151023). Production still uses SpiderMonkey.
 
 ## 2026-10-03 - V8 migration Phase 4: optional WebIDL operation arguments
 

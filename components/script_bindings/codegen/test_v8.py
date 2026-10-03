@@ -251,8 +251,27 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn("WebIdlOptionalArgument::Present(None)", source)
             self.assertIn("define_webidl_method_with_argument_flags", source)
 
+    def test_optional_explicit_primitive_defaults_are_emitted_without_truthiness_loss(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            webidl = root / "DefaultOperations.webidl"
+            webidl.write_text(
+                "[Exposed=Window] interface DefaultOperations { boolean flag(optional boolean value = false); long count(optional long value = 0); unsigned long size(optional unsigned long value = 6); float single(optional float value = 2.5); double ratio(optional double value = 1.5); unrestricted float unrestrictedSingle(optional unrestricted float value = 2.5); unrestricted double infinity(optional unrestricted double value = Infinity); boolean? nullableFlag(optional boolean? value = null); };",
+                encoding="utf-8",
+            )
+            source = generate(webidl, root / "out")
+            self.assertIn("Present(false)", source)
+            self.assertIn("Present(0i32)", source)
+            self.assertIn("Present(6u32)", source)
+            self.assertIn("Present(roves_v8::FiniteF32::new(2.5f32)", source)
+            self.assertIn("Present(roves_v8::FiniteF64::new(1.5f64)", source)
+            self.assertIn("Present(2.5f32)", source)
+            self.assertIn("Present(f64::INFINITY)", source)
+            self.assertIn("Value::Missing => roves_v8::WebIdlOptionalArgument::Present(None)", source)
+            self.assertIn("Value::Null => roves_v8::WebIdlOptionalArgument::Present(None)", source)
+
     def test_optional_explicit_defaults_variadics_and_unsupported_types_fail_closed(self):
-        for signature in ["double run(optional double value = 1);", "double run(double... values);", "double run(object value);"]:
+        for signature in ["double run(optional DOMString value = \"text\");", "double run(double... values);", "double run(object value);"]:
             with self.subTest(signature=signature):
                 self.assert_unsupported("interface Unsupported { " + signature + " };")
 
