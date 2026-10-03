@@ -8243,22 +8243,36 @@ class CGV8BindingRoot(CGThing):
                     raise TypeError(f"V8 backend only supports single-signature instance operations: {name}.{member.identifier.name}")
                 arguments = signatures[0][1]
                 argument_types = []
-                def add_argument_type(rust_type, conversion, match_arm, nullable):
+                def add_argument_type(rust_type, conversion, match_arm, nullable, optional):
+                    pattern, expression = match_arm.split(" => ", 1)
                     if nullable:
-                        pattern, expression = match_arm.split(" => ", 1)
                         rust_type = f"Option<{rust_type}>"
                         match_arm = f"Value::Null => None, {pattern} => Some({expression})"
-                    argument_types.append((rust_type, conversion, match_arm, nullable))
+                    if optional:
+                        rust_type = f"roves_v8::WebIdlOptionalArgument<{rust_type}>"
+                        if nullable:
+                            match_arm = (
+                                "Value::Missing => roves_v8::WebIdlOptionalArgument::Missing, "
+                                "Value::Null => roves_v8::WebIdlOptionalArgument::Present(None), "
+                                f"{pattern} => roves_v8::WebIdlOptionalArgument::Present(Some({expression}))"
+                            )
+                        else:
+                            match_arm = (
+                                "Value::Missing => roves_v8::WebIdlOptionalArgument::Missing, "
+                                f"{pattern} => roves_v8::WebIdlOptionalArgument::Present({expression})"
+                            )
+                    argument_types.append((rust_type, conversion, match_arm, nullable, optional))
 
                 for argument in arguments:
                     ty = argument.type
-                    if argument.optional or argument.variadic:
-                        raise TypeError(f"V8 backend only supports required operation arguments: {name}.{member.identifier.name}")
+                    if argument.variadic or (argument.optional and argument.defaultValue):
+                        raise TypeError(f"V8 backend only supports optional arguments without explicit defaults: {name}.{member.identifier.name}")
+                    optional = argument.optional
                     nullable = ty.nullable()
                     if nullable:
                         ty = ty.inner
                     if ty.isBoolean():
-                        add_argument_type("bool", "Boolean", "Value::Bool(value) => *value", nullable)
+                        add_argument_type("bool", "Boolean", "Value::Bool(value) => *value", nullable, optional)
                     elif ty.isInteger() and ty.name in {
                         "Byte", "Octet", "Short", "UnsignedShort", "Long", "UnsignedLong",
                         "LongLong", "UnsignedLongLong",
@@ -8270,21 +8284,21 @@ class CGV8BindingRoot(CGThing):
                             "LongLong": ("i64", "LongLong"), "UnsignedLongLong": ("u64", "UnsignedLongLong"),
                         }
                         rust_type, conversion = integer_arguments[ty.name]
-                        add_argument_type(rust_type, conversion, f"Value::Number(value) => *value as {rust_type}", nullable)
+                        add_argument_type(rust_type, conversion, f"Value::Number(value) => *value as {rust_type}", nullable, optional)
                     elif ty.isFloat() and ty.name == "Float":
-                        add_argument_type("roves_v8::FiniteF32", "Float", "Value::Number(value) => roves_v8::FiniteF32::new(*value as f32).expect(\"runtime validated finite float\")", nullable)
+                        add_argument_type("roves_v8::FiniteF32", "Float", "Value::Number(value) => roves_v8::FiniteF32::new(*value as f32).expect(\"runtime validated finite float\")", nullable, optional)
                     elif ty.isFloat() and ty.name == "UnrestrictedFloat":
-                        add_argument_type("f32", "UnrestrictedFloat", "Value::Number(value) => *value as f32", nullable)
+                        add_argument_type("f32", "UnrestrictedFloat", "Value::Number(value) => *value as f32", nullable, optional)
                     elif ty.isFloat() and ty.name == "Double":
-                        add_argument_type("roves_v8::FiniteF64", "Double", "Value::Number(value) => roves_v8::FiniteF64::new(*value).expect(\"runtime validated finite double\")", nullable)
+                        add_argument_type("roves_v8::FiniteF64", "Double", "Value::Number(value) => roves_v8::FiniteF64::new(*value).expect(\"runtime validated finite double\")", nullable, optional)
                     elif ty.isFloat() and ty.name == "UnrestrictedDouble":
-                        add_argument_type("f64", "UnrestrictedDouble", "Value::Number(value) => *value", nullable)
+                        add_argument_type("f64", "UnrestrictedDouble", "Value::Number(value) => *value", nullable, optional)
                     elif ty.isDOMString():
-                        add_argument_type("Vec<u16>", "DomString", "Value::Utf16String(value) => value.clone()", nullable)
+                        add_argument_type("Vec<u16>", "DomString", "Value::Utf16String(value) => value.clone()", nullable, optional)
                     elif ty.isUSVString():
-                        add_argument_type("String", "UsvString", "Value::String(value) => value.clone()", nullable)
+                        add_argument_type("String", "UsvString", "Value::String(value) => value.clone()", nullable, optional)
                     elif ty.isInteger() and ty.name == "UnsignedLong":
-                        add_argument_type("u32", "UnsignedLong", "Value::Number(value) => *value as u32", nullable)
+                        add_argument_type("u32", "UnsignedLong", "Value::Number(value) => *value as u32", nullable, optional)
                     else:
                         raise TypeError(f"V8 backend unsupported operation argument type: {name}.{member.identifier.name}: {ty}")
                 return_type = signatures[0][0]
@@ -8486,7 +8500,11 @@ class CGV8BindingRoot(CGThing):
             )
             conversions = ", ".join(f"roves_v8::WebIdlArgumentConversion::{argument_type[1]}" for argument_type in argument_types)
             if argument_types:
-                if any(argument_type[3] for argument_type in argument_types):
+                if any(argument_type[4] for argument_type in argument_types):
+                    nullable_arguments = ", ".join(str(argument_type[3]).lower() for argument_type in argument_types)
+                    optional_arguments = ", ".join(str(argument_type[4]).lower() for argument_type in argument_types)
+                    registrations_list.append(f'        runtime.define_webidl_method_with_argument_flags(&interface, "{idl}", {callback}, &[{conversions}], &[{nullable_arguments}], &[{optional_arguments}])?;')
+                elif any(argument_type[3] for argument_type in argument_types):
                     nullable_arguments = ", ".join(str(argument_type[3]).lower() for argument_type in argument_types)
                     registrations_list.append(f'        runtime.define_webidl_method_with_nullable_arguments(&interface, "{idl}", {callback}, &[{conversions}], &[{nullable_arguments}])?;')
                 else:

@@ -49,6 +49,10 @@ pub mod webidl {
     pub mod nullable_operations {
         include!(concat!(env!("OUT_DIR"), "/NullableOperationsV8Binding.rs"));
     }
+    #[cfg(test)]
+    pub mod optional_operations {
+        include!(concat!(env!("OUT_DIR"), "/OptionalOperationsV8Binding.rs"));
+    }
 }
 
 use std::sync::Once;
@@ -87,6 +91,9 @@ fn ensure_platform_initialized() {
 /// no data here to reconstruct the original object from.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
+    /// Internal WebIDL argument state for an omitted optional argument (including explicit
+    /// `undefined`). This is never a JavaScript value and cannot be stored back into V8.
+    Missing,
     Undefined,
     Null,
     Bool(bool),
@@ -258,6 +265,13 @@ pub enum WebIdlArgumentConversion {
     UsvString,
 }
 
+/// WebIDL optional-argument state. `Missing` differs from a present nullable `None`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum WebIdlOptionalArgument<T> {
+    Missing,
+    Present(T),
+}
+
 fn convert_webidl_integer(number: f64, bits: u32, signed: bool) -> f64 {
     if !number.is_finite() || number == 0.0 {
         return 0.0;
@@ -274,6 +288,7 @@ struct WebIdlMethodConfig {
     method: NativeMethod,
     conversions: Vec<WebIdlArgumentConversion>,
     nullable_arguments: Vec<bool>,
+    optional_arguments: Vec<bool>,
 }
 
 /// A callable method, registered via [`Runtime::define_method`]: receives the wrapped Rust value
@@ -1147,6 +1162,24 @@ impl Runtime {
         conversions: &[WebIdlArgumentConversion],
         nullable_arguments: &[bool],
     ) -> Result<(), String> {
+        self.define_webidl_method_with_argument_flags(
+            interface, name, method, conversions, nullable_arguments, &[],
+        )
+    }
+
+    /// Defines a method with per-argument nullable and optional WebIDL semantics. An optional
+    /// argument whose value is omitted or `undefined` reaches the native callback as
+    /// [`Value::Missing`], before nullable conversion; `null` for a nullable argument remains
+    /// [`Value::Null`]. Explicit default values are handled by generated bindings separately.
+    pub fn define_webidl_method_with_argument_flags(
+        &mut self,
+        interface: &Interface,
+        name: &str,
+        method: NativeMethod,
+        conversions: &[WebIdlArgumentConversion],
+        nullable_arguments: &[bool],
+        optional_arguments: &[bool],
+    ) -> Result<(), String> {
         if interface.materialized.get() {
             return Err("interface members must be defined before creating instances or descendants".into());
         }
@@ -1169,6 +1202,9 @@ impl Runtime {
             conversions: conversions.to_vec(),
             nullable_arguments: (0..conversions.len())
                 .map(|index| nullable_arguments.get(index).copied().unwrap_or(false))
+                .collect(),
+            optional_arguments: (0..conversions.len())
+                .map(|index| optional_arguments.get(index).copied().unwrap_or(false))
                 .collect(),
         });
         let config_pointer = (&*config) as *const WebIdlMethodConfig as *mut WebIdlMethodConfig;
@@ -1212,7 +1248,11 @@ impl Runtime {
                 let mut arguments = Vec::with_capacity(argument_count);
                 for i in 0..argument_count {
                     let argument = args.get(i as i32);
-                    let converted = if config.nullable_arguments.get(i).copied().unwrap_or(false)
+                    let converted = if config.optional_arguments.get(i).copied().unwrap_or(false)
+                        && argument.is_undefined()
+                    {
+                        Value::Missing
+                    } else if config.nullable_arguments.get(i).copied().unwrap_or(false)
                         && (argument.is_null() || argument.is_undefined())
                     {
                         Value::Null
@@ -1686,7 +1726,7 @@ fn native_value<'s>(scope: &v8::PinScope<'s, '_>, value: v8::Local<'s, v8::Value
 /// `undefined`; see [`Value`]'s own doc comment.
 fn v8_value<'s>(scope: &v8::PinScope<'s, '_>, value: &Value) -> v8::Local<'s, v8::Value> {
     match value {
-        Value::Undefined | Value::Object => v8::undefined(scope).into(),
+        Value::Missing | Value::Undefined | Value::Object => v8::undefined(scope).into(),
         Value::Null => v8::null(scope).into(),
         Value::Bool(b) => v8::Boolean::new(scope, *b).into(),
         Value::Number(n) => v8::Number::new(scope, *n).into(),
@@ -3061,6 +3101,44 @@ mod tests {
         assert_eq!(runtime.eval_value("values.mix(null, 5)").unwrap(), Value::Null);
         assert_eq!(runtime.eval_value("values.mix(7, 5)").unwrap(), Value::Number(12.0));
         assert_eq!(runtime.eval("(() => { try { values.count(Symbol()); } catch (e) { return e instanceof TypeError; } })()").unwrap(), "true");
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_optional_arguments_distinguish_missing_from_nullable_null() {
+        use crate::webidl::optional_operations::{OptionalOperationsBinding, OptionalOperationsNative};
+        use crate::WebIdlOptionalArgument;
+        struct OptionalValues;
+        #[allow(non_snake_case)]
+        impl OptionalOperationsNative for OptionalValues {
+            fn Classify(&self, value: WebIdlOptionalArgument<Option<i32>>) -> Option<i32> {
+                match value {
+                    WebIdlOptionalArgument::Missing => Some(-1),
+                    WebIdlOptionalArgument::Present(None) => None,
+                    WebIdlOptionalArgument::Present(Some(value)) => Some(value),
+                }
+            }
+            fn Fallback(&self, value: WebIdlOptionalArgument<i32>) -> i32 {
+                match value {
+                    WebIdlOptionalArgument::Missing => -1,
+                    WebIdlOptionalArgument::Present(value) => value,
+                }
+            }
+        }
+
+        let mut runtime = Runtime::new();
+        let binding = OptionalOperationsBinding::<OptionalValues>::install(&mut runtime).unwrap();
+        let handle = binding.create(&mut runtime, OptionalValues);
+        runtime.set_global_property("values", &handle).unwrap();
+
+        assert_eq!(runtime.eval_value("values.classify()").unwrap(), Value::Number(-1.0));
+        assert_eq!(runtime.eval_value("values.classify(undefined)").unwrap(), Value::Number(-1.0));
+        assert_eq!(runtime.eval_value("values.classify(null)").unwrap(), Value::Null);
+        assert_eq!(runtime.eval_value("values.classify('7')").unwrap(), Value::Number(7.0));
+        assert_eq!(runtime.eval_value("values.fallback()").unwrap(), Value::Number(-1.0));
+        assert_eq!(runtime.eval_value("values.fallback(undefined)").unwrap(), Value::Number(-1.0));
+        assert_eq!(runtime.eval_value("values.fallback(null)").unwrap(), Value::Number(0.0));
+        assert_eq!(runtime.eval("(() => { try { values.fallback(Symbol()); } catch (e) { return e instanceof TypeError; } })()").unwrap(), "true");
     }
 
     #[cfg(feature = "webidl-pilot")]

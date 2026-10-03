@@ -594,6 +594,16 @@ tests, 57 unit + 3 integration + 2 doctests in normal and JIT-less pilot modes, 
 6/6 (37137152487), all six Servo bundles plus Steam, SDL3 checks and patch validation (37137152516),
 Android (37137152568), and iOS (37137152538). Production still uses SpiderMonkey.
 
+**Twenty-sixth checkpoint (2026-10-03): optional WebIDL operation arguments without defaults.**
+The pilot represents omitted and explicit-`undefined` optional arguments as the engine-neutral
+`WebIdlOptionalArgument::Missing` state. Optional nullable parameters preserve the distinct
+`Present(None)` state for `null`, and ordinary present values use the established conversion.
+Default-valued optional parameters and variadics remain fail-closed. Runtime fixture coverage
+checks omitted, `undefined`, `null`, coercion and Symbol errors. Local verification passes 21
+generator tests, 59 unit + 3 WebIDL integration + 2 doctests in normal and JIT-less pilot modes,
+52 default unit + 2 doctests, and the integrated `servo-script` check. Patch overlay validation
+and cross-platform CI are pending. This remains pilot-only; production still uses SpiderMonkey.
+
 **Twenty-fifth checkpoint (2026-10-03): nullable WebIDL operation arguments.** Required nullable
 boolean, numeric, `DOMString`, and `USVString` arguments now generate `Option<T>` native contracts.
 For nullable types WebIDL maps both JavaScript `null` and `undefined` to IDL null; other values use

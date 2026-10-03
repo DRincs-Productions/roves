@@ -236,13 +236,35 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn("&[true, false]", source)
             self.assertIn("fn Mix(&self, arg0: Option<i32>, arg1: i32) -> Option<i32>;", source)
 
-    def test_optional_nullable_and_non_numeric_operation_arguments_fail_closed(self):
-        for signature in ["double run(optional double value);", "double run(ByteString? value);"]:
+    def test_optional_arguments_generate_missing_state_and_nullable_presence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            webidl = root / "Operations.webidl"
+            webidl.write_text(
+                "[Exposed=Window] interface Operations { long run(optional long value); long? nullable(optional long? value); };",
+                encoding="utf-8",
+            )
+            source = generate(webidl, root / "out")
+            self.assertIn("WebIdlOptionalArgument<i32>", source)
+            self.assertIn("WebIdlOptionalArgument<Option<i32>>", source)
+            self.assertIn("WebIdlOptionalArgument::Missing", source)
+            self.assertIn("WebIdlOptionalArgument::Present(None)", source)
+            self.assertIn("define_webidl_method_with_argument_flags", source)
+
+    def test_optional_explicit_defaults_variadics_and_unsupported_types_fail_closed(self):
+        for signature in ["double run(optional double value = 1);", "double run(double... values);", "double run(ByteString? value);"]:
             with self.subTest(signature=signature):
                 self.assert_unsupported("interface Unsupported { " + signature + " };")
 
-    def test_optional_nullable_and_non_boolean_operation_arguments_fail_closed(self):
-        for signature in ["boolean run(optional boolean value);", "boolean run(ByteString value);", "boolean run(boolean... values);"]:
+    def test_optional_boolean_arguments_are_supported_and_variadics_fail_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            webidl = root / "Operations.webidl"
+            webidl.write_text("[Exposed=Window] interface Operations { boolean run(optional boolean value); };", encoding="utf-8")
+            source = generate(webidl, root / "out")
+            self.assertIn("WebIdlOptionalArgument<bool>", source)
+            self.assertIn("WebIdlArgumentConversion::Boolean", source)
+        for signature in ["boolean run(ByteString value);", "boolean run(boolean... values);"]:
             with self.subTest(signature=signature):
                 self.assert_unsupported("interface Unsupported { " + signature + " };")
 

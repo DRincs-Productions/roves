@@ -17,7 +17,7 @@ qui prevale sulle note storiche più sotto.
    in ordine cronologico inverso (la più recente in cima). Le entry dal 2026-09-29 in poi (cerca
    "V8 migration") coprono tutto il lavoro di questa migrazione, checkpoint per checkpoint, con i
    bug reali trovati e come sono stati corretti.
-4. **[`../patches/servo-v0.5.0/`](../patches/servo-v0.5.0/)** — patch numerate `0001` → `0088`,
+4. **[`../patches/servo-v0.5.0/`](../patches/servo-v0.5.0/)** — patch numerate `0001` → `0090`,
    una per checkpoint, applicabili a un checkout pulito del tag Servo pristine (vedi
    `../AGENTS.md` per come funziona il meccanismo patch/vendoring di questo repo).
 5. **[`../components/roves-v8/src/lib.rs`](../components/roves-v8/src/lib.rs)** — runtime isolato
@@ -30,7 +30,9 @@ da questo blocco, fa fede lo stato attuale. L'utente ha richiesto autonomia cont
 testare localmente, avviare CI, correggere i fallimenti e proseguire fino al completamento dei
 criteri in `V8_MIGRATION.md`.
 
-Il checkpoint 25 (in lavorazione locale) aggiunge argomenti required nullable per boolean, tipi numerici, `DOMString` e `USVString`: `null`/`undefined` diventano IDL null (`None`), altrimenti si applica la conversione del tipo interno. Una firma mista verifica i flag per posizione. Optional, variadici, ByteString e tipi sconosciuti restano fail-closed. Verifiche locali complete: 20 test Python; pilot normale/JIT-less ciascuno con 58 unit + 3 integrazioni + 2 doctest; default 52 unit + 2 doctest; check integrato `servo-script`; patch 0089 si applica pulitamente. CI cross-platform da avviare dopo il push.
+Il checkpoint 26 aggiunge argomenti opzionali senza default per i tipi supportati. Omissione ed `undefined` diventano `WebIdlOptionalArgument::Missing`; `null` resta distinto e per i tipi nullable produce `Present(None)`. Il generatore rifiuta ancora default espliciti e variadici. Verifiche locali complete: 21 test Python; pilot normale e JIT-less ciascuno con 59 unit + 3 integrazioni + 2 doctest; default 52 unit + 2 doctest; check integrato `servo-script`. Patch 0090 e applicazione completa dell'overlay in preparazione; CI CP26 da avviare dopo il push.
+
+Il checkpoint 25 è pubblicato con commit `6525db014e0`; patch 0089 applica pulitamente. Aggiunge argomenti required nullable per boolean, tipi numerici, `DOMString` e `USVString`: `null`/`undefined` diventano IDL null (`None`), altrimenti si applica la conversione del tipo interno. Verifiche locali complete: 20 test Python; pilot normale/JIT-less ciascuno con 58 unit + 3 integrazioni + 2 doctest; default 52 unit + 2 doctest; check integrato `servo-script`. CI verde: V8 ([37141033528](https://github.com/DRincs-Productions/roves/actions/runs/37141033528)), Servo con sei bundle/Steam/SDL3/patch validation ([37141033571](https://github.com/DRincs-Productions/roves/actions/runs/37141033571)), Android ([37141033507](https://github.com/DRincs-Productions/roves/actions/runs/37141033507)), iOS ([37141033514](https://github.com/DRincs-Productions/roves/actions/runs/37141033514)). Produzione resta SpiderMonkey.
 
 Il checkpoint 24 e pubblicato con commit `02b695f74d0`; patch 0088 applica pulitamente. Aggiunge argomenti obbligatori DOMString/USVString con preservazione UTF-16 o scalar-value, coercizione ToString e propagazione degli errori. Verifiche locali complete: 19 test Python; pilot normale/JIT-less ciascuno con 57 unit + 3 integrazioni + 2 doctest; default 52 unit + 2 doctest; check integrato `servo-script`. Tutte le CI sono verdi: V8 6/6 ([37137152487](https://github.com/DRincs-Productions/roves/actions/runs/37137152487)), Servo bundle/test/Steam/patch validation ([37137152516](https://github.com/DRincs-Productions/roves/actions/runs/37137152516)), Android ([37137152568](https://github.com/DRincs-Productions/roves/actions/runs/37137152568)), iOS ([37137152538](https://github.com/DRincs-Productions/roves/actions/runs/37137152538)). Produzione ancora SpiderMonkey.
 

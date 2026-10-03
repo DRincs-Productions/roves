@@ -1,3 +1,18 @@
+## 2026-10-03 - V8 migration Phase 4: optional WebIDL operation arguments
+
+**Servo files:** `components/roves-v8/{build.rs,src/lib.rs,tests/webidl/OptionalOperations.webidl}`;
+`components/script_bindings/codegen/{codegen.py,test_v8.py}`.
+**Patch:** `0090-roves-v8-phase4-optional-operation-arguments.patch` after 0001-0089.
+
+The opt-in generator supports optional arguments without explicit defaults for the already
+supported boolean, numeric, DOMString and USVString types. Omitted arguments and explicit
+`undefined` become the engine-neutral `WebIdlOptionalArgument::Missing` state; nullable optional
+arguments keep `null` distinct as `Present(None)`. Runtime fixtures cover this distinction,
+normal coercion and Symbol errors. Explicit defaults, variadics and unsupported types remain
+fail-closed. Local verification passes 21 generator tests, 59 unit + 3 integration + 2 doctests
+in normal and JIT-less pilot modes, 52 default unit + 2 doctests, and the integrated `servo-script`
+check. Patch overlay validation and cross-platform CI are pending; production still uses SpiderMonkey.
+
 ## 2026-10-03 - V8 migration Phase 4: nullable WebIDL operation arguments
 
 **Servo files:** `components/roves-v8/{build.rs,src/lib.rs,tests/webidl/NullableOperations.webidl}`;
