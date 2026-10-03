@@ -8249,6 +8249,22 @@ class CGV8BindingRoot(CGThing):
                         raise TypeError(f"V8 backend only supports required operation arguments: {name}.{member.identifier.name}")
                     if ty.isBoolean():
                         argument_types.append(("bool", "Boolean", "Value::Bool(value) => *value"))
+                    elif ty.isInteger() and ty.name in {
+                        "Byte", "Octet", "Short", "UnsignedShort", "Long", "UnsignedLong",
+                        "LongLong", "UnsignedLongLong",
+                    }:
+                        integer_arguments = {
+                            "Byte": ("i8", "Byte"), "Octet": ("u8", "Octet"),
+                            "Short": ("i16", "Short"), "UnsignedShort": ("u16", "UnsignedShort"),
+                            "Long": ("i32", "Long"), "UnsignedLong": ("u32", "UnsignedLong"),
+                            "LongLong": ("i64", "LongLong"), "UnsignedLongLong": ("u64", "UnsignedLongLong"),
+                        }
+                        rust_type, conversion = integer_arguments[ty.name]
+                        argument_types.append((rust_type, conversion, f"Value::Number(value) => *value as {rust_type}"))
+                    elif ty.isFloat() and ty.name == "Float":
+                        argument_types.append(("roves_v8::FiniteF32", "Float", "Value::Number(value) => roves_v8::FiniteF32::new(*value as f32).expect(\"runtime validated finite float\")"))
+                    elif ty.isFloat() and ty.name == "UnrestrictedFloat":
+                        argument_types.append(("f32", "UnrestrictedFloat", "Value::Number(value) => *value as f32"))
                     elif ty.isFloat() and ty.name == "Double":
                         argument_types.append(("roves_v8::FiniteF64", "Double", "Value::Number(value) => roves_v8::FiniteF64::new(*value).expect(\"runtime validated finite double\")"))
                     elif ty.isFloat() and ty.name == "UnrestrictedDouble":

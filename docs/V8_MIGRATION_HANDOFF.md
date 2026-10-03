@@ -35,6 +35,8 @@ criteri in `V8_MIGRATION.md`.
 
 Il checkpoint 19 aggiunge ritorni `boolean?`, `double?` e `unsigned long?` alle operazioni supportate, con `Option<T>` nativo, `Some` convertito nel primitivo JS e `None` in `null`. Fixture e runtime verificano i tre tipi. Passano 15 test Python, runtime pilot normale/jitless, default e `cargo check` integrato. Patch 0083 si applica pulitamente. CI verde: V8 6/6 (37048609736), sei bundle Servo con Steam e patch validation (37048609764), Android (37048609658), iOS (37048609889).
 
+Il checkpoint 23 aggiunge argomenti numerici obbligatori WebIDL per ogni larghezza intera (`byte` fino a `unsigned long long`), oltre a `float` e `unrestricted float`. Le conversioni intere applicano ToNumber, troncamento, modulo 2^N e reinterpretazione con segno; NaN/infinito diventano zero. `float` rifiuta conversioni f32 non finite, `unrestricted float` le conserva. Passano 18 test Python, 56 unit + 3 integrazioni + 2 doctest in pilot normale e JIT-less, 52 unit + 2 doctest default e `cargo check` integrato. Patch 0087 applica pulitamente; CI pendenti. Produzione ancora SpiderMonkey.
+
 Il checkpoint 22 e stato pubblicato su `main` con commit `323649b84f7`; la patch 0086 e presente e si applica pulitamente alla base del checkpoint precedente. Aggiunge coercioni per argomenti richiesti WebIDL `double`, `unrestricted double` e `unsigned long`, accanto a `boolean`. ToNumber avviene in V8 prima della chiamata nativa; `double` rifiuta valori non finiti, `unrestricted double` li conserva e `unsigned long` applica il modulo WebIDL. Argomenti omessi e conversioni da Symbol falliscono prima di entrare nel callback nativo. I tipi optional/nullable e le stringhe sono ancora rifiutati dal generatore.
 
 Verifica locale: 18 test Python; `cargo test -p roves-v8 --features webidl-pilot` e variante `webidl-pilot,jitless` passano entrambe con 56 unit + 3 integrazioni + 2 doctest; il default passa con 52 unit + 2 doctest. `AWS_LC_SYS_NO_ASM=1 cargo check -p servo-script --features v8-bindings-pilot,js_jit --offline --locked` passa (warning preesistenti SpiderMonkey). `git diff --check` e apply-check patch verdi.
@@ -112,7 +114,7 @@ validata. Il pilot non è il runtime di produzione; il piano resta aperto fino a
 - **Fase 3 (ownership/GC)**: completa — `create_wrapped`/`get_wrapped` con finalizzatore
   garantito, sicurezza sui cicli di riferimento dimostrata con test reali di stress GC (fino a
   200 oggetti).
-- **Fase 4 (binding WebIDL/DOM)**: 22 checkpoint del pilot, con generazione WebIDL opt-in in `components/script_bindings/codegen.py`, adapter del DOM `Screen` e runtime verificato in `components/roves-v8`. Copre attributi e operazioni con conversioni primitive e stringhe, metodi e fixture runtime. Nessun percorso di produzione è ancora passato da SpiderMonkey a V8; restano wrapper DOM, interfacce, semantiche WebIDL e integrazione runtime. La fase è aperta.
+- **Fase 4 (binding WebIDL/DOM)**: 23 checkpoint del pilot, con generazione WebIDL opt-in in `components/script_bindings/codegen.py`, adapter del DOM `Screen` e runtime verificato in `components/roves-v8`. Copre attributi e operazioni con conversioni primitive e stringhe, metodi e fixture runtime. Nessun percorso di produzione è ancora passato da SpiderMonkey a V8; restano wrapper DOM, interfacce, semantiche WebIDL e integrazione runtime. La fase è aperta.
 
 **Perché tutto è isolato in `roves-v8` e non in produzione:** ispezionando una build reale
 (`target/debug/build/servo-script-bindings-*/out/Bindings/`) si sono trovati **522 file di

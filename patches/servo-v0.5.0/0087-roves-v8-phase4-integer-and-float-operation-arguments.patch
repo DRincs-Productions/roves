@@ -1,0 +1,227 @@
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 24c5888da60..e290ab1afb4 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -234,11 +234,32 @@ pub enum PrimitiveConversion {
+ #[derive(Clone, Copy, Debug)]
+ pub enum WebIdlArgumentConversion {
+     Boolean,
++    Byte,
++    Octet,
++    Short,
++    UnsignedShort,
++    Long,
++    LongLong,
++    UnsignedLongLong,
++    Float,
++    UnrestrictedFloat,
+     Double,
+     UnrestrictedDouble,
+     UnsignedLong,
+ }
+ 
++fn convert_webidl_integer(number: f64, bits: u32, signed: bool) -> f64 {
++    if !number.is_finite() || number == 0.0 {
++        return 0.0;
++    }
++    let modulus = 2.0_f64.powi(bits as i32);
++    let mut value = number.trunc().rem_euclid(modulus);
++    if signed && value >= modulus / 2.0 {
++        value -= modulus;
++    }
++    value
++}
++
+ struct WebIdlMethodConfig {
+     method: NativeMethod,
+     conversions: Vec<WebIdlArgumentConversion>,
+@@ -1163,6 +1184,47 @@ impl Runtime {
+                     let converted = match config.conversions.get(i) {
+                         None => native_value(scope, argument),
+                         Some(WebIdlArgumentConversion::Boolean) => Value::Bool(argument.boolean_value(scope)),
++                        Some(WebIdlArgumentConversion::Byte) => {
++                            let Some(number) = argument.number_value(scope) else { return; };
++                            Value::Number(convert_webidl_integer(number, 8, true))
++                        }
++                        Some(WebIdlArgumentConversion::Octet) => {
++                            let Some(number) = argument.number_value(scope) else { return; };
++                            Value::Number(convert_webidl_integer(number, 8, false))
++                        }
++                        Some(WebIdlArgumentConversion::Short) => {
++                            let Some(number) = argument.number_value(scope) else { return; };
++                            Value::Number(convert_webidl_integer(number, 16, true))
++                        }
++                        Some(WebIdlArgumentConversion::UnsignedShort) => {
++                            let Some(number) = argument.number_value(scope) else { return; };
++                            Value::Number(convert_webidl_integer(number, 16, false))
++                        }
++                        Some(WebIdlArgumentConversion::Long) => {
++                            let Some(number) = argument.number_value(scope) else { return; };
++                            Value::Number(convert_webidl_integer(number, 32, true))
++                        }
++                        Some(WebIdlArgumentConversion::LongLong) => {
++                            let Some(number) = argument.number_value(scope) else { return; };
++                            Value::Number(convert_webidl_integer(number, 64, true))
++                        }
++                        Some(WebIdlArgumentConversion::UnsignedLongLong) => {
++                            let Some(number) = argument.number_value(scope) else { return; };
++                            Value::Number(convert_webidl_integer(number, 64, false))
++                        }
++                        Some(WebIdlArgumentConversion::Float) => {
++                            let Some(number) = argument.number_value(scope) else { return; };
++                            let value = number as f32;
++                            if !value.is_finite() {
++                                throw_type_error(scope, "float argument must be finite");
++                                return;
++                            }
++                            Value::Number(value as f64)
++                        }
++                        Some(WebIdlArgumentConversion::UnrestrictedFloat) => {
++                            let Some(number) = argument.number_value(scope) else { return; };
++                            Value::Number(number as f32 as f64)
++                        }
+                         Some(WebIdlArgumentConversion::Double) => {
+                             let Some(number) = argument.number_value(scope) else { return; };
+                             if !number.is_finite() {
+@@ -1177,12 +1239,7 @@ impl Runtime {
+                         }
+                         Some(WebIdlArgumentConversion::UnsignedLong) => {
+                             let Some(number) = argument.number_value(scope) else { return; };
+-                            let converted = if !number.is_finite() || number == 0.0 {
+-                                0.0
+-                            } else {
+-                                number.trunc().rem_euclid(4_294_967_296.0)
+-                            };
+-                            Value::Number(converted)
++                            Value::Number(convert_webidl_integer(number, 32, false))
+                         }
+                     };
+                     arguments.push(converted);
+@@ -2741,6 +2798,15 @@ mod tests {
+             fn Add(&self, value: FiniteF64) -> FiniteF64 { FiniteF64::new(self.ratio + value.get()).unwrap() }
+             fn EchoUnrestricted(&self, value: f64) -> f64 { value }
+             fn Wrap(&self, value: u32) -> u32 { value }
++            fn EchoByte(&self, value: i8) -> i8 { value }
++            fn EchoOctet(&self, value: u8) -> u8 { value }
++            fn EchoShort(&self, value: i16) -> i16 { value }
++            fn EchoUnsignedShort(&self, value: u16) -> u16 { value }
++            fn EchoLong(&self, value: i32) -> i32 { value }
++            fn EchoLongLong(&self, value: i64) -> i64 { value }
++            fn EchoUnsignedLongLong(&self, value: u64) -> u64 { value }
++            fn EchoFloat(&self, value: FiniteF32) -> FiniteF32 { value }
++            fn EchoUnrestrictedFloat(&self, value: f32) -> f32 { value }
+             fn CurrentLabel(&self) -> Vec<u16> { vec![0xD800, 0x0041] }
+             fn OptionalLabel(&self) -> Option<Vec<u16>> { None }
+             fn CurrentUsvLabel(&self) -> String { "v8 ?".to_owned() }
+@@ -2780,7 +2846,19 @@ mod tests {
+         assert_eq!(runtime.eval_value("state.add('2.5')").unwrap(), Value::Number(5.0));
+         assert_eq!(runtime.eval_value("state.wrap(-1)").unwrap(), Value::Number(u32::MAX as f64));
+         assert_eq!(runtime.eval_value("state.echoUnrestricted(Infinity)").unwrap(), Value::Number(f64::INFINITY));
+-        for source in ["state.add(Infinity)", "state.add(Symbol())", "state.add()"] {
++        assert_eq!(runtime.eval_value("state.echoByte(128)").unwrap(), Value::Number(-128.0));
++        assert_eq!(runtime.eval_value("state.echoOctet(-1)").unwrap(), Value::Number(255.0));
++        assert_eq!(runtime.eval_value("state.echoOctet(NaN)").unwrap(), Value::Number(0.0));
++        assert_eq!(runtime.eval_value("state.echoShort(32768)").unwrap(), Value::Number(-32768.0));
++        assert_eq!(runtime.eval_value("state.echoUnsignedShort(-1)").unwrap(), Value::Number(65535.0));
++        assert_eq!(runtime.eval_value("state.echoLong(4294967295)").unwrap(), Value::Number(-1.0));
++        assert_eq!(runtime.eval_value("state.echoLong(Infinity)").unwrap(), Value::Number(0.0));
++        assert_eq!(runtime.eval_value("state.echoLongLong(9223372036854775808)").unwrap(), Value::Number(i64::MIN as f64));
++        assert_eq!(runtime.eval_value("state.echoUnsignedLongLong(-1)").unwrap(), Value::Number(u64::MAX as f64));
++        assert_eq!(runtime.eval_value("state.echoFloat('1.5')").unwrap(), Value::Number(1.5));
++        assert_eq!(runtime.eval_value("state.echoUnrestrictedFloat(Infinity)").unwrap(), Value::Number(f64::INFINITY));
++        assert_eq!(runtime.eval("Number.isNaN(state.echoUnrestrictedFloat(NaN))").unwrap(), "true");
++        for source in ["state.add(Infinity)", "state.add(Symbol())", "state.add()", "state.echoFloat(Infinity)", "state.echoFloat(1e300)"] {
+             assert!(runtime.eval(source).unwrap_err().contains("TypeError"), "{source}");
+         }
+ 
+diff --git a/components/roves-v8/tests/webidl/MutablePrimitives.webidl b/components/roves-v8/tests/webidl/MutablePrimitives.webidl
+index 794817c8d81..316182709b3 100644
+--- a/components/roves-v8/tests/webidl/MutablePrimitives.webidl
++++ b/components/roves-v8/tests/webidl/MutablePrimitives.webidl
+@@ -18,6 +18,15 @@ interface MutablePrimitives {
+   double add(double value);
+   unrestricted double echoUnrestricted(unrestricted double value);
+   unsigned long wrap(unsigned long value);
++  byte echoByte(byte value);
++  octet echoOctet(octet value);
++  short echoShort(short value);
++  unsigned short echoUnsignedShort(unsigned short value);
++  long echoLong(long value);
++  long long echoLongLong(long long value);
++  unsigned long long echoUnsignedLongLong(unsigned long long value);
++  float echoFloat(float value);
++  unrestricted float echoUnrestrictedFloat(unrestricted float value);
+   DOMString currentLabel();
+   DOMString? optionalLabel();
+   USVString currentUsvLabel();
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index 1a649fa9f25..3269bf9be6e 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8249,6 +8249,22 @@ class CGV8BindingRoot(CGThing):
+                         raise TypeError(f"V8 backend only supports required operation arguments: {name}.{member.identifier.name}")
+                     if ty.isBoolean():
+                         argument_types.append(("bool", "Boolean", "Value::Bool(value) => *value"))
++                    elif ty.isInteger() and ty.name in {
++                        "Byte", "Octet", "Short", "UnsignedShort", "Long", "UnsignedLong",
++                        "LongLong", "UnsignedLongLong",
++                    }:
++                        integer_arguments = {
++                            "Byte": ("i8", "Byte"), "Octet": ("u8", "Octet"),
++                            "Short": ("i16", "Short"), "UnsignedShort": ("u16", "UnsignedShort"),
++                            "Long": ("i32", "Long"), "UnsignedLong": ("u32", "UnsignedLong"),
++                            "LongLong": ("i64", "LongLong"), "UnsignedLongLong": ("u64", "UnsignedLongLong"),
++                        }
++                        rust_type, conversion = integer_arguments[ty.name]
++                        argument_types.append((rust_type, conversion, f"Value::Number(value) => *value as {rust_type}"))
++                    elif ty.isFloat() and ty.name == "Float":
++                        argument_types.append(("roves_v8::FiniteF32", "Float", "Value::Number(value) => roves_v8::FiniteF32::new(*value as f32).expect(\"runtime validated finite float\")"))
++                    elif ty.isFloat() and ty.name == "UnrestrictedFloat":
++                        argument_types.append(("f32", "UnrestrictedFloat", "Value::Number(value) => *value as f32"))
+                     elif ty.isFloat() and ty.name == "Double":
+                         argument_types.append(("roves_v8::FiniteF64", "Double", "Value::Number(value) => roves_v8::FiniteF64::new(*value).expect(\"runtime validated finite double\")"))
+                     elif ty.isFloat() and ty.name == "UnrestrictedDouble":
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index 7f63bba20af..4062c9254dc 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -100,7 +100,7 @@ class V8GeneratorTests(unittest.TestCase):
+                 generate(path, Path(directory) / "output")
+ 
+     def test_unsupported_members_never_silently_disappear(self):
+-        for member in ["readonly attribute float value;", "readonly attribute unsigned long long value;", "static readonly attribute boolean valid;", "undefined run(long value);", "[GetterThrows] readonly attribute boolean valid;", "attribute byte value;"]:
++        for member in ["readonly attribute float value;", "readonly attribute unsigned long long value;", "static readonly attribute boolean valid;", "undefined run(DOMString value);", "[GetterThrows] readonly attribute boolean valid;", "attribute byte value;"]:
+             with self.subTest(member=member):
+                 self.assert_unsupported("interface Unsupported { " + member + " };")
+ 
+@@ -194,16 +194,14 @@ class V8GeneratorTests(unittest.TestCase):
+             root = Path(directory)
+             webidl = root / "Operations.webidl"
+             webidl.write_text(
+-                "[Exposed=Window] interface Operations { double finite(double value); unrestricted double unrestrictedValue(unrestricted double value); unsigned long modulo(unsigned long value); };",
++                "[Exposed=Window] interface Operations { byte byteValue(byte value); octet octetValue(octet value); short shortValue(short value); unsigned short unsignedShortValue(unsigned short value); long longValue(long value); long long longLongValue(long long value); unsigned long unsignedLongValue(unsigned long value); unsigned long long unsignedLongLongValue(unsigned long long value); float floatValue(float value); unrestricted float unrestrictedFloat(unrestricted float value); double finite(double value); unrestricted double unrestrictedValue(unrestricted double value); };",
+                 encoding="utf-8",
+             )
+             source = generate(webidl, root / "out")
+-            self.assertIn("arg0: roves_v8::FiniteF64", source)
+-            self.assertIn("arg0: f64", source)
+-            self.assertIn("arg0: u32", source)
+-            self.assertIn("WebIdlArgumentConversion::Double", source)
+-            self.assertIn("WebIdlArgumentConversion::UnrestrictedDouble", source)
+-            self.assertIn("WebIdlArgumentConversion::UnsignedLong", source)
++            for rust_type in ["i8", "u8", "i16", "u16", "i32", "i64", "u32", "u64", "roves_v8::FiniteF32", "f32", "roves_v8::FiniteF64", "f64"]:
++                self.assertIn(f"arg0: {rust_type}", source)
++            for conversion in ["Byte", "Octet", "Short", "UnsignedShort", "Long", "LongLong", "UnsignedLong", "UnsignedLongLong", "Float", "UnrestrictedFloat", "Double", "UnrestrictedDouble"]:
++                self.assertIn(f"WebIdlArgumentConversion::{conversion}", source)
+ 
+     def test_optional_nullable_and_non_numeric_operation_arguments_fail_closed(self):
+         for signature in ["double run(optional double value);", "double run(double? value);", "double run(DOMString value);"]:
+@@ -211,7 +209,7 @@ class V8GeneratorTests(unittest.TestCase):
+                 self.assert_unsupported("interface Unsupported { " + signature + " };")
+ 
+     def test_optional_nullable_and_non_boolean_operation_arguments_fail_closed(self):
+-        for signature in ["boolean run(optional boolean value);", "boolean run(boolean? value);", "boolean run(long value);", "boolean run(boolean... values);"]:
++        for signature in ["boolean run(optional boolean value);", "boolean run(boolean? value);", "boolean run(DOMString value);", "boolean run(boolean... values);"]:
+             with self.subTest(signature=signature):
+                 self.assert_unsupported("interface Unsupported { " + signature + " };")
+ 

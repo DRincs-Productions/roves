@@ -18,6 +18,15 @@ interface MutablePrimitives {
   double add(double value);
   unrestricted double echoUnrestricted(unrestricted double value);
   unsigned long wrap(unsigned long value);
+  byte echoByte(byte value);
+  octet echoOctet(octet value);
+  short echoShort(short value);
+  unsigned short echoUnsignedShort(unsigned short value);
+  long echoLong(long value);
+  long long echoLongLong(long long value);
+  unsigned long long echoUnsignedLongLong(unsigned long long value);
+  float echoFloat(float value);
+  unrestricted float echoUnrestrictedFloat(unrestricted float value);
   DOMString currentLabel();
   DOMString? optionalLabel();
   USVString currentUsvLabel();

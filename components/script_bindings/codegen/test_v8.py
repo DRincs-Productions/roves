@@ -100,7 +100,7 @@ class V8GeneratorTests(unittest.TestCase):
                 generate(path, Path(directory) / "output")
 
     def test_unsupported_members_never_silently_disappear(self):
-        for member in ["readonly attribute float value;", "readonly attribute unsigned long long value;", "static readonly attribute boolean valid;", "undefined run(long value);", "[GetterThrows] readonly attribute boolean valid;", "attribute byte value;"]:
+        for member in ["readonly attribute float value;", "readonly attribute unsigned long long value;", "static readonly attribute boolean valid;", "undefined run(DOMString value);", "[GetterThrows] readonly attribute boolean valid;", "attribute byte value;"]:
             with self.subTest(member=member):
                 self.assert_unsupported("interface Unsupported { " + member + " };")
 
@@ -194,16 +194,14 @@ class V8GeneratorTests(unittest.TestCase):
             root = Path(directory)
             webidl = root / "Operations.webidl"
             webidl.write_text(
-                "[Exposed=Window] interface Operations { double finite(double value); unrestricted double unrestrictedValue(unrestricted double value); unsigned long modulo(unsigned long value); };",
+                "[Exposed=Window] interface Operations { byte byteValue(byte value); octet octetValue(octet value); short shortValue(short value); unsigned short unsignedShortValue(unsigned short value); long longValue(long value); long long longLongValue(long long value); unsigned long unsignedLongValue(unsigned long value); unsigned long long unsignedLongLongValue(unsigned long long value); float floatValue(float value); unrestricted float unrestrictedFloat(unrestricted float value); double finite(double value); unrestricted double unrestrictedValue(unrestricted double value); };",
                 encoding="utf-8",
             )
             source = generate(webidl, root / "out")
-            self.assertIn("arg0: roves_v8::FiniteF64", source)
-            self.assertIn("arg0: f64", source)
-            self.assertIn("arg0: u32", source)
-            self.assertIn("WebIdlArgumentConversion::Double", source)
-            self.assertIn("WebIdlArgumentConversion::UnrestrictedDouble", source)
-            self.assertIn("WebIdlArgumentConversion::UnsignedLong", source)
+            for rust_type in ["i8", "u8", "i16", "u16", "i32", "i64", "u32", "u64", "roves_v8::FiniteF32", "f32", "roves_v8::FiniteF64", "f64"]:
+                self.assertIn(f"arg0: {rust_type}", source)
+            for conversion in ["Byte", "Octet", "Short", "UnsignedShort", "Long", "LongLong", "UnsignedLong", "UnsignedLongLong", "Float", "UnrestrictedFloat", "Double", "UnrestrictedDouble"]:
+                self.assertIn(f"WebIdlArgumentConversion::{conversion}", source)
 
     def test_optional_nullable_and_non_numeric_operation_arguments_fail_closed(self):
         for signature in ["double run(optional double value);", "double run(double? value);", "double run(DOMString value);"]:
@@ -211,7 +209,7 @@ class V8GeneratorTests(unittest.TestCase):
                 self.assert_unsupported("interface Unsupported { " + signature + " };")
 
     def test_optional_nullable_and_non_boolean_operation_arguments_fail_closed(self):
-        for signature in ["boolean run(optional boolean value);", "boolean run(boolean? value);", "boolean run(long value);", "boolean run(boolean... values);"]:
+        for signature in ["boolean run(optional boolean value);", "boolean run(boolean? value);", "boolean run(DOMString value);", "boolean run(boolean... values);"]:
             with self.subTest(signature=signature):
                 self.assert_unsupported("interface Unsupported { " + signature + " };")
 

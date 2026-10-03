@@ -1,3 +1,17 @@
+## 2026-10-03 - V8 migration Phase 4: integer and float WebIDL operation arguments
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `components/roves-v8/tests/webidl/MutablePrimitives.webidl`; `components/script_bindings/codegen/{codegen.py,test_v8.py}`.
+**Patch:** `0087-roves-v8-phase4-integer-and-float-operation-arguments.patch` after 0001-0086.
+
+The opt-in binding now converts required arguments of every WebIDL integer width, plus restricted
+`float` and `unrestricted float`. Integer conversion applies ToNumber, truncation, modulo 2^N and
+signed reinterpretation; non-finite integer inputs become zero. Restricted float rounds to f32 and
+throws TypeError if conversion is non-finite, while unrestricted float retains NaN and infinities.
+Runtime fixtures test wrapping at signed and unsigned boundaries, 64-bit values and float overflow.
+Optional, nullable and string arguments remain fail-closed. Local normal/JIT-less/default runtime
+suites, generator tests and integrated `servo-script` compilation pass. Patch 0087 applies cleanly;
+CI is pending. Production still uses SpiderMonkey, and the wiki checkout is absent.
+
 ## 2026-10-03 - V8 migration Phase 4: required numeric WebIDL operation arguments
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `components/roves-v8/tests/webidl/MutablePrimitives.webidl`; `components/script_bindings/codegen/{codegen.py,test_v8.py}`.

@@ -571,6 +571,16 @@ boundary without borrowing Servo's SpiderMonkey-rooted `DOMString` implementatio
 tests pass in default, normal V8 pilot and JIT-less V8 pilot modes; six Python generator tests pass.
 Cross-platform CI is pending.
 
+**Twenty-third checkpoint (2026-10-03): integer and float WebIDL operation arguments.**
+The pilot generator supports all required WebIDL integer argument widths, restricted `float`, and
+`unrestricted float`, alongside checkpoint 22's `double` forms and `unsigned long`. Runtime
+conversion applies ToNumber and the WebIDL integer modulo/sign rules; restricted f32 arguments
+reject non-finite results (including finite f64 values that overflow f32), while unrestricted
+float preserves them. Fixture tests cover 8/16/32/64-bit boundaries, float conversion and errors.
+Local verification passes 18 generator tests, 56 unit + 3 WebIDL integration + 2 doctests in normal
+and JIT-less pilot modes, 52 unit + 2 doctests default, and the integrated `servo-script` check.
+Patch 0087 applies cleanly; cross-platform CI is pending. Production remains SpiderMonkey.
+
 **Twenty-second checkpoint (2026-10-03): required numeric WebIDL operation arguments.**
 The opt-in generator now accepts required `double`, `unrestricted double`, and `unsigned long`
 arguments in addition to booleans. Runtime coercion uses V8 ToNumber before native dispatch;

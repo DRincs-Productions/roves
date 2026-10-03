@@ -234,9 +234,30 @@ pub enum PrimitiveConversion {
 #[derive(Clone, Copy, Debug)]
 pub enum WebIdlArgumentConversion {
     Boolean,
+    Byte,
+    Octet,
+    Short,
+    UnsignedShort,
+    Long,
+    LongLong,
+    UnsignedLongLong,
+    Float,
+    UnrestrictedFloat,
     Double,
     UnrestrictedDouble,
     UnsignedLong,
+}
+
+fn convert_webidl_integer(number: f64, bits: u32, signed: bool) -> f64 {
+    if !number.is_finite() || number == 0.0 {
+        return 0.0;
+    }
+    let modulus = 2.0_f64.powi(bits as i32);
+    let mut value = number.trunc().rem_euclid(modulus);
+    if signed && value >= modulus / 2.0 {
+        value -= modulus;
+    }
+    value
 }
 
 struct WebIdlMethodConfig {
@@ -1163,6 +1184,47 @@ impl Runtime {
                     let converted = match config.conversions.get(i) {
                         None => native_value(scope, argument),
                         Some(WebIdlArgumentConversion::Boolean) => Value::Bool(argument.boolean_value(scope)),
+                        Some(WebIdlArgumentConversion::Byte) => {
+                            let Some(number) = argument.number_value(scope) else { return; };
+                            Value::Number(convert_webidl_integer(number, 8, true))
+                        }
+                        Some(WebIdlArgumentConversion::Octet) => {
+                            let Some(number) = argument.number_value(scope) else { return; };
+                            Value::Number(convert_webidl_integer(number, 8, false))
+                        }
+                        Some(WebIdlArgumentConversion::Short) => {
+                            let Some(number) = argument.number_value(scope) else { return; };
+                            Value::Number(convert_webidl_integer(number, 16, true))
+                        }
+                        Some(WebIdlArgumentConversion::UnsignedShort) => {
+                            let Some(number) = argument.number_value(scope) else { return; };
+                            Value::Number(convert_webidl_integer(number, 16, false))
+                        }
+                        Some(WebIdlArgumentConversion::Long) => {
+                            let Some(number) = argument.number_value(scope) else { return; };
+                            Value::Number(convert_webidl_integer(number, 32, true))
+                        }
+                        Some(WebIdlArgumentConversion::LongLong) => {
+                            let Some(number) = argument.number_value(scope) else { return; };
+                            Value::Number(convert_webidl_integer(number, 64, true))
+                        }
+                        Some(WebIdlArgumentConversion::UnsignedLongLong) => {
+                            let Some(number) = argument.number_value(scope) else { return; };
+                            Value::Number(convert_webidl_integer(number, 64, false))
+                        }
+                        Some(WebIdlArgumentConversion::Float) => {
+                            let Some(number) = argument.number_value(scope) else { return; };
+                            let value = number as f32;
+                            if !value.is_finite() {
+                                throw_type_error(scope, "float argument must be finite");
+                                return;
+                            }
+                            Value::Number(value as f64)
+                        }
+                        Some(WebIdlArgumentConversion::UnrestrictedFloat) => {
+                            let Some(number) = argument.number_value(scope) else { return; };
+                            Value::Number(number as f32 as f64)
+                        }
                         Some(WebIdlArgumentConversion::Double) => {
                             let Some(number) = argument.number_value(scope) else { return; };
                             if !number.is_finite() {
@@ -1177,12 +1239,7 @@ impl Runtime {
                         }
                         Some(WebIdlArgumentConversion::UnsignedLong) => {
                             let Some(number) = argument.number_value(scope) else { return; };
-                            let converted = if !number.is_finite() || number == 0.0 {
-                                0.0
-                            } else {
-                                number.trunc().rem_euclid(4_294_967_296.0)
-                            };
-                            Value::Number(converted)
+                            Value::Number(convert_webidl_integer(number, 32, false))
                         }
                     };
                     arguments.push(converted);
@@ -2741,6 +2798,15 @@ mod tests {
             fn Add(&self, value: FiniteF64) -> FiniteF64 { FiniteF64::new(self.ratio + value.get()).unwrap() }
             fn EchoUnrestricted(&self, value: f64) -> f64 { value }
             fn Wrap(&self, value: u32) -> u32 { value }
+            fn EchoByte(&self, value: i8) -> i8 { value }
+            fn EchoOctet(&self, value: u8) -> u8 { value }
+            fn EchoShort(&self, value: i16) -> i16 { value }
+            fn EchoUnsignedShort(&self, value: u16) -> u16 { value }
+            fn EchoLong(&self, value: i32) -> i32 { value }
+            fn EchoLongLong(&self, value: i64) -> i64 { value }
+            fn EchoUnsignedLongLong(&self, value: u64) -> u64 { value }
+            fn EchoFloat(&self, value: FiniteF32) -> FiniteF32 { value }
+            fn EchoUnrestrictedFloat(&self, value: f32) -> f32 { value }
             fn CurrentLabel(&self) -> Vec<u16> { vec![0xD800, 0x0041] }
             fn OptionalLabel(&self) -> Option<Vec<u16>> { None }
             fn CurrentUsvLabel(&self) -> String { "v8 ?".to_owned() }
@@ -2780,7 +2846,19 @@ mod tests {
         assert_eq!(runtime.eval_value("state.add('2.5')").unwrap(), Value::Number(5.0));
         assert_eq!(runtime.eval_value("state.wrap(-1)").unwrap(), Value::Number(u32::MAX as f64));
         assert_eq!(runtime.eval_value("state.echoUnrestricted(Infinity)").unwrap(), Value::Number(f64::INFINITY));
-        for source in ["state.add(Infinity)", "state.add(Symbol())", "state.add()"] {
+        assert_eq!(runtime.eval_value("state.echoByte(128)").unwrap(), Value::Number(-128.0));
+        assert_eq!(runtime.eval_value("state.echoOctet(-1)").unwrap(), Value::Number(255.0));
+        assert_eq!(runtime.eval_value("state.echoOctet(NaN)").unwrap(), Value::Number(0.0));
+        assert_eq!(runtime.eval_value("state.echoShort(32768)").unwrap(), Value::Number(-32768.0));
+        assert_eq!(runtime.eval_value("state.echoUnsignedShort(-1)").unwrap(), Value::Number(65535.0));
+        assert_eq!(runtime.eval_value("state.echoLong(4294967295)").unwrap(), Value::Number(-1.0));
+        assert_eq!(runtime.eval_value("state.echoLong(Infinity)").unwrap(), Value::Number(0.0));
+        assert_eq!(runtime.eval_value("state.echoLongLong(9223372036854775808)").unwrap(), Value::Number(i64::MIN as f64));
+        assert_eq!(runtime.eval_value("state.echoUnsignedLongLong(-1)").unwrap(), Value::Number(u64::MAX as f64));
+        assert_eq!(runtime.eval_value("state.echoFloat('1.5')").unwrap(), Value::Number(1.5));
+        assert_eq!(runtime.eval_value("state.echoUnrestrictedFloat(Infinity)").unwrap(), Value::Number(f64::INFINITY));
+        assert_eq!(runtime.eval("Number.isNaN(state.echoUnrestrictedFloat(NaN))").unwrap(), "true");
+        for source in ["state.add(Infinity)", "state.add(Symbol())", "state.add()", "state.echoFloat(Infinity)", "state.echoFloat(1e300)"] {
             assert!(runtime.eval(source).unwrap_err().contains("TypeError"), "{source}");
         }
 
