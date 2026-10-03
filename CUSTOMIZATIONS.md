@@ -9,7 +9,7 @@ dispatch; restricted doubles reject non-finite values with TypeError, unrestrict
 them, and unsigned long applies WebIDL modulo conversion. Omitted required arguments use `undefined`
 conversion and throw for restricted double; Symbol coercion errors propagate without entering native
 code. Runtime fixtures cover the conversions and generator tests ensure unsupported optional,
-nullable, and string forms still fail closed. This remains pilot-only; production uses SpiderMonkey.
+nullable, and string forms still fail closed. This remains pilot-only; production uses SpiderMonkey. CI verde: V8 6/6 (37117775121), sei bundle Servo con Steam e patch validation (37117775170), Android (37117775250) e iOS (37117775238).
 The wiki checkout is absent.
 
 ## 2026-10-03 - V8 migration Phase 4: restricted and unrestricted WebIDL floating-point values

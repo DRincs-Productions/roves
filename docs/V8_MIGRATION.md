@@ -579,7 +579,7 @@ uses modulo 2^32. Omitted required double arguments and Symbol conversions throw
 dispatch. Runtime fixtures exercise strings, Infinity, modulo wrapping, omitted values, and
 conversion errors; unsupported optional, nullable, and string arguments remain fail-closed.
 Local generator and normal/JIT-less/default runtime tests pass, as does the integrated
-`servo-script` check. Patch 0086 and cross-platform CI are pending. Production remains SpiderMonkey.
+`servo-script` check. Patch 0086 applies cleanly. CI verde: V8 6/6 (37117775121), sei bundle Servo con Steam e patch validation (37117775170), Android (37117775250) e iOS (37117775238). Production remains SpiderMonkey.
 
 **Twenty-first checkpoint (2026-10-03): finite and unrestricted WebIDL floating-point semantics.**
 The generated contract distinguishes restricted `float`/`double` from `unrestricted float`/
