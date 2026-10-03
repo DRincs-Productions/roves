@@ -1,3 +1,17 @@
+## 2026-10-03 - V8 migration Phase 4: required numeric WebIDL operation arguments
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `components/roves-v8/tests/webidl/MutablePrimitives.webidl`; `components/script_bindings/codegen/{codegen.py,test_v8.py}`.
+**Patch:** `0086-roves-v8-phase4-numeric-operation-arguments.patch` after 0001-0085.
+
+The opt-in generated binding accepts required `double`, `unrestricted double`, and `unsigned long`
+operation arguments alongside required booleans. V8 performs JavaScript ToNumber before native
+dispatch; restricted doubles reject non-finite values with TypeError, unrestricted doubles preserve
+them, and unsigned long applies WebIDL modulo conversion. Omitted required arguments use `undefined`
+conversion and throw for restricted double; Symbol coercion errors propagate without entering native
+code. Runtime fixtures cover the conversions and generator tests ensure unsupported optional,
+nullable, and string forms still fail closed. This remains pilot-only; production uses SpiderMonkey.
+The wiki checkout is absent.
+
 ## 2026-10-03 - V8 migration Phase 4: restricted and unrestricted WebIDL floating-point values
 
 **Servo files:** `Cargo.lock`; `components/roves-v8/{src/lib.rs,tests/webidl.rs,tests/webidl/MutablePrimitives.webidl}`; `components/script/{Cargo.toml,dom/screen.rs}`; `components/script_bindings/codegen/{codegen.py,test_v8.py}`.
@@ -10,8 +24,10 @@ returns. Unrestricted results keep the full IEEE-754 range. Mutable `double` att
 NaN and infinities with `TypeError` before mutating native state; nullable `null` remains direct
 IDL null. Servo's `Screen` adapter wraps its existing finite dimensions in the engine-neutral
 contract, and the pilot feature explicitly activates the optional runtime dependency. Local
-normal/JIT-less/default tests and the integrated `servo-script` check pass. The wiki checkout is
-not present; this change does not alter `mach build`/`mach bundle` flags or output.
+normal/JIT-less/default tests and the integrated `servo-script` check pass. CI is green: V8
+matrix 6/6 (37108919478), all six Servo bundles plus Steam and patch validation (37108919488),
+Android (37108919483), and iOS (37108919477). The wiki checkout is not present; this change does not
+alter `mach build`/`mach bundle` flags or output.
 ## 2026-10-02 - V8 migration Phase 4: integer and float WebIDL operation returns
 
 **Servo files:** `components/roves-v8/{src/lib.rs,tests/webidl/MutablePrimitives.webidl}`;

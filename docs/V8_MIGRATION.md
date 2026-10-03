@@ -571,6 +571,16 @@ boundary without borrowing Servo's SpiderMonkey-rooted `DOMString` implementatio
 tests pass in default, normal V8 pilot and JIT-less V8 pilot modes; six Python generator tests pass.
 Cross-platform CI is pending.
 
+**Twenty-second checkpoint (2026-10-03): required numeric WebIDL operation arguments.**
+The opt-in generator now accepts required `double`, `unrestricted double`, and `unsigned long`
+arguments in addition to booleans. Runtime coercion uses V8 ToNumber before native dispatch;
+restricted doubles reject NaN/infinities, unrestricted doubles preserve them, and unsigned long
+uses modulo 2^32. Omitted required double arguments and Symbol conversions throw before native
+dispatch. Runtime fixtures exercise strings, Infinity, modulo wrapping, omitted values, and
+conversion errors; unsupported optional, nullable, and string arguments remain fail-closed.
+Local generator and normal/JIT-less/default runtime tests pass, as does the integrated
+`servo-script` check. Patch 0086 and cross-platform CI are pending. Production remains SpiderMonkey.
+
 **Twenty-first checkpoint (2026-10-03): finite and unrestricted WebIDL floating-point semantics.**
 The generated contract distinguishes restricted `float`/`double` from `unrestricted float`/
 `unrestricted double`. Engine-neutral `FiniteF32`/`FiniteF64` wrappers reject NaN and infinities at
@@ -580,7 +590,7 @@ conversion now throws `TypeError` for non-finite results before native mutation,
 `null` remains IDL null. Servo's `Screen` adapter uses the finite contract, activated only under
 the pilot feature. Local validation: 16 generator tests; 56 unit + 3 WebIDL integration + 2
 doctests in normal and JIT-less pilot modes; 52 unit + 2 doctests default; `cargo check` of
-`servo-script` with V8 pilot and JIT features. Patch 0085 and CI are pending. Production remains
+`servo-script` with V8 pilot and JIT features. Patch 0085 applies cleanly. CI is green: V8 matrix 6/6 (37108919478), all six Servo bundles plus Steam and patch validation (37108919488), Android (37108919483), and iOS (37108919477). Production remains
 SpiderMonkey.
 **Twentieth checkpoint (2026-10-02): numeric WebIDL operation returns.** Supported operations
 now return `byte`, `octet`, `short`, `unsigned short`, `long`, `long long`, `unsigned long long`,

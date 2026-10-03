@@ -189,6 +189,27 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn("native.Accepts(arg0)", source)
             self.assertIn("native.Combine(arg0, arg1)", source)
 
+    def test_operations_generate_required_numeric_argument_coercions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            webidl = root / "Operations.webidl"
+            webidl.write_text(
+                "[Exposed=Window] interface Operations { double finite(double value); unrestricted double unrestrictedValue(unrestricted double value); unsigned long modulo(unsigned long value); };",
+                encoding="utf-8",
+            )
+            source = generate(webidl, root / "out")
+            self.assertIn("arg0: roves_v8::FiniteF64", source)
+            self.assertIn("arg0: f64", source)
+            self.assertIn("arg0: u32", source)
+            self.assertIn("WebIdlArgumentConversion::Double", source)
+            self.assertIn("WebIdlArgumentConversion::UnrestrictedDouble", source)
+            self.assertIn("WebIdlArgumentConversion::UnsignedLong", source)
+
+    def test_optional_nullable_and_non_numeric_operation_arguments_fail_closed(self):
+        for signature in ["double run(optional double value);", "double run(double? value);", "double run(DOMString value);"]:
+            with self.subTest(signature=signature):
+                self.assert_unsupported("interface Unsupported { " + signature + " };")
+
     def test_optional_nullable_and_non_boolean_operation_arguments_fail_closed(self):
         for signature in ["boolean run(optional boolean value);", "boolean run(boolean? value);", "boolean run(long value);", "boolean run(boolean... values);"]:
             with self.subTest(signature=signature):

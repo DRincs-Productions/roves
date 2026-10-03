@@ -15,6 +15,9 @@ interface MutablePrimitives {
   unrestricted float? optionalUnrestrictedFloatResult();
   unsigned long currentCount();
   boolean accepts(boolean value);
+  double add(double value);
+  unrestricted double echoUnrestricted(unrestricted double value);
+  unsigned long wrap(unsigned long value);
   DOMString currentLabel();
   DOMString? optionalLabel();
   USVString currentUsvLabel();

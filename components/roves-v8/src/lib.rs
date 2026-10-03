@@ -158,6 +158,8 @@ pub struct Runtime {
     /// Keeps callbacks armed until they have actually completed. An empty weak handle
     /// alone is insufficient: first-pass GC may clear it before second-pass finalization.
     wrapped_finalizers: Vec<WrappedFinalizer>,
+    /// Per-method callback data stays alive as long as this isolate can invoke the callbacks.
+    method_configs: Vec<Box<WebIdlMethodConfig>>,
 }
 
 struct WrappedFinalizer {
@@ -228,6 +230,20 @@ pub enum PrimitiveConversion {
     NullableUsvString,
 }
 
+/// Required WebIDL operation argument coercions supported by the generated V8 pilot.
+#[derive(Clone, Copy, Debug)]
+pub enum WebIdlArgumentConversion {
+    Boolean,
+    Double,
+    UnrestrictedDouble,
+    UnsignedLong,
+}
+
+struct WebIdlMethodConfig {
+    method: NativeMethod,
+    conversions: Vec<WebIdlArgumentConversion>,
+}
+
 /// A callable method, registered via [`Runtime::define_method`]: receives the wrapped Rust value
 /// of whichever instance it was called on (`node.someMethod()`) plus its JS arguments already
 /// converted to [`Value`], and returns a [`Value`]. Same plain-function-pointer restriction as
@@ -255,6 +271,7 @@ impl Runtime {
             isolate,
             context,
             wrapped_finalizers: Vec::new(),
+            method_configs: Vec::new(),
         }
     }
 
@@ -1071,6 +1088,19 @@ impl Runtime {
         name: &str,
         method: NativeMethod,
     ) -> Result<(), String> {
+        self.define_webidl_method(interface, name, method, &[])
+    }
+
+    /// Defines a method whose arguments are converted using the listed required WebIDL types.
+    /// Extra JavaScript arguments are ignored by the generated binding; omitted arguments are
+    /// converted from `undefined` according to the declared type.
+    pub fn define_webidl_method(
+        &mut self,
+        interface: &Interface,
+        name: &str,
+        method: NativeMethod,
+        conversions: &[WebIdlArgumentConversion],
+    ) -> Result<(), String> {
         if interface.materialized.get() {
             return Err("interface members must be defined before creating instances or descendants".into());
         }
@@ -1086,7 +1116,15 @@ impl Runtime {
         let Some(key) = v8::String::new(scope, name) else {
             return Err(format!("{name:?} is not valid as a method name string"));
         };
-        let external_data = v8::External::new(scope, method as *mut std::ffi::c_void);
+        // Keep the immutable config alive for the isolate's lifetime. Box preserves its address
+        // while the owning vector grows, and the isolate drops before these entries.
+        let config = Box::new(WebIdlMethodConfig {
+            method,
+            conversions: conversions.to_vec(),
+        });
+        let config_pointer = (&*config) as *const WebIdlMethodConfig as *mut WebIdlMethodConfig;
+        self.method_configs.push(config);
+        let external_data = v8::External::new(scope, config_pointer as *mut std::ffi::c_void);
 
         let function_template = v8::FunctionTemplate::builder(
             |scope: &mut v8::PinScope,
@@ -1096,9 +1134,8 @@ impl Runtime {
                 let Ok(external) = v8::Local::<v8::External>::try_from(data) else {
                     return;
                 };
-                // SAFETY: `external`'s value is exactly the `NativeMethod` pointer
-                // `define_method` stored below, cast back to its original type.
-                let method: NativeMethod = unsafe { std::mem::transmute(external.value()) };
+                // SAFETY: the External points to the config allocated for this method template.
+                let config = unsafe { &*(external.value() as *const WebIdlMethodConfig) };
 
                 let this = args.this();
                 if this.internal_field_count() < 1 {
@@ -1115,11 +1152,42 @@ impl Runtime {
                 }
                 let boxed_any: &Box<dyn std::any::Any> = unsafe { &*raw };
 
-                let mut arguments = Vec::with_capacity(args.length() as usize);
-                for i in 0..args.length() {
-                    arguments.push(native_value(scope, args.get(i)));
+                let argument_count = if config.conversions.is_empty() {
+                    args.length() as usize
+                } else {
+                    config.conversions.len()
+                };
+                let mut arguments = Vec::with_capacity(argument_count);
+                for i in 0..argument_count {
+                    let argument = args.get(i as i32);
+                    let converted = match config.conversions.get(i) {
+                        None => native_value(scope, argument),
+                        Some(WebIdlArgumentConversion::Boolean) => Value::Bool(argument.boolean_value(scope)),
+                        Some(WebIdlArgumentConversion::Double) => {
+                            let Some(number) = argument.number_value(scope) else { return; };
+                            if !number.is_finite() {
+                                throw_type_error(scope, "double argument must be finite");
+                                return;
+                            }
+                            Value::Number(number)
+                        }
+                        Some(WebIdlArgumentConversion::UnrestrictedDouble) => {
+                            let Some(number) = argument.number_value(scope) else { return; };
+                            Value::Number(number)
+                        }
+                        Some(WebIdlArgumentConversion::UnsignedLong) => {
+                            let Some(number) = argument.number_value(scope) else { return; };
+                            let converted = if !number.is_finite() || number == 0.0 {
+                                0.0
+                            } else {
+                                number.trunc().rem_euclid(4_294_967_296.0)
+                            };
+                            Value::Number(converted)
+                        }
+                    };
+                    arguments.push(converted);
                 }
-                let result = method(boxed_any.as_ref(), &arguments);
+                let result = (config.method)(boxed_any.as_ref(), &arguments);
                 retval.set(v8_value(scope, &result));
             },
         )
@@ -2670,6 +2738,9 @@ mod tests {
             fn OptionalUnrestrictedFloatResult(&self) -> Option<f32> { Some(f32::NAN) }
             fn CurrentCount(&self) -> u32 { self.count }
             fn Accepts(&self, value: bool) -> bool { value }
+            fn Add(&self, value: FiniteF64) -> FiniteF64 { FiniteF64::new(self.ratio + value.get()).unwrap() }
+            fn EchoUnrestricted(&self, value: f64) -> f64 { value }
+            fn Wrap(&self, value: u32) -> u32 { value }
             fn CurrentLabel(&self) -> Vec<u16> { vec![0xD800, 0x0041] }
             fn OptionalLabel(&self) -> Option<Vec<u16>> { None }
             fn CurrentUsvLabel(&self) -> String { "v8 ?".to_owned() }
@@ -2705,6 +2776,13 @@ mod tests {
         assert_eq!(native.ratio, 2.5);
         assert_eq!(native.count, 1);
         assert!(runtime.eval("state.count = Symbol() ").is_err());
+
+        assert_eq!(runtime.eval_value("state.add('2.5')").unwrap(), Value::Number(5.0));
+        assert_eq!(runtime.eval_value("state.wrap(-1)").unwrap(), Value::Number(u32::MAX as f64));
+        assert_eq!(runtime.eval_value("state.echoUnrestricted(Infinity)").unwrap(), Value::Number(f64::INFINITY));
+        for source in ["state.add(Infinity)", "state.add(Symbol())", "state.add()"] {
+            assert!(runtime.eval(source).unwrap_err().contains("TypeError"), "{source}");
+        }
 
         assert_eq!(runtime.eval_value("state.optionalEnabled").unwrap(), Value::Null);
         assert_eq!(runtime.eval_value("state.optionalRatio").unwrap(), Value::Null);

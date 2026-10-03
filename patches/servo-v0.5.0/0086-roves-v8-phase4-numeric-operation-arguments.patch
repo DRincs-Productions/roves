@@ -1,0 +1,268 @@
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 07b1b3e8b52..24c5888da60 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -158,6 +158,8 @@ pub struct Runtime {
+     /// Keeps callbacks armed until they have actually completed. An empty weak handle
+     /// alone is insufficient: first-pass GC may clear it before second-pass finalization.
+     wrapped_finalizers: Vec<WrappedFinalizer>,
++    /// Per-method callback data stays alive as long as this isolate can invoke the callbacks.
++    method_configs: Vec<Box<WebIdlMethodConfig>>,
+ }
+ 
+ struct WrappedFinalizer {
+@@ -228,6 +230,20 @@ pub enum PrimitiveConversion {
+     NullableUsvString,
+ }
+ 
++/// Required WebIDL operation argument coercions supported by the generated V8 pilot.
++#[derive(Clone, Copy, Debug)]
++pub enum WebIdlArgumentConversion {
++    Boolean,
++    Double,
++    UnrestrictedDouble,
++    UnsignedLong,
++}
++
++struct WebIdlMethodConfig {
++    method: NativeMethod,
++    conversions: Vec<WebIdlArgumentConversion>,
++}
++
+ /// A callable method, registered via [`Runtime::define_method`]: receives the wrapped Rust value
+ /// of whichever instance it was called on (`node.someMethod()`) plus its JS arguments already
+ /// converted to [`Value`], and returns a [`Value`]. Same plain-function-pointer restriction as
+@@ -255,6 +271,7 @@ impl Runtime {
+             isolate,
+             context,
+             wrapped_finalizers: Vec::new(),
++            method_configs: Vec::new(),
+         }
+     }
+ 
+@@ -1070,6 +1087,19 @@ impl Runtime {
+         interface: &Interface,
+         name: &str,
+         method: NativeMethod,
++    ) -> Result<(), String> {
++        self.define_webidl_method(interface, name, method, &[])
++    }
++
++    /// Defines a method whose arguments are converted using the listed required WebIDL types.
++    /// Extra JavaScript arguments are ignored by the generated binding; omitted arguments are
++    /// converted from `undefined` according to the declared type.
++    pub fn define_webidl_method(
++        &mut self,
++        interface: &Interface,
++        name: &str,
++        method: NativeMethod,
++        conversions: &[WebIdlArgumentConversion],
+     ) -> Result<(), String> {
+         if interface.materialized.get() {
+             return Err("interface members must be defined before creating instances or descendants".into());
+@@ -1086,7 +1116,15 @@ impl Runtime {
+         let Some(key) = v8::String::new(scope, name) else {
+             return Err(format!("{name:?} is not valid as a method name string"));
+         };
+-        let external_data = v8::External::new(scope, method as *mut std::ffi::c_void);
++        // Keep the immutable config alive for the isolate's lifetime. Box preserves its address
++        // while the owning vector grows, and the isolate drops before these entries.
++        let config = Box::new(WebIdlMethodConfig {
++            method,
++            conversions: conversions.to_vec(),
++        });
++        let config_pointer = (&*config) as *const WebIdlMethodConfig as *mut WebIdlMethodConfig;
++        self.method_configs.push(config);
++        let external_data = v8::External::new(scope, config_pointer as *mut std::ffi::c_void);
+ 
+         let function_template = v8::FunctionTemplate::builder(
+             |scope: &mut v8::PinScope,
+@@ -1096,9 +1134,8 @@ impl Runtime {
+                 let Ok(external) = v8::Local::<v8::External>::try_from(data) else {
+                     return;
+                 };
+-                // SAFETY: `external`'s value is exactly the `NativeMethod` pointer
+-                // `define_method` stored below, cast back to its original type.
+-                let method: NativeMethod = unsafe { std::mem::transmute(external.value()) };
++                // SAFETY: the External points to the config allocated for this method template.
++                let config = unsafe { &*(external.value() as *const WebIdlMethodConfig) };
+ 
+                 let this = args.this();
+                 if this.internal_field_count() < 1 {
+@@ -1115,11 +1152,42 @@ impl Runtime {
+                 }
+                 let boxed_any: &Box<dyn std::any::Any> = unsafe { &*raw };
+ 
+-                let mut arguments = Vec::with_capacity(args.length() as usize);
+-                for i in 0..args.length() {
+-                    arguments.push(native_value(scope, args.get(i)));
++                let argument_count = if config.conversions.is_empty() {
++                    args.length() as usize
++                } else {
++                    config.conversions.len()
++                };
++                let mut arguments = Vec::with_capacity(argument_count);
++                for i in 0..argument_count {
++                    let argument = args.get(i as i32);
++                    let converted = match config.conversions.get(i) {
++                        None => native_value(scope, argument),
++                        Some(WebIdlArgumentConversion::Boolean) => Value::Bool(argument.boolean_value(scope)),
++                        Some(WebIdlArgumentConversion::Double) => {
++                            let Some(number) = argument.number_value(scope) else { return; };
++                            if !number.is_finite() {
++                                throw_type_error(scope, "double argument must be finite");
++                                return;
++                            }
++                            Value::Number(number)
++                        }
++                        Some(WebIdlArgumentConversion::UnrestrictedDouble) => {
++                            let Some(number) = argument.number_value(scope) else { return; };
++                            Value::Number(number)
++                        }
++                        Some(WebIdlArgumentConversion::UnsignedLong) => {
++                            let Some(number) = argument.number_value(scope) else { return; };
++                            let converted = if !number.is_finite() || number == 0.0 {
++                                0.0
++                            } else {
++                                number.trunc().rem_euclid(4_294_967_296.0)
++                            };
++                            Value::Number(converted)
++                        }
++                    };
++                    arguments.push(converted);
+                 }
+-                let result = method(boxed_any.as_ref(), &arguments);
++                let result = (config.method)(boxed_any.as_ref(), &arguments);
+                 retval.set(v8_value(scope, &result));
+             },
+         )
+@@ -2670,6 +2738,9 @@ mod tests {
+             fn OptionalUnrestrictedFloatResult(&self) -> Option<f32> { Some(f32::NAN) }
+             fn CurrentCount(&self) -> u32 { self.count }
+             fn Accepts(&self, value: bool) -> bool { value }
++            fn Add(&self, value: FiniteF64) -> FiniteF64 { FiniteF64::new(self.ratio + value.get()).unwrap() }
++            fn EchoUnrestricted(&self, value: f64) -> f64 { value }
++            fn Wrap(&self, value: u32) -> u32 { value }
+             fn CurrentLabel(&self) -> Vec<u16> { vec![0xD800, 0x0041] }
+             fn OptionalLabel(&self) -> Option<Vec<u16>> { None }
+             fn CurrentUsvLabel(&self) -> String { "v8 ?".to_owned() }
+@@ -2706,6 +2777,13 @@ mod tests {
+         assert_eq!(native.count, 1);
+         assert!(runtime.eval("state.count = Symbol() ").is_err());
+ 
++        assert_eq!(runtime.eval_value("state.add('2.5')").unwrap(), Value::Number(5.0));
++        assert_eq!(runtime.eval_value("state.wrap(-1)").unwrap(), Value::Number(u32::MAX as f64));
++        assert_eq!(runtime.eval_value("state.echoUnrestricted(Infinity)").unwrap(), Value::Number(f64::INFINITY));
++        for source in ["state.add(Infinity)", "state.add(Symbol())", "state.add()"] {
++            assert!(runtime.eval(source).unwrap_err().contains("TypeError"), "{source}");
++        }
++
+         assert_eq!(runtime.eval_value("state.optionalEnabled").unwrap(), Value::Null);
+         assert_eq!(runtime.eval_value("state.optionalRatio").unwrap(), Value::Null);
+         assert_eq!(runtime.eval_value("state.optionalCount").unwrap(), Value::Null);
+diff --git a/components/roves-v8/tests/webidl/MutablePrimitives.webidl b/components/roves-v8/tests/webidl/MutablePrimitives.webidl
+index 76c1d05a5a0..794817c8d81 100644
+--- a/components/roves-v8/tests/webidl/MutablePrimitives.webidl
++++ b/components/roves-v8/tests/webidl/MutablePrimitives.webidl
+@@ -15,6 +15,9 @@ interface MutablePrimitives {
+   unrestricted float? optionalUnrestrictedFloatResult();
+   unsigned long currentCount();
+   boolean accepts(boolean value);
++  double add(double value);
++  unrestricted double echoUnrestricted(unrestricted double value);
++  unsigned long wrap(unsigned long value);
+   DOMString currentLabel();
+   DOMString? optionalLabel();
+   USVString currentUsvLabel();
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index 55127cfcf2b..1a649fa9f25 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8244,9 +8244,19 @@ class CGV8BindingRoot(CGThing):
+                 arguments = signatures[0][1]
+                 argument_types = []
+                 for argument in arguments:
+-                    if argument.optional or argument.variadic or argument.type.nullable() or not argument.type.isBoolean():
+-                        raise TypeError(f"V8 backend only supports required boolean operation arguments: {name}.{member.identifier.name}")
+-                    argument_types.append("bool")
++                    ty = argument.type
++                    if argument.optional or argument.variadic or ty.nullable():
++                        raise TypeError(f"V8 backend only supports required operation arguments: {name}.{member.identifier.name}")
++                    if ty.isBoolean():
++                        argument_types.append(("bool", "Boolean", "Value::Bool(value) => *value"))
++                    elif ty.isFloat() and ty.name == "Double":
++                        argument_types.append(("roves_v8::FiniteF64", "Double", "Value::Number(value) => roves_v8::FiniteF64::new(*value).expect(\"runtime validated finite double\")"))
++                    elif ty.isFloat() and ty.name == "UnrestrictedDouble":
++                        argument_types.append(("f64", "UnrestrictedDouble", "Value::Number(value) => *value"))
++                    elif ty.isInteger() and ty.name == "UnsignedLong":
++                        argument_types.append(("u32", "UnsignedLong", "Value::Number(value) => *value as u32"))
++                    else:
++                        raise TypeError(f"V8 backend unsupported operation argument type: {name}.{member.identifier.name}: {ty}")
+                 return_type = signatures[0][0]
+                 nullable_return = return_type.nullable()
+                 result_type = return_type.inner if nullable_return else return_type
+@@ -8357,7 +8367,7 @@ class CGV8BindingRoot(CGThing):
+             [f"    fn {native}(&self) -> {rust_type};"
+              + (f"\n    fn set_{native}(&mut self, value: {rust_type});" if setter else "")
+              for _, native, rust_type, _, setter, _ in attributes]
+-            + [f"    fn {native}(&self{', ' + ', '.join('arg' + str(index) + ': ' + argument_type for index, argument_type in enumerate(argument_types)) if argument_types else ''}) -> {rust_type};" for _, native, rust_type, _, argument_types in operations]
++            + [f"    fn {native}(&self{', ' + ', '.join('arg' + str(index) + ': ' + argument_type[0] for index, argument_type in enumerate(argument_types)) if argument_types else ''}) -> {rust_type};" for _, native, rust_type, _, argument_types in operations]
+         )
+         registrations_list = []
+         for idl, native, rust_type, value_expr, setter, conversion in attributes:
+@@ -8428,8 +8438,8 @@ class CGV8BindingRoot(CGThing):
+                 )
+         for idl, native, _, value_expr, argument_types in operations:
+             argument_conversions = "\n".join(
+-                f'            let arg{index} = match args.get({index}).unwrap_or(&Value::Undefined) {{ Value::Undefined | Value::Null => false, Value::Bool(value) => *value, Value::Number(value) => *value != 0.0 && !value.is_nan(), Value::String(value) => !value.is_empty(), Value::Utf16String(value) => !value.is_empty(), Value::Bytes(_) | Value::Object => true }};'
+-                for index, _ in enumerate(argument_types)
++                f'            let arg{index} = match args.get({index}).unwrap_or(&Value::Undefined) {{ {argument_type[2]}, _ => unreachable!("runtime conversion matches generated WebIDL argument type") }};'
++                for index, argument_type in enumerate(argument_types)
+             )
+             call_arguments = ", ".join(f"arg{index}" for index, _ in enumerate(argument_types))
+             if value_expr == "Value::Undefined":
+@@ -8444,7 +8454,11 @@ class CGV8BindingRoot(CGThing):
+                 + f'            {result_expr}\n'
+                 + f'        }}'
+             )
+-            registrations_list.append(f'        runtime.define_method(&interface, "{idl}", {callback})?;')
++            conversions = ", ".join(f"roves_v8::WebIdlArgumentConversion::{argument_type[1]}" for argument_type in argument_types)
++            if argument_types:
++                registrations_list.append(f'        runtime.define_webidl_method(&interface, "{idl}", {callback}, &[{conversions}])?;')
++            else:
++                registrations_list.append(f'        runtime.define_method(&interface, "{idl}", {callback})?;')
+         registrations = "\n".join(registrations_list)
+         return AUTOGENERATED_WARNING_COMMENT + f"""use roves_v8::{{Handle, Interface, Runtime, Value}};
+ 
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index d6d9bb26c94..7f63bba20af 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -189,6 +189,27 @@ class V8GeneratorTests(unittest.TestCase):
+             self.assertIn("native.Accepts(arg0)", source)
+             self.assertIn("native.Combine(arg0, arg1)", source)
+ 
++    def test_operations_generate_required_numeric_argument_coercions(self):
++        with tempfile.TemporaryDirectory() as directory:
++            root = Path(directory)
++            webidl = root / "Operations.webidl"
++            webidl.write_text(
++                "[Exposed=Window] interface Operations { double finite(double value); unrestricted double unrestrictedValue(unrestricted double value); unsigned long modulo(unsigned long value); };",
++                encoding="utf-8",
++            )
++            source = generate(webidl, root / "out")
++            self.assertIn("arg0: roves_v8::FiniteF64", source)
++            self.assertIn("arg0: f64", source)
++            self.assertIn("arg0: u32", source)
++            self.assertIn("WebIdlArgumentConversion::Double", source)
++            self.assertIn("WebIdlArgumentConversion::UnrestrictedDouble", source)
++            self.assertIn("WebIdlArgumentConversion::UnsignedLong", source)
++
++    def test_optional_nullable_and_non_numeric_operation_arguments_fail_closed(self):
++        for signature in ["double run(optional double value);", "double run(double? value);", "double run(DOMString value);"]:
++            with self.subTest(signature=signature):
++                self.assert_unsupported("interface Unsupported { " + signature + " };")
++
+     def test_optional_nullable_and_non_boolean_operation_arguments_fail_closed(self):
+         for signature in ["boolean run(optional boolean value);", "boolean run(boolean? value);", "boolean run(long value);", "boolean run(boolean... values);"]:
+             with self.subTest(signature=signature):
