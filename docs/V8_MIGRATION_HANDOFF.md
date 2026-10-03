@@ -20,11 +20,8 @@ qui prevale sulle note storiche più sotto.
 4. **[`../patches/servo-v0.5.0/`](../patches/servo-v0.5.0/)** — patch numerate `0001` → `0088`,
    una per checkpoint, applicabili a un checkout pulito del tag Servo pristine (vedi
    `../AGENTS.md` per come funziona il meccanismo patch/vendoring di questo repo).
-5. **[`../components/roves-v8/src/lib.rs`](../components/roves-v8/src/lib.rs)** — il codice
-   vero, un unico file, ~2000 righe, con commenti doc estesi su ogni funzione pubblica e su ogni
-   bug reale trovato. **Non è pseudocodice o un prototipo giocattolo scadente** — è scritto con
-   la stessa cura che si userebbe in produzione, solo isolato in una crate separata per
-   sicurezza. 56 unit test e tre integrazioni WebIDL, verificati in locale sia in modalita normale sia JIT-less.
+5. **[`../components/roves-v8/src/lib.rs`](../components/roves-v8/src/lib.rs)** — runtime isolato
+   con API engine-neutral e i test del pilot; verificato localmente in modalità normale e JIT-less.
 
 ## Stato aggiornato - 2026-10-03
 
@@ -33,7 +30,9 @@ da questo blocco, fa fede lo stato attuale. L'utente ha richiesto autonomia cont
 testare localmente, avviare CI, correggere i fallimenti e proseguire fino al completamento dei
 criteri in `V8_MIGRATION.md`.
 
-Il checkpoint 24 aggiunge argomenti obbligatori `DOMString`/`USVString` alle operazioni: `Vec<u16>` lossless per DOMString, `String` scalar-valid per USVString, ToString prima del callback, TypeError su Symbol e propagazione dell'eccezione originale se un hook utente lancia. Argomento omesso diventa la stringa `undefined`. Patch 0088 applica pulitamente. Verifiche locali: 19 test Python; pilot normale/JIT-less ciascuno con 57 unit + 3 integrazioni + 2 doctest; default 52 unit + 2 doctest; check integrato `servo-script` verde. CI cross-platform da avviare dopo il push.
+Il checkpoint 25 (in lavorazione locale) aggiunge argomenti required nullable per boolean, tipi numerici, `DOMString` e `USVString`: `null`/`undefined` diventano IDL null (`None`), altrimenti si applica la conversione del tipo interno. Una firma mista verifica i flag per posizione. Optional, variadici, ByteString e tipi sconosciuti restano fail-closed. Verifiche locali complete: 20 test Python; pilot normale/JIT-less ciascuno con 58 unit + 3 integrazioni + 2 doctest; default 52 unit + 2 doctest; check integrato `servo-script`; patch 0089 si applica pulitamente. CI cross-platform da avviare dopo il push.
+
+Il checkpoint 24 e pubblicato con commit `02b695f74d0`; patch 0088 applica pulitamente. Aggiunge argomenti obbligatori DOMString/USVString con preservazione UTF-16 o scalar-value, coercizione ToString e propagazione degli errori. Verifiche locali complete: 19 test Python; pilot normale/JIT-less ciascuno con 57 unit + 3 integrazioni + 2 doctest; default 52 unit + 2 doctest; check integrato `servo-script`. Tutte le CI sono verdi: V8 6/6 ([37137152487](https://github.com/DRincs-Productions/roves/actions/runs/37137152487)), Servo bundle/test/Steam/patch validation ([37137152516](https://github.com/DRincs-Productions/roves/actions/runs/37137152516)), Android ([37137152568](https://github.com/DRincs-Productions/roves/actions/runs/37137152568)), iOS ([37137152538](https://github.com/DRincs-Productions/roves/actions/runs/37137152538)). Produzione ancora SpiderMonkey.
 
 Il checkpoint 23 e stato pubblicato con commit `09ffe10fdcf`; patch 0087 e la CI sono verdi. Aggiunge conversioni degli argomenti numerici WebIDL interi e `float`/`unrestricted float`. Verifica locale: 18 test Python, pilot normale/JIT-less, default e cargo check integrato; run V8 37132532003, Servo 37132531959, Android 37132531996, iOS 37132532177.
 

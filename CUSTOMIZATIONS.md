@@ -1,3 +1,18 @@
+## 2026-10-03 - V8 migration Phase 4: nullable WebIDL operation arguments
+
+**Servo files:** `components/roves-v8/{build.rs,src/lib.rs,tests/webidl/NullableOperations.webidl}`;
+`components/script_bindings/codegen/{codegen.py,test_v8.py}`.
+**Patch:** `0089-roves-v8-phase4-nullable-operation-arguments.patch` after 0001-0088.
+
+The opt-in generator accepts required nullable primitive and string operation arguments. `null`
+and `undefined` map to IDL null (`Option<T>::None`); all other values use the inner type's normal
+WebIDL conversion. Native contracts cover boolean, integer and floating-point widths, DOMString
+and USVString. Mixed signatures pass per-argument nullability flags to the runtime. Optional,
+variadic and unsupported types (including ByteString) still fail closed. 20 generator tests, 58
+pilot unit + 3 integration + 2 doctests in normal and JIT-less modes, 52 default unit + 2 doctests,
+and integrated `servo-script` compilation pass locally. Patch 0089 applies cleanly; cross-platform
+CI is pending. Production still uses SpiderMonkey.
+
 ## 2026-10-03 - V8 migration Phase 4: WebIDL string operation arguments
 
 **Servo files:** `components/roves-v8/{build.rs,src/lib.rs,tests/webidl/StringOperations.webidl}`;
@@ -12,7 +27,9 @@ are rethrown unchanged. Omitted required string arguments follow WebIDL conversi
 `undefined` to the string "undefined". Optional, nullable and ByteString arguments still fail
 closed. 19 generator tests, 57 pilot unit + 3 integration + 2 doctests in normal and JIT-less
 modes, 52 default unit + 2 doctests, and the integrated `servo-script` check pass locally.
-Cross-platform CI has not yet run for this checkpoint. Production still uses SpiderMonkey.
+CI is green: V8 6/6 (37137152487), all six Servo bundles plus Steam, SDL3 checks and patch
+validation (37137152516), Android (37137152568), and iOS (37137152538). Production still uses
+SpiderMonkey.
 
 ## 2026-10-03 - V8 migration Phase 4: integer and float WebIDL operation arguments
 

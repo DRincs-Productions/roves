@@ -586,11 +586,23 @@ generator accepts required `DOMString` and `USVString` operation arguments. DOMS
 native Rust as lossless UTF-16 code units (`Vec<u16>`); USVString becomes a scalar-valid `String`,
 replacing unpaired surrogates with U+FFFD. JavaScript ToString conversion runs before native
 dispatch, Symbol throws TypeError, and exceptions raised by user `toString` hooks are rethrown
-unchanged. Omitted required strings convert `undefined` to the string `"undefined"`. Optional,
-nullable, and ByteString arguments remain fail-closed. Local verification passes 19 generator
+unchanged. Omitted required strings convert `undefined` to the string `"undefined"`. At this
+checkpoint nullable, optional, and ByteString arguments remain fail-closed. Local verification
+passes 19 generator
 tests, 57 unit + 3 integration + 2 doctests in normal and JIT-less pilot modes, 52 default unit +
-2 doctests, and the integrated `servo-script` check. Patch 0088 applies cleanly; cross-platform CI
-is pending. Production still uses SpiderMonkey.
+2 doctests, and the integrated `servo-script` check. Patch 0088 applies cleanly. CI is green: V8
+6/6 (37137152487), all six Servo bundles plus Steam, SDL3 checks and patch validation (37137152516),
+Android (37137152568), and iOS (37137152538). Production still uses SpiderMonkey.
+
+**Twenty-fifth checkpoint (2026-10-03): nullable WebIDL operation arguments.** Required nullable
+boolean, numeric, `DOMString`, and `USVString` arguments now generate `Option<T>` native contracts.
+For nullable types WebIDL maps both JavaScript `null` and `undefined` to IDL null; other values use
+the inner type's existing Boolean, numeric, ToString, UTF-16, or scalar-value conversion. A mixed
+nullable/non-nullable signature verifies the per-argument conversion flags. Optional and variadic
+arguments, ByteString and other unsupported types still fail closed. Local verification passes 20
+generator tests, 58 unit + 3 integration + 2 doctests in normal and JIT-less pilot modes, 52 default
+unit + 2 doctests, and the integrated `servo-script` check. Patch 0089 applies cleanly;
+cross-platform CI is pending. Production remains SpiderMonkey.
 
 **Twenty-second checkpoint (2026-10-03): required numeric WebIDL operation arguments.**
 The opt-in generator now accepts required `double`, `unrestricted double`, and `unsigned long`

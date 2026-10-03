@@ -1,0 +1,274 @@
+diff --git a/components/roves-v8/build.rs b/components/roves-v8/build.rs
+index 93e59ba98b0..2e68b668265 100644
+--- a/components/roves-v8/build.rs
++++ b/components/roves-v8/build.rs
+@@ -37,6 +37,10 @@ fn main() {
+         "cargo:rerun-if-changed={}",
+         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/webidl/StringOperations.webidl").display()
+     );
++    println!(
++        "cargo:rerun-if-changed={}",
++        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/webidl/NullableOperations.webidl").display()
++    );
+     let python = env::var("PYTHON").unwrap_or_else(|_| {
+         ["python3", "python"].into_iter().find(|name| {
+             Command::new(name).arg("--version").output().is_ok_and(|output| output.status.success())
+@@ -102,4 +106,13 @@ fn main() {
+         .status()
+         .expect("run string operation WebIDL fixture generator");
+     assert!(status.success(), "string operation WebIDL fixture generation failed");
++    let output = out_dir.join("NullableOperationsV8Binding.rs");
++    let status = Command::new(&python)
++        .arg(bindings.join("codegen/run_v8.py"))
++        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/webidl/NullableOperations.webidl"))
++        .arg(output)
++        .env("PYTHONDONTWRITEBYTECODE", "1")
++        .status()
++        .expect("run nullable operation WebIDL fixture generator");
++    assert!(status.success(), "nullable operation WebIDL fixture generation failed");
+ }
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 220ae6d25d6..e4eb4d47023 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -45,6 +45,10 @@ pub mod webidl {
+     pub mod string_operations {
+         include!(concat!(env!("OUT_DIR"), "/StringOperationsV8Binding.rs"));
+     }
++    #[cfg(test)]
++    pub mod nullable_operations {
++        include!(concat!(env!("OUT_DIR"), "/NullableOperationsV8Binding.rs"));
++    }
+ }
+ 
+ use std::sync::Once;
+@@ -269,6 +273,7 @@ fn convert_webidl_integer(number: f64, bits: u32, signed: bool) -> f64 {
+ struct WebIdlMethodConfig {
+     method: NativeMethod,
+     conversions: Vec<WebIdlArgumentConversion>,
++    nullable_arguments: Vec<bool>,
+ }
+ 
+ /// A callable method, registered via [`Runtime::define_method`]: receives the wrapped Rust value
+@@ -1127,6 +1132,20 @@ impl Runtime {
+         name: &str,
+         method: NativeMethod,
+         conversions: &[WebIdlArgumentConversion],
++    ) -> Result<(), String> {
++        self.define_webidl_method_with_nullable_arguments(interface, name, method, conversions, &[])
++    }
++
++    /// Defines a method whose required arguments use the listed WebIDL conversions and
++    /// nullable flags. For nullable types both `null` and `undefined` map to IDL null before
++    /// applying the inner type's conversion.
++    pub fn define_webidl_method_with_nullable_arguments(
++        &mut self,
++        interface: &Interface,
++        name: &str,
++        method: NativeMethod,
++        conversions: &[WebIdlArgumentConversion],
++        nullable_arguments: &[bool],
+     ) -> Result<(), String> {
+         if interface.materialized.get() {
+             return Err("interface members must be defined before creating instances or descendants".into());
+@@ -1148,6 +1167,9 @@ impl Runtime {
+         let config = Box::new(WebIdlMethodConfig {
+             method,
+             conversions: conversions.to_vec(),
++            nullable_arguments: (0..conversions.len())
++                .map(|index| nullable_arguments.get(index).copied().unwrap_or(false))
++                .collect(),
+         });
+         let config_pointer = (&*config) as *const WebIdlMethodConfig as *mut WebIdlMethodConfig;
+         self.method_configs.push(config);
+@@ -1190,7 +1212,12 @@ impl Runtime {
+                 let mut arguments = Vec::with_capacity(argument_count);
+                 for i in 0..argument_count {
+                     let argument = args.get(i as i32);
+-                    let converted = match config.conversions.get(i) {
++                    let converted = if config.nullable_arguments.get(i).copied().unwrap_or(false)
++                        && (argument.is_null() || argument.is_undefined())
++                    {
++                        Value::Null
++                    } else {
++                        match config.conversions.get(i) {
+                         None => native_value(scope, argument),
+                         Some(WebIdlArgumentConversion::Boolean) => Value::Bool(argument.boolean_value(scope)),
+                         Some(WebIdlArgumentConversion::Byte) => {
+@@ -1296,6 +1323,7 @@ impl Runtime {
+                                 Err(None) => return,
+                             }
+                         }
++                        }
+                     };
+                     arguments.push(converted);
+                 }
+@@ -2998,6 +3026,43 @@ mod tests {
+         assert_eq!(runtime.eval("(() => { try { strings.echoDom({ toString() { throw new RangeError('coercion'); } }); } catch (e) { return e instanceof RangeError && e.message === 'coercion'; } })()").unwrap(), "true");
+     }
+ 
++    #[cfg(feature = "webidl-pilot")]
++    #[test]
++    fn generated_nullable_operation_arguments_preserve_null_and_inner_conversions() {
++        use crate::webidl::nullable_operations::{NullableOperationsBinding, NullableOperationsNative};
++        struct NullableValues;
++        #[allow(non_snake_case)]
++        impl NullableOperationsNative for NullableValues {
++            fn Flag(&self, value: Option<bool>) -> Option<bool> { value }
++            fn Count(&self, value: Option<i32>) -> Option<i32> { value }
++            fn Label(&self, value: Option<Vec<u16>>) -> Option<Vec<u16>> { value }
++            fn Name(&self, value: Option<String>) -> Option<String> { value }
++            fn Mix(&self, value: Option<i32>, addend: i32) -> Option<i32> { value.map(|value| value + addend) }
++        }
++
++        let mut runtime = Runtime::new();
++        let binding = NullableOperationsBinding::<NullableValues>::install(&mut runtime).unwrap();
++        let handle = binding.create(&mut runtime, NullableValues);
++        runtime.set_global_property("values", &handle).unwrap();
++
++        assert_eq!(runtime.eval_value("values.flag(null)").unwrap(), Value::Null);
++        assert_eq!(runtime.eval_value("values.flag(undefined)").unwrap(), Value::Null);
++        assert_eq!(runtime.eval_value("values.flag()").unwrap(), Value::Null);
++        assert_eq!(runtime.eval_value("values.flag(0)").unwrap(), Value::Bool(false));
++        assert_eq!(runtime.eval_value("values.count(null)").unwrap(), Value::Null);
++        assert_eq!(runtime.eval_value("values.count(undefined)").unwrap(), Value::Null);
++        assert_eq!(runtime.eval_value("values.count('4294967295')").unwrap(), Value::Number(-1.0));
++        assert_eq!(runtime.eval_value("values.label(null)").unwrap(), Value::Null);
++        assert_eq!(runtime.eval_value("values.label(undefined)").unwrap(), Value::Null);
++        runtime.eval("globalThis.lone = '\\uD800';").unwrap();
++        assert_eq!(runtime.eval_value("values.label(lone)").unwrap(), Value::Utf16String(vec![0xD800]));
++        assert_eq!(runtime.eval_value("values.name(lone)").unwrap(), Value::String("\u{FFFD}".into()));
++        assert_eq!(runtime.eval_value("values.name({ toString() { return 'game'; } })").unwrap(), Value::String("game".into()));
++        assert_eq!(runtime.eval_value("values.mix(null, 5)").unwrap(), Value::Null);
++        assert_eq!(runtime.eval_value("values.mix(7, 5)").unwrap(), Value::Number(12.0));
++        assert_eq!(runtime.eval("(() => { try { values.count(Symbol()); } catch (e) { return e instanceof TypeError; } })()").unwrap(), "true");
++    }
++
+     #[cfg(feature = "webidl-pilot")]
+     #[test]
+     fn generated_nullable_domstring_preserves_null_and_utf16_semantics() {
+diff --git a/components/roves-v8/tests/webidl/NullableOperations.webidl b/components/roves-v8/tests/webidl/NullableOperations.webidl
+new file mode 100644
+index 00000000000..7c8d208c3d5
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/NullableOperations.webidl
+@@ -0,0 +1,8 @@
++[Exposed=Window]
++interface NullableOperations {
++    boolean? flag(boolean? value);
++    long? count(long? value);
++    DOMString? label(DOMString? value);
++    USVString? name(USVString? value);
++    long? mix(long? value, long addend);
++};
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index e6e9917470b..70d71742020 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8243,12 +8243,22 @@ class CGV8BindingRoot(CGThing):
+                     raise TypeError(f"V8 backend only supports single-signature instance operations: {name}.{member.identifier.name}")
+                 arguments = signatures[0][1]
+                 argument_types = []
++                def add_argument_type(rust_type, conversion, match_arm, nullable):
++                    if nullable:
++                        pattern, expression = match_arm.split(" => ", 1)
++                        rust_type = f"Option<{rust_type}>"
++                        match_arm = f"Value::Null => None, {pattern} => Some({expression})"
++                    argument_types.append((rust_type, conversion, match_arm, nullable))
++
+                 for argument in arguments:
+                     ty = argument.type
+-                    if argument.optional or argument.variadic or ty.nullable():
++                    if argument.optional or argument.variadic:
+                         raise TypeError(f"V8 backend only supports required operation arguments: {name}.{member.identifier.name}")
++                    nullable = ty.nullable()
++                    if nullable:
++                        ty = ty.inner
+                     if ty.isBoolean():
+-                        argument_types.append(("bool", "Boolean", "Value::Bool(value) => *value"))
++                        add_argument_type("bool", "Boolean", "Value::Bool(value) => *value", nullable)
+                     elif ty.isInteger() and ty.name in {
+                         "Byte", "Octet", "Short", "UnsignedShort", "Long", "UnsignedLong",
+                         "LongLong", "UnsignedLongLong",
+@@ -8260,21 +8270,21 @@ class CGV8BindingRoot(CGThing):
+                             "LongLong": ("i64", "LongLong"), "UnsignedLongLong": ("u64", "UnsignedLongLong"),
+                         }
+                         rust_type, conversion = integer_arguments[ty.name]
+-                        argument_types.append((rust_type, conversion, f"Value::Number(value) => *value as {rust_type}"))
++                        add_argument_type(rust_type, conversion, f"Value::Number(value) => *value as {rust_type}", nullable)
+                     elif ty.isFloat() and ty.name == "Float":
+-                        argument_types.append(("roves_v8::FiniteF32", "Float", "Value::Number(value) => roves_v8::FiniteF32::new(*value as f32).expect(\"runtime validated finite float\")"))
++                        add_argument_type("roves_v8::FiniteF32", "Float", "Value::Number(value) => roves_v8::FiniteF32::new(*value as f32).expect(\"runtime validated finite float\")", nullable)
+                     elif ty.isFloat() and ty.name == "UnrestrictedFloat":
+-                        argument_types.append(("f32", "UnrestrictedFloat", "Value::Number(value) => *value as f32"))
++                        add_argument_type("f32", "UnrestrictedFloat", "Value::Number(value) => *value as f32", nullable)
+                     elif ty.isFloat() and ty.name == "Double":
+-                        argument_types.append(("roves_v8::FiniteF64", "Double", "Value::Number(value) => roves_v8::FiniteF64::new(*value).expect(\"runtime validated finite double\")"))
++                        add_argument_type("roves_v8::FiniteF64", "Double", "Value::Number(value) => roves_v8::FiniteF64::new(*value).expect(\"runtime validated finite double\")", nullable)
+                     elif ty.isFloat() and ty.name == "UnrestrictedDouble":
+-                        argument_types.append(("f64", "UnrestrictedDouble", "Value::Number(value) => *value"))
++                        add_argument_type("f64", "UnrestrictedDouble", "Value::Number(value) => *value", nullable)
+                     elif ty.isDOMString():
+-                        argument_types.append(("Vec<u16>", "DomString", "Value::Utf16String(value) => value.clone()"))
++                        add_argument_type("Vec<u16>", "DomString", "Value::Utf16String(value) => value.clone()", nullable)
+                     elif ty.isUSVString():
+-                        argument_types.append(("String", "UsvString", "Value::String(value) => value.clone()"))
++                        add_argument_type("String", "UsvString", "Value::String(value) => value.clone()", nullable)
+                     elif ty.isInteger() and ty.name == "UnsignedLong":
+-                        argument_types.append(("u32", "UnsignedLong", "Value::Number(value) => *value as u32"))
++                        add_argument_type("u32", "UnsignedLong", "Value::Number(value) => *value as u32", nullable)
+                     else:
+                         raise TypeError(f"V8 backend unsupported operation argument type: {name}.{member.identifier.name}: {ty}")
+                 return_type = signatures[0][0]
+@@ -8476,7 +8486,11 @@ class CGV8BindingRoot(CGThing):
+             )
+             conversions = ", ".join(f"roves_v8::WebIdlArgumentConversion::{argument_type[1]}" for argument_type in argument_types)
+             if argument_types:
+-                registrations_list.append(f'        runtime.define_webidl_method(&interface, "{idl}", {callback}, &[{conversions}])?;')
++                if any(argument_type[3] for argument_type in argument_types):
++                    nullable_arguments = ", ".join(str(argument_type[3]).lower() for argument_type in argument_types)
++                    registrations_list.append(f'        runtime.define_webidl_method_with_nullable_arguments(&interface, "{idl}", {callback}, &[{conversions}], &[{nullable_arguments}])?;')
++                else:
++                    registrations_list.append(f'        runtime.define_webidl_method(&interface, "{idl}", {callback}, &[{conversions}])?;')
+             else:
+                 registrations_list.append(f'        runtime.define_method(&interface, "{idl}", {callback})?;')
+         registrations = "\n".join(registrations_list)
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index bd9467953ac..fd52e5ec548 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -217,13 +217,32 @@ class V8GeneratorTests(unittest.TestCase):
+             self.assertIn("WebIdlArgumentConversion::DomString", source)
+             self.assertIn("WebIdlArgumentConversion::UsvString", source)
+ 
++    def test_required_nullable_operation_arguments_generate_optional_native_contracts(self):
++        with tempfile.TemporaryDirectory() as directory:
++            root = Path(directory)
++            webidl = root / "NullableOperations.webidl"
++            webidl.write_text(
++                "[Exposed=Window] interface NullableOperations { boolean? flag(boolean? value); long? count(long? value); DOMString? label(DOMString? value); USVString? name(USVString? value); long? mix(long? value, long addend); };",
++                encoding="utf-8",
++            )
++            source = generate(webidl, root / "out")
++            self.assertIn("fn Flag(&self, arg0: Option<bool>) -> Option<bool>;", source)
++            self.assertIn("fn Count(&self, arg0: Option<i32>) -> Option<i32>;", source)
++            self.assertIn("fn Label(&self, arg0: Option<Vec<u16>>) -> Option<Vec<u16>>;", source)
++            self.assertIn("fn Name(&self, arg0: Option<String>) -> Option<String>;", source)
++            self.assertIn("Value::Null => None, Value::Bool(value) => Some(*value)", source)
++            self.assertIn("define_webidl_method_with_nullable_arguments", source)
++            self.assertIn("&[true]", source)
++            self.assertIn("&[true, false]", source)
++            self.assertIn("fn Mix(&self, arg0: Option<i32>, arg1: i32) -> Option<i32>;", source)
++
+     def test_optional_nullable_and_non_numeric_operation_arguments_fail_closed(self):
+-        for signature in ["double run(optional double value);", "double run(double? value);", "double run(ByteString value);"]:
++        for signature in ["double run(optional double value);", "double run(ByteString? value);"]:
+             with self.subTest(signature=signature):
+                 self.assert_unsupported("interface Unsupported { " + signature + " };")
+ 
+     def test_optional_nullable_and_non_boolean_operation_arguments_fail_closed(self):
+-        for signature in ["boolean run(optional boolean value);", "boolean run(boolean? value);", "boolean run(ByteString value);", "boolean run(boolean... values);"]:
++        for signature in ["boolean run(optional boolean value);", "boolean run(ByteString value);", "boolean run(boolean... values);"]:
+             with self.subTest(signature=signature):
+                 self.assert_unsupported("interface Unsupported { " + signature + " };")
+ 

@@ -217,13 +217,32 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn("WebIdlArgumentConversion::DomString", source)
             self.assertIn("WebIdlArgumentConversion::UsvString", source)
 
+    def test_required_nullable_operation_arguments_generate_optional_native_contracts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            webidl = root / "NullableOperations.webidl"
+            webidl.write_text(
+                "[Exposed=Window] interface NullableOperations { boolean? flag(boolean? value); long? count(long? value); DOMString? label(DOMString? value); USVString? name(USVString? value); long? mix(long? value, long addend); };",
+                encoding="utf-8",
+            )
+            source = generate(webidl, root / "out")
+            self.assertIn("fn Flag(&self, arg0: Option<bool>) -> Option<bool>;", source)
+            self.assertIn("fn Count(&self, arg0: Option<i32>) -> Option<i32>;", source)
+            self.assertIn("fn Label(&self, arg0: Option<Vec<u16>>) -> Option<Vec<u16>>;", source)
+            self.assertIn("fn Name(&self, arg0: Option<String>) -> Option<String>;", source)
+            self.assertIn("Value::Null => None, Value::Bool(value) => Some(*value)", source)
+            self.assertIn("define_webidl_method_with_nullable_arguments", source)
+            self.assertIn("&[true]", source)
+            self.assertIn("&[true, false]", source)
+            self.assertIn("fn Mix(&self, arg0: Option<i32>, arg1: i32) -> Option<i32>;", source)
+
     def test_optional_nullable_and_non_numeric_operation_arguments_fail_closed(self):
-        for signature in ["double run(optional double value);", "double run(double? value);", "double run(ByteString value);"]:
+        for signature in ["double run(optional double value);", "double run(ByteString? value);"]:
             with self.subTest(signature=signature):
                 self.assert_unsupported("interface Unsupported { " + signature + " };")
 
     def test_optional_nullable_and_non_boolean_operation_arguments_fail_closed(self):
-        for signature in ["boolean run(optional boolean value);", "boolean run(boolean? value);", "boolean run(ByteString value);", "boolean run(boolean... values);"]:
+        for signature in ["boolean run(optional boolean value);", "boolean run(ByteString value);", "boolean run(boolean... values);"]:
             with self.subTest(signature=signature):
                 self.assert_unsupported("interface Unsupported { " + signature + " };")
 

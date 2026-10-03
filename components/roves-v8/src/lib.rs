@@ -45,6 +45,10 @@ pub mod webidl {
     pub mod string_operations {
         include!(concat!(env!("OUT_DIR"), "/StringOperationsV8Binding.rs"));
     }
+    #[cfg(test)]
+    pub mod nullable_operations {
+        include!(concat!(env!("OUT_DIR"), "/NullableOperationsV8Binding.rs"));
+    }
 }
 
 use std::sync::Once;
@@ -269,6 +273,7 @@ fn convert_webidl_integer(number: f64, bits: u32, signed: bool) -> f64 {
 struct WebIdlMethodConfig {
     method: NativeMethod,
     conversions: Vec<WebIdlArgumentConversion>,
+    nullable_arguments: Vec<bool>,
 }
 
 /// A callable method, registered via [`Runtime::define_method`]: receives the wrapped Rust value
@@ -1128,6 +1133,20 @@ impl Runtime {
         method: NativeMethod,
         conversions: &[WebIdlArgumentConversion],
     ) -> Result<(), String> {
+        self.define_webidl_method_with_nullable_arguments(interface, name, method, conversions, &[])
+    }
+
+    /// Defines a method whose required arguments use the listed WebIDL conversions and
+    /// nullable flags. For nullable types both `null` and `undefined` map to IDL null before
+    /// applying the inner type's conversion.
+    pub fn define_webidl_method_with_nullable_arguments(
+        &mut self,
+        interface: &Interface,
+        name: &str,
+        method: NativeMethod,
+        conversions: &[WebIdlArgumentConversion],
+        nullable_arguments: &[bool],
+    ) -> Result<(), String> {
         if interface.materialized.get() {
             return Err("interface members must be defined before creating instances or descendants".into());
         }
@@ -1148,6 +1167,9 @@ impl Runtime {
         let config = Box::new(WebIdlMethodConfig {
             method,
             conversions: conversions.to_vec(),
+            nullable_arguments: (0..conversions.len())
+                .map(|index| nullable_arguments.get(index).copied().unwrap_or(false))
+                .collect(),
         });
         let config_pointer = (&*config) as *const WebIdlMethodConfig as *mut WebIdlMethodConfig;
         self.method_configs.push(config);
@@ -1190,7 +1212,12 @@ impl Runtime {
                 let mut arguments = Vec::with_capacity(argument_count);
                 for i in 0..argument_count {
                     let argument = args.get(i as i32);
-                    let converted = match config.conversions.get(i) {
+                    let converted = if config.nullable_arguments.get(i).copied().unwrap_or(false)
+                        && (argument.is_null() || argument.is_undefined())
+                    {
+                        Value::Null
+                    } else {
+                        match config.conversions.get(i) {
                         None => native_value(scope, argument),
                         Some(WebIdlArgumentConversion::Boolean) => Value::Bool(argument.boolean_value(scope)),
                         Some(WebIdlArgumentConversion::Byte) => {
@@ -1295,6 +1322,7 @@ impl Runtime {
                                 Err(Some(exception)) => { scope.throw_exception(exception); return; }
                                 Err(None) => return,
                             }
+                        }
                         }
                     };
                     arguments.push(converted);
@@ -2996,6 +3024,43 @@ mod tests {
         assert_eq!(runtime.eval_value("strings.echoDom()").unwrap(), Value::String("undefined".into()));
         assert_eq!(runtime.eval("(() => { try { strings.echoUsv(Symbol()); } catch (e) { return e instanceof TypeError; } })()").unwrap(), "true");
         assert_eq!(runtime.eval("(() => { try { strings.echoDom({ toString() { throw new RangeError('coercion'); } }); } catch (e) { return e instanceof RangeError && e.message === 'coercion'; } })()").unwrap(), "true");
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_nullable_operation_arguments_preserve_null_and_inner_conversions() {
+        use crate::webidl::nullable_operations::{NullableOperationsBinding, NullableOperationsNative};
+        struct NullableValues;
+        #[allow(non_snake_case)]
+        impl NullableOperationsNative for NullableValues {
+            fn Flag(&self, value: Option<bool>) -> Option<bool> { value }
+            fn Count(&self, value: Option<i32>) -> Option<i32> { value }
+            fn Label(&self, value: Option<Vec<u16>>) -> Option<Vec<u16>> { value }
+            fn Name(&self, value: Option<String>) -> Option<String> { value }
+            fn Mix(&self, value: Option<i32>, addend: i32) -> Option<i32> { value.map(|value| value + addend) }
+        }
+
+        let mut runtime = Runtime::new();
+        let binding = NullableOperationsBinding::<NullableValues>::install(&mut runtime).unwrap();
+        let handle = binding.create(&mut runtime, NullableValues);
+        runtime.set_global_property("values", &handle).unwrap();
+
+        assert_eq!(runtime.eval_value("values.flag(null)").unwrap(), Value::Null);
+        assert_eq!(runtime.eval_value("values.flag(undefined)").unwrap(), Value::Null);
+        assert_eq!(runtime.eval_value("values.flag()").unwrap(), Value::Null);
+        assert_eq!(runtime.eval_value("values.flag(0)").unwrap(), Value::Bool(false));
+        assert_eq!(runtime.eval_value("values.count(null)").unwrap(), Value::Null);
+        assert_eq!(runtime.eval_value("values.count(undefined)").unwrap(), Value::Null);
+        assert_eq!(runtime.eval_value("values.count('4294967295')").unwrap(), Value::Number(-1.0));
+        assert_eq!(runtime.eval_value("values.label(null)").unwrap(), Value::Null);
+        assert_eq!(runtime.eval_value("values.label(undefined)").unwrap(), Value::Null);
+        runtime.eval("globalThis.lone = '\\uD800';").unwrap();
+        assert_eq!(runtime.eval_value("values.label(lone)").unwrap(), Value::Utf16String(vec![0xD800]));
+        assert_eq!(runtime.eval_value("values.name(lone)").unwrap(), Value::String("\u{FFFD}".into()));
+        assert_eq!(runtime.eval_value("values.name({ toString() { return 'game'; } })").unwrap(), Value::String("game".into()));
+        assert_eq!(runtime.eval_value("values.mix(null, 5)").unwrap(), Value::Null);
+        assert_eq!(runtime.eval_value("values.mix(7, 5)").unwrap(), Value::Number(12.0));
+        assert_eq!(runtime.eval("(() => { try { values.count(Symbol()); } catch (e) { return e instanceof TypeError; } })()").unwrap(), "true");
     }
 
     #[cfg(feature = "webidl-pilot")]
