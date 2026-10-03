@@ -22,7 +22,7 @@ gamepad = ["script_bindings/gamepad", "embedder_traits/gamepad"]
 jitspew = ['js/jitspew']
 js_backtrace = []
 js_jit = ["js/jit"]
-v8-bindings-pilot = ["script_bindings/v8-bindings-pilot"]
+v8-bindings-pilot = ["script_bindings/v8-bindings-pilot", "dep:roves-v8"]
 profilemozjs = ['js/profilemozjs']
 testbinding = ["script_bindings/testbinding"]
 tracing = ["dep:tracing", "script_bindings/tracing"]
@@ -129,6 +129,7 @@ regex = { workspace = true }
 resvg = { workspace = true }
 rsa = { workspace = true }
 rustc-hash = { workspace = true }
+roves-v8 = { path = "../roves-v8", optional = true }
 script_bindings = { workspace = true }
 script_webgpu = { workspace = true, optional = true }
 script_traits = { workspace = true }

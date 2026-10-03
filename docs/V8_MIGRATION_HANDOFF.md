@@ -17,7 +17,7 @@ qui prevale sulle note storiche più sotto.
    in ordine cronologico inverso (la più recente in cima). Le entry dal 2026-09-29 in poi (cerca
    "V8 migration") coprono tutto il lavoro di questa migrazione, checkpoint per checkpoint, con i
    bug reali trovati e come sono stati corretti.
-4. **[`../patches/servo-v0.5.0/`](../patches/servo-v0.5.0/)** — patch numerate `0001` → `0084`,
+4. **[`../patches/servo-v0.5.0/`](../patches/servo-v0.5.0/)** — patch numerate `0001` → `0085`,
    una per checkpoint, applicabili a un checkout pulito del tag Servo pristine (vedi
    `../AGENTS.md` per come funziona il meccanismo patch/vendoring di questo repo).
 5. **[`../components/roves-v8/src/lib.rs`](../components/roves-v8/src/lib.rs)** — il codice
@@ -26,7 +26,7 @@ qui prevale sulle note storiche più sotto.
    la stessa cura che si userebbe in produzione, solo isolato in una crate separata per
    sicurezza. 56 unit test e tre integrazioni WebIDL, verificati in locale sia in modalita normale sia JIT-less.
 
-## Stato aggiornato - 2026-10-02
+## Stato aggiornato - 2026-10-03
 
 Le sezioni storiche qui sotto documentano le decisioni e i checkpoint precedenti; se divergono
 da questo blocco, fa fede lo stato attuale. L'utente ha richiesto autonomia continuativa: modificare,
@@ -34,6 +34,8 @@ testare localmente, avviare CI, correggere i fallimenti e proseguire fino al com
 criteri in `V8_MIGRATION.md`.
 
 Il checkpoint 19 aggiunge ritorni `boolean?`, `double?` e `unsigned long?` alle operazioni supportate, con `Option<T>` nativo, `Some` convertito nel primitivo JS e `None` in `null`. Fixture e runtime verificano i tre tipi. Passano 15 test Python, runtime pilot normale/jitless, default e `cargo check` integrato. Patch 0083 si applica pulitamente. CI verde: V8 6/6 (37048609736), sei bundle Servo con Steam e patch validation (37048609764), Android (37048609658), iOS (37048609889).
+
+Il checkpoint 21 corregge la distinzione tra tipi floating-point WebIDL ristretti (`float`/`double`, nativi `FiniteF32/F64`) e `unrestricted float/double`, che conservano NaN e infinito. I tipi finiti non possono essere costruiti con valori non finiti; gli attributi mutabili `double` ora generano TypeError prima di cambiare stato se ToNumber produce NaN o infinito. L-adapter Screen usa il contratto finito sotto feature pilot. Passano 16 test Python, runtime normale/JIT-less/default e `cargo check` integrato di `servo-script`; patch 0085 e CI pendenti. Wiki non aggiornabile perché checkout `roves-wiki` assente.
 
 Il checkpoint 20 estende i ritorni numerici delle operazioni a `byte`, `octet`, `short`, `unsigned short`, `long`, `long long`, `unsigned long long` e `float`, inclusi `float?` e `long long?`. I numeri WebIDL si mappano al tipo Rust corrispondente e a JavaScript Number; `Option<T>::None` diventa `null`. Passano 16 test Python, 56 unit + 3 integrazioni + 2 doctest in pilot normale e JIT-less, 52 unit + 2 doctest default e `cargo check` integrato. Patch 0084 si applica pulitamente. CI verde: V8 6/6 (37061193384), sei bundle Servo più Steam e patch validation (37061193356), Android (37061193392), iOS (37061193362). Il checkout `roves-wiki` manca, quindi non è stato possibile aggiornare la wiki.
 
@@ -102,7 +104,7 @@ validata. Il pilot non è il runtime di produzione; il piano resta aperto fino a
 - **Fase 3 (ownership/GC)**: completa — `create_wrapped`/`get_wrapped` con finalizzatore
   garantito, sicurezza sui cicli di riferimento dimostrata con test reali di stress GC (fino a
   200 oggetti).
-- **Fase 4 (binding WebIDL/DOM)**: 20 checkpoint del pilot, con generazione WebIDL opt-in in `components/script_bindings/codegen.py`, adapter del DOM `Screen` e runtime verificato in `components/roves-v8`. Copre attributi e operazioni con conversioni primitive e stringhe, metodi e fixture runtime. Nessun percorso di produzione è ancora passato da SpiderMonkey a V8; restano wrapper DOM, interfacce, semantiche WebIDL e integrazione runtime. La fase è aperta.
+- **Fase 4 (binding WebIDL/DOM)**: 21 checkpoint del pilot, con generazione WebIDL opt-in in `components/script_bindings/codegen.py`, adapter del DOM `Screen` e runtime verificato in `components/roves-v8`. Copre attributi e operazioni con conversioni primitive e stringhe, metodi e fixture runtime. Nessun percorso di produzione è ancora passato da SpiderMonkey a V8; restano wrapper DOM, interfacce, semantiche WebIDL e integrazione runtime. La fase è aperta.
 
 **Perché tutto è isolato in `roves-v8` e non in produzione:** ispezionando una build reale
 (`target/debug/build/servo-script-bindings-*/out/Bindings/`) si sono trovati **522 file di

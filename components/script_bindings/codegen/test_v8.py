@@ -25,9 +25,9 @@ class V8GeneratorTests(unittest.TestCase):
             source = generate(ROOT / "webidls/Screen.webidl", output)
             self.assertEqual(source, generate(ROOT / "webidls/Screen.webidl", output))
             self.assertEqual(source.count("runtime.define_property("), 6)
-            self.assertIn("fn AvailWidth(&self) -> f64;", source)
+            self.assertIn("fn AvailWidth(&self) -> roves_v8::FiniteF64;", source)
             self.assertIn("fn ColorDepth(&self) -> u32;", source)
-            self.assertIn("Value::Number(native.AvailWidth())", source)
+            self.assertIn("Value::Number(native.AvailWidth().get())", source)
             self.assertIn("Value::Number(native.ColorDepth() as f64)", source)
 
     def test_domstring_getters_preserve_utf16_code_units(self):
@@ -115,12 +115,12 @@ class V8GeneratorTests(unittest.TestCase):
             source = generate(webidl, root / "out")
             self.assertIn("fn Reset(&self) -> ();", source)
             self.assertIn("fn Ready(&self) -> bool;", source)
-            self.assertIn("fn Ratio(&self) -> f64;", source)
+            self.assertIn("fn Ratio(&self) -> roves_v8::FiniteF64;", source)
             self.assertIn("fn Count(&self) -> u32;", source)
             self.assertIn('runtime.define_method(&interface, "reset"', source)
             self.assertIn("Value::Undefined", source)
             self.assertIn("Value::Bool(native.Ready())", source)
-            self.assertIn("Value::Number(native.Ratio())", source)
+            self.assertIn("Value::Number(native.Ratio().get())", source)
             self.assertIn("Value::Number(native.Count() as f64)", source)
 
     def test_string_operation_returns_preserve_domstring_and_usvstring_types(self):
@@ -151,10 +151,10 @@ class V8GeneratorTests(unittest.TestCase):
             )
             source = generate(webidl, root / "out")
             self.assertIn("fn Enabled(&self) -> Option<bool>;", source)
-            self.assertIn("fn Ratio(&self) -> Option<f64>;", source)
+            self.assertIn("fn Ratio(&self) -> Option<roves_v8::FiniteF64>;", source)
             self.assertIn("fn Count(&self) -> Option<u32>;", source)
             self.assertIn("map(Value::Bool).unwrap_or(Value::Null)", source)
-            self.assertIn("map(Value::Number).unwrap_or(Value::Null)", source)
+            self.assertIn("map(|value| Value::Number(value.get())).unwrap_or(Value::Null)", source)
             self.assertIn("map(|value| Value::Number(value as f64)).unwrap_or(Value::Null)", source)
 
     def test_integer_and_float_operation_returns_map_to_rust_numbers(self):
@@ -162,13 +162,15 @@ class V8GeneratorTests(unittest.TestCase):
             root = Path(directory)
             webidl = root / "Numbers.webidl"
             webidl.write_text(
-                "[Exposed=Window] interface Numbers { byte signedByte(); octet octetValue(); short shortValue(); unsigned short unsignedShortValue(); long longValue(); long long longLongValue(); unsigned long long unsignedLongLongValue(); float floatValue(); float? nullableFloat(); long long? nullableLongLong(); };",
+                "[Exposed=Window] interface Numbers { byte signedByte(); octet octetValue(); short shortValue(); unsigned short unsignedShortValue(); long longValue(); long long longLongValue(); unsigned long long unsignedLongLongValue(); float floatValue(); float? nullableFloat(); unrestricted float unrestrictedFloat(); unrestricted float? nullableUnrestrictedFloat(); double doubleValue(); double? nullableDouble(); unrestricted double unrestrictedDouble(); unrestricted double? nullableUnrestrictedDouble(); long long? nullableLongLong(); };",
                 encoding="utf-8",
             )
             source = generate(webidl, root / "out")
-            for rust_type, method in [("i8", "SignedByte"), ("u8", "OctetValue"), ("i16", "ShortValue"), ("u16", "UnsignedShortValue"), ("i32", "LongValue"), ("i64", "LongLongValue"), ("u64", "UnsignedLongLongValue"), ("f32", "FloatValue"), ("Option<f32>", "NullableFloat"), ("Option<i64>", "NullableLongLong")]:
+            for rust_type, method in [("i8", "SignedByte"), ("u8", "OctetValue"), ("i16", "ShortValue"), ("u16", "UnsignedShortValue"), ("i32", "LongValue"), ("i64", "LongLongValue"), ("u64", "UnsignedLongLongValue"), ("roves_v8::FiniteF32", "FloatValue"), ("Option<roves_v8::FiniteF32>", "NullableFloat"), ("f32", "UnrestrictedFloat"), ("Option<f32>", "NullableUnrestrictedFloat"), ("roves_v8::FiniteF64", "DoubleValue"), ("Option<roves_v8::FiniteF64>", "NullableDouble"), ("f64", "UnrestrictedDouble"), ("Option<f64>", "NullableUnrestrictedDouble"), ("Option<i64>", "NullableLongLong")]:
                 self.assertIn(f"fn {method}(&self) -> {rust_type};", source)
-            self.assertIn("Value::Number(native.FloatValue() as f64)", source)
+            self.assertIn("Value::Number(native.FloatValue().get() as f64)", source)
+            self.assertIn("Value::Number(native.UnrestrictedFloat() as f64)", source)
+            self.assertIn("Value::Number(native.DoubleValue().get())", source)
             self.assertIn("Value::Number(native.UnsignedLongLongValue() as f64)", source)
 
     def test_operations_accept_required_boolean_arguments(self):
@@ -202,11 +204,12 @@ class V8GeneratorTests(unittest.TestCase):
             )
             source = generate(webidl, root / "out")
             self.assertIn("fn Enabled(&self) -> Option<bool>;", source)
-            self.assertIn("fn Ratio(&self) -> Option<f64>;", source)
+            self.assertIn("fn Ratio(&self) -> Option<roves_v8::FiniteF64>;", source)
             self.assertIn("fn Count(&self) -> Option<u32>;", source)
             self.assertIn("PrimitiveConversion::NullableBoolean", source)
             self.assertIn("PrimitiveConversion::NullableDouble", source)
             self.assertIn("PrimitiveConversion::NullableUnsignedLong", source)
+            self.assertIn("FiniteF64::new(*value).expect", source)
             self.assertIn("Value::Null => None", source)
 
     def test_unsupported_interface_shapes_fail(self):

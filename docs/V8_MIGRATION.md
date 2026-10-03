@@ -571,6 +571,17 @@ boundary without borrowing Servo's SpiderMonkey-rooted `DOMString` implementatio
 tests pass in default, normal V8 pilot and JIT-less V8 pilot modes; six Python generator tests pass.
 Cross-platform CI is pending.
 
+**Twenty-first checkpoint (2026-10-03): finite and unrestricted WebIDL floating-point semantics.**
+The generated contract distinguishes restricted `float`/`double` from `unrestricted float`/
+`unrestricted double`. Engine-neutral `FiniteF32`/`FiniteF64` wrappers reject NaN and infinities at
+construction, so restricted operation returns and nullable values cannot violate the WebIDL
+invariant; unrestricted types preserve them as JavaScript Numbers. Mutable `double` attribute
+conversion now throws `TypeError` for non-finite results before native mutation, while nullable
+`null` remains IDL null. Servo's `Screen` adapter uses the finite contract, activated only under
+the pilot feature. Local validation: 16 generator tests; 56 unit + 3 WebIDL integration + 2
+doctests in normal and JIT-less pilot modes; 52 unit + 2 doctests default; `cargo check` of
+`servo-script` with V8 pilot and JIT features. Patch 0085 and CI are pending. Production remains
+SpiderMonkey.
 **Twentieth checkpoint (2026-10-02): numeric WebIDL operation returns.** Supported operations
 now return `byte`, `octet`, `short`, `unsigned short`, `long`, `long long`, `unsigned long long`,
 and `float`, in both nullable and non-nullable form. The generated native contract uses the

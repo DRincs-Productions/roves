@@ -9,6 +9,10 @@ interface MutablePrimitives {
   undefined ping();
   boolean isEnabled();
   double currentRatio();
+  unrestricted double currentUnrestrictedRatio();
+  unrestricted double? optionalUnrestrictedRatioResult();
+  unrestricted float currentUnrestrictedFloat();
+  unrestricted float? optionalUnrestrictedFloatResult();
   unsigned long currentCount();
   boolean accepts(boolean value);
   DOMString currentLabel();

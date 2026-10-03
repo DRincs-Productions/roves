@@ -7,10 +7,10 @@ use roves_v8::webidl::validity_state::{ValidityStateBinding, ValidityStateNative
 
 struct TestScreen;
 impl ScreenNative for TestScreen {
-    fn AvailWidth(&self) -> f64 { 1280.5 }
-    fn AvailHeight(&self) -> f64 { 720.25 }
-    fn Width(&self) -> f64 { 1920.0 }
-    fn Height(&self) -> f64 { 1080.0 }
+    fn AvailWidth(&self) -> roves_v8::FiniteF64 { roves_v8::FiniteF64::new(1280.5).unwrap() }
+    fn AvailHeight(&self) -> roves_v8::FiniteF64 { roves_v8::FiniteF64::new(720.25).unwrap() }
+    fn Width(&self) -> roves_v8::FiniteF64 { roves_v8::FiniteF64::new(1920.0).unwrap() }
+    fn Height(&self) -> roves_v8::FiniteF64 { roves_v8::FiniteF64::new(1080.0).unwrap() }
     fn ColorDepth(&self) -> u32 { 24 }
     fn PixelDepth(&self) -> u32 { 32 }
 }

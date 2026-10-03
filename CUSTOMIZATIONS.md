@@ -1,3 +1,17 @@
+## 2026-10-03 - V8 migration Phase 4: restricted and unrestricted WebIDL floating-point values
+
+**Servo files:** `Cargo.lock`; `components/roves-v8/{src/lib.rs,tests/webidl.rs,tests/webidl/MutablePrimitives.webidl}`; `components/script/{Cargo.toml,dom/screen.rs}`; `components/script_bindings/codegen/{codegen.py,test_v8.py}`.
+**Patch:** `0085-roves-v8-phase4-webidl-finite-and-unrestricted-floats.patch` after 0001-0084.
+
+The opt-in generated binding now distinguishes restricted WebIDL `float`/`double` from
+`unrestricted float`/`unrestricted double`. `roves-v8::FiniteF32` and `FiniteF64` can only be
+constructed from finite values and represent restricted native returns, including nullable
+returns. Unrestricted results keep the full IEEE-754 range. Mutable `double` attributes reject
+NaN and infinities with `TypeError` before mutating native state; nullable `null` remains direct
+IDL null. Servo's `Screen` adapter wraps its existing finite dimensions in the engine-neutral
+contract, and the pilot feature explicitly activates the optional runtime dependency. Local
+normal/JIT-less/default tests and the integrated `servo-script` check pass. The wiki checkout is
+not present; this change does not alter `mach build`/`mach bundle` flags or output.
 ## 2026-10-02 - V8 migration Phase 4: integer and float WebIDL operation returns
 
 **Servo files:** `components/roves-v8/{src/lib.rs,tests/webidl/MutablePrimitives.webidl}`;

@@ -80,20 +80,28 @@ impl ScreenMethods<crate::DomTypeHolder> for Screen {
 /// This adapter does not create a V8 object or switch the production SpiderMonkey path.
 #[cfg(feature = "v8-bindings-pilot")]
 impl script_bindings::v8_bindings::screen::ScreenNative for Screen {
-    fn AvailWidth(&self) -> f64 {
-        *<Self as ScreenMethods<crate::DomTypeHolder>>::AvailWidth(self)
+    fn AvailWidth(&self) -> roves_v8::FiniteF64 {
+        roves_v8::FiniteF64::new(*<Self as ScreenMethods<crate::DomTypeHolder>>::AvailWidth(
+            self,
+        ))
+        .unwrap()
     }
 
-    fn AvailHeight(&self) -> f64 {
-        *<Self as ScreenMethods<crate::DomTypeHolder>>::AvailHeight(self)
+    fn AvailHeight(&self) -> roves_v8::FiniteF64 {
+        roves_v8::FiniteF64::new(*<Self as ScreenMethods<crate::DomTypeHolder>>::AvailHeight(
+            self,
+        ))
+        .unwrap()
     }
 
-    fn Width(&self) -> f64 {
-        *<Self as ScreenMethods<crate::DomTypeHolder>>::Width(self)
+    fn Width(&self) -> roves_v8::FiniteF64 {
+        roves_v8::FiniteF64::new(*<Self as ScreenMethods<crate::DomTypeHolder>>::Width(self))
+            .unwrap()
     }
 
-    fn Height(&self) -> f64 {
-        *<Self as ScreenMethods<crate::DomTypeHolder>>::Height(self)
+    fn Height(&self) -> roves_v8::FiniteF64 {
+        roves_v8::FiniteF64::new(*<Self as ScreenMethods<crate::DomTypeHolder>>::Height(self))
+            .unwrap()
     }
 
     fn ColorDepth(&self) -> u32 {

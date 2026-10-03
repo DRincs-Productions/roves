@@ -94,6 +94,35 @@ pub enum Value {
     Object,
 }
 
+/// Engine-neutral representation of the WebIDL restricted `float` type.
+/// Construction rejects NaN and infinities, keeping the IDL invariant across the V8 boundary.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FiniteF32(f32);
+
+impl FiniteF32 {
+    pub fn new(value: f32) -> Option<Self> {
+        value.is_finite().then_some(Self(value))
+    }
+
+    pub fn get(self) -> f32 {
+        self.0
+    }
+}
+
+/// Engine-neutral representation of the WebIDL restricted `double` type.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FiniteF64(f64);
+
+impl FiniteF64 {
+    pub fn new(value: f64) -> Option<Self> {
+        value.is_finite().then_some(Self(value))
+    }
+
+    pub fn get(self) -> f64 {
+        self.0
+    }
+}
+
 /// A persistent reference to a JS value, outliving any single [`Runtime::eval`]/`eval_value`
 /// call. Backed by a `v8::Global`, which is isolate-scoped rather than context-scoped, so it can
 /// be read back (via [`Runtime::load`]) from a different fresh context than the one it was
@@ -874,6 +903,10 @@ impl Runtime {
                                 PrimitiveConversion::Boolean => Value::Bool(value.boolean_value(scope)),
                                 PrimitiveConversion::Double => {
                                     let Some(number) = value.number_value(scope) else { return; };
+                                    if !number.is_finite() {
+                                        throw_type_error(scope, "double must be finite");
+                                        return;
+                                    }
                                     Value::Number(number)
                                 }
                                 PrimitiveConversion::UnsignedLong => {
@@ -892,6 +925,10 @@ impl Runtime {
                                         Value::Null
                                     } else {
                                         let Some(number) = value.number_value(scope) else { return; };
+                                        if !number.is_finite() {
+                                            throw_type_error(scope, "double must be finite");
+                                            return;
+                                        }
                                         Value::Number(number)
                                     }
                                 }
@@ -2594,6 +2631,13 @@ mod tests {
     #[test]
     fn generated_mutable_primitive_attributes_follow_webidl_conversion() {
         use crate::webidl::mutable_primitives::{MutablePrimitivesBinding, MutablePrimitivesNative};
+        use crate::{FiniteF32, FiniteF64};
+        assert!(FiniteF32::new(f32::NAN).is_none());
+        assert!(FiniteF32::new(f32::INFINITY).is_none());
+        assert!(FiniteF64::new(f64::NAN).is_none());
+        assert!(FiniteF64::new(f64::NEG_INFINITY).is_none());
+        assert_eq!(FiniteF32::new(1.25).unwrap().get(), 1.25);
+        assert_eq!(FiniteF64::new(-2.5).unwrap().get(), -2.5);
         #[derive(Default)]
         struct State {
             enabled: bool,
@@ -2607,19 +2651,23 @@ mod tests {
         impl MutablePrimitivesNative for State {
             fn Enabled(&self) -> bool { self.enabled }
             fn set_Enabled(&mut self, value: bool) { self.enabled = value; }
-            fn Ratio(&self) -> f64 { self.ratio }
-            fn set_Ratio(&mut self, value: f64) { self.ratio = value; }
+            fn Ratio(&self) -> FiniteF64 { FiniteF64::new(self.ratio).expect("test state stores finite double attributes") }
+            fn set_Ratio(&mut self, value: FiniteF64) { self.ratio = value.get(); }
             fn Count(&self) -> u32 { self.count }
             fn set_Count(&mut self, value: u32) { self.count = value; }
             fn OptionalEnabled(&self) -> Option<bool> { self.optional_enabled }
             fn set_OptionalEnabled(&mut self, value: Option<bool>) { self.optional_enabled = value; }
-            fn OptionalRatio(&self) -> Option<f64> { self.optional_ratio }
-            fn set_OptionalRatio(&mut self, value: Option<f64>) { self.optional_ratio = value; }
+            fn OptionalRatio(&self) -> Option<FiniteF64> { self.optional_ratio.map(|value| FiniteF64::new(value).expect("test state stores finite nullable doubles")) }
+            fn set_OptionalRatio(&mut self, value: Option<FiniteF64>) { self.optional_ratio = value.map(FiniteF64::get); }
             fn OptionalCount(&self) -> Option<u32> { self.optional_count }
             fn set_OptionalCount(&mut self, value: Option<u32>) { self.optional_count = value; }
             fn Ping(&self) {}
             fn IsEnabled(&self) -> bool { self.enabled }
-            fn CurrentRatio(&self) -> f64 { self.ratio }
+            fn CurrentRatio(&self) -> FiniteF64 { FiniteF64::new(self.ratio).unwrap_or_else(|| FiniteF64::new(0.0).unwrap()) }
+            fn CurrentUnrestrictedRatio(&self) -> f64 { f64::INFINITY }
+            fn OptionalUnrestrictedRatioResult(&self) -> Option<f64> { Some(f64::NAN) }
+            fn CurrentUnrestrictedFloat(&self) -> f32 { f32::INFINITY }
+            fn OptionalUnrestrictedFloatResult(&self) -> Option<f32> { Some(f32::NAN) }
             fn CurrentCount(&self) -> u32 { self.count }
             fn Accepts(&self, value: bool) -> bool { value }
             fn CurrentLabel(&self) -> Vec<u16> { vec![0xD800, 0x0041] }
@@ -2627,7 +2675,7 @@ mod tests {
             fn CurrentUsvLabel(&self) -> String { "v8 ?".to_owned() }
             fn OptionalUsvLabel(&self) -> Option<String> { Some("game".to_owned()) }
             fn OptionalEnabledResult(&self) -> Option<bool> { Some(true) }
-            fn OptionalRatioResult(&self) -> Option<f64> { None }
+            fn OptionalRatioResult(&self) -> Option<FiniteF64> { None }
             fn OptionalCountResult(&self) -> Option<u32> { Some(u32::MAX) }
             fn SignedByteResult(&self) -> i8 { -7 }
             fn OctetResult(&self) -> u8 { 250 }
@@ -2636,8 +2684,8 @@ mod tests {
             fn LongResult(&self) -> i32 { -2_000_000 }
             fn LongLongResult(&self) -> i64 { i64::MAX }
             fn UnsignedLongLongResult(&self) -> u64 { u64::MAX }
-            fn FloatResult(&self) -> f32 { 1.25 }
-            fn NullableFloatResult(&self) -> Option<f32> { Some(-2.5) }
+            fn FloatResult(&self) -> FiniteF32 { FiniteF32::new(1.25).unwrap() }
+            fn NullableFloatResult(&self) -> Option<FiniteF32> { Some(FiniteF32::new(-2.5).unwrap()) }
             fn NullableLongLongResult(&self) -> Option<i64> { None }
         }
         let mut runtime = Runtime::new();
@@ -2649,10 +2697,12 @@ mod tests {
         assert!(native.enabled);
         assert_eq!(native.ratio, 2.5);
         assert_eq!(native.count, u32::MAX);
-        runtime.eval("state.enabled = 0; state.ratio = {}; state.count = 4294967297").unwrap();
+        runtime.eval("state.enabled = 0; state.count = 4294967297").unwrap();
+        assert!(runtime.eval("state.ratio = {}").unwrap_err().contains("TypeError"));
+        assert!(runtime.eval("state.ratio = Infinity").unwrap_err().contains("TypeError"));
         let native = runtime.get_wrapped::<State>(&handle).unwrap();
         assert!(!native.enabled);
-        assert!(native.ratio.is_nan());
+        assert_eq!(native.ratio, 2.5);
         assert_eq!(native.count, 1);
         assert!(runtime.eval("state.count = Symbol() ").is_err());
 
@@ -2672,14 +2722,15 @@ mod tests {
 
         runtime.eval("state.optionalRatio = Symbol();").unwrap_err();
         assert_eq!(runtime.get_wrapped::<State>(&handle).unwrap().optional_ratio, Some(3.25));
-        runtime.eval("state.optionalEnabled = undefined; state.optionalRatio = undefined; state.optionalCount = undefined;").unwrap();
+        assert!(runtime.eval("state.optionalRatio = undefined;").unwrap_err().contains("TypeError"));
+        runtime.eval("state.optionalEnabled = undefined; state.optionalCount = undefined;").unwrap();
         let native = runtime.get_wrapped::<State>(&handle).unwrap();
         assert_eq!(native.optional_enabled, Some(false));
-        assert!(native.optional_ratio.unwrap().is_nan());
+        assert_eq!(native.optional_ratio, Some(3.25));
         assert_eq!(native.optional_count, Some(0));
         assert_eq!(runtime.eval_value("state.ping()").unwrap(), Value::Undefined);
         assert_eq!(runtime.eval_value("state.isEnabled()").unwrap(), Value::Bool(false));
-        assert!(matches!(runtime.eval_value("state.currentRatio()").unwrap(), Value::Number(value) if value.is_nan()));
+        assert_eq!(runtime.eval_value("state.currentRatio()").unwrap(), Value::Number(2.5));
         assert_eq!(runtime.eval_value("state.currentCount()").unwrap(), Value::Number(1.0));
         assert_eq!(runtime.eval_value("state.accepts(true)").unwrap(), Value::Bool(true));
         assert_eq!(runtime.eval_value("state.accepts(1)").unwrap(), Value::Bool(true));
@@ -2704,6 +2755,11 @@ mod tests {
             assert_eq!(runtime.eval_value(expression).unwrap(), Value::Number(expected), "{expression}");
         }
         assert_eq!(runtime.eval_value("state.nullableLongLongResult()").unwrap(), Value::Null);
+        assert_eq!(runtime.eval_value("state.currentRatio()").unwrap(), Value::Number(2.5));
+        assert!(runtime.eval("state.currentUnrestrictedRatio() === Infinity").unwrap() == "true");
+        assert!(runtime.eval("Number.isNaN(state.optionalUnrestrictedRatioResult())").unwrap() == "true");
+        assert!(runtime.eval("state.currentUnrestrictedFloat() === Infinity").unwrap() == "true");
+        assert!(runtime.eval("Number.isNaN(state.optionalUnrestrictedFloatResult())").unwrap() == "true");
     }
 
     #[cfg(feature = "webidl-pilot")]

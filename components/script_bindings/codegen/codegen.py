@@ -8259,10 +8259,20 @@ class CGV8BindingRoot(CGThing):
                         rust_type, value_expr = "bool", "Value::Bool(native.{native}())"
                 elif result_type.isFloat() and result_type.name == "Double":
                     if nullable_return:
+                        rust_type, value_expr = "Option<roves_v8::FiniteF64>", "native.{native}().map(|value| Value::Number(value.get())).unwrap_or(Value::Null)"
+                    else:
+                        rust_type, value_expr = "roves_v8::FiniteF64", "Value::Number(native.{native}().get())"
+                elif result_type.isFloat() and result_type.name == "Float":
+                    if nullable_return:
+                        rust_type, value_expr = "Option<roves_v8::FiniteF32>", "native.{native}().map(|value| Value::Number(value.get() as f64)).unwrap_or(Value::Null)"
+                    else:
+                        rust_type, value_expr = "roves_v8::FiniteF32", "Value::Number(native.{native}().get() as f64)"
+                elif result_type.isFloat() and result_type.name == "UnrestrictedDouble":
+                    if nullable_return:
                         rust_type, value_expr = "Option<f64>", "native.{native}().map(Value::Number).unwrap_or(Value::Null)"
                     else:
                         rust_type, value_expr = "f64", "Value::Number(native.{native}())"
-                elif result_type.isFloat() and result_type.name == "Float":
+                elif result_type.isFloat() and result_type.name == "UnrestrictedFloat":
                     if nullable_return:
                         rust_type, value_expr = "Option<f32>", "native.{native}().map(|value| Value::Number(value as f64)).unwrap_or(Value::Null)"
                     else:
@@ -8306,10 +8316,10 @@ class CGV8BindingRoot(CGThing):
                     rust_type, value_expr = "bool", "Value::Bool(native.{native}())"
             elif idl_type.isFloat() and idl_type.name == "Double":
                 if member.type.nullable():
-                    rust_type = "Option<f64>"
-                    value_expr = "native.{native}().map(Value::Number).unwrap_or(Value::Null)"
+                    rust_type = "Option<roves_v8::FiniteF64>"
+                    value_expr = "native.{native}().map(|value| Value::Number(value.get())).unwrap_or(Value::Null)"
                 else:
-                    rust_type, value_expr = "f64", "Value::Number(native.{native}())"
+                    rust_type, value_expr = "roves_v8::FiniteF64", "Value::Number(native.{native}().get())"
             elif idl_type.isInteger() and idl_type.name == "UnsignedLong":
                 if member.type.nullable():
                     rust_type = "Option<u32>"
@@ -8388,20 +8398,22 @@ class CGV8BindingRoot(CGThing):
                             )
                     elif conversion in {"NullableBoolean", "NullableDouble", "NullableUnsignedLong"}:
                         value_variant = "Bool" if conversion == "NullableBoolean" else "Number"
-                        primitive_type = {"NullableBoolean": "bool", "NullableDouble": "f64", "NullableUnsignedLong": "u32"}[conversion]
+                        primitive_type = {"NullableBoolean": "bool", "NullableDouble": "roves_v8::FiniteF64", "NullableUnsignedLong": "u32"}[conversion]
+                        primitive_value = "roves_v8::FiniteF64::new(*value).expect(\"runtime enforces finite WebIDL double\")" if conversion == "NullableDouble" else f"*value as {primitive_type}"
                         converted = (
                             f'let value = match value {{\n'
                             f'                Value::Null => None,\n'
-                            f'                Value::{value_variant}(value) => Some(*value as {primitive_type}),\n'
+                            f'                Value::{value_variant}(value) => Some({primitive_value}),\n'
                             f'                _ => unreachable!("typed WebIDL conversion"),\n'
                             f'            }};\n'
                             f'            native.{setter_native}(value);'
                         )
                     else:
                         value_variant = "Bool" if conversion == "Boolean" else "Number"
+                        primitive_value = "roves_v8::FiniteF64::new(*value).expect(\"runtime enforces finite WebIDL double\")" if conversion == "Double" else f"*value as {rust_type}"
                         converted = (
                             f'let Value::{value_variant}(value) = value else {{ unreachable!("typed WebIDL conversion") }};\n'
-                            f'            native.{setter_native}(*value as {rust_type});'
+                            f'            native.{setter_native}({primitive_value});'
                         )
                     registrations_list.append(
                         f'        runtime.define_webidl_primitive_property(&interface, "{idl}", {getter}, '
