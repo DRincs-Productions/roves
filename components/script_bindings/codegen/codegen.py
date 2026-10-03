@@ -8293,6 +8293,8 @@ class CGV8BindingRoot(CGThing):
                         add_argument_type("roves_v8::FiniteF64", "Double", "Value::Number(value) => roves_v8::FiniteF64::new(*value).expect(\"runtime validated finite double\")", nullable, optional)
                     elif ty.isFloat() and ty.name == "UnrestrictedDouble":
                         add_argument_type("f64", "UnrestrictedDouble", "Value::Number(value) => *value", nullable, optional)
+                    elif ty.isByteString():
+                        add_argument_type("Vec<u8>", "ByteString", "Value::ByteString(value) => value.clone()", nullable, optional)
                     elif ty.isDOMString():
                         add_argument_type("Vec<u16>", "DomString", "Value::Utf16String(value) => value.clone()", nullable, optional)
                     elif ty.isUSVString():

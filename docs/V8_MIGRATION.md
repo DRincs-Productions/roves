@@ -601,18 +601,32 @@ The pilot represents omitted and explicit-`undefined` optional arguments as the 
 Default-valued optional parameters and variadics remain fail-closed. Runtime fixture coverage
 checks omitted, `undefined`, `null`, coercion and Symbol errors. Local verification passes 21
 generator tests, 59 unit + 3 WebIDL integration + 2 doctests in normal and JIT-less pilot modes,
-52 default unit + 2 doctests, and the integrated `servo-script` check. Patch overlay validation
-and cross-platform CI are pending. This remains pilot-only; production still uses SpiderMonkey.
+52 default unit + 2 doctests, and the integrated `servo-script` check. Patch 0090 applies cleanly.
+CI is green: V8 matrix ([37144196093](https://github.com/DRincs-Productions/roves/actions/runs/37144196093)),
+all six Servo bundles plus Steam, SDL3 and patch validation ([37144196126](https://github.com/DRincs-Productions/roves/actions/runs/37144196126)),
+Android ([37144196111](https://github.com/DRincs-Productions/roves/actions/runs/37144196111)), and iOS
+([37144196107](https://github.com/DRincs-Productions/roves/actions/runs/37144196107)). This remains
+pilot-only; production still uses SpiderMonkey.
+
+**Twenty-seventh checkpoint (2026-10-03): WebIDL ByteString operation arguments.** The pilot
+converts JavaScript ToString output to engine-neutral `Vec<u8>` only when every UTF-16 code unit is
+at most 255, otherwise it throws TypeError. Symbol and user `toString` exceptions preserve their
+specified behavior. Required, nullable and optional nullable forms are covered; defaults and
+variadics remain fail-closed. Local verification passes 22 generator tests, 60 unit + 3 WebIDL
+integration + 2 doctests in normal and JIT-less pilot modes, 52 default unit + 2 doctests, and the
+integrated `servo-script` check. Patch overlay validation and cross-platform CI are pending. This
+remains pilot-only; production still uses SpiderMonkey.
 
 **Twenty-fifth checkpoint (2026-10-03): nullable WebIDL operation arguments.** Required nullable
 boolean, numeric, `DOMString`, and `USVString` arguments now generate `Option<T>` native contracts.
 For nullable types WebIDL maps both JavaScript `null` and `undefined` to IDL null; other values use
 the inner type's existing Boolean, numeric, ToString, UTF-16, or scalar-value conversion. A mixed
 nullable/non-nullable signature verifies the per-argument conversion flags. Optional and variadic
-arguments, ByteString and other unsupported types still fail closed. Local verification passes 20
+arguments and other unsupported types still fail closed. Local verification passes 20
 generator tests, 58 unit + 3 integration + 2 doctests in normal and JIT-less pilot modes, 52 default
-unit + 2 doctests, and the integrated `servo-script` check. Patch 0089 applies cleanly;
-cross-platform CI is pending. Production remains SpiderMonkey.
+unit + 2 doctests, and the integrated `servo-script` check. Patch 0089 applies cleanly. CI is
+green: V8 (37141033528), all six Servo bundles plus Steam and patch validation (37141033571),
+Android (37141033507), and iOS (37141033514). Production remains SpiderMonkey.
 
 **Twenty-second checkpoint (2026-10-03): required numeric WebIDL operation arguments.**
 The opt-in generator now accepts required `double`, `unrestricted double`, and `unsigned long`

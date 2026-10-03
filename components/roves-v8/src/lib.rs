@@ -53,6 +53,10 @@ pub mod webidl {
     pub mod optional_operations {
         include!(concat!(env!("OUT_DIR"), "/OptionalOperationsV8Binding.rs"));
     }
+    #[cfg(test)]
+    pub mod bytestring_operations {
+        include!(concat!(env!("OUT_DIR"), "/ByteStringOperationsV8Binding.rs"));
+    }
 }
 
 use std::sync::Once;
@@ -99,6 +103,8 @@ pub enum Value {
     Bool(bool),
     Number(f64),
     String(String),
+    /// WebIDL ByteString bytes; conversion to JavaScript preserves each byte as a code unit.
+    ByteString(Vec<u8>),
     /// A lossless UTF-16 string for JavaScript strings containing unpaired surrogates, which
     /// Rust's UTF-8 `String` cannot represent. Ordinary scalar-valid strings use `String`.
     Utf16String(Vec<u16>),
@@ -262,6 +268,7 @@ pub enum WebIdlArgumentConversion {
     UnrestrictedDouble,
     UnsignedLong,
     DomString,
+    ByteString,
     UsvString,
 }
 
@@ -1363,6 +1370,34 @@ impl Runtime {
                                 Err(None) => return,
                             }
                         }
+                        Some(WebIdlArgumentConversion::ByteString) => {
+                            if argument.is_symbol() {
+                                throw_type_error(scope, "Cannot convert a Symbol value to a string");
+                                return;
+                            }
+                            let result = {
+                                v8::tc_scope!(let tc_scope, scope);
+                                let scope = tc_scope;
+                                match argument.to_string(scope) {
+                                    Some(string) => {
+                                        let mut utf16 = vec![0; string.length()];
+                                        string.write_v2(scope, 0, &mut utf16, v8::WriteFlags::empty());
+                                        if utf16.iter().any(|unit| *unit > 0xFF) {
+                                            let message = v8::String::new(scope, "ByteString contains a code unit greater than 255").unwrap();
+                                            Err(Some(v8::Exception::type_error(scope, message).into()))
+                                        } else {
+                                            Ok(Value::ByteString(utf16.into_iter().map(|unit| unit as u8).collect()))
+                                        }
+                                    }
+                                    None => Err(scope.exception()),
+                                }
+                            };
+                            match result {
+                                Ok(value) => value,
+                                Err(Some(exception)) => { scope.throw_exception(exception); return; }
+                                Err(None) => return,
+                            }
+                        }
                         }
                     };
                     arguments.push(converted);
@@ -1733,6 +1768,12 @@ fn v8_value<'s>(scope: &v8::PinScope<'s, '_>, value: &Value) -> v8::Local<'s, v8
         Value::String(s) => v8::String::new(scope, s)
             .map(Into::into)
             .unwrap_or_else(|| v8::undefined(scope).into()),
+        Value::ByteString(bytes) => {
+            let units = bytes.iter().map(|byte| u16::from(*byte)).collect::<Vec<_>>();
+            v8::String::new_from_two_byte(scope, &units, v8::NewStringType::Normal)
+                .map(Into::into)
+                .unwrap_or_else(|| v8::undefined(scope).into())
+        }
         Value::Utf16String(units) => v8::String::new_from_two_byte(
             scope,
             units,
@@ -3139,6 +3180,49 @@ mod tests {
         assert_eq!(runtime.eval_value("values.fallback(undefined)").unwrap(), Value::Number(-1.0));
         assert_eq!(runtime.eval_value("values.fallback(null)").unwrap(), Value::Number(0.0));
         assert_eq!(runtime.eval("(() => { try { values.fallback(Symbol()); } catch (e) { return e instanceof TypeError; } })()").unwrap(), "true");
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_bytestring_arguments_preserve_bytes_and_enforce_code_unit_range() {
+        use crate::webidl::bytestring_operations::{ByteStringOperationsBinding, ByteStringOperationsNative};
+        use crate::WebIdlOptionalArgument;
+        struct ByteValues;
+        #[allow(non_snake_case)]
+        impl ByteStringOperationsNative for ByteValues {
+            fn Echo(&self, value: Vec<u8>) -> Vec<u16> {
+                value.into_iter().map(u16::from).collect()
+            }
+            fn NullableEcho(&self, value: Option<Vec<u8>>) -> Option<Vec<u16>> {
+                value.map(|value| value.into_iter().map(u16::from).collect())
+            }
+            fn OptionalEcho(&self, value: WebIdlOptionalArgument<Option<Vec<u8>>>) -> Option<Vec<u16>> {
+                match value {
+                    WebIdlOptionalArgument::Missing => Some("missing".encode_utf16().collect()),
+                    WebIdlOptionalArgument::Present(None) => None,
+                    WebIdlOptionalArgument::Present(Some(value)) => Some(value.into_iter().map(u16::from).collect()),
+                }
+            }
+        }
+
+        let mut runtime = Runtime::new();
+        let binding = ByteStringOperationsBinding::<ByteValues>::install(&mut runtime).unwrap();
+        let handle = binding.create(&mut runtime, ByteValues);
+        runtime.set_global_property("values", &handle).unwrap();
+
+        runtime.eval("globalThis.bytes = values.echo('A\\u00FF');").unwrap();
+        assert_eq!(runtime.eval_value("bytes.charCodeAt(0)").unwrap(), Value::Number(65.0));
+        assert_eq!(runtime.eval_value("bytes.charCodeAt(1)").unwrap(), Value::Number(255.0));
+        assert_eq!(runtime.eval_value("values.nullableEcho(null)").unwrap(), Value::Null);
+        assert_eq!(runtime.eval_value("values.nullableEcho(undefined)").unwrap(), Value::Null);
+        assert_eq!(runtime.eval_value("values.optionalEcho()").unwrap(), Value::String("missing".into()));
+        assert_eq!(runtime.eval_value("values.optionalEcho(undefined)").unwrap(), Value::String("missing".into()));
+        assert_eq!(runtime.eval_value("values.optionalEcho(null)").unwrap(), Value::Null);
+        assert_eq!(runtime.eval_value("values.optionalEcho('\\u00FE')").unwrap(), Value::String("þ".into()));
+        assert!(runtime.eval("values.echo('\\u0100')").unwrap_err().contains("TypeError"));
+        assert!(runtime.eval("values.echo('\\uD800')").unwrap_err().contains("TypeError"));
+        assert!(runtime.eval("values.echo(Symbol())").unwrap_err().contains("TypeError"));
+        assert_eq!(runtime.eval("(() => { try { values.echo({ toString() { throw new RangeError('bytes'); } }); } catch (e) { return e instanceof RangeError && e.message === 'bytes'; } })()").unwrap(), "true");
     }
 
     #[cfg(feature = "webidl-pilot")]

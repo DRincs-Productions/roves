@@ -252,7 +252,7 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn("define_webidl_method_with_argument_flags", source)
 
     def test_optional_explicit_defaults_variadics_and_unsupported_types_fail_closed(self):
-        for signature in ["double run(optional double value = 1);", "double run(double... values);", "double run(ByteString? value);"]:
+        for signature in ["double run(optional double value = 1);", "double run(double... values);", "double run(object value);"]:
             with self.subTest(signature=signature):
                 self.assert_unsupported("interface Unsupported { " + signature + " };")
 
@@ -264,9 +264,24 @@ class V8GeneratorTests(unittest.TestCase):
             source = generate(webidl, root / "out")
             self.assertIn("WebIdlOptionalArgument<bool>", source)
             self.assertIn("WebIdlArgumentConversion::Boolean", source)
-        for signature in ["boolean run(ByteString value);", "boolean run(boolean... values);"]:
+        for signature in ["boolean run(object value);", "boolean run(boolean... values);"]:
             with self.subTest(signature=signature):
                 self.assert_unsupported("interface Unsupported { " + signature + " };")
+
+    def test_bytestring_operation_arguments_use_bytes_and_keep_nullable_optional_states(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            webidl = root / "ByteStrings.webidl"
+            webidl.write_text(
+                "[Exposed=Window] interface ByteStrings { DOMString echo(ByteString value); DOMString? nullable(ByteString? value); DOMString? optionalValue(optional ByteString? value); };",
+                encoding="utf-8",
+            )
+            source = generate(webidl, root / "out")
+            self.assertIn("fn Echo(&self, arg0: Vec<u8>) -> Vec<u16>;", source)
+            self.assertIn("fn Nullable(&self, arg0: Option<Vec<u8>>) -> Option<Vec<u16>>;", source)
+            self.assertIn("fn OptionalValue(&self, arg0: roves_v8::WebIdlOptionalArgument<Option<Vec<u8>>>) -> Option<Vec<u16>>;", source)
+            self.assertIn("WebIdlArgumentConversion::ByteString", source)
+            self.assertIn("Value::ByteString(value) => value.clone()", source)
 
     def test_nullable_primitive_attributes_use_optional_native_values(self):
         with tempfile.TemporaryDirectory() as directory:

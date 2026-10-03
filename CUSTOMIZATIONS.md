@@ -1,3 +1,17 @@
+## 2026-10-03 - V8 migration Phase 4: ByteString WebIDL operation arguments
+
+**Servo files:** `components/roves-v8/{build.rs,src/lib.rs,tests/webidl/ByteStringOperations.webidl}`;
+`components/script_bindings/codegen/{codegen.py,test_v8.py}`.
+**Patch:** `0091-roves-v8-phase4-bytestring-operation-arguments.patch` after 0001-0090.
+
+The opt-in generator accepts required, nullable and optional nullable ByteString operation
+arguments, mapping native values to `Vec<u8>`. Runtime ToString conversion checks UTF-16 code units
+are all at most 255 and throws TypeError otherwise; Symbol and user coercion exceptions propagate.
+Defaults and variadics remain fail-closed. Local verification passes 22 generator tests, 60 unit +
+3 integration + 2 doctests in normal and JIT-less pilot modes, 52 default unit + 2 doctests, and
+the integrated `servo-script` check. Patch overlay validation and cross-platform CI are pending.
+Production still uses SpiderMonkey.
+
 ## 2026-10-03 - V8 migration Phase 4: optional WebIDL operation arguments
 
 **Servo files:** `components/roves-v8/{build.rs,src/lib.rs,tests/webidl/OptionalOperations.webidl}`;
@@ -11,7 +25,9 @@ arguments keep `null` distinct as `Present(None)`. Runtime fixtures cover this d
 normal coercion and Symbol errors. Explicit defaults, variadics and unsupported types remain
 fail-closed. Local verification passes 21 generator tests, 59 unit + 3 integration + 2 doctests
 in normal and JIT-less pilot modes, 52 default unit + 2 doctests, and the integrated `servo-script`
-check. Patch overlay validation and cross-platform CI are pending; production still uses SpiderMonkey.
+check. Patch 0090 applies cleanly. CI is green: V8 (37144196093), all Servo bundles plus Steam and
+patch validation (37144196126), Android (37144196111), and iOS (37144196107). Production still
+uses SpiderMonkey.
 
 ## 2026-10-03 - V8 migration Phase 4: nullable WebIDL operation arguments
 
@@ -25,8 +41,9 @@ WebIDL conversion. Native contracts cover boolean, integer and floating-point wi
 and USVString. Mixed signatures pass per-argument nullability flags to the runtime. Optional,
 variadic and unsupported types (including ByteString) still fail closed. 20 generator tests, 58
 pilot unit + 3 integration + 2 doctests in normal and JIT-less modes, 52 default unit + 2 doctests,
-and integrated `servo-script` compilation pass locally. Patch 0089 applies cleanly; cross-platform
-CI is pending. Production still uses SpiderMonkey.
+and integrated `servo-script` compilation pass locally. Patch 0089 applies cleanly. CI is green:
+V8 (37141033528), all six Servo bundles plus Steam and patch validation (37141033571), Android
+(37141033507), and iOS (37141033514). Production still uses SpiderMonkey.
 
 ## 2026-10-03 - V8 migration Phase 4: WebIDL string operation arguments
 
