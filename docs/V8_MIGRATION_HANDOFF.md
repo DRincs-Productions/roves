@@ -1,4 +1,4 @@
-# V8 migration - handoff (2026-10-04)
+# V8 migration - handoff (2026-10-04, fine giornata)
 
 Punto di ripresa operativo sintetico. L'utente autorizza a proseguire autonomamente: implementare,
 testare localmente, avviare e attendere CI, correggere e continuare senza fermarsi ai checkpoint.
@@ -9,7 +9,16 @@ criteri finali sono in [`V8_MIGRATION.md`](./V8_MIGRATION.md).
 
 **CP37 completo**, commit sorgente `2e053f7c216` e gitlink wiki `81642b8bb10`. `DomObject::native_object_id()` espone l'identità stabile engine-neutral; `dom_struct` genera `PartialEq` tramite tale API. Test reflector 2/2, macro `servo-dom-struct` 3/3, rustfmt e patch 0101 reverse-check superati. CI verde: V8 37226916624 (6/6), Servo 37226916650 (13/13), Android 37226916659 e iOS 37226916639.
 
-**Lavoro attivo: CP38 — identità nei root DOM.** `components/script_bindings/root.rs`: `Dom<T>`/`DomRoot<T>` equality/hash usano ora `NativeObjectId` invece dell'indirizzo Rust, allineandosi all'equality generata del checkpoint precedente. Il test compile-only del crate binding, reflector 2/2, macro 3/3, rustfmt e diff check sono verdi. Prossimi passi: audit testabile di equality/hash, patch 0102 e validazione pristine; aggiornare wiki, commit/push, avviare e attendere CI. Nessun tipo V8 è stato aggiunto; produzione resta SpiderMonkey.
+**CP38 implementato e pushato**, commit `b8f0acd3d3d`; wiki `roves-wiki` aggiornata e pushata al commit `ca2ec3b`. `components/script_bindings/root.rs` usa `NativeObjectId` per equality/hash di `Dom<T>` e `DomRoot<T>`. Test locali: test nuovo root identity/hash, reflector 2/2, `servo-dom-struct` 3/3, compile-only `servo-script-bindings`, rustfmt e `git diff --check` verdi. Patch 0102 reverse-checka e il validator CI ha applicato la serie pristine con successo. Build wiki Next.js: 82 pagine generate.
+
+**CI CP38 — ancora in corso per Servo, nessun retry avviato:**
+
+- V8 `37231672237`: verde, 6/6.
+- Android `37231672206`: verde, 3/3.
+- iOS `37231672276`: verde, 3/3.
+- Servo `37231672272`: 8 job verdi, 4 ancora in corso e 1 fallito. La failure è `build-and-publish (windows-latest, windows, portable)`, step `download + patch Servo source`, exit code 35. Il validator `validate-servo-patches` è verde; le quattro build ancora in corso sono Windows MSI, macOS DMG, Linux portable e Linux deb. Stato consultato alle 2026-10-04 20:35 UTC; verificare di nuovo prima di agire.
+
+**Ripresa:** attendere il completamento di Servo 37231672272. Se le altre build finiscono verdi, diagnosticare e ritentare la failure Windows portable (il run espone solo l'annotazione generica senza log testuale). Il PAT fornito in precedenza ha restituito 401 all'ultima richiesta API: non riutilizzarlo; se i log privati diventano indispensabili, chiedere un token read-only nuovo. Poi aggiornare qui e nei documenti di piano/customizzazioni gli esiti definitivi, correggere e rilanciare CI finché Servo è verde. Produzione resta SpiderMonkey e il lavoro continua dopo questo checkpoint.
 
 ## Avvio rapido
 
@@ -19,7 +28,7 @@ criteri finali sono in [`V8_MIGRATION.md`](./V8_MIGRATION.md).
 
 ## Direzione tecnica e limiti
 
-Le patch 0097–0101 hanno validato cache weak wrapper isolata e identità DOM engine-neutral; CP38 estende il contratto ai root. Restano da sostituire in produzione rooting/tracing SpiderMonkey, wrapper DOM e runtime; il pilot non è una migrazione production. CP32 ha dimostrato che collegare V8 e mozjs nello stesso eseguibile fallisce per simboli C++ duplicati: procedere come cutover a singolo engine, non come architettura duale.
+Le patch 0097–0102 hanno validato cache weak wrapper isolata e identità DOM engine-neutral fino a `Dom`/`DomRoot`. Restano da sostituire in produzione rooting/tracing SpiderMonkey, wrapper DOM e runtime; il pilot non è una migrazione production. CP32 ha dimostrato che collegare V8 e mozjs nello stesso eseguibile fallisce per simboli C++ duplicati: procedere come cutover a singolo engine, non come architettura duale.
 
 Per contesto storico consultare `CUSTOMIZATIONS.md` e la cronologia Git; evitare di duplicare qui i resoconti di ogni checkpoint già chiuso.
 
