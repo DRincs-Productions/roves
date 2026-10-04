@@ -28,10 +28,10 @@ is removed by the guaranteed finalizer, and a new wrapper can be created after c
 cover `===`, exactly-once native destruction, recreation after GC, and an old finalizer racing a
 replacement entry. Local verification passes: 26 generator tests; normal/JIT-less each with 66
 unit + 4 WebIDL integration + 2 doctests; default with 54 unit + 2 doctests; and the integrated
-`servo-script-bindings` cargo check. Patch 0097 applies in the pristine overlay validator. V8,
-Android, iOS, Steam, SDL3 probes, Linux deb, and macOS DMG CI jobs are green; the remaining Linux
-portable and Windows/macOS portable bundle jobs are still running. This remains an ownership
-primitive prototype, not production DOM integration.
+`servo-script-bindings` cargo check. Patch 0097 applies in the pristine overlay validator. CI is
+green: V8 37213254328, Android 37213254318, iOS 37213254280, and Servo 37213254289 (patch
+validation, SDL3 probes, Steam, six bundles, Linux layout/paint-api tests and bundle smoke tests).
+This remains an ownership primitive prototype, not production DOM integration.
 
 The next ownership work is not a mechanical replacement of `Reflector::get_jsobject`: an audit
 shows that reflector callers mix native identity/prototype queries, JS rooting, and operations

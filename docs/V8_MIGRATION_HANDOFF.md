@@ -48,10 +48,10 @@ CP33 implementazione completata localmente: `Runtime::create_instance_with_ident
 con token per impedire a un vecchio finalizer di rimuovere una voce sostitutiva. Testa riuso via
 `===`, factory lazy, cleanup esatto dopo GC e ricreazione. Suite locali normali/JIT-less: 66 unit +
 4 integrazioni + 2 doctest; default 54 unit + 2 doctest. Patch 0097 e validazione pristine passano;
-26 test generatori e `cargo check` integrato di `servo-script-bindings` passano. V8, Android, iOS,
-validazione patch, SDL3, Steam, Linux deb e macOS DMG sono verdi; Linux portable e Windows/macOS
-portable sono ancora in esecuzione. Nessun fallimento finora. Patch 0097 è stata validata nella
-serie pristine.
+26 test generatori e `cargo check` integrato di `servo-script-bindings` passano. Tutta la CI è verde:
+V8 37213254328, Android 37213254318, iOS 37213254280 e Servo 37213254289 (13/13 job: overlay,
+SDL3, Steam, tutti i sei bundle, layout/paint-api e smoke test Linux/macOS/Windows). Wiki build 82
+pagine verde al commit `43e941d`; doc CP33 pubblicata in `roves-wiki`.
 
 Prossimo lavoro: audit e migrazione per categorie dell'identità DOM, rooting e tracing. L'audit
 concreto conferma che `Reflector` contiene `Heap<*mut JSObject>`, `root.rs` basa `StableTraceObject`

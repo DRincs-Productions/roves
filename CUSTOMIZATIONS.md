@@ -11,8 +11,9 @@ and drops the native payload once. Tests cover `===`, weak reclamation, identity
 GC and old-finalizer/replacement races. Local verification: 26 Python generator tests; 66 unit + 4
 WebIDL integration + 2 doctests in normal and JIT-less pilot modes; 54 default unit + 2 doctests;
 and the integrated `servo-script-bindings` cargo check. Patch 0097 passes pristine-series
-validation. V8, Android, iOS, SDL3 probes, Steam, Linux deb, and macOS DMG CI jobs are green;
-Linux portable and Windows/macOS portable jobs are still running.
+validation. CI is green: V8 37213254328, Android 37213254318, iOS 37213254280, and Servo
+37213254289 (patch validation, SDL3 probes, Steam, all six bundles, Linux layout/paint-api tests,
+and bundle smoke tests).
 ## 2026-10-04 - V8 migration Phase 4: ValidityState generated binding integration
 
 **Servo files:** `components/roves-v8/tests/webidl.rs`.
