@@ -1,9 +1,314 @@
+diff --git a/components/roves-v8/build.rs b/components/roves-v8/build.rs
+index 1d9da4c8609..ae895023b0c 100644
+--- a/components/roves-v8/build.rs
++++ b/components/roves-v8/build.rs
+@@ -61,6 +61,10 @@ fn main() {
+         "cargo:rerun-if-changed={}",
+         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/webidl/OptionalNullableStringDefaults.webidl").display()
+     );
++    println!(
++        "cargo:rerun-if-changed={}",
++        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/webidl/EnumOperations.webidl").display()
++    );
+     let python = env::var("PYTHON").unwrap_or_else(|_| {
+         ["python3", "python"].into_iter().find(|name| {
+             Command::new(name).arg("--version").output().is_ok_and(|output| output.status.success())
+@@ -180,4 +184,13 @@ fn main() {
+         .status()
+         .expect("run optional nullable string default WebIDL fixture generator");
+     assert!(status.success(), "optional nullable string default WebIDL fixture generation failed");
++    let output = out_dir.join("EnumOperationsV8Binding.rs");
++    let status = Command::new(&python)
++        .arg(bindings.join("codegen/run_v8.py"))
++        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/webidl/EnumOperations.webidl"))
++        .arg(output)
++        .env("PYTHONDONTWRITEBYTECODE", "1")
++        .status()
++        .expect("run WebIDL enum operation fixture generator");
++    assert!(status.success(), "WebIDL enum operation fixture generation failed");
+ }
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 20b60e5da90..df4701a714e 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -69,6 +69,10 @@ pub mod webidl {
+     pub mod optional_nullable_string_defaults {
+         include!(concat!(env!("OUT_DIR"), "/OptionalNullableStringDefaultsV8Binding.rs"));
+     }
++    #[cfg(test)]
++    pub mod enum_operations {
++        include!(concat!(env!("OUT_DIR"), "/EnumOperationsV8Binding.rs"));
++    }
+ }
+ 
+ use std::sync::Once;
+@@ -282,6 +286,7 @@ pub enum WebIdlArgumentConversion {
+     DomString,
+     ByteString,
+     UsvString,
++    Enumeration,
+ }
+ 
+ /// WebIDL optional-argument state. `Missing` differs from a present nullable `None`.
+@@ -308,6 +313,7 @@ struct WebIdlMethodConfig {
+     conversions: Vec<WebIdlArgumentConversion>,
+     nullable_arguments: Vec<bool>,
+     optional_arguments: Vec<bool>,
++    enumeration_values: Vec<Option<Vec<Vec<u16>>>>,
+ }
+ 
+ /// A callable method, registered via [`Runtime::define_method`]: receives the wrapped Rust value
+@@ -1198,6 +1204,23 @@ impl Runtime {
+         conversions: &[WebIdlArgumentConversion],
+         nullable_arguments: &[bool],
+         optional_arguments: &[bool],
++    ) -> Result<(), String> {
++        self.define_webidl_method_with_argument_flags_and_enums(
++            interface, name, method, conversions, nullable_arguments, optional_arguments, &[],
++        )
++    }
++
++    /// Defines a method with nullable, optional and enum-value constraints for each argument.
++    /// Enum values are validated after JavaScript ToString and before the native callback.
++    pub fn define_webidl_method_with_argument_flags_and_enums(
++        &mut self,
++        interface: &Interface,
++        name: &str,
++        method: NativeMethod,
++        conversions: &[WebIdlArgumentConversion],
++        nullable_arguments: &[bool],
++        optional_arguments: &[bool],
++        enumeration_values: &[Option<&[&str]>],
+     ) -> Result<(), String> {
+         if interface.materialized.get() {
+             return Err("interface members must be defined before creating instances or descendants".into());
+@@ -1225,6 +1248,11 @@ impl Runtime {
+             optional_arguments: (0..conversions.len())
+                 .map(|index| optional_arguments.get(index).copied().unwrap_or(false))
+                 .collect(),
++            enumeration_values: (0..conversions.len())
++                .map(|index| enumeration_values.get(index).and_then(|values| *values).map(|values| {
++                    values.iter().map(|value| value.encode_utf16().collect()).collect()
++                }))
++                .collect(),
+         });
+         let config_pointer = (&*config) as *const WebIdlMethodConfig as *mut WebIdlMethodConfig;
+         self.method_configs.push(config);
+@@ -1410,6 +1438,37 @@ impl Runtime {
+                                 Err(None) => return,
+                             }
+                         }
++                        Some(WebIdlArgumentConversion::Enumeration) => {
++                            if argument.is_symbol() {
++                                throw_type_error(scope, "Cannot convert a Symbol value to a string");
++                                return;
++                            }
++                            let result = {
++                                v8::tc_scope!(let tc_scope, scope);
++                                let scope = tc_scope;
++                                match argument.to_string(scope) {
++                                    Some(string) => {
++                                        let mut utf16 = vec![0; string.length()];
++                                        string.write_v2(scope, 0, &mut utf16, v8::WriteFlags::empty());
++                                        let valid = config.enumeration_values.get(i)
++                                            .and_then(Option::as_ref)
++                                            .is_some_and(|values| values.iter().any(|value| value == &utf16));
++                                        if valid {
++                                            Ok(Value::String(String::from_utf16_lossy(&utf16)))
++                                        } else {
++                                            let message = v8::String::new(scope, "Value is not a valid WebIDL enum value").unwrap();
++                                            Err(Some(v8::Exception::type_error(scope, message).into()))
++                                        }
++                                    }
++                                    None => Err(scope.exception()),
++                                }
++                            };
++                            match result {
++                                Ok(value) => value,
++                                Err(Some(exception)) => { scope.throw_exception(exception); return; }
++                                Err(None) => return,
++                            }
++                        }
+                         }
+                     };
+                     arguments.push(converted);
+@@ -3401,6 +3460,36 @@ mod tests {
+         }
+     }
+ 
++    #[cfg(feature = "webidl-pilot")]
++    #[test]
++    fn generated_enum_arguments_validate_values_and_apply_optional_defaults() {
++        use crate::webidl::enum_operations::{EnumOperationsBinding, EnumOperationsNative};
++        use crate::WebIdlOptionalArgument;
++        struct DirectionNative;
++        #[allow(non_snake_case)]
++        impl EnumOperationsNative for DirectionNative {
++            fn Echo(&self, value: String) -> String { value }
++            fn OptionalValue(&self, value: WebIdlOptionalArgument<String>) -> String {
++                match value {
++                    WebIdlOptionalArgument::Missing => "missing".into(),
++                    WebIdlOptionalArgument::Present(value) => value,
++                }
++            }
++        }
++        let mut runtime = Runtime::new();
++        let binding = EnumOperationsBinding::<DirectionNative>::install(&mut runtime).unwrap();
++        let handle = binding.create(&mut runtime, DirectionNative);
++        runtime.set_global_property("directions", &handle).unwrap();
++
++        assert_eq!(runtime.eval_value("directions.echo('left')").unwrap(), Value::String("left".into()));
++        assert_eq!(runtime.eval_value("directions.echo({toString() { return 'right'; }})").unwrap(), Value::String("right".into()));
++        assert_eq!(runtime.eval_value("directions.optionalValue()").unwrap(), Value::String("right".into()));
++        assert_eq!(runtime.eval_value("directions.optionalValue(undefined)").unwrap(), Value::String("right".into()));
++        assert_eq!(runtime.eval_value("directions.optionalValue('left')").unwrap(), Value::String("left".into()));
++        assert_eq!(runtime.eval("(() => { try { directions.echo('up'); } catch (e) { return e instanceof TypeError; } })()").unwrap(), "true");
++        assert_eq!(runtime.eval("(() => { try { directions.echo(Symbol()); } catch (e) { return e instanceof TypeError; } })()").unwrap(), "true");
++    }
++
+     #[cfg(feature = "webidl-pilot")]
+     #[test]
+     fn generated_nullable_domstring_preserves_null_and_utf16_semantics() {
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index 71c396c2b5e..d1ee16b7ec3 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8244,7 +8244,7 @@ class CGV8BindingRoot(CGThing):
+                     raise TypeError(f"V8 backend only supports single-signature instance operations: {name}.{member.identifier.name}")
+                 arguments = signatures[0][1]
+                 argument_types = []
+-                def add_argument_type(rust_type, conversion, match_arm, nullable, optional, default_expression=None):
++                def add_argument_type(rust_type, conversion, match_arm, nullable, optional, default_expression=None, enumeration_values=None):
+                     pattern, expression = match_arm.split(" => ", 1)
+                     if nullable:
+                         rust_type = f"Option<{rust_type}>"
+@@ -8274,7 +8274,7 @@ class CGV8BindingRoot(CGThing):
+                                 f"Value::Missing => {missing}, "
+                                 f"{pattern} => roves_v8::WebIdlOptionalArgument::Present({expression})"
+                             )
+-                    argument_types.append((rust_type, conversion, match_arm, nullable, optional))
++                    argument_types.append((rust_type, conversion, match_arm, nullable, optional, enumeration_values))
+ 
+                 for argument in arguments:
+                     ty = argument.type
+@@ -8345,6 +8345,8 @@ class CGV8BindingRoot(CGThing):
+                                 default_expression = f"{rust_literal}.to_owned()"
+                             elif ty.isByteString() and default_type.isByteString():
+                                 default_expression = "vec![" + ", ".join(f"{ord(char)}u8" for char in default_value.value) + "]"
++                            elif ty.isEnum() and default_type.isDOMString() and default_value.value in ty.inner.values():
++                                default_expression = '"' + "".join(f"\\u{{{ord(char):x}}}" for char in default_value.value) + '".to_owned()'
+                         if default_expression is None:
+                             raise TypeError(f"V8 backend unsupported explicit default for {name}.{member.identifier.name}: {default_value}")
+                     if ty.isBoolean():
+@@ -8375,6 +8377,17 @@ class CGV8BindingRoot(CGThing):
+                         add_argument_type("Vec<u16>", "DomString", "Value::Utf16String(value) => value.clone()", nullable, optional, default_expression)
+                     elif ty.isUSVString():
+                         add_argument_type("String", "UsvString", "Value::String(value) => value.clone()", nullable, optional, default_expression)
++                    elif ty.isEnum() and not nullable:
++                        values = list(ty.inner.values())
++                        rust_values = [
++                            '"' + "".join(f"\\u{{{ord(char):x}}}" for char in value) + '"'
++                            for value in values
++                        ]
++                        enumeration_values = "Some(&[" + ", ".join(rust_values) + "])"
++                        add_argument_type(
++                            "String", "Enumeration", "Value::String(value) => value.clone()",
++                            nullable, optional, default_expression, enumeration_values,
++                        )
+                     elif ty.isInteger() and ty.name == "UnsignedLong":
+                         add_argument_type("u32", "UnsignedLong", "Value::Number(value) => *value as u32", nullable, optional)
+                     else:
+@@ -8578,15 +8591,10 @@ class CGV8BindingRoot(CGThing):
+             )
+             conversions = ", ".join(f"roves_v8::WebIdlArgumentConversion::{argument_type[1]}" for argument_type in argument_types)
+             if argument_types:
+-                if any(argument_type[4] for argument_type in argument_types):
+-                    nullable_arguments = ", ".join(str(argument_type[3]).lower() for argument_type in argument_types)
+-                    optional_arguments = ", ".join(str(argument_type[4]).lower() for argument_type in argument_types)
+-                    registrations_list.append(f'        runtime.define_webidl_method_with_argument_flags(&interface, "{idl}", {callback}, &[{conversions}], &[{nullable_arguments}], &[{optional_arguments}])?;')
+-                elif any(argument_type[3] for argument_type in argument_types):
+-                    nullable_arguments = ", ".join(str(argument_type[3]).lower() for argument_type in argument_types)
+-                    registrations_list.append(f'        runtime.define_webidl_method_with_nullable_arguments(&interface, "{idl}", {callback}, &[{conversions}], &[{nullable_arguments}])?;')
+-                else:
+-                    registrations_list.append(f'        runtime.define_webidl_method(&interface, "{idl}", {callback}, &[{conversions}])?;')
++                nullable_arguments = ", ".join(str(argument_type[3]).lower() for argument_type in argument_types)
++                optional_arguments = ", ".join(str(argument_type[4]).lower() for argument_type in argument_types)
++                enumeration_values = ", ".join(argument_type[5] or "None" for argument_type in argument_types)
++                registrations_list.append(f'        runtime.define_webidl_method_with_argument_flags_and_enums(&interface, "{idl}", {callback}, &[{conversions}], &[{nullable_arguments}], &[{optional_arguments}], &[{enumeration_values}])?;')
+             else:
+                 registrations_list.append(f'        runtime.define_method(&interface, "{idl}", {callback})?;')
+         registrations = "\n".join(registrations_list)
+diff --git a/components/script_bindings/codegen/run_v8.py b/components/script_bindings/codegen/run_v8.py
+index 721270626c9..e02e89e3444 100644
+--- a/components/script_bindings/codegen/run_v8.py
++++ b/components/script_bindings/codegen/run_v8.py
+@@ -24,7 +24,10 @@ def generate(webidl: Path, out_dir: Path) -> str:
+     parser.parse("[Global=Window, Exposed=Window] interface Window {};", "V8RealmExposure.webidl")
+     parser.parse("[Global=Worker, Exposed=Worker] interface Worker {};", "V8RealmExposure.webidl")
+     parser.parse(webidl.read_text(encoding="utf-8"), str(webidl))
+-    interfaces = [item for item in parser.finish() if item.identifier.name not in {"Window", "Worker"}]
++    interfaces = [
++        item for item in parser.finish()
++        if isinstance(item, WebIDL.IDLInterface) and item.identifier.name not in {"Window", "Worker"}
++    ]
+     if len(interfaces) != 1 or not isinstance(interfaces[0], WebIDL.IDLInterface):
+         raise TypeError("V8 pilot requires exactly one interface")
+     return CGV8BindingRoot(interfaces[0]).define()
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index 1f144e3b298..fcca324634d 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -231,7 +231,7 @@ class V8GeneratorTests(unittest.TestCase):
+             self.assertIn("fn Label(&self, arg0: Option<Vec<u16>>) -> Option<Vec<u16>>;", source)
+             self.assertIn("fn Name(&self, arg0: Option<String>) -> Option<String>;", source)
+             self.assertIn("Value::Null => None, Value::Bool(value) => Some(*value)", source)
+-            self.assertIn("define_webidl_method_with_nullable_arguments", source)
++            self.assertIn("define_webidl_method_with_argument_flags_and_enums", source)
+             self.assertIn("&[true]", source)
+             self.assertIn("&[true, false]", source)
+             self.assertIn("fn Mix(&self, arg0: Option<i32>, arg1: i32) -> Option<i32>;", source)
+@@ -249,7 +249,7 @@ class V8GeneratorTests(unittest.TestCase):
+             self.assertIn("WebIdlOptionalArgument<Option<i32>>", source)
+             self.assertIn("WebIdlOptionalArgument::Missing", source)
+             self.assertIn("WebIdlOptionalArgument::Present(None)", source)
+-            self.assertIn("define_webidl_method_with_argument_flags", source)
++            self.assertIn("define_webidl_method_with_argument_flags_and_enums", source)
+ 
+     def test_optional_explicit_primitive_defaults_are_emitted_without_truthiness_loss(self):
+         with tempfile.TemporaryDirectory() as directory:
+@@ -308,6 +308,23 @@ class V8GeneratorTests(unittest.TestCase):
+             self.assertIn("WebIdlArgumentConversion::UsvString", source)
+             self.assertIn("WebIdlArgumentConversion::ByteString", source)
+ 
++    def test_enum_arguments_validate_declared_values_and_support_optional_defaults(self):
++        with tempfile.TemporaryDirectory() as directory:
++            root = Path(directory)
++            webidl = root / "EnumOperations.webidl"
++            webidl.write_text(
++                'enum Direction { "left", "right" }; '
++                '[Exposed=Window] interface EnumOperations { '
++                'USVString echo(Direction value); '
++                'USVString optionalValue(optional Direction value = "right"); };',
++                encoding="utf-8",
++            )
++            source = generate(webidl, root / "out")
++            self.assertIn("fn Echo(&self, arg0: String) -> String;", source)
++            self.assertIn('Present("\\u{72}\\u{69}\\u{67}\\u{68}\\u{74}".to_owned())', source)
++            self.assertIn("WebIdlArgumentConversion::Enumeration", source)
++            self.assertIn('Some(&["\\u{6c}\\u{65}\\u{66}\\u{74}", "\\u{72}\\u{69}\\u{67}\\u{68}\\u{74}"])', source)
++
+     def test_optional_explicit_defaults_variadics_and_unsupported_types_fail_closed(self):
+         for signature in ["double run(double... values);", "double run(object value);"]:
+             with self.subTest(signature=signature):
 diff --git a/components/roves-v8/tests/webidl/EnumOperations.webidl b/components/roves-v8/tests/webidl/EnumOperations.webidl
-index c124e5cfed8..e944a22f99d 100644
---- a/components/roves-v8/tests/webidl/EnumOperations.webidl
+new file mode 100644
+index 00000000000..e944a22f99d
+--- /dev/null
 +++ b/components/roves-v8/tests/webidl/EnumOperations.webidl
-@@ -4,4 +4,3 @@ enum Direction { "left", "right" };
-   USVString echo(Direction value);
-   USVString optionalValue(optional Direction value = "right");
- };
--
+@@ -0,0 +1,6 @@
++enum Direction { "left", "right" };
++
++[Exposed=Window] interface EnumOperations {
++  USVString echo(Direction value);
++  USVString optionalValue(optional Direction value = "right");
++};
