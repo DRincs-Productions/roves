@@ -8,7 +8,7 @@
 //! impl that `#[dom_struct]` generates for DOM types (see
 //! `components/dom_struct/domobject.rs`). Two candidates are compared:
 //!
-//! - `dom_eq_*` — the current impl, which compares reflector pointers via
+//! - `dom_eq_*` — the current impl, which compares stable native reflector identities via
 //!   `DomObject::reflector(self) == DomObject::reflector(other)`,
 //!   routing through multiple non-`#[inline]` cross-crate calls
 //!   (`DomObject::reflector` -> `Reflector::reflector` -> `Reflector::PartialEq`).

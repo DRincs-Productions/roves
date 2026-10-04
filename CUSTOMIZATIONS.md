@@ -1,14 +1,26 @@
+## 2026-10-04 - V8 migration Phase 3: reflector equality uses engine-neutral identity (CP36 in progress)
+
+**Servo files:** `components/script_bindings/reflector.rs`, `components/script_bindings/benches/dom_partial_eq.rs`.
+**Patch:** `0100-roves-v8-reflector-native-equality.patch` after 0099.
+
+`Reflector::PartialEq` now compares stable `NativeObjectId` values rather than SpiderMonkey JS
+object pointers. This preserves native identity before JS wrapper creation and removes a direct
+engine-object dependency from DOM identity comparisons. A focused unit test verifies same-reflector
+equality and distinct-reflector inequality while both wrappers are still uninitialized. The
+benchmark comment now describes the identity being measured. Local unit tests pass; CI is pending.
+
 ## 2026-10-04 - V8 migration Phase 3/4: generated bindings use native wrapper identity (CP35 complete)
 
 **Servo files:** `components/script_bindings/codegen/codegen.py`,
 `components/script_bindings/codegen/test_v8.py`, `components/roves-v8/tests/webidl.rs`.
-****Patch:** `0099-roves-v8-binding-native-identity.patch` after 0098 and 0001-0097.
+**Patch:** `0099-roves-v8-binding-native-identity.patch` after 0098 and 0001-0097.
 
 Generated V8 pilot bindings expose `create_with_identity`, forwarding the engine-neutral reflector
 ID and a lazy factory to the runtime weak-wrapper cache. A generated `ValidityState` test verifies
-wrapper reuse and factory elision. Generator and normal/JIT-less/default runtime tests pass;
-integrated binding checks and the pristine reverse-check pass; CI run IDs will be recorded after completion. This remains opt-in
-and does not activate V8 in production.
+wrapper reuse and factory elision. Generator, normal/JIT-less/default runtime tests, integrated
+binding checks, and pristine-series validation pass. CI is green: V8 37220584940, Servo
+37220584970 (13/13 jobs), Android 37220610791, and iOS 37220610787. This remains opt-in and does
+not activate V8 in production.
 
 ## 2026-10-04 - V8 migration Phase 3: stable native DOM identity
 

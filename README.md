@@ -29,8 +29,9 @@ returns, primitive operation returns, required/optional parameters, nullable val
 conversion, explicit boolean/numeric defaults, and optional DOMString, USVString and ASCII
 ByteString defaults. Nullable string defaults preserve null separately from omission and explicit
 values. DOM reflectors now assign stable engine-neutral native identities, and generated pilot
-bindings can pass them to the V8 weak wrapper cache for identity-preserving reuse. V8 production
-integration is still in progress. The isolated runtime also tests weak wrapper-identity reuse and
+bindings can pass them to the V8 weak wrapper cache for identity-preserving reuse. Reflector
+equality also uses those identities before wrapper creation. V8 production integration is still in
+progress. The isolated runtime also tests weak wrapper-identity reuse and
 reclamation; this is not the production scripting engine. Shared agent instructions live in
 [AGENTS.md](./AGENTS.md).
 

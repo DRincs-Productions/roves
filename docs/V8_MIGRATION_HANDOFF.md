@@ -30,11 +30,15 @@ da questo blocco, fa fede lo stato attuale. L'utente ha richiesto autonomia cont
 testare localmente, avviare CI, correggere i fallimenti e proseguire fino al completamento dei
 criteri in `V8_MIGRATION.md`.
 
-CP35 in corso: il codegen WebIDL V8 emette `Binding::create_with_identity`, che inoltra l'ID del
-reflector alla cache weak di `Runtime::create_instance_with_identity` e accetta una factory lazy.
-Il test generato basato su `ValidityState` verifica il riuso del wrapper e che la seconda factory
-non venga chiamata. I 26 test generatori e i runtime normal/JIT-less/default passano; i check
-integrati, patch 0099, CI e wiki sono ancora in corso. La produzione resta SpiderMonkey.
+CP35 implementato e verificato localmente: 26 test generatori, runtime normal/JIT-less/default,
+check integrati e patch 0099 nella serie pristine passano. CI verde: V8 37220584940, Servo 37220584970 (13/13: patch validation, SDL3, Steam, sei bundle, layout/paint-api Linux e smoke), Android 37220610791 e iOS 37220610787. Wiki build 82 pagine; CP35 wiki 5c4d72f, CP36 wiki 0dbe53f.
+
+CP36 attivo: `Reflector::PartialEq` ora usa `NativeObjectId` invece del puntatore `JSObject`, così
+l'identità nativa resta valida prima della creazione del wrapper. I due test reflector passano,
+così come rustfmt e diff check; patch 0100 reverse-checka. La pagina wiki aggiornata è al commit
+0dbe53f ed è stata compilata (82 pagine). CP35 è chiuso. Da fare: committare/pushare CP36 e
+gitlink wiki, attendere tutta la matrice CP36 e risolvere eventuali fallimenti. La produzione usa
+ancora SpiderMonkey.
 
 CP34 completo (`1b3b87a0d7e`): `Reflector` assegna un `NativeObjectId` engine-neutral monotono e
 univoco nel processo, così la futura cache wrapper può usare un'identità nativa che non dipende da
@@ -42,7 +46,7 @@ indirizzi riutilizzabili. Il test mirato passa, così come il check `servo-scrip
 V8/JIT; rustfmt e `git diff --check` passano. Patch 0098 applica nella serie pristine. CI verde:
 V8 37217091986, Android 37217091942, iOS 37217092008, Servo 37217091945 (13/13 job). Wiki build
 82 pagine al commit `69d7578`. README/wiki aggiornate. Rooting/tracing e produzione restano
-SpiderMonkey. Passo successivo dopo CP35: continuare la sostituzione del rooting/handle JS e tracing
+SpiderMonkey. Passo successivo dopo CP36: continuare la sostituzione del rooting/handle JS e tracing
 per categorie di call site, senza esporre tipi V8 dalle API DOM pubbliche.
 
 CP31 completo: il pilot genera gli argomenti enum WebIDL, converte i valori stringa, rifiuta valori

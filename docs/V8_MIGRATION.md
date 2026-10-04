@@ -1,6 +1,6 @@
 # Roves V8 migration plan
 
-## Status note — 2026-10-04 (CP35 complete; Phase 3 production ownership remains open)
+## Status note — 2026-10-04 (CP36 in progress; Phase 3 production ownership remains open)
 
 The opt-in WebIDL pilot now generates enum operation arguments, applies WebIDL string
 conversion and rejects values outside the declared enum set before invoking native callbacks.
@@ -45,8 +45,16 @@ still SpiderMonkey-backed.
 CP35 connects the opt-in WebIDL generator to V8's weak native-identity cache. Generated bindings
 now expose `create_with_identity`, accepting the engine-neutral ID from a DOM `Reflector` and a
 lazy native wrapper factory. A generated `ValidityState` test confirms the same ID reuses the JS
-wrapper and skips the factory. Generator and normal/JIT-less/default runtime tests pass; integrated
-binding checks, patch 0099, pristine validation and CI are in progress. This remains pilot-only.
+wrapper and skips the factory. Generator (26 tests), normal/JIT-less/default runtime suites,
+integrated binding checks, and patch 0099 pristine validation pass. CI is green: V8 37220584940,
+Servo 37220584970 (13/13 jobs: patch validation, SDL3, Steam, all six bundles, Linux layout/
+paint-api, and smoke tests), Android 37220610791, and iOS 37220610787. This remains pilot-only.
+
+CP36 changes `Reflector::PartialEq` to compare `NativeObjectId`, making DOM identity engine-neutral
+and available before JS wrapper creation. Both focused reflector tests pass locally with
+`cargo test -p servo-script-bindings --features js/jit reflector::tests:: --offline --locked`;
+rustfmt and diff checks pass, and patch 0100 reverse-checks. CI and patch-series validation are
+pending. Production still uses SpiderMonkey.
 
 The next ownership work is not a mechanical replacement of `Reflector::get_jsobject`: an audit
 shows that reflector callers mix native identity/prototype queries, JS rooting, and operations

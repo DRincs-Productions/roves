@@ -1,0 +1,42 @@
+diff --git a/components/script_bindings/benches/dom_partial_eq.rs b/components/script_bindings/benches/dom_partial_eq.rs
+index fa2a63163c6..74c4fe97b43 100644
+--- a/components/script_bindings/benches/dom_partial_eq.rs
++++ b/components/script_bindings/benches/dom_partial_eq.rs
+@@ -8,7 +8,7 @@
+ //! impl that `#[dom_struct]` generates for DOM types (see
+ //! `components/dom_struct/domobject.rs`). Two candidates are compared:
+ //!
+-//! - `dom_eq_*` — the current impl, which compares reflector pointers via
++//! - `dom_eq_*` — the current impl, which compares stable native reflector identities via
+ //!   `DomObject::reflector(self) == DomObject::reflector(other)`,
+ //!   routing through multiple non-`#[inline]` cross-crate calls
+ //!   (`DomObject::reflector` -> `Reflector::reflector` -> `Reflector::PartialEq`).
+diff --git a/components/script_bindings/reflector.rs b/components/script_bindings/reflector.rs
+index b73de9ebf9d..3298d7421aa 100644
+--- a/components/script_bindings/reflector.rs
++++ b/components/script_bindings/reflector.rs
+@@ -84,7 +84,7 @@ unsafe impl<T> js::gc::Traceable for Reflector<T> {
+ 
+ impl<T> PartialEq for Reflector<T> {
+     fn eq(&self, other: &Reflector<T>) -> bool {
+-        self.object.get() == other.object.get()
++        self.native_object_id == other.native_object_id
+     }
+ }
+ 
+@@ -173,6 +173,15 @@ mod tests {
+         assert_ne!(first_id.get(), 0);
+         let _: NativeObjectId = first_id;
+     }
++
++    #[test]
++    fn reflector_equality_uses_native_identity_before_wrapper_creation() {
++        let first = Reflector::<()>::new();
++        let second = Reflector::<()>::new();
++
++        assert!(first == first);
++        assert!(first != second);
++    }
+ }
+ 
+ impl Reflector<AssociatedMemory> {

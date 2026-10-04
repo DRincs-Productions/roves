@@ -84,7 +84,7 @@ unsafe impl<T> js::gc::Traceable for Reflector<T> {
 
 impl<T> PartialEq for Reflector<T> {
     fn eq(&self, other: &Reflector<T>) -> bool {
-        self.object.get() == other.object.get()
+        self.native_object_id == other.native_object_id
     }
 }
 
@@ -172,6 +172,15 @@ mod tests {
         assert_ne!(first_id, second.native_object_id());
         assert_ne!(first_id.get(), 0);
         let _: NativeObjectId = first_id;
+    }
+
+    #[test]
+    fn reflector_equality_uses_native_identity_before_wrapper_creation() {
+        let first = Reflector::<()>::new();
+        let second = Reflector::<()>::new();
+
+        assert!(first == first);
+        assert!(first != second);
     }
 }
 
