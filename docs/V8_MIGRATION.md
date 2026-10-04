@@ -628,7 +628,8 @@ Runtime fixtures cover a literal backslash, a supplementary Unicode character, n
 argument values. Local verification passes 24 generator tests, 62 unit + 3 integration + 2 doctests
 in both normal and JIT-less pilot modes, 52 default unit + 2 doctests, and the integrated
 servo-script check. Patch 0093 applies to the CP28 source snapshot; wiki build passes all 82 pages
-and commit 462ed36 is published. Cross-platform CI is pending; this remains pilot-only and
+and commit 462ed36 is published. CI is green: V8 37189196623, Servo patch validation/SDL3/Steam/all
+six bundles 37189196591, Android 37189196574 and iOS 37189196578. This remains pilot-only and
 production still uses SpiderMonkey.
 
 **Twenty-eighth checkpoint (2026-10-03): optional WebIDL arguments with explicit primitive defaults.**

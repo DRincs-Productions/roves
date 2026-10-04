@@ -11,8 +11,9 @@ null and present-value states. Generator/runtime tests cover backslash literals,
 Unicode, default and explicit inputs. Local verification passes 24 generator tests; 62 unit + 3
 WebIDL integration + 2 doctests in normal and JIT-less pilot modes; 52 unit + 2 doctests without
 the feature; and the integrated servo-script check. Patch 0093 applies to the CP28 source snapshot.
-The wiki production build passes all 82 pages; commit 462ed36 is published. Cross-platform CI is
-pending.
+The wiki production build passes all 82 pages; commit 462ed36 is published. CI is green: V8
+37189196623, Servo patch validation/SDL3/Steam/all six bundles 37189196591, Android 37189196574
+and iOS 37189196578.
 
 ## 2026-10-03 - V8 migration Phase 4: optional WebIDL operation defaults
 
