@@ -1,6 +1,6 @@
 # Roves V8 migration plan
 
-## Status note — 2026-10-04 (CP34 complete; Phase 3 production ownership remains open)
+## Status note — 2026-10-04 (CP35 complete; Phase 3 production ownership remains open)
 
 The opt-in WebIDL pilot now generates enum operation arguments, applies WebIDL string
 conversion and rejects values outside the declared enum set before invoking native callbacks.
@@ -41,6 +41,12 @@ rustfmt, and diff checks pass. Patch 0098 passes pristine-series validation. CI 
 Steam, SDL3, all six bundles, Linux layout/paint-api, and platform smoke tests). Wiki production
 build passes all 82 pages at commit `69d7578`. Production rooting/tracing and wrapper creation are
 still SpiderMonkey-backed.
+
+CP35 connects the opt-in WebIDL generator to V8's weak native-identity cache. Generated bindings
+now expose `create_with_identity`, accepting the engine-neutral ID from a DOM `Reflector` and a
+lazy native wrapper factory. A generated `ValidityState` test confirms the same ID reuses the JS
+wrapper and skips the factory. Generator and normal/JIT-less/default runtime tests pass; integrated
+binding checks, patch 0099, pristine validation and CI are in progress. This remains pilot-only.
 
 The next ownership work is not a mechanical replacement of `Reflector::get_jsobject`: an audit
 shows that reflector callers mix native identity/prototype queries, JS rooting, and operations

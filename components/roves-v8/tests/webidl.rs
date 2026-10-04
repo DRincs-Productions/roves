@@ -91,6 +91,28 @@ fn generated_screen_binding_converts_real_webidl_numeric_types() {
     assert_eq!(runtime.eval("screen instanceof Screen").unwrap(), "true");
 }
 
+#[test]
+fn generated_binding_uses_native_identity_to_reuse_dom_wrappers() {
+    let mut runtime = Runtime::new();
+    let binding = ValidityStateBinding::<State>::install(&mut runtime).unwrap();
+    let flags = Rc::new(Cell::new(0));
+    let first = binding.create_with_identity(&mut runtime, 41, || State(flags.clone()));
+    // This models two native references to the same DOM object. The second native payload must
+    // not replace the first wrapper's native value or create a second JS-visible identity.
+    let same_native = binding.create_with_identity(&mut runtime, 41, || {
+        panic!("a live native wrapper must be reused without invoking the factory")
+    });
+    runtime.set_global_property("first", &first).unwrap();
+    runtime
+        .set_global_property("sameNative", &same_native)
+        .unwrap();
+    assert_eq!(runtime.eval("first === sameNative").unwrap(), "true");
+    assert_eq!(
+        runtime.eval("first instanceof ValidityState").unwrap(),
+        "true"
+    );
+}
+
 
 #[test]
 fn generated_validity_state_binding_matches_the_real_servo_webidl_contract() {

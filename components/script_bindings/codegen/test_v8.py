@@ -16,6 +16,8 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn("fn ValueMissing(&self) -> bool;", source)
             self.assertIn("fn Valid(&self) -> bool;", source)
             self.assertIn("runtime.expose_interface(&interface)?;", source)
+            self.assertIn("pub fn create_with_identity(", source)
+            self.assertIn("runtime.create_instance_with_identity(&self.interface, native_identity, create)", source)
             self.assertNotIn("js::", source)
             self.assertNotIn("v8::", source.replace("roves_v8::", ""))
 

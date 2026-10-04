@@ -1,0 +1,68 @@
+diff --git a/components/roves-v8/tests/webidl.rs b/components/roves-v8/tests/webidl.rs
+index 3530c64078d..a1da9065ce5 100644
+--- a/components/roves-v8/tests/webidl.rs
++++ b/components/roves-v8/tests/webidl.rs
+@@ -91,6 +91,28 @@ fn generated_screen_binding_converts_real_webidl_numeric_types() {
+     assert_eq!(runtime.eval("screen instanceof Screen").unwrap(), "true");
+ }
+ 
++#[test]
++fn generated_binding_uses_native_identity_to_reuse_dom_wrappers() {
++    let mut runtime = Runtime::new();
++    let binding = ValidityStateBinding::<State>::install(&mut runtime).unwrap();
++    let flags = Rc::new(Cell::new(0));
++    let first = binding.create_with_identity(&mut runtime, 41, || State(flags.clone()));
++    // This models two native references to the same DOM object. The second native payload must
++    // not replace the first wrapper's native value or create a second JS-visible identity.
++    let same_native = binding.create_with_identity(&mut runtime, 41, || {
++        panic!("a live native wrapper must be reused without invoking the factory")
++    });
++    runtime.set_global_property("first", &first).unwrap();
++    runtime
++        .set_global_property("sameNative", &same_native)
++        .unwrap();
++    assert_eq!(runtime.eval("first === sameNative").unwrap(), "true");
++    assert_eq!(
++        runtime.eval("first instanceof ValidityState").unwrap(),
++        "true"
++    );
++}
++
+ 
+ #[test]
+ fn generated_validity_state_binding_matches_the_real_servo_webidl_contract() {
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index d1ee16b7ec3..7312e2e418f 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8623,6 +8623,17 @@ impl<T: {name}Native> {name}Binding<T> {{
+     pub fn create(&self, runtime: &mut Runtime, native: T) -> Handle {{
+         runtime.create_instance(&self.interface, native)
+     }}
++
++    /// Creates or reuses the JS wrapper for a stable native DOM identity. Pass the identity
++    /// assigned by the owning DOM reflector; the factory runs only if no live wrapper exists.
++    pub fn create_with_identity(
++        &self,
++        runtime: &mut Runtime,
++        native_identity: u64,
++        create: impl FnOnce() -> T,
++    ) -> Handle {{
++        runtime.create_instance_with_identity(&self.interface, native_identity, create)
++    }}
+ }}
+ """
+ 
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index fcca324634d..c57a928b44d 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -16,6 +16,8 @@ class V8GeneratorTests(unittest.TestCase):
+             self.assertIn("fn ValueMissing(&self) -> bool;", source)
+             self.assertIn("fn Valid(&self) -> bool;", source)
+             self.assertIn("runtime.expose_interface(&interface)?;", source)
++            self.assertIn("pub fn create_with_identity(", source)
++            self.assertIn("runtime.create_instance_with_identity(&self.interface, native_identity, create)", source)
+             self.assertNotIn("js::", source)
+             self.assertNotIn("v8::", source.replace("roves_v8::", ""))
+ 

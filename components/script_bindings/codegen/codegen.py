@@ -8623,6 +8623,17 @@ impl<T: {name}Native> {name}Binding<T> {{
     pub fn create(&self, runtime: &mut Runtime, native: T) -> Handle {{
         runtime.create_instance(&self.interface, native)
     }}
+
+    /// Creates or reuses the JS wrapper for a stable native DOM identity. Pass the identity
+    /// assigned by the owning DOM reflector; the factory runs only if no live wrapper exists.
+    pub fn create_with_identity(
+        &self,
+        runtime: &mut Runtime,
+        native_identity: u64,
+        create: impl FnOnce() -> T,
+    ) -> Handle {{
+        runtime.create_instance_with_identity(&self.interface, native_identity, create)
+    }}
 }}
 """
 
