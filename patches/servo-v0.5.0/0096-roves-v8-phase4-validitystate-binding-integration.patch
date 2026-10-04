@@ -1,0 +1,38 @@
+diff --git a/components/roves-v8/tests/webidl.rs b/components/roves-v8/tests/webidl.rs
+index b84e1ee149f..3530c64078d 100644
+--- a/components/roves-v8/tests/webidl.rs
++++ b/components/roves-v8/tests/webidl.rs
+@@ -90,3 +90,33 @@ fn generated_screen_binding_converts_real_webidl_numeric_types() {
+     assert_eq!(runtime.eval_value("screen.pixelDepth").unwrap(), Value::Number(32.0));
+     assert_eq!(runtime.eval("screen instanceof Screen").unwrap(), "true");
+ }
++
++
++#[test]
++fn generated_validity_state_binding_matches_the_real_servo_webidl_contract() {
++    let mut runtime = Runtime::new();
++    let binding = ValidityStateBinding::<State>::install(&mut runtime).unwrap();
++    let flags = Rc::new(Cell::new(0));
++    let state = binding.create(&mut runtime, State(flags.clone()));
++    runtime.set_global_property("state", &state).unwrap();
++
++    for name in [
++        "valueMissing", "typeMismatch", "patternMismatch", "tooLong", "tooShort",
++        "rangeUnderflow", "rangeOverflow", "stepMismatch", "badInput", "customError", "valid",
++    ] {
++        assert_eq!(runtime.eval_value(&format!("state.{name}")).unwrap(), Value::Bool(name == "valid"));
++        let descriptor = format!(
++            "(() => {{ const d = Object.getOwnPropertyDescriptor(ValidityState.prototype, '{name}'); \
++             return [typeof d.get, d.set === undefined, d.enumerable, d.configurable].join(','); }})()"
++        );
++        assert_eq!(runtime.eval(&descriptor).unwrap(), "function,true,true,true", "{name}");
++    }
++
++    for bit in 0..10 {
++        flags.set(1 << bit);
++        assert_eq!(runtime.eval_value("state.valid").unwrap(), Value::Bool(false));
++    }
++    flags.set(0);
++    assert_eq!(runtime.eval_value("state.valid").unwrap(), Value::Bool(true));
++    assert_eq!(runtime.eval("state instanceof ValidityState").unwrap(), "true");
++}

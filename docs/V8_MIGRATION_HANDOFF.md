@@ -17,7 +17,7 @@ qui prevale sulle note storiche più sotto.
    in ordine cronologico inverso (la più recente in cima). Le entry dal 2026-09-29 in poi (cerca
    "V8 migration") coprono tutto il lavoro di questa migrazione, checkpoint per checkpoint, con i
    bug reali trovati e come sono stati corretti.
-4. **[`../patches/servo-v0.5.0/`](../patches/servo-v0.5.0/)** — patch numerate `0001` → `0095`,
+4. **[`../patches/servo-v0.5.0/`](../patches/servo-v0.5.0/)** — patch numerate `0001` → `0096`,
    una per checkpoint, applicabili a un checkout pulito del tag Servo pristine (vedi
    `../AGENTS.md` per come funziona il meccanismo patch/vendoring di questo repo).
 5. **[`../components/roves-v8/src/lib.rs`](../components/roves-v8/src/lib.rs)** — runtime isolato
@@ -30,12 +30,21 @@ da questo blocco, fa fede lo stato attuale. L'utente ha richiesto autonomia cont
 testare localmente, avviare CI, correggere i fallimenti e proseguire fino al completamento dei
 criteri in `V8_MIGRATION.md`.
 
-CP31 è in corso: enum WebIDL per gli argomenti di operazione, conversione stringa, validazione
-dei valori dichiarati prima del callback e default enum opzionali. Verifiche locali: 26 test
-generatori; pilot normale e JIT-less ciascuno con 64 unit + 3 integrazioni + 2 doctest; default
-52 unit + 2 doctest; check integrato `servo-script`. La patch 0095, build wiki e CI sono ancora
-da validare; produzione resta SpiderMonkey. Proseguire dal push, seguire tutti i workflow,
-correggere gli errori e continuare con la prossima unità di migrazione dopo CP31.
+CP31 completo: il pilot genera gli argomenti enum WebIDL, converte i valori stringa, rifiuta valori
+fuori dall'enum prima del callback e applica i default opzionali. Verifiche locali: 26 test
+generatori; pilot normale/JIT-less ciascuno con 64 unit + 3 integrazioni + 2 doctest; default 52
+unit + 2 doctest; check integrato `servo-script`. Patch 0095 valida nell'intera serie pristine;
+wiki build 82 pagine al commit 01270c6. CI verde: V8 37201595906; Servo 37202006567 (patch
+validation, SDL3, Steam, sei bundle); Android 37202073963; iOS 37202073968. Produzione resta
+SpiderMonkey. Prossimo passo: continuare Phase 4 verso conversioni WebIDL mancanti, registrazione
+dei membri e collegamento dei binding generati ai realm/DOM reali; rileggere il piano prima di
+selezionare il prossimo sottoinsieme e aggiornare questa nota dopo ogni run.
+
+CP32 in corso: si aggiunge in `components/roves-v8/tests/webidl.rs` una prova end-to-end del
+binding generato dal vero `components/script_bindings/webidls/ValidityState.webidl`, già prodotto
+dal crate con `v8-bindings-pilot`. Copre gli 11 attributi e la riflessione live dei flag. Il test
+mirato passa; ripetere suite normale/JIT-less/default, Python generator, check `servo-script`,
+rigenerare patch 0096, buildare wiki e avviare CI. La production path resta ancora SpiderMonkey.
 
 CP26 (`b03e711f304`) è completo e verde. Verifiche locali: 21 test Python; pilot normale e JIT-less ciascuno con 59 unit + 3 integrazioni + 2 doctest; default 52 unit + 2 doctest; check integrato `servo-script`. Patch 0090 applica sulla serie pristine. CI verdi: V8 ([37144196093](https://github.com/DRincs-Productions/roves/actions/runs/37144196093)), Servo (patch validation, SDL3, Steam e tutti i bundle: [37144196126](https://github.com/DRincs-Productions/roves/actions/runs/37144196126)), Android ([37144196111](https://github.com/DRincs-Productions/roves/actions/runs/37144196111)), iOS ([37144196107](https://github.com/DRincs-Productions/roves/actions/runs/37144196107)). Wiki aggiornata e build Next.js verde al commit `92ac3ac`.
 
