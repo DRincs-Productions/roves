@@ -1,5 +1,7 @@
 name: V8 migration checks
 
+# Use workflow_dispatch to retry transient runner or dependency-download failures.
+
 on:
   push:
     paths:
