@@ -4,6 +4,7 @@
 
 use std::cell::Cell;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use js::context::JSContext;
 use js::jsapi::{AddAssociatedMemory, Heap, JSObject, MemoryUse, RemoveAssociatedMemory};
@@ -15,6 +16,33 @@ use crate::interfaces::GlobalScopeHelpers;
 use crate::iterable::{Iterable, IterableIterator};
 use crate::root::{Dom, DomRoot, Root};
 use crate::{DomTypes, JSTraceable};
+
+static NEXT_NATIVE_OBJECT_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Stable engine-neutral identity for one native DOM object.
+///
+/// Unlike an allocation address, this value is never reused during the process lifetime. It can
+/// therefore key a scripting engine's weak wrapper cache without allowing allocator address
+/// reuse to return a wrapper for a different native object.
+#[derive(Clone, Copy, Debug, Eq, Hash, MallocSizeOf, PartialEq)]
+pub struct NativeObjectId(u64);
+
+impl NativeObjectId {
+    fn fresh() -> Self {
+        let id = NEXT_NATIVE_OBJECT_ID
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+                next.checked_add(1)
+            })
+            .expect("native DOM object identity space exhausted");
+        Self(id)
+    }
+
+    /// Returns the opaque numeric key for engine-internal identity maps.
+    #[inline]
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
 
 pub trait AssociatedMemorySize: Default {
     fn size(&self) -> usize;
@@ -46,6 +74,8 @@ pub struct Reflector<T = ()> {
     size: T,
     /// Cached prototype ID for fast type checks.
     proto_id: Cell<u16>,
+    /// Stable identity independent of the address or JavaScript engine wrapper.
+    native_object_id: NativeObjectId,
 }
 
 unsafe impl<T> js::gc::Traceable for Reflector<T> {
@@ -78,6 +108,12 @@ impl<T> Reflector<T> {
         self.proto_id.set(id);
     }
 
+    /// Get the stable identity assigned when this native DOM object was constructed.
+    #[inline]
+    pub fn native_object_id(&self) -> NativeObjectId {
+        self.native_object_id
+    }
+
     /// Initialize the reflector. (May be called only once.)
     ///
     /// # Safety
@@ -105,6 +141,7 @@ impl<T: AssociatedMemorySize> Reflector<T> {
         Reflector {
             object: Heap::default(),
             proto_id: Cell::new(u16::MAX),
+            native_object_id: NativeObjectId::fresh(),
             size: T::default(),
         }
     }
@@ -118,6 +155,23 @@ impl<T: AssociatedMemorySize> Reflector<T> {
         unsafe {
             RemoveAssociatedMemory(self.object.get(), self.rust_size(d), MemoryUse::DOMBinding);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NativeObjectId, Reflector};
+
+    #[test]
+    fn native_object_ids_are_stable_and_unique() {
+        let first = Reflector::<()>::new();
+        let second = Reflector::<()>::new();
+
+        let first_id = first.native_object_id();
+        assert_eq!(first.native_object_id(), first_id);
+        assert_ne!(first_id, second.native_object_id());
+        assert_ne!(first_id.get(), 0);
+        let _: NativeObjectId = first_id;
     }
 }
 

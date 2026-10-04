@@ -27,7 +27,10 @@ roves-v8 runtime is being validated with normal and JIT-less tests while WebIDL 
 are migrated. Its opt-in WebIDL pilot exercises mutable boolean/numeric and string attributes and
 returns, primitive operation returns, required/optional parameters, nullable values, ByteString
 conversion, explicit boolean/numeric defaults, and optional DOMString, USVString and ASCII
-ByteString defaults. Nullable string defaults preserve null separately from omission and explicit values. The isolated runtime also now tests weak wrapper-identity reuse and reclamation; this is not the production scripting engine. Shared agent instructions live in
+ByteString defaults. Nullable string defaults preserve null separately from omission and explicit
+values. DOM reflectors now assign stable engine-neutral native identities for future weak wrapper
+reuse; V8 production integration is still in progress. The isolated runtime also tests weak
+wrapper-identity reuse and reclamation; this is not the production scripting engine. Shared agent instructions live in
 [AGENTS.md](./AGENTS.md).
 
 [CUSTOMIZATIONS.md]: ./CUSTOMIZATIONS.md

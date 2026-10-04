@@ -30,6 +30,13 @@ da questo blocco, fa fede lo stato attuale. L'utente ha richiesto autonomia cont
 testare localmente, avviare CI, correggere i fallimenti e proseguire fino al completamento dei
 criteri in `V8_MIGRATION.md`.
 
+CP34 in corso: `Reflector` assegna ora un `NativeObjectId` engine-neutral monotono e univoco nel
+processo, così la futura cache wrapper può usare un'identità nativa che non dipende da indirizzi
+riutilizzabili. Il test mirato passa, così come il check `servo-script-bindings` con pilot V8/JIT;
+rustfmt e `git diff --check` passano. Patch 0098 è generata e reverse-checka; validazione della
+serie pristine e CI devono ancora finire. README/wiki sono aggiornate. Rooting/tracing e produzione
+restano SpiderMonkey.
+
 CP31 completo: il pilot genera gli argomenti enum WebIDL, converte i valori stringa, rifiuta valori
 fuori dall'enum prima del callback e applica i default opzionali. Verifiche locali: 26 test
 generatori; pilot normale/JIT-less ciascuno con 64 unit + 3 integrazioni + 2 doctest; default 52

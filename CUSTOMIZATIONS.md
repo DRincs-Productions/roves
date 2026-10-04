@@ -1,3 +1,16 @@
+## 2026-10-04 - V8 migration Phase 3: stable native DOM identity
+
+**Servo files:** `components/script_bindings/reflector.rs`.
+**Patch:** `0098-roves-v8-stable-native-object-identity.patch` after 0001-0097.
+
+Assign each DOM reflector a process-unique monotonic `NativeObjectId`. This engine-neutral key is
+independent of allocation addresses and JS handles, so it can safely key a future runtime-local
+weak wrapper cache without allocator address reuse aliasing two native objects. A focused unit test
+checks stability and uniqueness. The test passes locally, as does the opt-in `servo-script-bindings`
+check; rustfmt and diff checks pass. Patch 0098 reverse-checks against the working tree. Pristine
+series validation and cross-platform CI are running; production continues to use SpiderMonkey
+rooting and wrappers.
+
 ## 2026-10-04 - V8 migration Phase 3: weak DOM wrapper identity
 
 **Servo files:** `components/roves-v8/src/lib.rs`.
