@@ -1,0 +1,114 @@
+diff --git a/components/script_bindings/root.rs b/components/script_bindings/root.rs
+index 6e6cc613a0b..60448d619be 100644
+--- a/components/script_bindings/root.rs
++++ b/components/script_bindings/root.rs
+@@ -16,9 +16,38 @@
+ use crate::assert::assert_in_script;
+ use crate::conversions::DerivedFrom;
+ use crate::inheritance::Castable;
+-use crate::reflector::{DomObject, MutDomObject, Reflector};
++use crate::reflector::{DomObject, MutDomObject, NativeObjectId, Reflector};
+ use crate::trace::trace_reflector;
+ 
++#[cfg(test)]
++mod native_identity_tests {
++    use std::collections::hash_map::DefaultHasher;
++    use std::hash::{Hash, Hasher};
++
++    use super::Dom;
++    use crate::reflector::Reflector;
++
++    #[test]
++    fn dom_equality_and_hash_use_native_identity() {
++        let first = Reflector::<()>::new();
++        let first_alias = Dom::from_ref(&first);
++        let second = Reflector::<()>::new();
++        let second_dom = Dom::from_ref(&second);
++
++        assert_eq!(first_alias, first_alias.clone());
++        assert_ne!(first_alias, second_dom);
++
++        let mut first_hasher = DefaultHasher::new();
++        first_alias.hash(&mut first_hasher);
++        let mut alias_hasher = DefaultHasher::new();
++        first_alias.clone().hash(&mut alias_hasher);
++        let mut second_hasher = DefaultHasher::new();
++        second_dom.hash(&mut second_hasher);
++        assert_eq!(first_hasher.finish(), alias_hasher.finish());
++        assert_ne!(first_hasher.finish(), second_hasher.finish());
++    }
++}
++
+ /// A rooted value.
+ #[cfg_attr(crown, crown::unrooted_must_root_lint::allow_unrooted_interior)]
+ pub struct Root<T: StableTraceObject> {
+@@ -170,9 +199,9 @@ impl<T> MallocSizeOf for Dom<T> {
+     }
+ }
+ 
+-impl<T> PartialEq for Dom<T> {
++impl<T: DomObject> PartialEq for Dom<T> {
+     fn eq(&self, other: &Dom<T>) -> bool {
+-        self.ptr.as_ptr() == other.ptr.as_ptr()
++        self.native_object_id() == other.native_object_id()
+     }
+ }
+ 
+@@ -182,11 +211,11 @@ impl<'a, T: DomObject> PartialEq<&'a T> for Dom<T> {
+     }
+ }
+ 
+-impl<T> Eq for Dom<T> {}
++impl<T: DomObject> Eq for Dom<T> {}
+ 
+-impl<T> Hash for Dom<T> {
++impl<T: DomObject> Hash for Dom<T> {
+     fn hash<H: Hasher>(&self, state: &mut H) {
+-        self.ptr.as_ptr().hash(state)
++        self.native_object_id().hash(state)
+     }
+ }
+ 
+@@ -199,6 +228,12 @@ impl<T> Clone for Dom<T> {
+ }
+ 
+ impl<T: DomObject> Dom<T> {
++    #[inline]
++    fn native_object_id(&self) -> NativeObjectId {
++        // Dom stores a stable address of its native object for the duration of its trace.
++        unsafe { self.ptr.as_ref() }.native_object_id()
++    }
++
+     /// Create a `Dom<T>` from a `&T`
+     pub fn from_ref(obj: &T) -> Dom<T> {
+         assert_in_script();
+@@ -325,6 +360,11 @@ impl<T: Castable> DomRoot<T> {
+ }
+ 
+ impl<T: DomObject> DomRoot<T> {
++    #[inline]
++    fn native_object_id(&self) -> NativeObjectId {
++        self.value.native_object_id()
++    }
++
+     /// Generate a new root from a reference
+     pub fn from_ref(unrooted: &T) -> DomRoot<T> {
+         unsafe { DomRoot::new(Dom::from_ref(unrooted)) }
+@@ -355,7 +395,7 @@ where
+     T: DomObject,
+ {
+     fn eq(&self, other: &Self) -> bool {
+-        self.value == other.value
++        self.native_object_id() == other.native_object_id()
+     }
+ }
+ 
+@@ -363,7 +403,7 @@ impl<T: DomObject> Eq for DomRoot<T> {}
+ 
+ impl<T: DomObject> Hash for DomRoot<T> {
+     fn hash<H: Hasher>(&self, state: &mut H) {
+-        self.value.hash(state);
++        self.native_object_id().hash(state);
+     }
+ }
+ 

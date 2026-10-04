@@ -1,49 +1,27 @@
 # V8 migration - handoff (2026-10-04)
 
-Questo file è il punto di ripresa operativo della migrazione V8. Lo stato corrente riportato
-qui prevale sulle note storiche più sotto.
+Punto di ripresa operativo sintetico. L'utente autorizza a proseguire autonomamente: implementare,
+testare localmente, avviare e attendere CI, correggere e continuare senza fermarsi ai checkpoint.
+Aggiornare questo file a ogni checkpoint e condensare le note chiuse; il piano dettagliato e i
+criteri finali sono in [`V8_MIGRATION.md`](./V8_MIGRATION.md).
 
-## Documenti da leggere, in ordine
+## Stato corrente
 
-1. **[`docs/V8_MIGRATION.md`](./V8_MIGRATION.md)** — il piano architetturale completo (fasi 0-7,
-   decisioni già prese, regola dura "nessun tipo `v8::*` deve uscire dal confine di scripting").
-   Ha una "Status note" aggiornata in fondo a ogni sezione di fase con lo stato reale verificato.
-   **Leggi questo per primo, per intero.**
-2. **[`docs/V8_MIGRATION_PHASE0_INVENTORY.md`](./V8_MIGRATION_PHASE0_INVENTORY.md)** — inventario
-   reale (non ipotizzato) di tutti gli usi di SpiderMonkey in `components/script`/
-   `components/script_bindings`: conteggi per crate, file di rooting/GC chiave, dove vive il
-   generatore di binding.
-3. **[`../CUSTOMIZATIONS.md`](../CUSTOMIZATIONS.md)** — changelog prosa di *ogni* modifica fatta,
-   in ordine cronologico inverso (la più recente in cima). Le entry dal 2026-09-29 in poi (cerca
-   "V8 migration") coprono tutto il lavoro di questa migrazione, checkpoint per checkpoint, con i
-   bug reali trovati e come sono stati corretti.
-4. **[`../patches/servo-v0.5.0/`](../patches/servo-v0.5.0/)** — patch numerate `0001` → `0097`,
-   una per checkpoint, applicabili a un checkout pulito del tag Servo pristine (vedi
-   `../AGENTS.md` per come funziona il meccanismo patch/vendoring di questo repo).
-5. **[`../components/roves-v8/src/lib.rs`](../components/roves-v8/src/lib.rs)** — runtime isolato
-   con API engine-neutral e i test del pilot; verificato localmente in modalità normale e JIT-less.
+**CP37 completo**, commit sorgente `2e053f7c216` e gitlink wiki `81642b8bb10`. `DomObject::native_object_id()` espone l'identità stabile engine-neutral; `dom_struct` genera `PartialEq` tramite tale API. Test reflector 2/2, macro `servo-dom-struct` 3/3, rustfmt e patch 0101 reverse-check superati. CI verde: V8 37226916624 (6/6), Servo 37226916650 (13/13), Android 37226916659 e iOS 37226916639.
 
-## Stato aggiornato - 2026-10-04
+**Lavoro attivo: CP38 — identità nei root DOM.** `components/script_bindings/root.rs`: `Dom<T>`/`DomRoot<T>` equality/hash usano ora `NativeObjectId` invece dell'indirizzo Rust, allineandosi all'equality generata del checkpoint precedente. Il test compile-only del crate binding, reflector 2/2, macro 3/3, rustfmt e diff check sono verdi. Prossimi passi: audit testabile di equality/hash, patch 0102 e validazione pristine; aggiornare wiki, commit/push, avviare e attendere CI. Nessun tipo V8 è stato aggiunto; produzione resta SpiderMonkey.
 
-Le sezioni storiche qui sotto documentano le decisioni e i checkpoint precedenti; se divergono
-da questo blocco, fa fede lo stato attuale. L'utente ha richiesto autonomia continuativa: modificare,
-testare localmente, avviare CI, correggere i fallimenti e proseguire fino al completamento dei
-criteri in `V8_MIGRATION.md`.
+## Avvio rapido
 
-CP35 implementato e verificato localmente: 26 test generatori, runtime normal/JIT-less/default,
-check integrati e patch 0099 nella serie pristine passano. CI verde: V8 37220584940, Servo 37220584970 (13/13: patch validation, SDL3, Steam, sei bundle, layout/paint-api Linux e smoke), Android 37220610791 e iOS 37220610787. Wiki build 82 pagine; CP35 wiki 5c4d72f, CP36 wiki 0dbe53f.
+1. Leggere per intero [`V8_MIGRATION.md`](./V8_MIGRATION.md), poi l'inventario [`V8_MIGRATION_PHASE0_INVENTORY.md`](./V8_MIGRATION_PHASE0_INVENTORY.md).
+2. Per ogni modifica Servo, aggiornare `CUSTOMIZATIONS.md` e aggiungere una patch applicabile in `patches/servo-v0.5.0/`; verificare la serie pristine. Mantenere aggiornati README e wiki nello stesso checkpoint; verificare la build wiki.
+3. Eseguire test locali, commit/push secondo `AGENTS.md`, attendere tutte le CI rilevanti e correggere ogni failure. Aggiornare questo handoff con esiti e nuovo prossimo passo prima di proseguire.
 
-CP36 completo: `Reflector::PartialEq` confronta `NativeObjectId` e mantiene l'identità nativa
-disponibile prima del wrapper JS. I due test reflector, rustfmt, diff check e reverse-check 0100
-passano. CI verde: V8 37224061095, Servo 37224061184 (13/13, inclusi patch validation, SDL3,
-Steam, sei bundle, layout/paint-api Linux e smoke), Android 37224070360, iOS 37224070357. Wiki
-compilata in 82 pagine al commit 0dbe53f.
+## Direzione tecnica e limiti
 
-CP37 attivo: `DomObject::native_object_id()` espone l'identità engine-neutral dal trait DOM e il
-macro `dom_struct` la usa nelle implementazioni generate di `PartialEq`. Test locali: reflector
-2/2 e `servo-dom-struct` 3/3; patch 0101 reverse-checka. Da fare: wiki/build, commit/push CP37,
-attendere V8, Servo, Android e iOS e correggere eventuali fallimenti. La produzione usa ancora
-SpiderMonkey.
+Le patch 0097–0101 hanno validato cache weak wrapper isolata e identità DOM engine-neutral; CP38 estende il contratto ai root. Restano da sostituire in produzione rooting/tracing SpiderMonkey, wrapper DOM e runtime; il pilot non è una migrazione production. CP32 ha dimostrato che collegare V8 e mozjs nello stesso eseguibile fallisce per simboli C++ duplicati: procedere come cutover a singolo engine, non come architettura duale.
+
+Per contesto storico consultare `CUSTOMIZATIONS.md` e la cronologia Git; evitare di duplicare qui i resoconti di ogni checkpoint già chiuso.
 
 CP34 completo (`1b3b87a0d7e`): `Reflector` assegna un `NativeObjectId` engine-neutral monotono e
 univoco nel processo, così la futura cache wrapper può usare un'identità nativa che non dipende da

@@ -1,4 +1,4 @@
-## 2026-10-04 - V8 migration Phase 3/4: DomObject exposes native identity (CP37 in progress)
+## 2026-10-04 - V8 migration Phase 3/4: DomObject exposes native identity (CP37 complete)
 
 **Servo files:** `components/script_bindings/reflector.rs`, `components/dom_struct/domobject.rs`,
 `components/dom_struct/lib.rs`.
@@ -8,7 +8,19 @@ Add `DomObject::native_object_id()` as an engine-neutral default method and gene
 `PartialEq` implementations through that identity API, rather than through reflector equality.
 Update the macro expansion fixture and verify the reflector ID forwarding contract. The focused
 reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patch 0101
-reverse-checks against the working tree; cross-platform CI is pending.
+reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
+(13/13), Android 37226916659, and iOS 37226916639.
+
+## 2026-10-04 - V8 migration Phase 3: DOM root identity uses stable native IDs (CP38 in progress)
+
+**Servo file:** `components/script_bindings/root.rs`.
+**Patch:** pending as `0102-roves-v8-dom-root-native-identity.patch`.
+
+Change `Dom<T>`/`DomRoot<T>` equality and hashing to use `NativeObjectId` instead of native
+addresses. This extends the engine-neutral identity contract into root/container operations and
+aligns hash keys with generated DOM equality. Local `servo-script-bindings` test compilation,
+reflector tests (2/2), macro tests (3/3), rustfmt and diff checks pass. Full patch-series
+validation and cross-platform CI remain pending.
 
 ## 2026-10-04 - V8 migration Phase 3: reflector equality uses engine-neutral identity (CP36 complete)
 
