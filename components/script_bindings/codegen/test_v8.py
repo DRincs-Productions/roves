@@ -290,6 +290,24 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn("Present(Some(vec![115u16, 101u16, 101u16, 100u16]))", source)
             self.assertIn("Present(vec![97u8, 98u8, 99u8])", source)
 
+    def test_optional_nullable_string_null_defaults_preserve_missing_null_and_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            webidl = root / "NullableDefaults.webidl"
+            webidl.write_text(
+                "[Exposed=Window] interface NullableDefaults { "
+                "long dom(optional DOMString? value = null); "
+                "long usv(optional USVString? value = null); "
+                "long bytes(optional ByteString? value = null); };",
+                encoding="utf-8",
+            )
+            source = generate(webidl, root / "out")
+            self.assertIn("Present(None)", source)
+            self.assertIn("Value::Null => roves_v8::WebIdlOptionalArgument::Present(None)", source)
+            self.assertIn("WebIdlArgumentConversion::DomString", source)
+            self.assertIn("WebIdlArgumentConversion::UsvString", source)
+            self.assertIn("WebIdlArgumentConversion::ByteString", source)
+
     def test_optional_explicit_defaults_variadics_and_unsupported_types_fail_closed(self):
         for signature in ["double run(double... values);", "double run(object value);"]:
             with self.subTest(signature=signature):

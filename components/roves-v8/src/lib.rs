@@ -65,6 +65,10 @@ pub mod webidl {
     pub mod optional_string_defaults {
         include!(concat!(env!("OUT_DIR"), "/OptionalStringDefaultsV8Binding.rs"));
     }
+    #[cfg(test)]
+    pub mod optional_nullable_string_defaults {
+        include!(concat!(env!("OUT_DIR"), "/OptionalNullableStringDefaultsV8Binding.rs"));
+    }
 }
 
 use std::sync::Once;
@@ -3354,6 +3358,47 @@ mod tests {
         assert_eq!(runtime.eval_value("defaults.bytes()").unwrap(), Value::String("abc".into()));
         assert_eq!(runtime.eval_value("defaults.bytes(undefined)").unwrap(), Value::String("abc".into()));
         assert_eq!(runtime.eval_value("defaults.bytes('XYZ')").unwrap(), Value::String("XYZ".into()));
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_optional_nullable_string_defaults_distinguish_missing_null_and_values() {
+        use crate::webidl::optional_nullable_string_defaults::{
+            OptionalNullableStringDefaultsBinding, OptionalNullableStringDefaultsNative,
+        };
+        use crate::WebIdlOptionalArgument;
+        struct NullableDefaults;
+        #[allow(non_snake_case)]
+        impl OptionalNullableStringDefaultsNative for NullableDefaults {
+            fn Dom(&self, value: WebIdlOptionalArgument<Option<Vec<u16>>>) -> i32 {
+                match value {
+                    WebIdlOptionalArgument::Missing | WebIdlOptionalArgument::Present(None) => 0,
+                    WebIdlOptionalArgument::Present(Some(value)) => value.len() as i32,
+                }
+            }
+            fn Usv(&self, value: WebIdlOptionalArgument<Option<String>>) -> i32 {
+                match value {
+                    WebIdlOptionalArgument::Missing | WebIdlOptionalArgument::Present(None) => 0,
+                    WebIdlOptionalArgument::Present(Some(value)) => value.len() as i32,
+                }
+            }
+            fn Bytes(&self, value: WebIdlOptionalArgument<Option<Vec<u8>>>) -> i32 {
+                match value {
+                    WebIdlOptionalArgument::Missing | WebIdlOptionalArgument::Present(None) => 0,
+                    WebIdlOptionalArgument::Present(Some(value)) => value.len() as i32,
+                }
+            }
+        }
+        let mut runtime = Runtime::new();
+        let binding = OptionalNullableStringDefaultsBinding::<NullableDefaults>::install(&mut runtime).unwrap();
+        let handle = binding.create(&mut runtime, NullableDefaults);
+        runtime.set_global_property("nullableDefaults", &handle).unwrap();
+        for method in ["dom", "usv", "bytes"] {
+            assert_eq!(runtime.eval_value(&format!("nullableDefaults.{method}()")).unwrap(), Value::Number(0.0));
+            assert_eq!(runtime.eval_value(&format!("nullableDefaults.{method}(undefined)")).unwrap(), Value::Number(0.0));
+            assert_eq!(runtime.eval_value(&format!("nullableDefaults.{method}(null)")).unwrap(), Value::Number(0.0));
+            assert_eq!(runtime.eval_value(&format!("nullableDefaults.{method}('abc')")).unwrap(), Value::Number(3.0));
+        }
     }
 
     #[cfg(feature = "webidl-pilot")]

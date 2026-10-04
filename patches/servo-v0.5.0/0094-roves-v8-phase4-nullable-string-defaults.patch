@@ -1,0 +1,121 @@
+diff --git a/components/roves-v8/build.rs b/components/roves-v8/build.rs
+index 1122b25eccb..1d9da4c8609 100644
+--- a/components/roves-v8/build.rs
++++ b/components/roves-v8/build.rs
+@@ -57,6 +57,10 @@ fn main() {
+         "cargo:rerun-if-changed={}",
+         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/webidl/OptionalStringDefaults.webidl").display()
+     );
++    println!(
++        "cargo:rerun-if-changed={}",
++        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/webidl/OptionalNullableStringDefaults.webidl").display()
++    );
+     let python = env::var("PYTHON").unwrap_or_else(|_| {
+         ["python3", "python"].into_iter().find(|name| {
+             Command::new(name).arg("--version").output().is_ok_and(|output| output.status.success())
+@@ -167,4 +171,13 @@ fn main() {
+         .status()
+         .expect("run optional string default WebIDL fixture generator");
+     assert!(status.success(), "optional string default WebIDL fixture generation failed");
++    let output = out_dir.join("OptionalNullableStringDefaultsV8Binding.rs");
++    let status = Command::new(&python)
++        .arg(bindings.join("codegen/run_v8.py"))
++        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/webidl/OptionalNullableStringDefaults.webidl"))
++        .arg(output)
++        .env("PYTHONDONTWRITEBYTECODE", "1")
++        .status()
++        .expect("run optional nullable string default WebIDL fixture generator");
++    assert!(status.success(), "optional nullable string default WebIDL fixture generation failed");
+ }
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 579e2bda316..20b60e5da90 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -65,6 +65,10 @@ pub mod webidl {
+     pub mod optional_string_defaults {
+         include!(concat!(env!("OUT_DIR"), "/OptionalStringDefaultsV8Binding.rs"));
+     }
++    #[cfg(test)]
++    pub mod optional_nullable_string_defaults {
++        include!(concat!(env!("OUT_DIR"), "/OptionalNullableStringDefaultsV8Binding.rs"));
++    }
+ }
+ 
+ use std::sync::Once;
+@@ -3356,6 +3360,47 @@ mod tests {
+         assert_eq!(runtime.eval_value("defaults.bytes('XYZ')").unwrap(), Value::String("XYZ".into()));
+     }
+ 
++    #[cfg(feature = "webidl-pilot")]
++    #[test]
++    fn generated_optional_nullable_string_defaults_distinguish_missing_null_and_values() {
++        use crate::webidl::optional_nullable_string_defaults::{
++            OptionalNullableStringDefaultsBinding, OptionalNullableStringDefaultsNative,
++        };
++        use crate::WebIdlOptionalArgument;
++        struct NullableDefaults;
++        #[allow(non_snake_case)]
++        impl OptionalNullableStringDefaultsNative for NullableDefaults {
++            fn Dom(&self, value: WebIdlOptionalArgument<Option<Vec<u16>>>) -> i32 {
++                match value {
++                    WebIdlOptionalArgument::Missing | WebIdlOptionalArgument::Present(None) => 0,
++                    WebIdlOptionalArgument::Present(Some(value)) => value.len() as i32,
++                }
++            }
++            fn Usv(&self, value: WebIdlOptionalArgument<Option<String>>) -> i32 {
++                match value {
++                    WebIdlOptionalArgument::Missing | WebIdlOptionalArgument::Present(None) => 0,
++                    WebIdlOptionalArgument::Present(Some(value)) => value.len() as i32,
++                }
++            }
++            fn Bytes(&self, value: WebIdlOptionalArgument<Option<Vec<u8>>>) -> i32 {
++                match value {
++                    WebIdlOptionalArgument::Missing | WebIdlOptionalArgument::Present(None) => 0,
++                    WebIdlOptionalArgument::Present(Some(value)) => value.len() as i32,
++                }
++            }
++        }
++        let mut runtime = Runtime::new();
++        let binding = OptionalNullableStringDefaultsBinding::<NullableDefaults>::install(&mut runtime).unwrap();
++        let handle = binding.create(&mut runtime, NullableDefaults);
++        runtime.set_global_property("nullableDefaults", &handle).unwrap();
++        for method in ["dom", "usv", "bytes"] {
++            assert_eq!(runtime.eval_value(&format!("nullableDefaults.{method}()")).unwrap(), Value::Number(0.0));
++            assert_eq!(runtime.eval_value(&format!("nullableDefaults.{method}(undefined)")).unwrap(), Value::Number(0.0));
++            assert_eq!(runtime.eval_value(&format!("nullableDefaults.{method}(null)")).unwrap(), Value::Number(0.0));
++            assert_eq!(runtime.eval_value(&format!("nullableDefaults.{method}('abc')")).unwrap(), Value::Number(3.0));
++        }
++    }
++
+     #[cfg(feature = "webidl-pilot")]
+     #[test]
+     fn generated_nullable_domstring_preserves_null_and_utf16_semantics() {
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index 8408948cba3..1f144e3b298 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -290,6 +290,24 @@ class V8GeneratorTests(unittest.TestCase):
+             self.assertIn("Present(Some(vec![115u16, 101u16, 101u16, 100u16]))", source)
+             self.assertIn("Present(vec![97u8, 98u8, 99u8])", source)
+ 
++    def test_optional_nullable_string_null_defaults_preserve_missing_null_and_values(self):
++        with tempfile.TemporaryDirectory() as directory:
++            root = Path(directory)
++            webidl = root / "NullableDefaults.webidl"
++            webidl.write_text(
++                "[Exposed=Window] interface NullableDefaults { "
++                "long dom(optional DOMString? value = null); "
++                "long usv(optional USVString? value = null); "
++                "long bytes(optional ByteString? value = null); };",
++                encoding="utf-8",
++            )
++            source = generate(webidl, root / "out")
++            self.assertIn("Present(None)", source)
++            self.assertIn("Value::Null => roves_v8::WebIdlOptionalArgument::Present(None)", source)
++            self.assertIn("WebIdlArgumentConversion::DomString", source)
++            self.assertIn("WebIdlArgumentConversion::UsvString", source)
++            self.assertIn("WebIdlArgumentConversion::ByteString", source)
++
+     def test_optional_explicit_defaults_variadics_and_unsupported_types_fail_closed(self):
+         for signature in ["double run(double... values);", "double run(object value);"]:
+             with self.subTest(signature=signature):

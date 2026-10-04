@@ -1,4 +1,9 @@
-## 2026-10-03 - V8 migration Phase 4: optional WebIDL string defaults
+## 2026-10-04 - V8 migration Phase 4: nullable string defaults for optional arguments
+
+**Servo files:** components/roves-v8/{build.rs,src/lib.rs,tests/webidl/OptionalNullableStringDefaults.webidl}; components/script_bindings/codegen/test_v8.py.
+**Patch:** 0094-roves-v8-phase4-nullable-string-defaults.patch after 0001-0093.
+
+Expanded generated/runtime coverage for optional nullable DOMString, USVString and ByteString arguments whose declared default is null. Omission and explicit undefined select the declared null default; explicit null stays null; supplied strings undergo the existing per-type conversion. Local verification passes 25 generator tests; 63 unit + 3 WebIDL integration + 2 doctests in normal and JIT-less pilot modes; 52 default unit + 2 doctests; and the integrated servo-script check. Patch application, wiki build and cross-platform CI are pending.## 2026-10-03 - V8 migration Phase 4: optional WebIDL string defaults
 
 **Servo files:** components/roves-v8/{build.rs,src/lib.rs,tests/webidl/OptionalStringDefaults.webidl};
 components/script_bindings/codegen/{codegen.py,test_v8.py}.

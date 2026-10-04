@@ -620,6 +620,8 @@ Android ([37147150994](https://github.com/DRincs-Productions/roves/actions/runs/
 ([37147151023](https://github.com/DRincs-Productions/roves/actions/runs/37147151023)). This remains
 pilot-only; production still uses SpiderMonkey.
 
+
+**Thirtieth checkpoint (2026-10-04): nullable string defaults for optional WebIDL arguments.** Added explicit fixtures for optional nullable DOMString, USVString and ByteString arguments defaulting to null. Omission and undefined select the default null; explicit null stays null, and concrete values retain their existing conversions. Local verification passes 25 generator tests; 63 unit + 3 WebIDL integration + 2 doctests in both normal and JIT-less pilot modes; 52 default unit + 2 doctests; and integrated servo-script check. Patch 0094 is being prepared; wiki and cross-platform CI are pending. This remains pilot-only; production still uses SpiderMonkey.
 **Twenty-ninth checkpoint (2026-10-03): optional WebIDL string defaults.**
 The opt-in generator emits optional defaults for DOMString, USVString and ByteString. DOMString
 defaults become exact UTF-16 code units, USVString defaults become scalar-valid Rust strings, and
