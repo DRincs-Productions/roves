@@ -160,7 +160,7 @@ impl<T: AssociatedMemorySize> Reflector<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::{NativeObjectId, Reflector};
+    use super::{DomObject, NativeObjectId, Reflector};
 
     #[test]
     fn native_object_ids_are_stable_and_unique() {
@@ -172,6 +172,7 @@ mod tests {
         assert_ne!(first_id, second.native_object_id());
         assert_ne!(first_id.get(), 0);
         let _: NativeObjectId = first_id;
+        assert_eq!(DomObject::native_object_id(&first), first_id);
     }
 
     #[test]
@@ -203,6 +204,12 @@ pub trait DomObject: js::gc::Traceable + 'static {
     type ReflectorType: AssociatedMemorySize;
     /// Returns the receiver's reflector.
     fn reflector(&self) -> &Reflector<Self::ReflectorType>;
+
+    /// Returns the stable, engine-neutral identity for this native DOM object.
+    #[inline]
+    fn native_object_id(&self) -> NativeObjectId {
+        self.reflector().native_object_id()
+    }
 }
 
 impl DomObject for Reflector<()> {

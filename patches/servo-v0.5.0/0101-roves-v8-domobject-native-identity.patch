@@ -1,0 +1,62 @@
+diff --git a/components/dom_struct/domobject.rs b/components/dom_struct/domobject.rs
+index 9fe2309077c..aa01c11c4bc 100644
+--- a/components/dom_struct/domobject.rs
++++ b/components/dom_struct/domobject.rs
+@@ -66,7 +66,8 @@ pub(crate) fn expand_dom_object(
+ 
+         impl #impl_generics PartialEq for #name #ty_generics #where_clause {
+             fn eq(&self, other: &Self) -> bool {
+-                crate::DomObject::reflector(self) == crate::DomObject::reflector(other)
++                crate::DomObject::native_object_id(self)
++                    == crate::DomObject::native_object_id(other)
+             }
+         }
+     };
+diff --git a/components/dom_struct/lib.rs b/components/dom_struct/lib.rs
+index eafdba9f514..832f256e592 100644
+--- a/components/dom_struct/lib.rs
++++ b/components/dom_struct/lib.rs
+@@ -152,7 +152,8 @@ fn test_valid_dom_struct_generation() {
+         impl Eq for DomElement {}
+         impl PartialEq for DomElement {
+             fn eq(&self, other: &Self) -> bool {
+-                crate::DomObject::reflector(self) == crate::DomObject::reflector(other)
++                crate::DomObject::native_object_id(self)
++                    == crate::DomObject::native_object_id(other)
+             }
+         }
+         impl crate::HasParent for DomElement {
+diff --git a/components/script_bindings/reflector.rs b/components/script_bindings/reflector.rs
+index 3298d7421aa..f17c113150a 100644
+--- a/components/script_bindings/reflector.rs
++++ b/components/script_bindings/reflector.rs
+@@ -160,7 +160,7 @@ impl<T: AssociatedMemorySize> Reflector<T> {
+ 
+ #[cfg(test)]
+ mod tests {
+-    use super::{NativeObjectId, Reflector};
++    use super::{DomObject, NativeObjectId, Reflector};
+ 
+     #[test]
+     fn native_object_ids_are_stable_and_unique() {
+@@ -172,6 +172,7 @@ mod tests {
+         assert_ne!(first_id, second.native_object_id());
+         assert_ne!(first_id.get(), 0);
+         let _: NativeObjectId = first_id;
++        assert_eq!(DomObject::native_object_id(&first), first_id);
+     }
+ 
+     #[test]
+@@ -203,6 +204,12 @@ pub trait DomObject: js::gc::Traceable + 'static {
+     type ReflectorType: AssociatedMemorySize;
+     /// Returns the receiver's reflector.
+     fn reflector(&self) -> &Reflector<Self::ReflectorType>;
++
++    /// Returns the stable, engine-neutral identity for this native DOM object.
++    #[inline]
++    fn native_object_id(&self) -> NativeObjectId {
++        self.reflector().native_object_id()
++    }
+ }
+ 
+ impl DomObject for Reflector<()> {

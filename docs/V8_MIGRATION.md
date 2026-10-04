@@ -1,6 +1,6 @@
 # Roves V8 migration plan
 
-## Status note — 2026-10-04 (CP36 in progress; Phase 3 production ownership remains open)
+## Status note — 2026-10-04 (CP37 in progress; Phase 3 production ownership remains open)
 
 The opt-in WebIDL pilot now generates enum operation arguments, applies WebIDL string
 conversion and rejects values outside the declared enum set before invoking native callbacks.
@@ -54,7 +54,14 @@ CP36 changes `Reflector::PartialEq` to compare `NativeObjectId`, making DOM iden
 and available before JS wrapper creation. Both focused reflector tests pass locally with
 `cargo test -p servo-script-bindings --features js/jit reflector::tests:: --offline --locked`;
 rustfmt and diff checks pass, and patch 0100 reverse-checks. CI and patch-series validation are
-pending. Production still uses SpiderMonkey.
+pending. CI is green: V8 37224061095, Servo 37224061184 (13/13 jobs: pristine patch validation,
+SDL3, Steam, all six bundles, Linux layout/paint-api and smoke tests), Android 37224070360, and
+iOS 37224070357. Production still uses SpiderMonkey.
+
+CP37 adds the `DomObject::native_object_id()` engine-neutral API and updates generated DOM
+`PartialEq` implementations to use it. The two focused reflector tests and all three
+`servo-dom-struct` macro tests pass locally; patch 0101 reverse-checks. Cross-platform CI is
+pending.
 
 The next ownership work is not a mechanical replacement of `Reflector::get_jsobject`: an audit
 shows that reflector callers mix native identity/prototype queries, JS rooting, and operations

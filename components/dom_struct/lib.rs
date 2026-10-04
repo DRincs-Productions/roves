@@ -152,7 +152,8 @@ fn test_valid_dom_struct_generation() {
         impl Eq for DomElement {}
         impl PartialEq for DomElement {
             fn eq(&self, other: &Self) -> bool {
-                crate::DomObject::reflector(self) == crate::DomObject::reflector(other)
+                crate::DomObject::native_object_id(self)
+                    == crate::DomObject::native_object_id(other)
             }
         }
         impl crate::HasParent for DomElement {

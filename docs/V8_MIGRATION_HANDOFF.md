@@ -33,12 +33,17 @@ criteri in `V8_MIGRATION.md`.
 CP35 implementato e verificato localmente: 26 test generatori, runtime normal/JIT-less/default,
 check integrati e patch 0099 nella serie pristine passano. CI verde: V8 37220584940, Servo 37220584970 (13/13: patch validation, SDL3, Steam, sei bundle, layout/paint-api Linux e smoke), Android 37220610791 e iOS 37220610787. Wiki build 82 pagine; CP35 wiki 5c4d72f, CP36 wiki 0dbe53f.
 
-CP36 attivo: `Reflector::PartialEq` ora usa `NativeObjectId` invece del puntatore `JSObject`, così
-l'identità nativa resta valida prima della creazione del wrapper. I due test reflector passano,
-così come rustfmt e diff check; patch 0100 reverse-checka. La pagina wiki aggiornata è al commit
-0dbe53f ed è stata compilata (82 pagine). CP35 è chiuso. Da fare: committare/pushare CP36 e
-gitlink wiki, attendere tutta la matrice CP36 e risolvere eventuali fallimenti. La produzione usa
-ancora SpiderMonkey.
+CP36 completo: `Reflector::PartialEq` confronta `NativeObjectId` e mantiene l'identità nativa
+disponibile prima del wrapper JS. I due test reflector, rustfmt, diff check e reverse-check 0100
+passano. CI verde: V8 37224061095, Servo 37224061184 (13/13, inclusi patch validation, SDL3,
+Steam, sei bundle, layout/paint-api Linux e smoke), Android 37224070360, iOS 37224070357. Wiki
+compilata in 82 pagine al commit 0dbe53f.
+
+CP37 attivo: `DomObject::native_object_id()` espone l'identità engine-neutral dal trait DOM e il
+macro `dom_struct` la usa nelle implementazioni generate di `PartialEq`. Test locali: reflector
+2/2 e `servo-dom-struct` 3/3; patch 0101 reverse-checka. Da fare: wiki/build, commit/push CP37,
+attendere V8, Servo, Android e iOS e correggere eventuali fallimenti. La produzione usa ancora
+SpiderMonkey.
 
 CP34 completo (`1b3b87a0d7e`): `Reflector` assegna un `NativeObjectId` engine-neutral monotono e
 univoco nel processo, così la futura cache wrapper può usare un'identità nativa che non dipende da

@@ -1,4 +1,16 @@
-## 2026-10-04 - V8 migration Phase 3: reflector equality uses engine-neutral identity (CP36 in progress)
+## 2026-10-04 - V8 migration Phase 3/4: DomObject exposes native identity (CP37 in progress)
+
+**Servo files:** `components/script_bindings/reflector.rs`, `components/dom_struct/domobject.rs`,
+`components/dom_struct/lib.rs`.
+**Patch:** `0101-roves-v8-domobject-native-identity.patch` after 0100.
+
+Add `DomObject::native_object_id()` as an engine-neutral default method and generate DOM
+`PartialEq` implementations through that identity API, rather than through reflector equality.
+Update the macro expansion fixture and verify the reflector ID forwarding contract. The focused
+reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patch 0101
+reverse-checks against the working tree; cross-platform CI is pending.
+
+## 2026-10-04 - V8 migration Phase 3: reflector equality uses engine-neutral identity (CP36 complete)
 
 **Servo files:** `components/script_bindings/reflector.rs`, `components/script_bindings/benches/dom_partial_eq.rs`.
 **Patch:** `0100-roves-v8-reflector-native-equality.patch` after 0099.
@@ -7,7 +19,8 @@
 object pointers. This preserves native identity before JS wrapper creation and removes a direct
 engine-object dependency from DOM identity comparisons. A focused unit test verifies same-reflector
 equality and distinct-reflector inequality while both wrappers are still uninitialized. The
-benchmark comment now describes the identity being measured. Local unit tests pass; CI is pending.
+benchmark comment now describes the identity being measured. Local unit tests pass. CI is green:
+V8 37224061095, Servo 37224061184 (13/13 jobs), Android 37224070360, and iOS 37224070357.
 
 ## 2026-10-04 - V8 migration Phase 3/4: generated bindings use native wrapper identity (CP35 complete)
 

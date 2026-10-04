@@ -66,7 +66,8 @@ pub(crate) fn expand_dom_object(
 
         impl #impl_generics PartialEq for #name #ty_generics #where_clause {
             fn eq(&self, other: &Self) -> bool {
-                crate::DomObject::reflector(self) == crate::DomObject::reflector(other)
+                crate::DomObject::native_object_id(self)
+                    == crate::DomObject::native_object_id(other)
             }
         }
     };
