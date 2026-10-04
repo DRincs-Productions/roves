@@ -192,6 +192,8 @@ pub struct Interface {
 pub struct Runtime {
     isolate: v8::OwnedIsolate,
     context: v8::Global<v8::Context>,
+    wrapper_identities: WrapperIdentityMap,
+    next_wrapper_token: u64,
     /// Keeps callbacks armed until they have actually completed. An empty weak handle
     /// alone is insufficient: first-pass GC may clear it before second-pass finalization.
     wrapped_finalizers: Vec<WrappedFinalizer>,
@@ -202,6 +204,14 @@ pub struct Runtime {
 struct WrappedFinalizer {
     _weak: v8::Weak<v8::Value>,
     completed: std::rc::Rc<std::cell::Cell<bool>>,
+}
+
+type WrapperIdentityMap =
+    std::rc::Rc<std::cell::RefCell<std::collections::HashMap<u64, CachedWrapper>>>;
+
+struct CachedWrapper {
+    token: u64,
+    weak: v8::Weak<v8::Value>,
 }
 
 /// Tag passed to `set_aligned_pointer_in_internal_field`/`get_aligned_pointer_from_internal_field`
@@ -342,6 +352,8 @@ impl Runtime {
         Runtime {
             isolate,
             context,
+            wrapper_identities: WrapperIdentityMap::default(),
+            next_wrapper_token: 0,
             wrapped_finalizers: Vec::new(),
             method_configs: Vec::new(),
         }
@@ -655,7 +667,7 @@ impl Runtime {
             (v8::Global::new(scope, object_value), raw)
         };
 
-        self.install_guaranteed_finalizer(global_value, raw)
+        self.install_guaranteed_finalizer(global_value, raw, None)
     }
 
     /// Shared by [`create_wrapped`][Self::create_wrapped] and
@@ -666,11 +678,22 @@ impl Runtime {
         &mut self,
         global_value: v8::Global<v8::Value>,
         raw: *mut Box<dyn std::any::Any>,
+        identity: Option<u64>,
     ) -> Handle {
         // Reclaim only completed finalizers, never callbacks waiting for GC's second pass.
-        self.wrapped_finalizers.retain(|entry| !entry.completed.get());
+        self.wrapped_finalizers
+            .retain(|entry| !entry.completed.get());
+        let identity_token = identity.map(|_| {
+            let token = self.next_wrapper_token;
+            self.next_wrapper_token = self
+                .next_wrapper_token
+                .checked_add(1)
+                .expect("V8 wrapper identity token space exhausted");
+            token
+        });
         let completed = std::rc::Rc::new(std::cell::Cell::new(false));
         let completion = completed.clone();
+        let identity_registry = self.wrapper_identities.clone();
         let weak = v8::Weak::with_guaranteed_finalizer(
             &mut self.isolate,
             &global_value,
@@ -680,9 +703,23 @@ impl Runtime {
                 // runs at most once, and only after nothing JS-reachable points at the wrapper
                 // anymore, so nothing else can read `raw` concurrently or afterward.
                 drop(unsafe { Box::from_raw(raw) });
+                if let (Some(identity), Some(token)) = (identity, identity_token) {
+                    let mut registry = identity_registry.borrow_mut();
+                    if registry
+                        .get(&identity)
+                        .is_some_and(|cached| cached.token == token)
+                    {
+                        registry.remove(&identity);
+                    }
+                }
                 completion.set(true);
             }),
         );
+        if let (Some(identity), Some(token)) = (identity, identity_token) {
+            self.wrapper_identities
+                .borrow_mut()
+                .insert(identity, CachedWrapper { token, weak: weak.clone() });
+        }
         self.wrapped_finalizers.push(WrappedFinalizer { _weak: weak, completed });
 
         Handle(global_value)
@@ -792,6 +829,32 @@ impl Runtime {
     /// `interface`'s prototype object, so `instanceof` and the prototype chain work from JS,
     /// which a plain `create_wrapped` object doesn't have.
     pub fn create_instance<T: 'static>(&mut self, interface: &Interface, value: T) -> Handle {
+        self.create_instance_with_identity_inner(interface, value, None)
+    }
+
+    /// Creates or reuses a wrapper for a stable native identity. The identity must be unique
+    /// within this runtime and must always refer to the same native object type and interface.
+    /// The factory runs only when no live wrapper exists. The cache is weak: it preserves wrapper
+    /// identity while JavaScript still reaches the wrapper, but does not keep an otherwise-dead
+    /// DOM object alive.
+    pub fn create_instance_with_identity<T: 'static>(
+        &mut self,
+        interface: &Interface,
+        identity: u64,
+        create: impl FnOnce() -> T,
+    ) -> Handle {
+        if let Some(handle) = self.find_wrapper(identity) {
+            return handle;
+        }
+        self.create_instance_with_identity_inner(interface, create(), Some(identity))
+    }
+
+    fn create_instance_with_identity_inner<T: 'static>(
+        &mut self,
+        interface: &Interface,
+        value: T,
+        identity: Option<u64>,
+    ) -> Handle {
         self.expose_interface(interface).expect("failed to expose native interface");
         let boxed_any: Box<dyn std::any::Any> = Box::new(value);
 
@@ -818,7 +881,28 @@ impl Runtime {
             (v8::Global::new(scope, object_value), raw)
         };
 
-        self.install_guaranteed_finalizer(global_value, raw)
+        self.install_guaranteed_finalizer(global_value, raw, identity)
+    }
+
+    fn find_wrapper(&mut self, identity: u64) -> Option<Handle> {
+        let (token, weak) = self
+            .wrapper_identities
+            .borrow()
+            .get(&identity)
+            .map(|cached| (cached.token, cached.weak.clone()))?;
+        v8::scope!(let scope, &mut self.isolate);
+        if let Some(value) = weak.to_local(scope) {
+            Some(Handle(v8::Global::new(scope, value)))
+        } else {
+            let mut registry = self.wrapper_identities.borrow_mut();
+            if registry
+                .get(&identity)
+                .is_some_and(|cached| cached.token == token)
+            {
+                registry.remove(&identity);
+            }
+            None
+        }
     }
 
     /// Defines a read-only WebIDL-style attribute on the interface prototype.
@@ -2410,6 +2494,84 @@ mod tests {
             }
         }
         assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn create_instance_reuses_live_wrapper_by_native_identity_and_recreates_after_gc() {
+        let mut runtime = Runtime::new();
+        let interface = runtime.define_interface("IdentityNode", None);
+        let constructions = Arc::new(AtomicUsize::new(0));
+        let drops = Arc::new(AtomicUsize::new(0));
+        let make_node = || {
+            constructions.fetch_add(1, Ordering::SeqCst);
+            DropCounter(drops.clone())
+        };
+
+        let first = runtime.create_instance_with_identity(&interface, 17, make_node);
+        let second = runtime.create_instance_with_identity(&interface, 17, || {
+            panic!("the native factory must not run while the wrapper is alive")
+        });
+        runtime.set_global_property("first", &first).unwrap();
+        runtime.set_global_property("second", &second).unwrap();
+        assert_eq!(runtime.eval("first === second").unwrap(), "true");
+        assert_eq!(constructions.load(Ordering::SeqCst), 1);
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+
+        drop(first);
+        drop(second);
+        runtime
+            .eval("delete globalThis.first; delete globalThis.second")
+            .unwrap();
+        for _ in 0..20 {
+            runtime.force_full_gc_for_testing();
+            if drops.load(Ordering::SeqCst) == 1 {
+                break;
+            }
+        }
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        assert!(runtime.wrapper_identities.borrow().is_empty());
+
+        let recreated = runtime.create_instance_with_identity(&interface, 17, make_node);
+        assert_eq!(constructions.load(Ordering::SeqCst), 2);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        drop(recreated);
+    }
+
+    #[test]
+    fn old_identity_finalizer_does_not_remove_a_replacement_wrapper() {
+        let mut runtime = Runtime::new();
+        let interface = runtime.define_interface("IdentityNode", None);
+        let drops = Arc::new(AtomicUsize::new(0));
+        let old =
+            runtime.create_instance_with_identity(&interface, 29, || DropCounter(drops.clone()));
+        runtime.set_global_property("old", &old).unwrap();
+
+        // Simulate the cache entry having gone stale before its guaranteed finalizer runs.
+        // This can happen between V8's weak-handle clearing and finalizer passes.
+        runtime.wrapper_identities.borrow_mut().remove(&29);
+        let replacement =
+            runtime.create_instance_with_identity(&interface, 29, || DropCounter(drops.clone()));
+        runtime
+            .set_global_property("replacement", &replacement)
+            .unwrap();
+        assert_eq!(runtime.eval("old === replacement").unwrap(), "false");
+
+        drop(old);
+        runtime.eval("delete globalThis.old").unwrap();
+        for _ in 0..20 {
+            runtime.force_full_gc_for_testing();
+            if drops.load(Ordering::SeqCst) == 1 {
+                break;
+            }
+        }
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+
+        let reused = runtime.create_instance_with_identity(&interface, 29, || {
+            panic!("the replacement wrapper must remain cached after the old finalizer")
+        });
+        runtime.set_global_property("reused", &reused).unwrap();
+        assert_eq!(runtime.eval("replacement === reused").unwrap(), "true");
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
     }
 
     #[test]

@@ -1,3 +1,16 @@
+## 2026-10-04 - V8 migration Phase 3: weak DOM wrapper identity
+
+**Servo files:** `components/roves-v8/src/lib.rs`.
+**Patch:** 0097-roves-v8-wrapper-identity-cache.patch after 0001-0096.
+
+Add `Runtime::create_instance_with_identity`, which uses a stable per-runtime native identity to
+reuse a live JS wrapper from a weak cache. The native factory is lazy, so a cache hit does not
+construct or consume another native object. A unique generation token prevents an older wrapper's
+guaranteed finalizer from deleting a replacement cache entry; the finalizer removes its own entry
+and drops the native payload once. Tests cover `===`, weak reclamation, identity recreation after
+GC and old-finalizer/replacement races. Local verification: 26 Python generator tests; 66 unit + 4
+WebIDL integration + 2 doctests in normal and JIT-less pilot modes; 54 default unit + 2 doctests;
+and the integrated `servo-script-bindings` cargo check. Cross-platform CI is pending.
 ## 2026-10-04 - V8 migration Phase 4: ValidityState generated binding integration
 
 **Servo files:** `components/roves-v8/tests/webidl.rs`.

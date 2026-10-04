@@ -17,7 +17,7 @@ qui prevale sulle note storiche più sotto.
    in ordine cronologico inverso (la più recente in cima). Le entry dal 2026-09-29 in poi (cerca
    "V8 migration") coprono tutto il lavoro di questa migrazione, checkpoint per checkpoint, con i
    bug reali trovati e come sono stati corretti.
-4. **[`../patches/servo-v0.5.0/`](../patches/servo-v0.5.0/)** — patch numerate `0001` → `0096`,
+4. **[`../patches/servo-v0.5.0/`](../patches/servo-v0.5.0/)** — patch numerate `0001` → `0097`,
    una per checkpoint, applicabili a un checkout pulito del tag Servo pristine (vedi
    `../AGENTS.md` per come funziona il meccanismo patch/vendoring di questo repo).
 5. **[`../components/roves-v8/src/lib.rs`](../components/roves-v8/src/lib.rs)** — runtime isolato
@@ -36,28 +36,20 @@ generatori; pilot normale/JIT-less ciascuno con 64 unit + 3 integrazioni + 2 doc
 unit + 2 doctest; check integrato `servo-script`. Patch 0095 valida nell'intera serie pristine;
 wiki build 82 pagine al commit 01270c6. CI verde: V8 37201595906; Servo 37202006567 (patch
 validation, SDL3, Steam, sei bundle); Android 37202073963; iOS 37202073968. Produzione resta
-SpiderMonkey. Prossimo passo: continuare Phase 4 verso conversioni WebIDL mancanti, registrazione
-dei membri e collegamento dei binding generati ai realm/DOM reali; rileggere il piano prima di
-selezionare il prossimo sottoinsieme e aggiornare questa nota dopo ogni run.
+SpiderMonkey. I passi successivi di conversione WebIDL sono proseguiti nei checkpoint seguenti; il prossimo lavoro attivo e registrato nel blocco CP33 qui sopra.
 
-CP32 completo: la prova end-to-end in `components/roves-v8/tests/webidl.rs` usa il binding generato dal vero
-`components/script_bindings/webidls/ValidityState.webidl`, già prodotto dal crate con
-`v8-bindings-pilot`. Verifica tutti gli 11 attributi, i descrittori e il valore live di `valid` per
-ciascuno dei dieci flag. Test locale: pilot normale/JIT-less ciascuno 64 unit + 4 integration + 2
-doctest; default 52 unit + 2 doctest; 26 test generator; check integrato `servo-script` passano.
-Patch 0096 generata e reverse-check pass; wiki build 82 pagine, commit 5b7524c. CI V8
-(37205017801), Android (37205017867), iOS (37205017982) e Servo (37205017877: patch validation,
-SDL3, Steam e tutti e sei i bundle) verdi. Produzione resta SpiderMonkey. Prossimo: aggiungere un
-test nel crate `servo-script-bindings` stesso per installare il suo binding `ValidityState` generato
-e verificarlo sul runtime pilota; il tentativo è stato compilato ma non può linkare mentre entrambi
-gli engine sono presenti: `mozjs` e V8 esportano simboli C++ duplicati (`v8::internal::PrintF`, oltre
-a `diplomat_alloc/free`). Il test è stato rimosso, senza lasciare un target CI fallimentare. `cargo
-check` del crate resta la verifica di integrazione compilativa; i test runtime restano nel processo
-isolato `roves-v8`. Prima di provare un test runtime attraverso Servo bisogna eliminare SpiderMonkey
-dal binario. Prossimo lavoro: mappare e separare i wrapper/trait SpiderMonkey-specifici usati dai
-binding generati, cominciando dalla catena `interface.rs` / `reflector.rs` / `finalize.rs`, quindi
-definire la prima sostituzione che consenta un eseguibile Servo solo-V8.
+CP32 e completo: il test generato dal vero `ValidityState.webidl` verifica 11 attributi, descrittori,
+`instanceof` e i dieci flag nativi. CP32 resta pilot-only; la CI V8, Servo (patch validation, SDL3,
+Steam e sei bundle), Android e iOS e verde. Un test eseguibile nello stesso crate Servo fallisce al
+link per simboli C++ duplicati tra mozjs e V8; il `cargo check` integrato passa. Il runtime test
+resta nel binario isolato V8 fino alla rimozione di SpiderMonkey dal binario Servo.
 
+CP33 in corso: `Runtime::create_instance_with_identity` usa una cache `HashMap` di weak wrapper,
+con token per impedire a un vecchio finalizer di rimuovere una voce sostitutiva. Testa riuso via
+`===`, factory lazy, cleanup esatto dopo GC e ricreazione. Suite locali normali/JIT-less: 66 unit +
+4 integrazioni + 2 doctest; default 54 unit + 2 doctest. Patch 0097 e CI ancora da completare.
+Prossimo: chiudere CP33, poi iniziare la separazione concreta dei rooting/reflection SpiderMonkey
+partendo dalla API `Reflector` e dai suoi 644 call site rilevati in `script`/`script_bindings`.
 CP26 (`b03e711f304`) è completo e verde. Verifiche locali: 21 test Python; pilot normale e JIT-less ciascuno con 59 unit + 3 integrazioni + 2 doctest; default 52 unit + 2 doctest; check integrato `servo-script`. Patch 0090 applica sulla serie pristine. CI verdi: V8 ([37144196093](https://github.com/DRincs-Productions/roves/actions/runs/37144196093)), Servo (patch validation, SDL3, Steam e tutti i bundle: [37144196126](https://github.com/DRincs-Productions/roves/actions/runs/37144196126)), Android ([37144196111](https://github.com/DRincs-Productions/roves/actions/runs/37144196111)), iOS ([37144196107](https://github.com/DRincs-Productions/roves/actions/runs/37144196107)). Wiki aggiornata e build Next.js verde al commit `92ac3ac`.
 
 CP27 (`19bb9c8cd2e`) è completo e verde. ByteString operation arguments mappati a `Vec<u8>`; ToString valida ogni code unit <=255, per le forme required, nullable e optional. Verifiche locali: 22 test generatori; pilot normale/JIT-less ciascuno con 60 unit + 3 integrazioni + 2 doctest; default 52 unit + 2 doctest; check `servo-script`. Patch 0091 applica alla snapshot CP26 e al pristine nella CI. CI verdi: V8 ([37147151024](https://github.com/DRincs-Productions/roves/actions/runs/37147151024)), Servo (patch validation, SDL3, Steam e tutti i bundle: [37147151005](https://github.com/DRincs-Productions/roves/actions/runs/37147151005)), Android ([37147150994](https://github.com/DRincs-Productions/roves/actions/runs/37147150994)), iOS ([37147151023](https://github.com/DRincs-Productions/roves/actions/runs/37147151023)). Wiki build Next.js verde al commit `d36c050`.

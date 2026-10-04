@@ -1,6 +1,6 @@
 # Roves V8 migration plan
 
-## Status note — 2026-10-04 (CP32 complete; Phase 4 continues)
+## Status note — 2026-10-04 (CP33 in progress; Phase 3 ownership continues)
 
 The opt-in WebIDL pilot now generates enum operation arguments, applies WebIDL string
 conversion and rejects values outside the declared enum set before invoking native callbacks.
@@ -21,6 +21,16 @@ export duplicate C++ symbols (`v8::internal::PrintF`, plus `diplomat_alloc/free`
 pilot binding is compile-checked through this crate, while executable WebIDL tests stay in the
 isolated `roves-v8` test binary. The production cutover must remove SpiderMonkey from the linked
 binary before a runtime test can exercise both through Servo's binding crate.
+
+CP33 adds a weak wrapper-identity cache to the isolated V8 runtime. A stable native identity now
+reuses its existing live JavaScript wrapper without rerunning the native factory; the cache entry
+is removed by the guaranteed finalizer, and a new wrapper can be created after collection. Tests
+cover `===`, exactly-once native destruction, recreation after GC, and an old finalizer racing a
+replacement entry. Local verification passes: 26 generator tests; normal/JIT-less each with 66
+unit + 4 WebIDL integration + 2 doctests; default with 54 unit + 2 doctests; and the integrated
+`servo-script-bindings` cargo check. Patch 0097 is generated and reverse-checks cleanly; cross-
+platform CI is pending. This remains an ownership primitive prototype, not production DOM
+integration.
 
 ## Goal
 
