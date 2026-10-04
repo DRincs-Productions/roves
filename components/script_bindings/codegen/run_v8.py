@@ -24,7 +24,10 @@ def generate(webidl: Path, out_dir: Path) -> str:
     parser.parse("[Global=Window, Exposed=Window] interface Window {};", "V8RealmExposure.webidl")
     parser.parse("[Global=Worker, Exposed=Worker] interface Worker {};", "V8RealmExposure.webidl")
     parser.parse(webidl.read_text(encoding="utf-8"), str(webidl))
-    interfaces = [item for item in parser.finish() if item.identifier.name not in {"Window", "Worker"}]
+    interfaces = [
+        item for item in parser.finish()
+        if isinstance(item, WebIDL.IDLInterface) and item.identifier.name not in {"Window", "Worker"}
+    ]
     if len(interfaces) != 1 or not isinstance(interfaces[0], WebIDL.IDLInterface):
         raise TypeError("V8 pilot requires exactly one interface")
     return CGV8BindingRoot(interfaces[0]).define()

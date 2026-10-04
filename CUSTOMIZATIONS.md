@@ -9589,3 +9589,17 @@ conservative safety condition (one WebView, full-window content, no dialog/statu
 AccessKit idle and no pending texture work), with one unit test that independently falsifies
 each condition. Runtime selection is deliberately not enabled by this patch: the following
 opt-in prototype can now be evaluated with explicit A/B evidence and a tested fallback gate.
+
+## 2026-10-04 - V8 migration Phase 4: enum operation arguments
+
+**Servo files:** components/roves-v8/{build.rs,src/lib.rs,tests/webidl/EnumOperations.webidl};
+components/script_bindings/codegen/{codegen.py,run_v8.py,test_v8.py}.
+**Patch:** 0095-roves-v8-phase4-enum-operation-arguments.patch after 0001-0094.
+
+The opt-in WebIDL generator maps enum operation parameters to the existing Rust enum type,
+emits allowed UTF-16 enum values and supplies optional enum defaults. The runtime performs
+WebIDL string conversion and rejects undeclared enum values before entering the native callback,
+while preserving exceptions from coercion. `run_v8.py` now permits enum declarations alongside
+an interface in a pilot IDL file. Local validation passes 26 generator tests; 64 unit + 3
+integration + 2 doctests in normal and JIT-less pilot modes; 52 default unit + 2 doctests; and
+the integrated `servo-script` check. Pristine patch-series validation and CI are pending.

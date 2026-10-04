@@ -1,5 +1,14 @@
 # Roves V8 migration plan
 
+## Status note — 2026-10-04 (CP31 in progress)
+
+The opt-in WebIDL pilot now generates enum operation arguments, applies WebIDL string
+conversion and rejects values outside the declared enum set before invoking native callbacks.
+Optional enum arguments also use their declared defaults. Local generator, runtime (normal and
+JIT-less), default-runtime, and integrated `servo-script` checks pass. CP31 is not yet complete:
+patch-series validation, wiki build, and cross-platform CI are pending. Production still uses
+SpiderMonkey.
+
 ## Goal
 
 Migrate Roves from SpiderMonkey/`mozjs` to V8 as the **only** JavaScript engine. This is a replacement, not a dual-engine architecture. Once the migration is complete, SpiderMonkey-specific dependencies, features, tracing infrastructure, build configuration, and code paths must be removed.

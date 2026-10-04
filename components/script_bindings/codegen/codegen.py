@@ -8244,7 +8244,7 @@ class CGV8BindingRoot(CGThing):
                     raise TypeError(f"V8 backend only supports single-signature instance operations: {name}.{member.identifier.name}")
                 arguments = signatures[0][1]
                 argument_types = []
-                def add_argument_type(rust_type, conversion, match_arm, nullable, optional, default_expression=None):
+                def add_argument_type(rust_type, conversion, match_arm, nullable, optional, default_expression=None, enumeration_values=None):
                     pattern, expression = match_arm.split(" => ", 1)
                     if nullable:
                         rust_type = f"Option<{rust_type}>"
@@ -8274,7 +8274,7 @@ class CGV8BindingRoot(CGThing):
                                 f"Value::Missing => {missing}, "
                                 f"{pattern} => roves_v8::WebIdlOptionalArgument::Present({expression})"
                             )
-                    argument_types.append((rust_type, conversion, match_arm, nullable, optional))
+                    argument_types.append((rust_type, conversion, match_arm, nullable, optional, enumeration_values))
 
                 for argument in arguments:
                     ty = argument.type
@@ -8345,6 +8345,8 @@ class CGV8BindingRoot(CGThing):
                                 default_expression = f"{rust_literal}.to_owned()"
                             elif ty.isByteString() and default_type.isByteString():
                                 default_expression = "vec![" + ", ".join(f"{ord(char)}u8" for char in default_value.value) + "]"
+                            elif ty.isEnum() and default_type.isDOMString() and default_value.value in ty.inner.values():
+                                default_expression = '"' + "".join(f"\\u{{{ord(char):x}}}" for char in default_value.value) + '".to_owned()'
                         if default_expression is None:
                             raise TypeError(f"V8 backend unsupported explicit default for {name}.{member.identifier.name}: {default_value}")
                     if ty.isBoolean():
@@ -8375,6 +8377,17 @@ class CGV8BindingRoot(CGThing):
                         add_argument_type("Vec<u16>", "DomString", "Value::Utf16String(value) => value.clone()", nullable, optional, default_expression)
                     elif ty.isUSVString():
                         add_argument_type("String", "UsvString", "Value::String(value) => value.clone()", nullable, optional, default_expression)
+                    elif ty.isEnum() and not nullable:
+                        values = list(ty.inner.values())
+                        rust_values = [
+                            '"' + "".join(f"\\u{{{ord(char):x}}}" for char in value) + '"'
+                            for value in values
+                        ]
+                        enumeration_values = "Some(&[" + ", ".join(rust_values) + "])"
+                        add_argument_type(
+                            "String", "Enumeration", "Value::String(value) => value.clone()",
+                            nullable, optional, default_expression, enumeration_values,
+                        )
                     elif ty.isInteger() and ty.name == "UnsignedLong":
                         add_argument_type("u32", "UnsignedLong", "Value::Number(value) => *value as u32", nullable, optional)
                     else:
@@ -8578,15 +8591,10 @@ class CGV8BindingRoot(CGThing):
             )
             conversions = ", ".join(f"roves_v8::WebIdlArgumentConversion::{argument_type[1]}" for argument_type in argument_types)
             if argument_types:
-                if any(argument_type[4] for argument_type in argument_types):
-                    nullable_arguments = ", ".join(str(argument_type[3]).lower() for argument_type in argument_types)
-                    optional_arguments = ", ".join(str(argument_type[4]).lower() for argument_type in argument_types)
-                    registrations_list.append(f'        runtime.define_webidl_method_with_argument_flags(&interface, "{idl}", {callback}, &[{conversions}], &[{nullable_arguments}], &[{optional_arguments}])?;')
-                elif any(argument_type[3] for argument_type in argument_types):
-                    nullable_arguments = ", ".join(str(argument_type[3]).lower() for argument_type in argument_types)
-                    registrations_list.append(f'        runtime.define_webidl_method_with_nullable_arguments(&interface, "{idl}", {callback}, &[{conversions}], &[{nullable_arguments}])?;')
-                else:
-                    registrations_list.append(f'        runtime.define_webidl_method(&interface, "{idl}", {callback}, &[{conversions}])?;')
+                nullable_arguments = ", ".join(str(argument_type[3]).lower() for argument_type in argument_types)
+                optional_arguments = ", ".join(str(argument_type[4]).lower() for argument_type in argument_types)
+                enumeration_values = ", ".join(argument_type[5] or "None" for argument_type in argument_types)
+                registrations_list.append(f'        runtime.define_webidl_method_with_argument_flags_and_enums(&interface, "{idl}", {callback}, &[{conversions}], &[{nullable_arguments}], &[{optional_arguments}], &[{enumeration_values}])?;')
             else:
                 registrations_list.append(f'        runtime.define_method(&interface, "{idl}", {callback})?;')
         registrations = "\n".join(registrations_list)

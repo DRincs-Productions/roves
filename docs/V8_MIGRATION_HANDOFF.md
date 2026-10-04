@@ -1,4 +1,4 @@
-# V8 migration - handoff (2026-10-03)
+# V8 migration - handoff (2026-10-04)
 
 Questo file è il punto di ripresa operativo della migrazione V8. Lo stato corrente riportato
 qui prevale sulle note storiche più sotto.
@@ -17,18 +17,25 @@ qui prevale sulle note storiche più sotto.
    in ordine cronologico inverso (la più recente in cima). Le entry dal 2026-09-29 in poi (cerca
    "V8 migration") coprono tutto il lavoro di questa migrazione, checkpoint per checkpoint, con i
    bug reali trovati e come sono stati corretti.
-4. **[`../patches/servo-v0.5.0/`](../patches/servo-v0.5.0/)** — patch numerate `0001` → `0094`,
+4. **[`../patches/servo-v0.5.0/`](../patches/servo-v0.5.0/)** — patch numerate `0001` → `0095`,
    una per checkpoint, applicabili a un checkout pulito del tag Servo pristine (vedi
    `../AGENTS.md` per come funziona il meccanismo patch/vendoring di questo repo).
 5. **[`../components/roves-v8/src/lib.rs`](../components/roves-v8/src/lib.rs)** — runtime isolato
    con API engine-neutral e i test del pilot; verificato localmente in modalità normale e JIT-less.
 
-## Stato aggiornato - 2026-10-03
+## Stato aggiornato - 2026-10-04
 
 Le sezioni storiche qui sotto documentano le decisioni e i checkpoint precedenti; se divergono
 da questo blocco, fa fede lo stato attuale. L'utente ha richiesto autonomia continuativa: modificare,
 testare localmente, avviare CI, correggere i fallimenti e proseguire fino al completamento dei
 criteri in `V8_MIGRATION.md`.
+
+CP31 è in corso: enum WebIDL per gli argomenti di operazione, conversione stringa, validazione
+dei valori dichiarati prima del callback e default enum opzionali. Verifiche locali: 26 test
+generatori; pilot normale e JIT-less ciascuno con 64 unit + 3 integrazioni + 2 doctest; default
+52 unit + 2 doctest; check integrato `servo-script`. La patch 0095, build wiki e CI sono ancora
+da validare; produzione resta SpiderMonkey. Proseguire dal push, seguire tutti i workflow,
+correggere gli errori e continuare con la prossima unità di migrazione dopo CP31.
 
 CP26 (`b03e711f304`) è completo e verde. Verifiche locali: 21 test Python; pilot normale e JIT-less ciascuno con 59 unit + 3 integrazioni + 2 doctest; default 52 unit + 2 doctest; check integrato `servo-script`. Patch 0090 applica sulla serie pristine. CI verdi: V8 ([37144196093](https://github.com/DRincs-Productions/roves/actions/runs/37144196093)), Servo (patch validation, SDL3, Steam e tutti i bundle: [37144196126](https://github.com/DRincs-Productions/roves/actions/runs/37144196126)), Android ([37144196111](https://github.com/DRincs-Productions/roves/actions/runs/37144196111)), iOS ([37144196107](https://github.com/DRincs-Productions/roves/actions/runs/37144196107)). Wiki aggiornata e build Next.js verde al commit `92ac3ac`.
 

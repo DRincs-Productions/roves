@@ -231,7 +231,7 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn("fn Label(&self, arg0: Option<Vec<u16>>) -> Option<Vec<u16>>;", source)
             self.assertIn("fn Name(&self, arg0: Option<String>) -> Option<String>;", source)
             self.assertIn("Value::Null => None, Value::Bool(value) => Some(*value)", source)
-            self.assertIn("define_webidl_method_with_nullable_arguments", source)
+            self.assertIn("define_webidl_method_with_argument_flags_and_enums", source)
             self.assertIn("&[true]", source)
             self.assertIn("&[true, false]", source)
             self.assertIn("fn Mix(&self, arg0: Option<i32>, arg1: i32) -> Option<i32>;", source)
@@ -249,7 +249,7 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn("WebIdlOptionalArgument<Option<i32>>", source)
             self.assertIn("WebIdlOptionalArgument::Missing", source)
             self.assertIn("WebIdlOptionalArgument::Present(None)", source)
-            self.assertIn("define_webidl_method_with_argument_flags", source)
+            self.assertIn("define_webidl_method_with_argument_flags_and_enums", source)
 
     def test_optional_explicit_primitive_defaults_are_emitted_without_truthiness_loss(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -307,6 +307,23 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn("WebIdlArgumentConversion::DomString", source)
             self.assertIn("WebIdlArgumentConversion::UsvString", source)
             self.assertIn("WebIdlArgumentConversion::ByteString", source)
+
+    def test_enum_arguments_validate_declared_values_and_support_optional_defaults(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            webidl = root / "EnumOperations.webidl"
+            webidl.write_text(
+                'enum Direction { "left", "right" }; '
+                '[Exposed=Window] interface EnumOperations { '
+                'USVString echo(Direction value); '
+                'USVString optionalValue(optional Direction value = "right"); };',
+                encoding="utf-8",
+            )
+            source = generate(webidl, root / "out")
+            self.assertIn("fn Echo(&self, arg0: String) -> String;", source)
+            self.assertIn('Present("\\u{72}\\u{69}\\u{67}\\u{68}\\u{74}".to_owned())', source)
+            self.assertIn("WebIdlArgumentConversion::Enumeration", source)
+            self.assertIn('Some(&["\\u{6c}\\u{65}\\u{66}\\u{74}", "\\u{72}\\u{69}\\u{67}\\u{68}\\u{74}"])', source)
 
     def test_optional_explicit_defaults_variadics_and_unsupported_types_fail_closed(self):
         for signature in ["double run(double... values);", "double run(object value);"]:

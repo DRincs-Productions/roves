@@ -1,0 +1,9 @@
+diff --git a/components/roves-v8/tests/webidl/EnumOperations.webidl b/components/roves-v8/tests/webidl/EnumOperations.webidl
+index c124e5cfed8..e944a22f99d 100644
+--- a/components/roves-v8/tests/webidl/EnumOperations.webidl
++++ b/components/roves-v8/tests/webidl/EnumOperations.webidl
+@@ -4,4 +4,3 @@ enum Direction { "left", "right" };
+   USVString echo(Direction value);
+   USVString optionalValue(optional Direction value = "right");
+ };
+-

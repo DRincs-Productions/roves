@@ -69,6 +69,10 @@ pub mod webidl {
     pub mod optional_nullable_string_defaults {
         include!(concat!(env!("OUT_DIR"), "/OptionalNullableStringDefaultsV8Binding.rs"));
     }
+    #[cfg(test)]
+    pub mod enum_operations {
+        include!(concat!(env!("OUT_DIR"), "/EnumOperationsV8Binding.rs"));
+    }
 }
 
 use std::sync::Once;
@@ -282,6 +286,7 @@ pub enum WebIdlArgumentConversion {
     DomString,
     ByteString,
     UsvString,
+    Enumeration,
 }
 
 /// WebIDL optional-argument state. `Missing` differs from a present nullable `None`.
@@ -308,6 +313,7 @@ struct WebIdlMethodConfig {
     conversions: Vec<WebIdlArgumentConversion>,
     nullable_arguments: Vec<bool>,
     optional_arguments: Vec<bool>,
+    enumeration_values: Vec<Option<Vec<Vec<u16>>>>,
 }
 
 /// A callable method, registered via [`Runtime::define_method`]: receives the wrapped Rust value
@@ -1199,6 +1205,23 @@ impl Runtime {
         nullable_arguments: &[bool],
         optional_arguments: &[bool],
     ) -> Result<(), String> {
+        self.define_webidl_method_with_argument_flags_and_enums(
+            interface, name, method, conversions, nullable_arguments, optional_arguments, &[],
+        )
+    }
+
+    /// Defines a method with nullable, optional and enum-value constraints for each argument.
+    /// Enum values are validated after JavaScript ToString and before the native callback.
+    pub fn define_webidl_method_with_argument_flags_and_enums(
+        &mut self,
+        interface: &Interface,
+        name: &str,
+        method: NativeMethod,
+        conversions: &[WebIdlArgumentConversion],
+        nullable_arguments: &[bool],
+        optional_arguments: &[bool],
+        enumeration_values: &[Option<&[&str]>],
+    ) -> Result<(), String> {
         if interface.materialized.get() {
             return Err("interface members must be defined before creating instances or descendants".into());
         }
@@ -1224,6 +1247,11 @@ impl Runtime {
                 .collect(),
             optional_arguments: (0..conversions.len())
                 .map(|index| optional_arguments.get(index).copied().unwrap_or(false))
+                .collect(),
+            enumeration_values: (0..conversions.len())
+                .map(|index| enumeration_values.get(index).and_then(|values| *values).map(|values| {
+                    values.iter().map(|value| value.encode_utf16().collect()).collect()
+                }))
                 .collect(),
         });
         let config_pointer = (&*config) as *const WebIdlMethodConfig as *mut WebIdlMethodConfig;
@@ -1399,6 +1427,37 @@ impl Runtime {
                                             Err(Some(v8::Exception::type_error(scope, message).into()))
                                         } else {
                                             Ok(Value::ByteString(utf16.into_iter().map(|unit| unit as u8).collect()))
+                                        }
+                                    }
+                                    None => Err(scope.exception()),
+                                }
+                            };
+                            match result {
+                                Ok(value) => value,
+                                Err(Some(exception)) => { scope.throw_exception(exception); return; }
+                                Err(None) => return,
+                            }
+                        }
+                        Some(WebIdlArgumentConversion::Enumeration) => {
+                            if argument.is_symbol() {
+                                throw_type_error(scope, "Cannot convert a Symbol value to a string");
+                                return;
+                            }
+                            let result = {
+                                v8::tc_scope!(let tc_scope, scope);
+                                let scope = tc_scope;
+                                match argument.to_string(scope) {
+                                    Some(string) => {
+                                        let mut utf16 = vec![0; string.length()];
+                                        string.write_v2(scope, 0, &mut utf16, v8::WriteFlags::empty());
+                                        let valid = config.enumeration_values.get(i)
+                                            .and_then(Option::as_ref)
+                                            .is_some_and(|values| values.iter().any(|value| value == &utf16));
+                                        if valid {
+                                            Ok(Value::String(String::from_utf16_lossy(&utf16)))
+                                        } else {
+                                            let message = v8::String::new(scope, "Value is not a valid WebIDL enum value").unwrap();
+                                            Err(Some(v8::Exception::type_error(scope, message).into()))
                                         }
                                     }
                                     None => Err(scope.exception()),
@@ -3399,6 +3458,36 @@ mod tests {
             assert_eq!(runtime.eval_value(&format!("nullableDefaults.{method}(null)")).unwrap(), Value::Number(0.0));
             assert_eq!(runtime.eval_value(&format!("nullableDefaults.{method}('abc')")).unwrap(), Value::Number(3.0));
         }
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_enum_arguments_validate_values_and_apply_optional_defaults() {
+        use crate::webidl::enum_operations::{EnumOperationsBinding, EnumOperationsNative};
+        use crate::WebIdlOptionalArgument;
+        struct DirectionNative;
+        #[allow(non_snake_case)]
+        impl EnumOperationsNative for DirectionNative {
+            fn Echo(&self, value: String) -> String { value }
+            fn OptionalValue(&self, value: WebIdlOptionalArgument<String>) -> String {
+                match value {
+                    WebIdlOptionalArgument::Missing => "missing".into(),
+                    WebIdlOptionalArgument::Present(value) => value,
+                }
+            }
+        }
+        let mut runtime = Runtime::new();
+        let binding = EnumOperationsBinding::<DirectionNative>::install(&mut runtime).unwrap();
+        let handle = binding.create(&mut runtime, DirectionNative);
+        runtime.set_global_property("directions", &handle).unwrap();
+
+        assert_eq!(runtime.eval_value("directions.echo('left')").unwrap(), Value::String("left".into()));
+        assert_eq!(runtime.eval_value("directions.echo({toString() { return 'right'; }})").unwrap(), Value::String("right".into()));
+        assert_eq!(runtime.eval_value("directions.optionalValue()").unwrap(), Value::String("right".into()));
+        assert_eq!(runtime.eval_value("directions.optionalValue(undefined)").unwrap(), Value::String("right".into()));
+        assert_eq!(runtime.eval_value("directions.optionalValue('left')").unwrap(), Value::String("left".into()));
+        assert_eq!(runtime.eval("(() => { try { directions.echo('up'); } catch (e) { return e instanceof TypeError; } })()").unwrap(), "true");
+        assert_eq!(runtime.eval("(() => { try { directions.echo(Symbol()); } catch (e) { return e instanceof TypeError; } })()").unwrap(), "true");
     }
 
     #[cfg(feature = "webidl-pilot")]
