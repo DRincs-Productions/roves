@@ -142,10 +142,8 @@ validata. Il pilot non è il runtime di produzione; il piano resta aperto fino a
 
 - **Fase 1 (isolate/context/eval)**: completa.
 - **Fase 2 (conversione valori, Promise, moduli ES)**: completa.
-- **Fase 3 (ownership/GC)**: completa — `create_wrapped`/`get_wrapped` con finalizzatore
-  garantito, sicurezza sui cicli di riferimento dimostrata con test reali di stress GC (fino a
-  200 oggetti).
-- **Fase 4 (binding WebIDL/DOM)**: 23 checkpoint del pilot, con generazione WebIDL opt-in in `components/script_bindings/codegen.py`, adapter del DOM `Screen` e runtime verificato in `components/roves-v8`. Copre attributi e operazioni con conversioni primitive e stringhe, metodi e fixture runtime. Nessun percorso di produzione è ancora passato da SpiderMonkey a V8; restano wrapper DOM, interfacce, semantiche WebIDL e integrazione runtime. La fase è aperta.
+- **Fase 3 (ownership/GC)**: primitivi isolati validati in `roves-v8` (`create_wrapped`/`get_wrapped`, finalizzazione garantita e stress test dei cicli fino a 200 oggetti). La sostituzione in produzione di rooting/tracing SpiderMonkey, l'identita dei wrapper DOM e il collegamento al GC DOM restano aperti.
+- **Fase 4 (binding WebIDL/DOM)**: pilot incrementato fino al CP32, con generazione WebIDL opt-in in `components/script_bindings/codegen.py`, adapter del DOM `Screen` e runtime verificato in `components/roves-v8`. Copre attributi e operazioni con conversioni primitive e stringhe, metodi e fixture runtime. Nessun percorso di produzione è ancora passato da SpiderMonkey a V8; restano wrapper DOM, interfacce, semantiche WebIDL e integrazione runtime. La fase è aperta.
 
 **Perché tutto è isolato in `roves-v8` e non in produzione:** ispezionando una build reale
 (`target/debug/build/servo-script-bindings-*/out/Bindings/`) si sono trovati **522 file di
@@ -188,34 +186,6 @@ l'elenco rapido:
 9. Un valore `u16` arbitrario come tag di campo interno fa abortire V8 (vedi punto 4) — stesso
    bug categoria, voce separata perché è stato il primo trovato.
 
-## Decisione in sospeso per la prossima sessione
-
-L'utente ha chiesto esplicitamente, a fine sessione precedente: **"scegli tu se codegen.py o
-continuare a prototipare in roves-v8 su uno specifico elemento della lista"** — questa scelta
-non è stata ancora presa per mancanza di budget, non per indecisione tecnica. Le due opzioni
-reali, con il relativo rischio:
-
-- **Continuare a prototipare in `roves-v8`** (basso rischio, stesso pattern di tutta la
-  sessione): il prossimo elemento naturale dalla lista di validazione del piano è un grafo di
-  oggetti DOM minimale (`document.createElement` → `Element` con `appendChild`/`parentNode`,
-  usando `link` già esistente per formare il grafo), oppure l'intercettazione di proprietà
-  indicizzate/nominate (l'equivalente di `proxyhandler.rs`, mai prototipato).
-- **Iniziare davvero su `codegen.py`/`components/script_bindings`** (rischio alto — tocca codice
-  di produzione usato dalla build SpiderMonkey attuale). Il punto di partenza più sensato, visto
-  quanto già costruito: scegliere **una singola interfaccia WebIDL reale e semplicissima** (es.
-  `Console`, già ispezionata) e riscrivere a mano il suo `interface.rs`/`finalize.rs` equivalente
-  in stile V8 usando esattamente i primitivi già validati in `roves-v8` (stesso pattern
-  internal-field + `Weak::with_guaranteed_finalizer` + `FunctionTemplate`), **dietro un feature
-  flag Cargo spento di default**, così la build di produzione corrente non viene toccata finché
-  non si decide di attivarlo. Verificare con una build CI completa (non solo `cargo check`) che
-  il percorso SpiderMonkey esistente resti intatto.
-
-**Raccomandazione di chi scrive:** opzione 2 (toccare `codegen.py`/`script_bindings` per
-un'interfaccia reale, dietro feature flag) è il passo che l'utente ha già approvato in linea di
-principio ("si ti tocca modificare codegen.py... prendi la stessa decisione" per decisioni
-simili) — ma è un salto di rischio reale, va fatto con calma, un passo alla volta, verificando la
-build di produzione ad ogni modifica, non di fretta per "finire" qualcosa.
-
 ## Note operative per chi continua
 
 - **Workflow di verifica**: per ogni modifica a `components/roves-v8/`, genera sempre una patch
@@ -233,14 +203,12 @@ build di produzione ad ogni modifica, non di fretta per "finire" qualcosa.
 - **Quirk noto**: lo strumento Edit può silenziosamente convertire un intero file da LF a CRLF
   — verificare con `file <path>` prima di committare (vedi memoria
   `feedback_edit_tool_crlf_quirk.md`).
-- **Autonomia**: l'utente ha dato autonomia piena per questo lavoro — procedere senza chiedere
-  conferma a ogni passo, fermarsi solo per blocchi reali o decisioni di scala/rischio come quella
-  sopra.
+- **Autonomia**: continuare senza pause o approvazioni intermedie. Scegliere autonomamente i passi tecnici; chiedere una decisione soltanto quando nessun percorso sicuro e utile puo avanzare senza input dell'utente.
 
-## Continuation checkpoint ? 2026-10-01
+## Continuation checkpoint — 2026-10-01
 
-The pending choice above is resolved: continue isolated prototyping with indexed read
-interception, before the production generator jump. Added checkpoint 6 in `roves-v8`, patch
+At that stage, work continued with isolated prototyping and indexed read interception before the
+production generator jump. Added checkpoint 6 in `roves-v8`, patch
 0069, six tests (47 total), passing locally with and without `--features jitless`.
 `FunctionTemplate::inherit` does not propagate indexed interceptors: explicitly register on
 children. This is not a complete collection binding: query/enumeration/descriptors,

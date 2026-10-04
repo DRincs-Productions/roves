@@ -227,7 +227,7 @@ WebAssembly must also be tested separately under the selected JIT-less V8 config
 
 ## Build strategy
 
-No local build is assumed as part of this migration workflow. GitHub CI is the build/test authority.
+A Windows local toolchain is available: use local builds and tests for fast iteration, then GitHub CI for cross-platform and final verification. CI does not replace local work that can be done.
 
 Work incrementally. Once a migration step reaches a coherent **buildable** state:
 

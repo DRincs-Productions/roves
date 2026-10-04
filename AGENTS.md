@@ -6,7 +6,9 @@ Read `docs/V8_MIGRATION.md` and `docs/V8_MIGRATION_HANDOFF.md` before continuing
 The user explicitly requires autonomous implementation, local tests wherever possible,
 CI execution, waiting for results, fixing failures and continuing until every migration
 completion criterion is satisfied. Do not end work at a partial checkpoint or merely after
-starting CI. Keep progress accurate; never describe prototype coverage as production migration.
+starting CI. A checkpoint is a verification boundary, not a stopping point: once its checks pass,
+continue autonomously with the next migration task. Keep progress accurate; never describe
+prototype coverage as production migration.
 This file is the shared instruction entry point for all coding agents.
 
 
