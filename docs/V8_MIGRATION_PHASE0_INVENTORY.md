@@ -100,3 +100,27 @@ The biggest testing gap found here — no `-p script`/`script_bindings` CI leg, 
 no GC stress harness — is worth closing *incrementally* as migration work touches each area
 (per `docs/V8_MIGRATION.md`'s own Phase 5 guidance: "add or strengthen tests when a CI failure
 exposes an untested contract"), not as a prerequisite blocking Phase 1 from starting.
+
+## 2026-10-04 update - resolved Cargo graph and executable link boundary
+
+A workspace-resolved Cargo tree (`cargo tree -i mozjs --workspace --locked` and
+`cargo tree -i servo-jstraceable-derive --workspace --locked`) confirms the production
+fan-out: `mozjs` is a direct dependency of `servo-script`, `servo-script-bindings`, and
+`servo-script-webgpu`; these feed `servo`, which is consumed by `servoshell`, `servo-capi`,
+`servo-layout`, and `servo-media-examples`. The `servo-jstraceable-derive` proc macro is directly
+used by the same three script crates. The opt-in `roves-v8` crate is the only workspace consumer
+of `v8`.
+
+CP32's attempted executable test with the pilot feature proved that enabling both engines in one
+binary is not a viable migration bridge on Windows: linking `servo-script-bindings` with
+`v8-bindings-pilot,js/jit` failed on duplicate `v8::internal::PrintF` symbols from the V8 archive
+and SpiderMonkey's `mozjs_sys` archive, and duplicate `diplomat_alloc`/`diplomat_free` symbols.
+`cargo check` still passes because it does not link a binary. Continue the replacement as a
+single-engine cutover: migrate/remove the SpiderMonkey-dependent binding/runtime layers before
+attempting an executable Servo V8 integration test. Do not use the dual-engine pilot feature as a
+production configuration.
+
+The dependency tree also shows ICU C API `diplomat-runtime` 0.8.3 under mozjs, while V8's
+`temporal_capi` uses 0.16.0; the reported duplicate symbols were between two distinct 0.16.0
+artifacts at link time, so version unification alone is not established as a fix. Keep the direct
+linker collision as a cutover constraint and re-evaluate it only after SpiderMonkey is removed.
