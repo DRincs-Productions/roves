@@ -1,6 +1,6 @@
 # Roves V8 migration plan
 
-## Status note — 2026-10-04 (CP34 in progress; Phase 3 production ownership remains open)
+## Status note — 2026-10-04 (CP34 complete; Phase 3 production ownership remains open)
 
 The opt-in WebIDL pilot now generates enum operation arguments, applies WebIDL string
 conversion and rejects values outside the declared enum set before invoking native callbacks.
@@ -36,8 +36,11 @@ This remains an ownership primitive prototype, not production DOM integration.
 CP34 assigns every Servo `Reflector` a monotonic, process-unique `NativeObjectId`, independent of
 allocation addresses and JS engine handles. This is the native-side key needed to connect Servo
 DOM objects to the weak V8 wrapper identity cache. The focused local test, opt-in bindings check,
-rustfmt, and diff checks pass; patch 0098 and cross-platform CI are pending. Production
-rooting/tracing and wrapper creation are still SpiderMonkey-backed.
+rustfmt, and diff checks pass. Patch 0098 passes pristine-series validation. CI is green: V8
+37217091986, Android 37217091942, iOS 37217092008, and Servo 37217091945 (all 13 jobs, including
+Steam, SDL3, all six bundles, Linux layout/paint-api, and platform smoke tests). Wiki production
+build passes all 82 pages at commit `69d7578`. Production rooting/tracing and wrapper creation are
+still SpiderMonkey-backed.
 
 The next ownership work is not a mechanical replacement of `Reflector::get_jsobject`: an audit
 shows that reflector callers mix native identity/prototype queries, JS rooting, and operations

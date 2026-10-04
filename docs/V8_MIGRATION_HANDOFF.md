@@ -30,12 +30,15 @@ da questo blocco, fa fede lo stato attuale. L'utente ha richiesto autonomia cont
 testare localmente, avviare CI, correggere i fallimenti e proseguire fino al completamento dei
 criteri in `V8_MIGRATION.md`.
 
-CP34 in corso: `Reflector` assegna ora un `NativeObjectId` engine-neutral monotono e univoco nel
-processo, così la futura cache wrapper può usare un'identità nativa che non dipende da indirizzi
-riutilizzabili. Il test mirato passa, così come il check `servo-script-bindings` con pilot V8/JIT;
-rustfmt e `git diff --check` passano. Patch 0098 è generata e reverse-checka; validazione della
-serie pristine e CI devono ancora finire. README/wiki sono aggiornate. Rooting/tracing e produzione
-restano SpiderMonkey.
+CP34 completo (`1b3b87a0d7e`): `Reflector` assegna un `NativeObjectId` engine-neutral monotono e
+univoco nel processo, così la futura cache wrapper può usare un'identità nativa che non dipende da
+indirizzi riutilizzabili. Il test mirato passa, così come il check `servo-script-bindings` con pilot
+V8/JIT; rustfmt e `git diff --check` passano. Patch 0098 applica nella serie pristine. CI verde:
+V8 37217091986, Android 37217091942, iOS 37217092008, Servo 37217091945 (13/13 job). Wiki build
+82 pagine al commit `69d7578`. README/wiki aggiornate. Rooting/tracing e produzione restano
+SpiderMonkey. Lavoro attivo successivo: introdurre un contratto scripting engine-neutral per
+handle/root dei valori JS e mappare la migrazione per categorie di call site, senza spostare tipi
+V8 nelle API DOM pubbliche.
 
 CP31 completo: il pilot genera gli argomenti enum WebIDL, converte i valori stringa, rifiuta valori
 fuori dall'enum prima del callback e applica i default opzionali. Verifiche locali: 26 test

@@ -8,8 +8,9 @@ independent of allocation addresses and JS handles, so it can safely key a futur
 weak wrapper cache without allocator address reuse aliasing two native objects. A focused unit test
 checks stability and uniqueness. The test passes locally, as does the opt-in `servo-script-bindings`
 check; rustfmt and diff checks pass. Patch 0098 reverse-checks against the working tree. Pristine
-series validation and cross-platform CI are running; production continues to use SpiderMonkey
-rooting and wrappers.
+series validation passes. CI is green: V8 37217091986, Android 37217091942, iOS 37217092008, and
+Servo 37217091945 (SDL3 probes, Steam, all six bundles, Linux layout/paint-api tests, and smoke
+tests). Production continues to use SpiderMonkey rooting and wrappers.
 
 ## 2026-10-04 - V8 migration Phase 3: weak DOM wrapper identity
 
