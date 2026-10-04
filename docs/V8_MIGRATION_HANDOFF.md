@@ -44,12 +44,23 @@ Steam e sei bundle), Android e iOS e verde. Un test eseguibile nello stesso crat
 link per simboli C++ duplicati tra mozjs e V8; il `cargo check` integrato passa. Il runtime test
 resta nel binario isolato V8 fino alla rimozione di SpiderMonkey dal binario Servo.
 
-CP33 in corso: `Runtime::create_instance_with_identity` usa una cache `HashMap` di weak wrapper,
+CP33 implementazione completata localmente: `Runtime::create_instance_with_identity` usa una cache `HashMap` di weak wrapper,
 con token per impedire a un vecchio finalizer di rimuovere una voce sostitutiva. Testa riuso via
 `===`, factory lazy, cleanup esatto dopo GC e ricreazione. Suite locali normali/JIT-less: 66 unit +
-4 integrazioni + 2 doctest; default 54 unit + 2 doctest. Patch 0097 e CI ancora da completare.
-Prossimo: chiudere CP33, poi iniziare la separazione concreta dei rooting/reflection SpiderMonkey
-partendo dalla API `Reflector` e dai suoi 644 call site rilevati in `script`/`script_bindings`.
+4 integrazioni + 2 doctest; default 54 unit + 2 doctest. Patch 0097 e validazione pristine passano;
+26 test generatori e `cargo check` integrato di `servo-script-bindings` passano. V8, Android, iOS,
+validazione patch, SDL3, Steam, Linux deb e macOS DMG sono verdi; Linux portable e Windows/macOS
+portable sono ancora in esecuzione. Nessun fallimento finora. Patch 0097 è stata validata nella
+serie pristine.
+
+Prossimo lavoro: audit e migrazione per categorie dell'identità DOM, rooting e tracing. L'audit
+concreto conferma che `Reflector` contiene `Heap<*mut JSObject>`, `root.rs` basa `StableTraceObject`
+su `js::gc::Traceable`, e `trace.rs` usa `CallObjectTracer`; i 644 riferimenti non sono tutti
+equivalenti, perché molti richiedono direttamente API SpiderMonkey. Definire prima un contratto
+engine-neutral per identità nativa e wrapper/root posseduti dal runtime di scripting, poi migrare
+gruppi di call site mantenendo la compilabilità. Nessun tipo `v8::*` deve arrivare nelle API DOM
+pubbliche o shell. Produzione continua a collegare SpiderMonkey finché la sostituzione end-to-end
+non è pronta.
 CP26 (`b03e711f304`) è completo e verde. Verifiche locali: 21 test Python; pilot normale e JIT-less ciascuno con 59 unit + 3 integrazioni + 2 doctest; default 52 unit + 2 doctest; check integrato `servo-script`. Patch 0090 applica sulla serie pristine. CI verdi: V8 ([37144196093](https://github.com/DRincs-Productions/roves/actions/runs/37144196093)), Servo (patch validation, SDL3, Steam e tutti i bundle: [37144196126](https://github.com/DRincs-Productions/roves/actions/runs/37144196126)), Android ([37144196111](https://github.com/DRincs-Productions/roves/actions/runs/37144196111)), iOS ([37144196107](https://github.com/DRincs-Productions/roves/actions/runs/37144196107)). Wiki aggiornata e build Next.js verde al commit `92ac3ac`.
 
 CP27 (`19bb9c8cd2e`) è completo e verde. ByteString operation arguments mappati a `Vec<u8>`; ToString valida ogni code unit <=255, per le forme required, nullable e optional. Verifiche locali: 22 test generatori; pilot normale/JIT-less ciascuno con 60 unit + 3 integrazioni + 2 doctest; default 52 unit + 2 doctest; check `servo-script`. Patch 0091 applica alla snapshot CP26 e al pristine nella CI. CI verdi: V8 ([37147151024](https://github.com/DRincs-Productions/roves/actions/runs/37147151024)), Servo (patch validation, SDL3, Steam e tutti i bundle: [37147151005](https://github.com/DRincs-Productions/roves/actions/runs/37147151005)), Android ([37147150994](https://github.com/DRincs-Productions/roves/actions/runs/37147150994)), iOS ([37147151023](https://github.com/DRincs-Productions/roves/actions/runs/37147151023)). Wiki build Next.js verde al commit `d36c050`.

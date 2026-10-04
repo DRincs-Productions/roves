@@ -10,7 +10,9 @@ guaranteed finalizer from deleting a replacement cache entry; the finalizer remo
 and drops the native payload once. Tests cover `===`, weak reclamation, identity recreation after
 GC and old-finalizer/replacement races. Local verification: 26 Python generator tests; 66 unit + 4
 WebIDL integration + 2 doctests in normal and JIT-less pilot modes; 54 default unit + 2 doctests;
-and the integrated `servo-script-bindings` cargo check. Cross-platform CI is pending.
+and the integrated `servo-script-bindings` cargo check. Patch 0097 passes pristine-series
+validation. V8, Android, iOS, SDL3 probes, Steam, Linux deb, and macOS DMG CI jobs are green;
+Linux portable and Windows/macOS portable jobs are still running.
 ## 2026-10-04 - V8 migration Phase 4: ValidityState generated binding integration
 
 **Servo files:** `components/roves-v8/tests/webidl.rs`.
