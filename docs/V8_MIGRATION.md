@@ -1,13 +1,26 @@
 # Roves V8 migration plan
 
-## Status note — 2026-10-04 (CP31 in progress)
+## Status note — 2026-10-04 (CP32 complete; Phase 4 continues)
 
 The opt-in WebIDL pilot now generates enum operation arguments, applies WebIDL string
 conversion and rejects values outside the declared enum set before invoking native callbacks.
 Optional enum arguments also use their declared defaults. Local generator, runtime (normal and
-JIT-less), default-runtime, and integrated `servo-script` checks pass. CP31 is not yet complete:
-patch-series validation, wiki build, and cross-platform CI are pending. Production still uses
-SpiderMonkey.
+JIT-less), default-runtime, and integrated `servo-script` checks pass. Patch 0095 applies across
+the complete pristine patch series; the wiki production build passes all 82 pages. CI is green:
+V8 37201595906, Servo patch validation/SDL3/Steam/all six bundles 37202006567, Android
+37202073963 and iOS 37202073968. This is pilot coverage only: production still uses SpiderMonkey.
+
+CP32 adds an integration test against the actual Servo `ValidityState.webidl` and its generated
+V8 binding. It checks all 11 attributes, descriptor shape, `instanceof`, and that the `valid`
+getter reflects each of the ten native validation flags. Full local generator/runtime/default
+tests and the integrated `servo-script` check pass; CI is green: V8 37205017801, Servo 37205017877
+(patch validation, SDL3, Steam, all six bundles), Android 37205017867, and iOS 37205017982. This
+remains pilot coverage; production still uses SpiderMonkey. A trial test inside
+`servo-script-bindings` compiled but could not link while both engines are present: `mozjs` and V8
+export duplicate C++ symbols (`v8::internal::PrintF`, plus `diplomat_alloc/free`). Therefore the
+pilot binding is compile-checked through this crate, while executable WebIDL tests stay in the
+isolated `roves-v8` test binary. The production cutover must remove SpiderMonkey from the linked
+binary before a runtime test can exercise both through Servo's binding crate.
 
 ## Goal
 

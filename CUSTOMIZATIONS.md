@@ -6,7 +6,7 @@
 Add an integration test that installs the generated binding from Servo's actual
 `ValidityState.webidl` against the test-native implementation. It checks all eleven attributes,
 their WebIDL getter descriptors, interface identity, and live `valid` behavior for each of the ten
-native validation flags. Local verification passes: 64 unit + 4 integration + 2 doctests in normal and JIT-less pilot modes; 52 default unit + 2 doctests; 26 Python generator tests; and the integrated servo-script check. Patch 0096 applies in reverse to the current tree; the wiki production build passes all 82 pages at commit 5b7524c. Cross-platform CI is pending.
+native validation flags. Local verification passes: 64 unit + 4 integration + 2 doctests in normal and JIT-less pilot modes; 52 default unit + 2 doctests; 26 Python generator tests; and the integrated servo-script check. Patch 0096 applies in reverse to the current tree; the wiki production build passes all 82 pages at commit 5b7524c. CI is green: V8 37205017801, Android 37205017867, iOS 37205017982, and Servo 37205017877 (patch validation, SDL3 probes, Steam, and all six bundles including Linux portable upload).
 
 ## 2026-10-04 - V8 migration Phase 4: enum operation arguments
 

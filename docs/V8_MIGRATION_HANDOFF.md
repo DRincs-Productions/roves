@@ -40,11 +40,23 @@ SpiderMonkey. Prossimo passo: continuare Phase 4 verso conversioni WebIDL mancan
 dei membri e collegamento dei binding generati ai realm/DOM reali; rileggere il piano prima di
 selezionare il prossimo sottoinsieme e aggiornare questa nota dopo ogni run.
 
-CP32 in corso: si aggiunge in `components/roves-v8/tests/webidl.rs` una prova end-to-end del
-binding generato dal vero `components/script_bindings/webidls/ValidityState.webidl`, già prodotto
-dal crate con `v8-bindings-pilot`. Copre gli 11 attributi e la riflessione live dei flag. Il test
-mirato passa; ripetere suite normale/JIT-less/default, Python generator, check `servo-script`,
-rigenerare patch 0096, buildare wiki e avviare CI. La production path resta ancora SpiderMonkey.
+CP32 completo: la prova end-to-end in `components/roves-v8/tests/webidl.rs` usa il binding generato dal vero
+`components/script_bindings/webidls/ValidityState.webidl`, già prodotto dal crate con
+`v8-bindings-pilot`. Verifica tutti gli 11 attributi, i descrittori e il valore live di `valid` per
+ciascuno dei dieci flag. Test locale: pilot normale/JIT-less ciascuno 64 unit + 4 integration + 2
+doctest; default 52 unit + 2 doctest; 26 test generator; check integrato `servo-script` passano.
+Patch 0096 generata e reverse-check pass; wiki build 82 pagine, commit 5b7524c. CI V8
+(37205017801), Android (37205017867), iOS (37205017982) e Servo (37205017877: patch validation,
+SDL3, Steam e tutti e sei i bundle) verdi. Produzione resta SpiderMonkey. Prossimo: aggiungere un
+test nel crate `servo-script-bindings` stesso per installare il suo binding `ValidityState` generato
+e verificarlo sul runtime pilota; il tentativo è stato compilato ma non può linkare mentre entrambi
+gli engine sono presenti: `mozjs` e V8 esportano simboli C++ duplicati (`v8::internal::PrintF`, oltre
+a `diplomat_alloc/free`). Il test è stato rimosso, senza lasciare un target CI fallimentare. `cargo
+check` del crate resta la verifica di integrazione compilativa; i test runtime restano nel processo
+isolato `roves-v8`. Prima di provare un test runtime attraverso Servo bisogna eliminare SpiderMonkey
+dal binario. Prossimo lavoro: mappare e separare i wrapper/trait SpiderMonkey-specifici usati dai
+binding generati, cominciando dalla catena `interface.rs` / `reflector.rs` / `finalize.rs`, quindi
+definire la prima sostituzione che consenta un eseguibile Servo solo-V8.
 
 CP26 (`b03e711f304`) è completo e verde. Verifiche locali: 21 test Python; pilot normale e JIT-less ciascuno con 59 unit + 3 integrazioni + 2 doctest; default 52 unit + 2 doctest; check integrato `servo-script`. Patch 0090 applica sulla serie pristine. CI verdi: V8 ([37144196093](https://github.com/DRincs-Productions/roves/actions/runs/37144196093)), Servo (patch validation, SDL3, Steam e tutti i bundle: [37144196126](https://github.com/DRincs-Productions/roves/actions/runs/37144196126)), Android ([37144196111](https://github.com/DRincs-Productions/roves/actions/runs/37144196111)), iOS ([37144196107](https://github.com/DRincs-Productions/roves/actions/runs/37144196107)). Wiki aggiornata e build Next.js verde al commit `92ac3ac`.
 
