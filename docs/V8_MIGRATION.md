@@ -16,8 +16,11 @@ object for realms, modules and interface definition; (d) direct JSAPI calls (Pro
 `JS_DefineDebuggerObject`, structured clone, WebGL extension pointers). CP39 removes category
 (a): `OpaqueNode`/`UntrustedNodeAddress` now carry the native `Node` address, matching
 `TrustedNodeAddress`, so layout↔script node identity no longer touches `JSObject` or
-`private_from_object`. Categories (b)–(d) need an engine-owned wrapper/value contract and stay
-SpiderMonkey for now. Do not mechanically replace handles or expose V8 types in DOM APIs.
+`private_from_object`. CP40 routes the eight open-coded realm entries from a DOM object (part of
+category (c)) through the existing `enter_auto_realm` helper, leaving one implementation to swap
+at cutover; `get_jsobject()` call sites go from 56 to 45. The rest of (c) and categories (b)–(d)
+need an engine-owned wrapper/value contract and stay SpiderMonkey for now. Do not mechanically
+replace handles or expose V8 types in DOM APIs.
 
 Historical CP31 note: the opt-in WebIDL pilot generates enum operation arguments, applies WebIDL string
 conversion and rejects values outside the declared enum set before invoking native callbacks.

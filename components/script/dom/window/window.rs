@@ -9,7 +9,6 @@ use std::collections::hash_map::Entry;
 use std::default::Default;
 use std::ffi::c_void;
 use std::io::{Write, stderr, stdout};
-use std::ptr::NonNull;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -38,7 +37,7 @@ use js::conversions::ToJSValConvertible;
 use js::glue::DumpJSStack;
 use js::jsapi::{GCReason, Heap, JSContext as RawJSContext, JSObject, JSPROP_ENUMERATE};
 use js::jsval::{NullValue, UndefinedValue};
-use js::realm::{AutoRealm, CurrentRealm};
+use js::realm::CurrentRealm;
 use js::rust::wrappers2::{JS_DefineProperty, JS_GC};
 use js::rust::{
     CustomAutoRooter, CustomAutoRooterGuard, HandleObject, HandleValue, MutableHandleObject,
@@ -4069,8 +4068,7 @@ impl Window {
                 }
 
             // Steps 7.2.-7.5.
-            let obj = this.reflector().get_jsobject();
-            let mut realm = AutoRealm::new(cx, NonNull::new(obj.get()).unwrap());
+            let mut realm = enter_auto_realm(cx, &*this);
             let cx = &mut *realm;
             rooted!(&in(cx) let mut message_clone = UndefinedValue());
             if let Ok(ports) = structuredclone::read(cx, this.upcast(), data, message_clone.handle_mut()) {

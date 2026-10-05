@@ -4,7 +4,7 @@
 
 use std::borrow::ToOwned;
 use std::cell::Cell;
-use std::ptr::{self, NonNull};
+use std::ptr;
 use std::rc::Rc;
 
 use dom_struct::dom_struct;
@@ -13,7 +13,6 @@ use js::context::JSContext;
 use js::conversions::ToJSValConvertible;
 use js::jsapi::JSObject;
 use js::jsval::UndefinedValue;
-use js::realm::AutoRealm;
 use js::rust::{CustomAutoRooterGuard, HandleObject};
 use js::typedarray::{ArrayBuffer, ArrayBufferView, CreateWith};
 use net_traits::blob_url_store::UrlWithBlobClaim;
@@ -26,7 +25,7 @@ use net_traits::{
 };
 use profile_traits::ipc as ProfiledIpc;
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::{DomObject, reflect_weak_referenceable_dom_object_with_proto};
+use script_bindings::reflector::reflect_weak_referenceable_dom_object_with_proto;
 use servo_base::generic_channel::{LazyCallback, lazy_callback};
 use servo_constellation_traits::BlobImpl;
 use servo_url::{ImmutableOrigin, ServoUrl};
@@ -50,6 +49,7 @@ use crate::dom::globalscope::GlobalScope;
 use crate::dom::messageevent::MessageEvent;
 use crate::dom::window::Window;
 use crate::fetch::RequestWithGlobalScope;
+use crate::realms::enter_auto_realm;
 use crate::task::TaskOnce;
 use crate::task_source::SendableTaskSource;
 
@@ -612,10 +612,7 @@ impl TaskOnce for MessageReceivedTask {
 
         // Step 2-5.
         let global = ws.global();
-        let mut realm = AutoRealm::new(
-            cx,
-            NonNull::new(ws.reflector().get_jsobject().get()).unwrap(),
-        );
+        let mut realm = enter_auto_realm(cx, &*ws);
         let cx = &mut *realm;
         rooted!(&in(cx) let mut message = UndefinedValue());
         match self.message {

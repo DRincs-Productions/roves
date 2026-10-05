@@ -22,10 +22,15 @@ tutti i `curl` di `test.yml` ora usano `--retry-all-errors` (vedi `CUSTOMIZATION
 `Node` nativo invece del `JSObject`; `from_untrusted_node_address` non usa più
 `private_from_object`. Patch 0103, `cargo check -p servo-script` locale pulito. CI in verifica.
 
-**Ripresa:** confermare verde la CI di CP39 (e del fix curl). Poi prossima categoria dell'audit:
-(c) l'oggetto globale per realm/moduli/definizione interfacce, oppure (b) i valori passati a JS —
-entrambe richiedono prima un contratto engine-owned per wrapper/valori. Il toolchain locale
-Windows è completo: verificare ogni modifica in locale prima della CI.
+**CP40 (2026-10-05):** gli 8 ingressi manuali nel realm di un oggetto DOM passano ora tutti per
+`crate::realms::enter_auto_realm` (patch 0104); `get_jsobject()` scende da 56 a 45 chiamanti.
+`cargo check -p servo-script` locale pulito.
+
+**Ripresa:** confermare verde la CI cumulativa di CP39+CP40. Poi: categoria (b) — valori passati
+a JS (`ObjectValue(x.reflector().get_jsobject().get())`, scope chain, `safe_to_jsval`) — tramite
+un unico helper "riflettore → valore JS" analogo a `enter_auto_realm`, così il punto da
+sostituire al cutover resta unico. Il toolchain locale Windows è completo: verificare ogni
+modifica in locale prima della CI.
 
 ## Avvio rapido
 

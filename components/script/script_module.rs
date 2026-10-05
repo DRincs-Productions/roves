@@ -30,7 +30,7 @@ use js::jsapi::{
     SetModulePrivate, SetModuleResolveHook, SetScriptPrivateReferenceHooks, Value,
 };
 use js::jsval::{JSVal, PrivateValue, UndefinedValue};
-use js::realm::{AutoRealm, CurrentRealm};
+use js::realm::CurrentRealm;
 use js::rust::wrappers2::{
     CompileJsonModule1, CompileModule1, DefineFunctionWithReserved, GetModuleRequestSpecifier,
     GetModuleRequestType, JS_ClearPendingException, JS_DefineProperty4, JS_GetPendingException,
@@ -50,7 +50,6 @@ use net_traits::request::{
 use net_traits::{FetchMetadata, Metadata, NetworkError, ReferrerPolicy, ResourceFetchTiming};
 use script_bindings::cell::DomRefCell;
 use script_bindings::error::Fallible;
-use script_bindings::reflector::DomObject;
 use script_bindings::settings_stack::run_a_callback;
 use script_bindings::trace::CustomTraceable;
 use serde_json::{Map as JsonMap, Value as JsonValue};
@@ -290,10 +289,7 @@ impl ModuleTree {
         line_number: u32,
         introduction_type: Option<&'static CStr>,
     ) -> Self {
-        let mut realm = AutoRealm::new(
-            cx,
-            NonNull::new(global.reflector().get_jsobject().get()).unwrap(),
-        );
+        let mut realm = enter_auto_realm(cx, global);
         let cx = &mut *realm;
 
         let owner = Trusted::new(global);
@@ -375,10 +371,7 @@ impl ModuleTree {
         url: &ServoUrl,
         introduction_type: Option<&'static CStr>,
     ) -> Self {
-        let mut realm = AutoRealm::new(
-            cx,
-            NonNull::new(global.reflector().get_jsobject().get()).unwrap(),
-        );
+        let mut realm = enter_auto_realm(cx, global);
         let cx = &mut *realm;
 
         // Step 1. Let script be a new module script that this algorithm will subsequently initialize.
@@ -442,10 +435,7 @@ impl ModuleTree {
         module_record: HandleObject,
         mut eval_result: MutableHandleValue,
     ) -> Result<(), RethrowError> {
-        let mut realm = AutoRealm::new(
-            cx,
-            NonNull::new(global.reflector().get_jsobject().get()).unwrap(),
-        );
+        let mut realm = enter_auto_realm(cx, global);
         let cx = &mut *realm;
 
         unsafe {
@@ -1412,10 +1402,7 @@ fn fetch_the_descendants_and_link_module_script(
     // Step 6. Upon fulfillment of loadingPromise, run the following steps:
     let loading_promise_fulfillment = ModuleHandler::new_boxed(Box::new(
         task!(fulfilled_steps: |cx, global_scope: DomRoot<GlobalScope>| {
-            let mut realm = AutoRealm::new(
-                cx,
-                NonNull::new(global_scope.reflector().get_jsobject().get()).unwrap(),
-            );
+            let mut realm = enter_auto_realm(cx, &*global_scope);
             let cx = &mut *realm;
 
             let handle = fulfilled_module.get_record().map(|module| module.handle()).unwrap();

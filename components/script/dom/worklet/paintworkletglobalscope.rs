@@ -4,7 +4,7 @@
 
 use std::cell::Cell;
 use std::collections::hash_map::Entry;
-use std::ptr::{NonNull, null_mut};
+use std::ptr::null_mut;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -16,7 +16,6 @@ use euclid::{Scale, Size2D};
 use js::context::JSContext;
 use js::jsapi::{HandleValueArray, Heap, IsCallable, IsConstructor, JSObject, Value};
 use js::jsval::{JSVal, ObjectValue, UndefinedValue};
-use js::realm::AutoRealm;
 use js::rust::HandleValue;
 use js::rust::wrappers2::{
     Call, Construct1, JS_ClearPendingException, JS_IsExceptionPending, NewArrayObject,
@@ -50,6 +49,7 @@ use crate::dom::paintrenderingcontext2d::PaintRenderingContext2D;
 use crate::dom::paintsize::PaintSize;
 use crate::dom::worklet::WorkletExecutor;
 use crate::dom::workletglobalscope::{WorkletGlobalScope, WorkletGlobalScopeInit, WorkletTask};
+use crate::realms::enter_auto_realm;
 
 /// <https://drafts.css-houdini.org/css-paint-api/#paintworkletglobalscope>
 #[dom_struct]
@@ -252,10 +252,7 @@ impl PaintWorkletGlobalScope {
             name, size_in_px.width, size_in_px.height, device_pixel_ratio
         );
 
-        let mut realm = AutoRealm::new(
-            cx,
-            NonNull::new(self.worklet_global.reflector().get_jsobject().get()).unwrap(),
-        );
+        let mut realm = enter_auto_realm(cx, &self.worklet_global);
         let cx = &mut *realm;
 
         // TODO: Steps 1-2.1.

@@ -16,7 +16,7 @@ use js::context::JSContext;
 use js::conversions::jsstr_to_string;
 use js::jsapi::{HandleValue as RawHandleValue, IsCyclicModule, ModuleType};
 use js::jsval::{ObjectValue, UndefinedValue};
-use js::realm::{AutoRealm, CurrentRealm};
+use js::realm::CurrentRealm;
 use js::rust::wrappers2::{
     GetModuleNamespace, GetRequestedModuleSpecifier, GetRequestedModuleType,
     GetRequestedModulesCount, JS_GetModulePrivate, ModuleEvaluate, ModuleLink,
@@ -24,7 +24,6 @@ use js::rust::wrappers2::{
 use js::rust::{HandleValue, IntoHandle};
 use net_traits::blob_url_store::UrlWithBlobClaim;
 use net_traits::request::{Destination, Referrer, RequestClient};
-use script_bindings::reflector::DomObject;
 use script_bindings::settings_stack::run_a_callback;
 use servo_url::ServoUrl;
 
@@ -327,10 +326,7 @@ fn continue_dynamic_import(
     // Step 7. Let linkAndEvaluate be CreateBuiltinFunction(linkAndEvaluateClosure, 0, "", « »).
     let link_and_evaluate = ModuleHandler::new_boxed(Box::new(
         task!(link_and_evaluate: |cx, global_scope: DomRoot<GlobalScope>, inner_promise: Rc<Promise>, record: ModuleObject| {
-            let mut realm = AutoRealm::new(
-                cx,
-                std::ptr::NonNull::new(global_scope.reflector().get_jsobject().get()).unwrap(),
-            );
+            let mut realm = enter_auto_realm(cx, &*global_scope);
             let cx = &mut realm.current_realm();
             // a. Let link be Completion(module.Link()).
             let link = unsafe { ModuleLink(cx, record.handle()) };

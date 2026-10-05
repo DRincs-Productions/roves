@@ -11,6 +11,23 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-05 - V8 migration Phase 3: realm entry goes through one helper (CP40)
+
+**Servo files:** `components/script/dom/websocket.rs`, `components/script/dom/window/window.rs`,
+`components/script/dom/worklet/paintworkletglobalscope.rs`, `components/script/module_loading.rs`,
+`components/script/script_module.rs`.
+**Patch:** `0104-roves-v8-centralize-realm-entry.patch` after 0103.
+
+Second category from the `Reflector::get_jsobject` audit: eight call sites entered a DOM
+object's realm by hand (`AutoRealm::new(cx, NonNull::new(obj.reflector().get_jsobject().get())
+.unwrap())`), duplicating the existing `crate::realms::enter_auto_realm(cx, &obj)` helper. They
+now all use the helper, so realm entry from a DOM object has a single implementation to replace
+at the engine cutover. Behaviour is unchanged (the helper performs the identical call). The two
+custom-element sites that enter a *callback* object's realm are a different category and are
+untouched. Now-unused `AutoRealm`, `NonNull` and `DomObject` imports are removed. `get_jsobject()`
+call sites drop from 56 (audit baseline) to 45 across CP39–CP40. `servo-script` checks cleanly
+locally with only pre-existing warnings; patch 0104 reverse-checks.
+
 ## 2026-10-05 - V8 migration Phase 3: layout node identity uses native Node addresses (CP39)
 
 **Servo files:** `components/script/dom/node/node.rs`, `components/script/dom/node/layout_dom.rs`,

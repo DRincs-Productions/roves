@@ -1,0 +1,224 @@
+diff --git a/components/script/dom/websocket.rs b/components/script/dom/websocket.rs
+index 8249679716f..473b70b573e 100644
+--- a/components/script/dom/websocket.rs
++++ b/components/script/dom/websocket.rs
+@@ -4,7 +4,7 @@
+ 
+ use std::borrow::ToOwned;
+ use std::cell::Cell;
+-use std::ptr::{self, NonNull};
++use std::ptr;
+ use std::rc::Rc;
+ 
+ use dom_struct::dom_struct;
+@@ -13,7 +13,6 @@ use js::context::JSContext;
+ use js::conversions::ToJSValConvertible;
+ use js::jsapi::JSObject;
+ use js::jsval::UndefinedValue;
+-use js::realm::AutoRealm;
+ use js::rust::{CustomAutoRooterGuard, HandleObject};
+ use js::typedarray::{ArrayBuffer, ArrayBufferView, CreateWith};
+ use net_traits::blob_url_store::UrlWithBlobClaim;
+@@ -26,7 +25,7 @@ use net_traits::{
+ };
+ use profile_traits::ipc as ProfiledIpc;
+ use script_bindings::cell::DomRefCell;
+-use script_bindings::reflector::{DomObject, reflect_weak_referenceable_dom_object_with_proto};
++use script_bindings::reflector::reflect_weak_referenceable_dom_object_with_proto;
+ use servo_base::generic_channel::{LazyCallback, lazy_callback};
+ use servo_constellation_traits::BlobImpl;
+ use servo_url::{ImmutableOrigin, ServoUrl};
+@@ -50,6 +49,7 @@ use crate::dom::globalscope::GlobalScope;
+ use crate::dom::messageevent::MessageEvent;
+ use crate::dom::window::Window;
+ use crate::fetch::RequestWithGlobalScope;
++use crate::realms::enter_auto_realm;
+ use crate::task::TaskOnce;
+ use crate::task_source::SendableTaskSource;
+ 
+@@ -612,10 +612,7 @@ impl TaskOnce for MessageReceivedTask {
+ 
+         // Step 2-5.
+         let global = ws.global();
+-        let mut realm = AutoRealm::new(
+-            cx,
+-            NonNull::new(ws.reflector().get_jsobject().get()).unwrap(),
+-        );
++        let mut realm = enter_auto_realm(cx, &*ws);
+         let cx = &mut *realm;
+         rooted!(&in(cx) let mut message = UndefinedValue());
+         match self.message {
+diff --git a/components/script/dom/window/window.rs b/components/script/dom/window/window.rs
+index 6abe5f4a28e..0cdc696e66a 100644
+--- a/components/script/dom/window/window.rs
++++ b/components/script/dom/window/window.rs
+@@ -9,7 +9,6 @@ use std::collections::hash_map::Entry;
+ use std::default::Default;
+ use std::ffi::c_void;
+ use std::io::{Write, stderr, stdout};
+-use std::ptr::NonNull;
+ use std::rc::{Rc, Weak};
+ use std::sync::Arc;
+ use std::time::{Duration, Instant};
+@@ -38,7 +37,7 @@ use js::conversions::ToJSValConvertible;
+ use js::glue::DumpJSStack;
+ use js::jsapi::{GCReason, Heap, JSContext as RawJSContext, JSObject, JSPROP_ENUMERATE};
+ use js::jsval::{NullValue, UndefinedValue};
+-use js::realm::{AutoRealm, CurrentRealm};
++use js::realm::CurrentRealm;
+ use js::rust::wrappers2::{JS_DefineProperty, JS_GC};
+ use js::rust::{
+     CustomAutoRooter, CustomAutoRooterGuard, HandleObject, HandleValue, MutableHandleObject,
+@@ -4069,8 +4068,7 @@ impl Window {
+                 }
+ 
+             // Steps 7.2.-7.5.
+-            let obj = this.reflector().get_jsobject();
+-            let mut realm = AutoRealm::new(cx, NonNull::new(obj.get()).unwrap());
++            let mut realm = enter_auto_realm(cx, &*this);
+             let cx = &mut *realm;
+             rooted!(&in(cx) let mut message_clone = UndefinedValue());
+             if let Ok(ports) = structuredclone::read(cx, this.upcast(), data, message_clone.handle_mut()) {
+diff --git a/components/script/dom/worklet/paintworkletglobalscope.rs b/components/script/dom/worklet/paintworkletglobalscope.rs
+index ea6a364532e..dda95aee492 100644
+--- a/components/script/dom/worklet/paintworkletglobalscope.rs
++++ b/components/script/dom/worklet/paintworkletglobalscope.rs
+@@ -4,7 +4,7 @@
+ 
+ use std::cell::Cell;
+ use std::collections::hash_map::Entry;
+-use std::ptr::{NonNull, null_mut};
++use std::ptr::null_mut;
+ use std::rc::Rc;
+ use std::sync::{Arc, Mutex};
+ use std::thread;
+@@ -16,7 +16,6 @@ use euclid::{Scale, Size2D};
+ use js::context::JSContext;
+ use js::jsapi::{HandleValueArray, Heap, IsCallable, IsConstructor, JSObject, Value};
+ use js::jsval::{JSVal, ObjectValue, UndefinedValue};
+-use js::realm::AutoRealm;
+ use js::rust::HandleValue;
+ use js::rust::wrappers2::{
+     Call, Construct1, JS_ClearPendingException, JS_IsExceptionPending, NewArrayObject,
+@@ -50,6 +49,7 @@ use crate::dom::paintrenderingcontext2d::PaintRenderingContext2D;
+ use crate::dom::paintsize::PaintSize;
+ use crate::dom::worklet::WorkletExecutor;
+ use crate::dom::workletglobalscope::{WorkletGlobalScope, WorkletGlobalScopeInit, WorkletTask};
++use crate::realms::enter_auto_realm;
+ 
+ /// <https://drafts.css-houdini.org/css-paint-api/#paintworkletglobalscope>
+ #[dom_struct]
+@@ -252,10 +252,7 @@ impl PaintWorkletGlobalScope {
+             name, size_in_px.width, size_in_px.height, device_pixel_ratio
+         );
+ 
+-        let mut realm = AutoRealm::new(
+-            cx,
+-            NonNull::new(self.worklet_global.reflector().get_jsobject().get()).unwrap(),
+-        );
++        let mut realm = enter_auto_realm(cx, &self.worklet_global);
+         let cx = &mut *realm;
+ 
+         // TODO: Steps 1-2.1.
+diff --git a/components/script/module_loading.rs b/components/script/module_loading.rs
+index 2c69250549c..4e7960d8634 100644
+--- a/components/script/module_loading.rs
++++ b/components/script/module_loading.rs
+@@ -16,7 +16,7 @@ use js::context::JSContext;
+ use js::conversions::jsstr_to_string;
+ use js::jsapi::{HandleValue as RawHandleValue, IsCyclicModule, ModuleType};
+ use js::jsval::{ObjectValue, UndefinedValue};
+-use js::realm::{AutoRealm, CurrentRealm};
++use js::realm::CurrentRealm;
+ use js::rust::wrappers2::{
+     GetModuleNamespace, GetRequestedModuleSpecifier, GetRequestedModuleType,
+     GetRequestedModulesCount, JS_GetModulePrivate, ModuleEvaluate, ModuleLink,
+@@ -24,7 +24,6 @@ use js::rust::wrappers2::{
+ use js::rust::{HandleValue, IntoHandle};
+ use net_traits::blob_url_store::UrlWithBlobClaim;
+ use net_traits::request::{Destination, Referrer, RequestClient};
+-use script_bindings::reflector::DomObject;
+ use script_bindings::settings_stack::run_a_callback;
+ use servo_url::ServoUrl;
+ 
+@@ -327,10 +326,7 @@ fn continue_dynamic_import(
+     // Step 7. Let linkAndEvaluate be CreateBuiltinFunction(linkAndEvaluateClosure, 0, "", « »).
+     let link_and_evaluate = ModuleHandler::new_boxed(Box::new(
+         task!(link_and_evaluate: |cx, global_scope: DomRoot<GlobalScope>, inner_promise: Rc<Promise>, record: ModuleObject| {
+-            let mut realm = AutoRealm::new(
+-                cx,
+-                std::ptr::NonNull::new(global_scope.reflector().get_jsobject().get()).unwrap(),
+-            );
++            let mut realm = enter_auto_realm(cx, &*global_scope);
+             let cx = &mut realm.current_realm();
+             // a. Let link be Completion(module.Link()).
+             let link = unsafe { ModuleLink(cx, record.handle()) };
+diff --git a/components/script/script_module.rs b/components/script/script_module.rs
+index ec73161201b..774d0b0a6f3 100644
+--- a/components/script/script_module.rs
++++ b/components/script/script_module.rs
+@@ -30,7 +30,7 @@ use js::jsapi::{
+     SetModulePrivate, SetModuleResolveHook, SetScriptPrivateReferenceHooks, Value,
+ };
+ use js::jsval::{JSVal, PrivateValue, UndefinedValue};
+-use js::realm::{AutoRealm, CurrentRealm};
++use js::realm::CurrentRealm;
+ use js::rust::wrappers2::{
+     CompileJsonModule1, CompileModule1, DefineFunctionWithReserved, GetModuleRequestSpecifier,
+     GetModuleRequestType, JS_ClearPendingException, JS_DefineProperty4, JS_GetPendingException,
+@@ -50,7 +50,6 @@ use net_traits::request::{
+ use net_traits::{FetchMetadata, Metadata, NetworkError, ReferrerPolicy, ResourceFetchTiming};
+ use script_bindings::cell::DomRefCell;
+ use script_bindings::error::Fallible;
+-use script_bindings::reflector::DomObject;
+ use script_bindings::settings_stack::run_a_callback;
+ use script_bindings::trace::CustomTraceable;
+ use serde_json::{Map as JsonMap, Value as JsonValue};
+@@ -290,10 +289,7 @@ impl ModuleTree {
+         line_number: u32,
+         introduction_type: Option<&'static CStr>,
+     ) -> Self {
+-        let mut realm = AutoRealm::new(
+-            cx,
+-            NonNull::new(global.reflector().get_jsobject().get()).unwrap(),
+-        );
++        let mut realm = enter_auto_realm(cx, global);
+         let cx = &mut *realm;
+ 
+         let owner = Trusted::new(global);
+@@ -375,10 +371,7 @@ impl ModuleTree {
+         url: &ServoUrl,
+         introduction_type: Option<&'static CStr>,
+     ) -> Self {
+-        let mut realm = AutoRealm::new(
+-            cx,
+-            NonNull::new(global.reflector().get_jsobject().get()).unwrap(),
+-        );
++        let mut realm = enter_auto_realm(cx, global);
+         let cx = &mut *realm;
+ 
+         // Step 1. Let script be a new module script that this algorithm will subsequently initialize.
+@@ -442,10 +435,7 @@ impl ModuleTree {
+         module_record: HandleObject,
+         mut eval_result: MutableHandleValue,
+     ) -> Result<(), RethrowError> {
+-        let mut realm = AutoRealm::new(
+-            cx,
+-            NonNull::new(global.reflector().get_jsobject().get()).unwrap(),
+-        );
++        let mut realm = enter_auto_realm(cx, global);
+         let cx = &mut *realm;
+ 
+         unsafe {
+@@ -1412,10 +1402,7 @@ fn fetch_the_descendants_and_link_module_script(
+     // Step 6. Upon fulfillment of loadingPromise, run the following steps:
+     let loading_promise_fulfillment = ModuleHandler::new_boxed(Box::new(
+         task!(fulfilled_steps: |cx, global_scope: DomRoot<GlobalScope>| {
+-            let mut realm = AutoRealm::new(
+-                cx,
+-                NonNull::new(global_scope.reflector().get_jsobject().get()).unwrap(),
+-            );
++            let mut realm = enter_auto_realm(cx, &*global_scope);
+             let cx = &mut *realm;
+ 
+             let handle = fulfilled_module.get_record().map(|module| module.handle()).unwrap();
