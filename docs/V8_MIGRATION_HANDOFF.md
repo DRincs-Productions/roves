@@ -11,14 +11,15 @@ criteri finali sono in [`V8_MIGRATION.md`](./V8_MIGRATION.md).
 
 **CP38 implementato e pushato**, commit `b8f0acd3d3d`; wiki `roves-wiki` aggiornata e pushata al commit `ca2ec3b`. `components/script_bindings/root.rs` usa `NativeObjectId` per equality/hash di `Dom<T>` e `DomRoot<T>`. Test locali: test nuovo root identity/hash, reflector 2/2, `servo-dom-struct` 3/3, compile-only `servo-script-bindings`, rustfmt e `git diff --check` verdi. Patch 0102 reverse-checka e il validator CI ha applicato la serie pristine con successo. Build wiki Next.js: 82 pagine generate.
 
-**CI CP38 — ancora in corso per Servo, nessun retry avviato:**
+**CI CP38:** V8 `37231672237` 6/6, Android `37231672206`, iOS `37231672276` verdi. Servo
+`37231672272` 12/13: l'unico fallimento (Windows portable, exit 35) era un flake TLS del runner
+(`CRYPT_E_REVOCATION_OFFLINE`, letto dal log con il token read-only fornito il 2026-10-05). Fix:
+tutti i `curl` di `test.yml` ora usano `--retry-all-errors` (vedi `CUSTOMIZATIONS.md` del
+2026-10-05); il push di quel fix riverifica l'intera matrice Servo.
 
-- V8 `37231672237`: verde, 6/6.
-- Android `37231672206`: verde, 3/3.
-- iOS `37231672276`: verde, 3/3.
-- Servo `37231672272`: 8 job verdi, 4 ancora in corso e 1 fallito. La failure è `build-and-publish (windows-latest, windows, portable)`, step `download + patch Servo source`, exit code 35. Il validator `validate-servo-patches` è verde; le quattro build ancora in corso sono Windows MSI, macOS DMG, Linux portable e Linux deb. Stato consultato alle 2026-10-04 20:35 UTC; verificare di nuovo prima di agire.
-
-**Ripresa:** attendere il completamento di Servo 37231672272. Se le altre build finiscono verdi, diagnosticare e ritentare la failure Windows portable (il run espone solo l'annotazione generica senza log testuale). Il PAT fornito in precedenza ha restituito 401 all'ultima richiesta API: non riutilizzarlo; se i log privati diventano indispensabili, chiedere un token read-only nuovo. Poi aggiornare qui e nei documenti di piano/customizzazioni gli esiti definitivi, correggere e rilanciare CI finché Servo è verde. Produzione resta SpiderMonkey e il lavoro continua dopo questo checkpoint.
+**Ripresa:** confermare verde il run Servo del commit col fix curl, poi proseguire con il
+prossimo passo tecnico sotto ("Prossimo lavoro"). Il toolchain locale Windows è completo: usarlo
+per verificare ogni modifica prima della CI.
 
 ## Avvio rapido
 

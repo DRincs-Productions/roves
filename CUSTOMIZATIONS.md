@@ -11,16 +11,29 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
-## 2026-10-04 - V8 migration Phase 3: DOM root identity uses stable native IDs (CP38 in progress)
+## 2026-10-05 - CI: retry all curl errors on source/tool downloads
+
+**Roves-only:** `.github/workflows/test.yml`.
+
+Every `curl -fsSL` download in `test.yml` now uses `--retry 5 --retry-delay 5
+--retry-all-errors`. CP38's Servo run 37231672272 had 12/13 jobs green; Windows portable failed
+in "download + patch Servo source" with curl exit 35 (`schannel: CRYPT_E_REVOCATION_OFFLINE` —
+the certificate revocation server was unreachable). Plain `--retry` does not treat exit 35 as
+transient, hence `--retry-all-errors`. Infrastructure-only; no build flag, default or bundle
+convention changed, so `roves-action` (not checked out locally) needs no mirror update.
+
+## 2026-10-04 - V8 migration Phase 3: DOM root identity uses stable native IDs (CP38 complete)
 
 **Servo file:** `components/script_bindings/root.rs`.
-**Patch:** pending as `0102-roves-v8-dom-root-native-identity.patch`.
+**Patch:** `0102-roves-v8-dom-root-native-identity.patch` after 0101.
 
 Change `Dom<T>`/`DomRoot<T>` equality and hashing to use `NativeObjectId` instead of native
 addresses. This extends the engine-neutral identity contract into root/container operations and
 aligns hash keys with generated DOM equality. Local `servo-script-bindings` test compilation,
-reflector tests (2/2), macro tests (3/3), rustfmt and diff checks pass. Full patch-series
-validation and cross-platform CI remain pending.
+reflector tests (2/2), macro tests (3/3), rustfmt and diff checks pass; patch-series validation
+passed in CI. CI: V8 37231672237 (6/6), Android 37231672206, iOS 37231672276; Servo 37231672272
+12/13 jobs green, the one failure being the Windows download flake fixed in the entry above and
+re-verified on the following push.
 
 ## 2026-10-04 - V8 migration Phase 3: reflector equality uses engine-neutral identity (CP36 complete)
 

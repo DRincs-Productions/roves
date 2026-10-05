@@ -51,7 +51,7 @@ jobs:
       - name: apply local patches to pristine Servo
         shell: bash
         run: |
-          curl -fsSL -o servo-src.zip "https://github.com/servo/servo/archive/refs/tags/v${SERVO_TAG}.zip"
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o servo-src.zip "https://github.com/servo/servo/archive/refs/tags/v${SERVO_TAG}.zip"
           unzip -q servo-src.zip -d servo-src-tmp
           mv "servo-src-tmp/servo-${SERVO_TAG}" servo-src
           shopt -s nullglob
@@ -182,7 +182,7 @@ jobs:
       - name: prefetch pinned rust toolchain
         shell: bash
         run: |
-          curl -fsSL -o /tmp/rust-toolchain.toml "https://raw.githubusercontent.com/servo/servo/v${SERVO_TAG}/rust-toolchain.toml"
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o /tmp/rust-toolchain.toml "https://raw.githubusercontent.com/servo/servo/v${SERVO_TAG}/rust-toolchain.toml"
           mkdir -p /tmp/toolchain-probe && cp /tmp/rust-toolchain.toml /tmp/toolchain-probe/
           cd /tmp/toolchain-probe && rustup show
 
@@ -194,7 +194,10 @@ jobs:
       - name: download + patch Servo source
         shell: bash
         run: |
-          curl -fsSL -o servo-src.zip "https://github.com/servo/servo/archive/refs/tags/v${SERVO_TAG}.zip"
+          # --retry-all-errors: Windows runners' schannel curl intermittently fails with exit 35
+          # (CRYPT_E_REVOCATION_OFFLINE, the certificate revocation server unreachable), which
+          # plain --retry does not treat as transient. Seen on run 37231672272.
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o servo-src.zip "https://github.com/servo/servo/archive/refs/tags/v${SERVO_TAG}.zip"
           python3 -c "import zipfile; zipfile.ZipFile('servo-src.zip').extractall('servo-src-tmp')"
           mv "servo-src-tmp/servo-${SERVO_TAG}" servo-src
           rm -rf servo-src-tmp servo-src.zip
@@ -1172,7 +1175,7 @@ jobs:
       - name: prefetch pinned rust toolchain
         shell: bash
         run: |
-          curl -fsSL -o /tmp/rust-toolchain.toml "https://raw.githubusercontent.com/servo/servo/v${SERVO_TAG}/rust-toolchain.toml"
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o /tmp/rust-toolchain.toml "https://raw.githubusercontent.com/servo/servo/v${SERVO_TAG}/rust-toolchain.toml"
           mkdir -p /tmp/toolchain-probe && cp /tmp/rust-toolchain.toml /tmp/toolchain-probe/
           cd /tmp/toolchain-probe && rustup show
 
@@ -1183,7 +1186,7 @@ jobs:
       - name: download + patch Servo source
         shell: bash
         run: |
-          curl -fsSL -o servo-src.zip "https://github.com/servo/servo/archive/refs/tags/v${SERVO_TAG}.zip"
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o servo-src.zip "https://github.com/servo/servo/archive/refs/tags/v${SERVO_TAG}.zip"
           python3 -c "import zipfile; zipfile.ZipFile('servo-src.zip').extractall('servo-src-tmp')"
           mv "servo-src-tmp/servo-${SERVO_TAG}" servo-src
           rm -rf servo-src-tmp servo-src.zip
@@ -1259,13 +1262,13 @@ jobs:
       - name: generate steam_settings fixtures and swap in Goldberg/GSE
         shell: bash
         run: |
-          URL=$(curl -fsSL https://api.github.com/repos/Detanup01/gbe_fork/releases/latest \
+          URL=$(curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors https://api.github.com/repos/Detanup01/gbe_fork/releases/latest \
             | jq -r '.assets[] | select(.name=="emu-linux-release.tar.bz2") | .browser_download_url')
           if [ -z "$URL" ]; then
             echo "::error::could not resolve emu-linux-release.tar.bz2 from Detanup01/gbe_fork's latest release"
             exit 1
           fi
-          curl -fsSL -o gse.tar.bz2 "$URL"
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o gse.tar.bz2 "$URL"
           mkdir -p gse
           tar xjf gse.tar.bz2 -C gse
 
