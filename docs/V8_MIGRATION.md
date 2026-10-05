@@ -7,9 +7,17 @@ equality to use that engine-neutral contract. Local checks pass (reflector 2/2, 
 rustfmt, and patch 0101 reverse-check); CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639. Production still uses SpiderMonkey.
 
-CP38 is the active audit step: classify `Reflector::get_jsobject` callers by engine-neutral
-identity/prototype use versus rooting or SpiderMonkey JSAPI operations, then select a small
-buildable first migration. Do not mechanically replace handles or expose V8 types in DOM APIs.
+CP38 (complete) moved `Dom<T>`/`DomRoot<T>` equality and hashing onto `NativeObjectId`.
+
+CP39 is the first migration from the `Reflector::get_jsobject` caller audit (56 call sites, 29
+files). The callers fall into: (a) identity encoded as an address — layout `OpaqueNode`; (b)
+values handed to JS (`ObjectValue(...)` arguments, scope chains, `safe_to_jsval`); (c) the global
+object for realms, modules and interface definition; (d) direct JSAPI calls (Promise internals,
+`JS_DefineDebuggerObject`, structured clone, WebGL extension pointers). CP39 removes category
+(a): `OpaqueNode`/`UntrustedNodeAddress` now carry the native `Node` address, matching
+`TrustedNodeAddress`, so layout↔script node identity no longer touches `JSObject` or
+`private_from_object`. Categories (b)–(d) need an engine-owned wrapper/value contract and stay
+SpiderMonkey for now. Do not mechanically replace handles or expose V8 types in DOM APIs.
 
 Historical CP31 note: the opt-in WebIDL pilot generates enum operation arguments, applies WebIDL string
 conversion and rejects values outside the declared enum set before invoking native callbacks.

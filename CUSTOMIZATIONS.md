@@ -11,6 +11,25 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-05 - V8 migration Phase 3: layout node identity uses native Node addresses (CP39)
+
+**Servo files:** `components/script/dom/node/node.rs`, `components/script/dom/node/layout_dom.rs`,
+`components/script/dom/bindings/root.rs`, `components/script/layout_dom/servo_dangerous_style_element.rs`.
+**Patch:** `0103-roves-v8-native-opaque-node.patch` after 0102.
+
+First migration chosen from the audit of `Reflector::get_jsobject` callers (56 call sites in 29
+files). `OpaqueNode`/`UntrustedNodeAddress` — the node identity layout and paint hand back to
+script for hit testing, `elementFromPoint`, animations and image animation — were the address of
+the node's SpiderMonkey `JSObject`, decoded by `Node::from_untrusted_node_address` through
+`private_from_object`. That cannot exist under V8. They are now the address of the native `Node`
+value, the same representation `TrustedNodeAddress` already used: engine-neutral, valid exactly
+as long as the JS wrapper (the finalizer frees both together), and never moved even by a
+compacting GC. Decoding is a plain pointer cast. `combine_id_with_fragment_type` needs the two low
+bits free; a compile-time assertion checks `Node`'s alignment. `LayoutDom::get_jsobject` became
+unused and is removed, along with three `JSObject`/`conversions` imports. `servo-script` checks
+cleanly locally; patch 0103 reverse-checks. End-to-end coverage is the CI Linux smoke test's
+synthetic mouse input reaching the page, which goes through paint hit testing and this decoder.
+
 ## 2026-10-05 - CI: retry all curl errors on source/tool downloads
 
 **Roves-only:** `.github/workflows/test.yml`.

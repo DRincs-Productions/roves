@@ -12,7 +12,6 @@ use std::sync::atomic::Ordering;
 use embedder_traits::UntrustedNodeAddress;
 use euclid::default::Size2D;
 use html5ever::{LocalName, Namespace, local_name, ns};
-use js::jsapi::JSObject;
 use layout_api::{DangerousStyleElement, LayoutDamage, LayoutNode};
 use script_bindings::root::DomRoot;
 use selectors::Element as _;
@@ -480,7 +479,7 @@ impl<'dom> style::dom::TElement for ServoDangerousStyleElement<'dom> {
         // As long as this "unopaqued" element does not escape this function, we're not leaking
         // potentially-mutable elements from opaque elements.
         let host = unsafe {
-            let ptr = opaque_host.as_const_ptr::<JSObject>();
+            let ptr = opaque_host.as_const_ptr::<Node>();
             let untrusted_address = UntrustedNodeAddress::from_id(ptr as usize);
             let node = Node::from_untrusted_node_address(untrusted_address);
             let trusted_address = node.to_trusted_node_address();

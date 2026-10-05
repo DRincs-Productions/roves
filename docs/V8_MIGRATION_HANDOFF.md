@@ -17,9 +17,15 @@ criteri finali sono in [`V8_MIGRATION.md`](./V8_MIGRATION.md).
 tutti i `curl` di `test.yml` ora usano `--retry-all-errors` (vedi `CUSTOMIZATIONS.md` del
 2026-10-05); il push di quel fix riverifica l'intera matrice Servo.
 
-**Ripresa:** confermare verde il run Servo del commit col fix curl, poi proseguire con il
-prossimo passo tecnico sotto ("Prossimo lavoro"). Il toolchain locale Windows è completo: usarlo
-per verificare ogni modifica prima della CI.
+**CP39 (2026-10-05):** prima migrazione dall'audit dei chiamanti di `Reflector::get_jsobject`
+(categorie in `V8_MIGRATION.md`). `OpaqueNode`/`UntrustedNodeAddress` ora usano l'indirizzo del
+`Node` nativo invece del `JSObject`; `from_untrusted_node_address` non usa più
+`private_from_object`. Patch 0103, `cargo check -p servo-script` locale pulito. CI in verifica.
+
+**Ripresa:** confermare verde la CI di CP39 (e del fix curl). Poi prossima categoria dell'audit:
+(c) l'oggetto globale per realm/moduli/definizione interfacce, oppure (b) i valori passati a JS —
+entrambe richiedono prima un contratto engine-owned per wrapper/valori. Il toolchain locale
+Windows è completo: verificare ogni modifica in locale prima della CI.
 
 ## Avvio rapido
 

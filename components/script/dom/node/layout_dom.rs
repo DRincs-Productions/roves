@@ -345,9 +345,9 @@ impl<'dom> LayoutDom<'dom, Node> {
             .and_then(|iframe_element| iframe_element.pipeline_id())
     }
 
-    #[expect(unsafe_code)]
+    /// Same native-address identity as [`Node::to_opaque`]; see that method.
     pub(crate) fn opaque(self) -> OpaqueNode {
-        unsafe { OpaqueNode(self.get_jsobject() as usize) }
+        OpaqueNode(self.unsafe_get() as *const Node as usize)
     }
 
     #[expect(unsafe_code)]

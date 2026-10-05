@@ -23,7 +23,6 @@ use euclid::{Point2D, Rect};
 use html5ever::serialize::HtmlSerializer;
 use html5ever::{Namespace, Prefix, QualName, ns, serialize as html_serialize};
 use js::context::{JSContext, NoGC};
-use js::jsapi::JSObject;
 use js::rust::HandleObject;
 use keyboard_types::Modifiers;
 use layout_api::{
@@ -74,7 +73,7 @@ use crate::dom::bindings::codegen::Bindings::ShadowRootBinding::{
 };
 use crate::dom::bindings::codegen::Bindings::WindowBinding::WindowMethods;
 use crate::dom::bindings::codegen::UnionTypes::NodeOrString;
-use crate::dom::bindings::conversions::{self, DerivedFrom};
+use crate::dom::bindings::conversions::DerivedFrom;
 use crate::dom::bindings::domname::namespace_from_domstring;
 use crate::dom::bindings::error::{Error, ErrorResult, Fallible};
 use crate::dom::bindings::inheritance::{
@@ -578,8 +577,14 @@ impl Node {
         Self::complete_move_subtree(cx, child)
     }
 
+    /// The layout-facing identity of this node: the address of the native `Node`, the same
+    /// representation [`Node::to_trusted_node_address`] already uses. It is engine-neutral (no JS
+    /// wrapper involved), stable for the node's lifetime, and decoded back by
+    /// [`Node::from_untrusted_node_address`]. `combine_id_with_fragment_type` stores fragment
+    /// types in the two low bits, which the alignment assertion below guarantees are zero.
     pub(crate) fn to_opaque(&self) -> OpaqueNode {
-        OpaqueNode(self.reflector().get_jsobject().get() as usize)
+        const _: () = assert!(std::mem::align_of::<Node>() >= 4);
+        OpaqueNode(self as *const Node as usize)
     }
 
     pub(crate) fn as_custom_element(&self) -> Option<DomRoot<Element>> {
@@ -3295,20 +3300,19 @@ impl Node {
     ///
     /// # Safety
     ///
-    /// Callers should ensure they pass an UntrustedNodeAddress that points to a valid [`JSObject`]
-    /// in memory that represents a [`Node`].
+    /// Callers should ensure they pass an UntrustedNodeAddress produced from a live node's
+    /// [`Node::to_opaque`] (the native `Node` address, not a JS wrapper).
     #[expect(unsafe_code)]
     pub(crate) unsafe fn from_untrusted_node_address(
         candidate: UntrustedNodeAddress,
     ) -> &'static Self {
         // https://github.com/servo/servo/issues/6383
-        let candidate = candidate.0 as usize;
-        let object = candidate as *mut JSObject;
-        if object.is_null() {
+        let node = candidate.0 as *const Self;
+        if node.is_null() {
             panic!("Attempted to create a `Node` from an invalid pointer!")
         }
 
-        unsafe { &*(conversions::private_from_object(object) as *const Self) }
+        unsafe { &*node }
     }
 
     pub(crate) fn html_serialize(

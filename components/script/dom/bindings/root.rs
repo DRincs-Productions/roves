@@ -29,7 +29,7 @@ use std::default::Default;
 use std::hash::{Hash, Hasher};
 use std::mem;
 
-use js::jsapi::{Heap, JSObject, JSTracer, Value};
+use js::jsapi::{Heap, JSTracer, Value};
 use js::rust::HandleValue;
 use layout_api::TrustedNodeAddress;
 use malloc_size_of::{MallocSizeOf, MallocSizeOfOps};
@@ -125,17 +125,6 @@ where
     /// performing arbitrary (potentially mutating) operations on the value. Use with caution!
     pub(crate) unsafe fn as_ref(self) -> &'dom T {
         self.value
-    }
-}
-
-impl<T> LayoutDom<'_, T>
-where
-    T: DomObject,
-{
-    /// Get the reflector.
-    pub(crate) unsafe fn get_jsobject(&self) -> *mut JSObject {
-        assert_in_layout();
-        self.value.reflector().get_jsobject().get()
     }
 }
 
