@@ -14,7 +14,7 @@ use pixels::{EncodedImageType, Snapshot};
 use rustc_hash::FxHashMap;
 use script_bindings::cell::{DomRefCell, Ref};
 use script_bindings::inheritance::Castable;
-use script_bindings::reflector::{DomObject, reflect_dom_object_with_proto};
+use script_bindings::reflector::reflect_dom_object_with_proto;
 use script_bindings::weakref::WeakRef;
 use servo_base::id::{OffscreenCanvasId, OffscreenCanvasIndex};
 use servo_canvas_traits::webgl::{GLContextAttributes, WebGLVersion};
@@ -242,8 +242,7 @@ impl OffscreenCanvas {
         cx: &mut js::context::JSContext,
         options: HandleValue,
     ) -> Option<DomRoot<WebGL2RenderingContext>> {
-        if !WebGL2RenderingContext::is_webgl2_enabled(cx, self.global().reflector().get_jsobject())
-        {
+        if !WebGL2RenderingContext::is_webgl2_enabled_for_global(&self.global()) {
             return None;
         }
         if let Some(ctx) = self.context() {

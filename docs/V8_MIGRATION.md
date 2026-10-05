@@ -23,8 +23,10 @@ at cutover; `get_jsobject()` call sites go from 56 to 45. CP41 routes the eight 
 `script_bindings::reflector::dom_object_value` (37 open-coded sites remain). Open question: that
 helper, like the code it replaces, does not cross-compartment-wrap, whereas `ToJSValConvertible
 for Reflector` does (`maybe_wrap_value`); decide per site at cutover whether V8's context model
-needs the wrapping variant. The remaining (b) sites (event-handler scope chains,
-`safe_to_jsval`), the rest of (c) and (d) need an engine-owned wrapper/value contract and stay
+needs the wrapping variant. CP42 removes three more: WebGL2 gating on canvases takes the native
+`GlobalScope` and `Window.event` converts through the `Reflector` impl (34 remain). The
+event-handler scope chain in `eventtarget.rs` is really engine compile API (environment chain
+for `CompileFunction`) and moves with category (d). The rest of (c) and (d) need an engine-owned wrapper/value contract and stay
 SpiderMonkey for now. Do not mechanically
 replace handles or expose V8 types in DOM APIs.
 

@@ -1,0 +1,81 @@
+diff --git a/components/script/dom/canvas/offscreencanvas.rs b/components/script/dom/canvas/offscreencanvas.rs
+index 0968fe16736..7d1f5745471 100644
+--- a/components/script/dom/canvas/offscreencanvas.rs
++++ b/components/script/dom/canvas/offscreencanvas.rs
+@@ -14,7 +14,7 @@ use pixels::{EncodedImageType, Snapshot};
+ use rustc_hash::FxHashMap;
+ use script_bindings::cell::{DomRefCell, Ref};
+ use script_bindings::inheritance::Castable;
+-use script_bindings::reflector::{DomObject, reflect_dom_object_with_proto};
++use script_bindings::reflector::reflect_dom_object_with_proto;
+ use script_bindings::weakref::WeakRef;
+ use servo_base::id::{OffscreenCanvasId, OffscreenCanvasIndex};
+ use servo_canvas_traits::webgl::{GLContextAttributes, WebGLVersion};
+@@ -242,8 +242,7 @@ impl OffscreenCanvas {
+         cx: &mut js::context::JSContext,
+         options: HandleValue,
+     ) -> Option<DomRoot<WebGL2RenderingContext>> {
+-        if !WebGL2RenderingContext::is_webgl2_enabled(cx, self.global().reflector().get_jsobject())
+-        {
++        if !WebGL2RenderingContext::is_webgl2_enabled_for_global(&self.global()) {
+             return None;
+         }
+         if let Some(ctx) = self.context() {
+diff --git a/components/script/dom/html/htmlcanvaselement.rs b/components/script/dom/html/htmlcanvaselement.rs
+index aff11be5924..778579c9275 100644
+--- a/components/script/dom/html/htmlcanvaselement.rs
++++ b/components/script/dom/html/htmlcanvaselement.rs
+@@ -14,7 +14,6 @@ use layout_api::HTMLCanvasData;
+ use pixels::{EncodedImageType, Snapshot};
+ use rustc_hash::FxHashMap;
+ use script_bindings::cell::{DomRefCell, Ref};
+-use script_bindings::reflector::DomObject;
+ use script_bindings::weakref::WeakRef;
+ use servo_base::Epoch;
+ use servo_canvas_traits::webgl::{GLContextAttributes, WebGLVersion};
+@@ -284,8 +283,7 @@ impl HTMLCanvasElement {
+         cx: &mut js::context::JSContext,
+         options: HandleValue,
+     ) -> Option<DomRoot<WebGL2RenderingContext>> {
+-        if !WebGL2RenderingContext::is_webgl2_enabled(cx, self.global().reflector().get_jsobject())
+-        {
++        if !WebGL2RenderingContext::is_webgl2_enabled_for_global(&self.global()) {
+             return None;
+         }
+         if let Some(ctx) = self.context() {
+diff --git a/components/script/dom/webgl/webgl2renderingcontext.rs b/components/script/dom/webgl/webgl2renderingcontext.rs
+index 1b65e91f16c..42042d7b981 100644
+--- a/components/script/dom/webgl/webgl2renderingcontext.rs
++++ b/components/script/dom/webgl/webgl2renderingcontext.rs
+@@ -198,11 +198,17 @@ impl WebGL2RenderingContext {
+         _cx: &mut js::context::JSContext,
+         global: HandleObject,
+     ) -> bool {
++        let global = unsafe { GlobalScope::from_object(global.get()) };
++        Self::is_webgl2_enabled_for_global(&global)
++    }
++
++    /// Same check as `is_webgl2_enabled`, for callers that already hold the native global and
++    /// so need not round-trip through its JS object.
++    pub(crate) fn is_webgl2_enabled_for_global(global: &GlobalScope) -> bool {
+         if pref!(dom_webgl2_enabled) {
+             return true;
+         }
+ 
+-        let global = unsafe { GlobalScope::from_object(global.get()) };
+         let origin = global.origin();
+         let host = origin.host();
+         WEBGL2_ORIGINS
+diff --git a/components/script/dom/window/window.rs b/components/script/dom/window/window.rs
+index 0cdc696e66a..20457345f16 100644
+--- a/components/script/dom/window/window.rs
++++ b/components/script/dom/window/window.rs
+@@ -2290,7 +2290,7 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
+     /// <https://dom.spec.whatwg.org/#dom-window-event>
+     fn Event(&self, cx: &mut JSContext, rval: MutableHandleValue) {
+         if let Some(ref event) = *self.current_event.borrow() {
+-            event.reflector().get_jsobject().safe_to_jsval(cx, rval);
++            event.reflector().safe_to_jsval(cx, rval);
+         }
+     }
+ 

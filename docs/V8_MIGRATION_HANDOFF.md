@@ -31,10 +31,14 @@ nuovo `script_bindings::reflector::dom_object_value` (patch 0105); 37 chiamanti 
 `get_jsobject()` restano. Il helper non fa wrapping cross-compartment (come il codice sostituito):
 questione aperta annotata in `V8_MIGRATION.md`. `cargo check -p servo-script` locale pulito.
 
-**Ripresa:** confermare verde la CI cumulativa di CP39–CP41. Poi: resto della categoria (b)
-(scope chain degli event handler in `eventtarget.rs`, `safe_to_jsval` in `window.rs`) e resto
-di (c)/(d). Il toolchain locale Windows è completo: verificare ogni modifica in locale prima
-della CI.
+**CP42 (2026-10-05):** gating WebGL2 dei canvas via `is_webgl2_enabled_for_global(&GlobalScope)`
+e `Window.event` via `ToJSValConvertible for Reflector` (patch 0106); 34 chiamanti aperti.
+
+**Ripresa:** confermare verde la CI cumulativa di CP39–CP42. La scope chain degli event handler
+(`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
+(global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,
+estensioni WebGL, compile). Il toolchain locale Windows è completo: verificare ogni modifica in
+locale prima della CI.
 
 ## Avvio rapido
 

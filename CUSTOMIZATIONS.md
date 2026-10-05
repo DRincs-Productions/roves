@@ -11,6 +11,22 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-05 - V8 migration Phase 3: fewer raw wrapper reads in WebGL2 gating and Window.event (CP42)
+
+**Servo files:** `components/script/dom/webgl/webgl2renderingcontext.rs`,
+`components/script/dom/canvas/offscreencanvas.rs`, `components/script/dom/html/htmlcanvaselement.rs`,
+`components/script/dom/window/window.rs`.
+**Patch:** `0106-roves-v8-native-global-checks.patch` after 0105.
+
+Two more sites from the `Reflector::get_jsobject` audit. The canvas and OffscreenCanvas WebGL2
+context paths read the global's JS object only so `is_webgl2_enabled` could turn it straight back
+into the `GlobalScope`; the check's logic now lives in `is_webgl2_enabled_for_global(&GlobalScope)`
+and the canvases call that directly. The `HandleObject` form remains for the generated binding's
+`Func=` exposure check and simply delegates. `Window.event` now converts through `ToJSValConvertible
+for Reflector` instead of the raw `HandleObject` impl; both set the object value and apply the same
+cross-compartment wrapping, so behaviour is unchanged. Open-coded `get_jsobject()` sites: 37 → 34.
+`servo-script` checks cleanly locally with only pre-existing warnings; patch 0106 reverse-checks.
+
 ## 2026-10-05 - V8 migration Phase 3: DOM object → JS value goes through one helper (CP41)
 
 **Servo files:** `components/script_bindings/reflector.rs`,

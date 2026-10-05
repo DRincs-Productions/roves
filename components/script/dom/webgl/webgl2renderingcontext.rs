@@ -198,11 +198,17 @@ impl WebGL2RenderingContext {
         _cx: &mut js::context::JSContext,
         global: HandleObject,
     ) -> bool {
+        let global = unsafe { GlobalScope::from_object(global.get()) };
+        Self::is_webgl2_enabled_for_global(&global)
+    }
+
+    /// Same check as `is_webgl2_enabled`, for callers that already hold the native global and
+    /// so need not round-trip through its JS object.
+    pub(crate) fn is_webgl2_enabled_for_global(global: &GlobalScope) -> bool {
         if pref!(dom_webgl2_enabled) {
             return true;
         }
 
-        let global = unsafe { GlobalScope::from_object(global.get()) };
         let origin = global.origin();
         let host = origin.host();
         WEBGL2_ORIGINS
