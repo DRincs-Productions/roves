@@ -24,7 +24,7 @@ use net_traits::image_cache::ImageCache;
 use pixels::PixelFormat;
 use script_bindings::cell::DomRefCell;
 use script_bindings::interfaces::HasOrigin;
-use script_bindings::reflector::DomObject;
+use script_bindings::reflector::{DomObject, dom_object_value};
 use script_traits::{DrawAPaintImageResult, PaintWorkletError, Painter};
 use servo_base::id::PipelineId;
 use servo_config::pref;
@@ -328,7 +328,7 @@ impl PaintWorkletGlobalScope {
         rooted_vec!(let mut arguments_values);
         for argument in arguments {
             let style_value = CSSStyleValue::new(cx, self.upcast(), argument.clone());
-            arguments_values.push(ObjectValue(style_value.reflector().get_jsobject().get()));
+            arguments_values.push(dom_object_value(&*style_value));
         }
         let arguments_value_array = HandleValueArray::from(&arguments_values);
         rooted!(&in(cx) let argument_object = unsafe { NewArrayObject(cx, &arguments_value_array) });
@@ -337,8 +337,8 @@ impl PaintWorkletGlobalScope {
         callback_args.push(ObjectValue(
             rendering_context.reflector().get_jsobject().get(),
         ));
-        callback_args.push(ObjectValue(paint_size.reflector().get_jsobject().get()));
-        callback_args.push(ObjectValue(properties.reflector().get_jsobject().get()));
+        callback_args.push(dom_object_value(&*paint_size));
+        callback_args.push(dom_object_value(&*properties));
         callback_args.push(ObjectValue(argument_object.get()));
         let args = HandleValueArray::from(&callback_args);
 

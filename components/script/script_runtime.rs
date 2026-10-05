@@ -40,7 +40,7 @@ use js::jsapi::{
     RuntimeCode, ScriptEnvironmentPreparer_Closure, SetProcessBuildIdOp,
     StreamConsumer as JSStreamConsumer,
 };
-use js::jsval::{JSVal, ObjectValue, UndefinedValue};
+use js::jsval::{JSVal, UndefinedValue};
 use js::panic::wrap_panic;
 use js::realm::CurrentRealm;
 pub(crate) use js::rust::ThreadSafeJSContext;
@@ -61,7 +61,7 @@ use malloc_size_of_derive::MallocSizeOf;
 use profile_traits::mem::{Report, ReportKind};
 use profile_traits::path;
 use profile_traits::time::ProfilerCategory;
-use script_bindings::reflector::DomObject;
+use script_bindings::reflector::{DomObject, dom_object_value};
 use script_bindings::script_runtime::{mark_runtime_dead, runtime_is_alive, temp_cx};
 use script_bindings::settings_stack::run_a_script;
 use servo_config::opts::{self, DiagnosticsLoggingOption};
@@ -304,7 +304,7 @@ unsafe extern "C" fn get_host_defined_data(
             JS_SetReservedSlot(
                 *result,
                 INCUMBENT_SETTING_SLOT,
-                &ObjectValue(*incumbent_global.reflector().get_jsobject()),
+                &dom_object_value(&*incumbent_global),
             )
         };
 

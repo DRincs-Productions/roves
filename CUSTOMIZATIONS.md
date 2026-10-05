@@ -11,6 +11,25 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-05 - V8 migration Phase 3: DOM object → JS value goes through one helper (CP41)
+
+**Servo files:** `components/script_bindings/reflector.rs`,
+`components/script/dom/customelementregistry.rs`, `components/script/dom/indexeddb/idbrequest.rs`,
+`components/script/dom/worklet/paintworkletglobalscope.rs`, `components/script/script_runtime.rs`.
+**Patch:** `0105-roves-v8-dom-object-value.patch` after 0104.
+
+Category (b) of the `Reflector::get_jsobject` audit: eight sites built a JS value from a DOM
+object's wrapper by hand (`ObjectValue(obj.reflector().get_jsobject().get())`) — custom element
+`adoptedCallback` documents and form-associated `form`, the IndexedDB cursor result, the three
+paint worklet arguments, and the incumbent global handed to the host-defined data. They now call
+the new `script_bindings::reflector::dom_object_value(&obj)`, so producing a JS value from a DOM
+object has one implementation to replace at the engine cutover. Behaviour is identical: the
+helper deliberately does **not** apply cross-compartment wrapping, unlike `ToJSValConvertible for
+Reflector` (which calls `maybe_wrap_value`). Whether any of these sites should wrap is an open
+question recorded in `docs/V8_MIGRATION.md`, not changed here. Now-unused `ObjectValue`/`DomObject`
+imports are removed. Open-coded `get_jsobject()` sites outside the helpers go from 45 to 37.
+`servo-script` checks cleanly locally with only pre-existing warnings; patch 0105 reverse-checks.
+
 ## 2026-10-05 - V8 migration Phase 3: realm entry goes through one helper (CP40)
 
 **Servo files:** `components/script/dom/websocket.rs`, `components/script/dom/window/window.rs`,

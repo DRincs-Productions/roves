@@ -26,11 +26,15 @@ tutti i `curl` di `test.yml` ora usano `--retry-all-errors` (vedi `CUSTOMIZATION
 `crate::realms::enter_auto_realm` (patch 0104); `get_jsobject()` scende da 56 a 45 chiamanti.
 `cargo check -p servo-script` locale pulito.
 
-**Ripresa:** confermare verde la CI cumulativa di CP39+CP40. Poi: categoria (b) — valori passati
-a JS (`ObjectValue(x.reflector().get_jsobject().get())`, scope chain, `safe_to_jsval`) — tramite
-un unico helper "riflettore → valore JS" analogo a `enter_auto_realm`, così il punto da
-sostituire al cutover resta unico. Il toolchain locale Windows è completo: verificare ogni
-modifica in locale prima della CI.
+**CP41 (2026-10-05):** gli 8 `ObjectValue(x.reflector().get_jsobject().get())` passano per il
+nuovo `script_bindings::reflector::dom_object_value` (patch 0105); 37 chiamanti aperti di
+`get_jsobject()` restano. Il helper non fa wrapping cross-compartment (come il codice sostituito):
+questione aperta annotata in `V8_MIGRATION.md`. `cargo check -p servo-script` locale pulito.
+
+**Ripresa:** confermare verde la CI cumulativa di CP39–CP41. Poi: resto della categoria (b)
+(scope chain degli event handler in `eventtarget.rs`, `safe_to_jsval` in `window.rs`) e resto
+di (c)/(d). Il toolchain locale Windows è completo: verificare ogni modifica in locale prima
+della CI.
 
 ## Avvio rapido
 

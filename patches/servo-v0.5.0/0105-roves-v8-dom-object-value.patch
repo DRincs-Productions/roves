@@ -1,0 +1,150 @@
+diff --git a/components/script/dom/customelementregistry.rs b/components/script/dom/customelementregistry.rs
+index c500c0da075..59612bd4f1e 100644
+--- a/components/script/dom/customelementregistry.rs
++++ b/components/script/dom/customelementregistry.rs
+@@ -21,7 +21,7 @@ use js::rust::wrappers2::{Construct1, JS_GetProperty, SameValue};
+ use js::rust::{HandleObject, MutableHandleValue};
+ use rustc_hash::FxBuildHasher;
+ use script_bindings::cell::DomRefCell;
+-use script_bindings::reflector::{DomObject, Reflector, reflect_dom_object_with_proto};
++use script_bindings::reflector::{Reflector, dom_object_value, reflect_dom_object_with_proto};
+ use script_bindings::settings_stack::{run_a_callback, run_a_script};
+ use style::attr::AttrValue;
+ 
+@@ -1346,8 +1346,8 @@ impl CustomElementReactionStack {
+             ),
+             CallbackReaction::Adopted(ref old_doc, ref new_doc) => {
+                 let args = vec![Heap::default(), Heap::default()];
+-                args[0].set(ObjectValue(old_doc.reflector().get_jsobject().get()));
+-                args[1].set(ObjectValue(new_doc.reflector().get_jsobject().get()));
++                args[0].set(dom_object_value(&**old_doc));
++                args[1].set(dom_object_value(&**new_doc));
+                 (definition.callbacks.adopted_callback.clone(), args)
+             },
+             CallbackReaction::AttributeChanged(local_name, old_val, val, namespace) => {
+@@ -1405,7 +1405,7 @@ impl CustomElementReactionStack {
+             CallbackReaction::FormAssociated(form) => {
+                 let args = vec![Heap::default()];
+                 if let Some(form) = form {
+-                    args[0].set(ObjectValue(form.reflector().get_jsobject().get()));
++                    args[0].set(dom_object_value(&*form));
+                 } else {
+                     args[0].set(NullValue());
+                 }
+diff --git a/components/script/dom/indexeddb/idbrequest.rs b/components/script/dom/indexeddb/idbrequest.rs
+index ffcabe3a48e..0f00226aa3c 100644
+--- a/components/script/dom/indexeddb/idbrequest.rs
++++ b/components/script/dom/indexeddb/idbrequest.rs
+@@ -11,7 +11,7 @@ use js::jsapi::Heap;
+ use js::jsval::{DoubleValue, JSVal, ObjectValue, UndefinedValue};
+ use js::rust::HandleValue;
+ use profile_traits::generic_callback::GenericCallback;
+-use script_bindings::reflector::{DomObject, reflect_dom_object_with_cx};
++use script_bindings::reflector::{DomObject, dom_object_value, reflect_dom_object_with_cx};
+ use serde::{Deserialize, Serialize};
+ use servo_base::generic_channel::GenericSend;
+ use storage_traits::indexeddb::{
+@@ -251,7 +251,7 @@ impl RequestListener {
+                             None => {
+                                 answer
+                                     .handle_mut()
+-                                    .set(ObjectValue(*cursor.reflector().get_jsobject()));
++                                    .set(dom_object_value(&*cursor));
+                             },
+                         }
+                     }
+diff --git a/components/script/dom/worklet/paintworkletglobalscope.rs b/components/script/dom/worklet/paintworkletglobalscope.rs
+index dda95aee492..0c0c1297a71 100644
+--- a/components/script/dom/worklet/paintworkletglobalscope.rs
++++ b/components/script/dom/worklet/paintworkletglobalscope.rs
+@@ -24,7 +24,7 @@ use net_traits::image_cache::ImageCache;
+ use pixels::PixelFormat;
+ use script_bindings::cell::DomRefCell;
+ use script_bindings::interfaces::HasOrigin;
+-use script_bindings::reflector::DomObject;
++use script_bindings::reflector::{DomObject, dom_object_value};
+ use script_traits::{DrawAPaintImageResult, PaintWorkletError, Painter};
+ use servo_base::id::PipelineId;
+ use servo_config::pref;
+@@ -328,7 +328,7 @@ impl PaintWorkletGlobalScope {
+         rooted_vec!(let mut arguments_values);
+         for argument in arguments {
+             let style_value = CSSStyleValue::new(cx, self.upcast(), argument.clone());
+-            arguments_values.push(ObjectValue(style_value.reflector().get_jsobject().get()));
++            arguments_values.push(dom_object_value(&*style_value));
+         }
+         let arguments_value_array = HandleValueArray::from(&arguments_values);
+         rooted!(&in(cx) let argument_object = unsafe { NewArrayObject(cx, &arguments_value_array) });
+@@ -337,8 +337,8 @@ impl PaintWorkletGlobalScope {
+         callback_args.push(ObjectValue(
+             rendering_context.reflector().get_jsobject().get(),
+         ));
+-        callback_args.push(ObjectValue(paint_size.reflector().get_jsobject().get()));
+-        callback_args.push(ObjectValue(properties.reflector().get_jsobject().get()));
++        callback_args.push(dom_object_value(&*paint_size));
++        callback_args.push(dom_object_value(&*properties));
+         callback_args.push(ObjectValue(argument_object.get()));
+         let args = HandleValueArray::from(&callback_args);
+ 
+diff --git a/components/script/script_runtime.rs b/components/script/script_runtime.rs
+index 7f315c7b91c..3aa005cfd14 100644
+--- a/components/script/script_runtime.rs
++++ b/components/script/script_runtime.rs
+@@ -40,7 +40,7 @@ use js::jsapi::{
+     RuntimeCode, ScriptEnvironmentPreparer_Closure, SetProcessBuildIdOp,
+     StreamConsumer as JSStreamConsumer,
+ };
+-use js::jsval::{JSVal, ObjectValue, UndefinedValue};
++use js::jsval::{JSVal, UndefinedValue};
+ use js::panic::wrap_panic;
+ use js::realm::CurrentRealm;
+ pub(crate) use js::rust::ThreadSafeJSContext;
+@@ -61,7 +61,7 @@ use malloc_size_of_derive::MallocSizeOf;
+ use profile_traits::mem::{Report, ReportKind};
+ use profile_traits::path;
+ use profile_traits::time::ProfilerCategory;
+-use script_bindings::reflector::DomObject;
++use script_bindings::reflector::{DomObject, dom_object_value};
+ use script_bindings::script_runtime::{mark_runtime_dead, runtime_is_alive, temp_cx};
+ use script_bindings::settings_stack::run_a_script;
+ use servo_config::opts::{self, DiagnosticsLoggingOption};
+@@ -304,7 +304,7 @@ unsafe extern "C" fn get_host_defined_data(
+             JS_SetReservedSlot(
+                 *result,
+                 INCUMBENT_SETTING_SLOT,
+-                &ObjectValue(*incumbent_global.reflector().get_jsobject()),
++                &dom_object_value(&*incumbent_global),
+             )
+         };
+ 
+diff --git a/components/script_bindings/reflector.rs b/components/script_bindings/reflector.rs
+index f17c113150a..60e167b4723 100644
+--- a/components/script_bindings/reflector.rs
++++ b/components/script_bindings/reflector.rs
+@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
+ 
+ use js::context::JSContext;
+ use js::jsapi::{AddAssociatedMemory, Heap, JSObject, MemoryUse, RemoveAssociatedMemory};
++use js::jsval::{JSVal, ObjectValue};
+ use js::rust::HandleObject;
+ use malloc_size_of_derive::MallocSizeOf;
+ 
+@@ -212,6 +213,18 @@ pub trait DomObject: js::gc::Traceable + 'static {
+     }
+ }
+ 
++/// The JS value of a DOM object's wrapper, for building callback argument lists and similar.
++///
++/// This is exactly the value the former open-coded `ObjectValue(obj.reflector().get_jsobject()
++/// .get())` call sites produced: it does **not** apply cross-compartment wrapping, unlike
++/// `ToJSValConvertible for Reflector`. Whether those callers should wrap is an open question
++/// recorded in `docs/V8_MIGRATION.md`; this helper only gives them one seam to replace at the
++/// engine cutover.
++#[inline]
++pub fn dom_object_value(object: &impl DomObject) -> JSVal {
++    ObjectValue(object.reflector().get_jsobject().get())
++}
++
+ impl DomObject for Reflector<()> {
+     type ReflectorType = ();
+ 

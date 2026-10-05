@@ -18,8 +18,14 @@ object for realms, modules and interface definition; (d) direct JSAPI calls (Pro
 `TrustedNodeAddress`, so layout↔script node identity no longer touches `JSObject` or
 `private_from_object`. CP40 routes the eight open-coded realm entries from a DOM object (part of
 category (c)) through the existing `enter_auto_realm` helper, leaving one implementation to swap
-at cutover; `get_jsobject()` call sites go from 56 to 45. The rest of (c) and categories (b)–(d)
-need an engine-owned wrapper/value contract and stay SpiderMonkey for now. Do not mechanically
+at cutover; `get_jsobject()` call sites go from 56 to 45. CP41 routes the eight open-coded
+`ObjectValue(obj.reflector().get_jsobject().get())` sites of category (b) through
+`script_bindings::reflector::dom_object_value` (37 open-coded sites remain). Open question: that
+helper, like the code it replaces, does not cross-compartment-wrap, whereas `ToJSValConvertible
+for Reflector` does (`maybe_wrap_value`); decide per site at cutover whether V8's context model
+needs the wrapping variant. The remaining (b) sites (event-handler scope chains,
+`safe_to_jsval`), the rest of (c) and (d) need an engine-owned wrapper/value contract and stay
+SpiderMonkey for now. Do not mechanically
 replace handles or expose V8 types in DOM APIs.
 
 Historical CP31 note: the opt-in WebIDL pilot generates enum operation arguments, applies WebIDL string

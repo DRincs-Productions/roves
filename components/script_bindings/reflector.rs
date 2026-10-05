@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use js::context::JSContext;
 use js::jsapi::{AddAssociatedMemory, Heap, JSObject, MemoryUse, RemoveAssociatedMemory};
+use js::jsval::{JSVal, ObjectValue};
 use js::rust::HandleObject;
 use malloc_size_of_derive::MallocSizeOf;
 
@@ -210,6 +211,18 @@ pub trait DomObject: js::gc::Traceable + 'static {
     fn native_object_id(&self) -> NativeObjectId {
         self.reflector().native_object_id()
     }
+}
+
+/// The JS value of a DOM object's wrapper, for building callback argument lists and similar.
+///
+/// This is exactly the value the former open-coded `ObjectValue(obj.reflector().get_jsobject()
+/// .get())` call sites produced: it does **not** apply cross-compartment wrapping, unlike
+/// `ToJSValConvertible for Reflector`. Whether those callers should wrap is an open question
+/// recorded in `docs/V8_MIGRATION.md`; this helper only gives them one seam to replace at the
+/// engine cutover.
+#[inline]
+pub fn dom_object_value(object: &impl DomObject) -> JSVal {
+    ObjectValue(object.reflector().get_jsobject().get())
 }
 
 impl DomObject for Reflector<()> {

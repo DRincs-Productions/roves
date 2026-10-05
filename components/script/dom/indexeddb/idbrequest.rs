@@ -11,7 +11,7 @@ use js::jsapi::Heap;
 use js::jsval::{DoubleValue, JSVal, ObjectValue, UndefinedValue};
 use js::rust::HandleValue;
 use profile_traits::generic_callback::GenericCallback;
-use script_bindings::reflector::{DomObject, reflect_dom_object_with_cx};
+use script_bindings::reflector::{DomObject, dom_object_value, reflect_dom_object_with_cx};
 use serde::{Deserialize, Serialize};
 use servo_base::generic_channel::GenericSend;
 use storage_traits::indexeddb::{
@@ -251,7 +251,7 @@ impl RequestListener {
                             None => {
                                 answer
                                     .handle_mut()
-                                    .set(ObjectValue(*cursor.reflector().get_jsobject()));
+                                    .set(dom_object_value(&*cursor));
                             },
                         }
                     }

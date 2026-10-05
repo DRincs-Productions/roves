@@ -21,7 +21,7 @@ use js::rust::wrappers2::{Construct1, JS_GetProperty, SameValue};
 use js::rust::{HandleObject, MutableHandleValue};
 use rustc_hash::FxBuildHasher;
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::{DomObject, Reflector, reflect_dom_object_with_proto};
+use script_bindings::reflector::{Reflector, dom_object_value, reflect_dom_object_with_proto};
 use script_bindings::settings_stack::{run_a_callback, run_a_script};
 use style::attr::AttrValue;
 
@@ -1346,8 +1346,8 @@ impl CustomElementReactionStack {
             ),
             CallbackReaction::Adopted(ref old_doc, ref new_doc) => {
                 let args = vec![Heap::default(), Heap::default()];
-                args[0].set(ObjectValue(old_doc.reflector().get_jsobject().get()));
-                args[1].set(ObjectValue(new_doc.reflector().get_jsobject().get()));
+                args[0].set(dom_object_value(&**old_doc));
+                args[1].set(dom_object_value(&**new_doc));
                 (definition.callbacks.adopted_callback.clone(), args)
             },
             CallbackReaction::AttributeChanged(local_name, old_val, val, namespace) => {
@@ -1405,7 +1405,7 @@ impl CustomElementReactionStack {
             CallbackReaction::FormAssociated(form) => {
                 let args = vec![Heap::default()];
                 if let Some(form) = form {
-                    args[0].set(ObjectValue(form.reflector().get_jsobject().get()));
+                    args[0].set(dom_object_value(&*form));
                 } else {
                     args[0].set(NullValue());
                 }
