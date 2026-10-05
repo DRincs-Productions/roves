@@ -24,7 +24,7 @@ use net_traits::image_cache::ImageCache;
 use pixels::PixelFormat;
 use script_bindings::cell::DomRefCell;
 use script_bindings::interfaces::HasOrigin;
-use script_bindings::reflector::{DomObject, dom_object_value};
+use script_bindings::reflector::dom_object_value;
 use script_traits::{DrawAPaintImageResult, PaintWorkletError, Painter};
 use servo_base::id::PipelineId;
 use servo_config::pref;
@@ -334,9 +334,7 @@ impl PaintWorkletGlobalScope {
         rooted!(&in(cx) let argument_object = unsafe { NewArrayObject(cx, &arguments_value_array) });
 
         rooted_vec!(let mut callback_args);
-        callback_args.push(ObjectValue(
-            rendering_context.reflector().get_jsobject().get(),
-        ));
+        callback_args.push(dom_object_value(&*rendering_context));
         callback_args.push(dom_object_value(&*paint_size));
         callback_args.push(dom_object_value(&*properties));
         callback_args.push(ObjectValue(argument_object.get()));

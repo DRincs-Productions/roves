@@ -28,7 +28,8 @@ needs the wrapping variant. CP42 removes three more: WebGL2 gating on canvases t
 event-handler scope chain in `eventtarget.rs` is really engine compile API (environment chain
 for `CompileFunction`) and moves with category (d). CP43 starts (d): rejection tracking in
 `script_runtime.rs` uses `Promise::result`/`promise_obj`, so Promise JSAPI lives only in
-`promise.rs` (31 open-coded sites remain). The rest of (c) and (d) need an engine-owned wrapper/value contract and stay
+`promise.rs`. CP44 routes the last two multi-line hand-built wrapper values through
+`dom_object_value` (29 open-coded sites remain). The rest of (c) and (d) need an engine-owned wrapper/value contract and stay
 SpiderMonkey for now. Do not mechanically
 replace handles or expose V8 types in DOM APIs.
 

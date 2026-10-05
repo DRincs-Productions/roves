@@ -11,6 +11,19 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-05 - V8 migration Phase 3: last two hand-built DOM-object values (CP44)
+
+**Servo files:** `components/script/dom/indexeddb/idbrequest.rs`,
+`components/script/dom/worklet/paintworkletglobalscope.rs`.
+**Patch:** `0108-roves-v8-dom-object-value-multiline.patch` after 0107.
+
+Completes CP41: two `ObjectValue(obj.reflector().get_jsobject()..)` sites split across several
+lines were missed by CP41's single-line search — the `IDBCursorWithValue` request result and the
+paint worklet's rendering-context argument. Both now use `dom_object_value`, with identical
+behaviour; unused `ObjectValue`/`DomObject` imports are removed. No `ObjectValue` built from a
+reflector remains outside the helper. Open-coded `get_jsobject()` sites: 31 → 29. `servo-script`
+checks cleanly locally with only pre-existing warnings; patch 0108 reverse-checks.
+
 ## 2026-10-05 - V8 migration Phase 3: promise rejection tracking uses Promise methods (CP43)
 
 **Servo files:** `components/script/dom/promise/promise.rs`, `components/script/script_runtime.rs`.

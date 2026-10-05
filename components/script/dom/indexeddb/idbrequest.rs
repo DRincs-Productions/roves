@@ -8,10 +8,10 @@ use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::conversions::ToJSValConvertible;
 use js::jsapi::Heap;
-use js::jsval::{DoubleValue, JSVal, ObjectValue, UndefinedValue};
+use js::jsval::{DoubleValue, JSVal, UndefinedValue};
 use js::rust::HandleValue;
 use profile_traits::generic_callback::GenericCallback;
-use script_bindings::reflector::{DomObject, dom_object_value, reflect_dom_object_with_cx};
+use script_bindings::reflector::{dom_object_value, reflect_dom_object_with_cx};
 use serde::{Deserialize, Serialize};
 use servo_base::generic_channel::GenericSend;
 use storage_traits::indexeddb::{
@@ -244,9 +244,9 @@ impl RequestListener {
                     if let Some(cursor) = cursor {
                         match cursor.downcast::<IDBCursorWithValue>() {
                             Some(cursor_with_value) => {
-                                answer.handle_mut().set(ObjectValue(
-                                    *cursor_with_value.reflector().get_jsobject(),
-                                ));
+                                answer
+                                    .handle_mut()
+                                    .set(dom_object_value(&*cursor_with_value));
                             },
                             None => {
                                 answer

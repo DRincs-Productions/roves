@@ -38,7 +38,12 @@ e `Window.event` via `ToJSValConvertible for Reflector` (patch 0106); 34 chiaman
 e `promise_obj` (patch 0107): l'API Promise di SpiderMonkey resta solo in `promise.rs`; 31
 chiamanti aperti.
 
-**Ripresa:** confermare verde la CI cumulativa di CP39–CP43. La scope chain degli event handler
+**CP44 (2026-10-05):** gli ultimi due `ObjectValue(..get_jsobject()..)` su più righe (cursor
+IndexedDB, rendering context del paint worklet) usano `dom_object_value` (patch 0108); 29
+chiamanti aperti, quasi tutti API engine-specifiche (windowproxy, debugger, structured clone,
+definizione interfacce, `JS_DefineProperty`, compile).
+
+**Ripresa:** confermare verde la CI cumulativa di CP39–CP44. La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,
 estensioni WebGL, compile). Il toolchain locale Windows è completo: verificare ogni modifica in
