@@ -1,0 +1,84 @@
+diff --git a/components/script/dom/promise/promise.rs b/components/script/dom/promise/promise.rs
+index dc3a566c00a..40933231164 100644
+--- a/components/script/dom/promise/promise.rs
++++ b/components/script/dom/promise/promise.rs
+@@ -29,10 +29,10 @@ use js::realm::CurrentRealm;
+ use js::rust::wrappers2::{
+     AddPromiseReactions, AddRawValueRoot, CallOriginalPromiseReject, CallOriginalPromiseResolve,
+     GetPromiseIsHandled, GetPromiseState, IsPromiseObject, JS_ClearPendingException,
+-    JS_NewFunction, NewFunctionWithReserved, NewPromiseObject, RejectPromise, ResolvePromise,
++    JS_GetPromiseResult, JS_NewFunction, NewFunctionWithReserved, NewPromiseObject, RejectPromise, ResolvePromise,
+     SetAnyPromiseIsHandled, SetPromiseUserInputEventHandlingState,
+ };
+-use js::rust::{HandleObject, HandleValue, MutableHandleObject, Runtime};
++use js::rust::{HandleObject, HandleValue, MutableHandleObject, MutableHandleValue, Runtime};
+ use script_bindings::reflector::{DomObject, MutDomObject, Reflector};
+ use script_bindings::settings_stack::run_a_script;
+ 
+@@ -251,6 +251,13 @@ impl Promise {
+         matches!(state, PromiseState::Pending)
+     }
+ 
++    /// Store the promise's `[[PromiseResult]]` (the fulfillment value or rejection reason;
++    /// undefined while pending) in `rval`.
++    #[expect(unsafe_code)]
++    pub(crate) fn result(&self, rval: MutableHandleValue) {
++        unsafe { JS_GetPromiseResult(self.promise_obj(), rval) }
++    }
++
+     #[expect(unsafe_code)]
+     pub(crate) fn promise_obj(&self) -> HandleObject<'_> {
+         let obj = self.reflector().get_jsobject();
+diff --git a/components/script/script_runtime.rs b/components/script/script_runtime.rs
+index 3aa005cfd14..5ea795c9661 100644
+--- a/components/script/script_runtime.rs
++++ b/components/script/script_runtime.rs
+@@ -46,7 +46,7 @@ use js::realm::CurrentRealm;
+ pub(crate) use js::rust::ThreadSafeJSContext;
+ use js::rust::wrappers2::{
+     CollectServoSizes, ContextOptionsRef, DispatchableRun, InitConsumeStreamCallback,
+-    JS_AddExtraGCRootsTracer, JS_GetPromiseResult, JS_InitDestroyPrincipalsCallback,
++    JS_AddExtraGCRootsTracer, JS_InitDestroyPrincipalsCallback,
+     JS_InitReadPrincipalsCallback, JS_NewObject, JS_NewStringCopyUTF8N, JS_SetGCCallback,
+     JS_SetGCParameter, JS_SetGlobalJitCompilerOption, JS_SetOffthreadIonCompilationEnabled,
+     JS_SetSecurityCallbacks, SetDOMCallbacks, SetGCSliceCallback, SetJobQueue,
+@@ -61,7 +61,7 @@ use malloc_size_of_derive::MallocSizeOf;
+ use profile_traits::mem::{Report, ReportKind};
+ use profile_traits::path;
+ use profile_traits::time::ProfilerCategory;
+-use script_bindings::reflector::{DomObject, dom_object_value};
++use script_bindings::reflector::dom_object_value;
+ use script_bindings::script_runtime::{mark_runtime_dead, runtime_is_alive, temp_cx};
+ use script_bindings::settings_stack::run_a_script;
+ use servo_config::opts::{self, DiagnosticsLoggingOption};
+@@ -493,9 +493,7 @@ unsafe extern "C" fn promise_rejection_tracker(
+                     let root_promise = trusted_promise.root();
+ 
+                     rooted!(&in(cx) let mut reason = UndefinedValue());
+-                    unsafe {
+-                        JS_GetPromiseResult(root_promise.reflector().get_jsobject(), reason.handle_mut());
+-                    }
++                    root_promise.result(reason.handle_mut());
+ 
+                     let event = PromiseRejectionEvent::new(
+                         cx,
+@@ -676,9 +674,7 @@ pub(crate) fn notify_about_rejected_promises(cx: &mut JSContext, global: &Global
+                 // using PromiseRejectionEvent, with the cancelable attribute initialized to true,
+                 // the promise attribute initialized to p, and the reason attribute initialized to p.[[PromiseResult]].
+                 rooted!(&in(cx) let mut reason = UndefinedValue());
+-                unsafe {
+-                    JS_GetPromiseResult(promise.reflector().get_jsobject(), reason.handle_mut());
+-                }
++                promise.result(reason.handle_mut());
+ 
+                 log::error!(
+                     "Unhandled promise rejection: {}",
+@@ -702,7 +698,7 @@ pub(crate) fn notify_about_rejected_promises(cx: &mut JSContext, global: &Global
+                 // Step 4.1.4 If p.[[PromiseIsHandled]] is false, then append p to global's outstanding
+                 // rejected promises weak set.
+                 if !promise.get_promise_is_handled() {
+-                    target.global().add_consumed_rejection(promise.reflector().get_jsobject().into_handle());
++                    target.global().add_consumed_rejection(promise.promise_obj().into_handle());
+                 }
+             }
+         })

@@ -34,7 +34,11 @@ questione aperta annotata in `V8_MIGRATION.md`. `cargo check -p servo-script` lo
 **CP42 (2026-10-05):** gating WebGL2 dei canvas via `is_webgl2_enabled_for_global(&GlobalScope)`
 e `Window.event` via `ToJSValConvertible for Reflector` (patch 0106); 34 chiamanti aperti.
 
-**Ripresa:** confermare verde la CI cumulativa di CP39–CP42. La scope chain degli event handler
+**CP43 (2026-10-05):** il tracking delle rejection in `script_runtime.rs` usa `Promise::result`
+e `promise_obj` (patch 0107): l'API Promise di SpiderMonkey resta solo in `promise.rs`; 31
+chiamanti aperti.
+
+**Ripresa:** confermare verde la CI cumulativa di CP39–CP43. La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,
 estensioni WebGL, compile). Il toolchain locale Windows è completo: verificare ogni modifica in

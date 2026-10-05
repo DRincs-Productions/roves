@@ -26,7 +26,9 @@ for Reflector` does (`maybe_wrap_value`); decide per site at cutover whether V8'
 needs the wrapping variant. CP42 removes three more: WebGL2 gating on canvases takes the native
 `GlobalScope` and `Window.event` converts through the `Reflector` impl (34 remain). The
 event-handler scope chain in `eventtarget.rs` is really engine compile API (environment chain
-for `CompileFunction`) and moves with category (d). The rest of (c) and (d) need an engine-owned wrapper/value contract and stay
+for `CompileFunction`) and moves with category (d). CP43 starts (d): rejection tracking in
+`script_runtime.rs` uses `Promise::result`/`promise_obj`, so Promise JSAPI lives only in
+`promise.rs` (31 open-coded sites remain). The rest of (c) and (d) need an engine-owned wrapper/value contract and stay
 SpiderMonkey for now. Do not mechanically
 replace handles or expose V8 types in DOM APIs.
 

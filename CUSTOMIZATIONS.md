@@ -11,6 +11,21 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-05 - V8 migration Phase 3: promise rejection tracking uses Promise methods (CP43)
+
+**Servo files:** `components/script/dom/promise/promise.rs`, `components/script/script_runtime.rs`.
+**Patch:** `0107-roves-v8-promise-result-seam.patch` after 0106.
+
+Category (d) of the `Reflector::get_jsobject` audit, Promise internals. The unhandled/handled
+rejection tracking in `script_runtime.rs` read `[[PromiseResult]]` with a direct
+`JS_GetPromiseResult(promise.reflector().get_jsobject(), ..)` (twice) and passed the raw wrapper
+to `add_consumed_rejection`. It now calls the new `Promise::result(rval)` and the existing
+`Promise::promise_obj()`, so all SpiderMonkey Promise JSAPI stays inside `promise.rs`, the single
+module to reimplement over V8's `v8::Promise`. `promise_obj()` additionally asserts the object is
+a Promise, which holds for every promise the rejection tracker hands over. Open-coded
+`get_jsobject()` sites: 34 → 31. `servo-script` checks cleanly locally with only pre-existing
+warnings; patch 0107 reverse-checks.
+
 ## 2026-10-05 - V8 migration Phase 3: fewer raw wrapper reads in WebGL2 gating and Window.event (CP42)
 
 **Servo files:** `components/script/dom/webgl/webgl2renderingcontext.rs`,

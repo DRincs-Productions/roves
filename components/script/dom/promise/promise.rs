@@ -29,10 +29,10 @@ use js::realm::CurrentRealm;
 use js::rust::wrappers2::{
     AddPromiseReactions, AddRawValueRoot, CallOriginalPromiseReject, CallOriginalPromiseResolve,
     GetPromiseIsHandled, GetPromiseState, IsPromiseObject, JS_ClearPendingException,
-    JS_NewFunction, NewFunctionWithReserved, NewPromiseObject, RejectPromise, ResolvePromise,
+    JS_GetPromiseResult, JS_NewFunction, NewFunctionWithReserved, NewPromiseObject, RejectPromise, ResolvePromise,
     SetAnyPromiseIsHandled, SetPromiseUserInputEventHandlingState,
 };
-use js::rust::{HandleObject, HandleValue, MutableHandleObject, Runtime};
+use js::rust::{HandleObject, HandleValue, MutableHandleObject, MutableHandleValue, Runtime};
 use script_bindings::reflector::{DomObject, MutDomObject, Reflector};
 use script_bindings::settings_stack::run_a_script;
 
@@ -249,6 +249,13 @@ impl Promise {
     pub(crate) fn is_pending(&self) -> bool {
         let state = unsafe { GetPromiseState(self.promise_obj()) };
         matches!(state, PromiseState::Pending)
+    }
+
+    /// Store the promise's `[[PromiseResult]]` (the fulfillment value or rejection reason;
+    /// undefined while pending) in `rval`.
+    #[expect(unsafe_code)]
+    pub(crate) fn result(&self, rval: MutableHandleValue) {
+        unsafe { JS_GetPromiseResult(self.promise_obj(), rval) }
     }
 
     #[expect(unsafe_code)]
