@@ -1,0 +1,314 @@
+diff --git a/components/roves-v8/build.rs b/components/roves-v8/build.rs
+index e2a6b8cb40c..e7e6554dcd4 100644
+--- a/components/roves-v8/build.rs
++++ b/components/roves-v8/build.rs
+@@ -236,6 +236,7 @@ fn main() {
+         ("ShadowChild", &["ShadowBase"][..]),
+         ("TypeGapsProbe", &[][..]),
+         ("NamespaceProbe", &[][..]),
++        ("OverloadedConstructor", &[][..]),
+     ] {
+         println!("cargo:rerun-if-changed={}", fixtures.join(format!("{interface}.webidl")).display());
+         println!("cargo:rerun-if-changed={}", fixtures.join("Bindings.conf").display());
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index ba58979bf3a..3fb9c8eebfe 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -174,6 +174,10 @@ pub mod webidl {
+         include!(concat!(env!("OUT_DIR"), "/NamespaceProbeV8Binding.rs"));
+     }
+     #[cfg(test)]
++    pub mod overloaded_constructor {
++        include!(concat!(env!("OUT_DIR"), "/OverloadedConstructorV8Binding.rs"));
++    }
++    #[cfg(test)]
+     pub mod promise_operations {
+         include!(concat!(env!("OUT_DIR"), "/PromiseOperationsV8Binding.rs"));
+     }
+@@ -1627,6 +1631,9 @@ enum NativeMethodKind {
+ struct WebIdlConstructorConfig {
+     constructor: NativeConstructor,
+     arguments: WebIdlArguments,
++    /// For an overloaded constructor: every overload (chosen with WebIDL overload resolution);
++    /// `constructor`/`arguments` are then unused.
++    overloads: Vec<(NativeConstructor, WebIdlArguments, Vec<WebIdlArgument>)>,
+     /// The interface `new` constructs: recorded on the native for interface-typed checks.
+     interface: String,
+ }
+@@ -2181,6 +2188,7 @@ impl Runtime {
+                 optional_arguments,
+                 enumeration_values,
+             ),
++            overloads: Vec::new(),
+             interface: name.to_owned(),
+         });
+         let config_pointer = (&*config) as *const WebIdlConstructorConfig;
+@@ -2200,6 +2208,31 @@ impl Runtime {
+         let config = Box::new(WebIdlConstructorConfig {
+             constructor,
+             arguments: WebIdlArguments::typed(arguments),
++            overloads: Vec::new(),
++            interface: name.to_owned(),
++        });
++        let config_pointer = (&*config) as *const WebIdlConstructorConfig;
++        self.constructor_configs.push(config);
++        self.define_interface_inner(name, parent, Some(config_pointer))
++    }
++
++    /// Like [`Runtime::define_typed_constructible_interface`] for an overloaded constructor
++    /// (`Path2D`, `ImageData`): `new` picks the overload with WebIDL's overload resolution
++    /// algorithm, and the interface object's `length` is the shortest overload's.
++    pub fn define_overloaded_constructible_interface(
++        &mut self,
++        name: &str,
++        parent: Option<&Interface>,
++        overloads: &[(NativeConstructor, &[WebIdlArgument])],
++    ) -> Interface {
++        let (first, _) = overloads.first().expect("an overloaded constructor has overloads");
++        let config = Box::new(WebIdlConstructorConfig {
++            constructor: *first,
++            arguments: WebIdlArguments::typed(&[]),
++            overloads: overloads
++                .iter()
++                .map(|(constructor, arguments)| (*constructor, WebIdlArguments::typed(arguments), arguments.to_vec()))
++                .collect(),
+             interface: name.to_owned(),
+         });
+         let config_pointer = (&*config) as *const WebIdlConstructorConfig;
+@@ -2231,12 +2264,19 @@ impl Runtime {
+             .build(scope),
+             Some(config_pointer) => {
+                 // SAFETY: the config is boxed in `constructor_configs`, which outlives the isolate.
+-                let required = unsafe { &*config_pointer }
+-                    .arguments
+-                    .optional_arguments
+-                    .iter()
+-                    .take_while(|optional| !**optional)
+-                    .count();
++                let config = unsafe { &*config_pointer };
++                let required = if config.overloads.is_empty() {
++                    config.arguments.optional_arguments.iter().take_while(|optional| !**optional).count()
++                } else {
++                    config
++                        .overloads
++                        .iter()
++                        .map(|(_, _, arguments)| {
++                            arguments.iter().filter(|argument| !argument.optional && !argument.variadic && argument.default.is_none()).count()
++                        })
++                        .min()
++                        .unwrap_or(0)
++                };
+                 let external_data =
+                     v8::External::new(scope, config_pointer as *mut std::ffi::c_void);
+                 v8::FunctionTemplate::builder(
+@@ -2258,12 +2298,19 @@ impl Runtime {
+                             throw_type_error(scope, "Illegal constructor");
+                             return;
+                         }
+-                        let Some(arguments) =
+-                            convert_webidl_arguments(scope, &args, &config.arguments)
+-                        else {
++                        let (constructor, arguments) = if config.overloads.is_empty() {
++                            (config.constructor, &config.arguments)
++                        } else {
++                            let candidates: Vec<&[WebIdlArgument]> =
++                                config.overloads.iter().map(|(_, _, arguments)| arguments.as_slice()).collect();
++                            let Ok(selected) = select_overload(scope, &args, &candidates) else { return };
++                            let (constructor, arguments, _) = &config.overloads[selected];
++                            (*constructor, arguments)
++                        };
++                        let Some(arguments) = convert_webidl_arguments(scope, &args, arguments) else {
+                             return;
+                         };
+-                        let native = match (config.constructor)(&arguments) {
++                        let native = match constructor(&arguments) {
+                             Ok(native) => native,
+                             Err(error) => {
+                                 throw_webidl_error(scope, &error);
+@@ -8045,6 +8092,48 @@ mod tests {
+         assert_eq!(runtime.eval("probe.gated").unwrap(), "true");
+     }
+ 
++    #[cfg(feature = "webidl-pilot")]
++    #[test]
++    fn generated_overloaded_constructors_select_by_count_and_type() {
++        use crate::webidl::overloaded_constructor::{ShapeBinding, ShapeNative};
++        use crate::{Trace, Tracer};
++        struct Shape(String);
++        impl Trace for Shape {
++            fn trace(&self, _tracer: &mut Tracer) {}
++        }
++        #[allow(non_snake_case)]
++        impl ShapeNative for Shape {
++            fn Constructor() -> Self { Shape("empty".into()) }
++            fn Constructor_(name: Vec<u16>) -> Self { Shape(format!("named {}", String::from_utf16_lossy(&name))) }
++            fn Constructor__(sides: u32, filled: crate::WebIdlOptionalArgument<bool>) -> Self {
++                let filled = match filled {
++                    crate::WebIdlOptionalArgument::Present(filled) => filled.to_string(),
++                    crate::WebIdlOptionalArgument::Missing => "missing".into(),
++                };
++                Shape(format!("{sides} sides, filled {filled}"))
++            }
++            fn Description(&self) -> Vec<u16> { self.0.encode_utf16().collect() }
++        }
++        let mut runtime = Runtime::new();
++        ShapeBinding::<Shape>::install(&mut runtime).unwrap();
++        for (source, expected) in [
++            ("new Shape().description", "empty"),
++            ("new Shape('box').description", "named box"),
++            // Same argument count: the type at the distinguishing index decides.
++            ("new Shape(4).description", "4 sides, filled false"),
++            ("new Shape(3, true).description", "3 sides, filled true"),
++            // Neither number nor string: a string overload takes any other value (ToString).
++            ("new Shape({}).description", "named [object Object]"),
++            ("[Shape.length, new Shape() instanceof Shape].join()", "0,true"),
++            ("(() => { try { Shape(); } catch (e) { return e.name; } })()", "TypeError"),
++            // Extra arguments are ignored (overload resolution truncates to the longest overload).
++            ("new Shape(1, 2, 3).description", "1 sides, filled true"),
++            ("(() => { try { new Shape(Symbol()); } catch (e) { return e.name; } })()", "TypeError"),
++        ] {
++            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
++        }
++    }
++
+     #[cfg(feature = "webidl-pilot")]
+     #[test]
+     fn generated_promise_operations_resolve_reject_and_settle_later() {
+diff --git a/components/roves-v8/tests/webidl/OverloadedConstructor.webidl b/components/roves-v8/tests/webidl/OverloadedConstructor.webidl
+new file mode 100644
+index 00000000000..526bf11c59a
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/OverloadedConstructor.webidl
+@@ -0,0 +1,9 @@
++// An overloaded constructor (like Path2D and ImageData): `new` picks the overload with WebIDL's
++// overload resolution algorithm.
++[Exposed=Window]
++interface Shape {
++  constructor();
++  constructor(DOMString name);
++  constructor(unsigned long sides, optional boolean filled = false);
++  readonly attribute DOMString description;
++};
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index d332ab7cbf1..6ada9f20942 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -9627,6 +9627,7 @@ class CGV8BindingRoot(CGThing):
+             gate_last_registration(idl)
+         constructor = interface.ctor()
+         constructor_arguments = None
++        constructor_overloads = []
+         if constructor is not None and "HTMLConstructor" in constructor._extendedAttrDict:
+             # [HTMLConstructor]: without a custom element definition (the custom element
+             # registry is not wired to the V8 pilot yet), `new HTMLDivElement()` is a TypeError,
+@@ -9639,16 +9640,22 @@ class CGV8BindingRoot(CGThing):
+             constructor_throws = "Throws" in constructor._extendedAttrDict
+             if constructor_attributes:
+                 raise TypeError(f"V8 backend unsupported constructor attributes on {name}: {sorted(constructor_attributes)}")
+-            if len(signatures) != 1:
+-                raise TypeError(f"V8 backend only supports single-signature constructors: {name}")
+-            constructor_arguments = v8_argument_types(name, "constructor", signatures[0][1])
+-            constructor_parameters = ", ".join(
+-                f"arg{index}: {argument_type[0]}" for index, argument_type in enumerate(constructor_arguments)
+-            )
+-            trait_methods = "\n".join(
+-                [f"    fn Constructor({constructor_parameters}) -> {'Result<Self, roves_v8::WebIdlError>' if constructor_throws else 'Self'} where Self: Sized;"]
+-                + ([trait_methods] if trait_methods else [])
+-            )
++            # Servo's convention for overloads: Constructor, Constructor_, Constructor__, ...
++            constructor_overloads = [
++                ("Constructor" + "_" * index, v8_argument_types(name, "constructor", arguments))
++                for index, (_, arguments) in enumerate(signatures)
++            ]
++            if len(signatures) == 1:
++                constructor_arguments = constructor_overloads[0][1]
++            constructor_declarations = []
++            for native, overload_arguments in constructor_overloads:
++                constructor_parameters = ", ".join(
++                    f"arg{index}: {argument_type[0]}" for index, argument_type in enumerate(overload_arguments)
++                )
++                constructor_declarations.append(
++                    f"    fn {native}({constructor_parameters}) -> {'Result<Self, roves_v8::WebIdlError>' if constructor_throws else 'Self'} where Self: Sized;"
++                )
++            trait_methods = "\n".join(constructor_declarations + ([trait_methods] if trait_methods else []))
+         parent = interface.parent
+         if parent is None:
+             native_bound = "'static"
+@@ -9684,6 +9691,34 @@ class CGV8BindingRoot(CGThing):
+             hide_interface = ""
+         if namespace:
+             define_interface = f'runtime.define_namespace("{name}")'
++        elif len(constructor_overloads) > 1:
++            overload_entries = []
++            for native, overload_arguments in constructor_overloads:
++                conversions = "".join(
++                    f'                let arg{index} = match args.get({index}).unwrap_or(&Value::Undefined) {{ {argument_type[2]}, _ => unreachable!("runtime conversion matches generated WebIDL argument type") }};\n'
++                    for index, argument_type in enumerate(overload_arguments)
++                )
++                call_arguments = ", ".join(f"arg{index}" for index, _ in enumerate(overload_arguments))
++                constructed = f"<T as {name}Native>::{native}({call_arguments})"
++                constructed = (
++                    f"{constructed}.map(roves_v8::TracedNative::new)"
++                    if constructor_throws else f"Ok(roves_v8::TracedNative::new({constructed}))"
++                )
++                typed_arguments = ", ".join(
++                    v8_webidl_argument(argument_type, argument_type[6] or v8_flat_webidl_type(argument_type))
++                    for argument_type in overload_arguments
++                )
++                overload_entries.append(
++                    f'            ((|{"args" if overload_arguments else "_args"}| {{\n{conversions}                {constructed}\n            }}) as roves_v8::NativeConstructor, &[{typed_arguments}][..]),'
++                )
++            entries = "\n".join(overload_entries)
++            define_interface = (
++                f'runtime.define_overloaded_constructible_interface(\n'
++                f'            "{name}",\n'
++                f'            {parent_interface},\n'
++                f'            &[\n{entries}\n            ],\n'
++                f'        )'
++            )
+         elif constructor_arguments is None:
+             define_interface = f'runtime.define_interface("{name}", {parent_interface})'
+         else:
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index 79f1c503203..3125d8046a1 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -852,16 +852,28 @@ class V8GeneratorTests(unittest.TestCase):
+             self.assertIn("fn F(&self, arg0: Vec<u16>) -> ();", source)
+             self.assertIn("fn F_(&self, arg0: bool, arg1: roves_v8::WebIdlOptionalArgument<bool>) -> ();", source)
+ 
+-    def test_unsupported_and_overloaded_constructors_fail_closed(self):
+-        for constructor, message in [
+-            ("[Pref=\"dom_x\"] constructor();", "unsupported constructor attributes"),
+-            ("constructor(); constructor(boolean flag);", "single-signature constructors"),
+-        ]:
+-            with tempfile.TemporaryDirectory() as directory:
+-                path = Path(directory) / "Ctor.webidl"
+-                path.write_text(f"[Exposed=Window] interface Ctor {{ {constructor} }};", encoding="utf-8")
+-                with self.assertRaisesRegex(TypeError, message):
+-                    generate(path, Path(directory) / "output")
++    def test_unsupported_constructors_fail_closed(self):
++        with tempfile.TemporaryDirectory() as directory:
++            path = Path(directory) / "Ctor.webidl"
++            path.write_text("[Exposed=Window] interface Ctor { [Pref=\"dom_x\"] constructor(); };", encoding="utf-8")
++            with self.assertRaisesRegex(TypeError, "unsupported constructor attributes"):
++                generate(path, Path(directory) / "output")
++
++    def test_overloaded_constructors_use_servo_names_and_overload_resolution(self):
++        with tempfile.TemporaryDirectory() as directory:
++            path = Path(directory) / "Ctor.webidl"
++            path.write_text(
++                "[Exposed=Window] interface Ctor { [Throws] constructor(); [Throws] constructor(DOMString text);"
++                " [Throws] constructor(sequence<long> values); };",
++                encoding="utf-8",
++            )
++            source = generate(path, Path(directory) / "output")
++            self.assertIn("fn Constructor() -> Result<Self, roves_v8::WebIdlError> where Self: Sized;", source)
++            self.assertIn("fn Constructor_(arg0: Vec<u16>) -> Result<Self, roves_v8::WebIdlError> where Self: Sized;", source)
++            self.assertIn("fn Constructor__(arg0: Vec<i32>) -> Result<Self, roves_v8::WebIdlError> where Self: Sized;", source)
++            self.assertIn("runtime.define_overloaded_constructible_interface(", source)
++            self.assertIn("<T as CtorNative>::Constructor__(arg0).map(roves_v8::TracedNative::new)", source)
++            self.assertEqual(source.count("as roves_v8::NativeConstructor"), 3)
+ 
+     def test_throws_generates_fallible_native_signatures(self):
+         with tempfile.TemporaryDirectory() as directory:

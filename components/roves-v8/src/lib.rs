@@ -174,6 +174,10 @@ pub mod webidl {
         include!(concat!(env!("OUT_DIR"), "/NamespaceProbeV8Binding.rs"));
     }
     #[cfg(test)]
+    pub mod overloaded_constructor {
+        include!(concat!(env!("OUT_DIR"), "/OverloadedConstructorV8Binding.rs"));
+    }
+    #[cfg(test)]
     pub mod promise_operations {
         include!(concat!(env!("OUT_DIR"), "/PromiseOperationsV8Binding.rs"));
     }
@@ -1627,6 +1631,9 @@ enum NativeMethodKind {
 struct WebIdlConstructorConfig {
     constructor: NativeConstructor,
     arguments: WebIdlArguments,
+    /// For an overloaded constructor: every overload (chosen with WebIDL overload resolution);
+    /// `constructor`/`arguments` are then unused.
+    overloads: Vec<(NativeConstructor, WebIdlArguments, Vec<WebIdlArgument>)>,
     /// The interface `new` constructs: recorded on the native for interface-typed checks.
     interface: String,
 }
@@ -2181,6 +2188,7 @@ impl Runtime {
                 optional_arguments,
                 enumeration_values,
             ),
+            overloads: Vec::new(),
             interface: name.to_owned(),
         });
         let config_pointer = (&*config) as *const WebIdlConstructorConfig;
@@ -2200,6 +2208,31 @@ impl Runtime {
         let config = Box::new(WebIdlConstructorConfig {
             constructor,
             arguments: WebIdlArguments::typed(arguments),
+            overloads: Vec::new(),
+            interface: name.to_owned(),
+        });
+        let config_pointer = (&*config) as *const WebIdlConstructorConfig;
+        self.constructor_configs.push(config);
+        self.define_interface_inner(name, parent, Some(config_pointer))
+    }
+
+    /// Like [`Runtime::define_typed_constructible_interface`] for an overloaded constructor
+    /// (`Path2D`, `ImageData`): `new` picks the overload with WebIDL's overload resolution
+    /// algorithm, and the interface object's `length` is the shortest overload's.
+    pub fn define_overloaded_constructible_interface(
+        &mut self,
+        name: &str,
+        parent: Option<&Interface>,
+        overloads: &[(NativeConstructor, &[WebIdlArgument])],
+    ) -> Interface {
+        let (first, _) = overloads.first().expect("an overloaded constructor has overloads");
+        let config = Box::new(WebIdlConstructorConfig {
+            constructor: *first,
+            arguments: WebIdlArguments::typed(&[]),
+            overloads: overloads
+                .iter()
+                .map(|(constructor, arguments)| (*constructor, WebIdlArguments::typed(arguments), arguments.to_vec()))
+                .collect(),
             interface: name.to_owned(),
         });
         let config_pointer = (&*config) as *const WebIdlConstructorConfig;
@@ -2231,12 +2264,19 @@ impl Runtime {
             .build(scope),
             Some(config_pointer) => {
                 // SAFETY: the config is boxed in `constructor_configs`, which outlives the isolate.
-                let required = unsafe { &*config_pointer }
-                    .arguments
-                    .optional_arguments
-                    .iter()
-                    .take_while(|optional| !**optional)
-                    .count();
+                let config = unsafe { &*config_pointer };
+                let required = if config.overloads.is_empty() {
+                    config.arguments.optional_arguments.iter().take_while(|optional| !**optional).count()
+                } else {
+                    config
+                        .overloads
+                        .iter()
+                        .map(|(_, _, arguments)| {
+                            arguments.iter().filter(|argument| !argument.optional && !argument.variadic && argument.default.is_none()).count()
+                        })
+                        .min()
+                        .unwrap_or(0)
+                };
                 let external_data =
                     v8::External::new(scope, config_pointer as *mut std::ffi::c_void);
                 v8::FunctionTemplate::builder(
@@ -2258,12 +2298,19 @@ impl Runtime {
                             throw_type_error(scope, "Illegal constructor");
                             return;
                         }
-                        let Some(arguments) =
-                            convert_webidl_arguments(scope, &args, &config.arguments)
-                        else {
+                        let (constructor, arguments) = if config.overloads.is_empty() {
+                            (config.constructor, &config.arguments)
+                        } else {
+                            let candidates: Vec<&[WebIdlArgument]> =
+                                config.overloads.iter().map(|(_, _, arguments)| arguments.as_slice()).collect();
+                            let Ok(selected) = select_overload(scope, &args, &candidates) else { return };
+                            let (constructor, arguments, _) = &config.overloads[selected];
+                            (*constructor, arguments)
+                        };
+                        let Some(arguments) = convert_webidl_arguments(scope, &args, arguments) else {
                             return;
                         };
-                        let native = match (config.constructor)(&arguments) {
+                        let native = match constructor(&arguments) {
                             Ok(native) => native,
                             Err(error) => {
                                 throw_webidl_error(scope, &error);
@@ -8043,6 +8090,48 @@ mod tests {
         let mut runtime = Runtime::new();
         probeBinding::<Probe>::install(&mut runtime).unwrap();
         assert_eq!(runtime.eval("probe.gated").unwrap(), "true");
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_overloaded_constructors_select_by_count_and_type() {
+        use crate::webidl::overloaded_constructor::{ShapeBinding, ShapeNative};
+        use crate::{Trace, Tracer};
+        struct Shape(String);
+        impl Trace for Shape {
+            fn trace(&self, _tracer: &mut Tracer) {}
+        }
+        #[allow(non_snake_case)]
+        impl ShapeNative for Shape {
+            fn Constructor() -> Self { Shape("empty".into()) }
+            fn Constructor_(name: Vec<u16>) -> Self { Shape(format!("named {}", String::from_utf16_lossy(&name))) }
+            fn Constructor__(sides: u32, filled: crate::WebIdlOptionalArgument<bool>) -> Self {
+                let filled = match filled {
+                    crate::WebIdlOptionalArgument::Present(filled) => filled.to_string(),
+                    crate::WebIdlOptionalArgument::Missing => "missing".into(),
+                };
+                Shape(format!("{sides} sides, filled {filled}"))
+            }
+            fn Description(&self) -> Vec<u16> { self.0.encode_utf16().collect() }
+        }
+        let mut runtime = Runtime::new();
+        ShapeBinding::<Shape>::install(&mut runtime).unwrap();
+        for (source, expected) in [
+            ("new Shape().description", "empty"),
+            ("new Shape('box').description", "named box"),
+            // Same argument count: the type at the distinguishing index decides.
+            ("new Shape(4).description", "4 sides, filled false"),
+            ("new Shape(3, true).description", "3 sides, filled true"),
+            // Neither number nor string: a string overload takes any other value (ToString).
+            ("new Shape({}).description", "named [object Object]"),
+            ("[Shape.length, new Shape() instanceof Shape].join()", "0,true"),
+            ("(() => { try { Shape(); } catch (e) { return e.name; } })()", "TypeError"),
+            // Extra arguments are ignored (overload resolution truncates to the longest overload).
+            ("new Shape(1, 2, 3).description", "1 sides, filled true"),
+            ("(() => { try { new Shape(Symbol()); } catch (e) { return e.name; } })()", "TypeError"),
+        ] {
+            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
+        }
     }
 
     #[cfg(feature = "webidl-pilot")]

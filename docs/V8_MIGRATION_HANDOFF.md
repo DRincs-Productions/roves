@@ -283,6 +283,10 @@ con i descrittori dei membri copiati. Aggiunti `define_static_attribute` e
 `define_static_overloaded_webidl_method`. **`console` e `CSS` generano.** Test: generatore 64/64,
 `roves-v8` 102+5+2. Copertura **428/486**.
 
+**CP79 (2026-10-06):** costruttori sovraccarichi (`define_overloaded_constructible_interface`,
+patch 0143). **`Path2D`, `ImageData`, `OfflineAudioContext`, `MediaStream` generano.** Test:
+generatore 65/65, `roves-v8` 103+5+2. Copertura **432/486**.
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

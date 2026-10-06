@@ -9627,6 +9627,7 @@ class CGV8BindingRoot(CGThing):
             gate_last_registration(idl)
         constructor = interface.ctor()
         constructor_arguments = None
+        constructor_overloads = []
         if constructor is not None and "HTMLConstructor" in constructor._extendedAttrDict:
             # [HTMLConstructor]: without a custom element definition (the custom element
             # registry is not wired to the V8 pilot yet), `new HTMLDivElement()` is a TypeError,
@@ -9639,16 +9640,22 @@ class CGV8BindingRoot(CGThing):
             constructor_throws = "Throws" in constructor._extendedAttrDict
             if constructor_attributes:
                 raise TypeError(f"V8 backend unsupported constructor attributes on {name}: {sorted(constructor_attributes)}")
-            if len(signatures) != 1:
-                raise TypeError(f"V8 backend only supports single-signature constructors: {name}")
-            constructor_arguments = v8_argument_types(name, "constructor", signatures[0][1])
-            constructor_parameters = ", ".join(
-                f"arg{index}: {argument_type[0]}" for index, argument_type in enumerate(constructor_arguments)
-            )
-            trait_methods = "\n".join(
-                [f"    fn Constructor({constructor_parameters}) -> {'Result<Self, roves_v8::WebIdlError>' if constructor_throws else 'Self'} where Self: Sized;"]
-                + ([trait_methods] if trait_methods else [])
-            )
+            # Servo's convention for overloads: Constructor, Constructor_, Constructor__, ...
+            constructor_overloads = [
+                ("Constructor" + "_" * index, v8_argument_types(name, "constructor", arguments))
+                for index, (_, arguments) in enumerate(signatures)
+            ]
+            if len(signatures) == 1:
+                constructor_arguments = constructor_overloads[0][1]
+            constructor_declarations = []
+            for native, overload_arguments in constructor_overloads:
+                constructor_parameters = ", ".join(
+                    f"arg{index}: {argument_type[0]}" for index, argument_type in enumerate(overload_arguments)
+                )
+                constructor_declarations.append(
+                    f"    fn {native}({constructor_parameters}) -> {'Result<Self, roves_v8::WebIdlError>' if constructor_throws else 'Self'} where Self: Sized;"
+                )
+            trait_methods = "\n".join(constructor_declarations + ([trait_methods] if trait_methods else []))
         parent = interface.parent
         if parent is None:
             native_bound = "'static"
@@ -9684,6 +9691,34 @@ class CGV8BindingRoot(CGThing):
             hide_interface = ""
         if namespace:
             define_interface = f'runtime.define_namespace("{name}")'
+        elif len(constructor_overloads) > 1:
+            overload_entries = []
+            for native, overload_arguments in constructor_overloads:
+                conversions = "".join(
+                    f'                let arg{index} = match args.get({index}).unwrap_or(&Value::Undefined) {{ {argument_type[2]}, _ => unreachable!("runtime conversion matches generated WebIDL argument type") }};\n'
+                    for index, argument_type in enumerate(overload_arguments)
+                )
+                call_arguments = ", ".join(f"arg{index}" for index, _ in enumerate(overload_arguments))
+                constructed = f"<T as {name}Native>::{native}({call_arguments})"
+                constructed = (
+                    f"{constructed}.map(roves_v8::TracedNative::new)"
+                    if constructor_throws else f"Ok(roves_v8::TracedNative::new({constructed}))"
+                )
+                typed_arguments = ", ".join(
+                    v8_webidl_argument(argument_type, argument_type[6] or v8_flat_webidl_type(argument_type))
+                    for argument_type in overload_arguments
+                )
+                overload_entries.append(
+                    f'            ((|{"args" if overload_arguments else "_args"}| {{\n{conversions}                {constructed}\n            }}) as roves_v8::NativeConstructor, &[{typed_arguments}][..]),'
+                )
+            entries = "\n".join(overload_entries)
+            define_interface = (
+                f'runtime.define_overloaded_constructible_interface(\n'
+                f'            "{name}",\n'
+                f'            {parent_interface},\n'
+                f'            &[\n{entries}\n            ],\n'
+                f'        )'
+            )
         elif constructor_arguments is None:
             define_interface = f'runtime.define_interface("{name}", {parent_interface})'
         else:

@@ -11,6 +11,26 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: overloaded constructors (CP79)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `components/roves-v8/build.rs`,
+`components/roves-v8/tests/webidl/OverloadedConstructor.webidl` (new),
+`components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0143-roves-v8-overloaded-constructors.patch` after 0142.
+
+The new runtime call `define_overloaded_constructible_interface` lets `new` choose the
+constructor overload with WebIDL's overload resolution, using the same `select_overload` as
+operations. The interface object's `length` is the shortest overload's. The generator names the
+natives Constructor, Constructor_, Constructor__ (Servo's convention).
+
+Tests: generator 65/65. The new runtime fixture `Shape` covers selection by argument count,
+then by type (number vs. string), `ToString` fallback, truncation of extra arguments, a
+`Symbol` TypeError and calls without `new`. `roves-v8` passes 103 + 5 + 2 (also `jitless`), and
+61 + 2 by default. The `servo-script` pilot check is clean.
+
+Coverage: **432/486**. **`Path2D`, `ImageData`, `OfflineAudioContext` and `MediaStream` now
+generate.**
+
 ## 2026-10-06 - V8 migration Phase 4: WebIDL namespaces (`console`, `CSS`) (CP78)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `components/roves-v8/build.rs`,

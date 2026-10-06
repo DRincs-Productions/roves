@@ -852,16 +852,28 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn("fn F(&self, arg0: Vec<u16>) -> ();", source)
             self.assertIn("fn F_(&self, arg0: bool, arg1: roves_v8::WebIdlOptionalArgument<bool>) -> ();", source)
 
-    def test_unsupported_and_overloaded_constructors_fail_closed(self):
-        for constructor, message in [
-            ("[Pref=\"dom_x\"] constructor();", "unsupported constructor attributes"),
-            ("constructor(); constructor(boolean flag);", "single-signature constructors"),
-        ]:
-            with tempfile.TemporaryDirectory() as directory:
-                path = Path(directory) / "Ctor.webidl"
-                path.write_text(f"[Exposed=Window] interface Ctor {{ {constructor} }};", encoding="utf-8")
-                with self.assertRaisesRegex(TypeError, message):
-                    generate(path, Path(directory) / "output")
+    def test_unsupported_constructors_fail_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Ctor.webidl"
+            path.write_text("[Exposed=Window] interface Ctor { [Pref=\"dom_x\"] constructor(); };", encoding="utf-8")
+            with self.assertRaisesRegex(TypeError, "unsupported constructor attributes"):
+                generate(path, Path(directory) / "output")
+
+    def test_overloaded_constructors_use_servo_names_and_overload_resolution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Ctor.webidl"
+            path.write_text(
+                "[Exposed=Window] interface Ctor { [Throws] constructor(); [Throws] constructor(DOMString text);"
+                " [Throws] constructor(sequence<long> values); };",
+                encoding="utf-8",
+            )
+            source = generate(path, Path(directory) / "output")
+            self.assertIn("fn Constructor() -> Result<Self, roves_v8::WebIdlError> where Self: Sized;", source)
+            self.assertIn("fn Constructor_(arg0: Vec<u16>) -> Result<Self, roves_v8::WebIdlError> where Self: Sized;", source)
+            self.assertIn("fn Constructor__(arg0: Vec<i32>) -> Result<Self, roves_v8::WebIdlError> where Self: Sized;", source)
+            self.assertIn("runtime.define_overloaded_constructible_interface(", source)
+            self.assertIn("<T as CtorNative>::Constructor__(arg0).map(roves_v8::TracedNative::new)", source)
+            self.assertEqual(source.count("as roves_v8::NativeConstructor"), 3)
 
     def test_throws_generates_fallible_native_signatures(self):
         with tempfile.TemporaryDirectory() as directory:
