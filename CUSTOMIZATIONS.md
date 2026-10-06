@@ -11,6 +11,34 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 3: one traced wrapper per native, from generated bindings (CP52)
+
+**Servo files:** `components/roves-v8/src/lib.rs`; `components/script_bindings/codegen/codegen.py`,
+`test_v8.py`.
+**Patch:** `0116-roves-v8-traced-wrapper-identity.patch` after 0115.
+
+A traced native (CP51) now records its JS wrapper in a traced reference inside `GcBox`, like
+Blink's ScriptWrappable wrapper field. This has three consequences:
+- `create_traced_instance` returns the same wrapper on every call while the native lives, so
+  `===` identity and expando properties are preserved. This holds even when JS drops every
+  reference and only Rust keeps the native.
+- The native/wrapper cycle is collected together once neither side is reachable.
+- For traced natives, this replaces the weak identity cache that `create_instance` wrappers need.
+
+Every generated binding gains `wrap_traced(runtime, &GcRoot<T>)` (for `T: roves_v8::Trace`)
+alongside `create`/`create_with_identity`.
+
+**Tests.**
+- Wrapper identity across calls, and an expando that survives a GC while only Rust roots the
+  native.
+- Collection once both sides are unreachable.
+- A generated parent/child binding pair wrapping a traced native: inherited getters, a method, a
+  setter that mutates the traced native as observed from Rust, and identity on re-wrap.
+- Generator tests: 39/39.
+- `roves-v8` pilot and pilot+JIT-less: 77 unit + 5 integration + 2 doctests each; default 59 unit +
+  2 doctests.
+- `servo-script` check with the pilot is clean.
+
 ## 2026-10-06 - V8 migration Phase 3: traced native ownership on V8's unified heap (CP51)
 
 **Servo files:** `components/roves-v8/src/lib.rs`.

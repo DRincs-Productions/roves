@@ -112,6 +112,13 @@ Suite `roves-v8` 75+5+2 stabili (6 ripetizioni + release). **Prossimo:** binding
 di identità su istanze tracciate, poi la mappatura su `#[dom_struct]`/derive `JSTraceable` di
 Servo.
 
+**CP52 (2026-10-06):** un solo wrapper per nativo tracciato (patch 0116). `GcBox` traccia il
+proprio wrapper (come `ScriptWrappable` di Blink): identità `===` ed expando preservati finché il
+nativo vive, anche se JS lo abbandona; la coppia viene raccolta insieme. I binding generati
+hanno `wrap_traced`. Test: generatore 39/39, `roves-v8` 77+5+2, default 59+2, check pulito.
+**Prossimo:** mappare `#[dom_struct]`/`JSTraceable` di Servo su `Trace`, poi far passare un
+tipo DOM reale (`Screen` o `ValidityState`) per i wrapper tracciati.
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

@@ -8803,6 +8803,15 @@ impl<T: {name}Native> {name}Binding<T> {{
         runtime.create_instance(&self.interface, native)
     }}
 
+    /// Returns the one JS wrapper of a native that lives on the traced heap (see
+    /// `roves_v8::Trace`): native and wrapper keep each other alive and are collected together.
+    pub fn wrap_traced(&self, runtime: &mut Runtime, native: &roves_v8::GcRoot<T>) -> Handle
+    where
+        T: roves_v8::Trace,
+    {{
+        runtime.create_traced_instance(&self.interface, native)
+    }}
+
     /// Creates or reuses the JS wrapper for a stable native DOM identity. Pass the identity
     /// assigned by the owning DOM reflector; the factory runs only if no live wrapper exists.
     pub fn create_with_identity(

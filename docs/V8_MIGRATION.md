@@ -51,6 +51,11 @@ intended replacement for `JSTraceable`/`Dom<T>`/`Heap<JSVal>`; next it must back
 bindings and the identity cache, then be mapped onto Servo's `#[dom_struct]`/`JSTraceable`
 derive.
 
+**CP52 (2026-10-06): traced wrapper identity.** A traced native traces its single wrapper
+(Blink-style), so re-wrapping returns the same object with its expandos while the native lives,
+and the pair is collected together. Generated bindings expose `wrap_traced`. Next: map Servo's
+`#[dom_struct]`/`JSTraceable` onto `Trace` and route a real DOM type through traced wrappers.
+
 CP37 exposes stable `NativeObjectId` through `DomObject` and updates generated `dom_struct`
 equality to use that engine-neutral contract. Local checks pass (reflector 2/2, macro 3/3,
 rustfmt, and patch 0101 reverse-check); CI is green: V8 37226916624 (6/6), Servo 37226916650

@@ -314,6 +314,10 @@ struct GcBox {
     /// `UnsafeCell` makes the setter callbacks' exclusive access to it sound.
     native: std::cell::UnsafeCell<Box<dyn std::any::Any>>,
     trace: fn(&dyn std::any::Any, &mut Tracer),
+    /// The native's one JS wrapper, once created. Traced, like Blink's ScriptWrappable wrapper
+    /// reference: the wrapper (and its expando properties) lives as long as the native, and
+    /// the native/wrapper cycle is collected together once neither is reachable.
+    wrapper: std::cell::UnsafeCell<Option<v8::TracedReference<v8::Object>>>,
 }
 
 // SAFETY: `trace` forwards to the native's `Trace` impl, which must visit every reference it
@@ -323,6 +327,10 @@ unsafe impl v8::cppgc::GarbageCollected for GcBox {
         // SAFETY: tracing runs on the mutator thread while no callback holds `&mut native`.
         let native = unsafe { &*self.native.get() };
         (self.trace)(native.as_ref(), &mut Tracer { visitor });
+        // SAFETY: the wrapper slot is only written by create_traced_instance, never during GC.
+        if let Some(wrapper) = unsafe { &*self.wrapper.get() } {
+            visitor.trace(wrapper);
+        }
     }
 
     fn get_name(&self) -> &'static std::ffi::CStr {
@@ -982,6 +990,7 @@ impl Runtime {
         let gc_box = GcBox {
             native: std::cell::UnsafeCell::new(Box::new(native)),
             trace: trace_native::<T>,
+            wrapper: std::cell::UnsafeCell::new(None),
         };
         let heap = self.isolate.get_cpp_heap().expect("V8 isolates carry a cppgc heap");
         // SAFETY: the pointer is moved into a Persistent before anything else can run a GC.
@@ -989,23 +998,30 @@ impl Runtime {
         GcRoot { inner: v8::cppgc::Persistent::new(&pointer), native: std::marker::PhantomData }
     }
 
-    /// Creates a JS wrapper of `interface` for a traced native. Unlike `create_instance`, the
-    /// wrapper does not own the native through a finalizer: V8 traces wrapper -> native through
-    /// `Object::wrap`, and native -> JS through the native's [`JsRef`]s, so the pair lives while
-    /// either side is reachable and cycles between them are collected. The interface's existing
-    /// getters, setters and methods work unchanged.
+    /// Returns the JS wrapper of `interface` for a traced native, creating it on first use.
+    /// Unlike `create_instance`, the wrapper does not own the native through a finalizer: V8
+    /// traces wrapper -> native through `Object::wrap`, and native -> wrapper and native -> JS
+    /// through the native's traced references, so the pair lives while either side is reachable
+    /// and cycles between them are collected. A native has exactly one wrapper: later calls
+    /// return the same object (with its expando properties) for as long as the native lives.
+    /// The interface's existing getters, setters and methods work unchanged.
     pub fn create_traced_instance<T: Trace>(&mut self, interface: &Interface, native: &GcRoot<T>) -> Handle {
         self.expose_interface(interface).expect("failed to expose native interface");
         let context_handle = &self.context;
         v8::scope!(let scope, &mut self.isolate);
         let context = v8::Local::new(scope, context_handle);
         let scope = &mut v8::ContextScope::new(scope, context);
+        let gc_box = native.inner.get().expect("a GcRoot always points at a live native");
+        // SAFETY: shared read; the slot is only written below, on this thread.
+        if let Some(existing) = unsafe { &*gc_box.wrapper.get() }.as_ref().and_then(|wrapper| wrapper.get(scope)) {
+            let existing: v8::Local<v8::Value> = existing.into();
+            return Handle(v8::Global::new(scope, existing));
+        }
         let template = v8::Local::new(scope, &interface.template);
         let object = template
             .instance_template(scope)
             .new_instance(scope)
             .expect("a freshly created ObjectTemplate instance should never fail");
-        let gc_box = native.inner.get().expect("a GcRoot always points at a live native");
         object.set_aligned_pointer_in_internal_field(
             0,
             gc_box.native.get() as *const std::ffi::c_void,
@@ -1013,6 +1029,9 @@ impl Runtime {
         );
         // SAFETY: TRACED_NATIVE_TAG is used only for GcBox wrappers in this runtime.
         unsafe { v8::Object::wrap::<TRACED_NATIVE_TAG, GcBox>(scope, object, &native.inner) };
+        // SAFETY: no other reference to the wrapper slot is live; TracedReference creation
+        // performs the GC write barrier.
+        unsafe { *gc_box.wrapper.get() = Some(v8::TracedReference::new(scope, object)) };
         let object: v8::Local<v8::Value> = object.into();
         Handle(v8::Global::new(scope, object))
     }
@@ -3047,6 +3066,34 @@ mod tests {
         }
 
         #[test]
+        fn a_traced_native_keeps_one_wrapper_with_its_expandos_while_alive() {
+            let mut runtime = Runtime::new();
+            let interface = node_interface(&mut runtime);
+            let before = dropped();
+            let native = runtime.allocate_traced(node(3));
+            {
+                let first = runtime.create_traced_instance(&interface, &native);
+                let second = runtime.create_traced_instance(&interface, &native);
+                runtime.set_global_property("first", &first).unwrap();
+                runtime.set_global_property("second", &second).unwrap();
+                assert_eq!(runtime.eval("first === second").unwrap(), "true");
+                runtime.eval("first.expando = 'kept'; delete globalThis.first; delete globalThis.second;").unwrap();
+            }
+            // Only Rust holds the native; JS holds nothing. The wrapper must survive with its
+            // expando, because the native traces it.
+            collect(&mut runtime, before + 1);
+            assert_eq!(dropped(), before);
+            let again = runtime.create_traced_instance(&interface, &native);
+            runtime.set_global_property("again", &again).unwrap();
+            assert_eq!(runtime.eval("[again.expando, again.id].join()").unwrap(), "kept,3");
+            // Once neither side is reachable, the native/wrapper pair is collected together.
+            drop((again, native));
+            runtime.eval("delete globalThis.again;").unwrap();
+            collect(&mut runtime, before + 1);
+            assert_eq!(dropped(), before + 1);
+        }
+
+        #[test]
         fn a_traced_js_reference_keeps_its_value_alive() {
             let mut runtime = Runtime::new();
             let holder = runtime.allocate_traced(node(1));
@@ -4789,6 +4836,48 @@ mod tests {
         ] {
             assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
         }
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_bindings_wrap_traced_natives_through_an_inheritance_tree() {
+        use crate::webidl::inheritance_base::{InheritanceBaseBinding, InheritanceBaseNative};
+        use crate::webidl::inheritance_derived::{InheritanceDerivedBinding, InheritanceDerivedNative};
+        use crate::{Trace, Tracer};
+        struct Shape {
+            depth: u32,
+            flagged: bool,
+        }
+        impl Trace for Shape {
+            fn trace(&self, _tracer: &mut Tracer) {}
+        }
+        #[allow(non_snake_case)]
+        impl InheritanceBaseNative for Shape {
+            fn Depth(&self) -> u32 { self.depth }
+            fn Flagged(&self) -> bool { self.flagged }
+            fn set_Flagged(&mut self, value: bool) { self.flagged = value; }
+            fn IsBase(&self) -> bool { false }
+        }
+        #[allow(non_snake_case)]
+        impl InheritanceDerivedNative for Shape {
+            fn Ratio(&self) -> crate::FiniteF64 { crate::FiniteF64::new(0.25).unwrap() }
+            fn DoubledDepth(&self) -> u32 { self.depth * 2 }
+        }
+        let mut runtime = Runtime::new();
+        let base = InheritanceBaseBinding::<Shape>::install(&mut runtime).unwrap();
+        let derived = InheritanceDerivedBinding::<Shape>::install(&mut runtime, &base).unwrap();
+        let native = runtime.allocate_traced(Shape { depth: 4, flagged: false });
+        let wrapper = derived.wrap_traced(&mut runtime, &native);
+        runtime.set_global_property("shape", &wrapper).unwrap();
+        assert_eq!(
+            runtime.eval("shape.flagged = true; [shape instanceof InheritanceBase, shape.depth, shape.doubledDepth(), shape.ratio, shape.flagged].join()").unwrap(),
+            "true,4,8,0.25,true"
+        );
+        // The setter mutated the traced native itself, which Rust observes through its root.
+        assert!(native.get().flagged);
+        let again = derived.wrap_traced(&mut runtime, &native);
+        runtime.set_global_property("again", &again).unwrap();
+        assert_eq!(runtime.eval("again === shape").unwrap(), "true");
     }
 
     #[cfg(feature = "webidl-pilot")]
