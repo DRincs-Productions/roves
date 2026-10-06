@@ -74,6 +74,11 @@ attributes, `any`, dictionaries/sequences/unions.
 dispatches by argument count per the WebIDL overload resolution algorithm; native traits get
 Servo-style `X`/`X_` names. Type-distinguished overloads (30) still fail closed. Coverage 67/486.
 
+**CP56 (2026-10-06): `[CEReactions]`.** Members run inside the native type's
+`roves_v8::CeReactions::with_ce_reactions` hook (getters, setters, operations; the queue pops
+even when the member throws). "Unsupported member" rejections fell from 71 to 35; HTML element
+interfaces now wait on their ancestors.
+
 CP37 exposes stable `NativeObjectId` through `DomObject` and updates generated `dom_struct`
 equality to use that engine-neutral contract. Local checks pass (reflector 2/2, macro 3/3,
 rustfmt, and patch 0101 reverse-check); CI is green: V8 37226916624 (6/6), Servo 37226916650

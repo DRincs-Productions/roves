@@ -442,6 +442,22 @@ class V8GeneratorTests(unittest.TestCase):
                 self.assertIn(expected, source)
             self.assertEqual(source.count("roves_v8::WebIdlOverload {"), 2)
 
+    def test_ce_reactions_members_are_wrapped_in_the_native_hook(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Reactive.webidl"
+            path.write_text(
+                "[Exposed=Window] interface Reactive { [CEReactions] attribute DOMString title; "
+                "[CEReactions, Throws] undefined run(); readonly attribute boolean plain; };",
+                encoding="utf-8",
+            )
+            source = generate(path, Path(directory) / "output")
+            self.assertIn("pub trait ReactiveNative: 'static + roves_v8::CeReactions {", source)
+            self.assertIn("<T as roves_v8::CeReactions>::with_ce_reactions(move || -> Value {", source)
+            self.assertIn("<T as roves_v8::CeReactions>::with_ce_reactions(move || -> () {", source)
+            self.assertIn("<T as roves_v8::CeReactions>::with_ce_reactions(move || -> Result<Value, roves_v8::WebIdlError> {", source)
+            # Getter + setter of `title` and the `run` operation; `plain` is not wrapped.
+            self.assertEqual(source.count("with_ce_reactions("), 3)
+
     def test_overloads_needing_type_distinction_fail_closed(self):
         self.assert_unsupported("interface Unsupported { undefined f(DOMString a); undefined f(boolean a); };")
         self.assert_unsupported("interface Unsupported { undefined f(DOMString a); undefined f(boolean a, optional boolean b); };")

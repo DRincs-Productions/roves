@@ -125,6 +125,10 @@ pub mod webidl {
     pub mod overloaded_operations {
         include!(concat!(env!("OUT_DIR"), "/OverloadedOperationsV8Binding.rs"));
     }
+    #[cfg(test)]
+    pub mod ce_reactive {
+        include!(concat!(env!("OUT_DIR"), "/CeReactiveV8Binding.rs"));
+    }
 }
 
 use std::sync::Once;
@@ -762,6 +766,13 @@ pub type NativeConstructor = fn(&[Value]) -> Result<Box<dyn std::any::Any>, WebI
 pub trait Exposure {
     fn pref_enabled(&self, name: &str) -> bool;
     fn is_secure_context(&self) -> bool;
+}
+
+/// The custom element reaction hook generated bindings call around `[CEReactions]` members:
+/// Servo pushes an element queue before the member runs and pops (running the queued reactions)
+/// after it returns, whether it succeeded or threw. Implemented by the binding's native type.
+pub trait CeReactions {
+    fn with_ce_reactions<R>(run: impl FnOnce() -> R) -> R;
 }
 
 /// Exposes everything: every pref enabled, secure context.
@@ -5445,6 +5456,71 @@ mod tests {
             let expected = if source.ends_with("(true, true)") { "RangeError" } else { "TypeError" };
             assert_eq!(error, expected, "{source}");
         }
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_ce_reactions_members_run_inside_the_reaction_hook() {
+        use crate::webidl::ce_reactive::{CeReactiveBinding, CeReactiveNative};
+        use crate::{CeReactions, WebIdlError};
+        thread_local! {
+            static DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+            static LOG: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+        }
+        fn log(entry: String) {
+            LOG.with(|log| log.borrow_mut().push(entry));
+        }
+        struct Element {
+            title: Vec<u16>,
+        }
+        impl CeReactions for Element {
+            fn with_ce_reactions<R>(run: impl FnOnce() -> R) -> R {
+                DEPTH.with(|depth| depth.set(depth.get() + 1));
+                let result = run();
+                DEPTH.with(|depth| depth.set(depth.get() - 1));
+                log("reactions".into());
+                result
+            }
+        }
+        #[allow(non_snake_case)]
+        impl CeReactiveNative for Element {
+            fn Title(&self) -> Vec<u16> {
+                log(format!("get title at depth {}", DEPTH.with(std::cell::Cell::get)));
+                self.title.clone()
+            }
+            fn set_Title(&mut self, value: Vec<u16>) {
+                log(format!("set title at depth {}", DEPTH.with(std::cell::Cell::get)));
+                self.title = value;
+            }
+            fn Touch(&self) {
+                log(format!("touch at depth {}", DEPTH.with(std::cell::Cell::get)));
+            }
+            fn Fail(&self) -> Result<(), WebIdlError> {
+                log(format!("fail at depth {}", DEPTH.with(std::cell::Cell::get)));
+                Err(WebIdlError::TypeError("failed".into()))
+            }
+            fn ObservedDepth(&self) -> u32 {
+                DEPTH.with(std::cell::Cell::get)
+            }
+        }
+        let mut runtime = Runtime::new();
+        let binding = CeReactiveBinding::<Element>::install(&mut runtime).unwrap();
+        let element = binding.create(&mut runtime, Element { title: Vec::new() });
+        runtime.set_global_property("element", &element).unwrap();
+        runtime.eval("element.title = 'hello'; element.title; element.touch(); try { element.fail(); } catch (e) {}").unwrap();
+        assert_eq!(runtime.eval("[element.title, element.observedDepth].join()").unwrap(), "hello,0");
+        let entries = LOG.with(|log| log.borrow().clone());
+        assert_eq!(
+            entries[..8],
+            [
+                "set title at depth 1", "reactions",
+                "get title at depth 1", "reactions",
+                "touch at depth 1", "reactions",
+                "fail at depth 1", "reactions",
+            ]
+        );
+        // The hook unwinds even when the member throws, and plain members run outside it.
+        assert_eq!(DEPTH.with(std::cell::Cell::get), 0);
     }
 
     #[cfg(feature = "webidl-pilot")]

@@ -141,6 +141,14 @@ dizionari, sequence, union.
 distinti per tipo (30) restano rifiutati. Test generatore 44/44, `roves-v8` 80+5+2, default 59+2,
 check pulito. Copertura 67/486.
 
+**CP56 (2026-10-06):** `[CEReactions]` (patch 0120). Trait engine-neutral
+`roves_v8::CeReactions::with_ce_reactions`, implementato dal tipo nativo. Il generatore avvolge
+le closure di getter, setter, operazioni e overload; la coda viene rilasciata anche se il membro
+lancia. Test generatore 45/45, `roves-v8` 81+5+2, default 59+2, check pulito. Copertura 68/486;
+i rifiuti "unsupported member" sono scesi da 71 a 35. **Prossimo:** sbloccare gli antenati
+`Node`/`Element` (`[Abstract]`, attributi event handler, `any`, setter mutabili non supportati),
+poi l'esposizione non-Window (30).
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

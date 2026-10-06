@@ -11,6 +11,42 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: `[CEReactions]` members (CP56)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixture
+`components/roves-v8/tests/webidl/CeReactive.webidl`;
+`components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0120-roves-v8-webidl-ce-reactions.patch` after 0119.
+
+`[CEReactions]` was the largest remaining member blocker: 42 attributes, mostly reflected HTML
+attributes. Servo's SpiderMonkey bindings push a custom element reaction queue before such a
+member runs and pop it, running the reactions, afterwards. This happens for getters, setters and
+operations alike (`CGPerSignatureCall`).
+
+**Runtime.** It gains the engine-neutral `CeReactions` trait (`with_ce_reactions(run)`), which the
+binding's native type implements. Servo will implement it with its element-queue push and pop.
+
+**Generator.**
+- An interface with any `[CEReactions]` member requires `roves_v8::CeReactions` as a supertrait of
+  its native trait.
+- Each such member's closures (getter, setter, operation or overload) have their body wrapped in
+  `<T as roves_v8::CeReactions>::with_ce_reactions(move || -> R { .. })`. The return type is
+  `Value`, `()` or `Result<Value, WebIdlError>`.
+- Because the error is returned rather than propagated past the hook, the queue is popped even when
+  the member throws.
+
+**Tests.**
+- New runtime test: a setter, a getter, an operation and a throwing operation each run at reaction
+  depth 1, followed by the reactions. The depth returns to 0 after the throw, and a plain member runs
+  outside the hook.
+- Generator tests: 45/45.
+- `roves-v8` pilot and pilot+JIT-less: 81 unit + 5 integration + 2 doctests each; default 59 unit +
+  2 doctests.
+- `servo-script` check with the pilot is clean.
+
+Coverage: 68/486. The "unsupported member" rejections fell from 71 to 35. Most HTML element
+interfaces are now blocked only by their ancestors (`Node`/`Element` and others).
+
 ## 2026-10-06 - V8 migration Phase 4: overloads distinguishable by argument count (CP55)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixture
