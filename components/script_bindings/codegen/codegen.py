@@ -8421,6 +8421,14 @@ def v8_default_to_json_attributes(interface) -> list:
     return names
 
 
+# roves_v8::BufferKind variants, by WebIDL type name.
+V8_BUFFER_KINDS = {
+    "ArrayBuffer", "ArrayBufferView", "DataView", "Int8Array", "Uint8Array", "Uint8ClampedArray",
+    "Int16Array", "Uint16Array", "Int32Array", "Uint32Array", "Float32Array", "Float64Array",
+    "BigInt64Array", "BigUint64Array",
+}
+
+
 def v8_union_info(ty, name: str, member_name: str):
     """A Rust enum per union (named like Servo's, e.g. AddEventListenerOptionsOrBoolean) with
     one variant per member type."""
@@ -8470,6 +8478,12 @@ def v8_typed_info(ty, name: str, member_name: str):
         return v8_dictionary_info(ty.inner, name)
     if ty.isUnion():
         return v8_union_info(ty, name, member_name)
+    if ty.isBufferSource():
+        kind = "ArrayBuffer" if ty.isArrayBuffer() else "ArrayBufferView" if ty.isArrayBufferView() else ty.name
+        if kind not in V8_BUFFER_KINDS:
+            raise TypeError(f"V8 backend unsupported buffer type: {name}.{member_name}: {ty}")
+        return ("roves_v8::Handle", f"roves_v8::WebIdlType::Buffer(roves_v8::BufferKind::{kind})",
+                "Value::Js(value) => value.clone()", "Value::Js(ITEM)")
     if ty.isPromise():
         return ("roves_v8::Handle", "roves_v8::WebIdlType::Promise",
                 "Value::Js(value) => value.clone()", "Value::Js(ITEM)")
@@ -8542,7 +8556,8 @@ def v8_contains_sequence(ty) -> bool:
     """Whether the type needs the structured path (sequences and dictionaries)."""
     if ty.nullable():
         return v8_contains_sequence(ty.inner)
-    return ty.isSequence() or ty.isDictionary() or ty.isUnion() or ty.isCallbackInterface() or ty.isPromise()
+    return (ty.isSequence() or ty.isDictionary() or ty.isUnion() or ty.isCallbackInterface()
+            or ty.isPromise() or ty.isBufferSource())
 
 
 def v8_contains_handle(ty) -> bool:
@@ -8553,7 +8568,8 @@ def v8_contains_handle(ty) -> bool:
         return any(v8_contains_handle(member.type) for member in v8_dictionary_members(ty.inner))
     if ty.isUnion():
         return any(v8_contains_handle(member) for member in ty.memberTypes)
-    return ty.isAny() or ty.isObject() or ty.isCallback() or ty.isCallbackInterface() or ty.isPromise()
+    return (ty.isAny() or ty.isObject() or ty.isCallback() or ty.isCallbackInterface() or ty.isPromise()
+            or ty.isBufferSource())
 
 
 def v8_argument_types(name: str, member_name: str, arguments) -> list:
@@ -9056,7 +9072,7 @@ class CGV8BindingRoot(CGThing):
                         # WebIDL: a promise-returning operation rejects instead of throwing.
                         promise_operations.add(MakeNativeName(member.identifier.name) + "_" * overload_index)
                         rust_type, value_expr = "roves_v8::Handle", "Value::Js(native.{native}())"
-                    elif result_type.isAny() or result_type.isObject():
+                    elif result_type.isAny() or result_type.isObject() or result_type.isBufferSource():
                         if nullable_return:
                             rust_type, value_expr = "Option<roves_v8::Handle>", "native.{native}().map(Value::Js).unwrap_or(Value::Null)"
                         else:
@@ -9150,6 +9166,11 @@ class CGV8BindingRoot(CGThing):
                 else:
                     rust_type = native_type
                     value_expr = f"Value::Number({to_number.replace('VALUE', 'native.{native}()')})"
+            elif member.readonly and idl_type.isUnion() and not v8_contains_handle(member.type):
+                # Readonly union attributes reuse the union enum; the getter value template has
+                # its braces escaped for the later `.format(native=...)`.
+                rust_type, _, _, to_value = v8_typed_info(member.type, name, member.identifier.name)
+                value_expr = to_value.replace("{", "{{").replace("}", "}}").replace("ITEM", "native.{native}()")
             elif v8_is_dom_interface(idl_type):
                 if member.type.nullable():
                     rust_type = "Option<roves_v8::NativeRef>"

@@ -11,6 +11,44 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: buffer sources and readonly union attributes (CP69)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixture
+`components/roves-v8/tests/webidl/BufferOperations.webidl`;
+`components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0133-roves-v8-buffer-sources.patch` after 0132.
+
+Buffer source types are essential for games: `ArrayBuffer`, `ArrayBufferView`, typed arrays and
+`DataView` feed WebGL buffers and textures, Canvas image data, audio and `TextDecoder`.
+
+**Runtime.**
+- `WebIdlType::Buffer(BufferKind)` type-checks the value by kind and passes it as `Value::Js`
+  without copying. Unions select buffer members before sequences, as in the specification.
+- `ScriptContext::with_buffer_bytes(&buffer, |bytes: &mut [u8]| ..)` gives in-place access to the
+  live JS memory: a view's own range, or a whole `ArrayBuffer`. A detached buffer is empty.
+- `new_array_buffer(bytes)` and `new_typed_array(kind, bytes)` create results.
+
+**Generator.**
+- Buffer types become contextual `roves_v8::Handle`s on the structured path, as arguments and as
+  results. A `BufferSource` union becomes an enum of handles.
+- Readonly union attributes that carry no handles (e.g. `canvas: HTMLCanvasElement or
+  OffscreenCanvas`) reuse the union enums. Mutable union attributes still fail closed.
+
+**Tests.**
+- New runtime test:
+  - sums over a typed array, an offset view of a shared buffer and a `DataView`;
+  - a `fill` through `subarray` that touches only the view's range of live memory;
+  - `copy` from both union members into a fresh `ArrayBuffer`, with byte order;
+  - a returned `Float32Array`;
+  - TypeErrors for an array, an `ArrayBuffer` where a view is required, a wrong typed-array kind
+    and a string.
+- Generator tests: 58/58.
+- `roves-v8` pilot and pilot+JIT-less: 93 unit + 5 integration + 2 doctests each; default 60 unit +
+  2 doctests.
+- `servo-script` check with the pilot is clean.
+
+Coverage: **255/486**.
+
 ## 2026-10-06 - V8 migration Phase 4: defaults through types, `[LegacyWindowAlias]`, `[Func]`, clone markers (CP68)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixture

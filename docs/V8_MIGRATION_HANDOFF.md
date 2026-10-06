@@ -227,6 +227,11 @@ attraverso il tipo. Supportati anche `[LegacyWindowAlias]` (`add_interface_alias
 tipo, BufferSource (`ArrayBufferView`/typed array), iterable/maplike/setlike, `[Global]`, named
 property (`LegacyUnenumerableNamedProperties`), `[HTMLConstructor]`/`[LegacyFactoryFunction]`.
 
+**CP69 (2026-10-06):** buffer source (patch 0133). `WebIdlType::Buffer(BufferKind)`; accesso ai
+byte in place con `ScriptContext::with_buffer_bytes`, creazione con `new_array_buffer`/
+`new_typed_array`; supportati gli attributi union readonly. Test generatore 58/58, `roves-v8`
+93+5+2, default 60+2, check pulito. Copertura **255/486**.
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

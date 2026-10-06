@@ -104,7 +104,7 @@ class V8GeneratorTests(unittest.TestCase):
                 generate(path, Path(directory) / "output")
 
     def test_unsupported_members_never_silently_disappear(self):
-        for member in ["readonly attribute (long or DOMString) value;", "readonly attribute Promise<any> value;", "static readonly attribute boolean valid;", "[LegacyLenientThis] readonly attribute boolean valid;", "attribute Unsupported? owner;"]:
+        for member in ["attribute (long or DOMString) value;", "readonly attribute Promise<any> value;", "static readonly attribute boolean valid;", "[LegacyLenientThis] readonly attribute boolean valid;", "attribute Unsupported? owner;"]:
             with self.subTest(member=member):
                 self.assert_unsupported("interface Unsupported { " + member + " };")
 
@@ -691,6 +691,27 @@ class V8GeneratorTests(unittest.TestCase):
                 "default: Some(Value::Null) }",
                 'runtime.add_interface_alias(&interface, "webkitDefaults");',
                 'exposure.func_enabled("probe")',
+            ]:
+                self.assertIn(expected, source)
+
+    def test_buffer_sources_and_union_attributes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            other = Path(directory) / "Other.webidl"
+            other.write_text("[Exposed=Window] interface Other {};", encoding="utf-8")
+            path = Path(directory) / "Buffers.webidl"
+            path.write_text(
+                "typedef (ArrayBufferView or ArrayBuffer) Source; [Exposed=Window] interface Buffers { "
+                "unsigned long sum(Float32Array data); ArrayBuffer copy(Source source); "
+                "readonly attribute (Buffers or Other)? owner; };",
+                encoding="utf-8",
+            )
+            source = generate(path, Path(directory) / "output", (other,))
+            for expected in [
+                "fn Sum(&self, cx: &mut roves_v8::ScriptContext, arg0: roves_v8::Handle) -> Result<u32, roves_v8::WebIdlError>;",
+                "roves_v8::WebIdlType::Buffer(roves_v8::BufferKind::Float32Array)",
+                "roves_v8::WebIdlType::Buffer(roves_v8::BufferKind::ArrayBufferView), roves_v8::WebIdlType::Buffer(roves_v8::BufferKind::ArrayBuffer)",
+                "fn Copy(&self, cx: &mut roves_v8::ScriptContext, arg0: ArrayBufferViewOrArrayBuffer) -> Result<roves_v8::Handle, roves_v8::WebIdlError>;",
+                "fn Owner(&self) -> Option<BuffersOrOther>;",
             ]:
                 self.assertIn(expected, source)
 

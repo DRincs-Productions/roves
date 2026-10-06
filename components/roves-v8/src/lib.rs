@@ -177,6 +177,10 @@ pub mod webidl {
     pub mod defaults_probe {
         include!(concat!(env!("OUT_DIR"), "/DefaultsProbeV8Binding.rs"));
     }
+    #[cfg(test)]
+    pub mod buffer_operations {
+        include!(concat!(env!("OUT_DIR"), "/BufferOperationsV8Binding.rs"));
+    }
 }
 
 use std::sync::Once;
@@ -854,6 +858,60 @@ impl ScriptContext<'_, '_, '_> {
         }
     }
 
+    /// Runs `access` on the bytes of a buffer source in place (a view's own range, or a whole
+    /// `ArrayBuffer`); `None` if `buffer` is not one. A detached buffer is empty. The bytes are
+    /// the live JS memory: writes are visible to JS, and must not be kept past `access`.
+    pub fn with_buffer_bytes<R>(&mut self, buffer: &Handle, access: impl FnOnce(&mut [u8]) -> R) -> Option<R> {
+        let local = v8::Local::new(self.scope, &buffer.0);
+        let (data, length) = if let Ok(view) = v8::Local::<v8::ArrayBufferView>::try_from(local) {
+            (view.data() as *mut u8, view.byte_length())
+        } else if let Ok(array_buffer) = v8::Local::<v8::ArrayBuffer>::try_from(local) {
+            let data = array_buffer.data().map_or(std::ptr::null_mut(), |data| data.as_ptr() as *mut u8);
+            (data, array_buffer.byte_length())
+        } else {
+            return None;
+        };
+        if data.is_null() || length == 0 {
+            return Some(access(&mut []));
+        }
+        // SAFETY: V8 keeps the backing store alive while `local` (and the scope) lives, and no
+        // JS runs during `access`, so nothing can detach or resize the buffer meanwhile.
+        Some(access(unsafe { std::slice::from_raw_parts_mut(data, length) }))
+    }
+
+    /// A new `ArrayBuffer` owning `bytes`.
+    pub fn new_array_buffer(&mut self, bytes: Vec<u8>) -> Handle {
+        let store = v8::ArrayBuffer::new_backing_store_from_vec(bytes).make_shared();
+        let array_buffer: v8::Local<v8::Value> = v8::ArrayBuffer::with_backing_store(self.scope, &store).into();
+        Handle(v8::Global::new(self.scope, array_buffer))
+    }
+
+    /// A new typed array of `kind` over a fresh buffer holding `bytes` (whose length must be a
+    /// multiple of the element size). `None` for `ArrayBufferView`/`DataView`, which have no
+    /// single element type.
+    pub fn new_typed_array(&mut self, kind: BufferKind, bytes: Vec<u8>) -> Option<Handle> {
+        let length = bytes.len();
+        let store = v8::ArrayBuffer::new_backing_store_from_vec(bytes).make_shared();
+        let buffer = v8::ArrayBuffer::with_backing_store(self.scope, &store);
+        let scope = &*self.scope;
+        let array: v8::Local<v8::Value> = match kind {
+            BufferKind::ArrayBuffer => buffer.into(),
+            BufferKind::Int8Array => v8::Int8Array::new(scope, buffer, 0, length)?.into(),
+            BufferKind::Uint8Array => v8::Uint8Array::new(scope, buffer, 0, length)?.into(),
+            BufferKind::Uint8ClampedArray => v8::Uint8ClampedArray::new(scope, buffer, 0, length)?.into(),
+            BufferKind::Int16Array => v8::Int16Array::new(scope, buffer, 0, length / 2)?.into(),
+            BufferKind::Uint16Array => v8::Uint16Array::new(scope, buffer, 0, length / 2)?.into(),
+            BufferKind::Int32Array => v8::Int32Array::new(scope, buffer, 0, length / 4)?.into(),
+            BufferKind::Uint32Array => v8::Uint32Array::new(scope, buffer, 0, length / 4)?.into(),
+            BufferKind::Float32Array => v8::Float32Array::new(scope, buffer, 0, length / 4)?.into(),
+            BufferKind::Float64Array => v8::Float64Array::new(scope, buffer, 0, length / 8)?.into(),
+            BufferKind::BigInt64Array => v8::BigInt64Array::new(scope, buffer, 0, length / 8)?.into(),
+            BufferKind::BigUint64Array => v8::BigUint64Array::new(scope, buffer, 0, length / 8)?.into(),
+            BufferKind::ArrayBufferView | BufferKind::DataView => return None,
+        };
+        Some(Handle(v8::Global::new(self.scope, array)))
+    }
+
     /// Creates a pending promise. Returns the promise (to hand to JS) and its resolver (to settle
     /// it later with [`ScriptContext::resolve_promise`]/[`ScriptContext::reject_promise`] or,
     /// outside a native call, [`Runtime::settle_promise`]).
@@ -1069,6 +1127,50 @@ pub enum WebIdlType {
     Union(Vec<WebIdlType>),
     /// `Promise<T>`: any value, converted like `Promise.resolve(value)` ([`Value::Js`]).
     Promise,
+    /// A buffer source type (`ArrayBuffer`, `ArrayBufferView`, a typed array, `DataView`):
+    /// type-checked and passed as [`Value::Js`] without copying; natives access the bytes in
+    /// place with [`ScriptContext::with_buffer_bytes`].
+    Buffer(BufferKind),
+}
+
+/// The WebIDL buffer source types.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BufferKind {
+    ArrayBuffer,
+    ArrayBufferView,
+    DataView,
+    Int8Array,
+    Uint8Array,
+    Uint8ClampedArray,
+    Int16Array,
+    Uint16Array,
+    Int32Array,
+    Uint32Array,
+    Float32Array,
+    Float64Array,
+    BigInt64Array,
+    BigUint64Array,
+}
+
+impl BufferKind {
+    fn matches(self, value: v8::Local<v8::Value>) -> bool {
+        match self {
+            BufferKind::ArrayBuffer => value.is_array_buffer(),
+            BufferKind::ArrayBufferView => value.is_array_buffer_view(),
+            BufferKind::DataView => value.is_data_view(),
+            BufferKind::Int8Array => value.is_int8_array(),
+            BufferKind::Uint8Array => value.is_uint8_array(),
+            BufferKind::Uint8ClampedArray => value.is_uint8_clamped_array(),
+            BufferKind::Int16Array => value.is_int16_array(),
+            BufferKind::Uint16Array => value.is_uint16_array(),
+            BufferKind::Int32Array => value.is_int32_array(),
+            BufferKind::Uint32Array => value.is_uint32_array(),
+            BufferKind::Float32Array => value.is_float32_array(),
+            BufferKind::Float64Array => value.is_float64_array(),
+            BufferKind::BigInt64Array => value.is_big_int64_array(),
+            BufferKind::BigUint64Array => value.is_big_uint64_array(),
+        }
+    }
 }
 
 /// One member of a [`WebIdlType::Dictionary`].
@@ -3725,6 +3827,13 @@ fn convert_typed_value<'s>(
             Some(Value::Js(Handle(v8::Global::new(scope, value))))
         },
         WebIdlType::Union(members) => convert_union(scope, value, members),
+        WebIdlType::Buffer(kind) => {
+            if !kind.matches(value) {
+                throw_type_error(scope, &format!("value is not {kind:?}"));
+                return None;
+            }
+            Some(Value::Js(Handle(v8::Global::new(scope, value))))
+        },
         WebIdlType::Promise => {
             let resolver = v8::PromiseResolver::new(scope)?;
             resolver.resolve(scope, value)?;
@@ -3856,6 +3965,13 @@ fn convert_union<'s>(
             if let WebIdlType::Interface(name) = member {
                 if let Some(native) = implementing_native(scope, value, name) {
                     return Some(Value::Union(index, Box::new(Value::Native(native))));
+                }
+            }
+        }
+        for (index, member) in members.iter().enumerate() {
+            if let WebIdlType::Buffer(kind) = member {
+                if kind.matches(value) {
+                    return select(scope, index);
                 }
             }
         }
@@ -7300,6 +7416,54 @@ mod tests {
         let mut runtime = Runtime::new();
         let _binding = DefaultsProbeBinding::<Probe>::install_with(&mut runtime, &FuncOff).unwrap();
         assert_eq!(runtime.eval("[typeof DefaultsProbe, typeof webkitDefaultsProbe].join()").unwrap(), "undefined,undefined");
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_buffer_sources_are_accessed_in_place() {
+        use crate::webidl::buffer_operations::{ArrayBufferViewOrArrayBuffer, BufferOperationsBinding, BufferOperationsNative};
+        use crate::{BufferKind, Handle, ScriptContext, WebIdlError};
+        struct Ops;
+        #[allow(non_snake_case)]
+        impl BufferOperationsNative for Ops {
+            fn Sum(&self, cx: &mut ScriptContext, data: Handle) -> Result<u32, WebIdlError> {
+                Ok(cx.with_buffer_bytes(&data, |bytes| bytes.iter().map(|byte| *byte as u32).sum()).unwrap())
+            }
+            fn Fill(&self, cx: &mut ScriptContext, target: Handle, value: u8) -> Result<(), WebIdlError> {
+                cx.with_buffer_bytes(&target, |bytes| bytes.fill(value)).unwrap();
+                Ok(())
+            }
+            fn Copy(&self, cx: &mut ScriptContext, source: ArrayBufferViewOrArrayBuffer) -> Result<Handle, WebIdlError> {
+                let (ArrayBufferViewOrArrayBuffer::ArrayBufferView(source) | ArrayBufferViewOrArrayBuffer::ArrayBuffer(source)) = source;
+                let bytes = cx.with_buffer_bytes(&source, |bytes| bytes.to_vec()).unwrap();
+                Ok(cx.new_array_buffer(bytes))
+            }
+            fn Halves(&self, cx: &mut ScriptContext, count: u32) -> Result<Handle, WebIdlError> {
+                let bytes = (0..count).flat_map(|index| (index as f32 / 2.0).to_le_bytes()).collect();
+                Ok(cx.new_typed_array(BufferKind::Float32Array, bytes).unwrap())
+            }
+        }
+        let mut runtime = Runtime::new();
+        let binding = BufferOperationsBinding::<Ops>::install(&mut runtime).unwrap();
+        let ops = binding.create(&mut runtime, Ops);
+        runtime.set_global_property("ops", &ops).unwrap();
+        for (source, expected) in [
+            ("ops.sum(new Uint8Array([1, 2, 3]))", "6"),
+            // A view covers only its own range of the underlying buffer.
+            ("const shared = new Uint8Array([9, 1, 1, 9]); ops.sum(new Uint8Array(shared.buffer, 1, 2))", "2"),
+            ("ops.sum(new DataView(new Uint8Array([4, 4]).buffer))", "8"),
+            // Writes land in the live JS memory, limited to the view's range.
+            ("const target = new Uint8Array(4); ops.fill(target.subarray(1, 3), 7); target.join()", "0,7,7,0"),
+            // A BufferSource union accepts views and buffers; results are fresh buffers.
+            ("const copy = ops.copy(new Uint8Array([5, 6]).buffer); [copy instanceof ArrayBuffer, new Uint8Array(copy).join()].join('|')", "true|5,6"),
+            ("new Uint8Array(ops.copy(new Uint16Array([258]))).join()", "2,1"),
+            ("const halves = ops.halves(3); [halves instanceof Float32Array, halves.join()].join('|')", "true|0,0.5,1"),
+        ] {
+            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
+        }
+        for source in ["ops.sum([1, 2])", "ops.sum(new ArrayBuffer(2))", "ops.fill(new Int8Array(2), 1)", "ops.copy('text')"] {
+            assert!(runtime.eval(source).unwrap_err().contains("TypeError"), "{source}");
+        }
     }
 
     #[cfg(feature = "webidl-pilot")]
