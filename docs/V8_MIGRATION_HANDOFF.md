@@ -43,7 +43,11 @@ IndexedDB, rendering context del paint worklet) usano `dom_object_value` (patch 
 chiamanti aperti, quasi tutti API engine-specifiche (windowproxy, debugger, structured clone,
 definizione interfacce, `JS_DefineProperty`, compile).
 
-**Ripresa:** confermare verde la CI cumulativa di CP39–CP44. La scope chain degli event handler
+**CI CP39–CP44 verde** al commit `540320d7df2`: Servo `37349391499` (serie patch fino a 0108,
+build e bundle), Android `37349391487`, iOS `37349391463`; matrice V8 `37348750612` verde al
+commit CP41 `e067fc2800f` (i commit successivi non toccano i path del workflow V8).
+
+**Ripresa:** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,
 estensioni WebGL, compile). Il toolchain locale Windows è completo: verificare ogni modifica in
