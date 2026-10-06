@@ -164,6 +164,12 @@ ricevere `&mut`: tutti i setter sono `&self` (interior mutability, come il DOM d
 Test generatore 47/47, `roves-v8` 82+5+2, default 59+2, check pulito. Copertura 96/486.
 **Prossimo:** attributi contestuali (event handler, attributi `any`), poi dizionari e sequence.
 
+**CP59 (2026-10-06):** attributi contestuali (patch 0123): `define_contextual_attribute`,
+conversione `LegacyCallback` per `[LegacyTreatNonObjectAsNull]` (event handler). I nativi
+salvano i valori JS come `JsRef` tracciati. Test generatore 48/48, `roves-v8` 83+5+2, default
+59+2, check pulito. Copertura 99/486. **Prossimo:** dizionari e sequence (costruttori di
+`Event`/`EventTarget`, `composedPath`), poi callback interface (`EventListener`).
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

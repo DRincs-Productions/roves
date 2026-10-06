@@ -92,6 +92,11 @@ take `&self` everywhere (interior mutability, as in Servo) — the earlier `&mut
 would alias a live shared borrow under re-entrancy. Coverage 96/486. Next: contextual
 attributes (event handlers, `any` attributes), then dictionaries and sequences.
 
+**CP59 (2026-10-06): contextual attributes.** `any`/`object`/callback attributes (event
+handlers with `[LegacyTreatNonObjectAsNull]`) use `define_contextual_attribute`; natives store
+traced `JsRef`s. Coverage 99/486. Next: dictionaries and sequences (the `Event`/`EventTarget`
+constructors and `composedPath`), then callback interfaces (`EventListener`).
+
 CP37 exposes stable `NativeObjectId` through `DomObject` and updates generated `dom_struct`
 equality to use that engine-neutral contract. Local checks pass (reflector 2/2, macro 3/3,
 rustfmt, and patch 0101 reverse-check); CI is green: V8 37226916624 (6/6), Servo 37226916650

@@ -11,6 +11,48 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: contextual attributes, event handlers and `any` (CP59)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixture
+`components/roves-v8/tests/webidl/HandlerHost.webidl`;
+`components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0123-roves-v8-contextual-attributes.patch` after 0122.
+
+Attributes of type `any`, `object` and callback functions (event handlers in particular,
+`attribute EventHandler onclick`) hold JS values, so their natives need the engine.
+
+**Runtime.**
+- `Runtime::define_contextual_attribute(interface, name, getter, Option<setter>, conversion,
+  nullable)` installs a prototype accessor. Both natives receive a `ScriptContext`, the setter gets
+  the already converted value, and returned errors are thrown.
+- The new conversion `WebIdlArgumentConversion::LegacyCallback` implements
+  `[LegacyTreatNonObjectAsNull]`: any object is accepted (a non-callable one throws only when
+  invoked), and every non-object becomes `null` instead of throwing.
+- A shared `receiver_native` helper does the receiver check.
+
+**Generator.**
+- `any`, `object` and callback-typed attributes become contextual: the native trait gets
+  `X(&self, cx) -> Result<T, WebIdlError>` and `set_X(&self, cx, value) -> Result<(), WebIdlError>`.
+- Nullable callbacks marked `[LegacyTreatNonObjectAsNull]` map to `LegacyCallback`.
+- The `[CEReactions]` wrapper types contextual getters and setters as `Result`s.
+
+**Tests.**
+- New runtime test on a traced native that stores its handler and data as traced `JsRef`s (the
+  GC-correct production pattern). It covers:
+  - a null handler;
+  - handler identity and invocation with its result;
+  - non-object assignments clearing the handler;
+  - a stored non-callable object throwing a TypeError only when fired;
+  - `any` identity and an `object?` view of it;
+  - a readonly attribute having no setter;
+  - handler and data surviving full GCs through the trace.
+- Generator tests: 48/48.
+- `roves-v8` pilot and pilot+JIT-less: 83 unit + 5 integration + 2 doctests each; default 59 unit +
+  2 doctests.
+- `servo-script` check with the pilot is clean.
+
+Coverage: 99/486. Event-handler and `any` attribute blockers are gone.
+
 ## 2026-10-06 - V8 migration Phase 4: ScriptContext, `any`/`object`/callback values, `&self` setters (CP58)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixture

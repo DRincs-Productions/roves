@@ -133,6 +133,10 @@ pub mod webidl {
     pub mod callback_operations {
         include!(concat!(env!("OUT_DIR"), "/CallbackOperationsV8Binding.rs"));
     }
+    #[cfg(test)]
+    pub mod handler_host {
+        include!(concat!(env!("OUT_DIR"), "/HandlerHostV8Binding.rs"));
+    }
 }
 
 use std::sync::Once;
@@ -297,6 +301,8 @@ pub struct Runtime {
     constructor_configs: Vec<Box<WebIdlConstructorConfig>>,
     /// Per-overloaded-method callback data, kept alive for the same reason.
     overload_configs: Vec<Box<WebIdlOverloadConfig>>,
+    /// Per-contextual-attribute callback data, kept alive for the same reason.
+    attribute_configs: Vec<Box<ContextualAttributeConfig>>,
 }
 
 struct WrappedFinalizer {
@@ -701,6 +707,37 @@ impl ScriptContext<'_, '_, '_> {
     }
 }
 
+/// The getter of an attribute whose native needs the JS engine, registered via
+/// [`Runtime::define_contextual_attribute`].
+pub type ContextualPropertyGetter =
+    for<'a, 's, 'i> fn(&mut ScriptContext<'a, 's, 'i>, &dyn std::any::Any) -> Result<Value, WebIdlError>;
+
+/// The setter of a contextual attribute; it receives the already converted value.
+pub type ContextualPropertySetter =
+    for<'a, 's, 'i> fn(&mut ScriptContext<'a, 's, 'i>, &dyn std::any::Any, &Value) -> Result<(), WebIdlError>;
+
+struct ContextualAttributeConfig {
+    getter: ContextualPropertyGetter,
+    setter: Option<ContextualPropertySetter>,
+    conversion: WebIdlArguments,
+}
+
+/// Reads the native of a wrapper receiving a member call, or throws "Illegal invocation".
+fn receiver_native<'n>(scope: &mut v8::PinScope, this: v8::Local<v8::Object>) -> Option<&'n dyn std::any::Any> {
+    if this.internal_field_count() < 1 {
+        throw_type_error(scope, "Illegal invocation");
+        return None;
+    }
+    let raw = unsafe { this.get_aligned_pointer_from_internal_field(0, WRAPPED_POINTER_TAG) }
+        as *mut Box<dyn std::any::Any>;
+    if raw.is_null() {
+        throw_type_error(scope, "Illegal invocation");
+        return None;
+    }
+    // SAFETY: the receiver owns this Box (or its GcBox does) and is alive for the callback.
+    Some(unsafe { (&*raw).as_ref() })
+}
+
 /// A WebIDL operation that needs the JS engine (`any`, `object` or callback values), registered
 /// via [`Runtime::define_contextual_webidl_method`].
 pub type ContextualNativeMethod =
@@ -789,6 +826,9 @@ pub enum WebIdlArgumentConversion {
     Object,
     /// A WebIDL callback function: any callable, as [`Value::Js`]; else a TypeError.
     Callback,
+    /// A `[LegacyTreatNonObjectAsNull]` callback (event handlers): any object, as
+    /// [`Value::Js`]; every non-object becomes [`Value::Null`] instead of throwing.
+    LegacyCallback,
 }
 
 /// WebIDL optional-argument state. `Missing` differs from a present nullable `None`.
@@ -959,6 +999,7 @@ impl Runtime {
             wrapped_finalizers: Default::default(),
             constructor_configs: Vec::new(),
             overload_configs: Vec::new(),
+            attribute_configs: Vec::new(),
             method_configs: Vec::new(),
         }
     }
@@ -1751,6 +1792,99 @@ impl Runtime {
         getter: PropertyGetter,
     ) -> Result<(), String> {
         self.define_attribute(interface, name, getter, None, None, None, None, false)
+    }
+
+    /// Defines a prototype attribute whose native getter (and optional setter) needs the JS
+    /// engine: both receive a [`ScriptContext`], and the setter gets the assigned value already
+    /// converted by `conversion` (with `nullable` mapping null/undefined to [`Value::Null`]).
+    /// Errors the natives return are thrown.
+    pub fn define_contextual_attribute(
+        &mut self,
+        interface: &Interface,
+        name: &str,
+        getter: ContextualPropertyGetter,
+        setter: Option<ContextualPropertySetter>,
+        conversion: WebIdlArgumentConversion,
+        nullable: bool,
+    ) -> Result<(), String> {
+        if interface.materialized.get() {
+            return Err("interface members must be defined before creating instances or descendants".into());
+        }
+        let config = Box::new(ContextualAttributeConfig {
+            getter,
+            setter,
+            conversion: WebIdlArguments::new(&[conversion], &[nullable], &[false], &[None]),
+        });
+        let config_pointer = (&*config) as *const ContextualAttributeConfig;
+        self.attribute_configs.push(config);
+        let context_handle = &self.context;
+        v8::scope!(let scope, &mut self.isolate);
+        let context = v8::Local::new(scope, context_handle);
+        let scope = &mut v8::ContextScope::new(scope, context);
+        let template = v8::Local::new(scope, &interface.template);
+        let signature = v8::Signature::new(scope, template);
+        let key = v8::String::new(scope, name).ok_or("invalid attribute name")?;
+        let data = v8::External::new(scope, config_pointer as *mut std::ffi::c_void);
+        let getter_template = v8::FunctionTemplate::builder(
+            |scope: &mut v8::PinScope,
+             args: v8::FunctionCallbackArguments,
+             mut retval: v8::ReturnValue| {
+                let external = v8::Local::<v8::External>::try_from(args.data()).unwrap();
+                // SAFETY: the External points to this attribute's boxed config.
+                let config = unsafe { &*(external.value() as *const ContextualAttributeConfig) };
+                let Some(native) = receiver_native(scope, args.this()) else { return };
+                let result = (config.getter)(&mut ScriptContext { scope }, native);
+                match result {
+                    Ok(value) => {
+                        let value = v8_result(scope, &value);
+                        retval.set(value);
+                    },
+                    Err(error) => throw_webidl_error(scope, &error),
+                }
+            },
+        )
+        .data(data.into())
+        .signature(signature)
+        .constructor_behavior(v8::ConstructorBehavior::Throw)
+        .build(scope);
+        let getter_name = v8::String::new(scope, &format!("get {name}")).unwrap();
+        getter_template.set_class_name(getter_name);
+        let setter_template = if setter.is_some() {
+            let setter_template = v8::FunctionTemplate::builder(
+                |scope: &mut v8::PinScope,
+                 args: v8::FunctionCallbackArguments,
+                 _retval: v8::ReturnValue| {
+                    let external = v8::Local::<v8::External>::try_from(args.data()).unwrap();
+                    // SAFETY: the External points to this attribute's boxed config.
+                    let config = unsafe { &*(external.value() as *const ContextualAttributeConfig) };
+                    let Some(native) = receiver_native(scope, args.this()) else { return };
+                    let Some(value) = convert_webidl_arguments(scope, &args, &config.conversion) else {
+                        return;
+                    };
+                    let setter = config.setter.expect("setter template exists only with a setter");
+                    if let Err(error) = setter(&mut ScriptContext { scope }, native, &value[0]) {
+                        throw_webidl_error(scope, &error);
+                    }
+                },
+            )
+            .data(data.into())
+            .signature(signature)
+            .length(1)
+            .constructor_behavior(v8::ConstructorBehavior::Throw)
+            .build(scope);
+            let setter_name = v8::String::new(scope, &format!("set {name}")).unwrap();
+            setter_template.set_class_name(setter_name);
+            Some(setter_template)
+        } else {
+            None
+        };
+        template.prototype_template(scope).set_accessor_property(
+            key.into(),
+            Some(getter_template),
+            setter_template,
+            v8::PropertyAttribute::NONE,
+        );
+        Ok(())
     }
 
     /// Defines a WebIDL constant: a `{ writable: false, enumerable: true, configurable: false }`
@@ -2943,6 +3077,13 @@ fn convert_webidl_arguments<'s>(
                     return None;
                 }
                 Value::Js(Handle(v8::Global::new(scope, argument)))
+            }
+            Some(WebIdlArgumentConversion::LegacyCallback) => {
+                if argument.is_object() {
+                    Value::Js(Handle(v8::Global::new(scope, argument)))
+                } else {
+                    Value::Null
+                }
             }
             Some(WebIdlArgumentConversion::Callback) => {
                 if !argument.is_function() {
@@ -5729,6 +5870,87 @@ mod tests {
         for source in ["ops.apply(1, 1)", "ops.isObject(1)", "ops.apply({}, 1)", "ops.countCalls('x')"] {
             assert!(runtime.eval(source).unwrap_err().contains("TypeError"), "{source}");
         }
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_event_handler_and_any_attributes_store_traced_js_values() {
+        use crate::webidl::handler_host::{HandlerHostBinding, HandlerHostNative};
+        use crate::{Handle, JsRef, ScriptContext, Trace, Tracer, WebIdlError};
+        use std::cell::RefCell;
+        /// Stores its JS values as traced references, the GC-correct pattern: a handler that
+        /// closes over the host's own wrapper forms a collectable cycle.
+        struct Host {
+            onping: RefCell<Option<JsRef>>,
+            data: RefCell<Option<JsRef>>,
+        }
+        impl Trace for Host {
+            fn trace(&self, tracer: &mut Tracer) {
+                for slot in [&self.onping, &self.data] {
+                    if let Some(reference) = &*slot.borrow() {
+                        tracer.js(reference);
+                    }
+                }
+            }
+        }
+        fn load(cx: &mut ScriptContext, slot: &RefCell<Option<JsRef>>) -> Option<Handle> {
+            slot.borrow().as_ref().and_then(|reference| cx.js_ref_value(reference))
+        }
+        #[allow(non_snake_case)]
+        impl HandlerHostNative for Host {
+            fn Onping(&self, cx: &mut ScriptContext) -> Result<Option<Handle>, WebIdlError> {
+                Ok(load(cx, &self.onping))
+            }
+            fn set_Onping(&self, cx: &mut ScriptContext, value: Option<Handle>) -> Result<(), WebIdlError> {
+                *self.onping.borrow_mut() = value.map(|value| cx.js_ref(&value));
+                Ok(())
+            }
+            fn Data(&self, cx: &mut ScriptContext) -> Result<Handle, WebIdlError> {
+                Ok(load(cx, &self.data).unwrap_or_else(|| cx.handle(&Value::Undefined)))
+            }
+            fn set_Data(&self, cx: &mut ScriptContext, value: Handle) -> Result<(), WebIdlError> {
+                *self.data.borrow_mut() = Some(cx.js_ref(&value));
+                Ok(())
+            }
+            fn Shape(&self, cx: &mut ScriptContext) -> Result<Option<Handle>, WebIdlError> {
+                Ok(load(cx, &self.data).filter(|data| matches!(cx.value(data), Value::Js(_))))
+            }
+            fn Fire(&self, cx: &mut ScriptContext, detail: Handle) -> Result<Handle, WebIdlError> {
+                let Some(handler) = load(cx, &self.onping) else {
+                    return Ok(cx.handle(&Value::Null));
+                };
+                match cx.call(&handler, &Value::Undefined, &[Value::Js(detail)])? {
+                    Value::Js(result) => Ok(result),
+                    other => Ok(cx.handle(&other)),
+                }
+            }
+        }
+        let mut runtime = Runtime::new();
+        let binding = HandlerHostBinding::<Host>::install(&mut runtime).unwrap();
+        let host = runtime.allocate_traced(Host { onping: RefCell::new(None), data: RefCell::new(None) });
+        let wrapper = binding.wrap_traced(&mut runtime, &host);
+        runtime.set_global_property("host", &wrapper).unwrap();
+        for (source, expected) in [
+            ("host.onping === null && host.fire(1) === null", "true"),
+            ("const handler = d => d * 2; host.onping = handler; [host.onping === handler, host.fire(21)].join()", "true,42"),
+            // [LegacyTreatNonObjectAsNull]: non-objects clear the handler instead of throwing.
+            ("host.onping = 5; host.onping === null", "true"),
+            ("host.onping = handler; host.onping = 'text'; host.onping", "null"),
+            // A non-callable object is stored; invoking it is the TypeError.
+            ("host.onping = {}; (() => { try { host.fire(0); } catch (e) { return e.constructor.name; } })()", "TypeError"),
+            // `any` keeps identity; `object?` derives from it.
+            ("const payload = { n: 1 }; host.data = payload; [host.data === payload, host.shape === payload].join()", "true,true"),
+            ("host.data = 7; [host.data, host.shape].join()", "7,"),
+            ("Object.getOwnPropertyDescriptor(HandlerHost.prototype, 'shape').set", "undefined"),
+        ] {
+            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
+        }
+        // The traced references keep the handler alive through full GCs.
+        runtime.eval("host.onping = (d => d + 1); host.data = { kept: true };").unwrap();
+        runtime.force_full_gc_for_testing();
+        runtime.force_full_gc_for_testing();
+        assert_eq!(runtime.eval("[host.fire(1), host.data.kept].join()").unwrap(), "2,true");
+        drop((wrapper, host));
     }
 
     #[cfg(feature = "webidl-pilot")]

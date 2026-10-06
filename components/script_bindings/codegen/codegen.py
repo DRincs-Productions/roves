@@ -8468,10 +8468,11 @@ def v8_wrap_ce_reactions(registration: str) -> str:
                     close_brace = position
                     break
         body = registration[open_brace + 1:close_brace]
+        contextual = params.startswith("|cx,")
         if params.replace("cx, ", "") == "|native|":
-            result = "Value"
+            result = "Result<Value, roves_v8::WebIdlError>" if contextual else "Value"
         elif "value" in params:
-            result = "()"
+            result = "Result<(), roves_v8::WebIdlError>" if contextual else "()"
         else:
             result = "Result<Value, roves_v8::WebIdlError>" if fallible else "Value"
         output.append(registration[index:open_brace])
@@ -8540,6 +8541,7 @@ class CGV8BindingRoot(CGThing):
         attributes = []
         operations = []
         unforgeable_attributes = set()
+        contextual_attributes = []
         member_conditions = {}
         ce_reaction_members = set()
         constants = []
@@ -8670,6 +8672,23 @@ class CGV8BindingRoot(CGThing):
             if (not member.isAttr() or member.isStatic() or attribute_attributes):
                 raise TypeError(f"V8 backend unsupported member: {name}.{member.identifier.name}")
             idl_type = member.type.inner if member.type.nullable() else member.type
+            if idl_type.isAny() or idl_type.isObject() or idl_type.isCallback():
+                # The native needs the engine (it holds JS values): contextual accessors.
+                nullable = member.type.nullable()
+                if idl_type.isAny():
+                    conversion, nullable = "Any", False
+                elif idl_type.isObject():
+                    conversion = "Object"
+                elif member.type.nullable() and member.type.treatNonObjectAsNull():
+                    conversion = "LegacyCallback"
+                else:
+                    conversion = "Callback"
+                contextual_attributes.append((
+                    member.identifier.name, MakeNativeName(member.identifier.name),
+                    "Option<roves_v8::Handle>" if nullable else "roves_v8::Handle",
+                    nullable, not member.readonly, conversion,
+                ))
+                continue
             if idl_type.isBoolean():
                 if member.type.nullable():
                     rust_type = "Option<bool>"
@@ -8730,7 +8749,10 @@ class CGV8BindingRoot(CGThing):
                 raise TypeError(f"V8 backend does not support mutable attribute type: {name}.{member.identifier.name}")
             attributes.append((member.identifier.name, MakeNativeName(member.identifier.name), rust_type, value_expr, setter, conversion))
         trait_methods = "\n".join(
-            [f"    fn {native}(&self) -> {rust_type};"
+            [f"    fn {native}(&self, cx: &mut roves_v8::ScriptContext) -> Result<{rust_type}, roves_v8::WebIdlError>;"
+             + (f"\n    fn set_{native}(&self, cx: &mut roves_v8::ScriptContext, value: {rust_type}) -> Result<(), roves_v8::WebIdlError>;" if setter else "")
+             for _, native, rust_type, _, setter, _ in contextual_attributes]
+            + [f"    fn {native}(&self) -> {rust_type};"
              + (f"\n    fn set_{native}(&self, value: {rust_type});" if setter else "")
              for _, native, rust_type, _, setter, _ in attributes]
             + [f"    fn {native}(&self{', cx: &mut roves_v8::ScriptContext' if contextual else ''}{', ' + ', '.join('arg' + str(index) + ': ' + argument_type[0] for index, argument_type in enumerate(argument_types)) if argument_types else ''}) -> {f'Result<{rust_type}, roves_v8::WebIdlError>' if throws else rust_type};" for _, native, rust_type, _, argument_types, throws, _, _, contextual in operations]
@@ -8746,6 +8768,36 @@ class CGV8BindingRoot(CGThing):
             if condition:
                 registration = registrations_list[-1].strip()
                 registrations_list[-1] = f"        if {condition} {{\n            {registration}\n        }}"
+
+        for idl, native, rust_type, nullable, setter, conversion in contextual_attributes:
+            if nullable:
+                to_value = "Ok(result.map(Value::Js).unwrap_or(Value::Null))"
+                from_value = "Value::Js(value) => Some(value.clone()), Value::Null => None"
+            else:
+                to_value = "Ok(Value::Js(result))"
+                from_value = "Value::Js(value) => value.clone()"
+            getter = (
+                f'|cx, native| {{\n'
+                f'            let native = native.downcast_ref::<T>().expect("typed {name} wrapper");\n'
+                f'            let result = native.{native}(cx)?;\n'
+                f'            {to_value}\n'
+                f'        }}'
+            )
+            if setter:
+                setter_callback = (
+                    f'Some(|cx, native, value| {{\n'
+                    f'            let native = native.downcast_ref::<T>().expect("typed {name} wrapper");\n'
+                    f'            let value = match value {{ {from_value}, _ => unreachable!("runtime conversion matches generated WebIDL attribute type") }};\n'
+                    f'            native.set_{native}(cx, value)\n'
+                    f'        }})'
+                )
+            else:
+                setter_callback = "None"
+            registrations_list.append(
+                f'        runtime.define_contextual_attribute(&interface, "{idl}", {getter}, {setter_callback}, '
+                f'roves_v8::WebIdlArgumentConversion::{conversion}, {str(nullable).lower()})?;'
+            )
+            gate_last_registration(idl)
 
         for idl, native, rust_type, value_expr, setter, conversion in attributes:
             getter = (

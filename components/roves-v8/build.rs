@@ -212,6 +212,7 @@ fn main() {
         ("OverloadedOperations", &[][..]),
         ("CeReactive", &[][..]),
         ("CallbackOperations", &[][..]),
+        ("HandlerHost", &[][..]),
     ] {
         println!("cargo:rerun-if-changed={}", fixtures.join(format!("{interface}.webidl")).display());
         let status = Command::new(&python)

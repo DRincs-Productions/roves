@@ -104,7 +104,7 @@ class V8GeneratorTests(unittest.TestCase):
                 generate(path, Path(directory) / "output")
 
     def test_unsupported_members_never_silently_disappear(self):
-        for member in ["readonly attribute object value;", "readonly attribute any value;", "static readonly attribute boolean valid;", "[GetterThrows] readonly attribute boolean valid;", "attribute byte value;"]:
+        for member in ["readonly attribute (long or DOMString) value;", "readonly attribute Promise<any> value;", "static readonly attribute boolean valid;", "[GetterThrows] readonly attribute boolean valid;", "attribute byte value;"]:
             with self.subTest(member=member):
                 self.assert_unsupported("interface Unsupported { " + member + " };")
 
@@ -488,6 +488,29 @@ class V8GeneratorTests(unittest.TestCase):
             ]:
                 self.assertIn(expected, source)
             self.assertNotIn("downcast_mut", source)
+
+    def test_event_handler_and_any_attributes_are_contextual(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Host.webidl"
+            path.write_text(
+                "[LegacyTreatNonObjectAsNull] callback Handler = any (any event); typedef Handler? EventHandler; "
+                "callback Strict = undefined (); "
+                "[Exposed=Window] interface Host { attribute EventHandler onping; attribute Strict? strict; "
+                "attribute any data; readonly attribute object? shape; };",
+                encoding="utf-8",
+            )
+            source = generate(path, Path(directory) / "output")
+            for expected in [
+                "fn Onping(&self, cx: &mut roves_v8::ScriptContext) -> Result<Option<roves_v8::Handle>, roves_v8::WebIdlError>;",
+                "fn set_Onping(&self, cx: &mut roves_v8::ScriptContext, value: Option<roves_v8::Handle>) -> Result<(), roves_v8::WebIdlError>;",
+                "fn Data(&self, cx: &mut roves_v8::ScriptContext) -> Result<roves_v8::Handle, roves_v8::WebIdlError>;",
+                "fn Shape(&self, cx: &mut roves_v8::ScriptContext) -> Result<Option<roves_v8::Handle>, roves_v8::WebIdlError>;",
+                "roves_v8::WebIdlArgumentConversion::LegacyCallback, true)?;",
+                "roves_v8::WebIdlArgumentConversion::Callback, true)?;",
+                "roves_v8::WebIdlArgumentConversion::Any, false)?;",
+            ]:
+                self.assertIn(expected, source)
+            self.assertNotIn("fn set_Shape", source)
 
     def test_overloads_needing_type_distinction_fail_closed(self):
         self.assert_unsupported("interface Unsupported { undefined f(DOMString a); undefined f(boolean a); };")
