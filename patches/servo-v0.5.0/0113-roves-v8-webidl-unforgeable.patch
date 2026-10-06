@@ -1,0 +1,358 @@
+diff --git a/components/roves-v8/build.rs b/components/roves-v8/build.rs
+index ba9c9799769..28764825ebd 100644
+--- a/components/roves-v8/build.rs
++++ b/components/roves-v8/build.rs
+@@ -202,6 +202,8 @@ fn main() {
+         ("ConstructibleCounter", &[][..]),
+         ("ConstructibleChild", &["ConstructibleCounter"][..]),
+         ("ThrowingOperations", &[][..]),
++        ("UnforgeableBase", &[][..]),
++        ("UnforgeableChild", &["UnforgeableBase"][..]),
+     ] {
+         println!("cargo:rerun-if-changed={}", fixtures.join(format!("{interface}.webidl")).display());
+         let status = Command::new(&python)
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 53325f97f07..11503d05509 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -93,6 +93,14 @@ pub mod webidl {
+     pub mod throwing_operations {
+         include!(concat!(env!("OUT_DIR"), "/ThrowingOperationsV8Binding.rs"));
+     }
++    #[cfg(test)]
++    pub mod unforgeable_base {
++        include!(concat!(env!("OUT_DIR"), "/UnforgeableBaseV8Binding.rs"));
++    }
++    #[cfg(test)]
++    pub mod unforgeable_child {
++        include!(concat!(env!("OUT_DIR"), "/UnforgeableChildV8Binding.rs"));
++    }
+ }
+ 
+ use std::sync::Once;
+@@ -195,6 +203,13 @@ pub struct Interface {
+     /// The parent interface's template, so exposure can make the parent interface object
+     /// this interface object's `[[Prototype]]` (see [`Runtime::expose_interface`]).
+     parent_template: Option<v8::Global<v8::FunctionTemplate>>,
++    /// `[LegacyUnforgeable]` accessors (own and inherited), by name with their getter
++    /// template. `FunctionTemplate::inherit` does not carry instance-template accessor pairs
++    /// into descendants, so each descendant reinstalls these on its own instance template.
++    unforgeable_accessors: std::rc::Rc<std::cell::RefCell<Vec<(String, v8::Global<v8::FunctionTemplate>)>>>,
++    /// Set once a descendant has been defined: it copied the unforgeable list at that point,
++    /// so later unforgeable attributes on this interface would be missing from it.
++    has_descendants: std::rc::Rc<std::cell::Cell<bool>>,
+     name: String,
+     /// Set once the constructor has actually been exposed on the global object (lazily, at the
+     /// first [`Runtime::create_instance`] call — see that method's own doc comment on why this
+@@ -947,9 +962,23 @@ impl Runtime {
+         };
+         template.instance_template(scope).set_internal_field_count(1);
+ 
++        let mut inherited_unforgeable = Vec::new();
+         if let Some(parent) = parent {
+             let parent_template = v8::Local::new(scope, &parent.template);
+             template.inherit(parent_template);
++            parent.has_descendants.set(true);
++            let instance_template = template.instance_template(scope);
++            for (accessor_name, getter) in parent.unforgeable_accessors.borrow().iter() {
++                let key = v8::String::new(scope, accessor_name).unwrap();
++                let getter = v8::Local::new(scope, getter);
++                instance_template.set_accessor_property(
++                    key.into(),
++                    Some(getter),
++                    None,
++                    v8::PropertyAttribute::DONT_DELETE,
++                );
++                inherited_unforgeable.push((accessor_name.clone(), v8::Global::new(scope, getter)));
++            }
+         }
+ 
+         if let Some(class_name) = v8::String::new(scope, name) {
+@@ -977,6 +1006,8 @@ impl Runtime {
+         Interface {
+             template: v8::Global::new(scope, template),
+             parent_template: parent.map(|parent| parent.template.clone()),
++            unforgeable_accessors: std::rc::Rc::new(std::cell::RefCell::new(inherited_unforgeable)),
++            has_descendants: std::rc::Rc::new(std::cell::Cell::new(false)),
+             name: name.to_string(),
+             constructor_exposed: std::cell::Cell::new(false),
+             materialized: std::rc::Rc::new(std::cell::Cell::new(false)),
+@@ -1113,7 +1144,19 @@ impl Runtime {
+         name: &str,
+         getter: PropertyGetter,
+     ) -> Result<(), String> {
+-        self.define_attribute(interface, name, getter, None, None, None, None)
++        self.define_attribute(interface, name, getter, None, None, None, None, false)
++    }
++
++    /// Defines a read-only `[LegacyUnforgeable]` attribute: a non-configurable accessor that is
++    /// an own property of every instance of the interface and of its descendants, instead of a
++    /// prototype property.
++    pub fn define_unforgeable_property(
++        &mut self,
++        interface: &Interface,
++        name: &str,
++        getter: PropertyGetter,
++    ) -> Result<(), String> {
++        self.define_attribute(interface, name, getter, None, None, None, None, true)
+     }
+ 
+     /// Defines a prototype attribute with both a getter and a setter. Callback functions
+@@ -1125,7 +1168,7 @@ impl Runtime {
+         getter: PropertyGetter,
+         setter: PropertySetter,
+     ) -> Result<(), String> {
+-        self.define_attribute(interface, name, getter, Some(setter), None, None, None)
++        self.define_attribute(interface, name, getter, Some(setter), None, None, None, false)
+     }
+ 
+     /// Defines a WebIDL DOMString attribute with JavaScript ToString conversion.
+@@ -1136,7 +1179,7 @@ impl Runtime {
+         getter: PropertyGetter,
+         setter: DomStringSetter,
+     ) -> Result<(), String> {
+-        self.define_attribute(interface, name, getter, None, Some(setter), None, None)
++        self.define_attribute(interface, name, getter, None, Some(setter), None, None, false)
+     }
+ 
+     /// Defines a nullable WebIDL DOMString attribute. JavaScript `null` maps to IDL null;
+@@ -1148,7 +1191,7 @@ impl Runtime {
+         getter: PropertyGetter,
+         setter: NullableDomStringSetter,
+     ) -> Result<(), String> {
+-        self.define_attribute(interface, name, getter, None, None, Some(setter), None)
++        self.define_attribute(interface, name, getter, None, None, Some(setter), None, false)
+     }
+ 
+     /// Defines a settable primitive attribute whose conversion follows WebIDL's boolean or
+@@ -1161,7 +1204,7 @@ impl Runtime {
+         setter: WebIdlPrimitiveSetter,
+         conversion: PrimitiveConversion,
+     ) -> Result<(), String> {
+-        self.define_attribute(interface, name, getter, None, None, None, Some((setter, conversion)))
++        self.define_attribute(interface, name, getter, None, None, None, Some((setter, conversion)), false)
+     }
+ 
+     fn define_attribute(
+@@ -1173,7 +1216,11 @@ impl Runtime {
+         domstring_setter: Option<DomStringSetter>,
+         nullable_domstring_setter: Option<NullableDomStringSetter>,
+         primitive_setter: Option<(WebIdlPrimitiveSetter, PrimitiveConversion)>,
++        unforgeable: bool,
+     ) -> Result<(), String> {
++        if unforgeable && interface.has_descendants.get() {
++            return Err("unforgeable attributes must be defined before descendant interfaces".into());
++        }
+         if interface.materialized.get() {
+             return Err("interface members must be defined before creating instances or descendants".into());
+         }
+@@ -1429,9 +1476,19 @@ impl Runtime {
+             function.set_class_name(setter_name);
+             function
+         });
+-        template.prototype_template(scope).set_accessor_property(
+-            key.into(), Some(getter_template), setter_template, v8::PropertyAttribute::NONE,
+-        );
++        // [LegacyUnforgeable] attributes are non-configurable own properties of every
++        // instance; FunctionTemplate::inherit carries instance-template accessors into
++        // descendants, matching the WebIDL parser copying them into each descendant.
++        let (target, attributes) = if unforgeable {
++            interface
++                .unforgeable_accessors
++                .borrow_mut()
++                .push((name.to_string(), v8::Global::new(scope, getter_template)));
++            (template.instance_template(scope), v8::PropertyAttribute::DONT_DELETE)
++        } else {
++            (template.prototype_template(scope), v8::PropertyAttribute::NONE)
++        };
++        target.set_accessor_property(key.into(), Some(getter_template), setter_template, attributes);
+         Ok(())
+     }
+ 
+@@ -4245,6 +4302,47 @@ mod tests {
+         assert_eq!(caught(&mut runtime, "parser.parse('dom')"), "DOMException,InvalidStateError,not now");
+     }
+ 
++    #[cfg(feature = "webidl-pilot")]
++    #[test]
++    fn generated_unforgeable_attributes_are_non_configurable_own_properties() {
++        use crate::webidl::unforgeable_base::{UnforgeableBaseBinding, UnforgeableBaseNative};
++        use crate::webidl::unforgeable_child::{UnforgeableChildBinding, UnforgeableChildNative};
++        struct Item {
++            trusted: bool,
++            child: bool,
++        }
++        #[allow(non_snake_case)]
++        impl UnforgeableBaseNative for Item {
++            fn Trusted(&self) -> bool { self.trusted }
++            fn Ordinary(&self) -> bool { true }
++        }
++        // The child trait does not redeclare `Trusted`: the parser's copy of the unforgeable
++        // member is skipped, and the base installs it on the inherited instance template.
++        #[allow(non_snake_case)]
++        impl UnforgeableChildNative for Item {
++            fn Child(&self) -> bool { self.child }
++        }
++        let mut runtime = Runtime::new();
++        let base_binding = UnforgeableBaseBinding::<Item>::install(&mut runtime).unwrap();
++        let child_binding = UnforgeableChildBinding::<Item>::install(&mut runtime, &base_binding).unwrap();
++        let base = base_binding.create(&mut runtime, Item { trusted: true, child: false });
++        let child = child_binding.create(&mut runtime, Item { trusted: false, child: true });
++        runtime.set_global_property("base", &base).unwrap();
++        runtime.set_global_property("child", &child).unwrap();
++        for (source, expected) in [
++            ("[base.trusted, child.trusted, child.child, child.ordinary].join()", "true,false,true,true"),
++            ("[Object.hasOwn(base, 'trusted'), Object.hasOwn(child, 'trusted')].join()", "true,true"),
++            ("Object.hasOwn(UnforgeableBase.prototype, 'trusted')", "false"),
++            ("Object.hasOwn(base, 'ordinary')", "false"),
++            ("const d = Object.getOwnPropertyDescriptor(child, 'trusted'); [typeof d.get, d.set, d.enumerable, d.configurable].join()", "function,,true,false"),
++            ("delete child.trusted", "false"),
++            ("(() => { try { Object.defineProperty(base, 'trusted', { value: false }); return 'redefined'; } catch (e) { return e.constructor.name; } })()", "TypeError"),
++            ("child.trusted", "false"),
++        ] {
++            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
++        }
++    }
++
+     #[cfg(feature = "webidl-pilot")]
+     #[test]
+     fn generated_nullable_domstring_preserves_null_and_utf16_semantics() {
+diff --git a/components/roves-v8/tests/webidl/UnforgeableBase.webidl b/components/roves-v8/tests/webidl/UnforgeableBase.webidl
+new file mode 100644
+index 00000000000..080adfec876
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/UnforgeableBase.webidl
+@@ -0,0 +1,5 @@
++[Exposed=Window]
++interface UnforgeableBase {
++  [LegacyUnforgeable] readonly attribute boolean trusted;
++  readonly attribute boolean ordinary;
++};
+diff --git a/components/roves-v8/tests/webidl/UnforgeableChild.webidl b/components/roves-v8/tests/webidl/UnforgeableChild.webidl
+new file mode 100644
+index 00000000000..7bd19b771f8
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/UnforgeableChild.webidl
+@@ -0,0 +1,4 @@
++[Exposed=Window]
++interface UnforgeableChild : UnforgeableBase {
++  readonly attribute boolean child;
++};
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index 2386692a385..b6f55c910f8 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8369,6 +8369,10 @@ def v8_argument_types(name: str, member_name: str, arguments) -> list:
+     return argument_types
+ 
+ 
++# SpiderMonkey JIT/caching hints with no observable semantics; the V8 backend ignores them.
++V8_IGNORED_MEMBER_HINTS = {"Pure", "Constant"}
++
++
+ def v8_module_name(interface_name: str) -> str:
+     """Snake-case module of a V8 pilot binding: ValidityState -> validity_state,
+     HTMLElement -> html_element."""
+@@ -8407,20 +8411,30 @@ class CGV8BindingRoot(CGThing):
+             raise TypeError(f"V8 pilot only supports interfaces exposed to Window: {name}")
+         # A member redeclared down the chain would give the native trait and its supertrait
+         # two methods of the same name, making generated calls ambiguous.
++        # The parser copies an ancestor's [LegacyUnforgeable] members into each descendant
++        # (the same member object, with `originatingInterface` set to the ancestor). Those are
++        # not redeclarations: the ancestor installs them on its instance template, which
++        # descendants inherit.
++        def copied_from_ancestor(member):
++            return getattr(member, "originatingInterface", interface) is not interface
++
+         inherited = set()
+         ancestor = interface.parent
+         while ancestor is not None:
+             inherited.update(member.identifier.name for member in ancestor.members)
+             ancestor = ancestor.parent
+         for member in interface.members:
+-            if member.identifier.name in inherited:
++            if member.identifier.name in inherited and not copied_from_ancestor(member):
+                 raise TypeError(f"V8 backend does not support members shadowing an inherited member: {name}.{member.identifier.name}")
+         attributes = []
+         operations = []
++        unforgeable_attributes = set()
+         for member in interface.members:
++            if copied_from_ancestor(member):
++                continue
+             if member.isMethod():
+                 signatures = member.signatures()
+-                operation_attributes = set(member._extendedAttrDict) - {"Throws"}
++                operation_attributes = set(member._extendedAttrDict) - {"Throws"} - V8_IGNORED_MEMBER_HINTS
+                 if member.isStatic() or operation_attributes or len(signatures) != 1:
+                     raise TypeError(f"V8 backend only supports single-signature instance operations: {name}.{member.identifier.name}")
+                 throws = "Throws" in member._extendedAttrDict
+@@ -8483,7 +8497,13 @@ class CGV8BindingRoot(CGThing):
+                     raise TypeError(f"V8 backend unsupported operation return type: {name}.{member.identifier.name}: {return_type}")
+                 operations.append((member.identifier.name, MakeNativeName(member.identifier.name), rust_type, value_expr, argument_types, throws))
+                 continue
+-            if (not member.isAttr() or member.isStatic() or member._extendedAttrDict):
++            attribute_attributes = (
++                set(member._extendedAttrDict) - V8_IGNORED_MEMBER_HINTS if member.isAttr() else set()
++            )
++            if member.isAttr() and member.isLegacyUnforgeable() and member.readonly:
++                attribute_attributes.discard("LegacyUnforgeable")
++                unforgeable_attributes.add(member.identifier.name)
++            if (not member.isAttr() or member.isStatic() or attribute_attributes):
+                 raise TypeError(f"V8 backend unsupported member: {name}.{member.identifier.name}")
+             idl_type = member.type.inner if member.type.nullable() else member.type
+             if idl_type.isBoolean():
+@@ -8601,8 +8621,9 @@ class CGV8BindingRoot(CGThing):
+                         f'        }}, roves_v8::PrimitiveConversion::{conversion})?;'
+                     )
+             else:
++                define = "define_unforgeable_property" if idl in unforgeable_attributes else "define_property"
+                 registrations_list.append(
+-                    f'        runtime.define_property(&interface, "{idl}", {getter})?;'
++                    f'        runtime.{define}(&interface, "{idl}", {getter})?;'
+                 )
+         for idl, native, _, value_expr, argument_types, throws in operations:
+             argument_conversions = "\n".join(
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index 7be0a1acae8..0383d1d6d02 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -479,6 +479,39 @@ class V8GeneratorTests(unittest.TestCase):
+             with self.assertRaisesRegex(TypeError, "shadowing an inherited member"):
+                 generate(derived, Path(directory) / "output", (base,))
+ 
++    def test_unforgeable_attributes_install_once_on_the_declaring_interface(self):
++        with tempfile.TemporaryDirectory() as directory:
++            base = Path(directory) / "Base.webidl"
++            base.write_text(
++                "[Exposed=Window] interface Base { [LegacyUnforgeable] readonly attribute boolean trusted; };",
++                encoding="utf-8",
++            )
++            child = Path(directory) / "Child.webidl"
++            child.write_text("[Exposed=Window] interface Child : Base { readonly attribute boolean own; };", encoding="utf-8")
++            output = Path(directory) / "output"
++            base_source = generate(base, output)
++            self.assertIn('runtime.define_unforgeable_property(&interface, "trusted"', base_source)
++            child_source = generate(child, output, (base,))
++            # The parser copies the unforgeable member into Child; it must not be redeclared.
++            self.assertNotIn("trusted", child_source)
++            self.assertNotIn("Trusted", child_source)
++            self.assertIn("fn Own(&self) -> bool;", child_source)
++
++    def test_mutable_unforgeable_attributes_fail_closed(self):
++        self.assert_unsupported("interface Unsupported { [LegacyUnforgeable] attribute boolean flag; };")
++
++    def test_jit_hint_attributes_are_ignored(self):
++        with tempfile.TemporaryDirectory() as directory:
++            path = Path(directory) / "Hints.webidl"
++            path.write_text(
++                "[Exposed=Window] interface Hints { [Pure] readonly attribute boolean a; "
++                "[Constant] readonly attribute boolean b; [Pure] boolean c(); };",
++                encoding="utf-8",
++            )
++            source = generate(path, Path(directory) / "output")
++            for method in ["fn A(&self) -> bool;", "fn B(&self) -> bool;", "fn C(&self) -> bool;"]:
++                self.assertIn(method, source)
++
+     def test_binding_module_names_are_snake_case(self):
+         from codegen import v8_module_name
+ 

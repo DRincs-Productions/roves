@@ -30,6 +30,14 @@ matching JS exception; generated traits return `Result<_, roves_v8::WebIdlError>
 DOMException falls back to a named `Error` until the runtime installs the `DOMException`
 interface. Attribute throwing is still rejected. Coverage 16/486.
 
+**CP49 (2026-10-06): `[LegacyUnforgeable]`.** Readonly unforgeable attributes are
+non-configurable own instance properties (`define_unforgeable_property`); the runtime reinstalls
+them on descendants because `FunctionTemplate::inherit` does not propagate instance-template
+accessor pairs, and the generator skips the parser's copies in descendants. `[Pure]`/`[Constant]`
+hints are ignored. Coverage 16/486: the remaining core blockers are interface-typed values (DOM
+wrappers as attributes/arguments/returns), dictionaries, callbacks, sequences, unions, `any`,
+constants and `[Pref]`.
+
 CP37 exposes stable `NativeObjectId` through `DomObject` and updates generated `dom_struct`
 equality to use that engine-neutral contract. Local checks pass (reflector 2/2, macro 3/3,
 rustfmt, and patch 0101 reverse-check); CI is green: V8 37226916624 (6/6), Servo 37226916650

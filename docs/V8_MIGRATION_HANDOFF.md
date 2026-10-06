@@ -86,6 +86,15 @@ JIT-less), default 55+2, check `servo-script` pulito. Copertura **16/486**. **Pr
 membri `[LegacyUnforgeable]` copiati dal parser nei discendenti (`Event.isTrusted`, 40
 interfacce), `[GetterThrows]`/`[SetterThrows]` sugli attributi, `[Pref]`.
 
+**CP49 (2026-10-06):** `[LegacyUnforgeable]` readonly (patch 0113): proprietà proprie non
+configurabili dell'istanza. Il runtime le reinstalla nei discendenti perché
+`FunctionTemplate::inherit` **non** propaga gli accessor `set_accessor_property` dell'instance
+template; il generatore salta le copie del parser. `[Pure]`/`[Constant]` ignorati. Test
+generatore 38/38, `roves-v8` 71+5+2 (pilot e JIT-less), default 55+2, check pulito. Copertura
+16/486. **Prossimo, il blocco strutturale:** valori di tipo interfaccia (wrapper DOM come
+attributi/argomenti/ritorni), da costruire sulla cache identità di CP33/CP35. Poi costanti,
+dizionari, callback, sequence, union, `any`, `[Pref]`.
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

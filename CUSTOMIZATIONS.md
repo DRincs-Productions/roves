@@ -11,6 +11,48 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: `[LegacyUnforgeable]` attributes and JIT hints (CP49)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixtures
+`components/roves-v8/tests/webidl/UnforgeableBase.webidl` and `UnforgeableChild.webidl`;
+`components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0113-roves-v8-webidl-unforgeable.patch` after 0112.
+
+The WebIDL parser copies an ancestor's `[LegacyUnforgeable]` members into every descendant. It
+reuses the same member object with `originatingInterface` set to the ancestor. The generator treated
+those copies as redeclarations, which blocked 40 interfaces (every `Event` subclass through
+`Event.isTrusted`). The generator now skips the copies, both in the shadowing check and in member
+generation, and registers a readonly unforgeable attribute once, on its declaring interface,
+through the new `Runtime::define_unforgeable_property`. Mutable unforgeable attributes still fail
+closed.
+
+**Runtime.** WebIDL requires an unforgeable attribute to be a non-configurable own property of every
+instance, so it is installed on the instance template with `DONT_DELETE`. The runtime test found
+that `FunctionTemplate::inherit` does **not** carry instance-template accessor pairs
+(`set_accessor_property`) into descendants: the base worked, the child read `undefined`.
+- Each `Interface` now records its own and inherited unforgeable accessors.
+- Defining a child reinstalls them on the child's instance template.
+- Adding an unforgeable attribute after a child exists is rejected, since the child already copied
+  the list.
+
+**Generator.** `[Pure]` and `[Constant]` are SpiderMonkey JIT and caching hints with no observable
+semantics, and are now ignored on attributes and operations.
+
+**Tests.**
+- New runtime test checks:
+  - own property on base and child instances, not on the prototype;
+  - descriptor shape: getter function, setter undefined, enumerable, non-configurable;
+  - `delete` returns false;
+  - redefinition throws a TypeError;
+  - per-instance values.
+- Generator tests: 38/38.
+- `roves-v8` pilot and pilot+JIT-less: 71 unit + 5 integration + 2 doctests each; default 55 unit +
+  2 doctests.
+- `servo-script` check with the pilot is clean.
+
+Coverage stays 16/486. The `Event` family is now blocked by object/interface-typed members,
+dictionaries and callbacks, `[Pref]` and constants.
+
 ## 2026-10-06 - V8 migration Phase 4: `[Throws]` constructors and operations (CP48)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixture

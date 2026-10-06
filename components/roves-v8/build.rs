@@ -202,6 +202,8 @@ fn main() {
         ("ConstructibleCounter", &[][..]),
         ("ConstructibleChild", &["ConstructibleCounter"][..]),
         ("ThrowingOperations", &[][..]),
+        ("UnforgeableBase", &[][..]),
+        ("UnforgeableChild", &["UnforgeableBase"][..]),
     ] {
         println!("cargo:rerun-if-changed={}", fixtures.join(format!("{interface}.webidl")).display());
         let status = Command::new(&python)

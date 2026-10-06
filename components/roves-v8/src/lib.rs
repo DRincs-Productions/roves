@@ -93,6 +93,14 @@ pub mod webidl {
     pub mod throwing_operations {
         include!(concat!(env!("OUT_DIR"), "/ThrowingOperationsV8Binding.rs"));
     }
+    #[cfg(test)]
+    pub mod unforgeable_base {
+        include!(concat!(env!("OUT_DIR"), "/UnforgeableBaseV8Binding.rs"));
+    }
+    #[cfg(test)]
+    pub mod unforgeable_child {
+        include!(concat!(env!("OUT_DIR"), "/UnforgeableChildV8Binding.rs"));
+    }
 }
 
 use std::sync::Once;
@@ -195,6 +203,13 @@ pub struct Interface {
     /// The parent interface's template, so exposure can make the parent interface object
     /// this interface object's `[[Prototype]]` (see [`Runtime::expose_interface`]).
     parent_template: Option<v8::Global<v8::FunctionTemplate>>,
+    /// `[LegacyUnforgeable]` accessors (own and inherited), by name with their getter
+    /// template. `FunctionTemplate::inherit` does not carry instance-template accessor pairs
+    /// into descendants, so each descendant reinstalls these on its own instance template.
+    unforgeable_accessors: std::rc::Rc<std::cell::RefCell<Vec<(String, v8::Global<v8::FunctionTemplate>)>>>,
+    /// Set once a descendant has been defined: it copied the unforgeable list at that point,
+    /// so later unforgeable attributes on this interface would be missing from it.
+    has_descendants: std::rc::Rc<std::cell::Cell<bool>>,
     name: String,
     /// Set once the constructor has actually been exposed on the global object (lazily, at the
     /// first [`Runtime::create_instance`] call — see that method's own doc comment on why this
@@ -947,9 +962,23 @@ impl Runtime {
         };
         template.instance_template(scope).set_internal_field_count(1);
 
+        let mut inherited_unforgeable = Vec::new();
         if let Some(parent) = parent {
             let parent_template = v8::Local::new(scope, &parent.template);
             template.inherit(parent_template);
+            parent.has_descendants.set(true);
+            let instance_template = template.instance_template(scope);
+            for (accessor_name, getter) in parent.unforgeable_accessors.borrow().iter() {
+                let key = v8::String::new(scope, accessor_name).unwrap();
+                let getter = v8::Local::new(scope, getter);
+                instance_template.set_accessor_property(
+                    key.into(),
+                    Some(getter),
+                    None,
+                    v8::PropertyAttribute::DONT_DELETE,
+                );
+                inherited_unforgeable.push((accessor_name.clone(), v8::Global::new(scope, getter)));
+            }
         }
 
         if let Some(class_name) = v8::String::new(scope, name) {
@@ -977,6 +1006,8 @@ impl Runtime {
         Interface {
             template: v8::Global::new(scope, template),
             parent_template: parent.map(|parent| parent.template.clone()),
+            unforgeable_accessors: std::rc::Rc::new(std::cell::RefCell::new(inherited_unforgeable)),
+            has_descendants: std::rc::Rc::new(std::cell::Cell::new(false)),
             name: name.to_string(),
             constructor_exposed: std::cell::Cell::new(false),
             materialized: std::rc::Rc::new(std::cell::Cell::new(false)),
@@ -1113,7 +1144,19 @@ impl Runtime {
         name: &str,
         getter: PropertyGetter,
     ) -> Result<(), String> {
-        self.define_attribute(interface, name, getter, None, None, None, None)
+        self.define_attribute(interface, name, getter, None, None, None, None, false)
+    }
+
+    /// Defines a read-only `[LegacyUnforgeable]` attribute: a non-configurable accessor that is
+    /// an own property of every instance of the interface and of its descendants, instead of a
+    /// prototype property.
+    pub fn define_unforgeable_property(
+        &mut self,
+        interface: &Interface,
+        name: &str,
+        getter: PropertyGetter,
+    ) -> Result<(), String> {
+        self.define_attribute(interface, name, getter, None, None, None, None, true)
     }
 
     /// Defines a prototype attribute with both a getter and a setter. Callback functions
@@ -1125,7 +1168,7 @@ impl Runtime {
         getter: PropertyGetter,
         setter: PropertySetter,
     ) -> Result<(), String> {
-        self.define_attribute(interface, name, getter, Some(setter), None, None, None)
+        self.define_attribute(interface, name, getter, Some(setter), None, None, None, false)
     }
 
     /// Defines a WebIDL DOMString attribute with JavaScript ToString conversion.
@@ -1136,7 +1179,7 @@ impl Runtime {
         getter: PropertyGetter,
         setter: DomStringSetter,
     ) -> Result<(), String> {
-        self.define_attribute(interface, name, getter, None, Some(setter), None, None)
+        self.define_attribute(interface, name, getter, None, Some(setter), None, None, false)
     }
 
     /// Defines a nullable WebIDL DOMString attribute. JavaScript `null` maps to IDL null;
@@ -1148,7 +1191,7 @@ impl Runtime {
         getter: PropertyGetter,
         setter: NullableDomStringSetter,
     ) -> Result<(), String> {
-        self.define_attribute(interface, name, getter, None, None, Some(setter), None)
+        self.define_attribute(interface, name, getter, None, None, Some(setter), None, false)
     }
 
     /// Defines a settable primitive attribute whose conversion follows WebIDL's boolean or
@@ -1161,7 +1204,7 @@ impl Runtime {
         setter: WebIdlPrimitiveSetter,
         conversion: PrimitiveConversion,
     ) -> Result<(), String> {
-        self.define_attribute(interface, name, getter, None, None, None, Some((setter, conversion)))
+        self.define_attribute(interface, name, getter, None, None, None, Some((setter, conversion)), false)
     }
 
     fn define_attribute(
@@ -1173,7 +1216,11 @@ impl Runtime {
         domstring_setter: Option<DomStringSetter>,
         nullable_domstring_setter: Option<NullableDomStringSetter>,
         primitive_setter: Option<(WebIdlPrimitiveSetter, PrimitiveConversion)>,
+        unforgeable: bool,
     ) -> Result<(), String> {
+        if unforgeable && interface.has_descendants.get() {
+            return Err("unforgeable attributes must be defined before descendant interfaces".into());
+        }
         if interface.materialized.get() {
             return Err("interface members must be defined before creating instances or descendants".into());
         }
@@ -1429,9 +1476,19 @@ impl Runtime {
             function.set_class_name(setter_name);
             function
         });
-        template.prototype_template(scope).set_accessor_property(
-            key.into(), Some(getter_template), setter_template, v8::PropertyAttribute::NONE,
-        );
+        // [LegacyUnforgeable] attributes are non-configurable own properties of every
+        // instance; FunctionTemplate::inherit carries instance-template accessors into
+        // descendants, matching the WebIDL parser copying them into each descendant.
+        let (target, attributes) = if unforgeable {
+            interface
+                .unforgeable_accessors
+                .borrow_mut()
+                .push((name.to_string(), v8::Global::new(scope, getter_template)));
+            (template.instance_template(scope), v8::PropertyAttribute::DONT_DELETE)
+        } else {
+            (template.prototype_template(scope), v8::PropertyAttribute::NONE)
+        };
+        target.set_accessor_property(key.into(), Some(getter_template), setter_template, attributes);
         Ok(())
     }
 
@@ -4243,6 +4300,47 @@ mod tests {
             .eval("globalThis.DOMException = class DOMException extends Error { constructor(message, name) { super(message); this.name = name; } };")
             .unwrap();
         assert_eq!(caught(&mut runtime, "parser.parse('dom')"), "DOMException,InvalidStateError,not now");
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_unforgeable_attributes_are_non_configurable_own_properties() {
+        use crate::webidl::unforgeable_base::{UnforgeableBaseBinding, UnforgeableBaseNative};
+        use crate::webidl::unforgeable_child::{UnforgeableChildBinding, UnforgeableChildNative};
+        struct Item {
+            trusted: bool,
+            child: bool,
+        }
+        #[allow(non_snake_case)]
+        impl UnforgeableBaseNative for Item {
+            fn Trusted(&self) -> bool { self.trusted }
+            fn Ordinary(&self) -> bool { true }
+        }
+        // The child trait does not redeclare `Trusted`: the parser's copy of the unforgeable
+        // member is skipped, and the base installs it on the inherited instance template.
+        #[allow(non_snake_case)]
+        impl UnforgeableChildNative for Item {
+            fn Child(&self) -> bool { self.child }
+        }
+        let mut runtime = Runtime::new();
+        let base_binding = UnforgeableBaseBinding::<Item>::install(&mut runtime).unwrap();
+        let child_binding = UnforgeableChildBinding::<Item>::install(&mut runtime, &base_binding).unwrap();
+        let base = base_binding.create(&mut runtime, Item { trusted: true, child: false });
+        let child = child_binding.create(&mut runtime, Item { trusted: false, child: true });
+        runtime.set_global_property("base", &base).unwrap();
+        runtime.set_global_property("child", &child).unwrap();
+        for (source, expected) in [
+            ("[base.trusted, child.trusted, child.child, child.ordinary].join()", "true,false,true,true"),
+            ("[Object.hasOwn(base, 'trusted'), Object.hasOwn(child, 'trusted')].join()", "true,true"),
+            ("Object.hasOwn(UnforgeableBase.prototype, 'trusted')", "false"),
+            ("Object.hasOwn(base, 'ordinary')", "false"),
+            ("const d = Object.getOwnPropertyDescriptor(child, 'trusted'); [typeof d.get, d.set, d.enumerable, d.configurable].join()", "function,,true,false"),
+            ("delete child.trusted", "false"),
+            ("(() => { try { Object.defineProperty(base, 'trusted', { value: false }); return 'redefined'; } catch (e) { return e.constructor.name; } })()", "TypeError"),
+            ("child.trusted", "false"),
+        ] {
+            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
+        }
     }
 
     #[cfg(feature = "webidl-pilot")]

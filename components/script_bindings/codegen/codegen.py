@@ -8369,6 +8369,10 @@ def v8_argument_types(name: str, member_name: str, arguments) -> list:
     return argument_types
 
 
+# SpiderMonkey JIT/caching hints with no observable semantics; the V8 backend ignores them.
+V8_IGNORED_MEMBER_HINTS = {"Pure", "Constant"}
+
+
 def v8_module_name(interface_name: str) -> str:
     """Snake-case module of a V8 pilot binding: ValidityState -> validity_state,
     HTMLElement -> html_element."""
@@ -8407,20 +8411,30 @@ class CGV8BindingRoot(CGThing):
             raise TypeError(f"V8 pilot only supports interfaces exposed to Window: {name}")
         # A member redeclared down the chain would give the native trait and its supertrait
         # two methods of the same name, making generated calls ambiguous.
+        # The parser copies an ancestor's [LegacyUnforgeable] members into each descendant
+        # (the same member object, with `originatingInterface` set to the ancestor). Those are
+        # not redeclarations: the ancestor installs them on its instance template, which
+        # descendants inherit.
+        def copied_from_ancestor(member):
+            return getattr(member, "originatingInterface", interface) is not interface
+
         inherited = set()
         ancestor = interface.parent
         while ancestor is not None:
             inherited.update(member.identifier.name for member in ancestor.members)
             ancestor = ancestor.parent
         for member in interface.members:
-            if member.identifier.name in inherited:
+            if member.identifier.name in inherited and not copied_from_ancestor(member):
                 raise TypeError(f"V8 backend does not support members shadowing an inherited member: {name}.{member.identifier.name}")
         attributes = []
         operations = []
+        unforgeable_attributes = set()
         for member in interface.members:
+            if copied_from_ancestor(member):
+                continue
             if member.isMethod():
                 signatures = member.signatures()
-                operation_attributes = set(member._extendedAttrDict) - {"Throws"}
+                operation_attributes = set(member._extendedAttrDict) - {"Throws"} - V8_IGNORED_MEMBER_HINTS
                 if member.isStatic() or operation_attributes or len(signatures) != 1:
                     raise TypeError(f"V8 backend only supports single-signature instance operations: {name}.{member.identifier.name}")
                 throws = "Throws" in member._extendedAttrDict
@@ -8483,7 +8497,13 @@ class CGV8BindingRoot(CGThing):
                     raise TypeError(f"V8 backend unsupported operation return type: {name}.{member.identifier.name}: {return_type}")
                 operations.append((member.identifier.name, MakeNativeName(member.identifier.name), rust_type, value_expr, argument_types, throws))
                 continue
-            if (not member.isAttr() or member.isStatic() or member._extendedAttrDict):
+            attribute_attributes = (
+                set(member._extendedAttrDict) - V8_IGNORED_MEMBER_HINTS if member.isAttr() else set()
+            )
+            if member.isAttr() and member.isLegacyUnforgeable() and member.readonly:
+                attribute_attributes.discard("LegacyUnforgeable")
+                unforgeable_attributes.add(member.identifier.name)
+            if (not member.isAttr() or member.isStatic() or attribute_attributes):
                 raise TypeError(f"V8 backend unsupported member: {name}.{member.identifier.name}")
             idl_type = member.type.inner if member.type.nullable() else member.type
             if idl_type.isBoolean():
@@ -8601,8 +8621,9 @@ class CGV8BindingRoot(CGThing):
                         f'        }}, roves_v8::PrimitiveConversion::{conversion})?;'
                     )
             else:
+                define = "define_unforgeable_property" if idl in unforgeable_attributes else "define_property"
                 registrations_list.append(
-                    f'        runtime.define_property(&interface, "{idl}", {getter})?;'
+                    f'        runtime.{define}(&interface, "{idl}", {getter})?;'
                 )
         for idl, native, _, value_expr, argument_types, throws in operations:
             argument_conversions = "\n".join(

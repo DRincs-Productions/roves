@@ -479,6 +479,39 @@ class V8GeneratorTests(unittest.TestCase):
             with self.assertRaisesRegex(TypeError, "shadowing an inherited member"):
                 generate(derived, Path(directory) / "output", (base,))
 
+    def test_unforgeable_attributes_install_once_on_the_declaring_interface(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory) / "Base.webidl"
+            base.write_text(
+                "[Exposed=Window] interface Base { [LegacyUnforgeable] readonly attribute boolean trusted; };",
+                encoding="utf-8",
+            )
+            child = Path(directory) / "Child.webidl"
+            child.write_text("[Exposed=Window] interface Child : Base { readonly attribute boolean own; };", encoding="utf-8")
+            output = Path(directory) / "output"
+            base_source = generate(base, output)
+            self.assertIn('runtime.define_unforgeable_property(&interface, "trusted"', base_source)
+            child_source = generate(child, output, (base,))
+            # The parser copies the unforgeable member into Child; it must not be redeclared.
+            self.assertNotIn("trusted", child_source)
+            self.assertNotIn("Trusted", child_source)
+            self.assertIn("fn Own(&self) -> bool;", child_source)
+
+    def test_mutable_unforgeable_attributes_fail_closed(self):
+        self.assert_unsupported("interface Unsupported { [LegacyUnforgeable] attribute boolean flag; };")
+
+    def test_jit_hint_attributes_are_ignored(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Hints.webidl"
+            path.write_text(
+                "[Exposed=Window] interface Hints { [Pure] readonly attribute boolean a; "
+                "[Constant] readonly attribute boolean b; [Pure] boolean c(); };",
+                encoding="utf-8",
+            )
+            source = generate(path, Path(directory) / "output")
+            for method in ["fn A(&self) -> bool;", "fn B(&self) -> bool;", "fn C(&self) -> bool;"]:
+                self.assertIn(method, source)
+
     def test_binding_module_names_are_snake_case(self):
         from codegen import v8_module_name
 
