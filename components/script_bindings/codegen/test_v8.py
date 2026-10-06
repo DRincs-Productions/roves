@@ -102,7 +102,7 @@ class V8GeneratorTests(unittest.TestCase):
                 generate(path, Path(directory) / "output")
 
     def test_unsupported_members_never_silently_disappear(self):
-        for member in ["readonly attribute float value;", "readonly attribute unsigned long long value;", "static readonly attribute boolean valid;", "[GetterThrows] readonly attribute boolean valid;", "attribute byte value;"]:
+        for member in ["readonly attribute object value;", "readonly attribute any value;", "static readonly attribute boolean valid;", "[GetterThrows] readonly attribute boolean valid;", "attribute byte value;"]:
             with self.subTest(member=member):
                 self.assert_unsupported("interface Unsupported { " + member + " };")
 
@@ -499,6 +499,26 @@ class V8GeneratorTests(unittest.TestCase):
 
     def test_mutable_unforgeable_attributes_fail_closed(self):
         self.assert_unsupported("interface Unsupported { [LegacyUnforgeable] attribute boolean flag; };")
+
+    def test_readonly_numeric_attributes_map_to_rust_numbers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Numbers.webidl"
+            path.write_text(
+                "[Exposed=Window] interface Numbers { readonly attribute short a; readonly attribute long long b; "
+                "readonly attribute float c; readonly attribute unrestricted double d; readonly attribute unsigned short? e; "
+                "const unsigned short ONE = 1; const unrestricted double INF = Infinity; };",
+                encoding="utf-8",
+            )
+            source = generate(path, Path(directory) / "output")
+            for expected in [
+                "fn A(&self) -> i16;", "fn B(&self) -> i64;", "fn C(&self) -> roves_v8::FiniteF32;",
+                "fn D(&self) -> f64;", "fn E(&self) -> Option<u16>;",
+                "Value::Number(native.C().get() as f64)", "Value::Number(native.D())",
+                "native.E().map(|value| Value::Number(value as f64)).unwrap_or(Value::Null)",
+                'runtime.define_constant(&interface, "ONE", &Value::Number(1.0))?;',
+                'runtime.define_constant(&interface, "INF", &Value::Number(f64::INFINITY))?;',
+            ]:
+                self.assertIn(expected, source)
 
     def test_jit_hint_attributes_are_ignored(self):
         with tempfile.TemporaryDirectory() as directory:

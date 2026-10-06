@@ -1,0 +1,230 @@
+diff --git a/components/roves-v8/build.rs b/components/roves-v8/build.rs
+index 28764825ebd..9055eb9dd80 100644
+--- a/components/roves-v8/build.rs
++++ b/components/roves-v8/build.rs
+@@ -204,6 +204,7 @@ fn main() {
+         ("ThrowingOperations", &[][..]),
+         ("UnforgeableBase", &[][..]),
+         ("UnforgeableChild", &["UnforgeableBase"][..]),
++        ("WebIdlConstants", &[][..]),
+     ] {
+         println!("cargo:rerun-if-changed={}", fixtures.join(format!("{interface}.webidl")).display());
+         let status = Command::new(&python)
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 11503d05509..b3dc402bddf 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -101,6 +101,10 @@ pub mod webidl {
+     pub mod unforgeable_child {
+         include!(concat!(env!("OUT_DIR"), "/UnforgeableChildV8Binding.rs"));
+     }
++    #[cfg(test)]
++    pub mod web_idl_constants {
++        include!(concat!(env!("OUT_DIR"), "/WebIdlConstantsV8Binding.rs"));
++    }
+ }
+ 
+ use std::sync::Once;
+@@ -1147,6 +1151,29 @@ impl Runtime {
+         self.define_attribute(interface, name, getter, None, None, None, None, false)
+     }
+ 
++    /// Defines a WebIDL constant: a `{ writable: false, enumerable: true, configurable: false }`
++    /// data property on both the interface object and its prototype.
++    pub fn define_constant(&mut self, interface: &Interface, name: &str, value: &Value) -> Result<(), String> {
++        if interface.materialized.get() {
++            return Err("interface members must be defined before creating instances or descendants".into());
++        }
++        let context_handle = &self.context;
++        v8::scope!(let scope, &mut self.isolate);
++        let context = v8::Local::new(scope, context_handle);
++        let scope = &mut v8::ContextScope::new(scope, context);
++        let template = v8::Local::new(scope, &interface.template);
++        let key = v8::String::new(scope, name).ok_or("invalid constant name")?;
++        let constant: v8::Local<v8::Data> = match value {
++            Value::Number(number) => v8::Number::new(scope, *number).into(),
++            Value::Bool(boolean) => v8::Boolean::new(scope, *boolean).into(),
++            _ => return Err(format!("unsupported WebIDL constant value for {name}")),
++        };
++        let attributes = || v8::PropertyAttribute::READ_ONLY | v8::PropertyAttribute::DONT_DELETE;
++        template.set_with_attr(key.into(), constant, attributes());
++        template.prototype_template(scope).set_with_attr(key.into(), constant, attributes());
++        Ok(())
++    }
++
+     /// Defines a read-only `[LegacyUnforgeable]` attribute: a non-configurable accessor that is
+     /// an own property of every instance of the interface and of its descendants, instead of a
+     /// prototype property.
+@@ -4343,6 +4370,32 @@ mod tests {
+         }
+     }
+ 
++    #[cfg(feature = "webidl-pilot")]
++    #[test]
++    fn generated_constants_are_frozen_on_interface_object_and_prototype() {
++        use crate::webidl::web_idl_constants::{WebIdlConstantsBinding, WebIdlConstantsNative};
++        struct Phase;
++        #[allow(non_snake_case)]
++        impl WebIdlConstantsNative for Phase {
++            fn Phase(&self) -> u16 { 1 }
++        }
++        let mut runtime = Runtime::new();
++        let binding = WebIdlConstantsBinding::<Phase>::install(&mut runtime).unwrap();
++        let instance = binding.create(&mut runtime, Phase);
++        runtime.set_global_property("instance", &instance).unwrap();
++        for (source, expected) in [
++            ("[WebIdlConstants.NONE, WebIdlConstants.CAPTURING_PHASE, WebIdlConstants.LARGEST, WebIdlConstants.NEGATIVE].join()", "0,1,4294967295,-5"),
++            ("[WebIdlConstants.POSITIVE_INFINITY, Number.isNaN(WebIdlConstants.NOT_A_NUMBER), WebIdlConstants.ENABLED].join()", "Infinity,true,true"),
++            ("instance.phase === instance.CAPTURING_PHASE && WebIdlConstants.prototype.NONE === 0", "true"),
++            ("Object.hasOwn(instance, 'NONE')", "false"),
++            ("['NONE', 'LARGEST'].map(name => [WebIdlConstants, WebIdlConstants.prototype].map(target => { const d = Object.getOwnPropertyDescriptor(target, name); return [d.writable, d.enumerable, d.configurable].join(); }).join('|')).join(' ')", "false,true,false|false,true,false false,true,false|false,true,false"),
++            ("'use strict'; (() => { try { WebIdlConstants.NONE = 5; return 'assigned'; } catch (e) { return e.constructor.name; } })()", "TypeError"),
++            ("WebIdlConstants.NONE", "0"),
++        ] {
++            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
++        }
++    }
++
+     #[cfg(feature = "webidl-pilot")]
+     #[test]
+     fn generated_nullable_domstring_preserves_null_and_utf16_semantics() {
+diff --git a/components/roves-v8/tests/webidl/WebIdlConstants.webidl b/components/roves-v8/tests/webidl/WebIdlConstants.webidl
+new file mode 100644
+index 00000000000..e57aa7838e4
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/WebIdlConstants.webidl
+@@ -0,0 +1,11 @@
++[Exposed=Window]
++interface WebIdlConstants {
++  const unsigned short NONE = 0;
++  const unsigned short CAPTURING_PHASE = 1;
++  const unsigned long LARGEST = 4294967295;
++  const long long NEGATIVE = -5;
++  const unrestricted double POSITIVE_INFINITY = Infinity;
++  const unrestricted float NOT_A_NUMBER = NaN;
++  const boolean ENABLED = true;
++  readonly attribute unsigned short phase;
++};
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index b6f55c910f8..3dff40fdff9 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8369,6 +8369,22 @@ def v8_argument_types(name: str, member_name: str, arguments) -> list:
+     return argument_types
+ 
+ 
++# Readonly numeric attribute types beyond the original double/unsigned long pilot:
++# native Rust type, and the expression turning VALUE into a JS Number (f64).
++V8_NUMERIC_ATTRIBUTE_TYPES = {
++    "Byte": ("i8", "VALUE as f64"),
++    "Octet": ("u8", "VALUE as f64"),
++    "Short": ("i16", "VALUE as f64"),
++    "UnsignedShort": ("u16", "VALUE as f64"),
++    "Long": ("i32", "VALUE as f64"),
++    "LongLong": ("i64", "VALUE as f64"),
++    "UnsignedLongLong": ("u64", "VALUE as f64"),
++    "Float": ("roves_v8::FiniteF32", "VALUE.get() as f64"),
++    "UnrestrictedFloat": ("f32", "VALUE as f64"),
++    "UnrestrictedDouble": ("f64", "VALUE"),
++}
++
++
+ # SpiderMonkey JIT/caching hints with no observable semantics; the V8 backend ignores them.
+ V8_IGNORED_MEMBER_HINTS = {"Pure", "Constant"}
+ 
+@@ -8429,9 +8445,28 @@ class CGV8BindingRoot(CGThing):
+         attributes = []
+         operations = []
+         unforgeable_attributes = set()
++        constants = []
+         for member in interface.members:
+             if copied_from_ancestor(member):
+                 continue
++            if member.isConst():
++                value = member.value.value
++                if member._extendedAttrDict:
++                    raise TypeError(f"V8 backend unsupported member: {name}.{member.identifier.name}")
++                if isinstance(value, bool):
++                    constant = f"Value::Bool({str(value).lower()})"
++                elif isinstance(value, (int, float)):
++                    if value != value:
++                        number = "f64::NAN"
++                    elif value in (float("inf"), float("-inf")):
++                        number = "f64::INFINITY" if value > 0 else "f64::NEG_INFINITY"
++                    else:
++                        number = f"{float(value)!r}"
++                    constant = f"Value::Number({number})"
++                else:
++                    raise TypeError(f"V8 backend unsupported constant type: {name}.{member.identifier.name}: {member.type}")
++                constants.append((member.identifier.name, constant))
++                continue
+             if member.isMethod():
+                 signatures = member.signatures()
+                 operation_attributes = set(member._extendedAttrDict) - {"Throws"} - V8_IGNORED_MEMBER_HINTS
+@@ -8524,6 +8559,14 @@ class CGV8BindingRoot(CGThing):
+                     value_expr = "native.{native}().map(|value| Value::Number(value as f64)).unwrap_or(Value::Null)"
+                 else:
+                     rust_type, value_expr = "u32", "Value::Number(native.{native}() as f64)"
++            elif (idl_type.isInteger() or idl_type.isFloat()) and idl_type.name in V8_NUMERIC_ATTRIBUTE_TYPES:
++                native_type, to_number = V8_NUMERIC_ATTRIBUTE_TYPES[idl_type.name]
++                if member.type.nullable():
++                    rust_type = f"Option<{native_type}>"
++                    value_expr = f"native.{{native}}().map(|value| Value::Number({to_number.replace('VALUE', 'value')})).unwrap_or(Value::Null)"
++                else:
++                    rust_type = native_type
++                    value_expr = f"Value::Number({to_number.replace('VALUE', 'native.{native}()')})"
+             elif idl_type.isUSVString():
+                 if member.type.nullable():
+                     rust_type = "Option<String>"
+@@ -8557,7 +8600,10 @@ class CGV8BindingRoot(CGThing):
+              for _, native, rust_type, _, setter, _ in attributes]
+             + [f"    fn {native}(&self{', ' + ', '.join('arg' + str(index) + ': ' + argument_type[0] for index, argument_type in enumerate(argument_types)) if argument_types else ''}) -> {f'Result<{rust_type}, roves_v8::WebIdlError>' if throws else rust_type};" for _, native, rust_type, _, argument_types, throws in operations]
+         )
+-        registrations_list = []
++        registrations_list = [
++            f'        runtime.define_constant(&interface, "{idl}", &{constant})?;'
++            for idl, constant in constants
++        ]
+         for idl, native, rust_type, value_expr, setter, conversion in attributes:
+             getter = (
+                 f'|native| {{\n'
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index 0383d1d6d02..8036fb797f3 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -102,7 +102,7 @@ class V8GeneratorTests(unittest.TestCase):
+                 generate(path, Path(directory) / "output")
+ 
+     def test_unsupported_members_never_silently_disappear(self):
+-        for member in ["readonly attribute float value;", "readonly attribute unsigned long long value;", "static readonly attribute boolean valid;", "[GetterThrows] readonly attribute boolean valid;", "attribute byte value;"]:
++        for member in ["readonly attribute object value;", "readonly attribute any value;", "static readonly attribute boolean valid;", "[GetterThrows] readonly attribute boolean valid;", "attribute byte value;"]:
+             with self.subTest(member=member):
+                 self.assert_unsupported("interface Unsupported { " + member + " };")
+ 
+@@ -500,6 +500,26 @@ class V8GeneratorTests(unittest.TestCase):
+     def test_mutable_unforgeable_attributes_fail_closed(self):
+         self.assert_unsupported("interface Unsupported { [LegacyUnforgeable] attribute boolean flag; };")
+ 
++    def test_readonly_numeric_attributes_map_to_rust_numbers(self):
++        with tempfile.TemporaryDirectory() as directory:
++            path = Path(directory) / "Numbers.webidl"
++            path.write_text(
++                "[Exposed=Window] interface Numbers { readonly attribute short a; readonly attribute long long b; "
++                "readonly attribute float c; readonly attribute unrestricted double d; readonly attribute unsigned short? e; "
++                "const unsigned short ONE = 1; const unrestricted double INF = Infinity; };",
++                encoding="utf-8",
++            )
++            source = generate(path, Path(directory) / "output")
++            for expected in [
++                "fn A(&self) -> i16;", "fn B(&self) -> i64;", "fn C(&self) -> roves_v8::FiniteF32;",
++                "fn D(&self) -> f64;", "fn E(&self) -> Option<u16>;",
++                "Value::Number(native.C().get() as f64)", "Value::Number(native.D())",
++                "native.E().map(|value| Value::Number(value as f64)).unwrap_or(Value::Null)",
++                'runtime.define_constant(&interface, "ONE", &Value::Number(1.0))?;',
++                'runtime.define_constant(&interface, "INF", &Value::Number(f64::INFINITY))?;',
++            ]:
++                self.assertIn(expected, source)
++
+     def test_jit_hint_attributes_are_ignored(self):
+         with tempfile.TemporaryDirectory() as directory:
+             path = Path(directory) / "Hints.webidl"

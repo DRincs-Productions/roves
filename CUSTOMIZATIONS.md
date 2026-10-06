@@ -11,6 +11,36 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: WebIDL constants and readonly numeric attributes (CP50)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixture
+`components/roves-v8/tests/webidl/WebIdlConstants.webidl`;
+`components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0114-roves-v8-webidl-constants-numeric-attributes.patch` after 0113.
+
+**Constants.** The new `Runtime::define_constant` installs a WebIDL `const` as a
+`{ writable: false, enumerable: true, configurable: false }` data property on both the interface
+object and its prototype. Servo's constants are all numeric once the parser resolves typedefs like
+`GLenum`. The generator emits them as `Value::Number` (or `Value::Bool`), including Infinity and
+NaN.
+
+**Readonly attributes.** These now cover every integer type, `float`, `unrestricted float` and
+`unrestricted double`, nullable or not, through the new `V8_NUMERIC_ATTRIBUTE_TYPES` table. Setters
+for those types are still rejected. The "unsupported members never silently disappear" test now
+probes `object` and `any` attributes, since `float` and `unsigned long long` readonly attributes are
+supported.
+
+**Tests.**
+- New runtime test: constant values (including 2^32-1, a negative long long, Infinity, NaN and a
+  boolean), presence on the prototype but not the instance, descriptors on both targets, and strict
+  assignment throwing.
+- Generator tests: 39/39.
+- `roves-v8` pilot and pilot+JIT-less: 72 unit + 5 integration + 2 doctests each; default 55 unit +
+  2 doctests.
+- `servo-script` check with the pilot is clean.
+
+Coverage: **19/486** (`MediaError`, `WebGLActiveInfo` and `WebGLShaderPrecisionFormat` join).
+
 ## 2026-10-06 - V8 migration Phase 4: `[LegacyUnforgeable]` attributes and JIT hints (CP49)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixtures

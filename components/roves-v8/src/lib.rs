@@ -101,6 +101,10 @@ pub mod webidl {
     pub mod unforgeable_child {
         include!(concat!(env!("OUT_DIR"), "/UnforgeableChildV8Binding.rs"));
     }
+    #[cfg(test)]
+    pub mod web_idl_constants {
+        include!(concat!(env!("OUT_DIR"), "/WebIdlConstantsV8Binding.rs"));
+    }
 }
 
 use std::sync::Once;
@@ -1145,6 +1149,29 @@ impl Runtime {
         getter: PropertyGetter,
     ) -> Result<(), String> {
         self.define_attribute(interface, name, getter, None, None, None, None, false)
+    }
+
+    /// Defines a WebIDL constant: a `{ writable: false, enumerable: true, configurable: false }`
+    /// data property on both the interface object and its prototype.
+    pub fn define_constant(&mut self, interface: &Interface, name: &str, value: &Value) -> Result<(), String> {
+        if interface.materialized.get() {
+            return Err("interface members must be defined before creating instances or descendants".into());
+        }
+        let context_handle = &self.context;
+        v8::scope!(let scope, &mut self.isolate);
+        let context = v8::Local::new(scope, context_handle);
+        let scope = &mut v8::ContextScope::new(scope, context);
+        let template = v8::Local::new(scope, &interface.template);
+        let key = v8::String::new(scope, name).ok_or("invalid constant name")?;
+        let constant: v8::Local<v8::Data> = match value {
+            Value::Number(number) => v8::Number::new(scope, *number).into(),
+            Value::Bool(boolean) => v8::Boolean::new(scope, *boolean).into(),
+            _ => return Err(format!("unsupported WebIDL constant value for {name}")),
+        };
+        let attributes = || v8::PropertyAttribute::READ_ONLY | v8::PropertyAttribute::DONT_DELETE;
+        template.set_with_attr(key.into(), constant, attributes());
+        template.prototype_template(scope).set_with_attr(key.into(), constant, attributes());
+        Ok(())
     }
 
     /// Defines a read-only `[LegacyUnforgeable]` attribute: a non-configurable accessor that is
@@ -4338,6 +4365,32 @@ mod tests {
             ("delete child.trusted", "false"),
             ("(() => { try { Object.defineProperty(base, 'trusted', { value: false }); return 'redefined'; } catch (e) { return e.constructor.name; } })()", "TypeError"),
             ("child.trusted", "false"),
+        ] {
+            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
+        }
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_constants_are_frozen_on_interface_object_and_prototype() {
+        use crate::webidl::web_idl_constants::{WebIdlConstantsBinding, WebIdlConstantsNative};
+        struct Phase;
+        #[allow(non_snake_case)]
+        impl WebIdlConstantsNative for Phase {
+            fn Phase(&self) -> u16 { 1 }
+        }
+        let mut runtime = Runtime::new();
+        let binding = WebIdlConstantsBinding::<Phase>::install(&mut runtime).unwrap();
+        let instance = binding.create(&mut runtime, Phase);
+        runtime.set_global_property("instance", &instance).unwrap();
+        for (source, expected) in [
+            ("[WebIdlConstants.NONE, WebIdlConstants.CAPTURING_PHASE, WebIdlConstants.LARGEST, WebIdlConstants.NEGATIVE].join()", "0,1,4294967295,-5"),
+            ("[WebIdlConstants.POSITIVE_INFINITY, Number.isNaN(WebIdlConstants.NOT_A_NUMBER), WebIdlConstants.ENABLED].join()", "Infinity,true,true"),
+            ("instance.phase === instance.CAPTURING_PHASE && WebIdlConstants.prototype.NONE === 0", "true"),
+            ("Object.hasOwn(instance, 'NONE')", "false"),
+            ("['NONE', 'LARGEST'].map(name => [WebIdlConstants, WebIdlConstants.prototype].map(target => { const d = Object.getOwnPropertyDescriptor(target, name); return [d.writable, d.enumerable, d.configurable].join(); }).join('|')).join(' ')", "false,true,false|false,true,false false,true,false|false,true,false"),
+            ("'use strict'; (() => { try { WebIdlConstants.NONE = 5; return 'assigned'; } catch (e) { return e.constructor.name; } })()", "TypeError"),
+            ("WebIdlConstants.NONE", "0"),
         ] {
             assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
         }

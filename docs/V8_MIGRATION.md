@@ -38,6 +38,10 @@ hints are ignored. Coverage 16/486: the remaining core blockers are interface-ty
 wrappers as attributes/arguments/returns), dictionaries, callbacks, sequences, unions, `any`,
 constants and `[Pref]`.
 
+**CP50 (2026-10-06): constants and numeric attributes.** `define_constant` installs frozen WebIDL
+constants on the interface object and prototype; readonly attributes cover all integer and float
+types. Coverage 19/486.
+
 CP37 exposes stable `NativeObjectId` through `DomObject` and updates generated `dom_struct`
 equality to use that engine-neutral contract. Local checks pass (reflector 2/2, macro 3/3,
 rustfmt, and patch 0101 reverse-check); CI is green: V8 37226916624 (6/6), Servo 37226916650

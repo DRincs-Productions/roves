@@ -95,6 +95,10 @@ generatore 38/38, `roves-v8` 71+5+2 (pilot e JIT-less), default 55+2, check puli
 attributi/argomenti/ritorni), da costruire sulla cache identità di CP33/CP35. Poi costanti,
 dizionari, callback, sequence, union, `any`, `[Pref]`.
 
+**CP50 (2026-10-06):** costanti WebIDL (`define_constant`, congelate su interface object e
+prototype) e attributi readonly per tutti gli interi/float (patch 0114). Test generatore 39/39,
+`roves-v8` 72+5+2, default 55+2, check pulito. Copertura **19/486**.
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

@@ -8369,6 +8369,22 @@ def v8_argument_types(name: str, member_name: str, arguments) -> list:
     return argument_types
 
 
+# Readonly numeric attribute types beyond the original double/unsigned long pilot:
+# native Rust type, and the expression turning VALUE into a JS Number (f64).
+V8_NUMERIC_ATTRIBUTE_TYPES = {
+    "Byte": ("i8", "VALUE as f64"),
+    "Octet": ("u8", "VALUE as f64"),
+    "Short": ("i16", "VALUE as f64"),
+    "UnsignedShort": ("u16", "VALUE as f64"),
+    "Long": ("i32", "VALUE as f64"),
+    "LongLong": ("i64", "VALUE as f64"),
+    "UnsignedLongLong": ("u64", "VALUE as f64"),
+    "Float": ("roves_v8::FiniteF32", "VALUE.get() as f64"),
+    "UnrestrictedFloat": ("f32", "VALUE as f64"),
+    "UnrestrictedDouble": ("f64", "VALUE"),
+}
+
+
 # SpiderMonkey JIT/caching hints with no observable semantics; the V8 backend ignores them.
 V8_IGNORED_MEMBER_HINTS = {"Pure", "Constant"}
 
@@ -8429,8 +8445,27 @@ class CGV8BindingRoot(CGThing):
         attributes = []
         operations = []
         unforgeable_attributes = set()
+        constants = []
         for member in interface.members:
             if copied_from_ancestor(member):
+                continue
+            if member.isConst():
+                value = member.value.value
+                if member._extendedAttrDict:
+                    raise TypeError(f"V8 backend unsupported member: {name}.{member.identifier.name}")
+                if isinstance(value, bool):
+                    constant = f"Value::Bool({str(value).lower()})"
+                elif isinstance(value, (int, float)):
+                    if value != value:
+                        number = "f64::NAN"
+                    elif value in (float("inf"), float("-inf")):
+                        number = "f64::INFINITY" if value > 0 else "f64::NEG_INFINITY"
+                    else:
+                        number = f"{float(value)!r}"
+                    constant = f"Value::Number({number})"
+                else:
+                    raise TypeError(f"V8 backend unsupported constant type: {name}.{member.identifier.name}: {member.type}")
+                constants.append((member.identifier.name, constant))
                 continue
             if member.isMethod():
                 signatures = member.signatures()
@@ -8524,6 +8559,14 @@ class CGV8BindingRoot(CGThing):
                     value_expr = "native.{native}().map(|value| Value::Number(value as f64)).unwrap_or(Value::Null)"
                 else:
                     rust_type, value_expr = "u32", "Value::Number(native.{native}() as f64)"
+            elif (idl_type.isInteger() or idl_type.isFloat()) and idl_type.name in V8_NUMERIC_ATTRIBUTE_TYPES:
+                native_type, to_number = V8_NUMERIC_ATTRIBUTE_TYPES[idl_type.name]
+                if member.type.nullable():
+                    rust_type = f"Option<{native_type}>"
+                    value_expr = f"native.{{native}}().map(|value| Value::Number({to_number.replace('VALUE', 'value')})).unwrap_or(Value::Null)"
+                else:
+                    rust_type = native_type
+                    value_expr = f"Value::Number({to_number.replace('VALUE', 'native.{native}()')})"
             elif idl_type.isUSVString():
                 if member.type.nullable():
                     rust_type = "Option<String>"
@@ -8557,7 +8600,10 @@ class CGV8BindingRoot(CGThing):
              for _, native, rust_type, _, setter, _ in attributes]
             + [f"    fn {native}(&self{', ' + ', '.join('arg' + str(index) + ': ' + argument_type[0] for index, argument_type in enumerate(argument_types)) if argument_types else ''}) -> {f'Result<{rust_type}, roves_v8::WebIdlError>' if throws else rust_type};" for _, native, rust_type, _, argument_types, throws in operations]
         )
-        registrations_list = []
+        registrations_list = [
+            f'        runtime.define_constant(&interface, "{idl}", &{constant})?;'
+            for idl, constant in constants
+        ]
         for idl, native, rust_type, value_expr, setter, conversion in attributes:
             getter = (
                 f'|native| {{\n'
