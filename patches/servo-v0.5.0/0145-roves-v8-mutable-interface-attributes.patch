@@ -1,0 +1,165 @@
+diff --git a/components/roves-v8/build.rs b/components/roves-v8/build.rs
+index 07b790880d7..7f3c76ae673 100644
+--- a/components/roves-v8/build.rs
++++ b/components/roves-v8/build.rs
+@@ -238,6 +238,7 @@ fn main() {
+         ("NamespaceProbe", &[][..]),
+         ("OverloadedConstructor", &[][..]),
+         ("FactoryProbe", &[][..]),
++        ("Holder", &[][..]),
+     ] {
+         println!("cargo:rerun-if-changed={}", fixtures.join(format!("{interface}.webidl")).display());
+         println!("cargo:rerun-if-changed={}", fixtures.join("Bindings.conf").display());
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index e5a02753991..86006b3b345 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -182,6 +182,10 @@ pub mod webidl {
+         include!(concat!(env!("OUT_DIR"), "/FactoryProbeV8Binding.rs"));
+     }
+     #[cfg(test)]
++    pub mod holder {
++        include!(concat!(env!("OUT_DIR"), "/HolderV8Binding.rs"));
++    }
++    #[cfg(test)]
+     pub mod promise_operations {
+         include!(concat!(env!("OUT_DIR"), "/PromiseOperationsV8Binding.rs"));
+     }
+@@ -8280,6 +8284,59 @@ mod tests {
+         }
+     }
+ 
++    #[cfg(feature = "webidl-pilot")]
++    #[test]
++    fn generated_mutable_interface_attributes_accept_only_instances() {
++        use crate::webidl::holder::{HolderBinding, HolderNative};
++        use crate::{NativeRef, ScriptContext, Trace, Tracer, WebIdlError};
++        use std::cell::RefCell;
++        struct Holder {
++            id: u32,
++            next: RefCell<Option<NativeRef>>,
++            current: RefCell<Option<NativeRef>>,
++        }
++        impl Trace for Holder {
++            fn trace(&self, _tracer: &mut Tracer) {}
++        }
++        #[allow(non_snake_case)]
++        impl HolderNative for Holder {
++            fn Id(&self) -> u32 { self.id }
++            fn Next(&self) -> Option<NativeRef> { self.next.borrow().clone() }
++            fn set_Next(&self, value: Option<NativeRef>) { *self.next.borrow_mut() = value; }
++            fn Current(&self, _cx: &mut ScriptContext) -> Result<NativeRef, WebIdlError> {
++                self.current.borrow().clone().ok_or_else(|| WebIdlError::TypeError("no current".into()))
++            }
++            fn set_Current(&self, _cx: &mut ScriptContext, value: NativeRef) -> Result<(), WebIdlError> {
++                if value.get::<Holder>().is_some_and(|holder| std::ptr::eq(holder, self)) {
++                    return Err(WebIdlError::DomException { name: "HierarchyRequestError".into(), message: "self".into() });
++                }
++                *self.current.borrow_mut() = Some(value);
++                Ok(())
++            }
++        }
++        let mut runtime = Runtime::new();
++        let binding = HolderBinding::<Holder>::install(&mut runtime).unwrap();
++        for (name, id) in [("a", 1), ("b", 2)] {
++            let holder = runtime.allocate_traced(Holder { id, next: RefCell::new(None), current: RefCell::new(None) });
++            let wrapper = binding.wrap_traced(&mut runtime, &holder);
++            runtime.set_global_property(name, &wrapper).unwrap();
++        }
++        for (source, expected) in [
++            ("[a.next, (a.next = b, a.next === b), a.next.id].join()", ",true,2"),
++            ("a.next = null; a.next", "null"),
++            // A non-instance is a TypeError and leaves the value unchanged.
++            ("a.next = b; (() => { try { a.next = {}; } catch (e) { return e.name + ' ' + (a.next === b); } })()", "TypeError true"),
++            ("(() => { try { a.next = Object.create(Holder.prototype); } catch (e) { return e.name; } })()", "TypeError"),
++            // A non-nullable attribute rejects null; its setter may throw.
++            ("(() => { try { a.current = null; } catch (e) { return e.name; } })()", "TypeError"),
++            ("a.current = b; a.current === b", "true"),
++            ("(() => { try { a.current = a; } catch (e) { return e.name + ' ' + (a.current === b); } })()", "HierarchyRequestError true"),
++            ("(() => { try { return b.current; } catch (e) { return e.name; } })()", "TypeError"),
++        ] {
++            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
++        }
++    }
++
+     #[cfg(feature = "webidl-pilot")]
+     #[test]
+     fn generated_promise_operations_resolve_reject_and_settle_later() {
+diff --git a/components/roves-v8/tests/webidl/Holder.webidl b/components/roves-v8/tests/webidl/Holder.webidl
+new file mode 100644
+index 00000000000..99e4e85eca7
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/Holder.webidl
+@@ -0,0 +1,8 @@
++// Mutable interface-typed attributes (like TreeWalker.currentNode and HTMLTableElement.caption):
++// the setter accepts only instances of the interface (or null where nullable).
++[Exposed=Window]
++interface Holder {
++  readonly attribute unsigned long id;
++  attribute Holder? next;
++  [SetterThrows] attribute Holder current;
++};
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index bd243637315..b13fff196cc 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -9186,13 +9186,18 @@ class CGV8BindingRoot(CGThing):
+             lenient_this = "LegacyLenientThis" in member._extendedAttrDict
+             if lenient_this and not (idl_type.isAny() or idl_type.isObject() or idl_type.isCallback()):
+                 raise TypeError(f"V8 backend only supports [LegacyLenientThis] on contextual attributes: {name}.{member.identifier.name}")
++            mutable_interface = not member.readonly and v8_is_dom_interface(idl_type)
+             if ((idl_type.isUnion() and (not member.readonly or v8_contains_handle(member.type)))
+-                    or idl_type.isBufferSource() or idl_type.isPromise() or idl_type.isCallbackInterface()):
+-                # Structured attributes: the setter converts through the WebIDL type.
++                    or idl_type.isBufferSource() or idl_type.isPromise() or idl_type.isCallbackInterface()
++                    or mutable_interface):
++                # Structured attributes: the setter converts through the WebIDL type (for an
++                # interface type, a TypeError unless the value is an instance of it).
+                 rust, expr, arm, to_value = v8_typed_info(member.type, name, member.identifier.name)
++                # A throwing getter or setter makes the accessors fallible (they take the context).
++                throws = bool({"Throws", "GetterThrows", "SetterThrows"} & set(member._extendedAttrDict))
+                 typed_attributes.append((
+                     member.identifier.name, v8_native_name(member), rust, expr, arm,
+-                    to_value, not member.readonly, v8_contains_handle(member.type),
++                    to_value, not member.readonly, v8_contains_handle(member.type) or throws,
+                 ))
+                 continue
+             if idl_type.isAny() or idl_type.isObject() or idl_type.isCallback():
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index d0429016673..84bc1bc293f 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -104,7 +104,7 @@ class V8GeneratorTests(unittest.TestCase):
+                 generate(path, Path(directory) / "output")
+ 
+     def test_unsupported_members_never_silently_disappear(self):
+-        for member in ["[LegacyLenientSetter] readonly attribute boolean value;", "static readonly attribute boolean valid;", "[LegacyLenientThis] readonly attribute boolean valid;", "attribute Unsupported? owner;"]:
++        for member in ["[LegacyLenientSetter] readonly attribute boolean value;", "static readonly attribute boolean valid;", "[LegacyLenientThis] readonly attribute boolean valid;", "[Replaceable] readonly attribute boolean owner;"]:
+             with self.subTest(member=member):
+                 self.assert_unsupported("interface Unsupported { " + member + " };")
+ 
+@@ -859,6 +859,24 @@ class V8GeneratorTests(unittest.TestCase):
+             with self.assertRaisesRegex(TypeError, "unsupported constructor attributes"):
+                 generate(path, Path(directory) / "output")
+ 
++    def test_mutable_interface_attributes_convert_through_the_interface_type(self):
++        with tempfile.TemporaryDirectory() as directory:
++            path = Path(directory) / "Holder.webidl"
++            path.write_text(
++                "[Exposed=Window] interface Holder { attribute Holder? next; [SetterThrows] attribute Holder current; };",
++                encoding="utf-8",
++            )
++            source = generate(path, Path(directory) / "output")
++            self.assertIn("fn Next(&self) -> Option<roves_v8::NativeRef>;", source)
++            self.assertIn("fn set_Next(&self, value: Option<roves_v8::NativeRef>);", source)
++            # A throwing setter makes both accessors fallible.
++            self.assertIn(
++                "fn set_Current(&self, cx: &mut roves_v8::ScriptContext, value: roves_v8::NativeRef) -> Result<(), roves_v8::WebIdlError>;",
++                source,
++            )
++            self.assertIn('runtime.define_typed_attribute(&interface, "next"', source)
++            self.assertIn('roves_v8::WebIdlType::Nullable(Box::new(roves_v8::WebIdlType::Interface("Holder"', source)
++
+     def test_legacy_factory_functions_generate_fallible_natives(self):
+         with tempfile.TemporaryDirectory() as directory:
+             path = Path(directory) / "Picture.webidl"

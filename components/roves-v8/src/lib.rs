@@ -182,6 +182,10 @@ pub mod webidl {
         include!(concat!(env!("OUT_DIR"), "/FactoryProbeV8Binding.rs"));
     }
     #[cfg(test)]
+    pub mod holder {
+        include!(concat!(env!("OUT_DIR"), "/HolderV8Binding.rs"));
+    }
+    #[cfg(test)]
     pub mod promise_operations {
         include!(concat!(env!("OUT_DIR"), "/PromiseOperationsV8Binding.rs"));
     }
@@ -8275,6 +8279,59 @@ mod tests {
             ("(() => { try { Picture(); } catch (e) { return e.name; } })()", "TypeError"),
             // The interface itself stays nonconstructible.
             ("(() => { try { new FactoryProbe(); } catch (e) { return e.name; } })()", "TypeError"),
+        ] {
+            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
+        }
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_mutable_interface_attributes_accept_only_instances() {
+        use crate::webidl::holder::{HolderBinding, HolderNative};
+        use crate::{NativeRef, ScriptContext, Trace, Tracer, WebIdlError};
+        use std::cell::RefCell;
+        struct Holder {
+            id: u32,
+            next: RefCell<Option<NativeRef>>,
+            current: RefCell<Option<NativeRef>>,
+        }
+        impl Trace for Holder {
+            fn trace(&self, _tracer: &mut Tracer) {}
+        }
+        #[allow(non_snake_case)]
+        impl HolderNative for Holder {
+            fn Id(&self) -> u32 { self.id }
+            fn Next(&self) -> Option<NativeRef> { self.next.borrow().clone() }
+            fn set_Next(&self, value: Option<NativeRef>) { *self.next.borrow_mut() = value; }
+            fn Current(&self, _cx: &mut ScriptContext) -> Result<NativeRef, WebIdlError> {
+                self.current.borrow().clone().ok_or_else(|| WebIdlError::TypeError("no current".into()))
+            }
+            fn set_Current(&self, _cx: &mut ScriptContext, value: NativeRef) -> Result<(), WebIdlError> {
+                if value.get::<Holder>().is_some_and(|holder| std::ptr::eq(holder, self)) {
+                    return Err(WebIdlError::DomException { name: "HierarchyRequestError".into(), message: "self".into() });
+                }
+                *self.current.borrow_mut() = Some(value);
+                Ok(())
+            }
+        }
+        let mut runtime = Runtime::new();
+        let binding = HolderBinding::<Holder>::install(&mut runtime).unwrap();
+        for (name, id) in [("a", 1), ("b", 2)] {
+            let holder = runtime.allocate_traced(Holder { id, next: RefCell::new(None), current: RefCell::new(None) });
+            let wrapper = binding.wrap_traced(&mut runtime, &holder);
+            runtime.set_global_property(name, &wrapper).unwrap();
+        }
+        for (source, expected) in [
+            ("[a.next, (a.next = b, a.next === b), a.next.id].join()", ",true,2"),
+            ("a.next = null; a.next", "null"),
+            // A non-instance is a TypeError and leaves the value unchanged.
+            ("a.next = b; (() => { try { a.next = {}; } catch (e) { return e.name + ' ' + (a.next === b); } })()", "TypeError true"),
+            ("(() => { try { a.next = Object.create(Holder.prototype); } catch (e) { return e.name; } })()", "TypeError"),
+            // A non-nullable attribute rejects null; its setter may throw.
+            ("(() => { try { a.current = null; } catch (e) { return e.name; } })()", "TypeError"),
+            ("a.current = b; a.current === b", "true"),
+            ("(() => { try { a.current = a; } catch (e) { return e.name + ' ' + (a.current === b); } })()", "HierarchyRequestError true"),
+            ("(() => { try { return b.current; } catch (e) { return e.name; } })()", "TypeError"),
         ] {
             assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
         }

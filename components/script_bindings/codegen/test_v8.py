@@ -104,7 +104,7 @@ class V8GeneratorTests(unittest.TestCase):
                 generate(path, Path(directory) / "output")
 
     def test_unsupported_members_never_silently_disappear(self):
-        for member in ["[LegacyLenientSetter] readonly attribute boolean value;", "static readonly attribute boolean valid;", "[LegacyLenientThis] readonly attribute boolean valid;", "attribute Unsupported? owner;"]:
+        for member in ["[LegacyLenientSetter] readonly attribute boolean value;", "static readonly attribute boolean valid;", "[LegacyLenientThis] readonly attribute boolean valid;", "[Replaceable] readonly attribute boolean owner;"]:
             with self.subTest(member=member):
                 self.assert_unsupported("interface Unsupported { " + member + " };")
 
@@ -858,6 +858,24 @@ class V8GeneratorTests(unittest.TestCase):
             path.write_text("[Exposed=Window] interface Ctor { [Pref=\"dom_x\"] constructor(); };", encoding="utf-8")
             with self.assertRaisesRegex(TypeError, "unsupported constructor attributes"):
                 generate(path, Path(directory) / "output")
+
+    def test_mutable_interface_attributes_convert_through_the_interface_type(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Holder.webidl"
+            path.write_text(
+                "[Exposed=Window] interface Holder { attribute Holder? next; [SetterThrows] attribute Holder current; };",
+                encoding="utf-8",
+            )
+            source = generate(path, Path(directory) / "output")
+            self.assertIn("fn Next(&self) -> Option<roves_v8::NativeRef>;", source)
+            self.assertIn("fn set_Next(&self, value: Option<roves_v8::NativeRef>);", source)
+            # A throwing setter makes both accessors fallible.
+            self.assertIn(
+                "fn set_Current(&self, cx: &mut roves_v8::ScriptContext, value: roves_v8::NativeRef) -> Result<(), roves_v8::WebIdlError>;",
+                source,
+            )
+            self.assertIn('runtime.define_typed_attribute(&interface, "next"', source)
+            self.assertIn('roves_v8::WebIdlType::Nullable(Box::new(roves_v8::WebIdlType::Interface("Holder"', source)
 
     def test_legacy_factory_functions_generate_fallible_natives(self):
         with tempfile.TemporaryDirectory() as directory:

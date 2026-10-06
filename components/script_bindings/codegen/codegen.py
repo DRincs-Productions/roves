@@ -9186,13 +9186,18 @@ class CGV8BindingRoot(CGThing):
             lenient_this = "LegacyLenientThis" in member._extendedAttrDict
             if lenient_this and not (idl_type.isAny() or idl_type.isObject() or idl_type.isCallback()):
                 raise TypeError(f"V8 backend only supports [LegacyLenientThis] on contextual attributes: {name}.{member.identifier.name}")
+            mutable_interface = not member.readonly and v8_is_dom_interface(idl_type)
             if ((idl_type.isUnion() and (not member.readonly or v8_contains_handle(member.type)))
-                    or idl_type.isBufferSource() or idl_type.isPromise() or idl_type.isCallbackInterface()):
-                # Structured attributes: the setter converts through the WebIDL type.
+                    or idl_type.isBufferSource() or idl_type.isPromise() or idl_type.isCallbackInterface()
+                    or mutable_interface):
+                # Structured attributes: the setter converts through the WebIDL type (for an
+                # interface type, a TypeError unless the value is an instance of it).
                 rust, expr, arm, to_value = v8_typed_info(member.type, name, member.identifier.name)
+                # A throwing getter or setter makes the accessors fallible (they take the context).
+                throws = bool({"Throws", "GetterThrows", "SetterThrows"} & set(member._extendedAttrDict))
                 typed_attributes.append((
                     member.identifier.name, v8_native_name(member), rust, expr, arm,
-                    to_value, not member.readonly, v8_contains_handle(member.type),
+                    to_value, not member.readonly, v8_contains_handle(member.type) or throws,
                 ))
                 continue
             if idl_type.isAny() or idl_type.isObject() or idl_type.isCallback():

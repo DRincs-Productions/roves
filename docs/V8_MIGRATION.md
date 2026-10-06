@@ -186,6 +186,10 @@ and `MediaStream` generate. Coverage 432/486.
 instances of their interfaces, so `HTMLImageElement`, `HTMLAudioElement` and `HTMLOptionElement`
 generate. Coverage 435/486.
 
+**CP81 (2026-10-06): mutable interface-typed attributes.** Their setters accept only instances
+of the interface. `Animation`, `AudioBufferSourceNode`, `HTMLInputElement`, `HTMLTableElement`,
+`MediaSession`, `TreeWalker` and `VTTCue` generate. Coverage 442/486 (91%).
+
 CP37 exposes stable `NativeObjectId` through `DomObject` and updates generated `dom_struct`
 equality to use that engine-neutral contract. Local checks pass (reflector 2/2, macro 3/3,
 rustfmt, and patch 0101 reverse-check); CI is green: V8 37226916624 (6/6), Servo 37226916650

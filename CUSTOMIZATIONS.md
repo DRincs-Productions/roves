@@ -11,6 +11,32 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: mutable interface-typed attributes (CP81)
+
+**Servo files:** `components/roves-v8/build.rs`, `components/roves-v8/src/lib.rs` (test only),
+`components/roves-v8/tests/webidl/Holder.webidl` (new),
+`components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0145-roves-v8-mutable-interface-attributes.patch` after 0144.
+
+Writable attributes of a DOM interface type (`TreeWalker.currentNode`,
+`HTMLTableElement.caption`, `AudioBufferSourceNode.buffer`, ...) now use the structured
+(`define_typed_attribute`) path. The setter converts through `WebIdlType::Interface`, so a
+value that is not a traced instance of the interface (including prototype spoofing) is a
+TypeError and leaves the attribute unchanged. `null` is accepted only where the type is
+nullable. The native gets a `NativeRef` (`Option<NativeRef>` when nullable).
+
+The runtime needed no changes. **Pilot simplification:** a `[Throws]`/`[GetterThrows]`/
+`[SetterThrows]` attribute of this kind makes *both* accessors take the `ScriptContext` and
+return `Result`. Servo distinguishes the getter from the setter.
+
+Tests: generator 67/67. The new runtime fixture `Holder` covers set/get identity, `null`,
+non-instances and spoofed prototypes (the value is unchanged), a non-nullable `null`, a
+throwing setter (DOMException, value unchanged) and a throwing getter. `roves-v8` passes
+105 + 5 + 2 (also `jitless`), and 61 + 2 by default. The `servo-script` pilot check is clean.
+
+Coverage: **442/486**. **`Animation`, `AudioBufferSourceNode`, `HTMLInputElement`,
+`HTMLTableElement`, `MediaSession`, `TreeWalker` and `VTTCue` now generate.**
+
 ## 2026-10-06 - V8 migration Phase 4: `[LegacyFactoryFunction]` (`Image`, `Audio`, `Option`) (CP80)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `components/roves-v8/build.rs`,
