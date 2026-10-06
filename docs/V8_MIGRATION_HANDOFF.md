@@ -47,7 +47,15 @@ definizione interfacce, `JS_DefineProperty`, compile).
 build e bundle), Android `37349391487`, iOS `37349391463`; matrice V8 `37348750612` verde al
 commit CP41 `e067fc2800f` (i commit successivi non toccano i path del workflow V8).
 
-**Ripresa:** La scope chain degli event handler
+**CP45 (2026-10-06):** `codegen/v8_coverage.py` misura il backend V8 su tutto il WebIDL di Servo:
+**13/486** definizioni generabili. Ha fatto emergere e correggere un crash su
+`[Exposed=(Window,Worker)]`. Blocchi principali: ereditarietà 279, costruttori 55,
+`LegacyNoInterfaceObject` 32, `Pref` 25+. Test generatore 29/29 (patch 0109); la CI V8 stampa il
+report. Prossimo obiettivo Phase 4: supportare l'ereditarietà delle interfacce nel generatore e nel
+runtime `roves-v8`. Prima verificare cosa offre già il runtime: i flag di materializzazione
+condivisi indicano un supporto parziale alle catene di prototipi.
+
+**Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,
 estensioni WebGL, compile). Il toolchain locale Windows è completo: verificare ogni modifica in

@@ -11,6 +11,26 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: generator coverage report over all Servo WebIDL (CP45)
+
+**Servo files:** `components/script_bindings/codegen/codegen.py`,
+`components/script_bindings/codegen/test_v8.py`, new `components/script_bindings/codegen/v8_coverage.py`.
+**Patch:** `0109-roves-v8-generator-coverage.patch` after 0108. Also `.github/workflows/v8.yml`
+(not a Servo file): prints the report after the generator tests.
+
+`v8_coverage.py` parses every `webidls/*.webidl` together, as `run.py` does, and runs the opt-in
+`CGV8BindingRoot` on every interface, namespace and callback interface. The backend fails closed, so
+each rejection names the first unsupported shape it reached. Rejections are grouped by that reason
+and ranked, which gives the migration a real progress metric instead of a hand count. Running it found
+a generator bug: `[Exposed=(Window,Worker)]` parses as a nested list, and the Window-exposure check
+crashed with `unhashable type: 'list'` instead of accepting or rejecting the interface. Exposure is
+now flattened before the check. The "interface shape" rejection also now names which shape it hit
+(namespace, callback interface, inheritance, constructor). Measured coverage is **13/486**
+definitions (8 before the fix). The top blockers are inheritance (279), constructors (55),
+`[LegacyNoInterfaceObject]` (32) and `[Pref]` (25+). Three new generator tests cover multi-global
+exposure, the named shape, and the report (every rejection must be a deliberate backend
+`TypeError`, never a generator crash): 29/29 pass locally. SpiderMonkey binding output is untouched.
+
 ## 2026-10-05 - V8 migration Phase 3: last two hand-built DOM-object values (CP44)
 
 **Servo files:** `components/script/dom/indexeddb/idbrequest.rs`,

@@ -43,6 +43,9 @@ jobs:
       - name: test V8 WebIDL generator contracts
         shell: bash
         run: python -m unittest discover -s components/script_bindings/codegen -p test_v8.py
+      - name: report V8 WebIDL generator coverage
+        shell: bash
+        run: python components/script_bindings/codegen/v8_coverage.py --top 15
       - name: test runtime and compile-fail safety contracts
         shell: bash
         env:

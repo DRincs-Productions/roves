@@ -2,6 +2,14 @@
 
 ## Status note — 2026-10-04 (CP37 complete; Phase 3 production ownership remains open)
 
+**CP45 (2026-10-06): generator coverage metric.** `components/script_bindings/codegen/v8_coverage.py`
+runs the V8 backend over all of Servo's WebIDL and ranks the first blocker per definition. It
+reports 13/486 definitions generable, after it exposed and fixed a crash on
+`[Exposed=(Window,Worker)]`. The top blockers are interface inheritance (279), constructors (55),
+`[LegacyNoInterfaceObject]` (32) and `[Pref]` (25+). The V8 CI prints this report on every run.
+Inheritance is the next Phase 4 target, because it gates more than half of all bindings. This is
+pilot-generator coverage, not production bindings.
+
 CP37 exposes stable `NativeObjectId` through `DomObject` and updates generated `dom_struct`
 equality to use that engine-neutral contract. Local checks pass (reflector 2/2, macro 3/3,
 rustfmt, and patch 0101 reverse-check); CI is green: V8 37226916624 (6/6), Servo 37226916650

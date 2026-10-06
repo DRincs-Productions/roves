@@ -389,6 +389,47 @@ class V8GeneratorTests(unittest.TestCase):
             with self.assertRaisesRegex(TypeError, "exposed to Window"):
                 generate(path, Path(directory) / "output")
 
+    def test_multi_global_exposure_including_window_is_supported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Shared.webidl"
+            path.write_text(
+                "[Exposed=(Window,Worker)] interface Shared { readonly attribute boolean ok; };",
+                encoding="utf-8",
+            )
+            source = generate(path, Path(directory) / "output")
+            self.assertIn("fn Ok(&self) -> bool;", source)
+
+    def test_interface_shape_rejections_name_the_shape(self):
+        import WebIDL
+        from codegen import CGV8BindingRoot
+
+        with tempfile.TemporaryDirectory() as directory:
+            parser = WebIDL.Parser(directory)
+            parser.parse("[Global=Window, Exposed=Window] interface Window {};", "Window.webidl")
+            parser.parse(
+                "[Exposed=Window] interface Base {}; [Exposed=Window] interface Derived : Base {};",
+                "Derived.webidl",
+            )
+            derived = next(
+                item for item in parser.finish()
+                if isinstance(item, WebIDL.IDLInterface) and item.identifier.name == "Derived"
+            )
+            with self.assertRaisesRegex(TypeError, r"interface shape \(inheritance\)"):
+                CGV8BindingRoot(derived).define()
+
+    def test_coverage_report_counts_real_webidl(self):
+        from v8_coverage import measure
+
+        report = measure()
+        self.assertGreater(report["total"], 400)
+        self.assertIn("ValidityState", report["supported"])
+        self.assertIn("Screen", report["supported"])
+        self.assertEqual(len(report["supported"]) + len(report["rejected"]), report["total"])
+        # Every rejection must be a deliberate fail-closed TypeError from the backend,
+        # never a crash inside the generator itself.
+        for name, message in report["rejected"].items():
+            self.assertRegex(message, r"^V8 (backend|pilot) ", name)
+
 
 if __name__ == "__main__":
     unittest.main()

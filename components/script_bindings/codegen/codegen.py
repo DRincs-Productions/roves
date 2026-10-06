@@ -8226,14 +8226,24 @@ class CGV8BindingRoot(CGThing):
     def define(self) -> str:
         interface = self.interface
         name = interface.identifier.name
-        if (interface.isNamespace() or interface.isCallback() or interface.parent is not None
-                or interface.ctor() is not None):
-            raise TypeError(f"V8 backend does not yet support interface shape: {name}")
+        for unsupported_shape, present in [
+            ("namespace", interface.isNamespace()),
+            ("callback interface", interface.isCallback()),
+            ("inheritance", interface.parent is not None),
+            ("constructor", interface.ctor() is not None),
+        ]:
+            if present:
+                raise TypeError(f"V8 backend does not yet support interface shape ({unsupported_shape}): {name}")
         unsupported = set(interface._extendedAttrDict) - {"Exposed"}
         if unsupported:
             raise TypeError(f"V8 backend unsupported attributes on {name}: {sorted(unsupported)}")
         exposed = interface._extendedAttrDict.get("Exposed")
-        if exposed is None or not ({"Window", "*"} & set(exposed)):
+        # `[Exposed=Window]` parses as ["Window"], `[Exposed=(Window,Worker)]` as
+        # [["Window", "Worker"]]; flatten both forms before checking for Window.
+        exposed_globals = set()
+        for entry in exposed or []:
+            exposed_globals.update(entry if isinstance(entry, list) else [entry])
+        if not ({"Window", "*"} & exposed_globals):
             raise TypeError(f"V8 pilot only supports interfaces exposed to Window: {name}")
         attributes = []
         operations = []

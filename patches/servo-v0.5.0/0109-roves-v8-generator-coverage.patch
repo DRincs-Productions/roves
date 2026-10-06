@@ -1,0 +1,194 @@
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index 7312e2e418f..0dc951138f4 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8226,14 +8226,24 @@ class CGV8BindingRoot(CGThing):
+     def define(self) -> str:
+         interface = self.interface
+         name = interface.identifier.name
+-        if (interface.isNamespace() or interface.isCallback() or interface.parent is not None
+-                or interface.ctor() is not None):
+-            raise TypeError(f"V8 backend does not yet support interface shape: {name}")
++        for unsupported_shape, present in [
++            ("namespace", interface.isNamespace()),
++            ("callback interface", interface.isCallback()),
++            ("inheritance", interface.parent is not None),
++            ("constructor", interface.ctor() is not None),
++        ]:
++            if present:
++                raise TypeError(f"V8 backend does not yet support interface shape ({unsupported_shape}): {name}")
+         unsupported = set(interface._extendedAttrDict) - {"Exposed"}
+         if unsupported:
+             raise TypeError(f"V8 backend unsupported attributes on {name}: {sorted(unsupported)}")
+         exposed = interface._extendedAttrDict.get("Exposed")
+-        if exposed is None or not ({"Window", "*"} & set(exposed)):
++        # `[Exposed=Window]` parses as ["Window"], `[Exposed=(Window,Worker)]` as
++        # [["Window", "Worker"]]; flatten both forms before checking for Window.
++        exposed_globals = set()
++        for entry in exposed or []:
++            exposed_globals.update(entry if isinstance(entry, list) else [entry])
++        if not ({"Window", "*"} & exposed_globals):
+             raise TypeError(f"V8 pilot only supports interfaces exposed to Window: {name}")
+         attributes = []
+         operations = []
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index c57a928b44d..8185f9e557f 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -389,6 +389,47 @@ class V8GeneratorTests(unittest.TestCase):
+             with self.assertRaisesRegex(TypeError, "exposed to Window"):
+                 generate(path, Path(directory) / "output")
+ 
++    def test_multi_global_exposure_including_window_is_supported(self):
++        with tempfile.TemporaryDirectory() as directory:
++            path = Path(directory) / "Shared.webidl"
++            path.write_text(
++                "[Exposed=(Window,Worker)] interface Shared { readonly attribute boolean ok; };",
++                encoding="utf-8",
++            )
++            source = generate(path, Path(directory) / "output")
++            self.assertIn("fn Ok(&self) -> bool;", source)
++
++    def test_interface_shape_rejections_name_the_shape(self):
++        import WebIDL
++        from codegen import CGV8BindingRoot
++
++        with tempfile.TemporaryDirectory() as directory:
++            parser = WebIDL.Parser(directory)
++            parser.parse("[Global=Window, Exposed=Window] interface Window {};", "Window.webidl")
++            parser.parse(
++                "[Exposed=Window] interface Base {}; [Exposed=Window] interface Derived : Base {};",
++                "Derived.webidl",
++            )
++            derived = next(
++                item for item in parser.finish()
++                if isinstance(item, WebIDL.IDLInterface) and item.identifier.name == "Derived"
++            )
++            with self.assertRaisesRegex(TypeError, r"interface shape \(inheritance\)"):
++                CGV8BindingRoot(derived).define()
++
++    def test_coverage_report_counts_real_webidl(self):
++        from v8_coverage import measure
++
++        report = measure()
++        self.assertGreater(report["total"], 400)
++        self.assertIn("ValidityState", report["supported"])
++        self.assertIn("Screen", report["supported"])
++        self.assertEqual(len(report["supported"]) + len(report["rejected"]), report["total"])
++        # Every rejection must be a deliberate fail-closed TypeError from the backend,
++        # never a crash inside the generator itself.
++        for name, message in report["rejected"].items():
++            self.assertRegex(message, r"^V8 (backend|pilot) ", name)
++
+ 
+ if __name__ == "__main__":
+     unittest.main()
+diff --git a/components/script_bindings/codegen/v8_coverage.py b/components/script_bindings/codegen/v8_coverage.py
+new file mode 100644
+index 00000000000..48bb4f4473b
+--- /dev/null
++++ b/components/script_bindings/codegen/v8_coverage.py
+@@ -0,0 +1,103 @@
++# This Source Code Form is subject to the terms of the Mozilla Public
++# License, v. 2.0. If a copy of the MPL was not distributed with this
++# file, You can obtain one at https://mozilla.org/MPL/2.0/.
++"""Measure how much of Servo's real WebIDL the V8 backend can generate.
++
++Parses every file under webidls/ together (as run.py does, so inheritance and
++cross-file types resolve) and runs CGV8BindingRoot on each interface, namespace
++and callback interface. The backend fails closed, so each rejection carries the
++first unsupported shape it hit; reasons are bucketed with the interface and
++member names removed so the most common blockers can be ranked. This is a
++migration progress metric only: it does not build or run anything.
++"""
++import argparse
++from collections import Counter
++import json
++import os
++from pathlib import Path
++import re
++import sys
++import tempfile
++
++ROOT = Path(__file__).resolve().parent.parent
++sys.path[:0] = [str(ROOT / "third_party/WebIDL/parser"), str(ROOT / "third_party/ply")]
++
++import WebIDL
++from codegen import CGV8BindingRoot
++
++FILTER_PATTERN = re.compile("// skip-unless ([A-Z_]+)\n")
++
++
++def parse_all(cache_dir: Path) -> list:
++    parser = WebIDL.Parser(str(cache_dir))
++    for webidl in sorted((ROOT / "webidls").glob("*.webidl")):
++        contents = webidl.read_text(encoding="utf-8")
++        match = FILTER_PATTERN.search(contents)
++        if match and not os.environ.get(match.group(1)):
++            continue
++        parser.parse(contents, str(webidl))
++    return parser.finish()
++
++
++def bucket(message: str) -> str:
++    """Strip the per-interface/member suffix so equal blockers group together."""
++    reason = message.split(": ", 1)[0]
++    # Attribute-list rejections name the attributes after the interface name;
++    # keep the attribute list, drop the interface.
++    attributes = re.match(r"(V8 backend unsupported attributes on) \w+: (.*)", message)
++    if attributes:
++        return f"{attributes.group(1)} interface: {attributes.group(2)}"
++    # Type rejections keep the offending type, which is what needs implementing.
++    typed = re.match(r"(V8 backend unsupported [\w ]+type): [\w.]+: (.*)", message)
++    if typed:
++        return f"{typed.group(1)}: {typed.group(2)}"
++    return reason
++
++
++def measure() -> dict:
++    with tempfile.TemporaryDirectory() as directory:
++        results = parse_all(Path(directory))
++    definitions = sorted(
++        (item for item in results if isinstance(item, WebIDL.IDLInterfaceOrNamespace)),
++        key=lambda item: item.identifier.name,
++    )
++    supported = []
++    reasons = Counter()
++    rejected = {}
++    for definition in definitions:
++        name = definition.identifier.name
++        try:
++            CGV8BindingRoot(definition).define()
++        except TypeError as error:
++            reason = bucket(str(error))
++            reasons[reason] += 1
++            rejected[name] = str(error)
++        else:
++            supported.append(name)
++    return {
++        "total": len(definitions),
++        "supported": supported,
++        "rejected": rejected,
++        "reasons": reasons.most_common(),
++    }
++
++
++def main() -> None:
++    cli = argparse.ArgumentParser(description=__doc__)
++    cli.add_argument("--json", action="store_true", help="print the full report as JSON")
++    cli.add_argument("--top", type=int, default=20, help="number of blocker buckets to print")
++    args = cli.parse_args()
++    report = measure()
++    if args.json:
++        print(json.dumps(report, indent=2))
++        return
++    total, supported = report["total"], report["supported"]
++    print(f"V8 backend coverage: {len(supported)}/{total} WebIDL definitions")
++    print("Supported: " + (", ".join(supported) or "(none)"))
++    print(f"Top {args.top} blockers (first unsupported shape per definition):")
++    for reason, count in report["reasons"][: args.top]:
++        print(f"{count:5}  {reason}")
++
++
++if __name__ == "__main__":
++    main()
