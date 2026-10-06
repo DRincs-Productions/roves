@@ -8415,6 +8415,22 @@ def v8_is_dom_interface(ty) -> bool:
     return ty.isGeckoInterface() and ty.isNonCallbackInterface() and not ty.isPromise()
 
 
+def v8_overloads_distinguishable_by_count(signatures) -> bool:
+    """Whether every argument count selects at most one overload: the overloads' accepted
+    argument-count ranges (required..=total) do not overlap. Variadics are not supported."""
+    ranges = []
+    for _, arguments in signatures:
+        if any(argument.variadic for argument in arguments):
+            return False
+        required = sum(1 for argument in arguments if not argument.optional)
+        ranges.append((required, len(arguments)))
+    return all(
+        max(first[0], second[0]) > min(first[1], second[1])
+        for index, first in enumerate(ranges)
+        for second in ranges[index + 1:]
+    )
+
+
 def v8_module_name(interface_name: str) -> str:
     """Snake-case module of a V8 pilot binding: ValidityState -> validity_state,
     HTMLElement -> html_element."""
@@ -8500,72 +8516,76 @@ class CGV8BindingRoot(CGThing):
                 condition = v8_exposure_condition(member._extendedAttrDict)
                 if condition:
                     member_conditions[member.identifier.name] = condition
-                if member.isStatic() or operation_attributes or len(signatures) != 1:
+                if member.isStatic() or operation_attributes:
                     raise TypeError(f"V8 backend only supports single-signature instance operations: {name}.{member.identifier.name}")
+                if len(signatures) > 1 and not v8_overloads_distinguishable_by_count(signatures):
+                    raise TypeError(f"V8 backend only supports overloads distinguishable by argument count: {name}.{member.identifier.name}")
                 throws = "Throws" in member._extendedAttrDict
-                argument_types = v8_argument_types(name, member.identifier.name, signatures[0][1])
-                return_type = signatures[0][0]
-                nullable_return = return_type.nullable()
-                result_type = return_type.inner if nullable_return else return_type
-                if result_type.isUndefined() and not nullable_return:
-                    rust_type, value_expr = "()", "Value::Undefined"
-                elif result_type.isBoolean():
-                    if nullable_return:
-                        rust_type, value_expr = "Option<bool>", "native.{native}().map(Value::Bool).unwrap_or(Value::Null)"
+                for overload_index, (return_type, arguments) in enumerate(signatures):
+                    argument_types = v8_argument_types(name, member.identifier.name, arguments)
+                    nullable_return = return_type.nullable()
+                    result_type = return_type.inner if nullable_return else return_type
+                    if result_type.isUndefined() and not nullable_return:
+                        rust_type, value_expr = "()", "Value::Undefined"
+                    elif result_type.isBoolean():
+                        if nullable_return:
+                            rust_type, value_expr = "Option<bool>", "native.{native}().map(Value::Bool).unwrap_or(Value::Null)"
+                        else:
+                            rust_type, value_expr = "bool", "Value::Bool(native.{native}())"
+                    elif result_type.isFloat() and result_type.name == "Double":
+                        if nullable_return:
+                            rust_type, value_expr = "Option<roves_v8::FiniteF64>", "native.{native}().map(|value| Value::Number(value.get())).unwrap_or(Value::Null)"
+                        else:
+                            rust_type, value_expr = "roves_v8::FiniteF64", "Value::Number(native.{native}().get())"
+                    elif result_type.isFloat() and result_type.name == "Float":
+                        if nullable_return:
+                            rust_type, value_expr = "Option<roves_v8::FiniteF32>", "native.{native}().map(|value| Value::Number(value.get() as f64)).unwrap_or(Value::Null)"
+                        else:
+                            rust_type, value_expr = "roves_v8::FiniteF32", "Value::Number(native.{native}().get() as f64)"
+                    elif result_type.isFloat() and result_type.name == "UnrestrictedDouble":
+                        if nullable_return:
+                            rust_type, value_expr = "Option<f64>", "native.{native}().map(Value::Number).unwrap_or(Value::Null)"
+                        else:
+                            rust_type, value_expr = "f64", "Value::Number(native.{native}())"
+                    elif result_type.isFloat() and result_type.name == "UnrestrictedFloat":
+                        if nullable_return:
+                            rust_type, value_expr = "Option<f32>", "native.{native}().map(|value| Value::Number(value as f64)).unwrap_or(Value::Null)"
+                        else:
+                            rust_type, value_expr = "f32", "Value::Number(native.{native}() as f64)"
+                    elif result_type.isInteger() and result_type.name in {
+                        "Byte", "Octet", "Short", "UnsignedShort", "Long", "UnsignedLong", "LongLong", "UnsignedLongLong"
+                    }:
+                        integer_types = {
+                            "Byte": "i8", "Octet": "u8", "Short": "i16", "UnsignedShort": "u16",
+                            "Long": "i32", "UnsignedLong": "u32", "LongLong": "i64", "UnsignedLongLong": "u64",
+                        }
+                        native_type = integer_types[result_type.name]
+                        if nullable_return:
+                            rust_type, value_expr = f"Option<{native_type}>", "native.{native}().map(|value| Value::Number(value as f64)).unwrap_or(Value::Null)"
+                        else:
+                            rust_type, value_expr = native_type, "Value::Number(native.{native}() as f64)"
+                    elif result_type.isDOMString():
+                        rust_type = "Option<Vec<u16>>" if nullable_return else "Vec<u16>"
+                        value_expr = (
+                            "native.{native}().map(Value::Utf16String).unwrap_or(Value::Null)"
+                            if nullable_return else "Value::Utf16String(native.{native}())"
+                        )
+                    elif v8_is_dom_interface(result_type):
+                        if nullable_return:
+                            rust_type, value_expr = "Option<roves_v8::NativeRef>", "native.{native}().map(Value::Native).unwrap_or(Value::Null)"
+                        else:
+                            rust_type, value_expr = "roves_v8::NativeRef", "Value::Native(native.{native}())"
+                    elif result_type.isUSVString():
+                        rust_type = "Option<String>" if nullable_return else "String"
+                        value_expr = (
+                            "native.{native}().map(Value::String).unwrap_or(Value::Null)"
+                            if nullable_return else "Value::String(native.{native}())"
+                        )
                     else:
-                        rust_type, value_expr = "bool", "Value::Bool(native.{native}())"
-                elif result_type.isFloat() and result_type.name == "Double":
-                    if nullable_return:
-                        rust_type, value_expr = "Option<roves_v8::FiniteF64>", "native.{native}().map(|value| Value::Number(value.get())).unwrap_or(Value::Null)"
-                    else:
-                        rust_type, value_expr = "roves_v8::FiniteF64", "Value::Number(native.{native}().get())"
-                elif result_type.isFloat() and result_type.name == "Float":
-                    if nullable_return:
-                        rust_type, value_expr = "Option<roves_v8::FiniteF32>", "native.{native}().map(|value| Value::Number(value.get() as f64)).unwrap_or(Value::Null)"
-                    else:
-                        rust_type, value_expr = "roves_v8::FiniteF32", "Value::Number(native.{native}().get() as f64)"
-                elif result_type.isFloat() and result_type.name == "UnrestrictedDouble":
-                    if nullable_return:
-                        rust_type, value_expr = "Option<f64>", "native.{native}().map(Value::Number).unwrap_or(Value::Null)"
-                    else:
-                        rust_type, value_expr = "f64", "Value::Number(native.{native}())"
-                elif result_type.isFloat() and result_type.name == "UnrestrictedFloat":
-                    if nullable_return:
-                        rust_type, value_expr = "Option<f32>", "native.{native}().map(|value| Value::Number(value as f64)).unwrap_or(Value::Null)"
-                    else:
-                        rust_type, value_expr = "f32", "Value::Number(native.{native}() as f64)"
-                elif result_type.isInteger() and result_type.name in {
-                    "Byte", "Octet", "Short", "UnsignedShort", "Long", "UnsignedLong", "LongLong", "UnsignedLongLong"
-                }:
-                    integer_types = {
-                        "Byte": "i8", "Octet": "u8", "Short": "i16", "UnsignedShort": "u16",
-                        "Long": "i32", "UnsignedLong": "u32", "LongLong": "i64", "UnsignedLongLong": "u64",
-                    }
-                    native_type = integer_types[result_type.name]
-                    if nullable_return:
-                        rust_type, value_expr = f"Option<{native_type}>", "native.{native}().map(|value| Value::Number(value as f64)).unwrap_or(Value::Null)"
-                    else:
-                        rust_type, value_expr = native_type, "Value::Number(native.{native}() as f64)"
-                elif result_type.isDOMString():
-                    rust_type = "Option<Vec<u16>>" if nullable_return else "Vec<u16>"
-                    value_expr = (
-                        "native.{native}().map(Value::Utf16String).unwrap_or(Value::Null)"
-                        if nullable_return else "Value::Utf16String(native.{native}())"
-                    )
-                elif v8_is_dom_interface(result_type):
-                    if nullable_return:
-                        rust_type, value_expr = "Option<roves_v8::NativeRef>", "native.{native}().map(Value::Native).unwrap_or(Value::Null)"
-                    else:
-                        rust_type, value_expr = "roves_v8::NativeRef", "Value::Native(native.{native}())"
-                elif result_type.isUSVString():
-                    rust_type = "Option<String>" if nullable_return else "String"
-                    value_expr = (
-                        "native.{native}().map(Value::String).unwrap_or(Value::Null)"
-                        if nullable_return else "Value::String(native.{native}())"
-                    )
-                else:
-                    raise TypeError(f"V8 backend unsupported operation return type: {name}.{member.identifier.name}: {return_type}")
-                operations.append((member.identifier.name, MakeNativeName(member.identifier.name), rust_type, value_expr, argument_types, throws))
+                        raise TypeError(f"V8 backend unsupported operation return type: {name}.{member.identifier.name}: {return_type}")
+                    # Servo's convention for overloads: Fill, Fill_, Fill__, ...
+                    native_name = MakeNativeName(member.identifier.name) + "_" * overload_index
+                    operations.append((member.identifier.name, native_name, rust_type, value_expr, argument_types, throws, overload_index, len(signatures)))
                 continue
             attribute_attributes = (
                 set(member._extendedAttrDict) - V8_IGNORED_MEMBER_HINTS - V8_EXPOSURE_ATTRIBUTES
@@ -8644,7 +8664,7 @@ class CGV8BindingRoot(CGThing):
             [f"    fn {native}(&self) -> {rust_type};"
              + (f"\n    fn set_{native}(&mut self, value: {rust_type});" if setter else "")
              for _, native, rust_type, _, setter, _ in attributes]
-            + [f"    fn {native}(&self{', ' + ', '.join('arg' + str(index) + ': ' + argument_type[0] for index, argument_type in enumerate(argument_types)) if argument_types else ''}) -> {f'Result<{rust_type}, roves_v8::WebIdlError>' if throws else rust_type};" for _, native, rust_type, _, argument_types, throws in operations]
+            + [f"    fn {native}(&self{', ' + ', '.join('arg' + str(index) + ': ' + argument_type[0] for index, argument_type in enumerate(argument_types)) if argument_types else ''}) -> {f'Result<{rust_type}, roves_v8::WebIdlError>' if throws else rust_type};" for _, native, rust_type, _, argument_types, throws, _, _ in operations]
         )
         registrations_list = [
             f'        runtime.define_constant(&interface, "{idl}", &{constant})?;'
@@ -8724,7 +8744,8 @@ class CGV8BindingRoot(CGThing):
                     f'        runtime.{define}(&interface, "{idl}", {getter})?;'
                 )
             gate_last_registration(idl)
-        for idl, native, _, value_expr, argument_types, throws in operations:
+        overload_entries = []
+        for idl, native, _, value_expr, argument_types, throws, overload_index, overload_count in operations:
             argument_conversions = "\n".join(
                 f'            let arg{index} = match args.get({index}).unwrap_or(&Value::Undefined) {{ {argument_type[2]}, _ => unreachable!("runtime conversion matches generated WebIDL argument type") }};'
                 for index, argument_type in enumerate(argument_types)
@@ -8755,7 +8776,31 @@ class CGV8BindingRoot(CGThing):
             nullable_arguments = ", ".join(str(argument_type[3]).lower() for argument_type in argument_types)
             optional_arguments = ", ".join(str(argument_type[4]).lower() for argument_type in argument_types)
             enumeration_values = ", ".join(argument_type[5] or "None" for argument_type in argument_types)
-            if throws:
+            if overload_count > 1:
+                if not throws:
+                    # Overloads share the fallible dispatcher; infallible ones always succeed.
+                    wrapped = f"Ok({{ {result_expr} }})" if ";" in result_expr else f"Ok({result_expr})"
+                    callback = callback.replace(
+                        f"            {result_expr}\n        }}",
+                        f"            {wrapped}\n        }}",
+                    )
+                overload_entries.append(
+                    f"            roves_v8::WebIdlOverload {{\n"
+                    f"                method: {callback},\n"
+                    f"                conversions: &[{conversions}],\n"
+                    f"                nullable_arguments: &[{nullable_arguments}],\n"
+                    f"                optional_arguments: &[{optional_arguments}],\n"
+                    f"                enumeration_values: &[{enumeration_values}],\n"
+                    f"            }},"
+                )
+                if overload_index + 1 < overload_count:
+                    continue
+                entries = "\n".join(overload_entries)
+                overload_entries = []
+                registrations_list.append(
+                    f'        runtime.define_overloaded_webidl_method(&interface, "{idl}", &[\n{entries}\n        ])?;'
+                )
+            elif throws:
                 registrations_list.append(f'        runtime.define_fallible_webidl_method(&interface, "{idl}", {callback}, &[{conversions}], &[{nullable_arguments}], &[{optional_arguments}], &[{enumeration_values}])?;')
             elif argument_types:
                 registrations_list.append(f'        runtime.define_webidl_method_with_argument_flags_and_enums(&interface, "{idl}", {callback}, &[{conversions}], &[{nullable_arguments}], &[{optional_arguments}], &[{enumeration_values}])?;')

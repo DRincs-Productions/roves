@@ -70,6 +70,10 @@ prefs, secure context) through `install_with`; interface-level conditions and
 skip the member. Coverage 66/486. Next: overloads (34), non-Window exposure (30), event handler
 attributes, `any`, dictionaries/sequences/unions.
 
+**CP55 (2026-10-06): count-distinguishable overloads.** `define_overloaded_webidl_method`
+dispatches by argument count per the WebIDL overload resolution algorithm; native traits get
+Servo-style `X`/`X_` names. Type-distinguished overloads (30) still fail closed. Coverage 67/486.
+
 CP37 exposes stable `NativeObjectId` through `DomObject` and updates generated `dom_struct`
 equality to use that engine-neutral contract. Local checks pass (reflector 2/2, macro 3/3,
 rustfmt, and patch 0101 reverse-check); CI is green: V8 37226916624 (6/6), Servo 37226916650

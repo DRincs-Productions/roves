@@ -209,6 +209,7 @@ fn main() {
         ("LinkedLeaf", &["LinkedNode"][..]),
         ("ExposureGated", &[][..]),
         ("HiddenInterface", &[][..]),
+        ("OverloadedOperations", &[][..]),
     ] {
         println!("cargo:rerun-if-changed={}", fixtures.join(format!("{interface}.webidl")).display());
         let status = Command::new(&python)

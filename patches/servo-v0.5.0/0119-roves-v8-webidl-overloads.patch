@@ -1,0 +1,498 @@
+diff --git a/components/roves-v8/build.rs b/components/roves-v8/build.rs
+index e70ce3596b8..5e70e9a80ed 100644
+--- a/components/roves-v8/build.rs
++++ b/components/roves-v8/build.rs
+@@ -209,6 +209,7 @@ fn main() {
+         ("LinkedLeaf", &["LinkedNode"][..]),
+         ("ExposureGated", &[][..]),
+         ("HiddenInterface", &[][..]),
++        ("OverloadedOperations", &[][..]),
+     ] {
+         println!("cargo:rerun-if-changed={}", fixtures.join(format!("{interface}.webidl")).display());
+         let status = Command::new(&python)
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 4fddfb8d4e6..c893e88bdf0 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -121,6 +121,10 @@ pub mod webidl {
+     pub mod hidden_interface {
+         include!(concat!(env!("OUT_DIR"), "/HiddenInterfaceV8Binding.rs"));
+     }
++    #[cfg(test)]
++    pub mod overloaded_operations {
++        include!(concat!(env!("OUT_DIR"), "/OverloadedOperationsV8Binding.rs"));
++    }
+ }
+ 
+ use std::sync::Once;
+@@ -267,6 +271,8 @@ pub struct Runtime {
+     method_configs: Vec<Box<WebIdlMethodConfig>>,
+     /// Per-constructor callback data, kept alive for the same reason as `method_configs`.
+     constructor_configs: Vec<Box<WebIdlConstructorConfig>>,
++    /// Per-overloaded-method callback data, kept alive for the same reason.
++    overload_configs: Vec<Box<WebIdlOverloadConfig>>,
+ }
+ 
+ struct WrappedFinalizer {
+@@ -788,6 +794,21 @@ pub enum WebIdlError {
+ pub type FallibleNativeMethod =
+     fn(&dyn std::any::Any, &[Value]) -> Result<Value, WebIdlError>;
+ 
++/// One signature of an overloaded WebIDL operation, registered with
++/// [`Runtime::define_overloaded_webidl_method`]. The argument slices mean the same as for
++/// [`Runtime::define_fallible_webidl_method`].
++pub struct WebIdlOverload<'a> {
++    pub method: FallibleNativeMethod,
++    pub conversions: &'a [WebIdlArgumentConversion],
++    pub nullable_arguments: &'a [bool],
++    pub optional_arguments: &'a [bool],
++    pub enumeration_values: &'a [Option<&'a [&'a str]>],
++}
++
++struct WebIdlOverloadConfig {
++    overloads: Vec<(FallibleNativeMethod, WebIdlArguments)>,
++}
++
+ enum NativeMethodKind {
+     Infallible(NativeMethod),
+     Fallible(FallibleNativeMethod),
+@@ -830,6 +851,7 @@ impl Runtime {
+             next_wrapper_token: 0,
+             wrapped_finalizers: Default::default(),
+             constructor_configs: Vec::new(),
++            overload_configs: Vec::new(),
+             method_configs: Vec::new(),
+         }
+     }
+@@ -2074,6 +2096,111 @@ impl Runtime {
+         )
+     }
+ 
++    /// Defines an overloaded WebIDL operation whose overloads accept disjoint argument-count
++    /// ranges. As in the WebIDL overload resolution algorithm, the argument count (capped at the
++    /// longest overload) selects the overload, whose own conversions then apply; a count no
++    /// overload accepts throws a TypeError. Every overload is fallible (`[Throws]` or not).
++    pub fn define_overloaded_webidl_method(
++        &mut self,
++        interface: &Interface,
++        name: &str,
++        overloads: &[WebIdlOverload],
++    ) -> Result<(), String> {
++        if interface.materialized.get() {
++            return Err("interface members must be defined before creating instances or descendants".into());
++        }
++        let config = Box::new(WebIdlOverloadConfig {
++            overloads: overloads
++                .iter()
++                .map(|overload| {
++                    (
++                        overload.method,
++                        WebIdlArguments::new(
++                            overload.conversions,
++                            overload.nullable_arguments,
++                            overload.optional_arguments,
++                            overload.enumeration_values,
++                        ),
++                    )
++                })
++                .collect(),
++        });
++        let config_pointer = (&*config) as *const WebIdlOverloadConfig;
++        self.overload_configs.push(config);
++        let context_handle = &self.context;
++        v8::scope!(let scope, &mut self.isolate);
++        let context = v8::Local::new(scope, context_handle);
++        let scope = &mut v8::ContextScope::new(scope, context);
++        let template = v8::Local::new(scope, &interface.template);
++        let signature = v8::Signature::new(scope, template);
++        let key = v8::String::new(scope, name).ok_or("invalid method name")?;
++        // `length` of an overloaded operation is the shortest overload's required count.
++        let length = overloads
++            .iter()
++            .map(|overload| overload.optional_arguments.iter().filter(|optional| !**optional).count())
++            .min()
++            .unwrap_or(0);
++        let external_data = v8::External::new(scope, config_pointer as *mut std::ffi::c_void);
++        let function_template = v8::FunctionTemplate::builder(
++            |scope: &mut v8::PinScope,
++             args: v8::FunctionCallbackArguments,
++             mut retval: v8::ReturnValue| {
++                let Ok(external) = v8::Local::<v8::External>::try_from(args.data()) else {
++                    return;
++                };
++                // SAFETY: the External points to this method's boxed overload config.
++                let config = unsafe { &*(external.value() as *const WebIdlOverloadConfig) };
++                let this = args.this();
++                if this.internal_field_count() < 1 {
++                    throw_type_error(scope, "Illegal invocation");
++                    return;
++                }
++                let raw = unsafe {
++                    this.get_aligned_pointer_from_internal_field(0, WRAPPED_POINTER_TAG)
++                } as *mut Box<dyn std::any::Any>;
++                if raw.is_null() {
++                    throw_type_error(scope, "Illegal invocation");
++                    return;
++                }
++                let longest = config
++                    .overloads
++                    .iter()
++                    .map(|(_, arguments)| arguments.conversions.len())
++                    .max()
++                    .unwrap_or(0);
++                let count = (args.length().max(0) as usize).min(longest);
++                let selected = config.overloads.iter().find(|(_, arguments)| {
++                    let required = arguments.optional_arguments.iter().filter(|optional| !**optional).count();
++                    required <= count && count <= arguments.conversions.len()
++                });
++                let Some((method, arguments)) = selected else {
++                    throw_type_error(scope, "no overload accepts this number of arguments");
++                    return;
++                };
++                let Some(converted) = convert_webidl_arguments(scope, &args, arguments) else {
++                    return;
++                };
++                // SAFETY: as for the single-signature method callback.
++                let boxed_any: &Box<dyn std::any::Any> = unsafe { &*raw };
++                match method(boxed_any.as_ref(), &converted) {
++                    Ok(result) => {
++                        let result = v8_result(scope, &result);
++                        retval.set(result);
++                    },
++                    Err(error) => throw_webidl_error(scope, &error),
++                }
++            },
++        )
++        .data(external_data.into())
++        .signature(signature)
++        .length(length as i32)
++        .constructor_behavior(v8::ConstructorBehavior::Throw)
++        .build(scope);
++        let function_value: v8::Local<v8::Data> = function_template.into();
++        template.prototype_template(scope).set(key.into(), function_value);
++        Ok(())
++    }
++
+     /// Like [`Runtime::define_webidl_method_with_argument_flags_and_enums`] for an operation
+     /// that may throw: an `Err` from `method` is thrown to JS as the matching exception.
+     pub fn define_fallible_webidl_method(
+@@ -5277,6 +5404,49 @@ mod tests {
+         );
+     }
+ 
++    #[cfg(feature = "webidl-pilot")]
++    #[test]
++    fn generated_overloads_dispatch_on_argument_count() {
++        use crate::webidl::overloaded_operations::{OverloadedOperationsBinding, OverloadedOperationsNative};
++        use crate::{WebIdlError, WebIdlOptionalArgument};
++        struct Ops(std::cell::Cell<u32>);
++        #[allow(non_snake_case)]
++        impl OverloadedOperationsNative for Ops {
++            fn Describe(&self) -> Vec<u16> { "none".encode_utf16().collect() }
++            fn Describe_(&self, count: u32, loud: WebIdlOptionalArgument<bool>) -> Vec<u16> {
++                let WebIdlOptionalArgument::Present(loud) = loud else { unreachable!("declared default") };
++                let text = format!("{count}{}", if loud { "!" } else { "" });
++                text.encode_utf16().collect()
++            }
++            fn Measure(&self, text: Vec<u16>) -> u32 { text.len() as u32 }
++            fn Measure_(&self, text: Vec<u16>, scale: u32, offset: u32) -> u32 { text.len() as u32 * scale + offset }
++            fn Reset(&self) -> Result<(), WebIdlError> { self.0.set(0); Ok(()) }
++            fn Reset_(&self, hard: bool, deep: bool) -> Result<(), WebIdlError> {
++                if hard && deep { Err(WebIdlError::RangeError("too much".into())) } else { self.0.set(1); Ok(()) }
++            }
++        }
++        let mut runtime = Runtime::new();
++        let binding = OverloadedOperationsBinding::<Ops>::install(&mut runtime).unwrap();
++        let ops = binding.create(&mut runtime, Ops(std::cell::Cell::new(5)));
++        runtime.set_global_property("ops", &ops).unwrap();
++        for (source, expected) in [
++            ("[ops.describe(), ops.describe(3), ops.describe(3, true), ops.describe('4', 0)].join()", "none,3,3!,4"),
++            // Extra arguments beyond the longest overload are ignored, as WebIDL requires.
++            ("ops.describe(2, false, 'ignored', 9)", "2"),
++            ("[ops.measure('abc'), ops.measure('abc', 2, 1)].join()", "3,7"),
++            ("[ops.reset(), ops.reset(true, false)].join()", ","),
++            ("[OverloadedOperations.prototype.describe.length, OverloadedOperations.prototype.measure.length].join()", "0,1"),
++        ] {
++            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
++        }
++        // No overload takes two arguments (or none) here, and a throwing overload still throws.
++        for source in ["ops.measure()", "ops.measure('a', 2)", "ops.reset(true)", "ops.reset(true, true)"] {
++            let error = runtime.eval(&format!("(() => {{ try {{ {source}; return 'none'; }} catch (e) {{ return e.constructor.name; }} }})()")).unwrap();
++            let expected = if source.ends_with("(true, true)") { "RangeError" } else { "TypeError" };
++            assert_eq!(error, expected, "{source}");
++        }
++    }
++
+     #[cfg(feature = "webidl-pilot")]
+     #[test]
+     fn generated_nullable_domstring_preserves_null_and_utf16_semantics() {
+diff --git a/components/roves-v8/tests/webidl/OverloadedOperations.webidl b/components/roves-v8/tests/webidl/OverloadedOperations.webidl
+new file mode 100644
+index 00000000000..49eed73a4bc
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/OverloadedOperations.webidl
+@@ -0,0 +1,9 @@
++[Exposed=Window]
++interface OverloadedOperations {
++  DOMString describe();
++  DOMString describe(unsigned long count, optional boolean loud = false);
++  unsigned long measure(DOMString text);
++  unsigned long measure(DOMString text, unsigned long scale, unsigned long offset);
++  [Throws] undefined reset();
++  [Throws] undefined reset(boolean hard, boolean deep);
++};
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index 545c1017023..aee89f8b8b7 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8415,6 +8415,22 @@ def v8_is_dom_interface(ty) -> bool:
+     return ty.isGeckoInterface() and ty.isNonCallbackInterface() and not ty.isPromise()
+ 
+ 
++def v8_overloads_distinguishable_by_count(signatures) -> bool:
++    """Whether every argument count selects at most one overload: the overloads' accepted
++    argument-count ranges (required..=total) do not overlap. Variadics are not supported."""
++    ranges = []
++    for _, arguments in signatures:
++        if any(argument.variadic for argument in arguments):
++            return False
++        required = sum(1 for argument in arguments if not argument.optional)
++        ranges.append((required, len(arguments)))
++    return all(
++        max(first[0], second[0]) > min(first[1], second[1])
++        for index, first in enumerate(ranges)
++        for second in ranges[index + 1:]
++    )
++
++
+ def v8_module_name(interface_name: str) -> str:
+     """Snake-case module of a V8 pilot binding: ValidityState -> validity_state,
+     HTMLElement -> html_element."""
+@@ -8500,72 +8516,76 @@ class CGV8BindingRoot(CGThing):
+                 condition = v8_exposure_condition(member._extendedAttrDict)
+                 if condition:
+                     member_conditions[member.identifier.name] = condition
+-                if member.isStatic() or operation_attributes or len(signatures) != 1:
++                if member.isStatic() or operation_attributes:
+                     raise TypeError(f"V8 backend only supports single-signature instance operations: {name}.{member.identifier.name}")
++                if len(signatures) > 1 and not v8_overloads_distinguishable_by_count(signatures):
++                    raise TypeError(f"V8 backend only supports overloads distinguishable by argument count: {name}.{member.identifier.name}")
+                 throws = "Throws" in member._extendedAttrDict
+-                argument_types = v8_argument_types(name, member.identifier.name, signatures[0][1])
+-                return_type = signatures[0][0]
+-                nullable_return = return_type.nullable()
+-                result_type = return_type.inner if nullable_return else return_type
+-                if result_type.isUndefined() and not nullable_return:
+-                    rust_type, value_expr = "()", "Value::Undefined"
+-                elif result_type.isBoolean():
+-                    if nullable_return:
+-                        rust_type, value_expr = "Option<bool>", "native.{native}().map(Value::Bool).unwrap_or(Value::Null)"
+-                    else:
+-                        rust_type, value_expr = "bool", "Value::Bool(native.{native}())"
+-                elif result_type.isFloat() and result_type.name == "Double":
+-                    if nullable_return:
+-                        rust_type, value_expr = "Option<roves_v8::FiniteF64>", "native.{native}().map(|value| Value::Number(value.get())).unwrap_or(Value::Null)"
+-                    else:
+-                        rust_type, value_expr = "roves_v8::FiniteF64", "Value::Number(native.{native}().get())"
+-                elif result_type.isFloat() and result_type.name == "Float":
+-                    if nullable_return:
+-                        rust_type, value_expr = "Option<roves_v8::FiniteF32>", "native.{native}().map(|value| Value::Number(value.get() as f64)).unwrap_or(Value::Null)"
+-                    else:
+-                        rust_type, value_expr = "roves_v8::FiniteF32", "Value::Number(native.{native}().get() as f64)"
+-                elif result_type.isFloat() and result_type.name == "UnrestrictedDouble":
+-                    if nullable_return:
+-                        rust_type, value_expr = "Option<f64>", "native.{native}().map(Value::Number).unwrap_or(Value::Null)"
+-                    else:
+-                        rust_type, value_expr = "f64", "Value::Number(native.{native}())"
+-                elif result_type.isFloat() and result_type.name == "UnrestrictedFloat":
+-                    if nullable_return:
+-                        rust_type, value_expr = "Option<f32>", "native.{native}().map(|value| Value::Number(value as f64)).unwrap_or(Value::Null)"
+-                    else:
+-                        rust_type, value_expr = "f32", "Value::Number(native.{native}() as f64)"
+-                elif result_type.isInteger() and result_type.name in {
+-                    "Byte", "Octet", "Short", "UnsignedShort", "Long", "UnsignedLong", "LongLong", "UnsignedLongLong"
+-                }:
+-                    integer_types = {
+-                        "Byte": "i8", "Octet": "u8", "Short": "i16", "UnsignedShort": "u16",
+-                        "Long": "i32", "UnsignedLong": "u32", "LongLong": "i64", "UnsignedLongLong": "u64",
+-                    }
+-                    native_type = integer_types[result_type.name]
+-                    if nullable_return:
+-                        rust_type, value_expr = f"Option<{native_type}>", "native.{native}().map(|value| Value::Number(value as f64)).unwrap_or(Value::Null)"
+-                    else:
+-                        rust_type, value_expr = native_type, "Value::Number(native.{native}() as f64)"
+-                elif result_type.isDOMString():
+-                    rust_type = "Option<Vec<u16>>" if nullable_return else "Vec<u16>"
+-                    value_expr = (
+-                        "native.{native}().map(Value::Utf16String).unwrap_or(Value::Null)"
+-                        if nullable_return else "Value::Utf16String(native.{native}())"
+-                    )
+-                elif v8_is_dom_interface(result_type):
+-                    if nullable_return:
+-                        rust_type, value_expr = "Option<roves_v8::NativeRef>", "native.{native}().map(Value::Native).unwrap_or(Value::Null)"
++                for overload_index, (return_type, arguments) in enumerate(signatures):
++                    argument_types = v8_argument_types(name, member.identifier.name, arguments)
++                    nullable_return = return_type.nullable()
++                    result_type = return_type.inner if nullable_return else return_type
++                    if result_type.isUndefined() and not nullable_return:
++                        rust_type, value_expr = "()", "Value::Undefined"
++                    elif result_type.isBoolean():
++                        if nullable_return:
++                            rust_type, value_expr = "Option<bool>", "native.{native}().map(Value::Bool).unwrap_or(Value::Null)"
++                        else:
++                            rust_type, value_expr = "bool", "Value::Bool(native.{native}())"
++                    elif result_type.isFloat() and result_type.name == "Double":
++                        if nullable_return:
++                            rust_type, value_expr = "Option<roves_v8::FiniteF64>", "native.{native}().map(|value| Value::Number(value.get())).unwrap_or(Value::Null)"
++                        else:
++                            rust_type, value_expr = "roves_v8::FiniteF64", "Value::Number(native.{native}().get())"
++                    elif result_type.isFloat() and result_type.name == "Float":
++                        if nullable_return:
++                            rust_type, value_expr = "Option<roves_v8::FiniteF32>", "native.{native}().map(|value| Value::Number(value.get() as f64)).unwrap_or(Value::Null)"
++                        else:
++                            rust_type, value_expr = "roves_v8::FiniteF32", "Value::Number(native.{native}().get() as f64)"
++                    elif result_type.isFloat() and result_type.name == "UnrestrictedDouble":
++                        if nullable_return:
++                            rust_type, value_expr = "Option<f64>", "native.{native}().map(Value::Number).unwrap_or(Value::Null)"
++                        else:
++                            rust_type, value_expr = "f64", "Value::Number(native.{native}())"
++                    elif result_type.isFloat() and result_type.name == "UnrestrictedFloat":
++                        if nullable_return:
++                            rust_type, value_expr = "Option<f32>", "native.{native}().map(|value| Value::Number(value as f64)).unwrap_or(Value::Null)"
++                        else:
++                            rust_type, value_expr = "f32", "Value::Number(native.{native}() as f64)"
++                    elif result_type.isInteger() and result_type.name in {
++                        "Byte", "Octet", "Short", "UnsignedShort", "Long", "UnsignedLong", "LongLong", "UnsignedLongLong"
++                    }:
++                        integer_types = {
++                            "Byte": "i8", "Octet": "u8", "Short": "i16", "UnsignedShort": "u16",
++                            "Long": "i32", "UnsignedLong": "u32", "LongLong": "i64", "UnsignedLongLong": "u64",
++                        }
++                        native_type = integer_types[result_type.name]
++                        if nullable_return:
++                            rust_type, value_expr = f"Option<{native_type}>", "native.{native}().map(|value| Value::Number(value as f64)).unwrap_or(Value::Null)"
++                        else:
++                            rust_type, value_expr = native_type, "Value::Number(native.{native}() as f64)"
++                    elif result_type.isDOMString():
++                        rust_type = "Option<Vec<u16>>" if nullable_return else "Vec<u16>"
++                        value_expr = (
++                            "native.{native}().map(Value::Utf16String).unwrap_or(Value::Null)"
++                            if nullable_return else "Value::Utf16String(native.{native}())"
++                        )
++                    elif v8_is_dom_interface(result_type):
++                        if nullable_return:
++                            rust_type, value_expr = "Option<roves_v8::NativeRef>", "native.{native}().map(Value::Native).unwrap_or(Value::Null)"
++                        else:
++                            rust_type, value_expr = "roves_v8::NativeRef", "Value::Native(native.{native}())"
++                    elif result_type.isUSVString():
++                        rust_type = "Option<String>" if nullable_return else "String"
++                        value_expr = (
++                            "native.{native}().map(Value::String).unwrap_or(Value::Null)"
++                            if nullable_return else "Value::String(native.{native}())"
++                        )
+                     else:
+-                        rust_type, value_expr = "roves_v8::NativeRef", "Value::Native(native.{native}())"
+-                elif result_type.isUSVString():
+-                    rust_type = "Option<String>" if nullable_return else "String"
+-                    value_expr = (
+-                        "native.{native}().map(Value::String).unwrap_or(Value::Null)"
+-                        if nullable_return else "Value::String(native.{native}())"
+-                    )
+-                else:
+-                    raise TypeError(f"V8 backend unsupported operation return type: {name}.{member.identifier.name}: {return_type}")
+-                operations.append((member.identifier.name, MakeNativeName(member.identifier.name), rust_type, value_expr, argument_types, throws))
++                        raise TypeError(f"V8 backend unsupported operation return type: {name}.{member.identifier.name}: {return_type}")
++                    # Servo's convention for overloads: Fill, Fill_, Fill__, ...
++                    native_name = MakeNativeName(member.identifier.name) + "_" * overload_index
++                    operations.append((member.identifier.name, native_name, rust_type, value_expr, argument_types, throws, overload_index, len(signatures)))
+                 continue
+             attribute_attributes = (
+                 set(member._extendedAttrDict) - V8_IGNORED_MEMBER_HINTS - V8_EXPOSURE_ATTRIBUTES
+@@ -8644,7 +8664,7 @@ class CGV8BindingRoot(CGThing):
+             [f"    fn {native}(&self) -> {rust_type};"
+              + (f"\n    fn set_{native}(&mut self, value: {rust_type});" if setter else "")
+              for _, native, rust_type, _, setter, _ in attributes]
+-            + [f"    fn {native}(&self{', ' + ', '.join('arg' + str(index) + ': ' + argument_type[0] for index, argument_type in enumerate(argument_types)) if argument_types else ''}) -> {f'Result<{rust_type}, roves_v8::WebIdlError>' if throws else rust_type};" for _, native, rust_type, _, argument_types, throws in operations]
++            + [f"    fn {native}(&self{', ' + ', '.join('arg' + str(index) + ': ' + argument_type[0] for index, argument_type in enumerate(argument_types)) if argument_types else ''}) -> {f'Result<{rust_type}, roves_v8::WebIdlError>' if throws else rust_type};" for _, native, rust_type, _, argument_types, throws, _, _ in operations]
+         )
+         registrations_list = [
+             f'        runtime.define_constant(&interface, "{idl}", &{constant})?;'
+@@ -8724,7 +8744,8 @@ class CGV8BindingRoot(CGThing):
+                     f'        runtime.{define}(&interface, "{idl}", {getter})?;'
+                 )
+             gate_last_registration(idl)
+-        for idl, native, _, value_expr, argument_types, throws in operations:
++        overload_entries = []
++        for idl, native, _, value_expr, argument_types, throws, overload_index, overload_count in operations:
+             argument_conversions = "\n".join(
+                 f'            let arg{index} = match args.get({index}).unwrap_or(&Value::Undefined) {{ {argument_type[2]}, _ => unreachable!("runtime conversion matches generated WebIDL argument type") }};'
+                 for index, argument_type in enumerate(argument_types)
+@@ -8755,7 +8776,31 @@ class CGV8BindingRoot(CGThing):
+             nullable_arguments = ", ".join(str(argument_type[3]).lower() for argument_type in argument_types)
+             optional_arguments = ", ".join(str(argument_type[4]).lower() for argument_type in argument_types)
+             enumeration_values = ", ".join(argument_type[5] or "None" for argument_type in argument_types)
+-            if throws:
++            if overload_count > 1:
++                if not throws:
++                    # Overloads share the fallible dispatcher; infallible ones always succeed.
++                    wrapped = f"Ok({{ {result_expr} }})" if ";" in result_expr else f"Ok({result_expr})"
++                    callback = callback.replace(
++                        f"            {result_expr}\n        }}",
++                        f"            {wrapped}\n        }}",
++                    )
++                overload_entries.append(
++                    f"            roves_v8::WebIdlOverload {{\n"
++                    f"                method: {callback},\n"
++                    f"                conversions: &[{conversions}],\n"
++                    f"                nullable_arguments: &[{nullable_arguments}],\n"
++                    f"                optional_arguments: &[{optional_arguments}],\n"
++                    f"                enumeration_values: &[{enumeration_values}],\n"
++                    f"            }},"
++                )
++                if overload_index + 1 < overload_count:
++                    continue
++                entries = "\n".join(overload_entries)
++                overload_entries = []
++                registrations_list.append(
++                    f'        runtime.define_overloaded_webidl_method(&interface, "{idl}", &[\n{entries}\n        ])?;'
++                )
++            elif throws:
+                 registrations_list.append(f'        runtime.define_fallible_webidl_method(&interface, "{idl}", {callback}, &[{conversions}], &[{nullable_arguments}], &[{optional_arguments}], &[{enumeration_values}])?;')
+             elif argument_types:
+                 registrations_list.append(f'        runtime.define_webidl_method_with_argument_flags_and_enums(&interface, "{idl}", {callback}, &[{conversions}], &[{nullable_arguments}], &[{optional_arguments}], &[{enumeration_values}])?;')
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index 6eda016038d..d7eaf59d207 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -421,6 +421,31 @@ class V8GeneratorTests(unittest.TestCase):
+             self.assertIn("&[roves_v8::WebIdlArgumentConversion::Double, roves_v8::WebIdlArgumentConversion::DomString]", source)
+             self.assertIn("&[false, true]", source)
+ 
++    def test_count_distinguishable_overloads_share_one_dispatcher(self):
++        with tempfile.TemporaryDirectory() as directory:
++            path = Path(directory) / "Over.webidl"
++            path.write_text(
++                "[Exposed=Window] interface Over { boolean fill(); boolean fill(DOMString rule, optional boolean even = false); "
++                "undefined at(unsigned long x, unsigned long y, unsigned long z); };",
++                encoding="utf-8",
++            )
++            source = generate(path, Path(directory) / "output")
++            for expected in [
++                "fn Fill(&self) -> bool;",
++                "fn Fill_(&self, arg0: Vec<u16>, arg1: roves_v8::WebIdlOptionalArgument<bool>) -> bool;",
++                'runtime.define_overloaded_webidl_method(&interface, "fill", &[',
++                "roves_v8::WebIdlOverload {",
++                "Ok(Value::Bool(native.Fill()))",
++                "Ok(Value::Bool(native.Fill_(arg0, arg1)))",
++                'runtime.define_webidl_method_with_argument_flags_and_enums(&interface, "at"',
++            ]:
++                self.assertIn(expected, source)
++            self.assertEqual(source.count("roves_v8::WebIdlOverload {"), 2)
++
++    def test_overloads_needing_type_distinction_fail_closed(self):
++        self.assert_unsupported("interface Unsupported { undefined f(DOMString a); undefined f(boolean a); };")
++        self.assert_unsupported("interface Unsupported { undefined f(DOMString a); undefined f(boolean a, optional boolean b); };")
++
+     def test_unsupported_and_overloaded_constructors_fail_closed(self):
+         for constructor, message in [
+             ("[Pref=\"dom_x\"] constructor();", "unsupported constructor attributes"),

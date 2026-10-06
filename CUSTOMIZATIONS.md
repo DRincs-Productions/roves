@@ -11,6 +11,42 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: overloads distinguishable by argument count (CP55)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixture
+`components/roves-v8/tests/webidl/OverloadedOperations.webidl`;
+`components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0119-roves-v8-webidl-overloads.patch` after 0118.
+
+Overloaded operations split evenly in Servo's WebIDL: 34 can be told apart by argument count and 30
+need type-based distinction. This checkpoint handles the first group.
+
+**Runtime.** `Runtime::define_overloaded_webidl_method(interface, name, &[WebIdlOverload])`
+follows the WebIDL overload resolution algorithm for disjoint argument-count ranges:
+- the argument count, capped at the longest overload, selects the overload;
+- that overload's own conversions apply;
+- extra arguments are ignored;
+- a count no overload accepts is a TypeError;
+- the function's `length` is the shortest overload's required count.
+
+**Generator.**
+- Overloads become `X`, `X_`, `X__` on the native trait, following Servo's naming convention.
+- They register as one dispatcher; infallible overloads are wrapped in `Ok(..)`, with braces only
+  around statements.
+- Overloads whose count ranges overlap still fail closed, with a specific message.
+
+**Tests.**
+- New runtime test: dispatch across zero/one/two-argument overloads, including an optional default
+  and string-to-number coercion. It also covers ignored extra arguments, `length`, throwing
+  overloads, and TypeErrors for unmatched counts.
+- Generator tests: 44/44.
+- `roves-v8` pilot and pilot+JIT-less: 80 unit + 5 integration + 2 doctests each; default 59 unit +
+  2 doctests.
+- `servo-script` check with the pilot is clean.
+
+Coverage: 67/486. Most overloaded members sit in interfaces with other blockers too, which the
+report now shows directly.
+
 ## 2026-10-06 - V8 migration Phase 4: `[Pref]`, `[SecureContext]`, `[LegacyNoInterfaceObject]` exposure (CP54)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixtures

@@ -136,6 +136,11 @@ generatore 42/42, `roves-v8` 79+5+2, default 59+2, check pulito. Copertura **66/
 **Prossimo:** overload (34), esposizione non-Window (30), attributi event handler, `any`,
 dizionari, sequence, union.
 
+**CP55 (2026-10-06):** overload distinguibili per numero di argomenti (patch 0119):
+`define_overloaded_webidl_method`, nomi `X`/`X_` come in Servo. Gli overload che vanno
+distinti per tipo (30) restano rifiutati. Test generatore 44/44, `roves-v8` 80+5+2, default 59+2,
+check pulito. Copertura 67/486.
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

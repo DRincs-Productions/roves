@@ -121,6 +121,10 @@ pub mod webidl {
     pub mod hidden_interface {
         include!(concat!(env!("OUT_DIR"), "/HiddenInterfaceV8Binding.rs"));
     }
+    #[cfg(test)]
+    pub mod overloaded_operations {
+        include!(concat!(env!("OUT_DIR"), "/OverloadedOperationsV8Binding.rs"));
+    }
 }
 
 use std::sync::Once;
@@ -267,6 +271,8 @@ pub struct Runtime {
     method_configs: Vec<Box<WebIdlMethodConfig>>,
     /// Per-constructor callback data, kept alive for the same reason as `method_configs`.
     constructor_configs: Vec<Box<WebIdlConstructorConfig>>,
+    /// Per-overloaded-method callback data, kept alive for the same reason.
+    overload_configs: Vec<Box<WebIdlOverloadConfig>>,
 }
 
 struct WrappedFinalizer {
@@ -788,6 +794,21 @@ pub enum WebIdlError {
 pub type FallibleNativeMethod =
     fn(&dyn std::any::Any, &[Value]) -> Result<Value, WebIdlError>;
 
+/// One signature of an overloaded WebIDL operation, registered with
+/// [`Runtime::define_overloaded_webidl_method`]. The argument slices mean the same as for
+/// [`Runtime::define_fallible_webidl_method`].
+pub struct WebIdlOverload<'a> {
+    pub method: FallibleNativeMethod,
+    pub conversions: &'a [WebIdlArgumentConversion],
+    pub nullable_arguments: &'a [bool],
+    pub optional_arguments: &'a [bool],
+    pub enumeration_values: &'a [Option<&'a [&'a str]>],
+}
+
+struct WebIdlOverloadConfig {
+    overloads: Vec<(FallibleNativeMethod, WebIdlArguments)>,
+}
+
 enum NativeMethodKind {
     Infallible(NativeMethod),
     Fallible(FallibleNativeMethod),
@@ -830,6 +851,7 @@ impl Runtime {
             next_wrapper_token: 0,
             wrapped_finalizers: Default::default(),
             constructor_configs: Vec::new(),
+            overload_configs: Vec::new(),
             method_configs: Vec::new(),
         }
     }
@@ -2072,6 +2094,111 @@ impl Runtime {
             optional_arguments,
             enumeration_values,
         )
+    }
+
+    /// Defines an overloaded WebIDL operation whose overloads accept disjoint argument-count
+    /// ranges. As in the WebIDL overload resolution algorithm, the argument count (capped at the
+    /// longest overload) selects the overload, whose own conversions then apply; a count no
+    /// overload accepts throws a TypeError. Every overload is fallible (`[Throws]` or not).
+    pub fn define_overloaded_webidl_method(
+        &mut self,
+        interface: &Interface,
+        name: &str,
+        overloads: &[WebIdlOverload],
+    ) -> Result<(), String> {
+        if interface.materialized.get() {
+            return Err("interface members must be defined before creating instances or descendants".into());
+        }
+        let config = Box::new(WebIdlOverloadConfig {
+            overloads: overloads
+                .iter()
+                .map(|overload| {
+                    (
+                        overload.method,
+                        WebIdlArguments::new(
+                            overload.conversions,
+                            overload.nullable_arguments,
+                            overload.optional_arguments,
+                            overload.enumeration_values,
+                        ),
+                    )
+                })
+                .collect(),
+        });
+        let config_pointer = (&*config) as *const WebIdlOverloadConfig;
+        self.overload_configs.push(config);
+        let context_handle = &self.context;
+        v8::scope!(let scope, &mut self.isolate);
+        let context = v8::Local::new(scope, context_handle);
+        let scope = &mut v8::ContextScope::new(scope, context);
+        let template = v8::Local::new(scope, &interface.template);
+        let signature = v8::Signature::new(scope, template);
+        let key = v8::String::new(scope, name).ok_or("invalid method name")?;
+        // `length` of an overloaded operation is the shortest overload's required count.
+        let length = overloads
+            .iter()
+            .map(|overload| overload.optional_arguments.iter().filter(|optional| !**optional).count())
+            .min()
+            .unwrap_or(0);
+        let external_data = v8::External::new(scope, config_pointer as *mut std::ffi::c_void);
+        let function_template = v8::FunctionTemplate::builder(
+            |scope: &mut v8::PinScope,
+             args: v8::FunctionCallbackArguments,
+             mut retval: v8::ReturnValue| {
+                let Ok(external) = v8::Local::<v8::External>::try_from(args.data()) else {
+                    return;
+                };
+                // SAFETY: the External points to this method's boxed overload config.
+                let config = unsafe { &*(external.value() as *const WebIdlOverloadConfig) };
+                let this = args.this();
+                if this.internal_field_count() < 1 {
+                    throw_type_error(scope, "Illegal invocation");
+                    return;
+                }
+                let raw = unsafe {
+                    this.get_aligned_pointer_from_internal_field(0, WRAPPED_POINTER_TAG)
+                } as *mut Box<dyn std::any::Any>;
+                if raw.is_null() {
+                    throw_type_error(scope, "Illegal invocation");
+                    return;
+                }
+                let longest = config
+                    .overloads
+                    .iter()
+                    .map(|(_, arguments)| arguments.conversions.len())
+                    .max()
+                    .unwrap_or(0);
+                let count = (args.length().max(0) as usize).min(longest);
+                let selected = config.overloads.iter().find(|(_, arguments)| {
+                    let required = arguments.optional_arguments.iter().filter(|optional| !**optional).count();
+                    required <= count && count <= arguments.conversions.len()
+                });
+                let Some((method, arguments)) = selected else {
+                    throw_type_error(scope, "no overload accepts this number of arguments");
+                    return;
+                };
+                let Some(converted) = convert_webidl_arguments(scope, &args, arguments) else {
+                    return;
+                };
+                // SAFETY: as for the single-signature method callback.
+                let boxed_any: &Box<dyn std::any::Any> = unsafe { &*raw };
+                match method(boxed_any.as_ref(), &converted) {
+                    Ok(result) => {
+                        let result = v8_result(scope, &result);
+                        retval.set(result);
+                    },
+                    Err(error) => throw_webidl_error(scope, &error),
+                }
+            },
+        )
+        .data(external_data.into())
+        .signature(signature)
+        .length(length as i32)
+        .constructor_behavior(v8::ConstructorBehavior::Throw)
+        .build(scope);
+        let function_value: v8::Local<v8::Data> = function_template.into();
+        template.prototype_template(scope).set(key.into(), function_value);
+        Ok(())
     }
 
     /// Like [`Runtime::define_webidl_method_with_argument_flags_and_enums`] for an operation
@@ -5275,6 +5402,49 @@ mod tests {
             runtime.eval("[typeof ExposureGated, gated.extra, gated.secret(), gated instanceof ExposureGated].join()").unwrap(),
             "function,true,true,true"
         );
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_overloads_dispatch_on_argument_count() {
+        use crate::webidl::overloaded_operations::{OverloadedOperationsBinding, OverloadedOperationsNative};
+        use crate::{WebIdlError, WebIdlOptionalArgument};
+        struct Ops(std::cell::Cell<u32>);
+        #[allow(non_snake_case)]
+        impl OverloadedOperationsNative for Ops {
+            fn Describe(&self) -> Vec<u16> { "none".encode_utf16().collect() }
+            fn Describe_(&self, count: u32, loud: WebIdlOptionalArgument<bool>) -> Vec<u16> {
+                let WebIdlOptionalArgument::Present(loud) = loud else { unreachable!("declared default") };
+                let text = format!("{count}{}", if loud { "!" } else { "" });
+                text.encode_utf16().collect()
+            }
+            fn Measure(&self, text: Vec<u16>) -> u32 { text.len() as u32 }
+            fn Measure_(&self, text: Vec<u16>, scale: u32, offset: u32) -> u32 { text.len() as u32 * scale + offset }
+            fn Reset(&self) -> Result<(), WebIdlError> { self.0.set(0); Ok(()) }
+            fn Reset_(&self, hard: bool, deep: bool) -> Result<(), WebIdlError> {
+                if hard && deep { Err(WebIdlError::RangeError("too much".into())) } else { self.0.set(1); Ok(()) }
+            }
+        }
+        let mut runtime = Runtime::new();
+        let binding = OverloadedOperationsBinding::<Ops>::install(&mut runtime).unwrap();
+        let ops = binding.create(&mut runtime, Ops(std::cell::Cell::new(5)));
+        runtime.set_global_property("ops", &ops).unwrap();
+        for (source, expected) in [
+            ("[ops.describe(), ops.describe(3), ops.describe(3, true), ops.describe('4', 0)].join()", "none,3,3!,4"),
+            // Extra arguments beyond the longest overload are ignored, as WebIDL requires.
+            ("ops.describe(2, false, 'ignored', 9)", "2"),
+            ("[ops.measure('abc'), ops.measure('abc', 2, 1)].join()", "3,7"),
+            ("[ops.reset(), ops.reset(true, false)].join()", ","),
+            ("[OverloadedOperations.prototype.describe.length, OverloadedOperations.prototype.measure.length].join()", "0,1"),
+        ] {
+            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
+        }
+        // No overload takes two arguments (or none) here, and a throwing overload still throws.
+        for source in ["ops.measure()", "ops.measure('a', 2)", "ops.reset(true)", "ops.reset(true, true)"] {
+            let error = runtime.eval(&format!("(() => {{ try {{ {source}; return 'none'; }} catch (e) {{ return e.constructor.name; }} }})()")).unwrap();
+            let expected = if source.ends_with("(true, true)") { "RangeError" } else { "TypeError" };
+            assert_eq!(error, expected, "{source}");
+        }
     }
 
     #[cfg(feature = "webidl-pilot")]

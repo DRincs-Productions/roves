@@ -421,6 +421,31 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn("&[roves_v8::WebIdlArgumentConversion::Double, roves_v8::WebIdlArgumentConversion::DomString]", source)
             self.assertIn("&[false, true]", source)
 
+    def test_count_distinguishable_overloads_share_one_dispatcher(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Over.webidl"
+            path.write_text(
+                "[Exposed=Window] interface Over { boolean fill(); boolean fill(DOMString rule, optional boolean even = false); "
+                "undefined at(unsigned long x, unsigned long y, unsigned long z); };",
+                encoding="utf-8",
+            )
+            source = generate(path, Path(directory) / "output")
+            for expected in [
+                "fn Fill(&self) -> bool;",
+                "fn Fill_(&self, arg0: Vec<u16>, arg1: roves_v8::WebIdlOptionalArgument<bool>) -> bool;",
+                'runtime.define_overloaded_webidl_method(&interface, "fill", &[',
+                "roves_v8::WebIdlOverload {",
+                "Ok(Value::Bool(native.Fill()))",
+                "Ok(Value::Bool(native.Fill_(arg0, arg1)))",
+                'runtime.define_webidl_method_with_argument_flags_and_enums(&interface, "at"',
+            ]:
+                self.assertIn(expected, source)
+            self.assertEqual(source.count("roves_v8::WebIdlOverload {"), 2)
+
+    def test_overloads_needing_type_distinction_fail_closed(self):
+        self.assert_unsupported("interface Unsupported { undefined f(DOMString a); undefined f(boolean a); };")
+        self.assert_unsupported("interface Unsupported { undefined f(DOMString a); undefined f(boolean a, optional boolean b); };")
+
     def test_unsupported_and_overloaded_constructors_fail_closed(self):
         for constructor, message in [
             ("[Pref=\"dom_x\"] constructor();", "unsupported constructor attributes"),
