@@ -79,6 +79,11 @@ Servo-style `X`/`X_` names. Type-distinguished overloads (30) still fail closed.
 even when the member throws). "Unsupported member" rejections fell from 71 to 35; HTML element
 interfaces now wait on their ancestors.
 
+**CP57 (2026-10-06): `[Abstract]`.** Accepted (Servo-only "no direct instances"); coverage
+92/486. Core-chain blockers now: dictionaries, sequences, callback interfaces/functions (which
+need native code to run inside a JS context, i.e. an engine-neutral script context passed to
+natives), `[PutForwards]`, type-distinguished overloads.
+
 CP37 exposes stable `NativeObjectId` through `DomObject` and updates generated `dom_struct`
 equality to use that engine-neutral contract. Local checks pass (reflector 2/2, macro 3/3,
 rustfmt, and patch 0101 reverse-check); CI is green: V8 37226916624 (6/6), Servo 37226916650

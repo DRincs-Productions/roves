@@ -11,6 +11,24 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: accept Servo's `[Abstract]` interfaces (CP57)
+
+**Servo files:** `components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0121-roves-v8-webidl-abstract.patch` after 0120.
+
+`[Abstract]` is a Servo-specific extended attribute (`Node`, `CharacterData`, `CSSRule`, and
+others). It only means the interface has no direct instances. In Servo's own bindings it removes the
+concrete `Wrap` and type id, but it does not change the JS shape. The V8 generator now accepts it:
+instances are created through descendant bindings, which share the native type (CP46).
+
+Generator tests: 46/46. This was the single blocker behind most of the DOM inheritance chains.
+Coverage jumps from 68 to **92/486**. The core-chain blockers are now explicit:
+- dictionary arguments and defaults (`EventInit`, `GetRootNodeOptions`);
+- sequences (`Event.composedPath`);
+- callback interfaces (`EventTarget.addEventListener`);
+- `[PutForwards]` attributes (`Element.classList`);
+- overloads that need type-based distinction (`CharacterData.before`).
+
 ## 2026-10-06 - V8 migration Phase 4: `[CEReactions]` members (CP56)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixture

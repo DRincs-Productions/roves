@@ -149,6 +149,13 @@ i rifiuti "unsupported member" sono scesi da 71 a 35. **Prossimo:** sbloccare gl
 `Node`/`Element` (`[Abstract]`, attributi event handler, `any`, setter mutabili non supportati),
 poi l'esposizione non-Window (30).
 
+**CP57 (2026-10-06):** `[Abstract]` accettato (patch 0121); copertura **92/486**. Blocchi della
+catena principale: dizionari (`EventInit`), sequence (`composedPath`), callback
+(`addEventListener`), `[PutForwards]` (`classList`), overload per tipo. **Prossimo passo
+architetturale:** un contesto di script engine-neutral (`ScriptContext`) passato ai nativi che
+ne hanno bisogno, come il `cx` di Servo, per chiamare funzioni JS e creare oggetti/array.
+Sblocca `any`, callback, event handler, dizionari e sequence.
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

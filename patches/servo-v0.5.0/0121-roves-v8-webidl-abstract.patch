@@ -1,0 +1,34 @@
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index 9cfee3cd495..ea5854862f5 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8497,7 +8497,9 @@ class CGV8BindingRoot(CGThing):
+         ]:
+             if present:
+                 raise TypeError(f"V8 backend does not yet support interface shape ({unsupported_shape}): {name}")
+-        unsupported = set(interface._extendedAttrDict) - {"Exposed", "LegacyNoInterfaceObject"} - V8_EXPOSURE_ATTRIBUTES
++        # [Abstract] (Servo-specific) only means "no direct instances": the JS shape is the
++        # same, and instances are created through descendant bindings sharing the native type.
++        unsupported = set(interface._extendedAttrDict) - {"Exposed", "LegacyNoInterfaceObject", "Abstract"} - V8_EXPOSURE_ATTRIBUTES
+         if unsupported:
+             raise TypeError(f"V8 backend unsupported attributes on {name}: {sorted(unsupported)}")
+         exposed = interface._extendedAttrDict.get("Exposed")
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index 182841c066d..8517046ec68 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -458,6 +458,14 @@ class V8GeneratorTests(unittest.TestCase):
+             # Getter + setter of `title` and the `run` operation; `plain` is not wrapped.
+             self.assertEqual(source.count("with_ce_reactions("), 3)
+ 
++    def test_abstract_interfaces_generate_like_any_other(self):
++        with tempfile.TemporaryDirectory() as directory:
++            path = Path(directory) / "Shape.webidl"
++            path.write_text("[Abstract, Exposed=Window] interface Shape { readonly attribute double area; };", encoding="utf-8")
++            source = generate(path, Path(directory) / "output")
++            self.assertIn("fn Area(&self) -> roves_v8::FiniteF64;", source)
++            self.assertIn('runtime.define_interface("Shape", None)', source)
++
+     def test_overloads_needing_type_distinction_fail_closed(self):
+         self.assert_unsupported("interface Unsupported { undefined f(DOMString a); undefined f(boolean a); };")
+         self.assert_unsupported("interface Unsupported { undefined f(DOMString a); undefined f(boolean a, optional boolean b); };")

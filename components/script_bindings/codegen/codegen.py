@@ -8497,7 +8497,9 @@ class CGV8BindingRoot(CGThing):
         ]:
             if present:
                 raise TypeError(f"V8 backend does not yet support interface shape ({unsupported_shape}): {name}")
-        unsupported = set(interface._extendedAttrDict) - {"Exposed", "LegacyNoInterfaceObject"} - V8_EXPOSURE_ATTRIBUTES
+        # [Abstract] (Servo-specific) only means "no direct instances": the JS shape is the
+        # same, and instances are created through descendant bindings sharing the native type.
+        unsupported = set(interface._extendedAttrDict) - {"Exposed", "LegacyNoInterfaceObject", "Abstract"} - V8_EXPOSURE_ATTRIBUTES
         if unsupported:
             raise TypeError(f"V8 backend unsupported attributes on {name}: {sorted(unsupported)}")
         exposed = interface._extendedAttrDict.get("Exposed")

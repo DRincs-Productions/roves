@@ -458,6 +458,14 @@ class V8GeneratorTests(unittest.TestCase):
             # Getter + setter of `title` and the `run` operation; `plain` is not wrapped.
             self.assertEqual(source.count("with_ce_reactions("), 3)
 
+    def test_abstract_interfaces_generate_like_any_other(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Shape.webidl"
+            path.write_text("[Abstract, Exposed=Window] interface Shape { readonly attribute double area; };", encoding="utf-8")
+            source = generate(path, Path(directory) / "output")
+            self.assertIn("fn Area(&self) -> roves_v8::FiniteF64;", source)
+            self.assertIn('runtime.define_interface("Shape", None)', source)
+
     def test_overloads_needing_type_distinction_fail_closed(self):
         self.assert_unsupported("interface Unsupported { undefined f(DOMString a); undefined f(boolean a); };")
         self.assert_unsupported("interface Unsupported { undefined f(DOMString a); undefined f(boolean a, optional boolean b); };")
