@@ -534,6 +534,31 @@ class V8GeneratorTests(unittest.TestCase):
             ]:
                 self.assertIn(expected, source)
 
+    def test_dictionaries_generate_structs_in_webidl_member_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Dict.webidl"
+            path.write_text(
+                "dictionary Base { boolean zeta = false; boolean alpha = true; }; "
+                "dictionary Derived : Base { required DOMString type; long count; }; "
+                "[Exposed=Window] interface Dict { constructor(optional Base init = {}); Derived echo(Derived value); };",
+                encoding="utf-8",
+            )
+            source = generate(path, Path(directory) / "output")
+            for expected in [
+                "pub struct Base {\n    pub alpha: bool,\n    pub zeta: bool,\n}",
+                # Inherited members first, each level sorted; a missing optional member is None.
+                "pub struct Derived {\n    pub alpha: bool,\n    pub zeta: bool,\n    pub count: Option<i32>,\n    pub r#type: Vec<u16>,\n}",
+                'roves_v8::WebIdlDictionaryMember { name: "type".to_owned(), ty: roves_v8::WebIdlType::Primitive(roves_v8::WebIdlArgumentConversion::DomString), required: true, default: None }',
+                'name: "alpha".to_owned(), ty: roves_v8::WebIdlType::Primitive(roves_v8::WebIdlArgumentConversion::Boolean), required: false, default: Some(Value::Bool(true))',
+                "fn Constructor(arg0: Base) -> Self where Self: Sized;",
+                "runtime.define_typed_constructible_interface(",
+                # The optional dictionary argument is never missing: undefined converts to defaults.
+                "optional: false",
+                "fn Echo(&self, arg0: Derived) -> Derived;",
+                "native.Echo(arg0).into_value()",
+            ]:
+                self.assertIn(expected, source)
+
     def test_overloads_needing_type_distinction_fail_closed(self):
         self.assert_unsupported("interface Unsupported { undefined f(DOMString a); undefined f(boolean a); };")
         self.assert_unsupported("interface Unsupported { undefined f(DOMString a); undefined f(boolean a, optional boolean b); };")

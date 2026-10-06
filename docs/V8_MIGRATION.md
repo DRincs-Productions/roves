@@ -102,6 +102,11 @@ primitive/enumeration/interface/nullable/sequence) with `define_typed_webidl_met
 use the WebIDL iterable protocol and return arrays. This structured path is where dictionaries
 and unions go next. Coverage 100/486.
 
+**CP61 (2026-10-06): dictionaries.** `WebIdlType::Dictionary` implements the WebIDL dictionary
+conversion (member order, defaults incl. nested `{}`, required members); bindings generate one
+Rust struct per dictionary, and constructors accept structured arguments. Coverage 143/486.
+Next: callback interfaces (`EventListener`) and unions, then type-distinguished overloads.
+
 CP37 exposes stable `NativeObjectId` through `DomObject` and updates generated `dom_struct`
 equality to use that engine-neutral contract. Local checks pass (reflector 2/2, macro 3/3,
 rustfmt, and patch 0101 reverse-check); CI is green: V8 37226916624 (6/6), Servo 37226916650

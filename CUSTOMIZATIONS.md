@@ -11,6 +11,55 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: WebIDL dictionaries (CP61)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixture
+`components/roves-v8/tests/webidl/DictionaryProbe.webidl`;
+`components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0125-roves-v8-webidl-dictionaries.patch` after 0124.
+
+Dictionaries (`EventInit`, `GetRootNodeOptions`, and others) were the next core blocker. They use
+the structured path from CP60.
+
+**Runtime.** It adds `WebIdlType::Dictionary(Vec<WebIdlDictionaryMember { name, ty, required,
+default }>)` and implements the WebIDL dictionary conversion:
+- `undefined` and `null` are an empty dictionary, and any other non-object is a TypeError;
+- members are read with `[[Get]]` in WebIDL order, inherited dictionaries first and each level
+  sorted by name;
+- a missing member takes its default, where `Value::Undefined` as a default means "convert
+  `undefined` through the member type", which implements a nested `= {}`;
+- a missing required member is a TypeError;
+- the result is `Value::Dictionary(Vec<(name, Value)>)`, with `Value::Missing` for absent members.
+Returned dictionaries become plain objects holding their present members. The new
+`define_typed_constructible_interface` lets constructors take structured arguments.
+
+**Generator.**
+- Each dictionary a binding uses becomes a Rust struct with `from_entries` and `into_value`.
+  Required and defaulted members are plain fields, other members are `Option`, and Rust keywords
+  become raw identifiers (`r#type`).
+- Member defaults cover booleans, numbers (including Infinity and NaN), strings, enumerations, `null`,
+  `[]` and `{}`.
+- Dictionary arguments are never "missing": undefined converts to the defaults, as WebIDL
+  requires.
+- Dictionary results, and dictionaries holding JS handles, are handled; the latter make the member
+  contextual.
+
+**Tests.**
+- New runtime test on an `Event`-like generated interface, with a dictionary constructor argument
+  and a dictionary result. It covers:
+  - omitted, `null` and partial init dictionaries;
+  - the exact member access order, observed through a `Proxy`;
+  - defaults, nested `{}` and `[]` defaults, absent optional members, and a `Set` for a sequence
+    member;
+  - member coercion and a plain-object result;
+  - TypeErrors for a missing required member, a non-object dictionary and a bad member value.
+- Generator tests: 50/50.
+- `roves-v8` pilot and pilot+JIT-less: 85 unit + 5 integration + 2 doctests each; default 59 unit +
+  2 doctests.
+- `servo-script` check with the pilot is clean.
+
+Coverage: **143/486** (from 100).
+
 ## 2026-10-06 - V8 migration Phase 4: structured WebIDL types and sequences (CP60)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixture

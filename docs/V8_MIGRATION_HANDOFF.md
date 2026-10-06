@@ -177,6 +177,12 @@ salvano i valori JS come `JsRef` tracciati. Test generatore 48/48, `roves-v8` 83
 **Prossimo:** dizionari (`EventInit`, `GetRootNodeOptions`) sul percorso strutturato, poi
 callback interface (`EventListener`) e union.
 
+**CP61 (2026-10-06):** dizionari (patch 0125). `WebIdlType::Dictionary` con la conversione WebIDL
+completa (ordine dei membri, default compreso `{}` annidato, membri required); gli struct Rust
+sono generati per binding; c'è `define_typed_constructible_interface`. Test generatore 50/50,
+`roves-v8` 85+5+2, default 59+2, check pulito. Copertura **143/486**. **Prossimo:** callback
+interface (`EventListener`) e union, poi overload per tipo.
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

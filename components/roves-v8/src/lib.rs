@@ -141,6 +141,10 @@ pub mod webidl {
     pub mod sequence_operations {
         include!(concat!(env!("OUT_DIR"), "/SequenceOperationsV8Binding.rs"));
     }
+    #[cfg(test)]
+    pub mod dictionary_probe {
+        include!(concat!(env!("OUT_DIR"), "/DictionaryProbeV8Binding.rs"));
+    }
 }
 
 use std::sync::Once;
@@ -201,6 +205,9 @@ pub enum Value {
     Js(Handle),
     /// A WebIDL sequence; converting it to JS creates an array.
     Sequence(Vec<Value>),
+    /// A WebIDL dictionary: `(member name, value)` in member order, with [`Value::Missing`] for
+    /// members that are absent. Converting it to JS creates a plain object of the present ones.
+    Dictionary(Vec<(String, Value)>),
     /// A traced native DOM object (an interface-typed WebIDL value). Converting it to JS yields
     /// the native's one wrapper, created on first use as an instance of its concrete interface.
     Native(NativeRef),
@@ -597,6 +604,19 @@ fn traced_wrapper<'s>(
 
 /// Converts a callback result to JS, wrapping [`Value::Native`] results.
 fn v8_result<'s>(scope: &mut v8::PinScope<'s, '_>, value: &Value) -> v8::Local<'s, v8::Value> {
+    if let Value::Dictionary(entries) = value {
+        // Members may be natives, which need wrapping.
+        let object = v8::Object::new(scope);
+        for (name, member) in entries {
+            if *member == Value::Missing {
+                continue;
+            }
+            let key = v8::String::new(scope, name).unwrap();
+            let member = v8_result(scope, member);
+            object.create_data_property(scope, key.into(), member);
+        }
+        return object.into();
+    }
     if let Value::Sequence(elements) = value {
         // Elements may be natives, which need wrapping.
         let mut converted = Vec::with_capacity(elements.len());
@@ -856,6 +876,22 @@ pub enum WebIdlType {
     Nullable(Box<WebIdlType>),
     /// `sequence<T>`: any JS iterable, converted element by element ([`Value::Sequence`]).
     Sequence(Box<WebIdlType>),
+    /// A dictionary: members in WebIDL order (inherited first, each level sorted by name),
+    /// converted into a [`Value::Dictionary`].
+    Dictionary(Vec<WebIdlDictionaryMember>),
+}
+
+/// One member of a [`WebIdlType::Dictionary`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct WebIdlDictionaryMember {
+    pub name: String,
+    pub ty: WebIdlType,
+    /// A missing required member is a TypeError.
+    pub required: bool,
+    /// The value used when the member is missing. `Value::Undefined` means "convert
+    /// `undefined` through the member type", which is how a nested dictionary's `= {}` default
+    /// fills in that dictionary's own defaults.
+    pub default: Option<Value>,
 }
 
 /// One argument of a [`Runtime::define_typed_webidl_method`] operation.
@@ -1550,6 +1586,25 @@ impl Runtime {
                 optional_arguments,
                 enumeration_values,
             ),
+            finalizers: self.wrapped_finalizers.clone(),
+        });
+        let config_pointer = (&*config) as *const WebIdlConstructorConfig;
+        self.constructor_configs.push(config);
+        self.define_interface_inner(name, parent, Some(config_pointer))
+    }
+
+    /// Like [`Runtime::define_constructible_interface`] with constructor arguments described by
+    /// structured [`WebIdlType`]s (dictionaries, sequences).
+    pub fn define_typed_constructible_interface(
+        &mut self,
+        name: &str,
+        parent: Option<&Interface>,
+        constructor: NativeConstructor,
+        arguments: &[WebIdlArgument],
+    ) -> Interface {
+        let config = Box::new(WebIdlConstructorConfig {
+            constructor,
+            arguments: WebIdlArguments::typed(arguments),
             finalizers: self.wrapped_finalizers.clone(),
         });
         let config_pointer = (&*config) as *const WebIdlConstructorConfig;
@@ -3252,6 +3307,42 @@ fn convert_typed_value<'s>(
                 convert_typed_value(scope, value, inner)
             }
         },
+        WebIdlType::Dictionary(members) => {
+            // WebIDL dictionary conversion: undefined and null are an empty dictionary.
+            let object = if value.is_null_or_undefined() {
+                None
+            } else if let Ok(object) = v8::Local::<v8::Object>::try_from(value) {
+                Some(object)
+            } else {
+                throw_type_error(scope, "value is not a dictionary object");
+                return None;
+            };
+            let mut entries = Vec::with_capacity(members.len());
+            for member in members {
+                let raw: v8::Local<v8::Value> = match object {
+                    Some(object) => {
+                        let key = v8::String::new(scope, &member.name).unwrap();
+                        object.get(scope, key.into())?
+                    },
+                    None => v8::undefined(scope).into(),
+                };
+                let converted = if raw.is_undefined() {
+                    match &member.default {
+                        Some(Value::Undefined) => convert_typed_value(scope, raw, &member.ty)?,
+                        Some(default) => default.clone(),
+                        None if member.required => {
+                            throw_type_error(scope, &format!("required dictionary member '{}' is missing", member.name));
+                            return None;
+                        },
+                        None => Value::Missing,
+                    }
+                } else {
+                    convert_typed_value(scope, raw, &member.ty)?
+                };
+                entries.push((member.name.clone(), converted));
+            }
+            Some(Value::Dictionary(entries))
+        },
         WebIdlType::Sequence(element_type) => {
             // WebIDL "create a sequence from an iterable": the @@iterator protocol, so any
             // iterable (not only arrays) converts, and user iterators run.
@@ -3424,6 +3515,18 @@ fn v8_value<'s>(scope: &v8::PinScope<'s, '_>, value: &Value) -> v8::Local<'s, v8
         Value::Sequence(elements) => {
             let elements: Vec<_> = elements.iter().map(|element| v8_value(scope, element)).collect();
             v8::Array::new_with_elements(scope, &elements).into()
+        },
+        Value::Dictionary(entries) => {
+            let object = v8::Object::new(scope);
+            for (name, value) in entries {
+                if *value == Value::Missing {
+                    continue;
+                }
+                let key = v8::String::new(scope, name).unwrap();
+                let value = v8_value(scope, value);
+                object.create_data_property(scope, key.into(), value);
+            }
+            object.into()
         },
         Value::Null => v8::null(scope).into(),
         Value::Bool(b) => v8::Boolean::new(scope, *b).into(),
@@ -6178,6 +6281,56 @@ mod tests {
             "RangeError"
         );
         drop(roots);
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_dictionaries_follow_webidl_conversion_rules() {
+        use crate::webidl::dictionary_probe::{BaseInit, DictionaryProbeBinding, DictionaryProbeNative, ProbeInit};
+        /// An Event-like object: a type plus the flags of its init dictionary.
+        struct Probe {
+            r#type: Vec<u16>,
+            init: BaseInit,
+        }
+        #[allow(non_snake_case)]
+        impl DictionaryProbeNative for Probe {
+            fn Constructor(r#type: Vec<u16>, init: BaseInit) -> Self {
+                Probe { r#type, init }
+            }
+            fn Type(&self) -> Vec<u16> { self.r#type.clone() }
+            fn Bubbles(&self) -> bool { self.init.bubbles }
+            fn Cancelable(&self) -> bool { self.init.cancelable }
+            fn Describe(&self, mut init: ProbeInit) -> ProbeInit {
+                init.values.push(init.values.len() as i32);
+                init.count = init.count.map(|count| count * 2);
+                init
+            }
+        }
+        let mut runtime = Runtime::new();
+        let _binding = DictionaryProbeBinding::<Probe>::install(&mut runtime).unwrap();
+        for (source, expected) in [
+            // An omitted, undefined or null init dictionary takes every default.
+            ("const a = new DictionaryProbe('click'); [a.type, a.bubbles, a.cancelable].join()", "click,false,false"),
+            ("const b = new DictionaryProbe('x', null); [b.bubbles, b.cancelable].join()", "false,false"),
+            ("const c = new DictionaryProbe('x', { bubbles: 1, unrelated: true }); [c.bubbles, c.cancelable].join()", "true,false"),
+            // Members are read with getters, in WebIDL order (inherited first, then by name).
+            ("const order = []; const tracked = new Proxy({ label: 'l' }, { get(target, key) { if (typeof key === 'string') order.push(key); return target[key]; } }); new DictionaryProbe('x', tracked).describe(tracked); order.join()", "bubbles,cancelable,bubbles,cancelable,count,label,nested,values"),
+            // Defaults (including the nested `= {}` and `= []`), absent optional members and
+            // conversion of the returned dictionary back to a plain object.
+            ("JSON.stringify(c.describe({ label: 'probe' }))", "{\"bubbles\":false,\"cancelable\":false,\"label\":\"probe\",\"nested\":{\"deep\":true},\"values\":[0]}"),
+            ("const d = c.describe({ label: 7, count: '4', values: new Set([5]), nested: { deep: 0 } }); [d.label, d.count, d.values.join('|'), d.nested.deep].join()", "7,8,5|1,false"),
+            ("Object.getPrototypeOf(c.describe({ label: '' })) === Object.prototype", "true"),
+        ] {
+            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
+        }
+        for source in [
+            // A required member, a non-object dictionary and a bad member value are TypeErrors.
+            "new DictionaryProbe('x').describe({})",
+            "new DictionaryProbe('x', 5)",
+            "new DictionaryProbe('x').describe({ label: 'l', values: 3 })",
+        ] {
+            assert!(runtime.eval(source).unwrap_err().contains("TypeError"), "{source}");
+        }
     }
 
     #[cfg(feature = "webidl-pilot")]

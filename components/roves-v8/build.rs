@@ -214,6 +214,7 @@ fn main() {
         ("CallbackOperations", &[][..]),
         ("HandlerHost", &[][..]),
         ("SequenceOperations", &[][..]),
+        ("DictionaryProbe", &[][..]),
     ] {
         println!("cargo:rerun-if-changed={}", fixtures.join(format!("{interface}.webidl")).display());
         let status = Command::new(&python)

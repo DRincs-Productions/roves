@@ -1,0 +1,535 @@
+diff --git a/components/roves-v8/build.rs b/components/roves-v8/build.rs
+index 224a050e206..fc9f547b292 100644
+--- a/components/roves-v8/build.rs
++++ b/components/roves-v8/build.rs
+@@ -214,6 +214,7 @@ fn main() {
+         ("CallbackOperations", &[][..]),
+         ("HandlerHost", &[][..]),
+         ("SequenceOperations", &[][..]),
++        ("DictionaryProbe", &[][..]),
+     ] {
+         println!("cargo:rerun-if-changed={}", fixtures.join(format!("{interface}.webidl")).display());
+         let status = Command::new(&python)
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 54b5fff2553..8589cb31779 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -141,6 +141,10 @@ pub mod webidl {
+     pub mod sequence_operations {
+         include!(concat!(env!("OUT_DIR"), "/SequenceOperationsV8Binding.rs"));
+     }
++    #[cfg(test)]
++    pub mod dictionary_probe {
++        include!(concat!(env!("OUT_DIR"), "/DictionaryProbeV8Binding.rs"));
++    }
+ }
+ 
+ use std::sync::Once;
+@@ -201,6 +205,9 @@ pub enum Value {
+     Js(Handle),
+     /// A WebIDL sequence; converting it to JS creates an array.
+     Sequence(Vec<Value>),
++    /// A WebIDL dictionary: `(member name, value)` in member order, with [`Value::Missing`] for
++    /// members that are absent. Converting it to JS creates a plain object of the present ones.
++    Dictionary(Vec<(String, Value)>),
+     /// A traced native DOM object (an interface-typed WebIDL value). Converting it to JS yields
+     /// the native's one wrapper, created on first use as an instance of its concrete interface.
+     Native(NativeRef),
+@@ -597,6 +604,19 @@ fn traced_wrapper<'s>(
+ 
+ /// Converts a callback result to JS, wrapping [`Value::Native`] results.
+ fn v8_result<'s>(scope: &mut v8::PinScope<'s, '_>, value: &Value) -> v8::Local<'s, v8::Value> {
++    if let Value::Dictionary(entries) = value {
++        // Members may be natives, which need wrapping.
++        let object = v8::Object::new(scope);
++        for (name, member) in entries {
++            if *member == Value::Missing {
++                continue;
++            }
++            let key = v8::String::new(scope, name).unwrap();
++            let member = v8_result(scope, member);
++            object.create_data_property(scope, key.into(), member);
++        }
++        return object.into();
++    }
+     if let Value::Sequence(elements) = value {
+         // Elements may be natives, which need wrapping.
+         let mut converted = Vec::with_capacity(elements.len());
+@@ -856,6 +876,22 @@ pub enum WebIdlType {
+     Nullable(Box<WebIdlType>),
+     /// `sequence<T>`: any JS iterable, converted element by element ([`Value::Sequence`]).
+     Sequence(Box<WebIdlType>),
++    /// A dictionary: members in WebIDL order (inherited first, each level sorted by name),
++    /// converted into a [`Value::Dictionary`].
++    Dictionary(Vec<WebIdlDictionaryMember>),
++}
++
++/// One member of a [`WebIdlType::Dictionary`].
++#[derive(Clone, Debug, PartialEq)]
++pub struct WebIdlDictionaryMember {
++    pub name: String,
++    pub ty: WebIdlType,
++    /// A missing required member is a TypeError.
++    pub required: bool,
++    /// The value used when the member is missing. `Value::Undefined` means "convert
++    /// `undefined` through the member type", which is how a nested dictionary's `= {}` default
++    /// fills in that dictionary's own defaults.
++    pub default: Option<Value>,
+ }
+ 
+ /// One argument of a [`Runtime::define_typed_webidl_method`] operation.
+@@ -1557,6 +1593,25 @@ impl Runtime {
+         self.define_interface_inner(name, parent, Some(config_pointer))
+     }
+ 
++    /// Like [`Runtime::define_constructible_interface`] with constructor arguments described by
++    /// structured [`WebIdlType`]s (dictionaries, sequences).
++    pub fn define_typed_constructible_interface(
++        &mut self,
++        name: &str,
++        parent: Option<&Interface>,
++        constructor: NativeConstructor,
++        arguments: &[WebIdlArgument],
++    ) -> Interface {
++        let config = Box::new(WebIdlConstructorConfig {
++            constructor,
++            arguments: WebIdlArguments::typed(arguments),
++            finalizers: self.wrapped_finalizers.clone(),
++        });
++        let config_pointer = (&*config) as *const WebIdlConstructorConfig;
++        self.constructor_configs.push(config);
++        self.define_interface_inner(name, parent, Some(config_pointer))
++    }
++
+     fn define_interface_inner(
+         &mut self,
+         name: &str,
+@@ -3252,6 +3307,42 @@ fn convert_typed_value<'s>(
+                 convert_typed_value(scope, value, inner)
+             }
+         },
++        WebIdlType::Dictionary(members) => {
++            // WebIDL dictionary conversion: undefined and null are an empty dictionary.
++            let object = if value.is_null_or_undefined() {
++                None
++            } else if let Ok(object) = v8::Local::<v8::Object>::try_from(value) {
++                Some(object)
++            } else {
++                throw_type_error(scope, "value is not a dictionary object");
++                return None;
++            };
++            let mut entries = Vec::with_capacity(members.len());
++            for member in members {
++                let raw: v8::Local<v8::Value> = match object {
++                    Some(object) => {
++                        let key = v8::String::new(scope, &member.name).unwrap();
++                        object.get(scope, key.into())?
++                    },
++                    None => v8::undefined(scope).into(),
++                };
++                let converted = if raw.is_undefined() {
++                    match &member.default {
++                        Some(Value::Undefined) => convert_typed_value(scope, raw, &member.ty)?,
++                        Some(default) => default.clone(),
++                        None if member.required => {
++                            throw_type_error(scope, &format!("required dictionary member '{}' is missing", member.name));
++                            return None;
++                        },
++                        None => Value::Missing,
++                    }
++                } else {
++                    convert_typed_value(scope, raw, &member.ty)?
++                };
++                entries.push((member.name.clone(), converted));
++            }
++            Some(Value::Dictionary(entries))
++        },
+         WebIdlType::Sequence(element_type) => {
+             // WebIDL "create a sequence from an iterable": the @@iterator protocol, so any
+             // iterable (not only arrays) converts, and user iterators run.
+@@ -3425,6 +3516,18 @@ fn v8_value<'s>(scope: &v8::PinScope<'s, '_>, value: &Value) -> v8::Local<'s, v8
+             let elements: Vec<_> = elements.iter().map(|element| v8_value(scope, element)).collect();
+             v8::Array::new_with_elements(scope, &elements).into()
+         },
++        Value::Dictionary(entries) => {
++            let object = v8::Object::new(scope);
++            for (name, value) in entries {
++                if *value == Value::Missing {
++                    continue;
++                }
++                let key = v8::String::new(scope, name).unwrap();
++                let value = v8_value(scope, value);
++                object.create_data_property(scope, key.into(), value);
++            }
++            object.into()
++        },
+         Value::Null => v8::null(scope).into(),
+         Value::Bool(b) => v8::Boolean::new(scope, *b).into(),
+         Value::Number(n) => v8::Number::new(scope, *n).into(),
+@@ -6180,6 +6283,56 @@ mod tests {
+         drop(roots);
+     }
+ 
++    #[cfg(feature = "webidl-pilot")]
++    #[test]
++    fn generated_dictionaries_follow_webidl_conversion_rules() {
++        use crate::webidl::dictionary_probe::{BaseInit, DictionaryProbeBinding, DictionaryProbeNative, ProbeInit};
++        /// An Event-like object: a type plus the flags of its init dictionary.
++        struct Probe {
++            r#type: Vec<u16>,
++            init: BaseInit,
++        }
++        #[allow(non_snake_case)]
++        impl DictionaryProbeNative for Probe {
++            fn Constructor(r#type: Vec<u16>, init: BaseInit) -> Self {
++                Probe { r#type, init }
++            }
++            fn Type(&self) -> Vec<u16> { self.r#type.clone() }
++            fn Bubbles(&self) -> bool { self.init.bubbles }
++            fn Cancelable(&self) -> bool { self.init.cancelable }
++            fn Describe(&self, mut init: ProbeInit) -> ProbeInit {
++                init.values.push(init.values.len() as i32);
++                init.count = init.count.map(|count| count * 2);
++                init
++            }
++        }
++        let mut runtime = Runtime::new();
++        let _binding = DictionaryProbeBinding::<Probe>::install(&mut runtime).unwrap();
++        for (source, expected) in [
++            // An omitted, undefined or null init dictionary takes every default.
++            ("const a = new DictionaryProbe('click'); [a.type, a.bubbles, a.cancelable].join()", "click,false,false"),
++            ("const b = new DictionaryProbe('x', null); [b.bubbles, b.cancelable].join()", "false,false"),
++            ("const c = new DictionaryProbe('x', { bubbles: 1, unrelated: true }); [c.bubbles, c.cancelable].join()", "true,false"),
++            // Members are read with getters, in WebIDL order (inherited first, then by name).
++            ("const order = []; const tracked = new Proxy({ label: 'l' }, { get(target, key) { if (typeof key === 'string') order.push(key); return target[key]; } }); new DictionaryProbe('x', tracked).describe(tracked); order.join()", "bubbles,cancelable,bubbles,cancelable,count,label,nested,values"),
++            // Defaults (including the nested `= {}` and `= []`), absent optional members and
++            // conversion of the returned dictionary back to a plain object.
++            ("JSON.stringify(c.describe({ label: 'probe' }))", "{\"bubbles\":false,\"cancelable\":false,\"label\":\"probe\",\"nested\":{\"deep\":true},\"values\":[0]}"),
++            ("const d = c.describe({ label: 7, count: '4', values: new Set([5]), nested: { deep: 0 } }); [d.label, d.count, d.values.join('|'), d.nested.deep].join()", "7,8,5|1,false"),
++            ("Object.getPrototypeOf(c.describe({ label: '' })) === Object.prototype", "true"),
++        ] {
++            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
++        }
++        for source in [
++            // A required member, a non-object dictionary and a bad member value are TypeErrors.
++            "new DictionaryProbe('x').describe({})",
++            "new DictionaryProbe('x', 5)",
++            "new DictionaryProbe('x').describe({ label: 'l', values: 3 })",
++        ] {
++            assert!(runtime.eval(source).unwrap_err().contains("TypeError"), "{source}");
++        }
++    }
++
+     #[cfg(feature = "webidl-pilot")]
+     #[test]
+     fn generated_nullable_domstring_preserves_null_and_utf16_semantics() {
+diff --git a/components/roves-v8/tests/webidl/DictionaryProbe.webidl b/components/roves-v8/tests/webidl/DictionaryProbe.webidl
+new file mode 100644
+index 00000000000..ef00bd02f5c
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/DictionaryProbe.webidl
+@@ -0,0 +1,24 @@
++dictionary ProbeOptions {
++  boolean deep = true;
++};
++
++dictionary BaseInit {
++  boolean bubbles = false;
++  boolean cancelable = false;
++};
++
++dictionary ProbeInit : BaseInit {
++  required DOMString label;
++  unsigned long count;
++  sequence<long> values = [];
++  ProbeOptions nested = {};
++};
++
++[Exposed=Window]
++interface DictionaryProbe {
++  constructor(DOMString type, optional BaseInit init = {});
++  readonly attribute DOMString type;
++  readonly attribute boolean bubbles;
++  readonly attribute boolean cancelable;
++  ProbeInit describe(ProbeInit init);
++};
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index c337e1a2420..6e16259109b 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8233,6 +8233,109 @@ V8_TYPED_PRIMITIVES = {
+ }
+ 
+ 
++# Dictionaries used by the binding being generated: name -> Rust struct source.
++V8_DICTIONARIES: dict[str, str] = {}
++
++V8_RUST_KEYWORDS = {
++    "as", "break", "const", "continue", "crate", "else", "enum", "extern", "false", "fn", "for",
++    "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return",
++    "self", "static", "struct", "super", "trait", "true", "type", "unsafe", "use", "where",
++    "while", "async", "await", "dyn",
++}
++
++
++def v8_field_name(name: str) -> str:
++    return f"r#{name}" if name in V8_RUST_KEYWORDS else name
++
++
++def v8_dictionary_members(dictionary) -> list:
++    """Members in WebIDL conversion order: inherited dictionaries first, each level already
++    sorted by name by the parser."""
++    chain = []
++    while dictionary is not None:
++        chain.insert(0, dictionary)
++        dictionary = dictionary.parent
++    return [member for level in chain for member in level.members]
++
++
++def v8_default_value(default, ty, name: str, member_name: str) -> str:
++    """Rust `Value` expression for a dictionary member's WebIDL default."""
++    if isinstance(default, IDLNullValue):
++        return "Value::Null"
++    if isinstance(default, IDLEmptySequenceValue):
++        return "Value::Sequence(Vec::new())"
++    if isinstance(default, IDLDefaultDictionaryValue):
++        return "Value::Undefined"
++    if isinstance(default, IDLValue):
++        inner = ty.inner if ty.nullable() else ty
++        value = default.value
++        if inner.isBoolean():
++            return f"Value::Bool({str(value).lower()})"
++        if inner.isInteger() or inner.isFloat():
++            if value != value:
++                return "Value::Number(f64::NAN)"
++            if value in (float("inf"), float("-inf")):
++                return "Value::Number(f64::INFINITY)" if value > 0 else "Value::Number(f64::NEG_INFINITY)"
++            return f"Value::Number({float(value)!r})"
++        if inner.isDOMString():
++            utf16 = value.encode("utf-16-le", "surrogatepass")
++            units = [int.from_bytes(utf16[index:index + 2], "little") for index in range(0, len(utf16), 2)]
++            return "Value::Utf16String(vec![" + ", ".join(f"{unit}u16" for unit in units) + "])"
++        if inner.isUSVString() or inner.isEnum():
++            return 'Value::String("' + "".join(f"\\u{{{ord(char):x}}}" for char in value) + '".to_owned())'
++    raise TypeError(f"V8 backend unsupported dictionary default for {name}.{member_name}: {default}")
++
++
++def v8_dictionary_info(dictionary, name: str):
++    struct = dictionary.identifier.name
++    members = v8_dictionary_members(dictionary)
++    fields, entries, reads, writes = [], [], [], []
++    for index, member in enumerate(members):
++        member_name = member.identifier.name
++        rust, expr, arm, to_value = v8_typed_info(member.type, name, f"{struct}.{member_name}")
++        required = not member.optional
++        default = None
++        if member.defaultValue is not None:
++            default = v8_default_value(member.defaultValue, member.type, name, f"{struct}.{member_name}")
++        always_present = required or default is not None
++        field = v8_field_name(member_name)
++        fields.append(f"    pub {field}: {rust if always_present else f'Option<{rust}>'},")
++        entries.append(
++            "roves_v8::WebIdlDictionaryMember { "
++            f'name: "{member_name}".to_owned(), ty: {expr}, required: {str(required).lower()}, '
++            f"default: {f'Some({default})' if default else 'None'} }}"
++        )
++        unreachable = 'unreachable!("runtime conversion matches the generated WebIDL dictionary")'
++        if always_present:
++            reads.append(f"            {field}: match &entries[{index}].1 {{ {arm}, _ => {unreachable} }},")
++            written = to_value.replace("ITEM", f"self.{field}")
++        else:
++            reads.append(
++                f"            {field}: match &entries[{index}].1 {{ Value::Missing => None, "
++                f"value => Some(match value {{ {arm}, _ => {unreachable} }}) }},"
++            )
++            written = f"match self.{field} {{ Some(item) => {to_value.replace('ITEM', 'item')}, None => Value::Missing }}"
++        writes.append(f'            ("{member_name}".to_owned(), {written}),')
++    V8_DICTIONARIES[struct] = (
++        f"/// The `{struct}` WebIDL dictionary.\n"
++        "#[allow(non_snake_case)]\n"
++        "#[derive(Clone, Debug)]\n"
++        f"pub struct {struct} {{\n" + "\n".join(fields) + "\n}\n\n"
++        f"impl {struct} {{\n"
++        "    /// Builds the dictionary from its converted members (in WebIDL member order).\n"
++        "    pub fn from_entries(entries: &[(String, Value)]) -> Self {\n"
++        "        Self {\n" + "\n".join(reads) + "\n        }\n    }\n\n"
++        "    pub fn into_value(self) -> Value {\n"
++        "        Value::Dictionary(vec![\n" + "\n".join(writes) + "\n        ])\n    }\n}\n"
++    )
++    return (
++        struct,
++        "roves_v8::WebIdlType::Dictionary(vec![" + ", ".join(entries) + "])",
++        f"Value::Dictionary(entries) => {struct}::from_entries(entries)",
++        "ITEM.into_value()",
++    )
++
++
+ def v8_typed_info(ty, name: str, member_name: str):
+     """(rust_type, WebIdlType expression, match arm on a `&Value`, Rust -> Value template with
+     ITEM) for a type on the structured path: sequences of supported element types, nested
+@@ -8246,6 +8349,8 @@ def v8_typed_info(ty, name: str, member_name: str):
+             f"Value::Null => None, {pattern} => Some({expression})",
+             f"match ITEM {{ Some(item) => {to_value.replace('ITEM', 'item')}, None => Value::Null }}",
+         )
++    if ty.isDictionary():
++        return v8_dictionary_info(ty.inner, name)
+     if ty.isSequence():
+         rust, expr, arm, to_value = v8_typed_info(ty.inner, name, member_name)
+         return (
+@@ -8297,15 +8402,18 @@ def v8_flat_webidl_type(argument_type) -> str:
+ 
+ 
+ def v8_contains_sequence(ty) -> bool:
++    """Whether the type needs the structured path (sequences and dictionaries)."""
+     if ty.nullable():
+         return v8_contains_sequence(ty.inner)
+-    return ty.isSequence()
++    return ty.isSequence() or ty.isDictionary()
+ 
+ 
+ def v8_contains_handle(ty) -> bool:
+     """Whether values of this structured type carry JS handles (the native needs a context)."""
+     if ty.nullable() or ty.isSequence():
+         return v8_contains_handle(ty.inner)
++    if ty.isDictionary():
++        return any(v8_contains_handle(member.type) for member in v8_dictionary_members(ty.inner))
+     return ty.isAny() or ty.isObject()
+ 
+ 
+@@ -8352,7 +8460,7 @@ def v8_argument_types(name: str, member_name: str, arguments) -> list:
+         if argument.variadic:
+             raise TypeError(f"V8 backend does not support variadic arguments: {name}.{member_name}")
+         if v8_contains_sequence(ty):
+-            if default_value is not None and not isinstance(default_value, IDLEmptySequenceValue):
++            if default_value is not None and not isinstance(default_value, (IDLEmptySequenceValue, IDLDefaultDictionaryValue)):
+                 raise TypeError(f"V8 backend unsupported explicit default for {name}.{member_name}: {default_value}")
+             nullable = ty.nullable()
+             inner = ty.inner if nullable else ty
+@@ -8360,9 +8468,11 @@ def v8_argument_types(name: str, member_name: str, arguments) -> list:
+             if nullable:
+                 expr = f"roves_v8::WebIdlType::Nullable(Box::new({expr}))"
+             conversion = "Any" if v8_contains_handle(inner) else "Sequence"
++            # A dictionary argument is never "missing": undefined converts to its defaults.
++            optional = argument.optional and not inner.isDictionary()
+             add_argument_type(
+-                rust, conversion, arm, nullable, argument.optional,
+-                "Vec::new()" if default_value is not None else None, None, expr,
++                rust, conversion, arm, nullable, optional,
++                "Vec::new()" if (default_value is not None and optional) else None, None, expr,
+             )
+             continue
+         if default_value is not None and not argument.optional:
+@@ -8610,6 +8720,7 @@ class CGV8BindingRoot(CGThing):
+         self.interface = interface
+ 
+     def define(self) -> str:
++        V8_DICTIONARIES.clear()
+         interface = self.interface
+         name = interface.identifier.name
+         for unsupported_shape, present in [
+@@ -8738,7 +8849,7 @@ class CGV8BindingRoot(CGThing):
+                             "native.{native}().map(Value::Utf16String).unwrap_or(Value::Null)"
+                             if nullable_return else "Value::Utf16String(native.{native}())"
+                         )
+-                    elif result_type.isSequence():
++                    elif result_type.isSequence() or result_type.isDictionary():
+                         rust, _, _, to_value = v8_typed_info(result_type, name, member.identifier.name)
+                         if nullable_return:
+                             rust_type = f"Option<{rust}>"
+@@ -9019,7 +9130,10 @@ class CGV8BindingRoot(CGThing):
+             nullable_arguments = ", ".join(str(argument_type[3]).lower() for argument_type in argument_types)
+             optional_arguments = ", ".join(str(argument_type[4]).lower() for argument_type in argument_types)
+             enumeration_values = ", ".join(argument_type[5] or "None" for argument_type in argument_types)
+-            typed = any(argument_type[6] for argument_type in argument_types) or "Value::Sequence(" in value_expr
++            typed = (
++                any(argument_type[6] for argument_type in argument_types)
++                or "Value::Sequence(" in value_expr or ".into_value()" in value_expr
++            )
+             if typed and overload_count > 1:
+                 raise TypeError(f"V8 backend does not support overloads with sequence types: {name}.{idl}")
+             if typed:
+@@ -9129,15 +9243,32 @@ class CGV8BindingRoot(CGThing):
+                 f"{constructed}.map(|native| Box::new(native) as Box<dyn std::any::Any>)"
+                 if constructor_throws else f"Ok(Box::new({constructed}))"
+             )
++            constructor_callback = (
++                f'|{"args" if constructor_arguments else "_args"}| {{\n'
++                + (f"{conversions}\n" if conversions else "")
++                + f'            {constructed}\n'
++                f'        }}'
++            )
+             # Fully qualified: in an inheritance tree several native traits declare Constructor.
+-            define_interface = (
++            if any(argument_type[6] for argument_type in constructor_arguments):
++                typed_arguments = ", ".join(
++                    f"roves_v8::WebIdlArgument {{ ty: {argument_type[6] or v8_flat_webidl_type(argument_type)}, optional: {str(argument_type[4]).lower()} }}"
++                    for argument_type in constructor_arguments
++                )
++                define_interface = (
++                    f'runtime.define_typed_constructible_interface(\n'
++                    f'            "{name}",\n'
++                    f'            {parent_interface},\n'
++                    f'            {constructor_callback},\n'
++                    f'            &[{typed_arguments}],\n'
++                    f'        )'
++                )
++            else:
++              define_interface = (
+                 f'runtime.define_constructible_interface(\n'
+                 f'            "{name}",\n'
+                 f'            {parent_interface},\n'
+-                f'            |{"args" if constructor_arguments else "_args"}| {{\n'
+-                + (f"{conversions}\n" if conversions else "")
+-                + f'            {constructed}\n'
+-                f'        }},\n'
++                f'            {constructor_callback},\n'
+                 f'            &[{", ".join("roves_v8::WebIdlArgumentConversion::" + argument_type[1] for argument_type in constructor_arguments)}],\n'
+                 f'            &[{", ".join(str(argument_type[3]).lower() for argument_type in constructor_arguments)}],\n'
+                 f'            &[{", ".join(str(argument_type[4]).lower() for argument_type in constructor_arguments)}],\n'
+@@ -9146,8 +9277,9 @@ class CGV8BindingRoot(CGThing):
+             )
+         if ce_reaction_members:
+             native_bound += " + roves_v8::CeReactions"
++        dictionary_structs = "".join(f"\n{source}" for source in V8_DICTIONARIES.values())
+         return AUTOGENERATED_WARNING_COMMENT + f"""use roves_v8::{{Handle, Interface, Runtime, Value}};
+-
++{dictionary_structs}
+ #[allow(non_snake_case)]
+ pub trait {name}Native: {native_bound} {{
+ {trait_methods}
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index d9498cbbe71..6de9ed5f790 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -534,6 +534,31 @@ class V8GeneratorTests(unittest.TestCase):
+             ]:
+                 self.assertIn(expected, source)
+ 
++    def test_dictionaries_generate_structs_in_webidl_member_order(self):
++        with tempfile.TemporaryDirectory() as directory:
++            path = Path(directory) / "Dict.webidl"
++            path.write_text(
++                "dictionary Base { boolean zeta = false; boolean alpha = true; }; "
++                "dictionary Derived : Base { required DOMString type; long count; }; "
++                "[Exposed=Window] interface Dict { constructor(optional Base init = {}); Derived echo(Derived value); };",
++                encoding="utf-8",
++            )
++            source = generate(path, Path(directory) / "output")
++            for expected in [
++                "pub struct Base {\n    pub alpha: bool,\n    pub zeta: bool,\n}",
++                # Inherited members first, each level sorted; a missing optional member is None.
++                "pub struct Derived {\n    pub alpha: bool,\n    pub zeta: bool,\n    pub count: Option<i32>,\n    pub r#type: Vec<u16>,\n}",
++                'roves_v8::WebIdlDictionaryMember { name: "type".to_owned(), ty: roves_v8::WebIdlType::Primitive(roves_v8::WebIdlArgumentConversion::DomString), required: true, default: None }',
++                'name: "alpha".to_owned(), ty: roves_v8::WebIdlType::Primitive(roves_v8::WebIdlArgumentConversion::Boolean), required: false, default: Some(Value::Bool(true))',
++                "fn Constructor(arg0: Base) -> Self where Self: Sized;",
++                "runtime.define_typed_constructible_interface(",
++                # The optional dictionary argument is never missing: undefined converts to defaults.
++                "optional: false",
++                "fn Echo(&self, arg0: Derived) -> Derived;",
++                "native.Echo(arg0).into_value()",
++            ]:
++                self.assertIn(expected, source)
++
+     def test_overloads_needing_type_distinction_fail_closed(self):
+         self.assert_unsupported("interface Unsupported { undefined f(DOMString a); undefined f(boolean a); };")
+         self.assert_unsupported("interface Unsupported { undefined f(DOMString a); undefined f(boolean a, optional boolean b); };")
