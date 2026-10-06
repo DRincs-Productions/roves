@@ -824,8 +824,12 @@ class V8GeneratorTests(unittest.TestCase):
             child_source = generate(child, Path(directory) / "output", (base,))
             self.assertIn("runtime.define_indexed_property_getter(&interface", child_source)
             self.assertNotIn("fn IndexedGetter", child_source)
-            # Named getters need [LegacyUnenumerableNamedProperties] (no enumeration support yet).
-            self.assert_unsupported("interface Unsupported { getter DOMString? (DOMString name); };")
+            # Named getters also need the supported property names (enumerated as own keys).
+            enumerable = Path(directory) / "Enumerable.webidl"
+            enumerable.write_text("[Exposed=Window] interface Enumerable { getter DOMString? (DOMString name); };", encoding="utf-8")
+            enumerable_source = generate(enumerable, Path(directory) / "output")
+            self.assertIn("fn SupportedPropertyNames(&self) -> Vec<Vec<u16>>;", enumerable_source)
+            self.assertIn("enumerable: true", enumerable_source)
             named = Path(directory) / "Named.webidl"
             named.write_text(
                 "[Exposed=Window, LegacyUnenumerableNamedProperties] interface Named { getter DOMString? namedItem(DOMString name); };",
@@ -833,7 +837,8 @@ class V8GeneratorTests(unittest.TestCase):
             )
             named_source = generate(named, Path(directory) / "output")
             self.assertIn("fn NamedGetter(&self, name: Vec<u16>) -> Option<Vec<u16>>;", named_source)
-            self.assertIn("runtime.define_named_property_getter(&interface, |native, name| {", named_source)
+            self.assertIn("runtime.define_named_properties(&interface, roves_v8::NamedProperties {", named_source)
+            self.assertIn("enumerable: false", named_source)
             # Async iterables are not supported yet.
             self.assert_unsupported("interface Unsupported { async_iterable<DOMString>; };")
 
@@ -976,6 +981,30 @@ class V8GeneratorTests(unittest.TestCase):
             source = generate(path, Path(directory) / "output")
             self.assertNotIn("fn set(&self", source)
             self.assertIn("clear: None", source)
+
+    def test_named_setters_deleters_and_indexed_setters(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Store.webidl"
+            path.write_text(
+                "[Exposed=Window, LegacyOverrideBuiltIns] interface Store { readonly attribute unsigned long length;"
+                " getter DOMString? getItem(DOMString name);"
+                " setter undefined setItem(DOMString name, DOMString value); deleter undefined removeItem(DOMString name);"
+                " getter DOMString? (unsigned long index); setter undefined (unsigned long index, DOMString? value); };",
+                encoding="utf-8",
+            )
+            source = generate(path, Path(directory) / "output")
+            for expected in [
+                # Named special operations with identifiers are also ordinary operations.
+                "fn GetItem(&self, arg0: Vec<u16>) -> Option<Vec<u16>>;",
+                "fn SetItem(&self, arg0: Vec<u16>, arg1: Vec<u16>) -> ();",
+                "fn NamedSetter(&self, name: Vec<u16>, value: Vec<u16>) -> Result<(), roves_v8::WebIdlError>;",
+                "fn NamedDeleter(&self, name: Vec<u16>) -> Result<(), roves_v8::WebIdlError>;",
+                "fn IndexedSetter(&self, index: u32, value: Option<Vec<u16>>) -> Result<(), roves_v8::WebIdlError>;",
+                "runtime.define_named_properties(&interface, roves_v8::NamedProperties {",
+                "override_builtins: true",
+                "runtime.define_indexed_properties(",
+            ]:
+                self.assertIn(expected, source)
 
     def test_legacy_factory_functions_generate_fallible_natives(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -214,6 +214,14 @@ pub mod webidl {
         include!(concat!(env!("OUT_DIR"), "/ScoreMapV8Binding.rs"));
     }
     #[cfg(test)]
+    pub mod storage_probe {
+        include!(concat!(env!("OUT_DIR"), "/StorageProbeV8Binding.rs"));
+    }
+    #[cfg(test)]
+    pub mod data_map_probe {
+        include!(concat!(env!("OUT_DIR"), "/DataMapProbeV8Binding.rs"));
+    }
+    #[cfg(test)]
     pub mod promise_operations {
         include!(concat!(env!("OUT_DIR"), "/PromiseOperationsV8Binding.rs"));
     }
@@ -469,6 +477,8 @@ pub struct Runtime {
     legacy_factory_configs: Vec<Box<LegacyFactoryConfig>>,
     pair_iterable_configs: Vec<Box<PairIterableConfig>>,
     like_configs: Vec<Box<LikeConfig>>,
+    named_configs: Vec<Box<NamedConfig>>,
+    indexed_configs: Vec<Box<IndexedConfig>>,
 }
 
 struct WrappedFinalizer {
@@ -1921,6 +1931,98 @@ struct WebIdlConstructorConfig {
 /// this crate's other callback types, for the same reason.
 pub type NativeMethod = fn(&dyn std::any::Any, &[Value]) -> Value;
 
+/// A WebIDL indexed setter: the index and the value converted to the setter's value type.
+pub type IndexedPropertySetter = fn(&dyn std::any::Any, u32, &Value) -> Result<(), WebIdlError>;
+
+struct IndexedConfig {
+    getter: IndexedPropertyGetter,
+    setter: IndexedPropertySetter,
+    value_type: WebIdlType,
+}
+
+fn indexed_receiver<'c>(args: &v8::PropertyCallbackArguments) -> Option<(&'c IndexedConfig, &'c dyn std::any::Any)> {
+    let external = v8::Local::<v8::External>::try_from(args.data()).ok()?;
+    // SAFETY: the External points to this interface's boxed indexed-properties config.
+    let config = unsafe { &*(external.value() as *const IndexedConfig) };
+    let holder = args.holder();
+    if holder.internal_field_count() < 1 {
+        return None;
+    }
+    let raw = unsafe { holder.get_aligned_pointer_from_internal_field(0, WRAPPED_POINTER_TAG) } as *mut Box<dyn std::any::Any>;
+    if raw.is_null() {
+        return None;
+    }
+    // SAFETY: the holder owns this Box (or its GcBox) and is alive for the interceptor call.
+    Some((config, unsafe { &*raw }.as_ref()))
+}
+
+/// The supported property names of a named-properties object, in order.
+pub type NamedPropertyNames = fn(&dyn std::any::Any) -> Vec<String>;
+/// A WebIDL named setter: the name and the value converted to the setter's value type.
+pub type NamedPropertySetter = fn(&dyn std::any::Any, &str, &Value) -> Result<(), WebIdlError>;
+/// A WebIDL named deleter.
+pub type NamedPropertyDeleter = fn(&dyn std::any::Any, &str) -> Result<(), WebIdlError>;
+
+/// A legacy platform object's named properties, for [`Runtime::define_named_properties`].
+pub struct NamedProperties {
+    pub getter: NamedPropertyGetter,
+    pub names: Option<NamedPropertyNames>,
+    /// The named setter and the WebIDL type assigned values convert to.
+    pub setter: Option<(NamedPropertySetter, WebIdlType)>,
+    pub deleter: Option<NamedPropertyDeleter>,
+    /// `[LegacyOverrideBuiltIns]`: named properties shadow prototype members.
+    pub override_builtins: bool,
+    /// False for `[LegacyUnenumerableNamedProperties]`.
+    pub enumerable: bool,
+}
+
+struct NamedConfig {
+    properties: NamedProperties,
+    setter_arguments: Option<WebIdlArguments>,
+}
+
+/// The config and holder native of a named-property interceptor call.
+fn named_receiver<'c>(args: &v8::PropertyCallbackArguments) -> Option<(&'c NamedConfig, &'c dyn std::any::Any)> {
+    let external = v8::Local::<v8::External>::try_from(args.data()).ok()?;
+    // SAFETY: the External points to this interface's boxed named-properties config.
+    let config = unsafe { &*(external.value() as *const NamedConfig) };
+    let holder = args.holder();
+    if holder.internal_field_count() < 1 {
+        return None;
+    }
+    let raw = unsafe { holder.get_aligned_pointer_from_internal_field(0, WRAPPED_POINTER_TAG) } as *mut Box<dyn std::any::Any>;
+    if raw.is_null() {
+        return None;
+    }
+    // SAFETY: the holder owns this Box (or its GcBox) and is alive for the interceptor call.
+    Some((config, unsafe { &*raw }.as_ref()))
+}
+
+/// WebIDL named property visibility, minus "is a supported name": hidden by an own property,
+/// or (without `[LegacyOverrideBuiltIns]`) by a property on the prototype chain.
+fn named_property_hidden(scope: &mut v8::PinScope, config: &NamedConfig, holder: v8::Local<v8::Object>, key: v8::Local<v8::Name>) -> bool {
+    if config.properties.override_builtins {
+        holder.has_real_named_property(scope, key).unwrap_or(false)
+    } else {
+        named_property_shadowed(scope, holder, key)
+    }
+}
+
+/// The value of a visible named property, or `None`.
+fn visible_named_property(
+    scope: &mut v8::PinScope,
+    config: &NamedConfig,
+    holder: v8::Local<v8::Object>,
+    native: &dyn std::any::Any,
+    key: v8::Local<v8::Name>,
+) -> Option<Value> {
+    if named_property_hidden(scope, config, holder, key) {
+        return None;
+    }
+    let name = key.to_rust_string_lossy(scope);
+    (config.properties.getter)(native, &name)
+}
+
 /// An indexed-property read interceptor. `Some(value)` handles the index (including
 /// `Some(Value::Undefined)`); `None` lets normal JS own/prototype lookup continue.
 /// This is a primitive for future WebIDL collection bindings, not a complete implementation
@@ -1959,6 +2061,8 @@ impl Runtime {
             legacy_factory_configs: Vec::new(),
             pair_iterable_configs: Vec::new(),
             like_configs: Vec::new(),
+            named_configs: Vec::new(),
+            indexed_configs: Vec::new(),
             method_configs: Vec::new(),
         }
     }
@@ -4532,41 +4636,47 @@ impl Runtime {
     /// keys are intercepted; array indices go to the indexed getter. Like indexed getters, it
     /// must be registered on each derived interface too.
     pub fn define_named_property_getter(&mut self, interface: &Interface, getter: NamedPropertyGetter) -> Result<(), String> {
+        self.define_named_properties(
+            interface,
+            NamedProperties { getter, names: None, setter: None, deleter: None, override_builtins: false, enumerable: false },
+        )
+    }
+
+    /// Gives `interface` WebIDL named properties (a legacy platform object's named getter, and
+    /// optionally its supported names, named setter and named deleter), following WebIDL's
+    /// named property visibility: a supported name is visible unless the object has an own
+    /// property of that name or, without `[LegacyOverrideBuiltIns]`, its prototype chain does.
+    /// - `names` lists the supported property names: they are own keys (enumerable unless
+    ///   `enumerable` is false, for `[LegacyUnenumerableNamedProperties]`).
+    /// - With a `setter`, `[[Set]]` of any string key on the object itself calls it with the
+    ///   value converted to the setter's type (`storage.foo = 1`); without one, assigning a
+    ///   visible name is rejected (a TypeError in strict mode).
+    /// - `delete` of a visible name calls the `deleter`, or fails without one.
+    /// Not inherited through interface inheritance: register on each interface that has them.
+    pub fn define_named_properties(&mut self, interface: &Interface, properties: NamedProperties) -> Result<(), String> {
         if interface.materialized.get() {
-            return Err("named getter must be defined before creating instances or descendants".to_string());
+            return Err("named properties must be defined before creating instances or descendants".to_string());
         }
+        let setter_arguments = properties.setter.as_ref().map(|(_, ty)| {
+            WebIdlArguments::typed(&[WebIdlArgument { ty: ty.clone(), optional: false, variadic: false, default: None }])
+        });
+        let config = Box::new(NamedConfig { properties, setter_arguments });
+        let config_pointer = (&*config) as *const NamedConfig;
+        self.named_configs.push(config);
         let context_handle = &self.context;
         v8::scope!(let scope, &mut self.isolate);
         let context = v8::Local::new(scope, context_handle);
         let scope = &mut v8::ContextScope::new(scope, context);
         let template = v8::Local::new(scope, &interface.template);
-        let external_data = v8::External::new(scope, getter as *mut std::ffi::c_void);
+        let external_data = v8::External::new(scope, config_pointer as *mut std::ffi::c_void);
         let configuration = v8::NamedPropertyHandlerConfiguration::new()
             .getter(
                 |scope: &mut v8::PinScope,
                  key: v8::Local<v8::Name>,
                  args: v8::PropertyCallbackArguments,
                  mut retval: v8::ReturnValue<v8::Value>| {
-                    let Ok(external) = v8::Local::<v8::External>::try_from(args.data()) else {
-                        return v8::Intercepted::kNo;
-                    };
-                    // SAFETY: this External holds exactly the function pointer supplied above.
-                    let getter: NamedPropertyGetter = unsafe { std::mem::transmute(external.value()) };
-                    let holder = args.holder();
-                    if holder.internal_field_count() < 1 {
-                        return v8::Intercepted::kNo;
-                    }
-                    let raw = unsafe { holder.get_aligned_pointer_from_internal_field(0, WRAPPED_POINTER_TAG) }
-                        as *mut Box<dyn std::any::Any>;
-                    if raw.is_null() {
-                        return v8::Intercepted::kNo;
-                    }
-                    if named_property_shadowed(scope, holder, key) {
-                        return v8::Intercepted::kNo;
-                    }
-                    let name = key.to_rust_string_lossy(scope);
-                    // SAFETY: the holder owns this Box (or its GcBox) and is alive here.
-                    match getter(unsafe { &*raw }.as_ref(), &name) {
+                    let Some((config, native)) = named_receiver(&args) else { return v8::Intercepted::kNo };
+                    match visible_named_property(scope, config, args.holder(), native, key) {
                         Some(value) => {
                             let value = v8_result(scope, &value);
                             retval.set(value);
@@ -4579,33 +4689,101 @@ impl Runtime {
             .setter(
                 |scope: &mut v8::PinScope,
                  key: v8::Local<v8::Name>,
-                 _value: v8::Local<v8::Value>,
+                 value: v8::Local<v8::Value>,
                  args: v8::PropertyCallbackArguments,
                  mut retval: v8::ReturnValue<v8::Boolean>| {
+                    let Some((config, native)) = named_receiver(&args) else { return v8::Intercepted::kNo };
+                    let holder = args.holder();
+                    if let (Some((setter, _)), Some(arguments)) = (&config.properties.setter, &config.setter_arguments) {
+                        // WebIDL [[Set]]: a string key always goes to the named setter (even names
+                        // of prototype members, like `setItem`). V8 does not expose the receiver
+                        // to interceptors, so assignments through an inheriting object also land
+                        // here (WebIDL would define an own property on that object instead).
+                        let Some(arguments_type) = arguments.types.first().and_then(|ty| ty.as_ref()) else {
+                            return v8::Intercepted::kNo;
+                        };
+                        let Some(converted) = convert_typed_value(scope, value, arguments_type) else {
+                            return v8::Intercepted::kYes;
+                        };
+                        let name = key.to_rust_string_lossy(scope);
+                        if let Err(error) = setter(native, &name, &converted) {
+                            throw_webidl_error(scope, &error);
+                        }
+                        retval.set_bool(true);
+                        return v8::Intercepted::kYes;
+                    }
                     // WebIDL legacy platform objects without a named setter reject defining a
                     // supported property name: silently in sloppy mode, TypeError in strict mode.
-                    let Ok(external) = v8::Local::<v8::External>::try_from(args.data()) else {
-                        return v8::Intercepted::kNo;
-                    };
-                    // SAFETY: this External holds exactly the getter function pointer.
-                    let getter: NamedPropertyGetter = unsafe { std::mem::transmute(external.value()) };
-                    let holder = args.holder();
-                    if holder.internal_field_count() < 1 || holder.has_real_named_property(scope, key).unwrap_or(false) {
-                        return v8::Intercepted::kNo;
-                    }
-                    let raw = unsafe { holder.get_aligned_pointer_from_internal_field(0, WRAPPED_POINTER_TAG) }
-                        as *mut Box<dyn std::any::Any>;
-                    if raw.is_null() {
+                    if holder.has_real_named_property(scope, key).unwrap_or(false) {
                         return v8::Intercepted::kNo;
                     }
                     let name = key.to_rust_string_lossy(scope);
-                    // SAFETY: the holder owns this Box (or its GcBox) and is alive here.
-                    if getter(unsafe { &*raw }.as_ref(), &name).is_none() {
+                    if (config.properties.getter)(native, &name).is_none() {
                         return v8::Intercepted::kNo;
                     }
                     // `false` reports the failed [[Set]]: V8 throws the TypeError in strict mode.
                     retval.set_bool(false);
                     v8::Intercepted::kYes
+                },
+            )
+            .query(
+                |scope: &mut v8::PinScope,
+                 key: v8::Local<v8::Name>,
+                 args: v8::PropertyCallbackArguments,
+                 mut retval: v8::ReturnValue<v8::Integer>| {
+                    let Some((config, native)) = named_receiver(&args) else { return v8::Intercepted::kNo };
+                    if visible_named_property(scope, config, args.holder(), native, key).is_none() {
+                        return v8::Intercepted::kNo;
+                    }
+                    let mut attributes = v8::PropertyAttribute::NONE;
+                    if !config.properties.enumerable {
+                        attributes = attributes | v8::PropertyAttribute::DONT_ENUM;
+                    }
+                    if config.properties.setter.is_none() {
+                        attributes = attributes | v8::PropertyAttribute::READ_ONLY;
+                    }
+                    retval.set_int32(attributes.as_u32() as i32);
+                    v8::Intercepted::kYes
+                },
+            )
+            .deleter(
+                |scope: &mut v8::PinScope,
+                 key: v8::Local<v8::Name>,
+                 args: v8::PropertyCallbackArguments,
+                 mut retval: v8::ReturnValue<v8::Boolean>| {
+                    let Some((config, native)) = named_receiver(&args) else { return v8::Intercepted::kNo };
+                    if visible_named_property(scope, config, args.holder(), native, key).is_none() {
+                        return v8::Intercepted::kNo;
+                    }
+                    match config.properties.deleter {
+                        Some(deleter) => {
+                            let name = key.to_rust_string_lossy(scope);
+                            if let Err(error) = deleter(native, &name) {
+                                throw_webidl_error(scope, &error);
+                            }
+                            retval.set_bool(true);
+                        },
+                        // Without a deleter a visible named property cannot be deleted.
+                        None => retval.set_bool(false),
+                    }
+                    v8::Intercepted::kYes
+                },
+            )
+            .enumerator(
+                |scope: &mut v8::PinScope, args: v8::PropertyCallbackArguments, mut retval: v8::ReturnValue<v8::Array>| {
+                    let Some((config, native)) = named_receiver(&args) else { return };
+                    let Some(names) = config.properties.names else { return };
+                    let holder = args.holder();
+                    let mut visible = Vec::new();
+                    for name in names(native) {
+                        let Some(key) = v8::String::new(scope, &name) else { continue };
+                        if named_property_hidden(scope, config, holder, key.into()) {
+                            continue;
+                        }
+                        visible.push(key.into());
+                    }
+                    let array = v8::Array::new_with_elements(scope, &visible);
+                    retval.set(array);
                 },
             )
             .flags(v8::PropertyHandlerFlags::ONLY_INTERCEPT_STRINGS)
@@ -4678,6 +4856,64 @@ impl Runtime {
         template
             .instance_template(scope)
             .set_indexed_property_handler(configuration);
+        Ok(())
+    }
+
+    /// Like [`Runtime::define_indexed_property_getter`] with a WebIDL indexed setter
+    /// (`HTMLOptionsCollection`, `HTMLSelectElement`): `[[Set]]` of an array index converts the
+    /// value to `value_type` and calls `setter` (which may throw).
+    pub fn define_indexed_properties(
+        &mut self,
+        interface: &Interface,
+        getter: IndexedPropertyGetter,
+        setter: IndexedPropertySetter,
+        value_type: WebIdlType,
+    ) -> Result<(), String> {
+        if interface.materialized.get() {
+            return Err("indexed properties must be defined before creating instances or descendants".to_string());
+        }
+        let config = Box::new(IndexedConfig { getter, setter, value_type });
+        let config_pointer = (&*config) as *const IndexedConfig;
+        self.indexed_configs.push(config);
+        let context_handle = &self.context;
+        v8::scope!(let scope, &mut self.isolate);
+        let context = v8::Local::new(scope, context_handle);
+        let scope = &mut v8::ContextScope::new(scope, context);
+        let template = v8::Local::new(scope, &interface.template);
+        let external_data = v8::External::new(scope, config_pointer as *mut std::ffi::c_void);
+        let configuration = v8::IndexedPropertyHandlerConfiguration::new()
+            .getter(
+                |scope: &mut v8::PinScope, index: u32, args: v8::PropertyCallbackArguments, mut retval: v8::ReturnValue<v8::Value>| {
+                    let Some((config, native)) = indexed_receiver(&args) else { return v8::Intercepted::kNo };
+                    match (config.getter)(native, index) {
+                        Some(value) => {
+                            let value = v8_result(scope, &value);
+                            retval.set(value);
+                            v8::Intercepted::kYes
+                        },
+                        None => v8::Intercepted::kNo,
+                    }
+                },
+            )
+            .setter(
+                |scope: &mut v8::PinScope,
+                 index: u32,
+                 value: v8::Local<v8::Value>,
+                 args: v8::PropertyCallbackArguments,
+                 mut retval: v8::ReturnValue<v8::Boolean>| {
+                    let Some((config, native)) = indexed_receiver(&args) else { return v8::Intercepted::kNo };
+                    let Some(converted) = convert_typed_value(scope, value, &config.value_type) else {
+                        return v8::Intercepted::kYes;
+                    };
+                    if let Err(error) = (config.setter)(native, index, &converted) {
+                        throw_webidl_error(scope, &error);
+                    }
+                    retval.set_bool(true);
+                    v8::Intercepted::kYes
+                },
+            )
+            .data(external_data.into());
+        template.instance_template(scope).set_indexed_property_handler(configuration);
         Ok(())
     }
 
@@ -9290,6 +9526,101 @@ mod tests {
 
     #[cfg(feature = "webidl-pilot")]
     #[test]
+    fn generated_named_setters_deleters_and_override_builtins() {
+        use crate::webidl::data_map_probe::{DataMapProbeBinding, DataMapProbeNative};
+        use crate::webidl::storage_probe::{StorageProbeBinding, StorageProbeNative};
+        use crate::WebIdlError;
+        use std::cell::RefCell;
+        struct Entries(RefCell<Vec<(Vec<u16>, Vec<u16>)>>);
+        impl Entries {
+            fn get(&self, name: &[u16]) -> Option<Vec<u16>> {
+                self.0.borrow().iter().find(|(key, _)| key == name).map(|(_, value)| value.clone())
+            }
+            fn put(&self, name: Vec<u16>, value: Vec<u16>) {
+                let mut entries = self.0.borrow_mut();
+                match entries.iter_mut().find(|(key, _)| *key == name) {
+                    Some(entry) => entry.1 = value,
+                    None => entries.push((name, value)),
+                }
+            }
+            fn remove(&self, name: &[u16]) { self.0.borrow_mut().retain(|(key, _)| key != name) }
+            fn names(&self) -> Vec<Vec<u16>> { self.0.borrow().iter().map(|(key, _)| key.clone()).collect() }
+        }
+        #[allow(non_snake_case)]
+        impl StorageProbeNative for Entries {
+            fn Length(&self) -> u32 { self.0.borrow().len() as u32 }
+            fn GetItem(&self, name: Vec<u16>) -> Option<Vec<u16>> { self.get(&name) }
+            fn SetItem(&self, name: Vec<u16>, value: Vec<u16>) { self.put(name, value) }
+            fn RemoveItem(&self, name: Vec<u16>) { self.remove(&name) }
+            fn NamedGetter(&self, name: Vec<u16>) -> Option<Vec<u16>> { self.get(&name) }
+            fn SupportedPropertyNames(&self) -> Vec<Vec<u16>> { self.names() }
+            fn NamedSetter(&self, name: Vec<u16>, value: Vec<u16>) -> Result<(), WebIdlError> {
+                if value == "quota".encode_utf16().collect::<Vec<_>>() {
+                    return Err(WebIdlError::DomException { name: "QuotaExceededError".into(), message: "full".into() });
+                }
+                self.put(name, value);
+                Ok(())
+            }
+            fn NamedDeleter(&self, name: Vec<u16>) -> Result<(), WebIdlError> {
+                self.remove(&name);
+                Ok(())
+            }
+            fn IndexedGetter(&self, index: u32) -> Option<Vec<u16>> { self.0.borrow().get(index as usize).map(|(_, value)| value.clone()) }
+            fn IndexedSetter(&self, index: u32, value: Option<Vec<u16>>) -> Result<(), WebIdlError> {
+                let mut entries = self.0.borrow_mut();
+                let Some(entry) = entries.get_mut(index as usize) else {
+                    return Err(WebIdlError::RangeError("index out of range".into()));
+                };
+                entry.1 = value.unwrap_or_else(|| "(null)".encode_utf16().collect());
+                Ok(())
+            }
+        }
+        #[allow(non_snake_case)]
+        impl DataMapProbeNative for Entries {
+            fn NamedGetter(&self, name: Vec<u16>) -> Option<Vec<u16>> { self.get(&name) }
+            fn SupportedPropertyNames(&self) -> Vec<Vec<u16>> { self.names() }
+            fn NamedSetter(&self, name: Vec<u16>, value: Vec<u16>) -> Result<(), WebIdlError> {
+                self.put(name, value);
+                Ok(())
+            }
+            fn NamedDeleter(&self, name: Vec<u16>) -> Result<(), WebIdlError> {
+                self.remove(&name);
+                Ok(())
+            }
+        }
+        let mut runtime = Runtime::new();
+        let storage = StorageProbeBinding::<Entries>::install(&mut runtime).unwrap();
+        let data = DataMapProbeBinding::<Entries>::install(&mut runtime).unwrap();
+        let store = storage.create(&mut runtime, Entries(RefCell::new(Vec::new())));
+        runtime.set_global_property("store", &store).unwrap();
+        let map = data.create(&mut runtime, Entries(RefCell::new(Vec::new())));
+        runtime.set_global_property("map", &map).unwrap();
+        for (source, expected) in [
+            // Named setter: any string key, converted to DOMString; names are enumerable keys.
+            ("store.color = 'red'; store.size = 3; [store.getItem('color'), store.size, store.length].join()", "red,3,2"),
+            ("JSON.stringify(Object.keys(store)) + JSON.stringify(Object.entries(store))", "[\"color\",\"size\"][[\"color\",\"red\"],[\"size\",\"3\"]]"),
+            // [[Set]] of a prototype member's name still goes to the named setter...
+            ("store.setItem = 'x'; [typeof store.setItem, store.getItem('setItem')].join()", "function,x"),
+            // ...but without [LegacyOverrideBuiltIns] the prototype member stays visible.
+            ("Object.keys(store).includes('setItem')", "false"),
+            ("(() => { try { store.big = 'quota'; } catch (e) { return e.name + ' ' + store.big; } })()", "QuotaExceededError undefined"),
+            ("[delete store.color, store.color, store.getItem('color')].join()", "true,,"),
+            ("store.removeItem('size'); 'size' in store", "false"),
+            // Indexed setter: converts (nullable) and may throw.
+            ("store[0] = 'first'; store[0]", "first"),
+            ("store[0] = null; store[0]", "(null)"),
+            ("(() => { try { store[9] = 'x'; } catch (e) { return e.name; } })()", "RangeError"),
+            // [LegacyOverrideBuiltIns]: named properties shadow prototype members.
+            ("map.toString = 'shadow'; map.hasOwnProperty = 'own'; [map.toString, Object.keys(map).join('+')].join('|')", "shadow|toString+hasOwnProperty"),
+            ("[delete map.toString, typeof map.toString].join()", "true,function"),
+            ("map['a-b'] = 1; Object.getOwnPropertyDescriptor(map, 'a-b').value", "1"),
+        ] {
+            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
+        }
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
     fn generated_promise_operations_resolve_reject_and_settle_later() {
         use crate::webidl::promise_operations::{PromiseOperationsBinding, PromiseOperationsNative};
         use crate::{Handle, PromiseResolver, ScriptContext, WebIdlError};
@@ -9629,6 +9960,9 @@ mod tests {
                 let name = String::from_utf16_lossy(&name);
                 self.0.iter().find(|(id, _)| *id == name).map(|(_, value)| value.encode_utf16().collect())
             }
+            fn SupportedPropertyNames(&self) -> Vec<Vec<u16>> {
+                self.0.iter().map(|(id, _)| id.encode_utf16().collect()).collect()
+            }
         }
         let mut runtime = Runtime::new();
         let binding = NamedCollectionBinding::<Collection>::install(&mut runtime).unwrap();
@@ -9639,8 +9973,12 @@ mod tests {
             ("c.missing === undefined && c.namedItem('missing') === null", "true"),
             // Real properties on the object or its prototypes are never shadowed by names.
             ("[c.length, typeof c.toString].join()", "3,function"),
-            // [LegacyUnenumerableNamedProperties]: names are not enumerated.
+            // [LegacyUnenumerableNamedProperties]: names are own keys, but not enumerable;
+            // names shadowed by the prototype chain are not own keys at all.
             ("Object.keys(c).includes('alpha')", "false"),
+            ("[Object.getOwnPropertyNames(c).includes('alpha'), Object.getOwnPropertyNames(c).includes('toString'), 'alpha' in c].join()", "true,false,true"),
+            // Without a deleter a visible name cannot be deleted.
+            ("[delete c.alpha, c.alpha].join()", "false,A"),
             // Without a named setter, assigning a supported name is ignored (sloppy) or a
             // TypeError (strict); other names become ordinary expandos.
             ("c.alpha = 'own'; c.alpha", "A"),

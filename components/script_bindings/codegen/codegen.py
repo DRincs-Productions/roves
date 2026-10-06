@@ -8969,7 +8969,7 @@ class CGV8BindingRoot(CGThing):
         unsupported = set(interface._extendedAttrDict) - {
             "Exposed", "LegacyNoInterfaceObject", "Abstract", "Serializable", "Transferable",
             "LegacyWindowAlias", "Func", "LegacyUnenumerableNamedProperties", "LegacyFactoryFunction",
-            "ExceptionClass",
+            "ExceptionClass", "LegacyOverrideBuiltIns",
         } - V8_EXPOSURE_ATTRIBUTES - ({"ClassString"} if namespace else set())
         if unsupported:
             raise TypeError(f"V8 backend unsupported attributes on {name}: {sorted(unsupported)}")
@@ -9053,13 +9053,15 @@ class CGV8BindingRoot(CGThing):
                 getter_type = member.signatures()[0][0]
                 getter_type = getter_type.inner if getter_type.nullable() else getter_type
                 if member.isNamed():
-                    if not v8_has_unenumerable_named_properties(interface):
-                        raise TypeError(f"V8 backend only supports named getters with [LegacyUnenumerableNamedProperties]: {name}.{member.identifier.name}")
                     named_getter = getter_type
                 else:
                     indexed_getter = getter_type
                 if member.identifier.name.startswith("__"):
                     # An anonymous `getter T (unsigned long index)` has no operation of its own.
+                    continue
+            if member.isMethod() and (member.isSetter() or member.isDeleter()):
+                if member.identifier.name.startswith("__"):
+                    # An anonymous `setter`/`deleter` has no operation of its own.
                     continue
             if member.isConst():
                 value = member.value.value
@@ -9913,34 +9915,103 @@ class CGV8BindingRoot(CGThing):
                 raise TypeError(f"V8 backend does not support indexed getters returning JS values: {name}")
             if indexed_getter is not None:
                 trait_methods += f"\n    fn IndexedGetter(&self, index: u32) -> Option<{rust}>;"
-            registrations_list.append(
-                f"        runtime.define_indexed_property_getter(&interface, |native, index| {{\n"
+            getter_callback = (
+                "|native, index| {\n"
                 f'            let native = native.downcast_ref::<T>().expect("typed {name} wrapper");\n'
                 f"            <T as {getter_trait}>::IndexedGetter(native, index).map(|item| {to_value.replace('ITEM', 'item')})\n"
-                f"        }})?;"
+                "        }"
             )
-        named_type = named_getter
-        named_trait = f"{name}Native"
-        ancestor = interface.parent
-        while named_type is None and ancestor is not None:
-            for ancestor_member in ancestor.members:
-                if ancestor_member.isMethod() and ancestor_member.isGetter() and ancestor_member.isNamed():
-                    ancestor_type = ancestor_member.signatures()[0][0]
-                    named_type = ancestor_type.inner if ancestor_type.nullable() else ancestor_type
-                    owner = ancestor.identifier.name
-                    named_trait = f"super::{v8_module_name(owner)}::{owner}Native"
-            ancestor = ancestor.parent
-        if named_type is not None:
+            # An indexed setter (HTMLOptionsCollection): the nearest one on the chain.
+            setter_member, setter_trait, current = None, None, interface
+            while setter_member is None and current is not None:
+                for candidate in current.members:
+                    if candidate.isMethod() and candidate.isSetter() and candidate.isIndexed():
+                        setter_member = candidate
+                        owner = current.identifier.name
+                        setter_trait = f"{name}Native" if current is interface else f"super::{v8_module_name(owner)}::{owner}Native"
+                        own_setter = current is interface
+                current = current.parent
+            if setter_member is None:
+                registrations_list.append(f"        runtime.define_indexed_property_getter(&interface, {getter_callback})?;")
+            else:
+                value_type = setter_member.signatures()[0][1][1].type
+                value_rust, value_expr, value_arm, _ = v8_typed_info(value_type, name, "IndexedSetter")
+                if own_setter:
+                    trait_methods += (
+                        f"\n    fn IndexedSetter(&self, index: u32, value: {value_rust}) -> Result<(), roves_v8::WebIdlError>;"
+                    )
+                registrations_list.append(
+                    f"        runtime.define_indexed_properties(\n            &interface,\n            {getter_callback},\n"
+                    f'            |native, index, value| <T as {setter_trait}>::IndexedSetter(native.downcast_ref::<T>().expect("typed {name} wrapper"), index, '
+                    f'match value {{ {value_arm}, _ => unreachable!("runtime conversion matches the generated WebIDL type") }}),\n'
+                    f"            {value_expr},\n        )?;"
+                )
+        # Named properties: the nearest interface on the chain declaring each special operation
+        # provides it (V8 does not inherit interceptors, so every interface registers them).
+        def nearest_special(predicate):
+            current = interface
+            while current is not None:
+                for candidate in current.members:
+                    if candidate.isMethod() and predicate(candidate) and candidate.isNamed():
+                        owner = current.identifier.name
+                        trait = f"{name}Native" if current is interface else f"super::{v8_module_name(owner)}::{owner}Native"
+                        return candidate, trait, current is interface
+                current = current.parent
+            return None, None, False
+
+        named_member, named_trait, own_named = nearest_special(lambda member: member.isGetter())
+        if named_member is not None:
+            named_type = named_member.signatures()[0][0]
+            named_type = named_type.inner if named_type.nullable() else named_type
             rust, _, _, to_value = v8_typed_info(named_type, name, "NamedGetter")
             if v8_contains_handle(named_type):
                 raise TypeError(f"V8 backend does not support named getters returning JS values: {name}")
-            if named_getter is not None:
+            if own_named:
                 trait_methods += f"\n    fn NamedGetter(&self, name: Vec<u16>) -> Option<{rust}>;"
+                trait_methods += "\n    fn SupportedPropertyNames(&self) -> Vec<Vec<u16>>;"
+            downcast = f'native.downcast_ref::<T>().expect("typed {name} wrapper")'
+            fields = [
+                f"getter: |native, name| <T as {named_trait}>::NamedGetter({downcast}, name.encode_utf16().collect())"
+                f".map(|item| {to_value.replace('ITEM', 'item')})",
+                f"names: Some(|native| <T as {named_trait}>::SupportedPropertyNames({downcast})"
+                ".iter().map(|name| String::from_utf16_lossy(name)).collect())",
+            ]
+            setter_member, setter_trait, own_setter = nearest_special(lambda member: member.isSetter())
+            if setter_member is not None:
+                value_type = setter_member.signatures()[0][1][1].type
+                value_rust, value_expr, value_arm, _ = v8_typed_info(value_type, name, "NamedSetter")
+                if own_setter:
+                    trait_methods += (
+                        f"\n    fn NamedSetter(&self, name: Vec<u16>, value: {value_rust}) -> Result<(), roves_v8::WebIdlError>;"
+                    )
+                fields.append(
+                    f"setter: Some((|native, name, value| <T as {setter_trait}>::NamedSetter({downcast}, "
+                    f'name.encode_utf16().collect(), match value {{ {value_arm}, _ => unreachable!("runtime conversion matches the generated WebIDL type") }}), '
+                    f"{value_expr}))"
+                )
+            else:
+                fields.append("setter: None")
+            deleter_member, deleter_trait, own_deleter = nearest_special(lambda member: member.isDeleter())
+            if deleter_member is not None:
+                if own_deleter:
+                    trait_methods += "\n    fn NamedDeleter(&self, name: Vec<u16>) -> Result<(), roves_v8::WebIdlError>;"
+                fields.append(
+                    f"deleter: Some(|native, name| <T as {deleter_trait}>::NamedDeleter({downcast}, name.encode_utf16().collect()))"
+                )
+            else:
+                fields.append("deleter: None")
+            override_builtins = False
+            current = interface
+            while current is not None:
+                override_builtins = override_builtins or "LegacyOverrideBuiltIns" in current._extendedAttrDict
+                current = current.parent
+            fields.append(f"override_builtins: {str(override_builtins).lower()}")
+            fields.append(f"enumerable: {str(not v8_has_unenumerable_named_properties(interface)).lower()}")
+            field_source = "".join(f"            {field},\n" for field in fields)
             registrations_list.append(
-                f"        runtime.define_named_property_getter(&interface, |native, name| {{\n"
-                f'            let native = native.downcast_ref::<T>().expect("typed {name} wrapper");\n'
-                f"            <T as {named_trait}>::NamedGetter(native, name.encode_utf16().collect()).map(|item| {to_value.replace('ITEM', 'item')})\n"
-                f"        }})?;"
+                "        runtime.define_named_properties(&interface, roves_v8::NamedProperties {\n"
+                f"{field_source}"
+                "        })?;"
             )
         if value_iterable:
             registrations_list.append("        runtime.define_value_iterable(&interface);")
@@ -10026,7 +10097,10 @@ class CGV8BindingRoot(CGThing):
                 f"            |native, index| {{ let item = <T as {name}Native>::get_value_at_index({downcast}, index); {value_to_value.replace('ITEM', 'item')} }},\n"
                 "        )?;"
             )
-        own_methods = sorted(set(re.findall(r"fn (\w+)\(&self", trait_methods)) - {"IndexedGetter", "NamedGetter"})
+        own_methods = sorted(
+            set(re.findall(r"fn (\w+)\(&self", trait_methods))
+            - {"IndexedGetter", "IndexedSetter", "NamedGetter", "SupportedPropertyNames", "NamedSetter", "NamedDeleter"}
+        )
         if own_methods:
             call = re.compile(r"\bnative\.(" + "|".join(own_methods) + r")\(")
             registrations_list = [

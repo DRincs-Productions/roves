@@ -328,6 +328,14 @@ generatore 71/71, `roves-v8` 110+5+2. Copertura **468/486 (96%)**.
 **CP87 (2026-10-06):** `undefined` come membro di union (`WebIdlType::Undefined`, variante
 `Undefined(())`, patch 0151). **Genera `URLPattern`.** Copertura **469/486**.
 
+**CP88 (2026-10-06):** proprietà named complete (`define_named_properties`) con enumerazione,
+setter e deleter, `[LegacyOverrideBuiltIns]`, più setter indicizzati
+(`define_indexed_properties`) (patch 0152). Prima i setter indicizzati venivano ignorati in
+silenzio. **Generano `Document`, `HTMLDocument`, `XMLDocument`, `DOMStringMap`, `Storage`.**
+Test: generatore 72/72, `roves-v8` 111+5+2. Copertura **474/486 (97.5%)**. **Rimasti:**
+`[Global]` (10) e `[LegacyUnforgeable]` sull'interfaccia (`Location`,
+`DissimilarOriginLocation`).
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

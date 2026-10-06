@@ -11,6 +11,58 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: named properties, `[LegacyOverrideBuiltIns]`, indexed setters (CP88)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `components/roves-v8/build.rs`,
+`components/roves-v8/tests/webidl/StorageProbe.webidl`, `DataMapProbe.webidl` (new),
+`components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0152-roves-v8-named-properties.patch` after 0151.
+
+**Runtime.** The new `Runtime::define_named_properties(interface, NamedProperties)` replaces
+the getter-only interceptor; `define_named_property_getter` is now a wrapper around it. It
+implements WebIDL's legacy-platform-object named properties:
+- **Visibility.** An own property always hides a supported name. Without
+  `[LegacyOverrideBuiltIns]` so does any property on the prototype chain; with it, named
+  properties shadow prototype members, as `DOMStringMap` and `HTMLDocument` require.
+- **Enumeration.** A query interceptor reports the attributes: enumerable unless
+  `[LegacyUnenumerableNamedProperties]`, read-only without a setter. An enumerator lists the
+  visible supported names, so `Object.keys`, `getOwnPropertyNames` and `in` work.
+- **Named setter.** `[[Set]]` of any string key goes to the native named setter. This includes
+  names of prototype members (`storage.setItem = 'x'` stores an item). The value converts
+  through the setter's WebIDL type, and the setter may throw.
+  *Deviation:* V8 does not give interceptors the receiver, so an assignment through an
+  inheriting object also reaches the setter.
+- **Named deleter.** `delete` of a visible name calls the deleter; without one it fails.
+
+**Indexed setters.** The new `Runtime::define_indexed_properties(getter, setter, value_type)`
+handles `HTMLOptionsCollection` and `HTMLSelectElement`. **This fixes a silent gap:** the
+generator used to skip their anonymous indexed setter, so `options[i] = option` was not bound.
+
+**Generator.**
+- Named getters no longer require `[LegacyUnenumerableNamedProperties]`.
+- Natives use Servo's names: `NamedGetter`, `SupportedPropertyNames`, `NamedSetter`,
+  `NamedDeleter` and `IndexedSetter`. Named special operations that have an identifier
+  (`getItem`/`setItem`/`removeItem`) also stay ordinary operations, as in Servo.
+- Each special operation comes from the nearest interface on the chain that declares it,
+  because V8 does not inherit interceptors.
+- `[LegacyOverrideBuiltIns]` counts if it appears anywhere on the chain.
+
+Tests: generator 72/72. The `NamedCollection` fixture now also checks own keys, `in`, and a
+failing `delete`. The new fixtures `StorageProbe` and `DataMapProbe` cover:
+- the named setter with conversion and a DOMException;
+- setter precedence over prototype names, while those names stay visible;
+- enumerable keys and entries;
+- delete;
+- the indexed setter with nullable conversion and a RangeError;
+- `[LegacyOverrideBuiltIns]` shadowing `toString`.
+
+`roves-v8` passes 111 + 5 + 2 (also `jitless`), and 61 + 2 by default. The `servo-script`
+pilot check is clean.
+
+Coverage: **474/486 (97.5%)**. **`Document`, `HTMLDocument`, `XMLDocument`, `DOMStringMap` and
+`Storage` now generate.** What remains is `[Global]` (10 global-scope definitions) and
+interface-level `[LegacyUnforgeable]` (`Location`, `DissimilarOriginLocation`).
+
 ## 2026-10-06 - V8 migration Phase 4: `undefined` union members (CP87)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `components/roves-v8/tests/webidl/RecordProbe.webidl`,
