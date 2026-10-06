@@ -6,6 +6,7 @@ on:
   push:
     paths:
       - 'components/roves-v8/**'
+      - 'components/roves-v8-derive/**'
       - 'components/script_bindings/**'
       - '.github/workflows/v8.yml'
   workflow_dispatch: {}
@@ -37,6 +38,8 @@ jobs:
           cp -R components/roves-v8/src/. "$RUNNER_TEMP/roves-v8/src/"
           cp -R components/roves-v8/tests "$RUNNER_TEMP/roves-v8/tests"
           cp -R components/script_bindings "$RUNNER_TEMP/script_bindings"
+          # `#[derive(Trace)]` (a path dependency of roves-v8).
+          cp -R components/roves-v8-derive "$RUNNER_TEMP/roves-v8-derive"
           if [ -f components/roves-v8/build.rs ]; then
             cp components/roves-v8/build.rs "$RUNNER_TEMP/roves-v8/"
           fi

@@ -1,0 +1,19 @@
+[package]
+name = "roves-v8-derive"
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+publish = false
+description = "`#[derive(Trace)]` for roves-v8 traced natives: the V8 counterpart of Servo's `#[derive(JSTraceable)]` (see ../../docs/V8_MIGRATION.md, Phase 3)."
+
+[lib]
+name = "roves_v8_derive"
+path = "lib.rs"
+proc-macro = true
+
+# Explicit versions (not `workspace = true`): the V8 CI also builds roves-v8 outside the Servo
+# workspace, with this crate as a sibling.
+[dependencies]
+proc-macro2 = "1.0.107"
+syn = "2.0.119"
+synstructure = "0.13.2"

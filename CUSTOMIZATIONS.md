@@ -11,6 +11,49 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 3: `#[derive(Trace)]` (CP91)
+
+**Servo files:** `components/roves-v8-derive/` (new proc-macro crate), `components/roves-v8/`
+(`Cargo.toml`, `Cargo.lock`, `src/lib.rs`), root `Cargo.toml`/`Cargo.lock` (new workspace
+member). **Patch:** `0155-roves-v8-derive-trace.patch` after 0154. Also
+`.github/workflows/v8.yml`, which is not part of the patch series.
+
+This is the first step of mapping Servo's `#[dom_struct]`/`JSTraceable` onto the V8 unified heap.
+`#[derive(Trace)]` is the counterpart of `#[derive(JSTraceable)]`:
+- it traces every field through `roves_v8::Trace`;
+- it accepts the same field attributes: `#[no_trace]` (also `#[no_trace = "reason"]`), and
+  `#[custom_trace]` through the new `roves_v8::CustomTrace`, for foreign types;
+- it adds a `Trace` bound to every type parameter.
+
+Both derives can therefore sit on the same struct while the DOM migrates.
+
+`roves-v8` now implements `Trace` for:
+- `GcMember<T>` and `JsRef`;
+- `Option`, `Box`, `Rc`, `Vec`, `VecDeque`, arrays, the values of `HashMap`/`BTreeMap`, and
+  pairs;
+- `RefCell`, read without borrowing, like Servo's `DomRefCell::borrow_for_gc_trace`;
+- primitives, `String` and `Cell<Copy>`, as no-ops.
+
+The isolated V8 CI builds `roves-v8` outside the Servo workspace, so:
+- the derive crate uses explicit dependency versions (the ones already in the lock), not
+  `workspace = true`;
+- the workflow copies it as a sibling and triggers on its path;
+- `components/roves-v8/Cargo.lock` gained the crate. Locally, `--locked` was verified in a copy
+  of the CI's isolated layout.
+
+Test: `derived_trace_keeps_every_referenced_native_alive`. Six natives are reachable from a root
+only through different derived paths: a `RefCell<Vec<_>>`, an enum struct variant, a generic
+pair of `Option`s, and a `#[custom_trace]` field. None is collected while the root lives.
+Replacing the enum slot frees exactly one; dropping the root frees all seven. A mutation check
+(`#[no_trace]` on `children`) makes the test fail, as it should. `roves-v8` passes 114 + 5 + 2
+(pilot and `jitless`), and 62 + 2 by default. The `servo-script` pilot check is clean with
+`--locked`.
+
+Still open, and not attempted here:
+- `#[dom_struct]` does not derive `Trace` yet. Servo's field types (`Dom<T>`, `MutNullableDom`,
+  `Heap<JSVal>`, `DomRefCell`) must first gain V8 counterparts or `Trace` impls.
+- Production still traces through SpiderMonkey.
+
 ## 2026-10-06 - V8 migration Phase 4: `[Global]` realms and `[Inline]` (CP90)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `components/roves-v8/build.rs`,

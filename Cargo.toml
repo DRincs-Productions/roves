@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "components/media/examples",
     "components/roves-v8",
+    "components/roves-v8-derive",
     "components/xpath",
     "ffi/capi",
     "ports/servoshell",

@@ -452,7 +452,17 @@ dependencies = [
 name = "roves-v8"
 version = "0.1.0"
 dependencies = [
+ "roves-v8-derive",
  "v8",
+]
+
+[[package]]
+name = "roves-v8-derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "syn 2.0.119",
+ "synstructure 0.13.2",
 ]
 
 [[package]]

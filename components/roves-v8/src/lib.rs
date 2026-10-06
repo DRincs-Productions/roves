@@ -560,8 +560,128 @@ const WRAPPED_POINTER_TAG: u16 = 0;
 /// A native object that may live on the traced heap. `trace` must report every [`GcMember`] and
 /// [`JsRef`] the object holds — the same contract as Servo's `JSTraceable`. A missed reference
 /// lets its target be collected while still referenced.
+///
+/// `#[derive(Trace)]` implements it by tracing every field, with the same `#[no_trace]` and
+/// `#[custom_trace]` field attributes as `#[derive(JSTraceable)]`. Containers and references
+/// implement it below; types that hold no traced reference implement it as a no-op.
 pub trait Trace: 'static {
     fn trace(&self, tracer: &mut Tracer);
+}
+
+pub use roves_v8_derive::Trace;
+
+/// Tracing for foreign types that cannot implement [`Trace`] (the orphan rule), selected with
+/// `#[custom_trace]` on a field — the counterpart of Servo's `CustomTraceable`.
+pub trait CustomTrace {
+    fn trace(&self, tracer: &mut Tracer);
+}
+
+impl<T: Trace> Trace for GcMember<T> {
+    fn trace(&self, tracer: &mut Tracer) {
+        tracer.member(self);
+    }
+}
+
+impl Trace for JsRef {
+    fn trace(&self, tracer: &mut Tracer) {
+        tracer.js(self);
+    }
+}
+
+impl<T: Trace> Trace for Option<T> {
+    fn trace(&self, tracer: &mut Tracer) {
+        if let Some(value) = self {
+            value.trace(tracer);
+        }
+    }
+}
+
+impl<T: Trace> Trace for Box<T> {
+    fn trace(&self, tracer: &mut Tracer) {
+        (**self).trace(tracer);
+    }
+}
+
+impl<T: Trace> Trace for std::rc::Rc<T> {
+    fn trace(&self, tracer: &mut Tracer) {
+        (**self).trace(tracer);
+    }
+}
+
+impl<T: Trace> Trace for Vec<T> {
+    fn trace(&self, tracer: &mut Tracer) {
+        for item in self {
+            item.trace(tracer);
+        }
+    }
+}
+
+impl<T: Trace> Trace for std::collections::VecDeque<T> {
+    fn trace(&self, tracer: &mut Tracer) {
+        for item in self {
+            item.trace(tracer);
+        }
+    }
+}
+
+impl<T: Trace, const N: usize> Trace for [T; N] {
+    fn trace(&self, tracer: &mut Tracer) {
+        for item in self {
+            item.trace(tracer);
+        }
+    }
+}
+
+impl<K: 'static, V: Trace, S: 'static> Trace for std::collections::HashMap<K, V, S> {
+    fn trace(&self, tracer: &mut Tracer) {
+        for value in self.values() {
+            value.trace(tracer);
+        }
+    }
+}
+
+impl<K: 'static, V: Trace> Trace for std::collections::BTreeMap<K, V> {
+    fn trace(&self, tracer: &mut Tracer) {
+        for value in self.values() {
+            value.trace(tracer);
+        }
+    }
+}
+
+impl<T: Trace> Trace for std::cell::RefCell<T> {
+    fn trace(&self, tracer: &mut Tracer) {
+        // SAFETY: as with Servo's `DomRefCell::borrow_for_gc_trace`, tracing only reads the
+        // value and runs on the mutator thread inside a GC; a `RefMut` held across the code that
+        // triggered the GC does not write while the tracer reads.
+        unsafe { &*self.as_ptr() }.trace(tracer);
+    }
+}
+
+impl<A: Trace, B: Trace> Trace for (A, B) {
+    fn trace(&self, tracer: &mut Tracer) {
+        self.0.trace(tracer);
+        self.1.trace(tracer);
+    }
+}
+
+/// `Trace` for types that hold no traced reference.
+macro_rules! no_trace {
+    ($($ty:ty),* $(,)?) => {
+        $(impl Trace for $ty {
+            #[inline]
+            fn trace(&self, _tracer: &mut Tracer) {}
+        })*
+    };
+}
+
+no_trace!(
+    (), bool, char, u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize, f32, f64,
+    String, &'static str, std::time::Duration, std::time::Instant,
+);
+
+impl<T: Copy + 'static> Trace for std::cell::Cell<T> {
+    #[inline]
+    fn trace(&self, _tracer: &mut Tracer) {}
 }
 
 /// Passed to [`Trace::trace`] to report the references a traced object holds.
@@ -6492,6 +6612,112 @@ mod tests {
                     break;
                 }
             }
+        }
+
+        thread_local! {
+            static TREES_DROPPED: Cell<usize> = const { Cell::new(0) };
+        }
+
+        /// A foreign-looking type traced through `CustomTrace` (`#[custom_trace]`).
+        struct Extra(GcMember<Tree>);
+
+        impl CustomTrace for Extra {
+            fn trace(&self, tracer: &mut Tracer) {
+                tracer.member(&self.0);
+            }
+        }
+
+        /// Traced entirely by `#[derive(Trace)]`: containers, an enum, a generic pair, a
+        /// `#[custom_trace]` field and `#[no_trace]` fields.
+        #[derive(Trace)]
+        struct Tree {
+            #[no_trace]
+            id: u32,
+            children: RefCell<Vec<GcMember<Tree>>>,
+            slot: RefCell<Slot>,
+            pair: Pair<Option<GcMember<Tree>>>,
+            #[custom_trace]
+            extra: Extra,
+            #[no_trace = "a plain string holds no traced reference"]
+            name: String,
+        }
+
+        #[derive(Trace)]
+        enum Slot {
+            Empty,
+            One(GcMember<Tree>),
+            Named { tree: GcMember<Tree>, #[no_trace] label: u8 },
+        }
+
+        #[derive(Trace)]
+        struct Pair<T> {
+            first: T,
+            second: T,
+        }
+
+        impl Drop for Tree {
+            fn drop(&mut self) {
+                TREES_DROPPED.with(|dropped| dropped.set(dropped.get() + 1));
+            }
+        }
+
+        fn tree(id: u32) -> Tree {
+            Tree {
+                id,
+                children: RefCell::new(Vec::new()),
+                slot: RefCell::new(Slot::Empty),
+                pair: Pair { first: None, second: None },
+                extra: Extra(GcMember::empty()),
+                name: format!("tree {id}"),
+            }
+        }
+
+        #[test]
+        fn derived_trace_keeps_every_referenced_native_alive() {
+            let trees_dropped = || TREES_DROPPED.with(Cell::get);
+            let mut runtime = Runtime::new();
+            // Six natives, each reachable from the root only through a different derived path.
+            let leaves: Vec<GcRoot<Tree>> = (2..=7).map(|id| runtime.allocate_traced(tree(id))).collect();
+            let mut root_native = tree(1);
+            root_native.children.borrow_mut().push(leaves[0].member());
+            root_native.children.borrow_mut().push(leaves[1].member());
+            *root_native.slot.borrow_mut() = Slot::Named { tree: leaves[2].member(), label: 0 };
+            root_native.pair = Pair { first: Some(leaves[3].member()), second: Some(leaves[4].member()) };
+            root_native.extra = Extra(leaves[5].member());
+            let root = runtime.allocate_traced(root_native);
+            drop(leaves);
+            for _ in 0..5 {
+                runtime.force_full_gc_for_testing();
+            }
+            // A field missed by the derive would let its target be collected here.
+            assert_eq!(trees_dropped(), 0);
+            assert_eq!(root.get().name, "tree 1");
+            let ids: Vec<u32> = root
+                .get()
+                .children
+                .borrow()
+                .iter()
+                // SAFETY: the root is reachable and traces its children.
+                .map(|child| unsafe { child.get() }.unwrap().id)
+                .collect();
+            assert_eq!(ids, [2, 3]);
+            // Replacing a slot drops the only reference to its tree.
+            *root.get().slot.borrow_mut() = Slot::One(GcMember::empty());
+            for _ in 0..20 {
+                runtime.force_full_gc_for_testing();
+                if trees_dropped() >= 1 {
+                    break;
+                }
+            }
+            assert_eq!(trees_dropped(), 1);
+            drop(root);
+            for _ in 0..20 {
+                runtime.force_full_gc_for_testing();
+                if trees_dropped() >= 7 {
+                    break;
+                }
+            }
+            assert_eq!(trees_dropped(), 7);
         }
 
         #[test]

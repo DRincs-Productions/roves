@@ -351,6 +351,14 @@ fase:
 - integrare realm, script, event loop e moduli;
 - poi il cutover.
 
+**CP91 (2026-10-06, Fase 3):** nuovo crate proc-macro `roves-v8-derive` con `#[derive(Trace)]`
+(patch 0155). Usa gli stessi attributi di `JSTraceable` (`#[no_trace]`, `#[custom_trace]` →
+`roves_v8::CustomTrace`), e `roves-v8` implementa `Trace` per i container standard. **Nota CI:**
+la V8 CI compila `roves-v8` fuori dal workspace. Per questo il derive ha versioni esplicite, il
+workflow lo copia accanto, e `components/roves-v8/Cargo.lock` lo include. Test GC con mutation
+check. Prossimo passo: le controparti V8 di `Dom<T>`/`MutNullableDom`/`Heap<JSVal>`/`DomRefCell`,
+così che `#[dom_struct]` possa derivare `Trace`.
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

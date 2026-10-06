@@ -228,6 +228,13 @@ measures binding *shapes* only. Production still uses SpiderMonkey: the next pha
 the natives over Servo's DOM (`#[dom_struct]`/`JSTraceable` → `Trace`) and integrates the
 realm with script, the event loop and modules, before any cutover.
 
+**CP91 (2026-10-06, Phase 3): `#[derive(Trace)]`.** This is the V8 counterpart of
+`#[derive(JSTraceable)]`, with the same `#[no_trace]`/`#[custom_trace]` attributes, plus
+`Trace` impls for the standard containers. A GC test shows every derived path keeps its target
+alive, and a mutation check confirms the test fails when a path is skipped. Next: give Servo's
+field types (`Dom<T>`, `MutNullableDom`, `Heap<JSVal>`, `DomRefCell`) V8 counterparts, so that
+`#[dom_struct]` can derive `Trace`.
+
 CP37 exposes stable `NativeObjectId` through `DomObject` and updates generated `dom_struct`
 equality to use that engine-neutral contract. Local checks pass (reflector 2/2, macro 3/3,
 rustfmt, and patch 0101 reverse-check); CI is green: V8 37226916624 (6/6), Servo 37226916650
