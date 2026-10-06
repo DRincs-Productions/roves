@@ -325,6 +325,9 @@ natives usano i nomi di Servo (`get_index`, `size`, `has`, `get`, `set`/`add`, `
 `clear`). **Generano `CustomStateSet`, `FontFaceSet`, `CSSFontFeatureValuesMap`.** Test:
 generatore 71/71, `roves-v8` 110+5+2. Copertura **468/486 (96%)**.
 
+**CP87 (2026-10-06):** `undefined` come membro di union (`WebIdlType::Undefined`, variante
+`Undefined(())`, patch 0151). **Genera `URLPattern`.** Copertura **469/486**.
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

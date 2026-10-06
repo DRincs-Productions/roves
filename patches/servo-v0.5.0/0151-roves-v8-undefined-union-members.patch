@@ -1,0 +1,127 @@
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 42c57f59020..96993faa9af 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -1332,6 +1332,8 @@ pub enum WebIdlType {
+     /// An integer type annotated `[Clamp]` or `[EnforceRange]`: `conversion` names the integer
+     /// type (`Byte` .. `UnsignedLongLong`).
+     Integer(WebIdlArgumentConversion, IntegerMode),
++    /// `undefined` as a union member (`(USVString or undefined)`): accepts only `undefined`.
++    Undefined,
+     /// `record<K, V>` (`K` a string type): an object's own enumerable properties, converted
+     /// into a [`Value::Record`].
+     Record(Box<WebIdlType>, Box<WebIdlType>),
+@@ -5275,6 +5277,13 @@ fn convert_typed_value<'s>(
+             }
+             Some(Value::Dictionary(entries))
+         },
++        WebIdlType::Undefined => {
++            if !value.is_undefined() {
++                throw_type_error(scope, "value is not undefined");
++                return None;
++            }
++            Some(Value::Undefined)
++        },
+         WebIdlType::Record(key_type, value_type) => {
+             // WebIDL ES-to-record: the own enumerable properties, in [[OwnPropertyKeys]] order.
+             let Ok(object) = v8::Local::<v8::Object>::try_from(value) else {
+@@ -5401,6 +5410,11 @@ fn select_union_member<'s>(
+     let is_boolean = |member: &WebIdlType| matches!(member, WebIdlType::Primitive(WebIdlArgumentConversion::Boolean));
+     let is_object = |member: &WebIdlType| matches!(member, WebIdlType::Primitive(WebIdlArgumentConversion::Object));
+ 
++    if value.is_undefined() {
++        if let Some(index) = find(&|member| matches!(member, WebIdlType::Undefined)) {
++            return Ok(index);
++        }
++    }
+     if value.is_null_or_undefined() {
+         if let Some(index) = find(&|member| matches!(member, WebIdlType::Dictionary(_))) {
+             return Ok(index);
+@@ -9083,6 +9097,17 @@ mod tests {
+                 }
+                 counts
+             }
++            fn Groups(&self, groups: Vec<(Vec<u16>, crate::webidl::record_probe::StringOrUndefined)>) -> Vec<u16> {
++                use crate::webidl::record_probe::StringOrUndefined;
++                let parts: Vec<String> = groups
++                    .iter()
++                    .map(|(key, value)| match value {
++                        StringOrUndefined::String(value) => format!("{}={}", String::from_utf16_lossy(key), String::from_utf16_lossy(value)),
++                        StringOrUndefined::Undefined(()) => format!("{}=(none)", String::from_utf16_lossy(key)),
++                    })
++                    .collect();
++                parts.join(",").encode_utf16().collect()
++            }
+             fn Pick(&self, init: Init) -> Vec<u16> {
+                 let kind = match init {
+                     Init::StringSequenceSequence(_) => "sequence",
+@@ -9114,6 +9139,8 @@ mod tests {
+             ("Object.getPrototypeOf(probe.tally([])) === Object.prototype", "true"),
+             // Unions: iterable objects are sequences, other objects records, the rest strings.
+             ("[probe.pick([['a', 'b']]), probe.pick({ a: 'b', c: 'd' }), probe.pick('s'), probe.pick(1)].join()", "sequence,record 2,string,string"),
++            // `undefined` selects the union's undefined member; anything else converts to a string.
++            ("probe.groups({ a: 'x', b: undefined, c: null, d: 1 })", "a=x,b=(none),c=null,d=1"),
+         ] {
+             assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
+         }
+diff --git a/components/roves-v8/tests/webidl/RecordProbe.webidl b/components/roves-v8/tests/webidl/RecordProbe.webidl
+index 4c70252b732..fc618f398a1 100644
+--- a/components/roves-v8/tests/webidl/RecordProbe.webidl
++++ b/components/roves-v8/tests/webidl/RecordProbe.webidl
+@@ -5,4 +5,6 @@ interface RecordProbe {
+   DOMString describe(record<DOMString, long> counts);
+   record<USVString, unsigned long> tally(sequence<USVString> words);
+   DOMString pick((sequence<sequence<DOMString>> or record<DOMString, DOMString> or DOMString) init);
++  // Like URLPatternComponentResult.groups: `undefined` as a union member.
++  DOMString groups(record<DOMString, (DOMString or undefined)> groups);
+ };
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index 6be7cecfd04..07c42786ea5 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8495,6 +8495,9 @@ def v8_typed_info(ty, name: str, member_name: str):
+             raise TypeError(f"V8 backend unsupported buffer type: {name}.{member_name}: {ty}")
+         return ("roves_v8::Handle", f"roves_v8::WebIdlType::Buffer(roves_v8::BufferKind::{kind})",
+                 "Value::Js(value) => value.clone()", "Value::Js(ITEM)")
++    if ty.isUndefined():
++        # Only as a union member, like Servo's `Undefined(())` variants.
++        return ("()", "roves_v8::WebIdlType::Undefined", "Value::Undefined => ()", "{ let () = ITEM; Value::Undefined }")
+     if ty.isPromise():
+         return ("roves_v8::Handle", "roves_v8::WebIdlType::Promise",
+                 "Value::Js(value) => value.clone()", "Value::Js(ITEM)")
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index f008ec62480..14070ff6193 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -329,10 +329,17 @@ class V8GeneratorTests(unittest.TestCase):
+             self.assertIn("WebIdlArgumentConversion::Enumeration", source)
+             self.assertIn('Some(&["\\u{6c}\\u{65}\\u{66}\\u{74}", "\\u{72}\\u{69}\\u{67}\\u{68}\\u{74}"])', source)
+ 
+-    def test_optional_explicit_defaults_variadics_and_unsupported_types_fail_closed(self):
+-        for signature in ["double run(record<DOMString, (DOMString or undefined)> value);", "double run(sequence<(long or undefined)> value);"]:
+-            with self.subTest(signature=signature):
+-                self.assert_unsupported("interface Unsupported { " + signature + " };")
++    def test_undefined_union_members_map_to_unit_variants(self):
++        with tempfile.TemporaryDirectory() as directory:
++            path = Path(directory) / "Groups.webidl"
++            path.write_text(
++                "[Exposed=Window] interface Groups { double run(record<DOMString, (DOMString or undefined)> value); };",
++                encoding="utf-8",
++            )
++            source = generate(path, Path(directory) / "output")
++            self.assertIn("pub enum StringOrUndefined {", source)
++            self.assertIn("    Undefined(()),", source)
++            self.assertIn("roves_v8::WebIdlType::Undefined", source)
+ 
+     def test_optional_boolean_arguments_are_supported_and_variadics_fail_closed(self):
+         with tempfile.TemporaryDirectory() as directory:
+@@ -342,9 +349,6 @@ class V8GeneratorTests(unittest.TestCase):
+             source = generate(webidl, root / "out")
+             self.assertIn("WebIdlOptionalArgument<bool>", source)
+             self.assertIn("WebIdlArgumentConversion::Boolean", source)
+-        for signature in ["boolean run(record<DOMString, (long or undefined)> value);", "boolean run((boolean or undefined) value);"]:
+-            with self.subTest(signature=signature):
+-                self.assert_unsupported("interface Unsupported { " + signature + " };")
+ 
+     def test_bytestring_operation_arguments_use_bytes_and_keep_nullable_optional_states(self):
+         with tempfile.TemporaryDirectory() as directory:

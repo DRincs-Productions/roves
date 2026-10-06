@@ -329,10 +329,17 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn("WebIdlArgumentConversion::Enumeration", source)
             self.assertIn('Some(&["\\u{6c}\\u{65}\\u{66}\\u{74}", "\\u{72}\\u{69}\\u{67}\\u{68}\\u{74}"])', source)
 
-    def test_optional_explicit_defaults_variadics_and_unsupported_types_fail_closed(self):
-        for signature in ["double run(record<DOMString, (DOMString or undefined)> value);", "double run(sequence<(long or undefined)> value);"]:
-            with self.subTest(signature=signature):
-                self.assert_unsupported("interface Unsupported { " + signature + " };")
+    def test_undefined_union_members_map_to_unit_variants(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Groups.webidl"
+            path.write_text(
+                "[Exposed=Window] interface Groups { double run(record<DOMString, (DOMString or undefined)> value); };",
+                encoding="utf-8",
+            )
+            source = generate(path, Path(directory) / "output")
+            self.assertIn("pub enum StringOrUndefined {", source)
+            self.assertIn("    Undefined(()),", source)
+            self.assertIn("roves_v8::WebIdlType::Undefined", source)
 
     def test_optional_boolean_arguments_are_supported_and_variadics_fail_closed(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -342,9 +349,6 @@ class V8GeneratorTests(unittest.TestCase):
             source = generate(webidl, root / "out")
             self.assertIn("WebIdlOptionalArgument<bool>", source)
             self.assertIn("WebIdlArgumentConversion::Boolean", source)
-        for signature in ["boolean run(record<DOMString, (long or undefined)> value);", "boolean run((boolean or undefined) value);"]:
-            with self.subTest(signature=signature):
-                self.assert_unsupported("interface Unsupported { " + signature + " };")
 
     def test_bytestring_operation_arguments_use_bytes_and_keep_nullable_optional_states(self):
         with tempfile.TemporaryDirectory() as directory:

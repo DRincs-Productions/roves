@@ -11,6 +11,27 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: `undefined` union members (CP87)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `components/roves-v8/tests/webidl/RecordProbe.webidl`,
+`components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0151-roves-v8-undefined-union-members.patch` after 0150.
+
+**Runtime.** `WebIdlType::Undefined` accepts only `undefined`. Union selection now begins with
+WebIDL's step 1: `undefined` selects an `undefined` member, which comes before the dictionary
+rule.
+
+**Generator.** The member maps to a unit variant, `Undefined(())`, as in Servo's generated
+unions (`USVStringOrUndefined`).
+
+Tests: the generator's two "unsupported types" loops used `undefined` members, so they became
+one positive test (generator 71/71). The `RecordProbe` fixture gained `groups(record<DOMString,
+(DOMString or undefined)>)`; there, `undefined` selects the unit variant and `null` and numbers
+convert to strings. `roves-v8` passes 110 + 5 + 2 (also `jitless`), and 61 + 2 by default. The
+`servo-script` pilot check is clean.
+
+Coverage: **469/486**. **`URLPattern` now generates.**
+
 ## 2026-10-06 - V8 migration Phase 4: maplike and setlike (CP86)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `components/roves-v8/build.rs`,

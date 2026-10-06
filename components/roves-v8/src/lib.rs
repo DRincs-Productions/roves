@@ -1332,6 +1332,8 @@ pub enum WebIdlType {
     /// An integer type annotated `[Clamp]` or `[EnforceRange]`: `conversion` names the integer
     /// type (`Byte` .. `UnsignedLongLong`).
     Integer(WebIdlArgumentConversion, IntegerMode),
+    /// `undefined` as a union member (`(USVString or undefined)`): accepts only `undefined`.
+    Undefined,
     /// `record<K, V>` (`K` a string type): an object's own enumerable properties, converted
     /// into a [`Value::Record`].
     Record(Box<WebIdlType>, Box<WebIdlType>),
@@ -5275,6 +5277,13 @@ fn convert_typed_value<'s>(
             }
             Some(Value::Dictionary(entries))
         },
+        WebIdlType::Undefined => {
+            if !value.is_undefined() {
+                throw_type_error(scope, "value is not undefined");
+                return None;
+            }
+            Some(Value::Undefined)
+        },
         WebIdlType::Record(key_type, value_type) => {
             // WebIDL ES-to-record: the own enumerable properties, in [[OwnPropertyKeys]] order.
             let Ok(object) = v8::Local::<v8::Object>::try_from(value) else {
@@ -5401,6 +5410,11 @@ fn select_union_member<'s>(
     let is_boolean = |member: &WebIdlType| matches!(member, WebIdlType::Primitive(WebIdlArgumentConversion::Boolean));
     let is_object = |member: &WebIdlType| matches!(member, WebIdlType::Primitive(WebIdlArgumentConversion::Object));
 
+    if value.is_undefined() {
+        if let Some(index) = find(&|member| matches!(member, WebIdlType::Undefined)) {
+            return Ok(index);
+        }
+    }
     if value.is_null_or_undefined() {
         if let Some(index) = find(&|member| matches!(member, WebIdlType::Dictionary(_))) {
             return Ok(index);
@@ -9083,6 +9097,17 @@ mod tests {
                 }
                 counts
             }
+            fn Groups(&self, groups: Vec<(Vec<u16>, crate::webidl::record_probe::StringOrUndefined)>) -> Vec<u16> {
+                use crate::webidl::record_probe::StringOrUndefined;
+                let parts: Vec<String> = groups
+                    .iter()
+                    .map(|(key, value)| match value {
+                        StringOrUndefined::String(value) => format!("{}={}", String::from_utf16_lossy(key), String::from_utf16_lossy(value)),
+                        StringOrUndefined::Undefined(()) => format!("{}=(none)", String::from_utf16_lossy(key)),
+                    })
+                    .collect();
+                parts.join(",").encode_utf16().collect()
+            }
             fn Pick(&self, init: Init) -> Vec<u16> {
                 let kind = match init {
                     Init::StringSequenceSequence(_) => "sequence",
@@ -9114,6 +9139,8 @@ mod tests {
             ("Object.getPrototypeOf(probe.tally([])) === Object.prototype", "true"),
             // Unions: iterable objects are sequences, other objects records, the rest strings.
             ("[probe.pick([['a', 'b']]), probe.pick({ a: 'b', c: 'd' }), probe.pick('s'), probe.pick(1)].join()", "sequence,record 2,string,string"),
+            // `undefined` selects the union's undefined member; anything else converts to a string.
+            ("probe.groups({ a: 'x', b: undefined, c: null, d: 1 })", "a=x,b=(none),c=null,d=1"),
         ] {
             assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
         }

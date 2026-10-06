@@ -8495,6 +8495,9 @@ def v8_typed_info(ty, name: str, member_name: str):
             raise TypeError(f"V8 backend unsupported buffer type: {name}.{member_name}: {ty}")
         return ("roves_v8::Handle", f"roves_v8::WebIdlType::Buffer(roves_v8::BufferKind::{kind})",
                 "Value::Js(value) => value.clone()", "Value::Js(ITEM)")
+    if ty.isUndefined():
+        # Only as a union member, like Servo's `Undefined(())` variants.
+        return ("()", "roves_v8::WebIdlType::Undefined", "Value::Undefined => ()", "{ let () = ITEM; Value::Undefined }")
     if ty.isPromise():
         return ("roves_v8::Handle", "roves_v8::WebIdlType::Promise",
                 "Value::Js(value) => value.clone()", "Value::Js(ITEM)")

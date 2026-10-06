@@ -5,4 +5,6 @@ interface RecordProbe {
   DOMString describe(record<DOMString, long> counts);
   record<USVString, unsigned long> tally(sequence<USVString> words);
   DOMString pick((sequence<sequence<DOMString>> or record<DOMString, DOMString> or DOMString) init);
+  // Like URLPatternComponentResult.groups: `undefined` as a union member.
+  DOMString groups(record<DOMString, (DOMString or undefined)> groups);
 };
