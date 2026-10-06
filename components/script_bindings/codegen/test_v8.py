@@ -837,7 +837,8 @@ class V8GeneratorTests(unittest.TestCase):
             named_source = generate(named, Path(directory) / "output")
             self.assertIn("fn NamedGetter(&self, name: Vec<u16>) -> Option<Vec<u16>>;", named_source)
             self.assertIn("runtime.define_named_property_getter(&interface, |native, name| {", named_source)
-            self.assert_unsupported("interface Unsupported { iterable<DOMString, long>; };")
+            # Async iterables are not supported yet.
+            self.assert_unsupported("interface Unsupported { async_iterable<DOMString>; };")
 
     def test_overloads_needing_type_distinction_use_typed_overloads(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -890,6 +891,19 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn('runtime.define_static_attribute(&interface, "limit"', source)
             self.assertIn('runtime.mark_lenient_setter(&interface, "open");', source)
             self.assertLess(source.index("mark_lenient_setter"), source.index('"open", |native|'))
+
+    def test_pair_iterables_use_servo_iterable_natives(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Pairs.webidl"
+            path.write_text("[Exposed=Window] interface Pairs { iterable<DOMString, unsigned long>; };", encoding="utf-8")
+            source = generate(path, Path(directory) / "output")
+            self.assertIn("fn get_iterable_length(&self) -> u32;", source)
+            self.assertIn("fn get_key_at_index(&self, index: u32) -> Vec<u16>;", source)
+            self.assertIn("fn get_value_at_index(&self, index: u32) -> u32;", source)
+            self.assertIn("runtime.define_pair_iterable(", source)
+            # The parser's synthesized entries/keys/values/forEach have no natives.
+            self.assertNotIn("fn Entries", source)
+            self.assertNotIn('"forEach"', source)
 
     def test_legacy_factory_functions_generate_fallible_natives(self):
         with tempfile.TemporaryDirectory() as directory:

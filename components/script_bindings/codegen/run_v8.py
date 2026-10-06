@@ -33,7 +33,9 @@ def generate(webidl: Path, out_dir: Path, context: tuple[Path, ...] = ()) -> str
     parser.parse(webidl.read_text(encoding="utf-8"), str(webidl))
     interfaces = [
         item for item in parser.finish()
+        # An iterator interface (`PairsIterator`) is implemented by the runtime with its owner.
         if isinstance(item, (WebIDL.IDLInterface, WebIDL.IDLNamespace)) and not item.isCallback()
+        and getattr(item, "iterableInterface", None) is None
         and item.location.filename == str(webidl)
     ]
     if len(interfaces) != 1:

@@ -11,6 +11,44 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: pair iterables (`iterable<K, V>`) (CP83)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `components/roves-v8/build.rs`,
+`components/roves-v8/tests/webidl/PairList.webidl` (new),
+`components/script_bindings/codegen/codegen.py`, `run_v8.py`, `test_v8.py`, `v8_coverage.py`.
+**Patch:** `0147-roves-v8-pair-iterables.patch` after 0146.
+
+Runtime, `Runtime::define_pair_iterable(interface, length, key, value)`:
+- **Prototype methods.** The interface prototype gets `entries`, `keys`, `values` and `forEach`
+  (each with a receiver signature), plus `@@iterator`. `@@iterator` is the same function object
+  as `entries`.
+- **Iterator objects.** `entries()`, `keys()` and `values()` return WebIDL default iterator
+  objects. Their prototype is `%<Interface>IteratorPrototype%`: it is created at exposure,
+  inherits `%IteratorPrototype%`, and has `next()` and `@@toStringTag` "<Interface> Iterator".
+  Each iterator keeps its target, index and kind in V8 private symbols, plus an owner tag.
+  `next()` therefore rejects objects that are not this interface's iterators.
+- **Live reads.** The length and the item are read on every step, so iteration is live.
+  `forEach(callback, thisArg)` calls `callback(value, key, object)` and also re-reads the
+  length after each call.
+
+Generator:
+- The natives use Servo's `Iterable` names: `get_iterable_length`, `get_key_at_index`,
+  `get_value_at_index`. Key and value convert through `v8_typed_info`, so unions such as
+  FormData's `(File or USVString)` work.
+- The parser's synthesized `entries`/`keys`/`values`/`forEach` members are skipped.
+- `run_v8.py` ignores the synthesized iterator interface.
+- `v8_coverage.py` counts `<X>Iterator` as covered exactly when `X` generates, because the
+  runtime implements it.
+
+Tests: generator 69/69. The new runtime fixture `PairList` covers spread, `keys`, `values` and
+`entries`; the `@@iterator` identity; the iterator prototype chain and tag; live iteration;
+`forEach` with `thisArg`; a non-callable TypeError; foreign `next()` and foreign receivers; and
+enumerable prototype keys. `roves-v8` passes 107 + 5 + 2 (also `jitless`), and 61 + 2 by
+default. The `servo-script` pilot check is clean.
+
+Coverage: **447/486**. **`FormData` (and `FormDataIterator`) now generate.** `Headers` and
+`URLSearchParams` still need `record<K, V>` (constructor argument).
+
 ## 2026-10-06 - V8 migration Phase 4: static attributes and `[LegacyLenientSetter]` (CP82)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `components/roves-v8/build.rs`,

@@ -190,6 +190,10 @@ pub mod webidl {
         include!(concat!(env!("OUT_DIR"), "/GateV8Binding.rs"));
     }
     #[cfg(test)]
+    pub mod pair_list {
+        include!(concat!(env!("OUT_DIR"), "/PairListV8Binding.rs"));
+    }
+    #[cfg(test)]
     pub mod promise_operations {
         include!(concat!(env!("OUT_DIR"), "/PromiseOperationsV8Binding.rs"));
     }
@@ -395,6 +399,8 @@ pub struct Interface {
     value_iterable: std::cell::Cell<bool>,
     /// A WebIDL namespace (`console`, `CSS`): exposed as a plain object holding its operations.
     namespace: std::cell::Cell<bool>,
+    /// A WebIDL pair iterable (`iterable<K, V>`): its config, which owns the iterator prototype.
+    pair_iterable: std::cell::Cell<Option<*const PairIterableConfig>>,
     /// Readonly attributes with `[LegacyLenientSetter]`: assignments are silently ignored.
     lenient_setters: std::cell::RefCell<std::collections::HashSet<String>>,
     /// `[LegacyFactoryFunction]`s (`Image`, `Audio`, `Option`): name and function template.
@@ -434,6 +440,7 @@ pub struct Runtime {
     to_json_configs: Vec<Box<DefaultToJsonConfig>>,
     static_overload_configs: Vec<Box<StaticOverloadConfig>>,
     legacy_factory_configs: Vec<Box<LegacyFactoryConfig>>,
+    pair_iterable_configs: Vec<Box<PairIterableConfig>>,
 }
 
 struct WrappedFinalizer {
@@ -1685,6 +1692,118 @@ enum NativeMethodKind {
     Contextual(ContextualNativeMethod),
 }
 
+/// A pair iterable's length (`iterable<K, V>`), read before every step as WebIDL requires.
+pub type PairIterableLength = fn(&dyn std::any::Any) -> u32;
+/// A pair iterable's key or value at an index (below the current length).
+pub type PairIterableItem = fn(&dyn std::any::Any, u32) -> Value;
+
+struct PairIterableConfig {
+    length: PairIterableLength,
+    key: PairIterableItem,
+    value: PairIterableItem,
+    /// %<Interface>IteratorPrototype%, created when the interface is exposed.
+    iterator_prototype: std::cell::RefCell<Option<v8::Global<v8::Object>>>,
+}
+
+/// What a default iterator object yields (WebIDL "kind").
+#[derive(Clone, Copy)]
+enum PairIteratorKind {
+    Key = 0,
+    Value = 1,
+    Entry = 2,
+}
+
+fn pair_iterator_private<'s>(scope: &mut v8::PinScope<'s, '_>, name: &str) -> v8::Local<'s, v8::Private> {
+    let name = v8::String::new(scope, name).expect("private names are short ASCII");
+    v8::Private::for_api(scope, Some(name))
+}
+
+/// `entries()`/`keys()`/`values()` (and `@@iterator`): a new default iterator object over the
+/// receiver.
+fn create_pair_iterator(
+    scope: &mut v8::PinScope,
+    args: &v8::FunctionCallbackArguments,
+    retval: &mut v8::ReturnValue,
+    kind: PairIteratorKind,
+) {
+    let Ok(external) = v8::Local::<v8::External>::try_from(args.data()) else { return };
+    // SAFETY: the External points to this interface's boxed pair iterable config.
+    let config = unsafe { &*(external.value() as *const PairIterableConfig) };
+    let this = args.this();
+    if receiver_native(scope, this).is_none() {
+        return;
+    }
+    let Some(prototype) = config.iterator_prototype.borrow().as_ref().map(|prototype| v8::Local::new(scope, prototype)) else {
+        throw_type_error(scope, "interface is not exposed");
+        return;
+    };
+    let iterator = v8::Object::with_prototype_and_properties(scope, prototype.into(), &[], &[]);
+    let owner = pair_iterator_private(scope, "roves#iterator.owner");
+    let target = pair_iterator_private(scope, "roves#iterator.target");
+    let index = pair_iterator_private(scope, "roves#iterator.index");
+    let kind_key = pair_iterator_private(scope, "roves#iterator.kind");
+    iterator.set_private(scope, owner, external.into());
+    iterator.set_private(scope, target, this.into());
+    let zero = v8::Integer::new_from_unsigned(scope, 0);
+    iterator.set_private(scope, index, zero.into());
+    let kind = v8::Integer::new(scope, kind as i32);
+    iterator.set_private(scope, kind_key, kind.into());
+    retval.set(iterator.into());
+}
+
+/// `%<Interface>IteratorPrototype%.next()`.
+fn pair_iterator_next(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut retval: v8::ReturnValue) {
+    let Ok(external) = v8::Local::<v8::External>::try_from(args.data()) else { return };
+    // SAFETY: the External points to this interface's boxed pair iterable config.
+    let config = unsafe { &*(external.value() as *const PairIterableConfig) };
+    let this = args.this();
+    let owner = pair_iterator_private(scope, "roves#iterator.owner");
+    // Only default iterator objects of this very interface are valid receivers.
+    let owned = this
+        .get_private(scope, owner)
+        .and_then(|owner| v8::Local::<v8::External>::try_from(owner).ok())
+        .is_some_and(|owner| owner.value() == external.value());
+    if !owned {
+        throw_type_error(scope, "next() called on an object that is not this interface's iterator");
+        return;
+    }
+    let target_key = pair_iterator_private(scope, "roves#iterator.target");
+    let index_key = pair_iterator_private(scope, "roves#iterator.index");
+    let kind_key = pair_iterator_private(scope, "roves#iterator.kind");
+    let Some(target) = this.get_private(scope, target_key).and_then(|target| v8::Local::<v8::Object>::try_from(target).ok()) else {
+        return;
+    };
+    let index = this.get_private(scope, index_key).and_then(|index| index.uint32_value(scope)).unwrap_or(0);
+    let kind = this.get_private(scope, kind_key).and_then(|kind| kind.int32_value(scope)).unwrap_or(0);
+    let Some(native) = receiver_native(scope, target) else { return };
+    let result = v8::Object::new(scope);
+    let value_key = v8::String::new(scope, "value").unwrap();
+    let done_key = v8::String::new(scope, "done").unwrap();
+    if index >= (config.length)(native) {
+        let undefined = v8::undefined(scope);
+        result.create_data_property(scope, value_key.into(), undefined.into());
+        let done = v8::Boolean::new(scope, true);
+        result.create_data_property(scope, done_key.into(), done.into());
+        retval.set(result.into());
+        return;
+    }
+    let value = match kind {
+        0 => v8_result(scope, &(config.key)(native, index)),
+        1 => v8_result(scope, &(config.value)(native, index)),
+        _ => {
+            let key = v8_result(scope, &(config.key)(native, index));
+            let value = v8_result(scope, &(config.value)(native, index));
+            v8::Array::new_with_elements(scope, &[key, value]).into()
+        },
+    };
+    let next = v8::Integer::new_from_unsigned(scope, index + 1);
+    this.set_private(scope, index_key, next.into());
+    result.create_data_property(scope, value_key.into(), value);
+    let done = v8::Boolean::new(scope, false);
+    result.create_data_property(scope, done_key.into(), done.into());
+    retval.set(result.into());
+}
+
 struct LegacyFactoryConfig {
     constructor: NativeConstructor,
     arguments: WebIdlArguments,
@@ -1745,6 +1864,7 @@ impl Runtime {
             to_json_configs: Vec::new(),
             static_overload_configs: Vec::new(),
             legacy_factory_configs: Vec::new(),
+            pair_iterable_configs: Vec::new(),
             method_configs: Vec::new(),
         }
     }
@@ -2459,6 +2579,7 @@ impl Runtime {
             namespace: std::cell::Cell::new(false),
             legacy_factories: std::cell::RefCell::new(Vec::new()),
             lenient_setters: std::cell::RefCell::new(std::collections::HashSet::new()),
+            pair_iterable: std::cell::Cell::new(None),
             materialized: std::rc::Rc::new(std::cell::Cell::new(false)),
             ancestors: parent.map_or_else(Vec::new, |parent| {
                 let mut ancestors = parent.ancestors.clone();
@@ -2482,6 +2603,98 @@ impl Runtime {
     /// the object through its indexed getter and `length`. Call before exposure.
     pub fn define_value_iterable(&mut self, interface: &Interface) {
         interface.value_iterable.set(true);
+    }
+
+    /// Makes `interface` a WebIDL pair iterable (`iterable<K, V>`, e.g. `FormData`, `Headers`):
+    /// its prototype gets `entries`, `keys`, `values`, `forEach` and `@@iterator` (the same
+    /// function as `entries`). The iterators are default iterator objects whose prototype,
+    /// `%<Interface>IteratorPrototype%`, inherits `%IteratorPrototype%`. `length`, `key` and
+    /// `value` are read live on every step.
+    pub fn define_pair_iterable(
+        &mut self,
+        interface: &Interface,
+        length: PairIterableLength,
+        key: PairIterableItem,
+        value: PairIterableItem,
+    ) -> Result<(), String> {
+        if interface.materialized.get() {
+            return Err("interface members must be defined before creating instances or descendants".into());
+        }
+        let config = Box::new(PairIterableConfig { length, key, value, iterator_prototype: std::cell::RefCell::new(None) });
+        let config_pointer = (&*config) as *const PairIterableConfig;
+        self.pair_iterable_configs.push(config);
+        interface.pair_iterable.set(Some(config_pointer));
+        let context_handle = &self.context;
+        v8::scope!(let scope, &mut self.isolate);
+        let context = v8::Local::new(scope, context_handle);
+        let scope = &mut v8::ContextScope::new(scope, context);
+        let template = v8::Local::new(scope, &interface.template);
+        let signature = v8::Signature::new(scope, template);
+        let data = v8::External::new(scope, config_pointer as *mut std::ffi::c_void);
+        let prototype = template.prototype_template(scope);
+        macro_rules! iterator_method {
+            ($kind:expr) => {
+                v8::FunctionTemplate::builder(
+                    |scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut retval: v8::ReturnValue| {
+                        create_pair_iterator(scope, &args, &mut retval, $kind)
+                    },
+                )
+            };
+        }
+        for (name, builder) in [
+            ("entries", iterator_method!(PairIteratorKind::Entry)),
+            ("keys", iterator_method!(PairIteratorKind::Key)),
+            ("values", iterator_method!(PairIteratorKind::Value)),
+        ] {
+            let function = builder
+                .data(data.into())
+                .signature(signature)
+                .length(0)
+                .constructor_behavior(v8::ConstructorBehavior::Throw)
+                .build(scope);
+            let key = v8::String::new(scope, name).ok_or("invalid method name")?;
+            prototype.set(key.into(), function.into());
+            if name == "entries" {
+                // WebIDL: @@iterator is the same function object as `entries`.
+                let iterator = v8::Symbol::get_iterator(scope);
+                prototype.set_with_attr(iterator.into(), function.into(), v8::PropertyAttribute::DONT_ENUM);
+            }
+        }
+        let for_each = v8::FunctionTemplate::builder(
+            |scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _retval: v8::ReturnValue| {
+                let Ok(external) = v8::Local::<v8::External>::try_from(args.data()) else { return };
+                // SAFETY: the External points to this interface's boxed pair iterable config.
+                let config = unsafe { &*(external.value() as *const PairIterableConfig) };
+                let this = args.this();
+                let Ok(callback) = v8::Local::<v8::Function>::try_from(args.get(0)) else {
+                    throw_type_error(scope, "forEach callback is not a function");
+                    return;
+                };
+                let this_arg = args.get(1);
+                let mut index = 0;
+                loop {
+                    // The length and items are read again after every callback, which may mutate.
+                    let Some(native) = receiver_native(scope, this) else { return };
+                    if index >= (config.length)(native) {
+                        return;
+                    }
+                    let value = v8_result(scope, &(config.value)(native, index));
+                    let key = v8_result(scope, &(config.key)(native, index));
+                    if callback.call(scope, this_arg, &[value, key, this.into()]).is_none() {
+                        return;
+                    }
+                    index += 1;
+                }
+            },
+        )
+        .data(data.into())
+        .signature(signature)
+        .length(1)
+        .constructor_behavior(v8::ConstructorBehavior::Throw)
+        .build(scope);
+        let key = v8::String::new(scope, "forEach").ok_or("invalid method name")?;
+        prototype.set(key.into(), for_each.into());
+        Ok(())
     }
 
     /// Also exposes the interface object under `alias` (`[LegacyWindowAlias]`, e.g.
@@ -2594,6 +2807,39 @@ impl Runtime {
             }
             interface.constructor_exposed.set(true);
             return Ok(());
+        }
+        if let Some(config_pointer) = interface.pair_iterable.get() {
+            // SAFETY: the config is boxed in `pair_iterable_configs`, which outlives the isolate.
+            let config = unsafe { &*config_pointer };
+            // %IteratorPrototype% is the prototype of %ArrayIteratorPrototype%.
+            let array = v8::Array::new(scope, 0);
+            let iterator_symbol = v8::Symbol::get_iterator(scope);
+            let array_iterator = array
+                .get(scope, iterator_symbol.into())
+                .and_then(|function| v8::Local::<v8::Function>::try_from(function).ok())
+                .and_then(|function| function.call(scope, array.into(), &[]))
+                .and_then(|iterator| v8::Local::<v8::Object>::try_from(iterator).ok())
+                .ok_or("failed to create an array iterator")?;
+            let iterator_prototype = array_iterator
+                .get_prototype(scope)
+                .and_then(|prototype| v8::Local::<v8::Object>::try_from(prototype).ok())
+                .and_then(|prototype| prototype.get_prototype(scope))
+                .ok_or("failed to find %IteratorPrototype%")?;
+            let prototype = v8::Object::with_prototype_and_properties(scope, iterator_prototype, &[], &[]);
+            let data = v8::External::new(scope, config_pointer as *mut std::ffi::c_void);
+            let next = v8::Function::builder(pair_iterator_next)
+                .data(data.into())
+                .length(0)
+                .constructor_behavior(v8::ConstructorBehavior::Throw)
+                .build(scope)
+                .ok_or("failed to create next()")?;
+            let next_key = v8::String::new(scope, "next").unwrap();
+            next.set_name(next_key);
+            prototype.create_data_property(scope, next_key.into(), next.into());
+            let tag = v8::Symbol::get_to_string_tag(scope);
+            let tag_value = v8::String::new(scope, &format!("{} Iterator", interface.name)).ok_or("invalid interface name")?;
+            prototype.define_own_property(scope, tag.into(), tag_value.into(), v8::PropertyAttribute::READ_ONLY | v8::PropertyAttribute::DONT_ENUM);
+            *config.iterator_prototype.borrow_mut() = Some(v8::Global::new(scope, prototype));
         }
         if interface.interface_object_on_global.get() {
             let global = context.global(scope);
@@ -8400,6 +8646,48 @@ mod tests {
             ("typeof Object.getOwnPropertyDescriptor(Gate.prototype, 'open').set", "function"),
             ("Object.getOwnPropertyDescriptor(Gate.prototype, 'open').set.name", "set open"),
             ("(() => { try { Object.getOwnPropertyDescriptor(Gate.prototype, 'open').set.call(gate); } catch (e) { return e.name; } })()", "TypeError"),
+        ] {
+            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
+        }
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_pair_iterables_iterate_live_entries() {
+        use crate::webidl::pair_list::{PairListBinding, PairListNative};
+        use std::cell::RefCell;
+        struct Pairs(RefCell<Vec<(String, u32)>>);
+        #[allow(non_snake_case)]
+        impl PairListNative for Pairs {
+            fn Add(&self, key: Vec<u16>, value: u32) { self.0.borrow_mut().push((String::from_utf16_lossy(&key), value)); }
+            fn get_iterable_length(&self) -> u32 { self.0.borrow().len() as u32 }
+            fn get_key_at_index(&self, index: u32) -> Vec<u16> { self.0.borrow()[index as usize].0.encode_utf16().collect() }
+            fn get_value_at_index(&self, index: u32) -> u32 { self.0.borrow()[index as usize].1 }
+        }
+        let mut runtime = Runtime::new();
+        let binding = PairListBinding::<Pairs>::install(&mut runtime).unwrap();
+        let list = binding.create(&mut runtime, Pairs(RefCell::new(vec![("a".into(), 1), ("b".into(), 2)])));
+        runtime.set_global_property("list", &list).unwrap();
+        let other = binding.create(&mut runtime, Pairs(RefCell::new(vec![])));
+        runtime.set_global_property("other", &other).unwrap();
+        for (source, expected) in [
+            ("JSON.stringify([...list])", "[[\"a\",1],[\"b\",2]]"),
+            ("[...list.keys()].join() + '|' + [...list.values()].join()", "a,b|1,2"),
+            ("JSON.stringify(Array.from(list.entries()))", "[[\"a\",1],[\"b\",2]]"),
+            // @@iterator is entries; iterators inherit %IteratorPrototype%.
+            ("PairList.prototype[Symbol.iterator] === PairList.prototype.entries", "true"),
+            ("const it = list.keys(); [Object.prototype.toString.call(it), typeof it[Symbol.iterator], it[Symbol.iterator]() === it].join()", "[object PairList Iterator],function,true"),
+            ("const proto = Object.getPrototypeOf(list.keys()); [Object.getPrototypeOf(proto) === Object.getPrototypeOf(Object.getPrototypeOf([][Symbol.iterator]())), proto === Object.getPrototypeOf(list.values())].join()", "true,true"),
+            // Iteration is live: entries added mid-iteration are visited.
+            ("const live = list.values(); live.next(); list.add('c', 3); [live.next().value, live.next().value, live.next().done].join()", "2,3,true"),
+            // forEach(value, key, object) with thisArg.
+            ("const seen = []; list.forEach(function (v, k, o) { seen.push(k + '=' + v + (o === list) + this.tag); }, { tag: '!' }); seen.join()", "a=1true!,b=2true!,c=3true!"),
+            ("(() => { try { list.forEach(1); } catch (e) { return e.name; } })()", "TypeError"),
+            // next() only accepts this interface's iterators; methods only its instances.
+            ("(() => { try { Object.getPrototypeOf(list.keys()).next.call({}); } catch (e) { return e.name; } })()", "TypeError"),
+            ("(() => { try { PairList.prototype.entries.call({}); } catch (e) { return e.name; } })()", "TypeError"),
+            ("[...other].length", "0"),
+            ("Object.keys(PairList.prototype).sort().join()", "add,entries,forEach,keys,values"),
         ] {
             assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
         }

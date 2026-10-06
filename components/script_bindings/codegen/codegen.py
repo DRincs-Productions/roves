@@ -8991,6 +8991,7 @@ class CGV8BindingRoot(CGThing):
         typed_attributes = []
         idl_attribute_types = {}
         value_iterable = False
+        pair_iterable = None
         indexed_getter = None
         named_getter = None
         promise_operations = set()
@@ -9010,9 +9011,15 @@ class CGV8BindingRoot(CGThing):
             if copied_from_ancestor(member):
                 continue
             if type(member).__name__ == "IDLIterable":
-                if not member.isValueIterator():
-                    raise TypeError(f"V8 backend does not yet support pair iterables: {name}")
-                value_iterable = True
+                if member.isPairIterator():
+                    pair_iterable = (member.keyType, member.valueType)
+                else:
+                    value_iterable = True
+                continue
+            if (member.isMethod() and member.isMaplikeOrSetlikeOrIterableMethod()
+                    and type(member.maplikeOrSetlikeOrIterable).__name__ == "IDLIterable"
+                    and member.maplikeOrSetlikeOrIterable.isPairIterator()):
+                # entries/keys/values/forEach of a pair iterable: installed by the runtime.
                 continue
             if member.isMethod() and member.isGetter():
                 getter_type = member.signatures()[0][0]
@@ -9891,6 +9898,24 @@ class CGV8BindingRoot(CGThing):
             )
         if value_iterable:
             registrations_list.append("        runtime.define_value_iterable(&interface);")
+        if pair_iterable is not None:
+            # Servo's Iterable trait: the length, and the key and value at an index.
+            key_rust, _, _, key_to_value = v8_typed_info(pair_iterable[0], name, "iterable key")
+            value_rust, _, _, value_to_value = v8_typed_info(pair_iterable[1], name, "iterable value")
+            trait_methods += (
+                "\n    fn get_iterable_length(&self) -> u32;"
+                f"\n    fn get_key_at_index(&self, index: u32) -> {key_rust};"
+                f"\n    fn get_value_at_index(&self, index: u32) -> {value_rust};"
+            )
+            downcast = f'native.downcast_ref::<T>().expect("typed {name} wrapper")'
+            registrations_list.append(
+                "        runtime.define_pair_iterable(\n"
+                "            &interface,\n"
+                f"            |native| <T as {name}Native>::get_iterable_length({downcast}),\n"
+                f"            |native, index| {{ let item = <T as {name}Native>::get_key_at_index({downcast}, index); {key_to_value.replace('ITEM', 'item')} }},\n"
+                f"            |native, index| {{ let item = <T as {name}Native>::get_value_at_index({downcast}, index); {value_to_value.replace('ITEM', 'item')} }},\n"
+                "        )?;"
+            )
         own_methods = sorted(set(re.findall(r"fn (\w+)\(&self", trait_methods)) - {"IndexedGetter", "NamedGetter"})
         if own_methods:
             call = re.compile(r"\bnative\.(" + "|".join(own_methods) + r")\(")

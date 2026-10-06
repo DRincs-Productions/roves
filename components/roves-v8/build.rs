@@ -240,6 +240,7 @@ fn main() {
         ("FactoryProbe", &[][..]),
         ("Holder", &[][..]),
         ("Gate", &[][..]),
+        ("PairList", &[][..]),
     ] {
         println!("cargo:rerun-if-changed={}", fixtures.join(format!("{interface}.webidl")).display());
         println!("cargo:rerun-if-changed={}", fixtures.join("Bindings.conf").display());

@@ -300,6 +300,11 @@ Semplificazione del pilot: con `[*Throws]` entrambi gli accessor sono fallibili.
 (`mark_lenient_setter`, patch 0146). **Generano `Notification`, `PerformanceObserver`,
 `ShadowRoot`.** Test: generatore 68/68, `roves-v8` 106+5+2. Copertura **445/486**.
 
+**CP83 (2026-10-06):** pair iterable (`define_pair_iterable`, patch 0147). Gli iteratori sono
+oggetti con un prototipo per interfaccia, e il loro stato sta in simboli privati V8. **Genera
+`FormData`.** Test: generatore 69/69, `roves-v8` 107+5+2. Copertura **447/486**. Prossimo passo:
+`record<K, V>` (`Headers`, `URLSearchParams`, `RequestInit`).
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

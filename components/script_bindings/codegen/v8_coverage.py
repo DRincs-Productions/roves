@@ -63,6 +63,8 @@ def measure() -> dict:
     )
     own_errors = {}
     for definition in definitions:
+        if getattr(definition, "iterableInterface", None) is not None:
+            continue
         try:
             CGV8BindingRoot(definition).define()
         except TypeError as error:
@@ -73,6 +75,11 @@ def measure() -> dict:
     for definition in definitions:
         name = definition.identifier.name
         error = own_errors.get(name)
+        owner = getattr(definition, "iterableInterface", None)
+        if owner is not None:
+            # The runtime implements the iterator objects of its owner's pair iterable.
+            owner_error = own_errors.get(owner.identifier.name)
+            error = owner_error and f"V8 backend requires the iterable's interface to generate: {name}: {owner.identifier.name}"
         if error is None:
             # A child binding installs on its parent's binding, so it is only usable once
             # every ancestor generates too.
