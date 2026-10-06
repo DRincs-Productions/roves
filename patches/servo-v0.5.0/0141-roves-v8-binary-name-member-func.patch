@@ -1,0 +1,109 @@
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index ca9fd685bcb..8c4f778da04 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8819,13 +8819,19 @@ V8_NUMERIC_ATTRIBUTE_TYPES = {
+ 
+ 
+ # SpiderMonkey JIT/caching hints with no observable semantics; the V8 backend ignores them.
+-V8_IGNORED_MEMBER_HINTS = {"Pure", "Constant", "SameObject", "NewObject"}
++V8_IGNORED_MEMBER_HINTS = {"Pure", "Constant", "SameObject", "NewObject", "BinaryName", "WebGLHandlesContextLoss"}
++
++
++def v8_native_name(member) -> str:
++    """The native method name: `[BinaryName]` when given (as in Servo's generator)."""
++    binary_name = member.getExtendedAttribute("BinaryName")
++    return MakeNativeName(binary_name[0] if binary_name else member.identifier.name)
+ 
+ # Argument conversions whose values are engine handles: the native needs a ScriptContext.
+ V8_CONTEXTUAL_CONVERSIONS = {"Any", "Object", "Callback"}
+ 
+ # Exposure conditions a binding checks through `roves_v8::Exposure` while installing.
+-V8_EXPOSURE_ATTRIBUTES = {"Pref", "SecureContext", "Exposed"}
++V8_EXPOSURE_ATTRIBUTES = {"Pref", "SecureContext", "Exposed", "Func"}
+ 
+ 
+ def v8_exposed_globals(extended_attributes) -> list:
+@@ -9118,7 +9124,7 @@ class CGV8BindingRoot(CGThing):
+                         value_expr = to_value.replace("ITEM", "native.{native}()")
+                     elif result_type.isPromise():
+                         # WebIDL: a promise-returning operation rejects instead of throwing.
+-                        promise_operations.add(MakeNativeName(member.identifier.name) + "_" * overload_index)
++                        promise_operations.add(v8_native_name(member) + "_" * overload_index)
+                         rust_type, value_expr = "roves_v8::Handle", "Value::Js(native.{native}())"
+                     elif result_type.isAny() or result_type.isObject() or result_type.isBufferSource():
+                         if nullable_return:
+@@ -9139,11 +9145,11 @@ class CGV8BindingRoot(CGThing):
+                     else:
+                         raise TypeError(f"V8 backend unsupported operation return type: {name}.{member.identifier.name}: {return_type}")
+                     # Servo's convention for overloads: Fill, Fill_, Fill__, ...
+-                    native_name = MakeNativeName(member.identifier.name) + "_" * overload_index
++                    native_name = v8_native_name(member) + "_" * overload_index
+                     contextual = (
+                         any(argument_type[1] in V8_CONTEXTUAL_CONVERSIONS for argument_type in argument_types)
+                         or v8_contains_handle(result_type)
+-                        or MakeNativeName(member.identifier.name) in v8_context_members().get(name, set())
++                        or v8_native_name(member) in v8_context_members().get(name, set())
+                     )
+                     if len(signatures) > 1 and (contextual or any(argument_type[6] for argument_type in argument_types)):
+                         typed_overload_members.add(member.identifier.name)
+@@ -9179,7 +9185,7 @@ class CGV8BindingRoot(CGThing):
+                 # Structured attributes: the setter converts through the WebIDL type.
+                 rust, expr, arm, to_value = v8_typed_info(member.type, name, member.identifier.name)
+                 typed_attributes.append((
+-                    member.identifier.name, MakeNativeName(member.identifier.name), rust, expr, arm,
++                    member.identifier.name, v8_native_name(member), rust, expr, arm,
+                     to_value, not member.readonly, v8_contains_handle(member.type),
+                 ))
+                 continue
+@@ -9195,7 +9201,7 @@ class CGV8BindingRoot(CGThing):
+                 else:
+                     conversion = "Callback"
+                 contextual_attributes.append((
+-                    member.identifier.name, MakeNativeName(member.identifier.name),
++                    member.identifier.name, v8_native_name(member),
+                     "Option<roves_v8::Handle>" if nullable else "roves_v8::Handle",
+                     nullable, not member.readonly, conversion, lenient_this,
+                 ))
+@@ -9282,7 +9288,7 @@ class CGV8BindingRoot(CGThing):
+                 else:
+                     setter_info = None
+                 fallible_attributes.append((
+-                    member.identifier.name, MakeNativeName(member.identifier.name), rust_type, value_expr,
++                    member.identifier.name, v8_native_name(member), rust_type, value_expr,
+                     getter_throws, setter_throws, setter_info,
+                 ))
+                 if idl_type.isEnum():
+@@ -9290,7 +9296,7 @@ class CGV8BindingRoot(CGThing):
+                 continue
+             if setter and not idl_type.isDOMString() and conversion is None:
+                 raise TypeError(f"V8 backend does not support mutable attribute type: {name}.{member.identifier.name}")
+-            attributes.append((member.identifier.name, MakeNativeName(member.identifier.name), rust_type, value_expr, setter, conversion))
++            attributes.append((member.identifier.name, v8_native_name(member), rust_type, value_expr, setter, conversion))
+         trait_methods = "\n".join(
+             [f"    fn {native}(&self, cx: &mut roves_v8::ScriptContext) -> Result<{rust_type}, roves_v8::WebIdlError>;"
+              + (f"\n    fn set_{native}(&self, cx: &mut roves_v8::ScriptContext, value: {rust_type}) -> Result<(), roves_v8::WebIdlError>;" if setter else "")
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index 7d6af38c772..183646a2f5a 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -754,6 +754,19 @@ class V8GeneratorTests(unittest.TestCase):
+             ]:
+                 self.assertIn(expected, source)
+ 
++    def test_binary_name_webgl_hint_and_member_func(self):
++        with tempfile.TemporaryDirectory() as directory:
++            path = Path(directory) / "Gl.webidl"
++            path.write_text(
++                '[Exposed=Window] interface Gl { [BinaryName="Self_"] readonly attribute boolean self; '
++                '[WebGLHandlesContextLoss] boolean isLost(); [Func="internal"] readonly attribute boolean hidden; };',
++                encoding="utf-8",
++            )
++            source = generate(path, Path(directory) / "output")
++            self.assertIn("fn Self_(&self) -> bool;", source)
++            self.assertIn("fn IsLost(&self) -> bool;", source)
++            self.assertIn('if exposure.func_enabled("internal") {', source)
++
+     def test_lenient_this_and_html_constructor(self):
+         with tempfile.TemporaryDirectory() as directory:
+             path = Path(directory) / "Element.webidl"

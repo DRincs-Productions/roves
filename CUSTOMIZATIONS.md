@@ -11,6 +11,25 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: `[BinaryName]`, `[WebGLHandlesContextLoss]`, member `[Func]` (CP77)
+
+**Servo files:** `components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0141-roves-v8-binary-name-member-func.patch` after 0140.
+
+Three generator gaps, all small:
+- **`[BinaryName="X"]`** names the native method, as in Servo's generator
+  (`WorkerGlobalScope.self` → `Self_`). The new `v8_native_name` is used everywhere a native method
+  name is derived.
+- **`[WebGLHandlesContextLoss]`** is a hint that the method also works with a lost context. It does
+  not change the binding shape, so it is accepted.
+- **Member-level `[Func="path"]`** gates the member like `[Pref]` (`Navigator.servo`).
+
+Generator tests: 63/63. `roves-v8` is unchanged (101 + 5 + 2 pilot tests pass) and the
+`servo-script` check with the pilot is clean.
+
+Coverage: **425/486**. **`WebGLRenderingContext`, `WebGL2RenderingContext`,
+`CanvasRenderingContext2D`, `HTMLCanvasElement`, `AudioContext` and `Navigator` now generate.**
+
 ## 2026-10-06 - V8 migration Phase 4: enums, union/ByteString results, `[Clamp]`/`[EnforceRange]` (CP76)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixture

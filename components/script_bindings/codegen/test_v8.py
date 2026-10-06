@@ -754,6 +754,19 @@ class V8GeneratorTests(unittest.TestCase):
             ]:
                 self.assertIn(expected, source)
 
+    def test_binary_name_webgl_hint_and_member_func(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Gl.webidl"
+            path.write_text(
+                '[Exposed=Window] interface Gl { [BinaryName="Self_"] readonly attribute boolean self; '
+                '[WebGLHandlesContextLoss] boolean isLost(); [Func="internal"] readonly attribute boolean hidden; };',
+                encoding="utf-8",
+            )
+            source = generate(path, Path(directory) / "output")
+            self.assertIn("fn Self_(&self) -> bool;", source)
+            self.assertIn("fn IsLost(&self) -> bool;", source)
+            self.assertIn('if exposure.func_enabled("internal") {', source)
+
     def test_lenient_this_and_html_constructor(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "Element.webidl"
