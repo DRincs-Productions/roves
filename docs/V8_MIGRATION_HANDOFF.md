@@ -183,6 +183,14 @@ sono generati per binding; c'è `define_typed_constructible_interface`. Test gen
 `roves-v8` 85+5+2, default 59+2, check pulito. Copertura **143/486**. **Prossimo:** callback
 interface (`EventListener`) e union, poi overload per tipo.
 
+**CP62 (2026-10-06):** union, callback interface e costruttori tracciati (patch 0126). Algoritmo
+union WebIDL, `call_user_object_operation`. Ora `new X()` crea platform object tracciati
+(`TracedNative`, i binding costruibili richiedono `T: Trace`). **Ora generano `EventTarget`,
+`Event`, `UIEvent`, `MouseEvent`, `KeyboardEvent`.** Test generatore 51/51, `roves-v8` 86+5+2,
+default 59+2, check pulito. Copertura **157/486**. **Prossimo:** blocchi di `Node`/`Element`
+(attributi `[SetterThrows]`/`[PutForwards]`, setter di stringhe nullable, variadici, overload
+per tipo), poi l'esposizione non-Window.
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

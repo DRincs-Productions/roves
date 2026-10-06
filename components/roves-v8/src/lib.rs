@@ -145,6 +145,10 @@ pub mod webidl {
     pub mod dictionary_probe {
         include!(concat!(env!("OUT_DIR"), "/DictionaryProbeV8Binding.rs"));
     }
+    #[cfg(test)]
+    pub mod listener_target {
+        include!(concat!(env!("OUT_DIR"), "/ListenerTargetV8Binding.rs"));
+    }
 }
 
 use std::sync::Once;
@@ -205,6 +209,8 @@ pub enum Value {
     Js(Handle),
     /// A WebIDL sequence; converting it to JS creates an array.
     Sequence(Vec<Value>),
+    /// A WebIDL union value: the index of the selected member type and the converted value.
+    Union(usize, Box<Value>),
     /// A WebIDL dictionary: `(member name, value)` in member order, with [`Value::Missing`] for
     /// members that are absent. Converting it to JS creates a plain object of the present ones.
     Dictionary(Vec<(String, Value)>),
@@ -586,6 +592,18 @@ fn traced_wrapper<'s>(
         .instance_template(scope)
         .new_instance(scope)
         .expect("a freshly created ObjectTemplate instance should never fail");
+    attach_traced_wrapper(scope, object, interface, gc);
+    object
+}
+
+/// Makes `object` the wrapper of `gc`'s native, created as `interface`.
+fn attach_traced_wrapper(
+    scope: &mut v8::PinScope,
+    object: v8::Local<v8::Object>,
+    interface: &str,
+    gc: &v8::cppgc::Persistent<GcBox>,
+) {
+    let gc_box = gc.get().expect("a traced root always points at a live native");
     object.set_aligned_pointer_in_internal_field(
         0,
         gc_box.native.get() as *const std::ffi::c_void,
@@ -599,11 +617,13 @@ fn traced_wrapper<'s>(
         *gc_box.wrapper.get() = Some(v8::TracedReference::new(scope, object));
         *gc_box.wrapper_interface.get() = Some(interface.to_owned());
     }
-    object
 }
 
 /// Converts a callback result to JS, wrapping [`Value::Native`] results.
 fn v8_result<'s>(scope: &mut v8::PinScope<'s, '_>, value: &Value) -> v8::Local<'s, v8::Value> {
+    if let Value::Union(_, value) = value {
+        return v8_result(scope, value);
+    }
     if let Value::Dictionary(entries) = value {
         // Members may be natives, which need wrapping.
         let object = v8::Object::new(scope);
@@ -641,6 +661,26 @@ fn v8_result<'s>(scope: &mut v8::PinScope<'s, '_>, value: &Value) -> v8::Local<'
         v8::Local::new(scope, template)
     };
     traced_wrapper(scope, template, &native.interface, &native.gc).into()
+}
+
+/// The traced native behind `value` if it implements `expected` (or a descendant); never throws.
+fn implementing_native(scope: &mut v8::PinScope, value: v8::Local<v8::Value>, expected: &str) -> Option<NativeRef> {
+    let object = v8::Local::<v8::Object>::try_from(value).ok()?;
+    if !object.is_api_wrapper() {
+        return None;
+    }
+    // SAFETY: TRACED_NATIVE_TAG wrappers always hold a GcBox; the pointer moves straight into
+    // a Persistent.
+    let pointer = unsafe { v8::Object::unwrap::<TRACED_NATIVE_TAG, GcBox>(scope, object) }?;
+    // SAFETY: the value keeps the wrapper, and so its GcBox, alive.
+    let gc_box = unsafe { pointer.as_ref() };
+    // SAFETY: shared read of a slot written only when the wrapper was created.
+    let interface = unsafe { &*gc_box.wrapper_interface.get() }.clone()?;
+    let registry = scope.get_slot::<SharedInterfaceRegistry>()?.clone();
+    if !registry.borrow().inherits(&interface, expected) {
+        return None;
+    }
+    Some(NativeRef { gc: v8::cppgc::Persistent::new(&pointer), interface })
 }
 
 /// Converts an interface-typed argument: a traced wrapper whose interface is `expected` or
@@ -711,6 +751,42 @@ impl ScriptContext<'_, '_, '_> {
                 Err(WebIdlError::Js(Handle(v8::Global::new(try_catch, exception))))
             },
         }
+    }
+
+    /// WebIDL "call a user object's operation" for a callback interface value such as an
+    /// `EventListener`: a callable object is called directly (with `this` undefined); otherwise
+    /// its `operation` method is called with the object as `this`. A missing method is a
+    /// TypeError; exceptions come back as [`WebIdlError::Js`].
+    pub fn call_user_object_operation(
+        &mut self,
+        object: &Handle,
+        operation: &str,
+        arguments: &[Value],
+    ) -> Result<Value, WebIdlError> {
+        let local = v8::Local::new(self.scope, &object.0);
+        if local.is_function() {
+            return self.call(object, &Value::Undefined, arguments);
+        }
+        let Ok(target) = v8::Local::<v8::Object>::try_from(local) else {
+            return Err(WebIdlError::TypeError("callback interface value is not an object".into()));
+        };
+        let key = v8::String::new(self.scope, operation).unwrap();
+        let method = {
+            v8::tc_scope!(let try_catch, self.scope);
+            match target.get(try_catch, key.into()) {
+                Some(method) => Ok(v8::Global::new(try_catch, method)),
+                None => Err(try_catch.exception().map(|exception| v8::Global::new(try_catch, exception))),
+            }
+        };
+        let method = match method {
+            Ok(method) => Handle(method),
+            Err(Some(exception)) => return Err(WebIdlError::Js(Handle(exception))),
+            Err(None) => return Err(WebIdlError::TypeError("callback operation lookup failed".into())),
+        };
+        if !v8::Local::new(self.scope, &method.0).is_function() {
+            return Err(WebIdlError::TypeError(format!("callback interface object has no callable {operation}")));
+        }
+        self.call(&method, &Value::Js(object.clone()), arguments)
     }
 
     /// The engine-neutral value of a JS value (primitives convert; objects stay [`Value::Js`]).
@@ -879,6 +955,12 @@ pub enum WebIdlType {
     /// A dictionary: members in WebIDL order (inherited first, each level sorted by name),
     /// converted into a [`Value::Dictionary`].
     Dictionary(Vec<WebIdlDictionaryMember>),
+    /// A callback interface (e.g. `EventListener`): any object, as [`Value::Js`]; call it with
+    /// [`ScriptContext::call_user_object_operation`].
+    CallbackInterface,
+    /// A union of (non-nullable) member types, selected by the WebIDL union conversion
+    /// algorithm into a [`Value::Union`]. A nullable union is `Nullable(Union(..))`.
+    Union(Vec<WebIdlType>),
 }
 
 /// One member of a [`WebIdlType::Dictionary`].
@@ -975,7 +1057,21 @@ impl WebIdlArguments {
 /// the JS arguments already converted to [`Value`] and returns the new native object, which the
 /// runtime attaches to the `this` that `new` created (same ownership and finalization as
 /// [`Runtime::create_instance`]). Same plain-function-pointer restriction as the other callbacks.
-pub type NativeConstructor = fn(&[Value]) -> Result<Box<dyn std::any::Any>, WebIdlError>;
+pub type NativeConstructor = fn(&[Value]) -> Result<TracedNative, WebIdlError>;
+
+/// A newly constructed native for the traced heap, as returned by a [`NativeConstructor`]: the
+/// object `new` creates owns it exactly like a [`Runtime::create_traced_instance`] wrapper, so a
+/// JS-constructed object is a full platform object (accepted by interface-typed arguments).
+pub struct TracedNative {
+    native: Box<dyn std::any::Any>,
+    trace: fn(&dyn std::any::Any, &mut Tracer),
+}
+
+impl TracedNative {
+    pub fn new<T: Trace>(native: T) -> Self {
+        TracedNative { native: Box::new(native), trace: trace_native::<T> }
+    }
+}
 
 /// Answers the exposure conditions generated bindings check while installing: Servo
 /// preferences (`[Pref]`) and whether the realm is a secure context (`[SecureContext]`).
@@ -1055,7 +1151,8 @@ enum NativeMethodKind {
 struct WebIdlConstructorConfig {
     constructor: NativeConstructor,
     arguments: WebIdlArguments,
-    finalizers: std::rc::Rc<std::cell::RefCell<Vec<WrappedFinalizer>>>,
+    /// The interface `new` constructs: recorded on the native for interface-typed checks.
+    interface: String,
 }
 
 /// A callable method, registered via [`Runtime::define_method`]: receives the wrapped Rust value
@@ -1586,7 +1683,7 @@ impl Runtime {
                 optional_arguments,
                 enumeration_values,
             ),
-            finalizers: self.wrapped_finalizers.clone(),
+            interface: name.to_owned(),
         });
         let config_pointer = (&*config) as *const WebIdlConstructorConfig;
         self.constructor_configs.push(config);
@@ -1605,7 +1702,7 @@ impl Runtime {
         let config = Box::new(WebIdlConstructorConfig {
             constructor,
             arguments: WebIdlArguments::typed(arguments),
-            finalizers: self.wrapped_finalizers.clone(),
+            interface: name.to_owned(),
         });
         let config_pointer = (&*config) as *const WebIdlConstructorConfig;
         self.constructor_configs.push(config);
@@ -1675,22 +1772,19 @@ impl Runtime {
                                 return;
                             },
                         };
-                        let raw = Box::into_raw(Box::new(native));
-                        this.set_aligned_pointer_in_internal_field(
-                            0,
-                            raw as *const std::ffi::c_void,
-                            WRAPPED_POINTER_TAG,
-                        );
-                        let this_value: v8::Local<v8::Value> = this.into();
-                        let wrapper = v8::Global::new(scope, this_value);
-                        // `new` returns `this` because the return value is left unset.
-                        arm_native_finalizer(
-                            scope,
-                            &config.finalizers,
-                            &wrapper,
-                            raw,
-                            Box::new(|| {}),
-                        );
+                        let gc_box = GcBox {
+                            native: std::cell::UnsafeCell::new(native.native),
+                            trace: native.trace,
+                            wrapper: std::cell::UnsafeCell::new(None),
+                            wrapper_interface: std::cell::UnsafeCell::new(None),
+                        };
+                        let heap = scope.get_cpp_heap().expect("V8 isolates carry a cppgc heap");
+                        // SAFETY: moved into a Persistent before anything else can run a GC.
+                        let pointer = unsafe { v8::cppgc::make_garbage_collected(heap, gc_box) };
+                        let root = v8::cppgc::Persistent::new(&pointer);
+                        // `this` becomes the native's one wrapper (`new` returns it because the
+                        // return value is left unset); the temporary root then goes away.
+                        attach_traced_wrapper(scope, this, &config.interface, &root);
                     },
                 )
                 .data(external_data.into())
@@ -3307,6 +3401,14 @@ fn convert_typed_value<'s>(
                 convert_typed_value(scope, value, inner)
             }
         },
+        WebIdlType::CallbackInterface => {
+            if !value.is_object() {
+                throw_type_error(scope, "value is not a callback interface object");
+                return None;
+            }
+            Some(Value::Js(Handle(v8::Global::new(scope, value))))
+        },
+        WebIdlType::Union(members) => convert_union(scope, value, members),
         WebIdlType::Dictionary(members) => {
             // WebIDL dictionary conversion: undefined and null are an empty dictionary.
             let object = if value.is_null_or_undefined() {
@@ -3386,6 +3488,91 @@ fn convert_typed_value<'s>(
             Some(Value::Sequence(elements))
         },
     }
+}
+
+/// The WebIDL ES-to-union conversion over the member types this runtime supports. Steps follow
+/// the specification's order: nullish values to a dictionary, platform objects to an interface,
+/// callables to a callback, objects to a sequence/dictionary/callback interface/object, then
+/// boolean and number values, then the string, numeric and boolean fallbacks.
+fn convert_union<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    value: v8::Local<'_, v8::Value>,
+    members: &[WebIdlType],
+) -> Option<Value> {
+    let find = |predicate: &dyn Fn(&WebIdlType) -> bool| members.iter().position(|member| predicate(member));
+    let select = |scope: &mut v8::PinScope<'s, '_>, index: usize| -> Option<Value> {
+        let converted = convert_typed_value(scope, value, &members[index])?;
+        Some(Value::Union(index, Box::new(converted)))
+    };
+    let is_numeric = |member: &WebIdlType| {
+        matches!(member, WebIdlType::Primitive(conversion) if !matches!(conversion,
+            WebIdlArgumentConversion::Boolean | WebIdlArgumentConversion::DomString |
+            WebIdlArgumentConversion::UsvString | WebIdlArgumentConversion::ByteString |
+            WebIdlArgumentConversion::Any | WebIdlArgumentConversion::Object |
+            WebIdlArgumentConversion::Callback | WebIdlArgumentConversion::LegacyCallback |
+            WebIdlArgumentConversion::Interface | WebIdlArgumentConversion::Enumeration))
+    };
+    let is_string = |member: &WebIdlType| {
+        matches!(member, WebIdlType::Enumeration(_) | WebIdlType::Primitive(
+            WebIdlArgumentConversion::DomString | WebIdlArgumentConversion::UsvString |
+            WebIdlArgumentConversion::ByteString))
+    };
+    let is_boolean = |member: &WebIdlType| matches!(member, WebIdlType::Primitive(WebIdlArgumentConversion::Boolean));
+    let is_object = |member: &WebIdlType| matches!(member, WebIdlType::Primitive(WebIdlArgumentConversion::Object));
+
+    if value.is_null_or_undefined() {
+        if let Some(index) = find(&|member| matches!(member, WebIdlType::Dictionary(_))) {
+            return select(scope, index);
+        }
+    }
+    if value.is_object() {
+        for (index, member) in members.iter().enumerate() {
+            if let WebIdlType::Interface(name) = member {
+                if let Some(native) = implementing_native(scope, value, name) {
+                    return Some(Value::Union(index, Box::new(Value::Native(native))));
+                }
+            }
+        }
+        if value.is_function() {
+            if let Some(index) = find(&|member| matches!(member, WebIdlType::Primitive(WebIdlArgumentConversion::Callback))) {
+                return select(scope, index);
+            }
+        }
+        if let Some(index) = find(&|member| matches!(member, WebIdlType::Sequence(_))) {
+            let object = v8::Local::<v8::Object>::try_from(value).unwrap();
+            let iterator_symbol = v8::Symbol::get_iterator(scope);
+            let method = object.get(scope, iterator_symbol.into())?;
+            if !method.is_undefined() {
+                return select(scope, index);
+            }
+        }
+        if let Some(index) = find(&|member| matches!(member, WebIdlType::Dictionary(_))) {
+            return select(scope, index);
+        }
+        if let Some(index) = find(&|member| matches!(member, WebIdlType::CallbackInterface)) {
+            return select(scope, index);
+        }
+        if let Some(index) = find(&is_object) {
+            return select(scope, index);
+        }
+    }
+    if value.is_boolean() {
+        if let Some(index) = find(&is_boolean) {
+            return select(scope, index);
+        }
+    }
+    if value.is_number() {
+        if let Some(index) = find(&is_numeric) {
+            return select(scope, index);
+        }
+    }
+    for predicate in [&is_string as &dyn Fn(&WebIdlType) -> bool, &is_numeric, &is_boolean] {
+        if let Some(index) = find(predicate) {
+            return select(scope, index);
+        }
+    }
+    throw_type_error(scope, "value does not match any member of the union");
+    None
 }
 
 /// Arms the guaranteed finalizer that drops `raw` (a `Box<Box<dyn Any>>` attached to `wrapper`'s
@@ -3516,6 +3703,7 @@ fn v8_value<'s>(scope: &v8::PinScope<'s, '_>, value: &Value) -> v8::Local<'s, v8
             let elements: Vec<_> = elements.iter().map(|element| v8_value(scope, element)).collect();
             v8::Array::new_with_elements(scope, &elements).into()
         },
+        Value::Union(_, value) => v8_value(scope, value),
         Value::Dictionary(entries) => {
             let object = v8::Object::new(scope);
             for (name, value) in entries {
@@ -4063,7 +4251,10 @@ mod tests {
                 DROPPED.with(|dropped| dropped.set(dropped.get() + 1));
             }
         }
-        fn construct(arguments: &[Value]) -> Result<Box<dyn std::any::Any>, crate::WebIdlError> {
+        impl crate::Trace for Labeled {
+            fn trace(&self, _tracer: &mut crate::Tracer) {}
+        }
+        fn construct(arguments: &[Value]) -> Result<crate::TracedNative, crate::WebIdlError> {
             let Value::Utf16String(label) = &arguments[0] else { unreachable!("DOMString argument") };
             let count = match arguments[1] {
                 Value::Missing => 1,
@@ -4071,7 +4262,7 @@ mod tests {
                 _ => unreachable!("optional unsigned long argument"),
             };
             CONSTRUCTED.with(|constructed| constructed.set(constructed.get() + 1));
-            Ok(Box::new(Labeled { label: label.clone(), count }))
+            Ok(crate::TracedNative::new(Labeled { label: label.clone(), count }))
         }
 
         let mut runtime = Runtime::new();
@@ -5616,6 +5807,9 @@ mod tests {
             label: Vec<u16>,
             child: bool,
         }
+        impl crate::Trace for Counter {
+            fn trace(&self, _tracer: &mut crate::Tracer) {}
+        }
         #[allow(non_snake_case)]
         impl ConstructibleCounterNative for Counter {
             fn Constructor(start: u32, label: WebIdlOptionalArgument<Vec<u16>>) -> Self {
@@ -5664,6 +5858,9 @@ mod tests {
         use crate::webidl::throwing_operations::{ThrowingOperationsBinding, ThrowingOperationsNative};
         use crate::WebIdlError;
         struct Parser;
+        impl crate::Trace for Parser {
+            fn trace(&self, _tracer: &mut crate::Tracer) {}
+        }
         #[allow(non_snake_case)]
         impl ThrowingOperationsNative for Parser {
             fn Constructor(allow: bool) -> Result<Self, WebIdlError> {
@@ -6292,6 +6489,9 @@ mod tests {
             r#type: Vec<u16>,
             init: BaseInit,
         }
+        impl crate::Trace for Probe {
+            fn trace(&self, _tracer: &mut crate::Tracer) {}
+        }
         #[allow(non_snake_case)]
         impl DictionaryProbeNative for Probe {
             fn Constructor(r#type: Vec<u16>, init: BaseInit) -> Self {
@@ -6331,6 +6531,92 @@ mod tests {
         ] {
             assert!(runtime.eval(source).unwrap_err().contains("TypeError"), "{source}");
         }
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_callback_interfaces_and_unions_drive_an_event_target_like_binding() {
+        use crate::webidl::listener_target::{
+            ListenOptionsOrBoolean, ListenerTargetBinding, ListenerTargetNative, LongOrStringOrListenerTarget,
+        };
+        use crate::{Handle, JsRef, ScriptContext, Trace, Tracer, WebIdlError};
+        use std::cell::RefCell;
+        /// Listeners are traced references with their `once` flag.
+        struct Target {
+            listeners: RefCell<Vec<(JsRef, bool)>>,
+        }
+        impl Trace for Target {
+            fn trace(&self, tracer: &mut Tracer) {
+                for (listener, _) in self.listeners.borrow().iter() {
+                    tracer.js(listener);
+                }
+            }
+        }
+        #[allow(non_snake_case)]
+        impl ListenerTargetNative for Target {
+            fn Constructor() -> Self {
+                Target { listeners: RefCell::new(Vec::new()) }
+            }
+            fn Listen(&self, cx: &mut ScriptContext, listener: Option<Handle>, options: ListenOptionsOrBoolean) -> Result<(), WebIdlError> {
+                let once = match options {
+                    ListenOptionsOrBoolean::ListenOptions(options) => options.once,
+                    // As with addEventListener, a boolean is the capture flag, not `once`.
+                    ListenOptionsOrBoolean::Boolean(_) => false,
+                };
+                if let Some(listener) = listener {
+                    let reference = cx.js_ref(&listener);
+                    self.listeners.borrow_mut().push((reference, once));
+                }
+                Ok(())
+            }
+            fn Dispatch(&self, cx: &mut ScriptContext, detail: Handle) -> Result<u32, WebIdlError> {
+                // Snapshot first: listeners may add listeners re-entrantly.
+                let listeners: Vec<(Handle, bool)> = self
+                    .listeners
+                    .borrow()
+                    .iter()
+                    .filter_map(|(listener, once)| cx.js_ref_value(listener).map(|handle| (handle, *once)))
+                    .collect();
+                self.listeners.borrow_mut().retain(|(_, once)| !once);
+                for (listener, _) in &listeners {
+                    cx.call_user_object_operation(listener, "handleEvent", &[Value::Js(detail.clone())])?;
+                }
+                Ok(listeners.len() as u32)
+            }
+            fn Kind(&self, value: LongOrStringOrListenerTarget) -> Vec<u16> {
+                let text = match value {
+                    LongOrStringOrListenerTarget::Long(number) => format!("long:{number}"),
+                    LongOrStringOrListenerTarget::String(text) => format!("string:{}", String::from_utf16_lossy(&text)),
+                    LongOrStringOrListenerTarget::ListenerTarget(_) => "target".to_owned(),
+                };
+                text.encode_utf16().collect()
+            }
+        }
+        let mut runtime = Runtime::new();
+        let _binding = ListenerTargetBinding::<Target>::install(&mut runtime).unwrap();
+        for (source, expected) in [
+            // A function listener, an object with handleEvent (called with `this` = the object),
+            // a once listener, and a null listener that is ignored.
+            ("var t = new ListenerTarget(); var log = []; t.listen(d => log.push('fn:' + d)); t.listen({ handleEvent(d) { log.push('obj:' + d + ':' + (this.tag)); }, tag: 'me' }); t.listen(d => log.push('once:' + d), { once: true }); t.listen(null); [t.dispatch(1), t.dispatch(2)].join()", "3,2"),
+            ("log.join()", "fn:1,obj:1:me,once:1,fn:2,obj:2:me"),
+            // A boolean options value selects the boolean member; {} and undefined the dictionary.
+            ("const u = new ListenerTarget(); u.listen(() => 0, true); u.listen(() => 0); u.listen(() => 0, undefined); [u.dispatch(0), u.dispatch(0)].join()", "3,3"),
+            // Union selection by the WebIDL algorithm.
+            ("[t.kind(5), t.kind('5'), t.kind(t), t.kind(true), t.kind({})].join()", "long:5,string:5,target,string:true,string:[object Object]"),
+        ] {
+            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
+        }
+        // A listener's exception propagates; a non-callable handleEvent is a TypeError.
+        assert_eq!(
+            runtime.eval("const v = new ListenerTarget(); v.listen(() => { throw new RangeError('l'); }); try { v.dispatch(0) } catch (e) { e.constructor.name }").unwrap(),
+            "RangeError"
+        );
+        assert_eq!(
+            runtime.eval("const w = new ListenerTarget(); w.listen({ handleEvent: 5 }); try { w.dispatch(0) } catch (e) { e.constructor.name }").unwrap(),
+            "TypeError"
+        );
+        // A non-object listener is rejected by the callback-interface conversion.
+        assert!(runtime.eval("t.listen(5)").unwrap_err().contains("TypeError"));
     }
 
     #[cfg(feature = "webidl-pilot")]

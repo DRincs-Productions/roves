@@ -11,6 +11,63 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: unions, callback interfaces, traced constructors (CP62)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixture
+`components/roves-v8/tests/webidl/ListenerTarget.webidl`;
+`components/script_bindings/codegen/codegen.py`, `run_v8.py`, `test_v8.py`.
+**Patch:** `0126-roves-v8-unions-callback-interfaces.patch` after 0125.
+
+**Unions.** `WebIdlType::Union(members)` implements the WebIDL ES-to-union algorithm over the
+supported member types, in the specification's order:
+1. `null`/`undefined` select a dictionary member.
+2. A platform object selects an interface it implements. The check uses the unforgeable cppgc tag
+   through the new non-throwing `implementing_native`.
+3. A callable selects a callback-function member.
+4. Any other object selects a sequence (if it is iterable), then a dictionary, then a callback
+   interface, then `object`.
+5. Booleans and numbers select their own members.
+6. Otherwise the value falls back to a string, numeric or boolean member, in that order. Anything
+   left is a TypeError.
+
+The result is `Value::Union(index, value)`. The generator emits a Rust enum per union, named like
+Servo's (`AddEventListenerOptionsOrBoolean`), with `from_union`/`into_value`. A union argument
+defaulting to `{}` is never "missing", because the algorithm maps `undefined` to the dictionary.
+
+**Callback interfaces.** `WebIdlType::CallbackInterface` accepts any object.
+`ScriptContext::call_user_object_operation(object, "handleEvent", args)` implements WebIDL's
+"call a user object's operation": a callable object is called directly; otherwise its method is
+looked up and called with the object as `this`. A non-callable method is a TypeError, and
+exceptions rethrow. `run_v8.py` now ignores callback interfaces when it picks the file's interface.
+
+**Traced constructors (real gap found by the test).** Objects created with `new X()` did not use
+the traced model (CP51). They were therefore not recognized as instances of their interface by
+interface-typed arguments and unions, and did not take part in wrapper identity.
+- A `NativeConstructor` now returns a `TracedNative` (the native plus its trace function).
+- The runtime allocates it on the cppgc heap and makes `this` its single wrapper, through the
+  shared `attach_traced_wrapper`, recording the constructed interface.
+- Generated constructible bindings require `T: roves_v8::Trace`, the production direction in which
+  every DOM native is traced.
+- The obsolete finalizer plumbing in the constructor config was removed.
+
+**Tests.**
+- New runtime test on an `EventTarget`-like generated binding:
+  - function and `handleEvent`-object listeners (with `this`);
+  - `{ once: true }`;
+  - a null listener;
+  - boolean versus dictionary versus `undefined` options;
+  - union selection for long, string, platform object, boolean and plain object;
+  - a listener's exception propagating;
+  - a non-callable `handleEvent` and a non-object listener as TypeErrors.
+- The hand-written constructor test now builds traced natives and still checks exactly-once drops.
+- Generator tests: 51/51.
+- `roves-v8` pilot and pilot+JIT-less: 86 unit + 5 integration + 2 doctests each; default 59 unit +
+  2 doctests.
+- `servo-script` check with the pilot is clean.
+
+Coverage: **157/486**. **`EventTarget`, `Event`, `UIEvent`, `MouseEvent` and `KeyboardEvent` now
+generate.**
+
 ## 2026-10-06 - V8 migration Phase 4: WebIDL dictionaries (CP61)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixture

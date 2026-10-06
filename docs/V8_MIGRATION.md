@@ -107,6 +107,13 @@ conversion (member order, defaults incl. nested `{}`, required members); binding
 Rust struct per dictionary, and constructors accept structured arguments. Coverage 143/486.
 Next: callback interfaces (`EventListener`) and unions, then type-distinguished overloads.
 
+**CP62 (2026-10-06): unions, callback interfaces, traced constructors.** The WebIDL union
+algorithm (`Value::Union`, Servo-named Rust enums), callback interfaces with "call a user
+object's operation", and `new X()` now creating traced platform objects (`TracedNative`).
+`EventTarget`, `Event`, `UIEvent`, `MouseEvent`, `KeyboardEvent` generate; coverage 157/486.
+Next: `Node`/`Element` blockers (attributes with `[SetterThrows]`/`[PutForwards]`/nullable
+mutable strings, variadics, type-distinguished overloads), then non-Window exposure.
+
 CP37 exposes stable `NativeObjectId` through `DomObject` and updates generated `dom_struct`
 equality to use that engine-neutral contract. Local checks pass (reflector 2/2, macro 3/3,
 rustfmt, and patch 0101 reverse-check); CI is green: V8 37226916624 (6/6), Servo 37226916650

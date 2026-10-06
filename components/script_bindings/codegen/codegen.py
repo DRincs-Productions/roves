@@ -8336,6 +8336,38 @@ def v8_dictionary_info(dictionary, name: str):
     )
 
 
+def v8_union_info(ty, name: str, member_name: str):
+    """A Rust enum per union (named like Servo's, e.g. AddEventListenerOptionsOrBoolean) with
+    one variant per member type."""
+    enum = ty.name
+    variants, exprs, reads, writes = [], [], [], []
+    unreachable = 'unreachable!("runtime conversion matches the generated WebIDL union")'
+    for index, member in enumerate(ty.memberTypes):
+        rust, expr, arm, to_value = v8_typed_info(member, name, member_name)
+        variant = member.name
+        variants.append(f"    {variant}({rust}),")
+        exprs.append(expr)
+        reads.append(f"            {index} => Self::{variant}(match value {{ {arm}, _ => {unreachable} }}),")
+        writes.append(f"            Self::{variant}(item) => Value::Union({index}, Box::new({to_value.replace('ITEM', 'item')})),")
+    V8_DICTIONARIES[enum] = (
+        f"/// The `{enum}` WebIDL union.\n"
+        "#[derive(Clone, Debug)]\n"
+        f"pub enum {enum} {{\n" + "\n".join(variants) + "\n}\n\n"
+        f"impl {enum} {{\n"
+        "    /// Builds the union from the selected member's index and converted value.\n"
+        "    pub fn from_union(index: usize, value: &Value) -> Self {\n"
+        "        match index {\n" + "\n".join(reads) + f"\n            _ => {unreachable},\n        }}\n    }}\n\n"
+        "    pub fn into_value(self) -> Value {\n"
+        "        match self {\n" + "\n".join(writes) + "\n        }\n    }\n}\n"
+    )
+    return (
+        enum,
+        "roves_v8::WebIdlType::Union(vec![" + ", ".join(exprs) + "])",
+        f"Value::Union(index, value) => {enum}::from_union(*index, value)",
+        "ITEM.into_value()",
+    )
+
+
 def v8_typed_info(ty, name: str, member_name: str):
     """(rust_type, WebIdlType expression, match arm on a `&Value`, Rust -> Value template with
     ITEM) for a type on the structured path: sequences of supported element types, nested
@@ -8351,6 +8383,14 @@ def v8_typed_info(ty, name: str, member_name: str):
         )
     if ty.isDictionary():
         return v8_dictionary_info(ty.inner, name)
+    if ty.isUnion():
+        return v8_union_info(ty, name, member_name)
+    if ty.isCallbackInterface():
+        return ("roves_v8::Handle", "roves_v8::WebIdlType::CallbackInterface",
+                "Value::Js(value) => value.clone()", "Value::Js(ITEM)")
+    if ty.isCallback():
+        return ("roves_v8::Handle", "roves_v8::WebIdlType::Primitive(roves_v8::WebIdlArgumentConversion::Callback)",
+                "Value::Js(value) => value.clone()", "Value::Js(ITEM)")
     if ty.isSequence():
         rust, expr, arm, to_value = v8_typed_info(ty.inner, name, member_name)
         return (
@@ -8405,7 +8445,7 @@ def v8_contains_sequence(ty) -> bool:
     """Whether the type needs the structured path (sequences and dictionaries)."""
     if ty.nullable():
         return v8_contains_sequence(ty.inner)
-    return ty.isSequence() or ty.isDictionary()
+    return ty.isSequence() or ty.isDictionary() or ty.isUnion() or ty.isCallbackInterface()
 
 
 def v8_contains_handle(ty) -> bool:
@@ -8414,7 +8454,9 @@ def v8_contains_handle(ty) -> bool:
         return v8_contains_handle(ty.inner)
     if ty.isDictionary():
         return any(v8_contains_handle(member.type) for member in v8_dictionary_members(ty.inner))
-    return ty.isAny() or ty.isObject()
+    if ty.isUnion():
+        return any(v8_contains_handle(member) for member in ty.memberTypes)
+    return ty.isAny() or ty.isObject() or ty.isCallback() or ty.isCallbackInterface()
 
 
 def v8_argument_types(name: str, member_name: str, arguments) -> list:
@@ -8468,8 +8510,13 @@ def v8_argument_types(name: str, member_name: str, arguments) -> list:
             if nullable:
                 expr = f"roves_v8::WebIdlType::Nullable(Box::new({expr}))"
             conversion = "Any" if v8_contains_handle(inner) else "Sequence"
-            # A dictionary argument is never "missing": undefined converts to its defaults.
-            optional = argument.optional and not inner.isDictionary()
+            # A dictionary argument (or a union defaulting to `{}`) is never "missing":
+            # undefined converts to the dictionary's defaults.
+            optional = argument.optional and not (
+                inner.isDictionary() or isinstance(default_value, IDLDefaultDictionaryValue)
+            )
+            if optional and default_value is not None and not isinstance(default_value, IDLEmptySequenceValue):
+                raise TypeError(f"V8 backend unsupported explicit default for {name}.{member_name}: {default_value}")
             add_argument_type(
                 rust, conversion, arm, nullable, optional,
                 "Vec::new()" if (default_value is not None and optional) else None, None, expr,
@@ -9240,8 +9287,8 @@ class CGV8BindingRoot(CGThing):
             call_arguments = ", ".join(f"arg{index}" for index, _ in enumerate(constructor_arguments))
             constructed = f"<T as {name}Native>::Constructor({call_arguments})"
             constructed = (
-                f"{constructed}.map(|native| Box::new(native) as Box<dyn std::any::Any>)"
-                if constructor_throws else f"Ok(Box::new({constructed}))"
+                f"{constructed}.map(roves_v8::TracedNative::new)"
+                if constructor_throws else f"Ok(roves_v8::TracedNative::new({constructed}))"
             )
             constructor_callback = (
                 f'|{"args" if constructor_arguments else "_args"}| {{\n'
@@ -9277,6 +9324,9 @@ class CGV8BindingRoot(CGThing):
             )
         if ce_reaction_members:
             native_bound += " + roves_v8::CeReactions"
+        if constructor is not None:
+            # `new` creates a traced platform object (see roves_v8::TracedNative).
+            native_bound += " + roves_v8::Trace"
         dictionary_structs = "".join(f"\n{source}" for source in V8_DICTIONARIES.values())
         return AUTOGENERATED_WARNING_COMMENT + f"""use roves_v8::{{Handle, Interface, Runtime, Value}};
 {dictionary_structs}

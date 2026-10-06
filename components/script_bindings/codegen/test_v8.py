@@ -417,7 +417,7 @@ class V8GeneratorTests(unittest.TestCase):
             source = generate(path, Path(directory) / "output")
             self.assertIn("fn Constructor(arg0: roves_v8::FiniteF64, arg1: roves_v8::WebIdlOptionalArgument<Vec<u16>>) -> Self where Self: Sized;", source)
             self.assertIn("runtime.define_constructible_interface(", source)
-            self.assertIn("Box::new(<T as PointNative>::Constructor(arg0, arg1))", source)
+            self.assertIn("Ok(roves_v8::TracedNative::new(<T as PointNative>::Constructor(arg0, arg1)))", source)
             self.assertIn("&[roves_v8::WebIdlArgumentConversion::Double, roves_v8::WebIdlArgumentConversion::DomString]", source)
             self.assertIn("&[false, true]", source)
 
@@ -559,6 +559,32 @@ class V8GeneratorTests(unittest.TestCase):
             ]:
                 self.assertIn(expected, source)
 
+    def test_unions_and_callback_interfaces_use_structured_types(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Target.webidl"
+            path.write_text(
+                "[Exposed=Window] callback interface Listener { undefined handleEvent(any event); }; "
+                "dictionary Options { boolean once = false; }; "
+                "[Exposed=Window] interface Target { constructor(); "
+                "undefined listen(Listener? listener, optional (Options or boolean) options = {}); "
+                "DOMString kind((long or DOMString) value); };",
+                encoding="utf-8",
+            )
+            source = generate(path, Path(directory) / "output")
+            for expected in [
+                "pub enum OptionsOrBoolean {\n    Options(Options),\n    Boolean(bool),\n}",
+                "pub enum LongOrString {\n    Long(i32),\n    String(Vec<u16>),\n}",
+                "fn Listen(&self, cx: &mut roves_v8::ScriptContext, arg0: Option<roves_v8::Handle>, arg1: OptionsOrBoolean) -> Result<(), roves_v8::WebIdlError>;",
+                "roves_v8::WebIdlType::Nullable(Box::new(roves_v8::WebIdlType::CallbackInterface))",
+                "roves_v8::WebIdlType::Union(vec![",
+                # A union defaulting to `{}` is never missing: undefined selects the dictionary.
+                "optional: false",
+                # Constructible interfaces create traced platform objects.
+                "pub trait TargetNative: 'static + roves_v8::Trace {",
+                "Ok(roves_v8::TracedNative::new(<T as TargetNative>::Constructor()))",
+            ]:
+                self.assertIn(expected, source)
+
     def test_overloads_needing_type_distinction_fail_closed(self):
         self.assert_unsupported("interface Unsupported { undefined f(DOMString a); undefined f(boolean a); };")
         self.assert_unsupported("interface Unsupported { undefined f(DOMString a); undefined f(boolean a, optional boolean b); };")
@@ -584,7 +610,7 @@ class V8GeneratorTests(unittest.TestCase):
             )
             source = generate(path, Path(directory) / "output")
             self.assertIn("fn Constructor(arg0: bool) -> Result<Self, roves_v8::WebIdlError> where Self: Sized;", source)
-            self.assertIn(".map(|native| Box::new(native) as Box<dyn std::any::Any>)", source)
+            self.assertIn(".map(roves_v8::TracedNative::new)", source)
             self.assertIn("fn Parse(&self, arg0: Vec<u16>) -> Result<u32, roves_v8::WebIdlError>;", source)
             self.assertIn("fn Reset(&self) -> Result<(), roves_v8::WebIdlError>;", source)
             self.assertIn("fn Plain(&self) -> bool;", source)
@@ -686,7 +712,7 @@ class V8GeneratorTests(unittest.TestCase):
                 self.assertIn(expected, source)
 
     def test_callback_interfaces_and_promises_are_not_dom_interface_values(self):
-        self.assert_unsupported("callback interface Listener { undefined handle(); }; [Exposed=Window] interface Uses { undefined add(Listener listener); };")
+        self.assert_unsupported("interface Uses { undefined add(Promise<any> pending); };")
 
     def test_exposure_conditions_gate_interface_objects_and_members(self):
         with tempfile.TemporaryDirectory() as directory:
