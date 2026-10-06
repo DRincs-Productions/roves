@@ -754,7 +754,16 @@ class V8GeneratorTests(unittest.TestCase):
             child_source = generate(child, Path(directory) / "output", (base,))
             self.assertIn("runtime.define_indexed_property_getter(&interface", child_source)
             self.assertNotIn("fn IndexedGetter", child_source)
+            # Named getters need [LegacyUnenumerableNamedProperties] (no enumeration support yet).
             self.assert_unsupported("interface Unsupported { getter DOMString? (DOMString name); };")
+            named = Path(directory) / "Named.webidl"
+            named.write_text(
+                "[Exposed=Window, LegacyUnenumerableNamedProperties] interface Named { getter DOMString? namedItem(DOMString name); };",
+                encoding="utf-8",
+            )
+            named_source = generate(named, Path(directory) / "output")
+            self.assertIn("fn NamedGetter(&self, name: Vec<u16>) -> Option<Vec<u16>>;", named_source)
+            self.assertIn("runtime.define_named_property_getter(&interface, |native, name| {", named_source)
             self.assert_unsupported("interface Unsupported { iterable<DOMString, long>; };")
 
     def test_overloads_needing_type_distinction_use_typed_overloads(self):

@@ -8384,6 +8384,15 @@ def v8_context_members() -> dict:
     return _V8_CONTEXT_MEMBERS
 
 
+def v8_has_unenumerable_named_properties(interface) -> bool:
+    """[LegacyUnenumerableNamedProperties] on the interface or an ancestor."""
+    while interface is not None:
+        if "LegacyUnenumerableNamedProperties" in interface._extendedAttrDict:
+            return True
+        interface = interface.parent
+    return False
+
+
 def v8_is_json_type(ty) -> bool:
     """WebIDL JSON types the default toJSON collects: primitives, strings, enumerations,
     nullable and sequence forms of them, and interfaces that have a toJSON operation."""
@@ -8931,7 +8940,7 @@ class CGV8BindingRoot(CGThing):
         # [Serializable]/[Transferable] concern structured clone, not the binding's shape.
         unsupported = set(interface._extendedAttrDict) - {
             "Exposed", "LegacyNoInterfaceObject", "Abstract", "Serializable", "Transferable",
-            "LegacyWindowAlias", "Func",
+            "LegacyWindowAlias", "Func", "LegacyUnenumerableNamedProperties",
         } - V8_EXPOSURE_ATTRIBUTES
         if unsupported:
             raise TypeError(f"V8 backend unsupported attributes on {name}: {sorted(unsupported)}")
@@ -8965,6 +8974,7 @@ class CGV8BindingRoot(CGThing):
         typed_attributes = []
         value_iterable = False
         indexed_getter = None
+        named_getter = None
         promise_operations = set()
         typed_overload_members = set()
         typed_overload_entries = []
@@ -8985,10 +8995,14 @@ class CGV8BindingRoot(CGThing):
                 value_iterable = True
                 continue
             if member.isMethod() and member.isGetter():
-                if member.isNamed():
-                    raise TypeError(f"V8 backend does not yet support named getters: {name}.{member.identifier.name}")
                 getter_type = member.signatures()[0][0]
-                indexed_getter = getter_type.inner if getter_type.nullable() else getter_type
+                getter_type = getter_type.inner if getter_type.nullable() else getter_type
+                if member.isNamed():
+                    if not v8_has_unenumerable_named_properties(interface):
+                        raise TypeError(f"V8 backend only supports named getters with [LegacyUnenumerableNamedProperties]: {name}.{member.identifier.name}")
+                    named_getter = getter_type
+                else:
+                    indexed_getter = getter_type
                 if member.identifier.name.startswith("__"):
                     # An anonymous `getter T (unsigned long index)` has no operation of its own.
                     continue
@@ -9720,6 +9734,26 @@ class CGV8BindingRoot(CGThing):
                 f"        runtime.define_indexed_property_getter(&interface, |native, index| {{\n"
                 f'            let native = native.downcast_ref::<T>().expect("typed {name} wrapper");\n'
                 f"            native.IndexedGetter(index).map(|item| {to_value.replace('ITEM', 'item')})\n"
+                f"        }})?;"
+            )
+        named_type = named_getter
+        ancestor = interface.parent
+        while named_type is None and ancestor is not None:
+            for ancestor_member in ancestor.members:
+                if ancestor_member.isMethod() and ancestor_member.isGetter() and ancestor_member.isNamed():
+                    ancestor_type = ancestor_member.signatures()[0][0]
+                    named_type = ancestor_type.inner if ancestor_type.nullable() else ancestor_type
+            ancestor = ancestor.parent
+        if named_type is not None:
+            rust, _, _, to_value = v8_typed_info(named_type, name, "NamedGetter")
+            if v8_contains_handle(named_type):
+                raise TypeError(f"V8 backend does not support named getters returning JS values: {name}")
+            if named_getter is not None:
+                trait_methods += f"\n    fn NamedGetter(&self, name: Vec<u16>) -> Option<{rust}>;"
+            registrations_list.append(
+                f"        runtime.define_named_property_getter(&interface, |native, name| {{\n"
+                f'            let native = native.downcast_ref::<T>().expect("typed {name} wrapper");\n'
+                f"            native.NamedGetter(name.encode_utf16().collect()).map(|item| {to_value.replace('ITEM', 'item')})\n"
                 f"        }})?;"
             )
         if value_iterable:

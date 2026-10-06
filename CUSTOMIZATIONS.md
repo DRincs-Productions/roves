@@ -11,6 +11,44 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: named getters with `[LegacyUnenumerableNamedProperties]` (CP73)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixture
+`components/roves-v8/tests/webidl/NamedCollection.webidl`;
+`components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0137-roves-v8-named-getters.patch` after 0136.
+
+`HTMLCollection` (and later `Window`) exposes elements by name as properties.
+
+**Runtime.** `Runtime::define_named_property_getter` installs a string-only named interceptor
+that implements two WebIDL rules:
+- **Visibility.** A name is visible only if no real (non-interceptor) property of that name exists
+  on the object or its prototype chain, so `length` and `toString` always win. The new
+  `named_property_shadowed` checks `has_real_named_property` along the chain.
+- **Assignment.** Without a named setter, defining a supported name is rejected: the setter
+  interceptor reports `false`, so the assignment is ignored in sloppy mode and is a TypeError in
+  strict mode. Other names become ordinary expandos.
+
+Finding: V8's `NON_MASKING` flag gives the visibility rule for free but never calls the setter
+interceptor, so the rule is implemented explicitly instead. Names are not enumerated.
+
+**Generator.**
+- A named getter declares `NamedGetter(&self, name) -> Option<T>` on the native trait, as in Servo,
+  and is re-registered on descendants.
+- It is supported only with `[LegacyUnenumerableNamedProperties]`. Enumerable named properties need
+  an enumerator and still fail closed.
+
+**Tests.**
+- New runtime test: named and indexed access, unsupported names, real properties winning over
+  names, non-enumeration, sloppy versus strict assignment of a supported name, and an ordinary
+  expando.
+- Generator tests: 60/60.
+- `roves-v8` pilot and pilot+JIT-less: 97 unit + 5 integration + 2 doctests each; default 60 unit +
+  2 doctests.
+- `servo-script` check with the pilot is clean.
+
+Coverage: **268/486** (`HTMLCollection` generates).
+
 ## 2026-10-06 - V8 migration Phase 4: indexed getters and value iterables (CP72)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixtures

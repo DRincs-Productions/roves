@@ -248,6 +248,12 @@ generatore 60/60, `roves-v8` 96+5+2, default 60+2, check pulito. Copertura **263
 **Prossimo:** named property (`HTMLCollection`), pair iterable, `[Global]` (Window),
 `[LegacyFactoryFunction]`, `[HTMLConstructor]`.
 
+**CP73 (2026-10-06):** getter nominali con `[LegacyUnenumerableNamedProperties]` (patch 0137):
+regola di visibilità (le proprietà reali vincono) e assegnazione rifiutata (ignorata in sloppy
+mode, TypeError in strict). Nota: `NON_MASKING` di V8 non invoca il setter interceptor, quindi la
+regola è implementata a mano. Test generatore 60/60, `roves-v8` 97+5+2, default 60+2. Copertura
+**268/486**; `HTMLCollection` ora genera.
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,
