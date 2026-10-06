@@ -8999,6 +8999,7 @@ class CGV8BindingRoot(CGThing):
         contextual_attributes = []
         static_operations = []
         static_attributes = []
+        lenient_setters = []
         unscopables = []
         default_to_json = False
         fallible_attributes = []
@@ -9176,7 +9177,12 @@ class CGV8BindingRoot(CGThing):
             if member.isAttr() and member.isLegacyUnforgeable() and member.readonly:
                 attribute_attributes.discard("LegacyUnforgeable")
                 unforgeable_attributes.add(member.identifier.name)
-            if namespace and member.isAttr() and member.readonly and not (attribute_attributes - {"SameObject"}):
+            if member.isAttr() and member.readonly and "LegacyLenientSetter" in attribute_attributes:
+                # A setter that ignores assignments (installed by the runtime with the getter).
+                attribute_attributes.discard("LegacyLenientSetter")
+                lenient_setters.append(member.identifier.name)
+            if (member.isAttr() and (namespace or member.isStatic()) and member.readonly
+                    and not (attribute_attributes - {"SameObject"})):
                 rust, _, _, to_value = v8_typed_info(member.type, name, member.identifier.name)
                 static_attributes.append((member.identifier.name, v8_native_name(member), rust, to_value))
                 continue
@@ -9918,7 +9924,9 @@ class CGV8BindingRoot(CGThing):
                 f"            <T as {name}Native>::{factory_name}({call_arguments}).map(roves_v8::TracedNative::new)\n"
                 f"        }}, &[{typed_arguments}])?;\n"
             )
-        registrations = factory_registrations + registrations
+        registrations = factory_registrations + "".join(
+            f'        runtime.mark_lenient_setter(&interface, "{idl}");\n' for idl in lenient_setters
+        ) + registrations
         if constructor is not None or interface.legacyFactoryFunctions:
             # `new` creates a traced platform object (see roves_v8::TracedNative).
             native_bound += " + roves_v8::Trace"

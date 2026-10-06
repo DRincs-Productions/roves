@@ -296,6 +296,10 @@ Semplificazione del pilot: con `[*Throws]` entrambi gli accessor sono fallibili.
 `Animation`, `AudioBufferSourceNode`, `HTMLInputElement`, `HTMLTableElement`, `MediaSession`,
 `TreeWalker`, `VTTCue`.** Test: generatore 67/67, `roves-v8` 105+5+2. Copertura **442/486 (91%)**.
 
+**CP82 (2026-10-06):** attributi statici di interfaccia e `[LegacyLenientSetter]`
+(`mark_lenient_setter`, patch 0146). **Generano `Notification`, `PerformanceObserver`,
+`ShadowRoot`.** Test: generatore 68/68, `roves-v8` 106+5+2. Copertura **445/486**.
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

@@ -186,6 +186,10 @@ pub mod webidl {
         include!(concat!(env!("OUT_DIR"), "/HolderV8Binding.rs"));
     }
     #[cfg(test)]
+    pub mod gate {
+        include!(concat!(env!("OUT_DIR"), "/GateV8Binding.rs"));
+    }
+    #[cfg(test)]
     pub mod promise_operations {
         include!(concat!(env!("OUT_DIR"), "/PromiseOperationsV8Binding.rs"));
     }
@@ -391,6 +395,8 @@ pub struct Interface {
     value_iterable: std::cell::Cell<bool>,
     /// A WebIDL namespace (`console`, `CSS`): exposed as a plain object holding its operations.
     namespace: std::cell::Cell<bool>,
+    /// Readonly attributes with `[LegacyLenientSetter]`: assignments are silently ignored.
+    lenient_setters: std::cell::RefCell<std::collections::HashSet<String>>,
     /// `[LegacyFactoryFunction]`s (`Image`, `Audio`, `Option`): name and function template.
     legacy_factories: std::cell::RefCell<Vec<(String, v8::Global<v8::FunctionTemplate>)>>,
     // Materializing a child also freezes all ancestor templates. Shared flags track
@@ -700,6 +706,30 @@ fn traced_wrapper<'s>(
         .expect("a freshly created ObjectTemplate instance should never fail");
     attach_traced_wrapper(scope, object, interface, gc);
     object
+}
+
+/// The setter of a readonly `[LegacyLenientSetter]` attribute: assignments are ignored (it
+/// exists so that `obj.attr = x` does not throw in strict mode), or `None` for other attributes.
+fn lenient_setter<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    interface: &Interface,
+    name: &str,
+) -> Option<v8::Local<'s, v8::FunctionTemplate>> {
+    if !interface.lenient_setters.borrow().contains(name) {
+        return None;
+    }
+    let setter = v8::FunctionTemplate::builder(
+        |scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _retval: v8::ReturnValue| {
+            if args.length() == 0 {
+                throw_type_error(scope, "Not enough arguments");
+            }
+        },
+    )
+    .length(1)
+    .constructor_behavior(v8::ConstructorBehavior::Throw)
+    .build(scope);
+    setter.set_class_name(v8::String::new(scope, &format!("set {name}"))?);
+    Some(setter)
 }
 
 /// Moves a newly constructed native onto the traced heap with `object` as its one wrapper.
@@ -2428,6 +2458,7 @@ impl Runtime {
             value_iterable: std::cell::Cell::new(false),
             namespace: std::cell::Cell::new(false),
             legacy_factories: std::cell::RefCell::new(Vec::new()),
+            lenient_setters: std::cell::RefCell::new(std::collections::HashSet::new()),
             materialized: std::rc::Rc::new(std::cell::Cell::new(false)),
             ancestors: parent.map_or_else(Vec::new, |parent| {
                 let mut ancestors = parent.ancestors.clone();
@@ -2819,6 +2850,7 @@ impl Runtime {
         } else {
             None
         };
+        let setter_template = setter_template.or_else(|| lenient_setter(scope, interface, name));
         template.prototype_template(scope).set_accessor_property(
             key.into(),
             Some(getter_template),
@@ -2998,6 +3030,12 @@ impl Runtime {
         factory.set_class_name(v8::String::new(scope, name).ok_or("invalid factory name")?);
         interface.legacy_factories.borrow_mut().push((name.to_owned(), v8::Global::new(scope, factory)));
         Ok(())
+    }
+
+    /// Marks the readonly attribute `name` as `[LegacyLenientSetter]`: it gets a setter that
+    /// ignores assignments. Call before defining the attribute.
+    pub fn mark_lenient_setter(&mut self, interface: &Interface, name: &str) {
+        interface.lenient_setters.borrow_mut().insert(name.to_owned());
     }
 
     /// Defines a readonly static attribute (or a namespace attribute, e.g. `CSS.paintWorklet`):
@@ -3480,6 +3518,7 @@ impl Runtime {
         } else {
             (template.prototype_template(scope), v8::PropertyAttribute::NONE)
         };
+        let setter_template = setter_template.or_else(|| lenient_setter(scope, interface, name));
         target.set_accessor_property(key.into(), Some(getter_template), setter_template, attributes);
         Ok(())
     }
@@ -8332,6 +8371,35 @@ mod tests {
             ("a.current = b; a.current === b", "true"),
             ("(() => { try { a.current = a; } catch (e) { return e.name + ' ' + (a.current === b); } })()", "HierarchyRequestError true"),
             ("(() => { try { return b.current; } catch (e) { return e.name; } })()", "TypeError"),
+        ] {
+            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
+        }
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_static_attributes_and_lenient_setters() {
+        use crate::webidl::gate::{GateBinding, GateNative};
+        use crate::{ScriptContext, WebIdlError};
+        struct Gate;
+        #[allow(non_snake_case)]
+        impl GateNative for Gate {
+            fn Limit(_cx: &mut ScriptContext) -> Result<u32, WebIdlError> { Ok(8) }
+            fn Open(&self) -> bool { true }
+        }
+        let mut runtime = Runtime::new();
+        let binding = GateBinding::<Gate>::install(&mut runtime).unwrap();
+        let gate = binding.create(&mut runtime, Gate);
+        runtime.set_global_property("gate", &gate).unwrap();
+        for (source, expected) in [
+            // A static attribute is an accessor on the interface object, not on instances.
+            ("[Gate.limit, typeof gate.limit, typeof Object.getOwnPropertyDescriptor(Gate, 'limit').get].join()", "8,undefined,function"),
+            ("Gate.limit = 1; Gate.limit", "8"),
+            // [LegacyLenientSetter]: assigning does not throw, even in strict mode, and changes nothing.
+            ("(() => { 'use strict'; gate.open = false; return gate.open; })()", "true"),
+            ("typeof Object.getOwnPropertyDescriptor(Gate.prototype, 'open').set", "function"),
+            ("Object.getOwnPropertyDescriptor(Gate.prototype, 'open').set.name", "set open"),
+            ("(() => { try { Object.getOwnPropertyDescriptor(Gate.prototype, 'open').set.call(gate); } catch (e) { return e.name; } })()", "TypeError"),
         ] {
             assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
         }

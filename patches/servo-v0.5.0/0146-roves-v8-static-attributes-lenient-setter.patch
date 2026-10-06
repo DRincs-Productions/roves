@@ -1,0 +1,224 @@
+diff --git a/components/roves-v8/build.rs b/components/roves-v8/build.rs
+index 7f3c76ae673..2bbdfd23788 100644
+--- a/components/roves-v8/build.rs
++++ b/components/roves-v8/build.rs
+@@ -239,6 +239,7 @@ fn main() {
+         ("OverloadedConstructor", &[][..]),
+         ("FactoryProbe", &[][..]),
+         ("Holder", &[][..]),
++        ("Gate", &[][..]),
+     ] {
+         println!("cargo:rerun-if-changed={}", fixtures.join(format!("{interface}.webidl")).display());
+         println!("cargo:rerun-if-changed={}", fixtures.join("Bindings.conf").display());
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 86006b3b345..d61ca356b88 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -186,6 +186,10 @@ pub mod webidl {
+         include!(concat!(env!("OUT_DIR"), "/HolderV8Binding.rs"));
+     }
+     #[cfg(test)]
++    pub mod gate {
++        include!(concat!(env!("OUT_DIR"), "/GateV8Binding.rs"));
++    }
++    #[cfg(test)]
+     pub mod promise_operations {
+         include!(concat!(env!("OUT_DIR"), "/PromiseOperationsV8Binding.rs"));
+     }
+@@ -391,6 +395,8 @@ pub struct Interface {
+     value_iterable: std::cell::Cell<bool>,
+     /// A WebIDL namespace (`console`, `CSS`): exposed as a plain object holding its operations.
+     namespace: std::cell::Cell<bool>,
++    /// Readonly attributes with `[LegacyLenientSetter]`: assignments are silently ignored.
++    lenient_setters: std::cell::RefCell<std::collections::HashSet<String>>,
+     /// `[LegacyFactoryFunction]`s (`Image`, `Audio`, `Option`): name and function template.
+     legacy_factories: std::cell::RefCell<Vec<(String, v8::Global<v8::FunctionTemplate>)>>,
+     // Materializing a child also freezes all ancestor templates. Shared flags track
+@@ -702,6 +708,30 @@ fn traced_wrapper<'s>(
+     object
+ }
+ 
++/// The setter of a readonly `[LegacyLenientSetter]` attribute: assignments are ignored (it
++/// exists so that `obj.attr = x` does not throw in strict mode), or `None` for other attributes.
++fn lenient_setter<'s>(
++    scope: &mut v8::PinScope<'s, '_>,
++    interface: &Interface,
++    name: &str,
++) -> Option<v8::Local<'s, v8::FunctionTemplate>> {
++    if !interface.lenient_setters.borrow().contains(name) {
++        return None;
++    }
++    let setter = v8::FunctionTemplate::builder(
++        |scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _retval: v8::ReturnValue| {
++            if args.length() == 0 {
++                throw_type_error(scope, "Not enough arguments");
++            }
++        },
++    )
++    .length(1)
++    .constructor_behavior(v8::ConstructorBehavior::Throw)
++    .build(scope);
++    setter.set_class_name(v8::String::new(scope, &format!("set {name}"))?);
++    Some(setter)
++}
++
+ /// Moves a newly constructed native onto the traced heap with `object` as its one wrapper.
+ fn attach_new_traced_native(scope: &mut v8::PinScope, object: v8::Local<v8::Object>, interface: &str, native: TracedNative) {
+     let gc_box = GcBox {
+@@ -2428,6 +2458,7 @@ impl Runtime {
+             value_iterable: std::cell::Cell::new(false),
+             namespace: std::cell::Cell::new(false),
+             legacy_factories: std::cell::RefCell::new(Vec::new()),
++            lenient_setters: std::cell::RefCell::new(std::collections::HashSet::new()),
+             materialized: std::rc::Rc::new(std::cell::Cell::new(false)),
+             ancestors: parent.map_or_else(Vec::new, |parent| {
+                 let mut ancestors = parent.ancestors.clone();
+@@ -2819,6 +2850,7 @@ impl Runtime {
+         } else {
+             None
+         };
++        let setter_template = setter_template.or_else(|| lenient_setter(scope, interface, name));
+         template.prototype_template(scope).set_accessor_property(
+             key.into(),
+             Some(getter_template),
+@@ -3000,6 +3032,12 @@ impl Runtime {
+         Ok(())
+     }
+ 
++    /// Marks the readonly attribute `name` as `[LegacyLenientSetter]`: it gets a setter that
++    /// ignores assignments. Call before defining the attribute.
++    pub fn mark_lenient_setter(&mut self, interface: &Interface, name: &str) {
++        interface.lenient_setters.borrow_mut().insert(name.to_owned());
++    }
++
+     /// Defines a readonly static attribute (or a namespace attribute, e.g. `CSS.paintWorklet`):
+     /// an accessor on the interface object whose getter calls `getter` with no arguments.
+     pub fn define_static_attribute(&mut self, interface: &Interface, name: &str, getter: StaticNativeMethod) -> Result<(), String> {
+@@ -3480,6 +3518,7 @@ impl Runtime {
+         } else {
+             (template.prototype_template(scope), v8::PropertyAttribute::NONE)
+         };
++        let setter_template = setter_template.or_else(|| lenient_setter(scope, interface, name));
+         target.set_accessor_property(key.into(), Some(getter_template), setter_template, attributes);
+         Ok(())
+     }
+@@ -8337,6 +8376,35 @@ mod tests {
+         }
+     }
+ 
++    #[cfg(feature = "webidl-pilot")]
++    #[test]
++    fn generated_static_attributes_and_lenient_setters() {
++        use crate::webidl::gate::{GateBinding, GateNative};
++        use crate::{ScriptContext, WebIdlError};
++        struct Gate;
++        #[allow(non_snake_case)]
++        impl GateNative for Gate {
++            fn Limit(_cx: &mut ScriptContext) -> Result<u32, WebIdlError> { Ok(8) }
++            fn Open(&self) -> bool { true }
++        }
++        let mut runtime = Runtime::new();
++        let binding = GateBinding::<Gate>::install(&mut runtime).unwrap();
++        let gate = binding.create(&mut runtime, Gate);
++        runtime.set_global_property("gate", &gate).unwrap();
++        for (source, expected) in [
++            // A static attribute is an accessor on the interface object, not on instances.
++            ("[Gate.limit, typeof gate.limit, typeof Object.getOwnPropertyDescriptor(Gate, 'limit').get].join()", "8,undefined,function"),
++            ("Gate.limit = 1; Gate.limit", "8"),
++            // [LegacyLenientSetter]: assigning does not throw, even in strict mode, and changes nothing.
++            ("(() => { 'use strict'; gate.open = false; return gate.open; })()", "true"),
++            ("typeof Object.getOwnPropertyDescriptor(Gate.prototype, 'open').set", "function"),
++            ("Object.getOwnPropertyDescriptor(Gate.prototype, 'open').set.name", "set open"),
++            ("(() => { try { Object.getOwnPropertyDescriptor(Gate.prototype, 'open').set.call(gate); } catch (e) { return e.name; } })()", "TypeError"),
++        ] {
++            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
++        }
++    }
++
+     #[cfg(feature = "webidl-pilot")]
+     #[test]
+     fn generated_promise_operations_resolve_reject_and_settle_later() {
+diff --git a/components/roves-v8/tests/webidl/Gate.webidl b/components/roves-v8/tests/webidl/Gate.webidl
+new file mode 100644
+index 00000000000..cf45c4d31e3
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/Gate.webidl
+@@ -0,0 +1,7 @@
++// Static attributes (like Notification.permission) and [LegacyLenientSetter] (like
++// DocumentOrShadowRoot.fullscreenElement).
++[Exposed=Window]
++interface Gate {
++  static readonly attribute unsigned long limit;
++  [LegacyLenientSetter] readonly attribute boolean open;
++};
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index b13fff196cc..17009bf8170 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8999,6 +8999,7 @@ class CGV8BindingRoot(CGThing):
+         contextual_attributes = []
+         static_operations = []
+         static_attributes = []
++        lenient_setters = []
+         unscopables = []
+         default_to_json = False
+         fallible_attributes = []
+@@ -9176,7 +9177,12 @@ class CGV8BindingRoot(CGThing):
+             if member.isAttr() and member.isLegacyUnforgeable() and member.readonly:
+                 attribute_attributes.discard("LegacyUnforgeable")
+                 unforgeable_attributes.add(member.identifier.name)
+-            if namespace and member.isAttr() and member.readonly and not (attribute_attributes - {"SameObject"}):
++            if member.isAttr() and member.readonly and "LegacyLenientSetter" in attribute_attributes:
++                # A setter that ignores assignments (installed by the runtime with the getter).
++                attribute_attributes.discard("LegacyLenientSetter")
++                lenient_setters.append(member.identifier.name)
++            if (member.isAttr() and (namespace or member.isStatic()) and member.readonly
++                    and not (attribute_attributes - {"SameObject"})):
+                 rust, _, _, to_value = v8_typed_info(member.type, name, member.identifier.name)
+                 static_attributes.append((member.identifier.name, v8_native_name(member), rust, to_value))
+                 continue
+@@ -9918,7 +9924,9 @@ class CGV8BindingRoot(CGThing):
+                 f"            <T as {name}Native>::{factory_name}({call_arguments}).map(roves_v8::TracedNative::new)\n"
+                 f"        }}, &[{typed_arguments}])?;\n"
+             )
+-        registrations = factory_registrations + registrations
++        registrations = factory_registrations + "".join(
++            f'        runtime.mark_lenient_setter(&interface, "{idl}");\n' for idl in lenient_setters
++        ) + registrations
+         if constructor is not None or interface.legacyFactoryFunctions:
+             # `new` creates a traced platform object (see roves_v8::TracedNative).
+             native_bound += " + roves_v8::Trace"
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index 84bc1bc293f..b97a498bd5b 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -104,7 +104,7 @@ class V8GeneratorTests(unittest.TestCase):
+                 generate(path, Path(directory) / "output")
+ 
+     def test_unsupported_members_never_silently_disappear(self):
+-        for member in ["[LegacyLenientSetter] readonly attribute boolean value;", "static readonly attribute boolean valid;", "[LegacyLenientThis] readonly attribute boolean valid;", "[Replaceable] readonly attribute boolean owner;"]:
++        for member in ["static attribute boolean valid;", "[LegacyLenientThis] readonly attribute boolean valid;", "[Replaceable] readonly attribute boolean owner;"]:
+             with self.subTest(member=member):
+                 self.assert_unsupported("interface Unsupported { " + member + " };")
+ 
+@@ -877,6 +877,20 @@ class V8GeneratorTests(unittest.TestCase):
+             self.assertIn('runtime.define_typed_attribute(&interface, "next"', source)
+             self.assertIn('roves_v8::WebIdlType::Nullable(Box::new(roves_v8::WebIdlType::Interface("Holder"', source)
+ 
++    def test_static_attributes_and_lenient_setters(self):
++        with tempfile.TemporaryDirectory() as directory:
++            path = Path(directory) / "Gate.webidl"
++            path.write_text(
++                "[Exposed=Window] interface Gate { static readonly attribute unsigned long limit;"
++                " [LegacyLenientSetter] readonly attribute boolean open; };",
++                encoding="utf-8",
++            )
++            source = generate(path, Path(directory) / "output")
++            self.assertIn("fn Limit(cx: &mut roves_v8::ScriptContext) -> Result<u32, roves_v8::WebIdlError> where Self: Sized;", source)
++            self.assertIn('runtime.define_static_attribute(&interface, "limit"', source)
++            self.assertIn('runtime.mark_lenient_setter(&interface, "open");', source)
++            self.assertLess(source.index("mark_lenient_setter"), source.index('"open", |native|'))
++
+     def test_legacy_factory_functions_generate_fallible_natives(self):
+         with tempfile.TemporaryDirectory() as directory:
+             path = Path(directory) / "Picture.webidl"

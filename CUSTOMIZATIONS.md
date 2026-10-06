@@ -11,6 +11,29 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: static attributes and `[LegacyLenientSetter]` (CP82)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `components/roves-v8/build.rs`,
+`components/roves-v8/tests/webidl/Gate.webidl` (new),
+`components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0146-roves-v8-static-attributes-lenient-setter.patch` after 0145.
+
+- **Static readonly attributes** on interfaces (`Notification.permission`,
+  `PerformanceObserver.supportedEntryTypes`) now use the `define_static_attribute` added for
+  namespaces (CP78). The native takes the `ScriptContext` and returns `Result`.
+- **`[LegacyLenientSetter]`** (`DocumentOrShadowRoot.fullscreenElement`): the generator calls the
+  new `Runtime::mark_lenient_setter` before defining the attribute. Both runtime paths that
+  define accessors then give the readonly attribute a `set <name>` function. That function
+  ignores the value, so strict-mode assignments do not throw, and throws a TypeError only when
+  called with no argument.
+
+Tests: generator 68/68. The new runtime fixture `Gate` covers the static accessor (only on the
+interface object, and an assignment has no effect) and the lenient setter (strict mode, the
+descriptor, `name`, and the no-argument TypeError). `roves-v8` passes 106 + 5 + 2 (also
+`jitless`), and 61 + 2 by default. The `servo-script` pilot check is clean.
+
+Coverage: **445/486**. **`Notification`, `PerformanceObserver` and `ShadowRoot` now generate.**
+
 ## 2026-10-06 - V8 migration Phase 4: mutable interface-typed attributes (CP81)
 
 **Servo files:** `components/roves-v8/build.rs`, `components/roves-v8/src/lib.rs` (test only),

@@ -104,7 +104,7 @@ class V8GeneratorTests(unittest.TestCase):
                 generate(path, Path(directory) / "output")
 
     def test_unsupported_members_never_silently_disappear(self):
-        for member in ["[LegacyLenientSetter] readonly attribute boolean value;", "static readonly attribute boolean valid;", "[LegacyLenientThis] readonly attribute boolean valid;", "[Replaceable] readonly attribute boolean owner;"]:
+        for member in ["static attribute boolean valid;", "[LegacyLenientThis] readonly attribute boolean valid;", "[Replaceable] readonly attribute boolean owner;"]:
             with self.subTest(member=member):
                 self.assert_unsupported("interface Unsupported { " + member + " };")
 
@@ -876,6 +876,20 @@ class V8GeneratorTests(unittest.TestCase):
             )
             self.assertIn('runtime.define_typed_attribute(&interface, "next"', source)
             self.assertIn('roves_v8::WebIdlType::Nullable(Box::new(roves_v8::WebIdlType::Interface("Holder"', source)
+
+    def test_static_attributes_and_lenient_setters(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Gate.webidl"
+            path.write_text(
+                "[Exposed=Window] interface Gate { static readonly attribute unsigned long limit;"
+                " [LegacyLenientSetter] readonly attribute boolean open; };",
+                encoding="utf-8",
+            )
+            source = generate(path, Path(directory) / "output")
+            self.assertIn("fn Limit(cx: &mut roves_v8::ScriptContext) -> Result<u32, roves_v8::WebIdlError> where Self: Sized;", source)
+            self.assertIn('runtime.define_static_attribute(&interface, "limit"', source)
+            self.assertIn('runtime.mark_lenient_setter(&interface, "open");', source)
+            self.assertLess(source.index("mark_lenient_setter"), source.index('"open", |native|'))
 
     def test_legacy_factory_functions_generate_fallible_natives(self):
         with tempfile.TemporaryDirectory() as directory:
