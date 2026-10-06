@@ -309,6 +309,17 @@ oggetti con un prototipo per interfaccia, e il loro stato sta in simboli privati
 Rust i record sono `Vec<(K, V)>`. **Generano `Headers`, `URLSearchParams`, `Request`,
 `Response`.** Test: generatore 69/69, `roves-v8` 108+5+2. Copertura **453/486 (93%)**.
 
+**CP85 (2026-10-06):** callback interface (`define_callback_interface`, solo costanti),
+`[ExceptionClass]` (`make_exception_class`), `[Replaceable]` (`mark_replaceable`), costruttori
+`[SecureContext]`, attributi `[EnforceRange]`, `[PutForwards]` nullable (patch 0149). Test:
+generatore 70/70, `roves-v8` 109+5+2. Copertura **462/486 (95%)**. **Rimasti (24):**
+- `[Global]` (`Window` e global dei worker/worklet/debugger; `GlobalScope` `[Inline]`);
+- getter named enumerabili e `[LegacyOverrideBuiltIns]` (`Document`, `HTMLDocument`,
+  `DOMStringMap`, `Storage`);
+- maplike/setlike (`CustomStateSet`, `FontFaceSet`, `CSSFontFeatureValuesMap`);
+- `[LegacyUnforgeable]` sull'interfaccia (`Location`);
+- `undefined` nelle union (`URLPattern`).
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

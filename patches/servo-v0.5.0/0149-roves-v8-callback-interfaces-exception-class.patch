@@ -1,0 +1,471 @@
+diff --git a/components/roves-v8/build.rs b/components/roves-v8/build.rs
+index a253617b6cf..85cbfe23ada 100644
+--- a/components/roves-v8/build.rs
++++ b/components/roves-v8/build.rs
+@@ -242,6 +242,8 @@ fn main() {
+         ("Gate", &[][..]),
+         ("PairList", &[][..]),
+         ("RecordProbe", &[][..]),
++        ("FailureProbe", &[][..]),
++        ("FilterProbe", &[][..]),
+     ] {
+         println!("cargo:rerun-if-changed={}", fixtures.join(format!("{interface}.webidl")).display());
+         println!("cargo:rerun-if-changed={}", fixtures.join("Bindings.conf").display());
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index eead5df9d82..b6517d2622e 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -198,6 +198,14 @@ pub mod webidl {
+         include!(concat!(env!("OUT_DIR"), "/RecordProbeV8Binding.rs"));
+     }
+     #[cfg(test)]
++    pub mod failure_probe {
++        include!(concat!(env!("OUT_DIR"), "/FailureProbeV8Binding.rs"));
++    }
++    #[cfg(test)]
++    pub mod filter_probe {
++        include!(concat!(env!("OUT_DIR"), "/FilterProbeV8Binding.rs"));
++    }
++    #[cfg(test)]
+     pub mod promise_operations {
+         include!(concat!(env!("OUT_DIR"), "/PromiseOperationsV8Binding.rs"));
+     }
+@@ -410,6 +418,10 @@ pub struct Interface {
+     pair_iterable: std::cell::Cell<Option<*const PairIterableConfig>>,
+     /// Readonly attributes with `[LegacyLenientSetter]`: assignments are silently ignored.
+     lenient_setters: std::cell::RefCell<std::collections::HashSet<String>>,
++    /// Readonly attributes with `[Replaceable]`: assignments define an own data property.
++    replaceable: std::cell::RefCell<std::collections::HashSet<String>>,
++    /// `[ExceptionClass]` (`DOMException`): the prototype object inherits `Error.prototype`.
++    exception_class: std::cell::Cell<bool>,
+     /// `[LegacyFactoryFunction]`s (`Image`, `Audio`, `Option`): name and function template.
+     legacy_factories: std::cell::RefCell<Vec<(String, v8::Global<v8::FunctionTemplate>)>>,
+     // Materializing a child also freezes all ancestor templates. Shared flags track
+@@ -729,6 +741,26 @@ fn lenient_setter<'s>(
+     interface: &Interface,
+     name: &str,
+ ) -> Option<v8::Local<'s, v8::FunctionTemplate>> {
++    if interface.replaceable.borrow().contains(name) {
++        // [Replaceable]: the assignment shadows the attribute with an own data property.
++        let key = v8::String::new(scope, name)?;
++        let setter = v8::FunctionTemplate::builder(
++            |scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _retval: v8::ReturnValue| {
++                if args.length() == 0 {
++                    throw_type_error(scope, "Not enough arguments");
++                    return;
++                }
++                let Ok(name) = v8::Local::<v8::Name>::try_from(args.data()) else { return };
++                args.this().create_data_property(scope, name, args.get(0));
++            },
++        )
++        .data(key.into())
++        .length(1)
++        .constructor_behavior(v8::ConstructorBehavior::Throw)
++        .build(scope);
++        setter.set_class_name(v8::String::new(scope, &format!("set {name}"))?);
++        return Some(setter);
++    }
+     if !interface.lenient_setters.borrow().contains(name) {
+         return None;
+     }
+@@ -2599,6 +2631,8 @@ impl Runtime {
+             namespace: std::cell::Cell::new(false),
+             legacy_factories: std::cell::RefCell::new(Vec::new()),
+             lenient_setters: std::cell::RefCell::new(std::collections::HashSet::new()),
++            replaceable: std::cell::RefCell::new(std::collections::HashSet::new()),
++            exception_class: std::cell::Cell::new(false),
+             pair_iterable: std::cell::Cell::new(None),
+             materialized: std::rc::Rc::new(std::cell::Cell::new(false)),
+             ancestors: parent.map_or_else(Vec::new, |parent| {
+@@ -2828,6 +2862,21 @@ impl Runtime {
+             interface.constructor_exposed.set(true);
+             return Ok(());
+         }
++        if interface.exception_class.get() {
++            let prototype_key = v8::String::new(scope, "prototype").unwrap();
++            let error_key = v8::String::new(scope, "Error").unwrap();
++            let error_prototype = context
++                .global(scope)
++                .get(scope, error_key.into())
++                .and_then(|error| v8::Local::<v8::Object>::try_from(error).ok())
++                .and_then(|error| error.get(scope, prototype_key.into()))
++                .ok_or("failed to find Error.prototype")?;
++            function
++                .get(scope, prototype_key.into())
++                .and_then(|prototype| v8::Local::<v8::Object>::try_from(prototype).ok())
++                .ok_or("interface object has no prototype")?
++                .set_prototype(scope, error_prototype);
++        }
+         if let Some(config_pointer) = interface.pair_iterable.get() {
+             // SAFETY: the config is boxed in `pair_iterable_configs`, which outlives the isolate.
+             let config = unsafe { &*config_pointer };
+@@ -3298,6 +3347,31 @@ impl Runtime {
+         Ok(())
+     }
+ 
++    /// Marks the readonly attribute `name` as `[Replaceable]` (`self.origin`, `window.length`):
++    /// assigning it defines an own data property of that name on the receiver, shadowing the
++    /// accessor. Call before defining the attribute.
++    pub fn mark_replaceable(&mut self, interface: &Interface, name: &str) {
++        interface.replaceable.borrow_mut().insert(name.to_owned());
++    }
++
++    /// Makes `interface` an `[ExceptionClass]` (`DOMException`): its prototype object inherits
++    /// `Error.prototype`, so its instances (and descendants') are `instanceof Error`.
++    pub fn make_exception_class(&mut self, interface: &Interface) {
++        interface.exception_class.set(true);
++    }
++
++    /// Defines the interface object of a callback interface with constants (`NodeFilter`): a
++    /// function that throws when called and holds the constants, without a `prototype`.
++    pub fn define_callback_interface(&mut self, name: &str) -> Interface {
++        let interface = self.define_interface_inner(name, None, None);
++        let context_handle = &self.context;
++        v8::scope!(let scope, &mut self.isolate);
++        let context = v8::Local::new(scope, context_handle);
++        let scope = &mut v8::ContextScope::new(scope, context);
++        v8::Local::new(scope, &interface.template).remove_prototype();
++        interface
++    }
++
+     /// Marks the readonly attribute `name` as `[LegacyLenientSetter]`: it gets a setter that
+     /// ignores assignments. Call before defining the attribute.
+     pub fn mark_lenient_setter(&mut self, interface: &Interface, name: &str) {
+@@ -8825,6 +8899,70 @@ mod tests {
+         }
+     }
+ 
++    #[cfg(feature = "webidl-pilot")]
++    #[test]
++    fn generated_exception_classes_replaceable_and_secure_constructors() {
++        use crate::webidl::failure_probe::{FailureProbeBinding, FailureProbeNative};
++        use crate::webidl::filter_probe::FilterProbeBinding;
++        use crate::{Trace, Tracer};
++        use std::cell::Cell;
++        struct Failure {
++            message: String,
++            width: Cell<u64>,
++        }
++        impl Trace for Failure {
++            fn trace(&self, _tracer: &mut Tracer) {}
++        }
++        #[allow(non_snake_case)]
++        impl FailureProbeNative for Failure {
++            fn Constructor(message: crate::WebIdlOptionalArgument<Vec<u16>>) -> Self {
++                let message = match message {
++                    crate::WebIdlOptionalArgument::Present(message) => String::from_utf16_lossy(&message),
++                    crate::WebIdlOptionalArgument::Missing => String::new(),
++                };
++                Failure { message, width: Cell::new(0) }
++            }
++            fn Message(&self) -> Vec<u16> { self.message.encode_utf16().collect() }
++            fn Origin(&self) -> Vec<u16> { "null".encode_utf16().collect() }
++            fn Width(&self) -> u64 { self.width.get() }
++            fn set_Width(&self, value: u64) { self.width.set(value) }
++        }
++        // A callback interface binding has no natives: its native type is unused.
++        struct NoNative;
++        impl crate::webidl::filter_probe::FilterProbeNative for NoNative {}
++        struct Insecure;
++        impl crate::Exposure for Insecure {
++            fn pref_enabled(&self, _pref: &str) -> bool { true }
++            fn is_secure_context(&self) -> bool { false }
++        }
++        let mut runtime = Runtime::new();
++        FailureProbeBinding::<Failure>::install(&mut runtime).unwrap();
++        FilterProbeBinding::<NoNative>::install(&mut runtime).unwrap();
++        for (source, expected) in [
++            // [ExceptionClass]: instances are Errors (but not native Error objects).
++            ("const f = new FailureProbe('boom'); [f instanceof Error, f.message, Object.getPrototypeOf(FailureProbe.prototype) === Error.prototype].join()", "true,boom,true"),
++            ("Object.prototype.toString.call(new FailureProbe())", "[object FailureProbe]"),
++            // [Replaceable]: assignment shadows with an own data property; the accessor stays.
++            ("const r = new FailureProbe(); r.origin = 5; [r.origin, Object.getOwnPropertyDescriptor(r, 'origin').writable, new FailureProbe().origin].join()", "5,true,null"),
++            // [EnforceRange] attribute: out-of-range and non-finite values throw.
++            ("const w = new FailureProbe(); w.width = 42; w.width", "42"),
++            ("(() => { const w = new FailureProbe(); try { w.width = -1; } catch (e) { return e.name + ' ' + w.width; } })()", "TypeError 0"),
++            ("(() => { const w = new FailureProbe(); try { w.width = NaN; } catch (e) { return e.name; } })()", "TypeError"),
++            // A callback interface with constants: a function without prototype that throws.
++            ("[typeof FilterProbe, FilterProbe.FILTER_SKIP, 'prototype' in FilterProbe].join()", "function,3,false"),
++            ("(() => { try { FilterProbe(); } catch (e) { return e.name; } })()", "TypeError"),
++        ] {
++            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
++        }
++        // Outside a secure context the [SecureContext] constructor is absent: not constructible.
++        let mut runtime = Runtime::new();
++        FailureProbeBinding::<Failure>::install_with(&mut runtime, &Insecure).unwrap();
++        assert_eq!(
++            runtime.eval("(() => { try { new FailureProbe(); } catch (e) { return e.name; } })()").unwrap(),
++            "TypeError"
++        );
++    }
++
+     #[cfg(feature = "webidl-pilot")]
+     #[test]
+     fn generated_promise_operations_resolve_reject_and_settle_later() {
+diff --git a/components/roves-v8/tests/webidl/FailureProbe.webidl b/components/roves-v8/tests/webidl/FailureProbe.webidl
+new file mode 100644
+index 00000000000..552d4cf3688
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/FailureProbe.webidl
+@@ -0,0 +1,9 @@
++// [ExceptionClass] (like DOMException), a [SecureContext] constructor (like ClipboardItem),
++// [Replaceable] (like self.origin) and an [EnforceRange] attribute (like OffscreenCanvas.width).
++[Exposed=Window, ExceptionClass]
++interface FailureProbe {
++  [SecureContext] constructor(optional DOMString message = "");
++  readonly attribute DOMString message;
++  [Replaceable] readonly attribute DOMString origin;
++  attribute [EnforceRange] unsigned long long width;
++};
+diff --git a/components/roves-v8/tests/webidl/FilterProbe.webidl b/components/roves-v8/tests/webidl/FilterProbe.webidl
+new file mode 100644
+index 00000000000..495c14daed9
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/FilterProbe.webidl
+@@ -0,0 +1,8 @@
++// A callback interface with constants (like NodeFilter): only a legacy callback interface
++// object holding the constants is exposed.
++[Exposed=Window]
++callback interface FilterProbe {
++  const unsigned short FILTER_ACCEPT = 1;
++  const unsigned short FILTER_SKIP = 3;
++  unsigned short acceptNode(any node);
++};
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index 8926521ee18..dad6e8589a4 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8957,17 +8957,16 @@ class CGV8BindingRoot(CGThing):
+         interface = self.interface
+         name = interface.identifier.name
+         namespace = interface.isNamespace()
+-        for unsupported_shape, present in [
+-            ("callback interface", interface.isCallback()),
+-        ]:
+-            if present:
+-                raise TypeError(f"V8 backend does not yet support interface shape ({unsupported_shape}): {name}")
++        # A callback interface (EventListener, NodeFilter) is implemented by user objects: the
++        # binding only exposes its constants, on a legacy callback interface object.
++        callback_interface = interface.isCallback()
+         # [Abstract] (Servo-specific) only means "no direct instances": the JS shape is the
+         # same, and instances are created through descendant bindings sharing the native type.
+         # [Serializable]/[Transferable] concern structured clone, not the binding's shape.
+         unsupported = set(interface._extendedAttrDict) - {
+             "Exposed", "LegacyNoInterfaceObject", "Abstract", "Serializable", "Transferable",
+             "LegacyWindowAlias", "Func", "LegacyUnenumerableNamedProperties", "LegacyFactoryFunction",
++            "ExceptionClass",
+         } - V8_EXPOSURE_ATTRIBUTES - ({"ClassString"} if namespace else set())
+         if unsupported:
+             raise TypeError(f"V8 backend unsupported attributes on {name}: {sorted(unsupported)}")
+@@ -9011,6 +9010,7 @@ class CGV8BindingRoot(CGThing):
+         static_operations = []
+         static_attributes = []
+         lenient_setters = []
++        replaceable_attributes = []
+         unscopables = []
+         default_to_json = False
+         fallible_attributes = []
+@@ -9020,6 +9020,8 @@ class CGV8BindingRoot(CGThing):
+         for member in interface.members:
+             if copied_from_ancestor(member):
+                 continue
++            if callback_interface and not member.isConst():
++                continue
+             if type(member).__name__ == "IDLIterable":
+                 if member.isPairIterator():
+                     pair_iterable = (member.keyType, member.valueType)
+@@ -9194,6 +9196,10 @@ class CGV8BindingRoot(CGThing):
+             if member.isAttr() and member.isLegacyUnforgeable() and member.readonly:
+                 attribute_attributes.discard("LegacyUnforgeable")
+                 unforgeable_attributes.add(member.identifier.name)
++            if member.isAttr() and member.readonly and "Replaceable" in attribute_attributes:
++                # Assignments shadow the attribute with an own data property.
++                attribute_attributes.discard("Replaceable")
++                replaceable_attributes.append(member.identifier.name)
+             if member.isAttr() and member.readonly and "LegacyLenientSetter" in attribute_attributes:
+                 # A setter that ignores assignments (installed by the runtime with the getter).
+                 attribute_attributes.discard("LegacyLenientSetter")
+@@ -9210,9 +9216,10 @@ class CGV8BindingRoot(CGThing):
+             if lenient_this and not (idl_type.isAny() or idl_type.isObject() or idl_type.isCallback()):
+                 raise TypeError(f"V8 backend only supports [LegacyLenientThis] on contextual attributes: {name}.{member.identifier.name}")
+             mutable_interface = not member.readonly and v8_is_dom_interface(idl_type)
++            annotated_integer = idl_type.isInteger() and (idl_type.hasClamp() or idl_type.hasEnforceRange())
+             if ((idl_type.isUnion() and (not member.readonly or v8_contains_handle(member.type)))
+                     or idl_type.isBufferSource() or idl_type.isPromise() or idl_type.isCallbackInterface()
+-                    or mutable_interface):
++                    or mutable_interface or annotated_integer):
+                 # Structured attributes: the setter converts through the WebIDL type (for an
+                 # interface type, a TypeError unless the value is an instance of it).
+                 rust, expr, arm, to_value = v8_typed_info(member.type, name, member.identifier.name)
+@@ -9311,7 +9318,7 @@ class CGV8BindingRoot(CGThing):
+             if (getter_throws or setter_throws or put_forwards or (setter and idl_type.isEnum())
+                     or (setter and not idl_type.isDOMString() and conversion is None)):
+                 if put_forwards:
+-                    if not member.readonly or not v8_is_dom_interface(idl_type) or member.type.nullable():
++                    if not member.readonly or not v8_is_dom_interface(idl_type):
+                         raise TypeError(f"V8 backend unsupported [PutForwards] attribute: {name}.{member.identifier.name}")
+                     setter_info = ("Any", False, None, put_forwards[0])
+                 elif setter:
+@@ -9654,6 +9661,7 @@ class CGV8BindingRoot(CGThing):
+                 registrations_list.append(f'        runtime.define_method(&interface, "{idl}", {callback})?;')
+             gate_last_registration(idl)
+         constructor = interface.ctor()
++        constructor_condition = None
+         constructor_arguments = None
+         constructor_overloads = []
+         if constructor is not None and "HTMLConstructor" in constructor._extendedAttrDict:
+@@ -9664,7 +9672,9 @@ class CGV8BindingRoot(CGThing):
+         if constructor is not None:
+             signatures = constructor.signatures()
+             # The parser marks every constructor [NewObject]; that is inherent, not a shape.
+-            constructor_attributes = set(constructor._extendedAttrDict) - {"NewObject", "Throws"}
++            constructor_attributes = set(constructor._extendedAttrDict) - {"NewObject", "Throws", "SecureContext"}
++            if "SecureContext" in constructor._extendedAttrDict:
++                constructor_condition = "exposure.is_secure_context()"
+             constructor_throws = "Throws" in constructor._extendedAttrDict
+             if constructor_attributes:
+                 raise TypeError(f"V8 backend unsupported constructor attributes on {name}: {sorted(constructor_attributes)}")
+@@ -9792,6 +9802,16 @@ class CGV8BindingRoot(CGThing):
+                 f'            &[{", ".join(argument_type[5] or "None" for argument_type in constructor_arguments)}],\n'
+                 f'        )'
+             )
++        if constructor_condition:
++            define_interface = (
++                f"if {constructor_condition} {{\n            {define_interface}\n        }} else {{\n"
++                f'            runtime.define_interface("{name}", {parent_interface})\n        }}'
++            )
++        if callback_interface:
++            define_interface = f'runtime.define_callback_interface("{name}")'
++            if not constants:
++                # Without constants a callback interface has no interface object.
++                hide_interface = "        runtime.hide_interface_object(&interface);\n"
+         static_overloads = {}
+         for idl, native, rust_type, value_expr, argument_types, overload_count in static_operations:
+             parameters = ", ".join(f"arg{index}: {argument_type[0]}" for index, argument_type in enumerate(argument_types))
+@@ -9961,7 +9981,9 @@ class CGV8BindingRoot(CGThing):
+             )
+         registrations = factory_registrations + "".join(
+             f'        runtime.mark_lenient_setter(&interface, "{idl}");\n' for idl in lenient_setters
+-        ) + registrations
++        ) + "".join(
++            f'        runtime.mark_replaceable(&interface, "{idl}");\n' for idl in replaceable_attributes
++        ) + ("        runtime.make_exception_class(&interface);\n" if "ExceptionClass" in interface._extendedAttrDict else "") + registrations
+         if constructor is not None or interface.legacyFactoryFunctions:
+             # `new` creates a traced platform object (see roves_v8::TracedNative).
+             native_bound += " + roves_v8::Trace"
+@@ -9970,7 +9992,7 @@ class CGV8BindingRoot(CGThing):
+             name, dictionary_structs, native_bound, trait_methods, install_parameters, install_arguments,
+             define_interface, registrations, alias_registrations, hide_interface,
+         )
+-        if namespace:
++        if namespace or callback_interface:
+             # A namespace has no instances: drop the wrapper constructors, and allow its
+             # (usually lowercase, e.g. `console`) identifier in the type names.
+             source = source.replace(
+diff --git a/components/script_bindings/codegen/run_v8.py b/components/script_bindings/codegen/run_v8.py
+index 15653b41a80..61f70d0a178 100644
+--- a/components/script_bindings/codegen/run_v8.py
++++ b/components/script_bindings/codegen/run_v8.py
+@@ -31,13 +31,16 @@ def generate(webidl: Path, out_dir: Path, context: tuple[Path, ...] = ()) -> str
+     for dependency in context:
+         parser.parse(dependency.read_text(encoding="utf-8"), str(dependency))
+     parser.parse(webidl.read_text(encoding="utf-8"), str(webidl))
+-    interfaces = [
++    definitions = [
+         item for item in parser.finish()
+         # An iterator interface (`PairsIterator`) is implemented by the runtime with its owner.
+-        if isinstance(item, (WebIDL.IDLInterface, WebIDL.IDLNamespace)) and not item.isCallback()
++        if isinstance(item, (WebIDL.IDLInterface, WebIDL.IDLNamespace))
+         and getattr(item, "iterableInterface", None) is None
+         and item.location.filename == str(webidl)
+     ]
++    # Callback interfaces declared next to an interface are its argument types; a file with
++    # only a callback interface generates that callback interface's binding.
++    interfaces = [item for item in definitions if not item.isCallback()] or definitions
+     if len(interfaces) != 1:
+         raise TypeError("V8 pilot requires exactly one interface")
+     return CGV8BindingRoot(interfaces[0]).define()
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index 525392e7567..e3f7101eae7 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -104,7 +104,7 @@ class V8GeneratorTests(unittest.TestCase):
+                 generate(path, Path(directory) / "output")
+ 
+     def test_unsupported_members_never_silently_disappear(self):
+-        for member in ["static attribute boolean valid;", "[LegacyLenientThis] readonly attribute boolean valid;", "[Replaceable] readonly attribute boolean owner;"]:
++        for member in ["static attribute boolean valid;", "[LegacyLenientThis] readonly attribute boolean valid;", "[CrossOriginReadable] readonly attribute boolean owner;"]:
+             with self.subTest(member=member):
+                 self.assert_unsupported("interface Unsupported { " + member + " };")
+ 
+@@ -381,7 +381,7 @@ class V8GeneratorTests(unittest.TestCase):
+ 
+     def test_unsupported_interface_shapes_fail(self):
+         self.assert_unsupported("interface Unsupported { [Pref=\"dom_x\"] constructor(); };")
+-        self.assert_unsupported("namespace Unsupported { [Replaceable] readonly attribute boolean flag; };")
++        self.assert_unsupported("namespace Unsupported { [CrossOriginReadable] readonly attribute boolean flag; };")
+ 
+     def test_non_window_exposure_hides_the_interface_object_elsewhere(self):
+         with tempfile.TemporaryDirectory() as directory:
+@@ -427,13 +427,6 @@ class V8GeneratorTests(unittest.TestCase):
+             self.assertNotIn("wrap_traced", source)
+             self.assertIn("non_camel_case_types", source)
+ 
+-    def test_callback_interfaces_are_not_bindings_yet(self):
+-        with tempfile.TemporaryDirectory() as directory:
+-            path = Path(directory) / "Shapes.webidl"
+-            path.write_text("[Exposed=Window] callback interface Shapes { undefined run(); };", encoding="utf-8")
+-            with self.assertRaises(TypeError):
+-                generate(path, Path(directory) / "output")
+-
+     def test_constructor_generates_native_constructor_and_constructible_interface(self):
+         with tempfile.TemporaryDirectory() as directory:
+             path = Path(directory) / "Point.webidl"
+@@ -905,6 +898,47 @@ class V8GeneratorTests(unittest.TestCase):
+             self.assertNotIn("fn Entries", source)
+             self.assertNotIn('"forEach"', source)
+ 
++    def test_callback_interfaces_expose_only_their_constants(self):
++        with tempfile.TemporaryDirectory() as directory:
++            path = Path(directory) / "Filter.webidl"
++            path.write_text(
++                "[Exposed=Window] callback interface Filter { const unsigned short SKIP = 3; unsigned short accept(Node node); };"
++                " [Exposed=Window] interface Node {};",
++                encoding="utf-8",
++            )
++            path.write_text(
++                "[Exposed=Window] callback interface Filter { const unsigned short SKIP = 3; unsigned short accept(any node); };",
++                encoding="utf-8",
++            )
++            source = generate(path, Path(directory) / "output")
++            self.assertIn('runtime.define_callback_interface("Filter")', source)
++            self.assertIn('runtime.define_constant(&interface, "SKIP", &Value::Number(3.0))?;', source)
++            self.assertNotIn("Accept", source)
++            self.assertNotIn("hide_interface_object", source.split("exposed_in")[0])
++            path.write_text("[Exposed=Window] callback interface Listener { undefined handle(any event); };", encoding="utf-8")
++            source = generate(path, Path(directory) / "output")
++            self.assertIn("runtime.hide_interface_object(&interface);", source)
++
++    def test_replaceable_exception_class_and_secure_constructors(self):
++        with tempfile.TemporaryDirectory() as directory:
++            path = Path(directory) / "Failure.webidl"
++            path.write_text(
++                "[Exposed=Window, ExceptionClass] interface Failure { [SecureContext] constructor();"
++                " [Replaceable] readonly attribute DOMString origin;"
++                " attribute [EnforceRange] unsigned long long width; };",
++                encoding="utf-8",
++            )
++            source = generate(path, Path(directory) / "output")
++            self.assertIn("runtime.make_exception_class(&interface);", source)
++            self.assertIn('runtime.mark_replaceable(&interface, "origin");', source)
++            self.assertIn("if exposure.is_secure_context() {", source)
++            self.assertIn('runtime.define_interface("Failure", None)', source)
++            self.assertIn(
++                "roves_v8::WebIdlType::Integer(roves_v8::WebIdlArgumentConversion::UnsignedLongLong, roves_v8::IntegerMode::EnforceRange)",
++                source,
++            )
++            self.assertIn("fn set_Width(&self, value: u64);", source)
++
+     def test_legacy_factory_functions_generate_fallible_natives(self):
+         with tempfile.TemporaryDirectory() as directory:
+             path = Path(directory) / "Picture.webidl"

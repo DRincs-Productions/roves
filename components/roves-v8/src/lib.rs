@@ -198,6 +198,14 @@ pub mod webidl {
         include!(concat!(env!("OUT_DIR"), "/RecordProbeV8Binding.rs"));
     }
     #[cfg(test)]
+    pub mod failure_probe {
+        include!(concat!(env!("OUT_DIR"), "/FailureProbeV8Binding.rs"));
+    }
+    #[cfg(test)]
+    pub mod filter_probe {
+        include!(concat!(env!("OUT_DIR"), "/FilterProbeV8Binding.rs"));
+    }
+    #[cfg(test)]
     pub mod promise_operations {
         include!(concat!(env!("OUT_DIR"), "/PromiseOperationsV8Binding.rs"));
     }
@@ -410,6 +418,10 @@ pub struct Interface {
     pair_iterable: std::cell::Cell<Option<*const PairIterableConfig>>,
     /// Readonly attributes with `[LegacyLenientSetter]`: assignments are silently ignored.
     lenient_setters: std::cell::RefCell<std::collections::HashSet<String>>,
+    /// Readonly attributes with `[Replaceable]`: assignments define an own data property.
+    replaceable: std::cell::RefCell<std::collections::HashSet<String>>,
+    /// `[ExceptionClass]` (`DOMException`): the prototype object inherits `Error.prototype`.
+    exception_class: std::cell::Cell<bool>,
     /// `[LegacyFactoryFunction]`s (`Image`, `Audio`, `Option`): name and function template.
     legacy_factories: std::cell::RefCell<Vec<(String, v8::Global<v8::FunctionTemplate>)>>,
     // Materializing a child also freezes all ancestor templates. Shared flags track
@@ -729,6 +741,26 @@ fn lenient_setter<'s>(
     interface: &Interface,
     name: &str,
 ) -> Option<v8::Local<'s, v8::FunctionTemplate>> {
+    if interface.replaceable.borrow().contains(name) {
+        // [Replaceable]: the assignment shadows the attribute with an own data property.
+        let key = v8::String::new(scope, name)?;
+        let setter = v8::FunctionTemplate::builder(
+            |scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _retval: v8::ReturnValue| {
+                if args.length() == 0 {
+                    throw_type_error(scope, "Not enough arguments");
+                    return;
+                }
+                let Ok(name) = v8::Local::<v8::Name>::try_from(args.data()) else { return };
+                args.this().create_data_property(scope, name, args.get(0));
+            },
+        )
+        .data(key.into())
+        .length(1)
+        .constructor_behavior(v8::ConstructorBehavior::Throw)
+        .build(scope);
+        setter.set_class_name(v8::String::new(scope, &format!("set {name}"))?);
+        return Some(setter);
+    }
     if !interface.lenient_setters.borrow().contains(name) {
         return None;
     }
@@ -2599,6 +2631,8 @@ impl Runtime {
             namespace: std::cell::Cell::new(false),
             legacy_factories: std::cell::RefCell::new(Vec::new()),
             lenient_setters: std::cell::RefCell::new(std::collections::HashSet::new()),
+            replaceable: std::cell::RefCell::new(std::collections::HashSet::new()),
+            exception_class: std::cell::Cell::new(false),
             pair_iterable: std::cell::Cell::new(None),
             materialized: std::rc::Rc::new(std::cell::Cell::new(false)),
             ancestors: parent.map_or_else(Vec::new, |parent| {
@@ -2827,6 +2861,21 @@ impl Runtime {
             }
             interface.constructor_exposed.set(true);
             return Ok(());
+        }
+        if interface.exception_class.get() {
+            let prototype_key = v8::String::new(scope, "prototype").unwrap();
+            let error_key = v8::String::new(scope, "Error").unwrap();
+            let error_prototype = context
+                .global(scope)
+                .get(scope, error_key.into())
+                .and_then(|error| v8::Local::<v8::Object>::try_from(error).ok())
+                .and_then(|error| error.get(scope, prototype_key.into()))
+                .ok_or("failed to find Error.prototype")?;
+            function
+                .get(scope, prototype_key.into())
+                .and_then(|prototype| v8::Local::<v8::Object>::try_from(prototype).ok())
+                .ok_or("interface object has no prototype")?
+                .set_prototype(scope, error_prototype);
         }
         if let Some(config_pointer) = interface.pair_iterable.get() {
             // SAFETY: the config is boxed in `pair_iterable_configs`, which outlives the isolate.
@@ -3296,6 +3345,31 @@ impl Runtime {
         factory.set_class_name(v8::String::new(scope, name).ok_or("invalid factory name")?);
         interface.legacy_factories.borrow_mut().push((name.to_owned(), v8::Global::new(scope, factory)));
         Ok(())
+    }
+
+    /// Marks the readonly attribute `name` as `[Replaceable]` (`self.origin`, `window.length`):
+    /// assigning it defines an own data property of that name on the receiver, shadowing the
+    /// accessor. Call before defining the attribute.
+    pub fn mark_replaceable(&mut self, interface: &Interface, name: &str) {
+        interface.replaceable.borrow_mut().insert(name.to_owned());
+    }
+
+    /// Makes `interface` an `[ExceptionClass]` (`DOMException`): its prototype object inherits
+    /// `Error.prototype`, so its instances (and descendants') are `instanceof Error`.
+    pub fn make_exception_class(&mut self, interface: &Interface) {
+        interface.exception_class.set(true);
+    }
+
+    /// Defines the interface object of a callback interface with constants (`NodeFilter`): a
+    /// function that throws when called and holds the constants, without a `prototype`.
+    pub fn define_callback_interface(&mut self, name: &str) -> Interface {
+        let interface = self.define_interface_inner(name, None, None);
+        let context_handle = &self.context;
+        v8::scope!(let scope, &mut self.isolate);
+        let context = v8::Local::new(scope, context_handle);
+        let scope = &mut v8::ContextScope::new(scope, context);
+        v8::Local::new(scope, &interface.template).remove_prototype();
+        interface
     }
 
     /// Marks the readonly attribute `name` as `[LegacyLenientSetter]`: it gets a setter that
@@ -8823,6 +8897,70 @@ mod tests {
         ] {
             assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
         }
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_exception_classes_replaceable_and_secure_constructors() {
+        use crate::webidl::failure_probe::{FailureProbeBinding, FailureProbeNative};
+        use crate::webidl::filter_probe::FilterProbeBinding;
+        use crate::{Trace, Tracer};
+        use std::cell::Cell;
+        struct Failure {
+            message: String,
+            width: Cell<u64>,
+        }
+        impl Trace for Failure {
+            fn trace(&self, _tracer: &mut Tracer) {}
+        }
+        #[allow(non_snake_case)]
+        impl FailureProbeNative for Failure {
+            fn Constructor(message: crate::WebIdlOptionalArgument<Vec<u16>>) -> Self {
+                let message = match message {
+                    crate::WebIdlOptionalArgument::Present(message) => String::from_utf16_lossy(&message),
+                    crate::WebIdlOptionalArgument::Missing => String::new(),
+                };
+                Failure { message, width: Cell::new(0) }
+            }
+            fn Message(&self) -> Vec<u16> { self.message.encode_utf16().collect() }
+            fn Origin(&self) -> Vec<u16> { "null".encode_utf16().collect() }
+            fn Width(&self) -> u64 { self.width.get() }
+            fn set_Width(&self, value: u64) { self.width.set(value) }
+        }
+        // A callback interface binding has no natives: its native type is unused.
+        struct NoNative;
+        impl crate::webidl::filter_probe::FilterProbeNative for NoNative {}
+        struct Insecure;
+        impl crate::Exposure for Insecure {
+            fn pref_enabled(&self, _pref: &str) -> bool { true }
+            fn is_secure_context(&self) -> bool { false }
+        }
+        let mut runtime = Runtime::new();
+        FailureProbeBinding::<Failure>::install(&mut runtime).unwrap();
+        FilterProbeBinding::<NoNative>::install(&mut runtime).unwrap();
+        for (source, expected) in [
+            // [ExceptionClass]: instances are Errors (but not native Error objects).
+            ("const f = new FailureProbe('boom'); [f instanceof Error, f.message, Object.getPrototypeOf(FailureProbe.prototype) === Error.prototype].join()", "true,boom,true"),
+            ("Object.prototype.toString.call(new FailureProbe())", "[object FailureProbe]"),
+            // [Replaceable]: assignment shadows with an own data property; the accessor stays.
+            ("const r = new FailureProbe(); r.origin = 5; [r.origin, Object.getOwnPropertyDescriptor(r, 'origin').writable, new FailureProbe().origin].join()", "5,true,null"),
+            // [EnforceRange] attribute: out-of-range and non-finite values throw.
+            ("const w = new FailureProbe(); w.width = 42; w.width", "42"),
+            ("(() => { const w = new FailureProbe(); try { w.width = -1; } catch (e) { return e.name + ' ' + w.width; } })()", "TypeError 0"),
+            ("(() => { const w = new FailureProbe(); try { w.width = NaN; } catch (e) { return e.name; } })()", "TypeError"),
+            // A callback interface with constants: a function without prototype that throws.
+            ("[typeof FilterProbe, FilterProbe.FILTER_SKIP, 'prototype' in FilterProbe].join()", "function,3,false"),
+            ("(() => { try { FilterProbe(); } catch (e) { return e.name; } })()", "TypeError"),
+        ] {
+            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
+        }
+        // Outside a secure context the [SecureContext] constructor is absent: not constructible.
+        let mut runtime = Runtime::new();
+        FailureProbeBinding::<Failure>::install_with(&mut runtime, &Insecure).unwrap();
+        assert_eq!(
+            runtime.eval("(() => { try { new FailureProbe(); } catch (e) { return e.name; } })()").unwrap(),
+            "TypeError"
+        );
     }
 
     #[cfg(feature = "webidl-pilot")]

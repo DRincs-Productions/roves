@@ -201,6 +201,11 @@ iterator prototype. They iterate live, and `forEach` is supported. `FormData` ge
 conversion and is supported in unions and as a result type. `Headers`, `URLSearchParams`,
 `Request` and `Response` generate. Coverage 453/486 (93%).
 
+**CP85 (2026-10-06): callback interfaces, `[ExceptionClass]`, `[Replaceable]`, secure
+constructors.** `DOMException` (and its descendants), `EventListener`, `NodeFilter`,
+`OffscreenCanvas`, `ClipboardItem` and `PasswordCredential` generate. Coverage 462/486 (95%).
+The remaining blockers are listed in the handoff.
+
 CP37 exposes stable `NativeObjectId` through `DomObject` and updates generated `dom_struct`
 equality to use that engine-neutral contract. Local checks pass (reflector 2/2, macro 3/3,
 rustfmt, and patch 0101 reverse-check); CI is green: V8 37226916624 (6/6), Servo 37226916650

@@ -11,6 +11,47 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: callback interfaces, `[ExceptionClass]`, `[Replaceable]`, secure constructors (CP85)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `components/roves-v8/build.rs`,
+`components/roves-v8/tests/webidl/FailureProbe.webidl`, `FilterProbe.webidl` (new),
+`components/script_bindings/codegen/codegen.py`, `run_v8.py`, `test_v8.py`.
+**Patch:** `0149-roves-v8-callback-interfaces-exception-class.patch` after 0148.
+
+Several smaller shapes:
+- **Callback interfaces** (`EventListener`, `NodeFilter`, `XPathNSResolver`). User objects
+  implement them, so the binding exposes only their constants. With constants, the binding
+  uses a legacy callback interface object (the new `Runtime::define_callback_interface`): a
+  function that throws, holds the constants and has no `prototype`. Without constants there is
+  no interface object. Like namespaces, the binding has no instance constructors.
+  `run_v8.py` generates a file that contains only a callback interface.
+- **`[ExceptionClass]`** (`DOMException`). `Runtime::make_exception_class` makes the prototype
+  object inherit `Error.prototype` at exposure, so instances and descendants
+  (`QuotaExceededError`, `RTCError`) are `instanceof Error`.
+- **`[Replaceable]`** (`WorkerGlobalScope.origin`). `Runtime::mark_replaceable` gives the
+  readonly accessor a setter that runs `CreateDataProperty` on the receiver, shadowing the
+  accessor. This shares the hook with `[LegacyLenientSetter]`.
+- **Constructor `[SecureContext]`** (`ClipboardItem`, `PasswordCredential`). Outside a secure
+  context (`Exposure::is_secure_context`) the interface is defined as not constructible.
+- **`[Clamp]`/`[EnforceRange]` attributes** (`OffscreenCanvas.width`) use the structured
+  attribute path.
+- **`[PutForwards]` on a nullable attribute** (`Document.location`). A `null` target is a
+  TypeError when assigned, as WebIDL requires.
+
+Tests: generator 70/70. The new runtime fixtures `FailureProbe` and `FilterProbe` cover:
+- `instanceof Error` and the prototype chain;
+- `[Replaceable]` shadowing, with the accessor kept for other instances;
+- `[EnforceRange]` rejections that leave the value unchanged;
+- the callback interface object;
+- a non-constructible interface in an insecure context.
+
+`roves-v8` passes 109 + 5 + 2 (also `jitless`), and 61 + 2 by default. The `servo-script`
+pilot check is clean.
+
+Coverage: **462/486 (95%)**. **`DOMException`, `QuotaExceededError`, `RTCError`,
+`EventListener`, `NodeFilter`, `XPathNSResolver`, `ClipboardItem`, `PasswordCredential` and
+`OffscreenCanvas` now generate.**
+
 ## 2026-10-06 - V8 migration Phase 4: `record<K, V>` (CP84)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `components/roves-v8/build.rs`,

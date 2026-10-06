@@ -104,7 +104,7 @@ class V8GeneratorTests(unittest.TestCase):
                 generate(path, Path(directory) / "output")
 
     def test_unsupported_members_never_silently_disappear(self):
-        for member in ["static attribute boolean valid;", "[LegacyLenientThis] readonly attribute boolean valid;", "[Replaceable] readonly attribute boolean owner;"]:
+        for member in ["static attribute boolean valid;", "[LegacyLenientThis] readonly attribute boolean valid;", "[CrossOriginReadable] readonly attribute boolean owner;"]:
             with self.subTest(member=member):
                 self.assert_unsupported("interface Unsupported { " + member + " };")
 
@@ -381,7 +381,7 @@ class V8GeneratorTests(unittest.TestCase):
 
     def test_unsupported_interface_shapes_fail(self):
         self.assert_unsupported("interface Unsupported { [Pref=\"dom_x\"] constructor(); };")
-        self.assert_unsupported("namespace Unsupported { [Replaceable] readonly attribute boolean flag; };")
+        self.assert_unsupported("namespace Unsupported { [CrossOriginReadable] readonly attribute boolean flag; };")
 
     def test_non_window_exposure_hides_the_interface_object_elsewhere(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -426,13 +426,6 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertNotIn("pub fn create(", source)
             self.assertNotIn("wrap_traced", source)
             self.assertIn("non_camel_case_types", source)
-
-    def test_callback_interfaces_are_not_bindings_yet(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "Shapes.webidl"
-            path.write_text("[Exposed=Window] callback interface Shapes { undefined run(); };", encoding="utf-8")
-            with self.assertRaises(TypeError):
-                generate(path, Path(directory) / "output")
 
     def test_constructor_generates_native_constructor_and_constructible_interface(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -904,6 +897,47 @@ class V8GeneratorTests(unittest.TestCase):
             # The parser's synthesized entries/keys/values/forEach have no natives.
             self.assertNotIn("fn Entries", source)
             self.assertNotIn('"forEach"', source)
+
+    def test_callback_interfaces_expose_only_their_constants(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Filter.webidl"
+            path.write_text(
+                "[Exposed=Window] callback interface Filter { const unsigned short SKIP = 3; unsigned short accept(Node node); };"
+                " [Exposed=Window] interface Node {};",
+                encoding="utf-8",
+            )
+            path.write_text(
+                "[Exposed=Window] callback interface Filter { const unsigned short SKIP = 3; unsigned short accept(any node); };",
+                encoding="utf-8",
+            )
+            source = generate(path, Path(directory) / "output")
+            self.assertIn('runtime.define_callback_interface("Filter")', source)
+            self.assertIn('runtime.define_constant(&interface, "SKIP", &Value::Number(3.0))?;', source)
+            self.assertNotIn("Accept", source)
+            self.assertNotIn("hide_interface_object", source.split("exposed_in")[0])
+            path.write_text("[Exposed=Window] callback interface Listener { undefined handle(any event); };", encoding="utf-8")
+            source = generate(path, Path(directory) / "output")
+            self.assertIn("runtime.hide_interface_object(&interface);", source)
+
+    def test_replaceable_exception_class_and_secure_constructors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Failure.webidl"
+            path.write_text(
+                "[Exposed=Window, ExceptionClass] interface Failure { [SecureContext] constructor();"
+                " [Replaceable] readonly attribute DOMString origin;"
+                " attribute [EnforceRange] unsigned long long width; };",
+                encoding="utf-8",
+            )
+            source = generate(path, Path(directory) / "output")
+            self.assertIn("runtime.make_exception_class(&interface);", source)
+            self.assertIn('runtime.mark_replaceable(&interface, "origin");', source)
+            self.assertIn("if exposure.is_secure_context() {", source)
+            self.assertIn('runtime.define_interface("Failure", None)', source)
+            self.assertIn(
+                "roves_v8::WebIdlType::Integer(roves_v8::WebIdlArgumentConversion::UnsignedLongLong, roves_v8::IntegerMode::EnforceRange)",
+                source,
+            )
+            self.assertIn("fn set_Width(&self, value: u64);", source)
 
     def test_legacy_factory_functions_generate_fallible_natives(self):
         with tempfile.TemporaryDirectory() as directory:

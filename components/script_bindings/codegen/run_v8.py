@@ -31,13 +31,16 @@ def generate(webidl: Path, out_dir: Path, context: tuple[Path, ...] = ()) -> str
     for dependency in context:
         parser.parse(dependency.read_text(encoding="utf-8"), str(dependency))
     parser.parse(webidl.read_text(encoding="utf-8"), str(webidl))
-    interfaces = [
+    definitions = [
         item for item in parser.finish()
         # An iterator interface (`PairsIterator`) is implemented by the runtime with its owner.
-        if isinstance(item, (WebIDL.IDLInterface, WebIDL.IDLNamespace)) and not item.isCallback()
+        if isinstance(item, (WebIDL.IDLInterface, WebIDL.IDLNamespace))
         and getattr(item, "iterableInterface", None) is None
         and item.location.filename == str(webidl)
     ]
+    # Callback interfaces declared next to an interface are its argument types; a file with
+    # only a callback interface generates that callback interface's binding.
+    interfaces = [item for item in definitions if not item.isCallback()] or definitions
     if len(interfaces) != 1:
         raise TypeError("V8 pilot requires exactly one interface")
     return CGV8BindingRoot(interfaces[0]).define()

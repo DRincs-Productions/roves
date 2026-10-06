@@ -8957,17 +8957,16 @@ class CGV8BindingRoot(CGThing):
         interface = self.interface
         name = interface.identifier.name
         namespace = interface.isNamespace()
-        for unsupported_shape, present in [
-            ("callback interface", interface.isCallback()),
-        ]:
-            if present:
-                raise TypeError(f"V8 backend does not yet support interface shape ({unsupported_shape}): {name}")
+        # A callback interface (EventListener, NodeFilter) is implemented by user objects: the
+        # binding only exposes its constants, on a legacy callback interface object.
+        callback_interface = interface.isCallback()
         # [Abstract] (Servo-specific) only means "no direct instances": the JS shape is the
         # same, and instances are created through descendant bindings sharing the native type.
         # [Serializable]/[Transferable] concern structured clone, not the binding's shape.
         unsupported = set(interface._extendedAttrDict) - {
             "Exposed", "LegacyNoInterfaceObject", "Abstract", "Serializable", "Transferable",
             "LegacyWindowAlias", "Func", "LegacyUnenumerableNamedProperties", "LegacyFactoryFunction",
+            "ExceptionClass",
         } - V8_EXPOSURE_ATTRIBUTES - ({"ClassString"} if namespace else set())
         if unsupported:
             raise TypeError(f"V8 backend unsupported attributes on {name}: {sorted(unsupported)}")
@@ -9011,6 +9010,7 @@ class CGV8BindingRoot(CGThing):
         static_operations = []
         static_attributes = []
         lenient_setters = []
+        replaceable_attributes = []
         unscopables = []
         default_to_json = False
         fallible_attributes = []
@@ -9019,6 +9019,8 @@ class CGV8BindingRoot(CGThing):
         constants = []
         for member in interface.members:
             if copied_from_ancestor(member):
+                continue
+            if callback_interface and not member.isConst():
                 continue
             if type(member).__name__ == "IDLIterable":
                 if member.isPairIterator():
@@ -9194,6 +9196,10 @@ class CGV8BindingRoot(CGThing):
             if member.isAttr() and member.isLegacyUnforgeable() and member.readonly:
                 attribute_attributes.discard("LegacyUnforgeable")
                 unforgeable_attributes.add(member.identifier.name)
+            if member.isAttr() and member.readonly and "Replaceable" in attribute_attributes:
+                # Assignments shadow the attribute with an own data property.
+                attribute_attributes.discard("Replaceable")
+                replaceable_attributes.append(member.identifier.name)
             if member.isAttr() and member.readonly and "LegacyLenientSetter" in attribute_attributes:
                 # A setter that ignores assignments (installed by the runtime with the getter).
                 attribute_attributes.discard("LegacyLenientSetter")
@@ -9210,9 +9216,10 @@ class CGV8BindingRoot(CGThing):
             if lenient_this and not (idl_type.isAny() or idl_type.isObject() or idl_type.isCallback()):
                 raise TypeError(f"V8 backend only supports [LegacyLenientThis] on contextual attributes: {name}.{member.identifier.name}")
             mutable_interface = not member.readonly and v8_is_dom_interface(idl_type)
+            annotated_integer = idl_type.isInteger() and (idl_type.hasClamp() or idl_type.hasEnforceRange())
             if ((idl_type.isUnion() and (not member.readonly or v8_contains_handle(member.type)))
                     or idl_type.isBufferSource() or idl_type.isPromise() or idl_type.isCallbackInterface()
-                    or mutable_interface):
+                    or mutable_interface or annotated_integer):
                 # Structured attributes: the setter converts through the WebIDL type (for an
                 # interface type, a TypeError unless the value is an instance of it).
                 rust, expr, arm, to_value = v8_typed_info(member.type, name, member.identifier.name)
@@ -9311,7 +9318,7 @@ class CGV8BindingRoot(CGThing):
             if (getter_throws or setter_throws or put_forwards or (setter and idl_type.isEnum())
                     or (setter and not idl_type.isDOMString() and conversion is None)):
                 if put_forwards:
-                    if not member.readonly or not v8_is_dom_interface(idl_type) or member.type.nullable():
+                    if not member.readonly or not v8_is_dom_interface(idl_type):
                         raise TypeError(f"V8 backend unsupported [PutForwards] attribute: {name}.{member.identifier.name}")
                     setter_info = ("Any", False, None, put_forwards[0])
                 elif setter:
@@ -9654,6 +9661,7 @@ class CGV8BindingRoot(CGThing):
                 registrations_list.append(f'        runtime.define_method(&interface, "{idl}", {callback})?;')
             gate_last_registration(idl)
         constructor = interface.ctor()
+        constructor_condition = None
         constructor_arguments = None
         constructor_overloads = []
         if constructor is not None and "HTMLConstructor" in constructor._extendedAttrDict:
@@ -9664,7 +9672,9 @@ class CGV8BindingRoot(CGThing):
         if constructor is not None:
             signatures = constructor.signatures()
             # The parser marks every constructor [NewObject]; that is inherent, not a shape.
-            constructor_attributes = set(constructor._extendedAttrDict) - {"NewObject", "Throws"}
+            constructor_attributes = set(constructor._extendedAttrDict) - {"NewObject", "Throws", "SecureContext"}
+            if "SecureContext" in constructor._extendedAttrDict:
+                constructor_condition = "exposure.is_secure_context()"
             constructor_throws = "Throws" in constructor._extendedAttrDict
             if constructor_attributes:
                 raise TypeError(f"V8 backend unsupported constructor attributes on {name}: {sorted(constructor_attributes)}")
@@ -9792,6 +9802,16 @@ class CGV8BindingRoot(CGThing):
                 f'            &[{", ".join(argument_type[5] or "None" for argument_type in constructor_arguments)}],\n'
                 f'        )'
             )
+        if constructor_condition:
+            define_interface = (
+                f"if {constructor_condition} {{\n            {define_interface}\n        }} else {{\n"
+                f'            runtime.define_interface("{name}", {parent_interface})\n        }}'
+            )
+        if callback_interface:
+            define_interface = f'runtime.define_callback_interface("{name}")'
+            if not constants:
+                # Without constants a callback interface has no interface object.
+                hide_interface = "        runtime.hide_interface_object(&interface);\n"
         static_overloads = {}
         for idl, native, rust_type, value_expr, argument_types, overload_count in static_operations:
             parameters = ", ".join(f"arg{index}: {argument_type[0]}" for index, argument_type in enumerate(argument_types))
@@ -9961,7 +9981,9 @@ class CGV8BindingRoot(CGThing):
             )
         registrations = factory_registrations + "".join(
             f'        runtime.mark_lenient_setter(&interface, "{idl}");\n' for idl in lenient_setters
-        ) + registrations
+        ) + "".join(
+            f'        runtime.mark_replaceable(&interface, "{idl}");\n' for idl in replaceable_attributes
+        ) + ("        runtime.make_exception_class(&interface);\n" if "ExceptionClass" in interface._extendedAttrDict else "") + registrations
         if constructor is not None or interface.legacyFactoryFunctions:
             # `new` creates a traced platform object (see roves_v8::TracedNative).
             native_bound += " + roves_v8::Trace"
@@ -9970,7 +9992,7 @@ class CGV8BindingRoot(CGThing):
             name, dictionary_structs, native_bound, trait_methods, install_parameters, install_arguments,
             define_interface, registrations, alias_registrations, hide_interface,
         )
-        if namespace:
+        if namespace or callback_interface:
             # A namespace has no instances: drop the wrapper constructors, and allow its
             # (usually lowercase, e.g. `console`) identifier in the type names.
             source = source.replace(
