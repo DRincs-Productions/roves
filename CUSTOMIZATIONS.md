@@ -11,6 +11,48 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: static operations, `[Unscopable]`, default `toJSON`, `[NewObject]` (CP65)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixtures
+`components/roves-v8/tests/webidl/JsonBase.webidl` and `JsonChild.webidl`;
+`components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0129-roves-v8-static-unscopable-tojson.patch` after 0128.
+
+**Runtime.**
+- `define_static_webidl_method` installs a function on the interface object. Its
+  `StaticNativeMethod` receives a `ScriptContext` and structured arguments, and has no receiver.
+  The function's `length` is the required count.
+- `define_unscopables` installs `@@unscopables` on the prototype (an object of `name: true`,
+  read-only and non-enumerable). Its prototype is `Object.prototype` rather than null, a small
+  documented deviation.
+- `define_default_to_json` implements WebIDL's default `toJSON`: a new object holding each listed
+  attribute, read through the normal getters, which also check the receiver.
+
+**Generator.**
+- Static operations get `X(cx, args) -> Result<T, WebIdlError> where Self: Sized` on the native trait,
+  called as `<T as XNative>::X`. Overloaded statics fail closed.
+- `[Unscopable]` names of the interface and its ancestors are flattened.
+- `[Default] toJSON()` produces no native method. The collected attributes are the JSON-typed ones
+  (primitives, strings, enumerations, their nullable and sequence forms, and interfaces that have a
+  `toJSON`) of every interface in the chain that declares a default `toJSON`, ancestors first.
+- Redeclaring the default `toJSON` in a child is no longer counted as shadowing.
+- `[NewObject]` is accepted as a contract on the native.
+- Bug fixed during the work: these registrations were appended after the registration list had been
+  joined into the output. The join now happens last.
+
+**Tests.**
+- New runtime test (generated parent/child):
+  - a static operation, its `length`, its absence on instances and its RangeError;
+  - `JSON.stringify` and `Object.keys(toJSON())` order across the chain, without the `any`
+    attribute, and receiver checking;
+  - `@@unscopables` contents, and a `with` statement that does not see unscopable members.
+- Generator tests: 54/54.
+- `roves-v8` pilot and pilot+JIT-less: 90 unit + 5 integration + 2 doctests each; default 60 unit +
+  2 doctests.
+- `servo-script` check with the pilot is clean.
+
+Coverage: **190/486**.
+
 ## 2026-10-06 - V8 migration Phase 4: variadic arguments (CP64)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixture

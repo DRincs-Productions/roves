@@ -202,6 +202,11 @@ overload per tipo, `[HTMLConstructor]`, `[Unscopable]`, poi l'esposizione non-Wi
 rimanenti, convertiti, finiscono in un'unica sequence. Test generatore 53/53, `roves-v8` 89+5+2,
 default 60+2, check pulito. Copertura 171/486.
 
+**CP65 (2026-10-06):** operazioni statiche, `[Unscopable]`, `toJSON` di default e `[NewObject]`
+(patch 0129). Test generatore 54/54, `roves-v8` 90+5+2, default 60+2, check pulito. Copertura
+**190/486**. **Prossimo:** esposizione non-Window (31: Worker e worklet), `Promise`, overload
+per tipo, `[Serializable]`/`[Transferable]`.
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

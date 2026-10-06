@@ -219,6 +219,8 @@ fn main() {
         ("TokenProbe", &[][..]),
         ("AttributeProbe", &["TokenProbe"][..]),
         ("VariadicOperations", &[][..]),
+        ("JsonBase", &[][..]),
+        ("JsonChild", &["JsonBase"][..]),
     ] {
         println!("cargo:rerun-if-changed={}", fixtures.join(format!("{interface}.webidl")).display());
         let status = Command::new(&python)

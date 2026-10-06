@@ -161,6 +161,14 @@ pub mod webidl {
     pub mod variadic_operations {
         include!(concat!(env!("OUT_DIR"), "/VariadicOperationsV8Binding.rs"));
     }
+    #[cfg(test)]
+    pub mod json_base {
+        include!(concat!(env!("OUT_DIR"), "/JsonBaseV8Binding.rs"));
+    }
+    #[cfg(test)]
+    pub mod json_child {
+        include!(concat!(env!("OUT_DIR"), "/JsonChildV8Binding.rs"));
+    }
 }
 
 use std::sync::Once;
@@ -334,6 +342,9 @@ pub struct Runtime {
     overload_configs: Vec<Box<WebIdlOverloadConfig>>,
     /// Per-contextual-attribute callback data, kept alive for the same reason.
     attribute_configs: Vec<Box<ContextualAttributeConfig>>,
+    /// Per-static-method and default-toJSON callback data, kept alive for the same reason.
+    static_configs: Vec<Box<StaticMethodConfig>>,
+    to_json_configs: Vec<Box<DefaultToJsonConfig>>,
 }
 
 struct WrappedFinalizer {
@@ -850,6 +861,20 @@ impl ScriptContext<'_, '_, '_> {
     }
 }
 
+/// A static WebIDL operation (on the interface object), registered via
+/// [`Runtime::define_static_webidl_method`]. It has no receiver native.
+pub type StaticNativeMethod =
+    for<'a, 's, 'i> fn(&mut ScriptContext<'a, 's, 'i>, &[Value]) -> Result<Value, WebIdlError>;
+
+struct StaticMethodConfig {
+    method: StaticNativeMethod,
+    arguments: WebIdlArguments,
+}
+
+struct DefaultToJsonConfig {
+    attributes: Vec<String>,
+}
+
 /// The getter of an attribute whose native needs the JS engine, registered via
 /// [`Runtime::define_contextual_attribute`].
 pub type ContextualPropertyGetter =
@@ -1235,6 +1260,8 @@ impl Runtime {
             constructor_configs: Vec::new(),
             overload_configs: Vec::new(),
             attribute_configs: Vec::new(),
+            static_configs: Vec::new(),
+            to_json_configs: Vec::new(),
             method_configs: Vec::new(),
         }
     }
@@ -2135,6 +2162,131 @@ impl Runtime {
             setter_template,
             v8::PropertyAttribute::NONE,
         );
+        Ok(())
+    }
+
+    /// Defines a static operation on the interface object (`Interface.name(...)`), with
+    /// structured arguments. The native receives a [`ScriptContext`] and no receiver; errors
+    /// it returns are thrown.
+    pub fn define_static_webidl_method(
+        &mut self,
+        interface: &Interface,
+        name: &str,
+        method: StaticNativeMethod,
+        arguments: &[WebIdlArgument],
+    ) -> Result<(), String> {
+        if interface.materialized.get() {
+            return Err("interface members must be defined before creating instances or descendants".into());
+        }
+        let config = Box::new(StaticMethodConfig { method, arguments: WebIdlArguments::typed(arguments) });
+        let required = arguments.iter().take_while(|argument| !argument.optional && !argument.variadic).count();
+        let config_pointer = (&*config) as *const StaticMethodConfig;
+        self.static_configs.push(config);
+        let context_handle = &self.context;
+        v8::scope!(let scope, &mut self.isolate);
+        let context = v8::Local::new(scope, context_handle);
+        let scope = &mut v8::ContextScope::new(scope, context);
+        let template = v8::Local::new(scope, &interface.template);
+        let key = v8::String::new(scope, name).ok_or("invalid method name")?;
+        let data = v8::External::new(scope, config_pointer as *mut std::ffi::c_void);
+        let function_template = v8::FunctionTemplate::builder(
+            |scope: &mut v8::PinScope,
+             args: v8::FunctionCallbackArguments,
+             mut retval: v8::ReturnValue| {
+                let external = v8::Local::<v8::External>::try_from(args.data()).unwrap();
+                // SAFETY: the External points to this method's boxed config.
+                let config = unsafe { &*(external.value() as *const StaticMethodConfig) };
+                let Some(arguments) = convert_webidl_arguments(scope, &args, &config.arguments) else {
+                    return;
+                };
+                let result = (config.method)(&mut ScriptContext { scope }, &arguments);
+                match result {
+                    Ok(value) => {
+                        let value = v8_result(scope, &value);
+                        retval.set(value);
+                    },
+                    Err(error) => throw_webidl_error(scope, &error),
+                }
+            },
+        )
+        .data(data.into())
+        .length(required as i32)
+        .constructor_behavior(v8::ConstructorBehavior::Throw)
+        .build(scope);
+        template.set(key.into(), function_template.into());
+        Ok(())
+    }
+
+    /// Installs `@@unscopables` on the interface prototype: an object whose `names` are `true`,
+    /// so `with` statements do not see those members. `names` must include the unscopable
+    /// members of ancestor interfaces too (the generator flattens them).
+    pub fn define_unscopables(&mut self, interface: &Interface, names: &[&str]) -> Result<(), String> {
+        if interface.materialized.get() {
+            return Err("interface members must be defined before creating instances or descendants".into());
+        }
+        let context_handle = &self.context;
+        v8::scope!(let scope, &mut self.isolate);
+        let context = v8::Local::new(scope, context_handle);
+        let scope = &mut v8::ContextScope::new(scope, context);
+        let template = v8::Local::new(scope, &interface.template);
+        let unscopables = v8::ObjectTemplate::new(scope);
+        for name in names {
+            let key = v8::String::new(scope, name).ok_or("invalid unscopable name")?;
+            unscopables.set(key.into(), v8::Boolean::new(scope, true).into());
+        }
+        let symbol = v8::Symbol::get_unscopables(scope);
+        template.prototype_template(scope).set_with_attr(
+            symbol.into(),
+            unscopables.into(),
+            v8::PropertyAttribute::READ_ONLY | v8::PropertyAttribute::DONT_ENUM,
+        );
+        Ok(())
+    }
+
+    /// Defines WebIDL's default `toJSON` operation: a new plain object holding the current
+    /// value of each listed attribute (read through the normal getters, so the receiver check
+    /// and conversions apply). The generator lists the JSON-typed attributes of the interface
+    /// and of every ancestor that also has a default `toJSON`, ancestors first.
+    pub fn define_default_to_json(&mut self, interface: &Interface, attributes: &[&str]) -> Result<(), String> {
+        if interface.materialized.get() {
+            return Err("interface members must be defined before creating instances or descendants".into());
+        }
+        let config = Box::new(DefaultToJsonConfig {
+            attributes: attributes.iter().map(|name| name.to_string()).collect(),
+        });
+        let config_pointer = (&*config) as *const DefaultToJsonConfig;
+        self.to_json_configs.push(config);
+        let context_handle = &self.context;
+        v8::scope!(let scope, &mut self.isolate);
+        let context = v8::Local::new(scope, context_handle);
+        let scope = &mut v8::ContextScope::new(scope, context);
+        let template = v8::Local::new(scope, &interface.template);
+        let signature = v8::Signature::new(scope, template);
+        let key = v8::String::new(scope, "toJSON").unwrap();
+        let data = v8::External::new(scope, config_pointer as *mut std::ffi::c_void);
+        let function_template = v8::FunctionTemplate::builder(
+            |scope: &mut v8::PinScope,
+             args: v8::FunctionCallbackArguments,
+             mut retval: v8::ReturnValue| {
+                let external = v8::Local::<v8::External>::try_from(args.data()).unwrap();
+                // SAFETY: the External points to this operation's boxed config.
+                let config = unsafe { &*(external.value() as *const DefaultToJsonConfig) };
+                let this = args.this();
+                let result = v8::Object::new(scope);
+                for name in &config.attributes {
+                    let key = v8::String::new(scope, name).unwrap();
+                    // A getter that throws leaves its exception pending; stop there.
+                    let Some(value) = this.get(scope, key.into()) else { return };
+                    result.create_data_property(scope, key.into(), value);
+                }
+                retval.set(result.into());
+            },
+        )
+        .data(data.into())
+        .signature(signature)
+        .constructor_behavior(v8::ConstructorBehavior::Throw)
+        .build(scope);
+        template.prototype_template(scope).set(key.into(), function_template.into());
         Ok(())
     }
 
@@ -6821,6 +6973,57 @@ mod tests {
             assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
         }
         assert!(runtime.eval("ops.count('a', Symbol())").unwrap_err().contains("TypeError"));
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_static_operations_unscopables_and_default_to_json() {
+        use crate::webidl::json_base::{JsonBaseBinding, JsonBaseNative};
+        use crate::webidl::json_child::{JsonChildBinding, JsonChildNative};
+        use crate::{Handle, NativeRef, ScriptContext, Trace, Tracer, WebIdlError};
+        struct Item {
+            id: u32,
+            name: &'static str,
+        }
+        impl Trace for Item {
+            fn trace(&self, _tracer: &mut Tracer) {}
+        }
+        #[allow(non_snake_case)]
+        impl JsonBaseNative for Item {
+            fn Id(&self) -> u32 { self.id }
+            fn Flag(&self) -> bool { true }
+        }
+        #[allow(non_snake_case)]
+        impl JsonChildNative for Item {
+            fn Hidden(&self, cx: &mut ScriptContext) -> Result<Handle, WebIdlError> { Ok(cx.handle(&Value::Number(1.0))) }
+            fn Name(&self) -> Vec<u16> { self.name.encode_utf16().collect() }
+            fn Before(&self) {}
+            fn Clone(&self) -> NativeRef { unreachable!("not exercised") }
+            fn Count(_cx: &mut ScriptContext, base: u32) -> Result<u32, WebIdlError> {
+                base.checked_mul(2).ok_or_else(|| WebIdlError::RangeError("overflow".into()))
+            }
+        }
+        let mut runtime = Runtime::new();
+        let base = JsonBaseBinding::<Item>::install(&mut runtime).unwrap();
+        let child = JsonChildBinding::<Item>::install(&mut runtime, &base).unwrap();
+        let item = runtime.allocate_traced(Item { id: 7, name: "seven" });
+        let wrapper = child.wrap_traced(&mut runtime, &item);
+        runtime.set_global_property("item", &wrapper).unwrap();
+        for (source, expected) in [
+            // Static operation on the interface object, not on instances.
+            ("[JsonChild.count(21), typeof item.count, JsonChild.count.length].join()", "42,undefined,1"),
+            ("(() => { try { JsonChild.count(2 ** 31 + 1); } catch (e) { return e.name; } })()", "RangeError"),
+            // Default toJSON: JSON-typed attributes, ancestors first; `any` is not collected.
+            ("JSON.stringify(item)", "{\"id\":7,\"flag\":true,\"name\":\"seven\"}"),
+            ("Object.keys(item.toJSON()).join()", "id,flag,name"),
+            ("(() => { try { JsonChild.prototype.toJSON.call({}); } catch (e) { return e.name; } })()", "TypeError"),
+            // @@unscopables lists the interface's and its ancestors' unscopable members.
+            ("const u = JsonChild.prototype[Symbol.unscopables]; [u.before, u.flag, 'name' in u].join()", "true,true,false"),
+            ("(() => { const flag = 'outer'; with (item) { return [flag, typeof before, name].join(); } })()", "outer,undefined,seven"),
+        ] {
+            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
+        }
+        drop((wrapper, item));
     }
 
     #[cfg(feature = "webidl-pilot")]

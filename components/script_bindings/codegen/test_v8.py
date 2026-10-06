@@ -104,7 +104,7 @@ class V8GeneratorTests(unittest.TestCase):
                 generate(path, Path(directory) / "output")
 
     def test_unsupported_members_never_silently_disappear(self):
-        for member in ["readonly attribute (long or DOMString) value;", "readonly attribute Promise<any> value;", "static readonly attribute boolean valid;", "[Unscopable] readonly attribute boolean valid;", "attribute Unsupported? owner;"]:
+        for member in ["readonly attribute (long or DOMString) value;", "readonly attribute Promise<any> value;", "static readonly attribute boolean valid;", "[LegacyLenientThis] readonly attribute boolean valid;", "attribute Unsupported? owner;"]:
             with self.subTest(member=member):
                 self.assert_unsupported("interface Unsupported { " + member + " };")
 
@@ -617,6 +617,31 @@ class V8GeneratorTests(unittest.TestCase):
             source = generate(path, Path(directory) / "output")
             self.assertIn("fn Join(&self, arg0: Vec<u16>, arg1: Vec<Vec<u16>>) -> Vec<u16>;", source)
             self.assertIn("ty: roves_v8::WebIdlType::Primitive(roves_v8::WebIdlArgumentConversion::DomString), optional: false, variadic: true }", source)
+
+    def test_static_unscopable_and_default_to_json_members(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory) / "Base.webidl"
+            base.write_text(
+                "[Exposed=Window] interface Base { readonly attribute long id; [Unscopable] undefined old(); [Default] object toJSON(); };",
+                encoding="utf-8",
+            )
+            child = Path(directory) / "Child.webidl"
+            child.write_text(
+                "[Exposed=Window] interface Child : Base { readonly attribute DOMString name; readonly attribute any opaque; "
+                "[Unscopable] undefined fresh(); [NewObject] Child copy(); static boolean check(long value); [Default] object toJSON(); };",
+                encoding="utf-8",
+            )
+            source = generate(child, Path(directory) / "output", (base,))
+            for expected in [
+                "fn Check(cx: &mut roves_v8::ScriptContext, arg0: i32) -> Result<bool, roves_v8::WebIdlError> where Self: Sized;",
+                'runtime.define_static_webidl_method(&interface, "check", |cx, args| {',
+                "let result = <T as ChildNative>::Check(cx, arg0)?;",
+                'runtime.define_unscopables(&interface, &["old", "fresh"])?;',
+                'runtime.define_default_to_json(&interface, &["id", "name"])?;',
+                "fn Copy(&self) -> roves_v8::NativeRef;",
+            ]:
+                self.assertIn(expected, source)
+            self.assertNotIn("fn ToJSON", source)
 
     def test_overloads_needing_type_distinction_fail_closed(self):
         self.assert_unsupported("interface Unsupported { undefined f(DOMString a); undefined f(boolean a); };")

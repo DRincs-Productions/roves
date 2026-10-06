@@ -8361,6 +8361,43 @@ def v8_setter_conversion(idl_type, nullable: bool):
     return conversion, nullable, arm
 
 
+def v8_is_json_type(ty) -> bool:
+    """WebIDL JSON types the default toJSON collects: primitives, strings, enumerations,
+    nullable and sequence forms of them, and interfaces that have a toJSON operation."""
+    if ty.nullable() or ty.isSequence():
+        return v8_is_json_type(ty.inner)
+    if ty.isPrimitive() or ty.isString() or ty.isEnum():
+        return True
+    if v8_is_dom_interface(ty):
+        interface = ty.inner
+        while interface is not None:
+            if any(member.isMethod() and member.identifier.name == "toJSON" for member in interface.members):
+                return True
+            interface = interface.parent
+    return False
+
+
+def v8_default_to_json_attributes(interface) -> list:
+    """Attribute names the default toJSON collects: ancestors first, for every interface in the
+    chain that itself declares [Default] toJSON."""
+    chain = []
+    current = interface
+    while current is not None:
+        chain.insert(0, current)
+        current = current.parent
+    names = []
+    for level in chain:
+        if not any(member.isMethod() and member.identifier.name == "toJSON"
+                   and "Default" in member._extendedAttrDict for member in level.members):
+            continue
+        for member in level.members:
+            if (member.isAttr() and not member.isStatic()
+                    and getattr(member, "originatingInterface", level) is level
+                    and v8_is_json_type(member.type)):
+                names.append(member.identifier.name)
+    return names
+
+
 def v8_union_info(ty, name: str, member_name: str):
     """A Rust enum per union (named like Servo's, e.g. AddEventListenerOptionsOrBoolean) with
     one variant per member type."""
@@ -8698,7 +8735,7 @@ V8_NUMERIC_ATTRIBUTE_TYPES = {
 
 
 # SpiderMonkey JIT/caching hints with no observable semantics; the V8 backend ignores them.
-V8_IGNORED_MEMBER_HINTS = {"Pure", "Constant", "SameObject"}
+V8_IGNORED_MEMBER_HINTS = {"Pure", "Constant", "SameObject", "NewObject"}
 
 # Argument conversions whose values are engine handles: the native needs a ScriptContext.
 V8_CONTEXTUAL_CONVERSIONS = {"Any", "Object", "Callback"}
@@ -8836,12 +8873,19 @@ class CGV8BindingRoot(CGThing):
             inherited.update(member.identifier.name for member in ancestor.members)
             ancestor = ancestor.parent
         for member in interface.members:
-            if member.identifier.name in inherited and not copied_from_ancestor(member):
+            # Every level of a chain may redeclare WebIDL's default toJSON; it has no native.
+            default_to_json_member = (
+                member.isMethod() and member.identifier.name == "toJSON" and "Default" in member._extendedAttrDict
+            )
+            if member.identifier.name in inherited and not copied_from_ancestor(member) and not default_to_json_member:
                 raise TypeError(f"V8 backend does not support members shadowing an inherited member: {name}.{member.identifier.name}")
         attributes = []
         operations = []
         unforgeable_attributes = set()
         contextual_attributes = []
+        static_operations = []
+        unscopables = []
+        default_to_json = False
         fallible_attributes = []
         member_conditions = {}
         ce_reaction_members = set()
@@ -8869,13 +8913,19 @@ class CGV8BindingRoot(CGThing):
                 continue
             if member.isMethod():
                 signatures = member.signatures()
-                operation_attributes = set(member._extendedAttrDict) - {"Throws", "CEReactions"} - V8_IGNORED_MEMBER_HINTS - V8_EXPOSURE_ATTRIBUTES
+                if "Default" in member._extendedAttrDict and member.identifier.name == "toJSON":
+                    # WebIDL's default toJSON: generated from the attributes, no native.
+                    default_to_json = True
+                    continue
+                if "Unscopable" in member._extendedAttrDict:
+                    unscopables.append(member.identifier.name)
+                operation_attributes = set(member._extendedAttrDict) - {"Throws", "CEReactions", "Unscopable"} - V8_IGNORED_MEMBER_HINTS - V8_EXPOSURE_ATTRIBUTES
                 if "CEReactions" in member._extendedAttrDict:
                     ce_reaction_members.add(member.identifier.name)
                 condition = v8_exposure_condition(member._extendedAttrDict)
                 if condition:
                     member_conditions[member.identifier.name] = condition
-                if member.isStatic() or operation_attributes:
+                if operation_attributes or (member.isStatic() and len(signatures) > 1):
                     raise TypeError(f"V8 backend only supports single-signature instance operations: {name}.{member.identifier.name}")
                 if len(signatures) > 1 and not v8_overloads_distinguishable_by_count(signatures):
                     raise TypeError(f"V8 backend only supports overloads distinguishable by argument count: {name}.{member.identifier.name}")
@@ -8963,10 +9013,15 @@ class CGV8BindingRoot(CGThing):
                     )
                     if contextual and len(signatures) > 1:
                         raise TypeError(f"V8 backend does not support overloads needing a script context: {name}.{member.identifier.name}")
+                    if member.isStatic():
+                        static_operations.append((member.identifier.name, native_name, rust_type, value_expr, argument_types))
+                        continue
                     operations.append((member.identifier.name, native_name, rust_type, value_expr, argument_types, throws or contextual, overload_index, len(signatures), contextual))
                 continue
+            if member.isAttr() and "Unscopable" in member._extendedAttrDict:
+                unscopables.append(member.identifier.name)
             attribute_attributes = (
-                set(member._extendedAttrDict) - {"CEReactions"} - V8_IGNORED_MEMBER_HINTS - V8_EXPOSURE_ATTRIBUTES
+                set(member._extendedAttrDict) - {"CEReactions", "Unscopable"} - V8_IGNORED_MEMBER_HINTS - V8_EXPOSURE_ATTRIBUTES
                 - V8_FALLIBLE_ATTRIBUTE_ATTRIBUTES
                 if member.isAttr() else set()
             )
@@ -9331,7 +9386,6 @@ class CGV8BindingRoot(CGThing):
             else:
                 registrations_list.append(f'        runtime.define_method(&interface, "{idl}", {callback})?;')
             gate_last_registration(idl)
-        registrations = "\n".join(registrations_list)
         constructor = interface.ctor()
         constructor_arguments = None
         if constructor is not None:
@@ -9424,6 +9478,50 @@ class CGV8BindingRoot(CGThing):
                 f'            &[{", ".join(argument_type[5] or "None" for argument_type in constructor_arguments)}],\n'
                 f'        )'
             )
+        for idl, native, rust_type, value_expr, argument_types in static_operations:
+            parameters = ", ".join(f"arg{index}: {argument_type[0]}" for index, argument_type in enumerate(argument_types))
+            trait_methods += (
+                f"\n    fn {native}(cx: &mut roves_v8::ScriptContext{', ' + parameters if parameters else ''}) "
+                f"-> Result<{rust_type}, roves_v8::WebIdlError> where Self: Sized;"
+            )
+            conversions = "".join(
+                f'            let arg{index} = match args.get({index}).unwrap_or(&Value::Undefined) {{ {argument_type[2]}, _ => unreachable!("runtime conversion matches generated WebIDL argument type") }};\n'
+                for index, argument_type in enumerate(argument_types)
+            )
+            call_arguments = ", ".join(["cx"] + [f"arg{index}" for index, _ in enumerate(argument_types)])
+            call = f"<T as {name}Native>::{native}({call_arguments})"
+            if value_expr == "Value::Undefined":
+                body = f"            {call}?;\n            Ok(Value::Undefined)\n"
+            else:
+                body = (
+                    f"            let result = {call}?;\n"
+                    f"            Ok({value_expr.replace('native.{native}()', 'result')})\n"
+                )
+            typed_arguments = ", ".join(
+                f"roves_v8::WebIdlArgument {{ ty: {argument_type[6] or v8_flat_webidl_type(argument_type)}, optional: {str(argument_type[4]).lower()}, variadic: {str(argument_type[7]).lower()} }}"
+                for argument_type in argument_types
+            )
+            registrations_list.append(
+                f'        runtime.define_static_webidl_method(&interface, "{idl}", |cx, {"args" if argument_types else "_args"}| {{\n'
+                f"{conversions}{body}        }}, &[{typed_arguments}])?;"
+            )
+            gate_last_registration(idl)
+        inherited_unscopables = []
+        ancestor = interface.parent
+        while ancestor is not None:
+            inherited_unscopables = [
+                member.identifier.name for member in ancestor.members
+                if (member.isAttr() or member.isMethod()) and "Unscopable" in member._extendedAttrDict
+            ] + inherited_unscopables
+            ancestor = ancestor.parent
+        all_unscopables = list(dict.fromkeys(inherited_unscopables + unscopables))
+        if unscopables:
+            names = ", ".join(f'"{unscopable}"' for unscopable in all_unscopables)
+            registrations_list.append(f"        runtime.define_unscopables(&interface, &[{names}])?;")
+        if default_to_json:
+            names = ", ".join(f'"{attribute}"' for attribute in v8_default_to_json_attributes(interface))
+            registrations_list.append(f"        runtime.define_default_to_json(&interface, &[{names}])?;")
+        registrations = "\n".join(registrations_list)
         if ce_reaction_members:
             native_bound += " + roves_v8::CeReactions"
         if constructor is not None:
