@@ -1,0 +1,434 @@
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index b3dc402bddf..56dc9d77207 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -268,6 +268,139 @@ struct CachedWrapper {
+ /// value per type yet.
+ const WRAPPED_POINTER_TAG: u16 = 0;
+ 
++// ---------------------------------------------------------------------------------------------
++// Traced native objects (Phase 3 production ownership model, prototype).
++//
++// Servo's DOM objects are owned by the JS engine's GC: SpiderMonkey traces them through
++// `JSTraceable`, and DOM-to-DOM references are `Dom<T>` fields that the trace hook visits. The V8
++// equivalent is the unified heap: native objects live on V8's cppgc heap, are traced together with
++// JS objects in one marking pass, and are associated with their JS wrapper through
++// `Object::wrap`. That lets cycles through native and JS objects (a DOM node whose event
++// listener closes over the node's own wrapper) be collected, which the earlier
++// `create_instance` model (a strong `Box` released by a weak-handle finalizer) cannot see.
++//
++// None of the cppgc types escape: the scripting layer sees `Trace`, `Tracer`, `GcMember`,
++// `GcRoot` and `JsRef`, which mirror `JSTraceable`, `JSTracer`, `Dom<T>`, a rooted `DomRoot<T>`
++// and `Heap<JSVal>` respectively.
++
++/// A native object that may live on the traced heap. `trace` must report every [`GcMember`] and
++/// [`JsRef`] the object holds — the same contract as Servo's `JSTraceable`. A missed reference
++/// lets its target be collected while still referenced.
++pub trait Trace: 'static {
++    fn trace(&self, tracer: &mut Tracer);
++}
++
++/// Passed to [`Trace::trace`] to report the references a traced object holds.
++pub struct Tracer<'a> {
++    visitor: &'a mut v8::cppgc::Visitor,
++}
++
++impl Tracer<'_> {
++    /// Reports a strong reference to another traced native object.
++    pub fn member<T: Trace>(&mut self, member: &GcMember<T>) {
++        self.visitor.trace(&member.inner);
++    }
++
++    /// Reports a reference from this native object to a JS value.
++    pub fn js(&mut self, reference: &JsRef) {
++        self.visitor.trace(&reference.0);
++    }
++}
++
++/// The single cppgc type behind every traced native: the concrete native is type-erased so the
++/// existing `&dyn Any` callbacks (getters, setters, methods) work unchanged on traced objects.
++struct GcBox {
++    /// Pointed to by wrapper internal field 0, exactly like a `create_instance` native; the
++    /// `UnsafeCell` makes the setter callbacks' exclusive access to it sound.
++    native: std::cell::UnsafeCell<Box<dyn std::any::Any>>,
++    trace: fn(&dyn std::any::Any, &mut Tracer),
++}
++
++// SAFETY: `trace` forwards to the native's `Trace` impl, which must visit every reference it
++// holds (the documented contract of `Trace`).
++unsafe impl v8::cppgc::GarbageCollected for GcBox {
++    fn trace(&self, visitor: &mut v8::cppgc::Visitor) {
++        // SAFETY: tracing runs on the mutator thread while no callback holds `&mut native`.
++        let native = unsafe { &*self.native.get() };
++        (self.trace)(native.as_ref(), &mut Tracer { visitor });
++    }
++
++    fn get_name(&self) -> &'static std::ffi::CStr {
++        c"RovesTracedNative"
++    }
++}
++
++fn trace_native<T: Trace>(native: &dyn std::any::Any, tracer: &mut Tracer) {
++    native
++        .downcast_ref::<T>()
++        .expect("GcBox trace function matches its native type")
++        .trace(tracer);
++}
++
++/// A strong reference from one traced native object to another, like Servo's `Dom<T>`. Valid only
++/// as a field of a traced native whose [`Trace`] impl reports it.
++pub struct GcMember<T: Trace> {
++    inner: v8::cppgc::Member<GcBox>,
++    native: std::marker::PhantomData<fn() -> T>,
++}
++
++impl<T: Trace> GcMember<T> {
++    pub fn empty() -> Self {
++        GcMember { inner: v8::cppgc::Member::empty(), native: std::marker::PhantomData }
++    }
++
++    /// Points this member at `root`'s object (with the GC write barrier).
++    pub fn set(&mut self, root: &GcRoot<T>) {
++        self.inner.set(&root.inner);
++    }
++
++    /// The referenced native object.
++    ///
++    /// # Safety
++    /// The native that owns this member must be reachable and must report the member from its
++    /// [`Trace`] impl, so the target cannot have been collected.
++    pub unsafe fn get(&self) -> Option<&T> {
++        // SAFETY: forwarded to the caller's contract.
++        unsafe { self.inner.get() }.map(|gc_box| {
++            // SAFETY: only setter callbacks mutate the native, never while a getter borrows it.
++            unsafe { &*gc_box.native.get() }
++                .downcast_ref::<T>()
++                .expect("GcMember type matches its native")
++        })
++    }
++}
++
++/// An off-heap strong root keeping a traced native alive, like a rooted `DomRoot<T>`. It must be
++/// dropped before the [`Runtime`] that allocated it.
++pub struct GcRoot<T: Trace> {
++    inner: v8::cppgc::Persistent<GcBox>,
++    native: std::marker::PhantomData<fn() -> T>,
++}
++
++impl<T: Trace> GcRoot<T> {
++    pub fn get(&self) -> &T {
++        let gc_box = self.inner.get().expect("a GcRoot always points at a live native");
++        // SAFETY: only setter callbacks mutate the native, never while a root borrows it.
++        unsafe { &*gc_box.native.get() }
++            .downcast_ref::<T>()
++            .expect("GcRoot type matches its native")
++    }
++
++    /// A member pointing at the same native, for storing in another traced native.
++    pub fn member(&self) -> GcMember<T> {
++        GcMember { inner: v8::cppgc::Member::new(&self.inner), native: std::marker::PhantomData }
++    }
++}
++
++/// A reference from a traced native object to a JS value (for example a listener callback or
++/// another object's wrapper), like Servo's `Heap<JSVal>`. Valid only as a field of a traced native
++/// that reports it from [`Trace::trace`]; the native keeps the JS value alive, and a cycle through
++/// both is collected when nothing else reaches it.
++pub struct JsRef(v8::TracedReference<v8::Value>);
++
++/// Tag for `Object::wrap` of traced natives (distinct from the internal-field pointer tag).
++const TRACED_NATIVE_TAG: u16 = 1;
++
+ /// The result of running a script: either its final expression's string representation, or the
+ /// message from an uncaught exception (syntax error or a thrown value). Deliberately a plain
+ /// `Result<String, String>` — see this module's own doc comment on why no `v8::*` type escapes.
+@@ -536,6 +669,25 @@ impl Runtime {
+         }
+     }
+ 
++    /// Runs `source` like [`Runtime::eval_value`] but returns the result as a [`Handle`], so
++    /// objects and functions keep their identity instead of being converted.
++    pub fn eval_handle(&mut self, source: &str) -> Result<Handle, String> {
++        let context_handle = &self.context;
++        v8::scope!(let scope, &mut self.isolate);
++        let context = v8::Local::new(scope, context_handle);
++        let scope = &mut v8::ContextScope::new(scope, context);
++        v8::tc_scope!(let try_catch, scope);
++        let code = v8::String::new(try_catch, source).ok_or("source contained invalid UTF-16/UTF-8")?;
++        let result = v8::Script::compile(try_catch, code, None).and_then(|script| script.run(try_catch));
++        match result {
++            Some(value) => Ok(Handle(v8::Global::new(try_catch, value))),
++            None => Err(match try_catch.exception() {
++                Some(exception) => exception.to_rust_string_lossy(try_catch),
++                None => "unknown script error (no exception object captured)".to_string(),
++            }),
++        }
++    }
++
+     /// Same as [`Runtime::eval_value`], but if the result is a `Promise`, drives V8's microtask
+     /// queue (`Isolate::perform_microtask_checkpoint`) until it settles and returns the resolved
+     /// value, or the rejection's message. A non-`Promise` result returns immediately, same as
+@@ -824,6 +976,80 @@ impl Runtime {
+         Handle(global_value)
+     }
+ 
++    /// Allocates `native` on V8's traced heap and returns a root keeping it alive. See the
++    /// "Traced native objects" section for the ownership model.
++    pub fn allocate_traced<T: Trace>(&mut self, native: T) -> GcRoot<T> {
++        let gc_box = GcBox {
++            native: std::cell::UnsafeCell::new(Box::new(native)),
++            trace: trace_native::<T>,
++        };
++        let heap = self.isolate.get_cpp_heap().expect("V8 isolates carry a cppgc heap");
++        // SAFETY: the pointer is moved into a Persistent before anything else can run a GC.
++        let pointer = unsafe { v8::cppgc::make_garbage_collected(heap, gc_box) };
++        GcRoot { inner: v8::cppgc::Persistent::new(&pointer), native: std::marker::PhantomData }
++    }
++
++    /// Creates a JS wrapper of `interface` for a traced native. Unlike `create_instance`, the
++    /// wrapper does not own the native through a finalizer: V8 traces wrapper -> native through
++    /// `Object::wrap`, and native -> JS through the native's [`JsRef`]s, so the pair lives while
++    /// either side is reachable and cycles between them are collected. The interface's existing
++    /// getters, setters and methods work unchanged.
++    pub fn create_traced_instance<T: Trace>(&mut self, interface: &Interface, native: &GcRoot<T>) -> Handle {
++        self.expose_interface(interface).expect("failed to expose native interface");
++        let context_handle = &self.context;
++        v8::scope!(let scope, &mut self.isolate);
++        let context = v8::Local::new(scope, context_handle);
++        let scope = &mut v8::ContextScope::new(scope, context);
++        let template = v8::Local::new(scope, &interface.template);
++        let object = template
++            .instance_template(scope)
++            .new_instance(scope)
++            .expect("a freshly created ObjectTemplate instance should never fail");
++        let gc_box = native.inner.get().expect("a GcRoot always points at a live native");
++        object.set_aligned_pointer_in_internal_field(
++            0,
++            gc_box.native.get() as *const std::ffi::c_void,
++            WRAPPED_POINTER_TAG,
++        );
++        // SAFETY: TRACED_NATIVE_TAG is used only for GcBox wrappers in this runtime.
++        unsafe { v8::Object::wrap::<TRACED_NATIVE_TAG, GcBox>(scope, object, &native.inner) };
++        let object: v8::Local<v8::Value> = object.into();
++        Handle(v8::Global::new(scope, object))
++    }
++
++    /// Recovers the traced native behind a wrapper made by `create_traced_instance`, or `None`
++    /// for any other value (including `create_instance` wrappers).
++    pub fn traced_native<T: Trace>(&mut self, wrapper: &Handle) -> Option<GcRoot<T>> {
++        let context_handle = &self.context;
++        v8::scope!(let scope, &mut self.isolate);
++        let context = v8::Local::new(scope, context_handle);
++        let scope = &mut v8::ContextScope::new(scope, context);
++        let value = v8::Local::new(scope, &wrapper.0);
++        let object = v8::Local::<v8::Object>::try_from(value).ok()?;
++        // SAFETY: TRACED_NATIVE_TAG wrappers always hold a GcBox; the pointer is moved straight
++        // into a Persistent.
++        let pointer = unsafe { v8::Object::unwrap::<TRACED_NATIVE_TAG, GcBox>(scope, object) }?;
++        // SAFETY: the wrapper is alive (we hold its handle), so its GcBox is too.
++        let gc_box = unsafe { pointer.as_ref() };
++        // SAFETY: shared read of the native; no setter callback is running.
++        unsafe { &*gc_box.native.get() }.downcast_ref::<T>()?;
++        Some(GcRoot { inner: v8::cppgc::Persistent::new(&pointer), native: std::marker::PhantomData })
++    }
++
++    /// A reference to `value` for storing in a traced native (see [`JsRef`]).
++    pub fn js_ref(&mut self, value: &Handle) -> JsRef {
++        v8::scope!(let scope, &mut self.isolate);
++        let local = v8::Local::new(scope, &value.0);
++        JsRef(v8::TracedReference::new(scope, local))
++    }
++
++    /// The JS value a [`JsRef`] points at, as a strong [`Handle`].
++    pub fn js_ref_value(&mut self, reference: &JsRef) -> Option<Handle> {
++        v8::scope!(let scope, &mut self.isolate);
++        let local = reference.0.get(scope)?;
++        Some(Handle(v8::Global::new(scope, local)))
++    }
++
+     /// Defines a named JS interface — a constructor function exposed on the global object (e.g.
+     /// `window.Node`), backed by a `v8::FunctionTemplate`, optionally inheriting from `parent`'s
+     /// prototype chain via `FunctionTemplate::inherit` ("the function's prototype.__proto__ is
+@@ -1915,6 +2141,16 @@ impl Runtime {
+     fn force_full_gc_for_testing(&mut self) {
+         self.isolate
+             .request_garbage_collection_for_testing(v8::GarbageCollectionType::Full);
++        // The isolate-level request scans the native stack conservatively, so a stale pointer
++        // left in a test's stack frame can keep a traced native alive. Also run a precise
++        // unified-heap collection, which is what an idle production GC does.
++        if let Some(heap) = self.isolate.get_cpp_heap() {
++            // SAFETY: no traced-heap pointer is held only on the stack across this call: test
++            // code keeps natives in roots/members, never in raw locals.
++            unsafe {
++                heap.collect_garbage_for_testing(v8::cppgc::EmbedderStackState::NoHeapPointers)
++            };
++        }
+     }
+ 
+     /// Stores `value` as a JS value in this isolate and returns a [`Handle`] that outlives this
+@@ -2670,6 +2906,165 @@ mod tests {
+         );
+     }
+ 
++    mod traced {
++        use super::super::*;
++        use std::cell::{Cell, RefCell};
++
++        thread_local! {
++            static DROPPED: Cell<usize> = const { Cell::new(0) };
++        }
++
++        fn dropped() -> usize {
++            DROPPED.with(Cell::get)
++        }
++
++        /// A DOM-like node: a strong native reference to another node, and a JS reference (a
++        /// listener or its own wrapper), both reported to the tracer.
++        struct Node {
++            id: u32,
++            next: GcMember<Node>,
++            listener: RefCell<Option<JsRef>>,
++        }
++
++        impl Trace for Node {
++            fn trace(&self, tracer: &mut Tracer) {
++                tracer.member(&self.next);
++                if let Some(listener) = &*self.listener.borrow() {
++                    tracer.js(listener);
++                }
++            }
++        }
++
++        impl Drop for Node {
++            fn drop(&mut self) {
++                DROPPED.with(|dropped| dropped.set(dropped.get() + 1));
++            }
++        }
++
++        fn node(id: u32) -> Node {
++            Node { id, next: GcMember::empty(), listener: RefCell::new(None) }
++        }
++
++        fn node_interface(runtime: &mut Runtime) -> Interface {
++            let interface = runtime.define_interface("Node", None);
++            runtime
++                .define_property(&interface, "id", |native| {
++                    Value::Number(native.downcast_ref::<Node>().expect("Node wrapper").id as f64)
++                })
++                .unwrap();
++            runtime
++                .define_property(&interface, "nextId", |native| {
++                    let node = native.downcast_ref::<Node>().expect("Node wrapper");
++                    // SAFETY: `node` is reachable (its wrapper is the receiver) and traces `next`.
++                    match unsafe { node.next.get() } {
++                        Some(next) => Value::Number(next.id as f64),
++                        None => Value::Null,
++                    }
++                })
++                .unwrap();
++            interface
++        }
++
++        fn collect(runtime: &mut Runtime, expected: usize) {
++            for _ in 0..20 {
++                runtime.force_full_gc_for_testing();
++                if dropped() >= expected {
++                    break;
++                }
++            }
++        }
++
++        #[test]
++        fn traced_natives_serve_getters_and_follow_native_references() {
++            let mut runtime = Runtime::new();
++            let interface = node_interface(&mut runtime);
++            let second = runtime.allocate_traced(node(2));
++            let mut first_native = node(1);
++            first_native.next = second.member();
++            let first = runtime.allocate_traced(first_native);
++            let wrapper = runtime.create_traced_instance(&interface, &first);
++            runtime.set_global_property("first", &wrapper).unwrap();
++            assert_eq!(runtime.eval("[first.id, first.nextId, first instanceof Node].join()").unwrap(), "1,2,true");
++            // The wrapper resolves back to the same native object.
++            let resolved = runtime.traced_native::<Node>(&wrapper).unwrap();
++            assert!(std::ptr::eq(resolved.get(), first.get()));
++            let number = runtime.store(&Value::Number(1.0));
++            assert!(runtime.traced_native::<Node>(&number).is_none());
++
++            // Only the member keeps `second` alive once its own root is gone.
++            let before = dropped();
++            drop(second);
++            collect(&mut runtime, before + 1);
++            assert_eq!(dropped(), before, "a member keeps its target alive");
++            assert_eq!(runtime.eval("first.nextId").unwrap(), "2");
++
++            // With the JS global, the Rust roots and the wrapper handle gone, both natives go,
++            // each exactly once.
++            drop((first, resolved, wrapper));
++            runtime.eval("delete globalThis.first;").unwrap();
++            collect(&mut runtime, before + 2);
++            assert_eq!(dropped(), before + 2);
++        }
++
++        #[test]
++        fn cycles_between_natives_and_js_are_collected_but_kept_while_reachable() {
++            let mut runtime = Runtime::new();
++            let interface = node_interface(&mut runtime);
++            let before = dropped();
++            {
++                // A node whose listener closes over the node's own wrapper: native -> listener
++                // -> wrapper -> native. Strong references on either side would leak this.
++                let target = runtime.allocate_traced(node(7));
++                let wrapper = runtime.create_traced_instance(&interface, &target);
++                runtime.set_global_property("target", &wrapper).unwrap();
++                let listener = runtime.eval_handle("(() => { const node = target; return () => node.id; })()").unwrap();
++                let listener_ref = runtime.js_ref(&listener);
++                *target.get().listener.borrow_mut() = Some(listener_ref);
++                // A second cycle through native members: a -> b -> a.
++                let a = runtime.allocate_traced(node(10));
++                let b = runtime.allocate_traced(node(11));
++                unsafe_set_next(&a, &b);
++                unsafe_set_next(&b, &a);
++                runtime.eval("globalThis.keep = target;").unwrap();
++                drop((target, wrapper, listener, a, b));
++            }
++            runtime.eval("delete globalThis.target;").unwrap();
++            collect(&mut runtime, before + 2);
++            // The a <-> b cycle is collected; the listener cycle is still reachable from `keep`.
++            assert_eq!(dropped(), before + 2);
++            assert_eq!(runtime.eval("keep.id").unwrap(), "7");
++            runtime.eval("delete globalThis.keep;").unwrap();
++            collect(&mut runtime, before + 3);
++            assert_eq!(dropped(), before + 3, "the listener cycle is collected once unreachable");
++        }
++
++        /// Points `from.next` at `to`. Members are normally set while building the native; this
++        /// rewires an already-allocated one through a raw pointer, as a DOM mutation would.
++        fn unsafe_set_next(from: &GcRoot<Node>, to: &GcRoot<Node>) {
++            let from = from.get() as *const Node as *mut Node;
++            // SAFETY: test-only exclusive access; no other borrow of `from` exists right now.
++            unsafe { (*from).next.set(to) };
++        }
++
++        #[test]
++        fn a_traced_js_reference_keeps_its_value_alive() {
++            let mut runtime = Runtime::new();
++            let holder = runtime.allocate_traced(node(1));
++            {
++                let value = runtime.eval_handle("({ marker: 42 })").unwrap();
++                let reference = runtime.js_ref(&value);
++                *holder.get().listener.borrow_mut() = Some(reference);
++            }
++            runtime.force_full_gc_for_testing();
++            runtime.force_full_gc_for_testing();
++            let listener = holder.get().listener.borrow();
++            let value = runtime.js_ref_value(listener.as_ref().unwrap()).expect("kept alive by the trace");
++            drop(listener);
++            runtime.set_global_property("value", &value).unwrap();
++            assert_eq!(runtime.eval("value.marker").unwrap(), "42");
++        }
++    }
++
+     #[test]
+     fn constructible_interface_builds_native_objects_from_converted_arguments() {
+         thread_local! {

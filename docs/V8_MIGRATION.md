@@ -42,6 +42,15 @@ constants and `[Pref]`.
 constants on the interface object and prototype; readonly attributes cover all integer and float
 types. Coverage 19/486.
 
+**CP51 (2026-10-06): unified-heap ownership prototype (Phase 3).** Native objects can live on
+V8's cppgc heap, traced together with JS (`Trace`/`Tracer`, `GcMember<T>`, `GcRoot<T>`, `JsRef`,
+`Runtime::allocate_traced`/`create_traced_instance`). Wrappers attach through `Object::wrap`;
+existing getters/setters/methods work unchanged. Tests prove native↔native and native↔JS
+(listener closing over its node) cycles are collected and kept while reachable. This is the
+intended replacement for `JSTraceable`/`Dom<T>`/`Heap<JSVal>`; next it must back the generated
+bindings and the identity cache, then be mapped onto Servo's `#[dom_struct]`/`JSTraceable`
+derive.
+
 CP37 exposes stable `NativeObjectId` through `DomObject` and updates generated `dom_struct`
 equality to use that engine-neutral contract. Local checks pass (reflector 2/2, macro 3/3,
 rustfmt, and patch 0101 reverse-check); CI is green: V8 37226916624 (6/6), Servo 37226916650

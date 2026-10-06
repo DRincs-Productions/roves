@@ -11,6 +11,55 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 3: traced native ownership on V8's unified heap (CP51)
+
+**Servo files:** `components/roves-v8/src/lib.rs`.
+**Patch:** `0115-roves-v8-traced-native-ownership.patch` after 0114.
+
+This is the first prototype of the production ownership model the migration needs in place of
+SpiderMonkey's `JSTraceable`/`Dom<T>`/`Heap<JSVal>` rooting. Native objects are allocated on V8's
+**cppgc** heap and traced in the same marking pass as JS objects. A JS wrapper is associated with
+its native through `Object::wrap`, which is the model Blink (Oilpan) and Deno use. The earlier
+`create_instance` model (a strong `Box` released by a weak-handle finalizer) cannot collect a cycle
+that passes through native code, for example a DOM node whose event listener closes over the
+node's own wrapper. This model can.
+
+**Public API.** It is engine-neutral; no `v8::*` type escapes:
+- `Trace`/`Tracer` mirror `JSTraceable`/`JSTracer`;
+- `GcMember<T>` mirrors `Dom<T>`;
+- `GcRoot<T>` mirrors a rooted `DomRoot<T>`;
+- `JsRef` mirrors `Heap<JSVal>`;
+- `Runtime` gains `allocate_traced`, `create_traced_instance`, `traced_native`, `js_ref`,
+  `js_ref_value` and `eval_handle`.
+
+**Compatibility with existing callbacks.** Every traced native is stored in a single type-erased
+cppgc type, `GcBox`, whose native sits in an `UnsafeCell<Box<dyn Any>>`. Wrapper internal field 0
+points at that box, exactly as for `create_instance`. As a result, every existing and generated
+getter, setter and method works unchanged on traced objects.
+
+**Tests.** Three new GC tests:
+- Getters reach traced natives; a native reaches another through a `GcMember`; a wrapper resolves
+  back to the identical native; a member alone keeps its target alive; and everything drops
+  exactly once when unreachable.
+- A native↔native cycle is collected. A listener closure ↔ node ↔ wrapper cycle is kept while JS
+  reaches it and collected once nothing does.
+- A `JsRef` keeps its JS value alive across full GCs.
+
+**Finding.** The isolate-level test GC (`request_garbage_collection_for_testing`) scans the native
+stack **conservatively**, so stale pointers in a test frame kept traced natives alive and two tests
+first failed for that reason. `force_full_gc_for_testing` now also runs a precise
+(`NoHeapPointers`) unified-heap collection, which is what an idle production GC does.
+
+**Results.** `roves-v8` pilot and pilot+JIT-less: 75 unit + 5 integration + 2 doctests each, stable
+across 6 repeated runs and in release. Default: 58 unit + 2 doctests. The `servo-script` check with
+the pilot is clean.
+
+**Open.**
+- Generated bindings do not yet create traced instances.
+- The identity cache still uses `create_instance` wrappers.
+- `GcRoot` must be dropped before its `Runtime`; nothing enforces this yet.
+- Nothing in production uses any of this.
+
 ## 2026-10-06 - V8 migration Phase 4: WebIDL constants and readonly numeric attributes (CP50)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixture

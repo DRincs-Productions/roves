@@ -99,6 +99,19 @@ dizionari, callback, sequence, union, `any`, `[Pref]`.
 prototype) e attributi readonly per tutti gli interi/float (patch 0114). Test generatore 39/39,
 `roves-v8` 72+5+2, default 55+2, check pulito. Copertura **19/486**.
 
+**CP51 (2026-10-06), Phase 3:** prototipo di ownership sull'heap unificato V8 (cppgc), patch 0115.
+API engine-neutral: `Trace`/`Tracer` (come `JSTraceable`), `GcMember<T>` (come `Dom<T>`),
+`GcRoot<T>` (come `DomRoot`), `JsRef` (come `Heap<JSVal>`); `allocate_traced`,
+`create_traced_instance` (con `Object::wrap`), `traced_native`, `js_ref`, `eval_handle`. Un unico
+tipo cppgc `GcBox` con `UnsafeCell<Box<dyn Any>>`, puntato dall'internal field 0, quindi i
+callback esistenti funzionano invariati. I test dimostrano che i cicli nativo↔nativo e
+nativo↔JS (listener che chiude sul proprio nodo) vengono raccolti, e restano vivi finché
+raggiungibili. **Attenzione:** il GC di test a livello isolate scansiona lo stack in modo
+conservativo; `force_full_gc_for_testing` ora aggiunge una raccolta precisa (`NoHeapPointers`).
+Suite `roves-v8` 75+5+2 stabili (6 ripetizioni + release). **Prossimo:** binding generati e cache
+di identità su istanze tracciate, poi la mappatura su `#[dom_struct]`/derive `JSTraceable` di
+Servo.
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,
