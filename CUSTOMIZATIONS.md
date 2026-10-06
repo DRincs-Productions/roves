@@ -11,6 +11,55 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: interface-typed WebIDL values over traced natives (CP53)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixtures
+`components/roves-v8/tests/webidl/LinkedNode.webidl` and `LinkedLeaf.webidl`;
+`components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0117-roves-v8-interface-typed-values.patch` after 0116.
+
+This checkpoint adds DOM objects as WebIDL values: attributes, operation results and arguments of
+interface type (`readonly attribute Node? parentNode`, `boolean contains(Node other)`). It builds on
+the traced model of CP51 and CP52.
+
+**Runtime.**
+- `Value::Native(NativeRef)` carries a type-erased traced native plus its concrete interface name.
+  It is created with `GcRoot::native_ref(interface)` or `GcMember::native_ref(interface)` and read
+  with `NativeRef::get::<T>()`.
+- An interface registry (every interface's template and parent) is kept in an isolate slot.
+- A returned native becomes its single existing wrapper, so identity and expandos are preserved.
+  If it has no wrapper yet, one is created as its concrete interface.
+- An argument declared `WebIdlArgumentConversion::Interface` (with the interface name in the
+  argument's name slot) must be a traced wrapper whose recorded interface is the declared one or a
+  descendant. The check uses the unforgeable cppgc tag and the registry's parent chain, not the
+  spoofable prototype chain. Anything else is a TypeError before the native runs.
+
+**Real bug found by the test.** `Object::unwrap` on a non-API-wrapper object (`{}`,
+`Object.create(X.prototype)`) does not return null: it reads an arbitrary field. That gave a
+misaligned-pointer abort. Unwrapping is now guarded by `is_api_wrapper()` in both argument
+conversion and `traced_native`. An untraced `create_instance` wrapper of the right interface is
+also rejected safely.
+
+**Generator.** Non-callback DOM interface types (not buffer sources or promises) map to
+`roves_v8::NativeRef` or `Option<roves_v8::NativeRef>` in native traits, for attributes, returns and
+arguments.
+
+**Tests.**
+- Runtime test on a generated parent/child pair:
+  - chained `next` traversal and wrapper identity, including an expando on a returned object;
+  - on-demand wrappers created as the native's concrete interface;
+  - `null` results;
+  - receiver, descendant and `null` arguments;
+  - rejection of a plain object, a prototype spoof, `null` for a non-nullable argument, a number,
+    a missing argument and an untraced wrapper.
+- Generator tests: 41/41.
+- `roves-v8` pilot and pilot+JIT-less: 78 unit + 5 integration + 2 doctests each; default 59 unit +
+  2 doctests.
+- `servo-script` check with the pilot is clean.
+
+Coverage: **33/486** (from 19). New entries include `AbstractRange`, `CSSRuleList`, `DOMRectList`,
+`MessageChannel`, `StyleSheetList`, `TouchList`, `XMLSerializer` and `XPathExpression`.
+
 ## 2026-10-06 - V8 migration Phase 3: one traced wrapper per native, from generated bindings (CP52)
 
 **Servo files:** `components/roves-v8/src/lib.rs`; `components/script_bindings/codegen/codegen.py`,

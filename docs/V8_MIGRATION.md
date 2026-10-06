@@ -56,6 +56,14 @@ derive.
 and the pair is collected together. Generated bindings expose `wrap_traced`. Next: map Servo's
 `#[dom_struct]`/`JSTraceable` onto `Trace` and route a real DOM type through traced wrappers.
 
+**CP53 (2026-10-06): interface-typed values.** `Value::Native(NativeRef)` lets attributes,
+results and arguments carry traced DOM objects: results reuse or create the native's one wrapper
+(as its concrete interface, via an isolate-slot interface registry), and arguments are validated
+by the unforgeable cppgc tag plus the registry's inheritance chain. `Object::unwrap` must be
+guarded by `is_api_wrapper()` (it misreads ordinary objects). Coverage 33/486. Remaining top
+blockers: members with other types (`any`, dictionaries, sequences, unions, callbacks, event
+handlers), `[Pref]`, `[LegacyNoInterfaceObject]`, overloads.
+
 CP37 exposes stable `NativeObjectId` through `DomObject` and updates generated `dom_struct`
 equality to use that engine-neutral contract. Local checks pass (reflector 2/2, macro 3/3,
 rustfmt, and patch 0101 reverse-check); CI is green: V8 37226916624 (6/6), Servo 37226916650

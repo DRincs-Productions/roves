@@ -1,0 +1,594 @@
+diff --git a/components/roves-v8/build.rs b/components/roves-v8/build.rs
+index 9055eb9dd80..6047299ea00 100644
+--- a/components/roves-v8/build.rs
++++ b/components/roves-v8/build.rs
+@@ -205,6 +205,8 @@ fn main() {
+         ("UnforgeableBase", &[][..]),
+         ("UnforgeableChild", &["UnforgeableBase"][..]),
+         ("WebIdlConstants", &[][..]),
++        ("LinkedNode", &[][..]),
++        ("LinkedLeaf", &["LinkedNode"][..]),
+     ] {
+         println!("cargo:rerun-if-changed={}", fixtures.join(format!("{interface}.webidl")).display());
+         let status = Command::new(&python)
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 68e0c70d7ba..7e46ddfb8c1 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -105,6 +105,14 @@ pub mod webidl {
+     pub mod web_idl_constants {
+         include!(concat!(env!("OUT_DIR"), "/WebIdlConstantsV8Binding.rs"));
+     }
++    #[cfg(test)]
++    pub mod linked_node {
++        include!(concat!(env!("OUT_DIR"), "/LinkedNodeV8Binding.rs"));
++    }
++    #[cfg(test)]
++    pub mod linked_leaf {
++        include!(concat!(env!("OUT_DIR"), "/LinkedLeafV8Binding.rs"));
++    }
+ }
+ 
+ use std::sync::Once;
+@@ -161,6 +169,9 @@ pub enum Value {
+     /// scope explicitly needs ArrayBuffer/TypedArray, not just "some object".
+     Bytes(Vec<u8>),
+     Object,
++    /// A traced native DOM object (an interface-typed WebIDL value). Converting it to JS yields
++    /// the native's one wrapper, created on first use as an instance of its concrete interface.
++    Native(NativeRef),
+ }
+ 
+ /// Engine-neutral representation of the WebIDL restricted `float` type.
+@@ -318,6 +329,9 @@ struct GcBox {
+     /// reference: the wrapper (and its expando properties) lives as long as the native, and
+     /// the native/wrapper cycle is collected together once neither is reachable.
+     wrapper: std::cell::UnsafeCell<Option<v8::TracedReference<v8::Object>>>,
++    /// The interface the wrapper was created as; interface-typed arguments check it (and its
++    /// ancestors) instead of the spoofable prototype chain.
++    wrapper_interface: std::cell::UnsafeCell<Option<String>>,
+ }
+ 
+ // SAFETY: `trace` forwards to the native's `Trace` impl, which must visit every reference it
+@@ -357,6 +371,16 @@ impl<T: Trace> GcMember<T> {
+         GcMember { inner: v8::cppgc::Member::empty(), native: std::marker::PhantomData }
+     }
+ 
++    /// A type-erased reference to the member's target as an instance of `interface`.
++    ///
++    /// # Safety
++    /// Same contract as [`GcMember::get`].
++    pub unsafe fn native_ref(&self, interface: &str) -> Option<NativeRef> {
++        // SAFETY: forwarded to the caller's contract.
++        unsafe { self.inner.get() }?;
++        Some(NativeRef { gc: v8::cppgc::Persistent::new(&self.inner), interface: interface.to_owned() })
++    }
++
+     /// Points this member at `root`'s object (with the GC write barrier).
+     pub fn set(&mut self, root: &GcRoot<T>) {
+         self.inner.set(&root.inner);
+@@ -409,6 +433,171 @@ pub struct JsRef(v8::TracedReference<v8::Value>);
+ /// Tag for `Object::wrap` of traced natives (distinct from the internal-field pointer tag).
+ const TRACED_NATIVE_TAG: u16 = 1;
+ 
++/// A type-erased root for a traced native, tagged with its concrete interface name: what an
++/// interface-typed WebIDL attribute, return value or argument carries ([`Value::Native`]).
++pub struct NativeRef {
++    gc: v8::cppgc::Persistent<GcBox>,
++    interface: String,
++}
++
++impl NativeRef {
++    /// The concrete interface a wrapper is created as, if the native has none yet.
++    pub fn interface(&self) -> &str {
++        &self.interface
++    }
++
++    /// The native, if it is a `T`.
++    pub fn get<T: Trace>(&self) -> Option<&T> {
++        let gc_box = self.gc.get()?;
++        // SAFETY: shared read; setters never run while a native reference is borrowed.
++        unsafe { &*gc_box.native.get() }.downcast_ref::<T>()
++    }
++
++    /// Whether both refer to the same native object.
++    pub fn same_native(&self, other: &NativeRef) -> bool {
++        use v8::cppgc::GetRustObj;
++        self.gc.get_rust_obj() == other.gc.get_rust_obj()
++    }
++}
++
++impl Clone for NativeRef {
++    fn clone(&self) -> Self {
++        NativeRef { gc: v8::cppgc::Persistent::new(&self.gc), interface: self.interface.clone() }
++    }
++}
++
++impl PartialEq for NativeRef {
++    fn eq(&self, other: &Self) -> bool {
++        self.same_native(other)
++    }
++}
++
++impl std::fmt::Debug for NativeRef {
++    fn fmt(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
++        formatter.debug_struct("NativeRef").field("interface", &self.interface).finish()
++    }
++}
++
++impl<T: Trace> GcRoot<T> {
++    /// A type-erased reference to this native as an instance of `interface` (its concrete,
++    /// most-derived interface), for returning it from an interface-typed member.
++    pub fn native_ref(&self, interface: &str) -> NativeRef {
++        NativeRef { gc: v8::cppgc::Persistent::new(&self.inner), interface: interface.to_owned() }
++    }
++}
++
++/// Every defined interface by name with its parent, shared through an isolate slot so callbacks
++/// can create wrappers for returned natives and check interface-typed arguments.
++#[derive(Default)]
++struct InterfaceRegistry {
++    templates: std::collections::HashMap<String, v8::Global<v8::FunctionTemplate>>,
++    parents: std::collections::HashMap<String, Option<String>>,
++}
++
++type SharedInterfaceRegistry = std::rc::Rc<std::cell::RefCell<InterfaceRegistry>>;
++
++impl InterfaceRegistry {
++    fn inherits(&self, interface: &str, ancestor: &str) -> bool {
++        let mut current = Some(interface.to_owned());
++        while let Some(name) = current {
++            if name == ancestor {
++                return true;
++            }
++            current = self.parents.get(&name).cloned().flatten();
++        }
++        false
++    }
++}
++
++/// Returns `gc_box`'s wrapper, creating it from `template` (as `interface`) on first use.
++fn traced_wrapper<'s>(
++    scope: &mut v8::PinScope<'s, '_>,
++    template: v8::Local<'s, v8::FunctionTemplate>,
++    interface: &str,
++    gc: &v8::cppgc::Persistent<GcBox>,
++) -> v8::Local<'s, v8::Object> {
++    let gc_box = gc.get().expect("a traced root always points at a live native");
++    // SAFETY: shared read; the slot is only written below, on this thread.
++    if let Some(existing) = unsafe { &*gc_box.wrapper.get() }.as_ref().and_then(|wrapper| wrapper.get(scope)) {
++        return existing;
++    }
++    let object = template
++        .instance_template(scope)
++        .new_instance(scope)
++        .expect("a freshly created ObjectTemplate instance should never fail");
++    object.set_aligned_pointer_in_internal_field(
++        0,
++        gc_box.native.get() as *const std::ffi::c_void,
++        WRAPPED_POINTER_TAG,
++    );
++    // SAFETY: TRACED_NATIVE_TAG is used only for GcBox wrappers in this runtime.
++    unsafe { v8::Object::wrap::<TRACED_NATIVE_TAG, GcBox>(scope, object, gc) };
++    // SAFETY: no other reference to these slots is live; TracedReference creation performs
++    // the GC write barrier.
++    unsafe {
++        *gc_box.wrapper.get() = Some(v8::TracedReference::new(scope, object));
++        *gc_box.wrapper_interface.get() = Some(interface.to_owned());
++    }
++    object
++}
++
++/// Converts a callback result to JS, wrapping [`Value::Native`] results.
++fn v8_result<'s>(scope: &mut v8::PinScope<'s, '_>, value: &Value) -> v8::Local<'s, v8::Value> {
++    let Value::Native(native) = value else {
++        return v8_value(scope, value);
++    };
++    let registry = scope
++        .get_slot::<SharedInterfaceRegistry>()
++        .expect("runtime installs the interface registry")
++        .clone();
++    let template = {
++        let registry = registry.borrow();
++        let Some(template) = registry.templates.get(&native.interface) else {
++            throw_type_error(scope, "native object of an undefined interface");
++            return v8::undefined(scope).into();
++        };
++        v8::Local::new(scope, template)
++    };
++    traced_wrapper(scope, template, &native.interface, &native.gc).into()
++}
++
++/// Converts an interface-typed argument: a traced wrapper whose interface is `expected` or
++/// descends from it. `None` means a TypeError is pending.
++fn native_argument(
++    scope: &mut v8::PinScope,
++    argument: v8::Local<v8::Value>,
++    expected: &str,
++) -> Option<Value> {
++    let not_an_instance = |scope: &mut v8::PinScope| {
++        throw_type_error(scope, &format!("argument is not an object implementing {expected}"));
++        None
++    };
++    let Ok(object) = v8::Local::<v8::Object>::try_from(argument) else {
++        return not_an_instance(scope);
++    };
++    // `Object::unwrap` is only defined for API wrappers: on an ordinary object it reads an
++    // arbitrary field instead of returning null.
++    if !object.is_api_wrapper() {
++        return not_an_instance(scope);
++    }
++    // SAFETY: TRACED_NATIVE_TAG wrappers always hold a GcBox; the pointer moves straight into
++    // a Persistent.
++    let Some(pointer) = (unsafe { v8::Object::unwrap::<TRACED_NATIVE_TAG, GcBox>(scope, object) }) else {
++        return not_an_instance(scope);
++    };
++    // SAFETY: the argument keeps the wrapper, and so its GcBox, alive.
++    let gc_box = unsafe { pointer.as_ref() };
++    // SAFETY: shared read of a slot written only when the wrapper was created.
++    let Some(interface) = unsafe { &*gc_box.wrapper_interface.get() }.clone() else {
++        return not_an_instance(scope);
++    };
++    let registry = scope.get_slot::<SharedInterfaceRegistry>().expect("runtime installs the interface registry").clone();
++    if !registry.borrow().inherits(&interface, expected) {
++        return not_an_instance(scope);
++    }
++    Some(Value::Native(NativeRef { gc: v8::cppgc::Persistent::new(&pointer), interface }))
++}
++
+ /// The result of running a script: either its final expression's string representation, or the
+ /// message from an uncaught exception (syntax error or a thrown value). Deliberately a plain
+ /// `Result<String, String>` — see this module's own doc comment on why no `v8::*` type escapes.
+@@ -483,6 +672,9 @@ pub enum WebIdlArgumentConversion {
+     ByteString,
+     UsvString,
+     Enumeration,
++    /// A traced native implementing an interface. The interface name is passed in the
++    /// argument's `enumeration_values` slot (`Some(&["Node"])`).
++    Interface,
+ }
+ 
+ /// WebIDL optional-argument state. `Missing` differs from a present nullable `None`.
+@@ -593,6 +785,7 @@ impl Runtime {
+     pub fn new() -> Self {
+         ensure_platform_initialized();
+         let mut isolate = v8::Isolate::new(v8::CreateParams::default());
++        isolate.set_slot(SharedInterfaceRegistry::default());
+         let context = {
+             v8::scope!(let scope, &mut isolate);
+             let context = v8::Context::new(scope, Default::default());
+@@ -991,6 +1184,7 @@ impl Runtime {
+             native: std::cell::UnsafeCell::new(Box::new(native)),
+             trace: trace_native::<T>,
+             wrapper: std::cell::UnsafeCell::new(None),
++            wrapper_interface: std::cell::UnsafeCell::new(None),
+         };
+         let heap = self.isolate.get_cpp_heap().expect("V8 isolates carry a cppgc heap");
+         // SAFETY: the pointer is moved into a Persistent before anything else can run a GC.
+@@ -1011,28 +1205,8 @@ impl Runtime {
+         v8::scope!(let scope, &mut self.isolate);
+         let context = v8::Local::new(scope, context_handle);
+         let scope = &mut v8::ContextScope::new(scope, context);
+-        let gc_box = native.inner.get().expect("a GcRoot always points at a live native");
+-        // SAFETY: shared read; the slot is only written below, on this thread.
+-        if let Some(existing) = unsafe { &*gc_box.wrapper.get() }.as_ref().and_then(|wrapper| wrapper.get(scope)) {
+-            let existing: v8::Local<v8::Value> = existing.into();
+-            return Handle(v8::Global::new(scope, existing));
+-        }
+         let template = v8::Local::new(scope, &interface.template);
+-        let object = template
+-            .instance_template(scope)
+-            .new_instance(scope)
+-            .expect("a freshly created ObjectTemplate instance should never fail");
+-        object.set_aligned_pointer_in_internal_field(
+-            0,
+-            gc_box.native.get() as *const std::ffi::c_void,
+-            WRAPPED_POINTER_TAG,
+-        );
+-        // SAFETY: TRACED_NATIVE_TAG is used only for GcBox wrappers in this runtime.
+-        unsafe { v8::Object::wrap::<TRACED_NATIVE_TAG, GcBox>(scope, object, &native.inner) };
+-        // SAFETY: no other reference to the wrapper slot is live; TracedReference creation
+-        // performs the GC write barrier.
+-        unsafe { *gc_box.wrapper.get() = Some(v8::TracedReference::new(scope, object)) };
+-        let object: v8::Local<v8::Value> = object.into();
++        let object: v8::Local<v8::Value> = traced_wrapper(scope, template, &interface.name, &native.inner).into();
+         Handle(v8::Global::new(scope, object))
+     }
+ 
+@@ -1045,6 +1219,9 @@ impl Runtime {
+         let scope = &mut v8::ContextScope::new(scope, context);
+         let value = v8::Local::new(scope, &wrapper.0);
+         let object = v8::Local::<v8::Object>::try_from(value).ok()?;
++        if !object.is_api_wrapper() {
++            return None;
++        }
+         // SAFETY: TRACED_NATIVE_TAG wrappers always hold a GcBox; the pointer is moved straight
+         // into a Persistent.
+         let pointer = unsafe { v8::Object::unwrap::<TRACED_NATIVE_TAG, GcBox>(scope, object) }?;
+@@ -1252,6 +1429,16 @@ impl Runtime {
+         // `define_property` checkpoint never hit it.
+         let _ = context;
+ 
++        let registry = scope
++            .get_slot::<SharedInterfaceRegistry>()
++            .expect("runtime installs the interface registry")
++            .clone();
++        registry.borrow_mut().templates.insert(name.to_owned(), v8::Global::new(scope, template));
++        registry
++            .borrow_mut()
++            .parents
++            .insert(name.to_owned(), parent.map(|parent| parent.name.clone()));
++
+         Interface {
+             template: v8::Global::new(scope, template),
+             parent_template: parent.map(|parent| parent.template.clone()),
+@@ -1528,7 +1715,8 @@ impl Runtime {
+                 }
+                 // SAFETY: our instance owns this Box; its live local handle prevents GC.
+                 let value = getter(unsafe { (&*raw).as_ref() });
+-                retval.set(v8_value(scope, &value));
++                let value = v8_result(scope, &value);
++                retval.set(value);
+             },
+         )
+         .data(getter_data.into())
+@@ -1952,7 +2140,8 @@ impl Runtime {
+                         }
+                     },
+                 };
+-                retval.set(v8_value(scope, &result));
++                let result = v8_result(scope, &result);
++                retval.set(result);
+             },
+         )
+         .data(external_data.into())
+@@ -2435,6 +2624,16 @@ fn convert_webidl_arguments<'s>(
+                     Err(None) => return None,
+                 }
+             }
++            Some(WebIdlArgumentConversion::Interface) => {
++                let expected = config
++                    .enumeration_values
++                    .get(i)
++                    .and_then(Option::as_ref)
++                    .and_then(|names| names.first())
++                    .map(|name| String::from_utf16_lossy(name))
++                    .expect("interface-typed arguments name their interface");
++                native_argument(scope, argument, &expected)?
++            }
+             Some(WebIdlArgumentConversion::Enumeration) => {
+                 if argument.is_symbol() {
+                     throw_type_error(scope, "Cannot convert a Symbol value to a string");
+@@ -2592,6 +2791,9 @@ fn native_value<'s>(scope: &v8::PinScope<'s, '_>, value: v8::Local<'s, v8::Value
+ fn v8_value<'s>(scope: &v8::PinScope<'s, '_>, value: &Value) -> v8::Local<'s, v8::Value> {
+     match value {
+         Value::Missing | Value::Undefined | Value::Object => v8::undefined(scope).into(),
++        // Wrapping a native needs mutable isolate access; callback results go through
++        // `v8_result`, which does that. Other conversions have no interface context.
++        Value::Native(_) => v8::undefined(scope).into(),
+         Value::Null => v8::null(scope).into(),
+         Value::Bool(b) => v8::Boolean::new(scope, *b).into(),
+         Value::Number(n) => v8::Number::new(scope, *n).into(),
+@@ -4880,6 +5082,107 @@ mod tests {
+         assert_eq!(runtime.eval("again === shape").unwrap(), "true");
+     }
+ 
++    #[cfg(feature = "webidl-pilot")]
++    #[test]
++    fn generated_interface_typed_members_pass_traced_natives_both_ways() {
++        use crate::webidl::linked_leaf::{LinkedLeafBinding, LinkedLeafNative};
++        use crate::webidl::linked_node::{LinkedNodeBinding, LinkedNodeNative};
++        use crate::{GcMember, NativeRef, Trace, Tracer};
++        struct Link {
++            id: u32,
++            leaf: bool,
++            next: GcMember<Link>,
++        }
++        impl Trace for Link {
++            fn trace(&self, tracer: &mut Tracer) {
++                tracer.member(&self.next);
++            }
++        }
++        fn interface_of(link: &Link) -> &'static str {
++            if link.leaf { "LinkedLeaf" } else { "LinkedNode" }
++        }
++        #[allow(non_snake_case)]
++        impl LinkedNodeNative for Link {
++            fn Id(&self) -> u32 { self.id }
++            fn Next(&self) -> Option<NativeRef> {
++                // SAFETY: `self` is reachable (it is the receiver) and traces `next`.
++                let next = unsafe { self.next.get() }?;
++                unsafe { self.next.native_ref(interface_of(next)) }
++            }
++            fn Follow(&self, steps: u32) -> Option<NativeRef> {
++                let mut current = self;
++                for _ in 0..steps {
++                    // SAFETY: every link on the chain is reachable from the receiver.
++                    current = unsafe { current.next.get() }?;
++                }
++                if std::ptr::eq(current, self) {
++                    return None;
++                }
++                // Re-derive the member pointing at `current` from its predecessor.
++                let mut previous = self;
++                for _ in 1..steps {
++                    previous = unsafe { previous.next.get() }.unwrap();
++                }
++                unsafe { previous.next.native_ref(interface_of(current)) }
++            }
++            fn IsSame(&self, other: NativeRef) -> bool {
++                other.get::<Link>().is_some_and(|other| std::ptr::eq(other, self))
++            }
++            fn IdOr(&self, other: Option<NativeRef>, fallback: u32) -> u32 {
++                other.and_then(|other| other.get::<Link>().map(|link| link.id)).unwrap_or(fallback)
++            }
++        }
++        #[allow(non_snake_case)]
++        impl LinkedLeafNative for Link {
++            fn Leaf(&self) -> bool { self.leaf }
++        }
++
++        let mut runtime = Runtime::new();
++        let node = LinkedNodeBinding::<Link>::install(&mut runtime).unwrap();
++        let leaf_binding = LinkedLeafBinding::<Link>::install(&mut runtime, &node).unwrap();
++        // first -> second -> leaf
++        let leaf = runtime.allocate_traced(Link { id: 3, leaf: true, next: GcMember::empty() });
++        let second = runtime.allocate_traced(Link { id: 2, leaf: false, next: leaf.member() });
++        let first = runtime.allocate_traced(Link { id: 1, leaf: false, next: second.member() });
++        let first_wrapper = node.wrap_traced(&mut runtime, &first);
++        runtime.set_global_property("first", &first_wrapper).unwrap();
++        // The leaf already has a wrapper; the others get theirs on first return.
++        let leaf_wrapper = leaf_binding.wrap_traced(&mut runtime, &leaf);
++        runtime.set_global_property("leaf", &leaf_wrapper).unwrap();
++
++        for (source, expected) in [
++            ("[first.next.id, first.next.next.id, first.next.next.next].join()", "2,3,"),
++            // A returned native reuses its one wrapper, so identity and expandos hold.
++            ("first.next === first.next && first.next.next === leaf", "true"),
++            ("first.next.tag = 'kept'; first.follow(1).tag", "kept"),
++            // A wrapper created on demand uses the native's concrete interface.
++            ("[first.follow(2) instanceof LinkedLeaf, first.follow(2).leaf, first.next instanceof LinkedLeaf].join()", "true,true,false"),
++            ("first.follow(0) === null", "true"),
++            // Arguments: the receiver itself, a descendant, and null for a nullable parameter.
++            ("[first.isSame(first), first.isSame(leaf), first.idOr(leaf, 9), first.idOr(null, 9)].join()", "true,false,3,9"),
++        ] {
++            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
++        }
++        // An untraced (create_instance) wrapper of the same interface is an API wrapper without
++        // a traced native: it must be rejected, not misread.
++        let untraced = node.create(&mut runtime, Link { id: 9, leaf: false, next: GcMember::empty() });
++        runtime.set_global_property("untraced", &untraced).unwrap();
++        assert_eq!(runtime.eval("untraced.id").unwrap(), "9");
++        // Anything that is not a traced wrapper of the interface (or a descendant) is rejected
++        // before the native runs, including prototype spoofing.
++        for source in [
++            "first.isSame(untraced)",
++            "first.isSame({})",
++            "first.isSame(Object.create(LinkedNode.prototype))",
++            "first.isSame(null)",
++            "first.isSame(1)",
++            "first.isSame()",
++        ] {
++            assert!(runtime.eval(source).unwrap_err().contains("TypeError"), "{source}");
++        }
++        drop((first_wrapper, leaf_wrapper, first, second, leaf));
++    }
++
+     #[cfg(feature = "webidl-pilot")]
+     #[test]
+     fn generated_nullable_domstring_preserves_null_and_utf16_semantics() {
+diff --git a/components/roves-v8/tests/webidl/LinkedLeaf.webidl b/components/roves-v8/tests/webidl/LinkedLeaf.webidl
+new file mode 100644
+index 00000000000..cea4a2b7601
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/LinkedLeaf.webidl
+@@ -0,0 +1,4 @@
++[Exposed=Window]
++interface LinkedLeaf : LinkedNode {
++  readonly attribute boolean leaf;
++};
+diff --git a/components/roves-v8/tests/webidl/LinkedNode.webidl b/components/roves-v8/tests/webidl/LinkedNode.webidl
+new file mode 100644
+index 00000000000..2f7821893b2
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/LinkedNode.webidl
+@@ -0,0 +1,8 @@
++[Exposed=Window]
++interface LinkedNode {
++  readonly attribute unsigned long id;
++  readonly attribute LinkedNode? next;
++  LinkedNode? follow(unsigned long steps);
++  boolean isSame(LinkedNode other);
++  unsigned long idOr(LinkedNode? other, unsigned long fallback);
++};
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index 8a319dcc6d6..cd39646fb96 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8351,6 +8351,13 @@ def v8_argument_types(name: str, member_name: str, arguments) -> list:
+             add_argument_type("Vec<u16>", "DomString", "Value::Utf16String(value) => value.clone()", nullable, optional, default_expression)
+         elif ty.isUSVString():
+             add_argument_type("String", "UsvString", "Value::String(value) => value.clone()", nullable, optional, default_expression)
++        elif v8_is_dom_interface(ty):
++            # A traced native implementing the interface; the runtime checks the wrapper's
++            # interface (or a descendant) before the callback runs.
++            add_argument_type(
++                "roves_v8::NativeRef", "Interface", "Value::Native(value) => value.clone()",
++                nullable, optional, default_expression, f'Some(&["{ty.inner.identifier.name}"])',
++            )
+         elif ty.isEnum() and not nullable:
+             values = list(ty.inner.values())
+             rust_values = [
+@@ -8389,6 +8396,12 @@ V8_NUMERIC_ATTRIBUTE_TYPES = {
+ V8_IGNORED_MEMBER_HINTS = {"Pure", "Constant"}
+ 
+ 
++def v8_is_dom_interface(ty) -> bool:
++    """A (non-nullable) WebIDL type naming a regular DOM interface: not a callback
++    interface, buffer source or promise."""
++    return ty.isGeckoInterface() and ty.isNonCallbackInterface() and not ty.isPromise()
++
++
+ def v8_module_name(interface_name: str) -> str:
+     """Snake-case module of a V8 pilot binding: ValidityState -> validity_state,
+     HTMLElement -> html_element."""
+@@ -8522,6 +8535,11 @@ class CGV8BindingRoot(CGThing):
+                         "native.{native}().map(Value::Utf16String).unwrap_or(Value::Null)"
+                         if nullable_return else "Value::Utf16String(native.{native}())"
+                     )
++                elif v8_is_dom_interface(result_type):
++                    if nullable_return:
++                        rust_type, value_expr = "Option<roves_v8::NativeRef>", "native.{native}().map(Value::Native).unwrap_or(Value::Null)"
++                    else:
++                        rust_type, value_expr = "roves_v8::NativeRef", "Value::Native(native.{native}())"
+                 elif result_type.isUSVString():
+                     rust_type = "Option<String>" if nullable_return else "String"
+                     value_expr = (
+@@ -8567,6 +8585,12 @@ class CGV8BindingRoot(CGThing):
+                 else:
+                     rust_type = native_type
+                     value_expr = f"Value::Number({to_number.replace('VALUE', 'native.{native}()')})"
++            elif v8_is_dom_interface(idl_type):
++                if member.type.nullable():
++                    rust_type = "Option<roves_v8::NativeRef>"
++                    value_expr = "native.{native}().map(Value::Native).unwrap_or(Value::Null)"
++                else:
++                    rust_type, value_expr = "roves_v8::NativeRef", "Value::Native(native.{native}())"
+             elif idl_type.isUSVString():
+                 if member.type.nullable():
+                     rust_type = "Option<String>"
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index 51a1315ca40..3735ef541a4 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -522,6 +522,30 @@ class V8GeneratorTests(unittest.TestCase):
+             ]:
+                 self.assertIn(expected, source)
+ 
++    def test_interface_typed_members_use_native_refs(self):
++        with tempfile.TemporaryDirectory() as directory:
++            path = Path(directory) / "Tree.webidl"
++            path.write_text(
++                "[Exposed=Window] interface Tree { readonly attribute Tree? parent; readonly attribute Tree root; "
++                "Tree? childAt(unsigned long index); boolean contains(Tree? other); };",
++                encoding="utf-8",
++            )
++            source = generate(path, Path(directory) / "output")
++            for expected in [
++                "fn Parent(&self) -> Option<roves_v8::NativeRef>;",
++                "fn Root(&self) -> roves_v8::NativeRef;",
++                "fn ChildAt(&self, arg0: u32) -> Option<roves_v8::NativeRef>;",
++                "fn Contains(&self, arg0: Option<roves_v8::NativeRef>) -> bool;",
++                "native.Parent().map(Value::Native).unwrap_or(Value::Null)",
++                "Value::Native(native.Root())",
++                "roves_v8::WebIdlArgumentConversion::Interface",
++                '&[Some(&["Tree"])]',
++            ]:
++                self.assertIn(expected, source)
++
++    def test_callback_interfaces_and_promises_are_not_dom_interface_values(self):
++        self.assert_unsupported("callback interface Listener { undefined handle(); }; [Exposed=Window] interface Uses { undefined add(Listener listener); };")
++
+     def test_jit_hint_attributes_are_ignored(self):
+         with tempfile.TemporaryDirectory() as directory:
+             path = Path(directory) / "Hints.webidl"

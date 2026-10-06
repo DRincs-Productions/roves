@@ -119,6 +119,15 @@ hanno `wrap_traced`. Test: generatore 39/39, `roves-v8` 77+5+2, default 59+2, ch
 **Prossimo:** mappare `#[dom_struct]`/`JSTraceable` di Servo su `Trace`, poi far passare un
 tipo DOM reale (`Screen` o `ValidityState`) per i wrapper tracciati.
 
+**CP53 (2026-10-06):** valori di tipo interfaccia (patch 0117). `Value::Native(NativeRef)`;
+registro delle interfacce in uno slot dell'isolate. I ritorni riusano l'unico wrapper del nativo,
+oppure lo creano con l'interfaccia concreta. Gli argomenti vengono verificati col tag cppgc e la
+catena di ereditarietà del registro, non con il prototype chain falsificabile. **Bug trovato:**
+`Object::unwrap` su un oggetto non API wrapper legge memoria arbitraria: ora c'è sempre prima
+`is_api_wrapper()`. Test generatore 41/41, `roves-v8` 78+5+2, default 59+2, check pulito.
+Copertura **33/486**. **Prossimo:** `[Pref]` (69+18), `[LegacyNoInterfaceObject]` (33),
+overload (23), event handler, `any`, dizionari e sequence.
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

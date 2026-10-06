@@ -522,6 +522,30 @@ class V8GeneratorTests(unittest.TestCase):
             ]:
                 self.assertIn(expected, source)
 
+    def test_interface_typed_members_use_native_refs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Tree.webidl"
+            path.write_text(
+                "[Exposed=Window] interface Tree { readonly attribute Tree? parent; readonly attribute Tree root; "
+                "Tree? childAt(unsigned long index); boolean contains(Tree? other); };",
+                encoding="utf-8",
+            )
+            source = generate(path, Path(directory) / "output")
+            for expected in [
+                "fn Parent(&self) -> Option<roves_v8::NativeRef>;",
+                "fn Root(&self) -> roves_v8::NativeRef;",
+                "fn ChildAt(&self, arg0: u32) -> Option<roves_v8::NativeRef>;",
+                "fn Contains(&self, arg0: Option<roves_v8::NativeRef>) -> bool;",
+                "native.Parent().map(Value::Native).unwrap_or(Value::Null)",
+                "Value::Native(native.Root())",
+                "roves_v8::WebIdlArgumentConversion::Interface",
+                '&[Some(&["Tree"])]',
+            ]:
+                self.assertIn(expected, source)
+
+    def test_callback_interfaces_and_promises_are_not_dom_interface_values(self):
+        self.assert_unsupported("callback interface Listener { undefined handle(); }; [Exposed=Window] interface Uses { undefined add(Listener listener); };")
+
     def test_jit_hint_attributes_are_ignored(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "Hints.webidl"

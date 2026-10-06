@@ -8351,6 +8351,13 @@ def v8_argument_types(name: str, member_name: str, arguments) -> list:
             add_argument_type("Vec<u16>", "DomString", "Value::Utf16String(value) => value.clone()", nullable, optional, default_expression)
         elif ty.isUSVString():
             add_argument_type("String", "UsvString", "Value::String(value) => value.clone()", nullable, optional, default_expression)
+        elif v8_is_dom_interface(ty):
+            # A traced native implementing the interface; the runtime checks the wrapper's
+            # interface (or a descendant) before the callback runs.
+            add_argument_type(
+                "roves_v8::NativeRef", "Interface", "Value::Native(value) => value.clone()",
+                nullable, optional, default_expression, f'Some(&["{ty.inner.identifier.name}"])',
+            )
         elif ty.isEnum() and not nullable:
             values = list(ty.inner.values())
             rust_values = [
@@ -8387,6 +8394,12 @@ V8_NUMERIC_ATTRIBUTE_TYPES = {
 
 # SpiderMonkey JIT/caching hints with no observable semantics; the V8 backend ignores them.
 V8_IGNORED_MEMBER_HINTS = {"Pure", "Constant"}
+
+
+def v8_is_dom_interface(ty) -> bool:
+    """A (non-nullable) WebIDL type naming a regular DOM interface: not a callback
+    interface, buffer source or promise."""
+    return ty.isGeckoInterface() and ty.isNonCallbackInterface() and not ty.isPromise()
 
 
 def v8_module_name(interface_name: str) -> str:
@@ -8522,6 +8535,11 @@ class CGV8BindingRoot(CGThing):
                         "native.{native}().map(Value::Utf16String).unwrap_or(Value::Null)"
                         if nullable_return else "Value::Utf16String(native.{native}())"
                     )
+                elif v8_is_dom_interface(result_type):
+                    if nullable_return:
+                        rust_type, value_expr = "Option<roves_v8::NativeRef>", "native.{native}().map(Value::Native).unwrap_or(Value::Null)"
+                    else:
+                        rust_type, value_expr = "roves_v8::NativeRef", "Value::Native(native.{native}())"
                 elif result_type.isUSVString():
                     rust_type = "Option<String>" if nullable_return else "String"
                     value_expr = (
@@ -8567,6 +8585,12 @@ class CGV8BindingRoot(CGThing):
                 else:
                     rust_type = native_type
                     value_expr = f"Value::Number({to_number.replace('VALUE', 'native.{native}()')})"
+            elif v8_is_dom_interface(idl_type):
+                if member.type.nullable():
+                    rust_type = "Option<roves_v8::NativeRef>"
+                    value_expr = "native.{native}().map(Value::Native).unwrap_or(Value::Null)"
+                else:
+                    rust_type, value_expr = "roves_v8::NativeRef", "Value::Native(native.{native}())"
             elif idl_type.isUSVString():
                 if member.type.nullable():
                     rust_type = "Option<String>"
