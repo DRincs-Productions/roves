@@ -11,6 +11,40 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: WebIDL namespaces (`console`, `CSS`) (CP78)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `components/roves-v8/build.rs`,
+`components/roves-v8/tests/webidl/NamespaceProbe.webidl` (new),
+`components/script_bindings/codegen/codegen.py`, `run_v8.py`, `test_v8.py`.
+**Patch:** `0142-roves-v8-namespaces.patch` after 0141.
+
+The V8 pilot now generates WebIDL namespaces.
+
+Runtime (`roves-v8`):
+- **`define_namespace`**: on exposure, the global gets an ordinary object (prototype
+  `Object.prototype`, `@@toStringTag` = the identifier). It has no constructor and no prototype
+  object. The registered members are copied onto it with their property descriptors, so
+  operations stay writable, enumerable and configurable, constants stay read-only, and
+  attributes stay getters.
+- **`define_static_attribute`**: a read-only static/namespace attribute (`CSS.paintWorklet`).
+- **`define_static_overloaded_webidl_method`**: overloaded static/namespace operations
+  (`CSS.supports`) use the same WebIDL overload resolution as instance operations.
+  `select_overload` now takes only the argument lists.
+
+Generator:
+- Namespace members are static: the parser forbids marking them so explicitly.
+- Namespace attributes become `define_static_attribute`.
+- Servo's `[ClassString]` is accepted and ignored, because WebIDL makes the identifier the tag.
+- The binding has no `create`/`wrap_traced` (namespaces have no instances).
+- `run_v8.py` accepts an `IDLNamespace`.
+
+Tests: generator 64/64. The new runtime fixture `NamespaceProbe` covers the shape, descriptors,
+`[Throws]`, variadics, overloads by count and by type, a read-only constant, the getter and a
+`[Pref]`-gated attribute. `roves-v8` passes 102 + 5 + 2 with `webidl-pilot` (and `jitless`), and
+61 + 2 by default. The `servo-script` check with the pilot is clean.
+
+Coverage: **428/486** (`console`, `CSS` and a test namespace now generate).
+
 ## 2026-10-06 - V8 migration Phase 4: `[BinaryName]`, `[WebGLHandlesContextLoss]`, member `[Func]` (CP77)
 
 **Servo files:** `components/script_bindings/codegen/codegen.py`, `test_v8.py`.

@@ -235,6 +235,7 @@ fn main() {
         ("ShadowBase", &[][..]),
         ("ShadowChild", &["ShadowBase"][..]),
         ("TypeGapsProbe", &[][..]),
+        ("NamespaceProbe", &[][..]),
     ] {
         println!("cargo:rerun-if-changed={}", fixtures.join(format!("{interface}.webidl")).display());
         println!("cargo:rerun-if-changed={}", fixtures.join("Bindings.conf").display());

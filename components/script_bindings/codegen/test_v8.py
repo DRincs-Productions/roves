@@ -381,7 +381,7 @@ class V8GeneratorTests(unittest.TestCase):
 
     def test_unsupported_interface_shapes_fail(self):
         self.assert_unsupported("interface Unsupported { [Pref=\"dom_x\"] constructor(); };")
-        self.assert_unsupported("namespace Unsupported { undefined run(); };")
+        self.assert_unsupported("namespace Unsupported { [Replaceable] readonly attribute boolean flag; };")
 
     def test_non_window_exposure_hides_the_interface_object_elsewhere(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -405,10 +405,32 @@ class V8GeneratorTests(unittest.TestCase):
             source = generate(path, Path(directory) / "output")
             self.assertIn("fn Ok(&self) -> bool;", source)
 
-    def test_interface_shape_rejections_name_the_shape(self):
+    def test_namespaces_generate_static_members_on_a_namespace_object(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "Shapes.webidl"
-            path.write_text("[Exposed=Window] namespace Shapes { undefined run(); };", encoding="utf-8")
+            path.write_text(
+                "[Exposed=Window, ClassString=\"Shapes\"] namespace shapes {"
+                " const long SIDES = 4; readonly attribute DOMString name;"
+                " [Throws] undefined run(); boolean fits(DOMString a, DOMString b); boolean fits(DOMString a); };",
+                encoding="utf-8",
+            )
+            source = generate(path, Path(directory) / "output")
+            self.assertIn('runtime.define_namespace("shapes")', source)
+            self.assertIn('runtime.define_constant(&interface, "SIDES"', source)
+            # Namespace operations and attributes are static: no receiver, a ScriptContext.
+            self.assertIn("fn Run(cx: &mut roves_v8::ScriptContext) -> Result<(), roves_v8::WebIdlError> where Self: Sized;", source)
+            self.assertIn('runtime.define_static_attribute(&interface, "name"', source)
+            self.assertIn('runtime.define_static_overloaded_webidl_method(&interface, "fits"', source)
+            self.assertIn("<T as shapesNative>::Fits_(cx, arg0)", source)
+            # No instances: no wrapper constructors.
+            self.assertNotIn("pub fn create(", source)
+            self.assertNotIn("wrap_traced", source)
+            self.assertIn("non_camel_case_types", source)
+
+    def test_callback_interfaces_are_not_bindings_yet(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Shapes.webidl"
+            path.write_text("[Exposed=Window] callback interface Shapes { undefined run(); };", encoding="utf-8")
             with self.assertRaises(TypeError):
                 generate(path, Path(directory) / "output")
 

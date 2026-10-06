@@ -8946,8 +8946,8 @@ class CGV8BindingRoot(CGThing):
         V8_DICTIONARIES.clear()
         interface = self.interface
         name = interface.identifier.name
+        namespace = interface.isNamespace()
         for unsupported_shape, present in [
-            ("namespace", interface.isNamespace()),
             ("callback interface", interface.isCallback()),
         ]:
             if present:
@@ -8958,7 +8958,7 @@ class CGV8BindingRoot(CGThing):
         unsupported = set(interface._extendedAttrDict) - {
             "Exposed", "LegacyNoInterfaceObject", "Abstract", "Serializable", "Transferable",
             "LegacyWindowAlias", "Func", "LegacyUnenumerableNamedProperties",
-        } - V8_EXPOSURE_ATTRIBUTES
+        } - V8_EXPOSURE_ATTRIBUTES - ({"ClassString"} if namespace else set())
         if unsupported:
             raise TypeError(f"V8 backend unsupported attributes on {name}: {sorted(unsupported)}")
         exposed_globals = v8_exposed_globals(interface._extendedAttrDict)
@@ -8998,6 +8998,7 @@ class CGV8BindingRoot(CGThing):
         typed_overload_entries = []
         contextual_attributes = []
         static_operations = []
+        static_attributes = []
         unscopables = []
         default_to_json = False
         fallible_attributes = []
@@ -9056,7 +9057,8 @@ class CGV8BindingRoot(CGThing):
                 condition = v8_exposure_condition(member._extendedAttrDict)
                 if condition:
                     member_conditions[member.identifier.name] = condition
-                if operation_attributes or (member.isStatic() and len(signatures) > 1):
+                static = member.isStatic() or namespace
+                if operation_attributes:
                     raise TypeError(f"V8 backend only supports single-signature instance operations: {name}.{member.identifier.name}")
                 if len(signatures) > 1 and not v8_overloads_distinguishable_by_count(signatures):
                     # Needs the type step of overload resolution (the runtime's typed overloads).
@@ -9153,8 +9155,8 @@ class CGV8BindingRoot(CGThing):
                     )
                     if len(signatures) > 1 and (contextual or any(argument_type[6] for argument_type in argument_types)):
                         typed_overload_members.add(member.identifier.name)
-                    if member.isStatic():
-                        static_operations.append((member.identifier.name, native_name, rust_type, value_expr, argument_types))
+                    if static:
+                        static_operations.append((member.identifier.name, native_name, rust_type, value_expr, argument_types, len(signatures)))
                         continue
                     operations.append((member.identifier.name, native_name, rust_type, value_expr, argument_types, throws or contextual, overload_index, len(signatures), contextual))
                 continue
@@ -9174,6 +9176,10 @@ class CGV8BindingRoot(CGThing):
             if member.isAttr() and member.isLegacyUnforgeable() and member.readonly:
                 attribute_attributes.discard("LegacyUnforgeable")
                 unforgeable_attributes.add(member.identifier.name)
+            if namespace and member.isAttr() and member.readonly and not (attribute_attributes - {"SameObject"}):
+                rust, _, _, to_value = v8_typed_info(member.type, name, member.identifier.name)
+                static_attributes.append((member.identifier.name, v8_native_name(member), rust, to_value))
+                continue
             if (not member.isAttr() or member.isStatic() or attribute_attributes):
                 raise TypeError(f"V8 backend unsupported member: {name}.{member.identifier.name}")
             idl_type = member.type.inner if member.type.nullable() else member.type
@@ -9676,7 +9682,9 @@ class CGV8BindingRoot(CGThing):
             )
         else:
             hide_interface = ""
-        if constructor_arguments is None:
+        if namespace:
+            define_interface = f'runtime.define_namespace("{name}")'
+        elif constructor_arguments is None:
             define_interface = f'runtime.define_interface("{name}", {parent_interface})'
         else:
             conversions = "\n".join(
@@ -9721,7 +9729,8 @@ class CGV8BindingRoot(CGThing):
                 f'            &[{", ".join(argument_type[5] or "None" for argument_type in constructor_arguments)}],\n'
                 f'        )'
             )
-        for idl, native, rust_type, value_expr, argument_types in static_operations:
+        static_overloads = {}
+        for idl, native, rust_type, value_expr, argument_types, overload_count in static_operations:
             parameters = ", ".join(f"arg{index}: {argument_type[0]}" for index, argument_type in enumerate(argument_types))
             trait_methods += (
                 f"\n    fn {native}(cx: &mut roves_v8::ScriptContext{', ' + parameters if parameters else ''}) "
@@ -9744,9 +9753,31 @@ class CGV8BindingRoot(CGThing):
                 v8_webidl_argument(argument_type, argument_type[6] or v8_flat_webidl_type(argument_type))
                 for argument_type in argument_types
             )
+            callback = f'|cx, {"args" if argument_types else "_args"}| {{\n{conversions}{body}        }}'
+            if overload_count > 1:
+                static_overloads.setdefault(idl, []).append(
+                    f"(({callback}) as roves_v8::StaticNativeMethod, &[{typed_arguments}][..])"
+                )
+                if len(static_overloads[idl]) < overload_count:
+                    continue
+                overloads = ",\n            ".join(static_overloads[idl])
+                registrations_list.append(
+                    f'        runtime.define_static_overloaded_webidl_method(&interface, "{idl}", &[\n            {overloads},\n        ])?;'
+                )
+            else:
+                registrations_list.append(
+                    f'        runtime.define_static_webidl_method(&interface, "{idl}", {callback}, &[{typed_arguments}])?;'
+                )
+            gate_last_registration(idl)
+        for idl, native, rust_type, to_value in static_attributes:
+            trait_methods += (
+                f"\n    fn {native}(cx: &mut roves_v8::ScriptContext) -> Result<{rust_type}, roves_v8::WebIdlError> where Self: Sized;"
+            )
             registrations_list.append(
-                f'        runtime.define_static_webidl_method(&interface, "{idl}", |cx, {"args" if argument_types else "_args"}| {{\n'
-                f"{conversions}{body}        }}, &[{typed_arguments}])?;"
+                f'        runtime.define_static_attribute(&interface, "{idl}", |cx, _args| {{\n'
+                f"            let result = <T as {name}Native>::{native}(cx)?;\n"
+                f"            Ok({to_value.replace('ITEM', 'result')})\n"
+                f"        }})?;"
             )
             gate_last_registration(idl)
         inherited_unscopables = []
@@ -9828,6 +9859,25 @@ class CGV8BindingRoot(CGThing):
             # `new` creates a traced platform object (see roves_v8::TracedNative).
             native_bound += " + roves_v8::Trace"
         dictionary_structs = "".join(f"\n{source}" for source in V8_DICTIONARIES.values())
+        source = self.binding_source(
+            name, dictionary_structs, native_bound, trait_methods, install_parameters, install_arguments,
+            define_interface, registrations, alias_registrations, hide_interface,
+        )
+        if namespace:
+            # A namespace has no instances: drop the wrapper constructors, and allow its
+            # (usually lowercase, e.g. `console`) identifier in the type names.
+            source = source.replace(
+                "#[allow(non_snake_case)]\npub trait", "#[allow(non_snake_case, non_camel_case_types)]\npub trait"
+            )
+            source = source.replace("pub struct", "#[allow(non_camel_case_types)]\npub struct", 1)
+            source = source[:source.index("\n    pub fn create(&self")] + "}\n"
+        return source
+
+    @staticmethod
+    def binding_source(
+        name, dictionary_structs, native_bound, trait_methods, install_parameters, install_arguments,
+        define_interface, registrations, alias_registrations, hide_interface,
+    ) -> str:
         return AUTOGENERATED_WARNING_COMMENT + f"""#[allow(unused_imports)]
 use roves_v8::{{Handle, Interface, Runtime, Value}};
 {dictionary_structs}

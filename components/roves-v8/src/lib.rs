@@ -170,6 +170,10 @@ pub mod webidl {
         include!(concat!(env!("OUT_DIR"), "/JsonChildV8Binding.rs"));
     }
     #[cfg(test)]
+    pub mod namespace_probe {
+        include!(concat!(env!("OUT_DIR"), "/NamespaceProbeV8Binding.rs"));
+    }
+    #[cfg(test)]
     pub mod promise_operations {
         include!(concat!(env!("OUT_DIR"), "/PromiseOperationsV8Binding.rs"));
     }
@@ -373,6 +377,8 @@ pub struct Interface {
     aliases: std::cell::RefCell<Vec<String>>,
     /// A WebIDL value iterable: the prototype gets `Array.prototype`'s iteration methods.
     value_iterable: std::cell::Cell<bool>,
+    /// A WebIDL namespace (`console`, `CSS`): exposed as a plain object holding its operations.
+    namespace: std::cell::Cell<bool>,
     // Materializing a child also freezes all ancestor templates. Shared flags track
     // that separately from whether each constructor has been exposed globally.
     materialized: std::rc::Rc<std::cell::Cell<bool>>,
@@ -406,6 +412,7 @@ pub struct Runtime {
     /// Per-static-method and default-toJSON callback data, kept alive for the same reason.
     static_configs: Vec<Box<StaticMethodConfig>>,
     to_json_configs: Vec<Box<DefaultToJsonConfig>>,
+    static_overload_configs: Vec<Box<StaticOverloadConfig>>,
 }
 
 struct WrappedFinalizer {
@@ -1521,6 +1528,10 @@ pub struct WebIdlTypedOverload<'a> {
     pub arguments: &'a [WebIdlArgument],
 }
 
+struct StaticOverloadConfig {
+    overloads: Vec<(StaticNativeMethod, WebIdlArguments, Vec<WebIdlArgument>)>,
+}
+
 struct TypedOverloadConfig {
     overloads: Vec<(NativeMethodKind, WebIdlArguments, Vec<WebIdlArgument>)>,
 }
@@ -1533,18 +1544,18 @@ struct TypedOverloadConfig {
 fn select_overload(
     scope: &mut v8::PinScope,
     args: &v8::FunctionCallbackArguments,
-    overloads: &[(NativeMethodKind, WebIdlArguments, Vec<WebIdlArgument>)],
+    overloads: &[&[WebIdlArgument]],
 ) -> Result<usize, ()> {
     let longest = overloads
         .iter()
-        .map(|(_, _, arguments)| if arguments.last().is_some_and(|argument| argument.variadic) { usize::MAX } else { arguments.len() })
+        .map(|arguments| if arguments.last().is_some_and(|argument| argument.variadic) { usize::MAX } else { arguments.len() })
         .max()
         .unwrap_or(0);
     let count = (args.length().max(0) as usize).min(longest);
     let candidates: Vec<usize> = overloads
         .iter()
         .enumerate()
-        .filter(|(_, (_, _, arguments))| {
+        .filter(|(_, arguments)| {
             let required = arguments.iter().filter(|argument| !argument.optional && !argument.variadic && argument.default.is_none()).count();
             let variadic = arguments.last().is_some_and(|argument| argument.variadic);
             required <= count && (count <= arguments.len() || variadic)
@@ -1560,7 +1571,7 @@ fn select_overload(
         _ => {},
     }
     let type_at = |overload: usize, position: usize| -> Option<WebIdlType> {
-        let arguments = &overloads[overload].2;
+        let arguments = overloads[overload];
         arguments
             .get(position)
             .or_else(|| arguments.last().filter(|argument| argument.variadic))
@@ -1576,7 +1587,7 @@ fn select_overload(
     let value = args.get(position as i32);
     if value.is_undefined() {
         if let Some(candidate) = candidates.iter().find(|candidate| {
-            overloads[**candidate].2.get(position).is_some_and(|argument| argument.optional || argument.default.is_some())
+            overloads[**candidate].get(position).is_some_and(|argument| argument.optional || argument.default.is_some())
         }) {
             return Ok(*candidate);
         }
@@ -1660,6 +1671,7 @@ impl Runtime {
             attribute_configs: Vec::new(),
             static_configs: Vec::new(),
             to_json_configs: Vec::new(),
+            static_overload_configs: Vec::new(),
             method_configs: Vec::new(),
         }
     }
@@ -2341,6 +2353,7 @@ impl Runtime {
             interface_object_on_global: std::cell::Cell::new(true),
             aliases: std::cell::RefCell::new(Vec::new()),
             value_iterable: std::cell::Cell::new(false),
+            namespace: std::cell::Cell::new(false),
             materialized: std::rc::Rc::new(std::cell::Cell::new(false)),
             ancestors: parent.map_or_else(Vec::new, |parent| {
                 let mut ancestors = parent.ancestors.clone();
@@ -2348,6 +2361,15 @@ impl Runtime {
                 ancestors
             }),
         }
+    }
+
+    /// Defines a WebIDL namespace: register its operations with
+    /// [`Runtime::define_static_webidl_method`]; exposure then defines a plain object of that
+    /// name holding them (and no constructor or prototype).
+    pub fn define_namespace(&mut self, name: &str) -> Interface {
+        let namespace = self.define_interface_inner(name, None, None);
+        namespace.namespace.set(true);
+        namespace
     }
 
     /// Makes `interface` a WebIDL value iterable (`iterable<V>`): its prototype gets
@@ -2421,6 +2443,53 @@ impl Runtime {
             }
         }
         let key = v8::String::new(scope, &interface.name).ok_or("invalid interface name")?;
+        if interface.namespace.get() {
+            // A namespace object is an ordinary object (prototype %Object.prototype%) holding the
+            // operations defined with define_static_webidl_method, plus @@toStringTag.
+            let namespace = v8::Object::new(scope);
+            let names = function
+                .get_own_property_names(scope, v8::GetPropertyNamesArgs::default())
+                .ok_or("failed to read namespace members")?;
+            for index in 0..names.length() {
+                let Some(name) = names.get_index(scope, index) else { continue };
+                let skip = name.to_rust_string_lossy(scope);
+                if matches!(skip.as_str(), "length" | "name" | "prototype") {
+                    continue;
+                }
+                let Ok(name) = v8::Local::<v8::Name>::try_from(name) else { continue };
+                // Copy accessors (namespace attributes) as accessors, not their current value.
+                let Some(descriptor) = function.get_own_property_descriptor(scope, name) else { continue };
+                let Ok(descriptor) = v8::Local::<v8::Object>::try_from(descriptor) else { continue };
+                macro_rules! field {
+                    ($scope:expr, $name:literal) => {
+                        v8::String::new($scope, $name).and_then(|key| descriptor.get($scope, key.into()))
+                    };
+                }
+                let enumerable = field!(scope, "enumerable").is_some_and(|value| value.is_true());
+                let configurable = field!(scope, "configurable").is_some_and(|value| value.is_true());
+                let mut copy = if let Some(getter) = field!(scope, "get").filter(|getter| getter.is_function()) {
+                    let undefined = v8::undefined(scope).into();
+                    v8::PropertyDescriptor::new_from_get_set(getter, undefined)
+                } else {
+                    let Some(value) = field!(scope, "value") else { continue };
+                    let writable = field!(scope, "writable").is_some_and(|value| value.is_true());
+                    v8::PropertyDescriptor::new_from_value_writable(value, writable)
+                };
+                copy.set_enumerable(enumerable);
+                copy.set_configurable(configurable);
+                namespace.define_property(scope, name, &copy);
+            }
+            let tag = v8::Symbol::get_to_string_tag(scope);
+            namespace.define_own_property(scope, tag.into(), key.into(), v8::PropertyAttribute::READ_ONLY | v8::PropertyAttribute::DONT_ENUM);
+            if interface.interface_object_on_global.get()
+                && context.global(scope).define_own_property(scope, key.into(), namespace.into(), v8::PropertyAttribute::DONT_ENUM)
+                    != Some(true)
+            {
+                return Err("failed to expose namespace".into());
+            }
+            interface.constructor_exposed.set(true);
+            return Ok(());
+        }
         if interface.interface_object_on_global.get() {
             let global = context.global(scope);
             let mut names = vec![key];
@@ -2717,6 +2786,104 @@ impl Runtime {
         .constructor_behavior(v8::ConstructorBehavior::Throw)
         .build(scope);
         template.set(key.into(), function_template.into());
+        Ok(())
+    }
+
+    /// Like [`Runtime::define_static_webidl_method`] for an overloaded static operation (or
+    /// namespace operation, e.g. `CSS.supports`): the overload is chosen with WebIDL's overload
+    /// resolution algorithm, as for [`Runtime::define_typed_overloaded_webidl_method`].
+    pub fn define_static_overloaded_webidl_method(
+        &mut self,
+        interface: &Interface,
+        name: &str,
+        overloads: &[(StaticNativeMethod, &[WebIdlArgument])],
+    ) -> Result<(), String> {
+        if interface.materialized.get() {
+            return Err("interface members must be defined before creating instances or descendants".into());
+        }
+        let length = overloads
+            .iter()
+            .map(|(_, arguments)| arguments.iter().filter(|argument| !argument.optional && !argument.variadic && argument.default.is_none()).count())
+            .min()
+            .unwrap_or(0);
+        let config = Box::new(StaticOverloadConfig {
+            overloads: overloads
+                .iter()
+                .map(|(method, arguments)| (*method, WebIdlArguments::typed(arguments), arguments.to_vec()))
+                .collect(),
+        });
+        let config_pointer = (&*config) as *const StaticOverloadConfig;
+        self.static_overload_configs.push(config);
+        let context_handle = &self.context;
+        v8::scope!(let scope, &mut self.isolate);
+        let context = v8::Local::new(scope, context_handle);
+        let scope = &mut v8::ContextScope::new(scope, context);
+        let template = v8::Local::new(scope, &interface.template);
+        let key = v8::String::new(scope, name).ok_or("invalid method name")?;
+        let data = v8::External::new(scope, config_pointer as *mut std::ffi::c_void);
+        let function_template = v8::FunctionTemplate::builder(
+            |scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut retval: v8::ReturnValue| {
+                let external = v8::Local::<v8::External>::try_from(args.data()).unwrap();
+                // SAFETY: the External points to this method's boxed overload config.
+                let config = unsafe { &*(external.value() as *const StaticOverloadConfig) };
+                let candidates: Vec<&[WebIdlArgument]> = config.overloads.iter().map(|(_, _, arguments)| arguments.as_slice()).collect();
+                let Ok(selected) = select_overload(scope, &args, &candidates) else { return };
+                let (method, arguments, _) = &config.overloads[selected];
+                let Some(converted) = convert_webidl_arguments(scope, &args, arguments) else { return };
+                match method(&mut ScriptContext { scope }, &converted) {
+                    Ok(value) => {
+                        let value = v8_result(scope, &value);
+                        retval.set(value);
+                    },
+                    Err(error) => throw_webidl_error(scope, &error),
+                }
+            },
+        )
+        .data(data.into())
+        .length(length as i32)
+        .constructor_behavior(v8::ConstructorBehavior::Throw)
+        .build(scope);
+        template.set(key.into(), function_template.into());
+        Ok(())
+    }
+
+    /// Defines a readonly static attribute (or a namespace attribute, e.g. `CSS.paintWorklet`):
+    /// an accessor on the interface object whose getter calls `getter` with no arguments.
+    pub fn define_static_attribute(&mut self, interface: &Interface, name: &str, getter: StaticNativeMethod) -> Result<(), String> {
+        if interface.materialized.get() {
+            return Err("interface members must be defined before creating instances or descendants".into());
+        }
+        let config = Box::new(StaticMethodConfig { method: getter, arguments: WebIdlArguments::typed(&[]) });
+        let config_pointer = (&*config) as *const StaticMethodConfig;
+        self.static_configs.push(config);
+        let context_handle = &self.context;
+        v8::scope!(let scope, &mut self.isolate);
+        let context = v8::Local::new(scope, context_handle);
+        let scope = &mut v8::ContextScope::new(scope, context);
+        let template = v8::Local::new(scope, &interface.template);
+        let key = v8::String::new(scope, name).ok_or("invalid attribute name")?;
+        let getter_name = v8::String::new(scope, &format!("get {name}")).ok_or("invalid attribute name")?;
+        let data = v8::External::new(scope, config_pointer as *mut std::ffi::c_void);
+        let getter_template = v8::FunctionTemplate::builder(
+            |scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut retval: v8::ReturnValue| {
+                let external = v8::Local::<v8::External>::try_from(args.data()).unwrap();
+                // SAFETY: the External points to this attribute's boxed config.
+                let config = unsafe { &*(external.value() as *const StaticMethodConfig) };
+                match (config.method)(&mut ScriptContext { scope }, &[]) {
+                    Ok(value) => {
+                        let value = v8_result(scope, &value);
+                        retval.set(value);
+                    },
+                    Err(error) => throw_webidl_error(scope, &error),
+                }
+            },
+        )
+        .data(data.into())
+        .length(0)
+        .constructor_behavior(v8::ConstructorBehavior::Throw)
+        .build(scope);
+        getter_template.set_class_name(getter_name);
+        template.set_accessor_property(key.into(), Some(getter_template), None, v8::PropertyAttribute::NONE);
         Ok(())
     }
 
@@ -3400,7 +3567,8 @@ impl Runtime {
                 // SAFETY: the External points to this method's boxed overload config.
                 let config = unsafe { &*(external.value() as *const TypedOverloadConfig) };
                 let Some(native) = receiver_native(scope, args.this()) else { return };
-                let Ok(selected) = select_overload(scope, &args, &config.overloads) else { return };
+                let candidates: Vec<&[WebIdlArgument]> = config.overloads.iter().map(|(_, _, arguments)| arguments.as_slice()).collect();
+                let Ok(selected) = select_overload(scope, &args, &candidates) else { return };
                 let (method, arguments, _) = &config.overloads[selected];
                 let Some(converted) = convert_webidl_arguments(scope, &args, arguments) else { return };
                 let result = match method {
@@ -7812,6 +7980,69 @@ mod tests {
             assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
         }
         drop((wrapper, item));
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_namespaces_are_plain_objects_with_static_members() {
+        use crate::webidl::namespace_probe::{probeBinding, probeNative};
+        use crate::{Handle, ScriptContext, WebIdlError};
+        struct Probe;
+        #[allow(non_snake_case)]
+        impl probeNative for Probe {
+            fn Shout(_cx: &mut ScriptContext, text: Vec<u16>) -> Result<Vec<u16>, WebIdlError> {
+                if text.is_empty() {
+                    return Err(WebIdlError::TypeError("nothing to shout".into()));
+                }
+                Ok(String::from_utf16_lossy(&text).to_uppercase().encode_utf16().collect())
+            }
+            fn Count(_cx: &mut ScriptContext, items: Vec<Handle>) -> Result<u32, WebIdlError> { Ok(items.len() as u32) }
+            fn Supports(_cx: &mut ScriptContext, property: Vec<u16>, _value: Vec<u16>) -> Result<bool, WebIdlError> {
+                Ok(property == "color".encode_utf16().collect::<Vec<_>>())
+            }
+            fn Supports_(_cx: &mut ScriptContext, condition: Vec<u16>) -> Result<bool, WebIdlError> {
+                Ok(condition.starts_with(&"(".encode_utf16().collect::<Vec<_>>()))
+            }
+            fn Kind(_cx: &mut ScriptContext, value: i32) -> Result<Vec<u16>, WebIdlError> {
+                Ok(format!("long {value}").encode_utf16().collect())
+            }
+            fn Kind_(_cx: &mut ScriptContext, values: Vec<i32>) -> Result<Vec<u16>, WebIdlError> {
+                Ok(format!("sequence {}", values.len()).encode_utf16().collect())
+            }
+            fn Version(_cx: &mut ScriptContext) -> Result<Vec<u16>, WebIdlError> { Ok("1.0".encode_utf16().collect()) }
+            fn Gated(_cx: &mut ScriptContext) -> Result<bool, WebIdlError> { Ok(true) }
+        }
+        struct NoGated;
+        impl crate::Exposure for NoGated {
+            fn pref_enabled(&self, _pref: &str) -> bool { false }
+            fn is_secure_context(&self) -> bool { true }
+        }
+        let mut runtime = Runtime::new();
+        probeBinding::<Probe>::install_with(&mut runtime, &NoGated).unwrap();
+        for (source, expected) in [
+            // An ordinary object, not a function: no constructor, no prototype object.
+            ("[typeof probe, Object.getPrototypeOf(probe) === Object.prototype, 'prototype' in probe].join()", "object,true,false"),
+            ("[Object.prototype.toString.call(probe), Object.getOwnPropertyDescriptor(globalThis, 'probe').enumerable].join()", "[object probe],false"),
+            ("(() => { try { new probe(); } catch (e) { return e.name; } })()", "TypeError"),
+            // Operations: enumerable, writable, configurable data properties.
+            ("const d = Object.getOwnPropertyDescriptor(probe, 'shout'); [d.enumerable, d.writable, d.configurable, probe.shout.length].join()", "true,true,true,1"),
+            ("probe.shout('hey')", "HEY"),
+            ("(() => { try { probe.shout(''); } catch (e) { return e.name; } })()", "TypeError"),
+            ("[probe.count(), probe.count(1, 'a', {}), probe.count.length].join()", "0,3,0"),
+            // Overloads: by argument count, then by type.
+            ("[probe.supports('color', 'red'), probe.supports('(display: grid)'), probe.supports.length].join()", "true,true,1"),
+            ("[probe.kind(5), probe.kind([1, 2])].join()", "long 5,sequence 2"),
+            // Constants: read-only, and attributes are getters evaluated on every read.
+            ("probe.MODE = 9; [probe.MODE, Object.getOwnPropertyDescriptor(probe, 'MODE').writable].join()", "2,false"),
+            ("const v = Object.getOwnPropertyDescriptor(probe, 'version'); [typeof v.get, v.set, v.enumerable, probe.version].join()", "function,,true,1.0"),
+            // [Pref]-gated members are absent when the pref is off.
+            ("'gated' in probe", "false"),
+        ] {
+            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
+        }
+        let mut runtime = Runtime::new();
+        probeBinding::<Probe>::install(&mut runtime).unwrap();
+        assert_eq!(runtime.eval("probe.gated").unwrap(), "true");
     }
 
     #[cfg(feature = "webidl-pilot")]

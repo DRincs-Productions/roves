@@ -278,6 +278,11 @@ interface come interfacce, `[LegacyOverrideBuiltIns]`, `[LegacyUnforgeable]` sul
 `[Func]` sui membri (patch 0141). **Ora generano WebGL 1/2, Canvas 2D, `HTMLCanvasElement`,
 `AudioContext`, `Navigator`.** Copertura **425/486**.
 
+**CP78 (2026-10-06):** namespace WebIDL (patch 0142). `define_namespace` crea un oggetto ordinario
+con i descrittori dei membri copiati. Aggiunti `define_static_attribute` e
+`define_static_overloaded_webidl_method`. **`console` e `CSS` generano.** Test: generatore 64/64,
+`roves-v8` 102+5+2. Copertura **428/486**.
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

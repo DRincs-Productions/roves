@@ -33,7 +33,7 @@ def generate(webidl: Path, out_dir: Path, context: tuple[Path, ...] = ()) -> str
     parser.parse(webidl.read_text(encoding="utf-8"), str(webidl))
     interfaces = [
         item for item in parser.finish()
-        if isinstance(item, WebIDL.IDLInterface) and not item.isCallback()
+        if isinstance(item, (WebIDL.IDLInterface, WebIDL.IDLNamespace)) and not item.isCallback()
         and item.location.filename == str(webidl)
     ]
     if len(interfaces) != 1:
