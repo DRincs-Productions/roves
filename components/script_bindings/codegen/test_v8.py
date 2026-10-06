@@ -330,7 +330,7 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn('Some(&["\\u{6c}\\u{65}\\u{66}\\u{74}", "\\u{72}\\u{69}\\u{67}\\u{68}\\u{74}"])', source)
 
     def test_optional_explicit_defaults_variadics_and_unsupported_types_fail_closed(self):
-        for signature in ["double run(double... values);", "double run(sequence<long> value);"]:
+        for signature in ["double run(double... values);", "double run(record<DOMString, long> value);"]:
             with self.subTest(signature=signature):
                 self.assert_unsupported("interface Unsupported { " + signature + " };")
 
@@ -342,7 +342,7 @@ class V8GeneratorTests(unittest.TestCase):
             source = generate(webidl, root / "out")
             self.assertIn("WebIdlOptionalArgument<bool>", source)
             self.assertIn("WebIdlArgumentConversion::Boolean", source)
-        for signature in ["boolean run(sequence<long> value);", "boolean run(boolean... values);"]:
+        for signature in ["boolean run(record<DOMString, long> value);", "boolean run(boolean... values);"]:
             with self.subTest(signature=signature):
                 self.assert_unsupported("interface Unsupported { " + signature + " };")
 
@@ -511,6 +511,28 @@ class V8GeneratorTests(unittest.TestCase):
             ]:
                 self.assertIn(expected, source)
             self.assertNotIn("fn set_Shape", source)
+
+    def test_sequences_use_structured_webidl_types(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Seq.webidl"
+            path.write_text(
+                "[Exposed=Window] interface Seq { sequence<long?> holes(sequence<sequence<long>> grid, boolean flag); "
+                "unsigned long count(optional sequence<boolean> flags = []); sequence<any> echo(sequence<any> values); };",
+                encoding="utf-8",
+            )
+            source = generate(path, Path(directory) / "output")
+            for expected in [
+                "fn Holes(&self, arg0: Vec<Vec<i32>>, arg1: bool) -> Vec<Option<i32>>;",
+                "fn Count(&self, arg0: roves_v8::WebIdlOptionalArgument<Vec<bool>>) -> u32;",
+                "fn Echo(&self, cx: &mut roves_v8::ScriptContext, arg0: Vec<roves_v8::Handle>) -> Result<Vec<roves_v8::Handle>, roves_v8::WebIdlError>;",
+                "roves_v8::WebIdlType::Sequence(Box::new(roves_v8::WebIdlType::Sequence(Box::new(roves_v8::WebIdlType::Primitive(roves_v8::WebIdlArgumentConversion::Long)))))",
+                # A flat argument mixed into a structured operation keeps its conversion.
+                "roves_v8::WebIdlArgument { ty: roves_v8::WebIdlType::Primitive(roves_v8::WebIdlArgumentConversion::Boolean), optional: false }",
+                "Value::Missing => roves_v8::WebIdlOptionalArgument::Present(Vec::new())",
+                "roves_v8::WebIdlNativeOperation::Contextual(",
+                "match item { Some(item) => Value::Number(item as f64), None => Value::Null }",
+            ]:
+                self.assertIn(expected, source)
 
     def test_overloads_needing_type_distinction_fail_closed(self):
         self.assert_unsupported("interface Unsupported { undefined f(DOMString a); undefined f(boolean a); };")

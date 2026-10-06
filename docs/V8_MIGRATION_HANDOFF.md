@@ -170,6 +170,13 @@ salvano i valori JS come `JsRef` tracciati. Test generatore 48/48, `roves-v8` 83
 59+2, check pulito. Copertura 99/486. **Prossimo:** dizionari e sequence (costruttori di
 `Event`/`EventTarget`, `composedPath`), poi callback interface (`EventListener`).
 
+**CP60 (2026-10-06):** tipi WebIDL strutturati e sequence (patch 0124). `WebIdlType` ad albero e
+`define_typed_webidl_method`; `convert_webidl_value` estratto (senza cambi di comportamento) e
+`convert_typed_value` ricorsivo; le sequence usano il protocollo `@@iterator`. Test generatore
+49/49, `roves-v8` 84+5+2 senza warning, default 59+2, check pulito. Copertura 100/486.
+**Prossimo:** dizionari (`EventInit`, `GetRootNodeOptions`) sul percorso strutturato, poi
+callback interface (`EventListener`) e union.
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

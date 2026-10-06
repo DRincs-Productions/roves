@@ -97,6 +97,11 @@ handlers with `[LegacyTreatNonObjectAsNull]`) use `define_contextual_attribute`;
 traced `JsRef`s. Coverage 99/486. Next: dictionaries and sequences (the `Event`/`EventTarget`
 constructors and `composedPath`), then callback interfaces (`EventListener`).
 
+**CP60 (2026-10-06): structured types and sequences.** `WebIdlType` (nested
+primitive/enumeration/interface/nullable/sequence) with `define_typed_webidl_method`; sequences
+use the WebIDL iterable protocol and return arrays. This structured path is where dictionaries
+and unions go next. Coverage 100/486.
+
 CP37 exposes stable `NativeObjectId` through `DomObject` and updates generated `dom_struct`
 equality to use that engine-neutral contract. Local checks pass (reflector 2/2, macro 3/3,
 rustfmt, and patch 0101 reverse-check); CI is green: V8 37226916624 (6/6), Servo 37226916650

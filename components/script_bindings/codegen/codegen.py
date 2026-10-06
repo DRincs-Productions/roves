@@ -8213,12 +8213,108 @@ pub(crate) fn GetConstructorObject(
         return stripTrailingWhitespace(self.root.define())
 
 
+# Element-level WebIDL types the structured (sequence) path supports:
+# IDL type name -> (Rust type, WebIdlArgumentConversion, Value pattern => Rust expression,
+# Rust value -> Value expression with ITEM as the value).
+V8_TYPED_PRIMITIVES = {
+    "Boolean": ("bool", "Boolean", "Value::Bool(value) => *value", "Value::Bool(ITEM)"),
+    "Byte": ("i8", "Byte", "Value::Number(value) => *value as i8", "Value::Number(ITEM as f64)"),
+    "Octet": ("u8", "Octet", "Value::Number(value) => *value as u8", "Value::Number(ITEM as f64)"),
+    "Short": ("i16", "Short", "Value::Number(value) => *value as i16", "Value::Number(ITEM as f64)"),
+    "UnsignedShort": ("u16", "UnsignedShort", "Value::Number(value) => *value as u16", "Value::Number(ITEM as f64)"),
+    "Long": ("i32", "Long", "Value::Number(value) => *value as i32", "Value::Number(ITEM as f64)"),
+    "UnsignedLong": ("u32", "UnsignedLong", "Value::Number(value) => *value as u32", "Value::Number(ITEM as f64)"),
+    "LongLong": ("i64", "LongLong", "Value::Number(value) => *value as i64", "Value::Number(ITEM as f64)"),
+    "UnsignedLongLong": ("u64", "UnsignedLongLong", "Value::Number(value) => *value as u64", "Value::Number(ITEM as f64)"),
+    "Float": ("roves_v8::FiniteF32", "Float", 'Value::Number(value) => roves_v8::FiniteF32::new(*value as f32).expect("runtime validated finite float")', "Value::Number(ITEM.get() as f64)"),
+    "UnrestrictedFloat": ("f32", "UnrestrictedFloat", "Value::Number(value) => *value as f32", "Value::Number(ITEM as f64)"),
+    "Double": ("roves_v8::FiniteF64", "Double", 'Value::Number(value) => roves_v8::FiniteF64::new(*value).expect("runtime validated finite double")', "Value::Number(ITEM.get())"),
+    "UnrestrictedDouble": ("f64", "UnrestrictedDouble", "Value::Number(value) => *value", "Value::Number(ITEM)"),
+}
+
+
+def v8_typed_info(ty, name: str, member_name: str):
+    """(rust_type, WebIdlType expression, match arm on a `&Value`, Rust -> Value template with
+    ITEM) for a type on the structured path: sequences of supported element types, nested
+    nullables, interfaces, enumerations, strings, `any` and `object`."""
+    if ty.nullable():
+        rust, expr, arm, to_value = v8_typed_info(ty.inner, name, member_name)
+        pattern, expression = arm.split(" => ", 1)
+        return (
+            f"Option<{rust}>",
+            f"roves_v8::WebIdlType::Nullable(Box::new({expr}))",
+            f"Value::Null => None, {pattern} => Some({expression})",
+            f"match ITEM {{ Some(item) => {to_value.replace('ITEM', 'item')}, None => Value::Null }}",
+        )
+    if ty.isSequence():
+        rust, expr, arm, to_value = v8_typed_info(ty.inner, name, member_name)
+        return (
+            f"Vec<{rust}>",
+            f"roves_v8::WebIdlType::Sequence(Box::new({expr}))",
+            f'Value::Sequence(items) => items.iter().map(|item| match item {{ {arm}, _ => unreachable!("runtime conversion matches the generated WebIDL type") }}).collect()',
+            f"Value::Sequence(ITEM.into_iter().map(|item| {to_value.replace('ITEM', 'item')}).collect())",
+        )
+    primitive = V8_TYPED_PRIMITIVES.get(ty.name) if (ty.isPrimitive() and not ty.isEnum()) else None
+    if primitive:
+        rust, conversion, arm, to_value = primitive
+        return rust, f"roves_v8::WebIdlType::Primitive(roves_v8::WebIdlArgumentConversion::{conversion})", arm, to_value
+    if ty.isDOMString():
+        return ("Vec<u16>", "roves_v8::WebIdlType::Primitive(roves_v8::WebIdlArgumentConversion::DomString)",
+                "Value::Utf16String(value) => value.clone()", "Value::Utf16String(ITEM)")
+    if ty.isUSVString():
+        return ("String", "roves_v8::WebIdlType::Primitive(roves_v8::WebIdlArgumentConversion::UsvString)",
+                "Value::String(value) => value.clone()", "Value::String(ITEM)")
+    if ty.isByteString():
+        return ("Vec<u8>", "roves_v8::WebIdlType::Primitive(roves_v8::WebIdlArgumentConversion::ByteString)",
+                "Value::ByteString(value) => value.clone()", "Value::ByteString(ITEM)")
+    if ty.isEnum():
+        values = ", ".join(f'"{value}".to_owned()' for value in ty.inner.values())
+        return ("String", f"roves_v8::WebIdlType::Enumeration(vec![{values}])",
+                "Value::String(value) => value.clone()", "Value::String(ITEM)")
+    if v8_is_dom_interface(ty):
+        return ("roves_v8::NativeRef", f'roves_v8::WebIdlType::Interface("{ty.inner.identifier.name}".to_owned())',
+                "Value::Native(value) => value.clone()", "Value::Native(ITEM)")
+    if ty.isAny() or ty.isObject():
+        conversion = "Any" if ty.isAny() else "Object"
+        return ("roves_v8::Handle", f"roves_v8::WebIdlType::Primitive(roves_v8::WebIdlArgumentConversion::{conversion})",
+                "Value::Js(value) => value.clone()", "Value::Js(ITEM)")
+    raise TypeError(f"V8 backend unsupported sequence element type: {name}.{member_name}: {ty}")
+
+
+def v8_flat_webidl_type(argument_type) -> str:
+    """The structured WebIdlType expression of a flat argument tuple, for operations that
+    mix flat and structured arguments."""
+    _, conversion, _, nullable, _, enumeration_values, _ = argument_type
+    if conversion == "Enumeration":
+        values = enumeration_values[len("Some(&["):-len("])")]
+        ty = f"roves_v8::WebIdlType::Enumeration([{values}].iter().map(|value| value.to_string()).collect())"
+    elif conversion == "Interface":
+        interface = enumeration_values[len("Some(&["):-len("])")]
+        ty = f"roves_v8::WebIdlType::Interface({interface}.to_owned())"
+    else:
+        ty = f"roves_v8::WebIdlType::Primitive(roves_v8::WebIdlArgumentConversion::{conversion})"
+    return f"roves_v8::WebIdlType::Nullable(Box::new({ty}))" if nullable else ty
+
+
+def v8_contains_sequence(ty) -> bool:
+    if ty.nullable():
+        return v8_contains_sequence(ty.inner)
+    return ty.isSequence()
+
+
+def v8_contains_handle(ty) -> bool:
+    """Whether values of this structured type carry JS handles (the native needs a context)."""
+    if ty.nullable() or ty.isSequence():
+        return v8_contains_handle(ty.inner)
+    return ty.isAny() or ty.isObject()
+
+
 def v8_argument_types(name: str, member_name: str, arguments) -> list:
     """Map WebIDL arguments of an operation or constructor to the V8 backend's
     (rust_type, conversion, match_arm, nullable, optional, enumeration_values) tuples.
     Fails closed on any argument shape the runtime cannot convert yet."""
     argument_types = []
-    def add_argument_type(rust_type, conversion, match_arm, nullable, optional, default_expression=None, enumeration_values=None):
+    def add_argument_type(rust_type, conversion, match_arm, nullable, optional, default_expression=None, enumeration_values=None, typed=None):
         pattern, expression = match_arm.split(" => ", 1)
         if nullable:
             rust_type = f"Option<{rust_type}>"
@@ -8248,13 +8344,27 @@ def v8_argument_types(name: str, member_name: str, arguments) -> list:
                     f"Value::Missing => {missing}, "
                     f"{pattern} => roves_v8::WebIdlOptionalArgument::Present({expression})"
                 )
-        argument_types.append((rust_type, conversion, match_arm, nullable, optional, enumeration_values))
+        argument_types.append((rust_type, conversion, match_arm, nullable, optional, enumeration_values, typed))
 
     for argument in arguments:
         ty = argument.type
         default_value = argument.defaultValue
         if argument.variadic:
             raise TypeError(f"V8 backend does not support variadic arguments: {name}.{member_name}")
+        if v8_contains_sequence(ty):
+            if default_value is not None and not isinstance(default_value, IDLEmptySequenceValue):
+                raise TypeError(f"V8 backend unsupported explicit default for {name}.{member_name}: {default_value}")
+            nullable = ty.nullable()
+            inner = ty.inner if nullable else ty
+            rust, expr, arm, _ = v8_typed_info(inner, name, member_name)
+            if nullable:
+                expr = f"roves_v8::WebIdlType::Nullable(Box::new({expr}))"
+            conversion = "Any" if v8_contains_handle(inner) else "Sequence"
+            add_argument_type(
+                rust, conversion, arm, nullable, argument.optional,
+                "Vec::new()" if default_value is not None else None, None, expr,
+            )
+            continue
         if default_value is not None and not argument.optional:
             raise TypeError(f"V8 backend received a default for a required argument: {name}.{member_name}")
         optional = argument.optional
@@ -8628,6 +8738,14 @@ class CGV8BindingRoot(CGThing):
                             "native.{native}().map(Value::Utf16String).unwrap_or(Value::Null)"
                             if nullable_return else "Value::Utf16String(native.{native}())"
                         )
+                    elif result_type.isSequence():
+                        rust, _, _, to_value = v8_typed_info(result_type, name, member.identifier.name)
+                        if nullable_return:
+                            rust_type = f"Option<{rust}>"
+                            value_expr = f"match native.{{native}}() {{ Some(result) => {to_value.replace('ITEM', 'result')}, None => Value::Null }}"
+                        else:
+                            rust_type = rust
+                            value_expr = to_value.replace("ITEM", "native.{native}()")
                     elif result_type.isAny() or result_type.isObject():
                         if nullable_return:
                             rust_type, value_expr = "Option<roves_v8::Handle>", "native.{native}().map(Value::Js).unwrap_or(Value::Null)"
@@ -8650,7 +8768,7 @@ class CGV8BindingRoot(CGThing):
                     native_name = MakeNativeName(member.identifier.name) + "_" * overload_index
                     contextual = (
                         any(argument_type[1] in V8_CONTEXTUAL_CONVERSIONS for argument_type in argument_types)
-                        or result_type.isAny() or result_type.isObject()
+                        or v8_contains_handle(result_type)
                     )
                     if contextual and len(signatures) > 1:
                         raise TypeError(f"V8 backend does not support overloads needing a script context: {name}.{member.identifier.name}")
@@ -8901,6 +9019,22 @@ class CGV8BindingRoot(CGThing):
             nullable_arguments = ", ".join(str(argument_type[3]).lower() for argument_type in argument_types)
             optional_arguments = ", ".join(str(argument_type[4]).lower() for argument_type in argument_types)
             enumeration_values = ", ".join(argument_type[5] or "None" for argument_type in argument_types)
+            typed = any(argument_type[6] for argument_type in argument_types) or "Value::Sequence(" in value_expr
+            if typed and overload_count > 1:
+                raise TypeError(f"V8 backend does not support overloads with sequence types: {name}.{idl}")
+            if typed:
+                typed_arguments = []
+                for argument_type in argument_types:
+                    ty = argument_type[6] or v8_flat_webidl_type(argument_type)
+                    typed_arguments.append(
+                        f"roves_v8::WebIdlArgument {{ ty: {ty}, optional: {str(argument_type[4]).lower()} }}"
+                    )
+                kind = "Contextual" if contextual else "Fallible" if throws else "Plain"
+                registrations_list.append(
+                    f'        runtime.define_typed_webidl_method(&interface, "{idl}", roves_v8::WebIdlNativeOperation::{kind}({callback}), &[{", ".join(typed_arguments)}])?;'
+                )
+                gate_last_registration(idl)
+                continue
             if overload_count > 1:
                 if not throws:
                     # Overloads share the fallible dispatcher; infallible ones always succeed.

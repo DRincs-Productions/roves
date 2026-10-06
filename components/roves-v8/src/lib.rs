@@ -137,6 +137,10 @@ pub mod webidl {
     pub mod handler_host {
         include!(concat!(env!("OUT_DIR"), "/HandlerHostV8Binding.rs"));
     }
+    #[cfg(test)]
+    pub mod sequence_operations {
+        include!(concat!(env!("OUT_DIR"), "/SequenceOperationsV8Binding.rs"));
+    }
 }
 
 use std::sync::Once;
@@ -195,6 +199,8 @@ pub enum Value {
     Object,
     /// An arbitrary JS value kept as-is: WebIDL `any`, `object` and callback-function values.
     Js(Handle),
+    /// A WebIDL sequence; converting it to JS creates an array.
+    Sequence(Vec<Value>),
     /// A traced native DOM object (an interface-typed WebIDL value). Converting it to JS yields
     /// the native's one wrapper, created on first use as an instance of its concrete interface.
     Native(NativeRef),
@@ -591,6 +597,14 @@ fn traced_wrapper<'s>(
 
 /// Converts a callback result to JS, wrapping [`Value::Native`] results.
 fn v8_result<'s>(scope: &mut v8::PinScope<'s, '_>, value: &Value) -> v8::Local<'s, v8::Value> {
+    if let Value::Sequence(elements) = value {
+        // Elements may be natives, which need wrapping.
+        let mut converted = Vec::with_capacity(elements.len());
+        for element in elements {
+            converted.push(v8_result(scope, element));
+        }
+        return v8::Array::new_with_elements(scope, &converted).into();
+    }
     let Value::Native(native) = value else {
         return v8_value(scope, value);
     };
@@ -798,7 +812,7 @@ pub enum PrimitiveConversion {
 }
 
 /// Required WebIDL operation argument coercions supported by the generated V8 pilot.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum WebIdlArgumentConversion {
     Boolean,
     Byte,
@@ -831,6 +845,26 @@ pub enum WebIdlArgumentConversion {
     LegacyCallback,
 }
 
+/// A structured WebIDL type, for values the flat [`WebIdlArgumentConversion`]s cannot describe
+/// (sequences, and nullable or interface types nested inside them).
+#[derive(Clone, Debug, PartialEq)]
+pub enum WebIdlType {
+    Primitive(WebIdlArgumentConversion),
+    Enumeration(Vec<String>),
+    /// A traced native implementing the named interface (or a descendant).
+    Interface(String),
+    Nullable(Box<WebIdlType>),
+    /// `sequence<T>`: any JS iterable, converted element by element ([`Value::Sequence`]).
+    Sequence(Box<WebIdlType>),
+}
+
+/// One argument of a [`Runtime::define_typed_webidl_method`] operation.
+#[derive(Clone, Debug)]
+pub struct WebIdlArgument {
+    pub ty: WebIdlType,
+    pub optional: bool,
+}
+
 /// WebIDL optional-argument state. `Missing` differs from a present nullable `None`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum WebIdlOptionalArgument<T> {
@@ -861,6 +895,8 @@ struct WebIdlArguments {
     nullable_arguments: Vec<bool>,
     optional_arguments: Vec<bool>,
     enumeration_values: Vec<Option<Vec<Vec<u16>>>>,
+    /// Structured types, which take precedence over the flat conversion of the same index.
+    types: Vec<Option<WebIdlType>>,
 }
 
 impl WebIdlArguments {
@@ -883,6 +919,18 @@ impl WebIdlArguments {
                     values.iter().map(|value| value.encode_utf16().collect()).collect()
                 }))
                 .collect(),
+            types: Vec::new(),
+        }
+    }
+
+    fn typed(arguments: &[WebIdlArgument]) -> Self {
+        Self {
+            // Placeholders: every argument has a structured type.
+            conversions: vec![WebIdlArgumentConversion::Any; arguments.len()],
+            nullable_arguments: vec![false; arguments.len()],
+            optional_arguments: arguments.iter().map(|argument| argument.optional).collect(),
+            enumeration_values: vec![None; arguments.len()],
+            types: arguments.iter().map(|argument| Some(argument.ty.clone())).collect(),
         }
     }
 }
@@ -953,6 +1001,13 @@ pub struct WebIdlOverload<'a> {
 
 struct WebIdlOverloadConfig {
     overloads: Vec<(FallibleNativeMethod, WebIdlArguments)>,
+}
+
+/// The native behind a [`Runtime::define_typed_webidl_method`] operation.
+pub enum WebIdlNativeOperation {
+    Plain(NativeMethod),
+    Fallible(FallibleNativeMethod),
+    Contextual(ContextualNativeMethod),
 }
 
 enum NativeMethodKind {
@@ -2490,6 +2545,24 @@ impl Runtime {
         )
     }
 
+    /// Defines an operation whose arguments are described by structured [`WebIdlType`]s
+    /// (sequences and nested nullable/interface types). `method` is plain, fallible or
+    /// contextual, as with the other `define_*_method` functions.
+    pub fn define_typed_webidl_method(
+        &mut self,
+        interface: &Interface,
+        name: &str,
+        method: WebIdlNativeOperation,
+        arguments: &[WebIdlArgument],
+    ) -> Result<(), String> {
+        let kind = match method {
+            WebIdlNativeOperation::Plain(method) => NativeMethodKind::Infallible(method),
+            WebIdlNativeOperation::Fallible(method) => NativeMethodKind::Fallible(method),
+            WebIdlNativeOperation::Contextual(method) => NativeMethodKind::Contextual(method),
+        };
+        self.define_method_with_arguments(interface, name, kind, WebIdlArguments::typed(arguments))
+    }
+
     fn define_method_inner(
         &mut self,
         interface: &Interface,
@@ -2499,6 +2572,17 @@ impl Runtime {
         nullable_arguments: &[bool],
         optional_arguments: &[bool],
         enumeration_values: &[Option<&[&str]>],
+    ) -> Result<(), String> {
+        let arguments = WebIdlArguments::new(conversions, nullable_arguments, optional_arguments, enumeration_values);
+        self.define_method_with_arguments(interface, name, method, arguments)
+    }
+
+    fn define_method_with_arguments(
+        &mut self,
+        interface: &Interface,
+        name: &str,
+        method: NativeMethodKind,
+        arguments: WebIdlArguments,
     ) -> Result<(), String> {
         if interface.materialized.get() {
             return Err("interface members must be defined before creating instances or descendants".into());
@@ -2517,15 +2601,7 @@ impl Runtime {
         };
         // Keep the immutable config alive for the isolate's lifetime. Box preserves its address
         // while the owning vector grows, and the isolate drops before these entries.
-        let config = Box::new(WebIdlMethodConfig {
-            method,
-            arguments: WebIdlArguments::new(
-                conversions,
-                nullable_arguments,
-                optional_arguments,
-                enumeration_values,
-            ),
-        });
+        let config = Box::new(WebIdlMethodConfig { method, arguments });
         let config_pointer = (&*config) as *const WebIdlMethodConfig as *mut WebIdlMethodConfig;
         self.method_configs.push(config);
         let external_data = v8::External::new(scope, config_pointer as *mut std::ffi::c_void);
@@ -2934,210 +3010,291 @@ fn convert_webidl_arguments<'s>(
         {
             Value::Null
         } else {
-            match config.conversions.get(i) {
-            None => native_value(scope, argument),
-            Some(WebIdlArgumentConversion::Boolean) => Value::Bool(argument.boolean_value(scope)),
-            Some(WebIdlArgumentConversion::Byte) => {
-                let Some(number) = argument.number_value(scope) else { return None; };
-                Value::Number(convert_webidl_integer(number, 8, true))
-            }
-            Some(WebIdlArgumentConversion::Octet) => {
-                let Some(number) = argument.number_value(scope) else { return None; };
-                Value::Number(convert_webidl_integer(number, 8, false))
-            }
-            Some(WebIdlArgumentConversion::Short) => {
-                let Some(number) = argument.number_value(scope) else { return None; };
-                Value::Number(convert_webidl_integer(number, 16, true))
-            }
-            Some(WebIdlArgumentConversion::UnsignedShort) => {
-                let Some(number) = argument.number_value(scope) else { return None; };
-                Value::Number(convert_webidl_integer(number, 16, false))
-            }
-            Some(WebIdlArgumentConversion::Long) => {
-                let Some(number) = argument.number_value(scope) else { return None; };
-                Value::Number(convert_webidl_integer(number, 32, true))
-            }
-            Some(WebIdlArgumentConversion::LongLong) => {
-                let Some(number) = argument.number_value(scope) else { return None; };
-                Value::Number(convert_webidl_integer(number, 64, true))
-            }
-            Some(WebIdlArgumentConversion::UnsignedLongLong) => {
-                let Some(number) = argument.number_value(scope) else { return None; };
-                Value::Number(convert_webidl_integer(number, 64, false))
-            }
-            Some(WebIdlArgumentConversion::Float) => {
-                let Some(number) = argument.number_value(scope) else { return None; };
-                let value = number as f32;
-                if !value.is_finite() {
-                    throw_type_error(scope, "float argument must be finite");
-                    return None;
-                }
-                Value::Number(value as f64)
-            }
-            Some(WebIdlArgumentConversion::UnrestrictedFloat) => {
-                let Some(number) = argument.number_value(scope) else { return None; };
-                Value::Number(number as f32 as f64)
-            }
-            Some(WebIdlArgumentConversion::Double) => {
-                let Some(number) = argument.number_value(scope) else { return None; };
-                if !number.is_finite() {
-                    throw_type_error(scope, "double argument must be finite");
-                    return None;
-                }
-                Value::Number(number)
-            }
-            Some(WebIdlArgumentConversion::UnrestrictedDouble) => {
-                let Some(number) = argument.number_value(scope) else { return None; };
-                Value::Number(number)
-            }
-            Some(WebIdlArgumentConversion::UnsignedLong) => {
-                let Some(number) = argument.number_value(scope) else { return None; };
-                Value::Number(convert_webidl_integer(number, 32, false))
-            }
-            Some(WebIdlArgumentConversion::DomString) => {
-                if argument.is_symbol() {
-                    throw_type_error(scope, "Cannot convert a Symbol value to a string");
-                    return None;
-                }
-                let result = {
-                    v8::tc_scope!(let tc_scope, scope);
-                    let scope = tc_scope;
-                    match argument.to_string(scope) {
-                        Some(string) => {
-                            let mut utf16 = vec![0; string.length()];
-                            string.write_v2(scope, 0, &mut utf16, v8::WriteFlags::empty());
-                            Ok(Value::Utf16String(utf16))
-                        }
-                        None => Err(scope.exception()),
-                    }
-                };
-                match result {
-                    Ok(value) => value,
-                    Err(Some(exception)) => { scope.throw_exception(exception); return None; }
-                    Err(None) => return None,
-                }
-            }
-            Some(WebIdlArgumentConversion::UsvString) => {
-                if argument.is_symbol() {
-                    throw_type_error(scope, "Cannot convert a Symbol value to a string");
-                    return None;
-                }
-                let result = {
-                    v8::tc_scope!(let tc_scope, scope);
-                    let scope = tc_scope;
-                    match argument.to_string(scope) {
-                        Some(string) => {
-                            let mut utf16 = vec![0; string.length()];
-                            string.write_v2(scope, 0, &mut utf16, v8::WriteFlags::empty());
-                            Ok(Value::String(String::from_utf16_lossy(&utf16)))
-                        }
-                        None => Err(scope.exception()),
-                    }
-                };
-                match result {
-                    Ok(value) => value,
-                    Err(Some(exception)) => { scope.throw_exception(exception); return None; }
-                    Err(None) => return None,
-                }
-            }
-            Some(WebIdlArgumentConversion::ByteString) => {
-                if argument.is_symbol() {
-                    throw_type_error(scope, "Cannot convert a Symbol value to a string");
-                    return None;
-                }
-                let result = {
-                    v8::tc_scope!(let tc_scope, scope);
-                    let scope = tc_scope;
-                    match argument.to_string(scope) {
-                        Some(string) => {
-                            let mut utf16 = vec![0; string.length()];
-                            string.write_v2(scope, 0, &mut utf16, v8::WriteFlags::empty());
-                            if utf16.iter().any(|unit| *unit > 0xFF) {
-                                let message = v8::String::new(scope, "ByteString contains a code unit greater than 255").unwrap();
-                                Err(Some(v8::Exception::type_error(scope, message).into()))
-                            } else {
-                                Ok(Value::ByteString(utf16.into_iter().map(|unit| unit as u8).collect()))
-                            }
-                        }
-                        None => Err(scope.exception()),
-                    }
-                };
-                match result {
-                    Ok(value) => value,
-                    Err(Some(exception)) => { scope.throw_exception(exception); return None; }
-                    Err(None) => return None,
-                }
-            }
-            Some(WebIdlArgumentConversion::Any) => {
-                Value::Js(Handle(v8::Global::new(scope, argument)))
-            }
-            Some(WebIdlArgumentConversion::Object) => {
-                if !argument.is_object() {
-                    throw_type_error(scope, "argument is not an object");
-                    return None;
-                }
-                Value::Js(Handle(v8::Global::new(scope, argument)))
-            }
-            Some(WebIdlArgumentConversion::LegacyCallback) => {
-                if argument.is_object() {
-                    Value::Js(Handle(v8::Global::new(scope, argument)))
-                } else {
-                    Value::Null
-                }
-            }
-            Some(WebIdlArgumentConversion::Callback) => {
-                if !argument.is_function() {
-                    throw_type_error(scope, "argument is not callable");
-                    return None;
-                }
-                Value::Js(Handle(v8::Global::new(scope, argument)))
-            }
-            Some(WebIdlArgumentConversion::Interface) => {
-                let expected = config
-                    .enumeration_values
-                    .get(i)
-                    .and_then(Option::as_ref)
-                    .and_then(|names| names.first())
-                    .map(|name| String::from_utf16_lossy(name))
-                    .expect("interface-typed arguments name their interface");
-                native_argument(scope, argument, &expected)?
-            }
-            Some(WebIdlArgumentConversion::Enumeration) => {
-                if argument.is_symbol() {
-                    throw_type_error(scope, "Cannot convert a Symbol value to a string");
-                    return None;
-                }
-                let result = {
-                    v8::tc_scope!(let tc_scope, scope);
-                    let scope = tc_scope;
-                    match argument.to_string(scope) {
-                        Some(string) => {
-                            let mut utf16 = vec![0; string.length()];
-                            string.write_v2(scope, 0, &mut utf16, v8::WriteFlags::empty());
-                            let valid = config.enumeration_values.get(i)
-                                .and_then(Option::as_ref)
-                                .is_some_and(|values| values.iter().any(|value| value == &utf16));
-                            if valid {
-                                Ok(Value::String(String::from_utf16_lossy(&utf16)))
-                            } else {
-                                let message = v8::String::new(scope, "Value is not a valid WebIDL enum value").unwrap();
-                                Err(Some(v8::Exception::type_error(scope, message).into()))
-                            }
-                        }
-                        None => Err(scope.exception()),
-                    }
-                };
-                match result {
-                    Ok(value) => value,
-                    Err(Some(exception)) => { scope.throw_exception(exception); return None; }
-                    Err(None) => return None,
-                }
-            }
+            match config.types.get(i).and_then(Option::as_ref) {
+                Some(ty) => convert_typed_value(scope, argument, ty)?,
+                None => convert_webidl_value(
+                    scope,
+                    argument,
+                    config.conversions.get(i),
+                    config.enumeration_values.get(i).and_then(Option::as_ref),
+                )?,
             }
         };
         arguments.push(converted);
     }
     Some(arguments)
+}
+
+/// Converts one JS value by a flat WebIDL conversion (`None`: no conversion). `None` means a
+/// conversion threw and the exception is pending. `enumeration_values` lists an enumeration's
+/// values, or names the interface of an `Interface` conversion.
+fn convert_webidl_value<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    argument: v8::Local<'_, v8::Value>,
+    conversion: Option<&WebIdlArgumentConversion>,
+    enumeration_values: Option<&Vec<Vec<u16>>>,
+) -> Option<Value> {
+    Some(match conversion {
+        None => native_value(scope, argument),
+        Some(WebIdlArgumentConversion::Boolean) => Value::Bool(argument.boolean_value(scope)),
+        Some(WebIdlArgumentConversion::Byte) => {
+            let Some(number) = argument.number_value(scope) else { return None; };
+            Value::Number(convert_webidl_integer(number, 8, true))
+        }
+        Some(WebIdlArgumentConversion::Octet) => {
+            let Some(number) = argument.number_value(scope) else { return None; };
+            Value::Number(convert_webidl_integer(number, 8, false))
+        }
+        Some(WebIdlArgumentConversion::Short) => {
+            let Some(number) = argument.number_value(scope) else { return None; };
+            Value::Number(convert_webidl_integer(number, 16, true))
+        }
+        Some(WebIdlArgumentConversion::UnsignedShort) => {
+            let Some(number) = argument.number_value(scope) else { return None; };
+            Value::Number(convert_webidl_integer(number, 16, false))
+        }
+        Some(WebIdlArgumentConversion::Long) => {
+            let Some(number) = argument.number_value(scope) else { return None; };
+            Value::Number(convert_webidl_integer(number, 32, true))
+        }
+        Some(WebIdlArgumentConversion::LongLong) => {
+            let Some(number) = argument.number_value(scope) else { return None; };
+            Value::Number(convert_webidl_integer(number, 64, true))
+        }
+        Some(WebIdlArgumentConversion::UnsignedLongLong) => {
+            let Some(number) = argument.number_value(scope) else { return None; };
+            Value::Number(convert_webidl_integer(number, 64, false))
+        }
+        Some(WebIdlArgumentConversion::Float) => {
+            let Some(number) = argument.number_value(scope) else { return None; };
+            let value = number as f32;
+            if !value.is_finite() {
+                throw_type_error(scope, "float argument must be finite");
+                return None;
+            }
+            Value::Number(value as f64)
+        }
+        Some(WebIdlArgumentConversion::UnrestrictedFloat) => {
+            let Some(number) = argument.number_value(scope) else { return None; };
+            Value::Number(number as f32 as f64)
+        }
+        Some(WebIdlArgumentConversion::Double) => {
+            let Some(number) = argument.number_value(scope) else { return None; };
+            if !number.is_finite() {
+                throw_type_error(scope, "double argument must be finite");
+                return None;
+            }
+            Value::Number(number)
+        }
+        Some(WebIdlArgumentConversion::UnrestrictedDouble) => {
+            let Some(number) = argument.number_value(scope) else { return None; };
+            Value::Number(number)
+        }
+        Some(WebIdlArgumentConversion::UnsignedLong) => {
+            let Some(number) = argument.number_value(scope) else { return None; };
+            Value::Number(convert_webidl_integer(number, 32, false))
+        }
+        Some(WebIdlArgumentConversion::DomString) => {
+            if argument.is_symbol() {
+                throw_type_error(scope, "Cannot convert a Symbol value to a string");
+                return None;
+            }
+            let result = {
+                v8::tc_scope!(let tc_scope, scope);
+                let scope = tc_scope;
+                match argument.to_string(scope) {
+                    Some(string) => {
+                        let mut utf16 = vec![0; string.length()];
+                        string.write_v2(scope, 0, &mut utf16, v8::WriteFlags::empty());
+                        Ok(Value::Utf16String(utf16))
+                    }
+                    None => Err(scope.exception()),
+                }
+            };
+            match result {
+                Ok(value) => value,
+                Err(Some(exception)) => { scope.throw_exception(exception); return None; }
+                Err(None) => return None,
+            }
+        }
+        Some(WebIdlArgumentConversion::UsvString) => {
+            if argument.is_symbol() {
+                throw_type_error(scope, "Cannot convert a Symbol value to a string");
+                return None;
+            }
+            let result = {
+                v8::tc_scope!(let tc_scope, scope);
+                let scope = tc_scope;
+                match argument.to_string(scope) {
+                    Some(string) => {
+                        let mut utf16 = vec![0; string.length()];
+                        string.write_v2(scope, 0, &mut utf16, v8::WriteFlags::empty());
+                        Ok(Value::String(String::from_utf16_lossy(&utf16)))
+                    }
+                    None => Err(scope.exception()),
+                }
+            };
+            match result {
+                Ok(value) => value,
+                Err(Some(exception)) => { scope.throw_exception(exception); return None; }
+                Err(None) => return None,
+            }
+        }
+        Some(WebIdlArgumentConversion::ByteString) => {
+            if argument.is_symbol() {
+                throw_type_error(scope, "Cannot convert a Symbol value to a string");
+                return None;
+            }
+            let result = {
+                v8::tc_scope!(let tc_scope, scope);
+                let scope = tc_scope;
+                match argument.to_string(scope) {
+                    Some(string) => {
+                        let mut utf16 = vec![0; string.length()];
+                        string.write_v2(scope, 0, &mut utf16, v8::WriteFlags::empty());
+                        if utf16.iter().any(|unit| *unit > 0xFF) {
+                            let message = v8::String::new(scope, "ByteString contains a code unit greater than 255").unwrap();
+                            Err(Some(v8::Exception::type_error(scope, message).into()))
+                        } else {
+                            Ok(Value::ByteString(utf16.into_iter().map(|unit| unit as u8).collect()))
+                        }
+                    }
+                    None => Err(scope.exception()),
+                }
+            };
+            match result {
+                Ok(value) => value,
+                Err(Some(exception)) => { scope.throw_exception(exception); return None; }
+                Err(None) => return None,
+            }
+        }
+        Some(WebIdlArgumentConversion::Any) => {
+            Value::Js(Handle(v8::Global::new(scope, argument)))
+        }
+        Some(WebIdlArgumentConversion::Object) => {
+            if !argument.is_object() {
+                throw_type_error(scope, "argument is not an object");
+                return None;
+            }
+            Value::Js(Handle(v8::Global::new(scope, argument)))
+        }
+        Some(WebIdlArgumentConversion::LegacyCallback) => {
+            if argument.is_object() {
+                Value::Js(Handle(v8::Global::new(scope, argument)))
+            } else {
+                Value::Null
+            }
+        }
+        Some(WebIdlArgumentConversion::Callback) => {
+            if !argument.is_function() {
+                throw_type_error(scope, "argument is not callable");
+                return None;
+            }
+            Value::Js(Handle(v8::Global::new(scope, argument)))
+        }
+        Some(WebIdlArgumentConversion::Interface) => {
+            let expected = enumeration_values
+                .and_then(|names| names.first())
+                .map(|name| String::from_utf16_lossy(name))
+                .expect("interface-typed arguments name their interface");
+            native_argument(scope, argument, &expected)?
+        }
+        Some(WebIdlArgumentConversion::Enumeration) => {
+            if argument.is_symbol() {
+                throw_type_error(scope, "Cannot convert a Symbol value to a string");
+                return None;
+            }
+            let result = {
+                v8::tc_scope!(let tc_scope, scope);
+                let scope = tc_scope;
+                match argument.to_string(scope) {
+                    Some(string) => {
+                        let mut utf16 = vec![0; string.length()];
+                        string.write_v2(scope, 0, &mut utf16, v8::WriteFlags::empty());
+                        let valid = enumeration_values
+                            .is_some_and(|values| values.iter().any(|value| value == &utf16));
+                        if valid {
+                            Ok(Value::String(String::from_utf16_lossy(&utf16)))
+                        } else {
+                            let message = v8::String::new(scope, "Value is not a valid WebIDL enum value").unwrap();
+                            Err(Some(v8::Exception::type_error(scope, message).into()))
+                        }
+                    }
+                    None => Err(scope.exception()),
+                }
+            };
+            match result {
+                Ok(value) => value,
+                Err(Some(exception)) => { scope.throw_exception(exception); return None; }
+                Err(None) => return None,
+            }
+        }
+    })
+}
+
+/// Converts one JS value by a structured WebIDL type (see [`WebIdlType`]).
+fn convert_typed_value<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    value: v8::Local<'_, v8::Value>,
+    ty: &WebIdlType,
+) -> Option<Value> {
+    match ty {
+        WebIdlType::Primitive(conversion) => convert_webidl_value(scope, value, Some(conversion), None),
+        WebIdlType::Enumeration(values) => {
+            let values: Vec<Vec<u16>> = values.iter().map(|value| value.encode_utf16().collect()).collect();
+            convert_webidl_value(scope, value, Some(&WebIdlArgumentConversion::Enumeration), Some(&values))
+        },
+        WebIdlType::Interface(name) => native_argument(scope, value, name),
+        WebIdlType::Nullable(inner) => {
+            if value.is_null() || value.is_undefined() {
+                Some(Value::Null)
+            } else {
+                convert_typed_value(scope, value, inner)
+            }
+        },
+        WebIdlType::Sequence(element_type) => {
+            // WebIDL "create a sequence from an iterable": the @@iterator protocol, so any
+            // iterable (not only arrays) converts, and user iterators run.
+            let Ok(object) = v8::Local::<v8::Object>::try_from(value) else {
+                throw_type_error(scope, "value is not an iterable object");
+                return None;
+            };
+            let iterator_symbol = v8::Symbol::get_iterator(scope);
+            let method = object.get(scope, iterator_symbol.into())?;
+            let Ok(method) = v8::Local::<v8::Function>::try_from(method) else {
+                throw_type_error(scope, "value is not iterable");
+                return None;
+            };
+            let iterator = method.call(scope, object.into(), &[])?;
+            let Ok(iterator) = v8::Local::<v8::Object>::try_from(iterator) else {
+                throw_type_error(scope, "iterator is not an object");
+                return None;
+            };
+            let next_key = v8::String::new(scope, "next").unwrap();
+            let next = iterator.get(scope, next_key.into())?;
+            let Ok(next) = v8::Local::<v8::Function>::try_from(next) else {
+                throw_type_error(scope, "iterator has no next method");
+                return None;
+            };
+            let done_key = v8::String::new(scope, "done").unwrap();
+            let value_key = v8::String::new(scope, "value").unwrap();
+            let mut elements = Vec::new();
+            loop {
+                let result = next.call(scope, iterator.into(), &[])?;
+                let Ok(result) = v8::Local::<v8::Object>::try_from(result) else {
+                    throw_type_error(scope, "iterator result is not an object");
+                    return None;
+                };
+                let done = result.get(scope, done_key.into())?;
+                if done.boolean_value(scope) {
+                    break;
+                }
+                let element = result.get(scope, value_key.into())?;
+                elements.push(convert_typed_value(scope, element, element_type)?);
+            }
+            Some(Value::Sequence(elements))
+        },
+    }
 }
 
 /// Arms the guaranteed finalizer that drops `raw` (a `Box<Box<dyn Any>>` attached to `wrapper`'s
@@ -3264,6 +3421,10 @@ fn v8_value<'s>(scope: &v8::PinScope<'s, '_>, value: &Value) -> v8::Local<'s, v8
         // `v8_result`, which does that. Other conversions have no interface context.
         Value::Native(_) => v8::undefined(scope).into(),
         Value::Js(handle) => v8::Local::new(scope, &handle.0),
+        Value::Sequence(elements) => {
+            let elements: Vec<_> = elements.iter().map(|element| v8_value(scope, element)).collect();
+            v8::Array::new_with_elements(scope, &elements).into()
+        },
         Value::Null => v8::null(scope).into(),
         Value::Bool(b) => v8::Boolean::new(scope, *b).into(),
         Value::Number(n) => v8::Number::new(scope, *n).into(),
@@ -5951,6 +6112,72 @@ mod tests {
         runtime.force_full_gc_for_testing();
         assert_eq!(runtime.eval("[host.fire(1), host.data.kept].join()").unwrap(), "2,true");
         drop((wrapper, host));
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_sequences_convert_iterables_and_return_arrays() {
+        use crate::webidl::sequence_operations::{SequenceOperationsBinding, SequenceOperationsNative};
+        use crate::{Handle, NativeRef, ScriptContext, Trace, Tracer, WebIdlError, WebIdlOptionalArgument};
+        struct Ops(u32);
+        impl Trace for Ops {
+            fn trace(&self, _tracer: &mut Tracer) {}
+        }
+        #[allow(non_snake_case)]
+        impl SequenceOperationsNative for Ops {
+            fn Sum(&self, values: Vec<u32>) -> u32 { values.iter().sum() }
+            fn Split(&self, text: Vec<u16>) -> Vec<Vec<u16>> {
+                text.split(|unit| *unit == b',' as u16).map(<[u16]>::to_vec).collect()
+            }
+            fn Grid(&self, size: u32) -> Vec<Vec<i32>> {
+                (0..size as i32).map(|row| (0..size as i32).map(|column| row * 10 + column).collect()).collect()
+            }
+            fn WithHoles(&self, values: Vec<Option<i32>>) -> Vec<Option<i32>> {
+                values.into_iter().map(|value| value.map(|value| -value)).collect()
+            }
+            fn Selves(&self, items: Vec<NativeRef>) -> Vec<NativeRef> {
+                items.into_iter().filter(|item| item.get::<Ops>().is_some_and(|ops| ops.0 % 2 == 1)).collect()
+            }
+            fn CountFlags(&self, flags: WebIdlOptionalArgument<Vec<bool>>) -> u32 {
+                let WebIdlOptionalArgument::Present(flags) = flags else { unreachable!("declared default") };
+                flags.iter().filter(|flag| **flag).count() as u32
+            }
+            fn EchoAll(&self, _cx: &mut ScriptContext, values: Vec<Handle>) -> Result<Vec<Handle>, WebIdlError> {
+                Ok(values.into_iter().rev().collect())
+            }
+        }
+        let mut runtime = Runtime::new();
+        let binding = SequenceOperationsBinding::<Ops>::install(&mut runtime).unwrap();
+        let roots: Vec<_> = (1..=3).map(|index| runtime.allocate_traced(Ops(index))).collect();
+        for (index, root) in roots.iter().enumerate() {
+            let wrapper = binding.wrap_traced(&mut runtime, root);
+            runtime.set_global_property(&format!("ops{}", index + 1), &wrapper).unwrap();
+        }
+        for (source, expected) in [
+            ("ops1.sum([1, 2, 3])", "6"),
+            // Any iterable converts, with WebIDL element coercion.
+            ("ops1.sum(new Set([4, '5']))", "9"),
+            ("ops1.sum((function* () { yield 1; yield 2; })())", "3"),
+            ("JSON.stringify(ops1.split('a,b,,c'))", "[\"a\",\"b\",\"\",\"c\"]"),
+            ("JSON.stringify(ops1.grid(2))", "[[0,1],[10,11]]"),
+            ("Array.isArray(ops1.grid(1)) && Array.isArray(ops1.grid(1)[0])", "true"),
+            ("JSON.stringify(ops1.withHoles([1, null, 3, undefined]))", "[-1,null,-3,null]"),
+            // Interface elements are checked one by one and come back as the same wrappers.
+            ("const odd = ops1.selves([ops1, ops2, ops3]); [odd.length, odd[0] === ops1, odd[1] === ops3].join()", "2,true,true"),
+            ("[ops1.countFlags(), ops1.countFlags([true, false, true])].join()", "0,2"),
+            ("const o = {}; const echoed = ops1.echoAll([1, o, 'x']); [echoed[0], echoed[1] === o, echoed[2]].join()", "x,true,1"),
+        ] {
+            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
+        }
+        for source in ["ops1.sum(5)", "ops1.sum({})", "ops1.sum([Symbol()])", "ops1.selves([{}])", "ops1.selves([ops1, null])"] {
+            assert!(runtime.eval(source).unwrap_err().contains("TypeError"), "{source}");
+        }
+        // An exception thrown by a user iterator propagates unchanged.
+        assert_eq!(
+            runtime.eval("try { ops1.sum({ [Symbol.iterator]() { throw new RangeError('iter'); } }) } catch (e) { e.constructor.name }").unwrap(),
+            "RangeError"
+        );
+        drop(roots);
     }
 
     #[cfg(feature = "webidl-pilot")]

@@ -11,6 +11,56 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: structured WebIDL types and sequences (CP60)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixture
+`components/roves-v8/tests/webidl/SequenceOperations.webidl`;
+`components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0124-roves-v8-webidl-sequences.patch` after 0123.
+
+So far the runtime described conversions with one flat enum per argument plus parallel slices
+(nullable, optional, enumeration values). That cannot express nested types. This checkpoint adds a
+structured type tree for the members that need one. It is the foundation for sequences, and next
+for dictionaries and unions.
+
+**Runtime.**
+- `WebIdlType` has the variants `Primitive`, `Enumeration`, `Interface`, `Nullable` and `Sequence`.
+  The new `WebIdlArgument` holds a type and whether the argument is optional.
+- `define_typed_webidl_method(interface, name, WebIdlNativeOperation::{Plain, Fallible, Contextual},
+  &[WebIdlArgument])` registers operations that use it.
+- The per-value conversion was extracted from the argument loop into `convert_webidl_value`, with no
+  behaviour change. The recursive `convert_typed_value` is built on top of it.
+- Sequences follow WebIDL's "create a sequence from an iterable": they use the `@@iterator` protocol,
+  so any iterable converts (Sets, generators). Each element is converted, and exceptions from user
+  iterators propagate.
+- The new `Value::Sequence` converts back to JS arrays. Native elements inside a sequence become their
+  wrappers.
+
+**Generator.**
+- The new `v8_typed_info` maps nested sequence, nullable, primitive, string, enumeration, interface,
+  `any` and `object` types to a Rust type, a `WebIdlType` expression and both conversion directions.
+- An operation with a sequence argument or result is registered through the structured API. Its
+  flat arguments get the equivalent `WebIdlType`.
+- `= []` defaults and sequences of handles (which make the method contextual) are supported.
+- Overloads with sequences, and `record<..>`, still fail closed.
+
+**Tests.**
+- New runtime test on a generated binding with traced natives. It covers:
+  - array, `Set` and generator inputs with element coercion;
+  - `sequence<DOMString>` and nested `sequence<sequence<long>>` results;
+  - nullable elements in both directions;
+  - interface elements, filtered and returned as the identical wrappers;
+  - the empty-sequence default;
+  - `sequence<any>` preserving identity;
+  - TypeErrors for non-iterables, bad elements and non-native or null interface elements;
+  - a user iterator's RangeError propagating.
+- Generator tests: 49/49.
+- `roves-v8` pilot and pilot+JIT-less: 84 unit + 5 integration + 2 doctests each, warning-free;
+  default 59 unit + 2 doctests.
+- `servo-script` check with the pilot is clean.
+
+Coverage: 100/486.
+
 ## 2026-10-06 - V8 migration Phase 4: contextual attributes, event handlers and `any` (CP59)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixture
