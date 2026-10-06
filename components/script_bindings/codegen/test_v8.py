@@ -859,6 +859,23 @@ class V8GeneratorTests(unittest.TestCase):
             with self.assertRaisesRegex(TypeError, "unsupported constructor attributes"):
                 generate(path, Path(directory) / "output")
 
+    def test_legacy_factory_functions_generate_fallible_natives(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Picture.webidl"
+            path.write_text(
+                "[Exposed=Window, LegacyFactoryFunction=Image(optional unsigned long width)] interface Picture {};",
+                encoding="utf-8",
+            )
+            source = generate(path, Path(directory) / "output")
+            self.assertIn(
+                "fn Image(arg0: roves_v8::WebIdlOptionalArgument<u32>) -> Result<Self, roves_v8::WebIdlError> where Self: Sized;",
+                source,
+            )
+            self.assertIn('runtime.define_legacy_factory_function(&interface, "Image", |args| {', source)
+            self.assertIn("<T as PictureNative>::Image(arg0).map(roves_v8::TracedNative::new)", source)
+            # Factories create traced instances.
+            self.assertIn("pub trait PictureNative: 'static + roves_v8::Trace {", source)
+
     def test_overloaded_constructors_use_servo_names_and_overload_resolution(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "Ctor.webidl"

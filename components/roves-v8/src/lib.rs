@@ -178,6 +178,10 @@ pub mod webidl {
         include!(concat!(env!("OUT_DIR"), "/OverloadedConstructorV8Binding.rs"));
     }
     #[cfg(test)]
+    pub mod factory_probe {
+        include!(concat!(env!("OUT_DIR"), "/FactoryProbeV8Binding.rs"));
+    }
+    #[cfg(test)]
     pub mod promise_operations {
         include!(concat!(env!("OUT_DIR"), "/PromiseOperationsV8Binding.rs"));
     }
@@ -383,6 +387,8 @@ pub struct Interface {
     value_iterable: std::cell::Cell<bool>,
     /// A WebIDL namespace (`console`, `CSS`): exposed as a plain object holding its operations.
     namespace: std::cell::Cell<bool>,
+    /// `[LegacyFactoryFunction]`s (`Image`, `Audio`, `Option`): name and function template.
+    legacy_factories: std::cell::RefCell<Vec<(String, v8::Global<v8::FunctionTemplate>)>>,
     // Materializing a child also freezes all ancestor templates. Shared flags track
     // that separately from whether each constructor has been exposed globally.
     materialized: std::rc::Rc<std::cell::Cell<bool>>,
@@ -417,6 +423,7 @@ pub struct Runtime {
     static_configs: Vec<Box<StaticMethodConfig>>,
     to_json_configs: Vec<Box<DefaultToJsonConfig>>,
     static_overload_configs: Vec<Box<StaticOverloadConfig>>,
+    legacy_factory_configs: Vec<Box<LegacyFactoryConfig>>,
 }
 
 struct WrappedFinalizer {
@@ -689,6 +696,22 @@ fn traced_wrapper<'s>(
         .expect("a freshly created ObjectTemplate instance should never fail");
     attach_traced_wrapper(scope, object, interface, gc);
     object
+}
+
+/// Moves a newly constructed native onto the traced heap with `object` as its one wrapper.
+fn attach_new_traced_native(scope: &mut v8::PinScope, object: v8::Local<v8::Object>, interface: &str, native: TracedNative) {
+    let gc_box = GcBox {
+        native: std::cell::UnsafeCell::new(native.native),
+        trace: native.trace,
+        wrapper: std::cell::UnsafeCell::new(None),
+        wrapper_interface: std::cell::UnsafeCell::new(None),
+    };
+    let heap = scope.get_cpp_heap().expect("V8 isolates carry a cppgc heap");
+    // SAFETY: moved into a Persistent before anything else can run a GC.
+    let pointer = unsafe { v8::cppgc::make_garbage_collected(heap, gc_box) };
+    let root = v8::cppgc::Persistent::new(&pointer);
+    // The wrapper now keeps the native alive; the temporary root then goes away.
+    attach_traced_wrapper(scope, object, interface, &root);
 }
 
 /// Makes `object` the wrapper of `gc`'s native, created as `interface`.
@@ -1628,6 +1651,14 @@ enum NativeMethodKind {
     Contextual(ContextualNativeMethod),
 }
 
+struct LegacyFactoryConfig {
+    constructor: NativeConstructor,
+    arguments: WebIdlArguments,
+    /// The interface whose instances the factory creates.
+    interface: String,
+    template: v8::Global<v8::FunctionTemplate>,
+}
+
 struct WebIdlConstructorConfig {
     constructor: NativeConstructor,
     arguments: WebIdlArguments,
@@ -1679,6 +1710,7 @@ impl Runtime {
             static_configs: Vec::new(),
             to_json_configs: Vec::new(),
             static_overload_configs: Vec::new(),
+            legacy_factory_configs: Vec::new(),
             method_configs: Vec::new(),
         }
     }
@@ -2317,19 +2349,9 @@ impl Runtime {
                                 return;
                             },
                         };
-                        let gc_box = GcBox {
-                            native: std::cell::UnsafeCell::new(native.native),
-                            trace: native.trace,
-                            wrapper: std::cell::UnsafeCell::new(None),
-                            wrapper_interface: std::cell::UnsafeCell::new(None),
-                        };
-                        let heap = scope.get_cpp_heap().expect("V8 isolates carry a cppgc heap");
-                        // SAFETY: moved into a Persistent before anything else can run a GC.
-                        let pointer = unsafe { v8::cppgc::make_garbage_collected(heap, gc_box) };
-                        let root = v8::cppgc::Persistent::new(&pointer);
                         // `this` becomes the native's one wrapper (`new` returns it because the
-                        // return value is left unset); the temporary root then goes away.
-                        attach_traced_wrapper(scope, this, &config.interface, &root);
+                        // return value is left unset).
+                        attach_new_traced_native(scope, this, &config.interface, native);
                     },
                 )
                 .data(external_data.into())
@@ -2401,6 +2423,7 @@ impl Runtime {
             aliases: std::cell::RefCell::new(Vec::new()),
             value_iterable: std::cell::Cell::new(false),
             namespace: std::cell::Cell::new(false),
+            legacy_factories: std::cell::RefCell::new(Vec::new()),
             materialized: std::rc::Rc::new(std::cell::Cell::new(false)),
             ancestors: parent.map_or_else(Vec::new, |parent| {
                 let mut ancestors = parent.ancestors.clone();
@@ -2548,6 +2571,23 @@ impl Runtime {
                     != Some(true)
                 {
                     return Err("failed to expose interface".into());
+                }
+            }
+            let prototype_key = v8::String::new(scope, "prototype").unwrap();
+            let prototype = function.get(scope, prototype_key.into()).ok_or("interface object has no prototype")?;
+            for (name, factory) in interface.legacy_factories.borrow().iter() {
+                let factory = v8::Local::new(scope, factory);
+                let factory = factory.get_function(scope).ok_or("failed to materialize legacy factory function")?;
+                // WebIDL: the factory's `prototype` is the interface prototype object.
+                let mut descriptor = v8::PropertyDescriptor::new_from_value_writable(prototype, false);
+                descriptor.set_enumerable(false);
+                descriptor.set_configurable(false);
+                factory.define_property(scope, prototype_key.into(), &descriptor);
+                let name = v8::String::new(scope, name).ok_or("invalid factory name")?;
+                if global.define_own_property(scope, name.into(), factory.into(), v8::PropertyAttribute::DONT_ENUM)
+                    != Some(true)
+                {
+                    return Err("failed to expose legacy factory function".into());
                 }
             }
         }
@@ -2891,6 +2931,68 @@ impl Runtime {
         .constructor_behavior(v8::ConstructorBehavior::Throw)
         .build(scope);
         template.set(key.into(), function_template.into());
+        Ok(())
+    }
+
+    /// Defines a `[LegacyFactoryFunction=name(arguments)]` (`new Image(w, h)`): a constructor
+    /// function, exposed on the global with `interface`, whose `prototype` is the interface
+    /// prototype object and which creates traced instances of `interface`.
+    pub fn define_legacy_factory_function(
+        &mut self,
+        interface: &Interface,
+        name: &str,
+        constructor: NativeConstructor,
+        arguments: &[WebIdlArgument],
+    ) -> Result<(), String> {
+        if interface.materialized.get() {
+            return Err("interface members must be defined before creating instances or descendants".into());
+        }
+        let required = arguments
+            .iter()
+            .take_while(|argument| !argument.optional && !argument.variadic && argument.default.is_none())
+            .count();
+        let context_handle = &self.context;
+        v8::scope!(let scope, &mut self.isolate);
+        let context = v8::Local::new(scope, context_handle);
+        let scope = &mut v8::ContextScope::new(scope, context);
+        let config = Box::new(LegacyFactoryConfig {
+            constructor,
+            arguments: WebIdlArguments::typed(arguments),
+            interface: interface.name.clone(),
+            template: interface.template.clone(),
+        });
+        let config_pointer = (&*config) as *const LegacyFactoryConfig;
+        self.legacy_factory_configs.push(config);
+        let data = v8::External::new(scope, config_pointer as *mut std::ffi::c_void);
+        let factory = v8::FunctionTemplate::builder(
+            |scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut retval: v8::ReturnValue| {
+                let external = v8::Local::<v8::External>::try_from(args.data()).unwrap();
+                // SAFETY: the External points to this factory's boxed config.
+                let config = unsafe { &*(external.value() as *const LegacyFactoryConfig) };
+                if args.new_target().is_undefined() {
+                    throw_type_error(scope, "Constructor requires 'new'");
+                    return;
+                }
+                let Some(arguments) = convert_webidl_arguments(scope, &args, &config.arguments) else { return };
+                let native = match (config.constructor)(&arguments) {
+                    Ok(native) => native,
+                    Err(error) => {
+                        throw_webidl_error(scope, &error);
+                        return;
+                    },
+                };
+                // The new object is an instance of the interface, not of the factory function.
+                let template = v8::Local::new(scope, &config.template);
+                let Some(object) = template.instance_template(scope).new_instance(scope) else { return };
+                attach_new_traced_native(scope, object, &config.interface, native);
+                retval.set(object.into());
+            },
+        )
+        .data(data.into())
+        .length(required as i32)
+        .build(scope);
+        factory.set_class_name(v8::String::new(scope, name).ok_or("invalid factory name")?);
+        interface.legacy_factories.borrow_mut().push((name.to_owned(), v8::Global::new(scope, factory)));
         Ok(())
     }
 
@@ -8129,6 +8231,50 @@ mod tests {
             // Extra arguments are ignored (overload resolution truncates to the longest overload).
             ("new Shape(1, 2, 3).description", "1 sides, filled true"),
             ("(() => { try { new Shape(Symbol()); } catch (e) { return e.name; } })()", "TypeError"),
+        ] {
+            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
+        }
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_legacy_factory_functions_create_interface_instances() {
+        use crate::webidl::factory_probe::{FactoryProbeBinding, FactoryProbeNative};
+        use crate::{Trace, Tracer, WebIdlError, WebIdlOptionalArgument};
+        struct Picture(String);
+        impl Trace for Picture {
+            fn trace(&self, _tracer: &mut Tracer) {}
+        }
+        #[allow(non_snake_case)]
+        impl FactoryProbeNative for Picture {
+            fn Label(&self) -> Vec<u16> { self.0.encode_utf16().collect() }
+            fn Picture(width: WebIdlOptionalArgument<u32>, height: WebIdlOptionalArgument<u32>) -> Result<Self, WebIdlError> {
+                let size = |value: WebIdlOptionalArgument<u32>| match value {
+                    WebIdlOptionalArgument::Present(value) => value.to_string(),
+                    WebIdlOptionalArgument::Missing => "auto".into(),
+                };
+                Ok(Picture(format!("{}x{}", size(width), size(height))))
+            }
+            fn Snapshot(name: Vec<u16>) -> Result<Self, WebIdlError> {
+                if name.is_empty() {
+                    return Err(WebIdlError::DomException { name: "SyntaxError".into(), message: "empty".into() });
+                }
+                Ok(Picture(String::from_utf16_lossy(&name)))
+            }
+        }
+        let mut runtime = Runtime::new();
+        FactoryProbeBinding::<Picture>::install(&mut runtime).unwrap();
+        for (source, expected) in [
+            ("[new Picture().label, new Picture(4).label, new Picture(4, 3).label].join()", "autoxauto,4xauto,4x3"),
+            // The factory creates instances of the interface, sharing its prototype object.
+            ("const p = new Picture(1); [p instanceof FactoryProbe, p instanceof Picture, Object.getPrototypeOf(p) === FactoryProbe.prototype].join()", "true,true,true"),
+            ("const d = Object.getOwnPropertyDescriptor(Picture, 'prototype'); [d.writable, d.enumerable, d.configurable].join()", "false,false,false"),
+            ("[Picture.name, Picture.length, Snapshot.length, Object.getOwnPropertyDescriptor(globalThis, 'Picture').enumerable].join()", "Picture,0,1,false"),
+            ("new Snapshot('shot').label", "shot"),
+            ("(() => { try { new Snapshot(''); } catch (e) { return e.name; } })()", "SyntaxError"),
+            ("(() => { try { Picture(); } catch (e) { return e.name; } })()", "TypeError"),
+            // The interface itself stays nonconstructible.
+            ("(() => { try { new FactoryProbe(); } catch (e) { return e.name; } })()", "TypeError"),
         ] {
             assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
         }

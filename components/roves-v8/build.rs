@@ -237,6 +237,7 @@ fn main() {
         ("TypeGapsProbe", &[][..]),
         ("NamespaceProbe", &[][..]),
         ("OverloadedConstructor", &[][..]),
+        ("FactoryProbe", &[][..]),
     ] {
         println!("cargo:rerun-if-changed={}", fixtures.join(format!("{interface}.webidl")).display());
         println!("cargo:rerun-if-changed={}", fixtures.join("Bindings.conf").display());

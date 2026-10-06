@@ -182,6 +182,10 @@ adds static attributes and overloaded static operations to the runtime. Coverage
 **CP79 (2026-10-06): overloaded constructors.** `Path2D`, `ImageData`, `OfflineAudioContext`
 and `MediaStream` generate. Coverage 432/486.
 
+**CP80 (2026-10-06): `[LegacyFactoryFunction]`.** `Image`, `Audio` and `Option` create traced
+instances of their interfaces, so `HTMLImageElement`, `HTMLAudioElement` and `HTMLOptionElement`
+generate. Coverage 435/486.
+
 CP37 exposes stable `NativeObjectId` through `DomObject` and updates generated `dom_struct`
 equality to use that engine-neutral contract. Local checks pass (reflector 2/2, macro 3/3,
 rustfmt, and patch 0101 reverse-check); CI is green: V8 37226916624 (6/6), Servo 37226916650

@@ -11,6 +11,31 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: `[LegacyFactoryFunction]` (`Image`, `Audio`, `Option`) (CP80)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `components/roves-v8/build.rs`,
+`components/roves-v8/tests/webidl/FactoryProbe.webidl` (new),
+`components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0144-roves-v8-legacy-factory-functions.patch` after 0143.
+
+`define_legacy_factory_function` registers a constructor function that is exposed on the global
+together with its interface. It requires `new` and converts the arguments as WebIDL describes.
+It creates a traced instance from the interface's own instance template, so the result is an
+instance of the interface. The factory's `prototype` is the interface prototype object
+(non-writable, non-enumerable, non-configurable), as WebIDL requires. The construction of the
+traced native is shared with the interface constructor (`attach_new_traced_native`).
+
+The generator emits one fallible native per factory, named after the factory as in Servo
+(`fn Image(..) -> Result<Self, WebIdlError>`), and a `Trace` bound.
+
+Tests: generator 66/66. The new runtime fixture `FactoryProbe` covers two factories, optional
+arguments, `instanceof` both ways, the `prototype` descriptor, `name`/`length`, a
+DOMException, calls without `new`, and a still nonconstructible interface. `roves-v8` passes
+104 + 5 + 2 (also `jitless`), and 61 + 2 by default. The `servo-script` pilot check is clean.
+
+Coverage: **435/486**. **`HTMLImageElement`, `HTMLAudioElement` and `HTMLOptionElement` now
+generate.**
+
 ## 2026-10-06 - V8 migration Phase 4: overloaded constructors (CP79)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `components/roves-v8/build.rs`,

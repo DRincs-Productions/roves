@@ -8957,7 +8957,7 @@ class CGV8BindingRoot(CGThing):
         # [Serializable]/[Transferable] concern structured clone, not the binding's shape.
         unsupported = set(interface._extendedAttrDict) - {
             "Exposed", "LegacyNoInterfaceObject", "Abstract", "Serializable", "Transferable",
-            "LegacyWindowAlias", "Func", "LegacyUnenumerableNamedProperties",
+            "LegacyWindowAlias", "Func", "LegacyUnenumerableNamedProperties", "LegacyFactoryFunction",
         } - V8_EXPOSURE_ATTRIBUTES - ({"ClassString"} if namespace else set())
         if unsupported:
             raise TypeError(f"V8 backend unsupported attributes on {name}: {sorted(unsupported)}")
@@ -9890,7 +9890,31 @@ class CGV8BindingRoot(CGThing):
         registrations = "\n".join(registrations_list)
         if ce_reaction_members:
             native_bound += " + roves_v8::CeReactions"
-        if constructor is not None:
+        factory_registrations = ""
+        for factory in interface.legacyFactoryFunctions:
+            factory_name = factory.identifier.name
+            ((_, factory_arguments),) = factory.signatures()
+            factory_types = v8_argument_types(name, factory_name, factory_arguments)
+            parameters = ", ".join(f"arg{index}: {argument_type[0]}" for index, argument_type in enumerate(factory_types))
+            # Like Servo's, a legacy factory function's native is always fallible.
+            trait_methods += f"\n    fn {factory_name}({parameters}) -> Result<Self, roves_v8::WebIdlError> where Self: Sized;"
+            conversions = "".join(
+                f'            let arg{index} = match args.get({index}).unwrap_or(&Value::Undefined) {{ {argument_type[2]}, _ => unreachable!("runtime conversion matches generated WebIDL argument type") }};\n'
+                for index, argument_type in enumerate(factory_types)
+            )
+            call_arguments = ", ".join(f"arg{index}" for index, _ in enumerate(factory_types))
+            typed_arguments = ", ".join(
+                v8_webidl_argument(argument_type, argument_type[6] or v8_flat_webidl_type(argument_type))
+                for argument_type in factory_types
+            )
+            factory_registrations += (
+                f'        runtime.define_legacy_factory_function(&interface, "{factory_name}", |{"args" if factory_types else "_args"}| {{\n'
+                f"{conversions}"
+                f"            <T as {name}Native>::{factory_name}({call_arguments}).map(roves_v8::TracedNative::new)\n"
+                f"        }}, &[{typed_arguments}])?;\n"
+            )
+        registrations = factory_registrations + registrations
+        if constructor is not None or interface.legacyFactoryFunctions:
             # `new` creates a traced platform object (see roves_v8::TracedNative).
             native_bound += " + roves_v8::Trace"
         dictionary_structs = "".join(f"\n{source}" for source in V8_DICTIONARIES.values())
