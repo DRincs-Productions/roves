@@ -152,6 +152,12 @@ selection). Coverage 259/486.
 buffer attributes convert through their structured type (`define_typed_attribute`). Coverage
 261/486.
 
+**CP72 (2026-10-06): indexed getters and value iterables.** `IndexedGetter` on native traits,
+re-registered on descendants; `iterable<V>` gets `%Array.prototype%`'s iteration methods.
+`Element`, `NodeList`, `DOMTokenList` generate; coverage 263/486. Next: named properties
+(`HTMLCollection`), pair iterables, `[Global]` (Window), `[LegacyFactoryFunction]`,
+`[HTMLConstructor]`.
+
 CP37 exposes stable `NativeObjectId` through `DomObject` and updates generated `dom_struct`
 equality to use that engine-neutral contract. Local checks pass (reflector 2/2, macro 3/3,
 rustfmt, and patch 0101 reverse-check); CI is green: V8 37226916624 (6/6), Servo 37226916650

@@ -11,6 +11,47 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: indexed getters and value iterables (CP72)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixtures
+`components/roves-v8/tests/webidl/ItemList.webidl` and `ItemListChild.webidl`;
+`components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0136-roves-v8-indexed-getters-value-iterables.patch` after 0135.
+
+This covers `NodeList`, `DOMTokenList` and every other list exposing `getter T item(unsigned long)`
+plus `iterable<T>`, which is what makes `querySelectorAll(..)` usable with `for…of`, spread and
+`forEach`.
+
+**Generator.**
+- An indexed getter declares `IndexedGetter(&self, index) -> Option<T>` on the native trait, as in
+  Servo. `None` means the index is unsupported (absent, not `null`).
+- The getter is wired to the runtime's indexed interceptor. Because V8 does not inherit indexed
+  interceptors, every descendant re-registers its nearest ancestor's getter, which reaches it
+  through the native supertrait.
+- A named operation that is also the getter (`item`) still generates; an anonymous getter does not.
+- `iterable<V>` (a value iterator) calls `define_value_iterable`.
+- Named getters, pair iterables, and indexed getters returning JS values still fail closed.
+
+**Runtime.**
+- `define_value_iterable` copies `%Array.prototype%`'s `entries`, `keys`, `values` and `forEach`
+  onto the prototype at exposure, plus `@@iterator = values` (non-enumerable), as WebIDL prescribes
+  for value iterators.
+- The indexed interceptor now converts results with `v8_result`, so returned natives become their
+  wrappers.
+
+**Tests.**
+- New runtime test (generated list plus descendant):
+  - supported versus unsupported indices (`undefined`, while `item()` gives `null`) and `length`;
+  - spread, `for…of`, `forEach` with indices, `entries`/`keys`;
+  - `@@iterator` identity with `Array.prototype.values` and its non-enumerability;
+  - the descendant's own interceptor and inherited iteration.
+- Generator tests: 60/60.
+- `roves-v8` pilot and pilot+JIT-less: 96 unit + 5 integration + 2 doctests each; default 60 unit +
+  2 doctests.
+- `servo-script` check with the pilot is clean.
+
+Coverage: **263/486**. **`Element`, `NodeList` and `DOMTokenList` now generate.**
+
 ## 2026-10-06 - V8 migration Phase 4: mutable union and buffer attributes (CP71)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixtures

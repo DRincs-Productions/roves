@@ -733,6 +733,30 @@ class V8GeneratorTests(unittest.TestCase):
                 self.assertIn(expected, source)
             self.assertNotIn("fn set_Pixels", source)
 
+    def test_indexed_getters_and_value_iterables(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory) / "List.webidl"
+            base.write_text(
+                "[Exposed=Window] interface List { getter DOMString? item(unsigned long index); "
+                "readonly attribute unsigned long length; iterable<DOMString?>; };",
+                encoding="utf-8",
+            )
+            child = Path(directory) / "SubList.webidl"
+            child.write_text("[Exposed=Window] interface SubList : List { };", encoding="utf-8")
+            source = generate(base, Path(directory) / "output")
+            for expected in [
+                "fn IndexedGetter(&self, index: u32) -> Option<Vec<u16>>;",
+                "fn Item(&self, arg0: u32) -> Option<Vec<u16>>;",
+                "runtime.define_indexed_property_getter(&interface, |native, index| {",
+                "runtime.define_value_iterable(&interface);",
+            ]:
+                self.assertIn(expected, source)
+            child_source = generate(child, Path(directory) / "output", (base,))
+            self.assertIn("runtime.define_indexed_property_getter(&interface", child_source)
+            self.assertNotIn("fn IndexedGetter", child_source)
+            self.assert_unsupported("interface Unsupported { getter DOMString? (DOMString name); };")
+            self.assert_unsupported("interface Unsupported { iterable<DOMString, long>; };")
+
     def test_overloads_needing_type_distinction_use_typed_overloads(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "Draw.webidl"

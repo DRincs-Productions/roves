@@ -241,6 +241,13 @@ check pulito. Copertura **259/486**.
 union con handle e buffer, con setter convertito dal tipo strutturato (`define_typed_attribute`).
 Test generatore 59/59, `roves-v8` 95+5+2, default 60+2, check pulito. Copertura 261/486.
 
+**CP72 (2026-10-06):** getter indicizzati e value iterable (patch 0136): `IndexedGetter` nei trait
+nativi, interceptor registrato di nuovo nei discendenti; per `iterable<V>` i metodi di iterazione
+vengono da `%Array.prototype%`. **Ora generano `Element`, `NodeList`, `DOMTokenList`.** Test
+generatore 60/60, `roves-v8` 96+5+2, default 60+2, check pulito. Copertura **263/486**.
+**Prossimo:** named property (`HTMLCollection`), pair iterable, `[Global]` (Window),
+`[LegacyFactoryFunction]`, `[HTMLConstructor]`.
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

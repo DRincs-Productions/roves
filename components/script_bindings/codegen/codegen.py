@@ -8963,6 +8963,8 @@ class CGV8BindingRoot(CGThing):
         operations = []
         unforgeable_attributes = set()
         typed_attributes = []
+        value_iterable = False
+        indexed_getter = None
         promise_operations = set()
         typed_overload_members = set()
         typed_overload_entries = []
@@ -8977,6 +8979,19 @@ class CGV8BindingRoot(CGThing):
         for member in interface.members:
             if copied_from_ancestor(member):
                 continue
+            if type(member).__name__ == "IDLIterable":
+                if not member.isValueIterator():
+                    raise TypeError(f"V8 backend does not yet support pair iterables: {name}")
+                value_iterable = True
+                continue
+            if member.isMethod() and member.isGetter():
+                if member.isNamed():
+                    raise TypeError(f"V8 backend does not yet support named getters: {name}.{member.identifier.name}")
+                getter_type = member.signatures()[0][0]
+                indexed_getter = getter_type.inner if getter_type.nullable() else getter_type
+                if member.identifier.name.startswith("__"):
+                    # An anonymous `getter T (unsigned long index)` has no operation of its own.
+                    continue
             if member.isConst():
                 value = member.value.value
                 if member._extendedAttrDict:
@@ -9685,6 +9700,30 @@ class CGV8BindingRoot(CGThing):
         if default_to_json:
             names = ", ".join(f'"{attribute}"' for attribute in v8_default_to_json_attributes(interface))
             registrations_list.append(f"        runtime.define_default_to_json(&interface, &[{names}])?;")
+        # Indexed getter: declared on the interface that has it, and re-registered on every
+        # descendant because V8 does not inherit indexed interceptors.
+        getter_type = indexed_getter
+        ancestor = interface.parent
+        while getter_type is None and ancestor is not None:
+            for ancestor_member in ancestor.members:
+                if ancestor_member.isMethod() and ancestor_member.isGetter() and not ancestor_member.isNamed():
+                    ancestor_type = ancestor_member.signatures()[0][0]
+                    getter_type = ancestor_type.inner if ancestor_type.nullable() else ancestor_type
+            ancestor = ancestor.parent
+        if getter_type is not None:
+            rust, _, _, to_value = v8_typed_info(getter_type, name, "IndexedGetter")
+            if v8_contains_handle(getter_type):
+                raise TypeError(f"V8 backend does not support indexed getters returning JS values: {name}")
+            if indexed_getter is not None:
+                trait_methods += f"\n    fn IndexedGetter(&self, index: u32) -> Option<{rust}>;"
+            registrations_list.append(
+                f"        runtime.define_indexed_property_getter(&interface, |native, index| {{\n"
+                f'            let native = native.downcast_ref::<T>().expect("typed {name} wrapper");\n'
+                f"            native.IndexedGetter(index).map(|item| {to_value.replace('ITEM', 'item')})\n"
+                f"        }})?;"
+            )
+        if value_iterable:
+            registrations_list.append("        runtime.define_value_iterable(&interface);")
         registrations = "\n".join(registrations_list)
         if ce_reaction_members:
             native_bound += " + roves_v8::CeReactions"

@@ -197,6 +197,14 @@ pub mod webidl {
     pub mod style_probe {
         include!(concat!(env!("OUT_DIR"), "/StyleProbeV8Binding.rs"));
     }
+    #[cfg(test)]
+    pub mod item_list {
+        include!(concat!(env!("OUT_DIR"), "/ItemListV8Binding.rs"));
+    }
+    #[cfg(test)]
+    pub mod item_list_child {
+        include!(concat!(env!("OUT_DIR"), "/ItemListChildV8Binding.rs"));
+    }
 }
 
 use std::sync::Once;
@@ -343,6 +351,8 @@ pub struct Interface {
     interface_object_on_global: std::cell::Cell<bool>,
     /// `[LegacyWindowAlias]` names: extra global properties for the same interface object.
     aliases: std::cell::RefCell<Vec<String>>,
+    /// A WebIDL value iterable: the prototype gets `Array.prototype`'s iteration methods.
+    value_iterable: std::cell::Cell<bool>,
     // Materializing a child also freezes all ancestor templates. Shared flags track
     // that separately from whether each constructor has been exposed globally.
     materialized: std::rc::Rc<std::cell::Cell<bool>>,
@@ -2224,6 +2234,7 @@ impl Runtime {
             constructor_exposed: std::cell::Cell::new(false),
             interface_object_on_global: std::cell::Cell::new(true),
             aliases: std::cell::RefCell::new(Vec::new()),
+            value_iterable: std::cell::Cell::new(false),
             materialized: std::rc::Rc::new(std::cell::Cell::new(false)),
             ancestors: parent.map_or_else(Vec::new, |parent| {
                 let mut ancestors = parent.ancestors.clone();
@@ -2231,6 +2242,13 @@ impl Runtime {
                 ancestors
             }),
         }
+    }
+
+    /// Makes `interface` a WebIDL value iterable (`iterable<V>`): its prototype gets
+    /// `Array.prototype`'s `entries`/`keys`/`values`/`forEach` and `@@iterator`, which iterate
+    /// the object through its indexed getter and `length`. Call before exposure.
+    pub fn define_value_iterable(&mut self, interface: &Interface) {
+        interface.value_iterable.set(true);
     }
 
     /// Also exposes the interface object under `alias` (`[LegacyWindowAlias]`, e.g.
@@ -2260,6 +2278,33 @@ impl Runtime {
         // WebIDL: an interface object's [[Prototype]] is its parent's interface object
         // (`Object.getPrototypeOf(Element) === Node`). `FunctionTemplate::inherit` only links
         // the two `prototype` objects, so set the constructor's own prototype here.
+        if interface.value_iterable.get() {
+            // WebIDL value iterators: @@iterator, entries, keys, values and forEach are
+            // %Array.prototype%'s own functions (the interface also has an indexed getter and
+            // `length`, so they iterate the platform object like an array).
+            let prototype_key = v8::String::new(scope, "prototype").unwrap();
+            let prototype = function
+                .get(scope, prototype_key.into())
+                .and_then(|prototype| v8::Local::<v8::Object>::try_from(prototype).ok())
+                .ok_or("interface object has no prototype")?;
+            let array_key = v8::String::new(scope, "Array").unwrap();
+            let array_prototype = context
+                .global(scope)
+                .get(scope, array_key.into())
+                .and_then(|array| v8::Local::<v8::Object>::try_from(array).ok())
+                .and_then(|array| array.get(scope, prototype_key.into()))
+                .and_then(|array_prototype| v8::Local::<v8::Object>::try_from(array_prototype).ok())
+                .ok_or("realm has no Array.prototype")?;
+            for name in ["entries", "keys", "values", "forEach"] {
+                let key = v8::String::new(scope, name).unwrap();
+                let method = array_prototype.get(scope, key.into()).ok_or("missing Array.prototype method")?;
+                prototype.define_own_property(scope, key.into(), method, v8::PropertyAttribute::NONE);
+            }
+            let values_key = v8::String::new(scope, "values").unwrap();
+            let values = array_prototype.get(scope, values_key.into()).ok_or("missing Array.prototype.values")?;
+            let iterator = v8::Symbol::get_iterator(scope);
+            prototype.define_own_property(scope, iterator.into(), values, v8::PropertyAttribute::DONT_ENUM);
+        }
         if let Some(parent_template) = &interface.parent_template {
             let parent_template = v8::Local::new(scope, parent_template);
             let parent_function = parent_template
@@ -3486,7 +3531,8 @@ impl Runtime {
                     let boxed_any = unsafe { &*raw };
                     match getter(boxed_any.as_ref(), index) {
                         Some(value) => {
-                            retval.set(v8_value(scope, &value));
+                            let value = v8_result(scope, &value);
+                            retval.set(value);
                             v8::Intercepted::kYes
                         },
                         None => v8::Intercepted::kNo,
@@ -7785,6 +7831,49 @@ mod tests {
             ("ctx.lineDash = 5; const a = ctx.lineDash; ctx.lineDash = '5'; const b = typeof ctx.lineDash; ctx.lineDash = null; [a, b, ctx.lineDash].join()", "5,string,"),
             ("const p = ctx.pixels; [p instanceof Uint8Array, p.join()].join('|')", "true|1,2,3,4"),
             ("Object.getOwnPropertyDescriptor(StyleProbe.prototype, 'pixels').set", "undefined"),
+        ] {
+            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
+        }
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_indexed_getters_and_value_iterables_behave_like_node_lists() {
+        use crate::webidl::item_list::{ItemListBinding, ItemListNative};
+        use crate::webidl::item_list_child::{ItemListChildBinding, ItemListChildNative};
+        struct Items(Vec<&'static str>);
+        #[allow(non_snake_case)]
+        impl ItemListNative for Items {
+            fn Item(&self, index: u32) -> Option<Vec<u16>> { self.IndexedGetter(index) }
+            fn Length(&self) -> u32 { self.0.len() as u32 }
+            fn IndexedGetter(&self, index: u32) -> Option<Vec<u16>> {
+                self.0.get(index as usize).map(|item| item.encode_utf16().collect())
+            }
+        }
+        #[allow(non_snake_case)]
+        impl ItemListChildNative for Items {
+            fn Child(&self) -> bool { true }
+        }
+        let mut runtime = Runtime::new();
+        let lists = ItemListBinding::<Items>::install(&mut runtime).unwrap();
+        let children = ItemListChildBinding::<Items>::install(&mut runtime, &lists).unwrap();
+        let list = lists.create(&mut runtime, Items(vec!["a", "b", "c"]));
+        let child = children.create(&mut runtime, Items(vec!["x", "y"]));
+        runtime.set_global_property("list", &list).unwrap();
+        runtime.set_global_property("child", &child).unwrap();
+        for (source, expected) in [
+            // Supported indices read through the getter; others are absent, not null.
+            ("[list[0], list[2], list[3], list.item(3)].join('|')", "a|c||"),
+            ("list[3] === undefined && list.item(3) === null && list.length === 3", "true"),
+            // Value iterable: Array.prototype's iteration methods over the indexed getter.
+            ("[...list].join()", "a,b,c"),
+            ("const seen = []; for (const item of list) seen.push(item); seen.join()", "a,b,c"),
+            ("const each = []; list.forEach((item, index) => each.push(index + item)); each.join()", "0a,1b,2c"),
+            ("JSON.stringify([...list.entries()]) + [...list.keys()].join('')", "[[0,\"a\"],[1,\"b\"],[2,\"c\"]]012"),
+            ("ItemList.prototype[Symbol.iterator] === Array.prototype.values", "true"),
+            ("Object.getOwnPropertyDescriptor(ItemList.prototype, Symbol.iterator).enumerable", "false"),
+            // A descendant inherits the iteration methods and gets its own indexed interceptor.
+            ("[child[1], [...child].join(), child.child].join('|')", "y|x,y|true"),
         ] {
             assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
         }
