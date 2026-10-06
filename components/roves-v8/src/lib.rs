@@ -209,6 +209,10 @@ pub mod webidl {
     pub mod named_collection {
         include!(concat!(env!("OUT_DIR"), "/NamedCollectionV8Binding.rs"));
     }
+    #[cfg(test)]
+    pub mod lenient_probe {
+        include!(concat!(env!("OUT_DIR"), "/LenientProbeV8Binding.rs"));
+    }
 }
 
 use std::sync::Once;
@@ -1025,6 +1029,28 @@ struct ContextualAttributeConfig {
     getter: ContextualPropertyGetter,
     setter: Option<ContextualPropertySetter>,
     conversion: WebIdlArguments,
+    /// `[LegacyLenientThis]`: an invalid receiver reads `undefined` and ignores writes instead
+    /// of throwing (so the accessors carry no V8 signature).
+    lenient_this: bool,
+}
+
+/// The receiver's native for an attribute accessor: throws "Illegal invocation" for an invalid
+/// receiver, unless the attribute has `[LegacyLenientThis]`, which returns `None` silently.
+fn attribute_receiver<'n>(
+    scope: &mut v8::PinScope,
+    this: v8::Local<v8::Object>,
+    lenient_this: bool,
+) -> Option<&'n dyn std::any::Any> {
+    if !lenient_this {
+        return receiver_native(scope, this);
+    }
+    if this.internal_field_count() < 1 {
+        return None;
+    }
+    let raw = unsafe { this.get_aligned_pointer_from_internal_field(0, WRAPPED_POINTER_TAG) }
+        as *mut Box<dyn std::any::Any>;
+    // SAFETY: as for receiver_native.
+    (!raw.is_null()).then(|| unsafe { (&*raw).as_ref() })
 }
 
 /// Reads the native of a wrapper receiving a member call, or throws "Illegal invocation".
@@ -2452,7 +2478,23 @@ impl Runtime {
             return Err("interface members must be defined before creating instances or descendants".into());
         }
         let arguments = WebIdlArguments::new(&[conversion], &[nullable], &[false], &[None]);
-        self.define_attribute_with_conversion(interface, name, getter, setter, arguments)
+        self.define_attribute_with_conversion(interface, name, getter, setter, arguments, false)
+    }
+
+    /// [`Runtime::define_contextual_attribute`] for a `[LegacyLenientThis]` attribute (most
+    /// `GlobalEventHandlers`): with an invalid receiver the getter returns `undefined` and the
+    /// setter does nothing, instead of throwing.
+    pub fn define_lenient_contextual_attribute(
+        &mut self,
+        interface: &Interface,
+        name: &str,
+        getter: ContextualPropertyGetter,
+        setter: Option<ContextualPropertySetter>,
+        conversion: WebIdlArgumentConversion,
+        nullable: bool,
+    ) -> Result<(), String> {
+        let arguments = WebIdlArguments::new(&[conversion], &[nullable], &[false], &[None]);
+        self.define_attribute_with_conversion(interface, name, getter, setter, arguments, true)
     }
 
     /// Like [`Runtime::define_contextual_attribute`] with the assigned value converted by a
@@ -2466,7 +2508,7 @@ impl Runtime {
         ty: WebIdlType,
     ) -> Result<(), String> {
         let arguments = WebIdlArguments::typed(&[WebIdlArgument { ty, optional: false, variadic: false, default: None }]);
-        self.define_attribute_with_conversion(interface, name, getter, setter, arguments)
+        self.define_attribute_with_conversion(interface, name, getter, setter, arguments, false)
     }
 
     fn define_attribute_with_conversion(
@@ -2476,11 +2518,12 @@ impl Runtime {
         getter: ContextualPropertyGetter,
         setter: Option<ContextualPropertySetter>,
         conversion: WebIdlArguments,
+        lenient_this: bool,
     ) -> Result<(), String> {
         if interface.materialized.get() {
             return Err("interface members must be defined before creating instances or descendants".into());
         }
-        let config = Box::new(ContextualAttributeConfig { getter, setter, conversion });
+        let config = Box::new(ContextualAttributeConfig { getter, setter, conversion, lenient_this });
         let config_pointer = (&*config) as *const ContextualAttributeConfig;
         self.attribute_configs.push(config);
         let context_handle = &self.context;
@@ -2498,7 +2541,7 @@ impl Runtime {
                 let external = v8::Local::<v8::External>::try_from(args.data()).unwrap();
                 // SAFETY: the External points to this attribute's boxed config.
                 let config = unsafe { &*(external.value() as *const ContextualAttributeConfig) };
-                let Some(native) = receiver_native(scope, args.this()) else { return };
+                let Some(native) = attribute_receiver(scope, args.this(), config.lenient_this) else { return };
                 let result = (config.getter)(&mut ScriptContext { scope }, native);
                 match result {
                     Ok(value) => {
@@ -2509,10 +2552,10 @@ impl Runtime {
                 }
             },
         )
-        .data(data.into())
-        .signature(signature)
-        .constructor_behavior(v8::ConstructorBehavior::Throw)
-        .build(scope);
+        .data(data.into());
+        let getter_template = if lenient_this { getter_template } else { getter_template.signature(signature) }
+            .constructor_behavior(v8::ConstructorBehavior::Throw)
+            .build(scope);
         let getter_name = v8::String::new(scope, &format!("get {name}")).unwrap();
         getter_template.set_class_name(getter_name);
         let setter_template = if setter.is_some() {
@@ -2523,7 +2566,7 @@ impl Runtime {
                     let external = v8::Local::<v8::External>::try_from(args.data()).unwrap();
                     // SAFETY: the External points to this attribute's boxed config.
                     let config = unsafe { &*(external.value() as *const ContextualAttributeConfig) };
-                    let Some(native) = receiver_native(scope, args.this()) else { return };
+                    let Some(native) = attribute_receiver(scope, args.this(), config.lenient_this) else { return };
                     let Some(value) = convert_webidl_arguments(scope, &args, &config.conversion) else {
                         return;
                     };
@@ -2533,11 +2576,11 @@ impl Runtime {
                     }
                 },
             )
-            .data(data.into())
-            .signature(signature)
-            .length(1)
-            .constructor_behavior(v8::ConstructorBehavior::Throw)
-            .build(scope);
+            .data(data.into());
+            let setter_template = if lenient_this { setter_template } else { setter_template.signature(signature) }
+                .length(1)
+                .constructor_behavior(v8::ConstructorBehavior::Throw)
+                .build(scope);
             let setter_name = v8::String::new(scope, &format!("set {name}")).unwrap();
             setter_template.set_class_name(setter_name);
             Some(setter_template)
@@ -8027,6 +8070,44 @@ mod tests {
             ("c.alpha = 'own'; c.alpha", "A"),
             ("'use strict'; (() => { try { c.alpha = 'x'; return 'set'; } catch (e) { return e.name; } })()", "TypeError"),
             ("c.beta = 'own'; c.beta", "own"),
+        ] {
+            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
+        }
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_lenient_this_and_html_constructor() {
+        use crate::webidl::lenient_probe::{LenientProbeBinding, LenientProbeNative};
+        use crate::{Handle, ScriptContext, WebIdlError};
+        use std::cell::RefCell;
+        struct Probe(RefCell<Option<Handle>>);
+        #[allow(non_snake_case)]
+        impl LenientProbeNative for Probe {
+            fn Onmouseenter(&self, _cx: &mut ScriptContext) -> Result<Option<Handle>, WebIdlError> { Ok(self.0.borrow().clone()) }
+            fn set_Onmouseenter(&self, _cx: &mut ScriptContext, value: Option<Handle>) -> Result<(), WebIdlError> {
+                *self.0.borrow_mut() = value;
+                Ok(())
+            }
+            fn Onclick(&self, _cx: &mut ScriptContext) -> Result<Option<Handle>, WebIdlError> { Ok(None) }
+            fn set_Onclick(&self, _cx: &mut ScriptContext, _value: Option<Handle>) -> Result<(), WebIdlError> { Ok(()) }
+        }
+        let mut runtime = Runtime::new();
+        let binding = LenientProbeBinding::<Probe>::install(&mut runtime).unwrap();
+        let probe = binding.create(&mut runtime, Probe(RefCell::new(None)));
+        runtime.set_global_property("probe", &probe).unwrap();
+        // A wrapper of another native type exercises the non-panicking downcast.
+        let other = runtime.create_wrapped(42_u32);
+        runtime.set_global_property("other", &other).unwrap();
+        for (source, expected) in [
+            ("const f = () => 1; probe.onmouseenter = f; probe.onmouseenter === f", "true"),
+            // [LegacyLenientThis]: invalid receivers read undefined and ignore writes.
+            ("const d = Object.getOwnPropertyDescriptor(LenientProbe.prototype, 'onmouseenter'); [d.get.call({}), d.get.call(other), d.set.call({}, f)].join()", ",,"),
+            // Without it, an invalid receiver is still a TypeError.
+            ("(() => { try { Object.getOwnPropertyDescriptor(LenientProbe.prototype, 'onclick').get.call({}); } catch (e) { return e.name; } })()", "TypeError"),
+            // [HTMLConstructor] without a custom element definition: `new` is a TypeError.
+            ("(() => { try { new LenientProbe(); } catch (e) { return e.name; } })()", "TypeError"),
+            ("probe instanceof LenientProbe", "true"),
         ] {
             assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
         }

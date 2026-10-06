@@ -11,6 +11,42 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: `[LegacyLenientThis]` and `[HTMLConstructor]` (CP74)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixture
+`components/roves-v8/tests/webidl/LenientProbe.webidl`;
+`components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0138-roves-v8-lenient-this-html-constructor.patch` after 0137.
+
+These two attributes held back the whole HTML element tree.
+- **`[LegacyLenientThis]`.** It is set on the `GlobalEventHandlers` handlers such as
+  `onmouseenter`. With an invalid receiver, the getter returns `undefined` and the setter does
+  nothing, instead of throwing.
+  - Runtime: the new `define_lenient_contextual_attribute` builds the accessors without a V8
+    signature, and `attribute_receiver` checks the receiver silently.
+  - Generator: lenient closures downcast without panicking (`let .. else`), so a wrapper of another
+    native type is just an invalid receiver.
+  - Elsewhere the attribute still fails closed.
+- **`[HTMLConstructor]`.** The custom element registry is not wired to the V8 pilot yet. Without a
+  custom element definition, the HTML spec makes `new HTMLDivElement()` a TypeError, which is
+  exactly a nonconstructible interface object, so these constructors generate as such. Supporting
+  custom elements (`class X extends HTMLElement` with `customElements.define`) is a documented gap.
+
+**Tests.**
+- New runtime test:
+  - a lenient getter on a plain object and on another native type's wrapper reads `undefined`;
+  - a lenient setter is ignored;
+  - a non-lenient accessor still throws;
+  - `new` on an `[HTMLConstructor]` interface is a TypeError;
+  - natives still wrap and pass `instanceof`.
+- Generator tests: 61/61.
+- `roves-v8` pilot and pilot+JIT-less: 98 unit + 5 integration + 2 doctests each; default 60 unit +
+  2 doctests.
+- `servo-script` check with the pilot is clean.
+
+Coverage: **349/486** (from 268). `HTMLElement`, `SVGElement`, `HTMLDivElement`, `HTMLBodyElement` and
+most HTML element interfaces now generate.
+
 ## 2026-10-06 - V8 migration Phase 4: named getters with `[LegacyUnenumerableNamedProperties]` (CP73)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixture

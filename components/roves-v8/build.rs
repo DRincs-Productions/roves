@@ -231,6 +231,7 @@ fn main() {
         ("ItemList", &[][..]),
         ("ItemListChild", &["ItemList"][..]),
         ("NamedCollection", &[][..]),
+        ("LenientProbe", &[][..]),
     ] {
         println!("cargo:rerun-if-changed={}", fixtures.join(format!("{interface}.webidl")).display());
         println!("cargo:rerun-if-changed={}", fixtures.join("Bindings.conf").display());

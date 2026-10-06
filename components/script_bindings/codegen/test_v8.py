@@ -733,6 +733,23 @@ class V8GeneratorTests(unittest.TestCase):
                 self.assertIn(expected, source)
             self.assertNotIn("fn set_Pixels", source)
 
+    def test_lenient_this_and_html_constructor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Element.webidl"
+            path.write_text(
+                "[LegacyTreatNonObjectAsNull] callback Handler = any (any event); typedef Handler? EventHandler; "
+                "[Exposed=Window] interface Element { [HTMLConstructor] constructor(); "
+                "[LegacyLenientThis] attribute EventHandler onmouseenter; };",
+                encoding="utf-8",
+            )
+            source = generate(path, Path(directory) / "output")
+            self.assertIn('runtime.define_lenient_contextual_attribute(&interface, "onmouseenter"', source)
+            self.assertIn("let Some(native) = native.downcast_ref::<T>() else { return Ok(Value::Undefined) };", source)
+            # [HTMLConstructor] without custom elements: a nonconstructible interface object.
+            self.assertIn('runtime.define_interface("Element", None)', source)
+            self.assertNotIn("fn Constructor", source)
+            self.assert_unsupported("interface Unsupported { [LegacyLenientThis] readonly attribute boolean flag; };")
+
     def test_indexed_getters_and_value_iterables(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory) / "List.webidl"

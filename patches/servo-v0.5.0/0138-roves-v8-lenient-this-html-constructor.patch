@@ -1,0 +1,342 @@
+diff --git a/components/roves-v8/build.rs b/components/roves-v8/build.rs
+index 3ab16e1c6c3..865dfb3b001 100644
+--- a/components/roves-v8/build.rs
++++ b/components/roves-v8/build.rs
+@@ -231,6 +231,7 @@ fn main() {
+         ("ItemList", &[][..]),
+         ("ItemListChild", &["ItemList"][..]),
+         ("NamedCollection", &[][..]),
++        ("LenientProbe", &[][..]),
+     ] {
+         println!("cargo:rerun-if-changed={}", fixtures.join(format!("{interface}.webidl")).display());
+         println!("cargo:rerun-if-changed={}", fixtures.join("Bindings.conf").display());
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 5f9435e8771..871fe7beab4 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -209,6 +209,10 @@ pub mod webidl {
+     pub mod named_collection {
+         include!(concat!(env!("OUT_DIR"), "/NamedCollectionV8Binding.rs"));
+     }
++    #[cfg(test)]
++    pub mod lenient_probe {
++        include!(concat!(env!("OUT_DIR"), "/LenientProbeV8Binding.rs"));
++    }
+ }
+ 
+ use std::sync::Once;
+@@ -1025,6 +1029,28 @@ struct ContextualAttributeConfig {
+     getter: ContextualPropertyGetter,
+     setter: Option<ContextualPropertySetter>,
+     conversion: WebIdlArguments,
++    /// `[LegacyLenientThis]`: an invalid receiver reads `undefined` and ignores writes instead
++    /// of throwing (so the accessors carry no V8 signature).
++    lenient_this: bool,
++}
++
++/// The receiver's native for an attribute accessor: throws "Illegal invocation" for an invalid
++/// receiver, unless the attribute has `[LegacyLenientThis]`, which returns `None` silently.
++fn attribute_receiver<'n>(
++    scope: &mut v8::PinScope,
++    this: v8::Local<v8::Object>,
++    lenient_this: bool,
++) -> Option<&'n dyn std::any::Any> {
++    if !lenient_this {
++        return receiver_native(scope, this);
++    }
++    if this.internal_field_count() < 1 {
++        return None;
++    }
++    let raw = unsafe { this.get_aligned_pointer_from_internal_field(0, WRAPPED_POINTER_TAG) }
++        as *mut Box<dyn std::any::Any>;
++    // SAFETY: as for receiver_native.
++    (!raw.is_null()).then(|| unsafe { (&*raw).as_ref() })
+ }
+ 
+ /// Reads the native of a wrapper receiving a member call, or throws "Illegal invocation".
+@@ -2452,7 +2478,23 @@ impl Runtime {
+             return Err("interface members must be defined before creating instances or descendants".into());
+         }
+         let arguments = WebIdlArguments::new(&[conversion], &[nullable], &[false], &[None]);
+-        self.define_attribute_with_conversion(interface, name, getter, setter, arguments)
++        self.define_attribute_with_conversion(interface, name, getter, setter, arguments, false)
++    }
++
++    /// [`Runtime::define_contextual_attribute`] for a `[LegacyLenientThis]` attribute (most
++    /// `GlobalEventHandlers`): with an invalid receiver the getter returns `undefined` and the
++    /// setter does nothing, instead of throwing.
++    pub fn define_lenient_contextual_attribute(
++        &mut self,
++        interface: &Interface,
++        name: &str,
++        getter: ContextualPropertyGetter,
++        setter: Option<ContextualPropertySetter>,
++        conversion: WebIdlArgumentConversion,
++        nullable: bool,
++    ) -> Result<(), String> {
++        let arguments = WebIdlArguments::new(&[conversion], &[nullable], &[false], &[None]);
++        self.define_attribute_with_conversion(interface, name, getter, setter, arguments, true)
+     }
+ 
+     /// Like [`Runtime::define_contextual_attribute`] with the assigned value converted by a
+@@ -2466,7 +2508,7 @@ impl Runtime {
+         ty: WebIdlType,
+     ) -> Result<(), String> {
+         let arguments = WebIdlArguments::typed(&[WebIdlArgument { ty, optional: false, variadic: false, default: None }]);
+-        self.define_attribute_with_conversion(interface, name, getter, setter, arguments)
++        self.define_attribute_with_conversion(interface, name, getter, setter, arguments, false)
+     }
+ 
+     fn define_attribute_with_conversion(
+@@ -2476,11 +2518,12 @@ impl Runtime {
+         getter: ContextualPropertyGetter,
+         setter: Option<ContextualPropertySetter>,
+         conversion: WebIdlArguments,
++        lenient_this: bool,
+     ) -> Result<(), String> {
+         if interface.materialized.get() {
+             return Err("interface members must be defined before creating instances or descendants".into());
+         }
+-        let config = Box::new(ContextualAttributeConfig { getter, setter, conversion });
++        let config = Box::new(ContextualAttributeConfig { getter, setter, conversion, lenient_this });
+         let config_pointer = (&*config) as *const ContextualAttributeConfig;
+         self.attribute_configs.push(config);
+         let context_handle = &self.context;
+@@ -2498,7 +2541,7 @@ impl Runtime {
+                 let external = v8::Local::<v8::External>::try_from(args.data()).unwrap();
+                 // SAFETY: the External points to this attribute's boxed config.
+                 let config = unsafe { &*(external.value() as *const ContextualAttributeConfig) };
+-                let Some(native) = receiver_native(scope, args.this()) else { return };
++                let Some(native) = attribute_receiver(scope, args.this(), config.lenient_this) else { return };
+                 let result = (config.getter)(&mut ScriptContext { scope }, native);
+                 match result {
+                     Ok(value) => {
+@@ -2509,10 +2552,10 @@ impl Runtime {
+                 }
+             },
+         )
+-        .data(data.into())
+-        .signature(signature)
+-        .constructor_behavior(v8::ConstructorBehavior::Throw)
+-        .build(scope);
++        .data(data.into());
++        let getter_template = if lenient_this { getter_template } else { getter_template.signature(signature) }
++            .constructor_behavior(v8::ConstructorBehavior::Throw)
++            .build(scope);
+         let getter_name = v8::String::new(scope, &format!("get {name}")).unwrap();
+         getter_template.set_class_name(getter_name);
+         let setter_template = if setter.is_some() {
+@@ -2523,7 +2566,7 @@ impl Runtime {
+                     let external = v8::Local::<v8::External>::try_from(args.data()).unwrap();
+                     // SAFETY: the External points to this attribute's boxed config.
+                     let config = unsafe { &*(external.value() as *const ContextualAttributeConfig) };
+-                    let Some(native) = receiver_native(scope, args.this()) else { return };
++                    let Some(native) = attribute_receiver(scope, args.this(), config.lenient_this) else { return };
+                     let Some(value) = convert_webidl_arguments(scope, &args, &config.conversion) else {
+                         return;
+                     };
+@@ -2533,11 +2576,11 @@ impl Runtime {
+                     }
+                 },
+             )
+-            .data(data.into())
+-            .signature(signature)
+-            .length(1)
+-            .constructor_behavior(v8::ConstructorBehavior::Throw)
+-            .build(scope);
++            .data(data.into());
++            let setter_template = if lenient_this { setter_template } else { setter_template.signature(signature) }
++                .length(1)
++                .constructor_behavior(v8::ConstructorBehavior::Throw)
++                .build(scope);
+             let setter_name = v8::String::new(scope, &format!("set {name}")).unwrap();
+             setter_template.set_class_name(setter_name);
+             Some(setter_template)
+@@ -8032,6 +8075,44 @@ mod tests {
+         }
+     }
+ 
++    #[cfg(feature = "webidl-pilot")]
++    #[test]
++    fn generated_lenient_this_and_html_constructor() {
++        use crate::webidl::lenient_probe::{LenientProbeBinding, LenientProbeNative};
++        use crate::{Handle, ScriptContext, WebIdlError};
++        use std::cell::RefCell;
++        struct Probe(RefCell<Option<Handle>>);
++        #[allow(non_snake_case)]
++        impl LenientProbeNative for Probe {
++            fn Onmouseenter(&self, _cx: &mut ScriptContext) -> Result<Option<Handle>, WebIdlError> { Ok(self.0.borrow().clone()) }
++            fn set_Onmouseenter(&self, _cx: &mut ScriptContext, value: Option<Handle>) -> Result<(), WebIdlError> {
++                *self.0.borrow_mut() = value;
++                Ok(())
++            }
++            fn Onclick(&self, _cx: &mut ScriptContext) -> Result<Option<Handle>, WebIdlError> { Ok(None) }
++            fn set_Onclick(&self, _cx: &mut ScriptContext, _value: Option<Handle>) -> Result<(), WebIdlError> { Ok(()) }
++        }
++        let mut runtime = Runtime::new();
++        let binding = LenientProbeBinding::<Probe>::install(&mut runtime).unwrap();
++        let probe = binding.create(&mut runtime, Probe(RefCell::new(None)));
++        runtime.set_global_property("probe", &probe).unwrap();
++        // A wrapper of another native type exercises the non-panicking downcast.
++        let other = runtime.create_wrapped(42_u32);
++        runtime.set_global_property("other", &other).unwrap();
++        for (source, expected) in [
++            ("const f = () => 1; probe.onmouseenter = f; probe.onmouseenter === f", "true"),
++            // [LegacyLenientThis]: invalid receivers read undefined and ignore writes.
++            ("const d = Object.getOwnPropertyDescriptor(LenientProbe.prototype, 'onmouseenter'); [d.get.call({}), d.get.call(other), d.set.call({}, f)].join()", ",,"),
++            // Without it, an invalid receiver is still a TypeError.
++            ("(() => { try { Object.getOwnPropertyDescriptor(LenientProbe.prototype, 'onclick').get.call({}); } catch (e) { return e.name; } })()", "TypeError"),
++            // [HTMLConstructor] without a custom element definition: `new` is a TypeError.
++            ("(() => { try { new LenientProbe(); } catch (e) { return e.name; } })()", "TypeError"),
++            ("probe instanceof LenientProbe", "true"),
++        ] {
++            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
++        }
++    }
++
+     #[cfg(feature = "webidl-pilot")]
+     #[test]
+     fn generated_nullable_domstring_preserves_null_and_utf16_semantics() {
+diff --git a/components/roves-v8/tests/webidl/LenientProbe.webidl b/components/roves-v8/tests/webidl/LenientProbe.webidl
+new file mode 100644
+index 00000000000..3533ebfb7c8
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/LenientProbe.webidl
+@@ -0,0 +1,10 @@
++[LegacyTreatNonObjectAsNull]
++callback ProbeHandler = any (any event);
++typedef ProbeHandler? ProbeEventHandler;
++
++[Exposed=Window]
++interface LenientProbe {
++  [HTMLConstructor] constructor();
++  [LegacyLenientThis] attribute ProbeEventHandler onmouseenter;
++  attribute ProbeEventHandler onclick;
++};
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index 5922eb70e3a..2f99084bce2 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -9140,7 +9140,7 @@ class CGV8BindingRoot(CGThing):
+             if member.isAttr() and "Unscopable" in member._extendedAttrDict:
+                 unscopables.append(member.identifier.name)
+             attribute_attributes = (
+-                set(member._extendedAttrDict) - {"CEReactions", "Unscopable"} - V8_IGNORED_MEMBER_HINTS - V8_EXPOSURE_ATTRIBUTES
++                set(member._extendedAttrDict) - {"CEReactions", "Unscopable", "LegacyLenientThis"} - V8_IGNORED_MEMBER_HINTS - V8_EXPOSURE_ATTRIBUTES
+                 - V8_FALLIBLE_ATTRIBUTE_ATTRIBUTES
+                 if member.isAttr() else set()
+             )
+@@ -9156,6 +9156,9 @@ class CGV8BindingRoot(CGThing):
+             if (not member.isAttr() or member.isStatic() or attribute_attributes):
+                 raise TypeError(f"V8 backend unsupported member: {name}.{member.identifier.name}")
+             idl_type = member.type.inner if member.type.nullable() else member.type
++            lenient_this = "LegacyLenientThis" in member._extendedAttrDict
++            if lenient_this and not (idl_type.isAny() or idl_type.isObject() or idl_type.isCallback()):
++                raise TypeError(f"V8 backend only supports [LegacyLenientThis] on contextual attributes: {name}.{member.identifier.name}")
+             if ((idl_type.isUnion() and (not member.readonly or v8_contains_handle(member.type)))
+                     or idl_type.isBufferSource()):
+                 # Structured attributes: the setter converts through the WebIDL type.
+@@ -9179,7 +9182,7 @@ class CGV8BindingRoot(CGThing):
+                 contextual_attributes.append((
+                     member.identifier.name, MakeNativeName(member.identifier.name),
+                     "Option<roves_v8::Handle>" if nullable else "roves_v8::Handle",
+-                    nullable, not member.readonly, conversion,
++                    nullable, not member.readonly, conversion, lenient_this,
+                 ))
+                 continue
+             if idl_type.isBoolean():
+@@ -9271,7 +9274,7 @@ class CGV8BindingRoot(CGThing):
+         trait_methods = "\n".join(
+             [f"    fn {native}(&self, cx: &mut roves_v8::ScriptContext) -> Result<{rust_type}, roves_v8::WebIdlError>;"
+              + (f"\n    fn set_{native}(&self, cx: &mut roves_v8::ScriptContext, value: {rust_type}) -> Result<(), roves_v8::WebIdlError>;" if setter else "")
+-             for _, native, rust_type, _, setter, _ in contextual_attributes]
++             for _, native, rust_type, _, setter, _, _ in contextual_attributes]
+             + [(f"    fn {native}(&self, cx: &mut roves_v8::ScriptContext) -> Result<{rust}, roves_v8::WebIdlError>;"
+                 + (f"\n    fn set_{native}(&self, cx: &mut roves_v8::ScriptContext, value: {rust}) -> Result<(), roves_v8::WebIdlError>;" if setter else ""))
+                if contextual else
+@@ -9322,32 +9325,39 @@ class CGV8BindingRoot(CGThing):
+             )
+             gate_last_registration(idl)
+ 
+-        for idl, native, rust_type, nullable, setter, conversion in contextual_attributes:
++        for idl, native, rust_type, nullable, setter, conversion, lenient_this in contextual_attributes:
+             if nullable:
+                 to_value = "Ok(result.map(Value::Js).unwrap_or(Value::Null))"
+                 from_value = "Value::Js(value) => Some(value.clone()), Value::Null => None"
+             else:
+                 to_value = "Ok(Value::Js(result))"
+                 from_value = "Value::Js(value) => value.clone()"
++            if lenient_this:
++                # [LegacyLenientThis]: another native type is an invalid receiver, never a panic.
++                get_native = '            let Some(native) = native.downcast_ref::<T>() else { return Ok(Value::Undefined) };\n'
++                set_native = '            let Some(native) = native.downcast_ref::<T>() else { return Ok(()) };\n'
++            else:
++                get_native = set_native = f'            let native = native.downcast_ref::<T>().expect("typed {name} wrapper");\n'
+             getter = (
+                 f'|cx, native| {{\n'
+-                f'            let native = native.downcast_ref::<T>().expect("typed {name} wrapper");\n'
+-                f'            let result = native.{native}(cx)?;\n'
++                + get_native
++                + f'            let result = native.{native}(cx)?;\n'
+                 f'            {to_value}\n'
+                 f'        }}'
+             )
+             if setter:
+                 setter_callback = (
+                     f'Some(|cx, native, value| {{\n'
+-                    f'            let native = native.downcast_ref::<T>().expect("typed {name} wrapper");\n'
+-                    f'            let value = match value {{ {from_value}, _ => unreachable!("runtime conversion matches generated WebIDL attribute type") }};\n'
++                    + set_native
++                    + f'            let value = match value {{ {from_value}, _ => unreachable!("runtime conversion matches generated WebIDL attribute type") }};\n'
+                     f'            native.set_{native}(cx, value)\n'
+                     f'        }})'
+                 )
+             else:
+                 setter_callback = "None"
++            define = "define_lenient_contextual_attribute" if lenient_this else "define_contextual_attribute"
+             registrations_list.append(
+-                f'        runtime.define_contextual_attribute(&interface, "{idl}", {getter}, {setter_callback}, '
++                f'        runtime.{define}(&interface, "{idl}", {getter}, {setter_callback}, '
+                 f'roves_v8::WebIdlArgumentConversion::{conversion}, {str(nullable).lower()})?;'
+             )
+             gate_last_registration(idl)
+@@ -9576,6 +9586,11 @@ class CGV8BindingRoot(CGThing):
+             gate_last_registration(idl)
+         constructor = interface.ctor()
+         constructor_arguments = None
++        if constructor is not None and "HTMLConstructor" in constructor._extendedAttrDict:
++            # [HTMLConstructor]: without a custom element definition (the custom element
++            # registry is not wired to the V8 pilot yet), `new HTMLDivElement()` is a TypeError,
++            # which is exactly a nonconstructible interface object.
++            constructor = None
+         if constructor is not None:
+             signatures = constructor.signatures()
+             # The parser marks every constructor [NewObject]; that is inherent, not a shape.
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index afdcd1f617c..31947893db4 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -733,6 +733,23 @@ class V8GeneratorTests(unittest.TestCase):
+                 self.assertIn(expected, source)
+             self.assertNotIn("fn set_Pixels", source)
+ 
++    def test_lenient_this_and_html_constructor(self):
++        with tempfile.TemporaryDirectory() as directory:
++            path = Path(directory) / "Element.webidl"
++            path.write_text(
++                "[LegacyTreatNonObjectAsNull] callback Handler = any (any event); typedef Handler? EventHandler; "
++                "[Exposed=Window] interface Element { [HTMLConstructor] constructor(); "
++                "[LegacyLenientThis] attribute EventHandler onmouseenter; };",
++                encoding="utf-8",
++            )
++            source = generate(path, Path(directory) / "output")
++            self.assertIn('runtime.define_lenient_contextual_attribute(&interface, "onmouseenter"', source)
++            self.assertIn("let Some(native) = native.downcast_ref::<T>() else { return Ok(Value::Undefined) };", source)
++            # [HTMLConstructor] without custom elements: a nonconstructible interface object.
++            self.assertIn('runtime.define_interface("Element", None)', source)
++            self.assertNotIn("fn Constructor", source)
++            self.assert_unsupported("interface Unsupported { [LegacyLenientThis] readonly attribute boolean flag; };")
++
+     def test_indexed_getters_and_value_iterables(self):
+         with tempfile.TemporaryDirectory() as directory:
+             base = Path(directory) / "List.webidl"

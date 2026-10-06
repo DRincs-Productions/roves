@@ -254,6 +254,14 @@ mode, TypeError in strict). Nota: `NON_MASKING` di V8 non invoca il setter inter
 regola è implementata a mano. Test generatore 60/60, `roves-v8` 97+5+2, default 60+2. Copertura
 **268/486**; `HTMLCollection` ora genera.
 
+**CP74 (2026-10-06):** `[LegacyLenientThis]` (accessor senza signature, downcast senza panic) e
+`[HTMLConstructor]` (patch 0138). Quest'ultimo per ora rende l'interfaccia non costruibile: i
+custom element sono una lacuna documentata. Test generatore 61/61, `roves-v8` 98+5+2. Copertura
+**349/486**; ora generano `HTMLElement` e quasi tutte le interfacce degli elementi.
+**Prossimo:** ritorni union/enum (`getContext`, `canPlayType`), default `null` su callback e
+interfacce nullable (`Document`), `[LegacyFactoryFunction]` (`Image`, `Audio`), membri ridefiniti
+(`innerText`), `[Global]` (`Window`).
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

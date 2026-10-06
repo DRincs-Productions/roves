@@ -9140,7 +9140,7 @@ class CGV8BindingRoot(CGThing):
             if member.isAttr() and "Unscopable" in member._extendedAttrDict:
                 unscopables.append(member.identifier.name)
             attribute_attributes = (
-                set(member._extendedAttrDict) - {"CEReactions", "Unscopable"} - V8_IGNORED_MEMBER_HINTS - V8_EXPOSURE_ATTRIBUTES
+                set(member._extendedAttrDict) - {"CEReactions", "Unscopable", "LegacyLenientThis"} - V8_IGNORED_MEMBER_HINTS - V8_EXPOSURE_ATTRIBUTES
                 - V8_FALLIBLE_ATTRIBUTE_ATTRIBUTES
                 if member.isAttr() else set()
             )
@@ -9156,6 +9156,9 @@ class CGV8BindingRoot(CGThing):
             if (not member.isAttr() or member.isStatic() or attribute_attributes):
                 raise TypeError(f"V8 backend unsupported member: {name}.{member.identifier.name}")
             idl_type = member.type.inner if member.type.nullable() else member.type
+            lenient_this = "LegacyLenientThis" in member._extendedAttrDict
+            if lenient_this and not (idl_type.isAny() or idl_type.isObject() or idl_type.isCallback()):
+                raise TypeError(f"V8 backend only supports [LegacyLenientThis] on contextual attributes: {name}.{member.identifier.name}")
             if ((idl_type.isUnion() and (not member.readonly or v8_contains_handle(member.type)))
                     or idl_type.isBufferSource()):
                 # Structured attributes: the setter converts through the WebIDL type.
@@ -9179,7 +9182,7 @@ class CGV8BindingRoot(CGThing):
                 contextual_attributes.append((
                     member.identifier.name, MakeNativeName(member.identifier.name),
                     "Option<roves_v8::Handle>" if nullable else "roves_v8::Handle",
-                    nullable, not member.readonly, conversion,
+                    nullable, not member.readonly, conversion, lenient_this,
                 ))
                 continue
             if idl_type.isBoolean():
@@ -9271,7 +9274,7 @@ class CGV8BindingRoot(CGThing):
         trait_methods = "\n".join(
             [f"    fn {native}(&self, cx: &mut roves_v8::ScriptContext) -> Result<{rust_type}, roves_v8::WebIdlError>;"
              + (f"\n    fn set_{native}(&self, cx: &mut roves_v8::ScriptContext, value: {rust_type}) -> Result<(), roves_v8::WebIdlError>;" if setter else "")
-             for _, native, rust_type, _, setter, _ in contextual_attributes]
+             for _, native, rust_type, _, setter, _, _ in contextual_attributes]
             + [(f"    fn {native}(&self, cx: &mut roves_v8::ScriptContext) -> Result<{rust}, roves_v8::WebIdlError>;"
                 + (f"\n    fn set_{native}(&self, cx: &mut roves_v8::ScriptContext, value: {rust}) -> Result<(), roves_v8::WebIdlError>;" if setter else ""))
                if contextual else
@@ -9322,32 +9325,39 @@ class CGV8BindingRoot(CGThing):
             )
             gate_last_registration(idl)
 
-        for idl, native, rust_type, nullable, setter, conversion in contextual_attributes:
+        for idl, native, rust_type, nullable, setter, conversion, lenient_this in contextual_attributes:
             if nullable:
                 to_value = "Ok(result.map(Value::Js).unwrap_or(Value::Null))"
                 from_value = "Value::Js(value) => Some(value.clone()), Value::Null => None"
             else:
                 to_value = "Ok(Value::Js(result))"
                 from_value = "Value::Js(value) => value.clone()"
+            if lenient_this:
+                # [LegacyLenientThis]: another native type is an invalid receiver, never a panic.
+                get_native = '            let Some(native) = native.downcast_ref::<T>() else { return Ok(Value::Undefined) };\n'
+                set_native = '            let Some(native) = native.downcast_ref::<T>() else { return Ok(()) };\n'
+            else:
+                get_native = set_native = f'            let native = native.downcast_ref::<T>().expect("typed {name} wrapper");\n'
             getter = (
                 f'|cx, native| {{\n'
-                f'            let native = native.downcast_ref::<T>().expect("typed {name} wrapper");\n'
-                f'            let result = native.{native}(cx)?;\n'
+                + get_native
+                + f'            let result = native.{native}(cx)?;\n'
                 f'            {to_value}\n'
                 f'        }}'
             )
             if setter:
                 setter_callback = (
                     f'Some(|cx, native, value| {{\n'
-                    f'            let native = native.downcast_ref::<T>().expect("typed {name} wrapper");\n'
-                    f'            let value = match value {{ {from_value}, _ => unreachable!("runtime conversion matches generated WebIDL attribute type") }};\n'
+                    + set_native
+                    + f'            let value = match value {{ {from_value}, _ => unreachable!("runtime conversion matches generated WebIDL attribute type") }};\n'
                     f'            native.set_{native}(cx, value)\n'
                     f'        }})'
                 )
             else:
                 setter_callback = "None"
+            define = "define_lenient_contextual_attribute" if lenient_this else "define_contextual_attribute"
             registrations_list.append(
-                f'        runtime.define_contextual_attribute(&interface, "{idl}", {getter}, {setter_callback}, '
+                f'        runtime.{define}(&interface, "{idl}", {getter}, {setter_callback}, '
                 f'roves_v8::WebIdlArgumentConversion::{conversion}, {str(nullable).lower()})?;'
             )
             gate_last_registration(idl)
@@ -9576,6 +9586,11 @@ class CGV8BindingRoot(CGThing):
             gate_last_registration(idl)
         constructor = interface.ctor()
         constructor_arguments = None
+        if constructor is not None and "HTMLConstructor" in constructor._extendedAttrDict:
+            # [HTMLConstructor]: without a custom element definition (the custom element
+            # registry is not wired to the V8 pilot yet), `new HTMLDivElement()` is a TypeError,
+            # which is exactly a nonconstructible interface object.
+            constructor = None
         if constructor is not None:
             signatures = constructor.signatures()
             # The parser marks every constructor [NewObject]; that is inherent, not a shape.
