@@ -378,7 +378,7 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn("Value::Null => None", source)
 
     def test_unsupported_interface_shapes_fail(self):
-        self.assert_unsupported("interface Unsupported { constructor(); };")
+        self.assert_unsupported("interface Unsupported { [Throws] constructor(); };")
         self.assert_unsupported("namespace Unsupported { undefined run(); };")
 
     def test_non_window_exposure_fails_closed(self):
@@ -400,10 +400,35 @@ class V8GeneratorTests(unittest.TestCase):
 
     def test_interface_shape_rejections_name_the_shape(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "Constructible.webidl"
-            path.write_text("[Exposed=Window] interface Constructible { constructor(); };", encoding="utf-8")
-            with self.assertRaisesRegex(TypeError, "interface shape [(]constructor[)]"):
+            path = Path(directory) / "Shapes.webidl"
+            path.write_text("[Exposed=Window] namespace Shapes { undefined run(); };", encoding="utf-8")
+            with self.assertRaises(TypeError):
                 generate(path, Path(directory) / "output")
+
+    def test_constructor_generates_native_constructor_and_constructible_interface(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Point.webidl"
+            path.write_text(
+                "[Exposed=Window] interface Point { constructor(double x, optional DOMString label = \"p\"); readonly attribute double x; };",
+                encoding="utf-8",
+            )
+            source = generate(path, Path(directory) / "output")
+            self.assertIn("fn Constructor(arg0: roves_v8::FiniteF64, arg1: roves_v8::WebIdlOptionalArgument<Vec<u16>>) -> Self where Self: Sized;", source)
+            self.assertIn("runtime.define_constructible_interface(", source)
+            self.assertIn("Box::new(<T as PointNative>::Constructor(arg0, arg1))", source)
+            self.assertIn("&[roves_v8::WebIdlArgumentConversion::Double, roves_v8::WebIdlArgumentConversion::DomString]", source)
+            self.assertIn("&[false, true]", source)
+
+    def test_throwing_and_overloaded_constructors_fail_closed(self):
+        for constructor, message in [
+            ("[Throws] constructor();", "unsupported constructor attributes"),
+            ("constructor(); constructor(boolean flag);", "single-signature constructors"),
+        ]:
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "Ctor.webidl"
+                path.write_text(f"[Exposed=Window] interface Ctor {{ {constructor} }};", encoding="utf-8")
+                with self.assertRaisesRegex(TypeError, message):
+                    generate(path, Path(directory) / "output")
 
     def write_hierarchy(self, directory, derived_body="readonly attribute boolean derived;"):
         base = Path(directory) / "Base.webidl"

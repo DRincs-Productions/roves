@@ -199,6 +199,8 @@ fn main() {
     for (interface, context) in [
         ("InheritanceBase", &[][..]),
         ("InheritanceDerived", &["InheritanceBase"][..]),
+        ("ConstructibleCounter", &[][..]),
+        ("ConstructibleChild", &["ConstructibleCounter"][..]),
     ] {
         println!("cargo:rerun-if-changed={}", fixtures.join(format!("{interface}.webidl")).display());
         let status = Command::new(&python)

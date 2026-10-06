@@ -8213,6 +8213,162 @@ pub(crate) fn GetConstructorObject(
         return stripTrailingWhitespace(self.root.define())
 
 
+def v8_argument_types(name: str, member_name: str, arguments) -> list:
+    """Map WebIDL arguments of an operation or constructor to the V8 backend's
+    (rust_type, conversion, match_arm, nullable, optional, enumeration_values) tuples.
+    Fails closed on any argument shape the runtime cannot convert yet."""
+    argument_types = []
+    def add_argument_type(rust_type, conversion, match_arm, nullable, optional, default_expression=None, enumeration_values=None):
+        pattern, expression = match_arm.split(" => ", 1)
+        if nullable:
+            rust_type = f"Option<{rust_type}>"
+            match_arm = f"Value::Null => None, {pattern} => Some({expression})"
+        if optional:
+            rust_type = f"roves_v8::WebIdlOptionalArgument<{rust_type}>"
+            if nullable:
+                missing = (
+                    "roves_v8::WebIdlOptionalArgument::Present(None)"
+                    if default_expression == "None"
+                    else f"roves_v8::WebIdlOptionalArgument::Present(Some({default_expression}))"
+                    if default_expression is not None
+                    else "roves_v8::WebIdlOptionalArgument::Missing"
+                )
+                match_arm = (
+                    f"Value::Missing => {missing}, "
+                    "Value::Null => roves_v8::WebIdlOptionalArgument::Present(None), "
+                    f"{pattern} => roves_v8::WebIdlOptionalArgument::Present(Some({expression}))"
+                )
+            else:
+                missing = (
+                    f"roves_v8::WebIdlOptionalArgument::Present({default_expression})"
+                    if default_expression is not None
+                    else "roves_v8::WebIdlOptionalArgument::Missing"
+                )
+                match_arm = (
+                    f"Value::Missing => {missing}, "
+                    f"{pattern} => roves_v8::WebIdlOptionalArgument::Present({expression})"
+                )
+        argument_types.append((rust_type, conversion, match_arm, nullable, optional, enumeration_values))
+
+    for argument in arguments:
+        ty = argument.type
+        default_value = argument.defaultValue
+        if argument.variadic:
+            raise TypeError(f"V8 backend does not support variadic arguments: {name}.{member_name}")
+        if default_value is not None and not argument.optional:
+            raise TypeError(f"V8 backend received a default for a required argument: {name}.{member_name}")
+        optional = argument.optional
+        nullable = ty.nullable()
+        if nullable:
+            ty = ty.inner
+        default_expression = None
+        if default_value is not None:
+            if isinstance(default_value, IDLNullValue):
+                if not nullable:
+                    raise TypeError(f"V8 backend null default requires a nullable type: {name}.{member_name}")
+                default_expression = "None"
+            elif isinstance(default_value, IDLValue):
+                default_type = default_value.type
+                value = default_value.value
+                if ty.isBoolean() and default_type.isBoolean():
+                    default_expression = "true" if value else "false"
+                elif ty.isInteger() and default_type.isInteger():
+                    rust_type = {
+                        "Byte": "i8", "Octet": "u8", "Short": "i16", "UnsignedShort": "u16",
+                        "Long": "i32", "UnsignedLong": "u32", "LongLong": "i64", "UnsignedLongLong": "u64",
+                    }.get(ty.name)
+                    if rust_type is not None:
+                        default_expression = f"{value}{rust_type}"
+                elif ty.isFloat() and default_type.isFloat():
+                    def float_default(rust_type):
+                        if value != value:
+                            return f"{rust_type}::NAN"
+                        if value == float("inf"):
+                            return f"{rust_type}::INFINITY"
+                        if value == float("-inf"):
+                            return f"{rust_type}::NEG_INFINITY"
+                        return f"{value!r}{rust_type}"
+                    if ty.name == "Float":
+                        default_expression = f"roves_v8::FiniteF32::new({float_default('f32')}).expect(\"WebIDL float default is finite\")"
+                    elif ty.name == "Double":
+                        default_expression = f"roves_v8::FiniteF64::new({float_default('f64')}).expect(\"WebIDL double default is finite\")"
+                    elif ty.name == "UnrestrictedFloat":
+                        default_expression = float_default("f32")
+                    elif ty.name == "UnrestrictedDouble":
+                        default_expression = float_default("f64")
+                elif ty.isDOMString() and default_type.isDOMString():
+                    utf16 = default_value.value.encode("utf-16-le", "surrogatepass")
+                    units = [int.from_bytes(utf16[index:index + 2], "little") for index in range(0, len(utf16), 2)]
+                    default_expression = "vec![" + ", ".join(f"{unit}u16" for unit in units) + "]"
+                elif ty.isUSVString() and default_type.isDOMString():
+                    scalar_values = []
+                    index = 0
+                    string_value = default_value.value
+                    while index < len(string_value):
+                        codepoint = ord(string_value[index])
+                        if 0xD800 <= codepoint <= 0xDBFF and index + 1 < len(string_value):
+                            low = ord(string_value[index + 1])
+                            if 0xDC00 <= low <= 0xDFFF:
+                                codepoint = 0x10000 + ((codepoint - 0xD800) << 10) + (low - 0xDC00)
+                                index += 1
+                        if 0xD800 <= codepoint <= 0xDFFF:
+                            codepoint = 0xFFFD
+                        scalar_values.append(codepoint)
+                        index += 1
+                    rust_literal = '"' + "".join(f"\\u{{{codepoint:x}}}" for codepoint in scalar_values) + '"'
+                    default_expression = f"{rust_literal}.to_owned()"
+                elif ty.isByteString() and default_type.isByteString():
+                    default_expression = "vec![" + ", ".join(f"{ord(char)}u8" for char in default_value.value) + "]"
+                elif ty.isEnum() and default_type.isDOMString() and default_value.value in ty.inner.values():
+                    default_expression = '"' + "".join(f"\\u{{{ord(char):x}}}" for char in default_value.value) + '".to_owned()'
+            if default_expression is None:
+                raise TypeError(f"V8 backend unsupported explicit default for {name}.{member_name}: {default_value}")
+        if ty.isBoolean():
+            add_argument_type("bool", "Boolean", "Value::Bool(value) => *value", nullable, optional, default_expression)
+        elif ty.isInteger() and ty.name in {
+            "Byte", "Octet", "Short", "UnsignedShort", "Long", "UnsignedLong",
+            "LongLong", "UnsignedLongLong",
+        }:
+            integer_arguments = {
+                "Byte": ("i8", "Byte"), "Octet": ("u8", "Octet"),
+                "Short": ("i16", "Short"), "UnsignedShort": ("u16", "UnsignedShort"),
+                "Long": ("i32", "Long"), "UnsignedLong": ("u32", "UnsignedLong"),
+                "LongLong": ("i64", "LongLong"), "UnsignedLongLong": ("u64", "UnsignedLongLong"),
+            }
+            rust_type, conversion = integer_arguments[ty.name]
+            add_argument_type(rust_type, conversion, f"Value::Number(value) => *value as {rust_type}", nullable, optional, default_expression)
+        elif ty.isFloat() and ty.name == "Float":
+            add_argument_type("roves_v8::FiniteF32", "Float", "Value::Number(value) => roves_v8::FiniteF32::new(*value as f32).expect(\"runtime validated finite float\")", nullable, optional, default_expression)
+        elif ty.isFloat() and ty.name == "UnrestrictedFloat":
+            add_argument_type("f32", "UnrestrictedFloat", "Value::Number(value) => *value as f32", nullable, optional, default_expression)
+        elif ty.isFloat() and ty.name == "Double":
+            add_argument_type("roves_v8::FiniteF64", "Double", "Value::Number(value) => roves_v8::FiniteF64::new(*value).expect(\"runtime validated finite double\")", nullable, optional, default_expression)
+        elif ty.isFloat() and ty.name == "UnrestrictedDouble":
+            add_argument_type("f64", "UnrestrictedDouble", "Value::Number(value) => *value", nullable, optional, default_expression)
+        elif ty.isByteString():
+            add_argument_type("Vec<u8>", "ByteString", "Value::ByteString(value) => value.clone()", nullable, optional, default_expression)
+        elif ty.isDOMString():
+            add_argument_type("Vec<u16>", "DomString", "Value::Utf16String(value) => value.clone()", nullable, optional, default_expression)
+        elif ty.isUSVString():
+            add_argument_type("String", "UsvString", "Value::String(value) => value.clone()", nullable, optional, default_expression)
+        elif ty.isEnum() and not nullable:
+            values = list(ty.inner.values())
+            rust_values = [
+                '"' + "".join(f"\\u{{{ord(char):x}}}" for char in value) + '"'
+                for value in values
+            ]
+            enumeration_values = "Some(&[" + ", ".join(rust_values) + "])"
+            add_argument_type(
+                "String", "Enumeration", "Value::String(value) => value.clone()",
+                nullable, optional, default_expression, enumeration_values,
+            )
+        elif ty.isInteger() and ty.name == "UnsignedLong":
+            add_argument_type("u32", "UnsignedLong", "Value::Number(value) => *value as u32", nullable, optional)
+        else:
+            raise TypeError(f"V8 backend unsupported operation argument type: {name}.{member_name}: {ty}")
+    return argument_types
+
+
 def v8_module_name(interface_name: str) -> str:
     """Snake-case module of a V8 pilot binding: ValidityState -> validity_state,
     HTMLElement -> html_element."""
@@ -8235,7 +8391,6 @@ class CGV8BindingRoot(CGThing):
         for unsupported_shape, present in [
             ("namespace", interface.isNamespace()),
             ("callback interface", interface.isCallback()),
-            ("constructor", interface.ctor() is not None),
         ]:
             if present:
                 raise TypeError(f"V8 backend does not yet support interface shape ({unsupported_shape}): {name}")
@@ -8267,156 +8422,7 @@ class CGV8BindingRoot(CGThing):
                 signatures = member.signatures()
                 if member.isStatic() or member._extendedAttrDict or len(signatures) != 1:
                     raise TypeError(f"V8 backend only supports single-signature instance operations: {name}.{member.identifier.name}")
-                arguments = signatures[0][1]
-                argument_types = []
-                def add_argument_type(rust_type, conversion, match_arm, nullable, optional, default_expression=None, enumeration_values=None):
-                    pattern, expression = match_arm.split(" => ", 1)
-                    if nullable:
-                        rust_type = f"Option<{rust_type}>"
-                        match_arm = f"Value::Null => None, {pattern} => Some({expression})"
-                    if optional:
-                        rust_type = f"roves_v8::WebIdlOptionalArgument<{rust_type}>"
-                        if nullable:
-                            missing = (
-                                "roves_v8::WebIdlOptionalArgument::Present(None)"
-                                if default_expression == "None"
-                                else f"roves_v8::WebIdlOptionalArgument::Present(Some({default_expression}))"
-                                if default_expression is not None
-                                else "roves_v8::WebIdlOptionalArgument::Missing"
-                            )
-                            match_arm = (
-                                f"Value::Missing => {missing}, "
-                                "Value::Null => roves_v8::WebIdlOptionalArgument::Present(None), "
-                                f"{pattern} => roves_v8::WebIdlOptionalArgument::Present(Some({expression}))"
-                            )
-                        else:
-                            missing = (
-                                f"roves_v8::WebIdlOptionalArgument::Present({default_expression})"
-                                if default_expression is not None
-                                else "roves_v8::WebIdlOptionalArgument::Missing"
-                            )
-                            match_arm = (
-                                f"Value::Missing => {missing}, "
-                                f"{pattern} => roves_v8::WebIdlOptionalArgument::Present({expression})"
-                            )
-                    argument_types.append((rust_type, conversion, match_arm, nullable, optional, enumeration_values))
-
-                for argument in arguments:
-                    ty = argument.type
-                    default_value = argument.defaultValue
-                    if argument.variadic:
-                        raise TypeError(f"V8 backend does not support variadic arguments: {name}.{member.identifier.name}")
-                    if default_value is not None and not argument.optional:
-                        raise TypeError(f"V8 backend received a default for a required argument: {name}.{member.identifier.name}")
-                    optional = argument.optional
-                    nullable = ty.nullable()
-                    if nullable:
-                        ty = ty.inner
-                    default_expression = None
-                    if default_value is not None:
-                        if isinstance(default_value, IDLNullValue):
-                            if not nullable:
-                                raise TypeError(f"V8 backend null default requires a nullable type: {name}.{member.identifier.name}")
-                            default_expression = "None"
-                        elif isinstance(default_value, IDLValue):
-                            default_type = default_value.type
-                            value = default_value.value
-                            if ty.isBoolean() and default_type.isBoolean():
-                                default_expression = "true" if value else "false"
-                            elif ty.isInteger() and default_type.isInteger():
-                                rust_type = {
-                                    "Byte": "i8", "Octet": "u8", "Short": "i16", "UnsignedShort": "u16",
-                                    "Long": "i32", "UnsignedLong": "u32", "LongLong": "i64", "UnsignedLongLong": "u64",
-                                }.get(ty.name)
-                                if rust_type is not None:
-                                    default_expression = f"{value}{rust_type}"
-                            elif ty.isFloat() and default_type.isFloat():
-                                def float_default(rust_type):
-                                    if value != value:
-                                        return f"{rust_type}::NAN"
-                                    if value == float("inf"):
-                                        return f"{rust_type}::INFINITY"
-                                    if value == float("-inf"):
-                                        return f"{rust_type}::NEG_INFINITY"
-                                    return f"{value!r}{rust_type}"
-                                if ty.name == "Float":
-                                    default_expression = f"roves_v8::FiniteF32::new({float_default('f32')}).expect(\"WebIDL float default is finite\")"
-                                elif ty.name == "Double":
-                                    default_expression = f"roves_v8::FiniteF64::new({float_default('f64')}).expect(\"WebIDL double default is finite\")"
-                                elif ty.name == "UnrestrictedFloat":
-                                    default_expression = float_default("f32")
-                                elif ty.name == "UnrestrictedDouble":
-                                    default_expression = float_default("f64")
-                            elif ty.isDOMString() and default_type.isDOMString():
-                                utf16 = default_value.value.encode("utf-16-le", "surrogatepass")
-                                units = [int.from_bytes(utf16[index:index + 2], "little") for index in range(0, len(utf16), 2)]
-                                default_expression = "vec![" + ", ".join(f"{unit}u16" for unit in units) + "]"
-                            elif ty.isUSVString() and default_type.isDOMString():
-                                scalar_values = []
-                                index = 0
-                                string_value = default_value.value
-                                while index < len(string_value):
-                                    codepoint = ord(string_value[index])
-                                    if 0xD800 <= codepoint <= 0xDBFF and index + 1 < len(string_value):
-                                        low = ord(string_value[index + 1])
-                                        if 0xDC00 <= low <= 0xDFFF:
-                                            codepoint = 0x10000 + ((codepoint - 0xD800) << 10) + (low - 0xDC00)
-                                            index += 1
-                                    if 0xD800 <= codepoint <= 0xDFFF:
-                                        codepoint = 0xFFFD
-                                    scalar_values.append(codepoint)
-                                    index += 1
-                                rust_literal = '"' + "".join(f"\\u{{{codepoint:x}}}" for codepoint in scalar_values) + '"'
-                                default_expression = f"{rust_literal}.to_owned()"
-                            elif ty.isByteString() and default_type.isByteString():
-                                default_expression = "vec![" + ", ".join(f"{ord(char)}u8" for char in default_value.value) + "]"
-                            elif ty.isEnum() and default_type.isDOMString() and default_value.value in ty.inner.values():
-                                default_expression = '"' + "".join(f"\\u{{{ord(char):x}}}" for char in default_value.value) + '".to_owned()'
-                        if default_expression is None:
-                            raise TypeError(f"V8 backend unsupported explicit default for {name}.{member.identifier.name}: {default_value}")
-                    if ty.isBoolean():
-                        add_argument_type("bool", "Boolean", "Value::Bool(value) => *value", nullable, optional, default_expression)
-                    elif ty.isInteger() and ty.name in {
-                        "Byte", "Octet", "Short", "UnsignedShort", "Long", "UnsignedLong",
-                        "LongLong", "UnsignedLongLong",
-                    }:
-                        integer_arguments = {
-                            "Byte": ("i8", "Byte"), "Octet": ("u8", "Octet"),
-                            "Short": ("i16", "Short"), "UnsignedShort": ("u16", "UnsignedShort"),
-                            "Long": ("i32", "Long"), "UnsignedLong": ("u32", "UnsignedLong"),
-                            "LongLong": ("i64", "LongLong"), "UnsignedLongLong": ("u64", "UnsignedLongLong"),
-                        }
-                        rust_type, conversion = integer_arguments[ty.name]
-                        add_argument_type(rust_type, conversion, f"Value::Number(value) => *value as {rust_type}", nullable, optional, default_expression)
-                    elif ty.isFloat() and ty.name == "Float":
-                        add_argument_type("roves_v8::FiniteF32", "Float", "Value::Number(value) => roves_v8::FiniteF32::new(*value as f32).expect(\"runtime validated finite float\")", nullable, optional, default_expression)
-                    elif ty.isFloat() and ty.name == "UnrestrictedFloat":
-                        add_argument_type("f32", "UnrestrictedFloat", "Value::Number(value) => *value as f32", nullable, optional, default_expression)
-                    elif ty.isFloat() and ty.name == "Double":
-                        add_argument_type("roves_v8::FiniteF64", "Double", "Value::Number(value) => roves_v8::FiniteF64::new(*value).expect(\"runtime validated finite double\")", nullable, optional, default_expression)
-                    elif ty.isFloat() and ty.name == "UnrestrictedDouble":
-                        add_argument_type("f64", "UnrestrictedDouble", "Value::Number(value) => *value", nullable, optional, default_expression)
-                    elif ty.isByteString():
-                        add_argument_type("Vec<u8>", "ByteString", "Value::ByteString(value) => value.clone()", nullable, optional, default_expression)
-                    elif ty.isDOMString():
-                        add_argument_type("Vec<u16>", "DomString", "Value::Utf16String(value) => value.clone()", nullable, optional, default_expression)
-                    elif ty.isUSVString():
-                        add_argument_type("String", "UsvString", "Value::String(value) => value.clone()", nullable, optional, default_expression)
-                    elif ty.isEnum() and not nullable:
-                        values = list(ty.inner.values())
-                        rust_values = [
-                            '"' + "".join(f"\\u{{{ord(char):x}}}" for char in value) + '"'
-                            for value in values
-                        ]
-                        enumeration_values = "Some(&[" + ", ".join(rust_values) + "])"
-                        add_argument_type(
-                            "String", "Enumeration", "Value::String(value) => value.clone()",
-                            nullable, optional, default_expression, enumeration_values,
-                        )
-                    elif ty.isInteger() and ty.name == "UnsignedLong":
-                        add_argument_type("u32", "UnsignedLong", "Value::Number(value) => *value as u32", nullable, optional)
-                    else:
-                        raise TypeError(f"V8 backend unsupported operation argument type: {name}.{member.identifier.name}: {ty}")
+                argument_types = v8_argument_types(name, member.identifier.name, signatures[0][1])
                 return_type = signatures[0][0]
                 nullable_return = return_type.nullable()
                 result_type = return_type.inner if nullable_return else return_type
@@ -8623,6 +8629,24 @@ class CGV8BindingRoot(CGThing):
             else:
                 registrations_list.append(f'        runtime.define_method(&interface, "{idl}", {callback})?;')
         registrations = "\n".join(registrations_list)
+        constructor = interface.ctor()
+        constructor_arguments = None
+        if constructor is not None:
+            signatures = constructor.signatures()
+            # The parser marks every constructor [NewObject]; that is inherent, not a shape.
+            constructor_attributes = set(constructor._extendedAttrDict) - {"NewObject"}
+            if constructor_attributes:
+                raise TypeError(f"V8 backend unsupported constructor attributes on {name}: {sorted(constructor_attributes)}")
+            if len(signatures) != 1:
+                raise TypeError(f"V8 backend only supports single-signature constructors: {name}")
+            constructor_arguments = v8_argument_types(name, "constructor", signatures[0][1])
+            constructor_parameters = ", ".join(
+                f"arg{index}: {argument_type[0]}" for index, argument_type in enumerate(constructor_arguments)
+            )
+            trait_methods = "\n".join(
+                [f"    fn Constructor({constructor_parameters}) -> Self where Self: Sized;"]
+                + ([trait_methods] if trait_methods else [])
+            )
         parent = interface.parent
         if parent is None:
             native_bound = "'static"
@@ -8639,6 +8663,29 @@ class CGV8BindingRoot(CGThing):
                 f"runtime: &mut Runtime, parent: &{parent_module}::{parent_name}Binding<T>"
             )
             parent_interface = "Some(parent.interface())"
+        if constructor_arguments is None:
+            define_interface = f'runtime.define_interface("{name}", {parent_interface})'
+        else:
+            conversions = "\n".join(
+                f'            let arg{index} = match args.get({index}).unwrap_or(&Value::Undefined) {{ {argument_type[2]}, _ => unreachable!("runtime conversion matches generated WebIDL argument type") }};'
+                for index, argument_type in enumerate(constructor_arguments)
+            )
+            call_arguments = ", ".join(f"arg{index}" for index, _ in enumerate(constructor_arguments))
+            # Fully qualified: in an inheritance tree several native traits declare Constructor.
+            define_interface = (
+                f'runtime.define_constructible_interface(\n'
+                f'            "{name}",\n'
+                f'            {parent_interface},\n'
+                f'            |{"args" if constructor_arguments else "_args"}| {{\n'
+                + (f"{conversions}\n" if conversions else "")
+                + f'            Box::new(<T as {name}Native>::Constructor({call_arguments}))\n'
+                f'        }},\n'
+                f'            &[{", ".join("roves_v8::WebIdlArgumentConversion::" + argument_type[1] for argument_type in constructor_arguments)}],\n'
+                f'            &[{", ".join(str(argument_type[3]).lower() for argument_type in constructor_arguments)}],\n'
+                f'            &[{", ".join(str(argument_type[4]).lower() for argument_type in constructor_arguments)}],\n'
+                f'            &[{", ".join(argument_type[5] or "None" for argument_type in constructor_arguments)}],\n'
+                f'        )'
+            )
         return AUTOGENERATED_WARNING_COMMENT + f"""use roves_v8::{{Handle, Interface, Runtime, Value}};
 
 #[allow(non_snake_case)]
@@ -8655,7 +8702,7 @@ pub struct {name}Binding<T: {name}Native> {{
 
 impl<T: {name}Native> {name}Binding<T> {{
     pub fn install({install_parameters}) -> Result<Self, String> {{
-        let interface = runtime.define_interface("{name}", {parent_interface});
+        let interface = {define_interface};
 {registrations}
         runtime.expose_interface(&interface)?;
         Ok(Self {{ interface, native: std::marker::PhantomData }})

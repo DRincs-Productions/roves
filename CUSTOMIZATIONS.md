@@ -11,6 +11,56 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: WebIDL constructors in the V8 runtime and generator (CP47)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixtures
+`components/roves-v8/tests/webidl/ConstructibleCounter.webidl` and `ConstructibleChild.webidl`;
+`components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0111-roves-v8-webidl-constructors.patch` after 0110.
+
+Constructors were the top blocker once inheritance landed (208 definitions).
+
+**Runtime (`roves-v8`).** It gains `Runtime::define_constructible_interface(name, parent,
+constructor, conversions, nullable, optional, enums)`.
+- `new Name(...)` converts the arguments exactly like an operation's.
+- It calls the `NativeConstructor` (`fn(&[Value]) -> Box<dyn Any>`) and attaches the result to the
+  `this` that V8 created.
+- That object gets the same guaranteed exactly-once finalization as `create_instance`.
+- Calling the constructor without `new` throws a TypeError.
+- `length` is the number of required arguments.
+- JS subclasses (`class Sub extends Name`) construct through it.
+
+Two refactors make this possible, with no behaviour change:
+- The WebIDL argument conversion loop moved out of the method callback into the shared
+  `convert_webidl_arguments`.
+- Finalizer arming moved into `arm_native_finalizer`, now that the finalizer list is shared with
+  constructor callbacks. Doing this exposed a `rusty_v8` subtlety, now commented in the code: only
+  the original `Weak` owns the finalizer, and a clone is only an observer. The existing GC tests
+  caught the wrong ordering immediately.
+
+**Generator.** `constructor(...)` generates `fn Constructor(args) -> Self where Self: Sized` on the
+native trait, and the binding installs through `define_constructible_interface`. The generator
+calls it fully qualified (`<T as XNative>::Constructor`), because in an inheritance tree several
+native traits declare `Constructor`. The argument mapping moved into the shared
+`v8_argument_types`, so constructor and operation arguments cannot diverge. `[NewObject]` (added by
+the parser to every constructor) is accepted. `[Throws]` and overloaded constructors fail closed.
+Almost every real Servo constructor is `[Throws]`, so throwing support is the next step.
+
+**Tests.** New runtime tests cover a hand-written constructible interface and a generated
+constructible parent plus a constructible child that share one native type.
+- Hand-written interface: argument coercion and the error a conversion throws, no `new`, `length`,
+  JS subclassing, and exactly-once drops of temporaries.
+- Generated pair: each class's own constructor, inherited methods on the child instance,
+  `Object.getPrototypeOf(Child) === Parent`, and lengths.
+- Generator tests: 34/34.
+- `roves-v8` pilot and pilot+JIT-less: 69 unit + 5 integration + 2 doctests each; default 55 unit +
+  2 doctests.
+- `servo-script` check with the pilot is clean.
+
+Coverage stays 13/486. The constructor rejections now surface the next blockers: `[Throws]`
+members and constructors, `[Pref]`, and `[LegacyUnforgeable]` members such as `Event.isTrusted`.
+The WebIDL parser copies those into every descendant, so they currently trip the shadowing guard.
+
 ## 2026-10-06 - V8 migration Phase 4: WebIDL interface inheritance in the V8 generator (CP46)
 
 **Servo files:** `components/script_bindings/codegen/codegen.py`, `run_v8.py`, `test_v8.py`,

@@ -65,6 +65,18 @@ pulito. La copertura resta 13/486 perché quasi tutte le gerarchie partono da `E
 ha un costruttore. **Prossimo: costruttori WebIDL** (208 definizioni bloccate) nel runtime
 (`define_interface` oggi lancia "Illegal constructor") e nel generatore.
 
+**CP47 (2026-10-06):** costruttori WebIDL (patch 0111). Runtime:
+`define_constructible_interface` (argomenti convertiti come per le operazioni, finalizzazione
+esattamente una volta, TypeError senza `new`, `length`, sottoclassi JS); refactor
+`convert_webidl_arguments` e `arm_native_finalizer`. Attenzione: in `rusty_v8` solo il `Weak`
+originale possiede il finalizer, i clone sono semplici osservatori. Generatore: `XNative::Constructor`
+chiamato in forma qualificata; `[NewObject]` accettato; `[Throws]` e overload rifiutati. Test:
+generatore 34/34, `roves-v8` 69+5+2 (pilot e JIT-less), default 55+2, check `servo-script` pulito.
+**Prossimo:** `[Throws]` uniforme per costruttori, metodi e attributi (serve un tipo errore
+engine-neutral nel runtime, che lanci TypeError/RangeError; DOMException più avanti). Poi i membri
+`[LegacyUnforgeable]` copiati nei discendenti (`Event.isTrusted`): sono la stessa definizione,
+non un vero shadowing, e oggi bloccano 40 interfacce. Poi `[Pref]`.
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

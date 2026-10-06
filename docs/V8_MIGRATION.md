@@ -17,6 +17,13 @@ requires. Coverage counts a definition only when all its ancestors generate. It 
 because almost every hierarchy roots at the constructible `EventTarget`, so constructors (208)
 are the next target.
 
+**CP47 (2026-10-06): constructors.** `Runtime::define_constructible_interface` lets `new X(...)`
+build the native object through converted arguments, with exactly-once finalization; calling
+without `new` throws, and JS subclasses work. The generator emits `XNative::Constructor` and calls
+it fully qualified, so inherited constructible interfaces sharing one native type work. `[Throws]`
+and overloaded constructors still fail closed. Next blockers: `[Throws]` on constructors and
+members, `[Pref]`, and `[LegacyUnforgeable]` members copied into descendants (`Event.isTrusted`).
+
 CP37 exposes stable `NativeObjectId` through `DomObject` and updates generated `dom_struct`
 equality to use that engine-neutral contract. Local checks pass (reflector 2/2, macro 3/3,
 rustfmt, and patch 0101 reverse-check); CI is green: V8 37226916624 (6/6), Servo 37226916650

@@ -81,6 +81,14 @@ pub mod webidl {
     pub mod inheritance_derived {
         include!(concat!(env!("OUT_DIR"), "/InheritanceDerivedV8Binding.rs"));
     }
+    #[cfg(test)]
+    pub mod constructible_counter {
+        include!(concat!(env!("OUT_DIR"), "/ConstructibleCounterV8Binding.rs"));
+    }
+    #[cfg(test)]
+    pub mod constructible_child {
+        include!(concat!(env!("OUT_DIR"), "/ConstructibleChildV8Binding.rs"));
+    }
 }
 
 use std::sync::Once;
@@ -207,9 +215,12 @@ pub struct Runtime {
     next_wrapper_token: u64,
     /// Keeps callbacks armed until they have actually completed. An empty weak handle
     /// alone is insufficient: first-pass GC may clear it before second-pass finalization.
-    wrapped_finalizers: Vec<WrappedFinalizer>,
+    /// Shared with constructor callbacks, which create wrappers from inside V8.
+    wrapped_finalizers: std::rc::Rc<std::cell::RefCell<Vec<WrappedFinalizer>>>,
     /// Per-method callback data stays alive as long as this isolate can invoke the callbacks.
     method_configs: Vec<Box<WebIdlMethodConfig>>,
+    /// Per-constructor callback data, kept alive for the same reason as `method_configs`.
+    constructor_configs: Vec<Box<WebIdlConstructorConfig>>,
 }
 
 struct WrappedFinalizer {
@@ -331,10 +342,51 @@ fn convert_webidl_integer(number: f64, bits: u32, signed: bool) -> f64 {
 
 struct WebIdlMethodConfig {
     method: NativeMethod,
+    arguments: WebIdlArguments,
+}
+
+/// How a WebIDL operation's or constructor's JS arguments convert to [`Value`]s.
+struct WebIdlArguments {
     conversions: Vec<WebIdlArgumentConversion>,
     nullable_arguments: Vec<bool>,
     optional_arguments: Vec<bool>,
     enumeration_values: Vec<Option<Vec<Vec<u16>>>>,
+}
+
+impl WebIdlArguments {
+    fn new(
+        conversions: &[WebIdlArgumentConversion],
+        nullable_arguments: &[bool],
+        optional_arguments: &[bool],
+        enumeration_values: &[Option<&[&str]>],
+    ) -> Self {
+        Self {
+            conversions: conversions.to_vec(),
+            nullable_arguments: (0..conversions.len())
+                .map(|index| nullable_arguments.get(index).copied().unwrap_or(false))
+                .collect(),
+            optional_arguments: (0..conversions.len())
+                .map(|index| optional_arguments.get(index).copied().unwrap_or(false))
+                .collect(),
+            enumeration_values: (0..conversions.len())
+                .map(|index| enumeration_values.get(index).and_then(|values| *values).map(|values| {
+                    values.iter().map(|value| value.encode_utf16().collect()).collect()
+                }))
+                .collect(),
+        }
+    }
+}
+
+/// A WebIDL constructor, registered via [`Runtime::define_constructible_interface`]: receives
+/// the JS arguments already converted to [`Value`] and returns the new native object, which the
+/// runtime attaches to the `this` that `new` created (same ownership and finalization as
+/// [`Runtime::create_instance`]). Same plain-function-pointer restriction as the other callbacks.
+pub type NativeConstructor = fn(&[Value]) -> Box<dyn std::any::Any>;
+
+struct WebIdlConstructorConfig {
+    constructor: NativeConstructor,
+    arguments: WebIdlArguments,
+    finalizers: std::rc::Rc<std::cell::RefCell<Vec<WrappedFinalizer>>>,
 }
 
 /// A callable method, registered via [`Runtime::define_method`]: receives the wrapped Rust value
@@ -365,7 +417,8 @@ impl Runtime {
             context,
             wrapper_identities: WrapperIdentityMap::default(),
             next_wrapper_token: 0,
-            wrapped_finalizers: Vec::new(),
+            wrapped_finalizers: Default::default(),
+            constructor_configs: Vec::new(),
             method_configs: Vec::new(),
         }
     }
@@ -691,9 +744,6 @@ impl Runtime {
         raw: *mut Box<dyn std::any::Any>,
         identity: Option<u64>,
     ) -> Handle {
-        // Reclaim only completed finalizers, never callbacks waiting for GC's second pass.
-        self.wrapped_finalizers
-            .retain(|entry| !entry.completed.get());
         let identity_token = identity.map(|_| {
             let token = self.next_wrapper_token;
             self.next_wrapper_token = self
@@ -702,18 +752,13 @@ impl Runtime {
                 .expect("V8 wrapper identity token space exhausted");
             token
         });
-        let completed = std::rc::Rc::new(std::cell::Cell::new(false));
-        let completion = completed.clone();
         let identity_registry = self.wrapper_identities.clone();
-        let weak = v8::Weak::with_guaranteed_finalizer(
+        let weak = arm_native_finalizer(
             &mut self.isolate,
+            &self.wrapped_finalizers,
             &global_value,
+            raw,
             Box::new(move || {
-                // SAFETY: `raw` was created by `Box::into_raw` a few lines above and is reachable
-                // from exactly one place afterward (this closure) -- V8 guarantees this finalizer
-                // runs at most once, and only after nothing JS-reachable points at the wrapper
-                // anymore, so nothing else can read `raw` concurrently or afterward.
-                drop(unsafe { Box::from_raw(raw) });
                 if let (Some(identity), Some(token)) = (identity, identity_token) {
                     let mut registry = identity_registry.borrow_mut();
                     if registry
@@ -723,15 +768,13 @@ impl Runtime {
                         registry.remove(&identity);
                     }
                 }
-                completion.set(true);
             }),
         );
         if let (Some(identity), Some(token)) = (identity, identity_token) {
             self.wrapper_identities
                 .borrow_mut()
-                .insert(identity, CachedWrapper { token, weak: weak.clone() });
+                .insert(identity, CachedWrapper { token, weak });
         }
-        self.wrapped_finalizers.push(WrappedFinalizer { _weak: weak, completed });
 
         Handle(global_value)
     }
@@ -755,21 +798,120 @@ impl Runtime {
     /// V8 equivalent in isolation — this prototype is where that V8-side foundation gets designed
     /// and validated first.
     pub fn define_interface(&mut self, name: &str, parent: Option<&Interface>) -> Interface {
+        self.define_interface_inner(name, parent, None)
+    }
+
+    /// Defines a WebIDL interface with a `constructor(...)`: `new Name(...)` converts the
+    /// arguments like an operation's, calls `constructor` and attaches the returned native
+    /// object to the new instance, with the same ownership and guaranteed finalization as
+    /// [`Runtime::create_instance`]. Calling it without `new` throws a TypeError, and the
+    /// interface object's `length` is the number of required arguments. Native code can still
+    /// create instances with `create_instance`. JS-constructed objects are not entered in the
+    /// native-identity wrapper cache.
+    pub fn define_constructible_interface(
+        &mut self,
+        name: &str,
+        parent: Option<&Interface>,
+        constructor: NativeConstructor,
+        conversions: &[WebIdlArgumentConversion],
+        nullable_arguments: &[bool],
+        optional_arguments: &[bool],
+        enumeration_values: &[Option<&[&str]>],
+    ) -> Interface {
+        let config = Box::new(WebIdlConstructorConfig {
+            constructor,
+            arguments: WebIdlArguments::new(
+                conversions,
+                nullable_arguments,
+                optional_arguments,
+                enumeration_values,
+            ),
+            finalizers: self.wrapped_finalizers.clone(),
+        });
+        let config_pointer = (&*config) as *const WebIdlConstructorConfig;
+        self.constructor_configs.push(config);
+        self.define_interface_inner(name, parent, Some(config_pointer))
+    }
+
+    fn define_interface_inner(
+        &mut self,
+        name: &str,
+        parent: Option<&Interface>,
+        constructor: Option<*const WebIdlConstructorConfig>,
+    ) -> Interface {
         let context_handle = &self.context;
         v8::scope!(let scope, &mut self.isolate);
         let context = v8::Local::new(scope, context_handle);
         let scope = &mut v8::ContextScope::new(scope, context);
 
-        // Nonconstructible WebIDL interfaces throw on both calls and construction.
-        // Native instances are created by create_instance without invoking this function.
-        let template = v8::FunctionTemplate::builder(
-            |scope: &mut v8::PinScope,
-             _args: v8::FunctionCallbackArguments,
-             _retval: v8::ReturnValue| {
-                throw_type_error(scope, "Illegal constructor");
-             },
-        )
-        .build(scope);
+        let template = match constructor {
+            // Nonconstructible WebIDL interfaces throw on both calls and construction.
+            // Native instances are created by create_instance without invoking this function.
+            None => v8::FunctionTemplate::builder(
+                |scope: &mut v8::PinScope,
+                 _args: v8::FunctionCallbackArguments,
+                 _retval: v8::ReturnValue| {
+                    throw_type_error(scope, "Illegal constructor");
+                },
+            )
+            .build(scope),
+            Some(config_pointer) => {
+                // SAFETY: the config is boxed in `constructor_configs`, which outlives the isolate.
+                let required = unsafe { &*config_pointer }
+                    .arguments
+                    .optional_arguments
+                    .iter()
+                    .take_while(|optional| !**optional)
+                    .count();
+                let external_data =
+                    v8::External::new(scope, config_pointer as *mut std::ffi::c_void);
+                v8::FunctionTemplate::builder(
+                    |scope: &mut v8::PinScope,
+                     args: v8::FunctionCallbackArguments,
+                     _retval: v8::ReturnValue| {
+                        let Ok(external) = v8::Local::<v8::External>::try_from(args.data()) else {
+                            return;
+                        };
+                        // SAFETY: the External points to this interface's boxed constructor config.
+                        let config =
+                            unsafe { &*(external.value() as *const WebIdlConstructorConfig) };
+                        if args.new_target().is_undefined() {
+                            throw_type_error(scope, "Constructor requires 'new'");
+                            return;
+                        }
+                        let this = args.this();
+                        if this.internal_field_count() < 1 {
+                            throw_type_error(scope, "Illegal constructor");
+                            return;
+                        }
+                        let Some(arguments) =
+                            convert_webidl_arguments(scope, &args, &config.arguments)
+                        else {
+                            return;
+                        };
+                        let raw = Box::into_raw(Box::new((config.constructor)(&arguments)));
+                        this.set_aligned_pointer_in_internal_field(
+                            0,
+                            raw as *const std::ffi::c_void,
+                            WRAPPED_POINTER_TAG,
+                        );
+                        let this_value: v8::Local<v8::Value> = this.into();
+                        let wrapper = v8::Global::new(scope, this_value);
+                        // `new` returns `this` because the return value is left unset.
+                        arm_native_finalizer(
+                            scope,
+                            &config.finalizers,
+                            &wrapper,
+                            raw,
+                            Box::new(|| {}),
+                        );
+                    },
+                )
+                .data(external_data.into())
+                .length(required as i32)
+                .build(scope)
+            },
+        };
         template.instance_template(scope).set_internal_field_count(1);
 
         if let Some(parent) = parent {
@@ -1349,18 +1491,12 @@ impl Runtime {
         // while the owning vector grows, and the isolate drops before these entries.
         let config = Box::new(WebIdlMethodConfig {
             method,
-            conversions: conversions.to_vec(),
-            nullable_arguments: (0..conversions.len())
-                .map(|index| nullable_arguments.get(index).copied().unwrap_or(false))
-                .collect(),
-            optional_arguments: (0..conversions.len())
-                .map(|index| optional_arguments.get(index).copied().unwrap_or(false))
-                .collect(),
-            enumeration_values: (0..conversions.len())
-                .map(|index| enumeration_values.get(index).and_then(|values| *values).map(|values| {
-                    values.iter().map(|value| value.encode_utf16().collect()).collect()
-                }))
-                .collect(),
+            arguments: WebIdlArguments::new(
+                conversions,
+                nullable_arguments,
+                optional_arguments,
+                enumeration_values,
+            ),
         });
         let config_pointer = (&*config) as *const WebIdlMethodConfig as *mut WebIdlMethodConfig;
         self.method_configs.push(config);
@@ -1395,192 +1531,9 @@ impl Runtime {
                 // WebIDL's ToNumber/ToString conversions can run user code and throw. Preserve
                 // that exact exception across the native callback boundary instead of returning
                 // undefined when rusty_v8 reports the failed conversion as `None`.
-                let argument_count = if config.conversions.is_empty() {
-                    args.length() as usize
-                } else {
-                    config.conversions.len()
+                let Some(arguments) = convert_webidl_arguments(scope, &args, &config.arguments) else {
+                    return;
                 };
-                let mut arguments = Vec::with_capacity(argument_count);
-                for i in 0..argument_count {
-                    let argument = args.get(i as i32);
-                    let converted = if config.optional_arguments.get(i).copied().unwrap_or(false)
-                        && argument.is_undefined()
-                    {
-                        Value::Missing
-                    } else if config.nullable_arguments.get(i).copied().unwrap_or(false)
-                        && (argument.is_null() || argument.is_undefined())
-                    {
-                        Value::Null
-                    } else {
-                        match config.conversions.get(i) {
-                        None => native_value(scope, argument),
-                        Some(WebIdlArgumentConversion::Boolean) => Value::Bool(argument.boolean_value(scope)),
-                        Some(WebIdlArgumentConversion::Byte) => {
-                            let Some(number) = argument.number_value(scope) else { return; };
-                            Value::Number(convert_webidl_integer(number, 8, true))
-                        }
-                        Some(WebIdlArgumentConversion::Octet) => {
-                            let Some(number) = argument.number_value(scope) else { return; };
-                            Value::Number(convert_webidl_integer(number, 8, false))
-                        }
-                        Some(WebIdlArgumentConversion::Short) => {
-                            let Some(number) = argument.number_value(scope) else { return; };
-                            Value::Number(convert_webidl_integer(number, 16, true))
-                        }
-                        Some(WebIdlArgumentConversion::UnsignedShort) => {
-                            let Some(number) = argument.number_value(scope) else { return; };
-                            Value::Number(convert_webidl_integer(number, 16, false))
-                        }
-                        Some(WebIdlArgumentConversion::Long) => {
-                            let Some(number) = argument.number_value(scope) else { return; };
-                            Value::Number(convert_webidl_integer(number, 32, true))
-                        }
-                        Some(WebIdlArgumentConversion::LongLong) => {
-                            let Some(number) = argument.number_value(scope) else { return; };
-                            Value::Number(convert_webidl_integer(number, 64, true))
-                        }
-                        Some(WebIdlArgumentConversion::UnsignedLongLong) => {
-                            let Some(number) = argument.number_value(scope) else { return; };
-                            Value::Number(convert_webidl_integer(number, 64, false))
-                        }
-                        Some(WebIdlArgumentConversion::Float) => {
-                            let Some(number) = argument.number_value(scope) else { return; };
-                            let value = number as f32;
-                            if !value.is_finite() {
-                                throw_type_error(scope, "float argument must be finite");
-                                return;
-                            }
-                            Value::Number(value as f64)
-                        }
-                        Some(WebIdlArgumentConversion::UnrestrictedFloat) => {
-                            let Some(number) = argument.number_value(scope) else { return; };
-                            Value::Number(number as f32 as f64)
-                        }
-                        Some(WebIdlArgumentConversion::Double) => {
-                            let Some(number) = argument.number_value(scope) else { return; };
-                            if !number.is_finite() {
-                                throw_type_error(scope, "double argument must be finite");
-                                return;
-                            }
-                            Value::Number(number)
-                        }
-                        Some(WebIdlArgumentConversion::UnrestrictedDouble) => {
-                            let Some(number) = argument.number_value(scope) else { return; };
-                            Value::Number(number)
-                        }
-                        Some(WebIdlArgumentConversion::UnsignedLong) => {
-                            let Some(number) = argument.number_value(scope) else { return; };
-                            Value::Number(convert_webidl_integer(number, 32, false))
-                        }
-                        Some(WebIdlArgumentConversion::DomString) => {
-                            if argument.is_symbol() {
-                                throw_type_error(scope, "Cannot convert a Symbol value to a string");
-                                return;
-                            }
-                            let result = {
-                                v8::tc_scope!(let tc_scope, scope);
-                                let scope = tc_scope;
-                                match argument.to_string(scope) {
-                                    Some(string) => {
-                                        let mut utf16 = vec![0; string.length()];
-                                        string.write_v2(scope, 0, &mut utf16, v8::WriteFlags::empty());
-                                        Ok(Value::Utf16String(utf16))
-                                    }
-                                    None => Err(scope.exception()),
-                                }
-                            };
-                            match result {
-                                Ok(value) => value,
-                                Err(Some(exception)) => { scope.throw_exception(exception); return; }
-                                Err(None) => return,
-                            }
-                        }
-                        Some(WebIdlArgumentConversion::UsvString) => {
-                            if argument.is_symbol() {
-                                throw_type_error(scope, "Cannot convert a Symbol value to a string");
-                                return;
-                            }
-                            let result = {
-                                v8::tc_scope!(let tc_scope, scope);
-                                let scope = tc_scope;
-                                match argument.to_string(scope) {
-                                    Some(string) => {
-                                        let mut utf16 = vec![0; string.length()];
-                                        string.write_v2(scope, 0, &mut utf16, v8::WriteFlags::empty());
-                                        Ok(Value::String(String::from_utf16_lossy(&utf16)))
-                                    }
-                                    None => Err(scope.exception()),
-                                }
-                            };
-                            match result {
-                                Ok(value) => value,
-                                Err(Some(exception)) => { scope.throw_exception(exception); return; }
-                                Err(None) => return,
-                            }
-                        }
-                        Some(WebIdlArgumentConversion::ByteString) => {
-                            if argument.is_symbol() {
-                                throw_type_error(scope, "Cannot convert a Symbol value to a string");
-                                return;
-                            }
-                            let result = {
-                                v8::tc_scope!(let tc_scope, scope);
-                                let scope = tc_scope;
-                                match argument.to_string(scope) {
-                                    Some(string) => {
-                                        let mut utf16 = vec![0; string.length()];
-                                        string.write_v2(scope, 0, &mut utf16, v8::WriteFlags::empty());
-                                        if utf16.iter().any(|unit| *unit > 0xFF) {
-                                            let message = v8::String::new(scope, "ByteString contains a code unit greater than 255").unwrap();
-                                            Err(Some(v8::Exception::type_error(scope, message).into()))
-                                        } else {
-                                            Ok(Value::ByteString(utf16.into_iter().map(|unit| unit as u8).collect()))
-                                        }
-                                    }
-                                    None => Err(scope.exception()),
-                                }
-                            };
-                            match result {
-                                Ok(value) => value,
-                                Err(Some(exception)) => { scope.throw_exception(exception); return; }
-                                Err(None) => return,
-                            }
-                        }
-                        Some(WebIdlArgumentConversion::Enumeration) => {
-                            if argument.is_symbol() {
-                                throw_type_error(scope, "Cannot convert a Symbol value to a string");
-                                return;
-                            }
-                            let result = {
-                                v8::tc_scope!(let tc_scope, scope);
-                                let scope = tc_scope;
-                                match argument.to_string(scope) {
-                                    Some(string) => {
-                                        let mut utf16 = vec![0; string.length()];
-                                        string.write_v2(scope, 0, &mut utf16, v8::WriteFlags::empty());
-                                        let valid = config.enumeration_values.get(i)
-                                            .and_then(Option::as_ref)
-                                            .is_some_and(|values| values.iter().any(|value| value == &utf16));
-                                        if valid {
-                                            Ok(Value::String(String::from_utf16_lossy(&utf16)))
-                                        } else {
-                                            let message = v8::String::new(scope, "Value is not a valid WebIDL enum value").unwrap();
-                                            Err(Some(v8::Exception::type_error(scope, message).into()))
-                                        }
-                                    }
-                                    None => Err(scope.exception()),
-                                }
-                            };
-                            match result {
-                                Ok(value) => value,
-                                Err(Some(exception)) => { scope.throw_exception(exception); return; }
-                                Err(None) => return,
-                            }
-                        }
-                        }
-                    };
-                    arguments.push(converted);
-                }
                 let result = (config.method)(boxed_any.as_ref(), &arguments);
                 retval.set(v8_value(scope, &result));
             },
@@ -1894,6 +1847,239 @@ fn unreachable_resolve_module_callback<'s>(
         "roves-v8's eval_module only supports import-free modules in this phase; \
          see docs/V8_MIGRATION.md's Phase 2 status note"
     )
+}
+
+/// Converts a WebIDL operation's or constructor's JS arguments. WebIDL's ToNumber/ToString
+/// conversions can run user code and throw: `None` means a conversion threw and that exact
+/// exception is pending, so the caller must return without touching native state.
+fn convert_webidl_arguments<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: &v8::FunctionCallbackArguments<'_>,
+    config: &WebIdlArguments,
+) -> Option<Vec<Value>> {
+    let argument_count = if config.conversions.is_empty() {
+        args.length() as usize
+    } else {
+        config.conversions.len()
+    };
+    let mut arguments = Vec::with_capacity(argument_count);
+    for i in 0..argument_count {
+        let argument = args.get(i as i32);
+        let converted = if config.optional_arguments.get(i).copied().unwrap_or(false)
+            && argument.is_undefined()
+        {
+            Value::Missing
+        } else if config.nullable_arguments.get(i).copied().unwrap_or(false)
+            && (argument.is_null() || argument.is_undefined())
+        {
+            Value::Null
+        } else {
+            match config.conversions.get(i) {
+            None => native_value(scope, argument),
+            Some(WebIdlArgumentConversion::Boolean) => Value::Bool(argument.boolean_value(scope)),
+            Some(WebIdlArgumentConversion::Byte) => {
+                let Some(number) = argument.number_value(scope) else { return None; };
+                Value::Number(convert_webidl_integer(number, 8, true))
+            }
+            Some(WebIdlArgumentConversion::Octet) => {
+                let Some(number) = argument.number_value(scope) else { return None; };
+                Value::Number(convert_webidl_integer(number, 8, false))
+            }
+            Some(WebIdlArgumentConversion::Short) => {
+                let Some(number) = argument.number_value(scope) else { return None; };
+                Value::Number(convert_webidl_integer(number, 16, true))
+            }
+            Some(WebIdlArgumentConversion::UnsignedShort) => {
+                let Some(number) = argument.number_value(scope) else { return None; };
+                Value::Number(convert_webidl_integer(number, 16, false))
+            }
+            Some(WebIdlArgumentConversion::Long) => {
+                let Some(number) = argument.number_value(scope) else { return None; };
+                Value::Number(convert_webidl_integer(number, 32, true))
+            }
+            Some(WebIdlArgumentConversion::LongLong) => {
+                let Some(number) = argument.number_value(scope) else { return None; };
+                Value::Number(convert_webidl_integer(number, 64, true))
+            }
+            Some(WebIdlArgumentConversion::UnsignedLongLong) => {
+                let Some(number) = argument.number_value(scope) else { return None; };
+                Value::Number(convert_webidl_integer(number, 64, false))
+            }
+            Some(WebIdlArgumentConversion::Float) => {
+                let Some(number) = argument.number_value(scope) else { return None; };
+                let value = number as f32;
+                if !value.is_finite() {
+                    throw_type_error(scope, "float argument must be finite");
+                    return None;
+                }
+                Value::Number(value as f64)
+            }
+            Some(WebIdlArgumentConversion::UnrestrictedFloat) => {
+                let Some(number) = argument.number_value(scope) else { return None; };
+                Value::Number(number as f32 as f64)
+            }
+            Some(WebIdlArgumentConversion::Double) => {
+                let Some(number) = argument.number_value(scope) else { return None; };
+                if !number.is_finite() {
+                    throw_type_error(scope, "double argument must be finite");
+                    return None;
+                }
+                Value::Number(number)
+            }
+            Some(WebIdlArgumentConversion::UnrestrictedDouble) => {
+                let Some(number) = argument.number_value(scope) else { return None; };
+                Value::Number(number)
+            }
+            Some(WebIdlArgumentConversion::UnsignedLong) => {
+                let Some(number) = argument.number_value(scope) else { return None; };
+                Value::Number(convert_webidl_integer(number, 32, false))
+            }
+            Some(WebIdlArgumentConversion::DomString) => {
+                if argument.is_symbol() {
+                    throw_type_error(scope, "Cannot convert a Symbol value to a string");
+                    return None;
+                }
+                let result = {
+                    v8::tc_scope!(let tc_scope, scope);
+                    let scope = tc_scope;
+                    match argument.to_string(scope) {
+                        Some(string) => {
+                            let mut utf16 = vec![0; string.length()];
+                            string.write_v2(scope, 0, &mut utf16, v8::WriteFlags::empty());
+                            Ok(Value::Utf16String(utf16))
+                        }
+                        None => Err(scope.exception()),
+                    }
+                };
+                match result {
+                    Ok(value) => value,
+                    Err(Some(exception)) => { scope.throw_exception(exception); return None; }
+                    Err(None) => return None,
+                }
+            }
+            Some(WebIdlArgumentConversion::UsvString) => {
+                if argument.is_symbol() {
+                    throw_type_error(scope, "Cannot convert a Symbol value to a string");
+                    return None;
+                }
+                let result = {
+                    v8::tc_scope!(let tc_scope, scope);
+                    let scope = tc_scope;
+                    match argument.to_string(scope) {
+                        Some(string) => {
+                            let mut utf16 = vec![0; string.length()];
+                            string.write_v2(scope, 0, &mut utf16, v8::WriteFlags::empty());
+                            Ok(Value::String(String::from_utf16_lossy(&utf16)))
+                        }
+                        None => Err(scope.exception()),
+                    }
+                };
+                match result {
+                    Ok(value) => value,
+                    Err(Some(exception)) => { scope.throw_exception(exception); return None; }
+                    Err(None) => return None,
+                }
+            }
+            Some(WebIdlArgumentConversion::ByteString) => {
+                if argument.is_symbol() {
+                    throw_type_error(scope, "Cannot convert a Symbol value to a string");
+                    return None;
+                }
+                let result = {
+                    v8::tc_scope!(let tc_scope, scope);
+                    let scope = tc_scope;
+                    match argument.to_string(scope) {
+                        Some(string) => {
+                            let mut utf16 = vec![0; string.length()];
+                            string.write_v2(scope, 0, &mut utf16, v8::WriteFlags::empty());
+                            if utf16.iter().any(|unit| *unit > 0xFF) {
+                                let message = v8::String::new(scope, "ByteString contains a code unit greater than 255").unwrap();
+                                Err(Some(v8::Exception::type_error(scope, message).into()))
+                            } else {
+                                Ok(Value::ByteString(utf16.into_iter().map(|unit| unit as u8).collect()))
+                            }
+                        }
+                        None => Err(scope.exception()),
+                    }
+                };
+                match result {
+                    Ok(value) => value,
+                    Err(Some(exception)) => { scope.throw_exception(exception); return None; }
+                    Err(None) => return None,
+                }
+            }
+            Some(WebIdlArgumentConversion::Enumeration) => {
+                if argument.is_symbol() {
+                    throw_type_error(scope, "Cannot convert a Symbol value to a string");
+                    return None;
+                }
+                let result = {
+                    v8::tc_scope!(let tc_scope, scope);
+                    let scope = tc_scope;
+                    match argument.to_string(scope) {
+                        Some(string) => {
+                            let mut utf16 = vec![0; string.length()];
+                            string.write_v2(scope, 0, &mut utf16, v8::WriteFlags::empty());
+                            let valid = config.enumeration_values.get(i)
+                                .and_then(Option::as_ref)
+                                .is_some_and(|values| values.iter().any(|value| value == &utf16));
+                            if valid {
+                                Ok(Value::String(String::from_utf16_lossy(&utf16)))
+                            } else {
+                                let message = v8::String::new(scope, "Value is not a valid WebIDL enum value").unwrap();
+                                Err(Some(v8::Exception::type_error(scope, message).into()))
+                            }
+                        }
+                        None => Err(scope.exception()),
+                    }
+                };
+                match result {
+                    Ok(value) => value,
+                    Err(Some(exception)) => { scope.throw_exception(exception); return None; }
+                    Err(None) => return None,
+                }
+            }
+            }
+        };
+        arguments.push(converted);
+    }
+    Some(arguments)
+}
+
+/// Arms the guaranteed finalizer that drops `raw` (a `Box<Box<dyn Any>>` attached to `wrapper`'s
+/// internal field) exactly once, when V8 collects `wrapper`, then runs `after_drop`. The returned
+/// weak handle observes the wrapper; `finalizers` keeps the callback armed until it completes.
+fn arm_native_finalizer(
+    isolate: &mut v8::Isolate,
+    finalizers: &std::cell::RefCell<Vec<WrappedFinalizer>>,
+    wrapper: &v8::Global<v8::Value>,
+    raw: *mut Box<dyn std::any::Any>,
+    after_drop: Box<dyn FnOnce()>,
+) -> v8::Weak<v8::Value> {
+    // Reclaim only completed finalizers, never callbacks waiting for GC's second pass.
+    finalizers.borrow_mut().retain(|entry| !entry.completed.get());
+    let completed = std::rc::Rc::new(std::cell::Cell::new(false));
+    let completion = completed.clone();
+    let weak = v8::Weak::with_guaranteed_finalizer(
+        isolate,
+        wrapper,
+        Box::new(move || {
+            // SAFETY: `raw` came from `Box::into_raw` in the caller and is reachable from exactly
+            // one place afterward (this closure) -- V8 guarantees this finalizer runs at most
+            // once, and only after nothing JS-reachable points at the wrapper anymore, so
+            // nothing else can read `raw` concurrently or afterward.
+            drop(unsafe { Box::from_raw(raw) });
+            after_drop();
+            completion.set(true);
+        }),
+    );
+    // Only the original `Weak` owns the finalizer (a clone is a plain observer), so the
+    // original must stay in `finalizers` and the caller gets the clone.
+    let observer = weak.clone();
+    finalizers
+        .borrow_mut()
+        .push(WrappedFinalizer { _weak: weak, completed });
+    observer
 }
 
 fn throw_type_error(scope: &mut v8::PinScope, message: &str) {
@@ -2272,6 +2458,89 @@ mod tests {
             1,
             "value must be dropped exactly once, not zero or more than once"
         );
+    }
+
+    #[test]
+    fn constructible_interface_builds_native_objects_from_converted_arguments() {
+        thread_local! {
+            static CONSTRUCTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+            static DROPPED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        }
+        struct Labeled {
+            label: Vec<u16>,
+            count: u32,
+        }
+        impl Drop for Labeled {
+            fn drop(&mut self) {
+                DROPPED.with(|dropped| dropped.set(dropped.get() + 1));
+            }
+        }
+        fn construct(arguments: &[Value]) -> Box<dyn std::any::Any> {
+            let Value::Utf16String(label) = &arguments[0] else { unreachable!("DOMString argument") };
+            let count = match arguments[1] {
+                Value::Missing => 1,
+                Value::Number(count) => count as u32,
+                _ => unreachable!("optional unsigned long argument"),
+            };
+            CONSTRUCTED.with(|constructed| constructed.set(constructed.get() + 1));
+            Box::new(Labeled { label: label.clone(), count })
+        }
+
+        let mut runtime = Runtime::new();
+        let interface = runtime.define_constructible_interface(
+            "Labeled",
+            None,
+            construct,
+            &[crate::WebIdlArgumentConversion::DomString, crate::WebIdlArgumentConversion::UnsignedLong],
+            &[false, false],
+            &[false, true],
+            &[None, None],
+        );
+        runtime
+            .define_property(&interface, "label", |native| {
+                let labeled = native.downcast_ref::<Labeled>().expect("Labeled wrapper");
+                Value::String(String::from_utf16_lossy(&labeled.label))
+            })
+            .unwrap();
+        runtime
+            .define_property(&interface, "count", |native| {
+                Value::Number(native.downcast_ref::<Labeled>().expect("Labeled wrapper").count as f64)
+            })
+            .unwrap();
+        runtime.expose_interface(&interface).unwrap();
+
+        for (source, expected) in [
+            ("Labeled.length", "1"),
+            ("const a = new Labeled('first'); [a.label, a.count].join()", "first,1"),
+            ("const b = new Labeled({ toString() { return 'second'; } }, 7); [b.label, b.count].join()", "second,7"),
+            ("a instanceof Labeled && Object.getPrototypeOf(a) === Labeled.prototype", "true"),
+            // A JS subclass constructs through the WebIDL constructor and keeps native state.
+            ("class Sub extends Labeled { get twice() { return this.count * 2; } }; const c = new Sub('sub', 4); [c.label, c.twice, c instanceof Labeled].join()", "sub,8,true"),
+        ] {
+            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
+        }
+        assert_eq!(CONSTRUCTED.with(std::cell::Cell::get), 3);
+        // Calling without `new`, and arguments whose conversion throws, never construct.
+        for source in ["Labeled('x')", "new Labeled(Symbol())"] {
+            assert!(runtime.eval(source).unwrap_err().contains("TypeError"), "{source}");
+        }
+        assert_eq!(
+            runtime.eval("try { new Labeled({ toString() { throw new RangeError('custom'); } }) } catch (e) { e.message }").unwrap(),
+            "custom"
+        );
+        assert_eq!(CONSTRUCTED.with(std::cell::Cell::get), 3);
+
+        // JS-constructed natives get the same exactly-once finalization as create_instance.
+        runtime.eval("(() => { for (let i = 0; i < 10; i++) new Labeled('temp'); })()").unwrap();
+        assert_eq!(CONSTRUCTED.with(std::cell::Cell::get), 13);
+        for _ in 0..30 {
+            runtime.force_full_gc_for_testing();
+            if DROPPED.with(std::cell::Cell::get) == 10 {
+                break;
+            }
+        }
+        assert_eq!(DROPPED.with(std::cell::Cell::get), 10, "each temporary dropped exactly once");
+        assert_eq!(runtime.eval("[a.label, b.label, c.label].join()").unwrap(), "first,second,sub");
     }
 
     #[test]
@@ -3142,7 +3411,7 @@ mod tests {
             runtime.force_full_gc_for_testing();
             // The next allocation sweeps completed records, retaining the live one.
             let next = runtime.create_wrapped(());
-            assert!(runtime.wrapped_finalizers.len() <= 2);
+            assert!(runtime.wrapped_finalizers.borrow().len() <= 2);
             assert_eq!(runtime.get_wrapped::<i32>(&live), Some(&123));
             drop(next);
             runtime.force_full_gc_for_testing();
@@ -3744,6 +4013,59 @@ mod tests {
             "InheritanceDerived.prototype.doubledDepth.call(base)",
             "Object.getOwnPropertyDescriptor(InheritanceDerived.prototype, 'ratio').get.call(base)",
         ] {
+            assert!(runtime.eval(source).unwrap_err().contains("TypeError"), "{source}");
+        }
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_constructors_build_natives_and_chain_with_inheritance() {
+        use crate::webidl::constructible_child::{ConstructibleChildBinding, ConstructibleChildNative};
+        use crate::webidl::constructible_counter::{ConstructibleCounterBinding, ConstructibleCounterNative};
+        use crate::WebIdlOptionalArgument;
+        struct Counter {
+            value: std::cell::Cell<u32>,
+            label: Vec<u16>,
+            child: bool,
+        }
+        #[allow(non_snake_case)]
+        impl ConstructibleCounterNative for Counter {
+            fn Constructor(start: u32, label: WebIdlOptionalArgument<Vec<u16>>) -> Self {
+                let WebIdlOptionalArgument::Present(label) = label else {
+                    unreachable!("the declared default always supplies a label")
+                };
+                Counter { value: std::cell::Cell::new(start), label, child: false }
+            }
+            fn Value(&self) -> u32 { self.value.get() }
+            fn Label(&self) -> Vec<u16> { self.label.clone() }
+            fn Increment(&self) -> u32 {
+                self.value.set(self.value.get() + 1);
+                self.value.get()
+            }
+        }
+        // Both traits declare `Constructor`; the generated code calls each one qualified.
+        #[allow(non_snake_case)]
+        impl ConstructibleChildNative for Counter {
+            fn Constructor() -> Self {
+                Counter { value: std::cell::Cell::new(100), label: "child".encode_utf16().collect(), child: true }
+            }
+            fn Child(&self) -> bool { self.child }
+        }
+
+        let mut runtime = Runtime::new();
+        let counter = ConstructibleCounterBinding::<Counter>::install(&mut runtime).unwrap();
+        let _child = ConstructibleChildBinding::<Counter>::install(&mut runtime, &counter).unwrap();
+        for (source, expected) in [
+            ("[ConstructibleCounter.length, ConstructibleChild.length].join()", "1,0"),
+            ("const a = new ConstructibleCounter(5); [a.value, a.label, a.increment(), a.value].join()", "5,counter,6,6"),
+            ("const b = new ConstructibleCounter('7', 'named'); [b.value, b.label].join()", "7,named"),
+            ("const c = new ConstructibleChild(); [c.value, c.label, c.child, c.increment()].join()", "100,child,true,101"),
+            ("c instanceof ConstructibleCounter && Object.getPrototypeOf(ConstructibleChild) === ConstructibleCounter", "true"),
+            ("'child' in a", "false"),
+        ] {
+            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
+        }
+        for source in ["ConstructibleCounter(1)", "new ConstructibleCounter(Symbol())"] {
             assert!(runtime.eval(source).unwrap_err().contains("TypeError"), "{source}");
         }
     }
