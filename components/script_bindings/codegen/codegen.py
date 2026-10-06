@@ -8420,8 +8420,10 @@ class CGV8BindingRoot(CGThing):
         for member in interface.members:
             if member.isMethod():
                 signatures = member.signatures()
-                if member.isStatic() or member._extendedAttrDict or len(signatures) != 1:
+                operation_attributes = set(member._extendedAttrDict) - {"Throws"}
+                if member.isStatic() or operation_attributes or len(signatures) != 1:
                     raise TypeError(f"V8 backend only supports single-signature instance operations: {name}.{member.identifier.name}")
+                throws = "Throws" in member._extendedAttrDict
                 argument_types = v8_argument_types(name, member.identifier.name, signatures[0][1])
                 return_type = signatures[0][0]
                 nullable_return = return_type.nullable()
@@ -8479,7 +8481,7 @@ class CGV8BindingRoot(CGThing):
                     )
                 else:
                     raise TypeError(f"V8 backend unsupported operation return type: {name}.{member.identifier.name}: {return_type}")
-                operations.append((member.identifier.name, MakeNativeName(member.identifier.name), rust_type, value_expr, argument_types))
+                operations.append((member.identifier.name, MakeNativeName(member.identifier.name), rust_type, value_expr, argument_types, throws))
                 continue
             if (not member.isAttr() or member.isStatic() or member._extendedAttrDict):
                 raise TypeError(f"V8 backend unsupported member: {name}.{member.identifier.name}")
@@ -8533,7 +8535,7 @@ class CGV8BindingRoot(CGThing):
             [f"    fn {native}(&self) -> {rust_type};"
              + (f"\n    fn set_{native}(&mut self, value: {rust_type});" if setter else "")
              for _, native, rust_type, _, setter, _ in attributes]
-            + [f"    fn {native}(&self{', ' + ', '.join('arg' + str(index) + ': ' + argument_type[0] for index, argument_type in enumerate(argument_types)) if argument_types else ''}) -> {rust_type};" for _, native, rust_type, _, argument_types in operations]
+            + [f"    fn {native}(&self{', ' + ', '.join('arg' + str(index) + ': ' + argument_type[0] for index, argument_type in enumerate(argument_types)) if argument_types else ''}) -> {f'Result<{rust_type}, roves_v8::WebIdlError>' if throws else rust_type};" for _, native, rust_type, _, argument_types, throws in operations]
         )
         registrations_list = []
         for idl, native, rust_type, value_expr, setter, conversion in attributes:
@@ -8602,13 +8604,22 @@ class CGV8BindingRoot(CGThing):
                 registrations_list.append(
                     f'        runtime.define_property(&interface, "{idl}", {getter})?;'
                 )
-        for idl, native, _, value_expr, argument_types in operations:
+        for idl, native, _, value_expr, argument_types, throws in operations:
             argument_conversions = "\n".join(
                 f'            let arg{index} = match args.get({index}).unwrap_or(&Value::Undefined) {{ {argument_type[2]}, _ => unreachable!("runtime conversion matches generated WebIDL argument type") }};'
                 for index, argument_type in enumerate(argument_types)
             )
             call_arguments = ", ".join(f"arg{index}" for index, _ in enumerate(argument_types))
-            if value_expr == "Value::Undefined":
+            if throws:
+                # `[Throws]`: the native Err propagates to the runtime, which throws it to JS.
+                if value_expr == "Value::Undefined":
+                    result_expr = f"native.{native}({call_arguments})?;\n            Ok(Value::Undefined)"
+                else:
+                    result_expr = (
+                        f"let result = native.{native}({call_arguments})?;\n"
+                        f"            Ok({value_expr.replace('native.{native}()', 'result')})"
+                    )
+            elif value_expr == "Value::Undefined":
                 result_expr = f"native.{native}({call_arguments});\n            Value::Undefined"
             else:
                 result_expr = value_expr.replace("native.{native}()", f"native.{native}({call_arguments})")
@@ -8621,10 +8632,12 @@ class CGV8BindingRoot(CGThing):
                 + f'        }}'
             )
             conversions = ", ".join(f"roves_v8::WebIdlArgumentConversion::{argument_type[1]}" for argument_type in argument_types)
-            if argument_types:
-                nullable_arguments = ", ".join(str(argument_type[3]).lower() for argument_type in argument_types)
-                optional_arguments = ", ".join(str(argument_type[4]).lower() for argument_type in argument_types)
-                enumeration_values = ", ".join(argument_type[5] or "None" for argument_type in argument_types)
+            nullable_arguments = ", ".join(str(argument_type[3]).lower() for argument_type in argument_types)
+            optional_arguments = ", ".join(str(argument_type[4]).lower() for argument_type in argument_types)
+            enumeration_values = ", ".join(argument_type[5] or "None" for argument_type in argument_types)
+            if throws:
+                registrations_list.append(f'        runtime.define_fallible_webidl_method(&interface, "{idl}", {callback}, &[{conversions}], &[{nullable_arguments}], &[{optional_arguments}], &[{enumeration_values}])?;')
+            elif argument_types:
                 registrations_list.append(f'        runtime.define_webidl_method_with_argument_flags_and_enums(&interface, "{idl}", {callback}, &[{conversions}], &[{nullable_arguments}], &[{optional_arguments}], &[{enumeration_values}])?;')
             else:
                 registrations_list.append(f'        runtime.define_method(&interface, "{idl}", {callback})?;')
@@ -8634,7 +8647,8 @@ class CGV8BindingRoot(CGThing):
         if constructor is not None:
             signatures = constructor.signatures()
             # The parser marks every constructor [NewObject]; that is inherent, not a shape.
-            constructor_attributes = set(constructor._extendedAttrDict) - {"NewObject"}
+            constructor_attributes = set(constructor._extendedAttrDict) - {"NewObject", "Throws"}
+            constructor_throws = "Throws" in constructor._extendedAttrDict
             if constructor_attributes:
                 raise TypeError(f"V8 backend unsupported constructor attributes on {name}: {sorted(constructor_attributes)}")
             if len(signatures) != 1:
@@ -8644,7 +8658,7 @@ class CGV8BindingRoot(CGThing):
                 f"arg{index}: {argument_type[0]}" for index, argument_type in enumerate(constructor_arguments)
             )
             trait_methods = "\n".join(
-                [f"    fn Constructor({constructor_parameters}) -> Self where Self: Sized;"]
+                [f"    fn Constructor({constructor_parameters}) -> {'Result<Self, roves_v8::WebIdlError>' if constructor_throws else 'Self'} where Self: Sized;"]
                 + ([trait_methods] if trait_methods else [])
             )
         parent = interface.parent
@@ -8671,6 +8685,11 @@ class CGV8BindingRoot(CGThing):
                 for index, argument_type in enumerate(constructor_arguments)
             )
             call_arguments = ", ".join(f"arg{index}" for index, _ in enumerate(constructor_arguments))
+            constructed = f"<T as {name}Native>::Constructor({call_arguments})"
+            constructed = (
+                f"{constructed}.map(|native| Box::new(native) as Box<dyn std::any::Any>)"
+                if constructor_throws else f"Ok(Box::new({constructed}))"
+            )
             # Fully qualified: in an inheritance tree several native traits declare Constructor.
             define_interface = (
                 f'runtime.define_constructible_interface(\n'
@@ -8678,7 +8697,7 @@ class CGV8BindingRoot(CGThing):
                 f'            {parent_interface},\n'
                 f'            |{"args" if constructor_arguments else "_args"}| {{\n'
                 + (f"{conversions}\n" if conversions else "")
-                + f'            Box::new(<T as {name}Native>::Constructor({call_arguments}))\n'
+                + f'            {constructed}\n'
                 f'        }},\n'
                 f'            &[{", ".join("roves_v8::WebIdlArgumentConversion::" + argument_type[1] for argument_type in constructor_arguments)}],\n'
                 f'            &[{", ".join(str(argument_type[3]).lower() for argument_type in constructor_arguments)}],\n'

@@ -11,6 +11,48 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: `[Throws]` constructors and operations (CP48)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixture
+`components/roves-v8/tests/webidl/ThrowingOperations.webidl`;
+`components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0112-roves-v8-webidl-throws.patch` after 0111.
+
+`[Throws]` appears 727 times in Servo's WebIDL, including the constructors of `Event` and
+`EventTarget`.
+
+**Runtime.**
+- New engine-neutral `roves_v8::WebIdlError` with three variants: `TypeError`, `RangeError` and
+  `DomException { name, message }`.
+- New `define_fallible_webidl_method`, taking a
+  `FallibleNativeMethod = fn(&dyn Any, &[Value]) -> Result<Value, WebIdlError>`.
+- `NativeConstructor` now returns `Result<Box<dyn Any>, WebIdlError>`.
+- An `Err` is thrown as the matching JS exception. A DOMException is built as
+  `new DOMException(message, name)` when the realm defines `DOMException`. The runtime does not
+  install that interface yet, so until then it falls back to an `Error` whose `name` is set. That is
+  a documented gap, not spec behaviour.
+- Infallible methods keep their existing API.
+
+**Generator.**
+- `[Throws]` operations get `-> Result<T, roves_v8::WebIdlError>` on the native trait and register
+  through `define_fallible_webidl_method`, using `?` and `Ok(..)`.
+- `[Throws]` constructors return `Result<Self, roves_v8::WebIdlError>`.
+- Non-throwing output is byte-identical to before.
+- `[Throws]` on attributes (`[GetterThrows]`/`[SetterThrows]`) is still rejected.
+
+**Tests.**
+- New runtime test on a generated interface, which works with and without a realm `DOMException`:
+  - a constructor that refuses (TypeError);
+  - operation TypeError and RangeError;
+  - a throwing `undefined` operation;
+  - a DOMException.
+- Generator tests: 35/35.
+- `roves-v8` pilot and pilot+JIT-less: 70 unit + 5 integration + 2 doctests each; default 55 unit +
+  2 doctests.
+- `servo-script` check with the pilot is clean.
+
+Coverage: **16/486** (`Storage`, `TimeRanges` and `CanvasGradient` join).
+
 ## 2026-10-06 - V8 migration Phase 4: WebIDL constructors in the V8 runtime and generator (CP47)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixtures

@@ -378,7 +378,7 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn("Value::Null => None", source)
 
     def test_unsupported_interface_shapes_fail(self):
-        self.assert_unsupported("interface Unsupported { [Throws] constructor(); };")
+        self.assert_unsupported("interface Unsupported { [Pref=\"dom_x\"] constructor(); };")
         self.assert_unsupported("namespace Unsupported { undefined run(); };")
 
     def test_non_window_exposure_fails_closed(self):
@@ -419,9 +419,9 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn("&[roves_v8::WebIdlArgumentConversion::Double, roves_v8::WebIdlArgumentConversion::DomString]", source)
             self.assertIn("&[false, true]", source)
 
-    def test_throwing_and_overloaded_constructors_fail_closed(self):
+    def test_unsupported_and_overloaded_constructors_fail_closed(self):
         for constructor, message in [
-            ("[Throws] constructor();", "unsupported constructor attributes"),
+            ("[Pref=\"dom_x\"] constructor();", "unsupported constructor attributes"),
             ("constructor(); constructor(boolean flag);", "single-signature constructors"),
         ]:
             with tempfile.TemporaryDirectory() as directory:
@@ -429,6 +429,26 @@ class V8GeneratorTests(unittest.TestCase):
                 path.write_text(f"[Exposed=Window] interface Ctor {{ {constructor} }};", encoding="utf-8")
                 with self.assertRaisesRegex(TypeError, message):
                     generate(path, Path(directory) / "output")
+
+    def test_throws_generates_fallible_native_signatures(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Risky.webidl"
+            path.write_text(
+                "[Exposed=Window] interface Risky { [Throws] constructor(boolean ok); "
+                "[Throws] unsigned long parse(DOMString text); [Throws] undefined reset(); boolean plain(); };",
+                encoding="utf-8",
+            )
+            source = generate(path, Path(directory) / "output")
+            self.assertIn("fn Constructor(arg0: bool) -> Result<Self, roves_v8::WebIdlError> where Self: Sized;", source)
+            self.assertIn(".map(|native| Box::new(native) as Box<dyn std::any::Any>)", source)
+            self.assertIn("fn Parse(&self, arg0: Vec<u16>) -> Result<u32, roves_v8::WebIdlError>;", source)
+            self.assertIn("fn Reset(&self) -> Result<(), roves_v8::WebIdlError>;", source)
+            self.assertIn("fn Plain(&self) -> bool;", source)
+            self.assertIn('runtime.define_fallible_webidl_method(&interface, "parse"', source)
+            self.assertIn("let result = native.Parse(arg0)?;", source)
+            self.assertIn("Ok(Value::Number(result as f64))", source)
+            self.assertIn('runtime.define_fallible_webidl_method(&interface, "reset"', source)
+            self.assertIn('runtime.define_method(&interface, "plain"', source)
 
     def write_hierarchy(self, directory, derived_body="readonly attribute boolean derived;"):
         base = Path(directory) / "Base.webidl"

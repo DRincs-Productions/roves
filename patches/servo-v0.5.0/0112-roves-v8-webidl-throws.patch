@@ -1,0 +1,453 @@
+diff --git a/components/roves-v8/build.rs b/components/roves-v8/build.rs
+index db20607fd67..ba9c9799769 100644
+--- a/components/roves-v8/build.rs
++++ b/components/roves-v8/build.rs
+@@ -201,6 +201,7 @@ fn main() {
+         ("InheritanceDerived", &["InheritanceBase"][..]),
+         ("ConstructibleCounter", &[][..]),
+         ("ConstructibleChild", &["ConstructibleCounter"][..]),
++        ("ThrowingOperations", &[][..]),
+     ] {
+         println!("cargo:rerun-if-changed={}", fixtures.join(format!("{interface}.webidl")).display());
+         let status = Command::new(&python)
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 607afca3d33..53325f97f07 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -89,6 +89,10 @@ pub mod webidl {
+     pub mod constructible_child {
+         include!(concat!(env!("OUT_DIR"), "/ConstructibleChildV8Binding.rs"));
+     }
++    #[cfg(test)]
++    pub mod throwing_operations {
++        include!(concat!(env!("OUT_DIR"), "/ThrowingOperationsV8Binding.rs"));
++    }
+ }
+ 
+ use std::sync::Once;
+@@ -341,7 +345,7 @@ fn convert_webidl_integer(number: f64, bits: u32, signed: bool) -> f64 {
+ }
+ 
+ struct WebIdlMethodConfig {
+-    method: NativeMethod,
++    method: NativeMethodKind,
+     arguments: WebIdlArguments,
+ }
+ 
+@@ -381,7 +385,29 @@ impl WebIdlArguments {
+ /// the JS arguments already converted to [`Value`] and returns the new native object, which the
+ /// runtime attaches to the `this` that `new` created (same ownership and finalization as
+ /// [`Runtime::create_instance`]). Same plain-function-pointer restriction as the other callbacks.
+-pub type NativeConstructor = fn(&[Value]) -> Box<dyn std::any::Any>;
++pub type NativeConstructor = fn(&[Value]) -> Result<Box<dyn std::any::Any>, WebIdlError>;
++
++/// An exception a WebIDL `[Throws]` member raises, without exposing engine types. The runtime
++/// turns it into the matching JS exception when the native callback returns it.
++#[derive(Clone, Debug, PartialEq)]
++pub enum WebIdlError {
++    TypeError(String),
++    RangeError(String),
++    /// A `DOMException` with the given `name` (e.g. `"InvalidStateError"`). Thrown as
++    /// `new DOMException(message, name)` when the realm defines `DOMException`; until the
++    /// runtime installs that interface itself, it falls back to an `Error` whose `name` is set.
++    DomException { name: String, message: String },
++}
++
++/// A WebIDL operation that may throw (`[Throws]`), registered via
++/// [`Runtime::define_fallible_webidl_method`].
++pub type FallibleNativeMethod =
++    fn(&dyn std::any::Any, &[Value]) -> Result<Value, WebIdlError>;
++
++enum NativeMethodKind {
++    Infallible(NativeMethod),
++    Fallible(FallibleNativeMethod),
++}
+ 
+ struct WebIdlConstructorConfig {
+     constructor: NativeConstructor,
+@@ -889,7 +915,14 @@ impl Runtime {
+                         else {
+                             return;
+                         };
+-                        let raw = Box::into_raw(Box::new((config.constructor)(&arguments)));
++                        let native = match (config.constructor)(&arguments) {
++                            Ok(native) => native,
++                            Err(error) => {
++                                throw_webidl_error(scope, &error);
++                                return;
++                            },
++                        };
++                        let raw = Box::into_raw(Box::new(native));
+                         this.set_aligned_pointer_in_internal_field(
+                             0,
+                             raw as *const std::ffi::c_void,
+@@ -1471,6 +1504,50 @@ impl Runtime {
+         nullable_arguments: &[bool],
+         optional_arguments: &[bool],
+         enumeration_values: &[Option<&[&str]>],
++    ) -> Result<(), String> {
++        self.define_method_inner(
++            interface,
++            name,
++            NativeMethodKind::Infallible(method),
++            conversions,
++            nullable_arguments,
++            optional_arguments,
++            enumeration_values,
++        )
++    }
++
++    /// Like [`Runtime::define_webidl_method_with_argument_flags_and_enums`] for an operation
++    /// that may throw: an `Err` from `method` is thrown to JS as the matching exception.
++    pub fn define_fallible_webidl_method(
++        &mut self,
++        interface: &Interface,
++        name: &str,
++        method: FallibleNativeMethod,
++        conversions: &[WebIdlArgumentConversion],
++        nullable_arguments: &[bool],
++        optional_arguments: &[bool],
++        enumeration_values: &[Option<&[&str]>],
++    ) -> Result<(), String> {
++        self.define_method_inner(
++            interface,
++            name,
++            NativeMethodKind::Fallible(method),
++            conversions,
++            nullable_arguments,
++            optional_arguments,
++            enumeration_values,
++        )
++    }
++
++    fn define_method_inner(
++        &mut self,
++        interface: &Interface,
++        name: &str,
++        method: NativeMethodKind,
++        conversions: &[WebIdlArgumentConversion],
++        nullable_arguments: &[bool],
++        optional_arguments: &[bool],
++        enumeration_values: &[Option<&[&str]>],
+     ) -> Result<(), String> {
+         if interface.materialized.get() {
+             return Err("interface members must be defined before creating instances or descendants".into());
+@@ -1534,7 +1611,18 @@ impl Runtime {
+                 let Some(arguments) = convert_webidl_arguments(scope, &args, &config.arguments) else {
+                     return;
+                 };
+-                let result = (config.method)(boxed_any.as_ref(), &arguments);
++                let result = match config.method {
++                    NativeMethodKind::Infallible(method) => method(boxed_any.as_ref(), &arguments),
++                    NativeMethodKind::Fallible(method) => {
++                        match method(boxed_any.as_ref(), &arguments) {
++                            Ok(result) => result,
++                            Err(error) => {
++                                throw_webidl_error(scope, &error);
++                                return;
++                            },
++                        }
++                    },
++                };
+                 retval.set(v8_value(scope, &result));
+             },
+         )
+@@ -2082,6 +2170,44 @@ fn arm_native_finalizer(
+     observer
+ }
+ 
++/// Throws the JS exception matching a native [`WebIdlError`].
++fn throw_webidl_error(scope: &mut v8::PinScope, error: &WebIdlError) {
++    let exception = match error {
++        WebIdlError::TypeError(message) => {
++            let message = v8::String::new(scope, message).unwrap();
++            v8::Exception::type_error(scope, message)
++        },
++        WebIdlError::RangeError(message) => {
++            let message = v8::String::new(scope, message).unwrap();
++            v8::Exception::range_error(scope, message)
++        },
++        WebIdlError::DomException { name, message } => {
++            let message = v8::String::new(scope, message).unwrap();
++            let name = v8::String::new(scope, name).unwrap();
++            let context = scope.get_current_context();
++            let global = context.global(scope);
++            let key = v8::String::new(scope, "DOMException").unwrap();
++            let constructor = global
++                .get(scope, key.into())
++                .and_then(|value| v8::Local::<v8::Function>::try_from(value).ok());
++            match constructor
++                .and_then(|constructor| constructor.new_instance(scope, &[message.into(), name.into()]))
++            {
++                Some(exception) => exception.into(),
++                None => {
++                    let exception = v8::Exception::error(scope, message);
++                    if let Ok(object) = v8::Local::<v8::Object>::try_from(exception) {
++                        let name_key = v8::String::new(scope, "name").unwrap();
++                        object.set(scope, name_key.into(), name.into());
++                    }
++                    exception
++                },
++            }
++        },
++    };
++    scope.throw_exception(exception);
++}
++
+ fn throw_type_error(scope: &mut v8::PinScope, message: &str) {
+     let message = v8::String::new(scope, message).unwrap();
+     let exception = v8::Exception::type_error(scope, message);
+@@ -2475,7 +2601,7 @@ mod tests {
+                 DROPPED.with(|dropped| dropped.set(dropped.get() + 1));
+             }
+         }
+-        fn construct(arguments: &[Value]) -> Box<dyn std::any::Any> {
++        fn construct(arguments: &[Value]) -> Result<Box<dyn std::any::Any>, crate::WebIdlError> {
+             let Value::Utf16String(label) = &arguments[0] else { unreachable!("DOMString argument") };
+             let count = match arguments[1] {
+                 Value::Missing => 1,
+@@ -2483,7 +2609,7 @@ mod tests {
+                 _ => unreachable!("optional unsigned long argument"),
+             };
+             CONSTRUCTED.with(|constructed| constructed.set(constructed.get() + 1));
+-            Box::new(Labeled { label: label.clone(), count })
++            Ok(Box::new(Labeled { label: label.clone(), count }))
+         }
+ 
+         let mut runtime = Runtime::new();
+@@ -4070,6 +4196,55 @@ mod tests {
+         }
+     }
+ 
++    #[cfg(feature = "webidl-pilot")]
++    #[test]
++    fn generated_throws_members_raise_the_native_error_as_a_js_exception() {
++        use crate::webidl::throwing_operations::{ThrowingOperationsBinding, ThrowingOperationsNative};
++        use crate::WebIdlError;
++        struct Parser;
++        #[allow(non_snake_case)]
++        impl ThrowingOperationsNative for Parser {
++            fn Constructor(allow: bool) -> Result<Self, WebIdlError> {
++                if allow { Ok(Parser) } else { Err(WebIdlError::TypeError("construction refused".into())) }
++            }
++            fn Parse(&self, text: Vec<u16>) -> Result<u32, WebIdlError> {
++                let text = String::from_utf16_lossy(&text);
++                if text == "dom" {
++                    return Err(WebIdlError::DomException {
++                        name: "InvalidStateError".into(),
++                        message: "not now".into(),
++                    });
++                }
++                let value: u64 = text.parse().map_err(|_| WebIdlError::TypeError(format!("not a number: {text}")))?;
++                u32::try_from(value).map_err(|_| WebIdlError::RangeError("too large".into()))
++            }
++            fn Reset(&self, fail: bool) -> Result<(), WebIdlError> {
++                if fail { Err(WebIdlError::RangeError("reset failed".into())) } else { Ok(()) }
++            }
++        }
++
++        let mut runtime = Runtime::new();
++        let _binding = ThrowingOperationsBinding::<Parser>::install(&mut runtime).unwrap();
++        let caught = |runtime: &mut Runtime, source: &str| {
++            runtime
++                .eval(&format!("(() => {{ try {{ {source}; return 'no exception'; }} catch (e) {{ return [e.constructor.name, e.name, e.message].join(); }} }})()"))
++                .unwrap()
++        };
++        runtime.eval("var parser = new ThrowingOperations(true);").unwrap();
++        assert_eq!(runtime.eval("[parser.parse('12'), parser.reset(false)].join()").unwrap(), "12,");
++        assert_eq!(caught(&mut runtime, "new ThrowingOperations(false)"), "TypeError,TypeError,construction refused");
++        assert_eq!(caught(&mut runtime, "parser.parse('x')"), "TypeError,TypeError,not a number: x");
++        assert_eq!(caught(&mut runtime, "parser.parse('99999999999')"), "RangeError,RangeError,too large");
++        assert_eq!(caught(&mut runtime, "parser.reset(true)"), "RangeError,RangeError,reset failed");
++        // Without a DOMException interface in the realm, the name is still observable.
++        assert_eq!(caught(&mut runtime, "parser.parse('dom')"), "Error,InvalidStateError,not now");
++        // With one, the runtime constructs it like `new DOMException(message, name)`.
++        runtime
++            .eval("globalThis.DOMException = class DOMException extends Error { constructor(message, name) { super(message); this.name = name; } };")
++            .unwrap();
++        assert_eq!(caught(&mut runtime, "parser.parse('dom')"), "DOMException,InvalidStateError,not now");
++    }
++
+     #[cfg(feature = "webidl-pilot")]
+     #[test]
+     fn generated_nullable_domstring_preserves_null_and_utf16_semantics() {
+diff --git a/components/roves-v8/tests/webidl/ThrowingOperations.webidl b/components/roves-v8/tests/webidl/ThrowingOperations.webidl
+new file mode 100644
+index 00000000000..d1cc3fa5f4d
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/ThrowingOperations.webidl
+@@ -0,0 +1,6 @@
++[Exposed=Window]
++interface ThrowingOperations {
++  [Throws] constructor(boolean allow);
++  [Throws] unsigned long parse(DOMString text);
++  [Throws] undefined reset(boolean fail);
++};
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index 93c3c2864b7..2386692a385 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8420,8 +8420,10 @@ class CGV8BindingRoot(CGThing):
+         for member in interface.members:
+             if member.isMethod():
+                 signatures = member.signatures()
+-                if member.isStatic() or member._extendedAttrDict or len(signatures) != 1:
++                operation_attributes = set(member._extendedAttrDict) - {"Throws"}
++                if member.isStatic() or operation_attributes or len(signatures) != 1:
+                     raise TypeError(f"V8 backend only supports single-signature instance operations: {name}.{member.identifier.name}")
++                throws = "Throws" in member._extendedAttrDict
+                 argument_types = v8_argument_types(name, member.identifier.name, signatures[0][1])
+                 return_type = signatures[0][0]
+                 nullable_return = return_type.nullable()
+@@ -8479,7 +8481,7 @@ class CGV8BindingRoot(CGThing):
+                     )
+                 else:
+                     raise TypeError(f"V8 backend unsupported operation return type: {name}.{member.identifier.name}: {return_type}")
+-                operations.append((member.identifier.name, MakeNativeName(member.identifier.name), rust_type, value_expr, argument_types))
++                operations.append((member.identifier.name, MakeNativeName(member.identifier.name), rust_type, value_expr, argument_types, throws))
+                 continue
+             if (not member.isAttr() or member.isStatic() or member._extendedAttrDict):
+                 raise TypeError(f"V8 backend unsupported member: {name}.{member.identifier.name}")
+@@ -8533,7 +8535,7 @@ class CGV8BindingRoot(CGThing):
+             [f"    fn {native}(&self) -> {rust_type};"
+              + (f"\n    fn set_{native}(&mut self, value: {rust_type});" if setter else "")
+              for _, native, rust_type, _, setter, _ in attributes]
+-            + [f"    fn {native}(&self{', ' + ', '.join('arg' + str(index) + ': ' + argument_type[0] for index, argument_type in enumerate(argument_types)) if argument_types else ''}) -> {rust_type};" for _, native, rust_type, _, argument_types in operations]
++            + [f"    fn {native}(&self{', ' + ', '.join('arg' + str(index) + ': ' + argument_type[0] for index, argument_type in enumerate(argument_types)) if argument_types else ''}) -> {f'Result<{rust_type}, roves_v8::WebIdlError>' if throws else rust_type};" for _, native, rust_type, _, argument_types, throws in operations]
+         )
+         registrations_list = []
+         for idl, native, rust_type, value_expr, setter, conversion in attributes:
+@@ -8602,13 +8604,22 @@ class CGV8BindingRoot(CGThing):
+                 registrations_list.append(
+                     f'        runtime.define_property(&interface, "{idl}", {getter})?;'
+                 )
+-        for idl, native, _, value_expr, argument_types in operations:
++        for idl, native, _, value_expr, argument_types, throws in operations:
+             argument_conversions = "\n".join(
+                 f'            let arg{index} = match args.get({index}).unwrap_or(&Value::Undefined) {{ {argument_type[2]}, _ => unreachable!("runtime conversion matches generated WebIDL argument type") }};'
+                 for index, argument_type in enumerate(argument_types)
+             )
+             call_arguments = ", ".join(f"arg{index}" for index, _ in enumerate(argument_types))
+-            if value_expr == "Value::Undefined":
++            if throws:
++                # `[Throws]`: the native Err propagates to the runtime, which throws it to JS.
++                if value_expr == "Value::Undefined":
++                    result_expr = f"native.{native}({call_arguments})?;\n            Ok(Value::Undefined)"
++                else:
++                    result_expr = (
++                        f"let result = native.{native}({call_arguments})?;\n"
++                        f"            Ok({value_expr.replace('native.{native}()', 'result')})"
++                    )
++            elif value_expr == "Value::Undefined":
+                 result_expr = f"native.{native}({call_arguments});\n            Value::Undefined"
+             else:
+                 result_expr = value_expr.replace("native.{native}()", f"native.{native}({call_arguments})")
+@@ -8621,10 +8632,12 @@ class CGV8BindingRoot(CGThing):
+                 + f'        }}'
+             )
+             conversions = ", ".join(f"roves_v8::WebIdlArgumentConversion::{argument_type[1]}" for argument_type in argument_types)
+-            if argument_types:
+-                nullable_arguments = ", ".join(str(argument_type[3]).lower() for argument_type in argument_types)
+-                optional_arguments = ", ".join(str(argument_type[4]).lower() for argument_type in argument_types)
+-                enumeration_values = ", ".join(argument_type[5] or "None" for argument_type in argument_types)
++            nullable_arguments = ", ".join(str(argument_type[3]).lower() for argument_type in argument_types)
++            optional_arguments = ", ".join(str(argument_type[4]).lower() for argument_type in argument_types)
++            enumeration_values = ", ".join(argument_type[5] or "None" for argument_type in argument_types)
++            if throws:
++                registrations_list.append(f'        runtime.define_fallible_webidl_method(&interface, "{idl}", {callback}, &[{conversions}], &[{nullable_arguments}], &[{optional_arguments}], &[{enumeration_values}])?;')
++            elif argument_types:
+                 registrations_list.append(f'        runtime.define_webidl_method_with_argument_flags_and_enums(&interface, "{idl}", {callback}, &[{conversions}], &[{nullable_arguments}], &[{optional_arguments}], &[{enumeration_values}])?;')
+             else:
+                 registrations_list.append(f'        runtime.define_method(&interface, "{idl}", {callback})?;')
+@@ -8634,7 +8647,8 @@ class CGV8BindingRoot(CGThing):
+         if constructor is not None:
+             signatures = constructor.signatures()
+             # The parser marks every constructor [NewObject]; that is inherent, not a shape.
+-            constructor_attributes = set(constructor._extendedAttrDict) - {"NewObject"}
++            constructor_attributes = set(constructor._extendedAttrDict) - {"NewObject", "Throws"}
++            constructor_throws = "Throws" in constructor._extendedAttrDict
+             if constructor_attributes:
+                 raise TypeError(f"V8 backend unsupported constructor attributes on {name}: {sorted(constructor_attributes)}")
+             if len(signatures) != 1:
+@@ -8644,7 +8658,7 @@ class CGV8BindingRoot(CGThing):
+                 f"arg{index}: {argument_type[0]}" for index, argument_type in enumerate(constructor_arguments)
+             )
+             trait_methods = "\n".join(
+-                [f"    fn Constructor({constructor_parameters}) -> Self where Self: Sized;"]
++                [f"    fn Constructor({constructor_parameters}) -> {'Result<Self, roves_v8::WebIdlError>' if constructor_throws else 'Self'} where Self: Sized;"]
+                 + ([trait_methods] if trait_methods else [])
+             )
+         parent = interface.parent
+@@ -8671,6 +8685,11 @@ class CGV8BindingRoot(CGThing):
+                 for index, argument_type in enumerate(constructor_arguments)
+             )
+             call_arguments = ", ".join(f"arg{index}" for index, _ in enumerate(constructor_arguments))
++            constructed = f"<T as {name}Native>::Constructor({call_arguments})"
++            constructed = (
++                f"{constructed}.map(|native| Box::new(native) as Box<dyn std::any::Any>)"
++                if constructor_throws else f"Ok(Box::new({constructed}))"
++            )
+             # Fully qualified: in an inheritance tree several native traits declare Constructor.
+             define_interface = (
+                 f'runtime.define_constructible_interface(\n'
+@@ -8678,7 +8697,7 @@ class CGV8BindingRoot(CGThing):
+                 f'            {parent_interface},\n'
+                 f'            |{"args" if constructor_arguments else "_args"}| {{\n'
+                 + (f"{conversions}\n" if conversions else "")
+-                + f'            Box::new(<T as {name}Native>::Constructor({call_arguments}))\n'
++                + f'            {constructed}\n'
+                 f'        }},\n'
+                 f'            &[{", ".join("roves_v8::WebIdlArgumentConversion::" + argument_type[1] for argument_type in constructor_arguments)}],\n'
+                 f'            &[{", ".join(str(argument_type[3]).lower() for argument_type in constructor_arguments)}],\n'
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index edd482416d6..7be0a1acae8 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -378,7 +378,7 @@ class V8GeneratorTests(unittest.TestCase):
+             self.assertIn("Value::Null => None", source)
+ 
+     def test_unsupported_interface_shapes_fail(self):
+-        self.assert_unsupported("interface Unsupported { [Throws] constructor(); };")
++        self.assert_unsupported("interface Unsupported { [Pref=\"dom_x\"] constructor(); };")
+         self.assert_unsupported("namespace Unsupported { undefined run(); };")
+ 
+     def test_non_window_exposure_fails_closed(self):
+@@ -419,9 +419,9 @@ class V8GeneratorTests(unittest.TestCase):
+             self.assertIn("&[roves_v8::WebIdlArgumentConversion::Double, roves_v8::WebIdlArgumentConversion::DomString]", source)
+             self.assertIn("&[false, true]", source)
+ 
+-    def test_throwing_and_overloaded_constructors_fail_closed(self):
++    def test_unsupported_and_overloaded_constructors_fail_closed(self):
+         for constructor, message in [
+-            ("[Throws] constructor();", "unsupported constructor attributes"),
++            ("[Pref=\"dom_x\"] constructor();", "unsupported constructor attributes"),
+             ("constructor(); constructor(boolean flag);", "single-signature constructors"),
+         ]:
+             with tempfile.TemporaryDirectory() as directory:
+@@ -430,6 +430,26 @@ class V8GeneratorTests(unittest.TestCase):
+                 with self.assertRaisesRegex(TypeError, message):
+                     generate(path, Path(directory) / "output")
+ 
++    def test_throws_generates_fallible_native_signatures(self):
++        with tempfile.TemporaryDirectory() as directory:
++            path = Path(directory) / "Risky.webidl"
++            path.write_text(
++                "[Exposed=Window] interface Risky { [Throws] constructor(boolean ok); "
++                "[Throws] unsigned long parse(DOMString text); [Throws] undefined reset(); boolean plain(); };",
++                encoding="utf-8",
++            )
++            source = generate(path, Path(directory) / "output")
++            self.assertIn("fn Constructor(arg0: bool) -> Result<Self, roves_v8::WebIdlError> where Self: Sized;", source)
++            self.assertIn(".map(|native| Box::new(native) as Box<dyn std::any::Any>)", source)
++            self.assertIn("fn Parse(&self, arg0: Vec<u16>) -> Result<u32, roves_v8::WebIdlError>;", source)
++            self.assertIn("fn Reset(&self) -> Result<(), roves_v8::WebIdlError>;", source)
++            self.assertIn("fn Plain(&self) -> bool;", source)
++            self.assertIn('runtime.define_fallible_webidl_method(&interface, "parse"', source)
++            self.assertIn("let result = native.Parse(arg0)?;", source)
++            self.assertIn("Ok(Value::Number(result as f64))", source)
++            self.assertIn('runtime.define_fallible_webidl_method(&interface, "reset"', source)
++            self.assertIn('runtime.define_method(&interface, "plain"', source)
++
+     def write_hierarchy(self, directory, derived_body="readonly attribute boolean derived;"):
+         base = Path(directory) / "Base.webidl"
+         base.write_text("[Exposed=Window] interface Base { readonly attribute boolean base; };", encoding="utf-8")

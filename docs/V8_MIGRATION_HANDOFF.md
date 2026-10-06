@@ -77,6 +77,15 @@ engine-neutral nel runtime, che lanci TypeError/RangeError; DOMException più av
 `[LegacyUnforgeable]` copiati nei discendenti (`Event.isTrusted`): sono la stessa definizione,
 non un vero shadowing, e oggi bloccano 40 interfacce. Poi `[Pref]`.
 
+**CP48 (2026-10-06):** `[Throws]` su costruttori e operazioni (patch 0112). `roves_v8::WebIdlError`
+(TypeError, RangeError, DomException) è engine-neutral; `define_fallible_webidl_method`;
+`NativeConstructor` restituisce `Result`. DOMException: `new DOMException(message, name)` se il
+realm lo definisce, altrimenti un `Error` con `name` impostato (lacuna documentata finché il
+runtime non installa l'interfaccia). Test generatore 35/35, `roves-v8` 70+5+2 (pilot e
+JIT-less), default 55+2, check `servo-script` pulito. Copertura **16/486**. **Prossimo:** i
+membri `[LegacyUnforgeable]` copiati dal parser nei discendenti (`Event.isTrusted`, 40
+interfacce), `[GetterThrows]`/`[SetterThrows]` sugli attributi, `[Pref]`.
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

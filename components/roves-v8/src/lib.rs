@@ -89,6 +89,10 @@ pub mod webidl {
     pub mod constructible_child {
         include!(concat!(env!("OUT_DIR"), "/ConstructibleChildV8Binding.rs"));
     }
+    #[cfg(test)]
+    pub mod throwing_operations {
+        include!(concat!(env!("OUT_DIR"), "/ThrowingOperationsV8Binding.rs"));
+    }
 }
 
 use std::sync::Once;
@@ -341,7 +345,7 @@ fn convert_webidl_integer(number: f64, bits: u32, signed: bool) -> f64 {
 }
 
 struct WebIdlMethodConfig {
-    method: NativeMethod,
+    method: NativeMethodKind,
     arguments: WebIdlArguments,
 }
 
@@ -381,7 +385,29 @@ impl WebIdlArguments {
 /// the JS arguments already converted to [`Value`] and returns the new native object, which the
 /// runtime attaches to the `this` that `new` created (same ownership and finalization as
 /// [`Runtime::create_instance`]). Same plain-function-pointer restriction as the other callbacks.
-pub type NativeConstructor = fn(&[Value]) -> Box<dyn std::any::Any>;
+pub type NativeConstructor = fn(&[Value]) -> Result<Box<dyn std::any::Any>, WebIdlError>;
+
+/// An exception a WebIDL `[Throws]` member raises, without exposing engine types. The runtime
+/// turns it into the matching JS exception when the native callback returns it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum WebIdlError {
+    TypeError(String),
+    RangeError(String),
+    /// A `DOMException` with the given `name` (e.g. `"InvalidStateError"`). Thrown as
+    /// `new DOMException(message, name)` when the realm defines `DOMException`; until the
+    /// runtime installs that interface itself, it falls back to an `Error` whose `name` is set.
+    DomException { name: String, message: String },
+}
+
+/// A WebIDL operation that may throw (`[Throws]`), registered via
+/// [`Runtime::define_fallible_webidl_method`].
+pub type FallibleNativeMethod =
+    fn(&dyn std::any::Any, &[Value]) -> Result<Value, WebIdlError>;
+
+enum NativeMethodKind {
+    Infallible(NativeMethod),
+    Fallible(FallibleNativeMethod),
+}
 
 struct WebIdlConstructorConfig {
     constructor: NativeConstructor,
@@ -889,7 +915,14 @@ impl Runtime {
                         else {
                             return;
                         };
-                        let raw = Box::into_raw(Box::new((config.constructor)(&arguments)));
+                        let native = match (config.constructor)(&arguments) {
+                            Ok(native) => native,
+                            Err(error) => {
+                                throw_webidl_error(scope, &error);
+                                return;
+                            },
+                        };
+                        let raw = Box::into_raw(Box::new(native));
                         this.set_aligned_pointer_in_internal_field(
                             0,
                             raw as *const std::ffi::c_void,
@@ -1472,6 +1505,50 @@ impl Runtime {
         optional_arguments: &[bool],
         enumeration_values: &[Option<&[&str]>],
     ) -> Result<(), String> {
+        self.define_method_inner(
+            interface,
+            name,
+            NativeMethodKind::Infallible(method),
+            conversions,
+            nullable_arguments,
+            optional_arguments,
+            enumeration_values,
+        )
+    }
+
+    /// Like [`Runtime::define_webidl_method_with_argument_flags_and_enums`] for an operation
+    /// that may throw: an `Err` from `method` is thrown to JS as the matching exception.
+    pub fn define_fallible_webidl_method(
+        &mut self,
+        interface: &Interface,
+        name: &str,
+        method: FallibleNativeMethod,
+        conversions: &[WebIdlArgumentConversion],
+        nullable_arguments: &[bool],
+        optional_arguments: &[bool],
+        enumeration_values: &[Option<&[&str]>],
+    ) -> Result<(), String> {
+        self.define_method_inner(
+            interface,
+            name,
+            NativeMethodKind::Fallible(method),
+            conversions,
+            nullable_arguments,
+            optional_arguments,
+            enumeration_values,
+        )
+    }
+
+    fn define_method_inner(
+        &mut self,
+        interface: &Interface,
+        name: &str,
+        method: NativeMethodKind,
+        conversions: &[WebIdlArgumentConversion],
+        nullable_arguments: &[bool],
+        optional_arguments: &[bool],
+        enumeration_values: &[Option<&[&str]>],
+    ) -> Result<(), String> {
         if interface.materialized.get() {
             return Err("interface members must be defined before creating instances or descendants".into());
         }
@@ -1534,7 +1611,18 @@ impl Runtime {
                 let Some(arguments) = convert_webidl_arguments(scope, &args, &config.arguments) else {
                     return;
                 };
-                let result = (config.method)(boxed_any.as_ref(), &arguments);
+                let result = match config.method {
+                    NativeMethodKind::Infallible(method) => method(boxed_any.as_ref(), &arguments),
+                    NativeMethodKind::Fallible(method) => {
+                        match method(boxed_any.as_ref(), &arguments) {
+                            Ok(result) => result,
+                            Err(error) => {
+                                throw_webidl_error(scope, &error);
+                                return;
+                            },
+                        }
+                    },
+                };
                 retval.set(v8_value(scope, &result));
             },
         )
@@ -2082,6 +2170,44 @@ fn arm_native_finalizer(
     observer
 }
 
+/// Throws the JS exception matching a native [`WebIdlError`].
+fn throw_webidl_error(scope: &mut v8::PinScope, error: &WebIdlError) {
+    let exception = match error {
+        WebIdlError::TypeError(message) => {
+            let message = v8::String::new(scope, message).unwrap();
+            v8::Exception::type_error(scope, message)
+        },
+        WebIdlError::RangeError(message) => {
+            let message = v8::String::new(scope, message).unwrap();
+            v8::Exception::range_error(scope, message)
+        },
+        WebIdlError::DomException { name, message } => {
+            let message = v8::String::new(scope, message).unwrap();
+            let name = v8::String::new(scope, name).unwrap();
+            let context = scope.get_current_context();
+            let global = context.global(scope);
+            let key = v8::String::new(scope, "DOMException").unwrap();
+            let constructor = global
+                .get(scope, key.into())
+                .and_then(|value| v8::Local::<v8::Function>::try_from(value).ok());
+            match constructor
+                .and_then(|constructor| constructor.new_instance(scope, &[message.into(), name.into()]))
+            {
+                Some(exception) => exception.into(),
+                None => {
+                    let exception = v8::Exception::error(scope, message);
+                    if let Ok(object) = v8::Local::<v8::Object>::try_from(exception) {
+                        let name_key = v8::String::new(scope, "name").unwrap();
+                        object.set(scope, name_key.into(), name.into());
+                    }
+                    exception
+                },
+            }
+        },
+    };
+    scope.throw_exception(exception);
+}
+
 fn throw_type_error(scope: &mut v8::PinScope, message: &str) {
     let message = v8::String::new(scope, message).unwrap();
     let exception = v8::Exception::type_error(scope, message);
@@ -2475,7 +2601,7 @@ mod tests {
                 DROPPED.with(|dropped| dropped.set(dropped.get() + 1));
             }
         }
-        fn construct(arguments: &[Value]) -> Box<dyn std::any::Any> {
+        fn construct(arguments: &[Value]) -> Result<Box<dyn std::any::Any>, crate::WebIdlError> {
             let Value::Utf16String(label) = &arguments[0] else { unreachable!("DOMString argument") };
             let count = match arguments[1] {
                 Value::Missing => 1,
@@ -2483,7 +2609,7 @@ mod tests {
                 _ => unreachable!("optional unsigned long argument"),
             };
             CONSTRUCTED.with(|constructed| constructed.set(constructed.get() + 1));
-            Box::new(Labeled { label: label.clone(), count })
+            Ok(Box::new(Labeled { label: label.clone(), count }))
         }
 
         let mut runtime = Runtime::new();
@@ -4068,6 +4194,55 @@ mod tests {
         for source in ["ConstructibleCounter(1)", "new ConstructibleCounter(Symbol())"] {
             assert!(runtime.eval(source).unwrap_err().contains("TypeError"), "{source}");
         }
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_throws_members_raise_the_native_error_as_a_js_exception() {
+        use crate::webidl::throwing_operations::{ThrowingOperationsBinding, ThrowingOperationsNative};
+        use crate::WebIdlError;
+        struct Parser;
+        #[allow(non_snake_case)]
+        impl ThrowingOperationsNative for Parser {
+            fn Constructor(allow: bool) -> Result<Self, WebIdlError> {
+                if allow { Ok(Parser) } else { Err(WebIdlError::TypeError("construction refused".into())) }
+            }
+            fn Parse(&self, text: Vec<u16>) -> Result<u32, WebIdlError> {
+                let text = String::from_utf16_lossy(&text);
+                if text == "dom" {
+                    return Err(WebIdlError::DomException {
+                        name: "InvalidStateError".into(),
+                        message: "not now".into(),
+                    });
+                }
+                let value: u64 = text.parse().map_err(|_| WebIdlError::TypeError(format!("not a number: {text}")))?;
+                u32::try_from(value).map_err(|_| WebIdlError::RangeError("too large".into()))
+            }
+            fn Reset(&self, fail: bool) -> Result<(), WebIdlError> {
+                if fail { Err(WebIdlError::RangeError("reset failed".into())) } else { Ok(()) }
+            }
+        }
+
+        let mut runtime = Runtime::new();
+        let _binding = ThrowingOperationsBinding::<Parser>::install(&mut runtime).unwrap();
+        let caught = |runtime: &mut Runtime, source: &str| {
+            runtime
+                .eval(&format!("(() => {{ try {{ {source}; return 'no exception'; }} catch (e) {{ return [e.constructor.name, e.name, e.message].join(); }} }})()"))
+                .unwrap()
+        };
+        runtime.eval("var parser = new ThrowingOperations(true);").unwrap();
+        assert_eq!(runtime.eval("[parser.parse('12'), parser.reset(false)].join()").unwrap(), "12,");
+        assert_eq!(caught(&mut runtime, "new ThrowingOperations(false)"), "TypeError,TypeError,construction refused");
+        assert_eq!(caught(&mut runtime, "parser.parse('x')"), "TypeError,TypeError,not a number: x");
+        assert_eq!(caught(&mut runtime, "parser.parse('99999999999')"), "RangeError,RangeError,too large");
+        assert_eq!(caught(&mut runtime, "parser.reset(true)"), "RangeError,RangeError,reset failed");
+        // Without a DOMException interface in the realm, the name is still observable.
+        assert_eq!(caught(&mut runtime, "parser.parse('dom')"), "Error,InvalidStateError,not now");
+        // With one, the runtime constructs it like `new DOMException(message, name)`.
+        runtime
+            .eval("globalThis.DOMException = class DOMException extends Error { constructor(message, name) { super(message); this.name = name; } };")
+            .unwrap();
+        assert_eq!(caught(&mut runtime, "parser.parse('dom')"), "DOMException,InvalidStateError,not now");
     }
 
     #[cfg(feature = "webidl-pilot")]

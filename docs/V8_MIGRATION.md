@@ -24,6 +24,12 @@ it fully qualified, so inherited constructible interfaces sharing one native typ
 and overloaded constructors still fail closed. Next blockers: `[Throws]` on constructors and
 members, `[Pref]`, and `[LegacyUnforgeable]` members copied into descendants (`Event.isTrusted`).
 
+**CP48 (2026-10-06): `[Throws]`.** An engine-neutral `roves_v8::WebIdlError` (TypeError,
+RangeError, DOMException) returned by fallible native constructors/operations is thrown as the
+matching JS exception; generated traits return `Result<_, roves_v8::WebIdlError>` for `[Throws]`.
+DOMException falls back to a named `Error` until the runtime installs the `DOMException`
+interface. Attribute throwing is still rejected. Coverage 16/486.
+
 CP37 exposes stable `NativeObjectId` through `DomObject` and updates generated `dom_struct`
 equality to use that engine-neutral contract. Local checks pass (reflector 2/2, macro 3/3,
 rustfmt, and patch 0101 reverse-check); CI is green: V8 37226916624 (6/6), Servo 37226916650
