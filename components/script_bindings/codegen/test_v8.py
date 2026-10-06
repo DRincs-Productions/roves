@@ -44,7 +44,7 @@ class V8GeneratorTests(unittest.TestCase):
             )
             source = generate(webidl, root / "out")
             self.assertIn("fn Value(&self) -> Vec<u16>;", source)
-            self.assertIn("fn set_Value(&mut self, value: Vec<u16>);", source)
+            self.assertIn("fn set_Value(&self, value: Vec<u16>);", source)
             self.assertIn("runtime.define_domstring_property(&interface, \"value\"", source)
 
     def test_nullable_domstring_uses_nullable_native_representation(self):
@@ -58,7 +58,7 @@ class V8GeneratorTests(unittest.TestCase):
             source = generate(webidl, root / "out")
             self.assertIn("fn Value(&self) -> Option<Vec<u16>>;", source)
             self.assertIn("fn InitialValue(&self) -> Option<Vec<u16>>;", source)
-            self.assertIn("fn set_Value(&mut self, value: Option<Vec<u16>>);", source)
+            self.assertIn("fn set_Value(&self, value: Option<Vec<u16>>);", source)
             self.assertIn("unwrap_or(Value::Null)", source)
             self.assertIn('runtime.define_property(&interface, "initialValue"', source)
             self.assertIn("runtime.define_nullable_domstring_property(", source)
@@ -73,9 +73,9 @@ class V8GeneratorTests(unittest.TestCase):
             )
             source = generate(webidl, root / "out")
             self.assertIn("fn Value(&self) -> String;", source)
-            self.assertIn("fn set_Value(&mut self, value: String);", source)
+            self.assertIn("fn set_Value(&self, value: String);", source)
             self.assertIn("fn Nullable(&self) -> Option<String>;", source)
-            self.assertIn("fn set_Nullable(&mut self, value: Option<String>);", source)
+            self.assertIn("fn set_Nullable(&self, value: Option<String>);", source)
             self.assertIn("fn InitialValue(&self) -> Option<String>;", source)
             self.assertIn("PrimitiveConversion::UsvString", source)
             self.assertIn("PrimitiveConversion::NullableUsvString", source)
@@ -94,7 +94,7 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn("PrimitiveConversion::Boolean", source)
             self.assertIn("PrimitiveConversion::Double", source)
             self.assertIn("PrimitiveConversion::UnsignedLong", source)
-            self.assertIn("fn set_Count(&mut self, value: u32);", source)
+            self.assertIn("fn set_Count(&self, value: u32);", source)
 
     def assert_unsupported(self, contents):
         with tempfile.TemporaryDirectory() as directory:
@@ -330,7 +330,7 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn('Some(&["\\u{6c}\\u{65}\\u{66}\\u{74}", "\\u{72}\\u{69}\\u{67}\\u{68}\\u{74}"])', source)
 
     def test_optional_explicit_defaults_variadics_and_unsupported_types_fail_closed(self):
-        for signature in ["double run(double... values);", "double run(object value);"]:
+        for signature in ["double run(double... values);", "double run(sequence<long> value);"]:
             with self.subTest(signature=signature):
                 self.assert_unsupported("interface Unsupported { " + signature + " };")
 
@@ -342,7 +342,7 @@ class V8GeneratorTests(unittest.TestCase):
             source = generate(webidl, root / "out")
             self.assertIn("WebIdlOptionalArgument<bool>", source)
             self.assertIn("WebIdlArgumentConversion::Boolean", source)
-        for signature in ["boolean run(object value);", "boolean run(boolean... values);"]:
+        for signature in ["boolean run(sequence<long> value);", "boolean run(boolean... values);"]:
             with self.subTest(signature=signature):
                 self.assert_unsupported("interface Unsupported { " + signature + " };")
 
@@ -465,6 +465,29 @@ class V8GeneratorTests(unittest.TestCase):
             source = generate(path, Path(directory) / "output")
             self.assertIn("fn Area(&self) -> roves_v8::FiniteF64;", source)
             self.assertIn('runtime.define_interface("Shape", None)', source)
+
+    def test_any_object_and_callback_members_receive_a_script_context(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Engine.webidl"
+            path.write_text(
+                "callback Visitor = boolean (any value); [Exposed=Window] interface Engine { "
+                "any echo(any value); boolean visit(Visitor visitor, object target); undefined plain(boolean flag); "
+                "attribute boolean state; };",
+                encoding="utf-8",
+            )
+            source = generate(path, Path(directory) / "output")
+            for expected in [
+                "fn Echo(&self, cx: &mut roves_v8::ScriptContext, arg0: roves_v8::Handle) -> Result<roves_v8::Handle, roves_v8::WebIdlError>;",
+                "fn Visit(&self, cx: &mut roves_v8::ScriptContext, arg0: roves_v8::Handle, arg1: roves_v8::Handle) -> Result<bool, roves_v8::WebIdlError>;",
+                "fn Plain(&self, arg0: bool) -> ();",
+                # Setters take &self: natives may re-enter JS, so mutation is interior.
+                "fn set_State(&self, value: bool);",
+                'runtime.define_contextual_webidl_method(&interface, "echo", |cx, native, args| {',
+                "let result = native.Echo(cx, arg0)?;",
+                "roves_v8::WebIdlArgumentConversion::Callback, roves_v8::WebIdlArgumentConversion::Object",
+            ]:
+                self.assertIn(expected, source)
+            self.assertNotIn("downcast_mut", source)
 
     def test_overloads_needing_type_distinction_fail_closed(self):
         self.assert_unsupported("interface Unsupported { undefined f(DOMString a); undefined f(boolean a); };")

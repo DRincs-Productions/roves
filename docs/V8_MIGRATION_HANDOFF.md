@@ -156,6 +156,14 @@ architetturale:** un contesto di script engine-neutral (`ScriptContext`) passato
 ne hanno bisogno, come il `cx` di Servo, per chiamare funzioni JS e creare oggetti/array.
 Sblocca `any`, callback, event handler, dizionari e sequence.
 
+**CP58 (2026-10-06):** `ScriptContext` (patch 0122). I nativi contestuali ricevono
+`cx: &mut roves_v8::ScriptContext` (call, value, handle, js_ref); supportati argomenti
+`any`/`object`/callback e ritorni `any`/`object`; le eccezioni dei callback vengono rilanciate
+invariate (`WebIdlError::Js`). **Fix di soundness:** con la re-entrancy i setter non possono più
+ricevere `&mut`: tutti i setter sono `&self` (interior mutability, come il DOM di Servo).
+Test generatore 47/47, `roves-v8` 82+5+2, default 59+2, check pulito. Copertura 96/486.
+**Prossimo:** attributi contestuali (event handler, attributi `any`), poi dizionari e sequence.
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

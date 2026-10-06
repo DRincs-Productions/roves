@@ -129,6 +129,10 @@ pub mod webidl {
     pub mod ce_reactive {
         include!(concat!(env!("OUT_DIR"), "/CeReactiveV8Binding.rs"));
     }
+    #[cfg(test)]
+    pub mod callback_operations {
+        include!(concat!(env!("OUT_DIR"), "/CallbackOperationsV8Binding.rs"));
+    }
 }
 
 use std::sync::Once;
@@ -185,6 +189,8 @@ pub enum Value {
     /// scope explicitly needs ArrayBuffer/TypedArray, not just "some object".
     Bytes(Vec<u8>),
     Object,
+    /// An arbitrary JS value kept as-is: WebIDL `any`, `object` and callback-function values.
+    Js(Handle),
     /// A traced native DOM object (an interface-typed WebIDL value). Converting it to JS yields
     /// the native's one wrapper, created on first use as an instance of its concrete interface.
     Native(NativeRef),
@@ -225,7 +231,21 @@ impl FiniteF64 {
 /// created in — the migration plan's Phase 3 (GC/DOM ownership) will build the real reflector
 /// identity/lifetime model on top of this same primitive; this phase only needs the handle
 /// itself to work.
+#[derive(Clone)]
 pub struct Handle(v8::Global<v8::Value>);
+
+impl PartialEq for Handle {
+    /// Identity of the referenced JS value (the same object, or the same primitive handle).
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl std::fmt::Debug for Handle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("Handle")
+    }
+}
 
 /// A named JS interface (constructor + prototype chain), created via
 /// [`Runtime::define_interface`] — see that method's own doc comment.
@@ -343,8 +363,8 @@ impl Tracer<'_> {
 /// The single cppgc type behind every traced native: the concrete native is type-erased so the
 /// existing `&dyn Any` callbacks (getters, setters, methods) work unchanged on traced objects.
 struct GcBox {
-    /// Pointed to by wrapper internal field 0, exactly like a `create_instance` native; the
-    /// `UnsafeCell` makes the setter callbacks' exclusive access to it sound.
+    /// Pointed to by wrapper internal field 0, exactly like a `create_instance` native. Callbacks
+    /// only take shared references to it; natives mutate through interior mutability.
     native: std::cell::UnsafeCell<Box<dyn std::any::Any>>,
     trace: fn(&dyn std::any::Any, &mut Tracer),
     /// The native's one JS wrapper, once created. Traced, like Blink's ScriptWrappable wrapper
@@ -620,6 +640,72 @@ fn native_argument(
     Some(Value::Native(NativeRef { gc: v8::cppgc::Persistent::new(&pointer), interface }))
 }
 
+/// What a native WebIDL member that needs the JS engine receives, like the `cx` Servo passes to
+/// its DOM methods: it can call JS functions, read JS values and create references to them,
+/// without exposing engine types. It exists only for the duration of one native call.
+pub struct ScriptContext<'a, 's, 'i> {
+    scope: &'a mut v8::PinScope<'s, 'i>,
+}
+
+impl ScriptContext<'_, '_, '_> {
+    /// Calls `function` with `this` and `arguments`. An exception the function throws comes back
+    /// as [`WebIdlError::Js`], ready to rethrow by returning it from the native member.
+    pub fn call(&mut self, function: &Handle, this: &Value, arguments: &[Value]) -> Result<Value, WebIdlError> {
+        let scope = &mut *self.scope;
+        let function = v8::Local::new(scope, &function.0);
+        let Ok(function) = v8::Local::<v8::Function>::try_from(function) else {
+            return Err(WebIdlError::TypeError("value is not callable".into()));
+        };
+        let this = v8_result(scope, this);
+        let mut converted = Vec::with_capacity(arguments.len());
+        for argument in arguments {
+            converted.push(v8_result(scope, argument));
+        }
+        v8::tc_scope!(let try_catch, scope);
+        match function.call(try_catch, this, &converted) {
+            Some(result) => Ok(Value::Js(Handle(v8::Global::new(try_catch, result)))),
+            None => {
+                let exception = try_catch
+                    .exception()
+                    .unwrap_or_else(|| v8::undefined(try_catch).into());
+                Err(WebIdlError::Js(Handle(v8::Global::new(try_catch, exception))))
+            },
+        }
+    }
+
+    /// The engine-neutral value of a JS value (primitives convert; objects stay [`Value::Js`]).
+    pub fn value(&mut self, value: &Handle) -> Value {
+        let local = v8::Local::new(self.scope, &value.0);
+        if local.is_object() && !local.is_uint8_array() {
+            return Value::Js(value.clone());
+        }
+        native_value(self.scope, local)
+    }
+
+    /// A JS value for `value` (natives become their wrapper).
+    pub fn handle(&mut self, value: &Value) -> Handle {
+        let local = v8_result(self.scope, value);
+        Handle(v8::Global::new(self.scope, local))
+    }
+
+    /// A traced reference to `value`, for storing in a traced native (see [`JsRef`]).
+    pub fn js_ref(&mut self, value: &Handle) -> JsRef {
+        let local = v8::Local::new(self.scope, &value.0);
+        JsRef(v8::TracedReference::new(self.scope, local))
+    }
+
+    /// The value a [`JsRef`] points at.
+    pub fn js_ref_value(&mut self, reference: &JsRef) -> Option<Handle> {
+        let local = reference.0.get(self.scope)?;
+        Some(Handle(v8::Global::new(self.scope, local)))
+    }
+}
+
+/// A WebIDL operation that needs the JS engine (`any`, `object` or callback values), registered
+/// via [`Runtime::define_contextual_webidl_method`].
+pub type ContextualNativeMethod =
+    for<'a, 's, 'i> fn(&mut ScriptContext<'a, 's, 'i>, &dyn std::any::Any, &[Value]) -> Result<Value, WebIdlError>;
+
 /// The result of running a script: either its final expression's string representation, or the
 /// message from an uncaught exception (syntax error or a thrown value). Deliberately a plain
 /// `Result<String, String>` — see this module's own doc comment on why no `v8::*` type escapes.
@@ -647,17 +733,17 @@ pub type PropertyGetter = fn(&dyn std::any::Any) -> Value;
 /// a [`PropertyGetter`] — mutates whatever Rust value the instance actually wraps, the same way
 /// [`PropertyGetter`] reads it (downcast-checked, not a blind cast). Same plain-function-pointer
 /// restriction as [`PropertyGetter`]/[`NativeFunction`], for the same reason.
-pub type PropertySetter = fn(&mut dyn std::any::Any, &Value);
+pub type PropertySetter = fn(&dyn std::any::Any, &Value);
 
 /// A WebIDL DOMString setter. JavaScript string conversion runs in the runtime and preserves
 /// the resulting UTF-16 code units, including lone surrogates.
-pub type DomStringSetter = fn(&mut dyn std::any::Any, Vec<u16>);
+pub type DomStringSetter = fn(&dyn std::any::Any, Vec<u16>);
 
 /// A nullable WebIDL DOMString setter. `None` represents the IDL `null` value.
-pub type NullableDomStringSetter = fn(&mut dyn std::any::Any, Option<Vec<u16>>);
+pub type NullableDomStringSetter = fn(&dyn std::any::Any, Option<Vec<u16>>);
 
 /// A setter for primitive WebIDL attributes after JavaScript coercion.
-pub type WebIdlPrimitiveSetter = fn(&mut dyn std::any::Any, &Value);
+pub type WebIdlPrimitiveSetter = fn(&dyn std::any::Any, &Value);
 
 /// JavaScript-to-WebIDL coercion requested by a generated primitive attribute setter.
 #[derive(Clone, Copy)]
@@ -697,6 +783,12 @@ pub enum WebIdlArgumentConversion {
     /// A traced native implementing an interface. The interface name is passed in the
     /// argument's `enumeration_values` slot (`Some(&["Node"])`).
     Interface,
+    /// WebIDL `any`: the value unchanged, as [`Value::Js`].
+    Any,
+    /// WebIDL `object`: any JS object, as [`Value::Js`]; primitives are a TypeError.
+    Object,
+    /// A WebIDL callback function: any callable, as [`Value::Js`]; else a TypeError.
+    Callback,
 }
 
 /// WebIDL optional-argument state. `Missing` differs from a present nullable `None`.
@@ -798,6 +890,9 @@ pub enum WebIdlError {
     /// `new DOMException(message, name)` when the realm defines `DOMException`; until the
     /// runtime installs that interface itself, it falls back to an `Error` whose `name` is set.
     DomException { name: String, message: String },
+    /// Rethrow this JS value unchanged (an exception a callback threw, per WebIDL's
+    /// "rethrow" semantics for callback functions invoked by an operation).
+    Js(Handle),
 }
 
 /// A WebIDL operation that may throw (`[Throws]`), registered via
@@ -823,6 +918,7 @@ struct WebIdlOverloadConfig {
 enum NativeMethodKind {
     Infallible(NativeMethod),
     Fallible(FallibleNativeMethod),
+    Contextual(ContextualNativeMethod),
 }
 
 struct WebIdlConstructorConfig {
@@ -1820,9 +1916,11 @@ impl Runtime {
                         return;
                     }
                     let value = native_value(scope, args.get(0));
-                    // SAFETY: JavaScript exclusively borrows Runtime during this callback, so
-                    // no shared native getter reference can overlap the mutable borrow.
-                    setter(unsafe { (&mut *raw).as_mut() }, &value);
+                    // SAFETY: the instance owns this Box and its live local handle prevents GC.
+                    // Setters receive a shared reference: natives may re-enter JavaScript
+                    // (ScriptContext::call), so mutation goes through interior mutability, as
+                    // in Servo's DOM.
+                    setter(unsafe { (&*raw).as_ref() }, &value);
                 },
             )
             .data(setter_data.into())
@@ -1911,7 +2009,7 @@ impl Runtime {
                                 }
                             };
                             // Coercion may run user JavaScript; borrow native state only after it completes.
-                            setter(unsafe { (&mut *raw).as_mut() }, &converted);
+                            setter(unsafe { (&*raw).as_ref() }, &converted);
                         },
                     )
                     .data(setter_data.into())
@@ -1960,7 +2058,7 @@ impl Runtime {
                         Some(units)
                     };
                     // ToString can run user code or throw; borrow native state only afterwards.
-                    setter(unsafe { (&mut *raw).as_mut() }, converted);
+                    setter(unsafe { (&*raw).as_ref() }, converted);
                 },
             )
             .data(setter_data.into())
@@ -1995,7 +2093,7 @@ impl Runtime {
                         string.write_v2(scope, 0, &mut units, v8::WriteFlags::empty());
                         // The ToString operation above may execute user code, so take the
                         // mutable native borrow only after conversion has completed.
-                        setter(unsafe { (&mut *raw).as_mut() }, units);
+                        setter(unsafe { (&*raw).as_ref() }, units);
                     },
                 )
                 .data(setter_data.into())
@@ -2235,6 +2333,29 @@ impl Runtime {
         )
     }
 
+    /// Like [`Runtime::define_fallible_webidl_method`] for an operation whose native needs the JS
+    /// engine: it receives a [`ScriptContext`].
+    pub fn define_contextual_webidl_method(
+        &mut self,
+        interface: &Interface,
+        name: &str,
+        method: ContextualNativeMethod,
+        conversions: &[WebIdlArgumentConversion],
+        nullable_arguments: &[bool],
+        optional_arguments: &[bool],
+        enumeration_values: &[Option<&[&str]>],
+    ) -> Result<(), String> {
+        self.define_method_inner(
+            interface,
+            name,
+            NativeMethodKind::Contextual(method),
+            conversions,
+            nullable_arguments,
+            optional_arguments,
+            enumeration_values,
+        )
+    }
+
     fn define_method_inner(
         &mut self,
         interface: &Interface,
@@ -2311,6 +2432,16 @@ impl Runtime {
                     NativeMethodKind::Infallible(method) => method(boxed_any.as_ref(), &arguments),
                     NativeMethodKind::Fallible(method) => {
                         match method(boxed_any.as_ref(), &arguments) {
+                            Ok(result) => result,
+                            Err(error) => {
+                                throw_webidl_error(scope, &error);
+                                return;
+                            },
+                        }
+                    },
+                    NativeMethodKind::Contextual(method) => {
+                        let result = method(&mut ScriptContext { scope }, boxed_any.as_ref(), &arguments);
+                        match result {
                             Ok(result) => result,
                             Err(error) => {
                                 throw_webidl_error(scope, &error);
@@ -2803,6 +2934,23 @@ fn convert_webidl_arguments<'s>(
                     Err(None) => return None,
                 }
             }
+            Some(WebIdlArgumentConversion::Any) => {
+                Value::Js(Handle(v8::Global::new(scope, argument)))
+            }
+            Some(WebIdlArgumentConversion::Object) => {
+                if !argument.is_object() {
+                    throw_type_error(scope, "argument is not an object");
+                    return None;
+                }
+                Value::Js(Handle(v8::Global::new(scope, argument)))
+            }
+            Some(WebIdlArgumentConversion::Callback) => {
+                if !argument.is_function() {
+                    throw_type_error(scope, "argument is not callable");
+                    return None;
+                }
+                Value::Js(Handle(v8::Global::new(scope, argument)))
+            }
             Some(WebIdlArgumentConversion::Interface) => {
                 let expected = config
                     .enumeration_values
@@ -2890,6 +3038,7 @@ fn arm_native_finalizer(
 /// Throws the JS exception matching a native [`WebIdlError`].
 fn throw_webidl_error(scope: &mut v8::PinScope, error: &WebIdlError) {
     let exception = match error {
+        WebIdlError::Js(value) => v8::Local::new(scope, &value.0),
         WebIdlError::TypeError(message) => {
             let message = v8::String::new(scope, message).unwrap();
             v8::Exception::type_error(scope, message)
@@ -2973,6 +3122,7 @@ fn v8_value<'s>(scope: &v8::PinScope<'s, '_>, value: &Value) -> v8::Local<'s, v8
         // Wrapping a native needs mutable isolate access; callback results go through
         // `v8_result`, which does that. Other conversions have no interface context.
         Value::Native(_) => v8::undefined(scope).into(),
+        Value::Js(handle) => v8::Local::new(scope, &handle.0),
         Value::Null => v8::null(scope).into(),
         Value::Bool(b) => v8::Boolean::new(scope, *b).into(),
         Value::Number(n) => v8::Number::new(scope, *n).into(),
@@ -3114,20 +3264,20 @@ mod tests {
     fn generated_domstring_binding_preserves_unpaired_surrogates() {
         use crate::webidl::utf16_string_state::{Utf16StringStateBinding, Utf16StringStateNative};
 
-        struct NativeString(Vec<u16>);
+        struct NativeString(std::cell::RefCell<Vec<u16>>);
         impl Utf16StringStateNative for NativeString {
             fn Value(&self) -> Vec<u16> {
-                self.0.clone()
+                self.0.borrow().clone()
             }
-            fn set_Value(&mut self, value: Vec<u16>) {
-                self.0 = value;
+            fn set_Value(&self, value: Vec<u16>) {
+                *self.0.borrow_mut() = value;
             }
         }
 
         let mut runtime = Runtime::new();
         let binding = Utf16StringStateBinding::<NativeString>::install(&mut runtime).unwrap();
         let units = vec![0xD800, b'A' as u16, 0xDC00];
-        let state = binding.create(&mut runtime, NativeString(units.clone()));
+        let state = binding.create(&mut runtime, NativeString(std::cell::RefCell::new(units.clone())));
         runtime.set_global_property("state", &state).unwrap();
         assert_eq!(runtime.eval_value("state.value").unwrap(), Value::Utf16String(units));
         assert_eq!(
@@ -4075,17 +4225,17 @@ mod tests {
     #[test]
     fn define_settable_property_reads_the_initial_value() {
         struct Node {
-            value: String,
+            value: std::cell::RefCell<String>,
         }
         fn get_value(this: &dyn std::any::Any) -> Value {
             match this.downcast_ref::<Node>() {
-                Some(node) => Value::String(node.value.clone()),
+                Some(node) => Value::String(node.value.borrow().clone()),
                 None => Value::Undefined,
             }
         }
-        fn set_value(this: &mut dyn std::any::Any, new_value: &Value) {
-            if let (Some(node), Value::String(s)) = (this.downcast_mut::<Node>(), new_value) {
-                node.value = s.clone();
+        fn set_value(this: &dyn std::any::Any, new_value: &Value) {
+            if let (Some(node), Value::String(s)) = (this.downcast_ref::<Node>(), new_value) {
+                *node.value.borrow_mut() = s.clone();
             }
         }
 
@@ -4097,7 +4247,7 @@ mod tests {
         let node = runtime.create_instance(
             &node_interface,
             Node {
-                value: "hello".to_string(),
+                value: std::cell::RefCell::new("hello".to_string()),
             },
         );
         runtime.set_global_property("node", &node).unwrap();
@@ -4111,17 +4261,17 @@ mod tests {
     #[test]
     fn define_settable_property_mutates_the_wrapped_value() {
         struct Node {
-            value: String,
+            value: std::cell::RefCell<String>,
         }
         fn get_value(this: &dyn std::any::Any) -> Value {
             match this.downcast_ref::<Node>() {
-                Some(node) => Value::String(node.value.clone()),
+                Some(node) => Value::String(node.value.borrow().clone()),
                 None => Value::Undefined,
             }
         }
-        fn set_value(this: &mut dyn std::any::Any, new_value: &Value) {
-            if let (Some(node), Value::String(s)) = (this.downcast_mut::<Node>(), new_value) {
-                node.value = s.clone();
+        fn set_value(this: &dyn std::any::Any, new_value: &Value) {
+            if let (Some(node), Value::String(s)) = (this.downcast_ref::<Node>(), new_value) {
+                *node.value.borrow_mut() = s.clone();
             }
         }
 
@@ -4133,7 +4283,7 @@ mod tests {
         let node = runtime.create_instance(
             &node_interface,
             Node {
-                value: "hello".to_string(),
+                value: std::cell::RefCell::new("hello".to_string()),
             },
         );
         runtime.set_global_property("node", &node).unwrap();
@@ -4146,7 +4296,7 @@ mod tests {
             runtime.eval_value("node.nodeValue").unwrap(),
             Value::String("world".to_string())
         );
-        assert_eq!(runtime.get_wrapped::<Node>(&node).unwrap().value, "world");
+        assert_eq!(*runtime.get_wrapped::<Node>(&node).unwrap().value.borrow(), "world");
     }
 
     #[test]
@@ -4414,7 +4564,7 @@ mod tests {
     #[test]
     fn materializing_a_descendant_rejects_late_members_on_all_ancestors() {
         fn getter(_: &dyn std::any::Any) -> Value { Value::Undefined }
-        fn setter(_: &mut dyn std::any::Any, _: &Value) {}
+        fn setter(_: &dyn std::any::Any, _: &Value) {}
         fn method(_: &dyn std::any::Any, _: &[Value]) -> Value { Value::Undefined }
         let mut runtime = Runtime::new();
         let parent = runtime.define_interface("Parent", None);
@@ -4455,21 +4605,21 @@ mod tests {
     #[test]
     fn prototype_attributes_have_webidl_descriptors_and_check_receivers() {
         fn getter(this: &dyn std::any::Any) -> Value {
-            Value::Number(*this.downcast_ref::<i32>().unwrap() as f64)
+            Value::Number(this.downcast_ref::<std::cell::Cell<i32>>().unwrap().get() as f64)
         }
-        fn setter(this: &mut dyn std::any::Any, value: &Value) {
-            if let Value::Number(value) = value { *this.downcast_mut::<i32>().unwrap() = *value as i32; }
+        fn setter(this: &dyn std::any::Any, value: &Value) {
+            if let Value::Number(value) = value { this.downcast_ref::<std::cell::Cell<i32>>().unwrap().set(*value as i32); }
         }
         let mut runtime = Runtime::new();
         let interface = runtime.define_interface("Native", None);
         runtime.define_settable_property(&interface, "value", getter, setter).unwrap();
-        let node = runtime.create_instance(&interface, 3_i32);
+        let node = runtime.create_instance(&interface, std::cell::Cell::new(3_i32));
         runtime.set_global_property("node", &node).unwrap();
         assert_eq!(runtime.eval("Object.hasOwn(node, 'value')").unwrap(), "false");
         assert_eq!(runtime.eval("const d = Object.getOwnPropertyDescriptor(Native.prototype, 'value'); [d.get.name, d.get.length, d.set.name, d.set.length, d.enumerable, d.configurable].join(',')").unwrap(), "get value,0,set value,1,true,true");
         assert_eq!(runtime.eval("d.get.call(node)").unwrap(), "3");
         runtime.eval("d.set.call(node, 9)").unwrap();
-        assert_eq!(runtime.get_wrapped::<i32>(&node), Some(&9));
+        assert_eq!(runtime.get_wrapped::<std::cell::Cell<i32>>(&node).map(std::cell::Cell::get), Some(9));
         for expression in ["d.get.call({})", "d.set.call({}, 1)", "d.get.call(Object.create(node))", "new d.get()"] {
             assert!(runtime.eval(expression).unwrap_err().contains("TypeError"), "{expression}");
         }
@@ -4488,37 +4638,37 @@ mod tests {
         assert_eq!(FiniteF64::new(-2.5).unwrap().get(), -2.5);
         #[derive(Default)]
         struct State {
-            enabled: bool,
-            ratio: f64,
-            count: u32,
-            optional_enabled: Option<bool>,
-            optional_ratio: Option<f64>,
-            optional_count: Option<u32>,
+            enabled: std::cell::Cell<bool>,
+            ratio: std::cell::Cell<f64>,
+            count: std::cell::Cell<u32>,
+            optional_enabled: std::cell::Cell<Option<bool>>,
+            optional_ratio: std::cell::Cell<Option<f64>>,
+            optional_count: std::cell::Cell<Option<u32>>,
         }
         #[allow(non_snake_case)]
         impl MutablePrimitivesNative for State {
-            fn Enabled(&self) -> bool { self.enabled }
-            fn set_Enabled(&mut self, value: bool) { self.enabled = value; }
-            fn Ratio(&self) -> FiniteF64 { FiniteF64::new(self.ratio).expect("test state stores finite double attributes") }
-            fn set_Ratio(&mut self, value: FiniteF64) { self.ratio = value.get(); }
-            fn Count(&self) -> u32 { self.count }
-            fn set_Count(&mut self, value: u32) { self.count = value; }
-            fn OptionalEnabled(&self) -> Option<bool> { self.optional_enabled }
-            fn set_OptionalEnabled(&mut self, value: Option<bool>) { self.optional_enabled = value; }
-            fn OptionalRatio(&self) -> Option<FiniteF64> { self.optional_ratio.map(|value| FiniteF64::new(value).expect("test state stores finite nullable doubles")) }
-            fn set_OptionalRatio(&mut self, value: Option<FiniteF64>) { self.optional_ratio = value.map(FiniteF64::get); }
-            fn OptionalCount(&self) -> Option<u32> { self.optional_count }
-            fn set_OptionalCount(&mut self, value: Option<u32>) { self.optional_count = value; }
+            fn Enabled(&self) -> bool { self.enabled.get() }
+            fn set_Enabled(&self, value: bool) { self.enabled.set(value); }
+            fn Ratio(&self) -> FiniteF64 { FiniteF64::new(self.ratio.get()).expect("test state stores finite double attributes") }
+            fn set_Ratio(&self, value: FiniteF64) { self.ratio.set(value.get()); }
+            fn Count(&self) -> u32 { self.count.get() }
+            fn set_Count(&self, value: u32) { self.count.set(value); }
+            fn OptionalEnabled(&self) -> Option<bool> { self.optional_enabled.get() }
+            fn set_OptionalEnabled(&self, value: Option<bool>) { self.optional_enabled.set(value); }
+            fn OptionalRatio(&self) -> Option<FiniteF64> { self.optional_ratio.get().map(|value| FiniteF64::new(value).expect("test state stores finite nullable doubles")) }
+            fn set_OptionalRatio(&self, value: Option<FiniteF64>) { self.optional_ratio.set(value.map(FiniteF64::get)); }
+            fn OptionalCount(&self) -> Option<u32> { self.optional_count.get() }
+            fn set_OptionalCount(&self, value: Option<u32>) { self.optional_count.set(value); }
             fn Ping(&self) {}
-            fn IsEnabled(&self) -> bool { self.enabled }
-            fn CurrentRatio(&self) -> FiniteF64 { FiniteF64::new(self.ratio).unwrap_or_else(|| FiniteF64::new(0.0).unwrap()) }
+            fn IsEnabled(&self) -> bool { self.enabled.get() }
+            fn CurrentRatio(&self) -> FiniteF64 { FiniteF64::new(self.ratio.get()).unwrap_or_else(|| FiniteF64::new(0.0).unwrap()) }
             fn CurrentUnrestrictedRatio(&self) -> f64 { f64::INFINITY }
             fn OptionalUnrestrictedRatioResult(&self) -> Option<f64> { Some(f64::NAN) }
             fn CurrentUnrestrictedFloat(&self) -> f32 { f32::INFINITY }
             fn OptionalUnrestrictedFloatResult(&self) -> Option<f32> { Some(f32::NAN) }
-            fn CurrentCount(&self) -> u32 { self.count }
+            fn CurrentCount(&self) -> u32 { self.count.get() }
             fn Accepts(&self, value: bool) -> bool { value }
-            fn Add(&self, value: FiniteF64) -> FiniteF64 { FiniteF64::new(self.ratio + value.get()).unwrap() }
+            fn Add(&self, value: FiniteF64) -> FiniteF64 { FiniteF64::new(self.ratio.get() + value.get()).unwrap() }
             fn EchoUnrestricted(&self, value: f64) -> f64 { value }
             fn Wrap(&self, value: u32) -> u32 { value }
             fn EchoByte(&self, value: i8) -> i8 { value }
@@ -4554,16 +4704,16 @@ mod tests {
         runtime.set_global_property("state", &handle).unwrap();
         runtime.eval("state.enabled = 'false'; state.ratio = '2.5'; state.count = -1").unwrap();
         let native = runtime.get_wrapped::<State>(&handle).unwrap();
-        assert!(native.enabled);
-        assert_eq!(native.ratio, 2.5);
-        assert_eq!(native.count, u32::MAX);
+        assert!(native.enabled.get());
+        assert_eq!(native.ratio.get(), 2.5);
+        assert_eq!(native.count.get(), u32::MAX);
         runtime.eval("state.enabled = 0; state.count = 4294967297").unwrap();
         assert!(runtime.eval("state.ratio = {}").unwrap_err().contains("TypeError"));
         assert!(runtime.eval("state.ratio = Infinity").unwrap_err().contains("TypeError"));
         let native = runtime.get_wrapped::<State>(&handle).unwrap();
-        assert!(!native.enabled);
-        assert_eq!(native.ratio, 2.5);
-        assert_eq!(native.count, 1);
+        assert!(!native.enabled.get());
+        assert_eq!(native.ratio.get(), 2.5);
+        assert_eq!(native.count.get(), 1);
         assert!(runtime.eval("state.count = Symbol() ").is_err());
 
         assert_eq!(runtime.eval_value("state.add('2.5')").unwrap(), Value::Number(5.0));
@@ -4589,24 +4739,24 @@ mod tests {
         assert_eq!(runtime.eval_value("state.optionalRatio").unwrap(), Value::Null);
         assert_eq!(runtime.eval_value("state.optionalCount").unwrap(), Value::Null);
         runtime.eval("state.optionalEnabled = null; state.optionalRatio = null; state.optionalCount = null;").unwrap();
-        assert_eq!(runtime.get_wrapped::<State>(&handle).unwrap().optional_enabled, None);
-        assert_eq!(runtime.get_wrapped::<State>(&handle).unwrap().optional_ratio, None);
-        assert_eq!(runtime.get_wrapped::<State>(&handle).unwrap().optional_count, None);
+        assert_eq!(runtime.get_wrapped::<State>(&handle).unwrap().optional_enabled.get(), None);
+        assert_eq!(runtime.get_wrapped::<State>(&handle).unwrap().optional_ratio.get(), None);
+        assert_eq!(runtime.get_wrapped::<State>(&handle).unwrap().optional_count.get(), None);
 
         runtime.eval("state.optionalEnabled = 'false'; state.optionalRatio = '3.25'; state.optionalCount = -2;").unwrap();
         let native = runtime.get_wrapped::<State>(&handle).unwrap();
-        assert_eq!(native.optional_enabled, Some(true));
-        assert_eq!(native.optional_ratio, Some(3.25));
-        assert_eq!(native.optional_count, Some(u32::MAX - 1));
+        assert_eq!(native.optional_enabled.get(), Some(true));
+        assert_eq!(native.optional_ratio.get(), Some(3.25));
+        assert_eq!(native.optional_count.get(), Some(u32::MAX - 1));
 
         runtime.eval("state.optionalRatio = Symbol();").unwrap_err();
-        assert_eq!(runtime.get_wrapped::<State>(&handle).unwrap().optional_ratio, Some(3.25));
+        assert_eq!(runtime.get_wrapped::<State>(&handle).unwrap().optional_ratio.get(), Some(3.25));
         assert!(runtime.eval("state.optionalRatio = undefined;").unwrap_err().contains("TypeError"));
         runtime.eval("state.optionalEnabled = undefined; state.optionalCount = undefined;").unwrap();
         let native = runtime.get_wrapped::<State>(&handle).unwrap();
-        assert_eq!(native.optional_enabled, Some(false));
-        assert_eq!(native.optional_ratio, Some(3.25));
-        assert_eq!(native.optional_count, Some(0));
+        assert_eq!(native.optional_enabled.get(), Some(false));
+        assert_eq!(native.optional_ratio.get(), Some(3.25));
+        assert_eq!(native.optional_count.get(), Some(0));
         assert_eq!(runtime.eval_value("state.ping()").unwrap(), Value::Undefined);
         assert_eq!(runtime.eval_value("state.isEnabled()").unwrap(), Value::Bool(false));
         assert_eq!(runtime.eval_value("state.currentRatio()").unwrap(), Value::Number(2.5));
@@ -4986,8 +5136,8 @@ mod tests {
         // One native type per inheritance tree, as with Servo's `D: DomTypes`: the base
         // callbacks downcast to the same type, whichever interface created the wrapper.
         enum Shape {
-            Base { depth: u32, flagged: bool },
-            Derived { depth: u32, flagged: bool, ratio: f64 },
+            Base { depth: u32, flagged: std::cell::Cell<bool> },
+            Derived { depth: u32, flagged: std::cell::Cell<bool>, ratio: f64 },
         }
         #[allow(non_snake_case)]
         impl InheritanceBaseNative for Shape {
@@ -4995,10 +5145,10 @@ mod tests {
                 match self { Shape::Base { depth, .. } | Shape::Derived { depth, .. } => *depth }
             }
             fn Flagged(&self) -> bool {
-                match self { Shape::Base { flagged, .. } | Shape::Derived { flagged, .. } => *flagged }
+                match self { Shape::Base { flagged, .. } | Shape::Derived { flagged, .. } => flagged.get() }
             }
-            fn set_Flagged(&mut self, value: bool) {
-                match self { Shape::Base { flagged, .. } | Shape::Derived { flagged, .. } => *flagged = value }
+            fn set_Flagged(&self, value: bool) {
+                match self { Shape::Base { flagged, .. } | Shape::Derived { flagged, .. } => flagged.set(value) }
             }
             fn IsBase(&self) -> bool { matches!(self, Shape::Base { .. }) }
         }
@@ -5016,8 +5166,8 @@ mod tests {
         let mut runtime = Runtime::new();
         let base_binding = InheritanceBaseBinding::<Shape>::install(&mut runtime).unwrap();
         let derived_binding = InheritanceDerivedBinding::<Shape>::install(&mut runtime, &base_binding).unwrap();
-        let base = base_binding.create(&mut runtime, Shape::Base { depth: 1, flagged: false });
-        let derived = derived_binding.create(&mut runtime, Shape::Derived { depth: 3, flagged: false, ratio: 0.5 });
+        let base = base_binding.create(&mut runtime, Shape::Base { depth: 1, flagged: std::cell::Cell::new(false) });
+        let derived = derived_binding.create(&mut runtime, Shape::Derived { depth: 3, flagged: std::cell::Cell::new(false), ratio: 0.5 });
         runtime.set_global_property("base", &base).unwrap();
         runtime.set_global_property("derived", &derived).unwrap();
 
@@ -5227,7 +5377,7 @@ mod tests {
         use crate::{Trace, Tracer};
         struct Shape {
             depth: u32,
-            flagged: bool,
+            flagged: std::cell::Cell<bool>,
         }
         impl Trace for Shape {
             fn trace(&self, _tracer: &mut Tracer) {}
@@ -5235,8 +5385,8 @@ mod tests {
         #[allow(non_snake_case)]
         impl InheritanceBaseNative for Shape {
             fn Depth(&self) -> u32 { self.depth }
-            fn Flagged(&self) -> bool { self.flagged }
-            fn set_Flagged(&mut self, value: bool) { self.flagged = value; }
+            fn Flagged(&self) -> bool { self.flagged.get() }
+            fn set_Flagged(&self, value: bool) { self.flagged.set(value); }
             fn IsBase(&self) -> bool { false }
         }
         #[allow(non_snake_case)]
@@ -5247,7 +5397,7 @@ mod tests {
         let mut runtime = Runtime::new();
         let base = InheritanceBaseBinding::<Shape>::install(&mut runtime).unwrap();
         let derived = InheritanceDerivedBinding::<Shape>::install(&mut runtime, &base).unwrap();
-        let native = runtime.allocate_traced(Shape { depth: 4, flagged: false });
+        let native = runtime.allocate_traced(Shape { depth: 4, flagged: std::cell::Cell::new(false) });
         let wrapper = derived.wrap_traced(&mut runtime, &native);
         runtime.set_global_property("shape", &wrapper).unwrap();
         assert_eq!(
@@ -5255,7 +5405,7 @@ mod tests {
             "true,4,8,0.25,true"
         );
         // The setter mutated the traced native itself, which Rust observes through its root.
-        assert!(native.get().flagged);
+        assert!(native.get().flagged.get());
         let again = derived.wrap_traced(&mut runtime, &native);
         runtime.set_global_property("again", &again).unwrap();
         assert_eq!(runtime.eval("again === shape").unwrap(), "true");
@@ -5471,7 +5621,7 @@ mod tests {
             LOG.with(|log| log.borrow_mut().push(entry));
         }
         struct Element {
-            title: Vec<u16>,
+            title: std::cell::RefCell<Vec<u16>>,
         }
         impl CeReactions for Element {
             fn with_ce_reactions<R>(run: impl FnOnce() -> R) -> R {
@@ -5486,11 +5636,11 @@ mod tests {
         impl CeReactiveNative for Element {
             fn Title(&self) -> Vec<u16> {
                 log(format!("get title at depth {}", DEPTH.with(std::cell::Cell::get)));
-                self.title.clone()
+                self.title.borrow().clone()
             }
-            fn set_Title(&mut self, value: Vec<u16>) {
+            fn set_Title(&self, value: Vec<u16>) {
                 log(format!("set title at depth {}", DEPTH.with(std::cell::Cell::get)));
-                self.title = value;
+                *self.title.borrow_mut() = value;
             }
             fn Touch(&self) {
                 log(format!("touch at depth {}", DEPTH.with(std::cell::Cell::get)));
@@ -5505,7 +5655,7 @@ mod tests {
         }
         let mut runtime = Runtime::new();
         let binding = CeReactiveBinding::<Element>::install(&mut runtime).unwrap();
-        let element = binding.create(&mut runtime, Element { title: Vec::new() });
+        let element = binding.create(&mut runtime, Element { title: std::cell::RefCell::new(Vec::new()) });
         runtime.set_global_property("element", &element).unwrap();
         runtime.eval("element.title = 'hello'; element.title; element.touch(); try { element.fail(); } catch (e) {}").unwrap();
         assert_eq!(runtime.eval("[element.title, element.observedDepth].join()").unwrap(), "hello,0");
@@ -5525,15 +5675,73 @@ mod tests {
 
     #[cfg(feature = "webidl-pilot")]
     #[test]
+    fn generated_contextual_operations_call_back_into_js() {
+        use crate::webidl::callback_operations::{CallbackOperationsBinding, CallbackOperationsNative};
+        use crate::{Handle, ScriptContext, WebIdlError};
+        struct Ops(std::cell::Cell<u32>, std::cell::Cell<u32>);
+        #[allow(non_snake_case)]
+        impl CallbackOperationsNative for Ops {
+            fn Total(&self) -> u32 { self.1.get() }
+            fn set_Total(&self, value: u32) { self.1.set(value); }
+            fn Apply(&self, cx: &mut ScriptContext, callback: Handle, value: u32) -> Result<u32, WebIdlError> {
+                // Any exception the callback throws propagates unchanged.
+                let result = cx.call(&callback, &Value::Undefined, &[Value::Number(value as f64)])?;
+                let Value::Js(result) = result else { unreachable!("calls return JS values") };
+                match cx.value(&result) {
+                    Value::Number(number) => Ok(number as u32),
+                    _ => Err(WebIdlError::TypeError("callback must return a number".into())),
+                }
+            }
+            fn Echo(&self, _cx: &mut ScriptContext, value: Handle) -> Result<Handle, WebIdlError> {
+                Ok(value)
+            }
+            fn IsObject(&self, cx: &mut ScriptContext, value: Handle) -> Result<bool, WebIdlError> {
+                Ok(matches!(cx.value(&value), Value::Js(_)))
+            }
+            fn CountCalls(&self, cx: &mut ScriptContext, callback: Option<Handle>) -> Result<u32, WebIdlError> {
+                if let Some(callback) = callback {
+                    cx.call(&callback, &Value::Undefined, &[Value::Number(0.0)])?;
+                    self.0.set(self.0.get() + 1);
+                }
+                Ok(self.0.get())
+            }
+        }
+        let mut runtime = Runtime::new();
+        let binding = CallbackOperationsBinding::<Ops>::install(&mut runtime).unwrap();
+        let ops = binding.create(&mut runtime, Ops(std::cell::Cell::new(0), std::cell::Cell::new(0)));
+        runtime.set_global_property("ops", &ops).unwrap();
+        for (source, expected) in [
+            ("ops.apply(x => x * 2, 21)", "42"),
+            // `any` keeps object identity and primitives alike.
+            ("const o = {}; [ops.echo(o) === o, ops.echo(5), ops.echo(undefined) === undefined].join()", "true,5,true"),
+            ("[ops.isObject([]), ops.isObject(() => 1)].join()", "true,true"),
+            ("[ops.countCalls(null), ops.countCalls(() => 0), ops.countCalls(() => 0)].join()", "0,1,2"),
+            // A callback's exception is rethrown as-is, not converted.
+            ("class Custom extends Error {}; try { ops.apply(() => { throw new Custom('boom'); }, 1) } catch (e) { [e instanceof Custom, e.message].join() }", "true,boom"),
+            // The callback runs with re-entrant access to the same native.
+            ("ops.apply(x => ops.countCalls(() => 0) + x, 10)", "13"),
+            // A setter re-entered from inside a native call is sound: natives only ever get
+            // shared references and mutate through interior mutability.
+            ("ops.apply(x => { ops.total = x + 1; return ops.total; }, 6) + ops.total", "14"),
+        ] {
+            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
+        }
+        for source in ["ops.apply(1, 1)", "ops.isObject(1)", "ops.apply({}, 1)", "ops.countCalls('x')"] {
+            assert!(runtime.eval(source).unwrap_err().contains("TypeError"), "{source}");
+        }
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
     fn generated_nullable_domstring_preserves_null_and_utf16_semantics() {
         use crate::webidl::nullable_domstring::{NullableDomStringBinding, NullableDomStringNative};
         #[derive(Default)]
-        struct State(Option<Vec<u16>>);
+        struct State(std::cell::RefCell<Option<Vec<u16>>>);
         #[allow(non_snake_case)]
         impl NullableDomStringNative for State {
             fn InitialValue(&self) -> Option<Vec<u16>> { None }
-            fn Value(&self) -> Option<Vec<u16>> { self.0.clone() }
-            fn set_Value(&mut self, value: Option<Vec<u16>>) { self.0 = value; }
+            fn Value(&self) -> Option<Vec<u16>> { self.0.borrow().clone() }
+            fn set_Value(&self, value: Option<Vec<u16>>) { *self.0.borrow_mut() = value; }
         }
 
         let mut runtime = Runtime::new();
@@ -5549,7 +5757,7 @@ mod tests {
         assert_eq!(runtime.eval_value("state.value.charCodeAt(0)").unwrap(), Value::Number(0xD800 as f64));
         runtime.eval("state.value = null;").unwrap();
         assert_eq!(runtime.eval_value("state.value").unwrap(), Value::Null);
-        assert_eq!(runtime.get_wrapped::<State>(&handle).unwrap().0, None);
+        assert_eq!(*runtime.get_wrapped::<State>(&handle).unwrap().0.borrow(), None);
 
         runtime.eval("state.value = undefined;").unwrap();
         assert_eq!(runtime.eval_value("state.value").unwrap(), Value::String("undefined".into()));
@@ -5562,13 +5770,13 @@ mod tests {
     fn generated_usvstring_replaces_unpaired_surrogates_and_preserves_nullable_values() {
         use crate::webidl::usv_strings::{UsvStringsBinding, UsvStringsNative};
         #[derive(Default)]
-        struct State { value: String, nullable: Option<String> }
+        struct State { value: std::cell::RefCell<String>, nullable: std::cell::RefCell<Option<String>> }
         #[allow(non_snake_case)]
         impl UsvStringsNative for State {
-            fn Value(&self) -> String { self.value.clone() }
-            fn set_Value(&mut self, value: String) { self.value = value; }
-            fn Nullable(&self) -> Option<String> { self.nullable.clone() }
-            fn set_Nullable(&mut self, value: Option<String>) { self.nullable = value; }
+            fn Value(&self) -> String { self.value.borrow().clone() }
+            fn set_Value(&self, value: String) { *self.value.borrow_mut() = value; }
+            fn Nullable(&self) -> Option<String> { self.nullable.borrow().clone() }
+            fn set_Nullable(&self, value: Option<String>) { *self.nullable.borrow_mut() = value; }
             fn InitialValue(&self) -> Option<String> { None }
         }
 
@@ -5586,7 +5794,7 @@ mod tests {
 
         runtime.eval("state.nullable = null;").unwrap();
         assert_eq!(runtime.eval_value("state.nullable").unwrap(), Value::Null);
-        assert_eq!(runtime.get_wrapped::<State>(&handle).unwrap().nullable, None);
+        assert_eq!(runtime.get_wrapped::<State>(&handle).unwrap().nullable.borrow().clone(), None);
         runtime.eval("state.nullable = undefined;").unwrap();
         assert_eq!(runtime.eval_value("state.nullable").unwrap(), Value::String("undefined".into()));
         assert_eq!(runtime.eval("(() => { try { state.nullable = Symbol(); } catch (e) { return e instanceof TypeError; } })()").unwrap(), "true");

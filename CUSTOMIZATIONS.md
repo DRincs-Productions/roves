@@ -11,6 +11,53 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: ScriptContext, `any`/`object`/callback values, `&self` setters (CP58)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixture
+`components/roves-v8/tests/webidl/CallbackOperations.webidl`;
+`components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0122-roves-v8-script-context.patch` after 0121.
+
+Native members that work with arbitrary JS values need the engine, the way Servo's DOM methods take
+a `cx`. They now receive the engine-neutral `roves_v8::ScriptContext` (no `v8::*` in its API).
+- `ScriptContext::call(function, this, args)` invokes a JS function. An exception it throws comes
+  back as the new `WebIdlError::Js(Handle)`, and returning that rethrows it unchanged.
+- `ScriptContext` also offers `value`, `handle`, `js_ref` and `js_ref_value`.
+- New conversions: `WebIdlArgumentConversion::Any`, `Object` (rejects primitives) and `Callback`
+  (rejects non-callables). Their values travel as the new `Value::Js(Handle)`.
+- `Handle` now implements `Clone`, `PartialEq` (identity) and `Debug`.
+- The runtime adds `define_contextual_webidl_method` and `ContextualNativeMethod`.
+
+**Generator.** An operation with an `any`, `object` or callback-function argument, or an
+`any`/`object` result, becomes contextual:
+- its native method takes `cx: &mut roves_v8::ScriptContext` and returns a `Result`;
+- the `[CEReactions]` wrapper also recognizes contextual closures;
+- contextual overloads fail closed.
+
+**Soundness fix.** `ScriptContext::call` makes re-entrancy possible: a JS callback can run a setter
+on the same native while an outer method still holds `&self`. The runtime used to hand setters
+`&mut dyn Any`, which would then alias that live shared borrow (undefined behaviour). Every setter
+callback type now takes `&dyn Any`, and generated traits declare `set_X(&self, ..)`. Natives mutate
+through interior mutability, exactly as Servo's DOM does (`DomRefCell`, all methods `&self`). The 13
+test natives with `&mut self` setters were moved to `Cell`/`RefCell`.
+
+**Tests.**
+- New runtime test (on a generated binding):
+  - a native calling a JS callback and converting its result;
+  - `any` identity for objects and primitives;
+  - `object` checks;
+  - nullable callbacks;
+  - a custom exception class rethrown unchanged;
+  - re-entrant method and setter calls from inside a native call;
+  - TypeErrors for a non-callable callback, a primitive `object` and a non-callable nullable
+    callback.
+- Generator tests: 47/47.
+- `roves-v8` pilot and pilot+JIT-less: 82 unit + 5 integration + 2 doctests each; default 59 unit +
+  2 doctests.
+- `servo-script` check with the pilot is clean.
+
+Coverage: 96/486.
+
 ## 2026-10-06 - V8 migration Phase 4: accept Servo's `[Abstract]` interfaces (CP57)
 
 **Servo files:** `components/script_bindings/codegen/codegen.py`, `test_v8.py`.

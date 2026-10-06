@@ -8351,6 +8351,12 @@ def v8_argument_types(name: str, member_name: str, arguments) -> list:
             add_argument_type("Vec<u16>", "DomString", "Value::Utf16String(value) => value.clone()", nullable, optional, default_expression)
         elif ty.isUSVString():
             add_argument_type("String", "UsvString", "Value::String(value) => value.clone()", nullable, optional, default_expression)
+        elif ty.isAny():
+            add_argument_type("roves_v8::Handle", "Any", "Value::Js(value) => value.clone()", nullable, optional, default_expression)
+        elif ty.isObject():
+            add_argument_type("roves_v8::Handle", "Object", "Value::Js(value) => value.clone()", nullable, optional, default_expression)
+        elif ty.isCallback():
+            add_argument_type("roves_v8::Handle", "Callback", "Value::Js(value) => value.clone()", nullable, optional, default_expression)
         elif v8_is_dom_interface(ty):
             # A traced native implementing the interface; the runtime checks the wrapper's
             # interface (or a descendant) before the callback runs.
@@ -8395,6 +8401,9 @@ V8_NUMERIC_ATTRIBUTE_TYPES = {
 # SpiderMonkey JIT/caching hints with no observable semantics; the V8 backend ignores them.
 V8_IGNORED_MEMBER_HINTS = {"Pure", "Constant", "SameObject"}
 
+# Argument conversions whose values are engine handles: the native needs a ScriptContext.
+V8_CONTEXTUAL_CONVERSIONS = {"Any", "Object", "Callback"}
+
 # Exposure conditions a binding checks through `roves_v8::Exposure` while installing.
 V8_EXPOSURE_ATTRIBUTES = {"Pref", "SecureContext"}
 
@@ -8436,11 +8445,12 @@ def v8_wrap_ce_reactions(registration: str) -> str:
     overload) in `<T as roves_v8::CeReactions>::with_ce_reactions`, as Servo's generated
     bindings push and pop the custom element reaction queue around [CEReactions] members.
     Closures are found by their `|native` parameter list and matched by braces."""
-    fallible = "define_fallible_webidl_method" in registration or "WebIdlOverload" in registration
+    fallible = any(kind in registration for kind in ("define_fallible_webidl_method", "define_contextual_webidl_method", "WebIdlOverload"))
     output = []
     index = 0
     while True:
-        start = registration.find("|native", index)
+        starts = [found for found in (registration.find("|native", index), registration.find("|cx, native", index)) if found >= 0]
+        start = min(starts) if starts else -1
         if start < 0:
             output.append(registration[index:])
             return "".join(output)
@@ -8458,7 +8468,7 @@ def v8_wrap_ce_reactions(registration: str) -> str:
                     close_brace = position
                     break
         body = registration[open_brace + 1:close_brace]
-        if params == "|native|":
+        if params.replace("cx, ", "") == "|native|":
             result = "Value"
         elif "value" in params:
             result = "()"
@@ -8616,6 +8626,11 @@ class CGV8BindingRoot(CGThing):
                             "native.{native}().map(Value::Utf16String).unwrap_or(Value::Null)"
                             if nullable_return else "Value::Utf16String(native.{native}())"
                         )
+                    elif result_type.isAny() or result_type.isObject():
+                        if nullable_return:
+                            rust_type, value_expr = "Option<roves_v8::Handle>", "native.{native}().map(Value::Js).unwrap_or(Value::Null)"
+                        else:
+                            rust_type, value_expr = "roves_v8::Handle", "Value::Js(native.{native}())"
                     elif v8_is_dom_interface(result_type):
                         if nullable_return:
                             rust_type, value_expr = "Option<roves_v8::NativeRef>", "native.{native}().map(Value::Native).unwrap_or(Value::Null)"
@@ -8631,7 +8646,13 @@ class CGV8BindingRoot(CGThing):
                         raise TypeError(f"V8 backend unsupported operation return type: {name}.{member.identifier.name}: {return_type}")
                     # Servo's convention for overloads: Fill, Fill_, Fill__, ...
                     native_name = MakeNativeName(member.identifier.name) + "_" * overload_index
-                    operations.append((member.identifier.name, native_name, rust_type, value_expr, argument_types, throws, overload_index, len(signatures)))
+                    contextual = (
+                        any(argument_type[1] in V8_CONTEXTUAL_CONVERSIONS for argument_type in argument_types)
+                        or result_type.isAny() or result_type.isObject()
+                    )
+                    if contextual and len(signatures) > 1:
+                        raise TypeError(f"V8 backend does not support overloads needing a script context: {name}.{member.identifier.name}")
+                    operations.append((member.identifier.name, native_name, rust_type, value_expr, argument_types, throws or contextual, overload_index, len(signatures), contextual))
                 continue
             attribute_attributes = (
                 set(member._extendedAttrDict) - {"CEReactions"} - V8_IGNORED_MEMBER_HINTS - V8_EXPOSURE_ATTRIBUTES
@@ -8710,9 +8731,9 @@ class CGV8BindingRoot(CGThing):
             attributes.append((member.identifier.name, MakeNativeName(member.identifier.name), rust_type, value_expr, setter, conversion))
         trait_methods = "\n".join(
             [f"    fn {native}(&self) -> {rust_type};"
-             + (f"\n    fn set_{native}(&mut self, value: {rust_type});" if setter else "")
+             + (f"\n    fn set_{native}(&self, value: {rust_type});" if setter else "")
              for _, native, rust_type, _, setter, _ in attributes]
-            + [f"    fn {native}(&self{', ' + ', '.join('arg' + str(index) + ': ' + argument_type[0] for index, argument_type in enumerate(argument_types)) if argument_types else ''}) -> {f'Result<{rust_type}, roves_v8::WebIdlError>' if throws else rust_type};" for _, native, rust_type, _, argument_types, throws, _, _ in operations]
+            + [f"    fn {native}(&self{', cx: &mut roves_v8::ScriptContext' if contextual else ''}{', ' + ', '.join('arg' + str(index) + ': ' + argument_type[0] for index, argument_type in enumerate(argument_types)) if argument_types else ''}) -> {f'Result<{rust_type}, roves_v8::WebIdlError>' if throws else rust_type};" for _, native, rust_type, _, argument_types, throws, _, _, contextual in operations]
         )
         registrations_list = [
             f'        runtime.define_constant(&interface, "{idl}", &{constant})?;'
@@ -8739,12 +8760,12 @@ class CGV8BindingRoot(CGThing):
                     if rust_type == "Option<Vec<u16>>":
                         registrations_list.append(
                             f'        runtime.define_nullable_domstring_property(&interface, "{idl}", {getter}, '
-                            f'|native, value| {{ native.downcast_mut::<T>().expect("typed {name} wrapper").{setter_native}(value); }})?;'
+                            f'|native, value| {{ native.downcast_ref::<T>().expect("typed {name} wrapper").{setter_native}(value); }})?;'
                         )
                     else:
                         registrations_list.append(
                             f'        runtime.define_domstring_property(&interface, "{idl}", {getter}, '
-                            f'|native, value| {{ native.downcast_mut::<T>().expect("typed {name} wrapper").{setter_native}(value); }})?;'
+                            f'|native, value| {{ native.downcast_ref::<T>().expect("typed {name} wrapper").{setter_native}(value); }})?;'
                         )
                 else:
                     if conversion in {"UsvString", "NullableUsvString"}:
@@ -8784,7 +8805,7 @@ class CGV8BindingRoot(CGThing):
                     registrations_list.append(
                         f'        runtime.define_webidl_primitive_property(&interface, "{idl}", {getter}, '
                         f'|native, value| {{\n'
-                        f'            let native = native.downcast_mut::<T>().expect("typed {name} wrapper");\n'
+                        f'            let native = native.downcast_ref::<T>().expect("typed {name} wrapper");\n'
                         f'            {converted}\n'
                         f'        }}, roves_v8::PrimitiveConversion::{conversion})?;'
                     )
@@ -8795,12 +8816,14 @@ class CGV8BindingRoot(CGThing):
                 )
             gate_last_registration(idl)
         overload_entries = []
-        for idl, native, _, value_expr, argument_types, throws, overload_index, overload_count in operations:
+        for idl, native, _, value_expr, argument_types, throws, overload_index, overload_count, contextual in operations:
             argument_conversions = "\n".join(
                 f'            let arg{index} = match args.get({index}).unwrap_or(&Value::Undefined) {{ {argument_type[2]}, _ => unreachable!("runtime conversion matches generated WebIDL argument type") }};'
                 for index, argument_type in enumerate(argument_types)
             )
             call_arguments = ", ".join(f"arg{index}" for index, _ in enumerate(argument_types))
+            if contextual:
+                call_arguments = "cx" + (", " + call_arguments if call_arguments else "")
             if throws:
                 # `[Throws]`: the native Err propagates to the runtime, which throws it to JS.
                 if value_expr == "Value::Undefined":
@@ -8816,7 +8839,7 @@ class CGV8BindingRoot(CGThing):
                 result_expr = value_expr.replace("native.{native}()", f"native.{native}({call_arguments})")
             callback_args = "args" if argument_types else "_args"
             callback = (
-                f'|native, {callback_args}| {{\n'
+                f'|{"cx, " if contextual else ""}native, {callback_args}| {{\n'
                 + (f'{argument_conversions}\n' if argument_conversions else "")
                 + f'            let native = native.downcast_ref::<T>().expect("typed {name} wrapper");\n'
                 + f'            {result_expr}\n'
@@ -8850,6 +8873,8 @@ class CGV8BindingRoot(CGThing):
                 registrations_list.append(
                     f'        runtime.define_overloaded_webidl_method(&interface, "{idl}", &[\n{entries}\n        ])?;'
                 )
+            elif contextual:
+                registrations_list.append(f'        runtime.define_contextual_webidl_method(&interface, "{idl}", {callback}, &[{conversions}], &[{nullable_arguments}], &[{optional_arguments}], &[{enumeration_values}])?;')
             elif throws:
                 registrations_list.append(f'        runtime.define_fallible_webidl_method(&interface, "{idl}", {callback}, &[{conversions}], &[{nullable_arguments}], &[{optional_arguments}], &[{enumeration_values}])?;')
             elif argument_types:

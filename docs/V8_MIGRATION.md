@@ -84,6 +84,14 @@ interfaces now wait on their ancestors.
 need native code to run inside a JS context, i.e. an engine-neutral script context passed to
 natives), `[PutForwards]`, type-distinguished overloads.
 
+**CP58 (2026-10-06): ScriptContext.** Natives that need the engine receive an engine-neutral
+`roves_v8::ScriptContext` (call JS functions, read/create values, traced refs); `any`, `object`
+and callback-function arguments plus `any`/`object` results are supported, and callback
+exceptions rethrow unchanged (`WebIdlError::Js`). Because natives can now re-enter JS, setters
+take `&self` everywhere (interior mutability, as in Servo) — the earlier `&mut` setter callbacks
+would alias a live shared borrow under re-entrancy. Coverage 96/486. Next: contextual
+attributes (event handlers, `any` attributes), then dictionaries and sequences.
+
 CP37 exposes stable `NativeObjectId` through `DomObject` and updates generated `dom_struct`
 equality to use that engine-neutral contract. Local checks pass (reflector 2/2, macro 3/3,
 rustfmt, and patch 0101 reverse-check); CI is green: V8 37226916624 (6/6), Servo 37226916650
