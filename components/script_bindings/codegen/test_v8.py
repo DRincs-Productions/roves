@@ -330,7 +330,7 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn('Some(&["\\u{6c}\\u{65}\\u{66}\\u{74}", "\\u{72}\\u{69}\\u{67}\\u{68}\\u{74}"])', source)
 
     def test_optional_explicit_defaults_variadics_and_unsupported_types_fail_closed(self):
-        for signature in ["double run(double... values);", "double run(record<DOMString, long> value);"]:
+        for signature in ["double run(Promise<any> value);", "double run(record<DOMString, long> value);"]:
             with self.subTest(signature=signature):
                 self.assert_unsupported("interface Unsupported { " + signature + " };")
 
@@ -342,7 +342,7 @@ class V8GeneratorTests(unittest.TestCase):
             source = generate(webidl, root / "out")
             self.assertIn("WebIdlOptionalArgument<bool>", source)
             self.assertIn("WebIdlArgumentConversion::Boolean", source)
-        for signature in ["boolean run(record<DOMString, long> value);", "boolean run(boolean... values);"]:
+        for signature in ["boolean run(record<DOMString, long> value);", "boolean run(Promise<any> value);"]:
             with self.subTest(signature=signature):
                 self.assert_unsupported("interface Unsupported { " + signature + " };")
 
@@ -527,7 +527,7 @@ class V8GeneratorTests(unittest.TestCase):
                 "fn Echo(&self, cx: &mut roves_v8::ScriptContext, arg0: Vec<roves_v8::Handle>) -> Result<Vec<roves_v8::Handle>, roves_v8::WebIdlError>;",
                 "roves_v8::WebIdlType::Sequence(Box::new(roves_v8::WebIdlType::Sequence(Box::new(roves_v8::WebIdlType::Primitive(roves_v8::WebIdlArgumentConversion::Long)))))",
                 # A flat argument mixed into a structured operation keeps its conversion.
-                "roves_v8::WebIdlArgument { ty: roves_v8::WebIdlType::Primitive(roves_v8::WebIdlArgumentConversion::Boolean), optional: false }",
+                "roves_v8::WebIdlArgument { ty: roves_v8::WebIdlType::Primitive(roves_v8::WebIdlArgumentConversion::Boolean), optional: false, variadic: false }",
                 "Value::Missing => roves_v8::WebIdlOptionalArgument::Present(Vec::new())",
                 "roves_v8::WebIdlNativeOperation::Contextual(",
                 "match item { Some(item) => Value::Number(item as f64), None => Value::Null }",
@@ -609,6 +609,14 @@ class V8GeneratorTests(unittest.TestCase):
             ]:
                 self.assertIn(expected, source)
             self.assertNotIn("fn set_Tokens", source)
+
+    def test_variadic_arguments_collect_into_a_vec(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Var.webidl"
+            path.write_text("[Exposed=Window] interface Var { DOMString join(DOMString separator, DOMString... parts); };", encoding="utf-8")
+            source = generate(path, Path(directory) / "output")
+            self.assertIn("fn Join(&self, arg0: Vec<u16>, arg1: Vec<Vec<u16>>) -> Vec<u16>;", source)
+            self.assertIn("ty: roves_v8::WebIdlType::Primitive(roves_v8::WebIdlArgumentConversion::DomString), optional: false, variadic: true }", source)
 
     def test_overloads_needing_type_distinction_fail_closed(self):
         self.assert_unsupported("interface Unsupported { undefined f(DOMString a); undefined f(boolean a); };")

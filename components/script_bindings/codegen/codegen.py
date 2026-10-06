@@ -8454,7 +8454,7 @@ def v8_typed_info(ty, name: str, member_name: str):
 def v8_flat_webidl_type(argument_type) -> str:
     """The structured WebIdlType expression of a flat argument tuple, for operations that
     mix flat and structured arguments."""
-    _, conversion, _, nullable, _, enumeration_values, _ = argument_type
+    _, conversion, _, nullable, _, enumeration_values, _, _ = argument_type
     if conversion == "Enumeration":
         values = enumeration_values[len("Some(&["):-len("])")]
         ty = f"roves_v8::WebIdlType::Enumeration([{values}].iter().map(|value| value.to_string()).collect())"
@@ -8489,7 +8489,7 @@ def v8_argument_types(name: str, member_name: str, arguments) -> list:
     (rust_type, conversion, match_arm, nullable, optional, enumeration_values) tuples.
     Fails closed on any argument shape the runtime cannot convert yet."""
     argument_types = []
-    def add_argument_type(rust_type, conversion, match_arm, nullable, optional, default_expression=None, enumeration_values=None, typed=None):
+    def add_argument_type(rust_type, conversion, match_arm, nullable, optional, default_expression=None, enumeration_values=None, typed=None, variadic=False):
         pattern, expression = match_arm.split(" => ", 1)
         if nullable:
             rust_type = f"Option<{rust_type}>"
@@ -8519,13 +8519,20 @@ def v8_argument_types(name: str, member_name: str, arguments) -> list:
                     f"Value::Missing => {missing}, "
                     f"{pattern} => roves_v8::WebIdlOptionalArgument::Present({expression})"
                 )
-        argument_types.append((rust_type, conversion, match_arm, nullable, optional, enumeration_values, typed))
+        argument_types.append((rust_type, conversion, match_arm, nullable, optional, enumeration_values, typed, variadic))
 
     for argument in arguments:
         ty = argument.type
         default_value = argument.defaultValue
         if argument.variadic:
-            raise TypeError(f"V8 backend does not support variadic arguments: {name}.{member_name}")
+            # Every remaining JS argument converts by the element type into one Vec.
+            rust, expr, arm, _ = v8_typed_info(ty, name, member_name)
+            add_argument_type(
+                f"Vec<{rust}>", "Any" if v8_contains_handle(ty) else "Sequence",
+                f'Value::Sequence(items) => items.iter().map(|item| match item {{ {arm}, _ => unreachable!("runtime conversion matches the generated WebIDL type") }}).collect()',
+                False, False, None, None, expr, True,
+            )
+            continue
         if v8_contains_sequence(ty):
             if default_value is not None and not isinstance(default_value, (IDLEmptySequenceValue, IDLDefaultDictionaryValue)):
                 raise TypeError(f"V8 backend unsupported explicit default for {name}.{member_name}: {default_value}")
@@ -9283,7 +9290,7 @@ class CGV8BindingRoot(CGThing):
                 for argument_type in argument_types:
                     ty = argument_type[6] or v8_flat_webidl_type(argument_type)
                     typed_arguments.append(
-                        f"roves_v8::WebIdlArgument {{ ty: {ty}, optional: {str(argument_type[4]).lower()} }}"
+                        f"roves_v8::WebIdlArgument {{ ty: {ty}, optional: {str(argument_type[4]).lower()}, variadic: {str(argument_type[7]).lower()} }}"
                     )
                 kind = "Contextual" if contextual else "Fallible" if throws else "Plain"
                 registrations_list.append(
@@ -9394,7 +9401,7 @@ class CGV8BindingRoot(CGThing):
             # Fully qualified: in an inheritance tree several native traits declare Constructor.
             if any(argument_type[6] for argument_type in constructor_arguments):
                 typed_arguments = ", ".join(
-                    f"roves_v8::WebIdlArgument {{ ty: {argument_type[6] or v8_flat_webidl_type(argument_type)}, optional: {str(argument_type[4]).lower()} }}"
+                    f"roves_v8::WebIdlArgument {{ ty: {argument_type[6] or v8_flat_webidl_type(argument_type)}, optional: {str(argument_type[4]).lower()}, variadic: {str(argument_type[7]).lower()} }}"
                     for argument_type in constructor_arguments
                 )
                 define_interface = (

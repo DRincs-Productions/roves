@@ -157,6 +157,10 @@ pub mod webidl {
     pub mod attribute_probe {
         include!(concat!(env!("OUT_DIR"), "/AttributeProbeV8Binding.rs"));
     }
+    #[cfg(test)]
+    pub mod variadic_operations {
+        include!(concat!(env!("OUT_DIR"), "/VariadicOperationsV8Binding.rs"));
+    }
 }
 
 use std::sync::Once;
@@ -1010,6 +1014,9 @@ pub struct WebIdlDictionaryMember {
 pub struct WebIdlArgument {
     pub ty: WebIdlType,
     pub optional: bool,
+    /// A trailing variadic argument (`T... values`): every remaining JS argument converts by
+    /// `ty` into one [`Value::Sequence`] (empty when none are passed).
+    pub variadic: bool,
 }
 
 /// WebIDL optional-argument state. `Missing` differs from a present nullable `None`.
@@ -1051,6 +1058,8 @@ struct WebIdlArguments {
     enumeration_values: Vec<Option<Vec<Vec<u16>>>>,
     /// Structured types, which take precedence over the flat conversion of the same index.
     types: Vec<Option<WebIdlType>>,
+    /// Whether the last argument is variadic.
+    variadic_last: bool,
 }
 
 impl WebIdlArguments {
@@ -1074,6 +1083,7 @@ impl WebIdlArguments {
                 }))
                 .collect(),
             types: Vec::new(),
+            variadic_last: false,
         }
     }
 
@@ -1085,6 +1095,7 @@ impl WebIdlArguments {
             optional_arguments: arguments.iter().map(|argument| argument.optional).collect(),
             enumeration_values: vec![None; arguments.len()],
             types: arguments.iter().map(|argument| Some(argument.ty.clone())).collect(),
+            variadic_last: arguments.last().is_some_and(|argument| argument.variadic),
         }
     }
 }
@@ -3185,6 +3196,15 @@ fn convert_webidl_arguments<'s>(
     };
     let mut arguments = Vec::with_capacity(argument_count);
     for i in 0..argument_count {
+        if config.variadic_last && i + 1 == argument_count {
+            let ty = config.types[i].as_ref().expect("variadic arguments are structured");
+            let mut rest = Vec::new();
+            for index in i..args.length().max(0) as usize {
+                rest.push(convert_typed_value(scope, args.get(index as i32), ty)?);
+            }
+            arguments.push(Value::Sequence(rest));
+            break;
+        }
         let argument = args.get(i as i32);
         let converted = if config.optional_arguments.get(i).copied().unwrap_or(false)
             && argument.is_undefined()
@@ -6771,6 +6791,36 @@ mod tests {
         }
         assert_eq!(String::from_utf16_lossy(&TokenProbeNative::Value(tokens.get())), "x y");
         drop((wrapper, owner, tokens));
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_variadic_arguments_collect_the_remaining_arguments() {
+        use crate::webidl::variadic_operations::{VariadicOperationsBinding, VariadicOperationsNative};
+        struct Ops;
+        #[allow(non_snake_case)]
+        impl VariadicOperationsNative for Ops {
+            fn Count(&self, tokens: Vec<Vec<u16>>) -> u32 { tokens.len() as u32 }
+            fn Join(&self, separator: Vec<u16>, parts: Vec<Vec<u16>>) -> Vec<u16> {
+                parts.join(&separator[..])
+            }
+            fn Sum(&self, values: Vec<i32>) -> i32 { values.iter().sum() }
+        }
+        let mut runtime = Runtime::new();
+        let binding = VariadicOperationsBinding::<Ops>::install(&mut runtime).unwrap();
+        let ops = binding.create(&mut runtime, Ops);
+        runtime.set_global_property("ops", &ops).unwrap();
+        for (source, expected) in [
+            ("[ops.count(), ops.count('a'), ops.count('a', 'b', 'c')].join()", "0,1,3"),
+            // Each variadic value is converted (ToString, ToInt32) individually.
+            ("[ops.join('-'), ops.join('-', 1, true, null)].join('|')", "|1-true-null"),
+            ("ops.sum(1, '2', 3.9, 2 ** 32 + 4)", "10"),
+            // Undefined inside the variadic part is a value, not a missing argument.
+            ("ops.count(undefined, undefined)", "2"),
+        ] {
+            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
+        }
+        assert!(runtime.eval("ops.count('a', Symbol())").unwrap_err().contains("TypeError"));
     }
 
     #[cfg(feature = "webidl-pilot")]

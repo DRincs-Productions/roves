@@ -11,6 +11,30 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: variadic arguments (CP64)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixture
+`components/roves-v8/tests/webidl/VariadicOperations.webidl`;
+`components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0128-roves-v8-webidl-variadics.patch` after 0127.
+
+A trailing variadic argument (`T... values`, for example `DOMTokenList.add`) now converts every
+remaining JS argument by the element type into one `Value::Sequence`. The sequence is empty when
+none are passed, and an `undefined` inside it is a value, not a missing argument. `WebIdlArgument`
+gains `variadic`, and the structured argument conversion collects the rest of the arguments. The
+generator maps a variadic argument to `Vec<T>` on the structured path. Overloads with variadics
+still fail closed.
+
+**Tests.**
+- New runtime test: zero, one and many variadic values; per-value ToString/ToInt32 conversion
+  after a fixed argument; `undefined` values; a Symbol TypeError.
+- Generator tests: 53/53.
+- `roves-v8` pilot and pilot+JIT-less: 89 unit + 5 integration + 2 doctests each; default 60 unit +
+  2 doctests.
+- `servo-script` check with the pilot is clean.
+
+Coverage: 171/486.
+
 ## 2026-10-06 - V8 migration Phase 4: throwing, numeric and `[PutForwards]` attributes; exact 64-bit conversion (CP63)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixtures

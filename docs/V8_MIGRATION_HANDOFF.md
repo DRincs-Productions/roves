@@ -198,6 +198,10 @@ diventava 0; ora usa aritmetica `i128` esatta. Test generatore 52/52, `roves-v8`
 60+2, check pulito. Copertura **170/486**; **`Node` ora genera**. **Prossimo:** variadici,
 overload per tipo, `[HTMLConstructor]`, `[Unscopable]`, poi l'esposizione non-Window.
 
+**CP64 (2026-10-06):** argomenti variadici (patch 0128): `WebIdlArgument::variadic`; gli argomenti
+rimanenti, convertiti, finiscono in un'unica sequence. Test generatore 53/53, `roves-v8` 89+5+2,
+default 60+2, check pulito. Copertura 171/486.
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,
