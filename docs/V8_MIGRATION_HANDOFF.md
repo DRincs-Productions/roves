@@ -128,6 +128,14 @@ catena di ereditarietà del registro, non con il prototype chain falsificabile. 
 Copertura **33/486**. **Prossimo:** `[Pref]` (69+18), `[LegacyNoInterfaceObject]` (33),
 overload (23), event handler, `any`, dizionari e sequence.
 
+**CP54 (2026-10-06):** esposizione (patch 0118). Trait engine-neutral `roves_v8::Exposure`
+(pref Servo, secure context) e `ExposeAll`. I binding hanno `install_with`. A livello di
+interfaccia, `[Pref]`/`[SecureContext]`/`[LegacyNoInterfaceObject]` nascondono l'oggetto
+interfaccia (`hide_interface_object`); a livello di membro saltano la registrazione. Test
+generatore 42/42, `roves-v8` 79+5+2, default 59+2, check pulito. Copertura **66/486**.
+**Prossimo:** overload (34), esposizione non-Window (30), attributi event handler, `any`,
+dizionari, sequence, union.
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

@@ -11,6 +11,40 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: `[Pref]`, `[SecureContext]`, `[LegacyNoInterfaceObject]` exposure (CP54)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixtures
+`components/roves-v8/tests/webidl/ExposureGated.webidl` and `HiddenInterface.webidl`;
+`components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0118-roves-v8-webidl-exposure.patch` after 0117.
+
+**Runtime.** It gains the engine-neutral `Exposure` trait (`pref_enabled(name)`,
+`is_secure_context()`) and an `ExposeAll` implementation. `Runtime::hide_interface_object` keeps an
+interface object off the global while instances, prototypes and inheritance keep working.
+
+**Generator.**
+- Every binding now has `install_with(runtime, [parent], &dyn roves_v8::Exposure)`, and `install`
+  delegates to it with `ExposeAll`.
+- Interface-level `[Pref]`/`[SecureContext]` hide the interface object when unmet.
+  `[LegacyNoInterfaceObject]` always hides it.
+- Member-level `[Pref]`/`[SecureContext]` wrap that member's registration in the condition.
+- `[SameObject]` is a contract on the native's returned object; it is accepted like the other
+  ignored hints.
+
+**Tests.**
+- New runtime test:
+  - Restricted exposure: no interface object, but natives still wrap; a pref-gated member present,
+    a secure-context member absent.
+  - A hidden interface: no global, while instances and the `toString` tag still work.
+  - Full exposure: everything present.
+- Generator tests: 42/42.
+- `roves-v8` pilot and pilot+JIT-less: 79 unit + 5 integration + 2 doctests each; default 59 unit +
+  2 doctests.
+- `servo-script` check with the pilot is clean.
+
+Coverage: **66/486** (from 33). WebGL extension interfaces, geolocation and stream internals join,
+as do some Servo-internal `[LegacyNoInterfaceObject]` declarations.
+
 ## 2026-10-06 - V8 migration Phase 4: interface-typed WebIDL values over traced natives (CP53)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixtures

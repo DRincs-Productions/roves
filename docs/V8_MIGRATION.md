@@ -64,6 +64,12 @@ guarded by `is_api_wrapper()` (it misreads ordinary objects). Coverage 33/486. R
 blockers: members with other types (`any`, dictionaries, sequences, unions, callbacks, event
 handlers), `[Pref]`, `[LegacyNoInterfaceObject]`, overloads.
 
+**CP54 (2026-10-06): exposure.** Bindings take an engine-neutral `roves_v8::Exposure` (Servo
+prefs, secure context) through `install_with`; interface-level conditions and
+`[LegacyNoInterfaceObject]` keep the interface object off the global, member-level conditions
+skip the member. Coverage 66/486. Next: overloads (34), non-Window exposure (30), event handler
+attributes, `any`, dictionaries/sequences/unions.
+
 CP37 exposes stable `NativeObjectId` through `DomObject` and updates generated `dom_struct`
 equality to use that engine-neutral contract. Local checks pass (reflector 2/2, macro 3/3,
 rustfmt, and patch 0101 reverse-check); CI is green: V8 37226916624 (6/6), Servo 37226916650

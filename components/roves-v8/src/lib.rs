@@ -113,6 +113,14 @@ pub mod webidl {
     pub mod linked_leaf {
         include!(concat!(env!("OUT_DIR"), "/LinkedLeafV8Binding.rs"));
     }
+    #[cfg(test)]
+    pub mod exposure_gated {
+        include!(concat!(env!("OUT_DIR"), "/ExposureGatedV8Binding.rs"));
+    }
+    #[cfg(test)]
+    pub mod hidden_interface {
+        include!(concat!(env!("OUT_DIR"), "/HiddenInterfaceV8Binding.rs"));
+    }
 }
 
 use std::sync::Once;
@@ -230,6 +238,10 @@ pub struct Interface {
     /// first [`Runtime::create_instance`] call — see that method's own doc comment on why this
     /// can't happen eagerly in [`Runtime::define_interface`]).
     constructor_exposed: std::cell::Cell<bool>,
+    /// Whether exposure defines the interface object on the global (false for
+    /// `[LegacyNoInterfaceObject]` and for interfaces whose `[Pref]`/`[SecureContext]` condition
+    /// does not hold). Instances, prototypes and inheritance work either way.
+    interface_object_on_global: std::cell::Cell<bool>,
     // Materializing a child also freezes all ancestor templates. Shared flags track
     // that separately from whether each constructor has been exposed globally.
     materialized: std::rc::Rc<std::cell::Cell<bool>>,
@@ -738,6 +750,26 @@ impl WebIdlArguments {
 /// runtime attaches to the `this` that `new` created (same ownership and finalization as
 /// [`Runtime::create_instance`]). Same plain-function-pointer restriction as the other callbacks.
 pub type NativeConstructor = fn(&[Value]) -> Result<Box<dyn std::any::Any>, WebIdlError>;
+
+/// Answers the exposure conditions generated bindings check while installing: Servo
+/// preferences (`[Pref]`) and whether the realm is a secure context (`[SecureContext]`).
+pub trait Exposure {
+    fn pref_enabled(&self, name: &str) -> bool;
+    fn is_secure_context(&self) -> bool;
+}
+
+/// Exposes everything: every pref enabled, secure context.
+pub struct ExposeAll;
+
+impl Exposure for ExposeAll {
+    fn pref_enabled(&self, _name: &str) -> bool {
+        true
+    }
+
+    fn is_secure_context(&self) -> bool {
+        true
+    }
+}
 
 /// An exception a WebIDL `[Throws]` member raises, without exposing engine types. The runtime
 /// turns it into the matching JS exception when the native callback returns it.
@@ -1446,6 +1478,7 @@ impl Runtime {
             has_descendants: std::rc::Rc::new(std::cell::Cell::new(false)),
             name: name.to_string(),
             constructor_exposed: std::cell::Cell::new(false),
+            interface_object_on_global: std::cell::Cell::new(true),
             materialized: std::rc::Rc::new(std::cell::Cell::new(false)),
             ancestors: parent.map_or_else(Vec::new, |parent| {
                 let mut ancestors = parent.ancestors.clone();
@@ -1453,6 +1486,12 @@ impl Runtime {
                 ancestors
             }),
         }
+    }
+
+    /// Keeps `interface`'s interface object off the global object when it is exposed, for
+    /// `[LegacyNoInterfaceObject]` or an unmet exposure condition. Call before exposure.
+    pub fn hide_interface_object(&mut self, interface: &Interface) {
+        interface.interface_object_on_global.set(false);
     }
 
     /// Finalizes registration and exposes a nonconstructible interface constructor even
@@ -1480,9 +1519,11 @@ impl Runtime {
             }
         }
         let key = v8::String::new(scope, &interface.name).ok_or("invalid interface name")?;
-        if context.global(scope).define_own_property(
-            scope, key.into(), function.into(), v8::PropertyAttribute::DONT_ENUM,
-        ) != Some(true) {
+        if interface.interface_object_on_global.get()
+            && context.global(scope).define_own_property(
+                scope, key.into(), function.into(), v8::PropertyAttribute::DONT_ENUM,
+            ) != Some(true)
+        {
             return Err("failed to expose interface".into());
         }
         interface.constructor_exposed.set(true);
@@ -5181,6 +5222,59 @@ mod tests {
             assert!(runtime.eval(source).unwrap_err().contains("TypeError"), "{source}");
         }
         drop((first_wrapper, leaf_wrapper, first, second, leaf));
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_bindings_honour_pref_secure_context_and_no_interface_object() {
+        use crate::webidl::exposure_gated::{ExposureGatedBinding, ExposureGatedNative};
+        use crate::webidl::hidden_interface::{HiddenInterfaceBinding, HiddenInterfaceNative};
+        use crate::{ExposeAll, Exposure};
+        struct Gated;
+        #[allow(non_snake_case)]
+        impl ExposureGatedNative for Gated {
+            fn Always(&self) -> bool { true }
+            fn Extra(&self) -> bool { true }
+            fn Secret(&self) -> bool { true }
+        }
+        struct Hidden;
+        #[allow(non_snake_case)]
+        impl HiddenInterfaceNative for Hidden {
+            fn Visible(&self) -> bool { true }
+        }
+        /// Only the extra member's pref is on, and the realm is not a secure context.
+        struct Restricted;
+        impl Exposure for Restricted {
+            fn pref_enabled(&self, name: &str) -> bool { name == "dom_gated_extra_enabled" }
+            fn is_secure_context(&self) -> bool { false }
+        }
+
+        let mut runtime = Runtime::new();
+        let gated = ExposureGatedBinding::<Gated>::install_with(&mut runtime, &Restricted).unwrap();
+        let hidden = HiddenInterfaceBinding::<Hidden>::install(&mut runtime).unwrap();
+        let gated_instance = gated.create(&mut runtime, Gated);
+        let hidden_instance = hidden.create(&mut runtime, Hidden);
+        runtime.set_global_property("gated", &gated_instance).unwrap();
+        runtime.set_global_property("hidden", &hidden_instance).unwrap();
+        for (source, expected) in [
+            // The interface's own pref is off: no interface object, but natives still wrap.
+            ("[typeof ExposureGated, 'ExposureGated' in globalThis, gated.always].join()", "undefined,false,true"),
+            // Member-level conditions: the extra pref is on, the secure-context method is not.
+            ("['extra' in gated, gated.extra, 'secret' in gated].join()", "true,true,false"),
+            ("[typeof HiddenInterface, hidden.visible, Object.prototype.toString.call(hidden)].join()", "undefined,true,[object HiddenInterface]"),
+        ] {
+            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
+        }
+
+        // With everything exposed, the same binding defines everything.
+        let mut runtime = Runtime::new();
+        let gated = ExposureGatedBinding::<Gated>::install_with(&mut runtime, &ExposeAll).unwrap();
+        let instance = gated.create(&mut runtime, Gated);
+        runtime.set_global_property("gated", &instance).unwrap();
+        assert_eq!(
+            runtime.eval("[typeof ExposureGated, gated.extra, gated.secret(), gated instanceof ExposureGated].join()").unwrap(),
+            "function,true,true,true"
+        );
     }
 
     #[cfg(feature = "webidl-pilot")]

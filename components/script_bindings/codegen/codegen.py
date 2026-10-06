@@ -8393,7 +8393,20 @@ V8_NUMERIC_ATTRIBUTE_TYPES = {
 
 
 # SpiderMonkey JIT/caching hints with no observable semantics; the V8 backend ignores them.
-V8_IGNORED_MEMBER_HINTS = {"Pure", "Constant"}
+V8_IGNORED_MEMBER_HINTS = {"Pure", "Constant", "SameObject"}
+
+# Exposure conditions a binding checks through `roves_v8::Exposure` while installing.
+V8_EXPOSURE_ATTRIBUTES = {"Pref", "SecureContext"}
+
+
+def v8_exposure_condition(extended_attributes) -> str | None:
+    """Rust condition for an interface's or member's [Pref]/[SecureContext], or None."""
+    conditions = []
+    if "Pref" in extended_attributes:
+        conditions.append(f'exposure.pref_enabled("{extended_attributes["Pref"][0]}")')
+    if "SecureContext" in extended_attributes:
+        conditions.append("exposure.is_secure_context()")
+    return " && ".join(conditions) if conditions else None
 
 
 def v8_is_dom_interface(ty) -> bool:
@@ -8427,7 +8440,7 @@ class CGV8BindingRoot(CGThing):
         ]:
             if present:
                 raise TypeError(f"V8 backend does not yet support interface shape ({unsupported_shape}): {name}")
-        unsupported = set(interface._extendedAttrDict) - {"Exposed"}
+        unsupported = set(interface._extendedAttrDict) - {"Exposed", "LegacyNoInterfaceObject"} - V8_EXPOSURE_ATTRIBUTES
         if unsupported:
             raise TypeError(f"V8 backend unsupported attributes on {name}: {sorted(unsupported)}")
         exposed = interface._extendedAttrDict.get("Exposed")
@@ -8458,6 +8471,7 @@ class CGV8BindingRoot(CGThing):
         attributes = []
         operations = []
         unforgeable_attributes = set()
+        member_conditions = {}
         constants = []
         for member in interface.members:
             if copied_from_ancestor(member):
@@ -8482,7 +8496,10 @@ class CGV8BindingRoot(CGThing):
                 continue
             if member.isMethod():
                 signatures = member.signatures()
-                operation_attributes = set(member._extendedAttrDict) - {"Throws"} - V8_IGNORED_MEMBER_HINTS
+                operation_attributes = set(member._extendedAttrDict) - {"Throws"} - V8_IGNORED_MEMBER_HINTS - V8_EXPOSURE_ATTRIBUTES
+                condition = v8_exposure_condition(member._extendedAttrDict)
+                if condition:
+                    member_conditions[member.identifier.name] = condition
                 if member.isStatic() or operation_attributes or len(signatures) != 1:
                     raise TypeError(f"V8 backend only supports single-signature instance operations: {name}.{member.identifier.name}")
                 throws = "Throws" in member._extendedAttrDict
@@ -8551,8 +8568,13 @@ class CGV8BindingRoot(CGThing):
                 operations.append((member.identifier.name, MakeNativeName(member.identifier.name), rust_type, value_expr, argument_types, throws))
                 continue
             attribute_attributes = (
-                set(member._extendedAttrDict) - V8_IGNORED_MEMBER_HINTS if member.isAttr() else set()
+                set(member._extendedAttrDict) - V8_IGNORED_MEMBER_HINTS - V8_EXPOSURE_ATTRIBUTES
+                if member.isAttr() else set()
             )
+            if member.isAttr():
+                condition = v8_exposure_condition(member._extendedAttrDict)
+                if condition:
+                    member_conditions[member.identifier.name] = condition
             if member.isAttr() and member.isLegacyUnforgeable() and member.readonly:
                 attribute_attributes.discard("LegacyUnforgeable")
                 unforgeable_attributes.add(member.identifier.name)
@@ -8628,6 +8650,12 @@ class CGV8BindingRoot(CGThing):
             f'        runtime.define_constant(&interface, "{idl}", &{constant})?;'
             for idl, constant in constants
         ]
+        def gate_last_registration(idl):
+            condition = member_conditions.get(idl)
+            if condition:
+                registration = registrations_list[-1].strip()
+                registrations_list[-1] = f"        if {condition} {{\n            {registration}\n        }}"
+
         for idl, native, rust_type, value_expr, setter, conversion in attributes:
             getter = (
                 f'|native| {{\n'
@@ -8695,6 +8723,7 @@ class CGV8BindingRoot(CGThing):
                 registrations_list.append(
                     f'        runtime.{define}(&interface, "{idl}", {getter})?;'
                 )
+            gate_last_registration(idl)
         for idl, native, _, value_expr, argument_types, throws in operations:
             argument_conversions = "\n".join(
                 f'            let arg{index} = match args.get({index}).unwrap_or(&Value::Undefined) {{ {argument_type[2]}, _ => unreachable!("runtime conversion matches generated WebIDL argument type") }};'
@@ -8732,6 +8761,7 @@ class CGV8BindingRoot(CGThing):
                 registrations_list.append(f'        runtime.define_webidl_method_with_argument_flags_and_enums(&interface, "{idl}", {callback}, &[{conversions}], &[{nullable_arguments}], &[{optional_arguments}], &[{enumeration_values}])?;')
             else:
                 registrations_list.append(f'        runtime.define_method(&interface, "{idl}", {callback})?;')
+            gate_last_registration(idl)
         registrations = "\n".join(registrations_list)
         constructor = interface.ctor()
         constructor_arguments = None
@@ -8768,6 +8798,18 @@ class CGV8BindingRoot(CGThing):
                 f"runtime: &mut Runtime, parent: &{parent_module}::{parent_name}Binding<T>"
             )
             parent_interface = "Some(parent.interface())"
+        install_arguments = "runtime" if parent is None else "runtime, parent"
+        interface_condition = v8_exposure_condition(interface._extendedAttrDict)
+        if "LegacyNoInterfaceObject" in interface._extendedAttrDict:
+            hide_interface = "        runtime.hide_interface_object(&interface);\n"
+        elif interface_condition:
+            hide_interface = (
+                f"        if !({interface_condition}) {{\n"
+                "            runtime.hide_interface_object(&interface);\n"
+                "        }\n"
+            )
+        else:
+            hide_interface = ""
         if constructor_arguments is None:
             define_interface = f'runtime.define_interface("{name}", {parent_interface})'
         else:
@@ -8812,9 +8854,19 @@ pub struct {name}Binding<T: {name}Native> {{
 
 impl<T: {name}Native> {name}Binding<T> {{
     pub fn install({install_parameters}) -> Result<Self, String> {{
+        Self::install_with({install_arguments}, &roves_v8::ExposeAll)
+    }}
+
+    /// Installs the binding, defining `[Pref]`/`[SecureContext]` members and the interface
+    /// object on the global only where `exposure` allows them.
+    pub fn install_with(
+        {install_parameters},
+        exposure: &dyn roves_v8::Exposure,
+    ) -> Result<Self, String> {{
+        let _ = exposure;
         let interface = {define_interface};
 {registrations}
-        runtime.expose_interface(&interface)?;
+{hide_interface}        runtime.expose_interface(&interface)?;
         Ok(Self {{ interface, native: std::marker::PhantomData }})
     }}
 

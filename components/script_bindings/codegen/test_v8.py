@@ -546,6 +546,29 @@ class V8GeneratorTests(unittest.TestCase):
     def test_callback_interfaces_and_promises_are_not_dom_interface_values(self):
         self.assert_unsupported("callback interface Listener { undefined handle(); }; [Exposed=Window] interface Uses { undefined add(Listener listener); };")
 
+    def test_exposure_conditions_gate_interface_objects_and_members(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Gated.webidl"
+            path.write_text(
+                '[Exposed=Window, Pref="dom_gated"] interface Gated { readonly attribute boolean a; '
+                '[Pref="dom_extra", SecureContext] readonly attribute boolean b; [SecureContext] undefined c(); };',
+                encoding="utf-8",
+            )
+            source = generate(path, Path(directory) / "output")
+            for expected in [
+                "Self::install_with(runtime, &roves_v8::ExposeAll)",
+                "exposure: &dyn roves_v8::Exposure,",
+                'if exposure.pref_enabled("dom_extra") && exposure.is_secure_context() {',
+                "if exposure.is_secure_context() {",
+                'if !(exposure.pref_enabled("dom_gated")) {',
+                "runtime.hide_interface_object(&interface);",
+            ]:
+                self.assertIn(expected, source)
+            hidden = Path(directory) / "Hidden.webidl"
+            hidden.write_text("[Exposed=Window, LegacyNoInterfaceObject] interface Hidden { readonly attribute boolean a; };", encoding="utf-8")
+            hidden_source = generate(hidden, Path(directory) / "output")
+            self.assertIn("        runtime.hide_interface_object(&interface);\n        runtime.expose_interface(&interface)?;", hidden_source)
+
     def test_jit_hint_attributes_are_ignored(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "Hints.webidl"
