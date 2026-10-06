@@ -1,0 +1,463 @@
+diff --git a/components/roves-v8/build.rs b/components/roves-v8/build.rs
+index a449695d335..988cc71692e 100644
+--- a/components/roves-v8/build.rs
++++ b/components/roves-v8/build.rs
+@@ -221,13 +221,17 @@ fn main() {
+         ("VariadicOperations", &[][..]),
+         ("JsonBase", &[][..]),
+         ("JsonChild", &["JsonBase"][..]),
++        ("PromiseOperations", &[][..]),
+     ] {
+         println!("cargo:rerun-if-changed={}", fixtures.join(format!("{interface}.webidl")).display());
++        println!("cargo:rerun-if-changed={}", fixtures.join("Bindings.conf").display());
+         let status = Command::new(&python)
+             .arg(bindings.join("codegen/run_v8.py"))
+             .arg(fixtures.join(format!("{interface}.webidl")))
+             .arg(out_dir.join(format!("{interface}V8Binding.rs")))
+             .args(context.iter().map(|ancestor| fixtures.join(format!("{ancestor}.webidl"))))
++            .arg("--bindings-conf")
++            .arg(fixtures.join("Bindings.conf"))
+             .env("PYTHONDONTWRITEBYTECODE", "1")
+             .status()
+             .expect("run WebIDL inheritance fixture generator");
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index de5c42bb901..2fa37ea96ce 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -169,6 +169,10 @@ pub mod webidl {
+     pub mod json_child {
+         include!(concat!(env!("OUT_DIR"), "/JsonChildV8Binding.rs"));
+     }
++    #[cfg(test)]
++    pub mod promise_operations {
++        include!(concat!(env!("OUT_DIR"), "/PromiseOperationsV8Binding.rs"));
++    }
+ }
+ 
+ use std::sync::Once;
+@@ -743,6 +747,17 @@ fn native_argument(
+     Some(Value::Native(NativeRef { gc: v8::cppgc::Persistent::new(&pointer), interface }))
+ }
+ 
++/// The settling side of a promise created by [`ScriptContext::new_promise`]. It keeps the
++/// promise alive until settled; settling twice has no effect.
++#[derive(Clone)]
++pub struct PromiseResolver(v8::Global<v8::PromiseResolver>);
++
++impl std::fmt::Debug for PromiseResolver {
++    fn fmt(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
++        formatter.write_str("PromiseResolver")
++    }
++}
++
+ /// What a native WebIDL member that needs the JS engine receives, like the `cx` Servo passes to
+ /// its DOM methods: it can call JS functions, read JS values and create references to them,
+ /// without exposing engine types. It exists only for the duration of one native call.
+@@ -833,6 +848,33 @@ impl ScriptContext<'_, '_, '_> {
+         }
+     }
+ 
++    /// Creates a pending promise. Returns the promise (to hand to JS) and its resolver (to settle
++    /// it later with [`ScriptContext::resolve_promise`]/[`ScriptContext::reject_promise`] or,
++    /// outside a native call, [`Runtime::settle_promise`]).
++    pub fn new_promise(&mut self) -> (Handle, PromiseResolver) {
++        let resolver = v8::PromiseResolver::new(self.scope).expect("creating a promise resolver");
++        let promise: v8::Local<v8::Value> = resolver.get_promise(self.scope).into();
++        (Handle(v8::Global::new(self.scope, promise)), PromiseResolver(v8::Global::new(self.scope, resolver)))
++    }
++
++    /// Fulfils the promise of `resolver` with `value`.
++    pub fn resolve_promise(&mut self, resolver: &PromiseResolver, value: &Value) {
++        settle_promise(self.scope, resolver, Ok(value));
++    }
++
++    /// Rejects the promise of `resolver` with the JS exception of `error`.
++    pub fn reject_promise(&mut self, resolver: &PromiseResolver, error: &WebIdlError) {
++        settle_promise(self.scope, resolver, Err(error));
++    }
++
++    /// A promise already rejected with `error`: what a promise-returning operation produces
++    /// instead of throwing.
++    pub fn rejected_promise(&mut self, error: &WebIdlError) -> Handle {
++        let (promise, resolver) = self.new_promise();
++        self.reject_promise(&resolver, error);
++        promise
++    }
++
+     /// The engine-neutral value of a JS value (primitives convert; objects stay [`Value::Js`]).
+     pub fn value(&mut self, value: &Handle) -> Value {
+         let local = v8::Local::new(self.scope, &value.0);
+@@ -1019,6 +1061,8 @@ pub enum WebIdlType {
+     /// A union of (non-nullable) member types, selected by the WebIDL union conversion
+     /// algorithm into a [`Value::Union`]. A nullable union is `Nullable(Union(..))`.
+     Union(Vec<WebIdlType>),
++    /// `Promise<T>`: any value, converted like `Promise.resolve(value)` ([`Value::Js`]).
++    Promise,
+ }
+ 
+ /// One member of a [`WebIdlType::Dictionary`].
+@@ -1688,6 +1732,20 @@ impl Runtime {
+         Handle(v8::Global::new(scope, object))
+     }
+ 
++    /// Settles a promise created by [`ScriptContext::new_promise`] from outside a native call
++    /// (for example when asynchronous work completes), then runs the microtask checkpoint so
++    /// its reactions run.
++    pub fn settle_promise(&mut self, resolver: &PromiseResolver, outcome: Result<&Value, &WebIdlError>) {
++        {
++            let context_handle = &self.context;
++            v8::scope!(let scope, &mut self.isolate);
++            let context = v8::Local::new(scope, context_handle);
++            let scope = &mut v8::ContextScope::new(scope, context);
++            settle_promise(scope, resolver, outcome);
++        }
++        self.isolate.perform_microtask_checkpoint();
++    }
++
+     /// Recovers the traced native behind a wrapper made by `create_traced_instance`, or `None`
+     /// for any other value (including `create_instance` wrappers).
+     pub fn traced_native<T: Trace>(&mut self, wrapper: &Handle) -> Option<GcRoot<T>> {
+@@ -3631,6 +3689,12 @@ fn convert_typed_value<'s>(
+             Some(Value::Js(Handle(v8::Global::new(scope, value))))
+         },
+         WebIdlType::Union(members) => convert_union(scope, value, members),
++        WebIdlType::Promise => {
++            let resolver = v8::PromiseResolver::new(scope)?;
++            resolver.resolve(scope, value)?;
++            let promise: v8::Local<v8::Value> = resolver.get_promise(scope).into();
++            Some(Value::Js(Handle(v8::Global::new(scope, promise))))
++        },
+         WebIdlType::Dictionary(members) => {
+             // WebIDL dictionary conversion: undefined and null are an empty dictionary.
+             let object = if value.is_null_or_undefined() {
+@@ -3797,6 +3861,20 @@ fn convert_union<'s>(
+     None
+ }
+ 
++fn settle_promise(scope: &mut v8::PinScope, resolver: &PromiseResolver, outcome: Result<&Value, &WebIdlError>) {
++    let resolver = v8::Local::new(scope, &resolver.0);
++    match outcome {
++        Ok(value) => {
++            let value = v8_result(scope, value);
++            resolver.resolve(scope, value);
++        },
++        Err(error) => {
++            let reason = webidl_error_value(scope, error);
++            resolver.reject(scope, reason);
++        },
++    }
++}
++
+ /// Arms the guaranteed finalizer that drops `raw` (a `Box<Box<dyn Any>>` attached to `wrapper`'s
+ /// internal field) exactly once, when V8 collects `wrapper`, then runs `after_drop`. The returned
+ /// weak handle observes the wrapper; `finalizers` keeps the callback armed until it completes.
+@@ -3835,7 +3913,13 @@ fn arm_native_finalizer(
+ 
+ /// Throws the JS exception matching a native [`WebIdlError`].
+ fn throw_webidl_error(scope: &mut v8::PinScope, error: &WebIdlError) {
+-    let exception = match error {
++    let exception = webidl_error_value(scope, error);
++    scope.throw_exception(exception);
++}
++
++/// The JS exception value of a native [`WebIdlError`] (thrown, or used to reject a promise).
++fn webidl_error_value<'s>(scope: &mut v8::PinScope<'s, '_>, error: &WebIdlError) -> v8::Local<'s, v8::Value> {
++    match error {
+         WebIdlError::Js(value) => v8::Local::new(scope, &value.0),
+         WebIdlError::TypeError(message) => {
+             let message = v8::String::new(scope, message).unwrap();
+@@ -3868,8 +3952,7 @@ fn throw_webidl_error(scope: &mut v8::PinScope, error: &WebIdlError) {
+                 },
+             }
+         },
+-    };
+-    scope.throw_exception(exception);
++    }
+ }
+ 
+ fn throw_type_error(scope: &mut v8::PinScope, message: &str) {
+@@ -7055,6 +7138,66 @@ mod tests {
+         drop((wrapper, item));
+     }
+ 
++    #[cfg(feature = "webidl-pilot")]
++    #[test]
++    fn generated_promise_operations_resolve_reject_and_settle_later() {
++        use crate::webidl::promise_operations::{PromiseOperationsBinding, PromiseOperationsNative};
++        use crate::{Handle, PromiseResolver, ScriptContext, WebIdlError};
++        use std::cell::RefCell;
++        struct Ops {
++            pending: RefCell<Option<PromiseResolver>>,
++        }
++        #[allow(non_snake_case)]
++        impl PromiseOperationsNative for Ops {
++            fn Twice(&self, cx: &mut ScriptContext, value: u32) -> Result<Handle, WebIdlError> {
++                if value > 1000 {
++                    // Returned as a rejected promise, never thrown.
++                    return Err(WebIdlError::RangeError("too large".into()));
++                }
++                let (promise, resolver) = cx.new_promise();
++                cx.resolve_promise(&resolver, &Value::Number(value as f64 * 2.0));
++                Ok(promise)
++            }
++            fn Later(&self, cx: &mut ScriptContext) -> Result<Handle, WebIdlError> {
++                let (promise, resolver) = cx.new_promise();
++                *self.pending.borrow_mut() = Some(resolver);
++                Ok(promise)
++            }
++            fn Settle(&self, cx: &mut ScriptContext, succeed: bool) -> Result<(), WebIdlError> {
++                if let Some(resolver) = self.pending.borrow_mut().take() {
++                    if succeed {
++                        cx.resolve_promise(&resolver, &Value::String("settled".into()));
++                    } else {
++                        cx.reject_promise(&resolver, &WebIdlError::TypeError("refused".into()));
++                    }
++                }
++                Ok(())
++            }
++            fn Wrap(&self, _cx: &mut ScriptContext, input: Handle) -> Result<Handle, WebIdlError> {
++                Ok(input)
++            }
++        }
++        let mut runtime = Runtime::new();
++        let binding = PromiseOperationsBinding::<Ops>::install(&mut runtime).unwrap();
++        let ops = binding.create(&mut runtime, Ops { pending: RefCell::new(None) });
++        runtime.set_global_property("ops", &ops).unwrap();
++        assert_eq!(runtime.eval_resolved("ops.twice(21)").unwrap(), Value::Number(42.0));
++        let rejection = runtime.eval_resolved("ops.twice(5000)").unwrap_err();
++        assert!(rejection.contains("RangeError") && rejection.contains("too large"), "{rejection}");
++        assert_eq!(runtime.eval("ops.twice(5000) instanceof Promise").unwrap(), "true");
++        // `Promise<any>` arguments are converted like Promise.resolve.
++        assert_eq!(runtime.eval_resolved("ops.wrap(5)").unwrap(), Value::Number(5.0));
++        assert_eq!(runtime.eval_resolved("ops.wrap(Promise.resolve(7))").unwrap(), Value::Number(7.0));
++        // A promise settled re-entrantly from another native call...
++        assert_eq!(runtime.eval_resolved("const p = ops.later(); ops.settle(true); p").unwrap(), Value::String("settled".into()));
++        assert!(runtime.eval_resolved("const q = ops.later(); ops.settle(false); q").unwrap_err().contains("refused"));
++        // ...and one settled later from Rust, outside any native call.
++        runtime.eval("globalThis.done = 'no'; ops.later().then(value => { globalThis.done = value; });").unwrap();
++        let resolver = runtime.get_wrapped::<Ops>(&ops).unwrap().pending.borrow_mut().take().unwrap();
++        runtime.settle_promise(&resolver, Ok(&Value::String("async".into())));
++        assert_eq!(runtime.eval("done").unwrap(), "async");
++    }
++
+     #[cfg(feature = "webidl-pilot")]
+     #[test]
+     fn generated_nullable_domstring_preserves_null_and_utf16_semantics() {
+diff --git a/components/roves-v8/tests/webidl/Bindings.conf b/components/roves-v8/tests/webidl/Bindings.conf
+new file mode 100644
+index 00000000000..584430cd656
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/Bindings.conf
+@@ -0,0 +1,6 @@
++# Bindings.conf-style configuration for the V8 pilot test fixtures (merged over Servo's own).
++DOMInterfaces = {
++    'PromiseOperations': {
++        'cx': ['Settle'],
++    },
++}
+diff --git a/components/roves-v8/tests/webidl/PromiseOperations.webidl b/components/roves-v8/tests/webidl/PromiseOperations.webidl
+new file mode 100644
+index 00000000000..1f327f1fddd
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/PromiseOperations.webidl
+@@ -0,0 +1,7 @@
++[Exposed=Window]
++interface PromiseOperations {
++  Promise<unsigned long> twice(unsigned long value);
++  Promise<undefined> later();
++  undefined settle(boolean succeed);
++  Promise<any> wrap(Promise<any> input);
++};
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index 7215fc54d61..af402e52ee3 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8361,6 +8361,29 @@ def v8_setter_conversion(idl_type, nullable: bool):
+     return conversion, nullable, arm
+ 
+ 
++# Extra Bindings.conf-style files merged over Servo's own (run_v8.py's --bindings-conf, used by
++# test fixtures that are not Servo interfaces).
++V8_EXTRA_BINDINGS_CONFS: list[str] = []
++_V8_CONTEXT_MEMBERS: dict[str, set[str]] | None = None
++
++
++def v8_context_members() -> dict:
++    """Interface name -> native member names that need the engine context: the 'cx' and 'realm'
++    lists of Bindings.conf, the same configuration Servo's own generator reads."""
++    global _V8_CONTEXT_MEMBERS
++    if _V8_CONTEXT_MEMBERS is None:
++        members: dict[str, set[str]] = {}
++        paths = [os.path.join(os.path.dirname(os.path.abspath(__file__)), "Bindings.conf")] + V8_EXTRA_BINDINGS_CONFS
++        for path in paths:
++            scope: dict = {}
++            with open(path, encoding="utf-8") as conf:
++                exec(compile(conf.read(), path, "exec"), scope)
++            for interface, config in scope.get("DOMInterfaces", {}).items():
++                members.setdefault(interface, set()).update(config.get("cx", []) + config.get("realm", []))
++        _V8_CONTEXT_MEMBERS = members
++    return _V8_CONTEXT_MEMBERS
++
++
+ def v8_is_json_type(ty) -> bool:
+     """WebIDL JSON types the default toJSON collects: primitives, strings, enumerations,
+     nullable and sequence forms of them, and interfaces that have a toJSON operation."""
+@@ -8447,6 +8470,9 @@ def v8_typed_info(ty, name: str, member_name: str):
+         return v8_dictionary_info(ty.inner, name)
+     if ty.isUnion():
+         return v8_union_info(ty, name, member_name)
++    if ty.isPromise():
++        return ("roves_v8::Handle", "roves_v8::WebIdlType::Promise",
++                "Value::Js(value) => value.clone()", "Value::Js(ITEM)")
+     if ty.isCallbackInterface():
+         return ("roves_v8::Handle", "roves_v8::WebIdlType::CallbackInterface",
+                 "Value::Js(value) => value.clone()", "Value::Js(ITEM)")
+@@ -8507,7 +8533,7 @@ def v8_contains_sequence(ty) -> bool:
+     """Whether the type needs the structured path (sequences and dictionaries)."""
+     if ty.nullable():
+         return v8_contains_sequence(ty.inner)
+-    return ty.isSequence() or ty.isDictionary() or ty.isUnion() or ty.isCallbackInterface()
++    return ty.isSequence() or ty.isDictionary() or ty.isUnion() or ty.isCallbackInterface() or ty.isPromise()
+ 
+ 
+ def v8_contains_handle(ty) -> bool:
+@@ -8518,7 +8544,7 @@ def v8_contains_handle(ty) -> bool:
+         return any(v8_contains_handle(member.type) for member in v8_dictionary_members(ty.inner))
+     if ty.isUnion():
+         return any(v8_contains_handle(member) for member in ty.memberTypes)
+-    return ty.isAny() or ty.isObject() or ty.isCallback() or ty.isCallbackInterface()
++    return ty.isAny() or ty.isObject() or ty.isCallback() or ty.isCallbackInterface() or ty.isPromise()
+ 
+ 
+ def v8_argument_types(name: str, member_name: str, arguments) -> list:
+@@ -8892,6 +8918,7 @@ class CGV8BindingRoot(CGThing):
+         attributes = []
+         operations = []
+         unforgeable_attributes = set()
++        promise_operations = set()
+         contextual_attributes = []
+         static_operations = []
+         unscopables = []
+@@ -8997,6 +9024,10 @@ class CGV8BindingRoot(CGThing):
+                         else:
+                             rust_type = rust
+                             value_expr = to_value.replace("ITEM", "native.{native}()")
++                    elif result_type.isPromise():
++                        # WebIDL: a promise-returning operation rejects instead of throwing.
++                        promise_operations.add(MakeNativeName(member.identifier.name) + "_" * overload_index)
++                        rust_type, value_expr = "roves_v8::Handle", "Value::Js(native.{native}())"
+                     elif result_type.isAny() or result_type.isObject():
+                         if nullable_return:
+                             rust_type, value_expr = "Option<roves_v8::Handle>", "native.{native}().map(Value::Js).unwrap_or(Value::Null)"
+@@ -9020,6 +9051,7 @@ class CGV8BindingRoot(CGThing):
+                     contextual = (
+                         any(argument_type[1] in V8_CONTEXTUAL_CONVERSIONS for argument_type in argument_types)
+                         or v8_contains_handle(result_type)
++                        or MakeNativeName(member.identifier.name) in v8_context_members().get(name, set())
+                     )
+                     if contextual and len(signatures) > 1:
+                         raise TypeError(f"V8 backend does not support overloads needing a script context: {name}.{member.identifier.name}")
+@@ -9319,7 +9351,14 @@ class CGV8BindingRoot(CGThing):
+             call_arguments = ", ".join(f"arg{index}" for index, _ in enumerate(argument_types))
+             if contextual:
+                 call_arguments = "cx" + (", " + call_arguments if call_arguments else "")
+-            if throws:
++            if native in promise_operations:
++                result_expr = (
++                    f"match native.{native}({call_arguments}) {{\n"
++                    "                Ok(result) => Ok(Value::Js(result)),\n"
++                    "                Err(error) => Ok(Value::Js(cx.rejected_promise(&error))),\n"
++                    "            }"
++                )
++            elif throws:
+                 # `[Throws]`: the native Err propagates to the runtime, which throws it to JS.
+                 if value_expr == "Value::Undefined":
+                     result_expr = f"native.{native}({call_arguments})?;\n            Ok(Value::Undefined)"
+diff --git a/components/script_bindings/codegen/run_v8.py b/components/script_bindings/codegen/run_v8.py
+index 862f6146df5..df93bc9c7cf 100644
+--- a/components/script_bindings/codegen/run_v8.py
++++ b/components/script_bindings/codegen/run_v8.py
+@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
+ sys.path[:0] = [str(ROOT / "third_party/WebIDL/parser"), str(ROOT / "third_party/ply")]
+ 
+ import WebIDL
++import codegen
+ from codegen import CGV8BindingRoot
+ 
+ 
+@@ -45,7 +46,10 @@ def main() -> None:
+     cli.add_argument("webidl", type=Path)
+     cli.add_argument("output", type=Path)
+     cli.add_argument("context", type=Path, nargs="*", help="WebIDL files defining ancestors")
++    cli.add_argument("--bindings-conf", type=Path, action="append", default=[],
++                     help="extra Bindings.conf-style file (e.g. 'cx' lists for test fixtures)")
+     args = cli.parse_args()
++    codegen.V8_EXTRA_BINDINGS_CONFS.extend(str(path) for path in args.bindings_conf)
+     source = generate(args.webidl, args.output.parent, tuple(args.context))
+     args.output.write_text(source, encoding="utf-8", newline="\n")
+ 
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index f1a3b38f9a2..cd080011d2a 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -330,7 +330,7 @@ class V8GeneratorTests(unittest.TestCase):
+             self.assertIn('Some(&["\\u{6c}\\u{65}\\u{66}\\u{74}", "\\u{72}\\u{69}\\u{67}\\u{68}\\u{74}"])', source)
+ 
+     def test_optional_explicit_defaults_variadics_and_unsupported_types_fail_closed(self):
+-        for signature in ["double run(Promise<any> value);", "double run(record<DOMString, long> value);"]:
++        for signature in ["double run(record<DOMString, any> value);", "double run(record<DOMString, long> value);"]:
+             with self.subTest(signature=signature):
+                 self.assert_unsupported("interface Unsupported { " + signature + " };")
+ 
+@@ -342,7 +342,7 @@ class V8GeneratorTests(unittest.TestCase):
+             source = generate(webidl, root / "out")
+             self.assertIn("WebIdlOptionalArgument<bool>", source)
+             self.assertIn("WebIdlArgumentConversion::Boolean", source)
+-        for signature in ["boolean run(record<DOMString, long> value);", "boolean run(Promise<any> value);"]:
++        for signature in ["boolean run(record<DOMString, long> value);", "boolean run(record<DOMString, any> value);"]:
+             with self.subTest(signature=signature):
+                 self.assert_unsupported("interface Unsupported { " + signature + " };")
+ 
+@@ -648,6 +648,33 @@ class V8GeneratorTests(unittest.TestCase):
+                 self.assertIn(expected, source)
+             self.assertNotIn("fn ToJSON", source)
+ 
++    def test_promise_operations_reject_instead_of_throwing(self):
++        with tempfile.TemporaryDirectory() as directory:
++            path = Path(directory) / "Async.webidl"
++            path.write_text("[Exposed=Window] interface Async { Promise<long> run(Promise<any> input); };", encoding="utf-8")
++            source = generate(path, Path(directory) / "output")
++            self.assertIn("fn Run(&self, cx: &mut roves_v8::ScriptContext, arg0: roves_v8::Handle) -> Result<roves_v8::Handle, roves_v8::WebIdlError>;", source)
++            self.assertIn("Err(error) => Ok(Value::Js(cx.rejected_promise(&error))),", source)
++            self.assertIn("roves_v8::WebIdlType::Promise", source)
++
++    def test_bindings_conf_cx_lists_make_members_contextual(self):
++        import codegen
++        with tempfile.TemporaryDirectory() as directory:
++            conf = Path(directory) / "Bindings.conf"
++            conf.write_text("DOMInterfaces = { 'Plain': { 'cx': ['Run'] } }\n", encoding="utf-8")
++            path = Path(directory) / "Plain.webidl"
++            path.write_text("[Exposed=Window] interface Plain { undefined run(boolean flag); undefined other(); };", encoding="utf-8")
++            saved = list(codegen.V8_EXTRA_BINDINGS_CONFS)
++            codegen.V8_EXTRA_BINDINGS_CONFS[:] = [str(conf)]
++            codegen._V8_CONTEXT_MEMBERS = None
++            try:
++                source = generate(path, Path(directory) / "output")
++            finally:
++                codegen.V8_EXTRA_BINDINGS_CONFS[:] = saved
++                codegen._V8_CONTEXT_MEMBERS = None
++            self.assertIn("fn Run(&self, cx: &mut roves_v8::ScriptContext, arg0: bool) -> Result<(), roves_v8::WebIdlError>;", source)
++            self.assertIn("fn Other(&self) -> ();", source)
++
+     def test_overloads_needing_type_distinction_fail_closed(self):
+         self.assert_unsupported("interface Unsupported { undefined f(DOMString a); undefined f(boolean a); };")
+         self.assert_unsupported("interface Unsupported { undefined f(DOMString a); undefined f(boolean a, optional boolean b); };")
+@@ -775,7 +802,7 @@ class V8GeneratorTests(unittest.TestCase):
+                 self.assertIn(expected, source)
+ 
+     def test_callback_interfaces_and_promises_are_not_dom_interface_values(self):
+-        self.assert_unsupported("interface Uses { undefined add(Promise<any> pending); };")
++        self.assert_unsupported("interface Uses { undefined add(record<DOMString, any> pending); };")
+ 
+     def test_exposure_conditions_gate_interface_objects_and_members(self):
+         with tempfile.TemporaryDirectory() as directory:

@@ -330,7 +330,7 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn('Some(&["\\u{6c}\\u{65}\\u{66}\\u{74}", "\\u{72}\\u{69}\\u{67}\\u{68}\\u{74}"])', source)
 
     def test_optional_explicit_defaults_variadics_and_unsupported_types_fail_closed(self):
-        for signature in ["double run(Promise<any> value);", "double run(record<DOMString, long> value);"]:
+        for signature in ["double run(record<DOMString, any> value);", "double run(record<DOMString, long> value);"]:
             with self.subTest(signature=signature):
                 self.assert_unsupported("interface Unsupported { " + signature + " };")
 
@@ -342,7 +342,7 @@ class V8GeneratorTests(unittest.TestCase):
             source = generate(webidl, root / "out")
             self.assertIn("WebIdlOptionalArgument<bool>", source)
             self.assertIn("WebIdlArgumentConversion::Boolean", source)
-        for signature in ["boolean run(record<DOMString, long> value);", "boolean run(Promise<any> value);"]:
+        for signature in ["boolean run(record<DOMString, long> value);", "boolean run(record<DOMString, any> value);"]:
             with self.subTest(signature=signature):
                 self.assert_unsupported("interface Unsupported { " + signature + " };")
 
@@ -648,6 +648,33 @@ class V8GeneratorTests(unittest.TestCase):
                 self.assertIn(expected, source)
             self.assertNotIn("fn ToJSON", source)
 
+    def test_promise_operations_reject_instead_of_throwing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Async.webidl"
+            path.write_text("[Exposed=Window] interface Async { Promise<long> run(Promise<any> input); };", encoding="utf-8")
+            source = generate(path, Path(directory) / "output")
+            self.assertIn("fn Run(&self, cx: &mut roves_v8::ScriptContext, arg0: roves_v8::Handle) -> Result<roves_v8::Handle, roves_v8::WebIdlError>;", source)
+            self.assertIn("Err(error) => Ok(Value::Js(cx.rejected_promise(&error))),", source)
+            self.assertIn("roves_v8::WebIdlType::Promise", source)
+
+    def test_bindings_conf_cx_lists_make_members_contextual(self):
+        import codegen
+        with tempfile.TemporaryDirectory() as directory:
+            conf = Path(directory) / "Bindings.conf"
+            conf.write_text("DOMInterfaces = { 'Plain': { 'cx': ['Run'] } }\n", encoding="utf-8")
+            path = Path(directory) / "Plain.webidl"
+            path.write_text("[Exposed=Window] interface Plain { undefined run(boolean flag); undefined other(); };", encoding="utf-8")
+            saved = list(codegen.V8_EXTRA_BINDINGS_CONFS)
+            codegen.V8_EXTRA_BINDINGS_CONFS[:] = [str(conf)]
+            codegen._V8_CONTEXT_MEMBERS = None
+            try:
+                source = generate(path, Path(directory) / "output")
+            finally:
+                codegen.V8_EXTRA_BINDINGS_CONFS[:] = saved
+                codegen._V8_CONTEXT_MEMBERS = None
+            self.assertIn("fn Run(&self, cx: &mut roves_v8::ScriptContext, arg0: bool) -> Result<(), roves_v8::WebIdlError>;", source)
+            self.assertIn("fn Other(&self) -> ();", source)
+
     def test_overloads_needing_type_distinction_fail_closed(self):
         self.assert_unsupported("interface Unsupported { undefined f(DOMString a); undefined f(boolean a); };")
         self.assert_unsupported("interface Unsupported { undefined f(DOMString a); undefined f(boolean a, optional boolean b); };")
@@ -775,7 +802,7 @@ class V8GeneratorTests(unittest.TestCase):
                 self.assertIn(expected, source)
 
     def test_callback_interfaces_and_promises_are_not_dom_interface_values(self):
-        self.assert_unsupported("interface Uses { undefined add(Promise<any> pending); };")
+        self.assert_unsupported("interface Uses { undefined add(record<DOMString, any> pending); };")
 
     def test_exposure_conditions_gate_interface_objects_and_members(self):
         with tempfile.TemporaryDirectory() as directory:

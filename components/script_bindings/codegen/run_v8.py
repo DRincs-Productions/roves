@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path[:0] = [str(ROOT / "third_party/WebIDL/parser"), str(ROOT / "third_party/ply")]
 
 import WebIDL
+import codegen
 from codegen import CGV8BindingRoot
 
 
@@ -45,7 +46,10 @@ def main() -> None:
     cli.add_argument("webidl", type=Path)
     cli.add_argument("output", type=Path)
     cli.add_argument("context", type=Path, nargs="*", help="WebIDL files defining ancestors")
+    cli.add_argument("--bindings-conf", type=Path, action="append", default=[],
+                     help="extra Bindings.conf-style file (e.g. 'cx' lists for test fixtures)")
     args = cli.parse_args()
+    codegen.V8_EXTRA_BINDINGS_CONFS.extend(str(path) for path in args.bindings_conf)
     source = generate(args.webidl, args.output.parent, tuple(args.context))
     args.output.write_text(source, encoding="utf-8", newline="\n")
 

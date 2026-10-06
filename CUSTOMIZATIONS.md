@@ -11,6 +11,46 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: promises; `cx` members from Bindings.conf (CP67)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixtures
+`components/roves-v8/tests/webidl/PromiseOperations.webidl` and `Bindings.conf`;
+`components/script_bindings/codegen/codegen.py`, `run_v8.py`, `test_v8.py`.
+**Patch:** `0131-roves-v8-promises-bindings-conf.patch` after 0130.
+
+**Promises.**
+- The exception-value construction was split out of `throw_webidl_error` as `webidl_error_value`,
+  so errors can reject a promise as well as be thrown.
+- `ScriptContext` gains `new_promise() -> (Handle, PromiseResolver)`, `resolve_promise`,
+  `reject_promise` and `rejected_promise`. `PromiseResolver` is a new opaque type.
+- `Runtime::settle_promise` settles a promise later, outside any native call, then runs the
+  microtask checkpoint.
+- `WebIdlType::Promise` converts arguments like `Promise.resolve`.
+- The generator maps `Promise<T>` to `roves_v8::Handle` and makes promise-returning operations
+  contextual. As WebIDL requires, a native `Err` from such an operation becomes a rejected promise
+  instead of an exception. A failed argument conversion still throws, a documented gap.
+
+**Which natives need `cx`.** This is decided the way Servo's own generator decides it: by the
+`'cx'` and `'realm'` lists in `Bindings.conf`, which the V8 generator now reads through
+`v8_context_members`, alongside the type-based rule. `run_v8.py --bindings-conf` merges extra
+files; the test fixtures use `tests/webidl/Bindings.conf`. This is needed because a member such as
+`settle(boolean)` has no JS-value types but must still settle a promise. A `cx` member that is
+overloaded now fails closed, which accounts for one fewer covered interface.
+
+**Tests.**
+- New runtime test:
+  - immediate resolution;
+  - a native error arriving as a rejected promise, not thrown;
+  - `Promise<any>` arguments built from a plain value and from a promise;
+  - promises settled re-entrantly by another `cx` member, and rejected;
+  - a promise settled later from Rust running its `then` reaction.
+- Generator tests: 56/56, including promise rejection and Bindings.conf-driven `cx`.
+- `roves-v8` pilot and pilot+JIT-less: 91 unit + 5 integration + 2 doctests each; default 60 unit +
+  2 doctests.
+- `servo-script` check with the pilot is clean.
+
+Coverage: 220/486.
+
 ## 2026-10-06 - V8 migration Phase 4: `[Exposed]` for workers and worklets (CP66)
 
 **Servo files:** `components/roves-v8/src/lib.rs`; `components/script_bindings/codegen/codegen.py`,

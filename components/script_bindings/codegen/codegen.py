@@ -8361,6 +8361,29 @@ def v8_setter_conversion(idl_type, nullable: bool):
     return conversion, nullable, arm
 
 
+# Extra Bindings.conf-style files merged over Servo's own (run_v8.py's --bindings-conf, used by
+# test fixtures that are not Servo interfaces).
+V8_EXTRA_BINDINGS_CONFS: list[str] = []
+_V8_CONTEXT_MEMBERS: dict[str, set[str]] | None = None
+
+
+def v8_context_members() -> dict:
+    """Interface name -> native member names that need the engine context: the 'cx' and 'realm'
+    lists of Bindings.conf, the same configuration Servo's own generator reads."""
+    global _V8_CONTEXT_MEMBERS
+    if _V8_CONTEXT_MEMBERS is None:
+        members: dict[str, set[str]] = {}
+        paths = [os.path.join(os.path.dirname(os.path.abspath(__file__)), "Bindings.conf")] + V8_EXTRA_BINDINGS_CONFS
+        for path in paths:
+            scope: dict = {}
+            with open(path, encoding="utf-8") as conf:
+                exec(compile(conf.read(), path, "exec"), scope)
+            for interface, config in scope.get("DOMInterfaces", {}).items():
+                members.setdefault(interface, set()).update(config.get("cx", []) + config.get("realm", []))
+        _V8_CONTEXT_MEMBERS = members
+    return _V8_CONTEXT_MEMBERS
+
+
 def v8_is_json_type(ty) -> bool:
     """WebIDL JSON types the default toJSON collects: primitives, strings, enumerations,
     nullable and sequence forms of them, and interfaces that have a toJSON operation."""
@@ -8447,6 +8470,9 @@ def v8_typed_info(ty, name: str, member_name: str):
         return v8_dictionary_info(ty.inner, name)
     if ty.isUnion():
         return v8_union_info(ty, name, member_name)
+    if ty.isPromise():
+        return ("roves_v8::Handle", "roves_v8::WebIdlType::Promise",
+                "Value::Js(value) => value.clone()", "Value::Js(ITEM)")
     if ty.isCallbackInterface():
         return ("roves_v8::Handle", "roves_v8::WebIdlType::CallbackInterface",
                 "Value::Js(value) => value.clone()", "Value::Js(ITEM)")
@@ -8507,7 +8533,7 @@ def v8_contains_sequence(ty) -> bool:
     """Whether the type needs the structured path (sequences and dictionaries)."""
     if ty.nullable():
         return v8_contains_sequence(ty.inner)
-    return ty.isSequence() or ty.isDictionary() or ty.isUnion() or ty.isCallbackInterface()
+    return ty.isSequence() or ty.isDictionary() or ty.isUnion() or ty.isCallbackInterface() or ty.isPromise()
 
 
 def v8_contains_handle(ty) -> bool:
@@ -8518,7 +8544,7 @@ def v8_contains_handle(ty) -> bool:
         return any(v8_contains_handle(member.type) for member in v8_dictionary_members(ty.inner))
     if ty.isUnion():
         return any(v8_contains_handle(member) for member in ty.memberTypes)
-    return ty.isAny() or ty.isObject() or ty.isCallback() or ty.isCallbackInterface()
+    return ty.isAny() or ty.isObject() or ty.isCallback() or ty.isCallbackInterface() or ty.isPromise()
 
 
 def v8_argument_types(name: str, member_name: str, arguments) -> list:
@@ -8892,6 +8918,7 @@ class CGV8BindingRoot(CGThing):
         attributes = []
         operations = []
         unforgeable_attributes = set()
+        promise_operations = set()
         contextual_attributes = []
         static_operations = []
         unscopables = []
@@ -8997,6 +9024,10 @@ class CGV8BindingRoot(CGThing):
                         else:
                             rust_type = rust
                             value_expr = to_value.replace("ITEM", "native.{native}()")
+                    elif result_type.isPromise():
+                        # WebIDL: a promise-returning operation rejects instead of throwing.
+                        promise_operations.add(MakeNativeName(member.identifier.name) + "_" * overload_index)
+                        rust_type, value_expr = "roves_v8::Handle", "Value::Js(native.{native}())"
                     elif result_type.isAny() or result_type.isObject():
                         if nullable_return:
                             rust_type, value_expr = "Option<roves_v8::Handle>", "native.{native}().map(Value::Js).unwrap_or(Value::Null)"
@@ -9020,6 +9051,7 @@ class CGV8BindingRoot(CGThing):
                     contextual = (
                         any(argument_type[1] in V8_CONTEXTUAL_CONVERSIONS for argument_type in argument_types)
                         or v8_contains_handle(result_type)
+                        or MakeNativeName(member.identifier.name) in v8_context_members().get(name, set())
                     )
                     if contextual and len(signatures) > 1:
                         raise TypeError(f"V8 backend does not support overloads needing a script context: {name}.{member.identifier.name}")
@@ -9319,7 +9351,14 @@ class CGV8BindingRoot(CGThing):
             call_arguments = ", ".join(f"arg{index}" for index, _ in enumerate(argument_types))
             if contextual:
                 call_arguments = "cx" + (", " + call_arguments if call_arguments else "")
-            if throws:
+            if native in promise_operations:
+                result_expr = (
+                    f"match native.{native}({call_arguments}) {{\n"
+                    "                Ok(result) => Ok(Value::Js(result)),\n"
+                    "                Err(error) => Ok(Value::Js(cx.rejected_promise(&error))),\n"
+                    "            }"
+                )
+            elif throws:
                 # `[Throws]`: the native Err propagates to the runtime, which throws it to JS.
                 if value_expr == "Value::Undefined":
                     result_expr = f"native.{native}({call_arguments})?;\n            Ok(Value::Undefined)"

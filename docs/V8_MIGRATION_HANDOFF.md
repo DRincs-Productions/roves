@@ -213,6 +213,13 @@ non esposti. Test generatore 54/54, `roves-v8` 90+5+2, default 60+2, check pulit
 **208/486**. **Prossimo:** `Promise`, overload per tipo, iterable/maplike/setlike,
 `[Serializable]`/`[Transferable]`, `[Global]` (`Window` e i global dei worker).
 
+**CP67 (2026-10-06):** promise e Bindings.conf (patch 0131). Le operazioni che restituiscono
+promise rifiutano invece di lanciare. Su `ScriptContext` ci sono `new_promise`, `resolve_promise`,
+`reject_promise` e `rejected_promise`; per l'asincrono c'è `Runtime::settle_promise`. Quali
+nativi ricevono `cx` lo decidono, come in Servo, le liste `'cx'`/`'realm'` di `Bindings.conf`
+(`--bindings-conf` per le fixture). Test generatore 56/56, `roves-v8` 91+5+2, default 60+2, check
+pulito. Copertura 220/486. CI verde su CP49–CP58 (`3e86880a3a4`).
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

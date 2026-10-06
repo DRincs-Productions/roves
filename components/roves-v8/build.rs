@@ -221,13 +221,17 @@ fn main() {
         ("VariadicOperations", &[][..]),
         ("JsonBase", &[][..]),
         ("JsonChild", &["JsonBase"][..]),
+        ("PromiseOperations", &[][..]),
     ] {
         println!("cargo:rerun-if-changed={}", fixtures.join(format!("{interface}.webidl")).display());
+        println!("cargo:rerun-if-changed={}", fixtures.join("Bindings.conf").display());
         let status = Command::new(&python)
             .arg(bindings.join("codegen/run_v8.py"))
             .arg(fixtures.join(format!("{interface}.webidl")))
             .arg(out_dir.join(format!("{interface}V8Binding.rs")))
             .args(context.iter().map(|ancestor| fixtures.join(format!("{ancestor}.webidl"))))
+            .arg("--bindings-conf")
+            .arg(fixtures.join("Bindings.conf"))
             .env("PYTHONDONTWRITEBYTECODE", "1")
             .status()
             .expect("run WebIDL inheritance fixture generator");

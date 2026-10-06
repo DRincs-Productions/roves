@@ -169,6 +169,10 @@ pub mod webidl {
     pub mod json_child {
         include!(concat!(env!("OUT_DIR"), "/JsonChildV8Binding.rs"));
     }
+    #[cfg(test)]
+    pub mod promise_operations {
+        include!(concat!(env!("OUT_DIR"), "/PromiseOperationsV8Binding.rs"));
+    }
 }
 
 use std::sync::Once;
@@ -743,6 +747,17 @@ fn native_argument(
     Some(Value::Native(NativeRef { gc: v8::cppgc::Persistent::new(&pointer), interface }))
 }
 
+/// The settling side of a promise created by [`ScriptContext::new_promise`]. It keeps the
+/// promise alive until settled; settling twice has no effect.
+#[derive(Clone)]
+pub struct PromiseResolver(v8::Global<v8::PromiseResolver>);
+
+impl std::fmt::Debug for PromiseResolver {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("PromiseResolver")
+    }
+}
+
 /// What a native WebIDL member that needs the JS engine receives, like the `cx` Servo passes to
 /// its DOM methods: it can call JS functions, read JS values and create references to them,
 /// without exposing engine types. It exists only for the duration of one native call.
@@ -831,6 +846,33 @@ impl ScriptContext<'_, '_, '_> {
                 Err(WebIdlError::Js(Handle(v8::Global::new(try_catch, exception))))
             },
         }
+    }
+
+    /// Creates a pending promise. Returns the promise (to hand to JS) and its resolver (to settle
+    /// it later with [`ScriptContext::resolve_promise`]/[`ScriptContext::reject_promise`] or,
+    /// outside a native call, [`Runtime::settle_promise`]).
+    pub fn new_promise(&mut self) -> (Handle, PromiseResolver) {
+        let resolver = v8::PromiseResolver::new(self.scope).expect("creating a promise resolver");
+        let promise: v8::Local<v8::Value> = resolver.get_promise(self.scope).into();
+        (Handle(v8::Global::new(self.scope, promise)), PromiseResolver(v8::Global::new(self.scope, resolver)))
+    }
+
+    /// Fulfils the promise of `resolver` with `value`.
+    pub fn resolve_promise(&mut self, resolver: &PromiseResolver, value: &Value) {
+        settle_promise(self.scope, resolver, Ok(value));
+    }
+
+    /// Rejects the promise of `resolver` with the JS exception of `error`.
+    pub fn reject_promise(&mut self, resolver: &PromiseResolver, error: &WebIdlError) {
+        settle_promise(self.scope, resolver, Err(error));
+    }
+
+    /// A promise already rejected with `error`: what a promise-returning operation produces
+    /// instead of throwing.
+    pub fn rejected_promise(&mut self, error: &WebIdlError) -> Handle {
+        let (promise, resolver) = self.new_promise();
+        self.reject_promise(&resolver, error);
+        promise
     }
 
     /// The engine-neutral value of a JS value (primitives convert; objects stay [`Value::Js`]).
@@ -1019,6 +1061,8 @@ pub enum WebIdlType {
     /// A union of (non-nullable) member types, selected by the WebIDL union conversion
     /// algorithm into a [`Value::Union`]. A nullable union is `Nullable(Union(..))`.
     Union(Vec<WebIdlType>),
+    /// `Promise<T>`: any value, converted like `Promise.resolve(value)` ([`Value::Js`]).
+    Promise,
 }
 
 /// One member of a [`WebIdlType::Dictionary`].
@@ -1686,6 +1730,20 @@ impl Runtime {
         let template = v8::Local::new(scope, &interface.template);
         let object: v8::Local<v8::Value> = traced_wrapper(scope, template, &interface.name, &native.inner).into();
         Handle(v8::Global::new(scope, object))
+    }
+
+    /// Settles a promise created by [`ScriptContext::new_promise`] from outside a native call
+    /// (for example when asynchronous work completes), then runs the microtask checkpoint so
+    /// its reactions run.
+    pub fn settle_promise(&mut self, resolver: &PromiseResolver, outcome: Result<&Value, &WebIdlError>) {
+        {
+            let context_handle = &self.context;
+            v8::scope!(let scope, &mut self.isolate);
+            let context = v8::Local::new(scope, context_handle);
+            let scope = &mut v8::ContextScope::new(scope, context);
+            settle_promise(scope, resolver, outcome);
+        }
+        self.isolate.perform_microtask_checkpoint();
     }
 
     /// Recovers the traced native behind a wrapper made by `create_traced_instance`, or `None`
@@ -3631,6 +3689,12 @@ fn convert_typed_value<'s>(
             Some(Value::Js(Handle(v8::Global::new(scope, value))))
         },
         WebIdlType::Union(members) => convert_union(scope, value, members),
+        WebIdlType::Promise => {
+            let resolver = v8::PromiseResolver::new(scope)?;
+            resolver.resolve(scope, value)?;
+            let promise: v8::Local<v8::Value> = resolver.get_promise(scope).into();
+            Some(Value::Js(Handle(v8::Global::new(scope, promise))))
+        },
         WebIdlType::Dictionary(members) => {
             // WebIDL dictionary conversion: undefined and null are an empty dictionary.
             let object = if value.is_null_or_undefined() {
@@ -3797,6 +3861,20 @@ fn convert_union<'s>(
     None
 }
 
+fn settle_promise(scope: &mut v8::PinScope, resolver: &PromiseResolver, outcome: Result<&Value, &WebIdlError>) {
+    let resolver = v8::Local::new(scope, &resolver.0);
+    match outcome {
+        Ok(value) => {
+            let value = v8_result(scope, value);
+            resolver.resolve(scope, value);
+        },
+        Err(error) => {
+            let reason = webidl_error_value(scope, error);
+            resolver.reject(scope, reason);
+        },
+    }
+}
+
 /// Arms the guaranteed finalizer that drops `raw` (a `Box<Box<dyn Any>>` attached to `wrapper`'s
 /// internal field) exactly once, when V8 collects `wrapper`, then runs `after_drop`. The returned
 /// weak handle observes the wrapper; `finalizers` keeps the callback armed until it completes.
@@ -3835,7 +3913,13 @@ fn arm_native_finalizer(
 
 /// Throws the JS exception matching a native [`WebIdlError`].
 fn throw_webidl_error(scope: &mut v8::PinScope, error: &WebIdlError) {
-    let exception = match error {
+    let exception = webidl_error_value(scope, error);
+    scope.throw_exception(exception);
+}
+
+/// The JS exception value of a native [`WebIdlError`] (thrown, or used to reject a promise).
+fn webidl_error_value<'s>(scope: &mut v8::PinScope<'s, '_>, error: &WebIdlError) -> v8::Local<'s, v8::Value> {
+    match error {
         WebIdlError::Js(value) => v8::Local::new(scope, &value.0),
         WebIdlError::TypeError(message) => {
             let message = v8::String::new(scope, message).unwrap();
@@ -3868,8 +3952,7 @@ fn throw_webidl_error(scope: &mut v8::PinScope, error: &WebIdlError) {
                 },
             }
         },
-    };
-    scope.throw_exception(exception);
+    }
 }
 
 fn throw_type_error(scope: &mut v8::PinScope, message: &str) {
@@ -7053,6 +7136,66 @@ mod tests {
             assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
         }
         drop((wrapper, item));
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_promise_operations_resolve_reject_and_settle_later() {
+        use crate::webidl::promise_operations::{PromiseOperationsBinding, PromiseOperationsNative};
+        use crate::{Handle, PromiseResolver, ScriptContext, WebIdlError};
+        use std::cell::RefCell;
+        struct Ops {
+            pending: RefCell<Option<PromiseResolver>>,
+        }
+        #[allow(non_snake_case)]
+        impl PromiseOperationsNative for Ops {
+            fn Twice(&self, cx: &mut ScriptContext, value: u32) -> Result<Handle, WebIdlError> {
+                if value > 1000 {
+                    // Returned as a rejected promise, never thrown.
+                    return Err(WebIdlError::RangeError("too large".into()));
+                }
+                let (promise, resolver) = cx.new_promise();
+                cx.resolve_promise(&resolver, &Value::Number(value as f64 * 2.0));
+                Ok(promise)
+            }
+            fn Later(&self, cx: &mut ScriptContext) -> Result<Handle, WebIdlError> {
+                let (promise, resolver) = cx.new_promise();
+                *self.pending.borrow_mut() = Some(resolver);
+                Ok(promise)
+            }
+            fn Settle(&self, cx: &mut ScriptContext, succeed: bool) -> Result<(), WebIdlError> {
+                if let Some(resolver) = self.pending.borrow_mut().take() {
+                    if succeed {
+                        cx.resolve_promise(&resolver, &Value::String("settled".into()));
+                    } else {
+                        cx.reject_promise(&resolver, &WebIdlError::TypeError("refused".into()));
+                    }
+                }
+                Ok(())
+            }
+            fn Wrap(&self, _cx: &mut ScriptContext, input: Handle) -> Result<Handle, WebIdlError> {
+                Ok(input)
+            }
+        }
+        let mut runtime = Runtime::new();
+        let binding = PromiseOperationsBinding::<Ops>::install(&mut runtime).unwrap();
+        let ops = binding.create(&mut runtime, Ops { pending: RefCell::new(None) });
+        runtime.set_global_property("ops", &ops).unwrap();
+        assert_eq!(runtime.eval_resolved("ops.twice(21)").unwrap(), Value::Number(42.0));
+        let rejection = runtime.eval_resolved("ops.twice(5000)").unwrap_err();
+        assert!(rejection.contains("RangeError") && rejection.contains("too large"), "{rejection}");
+        assert_eq!(runtime.eval("ops.twice(5000) instanceof Promise").unwrap(), "true");
+        // `Promise<any>` arguments are converted like Promise.resolve.
+        assert_eq!(runtime.eval_resolved("ops.wrap(5)").unwrap(), Value::Number(5.0));
+        assert_eq!(runtime.eval_resolved("ops.wrap(Promise.resolve(7))").unwrap(), Value::Number(7.0));
+        // A promise settled re-entrantly from another native call...
+        assert_eq!(runtime.eval_resolved("const p = ops.later(); ops.settle(true); p").unwrap(), Value::String("settled".into()));
+        assert!(runtime.eval_resolved("const q = ops.later(); ops.settle(false); q").unwrap_err().contains("refused"));
+        // ...and one settled later from Rust, outside any native call.
+        runtime.eval("globalThis.done = 'no'; ops.later().then(value => { globalThis.done = value; });").unwrap();
+        let resolver = runtime.get_wrapped::<Ops>(&ops).unwrap().pending.borrow_mut().take().unwrap();
+        runtime.settle_promise(&resolver, Ok(&Value::String("async".into())));
+        assert_eq!(runtime.eval("done").unwrap(), "async");
     }
 
     #[cfg(feature = "webidl-pilot")]
