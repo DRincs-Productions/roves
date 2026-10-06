@@ -1,27 +1,3 @@
-diff --git a/Cargo.lock b/Cargo.lock
-index 22cd01dcf80..34d871c52bb 100644
---- a/Cargo.lock
-+++ b/Cargo.lock
-@@ -7378,9 +7378,19 @@ dependencies = [
- name = "roves-v8"
- version = "0.1.0"
- dependencies = [
-+ "roves-v8-derive",
-  "v8",
- ]
- 
-+[[package]]
-+name = "roves-v8-derive"
-+version = "0.1.0"
-+dependencies = [
-+ "proc-macro2",
-+ "syn 2.0.119",
-+ "synstructure 0.13.2",
-+]
-+
- [[package]]
- name = "roxmltree"
- version = "0.20.0"
 diff --git a/Cargo.toml b/Cargo.toml
 index e767e98db86..daf1fa842e7 100644
 --- a/Cargo.toml

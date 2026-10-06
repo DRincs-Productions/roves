@@ -1,0 +1,24 @@
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 2ea053d..2d46ec4 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -8184,7 +8184,7 @@ mod tests {
+         assert_eq!(runtime.eval_value("values.optionalEcho()").unwrap(), Value::String("missing".into()));
+         assert_eq!(runtime.eval_value("values.optionalEcho(undefined)").unwrap(), Value::String("missing".into()));
+         assert_eq!(runtime.eval_value("values.optionalEcho(null)").unwrap(), Value::Null);
+-        assert_eq!(runtime.eval_value("values.optionalEcho('\\u00FE')").unwrap(), Value::String("Ã¾".into()));
++        assert_eq!(runtime.eval_value("values.optionalEcho('\\u00FE')").unwrap(), Value::String("þ".into()));
+         assert!(runtime.eval("values.echo('\\u0100')").unwrap_err().contains("TypeError"));
+         assert!(runtime.eval("values.echo('\\uD800')").unwrap_err().contains("TypeError"));
+         assert!(runtime.eval("values.echo(Symbol())").unwrap_err().contains("TypeError"));
+diff --git a/components/roves-v8/tests/webidl/OptionalNullableStringDefaults.webidl b/components/roves-v8/tests/webidl/OptionalNullableStringDefaults.webidl
+new file mode 100644
+index 0000000..f57f7c5
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/OptionalNullableStringDefaults.webidl
+@@ -0,0 +1,5 @@
++[Exposed=Window] interface OptionalNullableStringDefaults {
++  long dom(optional DOMString? value = null);
++  long usv(optional USVString? value = null);
++  long bytes(optional ByteString? value = null);
++};

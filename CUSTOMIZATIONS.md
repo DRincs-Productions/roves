@@ -11,6 +11,25 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - Patch overlay fixes: root `Cargo.lock`, a missing fixture, mojibake (0155, 0157)
+
+Patch validation (pristine v0.5.0 plus every patch, the CI's `validate-servo-patches`) failed at
+`0155`. Its root `Cargo.lock` hunk expected a `roves-v8` package entry, but the overlay's
+lockfile has never tracked the roves-v8 crates; the build resolves them itself. `0155` now
+carries only `components/` and the root `Cargo.toml`.
+
+Reconstructing the tree locally and diffing it against the repository also showed two older
+overlay gaps:
+- `0094` never added the fixture `components/roves-v8/tests/webidl/OptionalNullableStringDefaults.webidl`,
+  because it was untracked when that patch was generated;
+- `0091` carries a double-encoded `"þ"` (`"Ã¾"`) in a test assertion.
+
+The new patch `0157-roves-v8-overlay-fixture-and-encoding-fix.patch` restores both. Afterwards
+the reconstructed `components/roves-v8`, `components/roves-v8-derive` and the V8 codegen match
+the repository exactly. **Lesson:** run `git add -N` on new files before generating a patch,
+and validate the whole series against a pristine extraction, not only with
+`git apply --check -R`.
+
 ## 2026-10-06 - V8 migration Phase 4: promise operations reject on conversion errors (CP92)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `components/roves-v8/tests/webidl/PromiseOperations.webidl`,
