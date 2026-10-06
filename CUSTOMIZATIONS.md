@@ -11,6 +11,47 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: defaults through types, `[LegacyWindowAlias]`, `[Func]`, clone markers (CP68)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixture
+`components/roves-v8/tests/webidl/DefaultsProbe.webidl`;
+`components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0132-roves-v8-structured-defaults-markers.patch` after 0131.
+
+**Defaults.**
+- Dictionary member defaults and the new `WebIdlArgument::default` are converted through the target
+  type when they apply, exactly like a passed value. A union, enumeration or `any` default therefore
+  takes the same shape as a JS value would. Before this, a union-typed dictionary default (such as
+  `AudioContextOptions.latencyHint = "interactive"`) would have reached the native unconverted.
+- The generator now applies defaults to arguments of type `any`, union, `object` or nullable union,
+  and to `undefined` defaults, through the structured path. The native always receives a value,
+  for example `getContext(contextId, optional any options = null)` and
+  `importNode(node, optional (boolean or ImportNodeOptions) options = false)`.
+- `v8_default_value` picks the representation from the literal's own type, and `IDLUndefinedValue`
+  maps to `Value::Undefined`.
+
+**Interface markers.**
+- `[Serializable]`/`[Transferable]` are accepted. They concern structured clone, not the binding's
+  shape.
+- `[LegacyWindowAlias=X]` exposes the same interface object under the extra global names, through
+  the new `Runtime::add_interface_alias`.
+- `[Func="path"]` becomes an `Exposure::func_enabled(path)` condition (default `true`), folded into
+  the interface condition.
+
+**Tests.**
+- New runtime test:
+  - a union `= false` default for an omitted or `undefined` argument;
+  - an `any = null` default;
+  - a union dictionary-member default and passed values, both converting through the union;
+  - alias identity and `instanceof`;
+  - `[Func]` hiding the interface object together with its alias.
+- Generator tests: 57/57.
+- `roves-v8` pilot and pilot+JIT-less: 92 unit + 5 integration + 2 doctests each; default 60 unit +
+  2 doctests.
+- `servo-script` check with the pilot is clean.
+
+Coverage: **242/486**.
+
 ## 2026-10-06 - V8 migration Phase 4: promises; `cx` members from Bindings.conf (CP67)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixtures

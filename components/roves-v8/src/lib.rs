@@ -173,6 +173,10 @@ pub mod webidl {
     pub mod promise_operations {
         include!(concat!(env!("OUT_DIR"), "/PromiseOperationsV8Binding.rs"));
     }
+    #[cfg(test)]
+    pub mod defaults_probe {
+        include!(concat!(env!("OUT_DIR"), "/DefaultsProbeV8Binding.rs"));
+    }
 }
 
 use std::sync::Once;
@@ -317,6 +321,8 @@ pub struct Interface {
     /// `[LegacyNoInterfaceObject]` and for interfaces whose `[Pref]`/`[SecureContext]` condition
     /// does not hold). Instances, prototypes and inheritance work either way.
     interface_object_on_global: std::cell::Cell<bool>,
+    /// `[LegacyWindowAlias]` names: extra global properties for the same interface object.
+    aliases: std::cell::RefCell<Vec<String>>,
     // Materializing a child also freezes all ancestor templates. Shared flags track
     // that separately from whether each constructor has been exposed globally.
     materialized: std::rc::Rc<std::cell::Cell<bool>>,
@@ -1072,9 +1078,9 @@ pub struct WebIdlDictionaryMember {
     pub ty: WebIdlType,
     /// A missing required member is a TypeError.
     pub required: bool,
-    /// The value used when the member is missing. `Value::Undefined` means "convert
-    /// `undefined` through the member type", which is how a nested dictionary's `= {}` default
-    /// fills in that dictionary's own defaults.
+    /// The value used when the member is missing, converted through `ty` like a passed value.
+    /// `Value::Undefined` therefore turns a nested dictionary's `= {}` into that dictionary's
+    /// own defaults.
     pub default: Option<Value>,
 }
 
@@ -1086,6 +1092,9 @@ pub struct WebIdlArgument {
     /// A trailing variadic argument (`T... values`): every remaining JS argument converts by
     /// `ty` into one [`Value::Sequence`] (empty when none are passed).
     pub variadic: bool,
+    /// For an optional argument, the WebIDL default used when it is missing or `undefined`,
+    /// converted through `ty` like a passed value.
+    pub default: Option<Value>,
 }
 
 /// WebIDL optional-argument state. `Missing` differs from a present nullable `None`.
@@ -1129,6 +1138,8 @@ struct WebIdlArguments {
     types: Vec<Option<WebIdlType>>,
     /// Whether the last argument is variadic.
     variadic_last: bool,
+    /// Per-argument defaults (structured arguments only).
+    defaults: Vec<Option<Value>>,
 }
 
 impl WebIdlArguments {
@@ -1153,6 +1164,7 @@ impl WebIdlArguments {
                 .collect(),
             types: Vec::new(),
             variadic_last: false,
+            defaults: Vec::new(),
         }
     }
 
@@ -1165,6 +1177,7 @@ impl WebIdlArguments {
             enumeration_values: vec![None; arguments.len()],
             types: arguments.iter().map(|argument| Some(argument.ty.clone())).collect(),
             variadic_last: arguments.last().is_some_and(|argument| argument.variadic),
+            defaults: arguments.iter().map(|argument| argument.default.clone()).collect(),
         }
     }
 }
@@ -1194,6 +1207,11 @@ impl TracedNative {
 pub trait Exposure {
     fn pref_enabled(&self, name: &str) -> bool;
     fn is_secure_context(&self) -> bool;
+
+    /// Servo's `[Func="path"]` exposure predicates, by path.
+    fn func_enabled(&self, _function: &str) -> bool {
+        true
+    }
 
     /// The WebIDL name of the realm's global (`Window`, `DedicatedWorker`, `PaintWorklet`...).
     fn global_name(&self) -> &str {
@@ -1999,6 +2017,7 @@ impl Runtime {
             name: name.to_string(),
             constructor_exposed: std::cell::Cell::new(false),
             interface_object_on_global: std::cell::Cell::new(true),
+            aliases: std::cell::RefCell::new(Vec::new()),
             materialized: std::rc::Rc::new(std::cell::Cell::new(false)),
             ancestors: parent.map_or_else(Vec::new, |parent| {
                 let mut ancestors = parent.ancestors.clone();
@@ -2006,6 +2025,12 @@ impl Runtime {
                 ancestors
             }),
         }
+    }
+
+    /// Also exposes the interface object under `alias` (`[LegacyWindowAlias]`, e.g.
+    /// `webkitURL` for `URL`). Call before exposure.
+    pub fn add_interface_alias(&mut self, interface: &Interface, alias: &str) {
+        interface.aliases.borrow_mut().push(alias.to_owned());
     }
 
     /// Keeps `interface`'s interface object off the global object when it is exposed, for
@@ -2039,12 +2064,19 @@ impl Runtime {
             }
         }
         let key = v8::String::new(scope, &interface.name).ok_or("invalid interface name")?;
-        if interface.interface_object_on_global.get()
-            && context.global(scope).define_own_property(
-                scope, key.into(), function.into(), v8::PropertyAttribute::DONT_ENUM,
-            ) != Some(true)
-        {
-            return Err("failed to expose interface".into());
+        if interface.interface_object_on_global.get() {
+            let global = context.global(scope);
+            let mut names = vec![key];
+            for alias in interface.aliases.borrow().iter() {
+                names.push(v8::String::new(scope, alias).ok_or("invalid interface alias")?);
+            }
+            for name in names {
+                if global.define_own_property(scope, name.into(), function.into(), v8::PropertyAttribute::DONT_ENUM)
+                    != Some(true)
+                {
+                    return Err("failed to expose interface".into());
+                }
+            }
         }
         interface.constructor_exposed.set(true);
         Ok(())
@@ -3430,7 +3462,11 @@ fn convert_webidl_arguments<'s>(
             break;
         }
         let argument = args.get(i as i32);
-        let converted = if config.optional_arguments.get(i).copied().unwrap_or(false)
+        let default = config.defaults.get(i).and_then(Option::as_ref);
+        let converted = if let (Some(default), true) = (default, argument.is_undefined()) {
+            let default = v8_value(scope, default);
+            convert_typed_value(scope, default, config.types[i].as_ref().expect("defaults are structured"))?
+        } else if config.optional_arguments.get(i).copied().unwrap_or(false)
             && argument.is_undefined()
         {
             Value::Missing
@@ -3716,8 +3752,12 @@ fn convert_typed_value<'s>(
                 };
                 let converted = if raw.is_undefined() {
                     match &member.default {
-                        Some(Value::Undefined) => convert_typed_value(scope, raw, &member.ty)?,
-                        Some(default) => default.clone(),
+                        // Defaults convert through the member type, so union, enumeration and
+                        // `any` defaults take the same shape as a passed value.
+                        Some(default) => {
+                            let default = v8_value(scope, default);
+                            convert_typed_value(scope, default, &member.ty)?
+                        },
                         None if member.required => {
                             throw_type_error(scope, &format!("required dictionary member '{}' is missing", member.name));
                             return None;
@@ -7196,6 +7236,70 @@ mod tests {
         let resolver = runtime.get_wrapped::<Ops>(&ops).unwrap().pending.borrow_mut().take().unwrap();
         runtime.settle_promise(&resolver, Ok(&Value::String("async".into())));
         assert_eq!(runtime.eval("done").unwrap(), "async");
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_defaults_convert_through_their_types_and_aliases_expose() {
+        use crate::webidl::defaults_probe::{
+            BooleanOrLatencyOptions, DefaultsProbeBinding, DefaultsProbeNative, LatencyCategoryOrDouble, LatencyOptions,
+        };
+        use crate::{Exposure, Handle, ScriptContext, WebIdlError};
+        struct Probe;
+        fn describe(options: &LatencyOptions) -> String {
+            match &options.latencyHint {
+                LatencyCategoryOrDouble::LatencyCategory(category) => format!("category:{category}"),
+                LatencyCategoryOrDouble::Double(value) => format!("seconds:{}", value.get()),
+            }
+        }
+        #[allow(non_snake_case)]
+        impl DefaultsProbeNative for Probe {
+            // `LatencyOptions` holds an `any`, so these members receive a context.
+            fn Kind(&self, _cx: &mut ScriptContext, options: BooleanOrLatencyOptions) -> Result<Vec<u16>, WebIdlError> {
+                let text = match options {
+                    BooleanOrLatencyOptions::Boolean(flag) => format!("boolean:{flag}"),
+                    BooleanOrLatencyOptions::LatencyOptions(options) => format!("options:{}", describe(&options)),
+                };
+                Ok(text.encode_utf16().collect())
+            }
+            fn Context(&self, cx: &mut ScriptContext, id: Vec<u16>, options: Handle) -> Result<Handle, WebIdlError> {
+                let kind = match cx.value(&options) {
+                    Value::Null => "null".to_owned(),
+                    Value::Js(_) => "object".to_owned(),
+                    other => format!("{other:?}"),
+                };
+                Ok(cx.handle(&Value::String(format!("{}:{kind}", String::from_utf16_lossy(&id)))))
+            }
+            fn Latency(&self, _cx: &mut ScriptContext, options: LatencyOptions) -> Result<Vec<u16>, WebIdlError> {
+                Ok(describe(&options).encode_utf16().collect())
+            }
+        }
+        let mut runtime = Runtime::new();
+        let binding = DefaultsProbeBinding::<Probe>::install(&mut runtime).unwrap();
+        let probe = binding.create(&mut runtime, Probe);
+        runtime.set_global_property("probe", &probe).unwrap();
+        for (source, expected) in [
+            // `= false` on a union selects its boolean member; undefined applies it too.
+            ("[probe.kind(), probe.kind(undefined), probe.kind(true), probe.kind({})].join('|')", "boolean:false|boolean:false|boolean:true|options:category:interactive"),
+            // `any = null` arrives as null when omitted.
+            ("[probe.context('2d'), probe.context('webgl', {})].join('|')", "2d:null|webgl:object"),
+            // A union dictionary-member default goes through the union like a passed value.
+            ("[probe.latency(), probe.latency({ latencyHint: 'playback' }), probe.latency({ latencyHint: 0.5 })].join('|')", "category:interactive|category:playback|seconds:0.5"),
+            // [LegacyWindowAlias]: the same interface object under another global name.
+            ("webkitDefaultsProbe === DefaultsProbe && probe instanceof webkitDefaultsProbe", "true"),
+        ] {
+            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
+        }
+        // [Func] gates the interface object (and its aliases) like [Pref].
+        struct FuncOff;
+        impl Exposure for FuncOff {
+            fn pref_enabled(&self, _name: &str) -> bool { true }
+            fn is_secure_context(&self) -> bool { true }
+            fn func_enabled(&self, function: &str) -> bool { function != "probe_enabled" }
+        }
+        let mut runtime = Runtime::new();
+        let _binding = DefaultsProbeBinding::<Probe>::install_with(&mut runtime, &FuncOff).unwrap();
+        assert_eq!(runtime.eval("[typeof DefaultsProbe, typeof webkitDefaultsProbe].join()").unwrap(), "undefined,undefined");
     }
 
     #[cfg(feature = "webidl-pilot")]

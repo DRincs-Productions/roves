@@ -136,6 +136,10 @@ of throwing; `ScriptContext` creates/settles promises and `Runtime::settle_promi
 them asynchronously. Which natives receive `cx` now also follows Servo's `Bindings.conf`
 `'cx'`/`'realm'` lists. Coverage 220/486.
 
+**CP68 (2026-10-06): defaults through types, aliases, `[Func]`.** Argument and dictionary
+defaults are converted through their WebIDL type at runtime; `[LegacyWindowAlias]`, `[Func]`,
+`[Serializable]`/`[Transferable]` supported. Coverage 242/486.
+
 CP37 exposes stable `NativeObjectId` through `DomObject` and updates generated `dom_struct`
 equality to use that engine-neutral contract. Local checks pass (reflector 2/2, macro 3/3,
 rustfmt, and patch 0101 reverse-check); CI is green: V8 37226916624 (6/6), Servo 37226916650

@@ -1,0 +1,471 @@
+diff --git a/components/roves-v8/build.rs b/components/roves-v8/build.rs
+index 988cc71692e..99a5ab05303 100644
+--- a/components/roves-v8/build.rs
++++ b/components/roves-v8/build.rs
+@@ -222,6 +222,7 @@ fn main() {
+         ("JsonBase", &[][..]),
+         ("JsonChild", &["JsonBase"][..]),
+         ("PromiseOperations", &[][..]),
++        ("DefaultsProbe", &[][..]),
+     ] {
+         println!("cargo:rerun-if-changed={}", fixtures.join(format!("{interface}.webidl")).display());
+         println!("cargo:rerun-if-changed={}", fixtures.join("Bindings.conf").display());
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 2fa37ea96ce..418ff555211 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -173,6 +173,10 @@ pub mod webidl {
+     pub mod promise_operations {
+         include!(concat!(env!("OUT_DIR"), "/PromiseOperationsV8Binding.rs"));
+     }
++    #[cfg(test)]
++    pub mod defaults_probe {
++        include!(concat!(env!("OUT_DIR"), "/DefaultsProbeV8Binding.rs"));
++    }
+ }
+ 
+ use std::sync::Once;
+@@ -317,6 +321,8 @@ pub struct Interface {
+     /// `[LegacyNoInterfaceObject]` and for interfaces whose `[Pref]`/`[SecureContext]` condition
+     /// does not hold). Instances, prototypes and inheritance work either way.
+     interface_object_on_global: std::cell::Cell<bool>,
++    /// `[LegacyWindowAlias]` names: extra global properties for the same interface object.
++    aliases: std::cell::RefCell<Vec<String>>,
+     // Materializing a child also freezes all ancestor templates. Shared flags track
+     // that separately from whether each constructor has been exposed globally.
+     materialized: std::rc::Rc<std::cell::Cell<bool>>,
+@@ -1072,9 +1078,9 @@ pub struct WebIdlDictionaryMember {
+     pub ty: WebIdlType,
+     /// A missing required member is a TypeError.
+     pub required: bool,
+-    /// The value used when the member is missing. `Value::Undefined` means "convert
+-    /// `undefined` through the member type", which is how a nested dictionary's `= {}` default
+-    /// fills in that dictionary's own defaults.
++    /// The value used when the member is missing, converted through `ty` like a passed value.
++    /// `Value::Undefined` therefore turns a nested dictionary's `= {}` into that dictionary's
++    /// own defaults.
+     pub default: Option<Value>,
+ }
+ 
+@@ -1086,6 +1092,9 @@ pub struct WebIdlArgument {
+     /// A trailing variadic argument (`T... values`): every remaining JS argument converts by
+     /// `ty` into one [`Value::Sequence`] (empty when none are passed).
+     pub variadic: bool,
++    /// For an optional argument, the WebIDL default used when it is missing or `undefined`,
++    /// converted through `ty` like a passed value.
++    pub default: Option<Value>,
+ }
+ 
+ /// WebIDL optional-argument state. `Missing` differs from a present nullable `None`.
+@@ -1129,6 +1138,8 @@ struct WebIdlArguments {
+     types: Vec<Option<WebIdlType>>,
+     /// Whether the last argument is variadic.
+     variadic_last: bool,
++    /// Per-argument defaults (structured arguments only).
++    defaults: Vec<Option<Value>>,
+ }
+ 
+ impl WebIdlArguments {
+@@ -1153,6 +1164,7 @@ impl WebIdlArguments {
+                 .collect(),
+             types: Vec::new(),
+             variadic_last: false,
++            defaults: Vec::new(),
+         }
+     }
+ 
+@@ -1165,6 +1177,7 @@ impl WebIdlArguments {
+             enumeration_values: vec![None; arguments.len()],
+             types: arguments.iter().map(|argument| Some(argument.ty.clone())).collect(),
+             variadic_last: arguments.last().is_some_and(|argument| argument.variadic),
++            defaults: arguments.iter().map(|argument| argument.default.clone()).collect(),
+         }
+     }
+ }
+@@ -1195,6 +1208,11 @@ pub trait Exposure {
+     fn pref_enabled(&self, name: &str) -> bool;
+     fn is_secure_context(&self) -> bool;
+ 
++    /// Servo's `[Func="path"]` exposure predicates, by path.
++    fn func_enabled(&self, _function: &str) -> bool {
++        true
++    }
++
+     /// The WebIDL name of the realm's global (`Window`, `DedicatedWorker`, `PaintWorklet`...).
+     fn global_name(&self) -> &str {
+         "Window"
+@@ -1999,6 +2017,7 @@ impl Runtime {
+             name: name.to_string(),
+             constructor_exposed: std::cell::Cell::new(false),
+             interface_object_on_global: std::cell::Cell::new(true),
++            aliases: std::cell::RefCell::new(Vec::new()),
+             materialized: std::rc::Rc::new(std::cell::Cell::new(false)),
+             ancestors: parent.map_or_else(Vec::new, |parent| {
+                 let mut ancestors = parent.ancestors.clone();
+@@ -2008,6 +2027,12 @@ impl Runtime {
+         }
+     }
+ 
++    /// Also exposes the interface object under `alias` (`[LegacyWindowAlias]`, e.g.
++    /// `webkitURL` for `URL`). Call before exposure.
++    pub fn add_interface_alias(&mut self, interface: &Interface, alias: &str) {
++        interface.aliases.borrow_mut().push(alias.to_owned());
++    }
++
+     /// Keeps `interface`'s interface object off the global object when it is exposed, for
+     /// `[LegacyNoInterfaceObject]` or an unmet exposure condition. Call before exposure.
+     pub fn hide_interface_object(&mut self, interface: &Interface) {
+@@ -2039,12 +2064,19 @@ impl Runtime {
+             }
+         }
+         let key = v8::String::new(scope, &interface.name).ok_or("invalid interface name")?;
+-        if interface.interface_object_on_global.get()
+-            && context.global(scope).define_own_property(
+-                scope, key.into(), function.into(), v8::PropertyAttribute::DONT_ENUM,
+-            ) != Some(true)
+-        {
+-            return Err("failed to expose interface".into());
++        if interface.interface_object_on_global.get() {
++            let global = context.global(scope);
++            let mut names = vec![key];
++            for alias in interface.aliases.borrow().iter() {
++                names.push(v8::String::new(scope, alias).ok_or("invalid interface alias")?);
++            }
++            for name in names {
++                if global.define_own_property(scope, name.into(), function.into(), v8::PropertyAttribute::DONT_ENUM)
++                    != Some(true)
++                {
++                    return Err("failed to expose interface".into());
++                }
++            }
+         }
+         interface.constructor_exposed.set(true);
+         Ok(())
+@@ -3430,7 +3462,11 @@ fn convert_webidl_arguments<'s>(
+             break;
+         }
+         let argument = args.get(i as i32);
+-        let converted = if config.optional_arguments.get(i).copied().unwrap_or(false)
++        let default = config.defaults.get(i).and_then(Option::as_ref);
++        let converted = if let (Some(default), true) = (default, argument.is_undefined()) {
++            let default = v8_value(scope, default);
++            convert_typed_value(scope, default, config.types[i].as_ref().expect("defaults are structured"))?
++        } else if config.optional_arguments.get(i).copied().unwrap_or(false)
+             && argument.is_undefined()
+         {
+             Value::Missing
+@@ -3716,8 +3752,12 @@ fn convert_typed_value<'s>(
+                 };
+                 let converted = if raw.is_undefined() {
+                     match &member.default {
+-                        Some(Value::Undefined) => convert_typed_value(scope, raw, &member.ty)?,
+-                        Some(default) => default.clone(),
++                        // Defaults convert through the member type, so union, enumeration and
++                        // `any` defaults take the same shape as a passed value.
++                        Some(default) => {
++                            let default = v8_value(scope, default);
++                            convert_typed_value(scope, default, &member.ty)?
++                        },
+                         None if member.required => {
+                             throw_type_error(scope, &format!("required dictionary member '{}' is missing", member.name));
+                             return None;
+@@ -7198,6 +7238,70 @@ mod tests {
+         assert_eq!(runtime.eval("done").unwrap(), "async");
+     }
+ 
++    #[cfg(feature = "webidl-pilot")]
++    #[test]
++    fn generated_defaults_convert_through_their_types_and_aliases_expose() {
++        use crate::webidl::defaults_probe::{
++            BooleanOrLatencyOptions, DefaultsProbeBinding, DefaultsProbeNative, LatencyCategoryOrDouble, LatencyOptions,
++        };
++        use crate::{Exposure, Handle, ScriptContext, WebIdlError};
++        struct Probe;
++        fn describe(options: &LatencyOptions) -> String {
++            match &options.latencyHint {
++                LatencyCategoryOrDouble::LatencyCategory(category) => format!("category:{category}"),
++                LatencyCategoryOrDouble::Double(value) => format!("seconds:{}", value.get()),
++            }
++        }
++        #[allow(non_snake_case)]
++        impl DefaultsProbeNative for Probe {
++            // `LatencyOptions` holds an `any`, so these members receive a context.
++            fn Kind(&self, _cx: &mut ScriptContext, options: BooleanOrLatencyOptions) -> Result<Vec<u16>, WebIdlError> {
++                let text = match options {
++                    BooleanOrLatencyOptions::Boolean(flag) => format!("boolean:{flag}"),
++                    BooleanOrLatencyOptions::LatencyOptions(options) => format!("options:{}", describe(&options)),
++                };
++                Ok(text.encode_utf16().collect())
++            }
++            fn Context(&self, cx: &mut ScriptContext, id: Vec<u16>, options: Handle) -> Result<Handle, WebIdlError> {
++                let kind = match cx.value(&options) {
++                    Value::Null => "null".to_owned(),
++                    Value::Js(_) => "object".to_owned(),
++                    other => format!("{other:?}"),
++                };
++                Ok(cx.handle(&Value::String(format!("{}:{kind}", String::from_utf16_lossy(&id)))))
++            }
++            fn Latency(&self, _cx: &mut ScriptContext, options: LatencyOptions) -> Result<Vec<u16>, WebIdlError> {
++                Ok(describe(&options).encode_utf16().collect())
++            }
++        }
++        let mut runtime = Runtime::new();
++        let binding = DefaultsProbeBinding::<Probe>::install(&mut runtime).unwrap();
++        let probe = binding.create(&mut runtime, Probe);
++        runtime.set_global_property("probe", &probe).unwrap();
++        for (source, expected) in [
++            // `= false` on a union selects its boolean member; undefined applies it too.
++            ("[probe.kind(), probe.kind(undefined), probe.kind(true), probe.kind({})].join('|')", "boolean:false|boolean:false|boolean:true|options:category:interactive"),
++            // `any = null` arrives as null when omitted.
++            ("[probe.context('2d'), probe.context('webgl', {})].join('|')", "2d:null|webgl:object"),
++            // A union dictionary-member default goes through the union like a passed value.
++            ("[probe.latency(), probe.latency({ latencyHint: 'playback' }), probe.latency({ latencyHint: 0.5 })].join('|')", "category:interactive|category:playback|seconds:0.5"),
++            // [LegacyWindowAlias]: the same interface object under another global name.
++            ("webkitDefaultsProbe === DefaultsProbe && probe instanceof webkitDefaultsProbe", "true"),
++        ] {
++            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
++        }
++        // [Func] gates the interface object (and its aliases) like [Pref].
++        struct FuncOff;
++        impl Exposure for FuncOff {
++            fn pref_enabled(&self, _name: &str) -> bool { true }
++            fn is_secure_context(&self) -> bool { true }
++            fn func_enabled(&self, function: &str) -> bool { function != "probe_enabled" }
++        }
++        let mut runtime = Runtime::new();
++        let _binding = DefaultsProbeBinding::<Probe>::install_with(&mut runtime, &FuncOff).unwrap();
++        assert_eq!(runtime.eval("[typeof DefaultsProbe, typeof webkitDefaultsProbe].join()").unwrap(), "undefined,undefined");
++    }
++
+     #[cfg(feature = "webidl-pilot")]
+     #[test]
+     fn generated_nullable_domstring_preserves_null_and_utf16_semantics() {
+diff --git a/components/roves-v8/tests/webidl/DefaultsProbe.webidl b/components/roves-v8/tests/webidl/DefaultsProbe.webidl
+new file mode 100644
+index 00000000000..6350519c797
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/DefaultsProbe.webidl
+@@ -0,0 +1,13 @@
++enum LatencyCategory { "interactive", "playback" };
++
++dictionary LatencyOptions {
++  (LatencyCategory or double) latencyHint = "interactive";
++  any detail = null;
++};
++
++[Exposed=Window, LegacyWindowAlias=webkitDefaultsProbe, Func="probe_enabled", Serializable]
++interface DefaultsProbe {
++  DOMString kind(optional (boolean or LatencyOptions) options = false);
++  any context(DOMString id, optional any options = null);
++  DOMString latency(optional LatencyOptions options = {});
++};
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index af402e52ee3..b8912a86ae6 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8264,10 +8264,12 @@ def v8_default_value(default, ty, name: str, member_name: str) -> str:
+         return "Value::Null"
+     if isinstance(default, IDLEmptySequenceValue):
+         return "Value::Sequence(Vec::new())"
+-    if isinstance(default, IDLDefaultDictionaryValue):
++    if isinstance(default, (IDLDefaultDictionaryValue, IDLUndefinedValue)):
+         return "Value::Undefined"
+     if isinstance(default, IDLValue):
+-        inner = ty.inner if ty.nullable() else ty
++        # The runtime converts defaults through the target type, so the literal's own type
++        # decides the representation (this covers unions, `any` and enumerations).
++        inner = default.type
+         value = default.value
+         if inner.isBoolean():
+             return f"Value::Bool({str(value).lower()})"
+@@ -8277,12 +8279,10 @@ def v8_default_value(default, ty, name: str, member_name: str) -> str:
+             if value in (float("inf"), float("-inf")):
+                 return "Value::Number(f64::INFINITY)" if value > 0 else "Value::Number(f64::NEG_INFINITY)"
+             return f"Value::Number({float(value)!r})"
+-        if inner.isDOMString():
++        if inner.isString() or inner.isEnum():
+             utf16 = value.encode("utf-16-le", "surrogatepass")
+             units = [int.from_bytes(utf16[index:index + 2], "little") for index in range(0, len(utf16), 2)]
+             return "Value::Utf16String(vec![" + ", ".join(f"{unit}u16" for unit in units) + "])"
+-        if inner.isUSVString() or inner.isEnum():
+-            return 'Value::String("' + "".join(f"\\u{{{ord(char):x}}}" for char in value) + '".to_owned())'
+     raise TypeError(f"V8 backend unsupported dictionary default for {name}.{member_name}: {default}")
+ 
+ 
+@@ -8514,10 +8514,19 @@ def v8_typed_info(ty, name: str, member_name: str):
+     raise TypeError(f"V8 backend unsupported sequence element type: {name}.{member_name}: {ty}")
+ 
+ 
++def v8_webidl_argument(argument_type, ty: str) -> str:
++    """The `roves_v8::WebIdlArgument` literal of an argument tuple with structured type `ty`."""
++    default = argument_type[8]
++    return (
++        f"roves_v8::WebIdlArgument {{ ty: {ty}, optional: {str(argument_type[4]).lower()}, "
++        f"variadic: {str(argument_type[7]).lower()}, default: {f'Some({default})' if default else 'None'} }}"
++    )
++
++
+ def v8_flat_webidl_type(argument_type) -> str:
+     """The structured WebIdlType expression of a flat argument tuple, for operations that
+     mix flat and structured arguments."""
+-    _, conversion, _, nullable, _, enumeration_values, _, _ = argument_type
++    _, conversion, _, nullable, _, enumeration_values, _, _, _ = argument_type
+     if conversion == "Enumeration":
+         values = enumeration_values[len("Some(&["):-len("])")]
+         ty = f"roves_v8::WebIdlType::Enumeration([{values}].iter().map(|value| value.to_string()).collect())"
+@@ -8552,7 +8561,7 @@ def v8_argument_types(name: str, member_name: str, arguments) -> list:
+     (rust_type, conversion, match_arm, nullable, optional, enumeration_values) tuples.
+     Fails closed on any argument shape the runtime cannot convert yet."""
+     argument_types = []
+-    def add_argument_type(rust_type, conversion, match_arm, nullable, optional, default_expression=None, enumeration_values=None, typed=None, variadic=False):
++    def add_argument_type(rust_type, conversion, match_arm, nullable, optional, default_expression=None, enumeration_values=None, typed=None, variadic=False, typed_default=None):
+         pattern, expression = match_arm.split(" => ", 1)
+         if nullable:
+             rust_type = f"Option<{rust_type}>"
+@@ -8582,7 +8591,7 @@ def v8_argument_types(name: str, member_name: str, arguments) -> list:
+                     f"Value::Missing => {missing}, "
+                     f"{pattern} => roves_v8::WebIdlOptionalArgument::Present({expression})"
+                 )
+-        argument_types.append((rust_type, conversion, match_arm, nullable, optional, enumeration_values, typed, variadic))
++        argument_types.append((rust_type, conversion, match_arm, nullable, optional, enumeration_values, typed, variadic, typed_default))
+ 
+     for argument in arguments:
+         ty = argument.type
+@@ -8596,6 +8605,19 @@ def v8_argument_types(name: str, member_name: str, arguments) -> list:
+                 False, False, None, None, expr, True,
+             )
+             continue
++        inner_type = ty.inner if ty.nullable() else ty
++        if default_value is not None and (
++            inner_type.isAny() or inner_type.isUnion() or inner_type.isObject()
++            or isinstance(default_value, IDLUndefinedValue)
++        ) and not isinstance(default_value, IDLDefaultDictionaryValue):
++            # The runtime applies the default (converted through the type) when the argument is
++            # missing or undefined, so the native always receives a value.
++            rust, expr, arm, _ = v8_typed_info(ty, name, member_name)
++            add_argument_type(
++                rust, "Any" if v8_contains_handle(ty) else "Sequence", arm, False, False,
++                None, None, expr, False, v8_default_value(default_value, ty, name, member_name),
++            )
++            continue
+         if v8_contains_sequence(ty):
+             if default_value is not None and not isinstance(default_value, (IDLEmptySequenceValue, IDLDefaultDictionaryValue)):
+                 raise TypeError(f"V8 backend unsupported explicit default for {name}.{member_name}: {default_value}")
+@@ -8792,6 +8814,8 @@ def v8_exposure_condition(extended_attributes, include_exposed: bool = True) ->
+         conditions.append(f'exposure.pref_enabled("{extended_attributes["Pref"][0]}")')
+     if "SecureContext" in extended_attributes:
+         conditions.append("exposure.is_secure_context()")
++    if "Func" in extended_attributes:
++        conditions.append(f'exposure.func_enabled("{extended_attributes["Func"][0]}")')
+     return " && ".join(conditions) if conditions else None
+ 
+ 
+@@ -8888,7 +8912,11 @@ class CGV8BindingRoot(CGThing):
+                 raise TypeError(f"V8 backend does not yet support interface shape ({unsupported_shape}): {name}")
+         # [Abstract] (Servo-specific) only means "no direct instances": the JS shape is the
+         # same, and instances are created through descendant bindings sharing the native type.
+-        unsupported = set(interface._extendedAttrDict) - {"Exposed", "LegacyNoInterfaceObject", "Abstract"} - V8_EXPOSURE_ATTRIBUTES
++        # [Serializable]/[Transferable] concern structured clone, not the binding's shape.
++        unsupported = set(interface._extendedAttrDict) - {
++            "Exposed", "LegacyNoInterfaceObject", "Abstract", "Serializable", "Transferable",
++            "LegacyWindowAlias", "Func",
++        } - V8_EXPOSURE_ATTRIBUTES
+         if unsupported:
+             raise TypeError(f"V8 backend unsupported attributes on {name}: {sorted(unsupported)}")
+         exposed_globals = v8_exposed_globals(interface._extendedAttrDict)
+@@ -9394,7 +9422,7 @@ class CGV8BindingRoot(CGThing):
+                 for argument_type in argument_types:
+                     ty = argument_type[6] or v8_flat_webidl_type(argument_type)
+                     typed_arguments.append(
+-                        f"roves_v8::WebIdlArgument {{ ty: {ty}, optional: {str(argument_type[4]).lower()}, variadic: {str(argument_type[7]).lower()} }}"
++                        v8_webidl_argument(argument_type, ty)
+                     )
+                 kind = "Contextual" if contextual else "Fallible" if throws else "Plain"
+                 registrations_list.append(
+@@ -9472,6 +9500,11 @@ class CGV8BindingRoot(CGThing):
+             parent_interface = "Some(parent.interface())"
+         install_arguments = "runtime" if parent is None else "runtime, parent"
+         interface_condition = v8_exposure_condition(interface._extendedAttrDict)
++        aliases = interface._extendedAttrDict.get("LegacyWindowAlias") or []
++        alias_registrations = "".join(
++            f'        runtime.add_interface_alias(&interface, "{alias}");\n'
++            for entry in aliases for alias in (entry if isinstance(entry, list) else [entry])
++        )
+         if "LegacyNoInterfaceObject" in interface._extendedAttrDict:
+             hide_interface = "        runtime.hide_interface_object(&interface);\n"
+         elif interface_condition:
+@@ -9504,7 +9537,7 @@ class CGV8BindingRoot(CGThing):
+             # Fully qualified: in an inheritance tree several native traits declare Constructor.
+             if any(argument_type[6] for argument_type in constructor_arguments):
+                 typed_arguments = ", ".join(
+-                    f"roves_v8::WebIdlArgument {{ ty: {argument_type[6] or v8_flat_webidl_type(argument_type)}, optional: {str(argument_type[4]).lower()}, variadic: {str(argument_type[7]).lower()} }}"
++                    v8_webidl_argument(argument_type, argument_type[6] or v8_flat_webidl_type(argument_type))
+                     for argument_type in constructor_arguments
+                 )
+                 define_interface = (
+@@ -9547,7 +9580,7 @@ class CGV8BindingRoot(CGThing):
+                     f"            Ok({value_expr.replace('native.{native}()', 'result')})\n"
+                 )
+             typed_arguments = ", ".join(
+-                f"roves_v8::WebIdlArgument {{ ty: {argument_type[6] or v8_flat_webidl_type(argument_type)}, optional: {str(argument_type[4]).lower()}, variadic: {str(argument_type[7]).lower()} }}"
++                v8_webidl_argument(argument_type, argument_type[6] or v8_flat_webidl_type(argument_type))
+                 for argument_type in argument_types
+             )
+             registrations_list.append(
+@@ -9605,7 +9638,7 @@ impl<T: {name}Native> {name}Binding<T> {{
+         let _ = exposure;
+         let interface = {define_interface};
+ {registrations}
+-{hide_interface}        runtime.expose_interface(&interface)?;
++{alias_registrations}{hide_interface}        runtime.expose_interface(&interface)?;
+         Ok(Self {{ interface, native: std::marker::PhantomData }})
+     }}
+ 
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index cd080011d2a..6921d900fbb 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -532,7 +532,7 @@ class V8GeneratorTests(unittest.TestCase):
+                 "fn Echo(&self, cx: &mut roves_v8::ScriptContext, arg0: Vec<roves_v8::Handle>) -> Result<Vec<roves_v8::Handle>, roves_v8::WebIdlError>;",
+                 "roves_v8::WebIdlType::Sequence(Box::new(roves_v8::WebIdlType::Sequence(Box::new(roves_v8::WebIdlType::Primitive(roves_v8::WebIdlArgumentConversion::Long)))))",
+                 # A flat argument mixed into a structured operation keeps its conversion.
+-                "roves_v8::WebIdlArgument { ty: roves_v8::WebIdlType::Primitive(roves_v8::WebIdlArgumentConversion::Boolean), optional: false, variadic: false }",
++                "roves_v8::WebIdlArgument { ty: roves_v8::WebIdlType::Primitive(roves_v8::WebIdlArgumentConversion::Boolean), optional: false, variadic: false, default: None }",
+                 "Value::Missing => roves_v8::WebIdlOptionalArgument::Present(Vec::new())",
+                 "roves_v8::WebIdlNativeOperation::Contextual(",
+                 "match item { Some(item) => Value::Number(item as f64), None => Value::Null }",
+@@ -621,7 +621,7 @@ class V8GeneratorTests(unittest.TestCase):
+             path.write_text("[Exposed=Window] interface Var { DOMString join(DOMString separator, DOMString... parts); };", encoding="utf-8")
+             source = generate(path, Path(directory) / "output")
+             self.assertIn("fn Join(&self, arg0: Vec<u16>, arg1: Vec<Vec<u16>>) -> Vec<u16>;", source)
+-            self.assertIn("ty: roves_v8::WebIdlType::Primitive(roves_v8::WebIdlArgumentConversion::DomString), optional: false, variadic: true }", source)
++            self.assertIn("ty: roves_v8::WebIdlType::Primitive(roves_v8::WebIdlArgumentConversion::DomString), optional: false, variadic: true, default: None }", source)
+ 
+     def test_static_unscopable_and_default_to_json_members(self):
+         with tempfile.TemporaryDirectory() as directory:
+@@ -675,6 +675,25 @@ class V8GeneratorTests(unittest.TestCase):
+             self.assertIn("fn Run(&self, cx: &mut roves_v8::ScriptContext, arg0: bool) -> Result<(), roves_v8::WebIdlError>;", source)
+             self.assertIn("fn Other(&self) -> ();", source)
+ 
++    def test_structured_defaults_aliases_and_markers(self):
++        with tempfile.TemporaryDirectory() as directory:
++            path = Path(directory) / "Defaults.webidl"
++            path.write_text(
++                "[Exposed=Window, LegacyWindowAlias=webkitDefaults, Func=\"probe\", Serializable, Transferable] "
++                "interface Defaults { DOMString kind(optional (boolean or DOMString) options = false); "
++                "any context(optional any options = null); };",
++                encoding="utf-8",
++            )
++            source = generate(path, Path(directory) / "output")
++            for expected in [
++                "fn Kind(&self, arg0: BooleanOrString) -> Vec<u16>;",
++                "default: Some(Value::Bool(false)) }",
++                "default: Some(Value::Null) }",
++                'runtime.add_interface_alias(&interface, "webkitDefaults");',
++                'exposure.func_enabled("probe")',
++            ]:
++                self.assertIn(expected, source)
++
+     def test_overloads_needing_type_distinction_fail_closed(self):
+         self.assert_unsupported("interface Unsupported { undefined f(DOMString a); undefined f(boolean a); };")
+         self.assert_unsupported("interface Unsupported { undefined f(DOMString a); undefined f(boolean a, optional boolean b); };")

@@ -220,6 +220,13 @@ nativi ricevono `cx` lo decidono, come in Servo, le liste `'cx'`/`'realm'` di `B
 (`--bindings-conf` per le fixture). Test generatore 56/56, `roves-v8` 91+5+2, default 60+2, check
 pulito. Copertura 220/486. CI verde su CP49–CP58 (`3e86880a3a4`).
 
+**CP68 (2026-10-06):** i default (di argomenti e di membri di dizionario) sono convertiti a runtime
+attraverso il tipo. Supportati anche `[LegacyWindowAlias]` (`add_interface_alias`), `[Func]`
+(`Exposure::func_enabled`) e `[Serializable]`/`[Transferable]` (patch 0132). Test generatore 57/57,
+`roves-v8` 92+5+2, default 60+2, check pulito. Copertura **242/486**. **Prossimo:** overload per
+tipo, BufferSource (`ArrayBufferView`/typed array), iterable/maplike/setlike, `[Global]`, named
+property (`LegacyUnenumerableNamedProperties`), `[HTMLConstructor]`/`[LegacyFactoryFunction]`.
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

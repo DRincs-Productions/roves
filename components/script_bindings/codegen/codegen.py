@@ -8264,10 +8264,12 @@ def v8_default_value(default, ty, name: str, member_name: str) -> str:
         return "Value::Null"
     if isinstance(default, IDLEmptySequenceValue):
         return "Value::Sequence(Vec::new())"
-    if isinstance(default, IDLDefaultDictionaryValue):
+    if isinstance(default, (IDLDefaultDictionaryValue, IDLUndefinedValue)):
         return "Value::Undefined"
     if isinstance(default, IDLValue):
-        inner = ty.inner if ty.nullable() else ty
+        # The runtime converts defaults through the target type, so the literal's own type
+        # decides the representation (this covers unions, `any` and enumerations).
+        inner = default.type
         value = default.value
         if inner.isBoolean():
             return f"Value::Bool({str(value).lower()})"
@@ -8277,12 +8279,10 @@ def v8_default_value(default, ty, name: str, member_name: str) -> str:
             if value in (float("inf"), float("-inf")):
                 return "Value::Number(f64::INFINITY)" if value > 0 else "Value::Number(f64::NEG_INFINITY)"
             return f"Value::Number({float(value)!r})"
-        if inner.isDOMString():
+        if inner.isString() or inner.isEnum():
             utf16 = value.encode("utf-16-le", "surrogatepass")
             units = [int.from_bytes(utf16[index:index + 2], "little") for index in range(0, len(utf16), 2)]
             return "Value::Utf16String(vec![" + ", ".join(f"{unit}u16" for unit in units) + "])"
-        if inner.isUSVString() or inner.isEnum():
-            return 'Value::String("' + "".join(f"\\u{{{ord(char):x}}}" for char in value) + '".to_owned())'
     raise TypeError(f"V8 backend unsupported dictionary default for {name}.{member_name}: {default}")
 
 
@@ -8514,10 +8514,19 @@ def v8_typed_info(ty, name: str, member_name: str):
     raise TypeError(f"V8 backend unsupported sequence element type: {name}.{member_name}: {ty}")
 
 
+def v8_webidl_argument(argument_type, ty: str) -> str:
+    """The `roves_v8::WebIdlArgument` literal of an argument tuple with structured type `ty`."""
+    default = argument_type[8]
+    return (
+        f"roves_v8::WebIdlArgument {{ ty: {ty}, optional: {str(argument_type[4]).lower()}, "
+        f"variadic: {str(argument_type[7]).lower()}, default: {f'Some({default})' if default else 'None'} }}"
+    )
+
+
 def v8_flat_webidl_type(argument_type) -> str:
     """The structured WebIdlType expression of a flat argument tuple, for operations that
     mix flat and structured arguments."""
-    _, conversion, _, nullable, _, enumeration_values, _, _ = argument_type
+    _, conversion, _, nullable, _, enumeration_values, _, _, _ = argument_type
     if conversion == "Enumeration":
         values = enumeration_values[len("Some(&["):-len("])")]
         ty = f"roves_v8::WebIdlType::Enumeration([{values}].iter().map(|value| value.to_string()).collect())"
@@ -8552,7 +8561,7 @@ def v8_argument_types(name: str, member_name: str, arguments) -> list:
     (rust_type, conversion, match_arm, nullable, optional, enumeration_values) tuples.
     Fails closed on any argument shape the runtime cannot convert yet."""
     argument_types = []
-    def add_argument_type(rust_type, conversion, match_arm, nullable, optional, default_expression=None, enumeration_values=None, typed=None, variadic=False):
+    def add_argument_type(rust_type, conversion, match_arm, nullable, optional, default_expression=None, enumeration_values=None, typed=None, variadic=False, typed_default=None):
         pattern, expression = match_arm.split(" => ", 1)
         if nullable:
             rust_type = f"Option<{rust_type}>"
@@ -8582,7 +8591,7 @@ def v8_argument_types(name: str, member_name: str, arguments) -> list:
                     f"Value::Missing => {missing}, "
                     f"{pattern} => roves_v8::WebIdlOptionalArgument::Present({expression})"
                 )
-        argument_types.append((rust_type, conversion, match_arm, nullable, optional, enumeration_values, typed, variadic))
+        argument_types.append((rust_type, conversion, match_arm, nullable, optional, enumeration_values, typed, variadic, typed_default))
 
     for argument in arguments:
         ty = argument.type
@@ -8594,6 +8603,19 @@ def v8_argument_types(name: str, member_name: str, arguments) -> list:
                 f"Vec<{rust}>", "Any" if v8_contains_handle(ty) else "Sequence",
                 f'Value::Sequence(items) => items.iter().map(|item| match item {{ {arm}, _ => unreachable!("runtime conversion matches the generated WebIDL type") }}).collect()',
                 False, False, None, None, expr, True,
+            )
+            continue
+        inner_type = ty.inner if ty.nullable() else ty
+        if default_value is not None and (
+            inner_type.isAny() or inner_type.isUnion() or inner_type.isObject()
+            or isinstance(default_value, IDLUndefinedValue)
+        ) and not isinstance(default_value, IDLDefaultDictionaryValue):
+            # The runtime applies the default (converted through the type) when the argument is
+            # missing or undefined, so the native always receives a value.
+            rust, expr, arm, _ = v8_typed_info(ty, name, member_name)
+            add_argument_type(
+                rust, "Any" if v8_contains_handle(ty) else "Sequence", arm, False, False,
+                None, None, expr, False, v8_default_value(default_value, ty, name, member_name),
             )
             continue
         if v8_contains_sequence(ty):
@@ -8792,6 +8814,8 @@ def v8_exposure_condition(extended_attributes, include_exposed: bool = True) -> 
         conditions.append(f'exposure.pref_enabled("{extended_attributes["Pref"][0]}")')
     if "SecureContext" in extended_attributes:
         conditions.append("exposure.is_secure_context()")
+    if "Func" in extended_attributes:
+        conditions.append(f'exposure.func_enabled("{extended_attributes["Func"][0]}")')
     return " && ".join(conditions) if conditions else None
 
 
@@ -8888,7 +8912,11 @@ class CGV8BindingRoot(CGThing):
                 raise TypeError(f"V8 backend does not yet support interface shape ({unsupported_shape}): {name}")
         # [Abstract] (Servo-specific) only means "no direct instances": the JS shape is the
         # same, and instances are created through descendant bindings sharing the native type.
-        unsupported = set(interface._extendedAttrDict) - {"Exposed", "LegacyNoInterfaceObject", "Abstract"} - V8_EXPOSURE_ATTRIBUTES
+        # [Serializable]/[Transferable] concern structured clone, not the binding's shape.
+        unsupported = set(interface._extendedAttrDict) - {
+            "Exposed", "LegacyNoInterfaceObject", "Abstract", "Serializable", "Transferable",
+            "LegacyWindowAlias", "Func",
+        } - V8_EXPOSURE_ATTRIBUTES
         if unsupported:
             raise TypeError(f"V8 backend unsupported attributes on {name}: {sorted(unsupported)}")
         exposed_globals = v8_exposed_globals(interface._extendedAttrDict)
@@ -9394,7 +9422,7 @@ class CGV8BindingRoot(CGThing):
                 for argument_type in argument_types:
                     ty = argument_type[6] or v8_flat_webidl_type(argument_type)
                     typed_arguments.append(
-                        f"roves_v8::WebIdlArgument {{ ty: {ty}, optional: {str(argument_type[4]).lower()}, variadic: {str(argument_type[7]).lower()} }}"
+                        v8_webidl_argument(argument_type, ty)
                     )
                 kind = "Contextual" if contextual else "Fallible" if throws else "Plain"
                 registrations_list.append(
@@ -9472,6 +9500,11 @@ class CGV8BindingRoot(CGThing):
             parent_interface = "Some(parent.interface())"
         install_arguments = "runtime" if parent is None else "runtime, parent"
         interface_condition = v8_exposure_condition(interface._extendedAttrDict)
+        aliases = interface._extendedAttrDict.get("LegacyWindowAlias") or []
+        alias_registrations = "".join(
+            f'        runtime.add_interface_alias(&interface, "{alias}");\n'
+            for entry in aliases for alias in (entry if isinstance(entry, list) else [entry])
+        )
         if "LegacyNoInterfaceObject" in interface._extendedAttrDict:
             hide_interface = "        runtime.hide_interface_object(&interface);\n"
         elif interface_condition:
@@ -9504,7 +9537,7 @@ class CGV8BindingRoot(CGThing):
             # Fully qualified: in an inheritance tree several native traits declare Constructor.
             if any(argument_type[6] for argument_type in constructor_arguments):
                 typed_arguments = ", ".join(
-                    f"roves_v8::WebIdlArgument {{ ty: {argument_type[6] or v8_flat_webidl_type(argument_type)}, optional: {str(argument_type[4]).lower()}, variadic: {str(argument_type[7]).lower()} }}"
+                    v8_webidl_argument(argument_type, argument_type[6] or v8_flat_webidl_type(argument_type))
                     for argument_type in constructor_arguments
                 )
                 define_interface = (
@@ -9547,7 +9580,7 @@ class CGV8BindingRoot(CGThing):
                     f"            Ok({value_expr.replace('native.{native}()', 'result')})\n"
                 )
             typed_arguments = ", ".join(
-                f"roves_v8::WebIdlArgument {{ ty: {argument_type[6] or v8_flat_webidl_type(argument_type)}, optional: {str(argument_type[4]).lower()}, variadic: {str(argument_type[7]).lower()} }}"
+                v8_webidl_argument(argument_type, argument_type[6] or v8_flat_webidl_type(argument_type))
                 for argument_type in argument_types
             )
             registrations_list.append(
@@ -9605,7 +9638,7 @@ impl<T: {name}Native> {name}Binding<T> {{
         let _ = exposure;
         let interface = {define_interface};
 {registrations}
-{hide_interface}        runtime.expose_interface(&interface)?;
+{alias_registrations}{hide_interface}        runtime.expose_interface(&interface)?;
         Ok(Self {{ interface, native: std::marker::PhantomData }})
     }}
 

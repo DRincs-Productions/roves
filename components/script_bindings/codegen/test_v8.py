@@ -532,7 +532,7 @@ class V8GeneratorTests(unittest.TestCase):
                 "fn Echo(&self, cx: &mut roves_v8::ScriptContext, arg0: Vec<roves_v8::Handle>) -> Result<Vec<roves_v8::Handle>, roves_v8::WebIdlError>;",
                 "roves_v8::WebIdlType::Sequence(Box::new(roves_v8::WebIdlType::Sequence(Box::new(roves_v8::WebIdlType::Primitive(roves_v8::WebIdlArgumentConversion::Long)))))",
                 # A flat argument mixed into a structured operation keeps its conversion.
-                "roves_v8::WebIdlArgument { ty: roves_v8::WebIdlType::Primitive(roves_v8::WebIdlArgumentConversion::Boolean), optional: false, variadic: false }",
+                "roves_v8::WebIdlArgument { ty: roves_v8::WebIdlType::Primitive(roves_v8::WebIdlArgumentConversion::Boolean), optional: false, variadic: false, default: None }",
                 "Value::Missing => roves_v8::WebIdlOptionalArgument::Present(Vec::new())",
                 "roves_v8::WebIdlNativeOperation::Contextual(",
                 "match item { Some(item) => Value::Number(item as f64), None => Value::Null }",
@@ -621,7 +621,7 @@ class V8GeneratorTests(unittest.TestCase):
             path.write_text("[Exposed=Window] interface Var { DOMString join(DOMString separator, DOMString... parts); };", encoding="utf-8")
             source = generate(path, Path(directory) / "output")
             self.assertIn("fn Join(&self, arg0: Vec<u16>, arg1: Vec<Vec<u16>>) -> Vec<u16>;", source)
-            self.assertIn("ty: roves_v8::WebIdlType::Primitive(roves_v8::WebIdlArgumentConversion::DomString), optional: false, variadic: true }", source)
+            self.assertIn("ty: roves_v8::WebIdlType::Primitive(roves_v8::WebIdlArgumentConversion::DomString), optional: false, variadic: true, default: None }", source)
 
     def test_static_unscopable_and_default_to_json_members(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -674,6 +674,25 @@ class V8GeneratorTests(unittest.TestCase):
                 codegen._V8_CONTEXT_MEMBERS = None
             self.assertIn("fn Run(&self, cx: &mut roves_v8::ScriptContext, arg0: bool) -> Result<(), roves_v8::WebIdlError>;", source)
             self.assertIn("fn Other(&self) -> ();", source)
+
+    def test_structured_defaults_aliases_and_markers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Defaults.webidl"
+            path.write_text(
+                "[Exposed=Window, LegacyWindowAlias=webkitDefaults, Func=\"probe\", Serializable, Transferable] "
+                "interface Defaults { DOMString kind(optional (boolean or DOMString) options = false); "
+                "any context(optional any options = null); };",
+                encoding="utf-8",
+            )
+            source = generate(path, Path(directory) / "output")
+            for expected in [
+                "fn Kind(&self, arg0: BooleanOrString) -> Vec<u16>;",
+                "default: Some(Value::Bool(false)) }",
+                "default: Some(Value::Null) }",
+                'runtime.add_interface_alias(&interface, "webkitDefaults");',
+                'exposure.func_enabled("probe")',
+            ]:
+                self.assertIn(expected, source)
 
     def test_overloads_needing_type_distinction_fail_closed(self):
         self.assert_unsupported("interface Unsupported { undefined f(DOMString a); undefined f(boolean a); };")
