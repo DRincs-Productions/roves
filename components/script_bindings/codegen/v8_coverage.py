@@ -61,19 +61,31 @@ def measure() -> dict:
         (item for item in results if isinstance(item, WebIDL.IDLInterfaceOrNamespace)),
         key=lambda item: item.identifier.name,
     )
+    own_errors = {}
+    for definition in definitions:
+        try:
+            CGV8BindingRoot(definition).define()
+        except TypeError as error:
+            own_errors[definition.identifier.name] = str(error)
     supported = []
     reasons = Counter()
     rejected = {}
     for definition in definitions:
         name = definition.identifier.name
-        try:
-            CGV8BindingRoot(definition).define()
-        except TypeError as error:
-            reason = bucket(str(error))
-            reasons[reason] += 1
-            rejected[name] = str(error)
-        else:
+        error = own_errors.get(name)
+        if error is None:
+            # A child binding installs on its parent's binding, so it is only usable once
+            # every ancestor generates too.
+            ancestor = getattr(definition, "parent", None)
+            while ancestor is not None and ancestor.identifier.name not in own_errors:
+                ancestor = ancestor.parent
+            if ancestor is not None:
+                error = f"V8 backend requires every ancestor to generate: {name}: {ancestor.identifier.name}"
+        if error is None:
             supported.append(name)
+        else:
+            reasons[bucket(error)] += 1
+            rejected[name] = error
     return {
         "total": len(definitions),
         "supported": supported,

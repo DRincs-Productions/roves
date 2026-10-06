@@ -10,6 +10,13 @@ reports 13/486 definitions generable, after it exposed and fixed a crash on
 Inheritance is the next Phase 4 target, because it gates more than half of all bindings. This is
 pilot-generator coverage, not production bindings.
 
+**CP46 (2026-10-06): interface inheritance.** The V8 generator supports `interface X : Parent`
+with one native type per inheritance tree (`XNative: ParentNative`, `XBinding::install(runtime,
+&parent_binding)`), and the runtime now sets `Object.getPrototypeOf(X) === Parent` as WebIDL
+requires. Coverage counts a definition only when all its ancestors generate. It stays at 13/486
+because almost every hierarchy roots at the constructible `EventTarget`, so constructors (208)
+are the next target.
+
 CP37 exposes stable `NativeObjectId` through `DomObject` and updates generated `dom_struct`
 equality to use that engine-neutral contract. Local checks pass (reflector 2/2, macro 3/3,
 rustfmt, and patch 0101 reverse-check); CI is green: V8 37226916624 (6/6), Servo 37226916650

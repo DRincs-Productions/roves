@@ -73,6 +73,14 @@ pub mod webidl {
     pub mod enum_operations {
         include!(concat!(env!("OUT_DIR"), "/EnumOperationsV8Binding.rs"));
     }
+    #[cfg(test)]
+    pub mod inheritance_base {
+        include!(concat!(env!("OUT_DIR"), "/InheritanceBaseV8Binding.rs"));
+    }
+    #[cfg(test)]
+    pub mod inheritance_derived {
+        include!(concat!(env!("OUT_DIR"), "/InheritanceDerivedV8Binding.rs"));
+    }
 }
 
 use std::sync::Once;
@@ -172,6 +180,9 @@ pub struct Handle(v8::Global<v8::Value>);
 /// [`Runtime::define_interface`] — see that method's own doc comment.
 pub struct Interface {
     template: v8::Global<v8::FunctionTemplate>,
+    /// The parent interface's template, so exposure can make the parent interface object
+    /// this interface object's `[[Prototype]]` (see [`Runtime::expose_interface`]).
+    parent_template: Option<v8::Global<v8::FunctionTemplate>>,
     name: String,
     /// Set once the constructor has actually been exposed on the global object (lazily, at the
     /// first [`Runtime::create_instance`] call — see that method's own doc comment on why this
@@ -790,6 +801,7 @@ impl Runtime {
 
         Interface {
             template: v8::Global::new(scope, template),
+            parent_template: parent.map(|parent| parent.template.clone()),
             name: name.to_string(),
             constructor_exposed: std::cell::Cell::new(false),
             materialized: std::rc::Rc::new(std::cell::Cell::new(false)),
@@ -813,6 +825,18 @@ impl Runtime {
         let scope = &mut v8::ContextScope::new(scope, context);
         let template = v8::Local::new(scope, &interface.template);
         let function = template.get_function(scope).ok_or("failed to materialize interface")?;
+        // WebIDL: an interface object's [[Prototype]] is its parent's interface object
+        // (`Object.getPrototypeOf(Element) === Node`). `FunctionTemplate::inherit` only links
+        // the two `prototype` objects, so set the constructor's own prototype here.
+        if let Some(parent_template) = &interface.parent_template {
+            let parent_template = v8::Local::new(scope, parent_template);
+            let parent_function = parent_template
+                .get_function(scope)
+                .ok_or("failed to materialize parent interface")?;
+            if function.set_prototype(scope, parent_function.into()) != Some(true) {
+                return Err("failed to link interface object to its parent".into());
+            }
+        }
         let key = v8::String::new(scope, &interface.name).ok_or("invalid interface name")?;
         if context.global(scope).define_own_property(
             scope, key.into(), function.into(), v8::PropertyAttribute::DONT_ENUM,
@@ -3650,6 +3674,78 @@ mod tests {
         assert_eq!(runtime.eval_value("directions.optionalValue('left')").unwrap(), Value::String("left".into()));
         assert_eq!(runtime.eval("(() => { try { directions.echo('up'); } catch (e) { return e instanceof TypeError; } })()").unwrap(), "true");
         assert_eq!(runtime.eval("(() => { try { directions.echo(Symbol()); } catch (e) { return e instanceof TypeError; } })()").unwrap(), "true");
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_inherited_interfaces_share_one_native_type_and_prototype_chain() {
+        use crate::webidl::inheritance_base::{InheritanceBaseBinding, InheritanceBaseNative};
+        use crate::webidl::inheritance_derived::{InheritanceDerivedBinding, InheritanceDerivedNative};
+        // One native type per inheritance tree, as with Servo's `D: DomTypes`: the base
+        // callbacks downcast to the same type, whichever interface created the wrapper.
+        enum Shape {
+            Base { depth: u32, flagged: bool },
+            Derived { depth: u32, flagged: bool, ratio: f64 },
+        }
+        #[allow(non_snake_case)]
+        impl InheritanceBaseNative for Shape {
+            fn Depth(&self) -> u32 {
+                match self { Shape::Base { depth, .. } | Shape::Derived { depth, .. } => *depth }
+            }
+            fn Flagged(&self) -> bool {
+                match self { Shape::Base { flagged, .. } | Shape::Derived { flagged, .. } => *flagged }
+            }
+            fn set_Flagged(&mut self, value: bool) {
+                match self { Shape::Base { flagged, .. } | Shape::Derived { flagged, .. } => *flagged = value }
+            }
+            fn IsBase(&self) -> bool { matches!(self, Shape::Base { .. }) }
+        }
+        #[allow(non_snake_case)]
+        impl InheritanceDerivedNative for Shape {
+            fn Ratio(&self) -> crate::FiniteF64 {
+                match self {
+                    Shape::Derived { ratio, .. } => crate::FiniteF64::new(*ratio).unwrap(),
+                    Shape::Base { .. } => unreachable!("the derived signature rejects base receivers"),
+                }
+            }
+            fn DoubledDepth(&self) -> u32 { self.Depth() * 2 }
+        }
+
+        let mut runtime = Runtime::new();
+        let base_binding = InheritanceBaseBinding::<Shape>::install(&mut runtime).unwrap();
+        let derived_binding = InheritanceDerivedBinding::<Shape>::install(&mut runtime, &base_binding).unwrap();
+        let base = base_binding.create(&mut runtime, Shape::Base { depth: 1, flagged: false });
+        let derived = derived_binding.create(&mut runtime, Shape::Derived { depth: 3, flagged: false, ratio: 0.5 });
+        runtime.set_global_property("base", &base).unwrap();
+        runtime.set_global_property("derived", &derived).unwrap();
+
+        for (source, expected) in [
+            ("Object.getPrototypeOf(InheritanceDerived.prototype) === InheritanceBase.prototype", "true"),
+            ("Object.getPrototypeOf(InheritanceDerived) === InheritanceBase", "true"),
+            ("derived instanceof InheritanceBase && derived instanceof InheritanceDerived", "true"),
+            ("base instanceof InheritanceDerived", "false"),
+            // Inherited members read the derived instance's own native state.
+            ("derived.depth", "3"),
+            ("derived.isBase()", "false"),
+            ("base.isBase()", "true"),
+            ("derived.ratio", "0.5"),
+            ("derived.doubledDepth()", "6"),
+            ("Object.hasOwn(InheritanceDerived.prototype, 'depth')", "false"),
+            ("Object.hasOwn(InheritanceBase.prototype, 'depth')", "true"),
+            ("'ratio' in base", "false"),
+            ("Object.prototype.toString.call(derived)", "[object InheritanceDerived]"),
+        ] {
+            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
+        }
+        runtime.eval("derived.flagged = true;").unwrap();
+        assert_eq!(runtime.eval("derived.flagged && !base.flagged").unwrap(), "true");
+        // Derived members keep rejecting receivers that are only a base instance.
+        for source in [
+            "InheritanceDerived.prototype.doubledDepth.call(base)",
+            "Object.getOwnPropertyDescriptor(InheritanceDerived.prototype, 'ratio').get.call(base)",
+        ] {
+            assert!(runtime.eval(source).unwrap_err().contains("TypeError"), "{source}");
+        }
     }
 
     #[cfg(feature = "webidl-pilot")]

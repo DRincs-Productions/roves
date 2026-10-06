@@ -193,4 +193,22 @@ fn main() {
         .status()
         .expect("run WebIDL enum operation fixture generator");
     assert!(status.success(), "WebIDL enum operation fixture generation failed");
+    // Inheritance: the derived binding is generated with its ancestor's file as parse
+    // context and refers to the base binding's sibling module.
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/webidl");
+    for (interface, context) in [
+        ("InheritanceBase", &[][..]),
+        ("InheritanceDerived", &["InheritanceBase"][..]),
+    ] {
+        println!("cargo:rerun-if-changed={}", fixtures.join(format!("{interface}.webidl")).display());
+        let status = Command::new(&python)
+            .arg(bindings.join("codegen/run_v8.py"))
+            .arg(fixtures.join(format!("{interface}.webidl")))
+            .arg(out_dir.join(format!("{interface}V8Binding.rs")))
+            .args(context.iter().map(|ancestor| fixtures.join(format!("{ancestor}.webidl"))))
+            .env("PYTHONDONTWRITEBYTECODE", "1")
+            .status()
+            .expect("run WebIDL inheritance fixture generator");
+        assert!(status.success(), "WebIDL inheritance fixture generation failed for {interface}");
+    }
 }

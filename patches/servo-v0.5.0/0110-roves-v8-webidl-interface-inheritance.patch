@@ -1,0 +1,442 @@
+diff --git a/components/roves-v8/build.rs b/components/roves-v8/build.rs
+index ae895023b0c..b0bd59cbc77 100644
+--- a/components/roves-v8/build.rs
++++ b/components/roves-v8/build.rs
+@@ -193,4 +193,22 @@ fn main() {
+         .status()
+         .expect("run WebIDL enum operation fixture generator");
+     assert!(status.success(), "WebIDL enum operation fixture generation failed");
++    // Inheritance: the derived binding is generated with its ancestor's file as parse
++    // context and refers to the base binding's sibling module.
++    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/webidl");
++    for (interface, context) in [
++        ("InheritanceBase", &[][..]),
++        ("InheritanceDerived", &["InheritanceBase"][..]),
++    ] {
++        println!("cargo:rerun-if-changed={}", fixtures.join(format!("{interface}.webidl")).display());
++        let status = Command::new(&python)
++            .arg(bindings.join("codegen/run_v8.py"))
++            .arg(fixtures.join(format!("{interface}.webidl")))
++            .arg(out_dir.join(format!("{interface}V8Binding.rs")))
++            .args(context.iter().map(|ancestor| fixtures.join(format!("{ancestor}.webidl"))))
++            .env("PYTHONDONTWRITEBYTECODE", "1")
++            .status()
++            .expect("run WebIDL inheritance fixture generator");
++        assert!(status.success(), "WebIDL inheritance fixture generation failed for {interface}");
++    }
+ }
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 93a585dcb26..6b8280a3544 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -73,6 +73,14 @@ pub mod webidl {
+     pub mod enum_operations {
+         include!(concat!(env!("OUT_DIR"), "/EnumOperationsV8Binding.rs"));
+     }
++    #[cfg(test)]
++    pub mod inheritance_base {
++        include!(concat!(env!("OUT_DIR"), "/InheritanceBaseV8Binding.rs"));
++    }
++    #[cfg(test)]
++    pub mod inheritance_derived {
++        include!(concat!(env!("OUT_DIR"), "/InheritanceDerivedV8Binding.rs"));
++    }
+ }
+ 
+ use std::sync::Once;
+@@ -172,6 +180,9 @@ pub struct Handle(v8::Global<v8::Value>);
+ /// [`Runtime::define_interface`] — see that method's own doc comment.
+ pub struct Interface {
+     template: v8::Global<v8::FunctionTemplate>,
++    /// The parent interface's template, so exposure can make the parent interface object
++    /// this interface object's `[[Prototype]]` (see [`Runtime::expose_interface`]).
++    parent_template: Option<v8::Global<v8::FunctionTemplate>>,
+     name: String,
+     /// Set once the constructor has actually been exposed on the global object (lazily, at the
+     /// first [`Runtime::create_instance`] call — see that method's own doc comment on why this
+@@ -790,6 +801,7 @@ impl Runtime {
+ 
+         Interface {
+             template: v8::Global::new(scope, template),
++            parent_template: parent.map(|parent| parent.template.clone()),
+             name: name.to_string(),
+             constructor_exposed: std::cell::Cell::new(false),
+             materialized: std::rc::Rc::new(std::cell::Cell::new(false)),
+@@ -813,6 +825,18 @@ impl Runtime {
+         let scope = &mut v8::ContextScope::new(scope, context);
+         let template = v8::Local::new(scope, &interface.template);
+         let function = template.get_function(scope).ok_or("failed to materialize interface")?;
++        // WebIDL: an interface object's [[Prototype]] is its parent's interface object
++        // (`Object.getPrototypeOf(Element) === Node`). `FunctionTemplate::inherit` only links
++        // the two `prototype` objects, so set the constructor's own prototype here.
++        if let Some(parent_template) = &interface.parent_template {
++            let parent_template = v8::Local::new(scope, parent_template);
++            let parent_function = parent_template
++                .get_function(scope)
++                .ok_or("failed to materialize parent interface")?;
++            if function.set_prototype(scope, parent_function.into()) != Some(true) {
++                return Err("failed to link interface object to its parent".into());
++            }
++        }
+         let key = v8::String::new(scope, &interface.name).ok_or("invalid interface name")?;
+         if context.global(scope).define_own_property(
+             scope, key.into(), function.into(), v8::PropertyAttribute::DONT_ENUM,
+@@ -3652,6 +3676,78 @@ mod tests {
+         assert_eq!(runtime.eval("(() => { try { directions.echo(Symbol()); } catch (e) { return e instanceof TypeError; } })()").unwrap(), "true");
+     }
+ 
++    #[cfg(feature = "webidl-pilot")]
++    #[test]
++    fn generated_inherited_interfaces_share_one_native_type_and_prototype_chain() {
++        use crate::webidl::inheritance_base::{InheritanceBaseBinding, InheritanceBaseNative};
++        use crate::webidl::inheritance_derived::{InheritanceDerivedBinding, InheritanceDerivedNative};
++        // One native type per inheritance tree, as with Servo's `D: DomTypes`: the base
++        // callbacks downcast to the same type, whichever interface created the wrapper.
++        enum Shape {
++            Base { depth: u32, flagged: bool },
++            Derived { depth: u32, flagged: bool, ratio: f64 },
++        }
++        #[allow(non_snake_case)]
++        impl InheritanceBaseNative for Shape {
++            fn Depth(&self) -> u32 {
++                match self { Shape::Base { depth, .. } | Shape::Derived { depth, .. } => *depth }
++            }
++            fn Flagged(&self) -> bool {
++                match self { Shape::Base { flagged, .. } | Shape::Derived { flagged, .. } => *flagged }
++            }
++            fn set_Flagged(&mut self, value: bool) {
++                match self { Shape::Base { flagged, .. } | Shape::Derived { flagged, .. } => *flagged = value }
++            }
++            fn IsBase(&self) -> bool { matches!(self, Shape::Base { .. }) }
++        }
++        #[allow(non_snake_case)]
++        impl InheritanceDerivedNative for Shape {
++            fn Ratio(&self) -> crate::FiniteF64 {
++                match self {
++                    Shape::Derived { ratio, .. } => crate::FiniteF64::new(*ratio).unwrap(),
++                    Shape::Base { .. } => unreachable!("the derived signature rejects base receivers"),
++                }
++            }
++            fn DoubledDepth(&self) -> u32 { self.Depth() * 2 }
++        }
++
++        let mut runtime = Runtime::new();
++        let base_binding = InheritanceBaseBinding::<Shape>::install(&mut runtime).unwrap();
++        let derived_binding = InheritanceDerivedBinding::<Shape>::install(&mut runtime, &base_binding).unwrap();
++        let base = base_binding.create(&mut runtime, Shape::Base { depth: 1, flagged: false });
++        let derived = derived_binding.create(&mut runtime, Shape::Derived { depth: 3, flagged: false, ratio: 0.5 });
++        runtime.set_global_property("base", &base).unwrap();
++        runtime.set_global_property("derived", &derived).unwrap();
++
++        for (source, expected) in [
++            ("Object.getPrototypeOf(InheritanceDerived.prototype) === InheritanceBase.prototype", "true"),
++            ("Object.getPrototypeOf(InheritanceDerived) === InheritanceBase", "true"),
++            ("derived instanceof InheritanceBase && derived instanceof InheritanceDerived", "true"),
++            ("base instanceof InheritanceDerived", "false"),
++            // Inherited members read the derived instance's own native state.
++            ("derived.depth", "3"),
++            ("derived.isBase()", "false"),
++            ("base.isBase()", "true"),
++            ("derived.ratio", "0.5"),
++            ("derived.doubledDepth()", "6"),
++            ("Object.hasOwn(InheritanceDerived.prototype, 'depth')", "false"),
++            ("Object.hasOwn(InheritanceBase.prototype, 'depth')", "true"),
++            ("'ratio' in base", "false"),
++            ("Object.prototype.toString.call(derived)", "[object InheritanceDerived]"),
++        ] {
++            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
++        }
++        runtime.eval("derived.flagged = true;").unwrap();
++        assert_eq!(runtime.eval("derived.flagged && !base.flagged").unwrap(), "true");
++        // Derived members keep rejecting receivers that are only a base instance.
++        for source in [
++            "InheritanceDerived.prototype.doubledDepth.call(base)",
++            "Object.getOwnPropertyDescriptor(InheritanceDerived.prototype, 'ratio').get.call(base)",
++        ] {
++            assert!(runtime.eval(source).unwrap_err().contains("TypeError"), "{source}");
++        }
++    }
++
+     #[cfg(feature = "webidl-pilot")]
+     #[test]
+     fn generated_nullable_domstring_preserves_null_and_utf16_semantics() {
+diff --git a/components/roves-v8/tests/webidl/InheritanceBase.webidl b/components/roves-v8/tests/webidl/InheritanceBase.webidl
+new file mode 100644
+index 00000000000..f01c0180b1b
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/InheritanceBase.webidl
+@@ -0,0 +1,6 @@
++[Exposed=Window]
++interface InheritanceBase {
++  readonly attribute unsigned long depth;
++  attribute boolean flagged;
++  boolean isBase();
++};
+diff --git a/components/roves-v8/tests/webidl/InheritanceDerived.webidl b/components/roves-v8/tests/webidl/InheritanceDerived.webidl
+new file mode 100644
+index 00000000000..88c83c6f378
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/InheritanceDerived.webidl
+@@ -0,0 +1,5 @@
++[Exposed=Window]
++interface InheritanceDerived : InheritanceBase {
++  readonly attribute double ratio;
++  unsigned long doubledDepth();
++};
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index 0dc951138f4..12dfbf95087 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8213,6 +8213,12 @@ pub(crate) fn GetConstructorObject(
+         return stripTrailingWhitespace(self.root.define())
+ 
+ 
++def v8_module_name(interface_name: str) -> str:
++    """Snake-case module of a V8 pilot binding: ValidityState -> validity_state,
++    HTMLElement -> html_element."""
++    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "_", interface_name).lower()
++
++
+ class CGV8BindingRoot(CGThing):
+     """First V8 backend slice: nonconstructible interfaces with primitive attributes.
+ 
+@@ -8229,7 +8235,6 @@ class CGV8BindingRoot(CGThing):
+         for unsupported_shape, present in [
+             ("namespace", interface.isNamespace()),
+             ("callback interface", interface.isCallback()),
+-            ("inheritance", interface.parent is not None),
+             ("constructor", interface.ctor() is not None),
+         ]:
+             if present:
+@@ -8245,6 +8250,16 @@ class CGV8BindingRoot(CGThing):
+             exposed_globals.update(entry if isinstance(entry, list) else [entry])
+         if not ({"Window", "*"} & exposed_globals):
+             raise TypeError(f"V8 pilot only supports interfaces exposed to Window: {name}")
++        # A member redeclared down the chain would give the native trait and its supertrait
++        # two methods of the same name, making generated calls ambiguous.
++        inherited = set()
++        ancestor = interface.parent
++        while ancestor is not None:
++            inherited.update(member.identifier.name for member in ancestor.members)
++            ancestor = ancestor.parent
++        for member in interface.members:
++            if member.identifier.name in inherited:
++                raise TypeError(f"V8 backend does not support members shadowing an inherited member: {name}.{member.identifier.name}")
+         attributes = []
+         operations = []
+         for member in interface.members:
+@@ -8608,10 +8623,26 @@ class CGV8BindingRoot(CGThing):
+             else:
+                 registrations_list.append(f'        runtime.define_method(&interface, "{idl}", {callback})?;')
+         registrations = "\n".join(registrations_list)
++        parent = interface.parent
++        if parent is None:
++            native_bound = "'static"
++            install_parameters = "runtime: &mut Runtime"
++            parent_interface = "None"
++        else:
++            # One native storage type `T` per inheritance tree (like Servo's `D: DomTypes`):
++            # the parent's callbacks downcast to the same `T`, and the child's native trait
++            # extends the parent's. Bindings live in sibling modules named by v8_module_name.
++            parent_name = parent.identifier.name
++            parent_module = f"super::{v8_module_name(parent_name)}"
++            native_bound = f"{parent_module}::{parent_name}Native"
++            install_parameters = (
++                f"runtime: &mut Runtime, parent: &{parent_module}::{parent_name}Binding<T>"
++            )
++            parent_interface = "Some(parent.interface())"
+         return AUTOGENERATED_WARNING_COMMENT + f"""use roves_v8::{{Handle, Interface, Runtime, Value}};
+ 
+ #[allow(non_snake_case)]
+-pub trait {name}Native: 'static {{
++pub trait {name}Native: {native_bound} {{
+ {trait_methods}
+ }}
+ 
+@@ -8623,13 +8654,18 @@ pub struct {name}Binding<T: {name}Native> {{
+ }}
+ 
+ impl<T: {name}Native> {name}Binding<T> {{
+-    pub fn install(runtime: &mut Runtime) -> Result<Self, String> {{
+-        let interface = runtime.define_interface("{name}", None);
++    pub fn install({install_parameters}) -> Result<Self, String> {{
++        let interface = runtime.define_interface("{name}", {parent_interface});
+ {registrations}
+         runtime.expose_interface(&interface)?;
+         Ok(Self {{ interface, native: std::marker::PhantomData }})
+     }}
+ 
++    /// The installed interface, for installing interfaces that inherit from this one.
++    pub fn interface(&self) -> &Interface {{
++        &self.interface
++    }}
++
+     pub fn create(&self, runtime: &mut Runtime, native: T) -> Handle {{
+         runtime.create_instance(&self.interface, native)
+     }}
+diff --git a/components/script_bindings/codegen/run_v8.py b/components/script_bindings/codegen/run_v8.py
+index e02e89e3444..6bf785a52d8 100644
+--- a/components/script_bindings/codegen/run_v8.py
++++ b/components/script_bindings/codegen/run_v8.py
+@@ -6,6 +6,10 @@
+ This is an opt-in migration backend, not a replacement for run.py yet. The tiny
+ Window exposure declaration describes the isolated realm, not an implementation
+ of Window. Actual selected interface definitions come unmodified from webidls/.
++
++The generated binding is for the single interface defined in `webidl`. Files
++passed as `context` are parsed only so that interface's ancestors resolve; they
++are generated separately, into sibling modules (see codegen.v8_module_name).
+ """
+ import argparse
+ from pathlib import Path
+@@ -18,17 +22,19 @@ import WebIDL
+ from codegen import CGV8BindingRoot
+ 
+ 
+-def generate(webidl: Path, out_dir: Path) -> str:
++def generate(webidl: Path, out_dir: Path, context: tuple[Path, ...] = ()) -> str:
+     out_dir.mkdir(parents=True, exist_ok=True)
+     parser = WebIDL.Parser(str(out_dir / "cache"))
+     parser.parse("[Global=Window, Exposed=Window] interface Window {};", "V8RealmExposure.webidl")
+     parser.parse("[Global=Worker, Exposed=Worker] interface Worker {};", "V8RealmExposure.webidl")
++    for dependency in context:
++        parser.parse(dependency.read_text(encoding="utf-8"), str(dependency))
+     parser.parse(webidl.read_text(encoding="utf-8"), str(webidl))
+     interfaces = [
+         item for item in parser.finish()
+-        if isinstance(item, WebIDL.IDLInterface) and item.identifier.name not in {"Window", "Worker"}
++        if isinstance(item, WebIDL.IDLInterface) and item.location.filename == str(webidl)
+     ]
+-    if len(interfaces) != 1 or not isinstance(interfaces[0], WebIDL.IDLInterface):
++    if len(interfaces) != 1:
+         raise TypeError("V8 pilot requires exactly one interface")
+     return CGV8BindingRoot(interfaces[0]).define()
+ 
+@@ -37,8 +43,9 @@ def main() -> None:
+     cli = argparse.ArgumentParser(description=__doc__)
+     cli.add_argument("webidl", type=Path)
+     cli.add_argument("output", type=Path)
++    cli.add_argument("context", type=Path, nargs="*", help="WebIDL files defining ancestors")
+     args = cli.parse_args()
+-    source = generate(args.webidl, args.output.parent)
++    source = generate(args.webidl, args.output.parent, tuple(args.context))
+     args.output.write_text(source, encoding="utf-8", newline="\n")
+ 
+ 
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index 8185f9e557f..7d12aa85051 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -380,7 +380,6 @@ class V8GeneratorTests(unittest.TestCase):
+     def test_unsupported_interface_shapes_fail(self):
+         self.assert_unsupported("interface Unsupported { constructor(); };")
+         self.assert_unsupported("namespace Unsupported { undefined run(); };")
+-        self.assert_unsupported("interface Base {}; [Exposed=Window] interface Unsupported : Base {};")
+ 
+     def test_non_window_exposure_fails_closed(self):
+         with tempfile.TemporaryDirectory() as directory:
+@@ -400,22 +399,47 @@ class V8GeneratorTests(unittest.TestCase):
+             self.assertIn("fn Ok(&self) -> bool;", source)
+ 
+     def test_interface_shape_rejections_name_the_shape(self):
+-        import WebIDL
+-        from codegen import CGV8BindingRoot
++        with tempfile.TemporaryDirectory() as directory:
++            path = Path(directory) / "Constructible.webidl"
++            path.write_text("[Exposed=Window] interface Constructible { constructor(); };", encoding="utf-8")
++            with self.assertRaisesRegex(TypeError, "interface shape [(]constructor[)]"):
++                generate(path, Path(directory) / "output")
+ 
++    def write_hierarchy(self, directory, derived_body="readonly attribute boolean derived;"):
++        base = Path(directory) / "Base.webidl"
++        base.write_text("[Exposed=Window] interface Base { readonly attribute boolean base; };", encoding="utf-8")
++        derived = Path(directory) / "HTMLDerived.webidl"
++        derived.write_text(f"[Exposed=Window] interface HTMLDerived : Base {{ {derived_body} }};", encoding="utf-8")
++        return base, derived
++
++    def test_inherited_interface_extends_parent_native_trait_and_binding(self):
+         with tempfile.TemporaryDirectory() as directory:
+-            parser = WebIDL.Parser(directory)
+-            parser.parse("[Global=Window, Exposed=Window] interface Window {};", "Window.webidl")
+-            parser.parse(
+-                "[Exposed=Window] interface Base {}; [Exposed=Window] interface Derived : Base {};",
+-                "Derived.webidl",
+-            )
+-            derived = next(
+-                item for item in parser.finish()
+-                if isinstance(item, WebIDL.IDLInterface) and item.identifier.name == "Derived"
+-            )
+-            with self.assertRaisesRegex(TypeError, r"interface shape \(inheritance\)"):
+-                CGV8BindingRoot(derived).define()
++            base, derived = self.write_hierarchy(directory)
++            output = Path(directory) / "output"
++            source = generate(derived, output, (base,))
++            self.assertEqual(source, generate(derived, output, (base,)))
++            self.assertIn("pub trait HTMLDerivedNative: super::base::BaseNative {", source)
++            self.assertIn("parent: &super::base::BaseBinding<T>", source)
++            self.assertIn('runtime.define_interface("HTMLDerived", Some(parent.interface()))', source)
++            self.assertIn("fn Derived(&self) -> bool;", source)
++            self.assertNotIn("fn Base(&self)", source)
++            base_source = generate(base, output)
++            self.assertIn("pub trait BaseNative: 'static {", base_source)
++            self.assertIn('runtime.define_interface("Base", None)', base_source)
++            self.assertIn("pub fn interface(&self) -> &Interface", base_source)
++
++    def test_redeclaring_an_inherited_member_fails_closed(self):
++        with tempfile.TemporaryDirectory() as directory:
++            base, derived = self.write_hierarchy(directory, "readonly attribute boolean base;")
++            with self.assertRaisesRegex(TypeError, "shadowing an inherited member"):
++                generate(derived, Path(directory) / "output", (base,))
++
++    def test_binding_module_names_are_snake_case(self):
++        from codegen import v8_module_name
++
++        for interface, module in [("ValidityState", "validity_state"), ("HTMLElement", "html_element"),
++                                  ("WebGL2RenderingContext", "web_gl2_rendering_context"), ("Node", "node")]:
++            self.assertEqual(v8_module_name(interface), module)
+ 
+     def test_coverage_report_counts_real_webidl(self):
+         from v8_coverage import measure
+diff --git a/components/script_bindings/codegen/v8_coverage.py b/components/script_bindings/codegen/v8_coverage.py
+index 48bb4f4473b..2bbe1061599 100644
+--- a/components/script_bindings/codegen/v8_coverage.py
++++ b/components/script_bindings/codegen/v8_coverage.py
+@@ -61,19 +61,31 @@ def measure() -> dict:
+         (item for item in results if isinstance(item, WebIDL.IDLInterfaceOrNamespace)),
+         key=lambda item: item.identifier.name,
+     )
++    own_errors = {}
++    for definition in definitions:
++        try:
++            CGV8BindingRoot(definition).define()
++        except TypeError as error:
++            own_errors[definition.identifier.name] = str(error)
+     supported = []
+     reasons = Counter()
+     rejected = {}
+     for definition in definitions:
+         name = definition.identifier.name
+-        try:
+-            CGV8BindingRoot(definition).define()
+-        except TypeError as error:
+-            reason = bucket(str(error))
+-            reasons[reason] += 1
+-            rejected[name] = str(error)
+-        else:
++        error = own_errors.get(name)
++        if error is None:
++            # A child binding installs on its parent's binding, so it is only usable once
++            # every ancestor generates too.
++            ancestor = getattr(definition, "parent", None)
++            while ancestor is not None and ancestor.identifier.name not in own_errors:
++                ancestor = ancestor.parent
++            if ancestor is not None:
++                error = f"V8 backend requires every ancestor to generate: {name}: {ancestor.identifier.name}"
++        if error is None:
+             supported.append(name)
++        else:
++            reasons[bucket(error)] += 1
++            rejected[name] = error
+     return {
+         "total": len(definitions),
+         "supported": supported,

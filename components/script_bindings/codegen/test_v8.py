@@ -380,7 +380,6 @@ class V8GeneratorTests(unittest.TestCase):
     def test_unsupported_interface_shapes_fail(self):
         self.assert_unsupported("interface Unsupported { constructor(); };")
         self.assert_unsupported("namespace Unsupported { undefined run(); };")
-        self.assert_unsupported("interface Base {}; [Exposed=Window] interface Unsupported : Base {};")
 
     def test_non_window_exposure_fails_closed(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -400,22 +399,47 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn("fn Ok(&self) -> bool;", source)
 
     def test_interface_shape_rejections_name_the_shape(self):
-        import WebIDL
-        from codegen import CGV8BindingRoot
-
         with tempfile.TemporaryDirectory() as directory:
-            parser = WebIDL.Parser(directory)
-            parser.parse("[Global=Window, Exposed=Window] interface Window {};", "Window.webidl")
-            parser.parse(
-                "[Exposed=Window] interface Base {}; [Exposed=Window] interface Derived : Base {};",
-                "Derived.webidl",
-            )
-            derived = next(
-                item for item in parser.finish()
-                if isinstance(item, WebIDL.IDLInterface) and item.identifier.name == "Derived"
-            )
-            with self.assertRaisesRegex(TypeError, r"interface shape \(inheritance\)"):
-                CGV8BindingRoot(derived).define()
+            path = Path(directory) / "Constructible.webidl"
+            path.write_text("[Exposed=Window] interface Constructible { constructor(); };", encoding="utf-8")
+            with self.assertRaisesRegex(TypeError, "interface shape [(]constructor[)]"):
+                generate(path, Path(directory) / "output")
+
+    def write_hierarchy(self, directory, derived_body="readonly attribute boolean derived;"):
+        base = Path(directory) / "Base.webidl"
+        base.write_text("[Exposed=Window] interface Base { readonly attribute boolean base; };", encoding="utf-8")
+        derived = Path(directory) / "HTMLDerived.webidl"
+        derived.write_text(f"[Exposed=Window] interface HTMLDerived : Base {{ {derived_body} }};", encoding="utf-8")
+        return base, derived
+
+    def test_inherited_interface_extends_parent_native_trait_and_binding(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base, derived = self.write_hierarchy(directory)
+            output = Path(directory) / "output"
+            source = generate(derived, output, (base,))
+            self.assertEqual(source, generate(derived, output, (base,)))
+            self.assertIn("pub trait HTMLDerivedNative: super::base::BaseNative {", source)
+            self.assertIn("parent: &super::base::BaseBinding<T>", source)
+            self.assertIn('runtime.define_interface("HTMLDerived", Some(parent.interface()))', source)
+            self.assertIn("fn Derived(&self) -> bool;", source)
+            self.assertNotIn("fn Base(&self)", source)
+            base_source = generate(base, output)
+            self.assertIn("pub trait BaseNative: 'static {", base_source)
+            self.assertIn('runtime.define_interface("Base", None)', base_source)
+            self.assertIn("pub fn interface(&self) -> &Interface", base_source)
+
+    def test_redeclaring_an_inherited_member_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base, derived = self.write_hierarchy(directory, "readonly attribute boolean base;")
+            with self.assertRaisesRegex(TypeError, "shadowing an inherited member"):
+                generate(derived, Path(directory) / "output", (base,))
+
+    def test_binding_module_names_are_snake_case(self):
+        from codegen import v8_module_name
+
+        for interface, module in [("ValidityState", "validity_state"), ("HTMLElement", "html_element"),
+                                  ("WebGL2RenderingContext", "web_gl2_rendering_context"), ("Node", "node")]:
+            self.assertEqual(v8_module_name(interface), module)
 
     def test_coverage_report_counts_real_webidl(self):
         from v8_coverage import measure

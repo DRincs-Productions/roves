@@ -11,6 +11,43 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: WebIDL interface inheritance in the V8 generator (CP46)
+
+**Servo files:** `components/script_bindings/codegen/codegen.py`, `run_v8.py`, `test_v8.py`,
+`v8_coverage.py`; `components/roves-v8/src/lib.rs`, `build.rs`, new fixtures
+`components/roves-v8/tests/webidl/InheritanceBase.webidl` and `InheritanceDerived.webidl`.
+**Patch:** `0110-roves-v8-webidl-interface-inheritance.patch` after 0109.
+
+The opt-in V8 generator now accepts interfaces with a parent, which was the top blocker in CP45's
+coverage report (279 definitions). The design keeps one native storage type `T` per inheritance
+tree, mirroring Servo's own `D: DomTypes` parameter. A parent's callbacks downcast to `T`, so they
+work unchanged on a child's instance. `{Child}Native` extends `{Parent}Native`, and
+`{Child}Binding::<T>::install(runtime, &parent_binding)` builds the interface with
+`define_interface(name, Some(parent.interface()))`. Every binding gains `interface()`. Bindings
+refer to their parent in a sibling module named by the new `v8_module_name` (snake case, so
+`HTMLElement` becomes `html_element`). `run_v8.py` takes optional ancestor WebIDL files as parse
+context and generates the one interface defined in the target file. A member that redeclares an
+inherited member fails closed, since the trait and its supertrait would otherwise have ambiguous
+methods of the same name.
+
+The new runtime test found a real WebIDL conformance gap in `roves-v8`. `FunctionTemplate::inherit`
+links only the two `prototype` objects, but WebIDL also requires
+`Object.getPrototypeOf(Child) === Parent` for the interface objects. `expose_interface` now sets the
+interface object's `[[Prototype]]` to the parent's interface object. The runtime test checks:
+- both prototype links;
+- `instanceof`;
+- inherited getters, setters and methods reading the derived instance's own native state;
+- own vs inherited descriptors;
+- derived members still rejecting base-only receivers.
+
+The coverage report now counts a definition only if every ancestor also generates. It stays at
+13/486, because nearly every hierarchy roots at `EventTarget`, which has a constructor.
+Constructors (208) are now the top blocker. Local results:
+- generator tests: 32/32;
+- `roves-v8` pilot and pilot+JIT-less: 67 unit + 5 integration + 2 doctests each;
+- default: 54 unit + 2 doctests;
+- `cargo check -p servo-script --features v8-bindings-pilot,js_jit` is clean.
+
 ## 2026-10-06 - V8 migration Phase 4: generator coverage report over all Servo WebIDL (CP45)
 
 **Servo files:** `components/script_bindings/codegen/codegen.py`,

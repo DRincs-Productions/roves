@@ -55,6 +55,16 @@ report. Prossimo obiettivo Phase 4: supportare l'ereditarietà delle interfacce 
 runtime `roves-v8`. Prima verificare cosa offre già il runtime: i flag di materializzazione
 condivisi indicano un supporto parziale alle catene di prototipi.
 
+**CP46 (2026-10-06):** il generatore V8 supporta l'ereditarietà delle interfacce (patch 0110):
+un unico tipo nativo `T` per albero, `XNative: ParentNative`, `XBinding::install(runtime,
+&parent_binding)`, moduli fratelli via `v8_module_name`, `run_v8.py` con file WebIDL antenati come
+contesto. Il test runtime ha trovato e corretto una non conformità: mancava
+`Object.getPrototypeOf(Child) === Parent`, ora impostato da `expose_interface`. Test: generatore
+32/32; `roves-v8` pilot e JIT-less 67+5+2 ciascuno, default 54+2; check `servo-script` col pilot
+pulito. La copertura resta 13/486 perché quasi tutte le gerarchie partono da `EventTarget`, che
+ha un costruttore. **Prossimo: costruttori WebIDL** (208 definizioni bloccate) nel runtime
+(`define_interface` oggi lancia "Illegal constructor") e nel generatore.
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,
