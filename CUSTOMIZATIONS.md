@@ -11,6 +11,39 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: mutable union and buffer attributes (CP71)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixtures
+`components/roves-v8/tests/webidl/GradientProbe.webidl` and `StyleProbe.webidl`;
+`components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0135-roves-v8-typed-attributes.patch` after 0134.
+
+This checkpoint covers attributes such as Canvas 2D's `fillStyle`/`strokeStyle`
+(`(DOMString or CanvasGradient or CanvasPattern)`), nullable unions, and buffer-typed attributes.
+
+**Runtime.** `Runtime::define_typed_attribute` is the contextual accessor with a setter that converts
+the assigned value through a structured `WebIdlType` (the union algorithm, buffer checks).
+`define_contextual_attribute` and it share `define_attribute_with_conversion`.
+
+**Generator.** Mutable union attributes, union attributes that carry handles, and buffer attributes
+take this path. The native signature is plain (`X(&self) -> T`, `set_X(&self, T)`), or contextual
+with `Result` when the type holds JS handles. Union attributes without handles reuse the union enums.
+
+**Tests.**
+- New runtime test:
+  - a string default;
+  - a string assignment;
+  - a platform object selecting the interface member and coming back as the identical object;
+  - a number falling back to the string member;
+  - a nullable `(unsigned long or DOMString)?` with number, string and `null`;
+  - a readonly `Uint8Array` attribute returning a typed array, with no setter.
+- Generator tests: 59/59.
+- `roves-v8` pilot and pilot+JIT-less: 95 unit + 5 integration + 2 doctests each; default 60 unit +
+  2 doctests.
+- `servo-script` check with the pilot is clean.
+
+Coverage: 261/486.
+
 ## 2026-10-06 - V8 migration Phase 4: full WebIDL overload resolution (CP70)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixtures

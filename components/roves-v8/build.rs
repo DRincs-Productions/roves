@@ -226,6 +226,8 @@ fn main() {
         ("BufferOperations", &[][..]),
         ("PathProbe", &[][..]),
         ("DrawProbe", &["PathProbe"][..]),
+        ("GradientProbe", &[][..]),
+        ("StyleProbe", &["GradientProbe"][..]),
     ] {
         println!("cargo:rerun-if-changed={}", fixtures.join(format!("{interface}.webidl")).display());
         println!("cargo:rerun-if-changed={}", fixtures.join("Bindings.conf").display());

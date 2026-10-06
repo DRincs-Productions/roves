@@ -104,7 +104,7 @@ class V8GeneratorTests(unittest.TestCase):
                 generate(path, Path(directory) / "output")
 
     def test_unsupported_members_never_silently_disappear(self):
-        for member in ["attribute (long or DOMString) value;", "readonly attribute Promise<any> value;", "static readonly attribute boolean valid;", "[LegacyLenientThis] readonly attribute boolean valid;", "attribute Unsupported? owner;"]:
+        for member in ["[LegacyLenientSetter] readonly attribute boolean value;", "readonly attribute Promise<any> value;", "static readonly attribute boolean valid;", "[LegacyLenientThis] readonly attribute boolean valid;", "attribute Unsupported? owner;"]:
             with self.subTest(member=member):
                 self.assert_unsupported("interface Unsupported { " + member + " };")
 
@@ -714,6 +714,24 @@ class V8GeneratorTests(unittest.TestCase):
                 "fn Owner(&self) -> Option<BuffersOrOther>;",
             ]:
                 self.assertIn(expected, source)
+
+    def test_mutable_union_and_buffer_attributes_use_typed_accessors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Style.webidl"
+            path.write_text(
+                "[Exposed=Window] interface Style { attribute (DOMString or long) fill; readonly attribute Uint8Array pixels; };",
+                encoding="utf-8",
+            )
+            source = generate(path, Path(directory) / "output")
+            for expected in [
+                "fn Fill(&self) -> StringOrLong;",
+                "fn set_Fill(&self, value: StringOrLong);",
+                "fn Pixels(&self, cx: &mut roves_v8::ScriptContext) -> Result<roves_v8::Handle, roves_v8::WebIdlError>;",
+                'runtime.define_typed_attribute(&interface, "fill"',
+                "roves_v8::WebIdlType::Union(vec![",
+            ]:
+                self.assertIn(expected, source)
+            self.assertNotIn("fn set_Pixels", source)
 
     def test_overloads_needing_type_distinction_use_typed_overloads(self):
         with tempfile.TemporaryDirectory() as directory:

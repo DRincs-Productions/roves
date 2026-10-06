@@ -189,6 +189,14 @@ pub mod webidl {
     pub mod draw_probe {
         include!(concat!(env!("OUT_DIR"), "/DrawProbeV8Binding.rs"));
     }
+    #[cfg(test)]
+    pub mod gradient_probe {
+        include!(concat!(env!("OUT_DIR"), "/GradientProbeV8Binding.rs"));
+    }
+    #[cfg(test)]
+    pub mod style_probe {
+        include!(concat!(env!("OUT_DIR"), "/StyleProbeV8Binding.rs"));
+    }
 }
 
 use std::sync::Once;
@@ -2390,11 +2398,36 @@ impl Runtime {
         if interface.materialized.get() {
             return Err("interface members must be defined before creating instances or descendants".into());
         }
-        let config = Box::new(ContextualAttributeConfig {
-            getter,
-            setter,
-            conversion: WebIdlArguments::new(&[conversion], &[nullable], &[false], &[None]),
-        });
+        let arguments = WebIdlArguments::new(&[conversion], &[nullable], &[false], &[None]);
+        self.define_attribute_with_conversion(interface, name, getter, setter, arguments)
+    }
+
+    /// Like [`Runtime::define_contextual_attribute`] with the assigned value converted by a
+    /// structured [`WebIdlType`] (unions such as `fillStyle`'s, buffers, handles).
+    pub fn define_typed_attribute(
+        &mut self,
+        interface: &Interface,
+        name: &str,
+        getter: ContextualPropertyGetter,
+        setter: Option<ContextualPropertySetter>,
+        ty: WebIdlType,
+    ) -> Result<(), String> {
+        let arguments = WebIdlArguments::typed(&[WebIdlArgument { ty, optional: false, variadic: false, default: None }]);
+        self.define_attribute_with_conversion(interface, name, getter, setter, arguments)
+    }
+
+    fn define_attribute_with_conversion(
+        &mut self,
+        interface: &Interface,
+        name: &str,
+        getter: ContextualPropertyGetter,
+        setter: Option<ContextualPropertySetter>,
+        conversion: WebIdlArguments,
+    ) -> Result<(), String> {
+        if interface.materialized.get() {
+            return Err("interface members must be defined before creating instances or descendants".into());
+        }
+        let config = Box::new(ContextualAttributeConfig { getter, setter, conversion });
         let config_pointer = (&*config) as *const ContextualAttributeConfig;
         self.attribute_configs.push(config);
         let context_handle = &self.context;
@@ -7701,6 +7734,60 @@ mod tests {
         }
         // The selected overload still converts its own arguments.
         assert!(runtime.eval("d.fill('sideways')").unwrap_err().contains("TypeError"));
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_union_and_buffer_attributes_convert_through_their_types() {
+        use crate::webidl::gradient_probe::{GradientProbeBinding, GradientProbeNative};
+        use crate::webidl::style_probe::{StringOrGradientProbe, StyleProbeBinding, StyleProbeNative, UnsignedLongOrString};
+        use crate::{BufferKind, Handle, ScriptContext, Trace, Tracer, WebIdlError};
+        use std::cell::RefCell;
+        struct Gradient;
+        impl Trace for Gradient {
+            fn trace(&self, _tracer: &mut Tracer) {}
+        }
+        impl GradientProbeNative for Gradient {
+            fn Constructor() -> Self { Gradient }
+        }
+        /// Holds the fill style as given (the gradient as a traced-native reference).
+        struct Style {
+            fill: RefCell<StringOrGradientProbe>,
+            dash: RefCell<Option<UnsignedLongOrString>>,
+        }
+        impl Trace for Style {
+            fn trace(&self, _tracer: &mut Tracer) {}
+        }
+        #[allow(non_snake_case)]
+        impl StyleProbeNative for Style {
+            fn Constructor() -> Self {
+                Style { fill: RefCell::new(StringOrGradientProbe::String("#000000".encode_utf16().collect())), dash: RefCell::new(None) }
+            }
+            fn FillStyle(&self) -> StringOrGradientProbe { self.fill.borrow().clone() }
+            fn set_FillStyle(&self, value: StringOrGradientProbe) { *self.fill.borrow_mut() = value; }
+            fn LineDash(&self) -> Option<UnsignedLongOrString> { self.dash.borrow().clone() }
+            fn set_LineDash(&self, value: Option<UnsignedLongOrString>) { *self.dash.borrow_mut() = value; }
+            fn Pixels(&self, cx: &mut ScriptContext) -> Result<Handle, WebIdlError> {
+                Ok(cx.new_typed_array(BufferKind::Uint8Array, vec![1, 2, 3, 4]).unwrap())
+            }
+        }
+        let mut runtime = Runtime::new();
+        let _gradients = GradientProbeBinding::<Gradient>::install(&mut runtime).unwrap();
+        let _styles = StyleProbeBinding::<Style>::install(&mut runtime).unwrap();
+        for (source, expected) in [
+            ("const ctx = new StyleProbe(); ctx.fillStyle", "#000000"),
+            ("ctx.fillStyle = 'red'; ctx.fillStyle", "red"),
+            // A platform object selects the interface member and comes back as the same object.
+            ("const g = new GradientProbe(); ctx.fillStyle = g; ctx.fillStyle === g", "true"),
+            // Other values fall back to the string member, as in browsers.
+            ("ctx.fillStyle = 42; ctx.fillStyle", "42"),
+            // A nullable union: null clears it, numbers and strings select their members.
+            ("ctx.lineDash = 5; const a = ctx.lineDash; ctx.lineDash = '5'; const b = typeof ctx.lineDash; ctx.lineDash = null; [a, b, ctx.lineDash].join()", "5,string,"),
+            ("const p = ctx.pixels; [p instanceof Uint8Array, p.join()].join('|')", "true|1,2,3,4"),
+            ("Object.getOwnPropertyDescriptor(StyleProbe.prototype, 'pixels').set", "undefined"),
+        ] {
+            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
+        }
     }
 
     #[cfg(feature = "webidl-pilot")]

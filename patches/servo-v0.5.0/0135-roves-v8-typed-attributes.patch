@@ -1,0 +1,267 @@
+diff --git a/components/roves-v8/build.rs b/components/roves-v8/build.rs
+index 56c7ba6e134..e939d0f643f 100644
+--- a/components/roves-v8/build.rs
++++ b/components/roves-v8/build.rs
+@@ -226,6 +226,8 @@ fn main() {
+         ("BufferOperations", &[][..]),
+         ("PathProbe", &[][..]),
+         ("DrawProbe", &["PathProbe"][..]),
++        ("GradientProbe", &[][..]),
++        ("StyleProbe", &["GradientProbe"][..]),
+     ] {
+         println!("cargo:rerun-if-changed={}", fixtures.join(format!("{interface}.webidl")).display());
+         println!("cargo:rerun-if-changed={}", fixtures.join("Bindings.conf").display());
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 3e1ffccbcac..4ec5312d768 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -189,6 +189,14 @@ pub mod webidl {
+     pub mod draw_probe {
+         include!(concat!(env!("OUT_DIR"), "/DrawProbeV8Binding.rs"));
+     }
++    #[cfg(test)]
++    pub mod gradient_probe {
++        include!(concat!(env!("OUT_DIR"), "/GradientProbeV8Binding.rs"));
++    }
++    #[cfg(test)]
++    pub mod style_probe {
++        include!(concat!(env!("OUT_DIR"), "/StyleProbeV8Binding.rs"));
++    }
+ }
+ 
+ use std::sync::Once;
+@@ -2390,11 +2398,36 @@ impl Runtime {
+         if interface.materialized.get() {
+             return Err("interface members must be defined before creating instances or descendants".into());
+         }
+-        let config = Box::new(ContextualAttributeConfig {
+-            getter,
+-            setter,
+-            conversion: WebIdlArguments::new(&[conversion], &[nullable], &[false], &[None]),
+-        });
++        let arguments = WebIdlArguments::new(&[conversion], &[nullable], &[false], &[None]);
++        self.define_attribute_with_conversion(interface, name, getter, setter, arguments)
++    }
++
++    /// Like [`Runtime::define_contextual_attribute`] with the assigned value converted by a
++    /// structured [`WebIdlType`] (unions such as `fillStyle`'s, buffers, handles).
++    pub fn define_typed_attribute(
++        &mut self,
++        interface: &Interface,
++        name: &str,
++        getter: ContextualPropertyGetter,
++        setter: Option<ContextualPropertySetter>,
++        ty: WebIdlType,
++    ) -> Result<(), String> {
++        let arguments = WebIdlArguments::typed(&[WebIdlArgument { ty, optional: false, variadic: false, default: None }]);
++        self.define_attribute_with_conversion(interface, name, getter, setter, arguments)
++    }
++
++    fn define_attribute_with_conversion(
++        &mut self,
++        interface: &Interface,
++        name: &str,
++        getter: ContextualPropertyGetter,
++        setter: Option<ContextualPropertySetter>,
++        conversion: WebIdlArguments,
++    ) -> Result<(), String> {
++        if interface.materialized.get() {
++            return Err("interface members must be defined before creating instances or descendants".into());
++        }
++        let config = Box::new(ContextualAttributeConfig { getter, setter, conversion });
+         let config_pointer = (&*config) as *const ContextualAttributeConfig;
+         self.attribute_configs.push(config);
+         let context_handle = &self.context;
+@@ -7703,6 +7736,60 @@ mod tests {
+         assert!(runtime.eval("d.fill('sideways')").unwrap_err().contains("TypeError"));
+     }
+ 
++    #[cfg(feature = "webidl-pilot")]
++    #[test]
++    fn generated_union_and_buffer_attributes_convert_through_their_types() {
++        use crate::webidl::gradient_probe::{GradientProbeBinding, GradientProbeNative};
++        use crate::webidl::style_probe::{StringOrGradientProbe, StyleProbeBinding, StyleProbeNative, UnsignedLongOrString};
++        use crate::{BufferKind, Handle, ScriptContext, Trace, Tracer, WebIdlError};
++        use std::cell::RefCell;
++        struct Gradient;
++        impl Trace for Gradient {
++            fn trace(&self, _tracer: &mut Tracer) {}
++        }
++        impl GradientProbeNative for Gradient {
++            fn Constructor() -> Self { Gradient }
++        }
++        /// Holds the fill style as given (the gradient as a traced-native reference).
++        struct Style {
++            fill: RefCell<StringOrGradientProbe>,
++            dash: RefCell<Option<UnsignedLongOrString>>,
++        }
++        impl Trace for Style {
++            fn trace(&self, _tracer: &mut Tracer) {}
++        }
++        #[allow(non_snake_case)]
++        impl StyleProbeNative for Style {
++            fn Constructor() -> Self {
++                Style { fill: RefCell::new(StringOrGradientProbe::String("#000000".encode_utf16().collect())), dash: RefCell::new(None) }
++            }
++            fn FillStyle(&self) -> StringOrGradientProbe { self.fill.borrow().clone() }
++            fn set_FillStyle(&self, value: StringOrGradientProbe) { *self.fill.borrow_mut() = value; }
++            fn LineDash(&self) -> Option<UnsignedLongOrString> { self.dash.borrow().clone() }
++            fn set_LineDash(&self, value: Option<UnsignedLongOrString>) { *self.dash.borrow_mut() = value; }
++            fn Pixels(&self, cx: &mut ScriptContext) -> Result<Handle, WebIdlError> {
++                Ok(cx.new_typed_array(BufferKind::Uint8Array, vec![1, 2, 3, 4]).unwrap())
++            }
++        }
++        let mut runtime = Runtime::new();
++        let _gradients = GradientProbeBinding::<Gradient>::install(&mut runtime).unwrap();
++        let _styles = StyleProbeBinding::<Style>::install(&mut runtime).unwrap();
++        for (source, expected) in [
++            ("const ctx = new StyleProbe(); ctx.fillStyle", "#000000"),
++            ("ctx.fillStyle = 'red'; ctx.fillStyle", "red"),
++            // A platform object selects the interface member and comes back as the same object.
++            ("const g = new GradientProbe(); ctx.fillStyle = g; ctx.fillStyle === g", "true"),
++            // Other values fall back to the string member, as in browsers.
++            ("ctx.fillStyle = 42; ctx.fillStyle", "42"),
++            // A nullable union: null clears it, numbers and strings select their members.
++            ("ctx.lineDash = 5; const a = ctx.lineDash; ctx.lineDash = '5'; const b = typeof ctx.lineDash; ctx.lineDash = null; [a, b, ctx.lineDash].join()", "5,string,"),
++            ("const p = ctx.pixels; [p instanceof Uint8Array, p.join()].join('|')", "true|1,2,3,4"),
++            ("Object.getOwnPropertyDescriptor(StyleProbe.prototype, 'pixels').set", "undefined"),
++        ] {
++            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
++        }
++    }
++
+     #[cfg(feature = "webidl-pilot")]
+     #[test]
+     fn generated_nullable_domstring_preserves_null_and_utf16_semantics() {
+diff --git a/components/roves-v8/tests/webidl/GradientProbe.webidl b/components/roves-v8/tests/webidl/GradientProbe.webidl
+new file mode 100644
+index 00000000000..d4e31b224db
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/GradientProbe.webidl
+@@ -0,0 +1,4 @@
++[Exposed=Window]
++interface GradientProbe {
++  constructor();
++};
+diff --git a/components/roves-v8/tests/webidl/StyleProbe.webidl b/components/roves-v8/tests/webidl/StyleProbe.webidl
+new file mode 100644
+index 00000000000..bf9c9db3211
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/StyleProbe.webidl
+@@ -0,0 +1,7 @@
++[Exposed=Window]
++interface StyleProbe {
++  constructor();
++  attribute (DOMString or GradientProbe) fillStyle;
++  attribute (unsigned long or DOMString)? lineDash;
++  readonly attribute Uint8Array pixels;
++};
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index 40a2879922f..5a28e5cb758 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8962,6 +8962,7 @@ class CGV8BindingRoot(CGThing):
+         attributes = []
+         operations = []
+         unforgeable_attributes = set()
++        typed_attributes = []
+         promise_operations = set()
+         typed_overload_members = set()
+         typed_overload_entries = []
+@@ -9126,6 +9127,15 @@ class CGV8BindingRoot(CGThing):
+             if (not member.isAttr() or member.isStatic() or attribute_attributes):
+                 raise TypeError(f"V8 backend unsupported member: {name}.{member.identifier.name}")
+             idl_type = member.type.inner if member.type.nullable() else member.type
++            if ((idl_type.isUnion() and (not member.readonly or v8_contains_handle(member.type)))
++                    or idl_type.isBufferSource()):
++                # Structured attributes: the setter converts through the WebIDL type.
++                rust, expr, arm, to_value = v8_typed_info(member.type, name, member.identifier.name)
++                typed_attributes.append((
++                    member.identifier.name, MakeNativeName(member.identifier.name), rust, expr, arm,
++                    to_value, not member.readonly, v8_contains_handle(member.type),
++                ))
++                continue
+             if idl_type.isAny() or idl_type.isObject() or idl_type.isCallback():
+                 # The native needs the engine (it holds JS values): contextual accessors.
+                 nullable = member.type.nullable()
+@@ -9233,6 +9243,11 @@ class CGV8BindingRoot(CGThing):
+             [f"    fn {native}(&self, cx: &mut roves_v8::ScriptContext) -> Result<{rust_type}, roves_v8::WebIdlError>;"
+              + (f"\n    fn set_{native}(&self, cx: &mut roves_v8::ScriptContext, value: {rust_type}) -> Result<(), roves_v8::WebIdlError>;" if setter else "")
+              for _, native, rust_type, _, setter, _ in contextual_attributes]
++            + [(f"    fn {native}(&self, cx: &mut roves_v8::ScriptContext) -> Result<{rust}, roves_v8::WebIdlError>;"
++                + (f"\n    fn set_{native}(&self, cx: &mut roves_v8::ScriptContext, value: {rust}) -> Result<(), roves_v8::WebIdlError>;" if setter else ""))
++               if contextual else
++               (f"    fn {native}(&self) -> {rust};" + (f"\n    fn set_{native}(&self, value: {rust});" if setter else ""))
++               for _, native, rust, _, _, _, setter, contextual in typed_attributes]
+             + [f"    fn {native}(&self) -> {f'Result<{rust_type}, roves_v8::WebIdlError>' if getter_throws else rust_type};"
+                + (f"\n    fn set_{native}(&self, value: {rust_type}){' -> Result<(), roves_v8::WebIdlError>' if setter_throws else ''};"
+                   if setter_info and not setter_info[3] else "")
+@@ -9254,6 +9269,30 @@ class CGV8BindingRoot(CGThing):
+                 registration = registrations_list[-1].strip()
+                 registrations_list[-1] = f"        if {condition} {{\n            {registration}\n        }}"
+ 
++        for idl, native, rust, expr, arm, to_value, setter, contextual in typed_attributes:
++            downcast = f'            let native = native.downcast_ref::<T>().expect("typed {name} wrapper");\n'
++            read = f"native.{native}(cx)?" if contextual else f"native.{native}()"
++            getter = (
++                f"|cx, native| {{\n            let _ = &cx;\n{downcast}"
++                f"            let result = {read};\n"
++                f"            Ok({to_value.replace('ITEM', 'result')})\n"
++                f"        }}"
++            )
++            if setter:
++                write = f"native.set_{native}(cx, value)" if contextual else f"native.set_{native}(value);\n            Ok(())"
++                setter_callback = (
++                    f"Some(|cx, native, value| {{\n            let _ = &cx;\n{downcast}"
++                    f'            let value = match value {{ {arm}, _ => unreachable!("runtime conversion matches generated WebIDL attribute type") }};\n'
++                    f"            {write}\n"
++                    f"        }})"
++                )
++            else:
++                setter_callback = "None"
++            registrations_list.append(
++                f'        runtime.define_typed_attribute(&interface, "{idl}", {getter}, {setter_callback}, {expr})?;'
++            )
++            gate_last_registration(idl)
++
+         for idl, native, rust_type, nullable, setter, conversion in contextual_attributes:
+             if nullable:
+                 to_value = "Ok(result.map(Value::Js).unwrap_or(Value::Null))"
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index 91e41918c28..5cb400863b8 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -104,7 +104,7 @@ class V8GeneratorTests(unittest.TestCase):
+                 generate(path, Path(directory) / "output")
+ 
+     def test_unsupported_members_never_silently_disappear(self):
+-        for member in ["attribute (long or DOMString) value;", "readonly attribute Promise<any> value;", "static readonly attribute boolean valid;", "[LegacyLenientThis] readonly attribute boolean valid;", "attribute Unsupported? owner;"]:
++        for member in ["[LegacyLenientSetter] readonly attribute boolean value;", "readonly attribute Promise<any> value;", "static readonly attribute boolean valid;", "[LegacyLenientThis] readonly attribute boolean valid;", "attribute Unsupported? owner;"]:
+             with self.subTest(member=member):
+                 self.assert_unsupported("interface Unsupported { " + member + " };")
+ 
+@@ -715,6 +715,24 @@ class V8GeneratorTests(unittest.TestCase):
+             ]:
+                 self.assertIn(expected, source)
+ 
++    def test_mutable_union_and_buffer_attributes_use_typed_accessors(self):
++        with tempfile.TemporaryDirectory() as directory:
++            path = Path(directory) / "Style.webidl"
++            path.write_text(
++                "[Exposed=Window] interface Style { attribute (DOMString or long) fill; readonly attribute Uint8Array pixels; };",
++                encoding="utf-8",
++            )
++            source = generate(path, Path(directory) / "output")
++            for expected in [
++                "fn Fill(&self) -> StringOrLong;",
++                "fn set_Fill(&self, value: StringOrLong);",
++                "fn Pixels(&self, cx: &mut roves_v8::ScriptContext) -> Result<roves_v8::Handle, roves_v8::WebIdlError>;",
++                'runtime.define_typed_attribute(&interface, "fill"',
++                "roves_v8::WebIdlType::Union(vec![",
++            ]:
++                self.assertIn(expected, source)
++            self.assertNotIn("fn set_Pixels", source)
++
+     def test_overloads_needing_type_distinction_use_typed_overloads(self):
+         with tempfile.TemporaryDirectory() as directory:
+             path = Path(directory) / "Draw.webidl"

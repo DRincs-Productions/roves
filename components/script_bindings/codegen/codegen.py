@@ -8962,6 +8962,7 @@ class CGV8BindingRoot(CGThing):
         attributes = []
         operations = []
         unforgeable_attributes = set()
+        typed_attributes = []
         promise_operations = set()
         typed_overload_members = set()
         typed_overload_entries = []
@@ -9126,6 +9127,15 @@ class CGV8BindingRoot(CGThing):
             if (not member.isAttr() or member.isStatic() or attribute_attributes):
                 raise TypeError(f"V8 backend unsupported member: {name}.{member.identifier.name}")
             idl_type = member.type.inner if member.type.nullable() else member.type
+            if ((idl_type.isUnion() and (not member.readonly or v8_contains_handle(member.type)))
+                    or idl_type.isBufferSource()):
+                # Structured attributes: the setter converts through the WebIDL type.
+                rust, expr, arm, to_value = v8_typed_info(member.type, name, member.identifier.name)
+                typed_attributes.append((
+                    member.identifier.name, MakeNativeName(member.identifier.name), rust, expr, arm,
+                    to_value, not member.readonly, v8_contains_handle(member.type),
+                ))
+                continue
             if idl_type.isAny() or idl_type.isObject() or idl_type.isCallback():
                 # The native needs the engine (it holds JS values): contextual accessors.
                 nullable = member.type.nullable()
@@ -9233,6 +9243,11 @@ class CGV8BindingRoot(CGThing):
             [f"    fn {native}(&self, cx: &mut roves_v8::ScriptContext) -> Result<{rust_type}, roves_v8::WebIdlError>;"
              + (f"\n    fn set_{native}(&self, cx: &mut roves_v8::ScriptContext, value: {rust_type}) -> Result<(), roves_v8::WebIdlError>;" if setter else "")
              for _, native, rust_type, _, setter, _ in contextual_attributes]
+            + [(f"    fn {native}(&self, cx: &mut roves_v8::ScriptContext) -> Result<{rust}, roves_v8::WebIdlError>;"
+                + (f"\n    fn set_{native}(&self, cx: &mut roves_v8::ScriptContext, value: {rust}) -> Result<(), roves_v8::WebIdlError>;" if setter else ""))
+               if contextual else
+               (f"    fn {native}(&self) -> {rust};" + (f"\n    fn set_{native}(&self, value: {rust});" if setter else ""))
+               for _, native, rust, _, _, _, setter, contextual in typed_attributes]
             + [f"    fn {native}(&self) -> {f'Result<{rust_type}, roves_v8::WebIdlError>' if getter_throws else rust_type};"
                + (f"\n    fn set_{native}(&self, value: {rust_type}){' -> Result<(), roves_v8::WebIdlError>' if setter_throws else ''};"
                   if setter_info and not setter_info[3] else "")
@@ -9253,6 +9268,30 @@ class CGV8BindingRoot(CGThing):
             if condition:
                 registration = registrations_list[-1].strip()
                 registrations_list[-1] = f"        if {condition} {{\n            {registration}\n        }}"
+
+        for idl, native, rust, expr, arm, to_value, setter, contextual in typed_attributes:
+            downcast = f'            let native = native.downcast_ref::<T>().expect("typed {name} wrapper");\n'
+            read = f"native.{native}(cx)?" if contextual else f"native.{native}()"
+            getter = (
+                f"|cx, native| {{\n            let _ = &cx;\n{downcast}"
+                f"            let result = {read};\n"
+                f"            Ok({to_value.replace('ITEM', 'result')})\n"
+                f"        }}"
+            )
+            if setter:
+                write = f"native.set_{native}(cx, value)" if contextual else f"native.set_{native}(value);\n            Ok(())"
+                setter_callback = (
+                    f"Some(|cx, native, value| {{\n            let _ = &cx;\n{downcast}"
+                    f'            let value = match value {{ {arm}, _ => unreachable!("runtime conversion matches generated WebIDL attribute type") }};\n'
+                    f"            {write}\n"
+                    f"        }})"
+                )
+            else:
+                setter_callback = "None"
+            registrations_list.append(
+                f'        runtime.define_typed_attribute(&interface, "{idl}", {getter}, {setter_callback}, {expr})?;'
+            )
+            gate_last_registration(idl)
 
         for idl, native, rust_type, nullable, setter, conversion in contextual_attributes:
             if nullable:
