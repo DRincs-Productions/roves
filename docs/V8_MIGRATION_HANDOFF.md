@@ -305,6 +305,10 @@ oggetti con un prototipo per interfaccia, e il loro stato sta in simboli privati
 `FormData`.** Test: generatore 69/69, `roves-v8` 107+5+2. Copertura **447/486**. Prossimo passo:
 `record<K, V>` (`Headers`, `URLSearchParams`, `RequestInit`).
 
+**CP84 (2026-10-06):** `record<K, V>` (`WebIdlType::Record`, `Value::Record`, patch 0148). In
+Rust i record sono `Vec<(K, V)>`. **Generano `Headers`, `URLSearchParams`, `Request`,
+`Response`.** Test: generatore 69/69, `roves-v8` 108+5+2. Copertura **453/486 (93%)**.
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

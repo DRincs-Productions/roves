@@ -8512,6 +8512,16 @@ def v8_typed_info(ty, name: str, member_name: str):
             f'Value::Sequence(items) => items.iter().map(|item| match item {{ {arm}, _ => unreachable!("runtime conversion matches the generated WebIDL type") }}).collect()',
             f"Value::Sequence(ITEM.into_iter().map(|item| {to_value.replace('ITEM', 'item')}).collect())",
         )
+    if ty.isRecord():
+        # Servo's Record<K, V> is an ordered map; the pilot uses ordered (key, value) pairs.
+        key_rust, key_expr, key_arm, key_to_value = v8_typed_info(ty.keyType, name, member_name)
+        rust, expr, arm, to_value = v8_typed_info(ty.inner, name, member_name)
+        return (
+            f"Vec<({key_rust}, {rust})>",
+            f"roves_v8::WebIdlType::Record(Box::new({key_expr}), Box::new({expr}))",
+            f'Value::Record(entries) => entries.iter().map(|(key, item)| (match key {{ {key_arm.replace("Value::", "Value::")}, _ => unreachable!("runtime conversion matches the generated WebIDL type") }}, match item {{ {arm}, _ => unreachable!("runtime conversion matches the generated WebIDL type") }})).collect()',
+            f"Value::Record(ITEM.into_iter().map(|(key, item)| ({key_to_value.replace('ITEM', 'key')}, {to_value.replace('ITEM', 'item')})).collect())",
+        )
     if ty.isInteger() and (ty.hasClamp() or ty.hasEnforceRange()):
         base = ty.name.replace("RangeEnforced", "").replace("Clamped", "")
         rust, _, arm, to_value = V8_TYPED_PRIMITIVES[base]
@@ -8573,7 +8583,7 @@ def v8_contains_sequence(ty) -> bool:
     """Whether the type needs the structured path (sequences and dictionaries)."""
     if ty.nullable():
         return v8_contains_sequence(ty.inner)
-    return (ty.isSequence() or ty.isDictionary() or ty.isUnion() or ty.isCallbackInterface()
+    return (ty.isSequence() or ty.isRecord() or ty.isDictionary() or ty.isUnion() or ty.isCallbackInterface()
             or ty.isPromise() or ty.isBufferSource()
             or (ty.isInteger() and (ty.hasClamp() or ty.hasEnforceRange())))
 
@@ -9129,7 +9139,7 @@ class CGV8BindingRoot(CGThing):
                         else:
                             rust_type = rust
                             value_expr = to_value.replace("ITEM", "native.{native}()")
-                    elif result_type.isUnion() or result_type.isEnum() or result_type.isByteString():
+                    elif result_type.isUnion() or result_type.isEnum() or result_type.isByteString() or result_type.isRecord():
                         rust_type, _, _, to_value = v8_typed_info(return_type, name, member.identifier.name)
                         value_expr = to_value.replace("ITEM", "native.{native}()")
                     elif result_type.isPromise():

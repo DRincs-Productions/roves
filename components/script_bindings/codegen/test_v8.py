@@ -330,7 +330,7 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn('Some(&["\\u{6c}\\u{65}\\u{66}\\u{74}", "\\u{72}\\u{69}\\u{67}\\u{68}\\u{74}"])', source)
 
     def test_optional_explicit_defaults_variadics_and_unsupported_types_fail_closed(self):
-        for signature in ["double run(record<DOMString, any> value);", "double run(record<DOMString, long> value);"]:
+        for signature in ["double run(record<DOMString, (DOMString or undefined)> value);", "double run(sequence<(long or undefined)> value);"]:
             with self.subTest(signature=signature):
                 self.assert_unsupported("interface Unsupported { " + signature + " };")
 
@@ -342,7 +342,7 @@ class V8GeneratorTests(unittest.TestCase):
             source = generate(webidl, root / "out")
             self.assertIn("WebIdlOptionalArgument<bool>", source)
             self.assertIn("WebIdlArgumentConversion::Boolean", source)
-        for signature in ["boolean run(record<DOMString, long> value);", "boolean run(record<DOMString, any> value);"]:
+        for signature in ["boolean run(record<DOMString, (long or undefined)> value);", "boolean run((boolean or undefined) value);"]:
             with self.subTest(signature=signature):
                 self.assert_unsupported("interface Unsupported { " + signature + " };")
 
@@ -1051,8 +1051,23 @@ class V8GeneratorTests(unittest.TestCase):
             ]:
                 self.assertIn(expected, source)
 
-    def test_callback_interfaces_and_promises_are_not_dom_interface_values(self):
-        self.assert_unsupported("interface Uses { undefined add(record<DOMString, any> pending); };")
+    def test_records_convert_to_ordered_pairs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Uses.webidl"
+            path.write_text(
+                "[Exposed=Window] interface Uses { undefined add(record<ByteString, any> pending);"
+                " record<DOMString, long> counts(); };",
+                encoding="utf-8",
+            )
+            source = generate(path, Path(directory) / "output")
+            self.assertIn("arg0: Vec<(Vec<u8>, roves_v8::Handle)>", source)
+            self.assertIn("-> Vec<(Vec<u16>, i32)>;", source)
+            self.assertIn(
+                "roves_v8::WebIdlType::Record(Box::new(roves_v8::WebIdlType::Primitive(roves_v8::WebIdlArgumentConversion::ByteString)),"
+                " Box::new(roves_v8::WebIdlType::Primitive(roves_v8::WebIdlArgumentConversion::Any)))",
+                source,
+            )
+            self.assertIn("Value::Record(", source)
 
     def test_exposure_conditions_gate_interface_objects_and_members(self):
         with tempfile.TemporaryDirectory() as directory:

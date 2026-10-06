@@ -11,6 +11,44 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: `record<K, V>` (CP84)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `components/roves-v8/build.rs`,
+`components/roves-v8/tests/webidl/RecordProbe.webidl` (new),
+`components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0148-roves-v8-records.patch` after 0147.
+
+**Runtime.** The new `WebIdlType::Record(key, value)` follows WebIDL's ES-to-record conversion
+and yields a `Value::Record(Vec<(Value, Value)>)`:
+- Non-objects are rejected.
+- Properties are taken in `[[OwnPropertyKeys]]` order, so proxy traps run.
+- Only own enumerable properties are kept, checked through `[[GetOwnProperty]]`.
+- Keys convert through the key type, so an enumerable symbol key is a TypeError.
+- Keys that convert to the same IDL value keep their first position and take the last value.
+
+In unions, a record is selected like a dictionary, for non-iterable objects. Converting a
+record result to JS makes a plain object; its values may be natives.
+
+**Generator.** Records map to `Vec<(K, V)>` (Servo uses an ordered `Record<K, V>`). They are
+accepted as arguments, dictionary members and union members, and as operation results.
+
+Tests: generator 69/69. The old "records are unsupported" cases were replaced by a positive
+test and by still-unsupported `undefined` union members. The new runtime fixture `RecordProbe`
+covers:
+- property order with integer keys;
+- inherited and non-enumerable properties;
+- a proxy `ownKeys`;
+- the empty record and non-objects;
+- symbol keys;
+- record results;
+- union selection among sequence, record and string.
+
+`roves-v8` passes 108 + 5 + 2 (also `jitless`), and 61 + 2 by default. The `servo-script`
+pilot check is clean.
+
+Coverage: **453/486**. **`Headers`, `URLSearchParams` (and their iterators), `Request` and
+`Response` now generate.**
+
 ## 2026-10-06 - V8 migration Phase 4: pair iterables (`iterable<K, V>`) (CP83)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `components/roves-v8/build.rs`,

@@ -1,0 +1,307 @@
+diff --git a/components/roves-v8/build.rs b/components/roves-v8/build.rs
+index 00510fad0e7..a253617b6cf 100644
+--- a/components/roves-v8/build.rs
++++ b/components/roves-v8/build.rs
+@@ -241,6 +241,7 @@ fn main() {
+         ("Holder", &[][..]),
+         ("Gate", &[][..]),
+         ("PairList", &[][..]),
++        ("RecordProbe", &[][..]),
+     ] {
+         println!("cargo:rerun-if-changed={}", fixtures.join(format!("{interface}.webidl")).display());
+         println!("cargo:rerun-if-changed={}", fixtures.join("Bindings.conf").display());
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 1fbd6a1af8f..eead5df9d82 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -194,6 +194,10 @@ pub mod webidl {
+         include!(concat!(env!("OUT_DIR"), "/PairListV8Binding.rs"));
+     }
+     #[cfg(test)]
++    pub mod record_probe {
++        include!(concat!(env!("OUT_DIR"), "/RecordProbeV8Binding.rs"));
++    }
++    #[cfg(test)]
+     pub mod promise_operations {
+         include!(concat!(env!("OUT_DIR"), "/PromiseOperationsV8Binding.rs"));
+     }
+@@ -314,6 +318,9 @@ pub enum Value {
+     /// A WebIDL dictionary: `(member name, value)` in member order, with [`Value::Missing`] for
+     /// members that are absent. Converting it to JS creates a plain object of the present ones.
+     Dictionary(Vec<(String, Value)>),
++    /// A WebIDL `record<K, V>`: `(key, value)` pairs in the source object's property order, with
++    /// keys converted to the (string) key type. Converting it to JS creates a plain object.
++    Record(Vec<(Value, Value)>),
+     /// A traced native DOM object (an interface-typed WebIDL value). Converting it to JS yields
+     /// the native's one wrapper, created on first use as an instance of its concrete interface.
+     Native(NativeRef),
+@@ -796,6 +803,16 @@ fn v8_result<'s>(scope: &mut v8::PinScope<'s, '_>, value: &Value) -> v8::Local<'
+         }
+         return object.into();
+     }
++    if let Value::Record(entries) = value {
++        // Values may be natives, which need wrapping.
++        let object = v8::Object::new(scope);
++        for (key, item) in entries {
++            let key = v8_value(scope, key);
++            let item = v8_result(scope, item);
++            object.create_data_property(scope, key.try_into().unwrap(), item);
++        }
++        return object.into();
++    }
+     if let Value::Sequence(elements) = value {
+         // Elements may be natives, which need wrapping.
+         let mut converted = Vec::with_capacity(elements.len());
+@@ -1274,6 +1291,9 @@ pub enum WebIdlType {
+     /// An integer type annotated `[Clamp]` or `[EnforceRange]`: `conversion` names the integer
+     /// type (`Byte` .. `UnsignedLongLong`).
+     Integer(WebIdlArgumentConversion, IntegerMode),
++    /// `record<K, V>` (`K` a string type): an object's own enumerable properties, converted
++    /// into a [`Value::Record`].
++    Record(Box<WebIdlType>, Box<WebIdlType>),
+     /// A buffer source type (`ArrayBuffer`, `ArrayBufferView`, a typed array, `DataView`):
+     /// type-checked and passed as [`Value::Js`] without copying; natives access the bytes in
+     /// place with [`ScriptContext::with_buffer_bytes`].
+@@ -4961,6 +4981,47 @@ fn convert_typed_value<'s>(
+             }
+             Some(Value::Dictionary(entries))
+         },
++        WebIdlType::Record(key_type, value_type) => {
++            // WebIDL ES-to-record: the own enumerable properties, in [[OwnPropertyKeys]] order.
++            let Ok(object) = v8::Local::<v8::Object>::try_from(value) else {
++                throw_type_error(scope, "value is not a record object");
++                return None;
++            };
++            let keys = object.get_own_property_names(
++                scope,
++                v8::GetPropertyNamesArgs {
++                    mode: v8::KeyCollectionMode::OwnOnly,
++                    property_filter: v8::PropertyFilter::ALL_PROPERTIES,
++                    index_filter: v8::IndexFilter::IncludeIndices,
++                    key_conversion: v8::KeyConversionMode::ConvertToString,
++                },
++            )?;
++            let mut entries: Vec<(Value, Value)> = Vec::new();
++            for index in 0..keys.length() {
++                let key = keys.get_index(scope, index)?;
++                let Ok(name) = v8::Local::<v8::Name>::try_from(key) else { continue };
++                // [[GetOwnProperty]] may run proxy traps; only enumerable properties count.
++                let Some(descriptor) = object.get_own_property_descriptor(scope, name) else { return None };
++                if descriptor.is_undefined() {
++                    continue;
++                }
++                let Ok(descriptor) = v8::Local::<v8::Object>::try_from(descriptor) else { continue };
++                let enumerable_key = v8::String::new(scope, "enumerable").unwrap();
++                if !descriptor.get(scope, enumerable_key.into())?.boolean_value(scope) {
++                    continue;
++                }
++                let typed_key = convert_typed_value(scope, key, key_type)?;
++                let item = object.get(scope, key)?;
++                let typed_value = convert_typed_value(scope, item, value_type)?;
++                // Keys that convert to the same IDL value (e.g. USVString replacement) keep the
++                // first position and the last value.
++                match entries.iter_mut().find(|(existing, _)| *existing == typed_key) {
++                    Some(entry) => entry.1 = typed_value,
++                    None => entries.push((typed_key, typed_value)),
++                }
++            }
++            Some(Value::Record(entries))
++        },
+         WebIdlType::Sequence(element_type) => {
+             // WebIDL "create a sequence from an iterable": the @@iterator protocol, so any
+             // iterable (not only arrays) converts, and user iterators run.
+@@ -5079,7 +5140,7 @@ fn select_union_member<'s>(
+                 return Ok(index);
+             }
+         }
+-        if let Some(index) = find(&|member| matches!(member, WebIdlType::Dictionary(_))) {
++        if let Some(index) = find(&|member| matches!(member, WebIdlType::Dictionary(_) | WebIdlType::Record(..))) {
+             return Ok(index);
+         }
+         if let Some(index) = find(&|member| matches!(member, WebIdlType::CallbackInterface)) {
+@@ -5271,6 +5332,17 @@ fn v8_value<'s>(scope: &v8::PinScope<'s, '_>, value: &Value) -> v8::Local<'s, v8
+             v8::Array::new_with_elements(scope, &elements).into()
+         },
+         Value::Union(_, value) => v8_value(scope, value),
++        Value::Record(entries) => {
++            let object = v8::Object::new(scope);
++            for (key, item) in entries {
++                let key = v8_value(scope, key);
++                let item = v8_value(scope, item);
++                if let Ok(key) = v8::Local::<v8::Name>::try_from(key) {
++                    object.create_data_property(scope, key, item);
++                }
++            }
++            object.into()
++        },
+         Value::Dictionary(entries) => {
+             let object = v8::Object::new(scope);
+             for (name, value) in entries {
+@@ -8693,6 +8765,66 @@ mod tests {
+         }
+     }
+ 
++    #[cfg(feature = "webidl-pilot")]
++    #[test]
++    fn generated_records_convert_own_enumerable_properties() {
++        use crate::webidl::record_probe::{RecordProbeBinding, RecordProbeNative, StringSequenceSequenceOrStringStringRecordOrString as Init};
++        struct Probe;
++        #[allow(non_snake_case)]
++        impl RecordProbeNative for Probe {
++            fn Describe(&self, counts: Vec<(Vec<u16>, i32)>) -> Vec<u16> {
++                let parts: Vec<String> = counts
++                    .iter()
++                    .map(|(key, count)| format!("{}={count}", String::from_utf16_lossy(key)))
++                    .collect();
++                parts.join(",").encode_utf16().collect()
++            }
++            fn Tally(&self, words: Vec<String>) -> Vec<(String, u32)> {
++                let mut counts: Vec<(String, u32)> = Vec::new();
++                for word in words {
++                    match counts.iter_mut().find(|(key, _)| *key == word) {
++                        Some(entry) => entry.1 += 1,
++                        None => counts.push((word, 1)),
++                    }
++                }
++                counts
++            }
++            fn Pick(&self, init: Init) -> Vec<u16> {
++                let kind = match init {
++                    Init::StringSequenceSequence(_) => "sequence",
++                    Init::StringStringRecord(entries) => return format!("record {}", entries.len()).encode_utf16().collect(),
++                    Init::String(_) => "string",
++                };
++                kind.encode_utf16().collect()
++            }
++        }
++        let mut runtime = Runtime::new();
++        let binding = RecordProbeBinding::<Probe>::install(&mut runtime).unwrap();
++        let probe = binding.create(&mut runtime, Probe);
++        runtime.set_global_property("probe", &probe).unwrap();
++        for (source, expected) in [
++            ("probe.describe({ a: 1, b: '2', c: 3.7 })", "a=1,b=2,c=3"),
++            // [[OwnPropertyKeys]] order: integer keys first, then strings in insertion order.
++            ("probe.describe({ b: 1, 2: 2, a: 3, 1: 4 })", "1=4,2=2,b=1,a=3"),
++            // Only own enumerable properties; inherited ones are ignored.
++            ("const o = Object.create({ inherited: 1 }); Object.defineProperty(o, 'hidden', { value: 2 }); o.shown = 3; probe.describe(o)", "shown=3"),
++            // Getters run once, in order; proxies' ownKeys/getOwnPropertyDescriptor traps run too.
++            ("probe.describe(new Proxy({ x: 1, y: 2 }, { ownKeys: () => ['y', 'x'] }))", "y=2,x=1"),
++            ("probe.describe({})", ""),
++            ("(() => { try { probe.describe(null); } catch (e) { return e.name; } })()", "TypeError"),
++            ("(() => { try { probe.describe(5); } catch (e) { return e.name; } })()", "TypeError"),
++            // An enumerable symbol key cannot convert to DOMString.
++            ("(() => { try { probe.describe({ [Symbol('s')]: 1 }); } catch (e) { return e.name; } })()", "TypeError"),
++            // Results become plain objects.
++            ("JSON.stringify(probe.tally(['x', 'y', 'x']))", "{\"x\":2,\"y\":1}"),
++            ("Object.getPrototypeOf(probe.tally([])) === Object.prototype", "true"),
++            // Unions: iterable objects are sequences, other objects records, the rest strings.
++            ("[probe.pick([['a', 'b']]), probe.pick({ a: 'b', c: 'd' }), probe.pick('s'), probe.pick(1)].join()", "sequence,record 2,string,string"),
++        ] {
++            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
++        }
++    }
++
+     #[cfg(feature = "webidl-pilot")]
+     #[test]
+     fn generated_promise_operations_resolve_reject_and_settle_later() {
+diff --git a/components/roves-v8/tests/webidl/RecordProbe.webidl b/components/roves-v8/tests/webidl/RecordProbe.webidl
+new file mode 100644
+index 00000000000..4c70252b732
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/RecordProbe.webidl
+@@ -0,0 +1,8 @@
++// record<K, V> (like Headers' HeadersInit and URLSearchParams' init): arguments, results and
++// a union member chosen for non-iterable objects.
++[Exposed=Window]
++interface RecordProbe {
++  DOMString describe(record<DOMString, long> counts);
++  record<USVString, unsigned long> tally(sequence<USVString> words);
++  DOMString pick((sequence<sequence<DOMString>> or record<DOMString, DOMString> or DOMString) init);
++};
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index c12ea2e7876..8926521ee18 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8512,6 +8512,16 @@ def v8_typed_info(ty, name: str, member_name: str):
+             f'Value::Sequence(items) => items.iter().map(|item| match item {{ {arm}, _ => unreachable!("runtime conversion matches the generated WebIDL type") }}).collect()',
+             f"Value::Sequence(ITEM.into_iter().map(|item| {to_value.replace('ITEM', 'item')}).collect())",
+         )
++    if ty.isRecord():
++        # Servo's Record<K, V> is an ordered map; the pilot uses ordered (key, value) pairs.
++        key_rust, key_expr, key_arm, key_to_value = v8_typed_info(ty.keyType, name, member_name)
++        rust, expr, arm, to_value = v8_typed_info(ty.inner, name, member_name)
++        return (
++            f"Vec<({key_rust}, {rust})>",
++            f"roves_v8::WebIdlType::Record(Box::new({key_expr}), Box::new({expr}))",
++            f'Value::Record(entries) => entries.iter().map(|(key, item)| (match key {{ {key_arm.replace("Value::", "Value::")}, _ => unreachable!("runtime conversion matches the generated WebIDL type") }}, match item {{ {arm}, _ => unreachable!("runtime conversion matches the generated WebIDL type") }})).collect()',
++            f"Value::Record(ITEM.into_iter().map(|(key, item)| ({key_to_value.replace('ITEM', 'key')}, {to_value.replace('ITEM', 'item')})).collect())",
++        )
+     if ty.isInteger() and (ty.hasClamp() or ty.hasEnforceRange()):
+         base = ty.name.replace("RangeEnforced", "").replace("Clamped", "")
+         rust, _, arm, to_value = V8_TYPED_PRIMITIVES[base]
+@@ -8573,7 +8583,7 @@ def v8_contains_sequence(ty) -> bool:
+     """Whether the type needs the structured path (sequences and dictionaries)."""
+     if ty.nullable():
+         return v8_contains_sequence(ty.inner)
+-    return (ty.isSequence() or ty.isDictionary() or ty.isUnion() or ty.isCallbackInterface()
++    return (ty.isSequence() or ty.isRecord() or ty.isDictionary() or ty.isUnion() or ty.isCallbackInterface()
+             or ty.isPromise() or ty.isBufferSource()
+             or (ty.isInteger() and (ty.hasClamp() or ty.hasEnforceRange())))
+ 
+@@ -9129,7 +9139,7 @@ class CGV8BindingRoot(CGThing):
+                         else:
+                             rust_type = rust
+                             value_expr = to_value.replace("ITEM", "native.{native}()")
+-                    elif result_type.isUnion() or result_type.isEnum() or result_type.isByteString():
++                    elif result_type.isUnion() or result_type.isEnum() or result_type.isByteString() or result_type.isRecord():
+                         rust_type, _, _, to_value = v8_typed_info(return_type, name, member.identifier.name)
+                         value_expr = to_value.replace("ITEM", "native.{native}()")
+                     elif result_type.isPromise():
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index 2f0f2d72e8d..525392e7567 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -330,7 +330,7 @@ class V8GeneratorTests(unittest.TestCase):
+             self.assertIn('Some(&["\\u{6c}\\u{65}\\u{66}\\u{74}", "\\u{72}\\u{69}\\u{67}\\u{68}\\u{74}"])', source)
+ 
+     def test_optional_explicit_defaults_variadics_and_unsupported_types_fail_closed(self):
+-        for signature in ["double run(record<DOMString, any> value);", "double run(record<DOMString, long> value);"]:
++        for signature in ["double run(record<DOMString, (DOMString or undefined)> value);", "double run(sequence<(long or undefined)> value);"]:
+             with self.subTest(signature=signature):
+                 self.assert_unsupported("interface Unsupported { " + signature + " };")
+ 
+@@ -342,7 +342,7 @@ class V8GeneratorTests(unittest.TestCase):
+             source = generate(webidl, root / "out")
+             self.assertIn("WebIdlOptionalArgument<bool>", source)
+             self.assertIn("WebIdlArgumentConversion::Boolean", source)
+-        for signature in ["boolean run(record<DOMString, long> value);", "boolean run(record<DOMString, any> value);"]:
++        for signature in ["boolean run(record<DOMString, (long or undefined)> value);", "boolean run((boolean or undefined) value);"]:
+             with self.subTest(signature=signature):
+                 self.assert_unsupported("interface Unsupported { " + signature + " };")
+ 
+@@ -1051,8 +1051,23 @@ class V8GeneratorTests(unittest.TestCase):
+             ]:
+                 self.assertIn(expected, source)
+ 
+-    def test_callback_interfaces_and_promises_are_not_dom_interface_values(self):
+-        self.assert_unsupported("interface Uses { undefined add(record<DOMString, any> pending); };")
++    def test_records_convert_to_ordered_pairs(self):
++        with tempfile.TemporaryDirectory() as directory:
++            path = Path(directory) / "Uses.webidl"
++            path.write_text(
++                "[Exposed=Window] interface Uses { undefined add(record<ByteString, any> pending);"
++                " record<DOMString, long> counts(); };",
++                encoding="utf-8",
++            )
++            source = generate(path, Path(directory) / "output")
++            self.assertIn("arg0: Vec<(Vec<u8>, roves_v8::Handle)>", source)
++            self.assertIn("-> Vec<(Vec<u16>, i32)>;", source)
++            self.assertIn(
++                "roves_v8::WebIdlType::Record(Box::new(roves_v8::WebIdlType::Primitive(roves_v8::WebIdlArgumentConversion::ByteString)),"
++                " Box::new(roves_v8::WebIdlType::Primitive(roves_v8::WebIdlArgumentConversion::Any)))",
++                source,
++            )
++            self.assertIn("Value::Record(", source)
+ 
+     def test_exposure_conditions_gate_interface_objects_and_members(self):
+         with tempfile.TemporaryDirectory() as directory:

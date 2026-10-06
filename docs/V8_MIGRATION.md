@@ -197,6 +197,10 @@ of the interface. `Animation`, `AudioBufferSourceNode`, `HTMLInputElement`, `HTM
 iterator prototype. They iterate live, and `forEach` is supported. `FormData` generates.
 `Headers`/`URLSearchParams` need records next. Coverage 447/486.
 
+**CP84 (2026-10-06): records.** `record<K, V>` uses the spec's own-enumerable-property
+conversion and is supported in unions and as a result type. `Headers`, `URLSearchParams`,
+`Request` and `Response` generate. Coverage 453/486 (93%).
+
 CP37 exposes stable `NativeObjectId` through `DomObject` and updates generated `dom_struct`
 equality to use that engine-neutral contract. Local checks pass (reflector 2/2, macro 3/3,
 rustfmt, and patch 0101 reverse-check); CI is green: V8 37226916624 (6/6), Servo 37226916650

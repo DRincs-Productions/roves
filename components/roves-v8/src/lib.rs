@@ -194,6 +194,10 @@ pub mod webidl {
         include!(concat!(env!("OUT_DIR"), "/PairListV8Binding.rs"));
     }
     #[cfg(test)]
+    pub mod record_probe {
+        include!(concat!(env!("OUT_DIR"), "/RecordProbeV8Binding.rs"));
+    }
+    #[cfg(test)]
     pub mod promise_operations {
         include!(concat!(env!("OUT_DIR"), "/PromiseOperationsV8Binding.rs"));
     }
@@ -314,6 +318,9 @@ pub enum Value {
     /// A WebIDL dictionary: `(member name, value)` in member order, with [`Value::Missing`] for
     /// members that are absent. Converting it to JS creates a plain object of the present ones.
     Dictionary(Vec<(String, Value)>),
+    /// A WebIDL `record<K, V>`: `(key, value)` pairs in the source object's property order, with
+    /// keys converted to the (string) key type. Converting it to JS creates a plain object.
+    Record(Vec<(Value, Value)>),
     /// A traced native DOM object (an interface-typed WebIDL value). Converting it to JS yields
     /// the native's one wrapper, created on first use as an instance of its concrete interface.
     Native(NativeRef),
@@ -796,6 +803,16 @@ fn v8_result<'s>(scope: &mut v8::PinScope<'s, '_>, value: &Value) -> v8::Local<'
         }
         return object.into();
     }
+    if let Value::Record(entries) = value {
+        // Values may be natives, which need wrapping.
+        let object = v8::Object::new(scope);
+        for (key, item) in entries {
+            let key = v8_value(scope, key);
+            let item = v8_result(scope, item);
+            object.create_data_property(scope, key.try_into().unwrap(), item);
+        }
+        return object.into();
+    }
     if let Value::Sequence(elements) = value {
         // Elements may be natives, which need wrapping.
         let mut converted = Vec::with_capacity(elements.len());
@@ -1274,6 +1291,9 @@ pub enum WebIdlType {
     /// An integer type annotated `[Clamp]` or `[EnforceRange]`: `conversion` names the integer
     /// type (`Byte` .. `UnsignedLongLong`).
     Integer(WebIdlArgumentConversion, IntegerMode),
+    /// `record<K, V>` (`K` a string type): an object's own enumerable properties, converted
+    /// into a [`Value::Record`].
+    Record(Box<WebIdlType>, Box<WebIdlType>),
     /// A buffer source type (`ArrayBuffer`, `ArrayBufferView`, a typed array, `DataView`):
     /// type-checked and passed as [`Value::Js`] without copying; natives access the bytes in
     /// place with [`ScriptContext::with_buffer_bytes`].
@@ -4961,6 +4981,47 @@ fn convert_typed_value<'s>(
             }
             Some(Value::Dictionary(entries))
         },
+        WebIdlType::Record(key_type, value_type) => {
+            // WebIDL ES-to-record: the own enumerable properties, in [[OwnPropertyKeys]] order.
+            let Ok(object) = v8::Local::<v8::Object>::try_from(value) else {
+                throw_type_error(scope, "value is not a record object");
+                return None;
+            };
+            let keys = object.get_own_property_names(
+                scope,
+                v8::GetPropertyNamesArgs {
+                    mode: v8::KeyCollectionMode::OwnOnly,
+                    property_filter: v8::PropertyFilter::ALL_PROPERTIES,
+                    index_filter: v8::IndexFilter::IncludeIndices,
+                    key_conversion: v8::KeyConversionMode::ConvertToString,
+                },
+            )?;
+            let mut entries: Vec<(Value, Value)> = Vec::new();
+            for index in 0..keys.length() {
+                let key = keys.get_index(scope, index)?;
+                let Ok(name) = v8::Local::<v8::Name>::try_from(key) else { continue };
+                // [[GetOwnProperty]] may run proxy traps; only enumerable properties count.
+                let Some(descriptor) = object.get_own_property_descriptor(scope, name) else { return None };
+                if descriptor.is_undefined() {
+                    continue;
+                }
+                let Ok(descriptor) = v8::Local::<v8::Object>::try_from(descriptor) else { continue };
+                let enumerable_key = v8::String::new(scope, "enumerable").unwrap();
+                if !descriptor.get(scope, enumerable_key.into())?.boolean_value(scope) {
+                    continue;
+                }
+                let typed_key = convert_typed_value(scope, key, key_type)?;
+                let item = object.get(scope, key)?;
+                let typed_value = convert_typed_value(scope, item, value_type)?;
+                // Keys that convert to the same IDL value (e.g. USVString replacement) keep the
+                // first position and the last value.
+                match entries.iter_mut().find(|(existing, _)| *existing == typed_key) {
+                    Some(entry) => entry.1 = typed_value,
+                    None => entries.push((typed_key, typed_value)),
+                }
+            }
+            Some(Value::Record(entries))
+        },
         WebIdlType::Sequence(element_type) => {
             // WebIDL "create a sequence from an iterable": the @@iterator protocol, so any
             // iterable (not only arrays) converts, and user iterators run.
@@ -5079,7 +5140,7 @@ fn select_union_member<'s>(
                 return Ok(index);
             }
         }
-        if let Some(index) = find(&|member| matches!(member, WebIdlType::Dictionary(_))) {
+        if let Some(index) = find(&|member| matches!(member, WebIdlType::Dictionary(_) | WebIdlType::Record(..))) {
             return Ok(index);
         }
         if let Some(index) = find(&|member| matches!(member, WebIdlType::CallbackInterface)) {
@@ -5271,6 +5332,17 @@ fn v8_value<'s>(scope: &v8::PinScope<'s, '_>, value: &Value) -> v8::Local<'s, v8
             v8::Array::new_with_elements(scope, &elements).into()
         },
         Value::Union(_, value) => v8_value(scope, value),
+        Value::Record(entries) => {
+            let object = v8::Object::new(scope);
+            for (key, item) in entries {
+                let key = v8_value(scope, key);
+                let item = v8_value(scope, item);
+                if let Ok(key) = v8::Local::<v8::Name>::try_from(key) {
+                    object.create_data_property(scope, key, item);
+                }
+            }
+            object.into()
+        },
         Value::Dictionary(entries) => {
             let object = v8::Object::new(scope);
             for (name, value) in entries {
@@ -8688,6 +8760,66 @@ mod tests {
             ("(() => { try { PairList.prototype.entries.call({}); } catch (e) { return e.name; } })()", "TypeError"),
             ("[...other].length", "0"),
             ("Object.keys(PairList.prototype).sort().join()", "add,entries,forEach,keys,values"),
+        ] {
+            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
+        }
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_records_convert_own_enumerable_properties() {
+        use crate::webidl::record_probe::{RecordProbeBinding, RecordProbeNative, StringSequenceSequenceOrStringStringRecordOrString as Init};
+        struct Probe;
+        #[allow(non_snake_case)]
+        impl RecordProbeNative for Probe {
+            fn Describe(&self, counts: Vec<(Vec<u16>, i32)>) -> Vec<u16> {
+                let parts: Vec<String> = counts
+                    .iter()
+                    .map(|(key, count)| format!("{}={count}", String::from_utf16_lossy(key)))
+                    .collect();
+                parts.join(",").encode_utf16().collect()
+            }
+            fn Tally(&self, words: Vec<String>) -> Vec<(String, u32)> {
+                let mut counts: Vec<(String, u32)> = Vec::new();
+                for word in words {
+                    match counts.iter_mut().find(|(key, _)| *key == word) {
+                        Some(entry) => entry.1 += 1,
+                        None => counts.push((word, 1)),
+                    }
+                }
+                counts
+            }
+            fn Pick(&self, init: Init) -> Vec<u16> {
+                let kind = match init {
+                    Init::StringSequenceSequence(_) => "sequence",
+                    Init::StringStringRecord(entries) => return format!("record {}", entries.len()).encode_utf16().collect(),
+                    Init::String(_) => "string",
+                };
+                kind.encode_utf16().collect()
+            }
+        }
+        let mut runtime = Runtime::new();
+        let binding = RecordProbeBinding::<Probe>::install(&mut runtime).unwrap();
+        let probe = binding.create(&mut runtime, Probe);
+        runtime.set_global_property("probe", &probe).unwrap();
+        for (source, expected) in [
+            ("probe.describe({ a: 1, b: '2', c: 3.7 })", "a=1,b=2,c=3"),
+            // [[OwnPropertyKeys]] order: integer keys first, then strings in insertion order.
+            ("probe.describe({ b: 1, 2: 2, a: 3, 1: 4 })", "1=4,2=2,b=1,a=3"),
+            // Only own enumerable properties; inherited ones are ignored.
+            ("const o = Object.create({ inherited: 1 }); Object.defineProperty(o, 'hidden', { value: 2 }); o.shown = 3; probe.describe(o)", "shown=3"),
+            // Getters run once, in order; proxies' ownKeys/getOwnPropertyDescriptor traps run too.
+            ("probe.describe(new Proxy({ x: 1, y: 2 }, { ownKeys: () => ['y', 'x'] }))", "y=2,x=1"),
+            ("probe.describe({})", ""),
+            ("(() => { try { probe.describe(null); } catch (e) { return e.name; } })()", "TypeError"),
+            ("(() => { try { probe.describe(5); } catch (e) { return e.name; } })()", "TypeError"),
+            // An enumerable symbol key cannot convert to DOMString.
+            ("(() => { try { probe.describe({ [Symbol('s')]: 1 }); } catch (e) { return e.name; } })()", "TypeError"),
+            // Results become plain objects.
+            ("JSON.stringify(probe.tally(['x', 'y', 'x']))", "{\"x\":2,\"y\":1}"),
+            ("Object.getPrototypeOf(probe.tally([])) === Object.prototype", "true"),
+            // Unions: iterable objects are sequences, other objects records, the rest strings.
+            ("[probe.pick([['a', 'b']]), probe.pick({ a: 'b', c: 'd' }), probe.pick('s'), probe.pick(1)].join()", "sequence,record 2,string,string"),
         ] {
             assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
         }
