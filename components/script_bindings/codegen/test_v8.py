@@ -675,6 +675,9 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn("fn Run(&self, cx: &mut roves_v8::ScriptContext, arg0: roves_v8::Handle) -> Result<roves_v8::Handle, roves_v8::WebIdlError>;", source)
             self.assertIn("Err(error) => Ok(Value::Js(cx.rejected_promise(&error))),", source)
             self.assertIn("roves_v8::WebIdlType::Promise", source)
+            # Argument conversion errors reject too: marked before the operation is defined.
+            self.assertIn('runtime.mark_promise_operation(&interface, "run");', source)
+            self.assertLess(source.index("mark_promise_operation"), source.index('define_typed_webidl_method(&interface, "run"'))
 
     def test_bindings_conf_cx_lists_make_members_contextual(self):
         import codegen

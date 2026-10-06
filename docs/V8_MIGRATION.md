@@ -235,6 +235,11 @@ alive, and a mutation check confirms the test fails when a path is skipped. Next
 field types (`Dom<T>`, `MutNullableDom`, `Heap<JSVal>`, `DomRefCell`) V8 counterparts, so that
 `#[dom_struct]` can derive `Trace`.
 
+**CP92 (2026-10-06): promise conversion errors reject.** Promise-returning operations now
+return a rejected promise when overload resolution or argument conversion fails, as WebIDL
+requires, instead of throwing. This covers every operation path, static and overloaded
+included.
+
 CP37 exposes stable `NativeObjectId` through `DomObject` and updates generated `dom_struct`
 equality to use that engine-neutral contract. Local checks pass (reflector 2/2, macro 3/3,
 rustfmt, and patch 0101 reverse-check); CI is green: V8 37226916624 (6/6), Servo 37226916650

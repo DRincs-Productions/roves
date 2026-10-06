@@ -359,11 +359,41 @@ workflow lo copia accanto, e `components/roves-v8/Cargo.lock` lo include. Test G
 check. Prossimo passo: le controparti V8 di `Dom<T>`/`MutNullableDom`/`Heap<JSVal>`/`DomRefCell`,
 così che `#[dom_struct]` possa derivare `Trace`.
 
+**CP92 (2026-10-06):** le operazioni che restituiscono Promise rifiutano, invece di lanciare,
+quando falliscono la risoluzione degli overload o la conversione degli argomenti
+(`mark_promise_operation`, `reject_on_failure`, patch 0156). Vale su tutti i percorsi, compresi
+quelli statici e sovraccarichi.
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,
 estensioni WebGL, compile). Il toolchain locale Windows è completo: verificare ogni modifica in
 locale prima della CI.
+
+## Piano per la prossima fase (dopo CP92): il DOM di Servo sull'heap V8
+
+La copertura del generatore è al 100%: ora il lavoro è il cutover del DOM reale. Analisi del
+codice attuale:
+
+- **Il modello di Servo.** In `script_bindings/root.rs`, `Dom<T>` è un `NonNull<T>`. Il suo
+  `JSTraceable` traccia il **reflector** del bersaglio (`trace_reflector`): l'oggetto Rust è
+  posseduto dal suo `JSObject` e il grafo GC è quello di SpiderMonkey.
+- **Il modello V8 (pronto in `roves-v8`).** Il native vive in un `GcBox` cppgc e traccia il
+  proprio wrapper. Gli archi native→native sono `GcMember` e native→JS sono `JsRef`.
+  `#[derive(Trace)]` (CP91) usa la stessa grammatica di `JSTraceable`.
+- **Il ponte proposto.** Il `Reflector` di ogni oggetto DOM (primo campo di ogni
+  `#[dom_struct]`) tiene, sotto `engine-v8`, un `Member` al proprio `GcBox`. In questo modo
+  `Dom<T>::trace` diventa "traccia il membro del reflector del bersaglio": stessa forma di oggi
+  (`trace_reflector`), ma su cppgc, senza cambiare i ~600 call site che usano `Dom<T>`.
+  `MutNullableDom`/`DomRefCell` restano wrapper, con `Trace` a passthrough (`RefCell` è già
+  fatto, alla maniera di `borrow_for_gc_trace`). `Heap<JSVal>` diventa `JsRef`.
+- **Vincolo.** V8 e mozjs non si linkano nello stesso binario (CP32). Quindi
+  `script_bindings`/`script` vanno compilati con un cfg `engine-v8` alternativo, non
+  affiancato. Ordine suggerito: `Reflector` → `Dom`/`DomRoot`/`MutNullableDom` →
+  `#[dom_struct]` che deriva `Trace` sotto `engine-v8` → `reflect_dom_object` su
+  `allocate_traced` → realm Window (`install_global`) → `cargo check` del crate `script` con
+  `engine-v8` come primo obiettivo misurabile (contare gli errori come metrica, come per la
+  copertura del generatore).
 
 ## Avvio rapido
 

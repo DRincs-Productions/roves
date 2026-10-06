@@ -1,0 +1,301 @@
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 16c73ae6932..2d46ec4a5e9 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -463,6 +463,8 @@ pub struct InterfaceData {
+     pair_iterable: std::cell::Cell<Option<*const PairIterableConfig>>,
+     /// Readonly attributes with `[LegacyLenientSetter]`: assignments are silently ignored.
+     lenient_setters: std::cell::RefCell<std::collections::HashSet<String>>,
++    /// Promise-returning operations: argument conversion errors reject instead of throwing.
++    promise_operations: std::cell::RefCell<std::collections::HashSet<String>>,
+     /// Readonly attributes with `[Replaceable]`: assignments define an own data property.
+     replaceable: std::cell::RefCell<std::collections::HashSet<String>>,
+     /// `[ExceptionClass]` (`DOMException`): the prototype object inherits `Error.prototype`.
+@@ -980,6 +982,31 @@ fn member_target<'s>(
+     (template.instance_template(scope), attributes)
+ }
+ 
++/// Runs a promise-returning operation's pre-native steps (overload selection, argument
++/// conversion). WebIDL: when one throws, the operation returns a promise rejected with the
++/// exception instead of throwing. Other operations just run `step`.
++fn reject_on_failure<T>(
++    scope: &mut v8::PinScope,
++    promise: bool,
++    retval: &mut v8::ReturnValue,
++    step: impl FnOnce(&mut v8::PinScope) -> Option<T>,
++) -> Option<T> {
++    if !promise {
++        return step(scope);
++    }
++    v8::tc_scope!(let try_catch, scope);
++    let result = step(try_catch);
++    if result.is_none() {
++        let exception = try_catch.exception().unwrap_or_else(|| v8::undefined(try_catch).into());
++        try_catch.reset();
++        if let Some(resolver) = v8::PromiseResolver::new(try_catch) {
++            resolver.reject(try_catch, exception);
++            retval.set(resolver.get_promise(try_catch).into());
++        }
++    }
++    result
++}
++
+ /// Moves a newly constructed native onto the traced heap with `object` as its one wrapper.
+ fn attach_new_traced_native(scope: &mut v8::PinScope, object: v8::Local<v8::Object>, interface: &str, native: TracedNative) {
+     let gc_box = GcBox {
+@@ -1348,6 +1375,7 @@ pub type StaticNativeMethod =
+ struct StaticMethodConfig {
+     method: StaticNativeMethod,
+     arguments: WebIdlArguments,
++    promise: bool,
+ }
+ 
+ struct DefaultToJsonConfig {
+@@ -1688,6 +1716,8 @@ fn convert_webidl_integer(number: f64, bits: u32, signed: bool) -> f64 {
+ struct WebIdlMethodConfig {
+     method: NativeMethodKind,
+     arguments: WebIdlArguments,
++    /// A promise-returning operation: conversion errors reject instead of throwing.
++    promise: bool,
+ }
+ 
+ /// How a WebIDL operation's or constructor's JS arguments convert to [`Value`]s.
+@@ -1854,10 +1884,12 @@ pub struct WebIdlTypedOverload<'a> {
+ 
+ struct StaticOverloadConfig {
+     overloads: Vec<(StaticNativeMethod, WebIdlArguments, Vec<WebIdlArgument>)>,
++    promise: bool,
+ }
+ 
+ struct TypedOverloadConfig {
+     overloads: Vec<(NativeMethodKind, WebIdlArguments, Vec<WebIdlArgument>)>,
++    promise: bool,
+ }
+ 
+ /// WebIDL overload resolution over structured overloads: the argument count (capped at the
+@@ -2962,6 +2994,7 @@ impl Runtime {
+             namespace: std::cell::Cell::new(false),
+             legacy_factories: std::cell::RefCell::new(Vec::new()),
+             lenient_setters: std::cell::RefCell::new(std::collections::HashSet::new()),
++            promise_operations: std::cell::RefCell::new(std::collections::HashSet::new()),
+             replaceable: std::cell::RefCell::new(std::collections::HashSet::new()),
+             exception_class: std::cell::Cell::new(false),
+             unforgeable_members: std::cell::Cell::new(false),
+@@ -3699,7 +3732,8 @@ impl Runtime {
+         if interface.materialized.get() {
+             return Err("interface members must be defined before creating instances or descendants".into());
+         }
+-        let config = Box::new(StaticMethodConfig { method, arguments: WebIdlArguments::typed(arguments) });
++        let promise = interface.promise_operations.borrow().contains(name);
++        let config = Box::new(StaticMethodConfig { method, arguments: WebIdlArguments::typed(arguments), promise });
+         let required = arguments.iter().take_while(|argument| !argument.optional && !argument.variadic).count();
+         let config_pointer = (&*config) as *const StaticMethodConfig;
+         self.static_configs.push(config);
+@@ -3717,7 +3751,9 @@ impl Runtime {
+                 let external = v8::Local::<v8::External>::try_from(args.data()).unwrap();
+                 // SAFETY: the External points to this method's boxed config.
+                 let config = unsafe { &*(external.value() as *const StaticMethodConfig) };
+-                let Some(arguments) = convert_webidl_arguments(scope, &args, &config.arguments) else {
++                let Some(arguments) = reject_on_failure(scope, config.promise, &mut retval, |scope| {
++                    convert_webidl_arguments(scope, &args, &config.arguments)
++                }) else {
+                     return;
+                 };
+                 let result = (config.method)(&mut ScriptContext { scope }, &arguments);
+@@ -3760,6 +3796,7 @@ impl Runtime {
+                 .iter()
+                 .map(|(method, arguments)| (*method, WebIdlArguments::typed(arguments), arguments.to_vec()))
+                 .collect(),
++            promise: interface.promise_operations.borrow().contains(name),
+         });
+         let config_pointer = (&*config) as *const StaticOverloadConfig;
+         self.static_overload_configs.push(config);
+@@ -3776,9 +3813,14 @@ impl Runtime {
+                 // SAFETY: the External points to this method's boxed overload config.
+                 let config = unsafe { &*(external.value() as *const StaticOverloadConfig) };
+                 let candidates: Vec<&[WebIdlArgument]> = config.overloads.iter().map(|(_, _, arguments)| arguments.as_slice()).collect();
+-                let Ok(selected) = select_overload(scope, &args, &candidates) else { return };
+-                let (method, arguments, _) = &config.overloads[selected];
+-                let Some(converted) = convert_webidl_arguments(scope, &args, arguments) else { return };
++                let Some((selected, converted)) = reject_on_failure(scope, config.promise, &mut retval, |scope| {
++                    let selected = select_overload(scope, &args, &candidates).ok()?;
++                    let converted = convert_webidl_arguments(scope, &args, &config.overloads[selected].1)?;
++                    Some((selected, converted))
++                }) else {
++                    return;
++                };
++                let (method, _, _) = &config.overloads[selected];
+                 match method(&mut ScriptContext { scope }, &converted) {
+                     Ok(value) => {
+                         let value = v8_result(scope, &value);
+@@ -3978,6 +4020,13 @@ impl Runtime {
+         );
+     }
+ 
++    /// Marks the operation `name` as promise-returning: when its arguments fail to convert, it
++    /// returns a rejected promise instead of throwing (WebIDL). Call before defining it; the
++    /// native's own errors are already returned as rejected promises by generated code.
++    pub fn mark_promise_operation(&mut self, interface: &Interface, name: &str) {
++        interface.promise_operations.borrow_mut().insert(name.to_owned());
++    }
++
+     /// Marks the readonly attribute `name` as `[LegacyLenientSetter]`: it gets a setter that
+     /// ignores assignments. Call before defining the attribute.
+     pub fn mark_lenient_setter(&mut self, interface: &Interface, name: &str) {
+@@ -3990,7 +4039,7 @@ impl Runtime {
+         if interface.materialized.get() {
+             return Err("interface members must be defined before creating instances or descendants".into());
+         }
+-        let config = Box::new(StaticMethodConfig { method: getter, arguments: WebIdlArguments::typed(&[]) });
++        let config = Box::new(StaticMethodConfig { method: getter, arguments: WebIdlArguments::typed(&[]), promise: false });
+         let config_pointer = (&*config) as *const StaticMethodConfig;
+         self.static_configs.push(config);
+         let context_handle = &self.context;
+@@ -4687,6 +4736,7 @@ impl Runtime {
+                     (kind, WebIdlArguments::typed(overload.arguments), overload.arguments.to_vec())
+                 })
+                 .collect(),
++            promise: interface.promise_operations.borrow().contains(name),
+         });
+         let config_pointer = (&*config) as *const TypedOverloadConfig;
+         self.typed_overload_configs.push(config);
+@@ -4707,9 +4757,14 @@ impl Runtime {
+                 let config = unsafe { &*(external.value() as *const TypedOverloadConfig) };
+                 let Some(native) = receiver_native(scope, args.this()) else { return };
+                 let candidates: Vec<&[WebIdlArgument]> = config.overloads.iter().map(|(_, _, arguments)| arguments.as_slice()).collect();
+-                let Ok(selected) = select_overload(scope, &args, &candidates) else { return };
+-                let (method, arguments, _) = &config.overloads[selected];
+-                let Some(converted) = convert_webidl_arguments(scope, &args, arguments) else { return };
++                let Some((selected, converted)) = reject_on_failure(scope, config.promise, &mut retval, |scope| {
++                    let selected = select_overload(scope, &args, &candidates).ok()?;
++                    let converted = convert_webidl_arguments(scope, &args, &config.overloads[selected].1)?;
++                    Some((selected, converted))
++                }) else {
++                    return;
++                };
++                let (method, _, _) = &config.overloads[selected];
+                 let result = match method {
+                     NativeMethodKind::Infallible(method) => Ok(method(native, &converted)),
+                     NativeMethodKind::Fallible(method) => method(native, &converted),
+@@ -4837,7 +4892,8 @@ impl Runtime {
+         };
+         // Keep the immutable config alive for the isolate's lifetime. Box preserves its address
+         // while the owning vector grows, and the isolate drops before these entries.
+-        let config = Box::new(WebIdlMethodConfig { method, arguments });
++        let promise = interface.promise_operations.borrow().contains(name);
++        let config = Box::new(WebIdlMethodConfig { method, arguments, promise });
+         let config_pointer = (&*config) as *const WebIdlMethodConfig as *mut WebIdlMethodConfig;
+         self.method_configs.push(config);
+         let external_data = v8::External::new(scope, config_pointer as *mut std::ffi::c_void);
+@@ -4871,7 +4927,9 @@ impl Runtime {
+                 // WebIDL's ToNumber/ToString conversions can run user code and throw. Preserve
+                 // that exact exception across the native callback boundary instead of returning
+                 // undefined when rusty_v8 reports the failed conversion as `None`.
+-                let Some(arguments) = convert_webidl_arguments(scope, &args, &config.arguments) else {
++                let Some(arguments) = reject_on_failure(scope, config.promise, &mut retval, |scope| {
++                    convert_webidl_arguments(scope, &args, &config.arguments)
++                }) else {
+                     return;
+                 };
+                 let result = match config.method {
+@@ -10155,6 +10213,21 @@ mod tests {
+             fn Wrap(&self, _cx: &mut ScriptContext, input: Handle) -> Result<Handle, WebIdlError> {
+                 Ok(input)
+             }
++            fn Half(cx: &mut ScriptContext, value: u32) -> Result<Handle, WebIdlError> {
++                let (promise, resolver) = cx.new_promise();
++                cx.resolve_promise(&resolver, &Value::Number((value / 2) as f64));
++                Ok(promise)
++            }
++            fn Count(&self, cx: &mut ScriptContext, text: Vec<u16>) -> Result<Handle, WebIdlError> {
++                let (promise, resolver) = cx.new_promise();
++                cx.resolve_promise(&resolver, &Value::Number(text.len() as f64));
++                Ok(promise)
++            }
++            fn Count_(&self, cx: &mut ScriptContext, values: Vec<i32>) -> Result<Handle, WebIdlError> {
++                let (promise, resolver) = cx.new_promise();
++                cx.resolve_promise(&resolver, &Value::Number(values.len() as f64));
++                Ok(promise)
++            }
+         }
+         let mut runtime = Runtime::new();
+         let binding = PromiseOperationsBinding::<Ops>::install(&mut runtime).unwrap();
+@@ -10164,6 +10237,22 @@ mod tests {
+         let rejection = runtime.eval_resolved("ops.twice(5000)").unwrap_err();
+         assert!(rejection.contains("RangeError") && rejection.contains("too large"), "{rejection}");
+         assert_eq!(runtime.eval("ops.twice(5000) instanceof Promise").unwrap(), "true");
++        // An argument that fails to convert also rejects (WebIDL), instead of throwing.
++        assert_eq!(runtime.eval("ops.twice(Symbol()) instanceof Promise").unwrap(), "true");
++        let rejection = runtime.eval_resolved("ops.twice(Symbol())").unwrap_err();
++        assert!(rejection.contains("TypeError"), "{rejection}");
++        // A user valueOf that throws rejects with that very exception.
++        assert!(runtime.eval_resolved("ops.twice({ valueOf() { throw new RangeError('mine'); } })").unwrap_err().contains("mine"));
++        // Static and overloaded promise operations: conversion and overload-resolution errors
++        // reject as well.
++        assert_eq!(runtime.eval_resolved("PromiseOperations.half(9)").unwrap(), Value::Number(4.0));
++        assert_eq!(runtime.eval("PromiseOperations.half(Symbol()) instanceof Promise").unwrap(), "true");
++        assert!(runtime.eval_resolved("PromiseOperations.half(Symbol())").unwrap_err().contains("TypeError"));
++        assert_eq!(runtime.eval_resolved("ops.count('abc')").unwrap(), Value::Number(3.0));
++        assert_eq!(runtime.eval_resolved("ops.count([1, 2])").unwrap(), Value::Number(2.0));
++        assert_eq!(runtime.eval("ops.count([Symbol()]) instanceof Promise").unwrap(), "true");
++        assert!(runtime.eval_resolved("ops.count([Symbol()])").unwrap_err().contains("TypeError"));
++        assert!(runtime.eval_resolved("ops.count()").unwrap_err().contains("TypeError"));
+         // `Promise<any>` arguments are converted like Promise.resolve.
+         assert_eq!(runtime.eval_resolved("ops.wrap(5)").unwrap(), Value::Number(5.0));
+         assert_eq!(runtime.eval_resolved("ops.wrap(Promise.resolve(7))").unwrap(), Value::Number(7.0));
+diff --git a/components/roves-v8/tests/webidl/PromiseOperations.webidl b/components/roves-v8/tests/webidl/PromiseOperations.webidl
+index 1f327f1fddd..7daab489ce8 100644
+--- a/components/roves-v8/tests/webidl/PromiseOperations.webidl
++++ b/components/roves-v8/tests/webidl/PromiseOperations.webidl
+@@ -4,4 +4,8 @@ interface PromiseOperations {
+   Promise<undefined> later();
+   undefined settle(boolean succeed);
+   Promise<any> wrap(Promise<any> input);
++  // Static and overloaded promise operations reject on conversion errors too.
++  static Promise<unsigned long> half(unsigned long value);
++  Promise<unsigned long> count(DOMString text);
++  Promise<unsigned long> count(sequence<long> values);
+ };
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index 51f18dc067f..f3b590523ab 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -9018,6 +9018,7 @@ class CGV8BindingRoot(CGThing):
+         indexed_getter = None
+         named_getter = None
+         promise_operations = set()
++        promise_operation_names = set()
+         typed_overload_members = set()
+         typed_overload_entries = []
+         contextual_attributes = []
+@@ -9174,6 +9175,7 @@ class CGV8BindingRoot(CGThing):
+                     elif result_type.isPromise():
+                         # WebIDL: a promise-returning operation rejects instead of throwing.
+                         promise_operations.add(v8_native_name(member) + "_" * overload_index)
++                        promise_operation_names.add(member.identifier.name)
+                         rust_type, value_expr = "roves_v8::Handle", "Value::Js(native.{native}())"
+                     elif result_type.isAny() or result_type.isObject() or result_type.isBufferSource():
+                         if nullable_return:
+@@ -10143,6 +10145,8 @@ class CGV8BindingRoot(CGThing):
+                 f"        }}, &[{typed_arguments}])?;\n"
+             )
+         registrations = factory_registrations + "".join(
++            f'        runtime.mark_promise_operation(&interface, "{idl}");\n' for idl in sorted(promise_operation_names)
++        ) + "".join(
+             f'        runtime.mark_lenient_setter(&interface, "{idl}");\n' for idl in lenient_setters
+         ) + "".join(
+             f'        runtime.mark_replaceable(&interface, "{idl}");\n' for idl in replaceable_attributes
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index af6c3217ff2..5afc6b690ec 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -675,6 +675,9 @@ class V8GeneratorTests(unittest.TestCase):
+             self.assertIn("fn Run(&self, cx: &mut roves_v8::ScriptContext, arg0: roves_v8::Handle) -> Result<roves_v8::Handle, roves_v8::WebIdlError>;", source)
+             self.assertIn("Err(error) => Ok(Value::Js(cx.rejected_promise(&error))),", source)
+             self.assertIn("roves_v8::WebIdlType::Promise", source)
++            # Argument conversion errors reject too: marked before the operation is defined.
++            self.assertIn('runtime.mark_promise_operation(&interface, "run");', source)
++            self.assertLess(source.index("mark_promise_operation"), source.index('define_typed_webidl_method(&interface, "run"'))
+ 
+     def test_bindings_conf_cx_lists_make_members_contextual(self):
+         import codegen

@@ -11,6 +11,31 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: promise operations reject on conversion errors (CP92)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `components/roves-v8/tests/webidl/PromiseOperations.webidl`,
+`components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0156-roves-v8-promise-conversion-rejects.patch` after 0155.
+
+This closes a documented pilot gap. WebIDL requires a promise-returning operation to return a
+rejected promise when overload resolution or argument conversion throws, instead of throwing.
+Errors from the native were already turned into rejections; failures before the native call
+still threw.
+- **Runtime.** The new `Runtime::mark_promise_operation(interface, name)` sets a `promise` flag
+  on the operation's config. Every operation path honours it: regular, typed, static,
+  static-overloaded and typed-overloaded. The new `reject_on_failure` helper runs selection and
+  conversion inside a `TryCatch`, and any exception (a no-overload TypeError, a failed
+  conversion, a user `valueOf` that throws) becomes the rejection reason of a new promise.
+- **Generator.** It emits the mark for every promise-returning operation, static ones included,
+  before that operation is defined.
+
+Tests: generator 73/73, with the mark checked to come before the definition. The
+`PromiseOperations` fixture gained a static `half` and an overloaded `count(DOMString)` /
+`count(sequence<long>)`. It checks conversion rejections for `twice(Symbol())`, a throwing
+`valueOf`, `half(Symbol())`, a sequence element and a missing overload, and that the calls
+still resolve normally otherwise. A mutation check (flag forced off) makes the test fail. `roves-v8` passes 114 + 5 + 2 (also `jitless`), and
+62 + 2 by default. The `servo-script` pilot check is clean.
+
 ## 2026-10-06 - V8 migration Phase 3: `#[derive(Trace)]` (CP91)
 
 **Servo files:** `components/roves-v8-derive/` (new proc-macro crate), `components/roves-v8/`
@@ -87,9 +112,12 @@ Still open, and not attempted here:
 
 **Pilot deviations, documented:**
 - Window's named properties use an interceptor on the global itself, not a separate
-  `WindowProperties` object in the prototype chain. Names therefore never shadow inherited
-  members such as `toString`; per spec they would shadow `EventTarget.prototype` and
-  `Object.prototype` members.
+  `WindowProperties` object in the prototype chain. *Visibility* still matches the spec: the
+  named property visibility algorithm checks the window's whole prototype chain (except named
+  properties objects), so inherited members such as `toString` win either way. (Corrected in
+  CP92: the first version of this note claimed the opposite.) The difference is only *where*
+  the property is: an own property of the global (`hasOwnProperty`, `getOwnPropertyNames`)
+  instead of a property of `WindowProperties`.
 - `install_global` must run before scripts or instances, because the previous realm's state
   is not carried over.
 

@@ -9018,6 +9018,7 @@ class CGV8BindingRoot(CGThing):
         indexed_getter = None
         named_getter = None
         promise_operations = set()
+        promise_operation_names = set()
         typed_overload_members = set()
         typed_overload_entries = []
         contextual_attributes = []
@@ -9174,6 +9175,7 @@ class CGV8BindingRoot(CGThing):
                     elif result_type.isPromise():
                         # WebIDL: a promise-returning operation rejects instead of throwing.
                         promise_operations.add(v8_native_name(member) + "_" * overload_index)
+                        promise_operation_names.add(member.identifier.name)
                         rust_type, value_expr = "roves_v8::Handle", "Value::Js(native.{native}())"
                     elif result_type.isAny() or result_type.isObject() or result_type.isBufferSource():
                         if nullable_return:
@@ -10143,6 +10145,8 @@ class CGV8BindingRoot(CGThing):
                 f"        }}, &[{typed_arguments}])?;\n"
             )
         registrations = factory_registrations + "".join(
+            f'        runtime.mark_promise_operation(&interface, "{idl}");\n' for idl in sorted(promise_operation_names)
+        ) + "".join(
             f'        runtime.mark_lenient_setter(&interface, "{idl}");\n' for idl in lenient_setters
         ) + "".join(
             f'        runtime.mark_replaceable(&interface, "{idl}");\n' for idl in replaceable_attributes
