@@ -1,0 +1,428 @@
+diff --git a/components/roves-v8/build.rs b/components/roves-v8/build.rs
+index 716e27bf76a..b8183dd5a45 100644
+--- a/components/roves-v8/build.rs
++++ b/components/roves-v8/build.rs
+@@ -216,6 +216,8 @@ fn main() {
+         ("SequenceOperations", &[][..]),
+         ("DictionaryProbe", &[][..]),
+         ("ListenerTarget", &[][..]),
++        ("TokenProbe", &[][..]),
++        ("AttributeProbe", &["TokenProbe"][..]),
+     ] {
+         println!("cargo:rerun-if-changed={}", fixtures.join(format!("{interface}.webidl")).display());
+         let status = Command::new(&python)
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 8dbad3e9dd6..b5ba7b4535b 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -149,6 +149,14 @@ pub mod webidl {
+     pub mod listener_target {
+         include!(concat!(env!("OUT_DIR"), "/ListenerTargetV8Binding.rs"));
+     }
++    #[cfg(test)]
++    pub mod token_probe {
++        include!(concat!(env!("OUT_DIR"), "/TokenProbeV8Binding.rs"));
++    }
++    #[cfg(test)]
++    pub mod attribute_probe {
++        include!(concat!(env!("OUT_DIR"), "/AttributeProbeV8Binding.rs"));
++    }
+ }
+ 
+ use std::sync::Once;
+@@ -789,6 +797,27 @@ impl ScriptContext<'_, '_, '_> {
+         self.call(&method, &Value::Js(object.clone()), arguments)
+     }
+ 
++    /// `object[name] = value` (an ordinary `[[Set]]`, so setters run). Exceptions come back as
++    /// [`WebIdlError::Js`]; a non-object target is a TypeError. Used by `[PutForwards]`.
++    pub fn set_property(&mut self, object: &Handle, name: &str, value: &Value) -> Result<(), WebIdlError> {
++        let local = v8::Local::new(self.scope, &object.0);
++        let Ok(target) = v8::Local::<v8::Object>::try_from(local) else {
++            return Err(WebIdlError::TypeError("cannot set a property on a non-object".into()));
++        };
++        let value = v8_result(self.scope, value);
++        let key = v8::String::new(self.scope, name).unwrap();
++        v8::tc_scope!(let try_catch, self.scope);
++        match target.set(try_catch, key.into(), value) {
++            Some(_) => Ok(()),
++            None => {
++                let exception = try_catch
++                    .exception()
++                    .unwrap_or_else(|| v8::undefined(try_catch).into());
++                Err(WebIdlError::Js(Handle(v8::Global::new(try_catch, exception))))
++            },
++        }
++    }
++
+     /// The engine-neutral value of a JS value (primitives convert; objects stay [`Value::Js`]).
+     pub fn value(&mut self, value: &Handle) -> Value {
+         let local = v8::Local::new(self.scope, &value.0);
+@@ -994,12 +1023,19 @@ fn convert_webidl_integer(number: f64, bits: u32, signed: bool) -> f64 {
+     if !number.is_finite() || number == 0.0 {
+         return 0.0;
+     }
+-    let modulus = 2.0_f64.powi(bits as i32);
+-    let mut value = number.trunc().rem_euclid(modulus);
+-    if signed && value >= modulus / 2.0 {
++    let truncated = number.trunc();
++    // Every f64 this large is a multiple of 2^64 (its ulp exceeds it), so the modulo is 0.
++    if truncated.abs() >= 2.0_f64.powi(127) {
++        return 0.0;
++    }
++    // Exact integer arithmetic: in f64, `-5 mod 2^64` would round 2^64 - 5 up to 2^64 and
++    // turn every negative `long long` into 0.
++    let modulus: i128 = 1 << bits;
++    let mut value = (truncated as i128).rem_euclid(modulus);
++    if signed && value >= modulus / 2 {
+         value -= modulus;
+     }
+-    value
++    value as f64
+ }
+ 
+ struct WebIdlMethodConfig {
+@@ -4049,6 +4085,18 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn webidl_integer_conversion_is_exact_for_64_bit_types() {
++        assert_eq!(super::convert_webidl_integer(-5.0, 64, true), -5.0);
++        assert_eq!(super::convert_webidl_integer(-5.0, 64, false), 18446744073709551611.0);
++        assert_eq!(super::convert_webidl_integer(-1.0, 32, false), 4294967295.0);
++        assert_eq!(super::convert_webidl_integer(300.0, 8, true), 44.0);
++        assert_eq!(super::convert_webidl_integer(-129.5, 8, true), 127.0);
++        assert_eq!(super::convert_webidl_integer(2.0_f64.powi(63), 64, true), -(2.0_f64.powi(63)));
++        assert_eq!(super::convert_webidl_integer(1e300, 64, true), 0.0);
++        assert_eq!(super::convert_webidl_integer(f64::NAN, 64, true), 0.0);
++    }
++
+     mod traced {
+         use super::super::*;
+         use std::cell::{Cell, RefCell};
+@@ -6619,6 +6667,112 @@ mod tests {
+         assert!(runtime.eval("t.listen(5)").unwrap_err().contains("TypeError"));
+     }
+ 
++    #[cfg(feature = "webidl-pilot")]
++    #[test]
++    fn generated_throwing_numeric_and_forwarding_attributes() {
++        use crate::webidl::attribute_probe::{AttributeProbeBinding, AttributeProbeNative};
++        use crate::webidl::token_probe::{TokenProbeBinding, TokenProbeNative};
++        use crate::{GcMember, NativeRef, Trace, Tracer, WebIdlError};
++        use std::cell::{Cell, RefCell};
++        /// Both interfaces share one native type, as in Servo's DOM.
++        enum Probe {
++            Tokens(RefCell<Vec<u16>>),
++            Owner {
++                label: RefCell<Option<Vec<u16>>>,
++                flag: Cell<bool>,
++                small: Cell<i8>,
++                big: Cell<i64>,
++                ratio: Cell<f32>,
++                tokens: GcMember<Probe>,
++            },
++        }
++        impl Trace for Probe {
++            fn trace(&self, tracer: &mut Tracer) {
++                if let Probe::Owner { tokens, .. } = self {
++                    tracer.member(tokens);
++                }
++            }
++        }
++        #[allow(non_snake_case)]
++        impl TokenProbeNative for Probe {
++            fn Value(&self) -> Vec<u16> {
++                let Probe::Tokens(value) = self else { unreachable!() };
++                value.borrow().clone()
++            }
++            fn set_Value(&self, value: Vec<u16>) {
++                let Probe::Tokens(slot) = self else { unreachable!() };
++                *slot.borrow_mut() = value;
++            }
++        }
++        macro_rules! owner {
++            ($self:ident, $field:ident) => {{
++                let Probe::Owner { $field, .. } = $self else { unreachable!() };
++                $field
++            }};
++        }
++        #[allow(non_snake_case)]
++        impl AttributeProbeNative for Probe {
++            fn Label(&self) -> Option<Vec<u16>> { owner!(self, label).borrow().clone() }
++            fn set_Label(&self, value: Option<Vec<u16>>) -> Result<(), WebIdlError> {
++                if value.as_deref() == Some(&[]) {
++                    return Err(WebIdlError::DomException { name: "SyntaxError".into(), message: "empty label".into() });
++                }
++                *owner!(self, label).borrow_mut() = value;
++                Ok(())
++            }
++            fn Checked(&self) -> Result<u32, WebIdlError> {
++                owner!(self, label).borrow().as_ref().map(|label| label.len() as u32).ok_or_else(|| WebIdlError::TypeError("no label".into()))
++            }
++            fn Flag(&self) -> Result<bool, WebIdlError> { Ok(owner!(self, flag).get()) }
++            fn set_Flag(&self, value: bool) -> Result<(), WebIdlError> { owner!(self, flag).set(value); Ok(()) }
++            fn Small(&self) -> i8 { owner!(self, small).get() }
++            fn set_Small(&self, value: i8) { owner!(self, small).set(value); }
++            fn Big(&self) -> i64 { owner!(self, big).get() }
++            fn set_Big(&self, value: i64) { owner!(self, big).set(value); }
++            fn Ratio(&self) -> f32 { owner!(self, ratio).get() }
++            fn set_Ratio(&self, value: f32) { owner!(self, ratio).set(value); }
++            fn Tokens(&self) -> NativeRef {
++                // SAFETY: the owner is the receiver (reachable) and traces `tokens`.
++                unsafe { owner!(self, tokens).native_ref("TokenProbe") }.unwrap()
++            }
++        }
++        let mut runtime = Runtime::new();
++        let _tokens = TokenProbeBinding::<Probe>::install(&mut runtime).unwrap();
++        let probes = AttributeProbeBinding::<Probe>::install(&mut runtime).unwrap();
++        let tokens = runtime.allocate_traced(Probe::Tokens(RefCell::new("a b".encode_utf16().collect())));
++        let owner = runtime.allocate_traced(Probe::Owner {
++            label: RefCell::new(None),
++            flag: Cell::new(false),
++            small: Cell::new(0),
++            big: Cell::new(0),
++            ratio: Cell::new(0.0),
++            tokens: tokens.member(),
++        });
++        let wrapper = probes.wrap_traced(&mut runtime, &owner);
++        runtime.set_global_property("probe", &wrapper).unwrap();
++        let caught = |runtime: &mut Runtime, source: &str| {
++            runtime.eval(&format!("(() => {{ try {{ {source}; return 'ok'; }} catch (e) {{ return e.name; }} }})()")).unwrap()
++        };
++        // [GetterThrows] and [SetterThrows] surface the native errors.
++        assert_eq!(caught(&mut runtime, "probe.checked"), "TypeError");
++        assert_eq!(caught(&mut runtime, "probe.label = ''"), "SyntaxError");
++        for (source, expected) in [
++            ("probe.label = 'name'; [probe.label, probe.checked].join()", "name,4"),
++            ("probe.label = null; probe.label", "null"),
++            ("probe.flag = 1; probe.flag", "true"),
++            // WebIDL integer conversions on setters: byte wraps, long long keeps sign.
++            ("probe.small = 300; probe.big = -5; [probe.small, probe.big].join()", "44,-5"),
++            ("probe.ratio = 0.1; probe.ratio === Math.fround(0.1)", "true"),
++            // [PutForwards=value]: assigning the attribute assigns its object's `value`.
++            ("const before = probe.tokens; probe.tokens = 'x y'; [probe.tokens.value, probe.tokens === before].join()", "x y,true"),
++            ("Object.getOwnPropertyDescriptor(AttributeProbe.prototype, 'tokens').set.length", "1"),
++        ] {
++            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
++        }
++        assert_eq!(String::from_utf16_lossy(&TokenProbeNative::Value(tokens.get())), "x y");
++        drop((wrapper, owner, tokens));
++    }
++
+     #[cfg(feature = "webidl-pilot")]
+     #[test]
+     fn generated_nullable_domstring_preserves_null_and_utf16_semantics() {
+diff --git a/components/roves-v8/tests/webidl/AttributeProbe.webidl b/components/roves-v8/tests/webidl/AttributeProbe.webidl
+new file mode 100644
+index 00000000000..18c23805b58
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/AttributeProbe.webidl
+@@ -0,0 +1,10 @@
++[Exposed=Window]
++interface AttributeProbe {
++  [SetterThrows] attribute DOMString? label;
++  [GetterThrows] readonly attribute unsigned long checked;
++  [Throws] attribute boolean flag;
++  attribute byte small;
++  attribute long long big;
++  attribute unrestricted float ratio;
++  [PutForwards=value] readonly attribute TokenProbe tokens;
++};
+diff --git a/components/roves-v8/tests/webidl/TokenProbe.webidl b/components/roves-v8/tests/webidl/TokenProbe.webidl
+new file mode 100644
+index 00000000000..d4074e6387b
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/TokenProbe.webidl
+@@ -0,0 +1,4 @@
++[Exposed=Window]
++interface TokenProbe {
++  attribute DOMString value;
++};
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index 7b2f0640fe8..15c39c27a74 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8336,6 +8336,31 @@ def v8_dictionary_info(dictionary, name: str):
+     )
+ 
+ 
++# Attribute extended attributes handled by the fallible (contextual accessor) path.
++V8_FALLIBLE_ATTRIBUTE_ATTRIBUTES = {"Throws", "GetterThrows", "SetterThrows", "PutForwards"}
++
++
++def v8_setter_conversion(idl_type, nullable: bool):
++    """(WebIdlArgumentConversion, nullable, match arm) for a setter's value on the contextual
++    accessor path, or None if the type has no setter conversion yet."""
++    if idl_type.isBoolean():
++        conversion, arm = "Boolean", "Value::Bool(value) => *value"
++    elif (idl_type.isInteger() or idl_type.isFloat()) and idl_type.name in V8_TYPED_PRIMITIVES:
++        _, conversion, arm, _ = V8_TYPED_PRIMITIVES[idl_type.name]
++    elif idl_type.isDOMString():
++        conversion, arm = "DomString", "Value::Utf16String(value) => value.clone()"
++    elif idl_type.isUSVString():
++        conversion, arm = "UsvString", "Value::String(value) => value.clone()"
++    elif idl_type.isByteString():
++        conversion, arm = "ByteString", "Value::ByteString(value) => value.clone()"
++    else:
++        return None
++    if nullable:
++        pattern, expression = arm.split(" => ", 1)
++        arm = f"Value::Null => None, {pattern} => Some({expression})"
++    return conversion, nullable, arm
++
++
+ def v8_union_info(ty, name: str, member_name: str):
+     """A Rust enum per union (named like Servo's, e.g. AddEventListenerOptionsOrBoolean) with
+     one variant per member type."""
+@@ -8810,6 +8835,7 @@ class CGV8BindingRoot(CGThing):
+         operations = []
+         unforgeable_attributes = set()
+         contextual_attributes = []
++        fallible_attributes = []
+         member_conditions = {}
+         ce_reaction_members = set()
+         constants = []
+@@ -8934,6 +8960,7 @@ class CGV8BindingRoot(CGThing):
+                 continue
+             attribute_attributes = (
+                 set(member._extendedAttrDict) - {"CEReactions"} - V8_IGNORED_MEMBER_HINTS - V8_EXPOSURE_ATTRIBUTES
++                - V8_FALLIBLE_ATTRIBUTE_ATTRIBUTES
+                 if member.isAttr() else set()
+             )
+             if member.isAttr() and "CEReactions" in member._extendedAttrDict:
+@@ -9021,6 +9048,28 @@ class CGV8BindingRoot(CGThing):
+                 conversion = "NullableUnsignedLong" if member.type.nullable() else "UnsignedLong"
+             elif idl_type.isUSVString():
+                 conversion = "NullableUsvString" if member.type.nullable() else "UsvString"
++            extended = member._extendedAttrDict
++            getter_throws = bool({"Throws", "GetterThrows"} & set(extended))
++            setter_throws = setter and bool({"Throws", "SetterThrows"} & set(extended))
++            put_forwards = extended.get("PutForwards")
++            if (getter_throws or setter_throws or put_forwards
++                    or (setter and not idl_type.isDOMString() and conversion is None)):
++                if put_forwards:
++                    if not member.readonly or not v8_is_dom_interface(idl_type) or member.type.nullable():
++                        raise TypeError(f"V8 backend unsupported [PutForwards] attribute: {name}.{member.identifier.name}")
++                    setter_info = ("Any", False, None, put_forwards[0])
++                elif setter:
++                    setter_conversion = v8_setter_conversion(idl_type, member.type.nullable())
++                    if setter_conversion is None:
++                        raise TypeError(f"V8 backend does not support mutable attribute type: {name}.{member.identifier.name}")
++                    setter_info = setter_conversion + (None,)
++                else:
++                    setter_info = None
++                fallible_attributes.append((
++                    member.identifier.name, MakeNativeName(member.identifier.name), rust_type, value_expr,
++                    getter_throws, setter_throws, setter_info,
++                ))
++                continue
+             if setter and not idl_type.isDOMString() and conversion is None:
+                 raise TypeError(f"V8 backend does not support mutable attribute type: {name}.{member.identifier.name}")
+             attributes.append((member.identifier.name, MakeNativeName(member.identifier.name), rust_type, value_expr, setter, conversion))
+@@ -9028,6 +9077,10 @@ class CGV8BindingRoot(CGThing):
+             [f"    fn {native}(&self, cx: &mut roves_v8::ScriptContext) -> Result<{rust_type}, roves_v8::WebIdlError>;"
+              + (f"\n    fn set_{native}(&self, cx: &mut roves_v8::ScriptContext, value: {rust_type}) -> Result<(), roves_v8::WebIdlError>;" if setter else "")
+              for _, native, rust_type, _, setter, _ in contextual_attributes]
++            + [f"    fn {native}(&self) -> {f'Result<{rust_type}, roves_v8::WebIdlError>' if getter_throws else rust_type};"
++               + (f"\n    fn set_{native}(&self, value: {rust_type}){' -> Result<(), roves_v8::WebIdlError>' if setter_throws else ''};"
++                  if setter_info and not setter_info[3] else "")
++               for _, native, rust_type, _, getter_throws, setter_throws, setter_info in fallible_attributes]
+             + [f"    fn {native}(&self) -> {rust_type};"
+              + (f"\n    fn set_{native}(&self, value: {rust_type});" if setter else "")
+              for _, native, rust_type, _, setter, _ in attributes]
+@@ -9075,6 +9128,48 @@ class CGV8BindingRoot(CGThing):
+             )
+             gate_last_registration(idl)
+ 
++        for idl, native, rust_type, value_expr, getter_throws, setter_throws, setter_info in fallible_attributes:
++            downcast = f'            let native = native.downcast_ref::<T>().expect("typed {name} wrapper");\n'
++            if getter_throws:
++                read = (
++                    f"            let result = native.{native}()?;\n"
++                    f"            Ok({value_expr.replace('native.{native}()', 'result')})\n"
++                )
++            else:
++                read = f"            Ok({value_expr.format(native=native)})\n"
++            getter = f"|cx, native| {{\n            let _ = cx;\n{downcast}{read}        }}"
++            if setter_info is None:
++                setter_callback, conversion, nullable = "None", "Any", False
++            else:
++                conversion, nullable, arm, forward = setter_info
++                if forward:
++                    # [PutForwards]: assign the value to the attribute's object's property.
++                    target = (
++                        f"native.{native}()?" if getter_throws else value_expr.format(native=native)
++                    )
++                    if getter_throws:
++                        target = value_expr.replace("native.{native}()", f"native.{native}()?")
++                    setter_callback = (
++                        f"Some(|cx, native, value| {{\n{downcast}"
++                        f"            let target = {target};\n"
++                        f"            let target = cx.handle(&target);\n"
++                        f'            cx.set_property(&target, "{forward}", value)\n'
++                        f"        }})"
++                    )
++                else:
++                    call = f"native.set_{native}(value)"
++                    setter_callback = (
++                        f"Some(|cx, native, value| {{\n            let _ = cx;\n{downcast}"
++                        f'            let value = match value {{ {arm}, _ => unreachable!("runtime conversion matches generated WebIDL attribute type") }};\n'
++                        + (f"            {call}\n" if setter_throws else f"            {call};\n            Ok(())\n")
++                        + "        })"
++                    )
++            registrations_list.append(
++                f'        runtime.define_contextual_attribute(&interface, "{idl}", {getter}, {setter_callback}, '
++                f'roves_v8::WebIdlArgumentConversion::{conversion}, {str(nullable).lower()})?;'
++            )
++            gate_last_registration(idl)
++
+         for idl, native, rust_type, value_expr, setter, conversion in attributes:
+             getter = (
+                 f'|native| {{\n'
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index d71a9433d7b..30fa5e349a2 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -104,7 +104,7 @@ class V8GeneratorTests(unittest.TestCase):
+                 generate(path, Path(directory) / "output")
+ 
+     def test_unsupported_members_never_silently_disappear(self):
+-        for member in ["readonly attribute (long or DOMString) value;", "readonly attribute Promise<any> value;", "static readonly attribute boolean valid;", "[GetterThrows] readonly attribute boolean valid;", "attribute byte value;"]:
++        for member in ["readonly attribute (long or DOMString) value;", "readonly attribute Promise<any> value;", "static readonly attribute boolean valid;", "[Unscopable] readonly attribute boolean valid;", "attribute Unsupported? owner;"]:
+             with self.subTest(member=member):
+                 self.assert_unsupported("interface Unsupported { " + member + " };")
+ 
+@@ -585,6 +585,31 @@ class V8GeneratorTests(unittest.TestCase):
+             ]:
+                 self.assertIn(expected, source)
+ 
++    def test_throwing_numeric_and_forwarding_attributes_use_contextual_accessors(self):
++        with tempfile.TemporaryDirectory() as directory:
++            target = Path(directory) / "Tokens.webidl"
++            target.write_text("[Exposed=Window] interface Tokens { attribute DOMString value; };", encoding="utf-8")
++            path = Path(directory) / "Owner.webidl"
++            path.write_text(
++                "[Exposed=Window] interface Owner { [SetterThrows] attribute DOMString? label; "
++                "[GetterThrows] readonly attribute unsigned long checked; attribute byte small; "
++                "[PutForwards=value] readonly attribute Tokens tokens; };",
++                encoding="utf-8",
++            )
++            source = generate(path, Path(directory) / "output", (target,))
++            for expected in [
++                "fn Label(&self) -> Option<Vec<u16>>;",
++                "fn set_Label(&self, value: Option<Vec<u16>>) -> Result<(), roves_v8::WebIdlError>;",
++                "fn Checked(&self) -> Result<u32, roves_v8::WebIdlError>;",
++                "fn set_Small(&self, value: i8);",
++                "fn Tokens(&self) -> roves_v8::NativeRef;",
++                "roves_v8::WebIdlArgumentConversion::DomString, true)?;",
++                "roves_v8::WebIdlArgumentConversion::Byte, false)?;",
++                'cx.set_property(&target, "value", value)',
++            ]:
++                self.assertIn(expected, source)
++            self.assertNotIn("fn set_Tokens", source)
++
+     def test_overloads_needing_type_distinction_fail_closed(self):
+         self.assert_unsupported("interface Unsupported { undefined f(DOMString a); undefined f(boolean a); };")
+         self.assert_unsupported("interface Unsupported { undefined f(DOMString a); undefined f(boolean a, optional boolean b); };")

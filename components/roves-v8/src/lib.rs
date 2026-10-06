@@ -149,6 +149,14 @@ pub mod webidl {
     pub mod listener_target {
         include!(concat!(env!("OUT_DIR"), "/ListenerTargetV8Binding.rs"));
     }
+    #[cfg(test)]
+    pub mod token_probe {
+        include!(concat!(env!("OUT_DIR"), "/TokenProbeV8Binding.rs"));
+    }
+    #[cfg(test)]
+    pub mod attribute_probe {
+        include!(concat!(env!("OUT_DIR"), "/AttributeProbeV8Binding.rs"));
+    }
 }
 
 use std::sync::Once;
@@ -789,6 +797,27 @@ impl ScriptContext<'_, '_, '_> {
         self.call(&method, &Value::Js(object.clone()), arguments)
     }
 
+    /// `object[name] = value` (an ordinary `[[Set]]`, so setters run). Exceptions come back as
+    /// [`WebIdlError::Js`]; a non-object target is a TypeError. Used by `[PutForwards]`.
+    pub fn set_property(&mut self, object: &Handle, name: &str, value: &Value) -> Result<(), WebIdlError> {
+        let local = v8::Local::new(self.scope, &object.0);
+        let Ok(target) = v8::Local::<v8::Object>::try_from(local) else {
+            return Err(WebIdlError::TypeError("cannot set a property on a non-object".into()));
+        };
+        let value = v8_result(self.scope, value);
+        let key = v8::String::new(self.scope, name).unwrap();
+        v8::tc_scope!(let try_catch, self.scope);
+        match target.set(try_catch, key.into(), value) {
+            Some(_) => Ok(()),
+            None => {
+                let exception = try_catch
+                    .exception()
+                    .unwrap_or_else(|| v8::undefined(try_catch).into());
+                Err(WebIdlError::Js(Handle(v8::Global::new(try_catch, exception))))
+            },
+        }
+    }
+
     /// The engine-neutral value of a JS value (primitives convert; objects stay [`Value::Js`]).
     pub fn value(&mut self, value: &Handle) -> Value {
         let local = v8::Local::new(self.scope, &value.0);
@@ -994,12 +1023,19 @@ fn convert_webidl_integer(number: f64, bits: u32, signed: bool) -> f64 {
     if !number.is_finite() || number == 0.0 {
         return 0.0;
     }
-    let modulus = 2.0_f64.powi(bits as i32);
-    let mut value = number.trunc().rem_euclid(modulus);
-    if signed && value >= modulus / 2.0 {
+    let truncated = number.trunc();
+    // Every f64 this large is a multiple of 2^64 (its ulp exceeds it), so the modulo is 0.
+    if truncated.abs() >= 2.0_f64.powi(127) {
+        return 0.0;
+    }
+    // Exact integer arithmetic: in f64, `-5 mod 2^64` would round 2^64 - 5 up to 2^64 and
+    // turn every negative `long long` into 0.
+    let modulus: i128 = 1 << bits;
+    let mut value = (truncated as i128).rem_euclid(modulus);
+    if signed && value >= modulus / 2 {
         value -= modulus;
     }
-    value
+    value as f64
 }
 
 struct WebIdlMethodConfig {
@@ -4049,6 +4085,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn webidl_integer_conversion_is_exact_for_64_bit_types() {
+        assert_eq!(super::convert_webidl_integer(-5.0, 64, true), -5.0);
+        assert_eq!(super::convert_webidl_integer(-5.0, 64, false), 18446744073709551611.0);
+        assert_eq!(super::convert_webidl_integer(-1.0, 32, false), 4294967295.0);
+        assert_eq!(super::convert_webidl_integer(300.0, 8, true), 44.0);
+        assert_eq!(super::convert_webidl_integer(-129.5, 8, true), 127.0);
+        assert_eq!(super::convert_webidl_integer(2.0_f64.powi(63), 64, true), -(2.0_f64.powi(63)));
+        assert_eq!(super::convert_webidl_integer(1e300, 64, true), 0.0);
+        assert_eq!(super::convert_webidl_integer(f64::NAN, 64, true), 0.0);
+    }
+
     mod traced {
         use super::super::*;
         use std::cell::{Cell, RefCell};
@@ -6617,6 +6665,112 @@ mod tests {
         );
         // A non-object listener is rejected by the callback-interface conversion.
         assert!(runtime.eval("t.listen(5)").unwrap_err().contains("TypeError"));
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_throwing_numeric_and_forwarding_attributes() {
+        use crate::webidl::attribute_probe::{AttributeProbeBinding, AttributeProbeNative};
+        use crate::webidl::token_probe::{TokenProbeBinding, TokenProbeNative};
+        use crate::{GcMember, NativeRef, Trace, Tracer, WebIdlError};
+        use std::cell::{Cell, RefCell};
+        /// Both interfaces share one native type, as in Servo's DOM.
+        enum Probe {
+            Tokens(RefCell<Vec<u16>>),
+            Owner {
+                label: RefCell<Option<Vec<u16>>>,
+                flag: Cell<bool>,
+                small: Cell<i8>,
+                big: Cell<i64>,
+                ratio: Cell<f32>,
+                tokens: GcMember<Probe>,
+            },
+        }
+        impl Trace for Probe {
+            fn trace(&self, tracer: &mut Tracer) {
+                if let Probe::Owner { tokens, .. } = self {
+                    tracer.member(tokens);
+                }
+            }
+        }
+        #[allow(non_snake_case)]
+        impl TokenProbeNative for Probe {
+            fn Value(&self) -> Vec<u16> {
+                let Probe::Tokens(value) = self else { unreachable!() };
+                value.borrow().clone()
+            }
+            fn set_Value(&self, value: Vec<u16>) {
+                let Probe::Tokens(slot) = self else { unreachable!() };
+                *slot.borrow_mut() = value;
+            }
+        }
+        macro_rules! owner {
+            ($self:ident, $field:ident) => {{
+                let Probe::Owner { $field, .. } = $self else { unreachable!() };
+                $field
+            }};
+        }
+        #[allow(non_snake_case)]
+        impl AttributeProbeNative for Probe {
+            fn Label(&self) -> Option<Vec<u16>> { owner!(self, label).borrow().clone() }
+            fn set_Label(&self, value: Option<Vec<u16>>) -> Result<(), WebIdlError> {
+                if value.as_deref() == Some(&[]) {
+                    return Err(WebIdlError::DomException { name: "SyntaxError".into(), message: "empty label".into() });
+                }
+                *owner!(self, label).borrow_mut() = value;
+                Ok(())
+            }
+            fn Checked(&self) -> Result<u32, WebIdlError> {
+                owner!(self, label).borrow().as_ref().map(|label| label.len() as u32).ok_or_else(|| WebIdlError::TypeError("no label".into()))
+            }
+            fn Flag(&self) -> Result<bool, WebIdlError> { Ok(owner!(self, flag).get()) }
+            fn set_Flag(&self, value: bool) -> Result<(), WebIdlError> { owner!(self, flag).set(value); Ok(()) }
+            fn Small(&self) -> i8 { owner!(self, small).get() }
+            fn set_Small(&self, value: i8) { owner!(self, small).set(value); }
+            fn Big(&self) -> i64 { owner!(self, big).get() }
+            fn set_Big(&self, value: i64) { owner!(self, big).set(value); }
+            fn Ratio(&self) -> f32 { owner!(self, ratio).get() }
+            fn set_Ratio(&self, value: f32) { owner!(self, ratio).set(value); }
+            fn Tokens(&self) -> NativeRef {
+                // SAFETY: the owner is the receiver (reachable) and traces `tokens`.
+                unsafe { owner!(self, tokens).native_ref("TokenProbe") }.unwrap()
+            }
+        }
+        let mut runtime = Runtime::new();
+        let _tokens = TokenProbeBinding::<Probe>::install(&mut runtime).unwrap();
+        let probes = AttributeProbeBinding::<Probe>::install(&mut runtime).unwrap();
+        let tokens = runtime.allocate_traced(Probe::Tokens(RefCell::new("a b".encode_utf16().collect())));
+        let owner = runtime.allocate_traced(Probe::Owner {
+            label: RefCell::new(None),
+            flag: Cell::new(false),
+            small: Cell::new(0),
+            big: Cell::new(0),
+            ratio: Cell::new(0.0),
+            tokens: tokens.member(),
+        });
+        let wrapper = probes.wrap_traced(&mut runtime, &owner);
+        runtime.set_global_property("probe", &wrapper).unwrap();
+        let caught = |runtime: &mut Runtime, source: &str| {
+            runtime.eval(&format!("(() => {{ try {{ {source}; return 'ok'; }} catch (e) {{ return e.name; }} }})()")).unwrap()
+        };
+        // [GetterThrows] and [SetterThrows] surface the native errors.
+        assert_eq!(caught(&mut runtime, "probe.checked"), "TypeError");
+        assert_eq!(caught(&mut runtime, "probe.label = ''"), "SyntaxError");
+        for (source, expected) in [
+            ("probe.label = 'name'; [probe.label, probe.checked].join()", "name,4"),
+            ("probe.label = null; probe.label", "null"),
+            ("probe.flag = 1; probe.flag", "true"),
+            // WebIDL integer conversions on setters: byte wraps, long long keeps sign.
+            ("probe.small = 300; probe.big = -5; [probe.small, probe.big].join()", "44,-5"),
+            ("probe.ratio = 0.1; probe.ratio === Math.fround(0.1)", "true"),
+            // [PutForwards=value]: assigning the attribute assigns its object's `value`.
+            ("const before = probe.tokens; probe.tokens = 'x y'; [probe.tokens.value, probe.tokens === before].join()", "x y,true"),
+            ("Object.getOwnPropertyDescriptor(AttributeProbe.prototype, 'tokens').set.length", "1"),
+        ] {
+            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
+        }
+        assert_eq!(String::from_utf16_lossy(&TokenProbeNative::Value(tokens.get())), "x y");
+        drop((wrapper, owner, tokens));
     }
 
     #[cfg(feature = "webidl-pilot")]

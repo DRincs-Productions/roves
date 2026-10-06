@@ -104,7 +104,7 @@ class V8GeneratorTests(unittest.TestCase):
                 generate(path, Path(directory) / "output")
 
     def test_unsupported_members_never_silently_disappear(self):
-        for member in ["readonly attribute (long or DOMString) value;", "readonly attribute Promise<any> value;", "static readonly attribute boolean valid;", "[GetterThrows] readonly attribute boolean valid;", "attribute byte value;"]:
+        for member in ["readonly attribute (long or DOMString) value;", "readonly attribute Promise<any> value;", "static readonly attribute boolean valid;", "[Unscopable] readonly attribute boolean valid;", "attribute Unsupported? owner;"]:
             with self.subTest(member=member):
                 self.assert_unsupported("interface Unsupported { " + member + " };")
 
@@ -584,6 +584,31 @@ class V8GeneratorTests(unittest.TestCase):
                 "Ok(roves_v8::TracedNative::new(<T as TargetNative>::Constructor()))",
             ]:
                 self.assertIn(expected, source)
+
+    def test_throwing_numeric_and_forwarding_attributes_use_contextual_accessors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "Tokens.webidl"
+            target.write_text("[Exposed=Window] interface Tokens { attribute DOMString value; };", encoding="utf-8")
+            path = Path(directory) / "Owner.webidl"
+            path.write_text(
+                "[Exposed=Window] interface Owner { [SetterThrows] attribute DOMString? label; "
+                "[GetterThrows] readonly attribute unsigned long checked; attribute byte small; "
+                "[PutForwards=value] readonly attribute Tokens tokens; };",
+                encoding="utf-8",
+            )
+            source = generate(path, Path(directory) / "output", (target,))
+            for expected in [
+                "fn Label(&self) -> Option<Vec<u16>>;",
+                "fn set_Label(&self, value: Option<Vec<u16>>) -> Result<(), roves_v8::WebIdlError>;",
+                "fn Checked(&self) -> Result<u32, roves_v8::WebIdlError>;",
+                "fn set_Small(&self, value: i8);",
+                "fn Tokens(&self) -> roves_v8::NativeRef;",
+                "roves_v8::WebIdlArgumentConversion::DomString, true)?;",
+                "roves_v8::WebIdlArgumentConversion::Byte, false)?;",
+                'cx.set_property(&target, "value", value)',
+            ]:
+                self.assertIn(expected, source)
+            self.assertNotIn("fn set_Tokens", source)
 
     def test_overloads_needing_type_distinction_fail_closed(self):
         self.assert_unsupported("interface Unsupported { undefined f(DOMString a); undefined f(boolean a); };")

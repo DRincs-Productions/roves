@@ -11,6 +11,50 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: throwing, numeric and `[PutForwards]` attributes; exact 64-bit conversion (CP63)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixtures
+`components/roves-v8/tests/webidl/TokenProbe.webidl` and `AttributeProbe.webidl`;
+`components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0127-roves-v8-fallible-attributes.patch` after 0126.
+
+**Generator.** Three kinds of attribute now go through the contextual accessor path from CP59, with
+results:
+- attributes with `[Throws]`/`[GetterThrows]`/`[SetterThrows]`;
+- mutable attributes of every numeric type (setters were limited to `double` and
+  `unsigned long`);
+- `[PutForwards=x]` attributes.
+
+The native trait keeps a context-free shape: `X(&self) -> T` or `Result<T, WebIdlError>`, and
+`set_X(&self, value)` likewise. `v8_setter_conversion` maps boolean, all integer and float types,
+`DOMString`, `USVString` and `ByteString` setters (nullable or not) to their runtime conversion.
+`[PutForwards=value]` installs a setter that runs `this.attr.value = V` through the new
+`ScriptContext::set_property` (an ordinary `[[Set]]`, so the target's own setter and errors apply).
+
+**Runtime bug found by the test.** `convert_webidl_integer` did the WebIDL modulo in `f64`. For
+64-bit types, `-5 mod 2^64 = 2^64 - 5` is not representable, so it rounded to `2^64` and every
+negative `long long` became 0, for operation arguments as well as attributes. It now uses exact
+`i128` arithmetic. Any `f64` of magnitude ≥ 2^127 is a multiple of 2^64, so it maps to 0. A new unit
+test covers 64-bit signed and unsigned values, 32-bit and 8-bit wrapping, truncation, the 2^63
+boundary, huge values and NaN.
+
+**Tests.**
+- New runtime test on a generated interface sharing a traced native type with the forwarding
+  target. It covers:
+  - `[GetterThrows]` raising TypeError and `[SetterThrows]` raising a DOMException name;
+  - nullable string setters;
+  - a `[Throws]` boolean;
+  - `byte` wrapping and a negative `long long`;
+  - `unrestricted float` rounding;
+  - `[PutForwards]` updating the identical target object, observed from Rust, with a setter
+    length of 1.
+- Generator tests: 52/52.
+- `roves-v8` pilot and pilot+JIT-less: 88 unit + 5 integration + 2 doctests each; default 60 unit +
+  2 doctests.
+- `servo-script` check with the pilot is clean.
+
+Coverage: **170/486**. **`Node` now generates.**
+
 ## 2026-10-06 - V8 migration Phase 4: unions, callback interfaces, traced constructors (CP62)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixture

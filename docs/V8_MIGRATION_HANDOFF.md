@@ -191,6 +191,13 @@ default 59+2, check pulito. Copertura **157/486**. **Prossimo:** blocchi di `Nod
 (attributi `[SetterThrows]`/`[PutForwards]`, setter di stringhe nullable, variadici, overload
 per tipo), poi l'esposizione non-Window.
 
+**CP63 (2026-10-06):** attributi che lanciano, setter di tutti i tipi numerici e `[PutForwards]`
+(patch 0127) sul percorso degli accessor contestuali; nuovo `ScriptContext::set_property`.
+**Bug corretto:** `convert_webidl_integer` calcolava il modulo in f64, e ogni `long long` negativo
+diventava 0; ora usa aritmetica `i128` esatta. Test generatore 52/52, `roves-v8` 88+5+2, default
+60+2, check pulito. Copertura **170/486**; **`Node` ora genera**. **Prossimo:** variadici,
+overload per tipo, `[HTMLConstructor]`, `[Unscopable]`, poi l'esposizione non-Window.
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

@@ -8336,6 +8336,31 @@ def v8_dictionary_info(dictionary, name: str):
     )
 
 
+# Attribute extended attributes handled by the fallible (contextual accessor) path.
+V8_FALLIBLE_ATTRIBUTE_ATTRIBUTES = {"Throws", "GetterThrows", "SetterThrows", "PutForwards"}
+
+
+def v8_setter_conversion(idl_type, nullable: bool):
+    """(WebIdlArgumentConversion, nullable, match arm) for a setter's value on the contextual
+    accessor path, or None if the type has no setter conversion yet."""
+    if idl_type.isBoolean():
+        conversion, arm = "Boolean", "Value::Bool(value) => *value"
+    elif (idl_type.isInteger() or idl_type.isFloat()) and idl_type.name in V8_TYPED_PRIMITIVES:
+        _, conversion, arm, _ = V8_TYPED_PRIMITIVES[idl_type.name]
+    elif idl_type.isDOMString():
+        conversion, arm = "DomString", "Value::Utf16String(value) => value.clone()"
+    elif idl_type.isUSVString():
+        conversion, arm = "UsvString", "Value::String(value) => value.clone()"
+    elif idl_type.isByteString():
+        conversion, arm = "ByteString", "Value::ByteString(value) => value.clone()"
+    else:
+        return None
+    if nullable:
+        pattern, expression = arm.split(" => ", 1)
+        arm = f"Value::Null => None, {pattern} => Some({expression})"
+    return conversion, nullable, arm
+
+
 def v8_union_info(ty, name: str, member_name: str):
     """A Rust enum per union (named like Servo's, e.g. AddEventListenerOptionsOrBoolean) with
     one variant per member type."""
@@ -8810,6 +8835,7 @@ class CGV8BindingRoot(CGThing):
         operations = []
         unforgeable_attributes = set()
         contextual_attributes = []
+        fallible_attributes = []
         member_conditions = {}
         ce_reaction_members = set()
         constants = []
@@ -8934,6 +8960,7 @@ class CGV8BindingRoot(CGThing):
                 continue
             attribute_attributes = (
                 set(member._extendedAttrDict) - {"CEReactions"} - V8_IGNORED_MEMBER_HINTS - V8_EXPOSURE_ATTRIBUTES
+                - V8_FALLIBLE_ATTRIBUTE_ATTRIBUTES
                 if member.isAttr() else set()
             )
             if member.isAttr() and "CEReactions" in member._extendedAttrDict:
@@ -9021,6 +9048,28 @@ class CGV8BindingRoot(CGThing):
                 conversion = "NullableUnsignedLong" if member.type.nullable() else "UnsignedLong"
             elif idl_type.isUSVString():
                 conversion = "NullableUsvString" if member.type.nullable() else "UsvString"
+            extended = member._extendedAttrDict
+            getter_throws = bool({"Throws", "GetterThrows"} & set(extended))
+            setter_throws = setter and bool({"Throws", "SetterThrows"} & set(extended))
+            put_forwards = extended.get("PutForwards")
+            if (getter_throws or setter_throws or put_forwards
+                    or (setter and not idl_type.isDOMString() and conversion is None)):
+                if put_forwards:
+                    if not member.readonly or not v8_is_dom_interface(idl_type) or member.type.nullable():
+                        raise TypeError(f"V8 backend unsupported [PutForwards] attribute: {name}.{member.identifier.name}")
+                    setter_info = ("Any", False, None, put_forwards[0])
+                elif setter:
+                    setter_conversion = v8_setter_conversion(idl_type, member.type.nullable())
+                    if setter_conversion is None:
+                        raise TypeError(f"V8 backend does not support mutable attribute type: {name}.{member.identifier.name}")
+                    setter_info = setter_conversion + (None,)
+                else:
+                    setter_info = None
+                fallible_attributes.append((
+                    member.identifier.name, MakeNativeName(member.identifier.name), rust_type, value_expr,
+                    getter_throws, setter_throws, setter_info,
+                ))
+                continue
             if setter and not idl_type.isDOMString() and conversion is None:
                 raise TypeError(f"V8 backend does not support mutable attribute type: {name}.{member.identifier.name}")
             attributes.append((member.identifier.name, MakeNativeName(member.identifier.name), rust_type, value_expr, setter, conversion))
@@ -9028,6 +9077,10 @@ class CGV8BindingRoot(CGThing):
             [f"    fn {native}(&self, cx: &mut roves_v8::ScriptContext) -> Result<{rust_type}, roves_v8::WebIdlError>;"
              + (f"\n    fn set_{native}(&self, cx: &mut roves_v8::ScriptContext, value: {rust_type}) -> Result<(), roves_v8::WebIdlError>;" if setter else "")
              for _, native, rust_type, _, setter, _ in contextual_attributes]
+            + [f"    fn {native}(&self) -> {f'Result<{rust_type}, roves_v8::WebIdlError>' if getter_throws else rust_type};"
+               + (f"\n    fn set_{native}(&self, value: {rust_type}){' -> Result<(), roves_v8::WebIdlError>' if setter_throws else ''};"
+                  if setter_info and not setter_info[3] else "")
+               for _, native, rust_type, _, getter_throws, setter_throws, setter_info in fallible_attributes]
             + [f"    fn {native}(&self) -> {rust_type};"
              + (f"\n    fn set_{native}(&self, value: {rust_type});" if setter else "")
              for _, native, rust_type, _, setter, _ in attributes]
@@ -9069,6 +9122,48 @@ class CGV8BindingRoot(CGThing):
                 )
             else:
                 setter_callback = "None"
+            registrations_list.append(
+                f'        runtime.define_contextual_attribute(&interface, "{idl}", {getter}, {setter_callback}, '
+                f'roves_v8::WebIdlArgumentConversion::{conversion}, {str(nullable).lower()})?;'
+            )
+            gate_last_registration(idl)
+
+        for idl, native, rust_type, value_expr, getter_throws, setter_throws, setter_info in fallible_attributes:
+            downcast = f'            let native = native.downcast_ref::<T>().expect("typed {name} wrapper");\n'
+            if getter_throws:
+                read = (
+                    f"            let result = native.{native}()?;\n"
+                    f"            Ok({value_expr.replace('native.{native}()', 'result')})\n"
+                )
+            else:
+                read = f"            Ok({value_expr.format(native=native)})\n"
+            getter = f"|cx, native| {{\n            let _ = cx;\n{downcast}{read}        }}"
+            if setter_info is None:
+                setter_callback, conversion, nullable = "None", "Any", False
+            else:
+                conversion, nullable, arm, forward = setter_info
+                if forward:
+                    # [PutForwards]: assign the value to the attribute's object's property.
+                    target = (
+                        f"native.{native}()?" if getter_throws else value_expr.format(native=native)
+                    )
+                    if getter_throws:
+                        target = value_expr.replace("native.{native}()", f"native.{native}()?")
+                    setter_callback = (
+                        f"Some(|cx, native, value| {{\n{downcast}"
+                        f"            let target = {target};\n"
+                        f"            let target = cx.handle(&target);\n"
+                        f'            cx.set_property(&target, "{forward}", value)\n'
+                        f"        }})"
+                    )
+                else:
+                    call = f"native.set_{native}(value)"
+                    setter_callback = (
+                        f"Some(|cx, native, value| {{\n            let _ = cx;\n{downcast}"
+                        f'            let value = match value {{ {arm}, _ => unreachable!("runtime conversion matches generated WebIDL attribute type") }};\n'
+                        + (f"            {call}\n" if setter_throws else f"            {call};\n            Ok(())\n")
+                        + "        })"
+                    )
             registrations_list.append(
                 f'        runtime.define_contextual_attribute(&interface, "{idl}", {getter}, {setter_callback}, '
                 f'roves_v8::WebIdlArgumentConversion::{conversion}, {str(nullable).lower()})?;'
