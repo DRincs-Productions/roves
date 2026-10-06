@@ -207,6 +207,12 @@ default 60+2, check pulito. Copertura 171/486.
 **190/486**. **Prossimo:** esposizione non-Window (31: Worker e worklet), `Promise`, overload
 per tipo, `[Serializable]`/`[Transferable]`.
 
+**CP66 (2026-10-06):** `[Exposed]` per worker e worklet (patch 0130). `Exposure::global_name` ed
+`exposed_in` (`*`, gruppo `Worker`); i binding nascondono oggetti interfaccia e membri sui global
+non esposti. Test generatore 54/54, `roves-v8` 90+5+2, default 60+2, check pulito. Copertura
+**208/486**. **Prossimo:** `Promise`, overload per tipo, iterable/maplike/setlike,
+`[Serializable]`/`[Transferable]`, `[Global]` (`Window` e i global dei worker).
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

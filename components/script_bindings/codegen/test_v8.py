@@ -383,12 +383,17 @@ class V8GeneratorTests(unittest.TestCase):
         self.assert_unsupported("interface Unsupported { [Pref=\"dom_x\"] constructor(); };")
         self.assert_unsupported("namespace Unsupported { undefined run(); };")
 
-    def test_non_window_exposure_fails_closed(self):
+    def test_non_window_exposure_hides_the_interface_object_elsewhere(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "WorkerOnly.webidl"
-            path.write_text("[Exposed=Worker] interface WorkerOnly {};", encoding="utf-8")
-            with self.assertRaisesRegex(TypeError, "exposed to Window"):
-                generate(path, Path(directory) / "output")
+            path.write_text("[Exposed=Worker] interface WorkerOnly { readonly attribute boolean ok; };", encoding="utf-8")
+            source = generate(path, Path(directory) / "output")
+            self.assertIn('if !(exposure.exposed_in(&["Worker"])) {', source)
+            shared = Path(directory) / "Shared.webidl"
+            shared.write_text("[Exposed=(Window,Worker)] interface Shared { [Exposed=Window] readonly attribute boolean ok; };", encoding="utf-8")
+            source = generate(shared, Path(directory) / "output")
+            self.assertIn('if !(exposure.exposed_in(&["Window", "Worker"])) {', source)
+            self.assertIn('if exposure.exposed_in(&["Window"]) {', source)
 
     def test_multi_global_exposure_including_window_is_supported(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -786,7 +791,7 @@ class V8GeneratorTests(unittest.TestCase):
                 "exposure: &dyn roves_v8::Exposure,",
                 'if exposure.pref_enabled("dom_extra") && exposure.is_secure_context() {',
                 "if exposure.is_secure_context() {",
-                'if !(exposure.pref_enabled("dom_gated")) {',
+                'if !(exposure.exposed_in(&["Window"]) && exposure.pref_enabled("dom_gated")) {',
                 "runtime.hide_interface_object(&interface);",
             ]:
                 self.assertIn(expected, source)

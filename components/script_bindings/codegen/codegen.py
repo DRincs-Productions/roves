@@ -8741,12 +8741,27 @@ V8_IGNORED_MEMBER_HINTS = {"Pure", "Constant", "SameObject", "NewObject"}
 V8_CONTEXTUAL_CONVERSIONS = {"Any", "Object", "Callback"}
 
 # Exposure conditions a binding checks through `roves_v8::Exposure` while installing.
-V8_EXPOSURE_ATTRIBUTES = {"Pref", "SecureContext"}
+V8_EXPOSURE_ATTRIBUTES = {"Pref", "SecureContext", "Exposed"}
 
 
-def v8_exposure_condition(extended_attributes) -> str | None:
-    """Rust condition for an interface's or member's [Pref]/[SecureContext], or None."""
+def v8_exposed_globals(extended_attributes) -> list:
+    """`[Exposed=Window]` parses as ["Window"], `[Exposed=(Window,Worker)]` as
+    [["Window", "Worker"]]; flatten both forms."""
+    globals_ = []
+    for entry in extended_attributes.get("Exposed") or []:
+        globals_.extend(entry if isinstance(entry, list) else [entry])
+    return globals_
+
+
+def v8_exposure_condition(extended_attributes, include_exposed: bool = True) -> str | None:
+    """Rust condition for an interface's or member's [Exposed]/[Pref]/[SecureContext], or None.
+    `[Exposed]` lists that include Window or `*` are always true for the Window realm, but are
+    still checked so other globals (workers, worklets) get the right shape."""
     conditions = []
+    exposed = v8_exposed_globals(extended_attributes) if include_exposed else []
+    if exposed and "*" not in exposed:
+        names = ", ".join(f'"{name}"' for name in exposed)
+        conditions.append(f"exposure.exposed_in(&[{names}])")
     if "Pref" in extended_attributes:
         conditions.append(f'exposure.pref_enabled("{extended_attributes["Pref"][0]}")')
     if "SecureContext" in extended_attributes:
@@ -8850,14 +8865,9 @@ class CGV8BindingRoot(CGThing):
         unsupported = set(interface._extendedAttrDict) - {"Exposed", "LegacyNoInterfaceObject", "Abstract"} - V8_EXPOSURE_ATTRIBUTES
         if unsupported:
             raise TypeError(f"V8 backend unsupported attributes on {name}: {sorted(unsupported)}")
-        exposed = interface._extendedAttrDict.get("Exposed")
-        # `[Exposed=Window]` parses as ["Window"], `[Exposed=(Window,Worker)]` as
-        # [["Window", "Worker"]]; flatten both forms before checking for Window.
-        exposed_globals = set()
-        for entry in exposed or []:
-            exposed_globals.update(entry if isinstance(entry, list) else [entry])
-        if not ({"Window", "*"} & exposed_globals):
-            raise TypeError(f"V8 pilot only supports interfaces exposed to Window: {name}")
+        exposed_globals = v8_exposed_globals(interface._extendedAttrDict)
+        if not exposed_globals:
+            raise TypeError(f"V8 backend requires an [Exposed] list: {name}")
         # A member redeclared down the chain would give the native trait and its supertrait
         # two methods of the same name, making generated calls ambiguous.
         # The parser copies an ancestor's [LegacyUnforgeable] members into each descendant

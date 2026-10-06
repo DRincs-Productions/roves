@@ -11,6 +11,37 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: `[Exposed]` for workers and worklets (CP66)
+
+**Servo files:** `components/roves-v8/src/lib.rs`; `components/script_bindings/codegen/codegen.py`,
+`test_v8.py`.
+**Patch:** `0130-roves-v8-global-exposure.patch` after 0129.
+
+The V8 backend had rejected every interface not exposed to Window (31 definitions). The generated
+binding does not depend on which global it is installed in. Only the interface object's presence
+and member-level `[Exposed]` do.
+
+- `roves_v8::Exposure` gains `global_name()` (default `"Window"`) and `exposed_in(globals)`, where
+  `*` matches every global and `Worker` matches every worker global (`DedicatedWorker`,
+  `ServiceWorker`...). Both are default methods, so existing implementations are unaffected.
+- Generated bindings fold the interface's `[Exposed]` list into the interface condition, so the
+  interface object is hidden on globals it is not exposed to. Member-level `[Exposed]` gates the
+  member like `[Pref]`.
+- The "exposed to Window only" rejection is gone. Six generated iterator helper interfaces with no
+  `[Exposed]` list are still rejected, pending iterable support.
+
+**Tests.**
+- The exposure runtime test adds a `DedicatedWorker` realm with every pref on: the Window-only
+  interface has no interface object while its natives still wrap. It also checks the `exposed_in`
+  rules.
+- Generator tests cover a worker-only interface and a Window-only member of a shared interface:
+  54/54.
+- `roves-v8` pilot and pilot+JIT-less: 90 unit + 5 integration + 2 doctests each; default 60 unit +
+  2 doctests.
+- `servo-script` check with the pilot is clean.
+
+Coverage: **208/486**.
+
 ## 2026-10-06 - V8 migration Phase 4: static operations, `[Unscopable]`, default `toJSON`, `[NewObject]` (CP65)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixtures

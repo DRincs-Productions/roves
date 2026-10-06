@@ -1,0 +1,135 @@
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index cccc170ffb7..de5c42bb901 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -1150,6 +1150,20 @@ impl TracedNative {
+ pub trait Exposure {
+     fn pref_enabled(&self, name: &str) -> bool;
+     fn is_secure_context(&self) -> bool;
++
++    /// The WebIDL name of the realm's global (`Window`, `DedicatedWorker`, `PaintWorklet`...).
++    fn global_name(&self) -> &str {
++        "Window"
++    }
++
++    /// Whether an `[Exposed=(..)]` list includes this realm's global: `*` matches every global,
++    /// and `Worker` matches every worker global (`DedicatedWorker`, `ServiceWorker`...).
++    fn exposed_in(&self, globals: &[&str]) -> bool {
++        let global = self.global_name();
++        globals.iter().any(|exposed| {
++            *exposed == "*" || *exposed == global || (*exposed == "Worker" && global.ends_with("Worker"))
++        })
++    }
+ }
+ 
+ /// The custom element reaction hook generated bindings call around `[CEReactions]` members:
+@@ -6385,6 +6399,21 @@ mod tests {
+             runtime.eval("[typeof ExposureGated, gated.extra, gated.secret(), gated instanceof ExposureGated].join()").unwrap(),
+             "function,true,true,true"
+         );
++
++        // A worker realm with every pref on: a Window-only interface has no interface object.
++        struct DedicatedWorker;
++        impl Exposure for DedicatedWorker {
++            fn pref_enabled(&self, _name: &str) -> bool { true }
++            fn is_secure_context(&self) -> bool { true }
++            fn global_name(&self) -> &str { "DedicatedWorker" }
++        }
++        assert!(DedicatedWorker.exposed_in(&["Worker"]) && DedicatedWorker.exposed_in(&["*"]));
++        assert!(!DedicatedWorker.exposed_in(&["Window"]) && !ExposeAll.exposed_in(&["Worker"]));
++        let mut runtime = Runtime::new();
++        let gated = ExposureGatedBinding::<Gated>::install_with(&mut runtime, &DedicatedWorker).unwrap();
++        let instance = gated.create(&mut runtime, Gated);
++        runtime.set_global_property("gated", &instance).unwrap();
++        assert_eq!(runtime.eval("[typeof ExposureGated, gated.always].join()").unwrap(), "undefined,true");
+     }
+ 
+     #[cfg(feature = "webidl-pilot")]
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index db10ab82ff8..7215fc54d61 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8741,12 +8741,27 @@ V8_IGNORED_MEMBER_HINTS = {"Pure", "Constant", "SameObject", "NewObject"}
+ V8_CONTEXTUAL_CONVERSIONS = {"Any", "Object", "Callback"}
+ 
+ # Exposure conditions a binding checks through `roves_v8::Exposure` while installing.
+-V8_EXPOSURE_ATTRIBUTES = {"Pref", "SecureContext"}
++V8_EXPOSURE_ATTRIBUTES = {"Pref", "SecureContext", "Exposed"}
+ 
+ 
+-def v8_exposure_condition(extended_attributes) -> str | None:
+-    """Rust condition for an interface's or member's [Pref]/[SecureContext], or None."""
++def v8_exposed_globals(extended_attributes) -> list:
++    """`[Exposed=Window]` parses as ["Window"], `[Exposed=(Window,Worker)]` as
++    [["Window", "Worker"]]; flatten both forms."""
++    globals_ = []
++    for entry in extended_attributes.get("Exposed") or []:
++        globals_.extend(entry if isinstance(entry, list) else [entry])
++    return globals_
++
++
++def v8_exposure_condition(extended_attributes, include_exposed: bool = True) -> str | None:
++    """Rust condition for an interface's or member's [Exposed]/[Pref]/[SecureContext], or None.
++    `[Exposed]` lists that include Window or `*` are always true for the Window realm, but are
++    still checked so other globals (workers, worklets) get the right shape."""
+     conditions = []
++    exposed = v8_exposed_globals(extended_attributes) if include_exposed else []
++    if exposed and "*" not in exposed:
++        names = ", ".join(f'"{name}"' for name in exposed)
++        conditions.append(f"exposure.exposed_in(&[{names}])")
+     if "Pref" in extended_attributes:
+         conditions.append(f'exposure.pref_enabled("{extended_attributes["Pref"][0]}")')
+     if "SecureContext" in extended_attributes:
+@@ -8850,14 +8865,9 @@ class CGV8BindingRoot(CGThing):
+         unsupported = set(interface._extendedAttrDict) - {"Exposed", "LegacyNoInterfaceObject", "Abstract"} - V8_EXPOSURE_ATTRIBUTES
+         if unsupported:
+             raise TypeError(f"V8 backend unsupported attributes on {name}: {sorted(unsupported)}")
+-        exposed = interface._extendedAttrDict.get("Exposed")
+-        # `[Exposed=Window]` parses as ["Window"], `[Exposed=(Window,Worker)]` as
+-        # [["Window", "Worker"]]; flatten both forms before checking for Window.
+-        exposed_globals = set()
+-        for entry in exposed or []:
+-            exposed_globals.update(entry if isinstance(entry, list) else [entry])
+-        if not ({"Window", "*"} & exposed_globals):
+-            raise TypeError(f"V8 pilot only supports interfaces exposed to Window: {name}")
++        exposed_globals = v8_exposed_globals(interface._extendedAttrDict)
++        if not exposed_globals:
++            raise TypeError(f"V8 backend requires an [Exposed] list: {name}")
+         # A member redeclared down the chain would give the native trait and its supertrait
+         # two methods of the same name, making generated calls ambiguous.
+         # The parser copies an ancestor's [LegacyUnforgeable] members into each descendant
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index 38632fdc452..f1a3b38f9a2 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -383,12 +383,17 @@ class V8GeneratorTests(unittest.TestCase):
+         self.assert_unsupported("interface Unsupported { [Pref=\"dom_x\"] constructor(); };")
+         self.assert_unsupported("namespace Unsupported { undefined run(); };")
+ 
+-    def test_non_window_exposure_fails_closed(self):
++    def test_non_window_exposure_hides_the_interface_object_elsewhere(self):
+         with tempfile.TemporaryDirectory() as directory:
+             path = Path(directory) / "WorkerOnly.webidl"
+-            path.write_text("[Exposed=Worker] interface WorkerOnly {};", encoding="utf-8")
+-            with self.assertRaisesRegex(TypeError, "exposed to Window"):
+-                generate(path, Path(directory) / "output")
++            path.write_text("[Exposed=Worker] interface WorkerOnly { readonly attribute boolean ok; };", encoding="utf-8")
++            source = generate(path, Path(directory) / "output")
++            self.assertIn('if !(exposure.exposed_in(&["Worker"])) {', source)
++            shared = Path(directory) / "Shared.webidl"
++            shared.write_text("[Exposed=(Window,Worker)] interface Shared { [Exposed=Window] readonly attribute boolean ok; };", encoding="utf-8")
++            source = generate(shared, Path(directory) / "output")
++            self.assertIn('if !(exposure.exposed_in(&["Window", "Worker"])) {', source)
++            self.assertIn('if exposure.exposed_in(&["Window"]) {', source)
+ 
+     def test_multi_global_exposure_including_window_is_supported(self):
+         with tempfile.TemporaryDirectory() as directory:
+@@ -786,7 +791,7 @@ class V8GeneratorTests(unittest.TestCase):
+                 "exposure: &dyn roves_v8::Exposure,",
+                 'if exposure.pref_enabled("dom_extra") && exposure.is_secure_context() {',
+                 "if exposure.is_secure_context() {",
+-                'if !(exposure.pref_enabled("dom_gated")) {',
++                'if !(exposure.exposed_in(&["Window"]) && exposure.pref_enabled("dom_gated")) {',
+                 "runtime.hide_interface_object(&interface);",
+             ]:
+                 self.assertIn(expected, source)

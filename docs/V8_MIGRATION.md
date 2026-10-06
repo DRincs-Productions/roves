@@ -127,6 +127,10 @@ into one converted sequence. Coverage 171/486.
 Coverage 190/486. Remaining top blockers: missing ancestors (35), non-Window exposure (31),
 shadowing (11), `[Serializable]`/`[Transferable]`, type-distinguished overloads, promises.
 
+**CP66 (2026-10-06): `[Exposed]` for workers/worklets.** `Exposure::global_name`/`exposed_in`;
+bindings hide interface objects and members on globals they are not exposed to. Coverage
+208/486.
+
 CP37 exposes stable `NativeObjectId` through `DomObject` and updates generated `dom_struct`
 equality to use that engine-neutral contract. Local checks pass (reflector 2/2, macro 3/3,
 rustfmt, and patch 0101 reverse-check); CI is green: V8 37226916624 (6/6), Servo 37226916650

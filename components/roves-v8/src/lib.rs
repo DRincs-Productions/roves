@@ -1150,6 +1150,20 @@ impl TracedNative {
 pub trait Exposure {
     fn pref_enabled(&self, name: &str) -> bool;
     fn is_secure_context(&self) -> bool;
+
+    /// The WebIDL name of the realm's global (`Window`, `DedicatedWorker`, `PaintWorklet`...).
+    fn global_name(&self) -> &str {
+        "Window"
+    }
+
+    /// Whether an `[Exposed=(..)]` list includes this realm's global: `*` matches every global,
+    /// and `Worker` matches every worker global (`DedicatedWorker`, `ServiceWorker`...).
+    fn exposed_in(&self, globals: &[&str]) -> bool {
+        let global = self.global_name();
+        globals.iter().any(|exposed| {
+            *exposed == "*" || *exposed == global || (*exposed == "Worker" && global.ends_with("Worker"))
+        })
+    }
 }
 
 /// The custom element reaction hook generated bindings call around `[CEReactions]` members:
@@ -6385,6 +6399,21 @@ mod tests {
             runtime.eval("[typeof ExposureGated, gated.extra, gated.secret(), gated instanceof ExposureGated].join()").unwrap(),
             "function,true,true,true"
         );
+
+        // A worker realm with every pref on: a Window-only interface has no interface object.
+        struct DedicatedWorker;
+        impl Exposure for DedicatedWorker {
+            fn pref_enabled(&self, _name: &str) -> bool { true }
+            fn is_secure_context(&self) -> bool { true }
+            fn global_name(&self) -> &str { "DedicatedWorker" }
+        }
+        assert!(DedicatedWorker.exposed_in(&["Worker"]) && DedicatedWorker.exposed_in(&["*"]));
+        assert!(!DedicatedWorker.exposed_in(&["Window"]) && !ExposeAll.exposed_in(&["Worker"]));
+        let mut runtime = Runtime::new();
+        let gated = ExposureGatedBinding::<Gated>::install_with(&mut runtime, &DedicatedWorker).unwrap();
+        let instance = gated.create(&mut runtime, Gated);
+        runtime.set_global_property("gated", &instance).unwrap();
+        assert_eq!(runtime.eval("[typeof ExposureGated, gated.always].join()").unwrap(), "undefined,true");
     }
 
     #[cfg(feature = "webidl-pilot")]
