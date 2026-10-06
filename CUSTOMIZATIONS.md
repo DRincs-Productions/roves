@@ -11,6 +11,44 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: interface-level `[LegacyUnforgeable]`, stringifier fix (CP89)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `components/roves-v8/build.rs`,
+`components/roves-v8/tests/webidl/LocationProbe.webidl` (new),
+`components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0153-roves-v8-unforgeable-interfaces-stringifier.patch` after 0152.
+
+- **Interface-level `[LegacyUnforgeable]`** (`Location`, `DissimilarOriginLocation`). With
+  `Runtime::make_unforgeable`, every regular attribute and operation defined afterwards goes on
+  the instance template instead of the prototype. Accessors get `DONT_DELETE`; operations get
+  `READ_ONLY | DONT_DELETE`. All accessor and method definition paths share the new
+  `member_target` helper. Instances also get WebIDL's own `valueOf`, which is the intrinsic
+  `%Object.prototype.valueOf%` (non-writable, non-enumerable, non-configurable).
+- **`[CrossOriginReadable/Writable/Callable]`** are accepted as hints. They only widen access
+  for cross-origin callers, and the V8 pilot exposes no object cross-origin yet, so ignoring
+  them is fail-safe. The cross-origin WindowProxy/Location work must revisit this.
+- **Stringifier fix (a latent bug).** Interfaces with a stringifier (`URL`, `DOMTokenList`,
+  `Range`, `HTMLAnchorElement`, `MediaList`, `TrustedHTML`, ...) generated a JS method literally
+  named `__stringifier`, with a native of that name, instead of `toString`. Now, as in Servo,
+  the method is `toString`:
+  - a `stringifier attribute` calls that attribute's getter (`Href`), with no extra native;
+  - a bare `stringifier;` calls the native `Stringifier`.
+
+Tests: generator 73/73 (new stringifier test). The new runtime fixture `LocationProbe` covers:
+- own and non-configurable members, with none on the prototype;
+- failing `delete` and `defineProperty`;
+- the `valueOf` descriptor;
+- `toString`/`String()` through the stringifier attribute;
+- a throwing setter that leaves the value unchanged;
+- prototype patching that cannot intercept.
+
+`roves-v8` passes 112 + 5 + 2 (also `jitless`), and 61 + 2 by default. The `servo-script`
+pilot check is clean.
+
+Coverage: **476/486 (97.9%)**. **`Location` and `DissimilarOriginLocation` now generate.** The
+only remaining blocker is `[Global]`: `Window`, `DissimilarOriginWindow`, the worker,
+worklet and debugger global scopes, and `GlobalScope` `[Inline]`.
+
 ## 2026-10-06 - V8 migration Phase 4: named properties, `[LegacyOverrideBuiltIns]`, indexed setters (CP88)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `components/roves-v8/build.rs`,

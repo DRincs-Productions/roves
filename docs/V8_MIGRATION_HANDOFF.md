@@ -336,6 +336,12 @@ Test: generatore 72/72, `roves-v8` 111+5+2. Copertura **474/486 (97.5%)**. **Rim
 `[Global]` (10) e `[LegacyUnforgeable]` sull'interfaccia (`Location`,
 `DissimilarOriginLocation`).
 
+**CP89 (2026-10-06):** `[LegacyUnforgeable]` sull'interfaccia (`make_unforgeable`,
+`member_target`, `valueOf` intrinseco) e i `[CrossOrigin*]` come hint (patch 0153). **Corretto
+un bug latente:** gli stringifier generavano un metodo JS `__stringifier` invece di `toString`.
+**Generano `Location` e `DissimilarOriginLocation`.** Test: generatore 73/73, `roves-v8`
+112+5+2. Copertura **476/486 (97.9%)**. **Resta solo `[Global]`** (vedi il piano sotto).
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

@@ -1,0 +1,330 @@
+diff --git a/components/roves-v8/build.rs b/components/roves-v8/build.rs
+index 05efd1c2e4e..504d97d00e4 100644
+--- a/components/roves-v8/build.rs
++++ b/components/roves-v8/build.rs
+@@ -248,6 +248,7 @@ fn main() {
+         ("ScoreMap", &[][..]),
+         ("StorageProbe", &[][..]),
+         ("DataMapProbe", &[][..]),
++        ("LocationProbe", &[][..]),
+     ] {
+         println!("cargo:rerun-if-changed={}", fixtures.join(format!("{interface}.webidl")).display());
+         println!("cargo:rerun-if-changed={}", fixtures.join("Bindings.conf").display());
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index c6bd0623702..863c97bfd45 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -222,6 +222,10 @@ pub mod webidl {
+         include!(concat!(env!("OUT_DIR"), "/DataMapProbeV8Binding.rs"));
+     }
+     #[cfg(test)]
++    pub mod location_probe {
++        include!(concat!(env!("OUT_DIR"), "/LocationProbeV8Binding.rs"));
++    }
++    #[cfg(test)]
+     pub mod promise_operations {
+         include!(concat!(env!("OUT_DIR"), "/PromiseOperationsV8Binding.rs"));
+     }
+@@ -438,6 +442,9 @@ pub struct Interface {
+     replaceable: std::cell::RefCell<std::collections::HashSet<String>>,
+     /// `[ExceptionClass]` (`DOMException`): the prototype object inherits `Error.prototype`.
+     exception_class: std::cell::Cell<bool>,
++    /// Interface-level `[LegacyUnforgeable]` (`Location`): every regular attribute and operation
++    /// is a non-configurable own property of each instance instead of a prototype member.
++    unforgeable_members: std::cell::Cell<bool>,
+     /// `[LegacyFactoryFunction]`s (`Image`, `Audio`, `Option`): name and function template.
+     legacy_factories: std::cell::RefCell<Vec<(String, v8::Global<v8::FunctionTemplate>)>>,
+     // Materializing a child also freezes all ancestor templates. Shared flags track
+@@ -797,6 +804,26 @@ fn lenient_setter<'s>(
+     Some(setter)
+ }
+ 
++/// Where a regular member of `interface` is defined: the prototype, or for an interface-level
++/// `[LegacyUnforgeable]` each instance, as a non-configurable (and, for operations, read-only)
++/// own property.
++fn member_target<'s>(
++    scope: &mut v8::PinScope<'s, '_>,
++    interface: &Interface,
++    template: v8::Local<'s, v8::FunctionTemplate>,
++    operation: bool,
++) -> (v8::Local<'s, v8::ObjectTemplate>, v8::PropertyAttribute) {
++    if !interface.unforgeable_members.get() {
++        return (template.prototype_template(scope), v8::PropertyAttribute::NONE);
++    }
++    let attributes = if operation {
++        v8::PropertyAttribute::READ_ONLY | v8::PropertyAttribute::DONT_DELETE
++    } else {
++        v8::PropertyAttribute::DONT_DELETE
++    };
++    (template.instance_template(scope), attributes)
++}
++
+ /// Moves a newly constructed native onto the traced heap with `object` as its one wrapper.
+ fn attach_new_traced_native(scope: &mut v8::PinScope, object: v8::Local<v8::Object>, interface: &str, native: TracedNative) {
+     let gc_box = GcBox {
+@@ -2779,6 +2806,7 @@ impl Runtime {
+             lenient_setters: std::cell::RefCell::new(std::collections::HashSet::new()),
+             replaceable: std::cell::RefCell::new(std::collections::HashSet::new()),
+             exception_class: std::cell::Cell::new(false),
++            unforgeable_members: std::cell::Cell::new(false),
+             pair_iterable: std::cell::Cell::new(None),
+             materialized: std::rc::Rc::new(std::cell::Cell::new(false)),
+             ancestors: parent.map_or_else(Vec::new, |parent| {
+@@ -3492,12 +3520,8 @@ impl Runtime {
+             None
+         };
+         let setter_template = setter_template.or_else(|| lenient_setter(scope, interface, name));
+-        template.prototype_template(scope).set_accessor_property(
+-            key.into(),
+-            Some(getter_template),
+-            setter_template,
+-            v8::PropertyAttribute::NONE,
+-        );
++        let (target, attributes) = member_target(scope, interface, template, false);
++        target.set_accessor_property(key.into(), Some(getter_template), setter_template, attributes);
+         Ok(())
+     }
+ 
+@@ -3698,6 +3722,24 @@ impl Runtime {
+         interface
+     }
+ 
++    /// Makes `interface` `[LegacyUnforgeable]` as a whole (`Location`): regular attributes and
++    /// operations defined after this become non-configurable own properties of each instance,
++    /// and instances get WebIDL's unforgeable `valueOf` (`%Object.prototype.valueOf%`).
++    pub fn make_unforgeable(&mut self, interface: &Interface) {
++        interface.unforgeable_members.set(true);
++        let context_handle = &self.context;
++        v8::scope!(let scope, &mut self.isolate);
++        let context = v8::Local::new(scope, context_handle);
++        let scope = &mut v8::ContextScope::new(scope, context);
++        let template = v8::Local::new(scope, &interface.template);
++        let key = v8::String::new(scope, "valueOf").unwrap();
++        template.instance_template(scope).set_intrinsic_data_property(
++            key.into(),
++            v8::Intrinsic::ObjProtoValueOf,
++            v8::PropertyAttribute::READ_ONLY | v8::PropertyAttribute::DONT_ENUM | v8::PropertyAttribute::DONT_DELETE,
++        );
++    }
++
+     /// Marks the readonly attribute `name` as `[LegacyLenientSetter]`: it gets a setter that
+     /// ignores assignments. Call before defining the attribute.
+     pub fn mark_lenient_setter(&mut self, interface: &Interface, name: &str) {
+@@ -4182,7 +4224,7 @@ impl Runtime {
+                 .push((name.to_string(), v8::Global::new(scope, getter_template)));
+             (template.instance_template(scope), v8::PropertyAttribute::DONT_DELETE)
+         } else {
+-            (template.prototype_template(scope), v8::PropertyAttribute::NONE)
++            member_target(scope, interface, template, false)
+         };
+         let setter_template = setter_template.or_else(|| lenient_setter(scope, interface, name));
+         target.set_accessor_property(key.into(), Some(getter_template), setter_template, attributes);
+@@ -4371,7 +4413,8 @@ impl Runtime {
+         .constructor_behavior(v8::ConstructorBehavior::Throw)
+         .build(scope);
+         let function_value: v8::Local<v8::Data> = function_template.into();
+-        template.prototype_template(scope).set(key.into(), function_value);
++        let (target, attributes) = member_target(scope, interface, template, true);
++        target.set_with_attr(key.into(), function_value, attributes);
+         Ok(())
+     }
+ 
+@@ -4449,7 +4492,8 @@ impl Runtime {
+         .constructor_behavior(v8::ConstructorBehavior::Throw)
+         .build(scope);
+         let function_value: v8::Local<v8::Data> = function_template.into();
+-        template.prototype_template(scope).set(key.into(), function_value);
++        let (target, attributes) = member_target(scope, interface, template, true);
++        target.set_with_attr(key.into(), function_value, attributes);
+         Ok(())
+     }
+ 
+@@ -4548,7 +4592,7 @@ impl Runtime {
+ 
+         let template = v8::Local::new(scope, &interface.template);
+         let signature = v8::Signature::new(scope, template);
+-        let prototype_template = template.prototype_template(scope);
++        let (member_template, member_attributes) = member_target(scope, interface, template, true);
+ 
+         let Some(key) = v8::String::new(scope, name) else {
+             return Err(format!("{name:?} is not valid as a method name string"));
+@@ -4624,7 +4668,7 @@ impl Runtime {
+         .build(scope);
+ 
+         let function_value: v8::Local<v8::Data> = function_template.into();
+-        prototype_template.set(key.into(), function_value);
++        member_template.set_with_attr(key.into(), function_value, member_attributes);
+         Ok(())
+     }
+ 
+@@ -9619,6 +9663,51 @@ mod tests {
+         }
+     }
+ 
++    #[cfg(feature = "webidl-pilot")]
++    #[test]
++    fn generated_unforgeable_interfaces_define_own_members() {
++        use crate::webidl::location_probe::{LocationProbeBinding, LocationProbeNative};
++        use crate::WebIdlError;
++        use std::cell::RefCell;
++        struct Location(RefCell<String>);
++        #[allow(non_snake_case)]
++        impl LocationProbeNative for Location {
++            fn Href(&self) -> Result<String, WebIdlError> { Ok(self.0.borrow().clone()) }
++            fn set_Href(&self, value: String) -> Result<(), WebIdlError> {
++                if !value.contains(':') {
++                    return Err(WebIdlError::TypeError("invalid URL".into()));
++                }
++                *self.0.borrow_mut() = value;
++                Ok(())
++            }
++            fn Origin(&self) -> String { "https://example.test".into() }
++            fn Assign(&self, url: String) -> Result<(), WebIdlError> { self.set_Href(url) }
++        }
++        let mut runtime = Runtime::new();
++        let binding = LocationProbeBinding::<Location>::install(&mut runtime).unwrap();
++        let location = binding.create(&mut runtime, Location(RefCell::new("https://example.test/a".into())));
++        runtime.set_global_property("loc", &location).unwrap();
++        for (source, expected) in [
++            // Members are own properties of the instance, not of the prototype.
++            ("['href', 'origin', 'assign', 'toString', 'valueOf'].map(name => loc.hasOwnProperty(name)).join()", "true,true,true,true,true"),
++            ("['href', 'origin', 'assign'].map(name => name in LocationProbe.prototype).join()", "false,false,false"),
++            // Non-configurable: they cannot be deleted or redefined.
++            ("const d = Object.getOwnPropertyDescriptor(loc, 'href'); [d.configurable, d.enumerable, typeof d.get, typeof d.set].join()", "false,true,function,function"),
++            ("const a = Object.getOwnPropertyDescriptor(loc, 'assign'); [a.configurable, a.writable, a.enumerable].join()", "false,false,true"),
++            ("[delete loc.href, loc.href].join()", "false,https://example.test/a"),
++            ("(() => { try { Object.defineProperty(loc, 'href', { value: 1 }); } catch (e) { return e.name; } })()", "TypeError"),
++            // valueOf is %Object.prototype.valueOf%, non-enumerable and read-only.
++            ("const v = Object.getOwnPropertyDescriptor(loc, 'valueOf'); [v.value === Object.prototype.valueOf, v.enumerable, v.writable, v.configurable].join()", "true,false,false,false"),
++            // The members still work, including the stringifier and the throwing setter.
++            ("loc.assign('https://example.test/b'); [String(loc), loc.toString(), loc.origin].join()", "https://example.test/b,https://example.test/b,https://example.test"),
++            ("(() => { try { loc.href = 'nope'; } catch (e) { return e.name + ' ' + loc.href; } })()", "TypeError https://example.test/b"),
++            // Patching the prototype cannot intercept them.
++            ("LocationProbe.prototype.assign = () => 'hijacked'; loc.assign('https://example.test/c'); loc.href", "https://example.test/c"),
++        ] {
++            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
++        }
++    }
++
+     #[cfg(feature = "webidl-pilot")]
+     #[test]
+     fn generated_promise_operations_resolve_reject_and_settle_later() {
+diff --git a/components/roves-v8/tests/webidl/LocationProbe.webidl b/components/roves-v8/tests/webidl/LocationProbe.webidl
+new file mode 100644
+index 00000000000..ec987ab1c40
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/LocationProbe.webidl
+@@ -0,0 +1,8 @@
++// Interface-level [LegacyUnforgeable] (like Location): every member is a non-configurable own
++// property of each instance.
++[Exposed=Window, LegacyUnforgeable]
++interface LocationProbe {
++  [Throws, CrossOriginWritable] stringifier attribute USVString href;
++  readonly attribute USVString origin;
++  [Throws] undefined assign(USVString url);
++};
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index 62b043d5a25..fdc66902ab2 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8832,7 +8832,12 @@ V8_NUMERIC_ATTRIBUTE_TYPES = {
+ 
+ 
+ # SpiderMonkey JIT/caching hints with no observable semantics; the V8 backend ignores them.
+-V8_IGNORED_MEMBER_HINTS = {"Pure", "Constant", "SameObject", "NewObject", "BinaryName", "WebGLHandlesContextLoss"}
++# [CrossOrigin*] only widen access for cross-origin callers; the V8 pilot exposes no object
++# cross-origin yet (no cross-origin WindowProxy/Location), so ignoring them stays fail-safe.
++V8_IGNORED_MEMBER_HINTS = {
++    "Pure", "Constant", "SameObject", "NewObject", "BinaryName", "WebGLHandlesContextLoss",
++    "CrossOriginReadable", "CrossOriginWritable", "CrossOriginCallable",
++}
+ 
+ 
+ def v8_native_name(member) -> str:
+@@ -8969,7 +8974,7 @@ class CGV8BindingRoot(CGThing):
+         unsupported = set(interface._extendedAttrDict) - {
+             "Exposed", "LegacyNoInterfaceObject", "Abstract", "Serializable", "Transferable",
+             "LegacyWindowAlias", "Func", "LegacyUnenumerableNamedProperties", "LegacyFactoryFunction",
+-            "ExceptionClass", "LegacyOverrideBuiltIns",
++            "ExceptionClass", "LegacyOverrideBuiltIns", "LegacyUnforgeable",
+         } - V8_EXPOSURE_ATTRIBUTES - ({"ClassString"} if namespace else set())
+         if unsupported:
+             raise TypeError(f"V8 backend unsupported attributes on {name}: {sorted(unsupported)}")
+@@ -10137,7 +10142,10 @@ class CGV8BindingRoot(CGThing):
+             f'        runtime.mark_lenient_setter(&interface, "{idl}");\n' for idl in lenient_setters
+         ) + "".join(
+             f'        runtime.mark_replaceable(&interface, "{idl}");\n' for idl in replaceable_attributes
+-        ) + ("        runtime.make_exception_class(&interface);\n" if "ExceptionClass" in interface._extendedAttrDict else "") + registrations
++        ) + ("        runtime.make_exception_class(&interface);\n" if "ExceptionClass" in interface._extendedAttrDict else "") + (
++            # Interface-level [LegacyUnforgeable]: before any member is defined.
++            "        runtime.make_unforgeable(&interface);\n" if "LegacyUnforgeable" in interface._extendedAttrDict else ""
++        ) + registrations
+         if constructor is not None or interface.legacyFactoryFunctions:
+             # `new` creates a traced platform object (see roves_v8::TracedNative).
+             native_bound += " + roves_v8::Trace"
+@@ -10146,6 +10154,21 @@ class CGV8BindingRoot(CGThing):
+             name, dictionary_structs, native_bound, trait_methods, install_parameters, install_arguments,
+             define_interface, registrations, alias_registrations, hide_interface,
+         )
++        stringifier = next(
++            (member for member in interface.members
++             if member.isMethod() and member.isStringifier() and not copied_from_ancestor(member)),
++            None,
++        )
++        if stringifier is not None:
++            # As in Servo: the stringifier is `toString`. A `stringifier attribute` calls that
++            # attribute's getter; a bare `stringifier;` calls the native `Stringifier`.
++            source = source.replace('"__stringifier"', '"toString"')
++            if stringifier.underlyingAttr is not None:
++                getter = v8_native_name(stringifier.underlyingAttr)
++                source = re.sub(r"\n    fn __stringifier\(&self\)[^\n]*", "", source)
++                source = source.replace("::__stringifier(native", f"::{getter}(native")
++            else:
++                source = source.replace("__stringifier", "Stringifier")
+         if namespace or callback_interface:
+             # A namespace has no instances: drop the wrapper constructors, and allow its
+             # (usually lowercase, e.g. `console`) identifier in the type names.
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index 1034bc1008b..af6c3217ff2 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -104,7 +104,7 @@ class V8GeneratorTests(unittest.TestCase):
+                 generate(path, Path(directory) / "output")
+ 
+     def test_unsupported_members_never_silently_disappear(self):
+-        for member in ["static attribute boolean valid;", "[LegacyLenientThis] readonly attribute boolean valid;", "[CrossOriginReadable] readonly attribute boolean owner;"]:
++        for member in ["static attribute boolean valid;", "[LegacyLenientThis] readonly attribute boolean valid;", "[Affects=Nothing] readonly attribute boolean owner;"]:
+             with self.subTest(member=member):
+                 self.assert_unsupported("interface Unsupported { " + member + " };")
+ 
+@@ -385,7 +385,7 @@ class V8GeneratorTests(unittest.TestCase):
+ 
+     def test_unsupported_interface_shapes_fail(self):
+         self.assert_unsupported("interface Unsupported { [Pref=\"dom_x\"] constructor(); };")
+-        self.assert_unsupported("namespace Unsupported { [CrossOriginReadable] readonly attribute boolean flag; };")
++        self.assert_unsupported("namespace Unsupported { [Affects=Nothing] readonly attribute boolean flag; };")
+ 
+     def test_non_window_exposure_hides_the_interface_object_elsewhere(self):
+         with tempfile.TemporaryDirectory() as directory:
+@@ -1006,6 +1006,21 @@ class V8GeneratorTests(unittest.TestCase):
+             ]:
+                 self.assertIn(expected, source)
+ 
++    def test_stringifiers_are_to_string(self):
++        with tempfile.TemporaryDirectory() as directory:
++            path = Path(directory) / "Link.webidl"
++            path.write_text("[Exposed=Window] interface Link { stringifier attribute USVString href; };", encoding="utf-8")
++            source = generate(path, Path(directory) / "output")
++            # `toString` calls the attribute getter; no separate native.
++            self.assertIn('"toString"', source)
++            self.assertIn("<T as LinkNative>::Href(native)", source)
++            self.assertNotIn("__stringifier", source)
++            path.write_text("[Exposed=Window] interface Range { stringifier; };", encoding="utf-8")
++            source = generate(path, Path(directory) / "output")
++            self.assertIn("fn Stringifier(&self)", source)
++            self.assertIn('"toString"', source)
++            self.assertNotIn("__stringifier", source)
++
+     def test_legacy_factory_functions_generate_fallible_natives(self):
+         with tempfile.TemporaryDirectory() as directory:
+             path = Path(directory) / "Picture.webidl"

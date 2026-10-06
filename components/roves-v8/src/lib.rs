@@ -222,6 +222,10 @@ pub mod webidl {
         include!(concat!(env!("OUT_DIR"), "/DataMapProbeV8Binding.rs"));
     }
     #[cfg(test)]
+    pub mod location_probe {
+        include!(concat!(env!("OUT_DIR"), "/LocationProbeV8Binding.rs"));
+    }
+    #[cfg(test)]
     pub mod promise_operations {
         include!(concat!(env!("OUT_DIR"), "/PromiseOperationsV8Binding.rs"));
     }
@@ -438,6 +442,9 @@ pub struct Interface {
     replaceable: std::cell::RefCell<std::collections::HashSet<String>>,
     /// `[ExceptionClass]` (`DOMException`): the prototype object inherits `Error.prototype`.
     exception_class: std::cell::Cell<bool>,
+    /// Interface-level `[LegacyUnforgeable]` (`Location`): every regular attribute and operation
+    /// is a non-configurable own property of each instance instead of a prototype member.
+    unforgeable_members: std::cell::Cell<bool>,
     /// `[LegacyFactoryFunction]`s (`Image`, `Audio`, `Option`): name and function template.
     legacy_factories: std::cell::RefCell<Vec<(String, v8::Global<v8::FunctionTemplate>)>>,
     // Materializing a child also freezes all ancestor templates. Shared flags track
@@ -795,6 +802,26 @@ fn lenient_setter<'s>(
     .build(scope);
     setter.set_class_name(v8::String::new(scope, &format!("set {name}"))?);
     Some(setter)
+}
+
+/// Where a regular member of `interface` is defined: the prototype, or for an interface-level
+/// `[LegacyUnforgeable]` each instance, as a non-configurable (and, for operations, read-only)
+/// own property.
+fn member_target<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    interface: &Interface,
+    template: v8::Local<'s, v8::FunctionTemplate>,
+    operation: bool,
+) -> (v8::Local<'s, v8::ObjectTemplate>, v8::PropertyAttribute) {
+    if !interface.unforgeable_members.get() {
+        return (template.prototype_template(scope), v8::PropertyAttribute::NONE);
+    }
+    let attributes = if operation {
+        v8::PropertyAttribute::READ_ONLY | v8::PropertyAttribute::DONT_DELETE
+    } else {
+        v8::PropertyAttribute::DONT_DELETE
+    };
+    (template.instance_template(scope), attributes)
 }
 
 /// Moves a newly constructed native onto the traced heap with `object` as its one wrapper.
@@ -2779,6 +2806,7 @@ impl Runtime {
             lenient_setters: std::cell::RefCell::new(std::collections::HashSet::new()),
             replaceable: std::cell::RefCell::new(std::collections::HashSet::new()),
             exception_class: std::cell::Cell::new(false),
+            unforgeable_members: std::cell::Cell::new(false),
             pair_iterable: std::cell::Cell::new(None),
             materialized: std::rc::Rc::new(std::cell::Cell::new(false)),
             ancestors: parent.map_or_else(Vec::new, |parent| {
@@ -3492,12 +3520,8 @@ impl Runtime {
             None
         };
         let setter_template = setter_template.or_else(|| lenient_setter(scope, interface, name));
-        template.prototype_template(scope).set_accessor_property(
-            key.into(),
-            Some(getter_template),
-            setter_template,
-            v8::PropertyAttribute::NONE,
-        );
+        let (target, attributes) = member_target(scope, interface, template, false);
+        target.set_accessor_property(key.into(), Some(getter_template), setter_template, attributes);
         Ok(())
     }
 
@@ -3696,6 +3720,24 @@ impl Runtime {
         let scope = &mut v8::ContextScope::new(scope, context);
         v8::Local::new(scope, &interface.template).remove_prototype();
         interface
+    }
+
+    /// Makes `interface` `[LegacyUnforgeable]` as a whole (`Location`): regular attributes and
+    /// operations defined after this become non-configurable own properties of each instance,
+    /// and instances get WebIDL's unforgeable `valueOf` (`%Object.prototype.valueOf%`).
+    pub fn make_unforgeable(&mut self, interface: &Interface) {
+        interface.unforgeable_members.set(true);
+        let context_handle = &self.context;
+        v8::scope!(let scope, &mut self.isolate);
+        let context = v8::Local::new(scope, context_handle);
+        let scope = &mut v8::ContextScope::new(scope, context);
+        let template = v8::Local::new(scope, &interface.template);
+        let key = v8::String::new(scope, "valueOf").unwrap();
+        template.instance_template(scope).set_intrinsic_data_property(
+            key.into(),
+            v8::Intrinsic::ObjProtoValueOf,
+            v8::PropertyAttribute::READ_ONLY | v8::PropertyAttribute::DONT_ENUM | v8::PropertyAttribute::DONT_DELETE,
+        );
     }
 
     /// Marks the readonly attribute `name` as `[LegacyLenientSetter]`: it gets a setter that
@@ -4182,7 +4224,7 @@ impl Runtime {
                 .push((name.to_string(), v8::Global::new(scope, getter_template)));
             (template.instance_template(scope), v8::PropertyAttribute::DONT_DELETE)
         } else {
-            (template.prototype_template(scope), v8::PropertyAttribute::NONE)
+            member_target(scope, interface, template, false)
         };
         let setter_template = setter_template.or_else(|| lenient_setter(scope, interface, name));
         target.set_accessor_property(key.into(), Some(getter_template), setter_template, attributes);
@@ -4371,7 +4413,8 @@ impl Runtime {
         .constructor_behavior(v8::ConstructorBehavior::Throw)
         .build(scope);
         let function_value: v8::Local<v8::Data> = function_template.into();
-        template.prototype_template(scope).set(key.into(), function_value);
+        let (target, attributes) = member_target(scope, interface, template, true);
+        target.set_with_attr(key.into(), function_value, attributes);
         Ok(())
     }
 
@@ -4449,7 +4492,8 @@ impl Runtime {
         .constructor_behavior(v8::ConstructorBehavior::Throw)
         .build(scope);
         let function_value: v8::Local<v8::Data> = function_template.into();
-        template.prototype_template(scope).set(key.into(), function_value);
+        let (target, attributes) = member_target(scope, interface, template, true);
+        target.set_with_attr(key.into(), function_value, attributes);
         Ok(())
     }
 
@@ -4548,7 +4592,7 @@ impl Runtime {
 
         let template = v8::Local::new(scope, &interface.template);
         let signature = v8::Signature::new(scope, template);
-        let prototype_template = template.prototype_template(scope);
+        let (member_template, member_attributes) = member_target(scope, interface, template, true);
 
         let Some(key) = v8::String::new(scope, name) else {
             return Err(format!("{name:?} is not valid as a method name string"));
@@ -4624,7 +4668,7 @@ impl Runtime {
         .build(scope);
 
         let function_value: v8::Local<v8::Data> = function_template.into();
-        prototype_template.set(key.into(), function_value);
+        member_template.set_with_attr(key.into(), function_value, member_attributes);
         Ok(())
     }
 
@@ -9614,6 +9658,51 @@ mod tests {
             ("map.toString = 'shadow'; map.hasOwnProperty = 'own'; [map.toString, Object.keys(map).join('+')].join('|')", "shadow|toString+hasOwnProperty"),
             ("[delete map.toString, typeof map.toString].join()", "true,function"),
             ("map['a-b'] = 1; Object.getOwnPropertyDescriptor(map, 'a-b').value", "1"),
+        ] {
+            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
+        }
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_unforgeable_interfaces_define_own_members() {
+        use crate::webidl::location_probe::{LocationProbeBinding, LocationProbeNative};
+        use crate::WebIdlError;
+        use std::cell::RefCell;
+        struct Location(RefCell<String>);
+        #[allow(non_snake_case)]
+        impl LocationProbeNative for Location {
+            fn Href(&self) -> Result<String, WebIdlError> { Ok(self.0.borrow().clone()) }
+            fn set_Href(&self, value: String) -> Result<(), WebIdlError> {
+                if !value.contains(':') {
+                    return Err(WebIdlError::TypeError("invalid URL".into()));
+                }
+                *self.0.borrow_mut() = value;
+                Ok(())
+            }
+            fn Origin(&self) -> String { "https://example.test".into() }
+            fn Assign(&self, url: String) -> Result<(), WebIdlError> { self.set_Href(url) }
+        }
+        let mut runtime = Runtime::new();
+        let binding = LocationProbeBinding::<Location>::install(&mut runtime).unwrap();
+        let location = binding.create(&mut runtime, Location(RefCell::new("https://example.test/a".into())));
+        runtime.set_global_property("loc", &location).unwrap();
+        for (source, expected) in [
+            // Members are own properties of the instance, not of the prototype.
+            ("['href', 'origin', 'assign', 'toString', 'valueOf'].map(name => loc.hasOwnProperty(name)).join()", "true,true,true,true,true"),
+            ("['href', 'origin', 'assign'].map(name => name in LocationProbe.prototype).join()", "false,false,false"),
+            // Non-configurable: they cannot be deleted or redefined.
+            ("const d = Object.getOwnPropertyDescriptor(loc, 'href'); [d.configurable, d.enumerable, typeof d.get, typeof d.set].join()", "false,true,function,function"),
+            ("const a = Object.getOwnPropertyDescriptor(loc, 'assign'); [a.configurable, a.writable, a.enumerable].join()", "false,false,true"),
+            ("[delete loc.href, loc.href].join()", "false,https://example.test/a"),
+            ("(() => { try { Object.defineProperty(loc, 'href', { value: 1 }); } catch (e) { return e.name; } })()", "TypeError"),
+            // valueOf is %Object.prototype.valueOf%, non-enumerable and read-only.
+            ("const v = Object.getOwnPropertyDescriptor(loc, 'valueOf'); [v.value === Object.prototype.valueOf, v.enumerable, v.writable, v.configurable].join()", "true,false,false,false"),
+            // The members still work, including the stringifier and the throwing setter.
+            ("loc.assign('https://example.test/b'); [String(loc), loc.toString(), loc.origin].join()", "https://example.test/b,https://example.test/b,https://example.test"),
+            ("(() => { try { loc.href = 'nope'; } catch (e) { return e.name + ' ' + loc.href; } })()", "TypeError https://example.test/b"),
+            // Patching the prototype cannot intercept them.
+            ("LocationProbe.prototype.assign = () => 'hijacked'; loc.assign('https://example.test/c'); loc.href", "https://example.test/c"),
         ] {
             assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
         }

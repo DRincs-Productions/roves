@@ -104,7 +104,7 @@ class V8GeneratorTests(unittest.TestCase):
                 generate(path, Path(directory) / "output")
 
     def test_unsupported_members_never_silently_disappear(self):
-        for member in ["static attribute boolean valid;", "[LegacyLenientThis] readonly attribute boolean valid;", "[CrossOriginReadable] readonly attribute boolean owner;"]:
+        for member in ["static attribute boolean valid;", "[LegacyLenientThis] readonly attribute boolean valid;", "[Affects=Nothing] readonly attribute boolean owner;"]:
             with self.subTest(member=member):
                 self.assert_unsupported("interface Unsupported { " + member + " };")
 
@@ -385,7 +385,7 @@ class V8GeneratorTests(unittest.TestCase):
 
     def test_unsupported_interface_shapes_fail(self):
         self.assert_unsupported("interface Unsupported { [Pref=\"dom_x\"] constructor(); };")
-        self.assert_unsupported("namespace Unsupported { [CrossOriginReadable] readonly attribute boolean flag; };")
+        self.assert_unsupported("namespace Unsupported { [Affects=Nothing] readonly attribute boolean flag; };")
 
     def test_non_window_exposure_hides_the_interface_object_elsewhere(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1005,6 +1005,21 @@ class V8GeneratorTests(unittest.TestCase):
                 "runtime.define_indexed_properties(",
             ]:
                 self.assertIn(expected, source)
+
+    def test_stringifiers_are_to_string(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Link.webidl"
+            path.write_text("[Exposed=Window] interface Link { stringifier attribute USVString href; };", encoding="utf-8")
+            source = generate(path, Path(directory) / "output")
+            # `toString` calls the attribute getter; no separate native.
+            self.assertIn('"toString"', source)
+            self.assertIn("<T as LinkNative>::Href(native)", source)
+            self.assertNotIn("__stringifier", source)
+            path.write_text("[Exposed=Window] interface Range { stringifier; };", encoding="utf-8")
+            source = generate(path, Path(directory) / "output")
+            self.assertIn("fn Stringifier(&self)", source)
+            self.assertIn('"toString"', source)
+            self.assertNotIn("__stringifier", source)
 
     def test_legacy_factory_functions_generate_fallible_natives(self):
         with tempfile.TemporaryDirectory() as directory:

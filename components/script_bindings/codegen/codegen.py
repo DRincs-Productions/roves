@@ -8832,7 +8832,12 @@ V8_NUMERIC_ATTRIBUTE_TYPES = {
 
 
 # SpiderMonkey JIT/caching hints with no observable semantics; the V8 backend ignores them.
-V8_IGNORED_MEMBER_HINTS = {"Pure", "Constant", "SameObject", "NewObject", "BinaryName", "WebGLHandlesContextLoss"}
+# [CrossOrigin*] only widen access for cross-origin callers; the V8 pilot exposes no object
+# cross-origin yet (no cross-origin WindowProxy/Location), so ignoring them stays fail-safe.
+V8_IGNORED_MEMBER_HINTS = {
+    "Pure", "Constant", "SameObject", "NewObject", "BinaryName", "WebGLHandlesContextLoss",
+    "CrossOriginReadable", "CrossOriginWritable", "CrossOriginCallable",
+}
 
 
 def v8_native_name(member) -> str:
@@ -8969,7 +8974,7 @@ class CGV8BindingRoot(CGThing):
         unsupported = set(interface._extendedAttrDict) - {
             "Exposed", "LegacyNoInterfaceObject", "Abstract", "Serializable", "Transferable",
             "LegacyWindowAlias", "Func", "LegacyUnenumerableNamedProperties", "LegacyFactoryFunction",
-            "ExceptionClass", "LegacyOverrideBuiltIns",
+            "ExceptionClass", "LegacyOverrideBuiltIns", "LegacyUnforgeable",
         } - V8_EXPOSURE_ATTRIBUTES - ({"ClassString"} if namespace else set())
         if unsupported:
             raise TypeError(f"V8 backend unsupported attributes on {name}: {sorted(unsupported)}")
@@ -10137,7 +10142,10 @@ class CGV8BindingRoot(CGThing):
             f'        runtime.mark_lenient_setter(&interface, "{idl}");\n' for idl in lenient_setters
         ) + "".join(
             f'        runtime.mark_replaceable(&interface, "{idl}");\n' for idl in replaceable_attributes
-        ) + ("        runtime.make_exception_class(&interface);\n" if "ExceptionClass" in interface._extendedAttrDict else "") + registrations
+        ) + ("        runtime.make_exception_class(&interface);\n" if "ExceptionClass" in interface._extendedAttrDict else "") + (
+            # Interface-level [LegacyUnforgeable]: before any member is defined.
+            "        runtime.make_unforgeable(&interface);\n" if "LegacyUnforgeable" in interface._extendedAttrDict else ""
+        ) + registrations
         if constructor is not None or interface.legacyFactoryFunctions:
             # `new` creates a traced platform object (see roves_v8::TracedNative).
             native_bound += " + roves_v8::Trace"
@@ -10146,6 +10154,21 @@ class CGV8BindingRoot(CGThing):
             name, dictionary_structs, native_bound, trait_methods, install_parameters, install_arguments,
             define_interface, registrations, alias_registrations, hide_interface,
         )
+        stringifier = next(
+            (member for member in interface.members
+             if member.isMethod() and member.isStringifier() and not copied_from_ancestor(member)),
+            None,
+        )
+        if stringifier is not None:
+            # As in Servo: the stringifier is `toString`. A `stringifier attribute` calls that
+            # attribute's getter; a bare `stringifier;` calls the native `Stringifier`.
+            source = source.replace('"__stringifier"', '"toString"')
+            if stringifier.underlyingAttr is not None:
+                getter = v8_native_name(stringifier.underlyingAttr)
+                source = re.sub(r"\n    fn __stringifier\(&self\)[^\n]*", "", source)
+                source = source.replace("::__stringifier(native", f"::{getter}(native")
+            else:
+                source = source.replace("__stringifier", "Stringifier")
         if namespace or callback_interface:
             # A namespace has no instances: drop the wrapper constructors, and allow its
             # (usually lowercase, e.g. `console`) identifier in the type names.

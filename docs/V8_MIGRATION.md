@@ -216,6 +216,10 @@ deleters, `[LegacyOverrideBuiltIns]` and indexed setters. Indexed setters were s
 before this checkpoint. `Document`, `HTMLDocument`, `Storage` and `DOMStringMap` generate.
 Coverage 474/486 (97.5%). Only `[Global]` and interface-level `[LegacyUnforgeable]` remain.
 
+**CP89 (2026-10-06): unforgeable interfaces, stringifier fix.** `Location` generates. It also
+fixes a latent bug: stringifiers generated a JS method named `__stringifier` instead of
+`toString`. Coverage 476/486 (97.9%). Only `[Global]` remains.
+
 CP37 exposes stable `NativeObjectId` through `DomObject` and updates generated `dom_struct`
 equality to use that engine-neutral contract. Local checks pass (reflector 2/2, macro 3/3,
 rustfmt, and patch 0101 reverse-check); CI is green: V8 37226916624 (6/6), Servo 37226916650
