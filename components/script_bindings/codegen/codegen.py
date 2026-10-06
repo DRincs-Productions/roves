@@ -8975,6 +8975,10 @@ class CGV8BindingRoot(CGThing):
             "Exposed", "LegacyNoInterfaceObject", "Abstract", "Serializable", "Transferable",
             "LegacyWindowAlias", "Func", "LegacyUnenumerableNamedProperties", "LegacyFactoryFunction",
             "ExceptionClass", "LegacyOverrideBuiltIns", "LegacyUnforgeable",
+            # [Global] places members on the global object; Servo's [NeedResolve] (lazy interface
+            # objects) does not apply, the V8 runtime exposes them eagerly; Servo's [Inline]
+            # (GlobalScope) is an internal interface left out of the prototype chain.
+            "Global", "NeedResolve", "Inline",
         } - V8_EXPOSURE_ATTRIBUTES - ({"ClassString"} if namespace else set())
         if unsupported:
             raise TypeError(f"V8 backend unsupported attributes on {name}: {sorted(unsupported)}")
@@ -10143,6 +10147,8 @@ class CGV8BindingRoot(CGThing):
         ) + "".join(
             f'        runtime.mark_replaceable(&interface, "{idl}");\n' for idl in replaceable_attributes
         ) + ("        runtime.make_exception_class(&interface);\n" if "ExceptionClass" in interface._extendedAttrDict else "") + (
+            "        runtime.make_global(&interface);\n" if "Global" in interface._extendedAttrDict else ""
+        ) + (
             # Interface-level [LegacyUnforgeable]: before any member is defined.
             "        runtime.make_unforgeable(&interface);\n" if "LegacyUnforgeable" in interface._extendedAttrDict else ""
         ) + registrations
@@ -10169,7 +10175,30 @@ class CGV8BindingRoot(CGThing):
                 source = source.replace("::__stringifier(native", f"::{getter}(native")
             else:
                 source = source.replace("__stringifier", "Stringifier")
-        if namespace or callback_interface:
+        inline = "Inline" in interface._extendedAttrDict
+        if inline:
+            if any(not copied_from_ancestor(member) for member in interface.members):
+                raise TypeError(f"V8 backend only supports [Inline] interfaces without members: {name}")
+            # Not part of the JS prototype chain: the binding hands descendants its parent's
+            # interface, and defines and exposes nothing itself.
+            source = source.replace(f"let interface = {define_interface};", "let interface = parent.interface().clone();")
+            source = source.replace("        runtime.expose_interface(&interface)?;\n", "        let _ = runtime;\n")
+            source = re.sub(r"        if !\(exposure\.exposed_in\([^\n]*\n            runtime\.hide_interface_object\(&interface\);\n        }\n", "", source)
+        if "Global" in interface._extendedAttrDict:
+            source = source.replace(
+                "    /// The installed interface, for installing interfaces that inherit from this one.",
+                "    /// Makes a new realm whose global object is an instance of this interface owning\n"
+                "    /// `native` (see `roves_v8::Runtime::install_global`).\n"
+                "    pub fn install_global(&self, runtime: &mut Runtime, native: T) -> Result<(), String>\n"
+                "    where\n"
+                "        T: roves_v8::Trace,\n"
+                "    {\n"
+                "        runtime.install_global(&self.interface, roves_v8::TracedNative::new(native))\n"
+                "    }\n\n"
+                "    /// The installed interface, for installing interfaces that inherit from this one.",
+                1,
+            )
+        if namespace or callback_interface or inline:
             # A namespace has no instances: drop the wrapper constructors, and allow its
             # (usually lowercase, e.g. `console`) identifier in the type names.
             source = source.replace(

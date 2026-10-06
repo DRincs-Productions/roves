@@ -226,6 +226,18 @@ pub mod webidl {
         include!(concat!(env!("OUT_DIR"), "/LocationProbeV8Binding.rs"));
     }
     #[cfg(test)]
+    pub mod global_base {
+        include!(concat!(env!("OUT_DIR"), "/GlobalBaseV8Binding.rs"));
+    }
+    #[cfg(test)]
+    pub mod global_scope_probe {
+        include!(concat!(env!("OUT_DIR"), "/GlobalScopeProbeV8Binding.rs"));
+    }
+    #[cfg(test)]
+    pub mod window_probe {
+        include!(concat!(env!("OUT_DIR"), "/WindowProbeV8Binding.rs"));
+    }
+    #[cfg(test)]
     pub mod promise_operations {
         include!(concat!(env!("OUT_DIR"), "/PromiseOperationsV8Binding.rs"));
     }
@@ -406,8 +418,21 @@ impl std::fmt::Debug for Handle {
 }
 
 /// A named JS interface (constructor + prototype chain), created via
-/// [`Runtime::define_interface`] — see that method's own doc comment.
-pub struct Interface {
+/// [`Runtime::define_interface`] — see that method's own doc comment. Cloning yields another
+/// handle to the same interface (the runtime keeps one to re-expose it in a new global realm).
+#[derive(Clone)]
+pub struct Interface(std::rc::Rc<InterfaceData>);
+
+impl std::ops::Deref for Interface {
+    type Target = InterfaceData;
+
+    fn deref(&self) -> &InterfaceData {
+        &self.0
+    }
+}
+
+/// The shared state behind an [`Interface`] handle.
+pub struct InterfaceData {
     template: v8::Global<v8::FunctionTemplate>,
     /// The parent interface's template, so exposure can make the parent interface object
     /// this interface object's `[[Prototype]]` (see [`Runtime::expose_interface`]).
@@ -445,6 +470,9 @@ pub struct Interface {
     /// Interface-level `[LegacyUnforgeable]` (`Location`): every regular attribute and operation
     /// is a non-configurable own property of each instance instead of a prototype member.
     unforgeable_members: std::cell::Cell<bool>,
+    /// `[Global]` (`Window`, worker global scopes): regular attributes and operations are own
+    /// properties of the global object (configurable, unlike `[LegacyUnforgeable]`).
+    global: std::cell::Cell<bool>,
     /// `[LegacyFactoryFunction]`s (`Image`, `Audio`, `Option`): name and function template.
     legacy_factories: std::cell::RefCell<Vec<(String, v8::Global<v8::FunctionTemplate>)>>,
     // Materializing a child also freezes all ancestor templates. Shared flags track
@@ -486,6 +514,10 @@ pub struct Runtime {
     like_configs: Vec<Box<LikeConfig>>,
     named_configs: Vec<Box<NamedConfig>>,
     indexed_configs: Vec<Box<IndexedConfig>>,
+    /// Every interface defined, so [`Runtime::install_global`] can expose them in the new realm.
+    interfaces: Vec<Interface>,
+    /// The native of the `[Global]` object installed by [`Runtime::install_global`].
+    global_native: Option<v8::cppgc::Persistent<GcBox>>,
 }
 
 struct WrappedFinalizer {
@@ -814,6 +846,10 @@ fn member_target<'s>(
     operation: bool,
 ) -> (v8::Local<'s, v8::ObjectTemplate>, v8::PropertyAttribute) {
     if !interface.unforgeable_members.get() {
+        if interface.global.get() {
+            // [Global]: on the global object itself, with the usual (configurable) attributes.
+            return (template.instance_template(scope), v8::PropertyAttribute::NONE);
+        }
         return (template.prototype_template(scope), v8::PropertyAttribute::NONE);
     }
     let attributes = if operation {
@@ -2090,6 +2126,8 @@ impl Runtime {
             like_configs: Vec::new(),
             named_configs: Vec::new(),
             indexed_configs: Vec::new(),
+            interfaces: Vec::new(),
+            global_native: None,
             method_configs: Vec::new(),
         }
     }
@@ -2791,7 +2829,7 @@ impl Runtime {
             .parents
             .insert(name.to_owned(), parent.map(|parent| parent.name.clone()));
 
-        Interface {
+        let interface = Interface(std::rc::Rc::new(InterfaceData {
             template: v8::Global::new(scope, template),
             parent_template: parent.map(|parent| parent.template.clone()),
             unforgeable_accessors: std::rc::Rc::new(std::cell::RefCell::new(inherited_unforgeable)),
@@ -2807,6 +2845,7 @@ impl Runtime {
             replaceable: std::cell::RefCell::new(std::collections::HashSet::new()),
             exception_class: std::cell::Cell::new(false),
             unforgeable_members: std::cell::Cell::new(false),
+            global: std::cell::Cell::new(false),
             pair_iterable: std::cell::Cell::new(None),
             materialized: std::rc::Rc::new(std::cell::Cell::new(false)),
             ancestors: parent.map_or_else(Vec::new, |parent| {
@@ -2814,7 +2853,9 @@ impl Runtime {
                 ancestors.push(parent.materialized.clone());
                 ancestors
             }),
-        }
+        }));
+        self.interfaces.push(interface.clone());
+        interface
     }
 
     /// Defines a WebIDL namespace: register its operations with
@@ -3720,6 +3761,83 @@ impl Runtime {
         let scope = &mut v8::ContextScope::new(scope, context);
         v8::Local::new(scope, &interface.template).remove_prototype();
         interface
+    }
+
+    /// Makes `interface` a `[Global]` interface (`Window`, `DedicatedWorkerGlobalScope`): its
+    /// regular attributes and operations defined after this are own properties of the global
+    /// object. Create the realm with [`Runtime::install_global`].
+    pub fn make_global(&mut self, interface: &Interface) {
+        interface.global.set(true);
+    }
+
+    /// Replaces this runtime's realm with a new one whose global object is an instance of the
+    /// `[Global]` interface `interface`, owning `native` (traced like a constructed instance):
+    /// `globalThis` is the `Window`, its prototype chain is `Window.prototype` → ancestors, and
+    /// its members are own properties. Every interface already defined is exposed again in the
+    /// new realm.
+    ///
+    /// Call this after installing the bindings and before running scripts or creating
+    /// instances: values, wrappers and global properties of the previous realm stay there.
+    pub fn install_global(&mut self, interface: &Interface, native: TracedNative) -> Result<(), String> {
+        if !interface.global.get() {
+            return Err(format!("{} is not a [Global] interface", interface.name));
+        }
+        let context = {
+            v8::scope!(let scope, &mut self.isolate);
+            let template = v8::Local::new(scope, &interface.template);
+            let global_template = template.instance_template(scope);
+            let context = v8::Context::new(
+                scope,
+                v8::ContextOptions { global_template: Some(global_template), global_object: None, microtask_queue: None },
+            );
+            let scope = &mut v8::ContextScope::new(scope, context);
+            // `context.global()` is the global proxy, the only global object scripts ever see
+            // (receivers, `globalThis`); V8 gives it the template's internal fields.
+            let proxy = context.global(scope);
+            if proxy.internal_field_count() < 1 {
+                return Err("the global proxy has no internal field".into());
+            }
+            let gc_box = GcBox {
+                native: std::cell::UnsafeCell::new(native.native),
+                trace: native.trace,
+                wrapper: std::cell::UnsafeCell::new(None),
+                wrapper_interface: std::cell::UnsafeCell::new(None),
+            };
+            let heap = scope.get_cpp_heap().expect("V8 isolates carry a cppgc heap");
+            // SAFETY: moved into a Persistent before anything else can run a GC.
+            let pointer = unsafe { v8::cppgc::make_garbage_collected(heap, gc_box) };
+            let root = v8::cppgc::Persistent::new(&pointer);
+            let gc_box = root.get().expect("a fresh root points at its native");
+            proxy.set_aligned_pointer_in_internal_field(0, gc_box.native.get() as *const std::ffi::c_void, WRAPPED_POINTER_TAG);
+            // The proxy is the native's one wrapper, so a native returning itself
+            // (`window.self`) yields `globalThis`.
+            // SAFETY: no other reference to these slots is live.
+            unsafe {
+                *gc_box.wrapper.get() = Some(v8::TracedReference::new(scope, proxy));
+                *gc_box.wrapper_interface.get() = Some(interface.name.clone());
+            }
+            // The global lives as long as the realm: the runtime roots its native.
+            self.global_native = Some(root);
+            v8::Global::new(scope, context)
+        };
+        self.context = context;
+        for defined in self.interfaces.clone() {
+            if defined.constructor_exposed.get() {
+                defined.constructor_exposed.set(false);
+                self.expose_interface(&defined)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The native of the global object installed by [`Runtime::install_global`], as an
+    /// interface-typed value (for example what `window.self` returns).
+    pub fn global_ref(&self) -> Option<NativeRef> {
+        let root = self.global_native.as_ref()?;
+        let gc_box = root.get()?;
+        // SAFETY: shared read of the interface name, set once at installation.
+        let interface = unsafe { &*gc_box.wrapper_interface.get() }.clone()?;
+        Some(NativeRef { gc: v8::cppgc::Persistent::new(root), interface })
     }
 
     /// Makes `interface` `[LegacyUnforgeable]` as a whole (`Location`): regular attributes and
@@ -9703,6 +9821,71 @@ mod tests {
             ("(() => { try { loc.href = 'nope'; } catch (e) { return e.name + ' ' + loc.href; } })()", "TypeError https://example.test/b"),
             // Patching the prototype cannot intercept them.
             ("LocationProbe.prototype.assign = () => 'hijacked'; loc.assign('https://example.test/c'); loc.href", "https://example.test/c"),
+        ] {
+            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
+        }
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_global_interfaces_make_the_realm_global() {
+        use crate::webidl::global_base::{GlobalBaseBinding, GlobalBaseNative};
+        use crate::webidl::global_scope_probe::{GlobalScopeProbeBinding, GlobalScopeProbeNative};
+        use crate::webidl::window_probe::{WindowProbeBinding, WindowProbeNative};
+        use crate::{NativeRef, Trace, Tracer};
+        use std::cell::Cell;
+        struct Window {
+            counter: Cell<u32>,
+            this: std::cell::RefCell<Option<NativeRef>>,
+        }
+        impl Trace for Window {
+            fn trace(&self, _tracer: &mut Tracer) {}
+        }
+        #[allow(non_snake_case)]
+        impl GlobalBaseNative for Window {
+            fn BaseName(&self) -> Vec<u16> { "base".encode_utf16().collect() }
+        }
+        impl GlobalScopeProbeNative for Window {}
+        #[allow(non_snake_case)]
+        impl WindowProbeNative for Window {
+            fn Title(&self) -> Vec<u16> { "probe".encode_utf16().collect() }
+            fn Counter(&self) -> u32 { self.counter.get() }
+            fn set_Counter(&self, value: u32) { self.counter.set(value) }
+            fn Greet(&self, who: Vec<u16>) -> Vec<u16> { format!("hello {}", String::from_utf16_lossy(&who)).encode_utf16().collect() }
+            fn Self_(&self) -> NativeRef { self.this.borrow().clone().expect("self is set") }
+            fn Length(&self) -> u32 { 0 }
+        }
+        let mut runtime = Runtime::new();
+        let base = GlobalBaseBinding::<Window>::install(&mut runtime).unwrap();
+        let scope = GlobalScopeProbeBinding::<Window>::install(&mut runtime, &base).unwrap();
+        let window = WindowProbeBinding::<Window>::install(&mut runtime, &scope).unwrap();
+        window
+            .install_global(&mut runtime, Window { counter: Cell::new(0), this: std::cell::RefCell::new(None) })
+            .unwrap();
+        let global = runtime.global_ref().expect("a global is installed");
+        *global.get::<Window>().unwrap().this.borrow_mut() = Some(global.clone());
+        // The realm roots the global's native: it survives a full collection.
+        runtime.force_full_gc_for_testing();
+        for (source, expected) in [
+            // Members of the [Global] interface are own properties of the global object.
+            ("[typeof greet, greet('you'), globalThis.title, title].join()", "function,hello you,probe,probe"),
+            ("const g = Object.getOwnPropertyDescriptor(globalThis, 'greet'); [g.writable, g.enumerable, g.configurable].join()", "true,true,true"),
+            ("[typeof Object.getOwnPropertyDescriptor(globalThis, 'counter').get, 'greet' in WindowProbe.prototype].join()", "function,false"),
+            ("counter = 5; globalThis.counter += 2; counter", "7"),
+            // The global's prototype chain: WindowProbe.prototype -> GlobalBase.prototype (the
+            // [Inline] GlobalScopeProbe is not part of it, and is not exposed).
+            ("[Object.getPrototypeOf(globalThis) === WindowProbe.prototype, Object.getPrototypeOf(WindowProbe.prototype) === GlobalBase.prototype].join()", "true,true"),
+            ("[globalThis instanceof WindowProbe, globalThis instanceof GlobalBase, typeof GlobalScopeProbe].join()", "true,true,undefined"),
+            ("[baseName(), Object.prototype.toString.call(globalThis)].join()", "base,[object WindowProbe]"),
+            // Interfaces are exposed in the new realm; the interface object is not constructible.
+            ("[typeof WindowProbe, typeof GlobalBase].join()", "function,function"),
+            ("(() => { try { new WindowProbe(); } catch (e) { return e.name; } })()", "TypeError"),
+            // The native's one wrapper is the global proxy, which is what scripts see.
+            ("[self === globalThis, globalThis.self === self, counter].join()", "true,true,7"),
+            // [Replaceable] on the global.
+            ("length = 'replaced'; length", "replaced"),
+            // Receiver checks still apply to the global's own members.
+            ("(() => { try { Object.getOwnPropertyDescriptor(globalThis, 'greet').value.call({}, 'x'); } catch (e) { return e.name; } })()", "TypeError"),
         ] {
             assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
         }

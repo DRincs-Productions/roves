@@ -11,6 +11,68 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: `[Global]` realms and `[Inline]` (CP90)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `components/roves-v8/build.rs`,
+`components/roves-v8/tests/webidl/GlobalBase.webidl`, `GlobalScopeProbe.webidl`,
+`WindowProbe.webidl` (new), `components/script_bindings/codegen/codegen.py`.
+**Patch:** `0154-roves-v8-global-realms.patch` after 0153.
+
+**Runtime.**
+- `Interface` is now a cheap shared handle (`Rc<InterfaceData>` with `Deref`). The runtime keeps
+  one handle per defined interface.
+- `Runtime::make_global` marks a `[Global]` interface. Its regular attributes and operations
+  then become own (configurable) properties of the global object, through `member_target`.
+- `Runtime::install_global(interface, TracedNative)` replaces the realm:
+  - It creates a context whose global template is the interface's instance template. The
+    global object's prototype chain is then `Window.prototype` → its ancestors.
+  - It attaches the native to the **global proxy**. V8 gives the proxy the template's internal
+    field (the inner global object has none), and the proxy is what scripts see as receivers and
+    `globalThis`.
+  - It makes the proxy the native's one wrapper, so `window.self === globalThis`.
+  - It roots the native for the realm's lifetime.
+  - It exposes every defined interface again in the new realm.
+- `Runtime::global_ref` returns the global's `NativeRef`.
+
+**Generator.**
+- `[Global]` emits `make_global` and gives the binding an `install_global(native)` method.
+- Servo's `[NeedResolve]` (lazy interface objects) is ignored, because the runtime exposes
+  interfaces eagerly.
+- Servo's internal `[Inline]` (`GlobalScope`) generates a binding that hands its parent's
+  interface to descendants. It defines and exposes nothing, so `Window.prototype` inherits
+  `EventTarget.prototype` directly, as in Servo.
+
+**Pilot deviations, documented:**
+- Window's named properties use an interceptor on the global itself, not a separate
+  `WindowProperties` object in the prototype chain. Names therefore never shadow inherited
+  members such as `toString`; per spec they would shadow `EventTarget.prototype` and
+  `Object.prototype` members.
+- `install_global` must run before scripts or instances, because the previous realm's state
+  is not carried over.
+
+Tests: generator 73/73. The new runtime fixtures `GlobalBase`, `GlobalScopeProbe` and
+`WindowProbe` cover:
+- own global members and their descriptors, with nothing on the prototype;
+- accessors and assignment through the global;
+- the prototype chain with the `[Inline]` interface skipped and not exposed;
+- `instanceof` and `@@toStringTag`;
+- re-exposed, non-constructible interface objects;
+- `self === globalThis`;
+- `[Replaceable]` on the global;
+- receiver checks;
+- the native surviving a full GC.
+
+`roves-v8` passes 113 + 5 + 2 (also `jitless`), and 61 + 2 by default. The `servo-script`
+pilot check is clean.
+
+Coverage: **486/486 (100%)** of Servo's WebIDL definitions generate V8 bindings. **This is
+generator and runtime coverage of the binding *shapes*. It is not a production migration:**
+Servo's DOM still runs on SpiderMonkey. The natives are not yet implemented over Servo's DOM
+types, `#[dom_struct]`/`JSTraceable` are not mapped onto `Trace`, and there is no
+script/realm/event-loop integration. That cutover work, and its blockers (custom elements, the
+DOMException fallback, `GcRoot` lifetimes, cross-origin objects), is tracked in
+`docs/V8_MIGRATION.md`.
+
 ## 2026-10-06 - V8 migration Phase 4: interface-level `[LegacyUnforgeable]`, stringifier fix (CP89)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `components/roves-v8/build.rs`,

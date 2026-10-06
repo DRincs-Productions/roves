@@ -342,6 +342,15 @@ un bug latente:** gli stringifier generavano un metodo JS `__stringifier` invece
 **Generano `Location` e `DissimilarOriginLocation`.** Test: generatore 73/73, `roves-v8`
 112+5+2. Copertura **476/486 (97.9%)**. **Resta solo `[Global]`** (vedi il piano sotto).
 
+**CP90 (2026-10-06):** realm `[Global]` (`make_global`, `install_global`, `global_ref`;
+`Interface` è ora un handle `Rc`) e `[Inline]` (patch 0154). Il native del global sta sul
+**proxy**, l'unico oggetto con il campo interno. **Copertura del generatore 486/486 (100%).**
+Attenzione: misura solo le *forme* dei binding. La produzione usa ancora SpiderMonkey. Prossima
+fase:
+- implementare i natives sui tipi DOM di Servo (`#[dom_struct]`/`JSTraceable` → `Trace`);
+- integrare realm, script, event loop e moduli;
+- poi il cutover.
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

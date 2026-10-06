@@ -220,6 +220,14 @@ Coverage 474/486 (97.5%). Only `[Global]` and interface-level `[LegacyUnforgeabl
 fixes a latent bug: stringifiers generated a JS method named `__stringifier` instead of
 `toString`. Coverage 476/486 (97.9%). Only `[Global]` remains.
 
+**CP90 (2026-10-06): `[Global]` realms.** `install_global` creates the realm with the
+`[Global]` interface's instance template as the global template. The native sits on the
+global proxy, members are own properties, and interfaces are re-exposed. Servo's `[Inline]`
+`GlobalScope` is left out of the chain. **Generator coverage is 486/486 (100%).** This
+measures binding *shapes* only. Production still uses SpiderMonkey: the next phase implements
+the natives over Servo's DOM (`#[dom_struct]`/`JSTraceable` → `Trace`) and integrates the
+realm with script, the event loop and modules, before any cutover.
+
 CP37 exposes stable `NativeObjectId` through `DomObject` and updates generated `dom_struct`
 equality to use that engine-neutral contract. Local checks pass (reflector 2/2, macro 3/3,
 rustfmt, and patch 0101 reverse-check); CI is green: V8 37226916624 (6/6), Servo 37226916650
