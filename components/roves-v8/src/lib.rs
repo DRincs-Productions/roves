@@ -221,6 +221,10 @@ pub mod webidl {
     pub mod shadow_child {
         include!(concat!(env!("OUT_DIR"), "/ShadowChildV8Binding.rs"));
     }
+    #[cfg(test)]
+    pub mod type_gaps_probe {
+        include!(concat!(env!("OUT_DIR"), "/TypeGapsProbeV8Binding.rs"));
+    }
 }
 
 use std::sync::Once;
@@ -1192,10 +1196,70 @@ pub enum WebIdlType {
     Union(Vec<WebIdlType>),
     /// `Promise<T>`: any value, converted like `Promise.resolve(value)` ([`Value::Js`]).
     Promise,
+    /// An integer type annotated `[Clamp]` or `[EnforceRange]`: `conversion` names the integer
+    /// type (`Byte` .. `UnsignedLongLong`).
+    Integer(WebIdlArgumentConversion, IntegerMode),
     /// A buffer source type (`ArrayBuffer`, `ArrayBufferView`, a typed array, `DataView`):
     /// type-checked and passed as [`Value::Js`] without copying; natives access the bytes in
     /// place with [`ScriptContext::with_buffer_bytes`].
     Buffer(BufferKind),
+}
+
+/// The WebIDL conversion mode of an annotated integer type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntegerMode {
+    /// `[Clamp]`: NaN is 0; otherwise clamp to the range and round half to even.
+    Clamp,
+    /// `[EnforceRange]`: non-finite or out-of-range (after truncation) values are TypeErrors.
+    EnforceRange,
+}
+
+/// The value range of a WebIDL integer type (64-bit types use the exactly representable
+/// ±(2^53 − 1), as WebIDL specifies).
+fn integer_range(conversion: WebIdlArgumentConversion) -> Option<(f64, f64)> {
+    let safe = 9007199254740991.0;
+    Some(match conversion {
+        WebIdlArgumentConversion::Byte => (-128.0, 127.0),
+        WebIdlArgumentConversion::Octet => (0.0, 255.0),
+        WebIdlArgumentConversion::Short => (-32768.0, 32767.0),
+        WebIdlArgumentConversion::UnsignedShort => (0.0, 65535.0),
+        WebIdlArgumentConversion::Long => (-2147483648.0, 2147483647.0),
+        WebIdlArgumentConversion::UnsignedLong => (0.0, 4294967295.0),
+        WebIdlArgumentConversion::LongLong => (-safe, safe),
+        WebIdlArgumentConversion::UnsignedLongLong => (0.0, safe),
+        _ => return None,
+    })
+}
+
+/// Applies `[Clamp]`/`[EnforceRange]` to an already ToNumber-converted value.
+fn convert_annotated_integer(number: f64, conversion: WebIdlArgumentConversion, mode: IntegerMode) -> Result<f64, String> {
+    let (min, max) = integer_range(conversion).ok_or("not an integer type")?;
+    match mode {
+        IntegerMode::EnforceRange => {
+            if !number.is_finite() {
+                return Err("value is not a finite number".into());
+            }
+            let truncated = number.trunc();
+            if truncated < min || truncated > max {
+                return Err(format!("value {truncated} is outside the range {min}..={max}"));
+            }
+            Ok(truncated + 0.0)
+        },
+        IntegerMode::Clamp => {
+            if number.is_nan() {
+                return Ok(0.0);
+            }
+            let clamped = number.clamp(min, max);
+            // Round half to even.
+            let floor = clamped.floor();
+            let rounded = if clamped - floor == 0.5 {
+                if floor % 2.0 == 0.0 { floor } else { floor + 1.0 }
+            } else {
+                clamped.round()
+            };
+            Ok(rounded + 0.0)
+        },
+    }
 }
 
 /// The WebIDL buffer source types.
@@ -4228,6 +4292,16 @@ fn convert_typed_value<'s>(
             Some(Value::Js(Handle(v8::Global::new(scope, value))))
         },
         WebIdlType::Union(members) => convert_union(scope, value, members),
+        WebIdlType::Integer(conversion, mode) => {
+            let number = value.number_value(scope)?;
+            match convert_annotated_integer(number, *conversion, *mode) {
+                Ok(number) => Some(Value::Number(number)),
+                Err(message) => {
+                    throw_type_error(scope, &message);
+                    None
+                },
+            }
+        },
         WebIdlType::Buffer(kind) => {
             if !kind.matches(value) {
                 throw_type_error(scope, &format!("value is not {kind:?}"));
@@ -4934,6 +5008,26 @@ mod tests {
             1,
             "value must be dropped exactly once, not zero or more than once"
         );
+    }
+
+    #[test]
+    fn clamp_and_enforce_range_follow_webidl() {
+        use super::{convert_annotated_integer, IntegerMode, WebIdlArgumentConversion as C};
+        let clamp = |number, conversion| convert_annotated_integer(number, conversion, IntegerMode::Clamp).unwrap();
+        assert_eq!(clamp(300.0, C::Octet), 255.0);
+        assert_eq!(clamp(-5.0, C::Octet), 0.0);
+        assert_eq!(clamp(f64::NAN, C::Long), 0.0);
+        assert_eq!(clamp(2.5, C::Octet), 2.0);
+        assert_eq!(clamp(3.5, C::Octet), 4.0);
+        assert_eq!(clamp(-0.4, C::Long), 0.0);
+        assert!(clamp(-0.4, C::Long).is_sign_positive());
+        assert_eq!(clamp(f64::INFINITY, C::UnsignedLongLong), 9007199254740991.0);
+        let enforce = |number, conversion| convert_annotated_integer(number, conversion, IntegerMode::EnforceRange);
+        assert_eq!(enforce(255.9, C::Octet), Ok(255.0));
+        assert!(enforce(256.0, C::Octet).is_err());
+        assert!(enforce(-1.0, C::UnsignedLong).is_err());
+        assert!(enforce(f64::INFINITY, C::Long).is_err());
+        assert!(enforce(f64::NAN, C::Long).is_err());
     }
 
     #[test]
@@ -8146,6 +8240,67 @@ mod tests {
             runtime.eval("[node.label, Object.getOwnPropertyDescriptor(ShadowBase.prototype, 'label').get.call(node)].join()").unwrap(),
             "child,base"
         );
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_enums_unions_bytestrings_and_annotated_integers() {
+        use crate::webidl::type_gaps_probe::{StringOrUnsignedLong, TypeGapsProbeBinding, TypeGapsProbeNative};
+        use crate::{Handle, ScriptContext, WebIdlError};
+        use std::cell::RefCell;
+        struct Probe {
+            state: RefCell<String>,
+            maybe: RefCell<Option<String>>,
+        }
+        #[allow(non_snake_case)]
+        impl TypeGapsProbeNative for Probe {
+            fn State(&self) -> String { self.state.borrow().clone() }
+            fn set_State(&self, value: String) { *self.state.borrow_mut() = value; }
+            fn MaybeState(&self) -> Option<String> { self.maybe.borrow().clone() }
+            fn set_MaybeState(&self, value: Option<String>) { *self.maybe.borrow_mut() = value; }
+            fn Raw(&self) -> Vec<u8> { vec![104, 105, 255] }
+            fn Next(&self) -> String { "closed".to_owned() }
+            fn Pick(&self, as_text: bool) -> Option<StringOrUnsignedLong> {
+                Some(if as_text { StringOrUnsignedLong::String("seven".encode_utf16().collect()) } else { StringOrUnsignedLong::UnsignedLong(7) })
+            }
+            fn Header(&self, present: bool) -> Option<Vec<u8>> { present.then(|| b"text/html".to_vec()) }
+            fn Clamp(&self, value: u8) -> u8 { value }
+            fn Strict(&self, value: i32) -> i32 { value }
+            fn Filtered(&self, cx: &mut ScriptContext, filter: Option<Handle>) -> Result<u32, WebIdlError> {
+                let Some(filter) = filter else { return Ok(0) };
+                match cx.call_user_object_operation(&filter, "acceptNode", &[Value::Null])? {
+                    Value::Js(result) => match cx.value(&result) {
+                        Value::Number(number) => Ok(number as u32),
+                        _ => Ok(0),
+                    },
+                    _ => Ok(0),
+                }
+            }
+        }
+        let mut runtime = Runtime::new();
+        let binding = TypeGapsProbeBinding::<Probe>::install(&mut runtime).unwrap();
+        let probe = binding.create(&mut runtime, Probe { state: RefCell::new("running".into()), maybe: RefCell::new(None) });
+        runtime.set_global_property("p", &probe).unwrap();
+        for (source, expected) in [
+            // Enumeration attributes: valid values set, invalid ones are silently ignored.
+            ("p.state = 'suspended'; p.state = 'bogus'; p.state", "suspended"),
+            ("p.maybeState = 'closed'; const a = p.maybeState; p.maybeState = null; [a, p.maybeState].join()", "closed,"),
+            ("p.next()", "closed"),
+            // ByteString attribute and nullable ByteString result.
+            ("[p.raw.length, p.raw.charCodeAt(2), p.header(true), p.header(false)].join()", "3,255,text/html,"),
+            // A nullable union result.
+            ("[p.pick(true), p.pick(false), typeof p.pick(false)].join()", "seven,7,number"),
+            // [Clamp]: clamp and round half to even; [EnforceRange]: truncate in range.
+            ("[p.clamp(300), p.clamp(-3), p.clamp(2.5), p.clamp(3.5), p.clamp(NaN)].join()", "255,0,2,4,0"),
+            ("[p.strict(5.9), p.strict(-2147483648)].join()", "5,-2147483648"),
+            // A nullable callback interface with a `= null` default.
+            ("[p.filtered(), p.filtered(null), p.filtered({ acceptNode: () => 3 }), p.filtered(() => 2)].join()", "0,0,3,2"),
+        ] {
+            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
+        }
+        for source in ["p.strict(2 ** 31)", "p.strict(Infinity)", "p.strict(NaN)"] {
+            assert!(runtime.eval(source).unwrap_err().contains("TypeError"), "{source}");
+        }
     }
 
     #[cfg(feature = "webidl-pilot")]

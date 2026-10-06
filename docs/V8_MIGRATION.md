@@ -169,6 +169,10 @@ accessors and non-constructible HTML element interfaces (custom elements remain 
 **CP75 (2026-10-06): qualified native calls.** Generated calls use `<T as XNative>::M(native, ..)`,
 so derived interfaces may redeclare inherited members. Coverage 357/486.
 
+**CP76 (2026-10-06): type gaps.** Enumeration attributes/results (invalid assignments ignored),
+union/`ByteString` results, `[Clamp]`/`[EnforceRange]`, promise and callback-interface
+attributes, `= null` defaults. Coverage 422/486 (87%).
+
 CP37 exposes stable `NativeObjectId` through `DomObject` and updates generated `dom_struct`
 equality to use that engine-neutral contract. Local checks pass (reflector 2/2, macro 3/3,
 rustfmt, and patch 0101 reverse-check); CI is green: V8 37226916624 (6/6), Servo 37226916650

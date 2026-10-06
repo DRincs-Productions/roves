@@ -8353,6 +8353,8 @@ def v8_setter_conversion(idl_type, nullable: bool):
         conversion, arm = "UsvString", "Value::String(value) => value.clone()"
     elif idl_type.isByteString():
         conversion, arm = "ByteString", "Value::ByteString(value) => value.clone()"
+    elif idl_type.isEnum():
+        conversion, arm = "UsvString", "Value::String(value) => value.clone()"
     else:
         return None
     if nullable:
@@ -8510,6 +8512,12 @@ def v8_typed_info(ty, name: str, member_name: str):
             f'Value::Sequence(items) => items.iter().map(|item| match item {{ {arm}, _ => unreachable!("runtime conversion matches the generated WebIDL type") }}).collect()',
             f"Value::Sequence(ITEM.into_iter().map(|item| {to_value.replace('ITEM', 'item')}).collect())",
         )
+    if ty.isInteger() and (ty.hasClamp() or ty.hasEnforceRange()):
+        base = ty.name.replace("RangeEnforced", "").replace("Clamped", "")
+        rust, _, arm, to_value = V8_TYPED_PRIMITIVES[base]
+        mode = "Clamp" if ty.hasClamp() else "EnforceRange"
+        return (rust, f"roves_v8::WebIdlType::Integer(roves_v8::WebIdlArgumentConversion::{base}, roves_v8::IntegerMode::{mode})",
+                arm, to_value)
     primitive = V8_TYPED_PRIMITIVES.get(ty.name) if (ty.isPrimitive() and not ty.isEnum()) else None
     if primitive:
         rust, conversion, arm, to_value = primitive
@@ -8566,7 +8574,8 @@ def v8_contains_sequence(ty) -> bool:
     if ty.nullable():
         return v8_contains_sequence(ty.inner)
     return (ty.isSequence() or ty.isDictionary() or ty.isUnion() or ty.isCallbackInterface()
-            or ty.isPromise() or ty.isBufferSource())
+            or ty.isPromise() or ty.isBufferSource()
+            or (ty.isInteger() and (ty.hasClamp() or ty.hasEnforceRange())))
 
 
 def v8_contains_handle(ty) -> bool:
@@ -8634,6 +8643,8 @@ def v8_argument_types(name: str, member_name: str, arguments) -> list:
         if default_value is not None and (
             inner_type.isAny() or inner_type.isUnion() or inner_type.isObject()
             or isinstance(default_value, IDLUndefinedValue)
+            or (isinstance(default_value, IDLNullValue) and ty.nullable()
+                and not (inner_type.isString() or inner_type.isPrimitive()))
         ) and not isinstance(default_value, IDLDefaultDictionaryValue):
             # The runtime applies the default (converted through the type) when the argument is
             # missing or undefined, so the native always receives a value.
@@ -8972,6 +8983,7 @@ class CGV8BindingRoot(CGThing):
         operations = []
         unforgeable_attributes = set()
         typed_attributes = []
+        idl_attribute_types = {}
         value_iterable = False
         indexed_getter = None
         named_getter = None
@@ -9101,6 +9113,9 @@ class CGV8BindingRoot(CGThing):
                         else:
                             rust_type = rust
                             value_expr = to_value.replace("ITEM", "native.{native}()")
+                    elif result_type.isUnion() or result_type.isEnum() or result_type.isByteString():
+                        rust_type, _, _, to_value = v8_typed_info(return_type, name, member.identifier.name)
+                        value_expr = to_value.replace("ITEM", "native.{native}()")
                     elif result_type.isPromise():
                         # WebIDL: a promise-returning operation rejects instead of throwing.
                         promise_operations.add(MakeNativeName(member.identifier.name) + "_" * overload_index)
@@ -9160,7 +9175,7 @@ class CGV8BindingRoot(CGThing):
             if lenient_this and not (idl_type.isAny() or idl_type.isObject() or idl_type.isCallback()):
                 raise TypeError(f"V8 backend only supports [LegacyLenientThis] on contextual attributes: {name}.{member.identifier.name}")
             if ((idl_type.isUnion() and (not member.readonly or v8_contains_handle(member.type)))
-                    or idl_type.isBufferSource()):
+                    or idl_type.isBufferSource() or idl_type.isPromise() or idl_type.isCallbackInterface()):
                 # Structured attributes: the setter converts through the WebIDL type.
                 rust, expr, arm, to_value = v8_typed_info(member.type, name, member.identifier.name)
                 typed_attributes.append((
@@ -9211,6 +9226,9 @@ class CGV8BindingRoot(CGThing):
                 else:
                     rust_type = native_type
                     value_expr = f"Value::Number({to_number.replace('VALUE', 'native.{native}()')})"
+            elif idl_type.isEnum() or idl_type.isByteString():
+                rust_type, _, _, to_value = v8_typed_info(member.type, name, member.identifier.name)
+                value_expr = to_value.replace("{", "{{").replace("}", "}}").replace("ITEM", "native.{native}()")
             elif member.readonly and idl_type.isUnion() and not v8_contains_handle(member.type):
                 # Readonly union attributes reuse the union enum; the getter value template has
                 # its braces escaped for the later `.format(native=...)`.
@@ -9250,7 +9268,7 @@ class CGV8BindingRoot(CGThing):
             getter_throws = bool({"Throws", "GetterThrows"} & set(extended))
             setter_throws = setter and bool({"Throws", "SetterThrows"} & set(extended))
             put_forwards = extended.get("PutForwards")
-            if (getter_throws or setter_throws or put_forwards
+            if (getter_throws or setter_throws or put_forwards or (setter and idl_type.isEnum())
                     or (setter and not idl_type.isDOMString() and conversion is None)):
                 if put_forwards:
                     if not member.readonly or not v8_is_dom_interface(idl_type) or member.type.nullable():
@@ -9267,6 +9285,8 @@ class CGV8BindingRoot(CGThing):
                     member.identifier.name, MakeNativeName(member.identifier.name), rust_type, value_expr,
                     getter_throws, setter_throws, setter_info,
                 ))
+                if idl_type.isEnum():
+                    idl_attribute_types[member.identifier.name] = idl_type
                 continue
             if setter and not idl_type.isDOMString() and conversion is None:
                 raise TypeError(f"V8 backend does not support mutable attribute type: {name}.{member.identifier.name}")
@@ -9392,6 +9412,15 @@ class CGV8BindingRoot(CGThing):
                     )
                 else:
                     call = f"native.set_{native}(value)"
+                    enum_type = idl_attribute_types.get(idl)
+                    if enum_type is not None:
+                        # Assigning a string outside the enumeration is silently ignored.
+                        values = ", ".join(f'"{value}"' for value in enum_type.inner.values())
+                        check = "value.as_deref()" if nullable else "Some(value.as_str())"
+                        call = (
+                            f"if let Some(text) = {check} {{ if ![{values}].contains(&text) {{ return Ok(()); }} }}\n"
+                            f"            {call}"
+                        )
                     setter_callback = (
                         f"Some(|cx, native, value| {{\n            let _ = cx;\n{downcast}"
                         f'            let value = match value {{ {arm}, _ => unreachable!("runtime conversion matches generated WebIDL attribute type") }};\n'

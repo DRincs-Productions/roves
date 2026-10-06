@@ -266,6 +266,14 @@ interfacce nullable (`Document`), `[LegacyFactoryFunction]` (`Image`, `Audio`), 
 i membri ridefiniti nei discendenti (`innerText`) ora funzionano; i getter ereditati usano il
 trait dell'antenato. Test generatore 61/61, `roves-v8` 99+5+2. Copertura **357/486**.
 
+**CP76 (2026-10-06):** lacune di tipo (patch 0140). Enum (assegnazioni non valide ignorate),
+risultati union e `ByteString`, `[Clamp]`/`[EnforceRange]` (`WebIdlType::Integer`), attributi
+promise e callback interface, default `= null`. Test generatore 62/62, `roves-v8` 101+5+2,
+default 61+2. Copertura **422/486 (87%)**. **Rimasti:** `[Global]` (`Window`, global dei worker),
+pair iterable, `[LegacyFactoryFunction]`, namespace, costruttori sovraccarichi, callback
+interface come interfacce, `[LegacyOverrideBuiltIns]`, `[LegacyUnforgeable]` sull'interfaccia
+(`Location`).
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

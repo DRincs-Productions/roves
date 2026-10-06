@@ -104,7 +104,7 @@ class V8GeneratorTests(unittest.TestCase):
                 generate(path, Path(directory) / "output")
 
     def test_unsupported_members_never_silently_disappear(self):
-        for member in ["[LegacyLenientSetter] readonly attribute boolean value;", "readonly attribute Promise<any> value;", "static readonly attribute boolean valid;", "[LegacyLenientThis] readonly attribute boolean valid;", "attribute Unsupported? owner;"]:
+        for member in ["[LegacyLenientSetter] readonly attribute boolean value;", "static readonly attribute boolean valid;", "[LegacyLenientThis] readonly attribute boolean valid;", "attribute Unsupported? owner;"]:
             with self.subTest(member=member):
                 self.assert_unsupported("interface Unsupported { " + member + " };")
 
@@ -732,6 +732,27 @@ class V8GeneratorTests(unittest.TestCase):
             ]:
                 self.assertIn(expected, source)
             self.assertNotIn("fn set_Pixels", source)
+
+    def test_enums_bytestrings_unions_and_annotated_integers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Gaps.webidl"
+            path.write_text(
+                'enum Mode { "a", "b" }; [Exposed=Window] interface Gaps { attribute Mode mode; '
+                "readonly attribute ByteString raw; (DOMString or long) pick(); "
+                "octet clamp([Clamp] octet value); long strict([EnforceRange] long value); };",
+                encoding="utf-8",
+            )
+            source = generate(path, Path(directory) / "output")
+            for expected in [
+                "fn Mode(&self) -> String;",
+                "fn set_Mode(&self, value: String);",
+                ".contains(&text) { return Ok(()); }",
+                "fn Raw(&self) -> Vec<u8>;",
+                "fn Pick(&self) -> StringOrLong;",
+                "roves_v8::WebIdlType::Integer(roves_v8::WebIdlArgumentConversion::Octet, roves_v8::IntegerMode::Clamp)",
+                "roves_v8::WebIdlType::Integer(roves_v8::WebIdlArgumentConversion::Long, roves_v8::IntegerMode::EnforceRange)",
+            ]:
+                self.assertIn(expected, source)
 
     def test_lenient_this_and_html_constructor(self):
         with tempfile.TemporaryDirectory() as directory:

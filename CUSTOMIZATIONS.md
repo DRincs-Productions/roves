@@ -11,6 +11,44 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: enums, union/ByteString results, `[Clamp]`/`[EnforceRange]` (CP76)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixture
+`components/roves-v8/tests/webidl/TypeGapsProbe.webidl`;
+`components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0140-roves-v8-type-gaps.patch` after 0139.
+
+This closes a group of type gaps that were scattered over many interfaces.
+- **Enumeration attributes and results** (`AudioContext.state`, `IDBTransaction.mode`,
+  `canPlayType`, and others). As WebIDL requires, assigning a string outside the enumeration is
+  silently ignored: the setter converts with ToString and the generated code checks membership.
+- **Union, enumeration and `ByteString` results**, nullable or not (`getContext`, `Headers.get`).
+  Also readonly `ByteString` attributes.
+- **`[Clamp]`/`[EnforceRange]` integers.** The new `WebIdlType::Integer(conversion, IntegerMode)`
+  follows the WebIDL algorithms. `[Clamp]` maps NaN to 0, clamps, and rounds half to even (never
+  `-0`). `[EnforceRange]` throws a TypeError for non-finite or out-of-range values after
+  truncation. 64-bit types use ±(2^53 − 1).
+- **Promise- and callback-interface-typed attributes** take the typed attribute path.
+- **`= null` defaults** on nullable callback, interface and union arguments go through the
+  structured default path (`Document.createNodeIterator`).
+
+**Tests.**
+- New `clamp_and_enforce_range_follow_webidl` unit test.
+- New runtime test on a generated interface:
+  - valid and invalid enum assignments, a nullable enum, and an enum result;
+  - `ByteString` attribute bytes and a nullable `ByteString` result;
+  - a nullable union result with both members;
+  - clamping and half-even rounding;
+  - enforce-range truncation and its three TypeErrors;
+  - a nullable callback interface with a `= null` default, called both as an object and as a
+    function.
+- Generator tests: 62/62.
+- `roves-v8` pilot and pilot+JIT-less: 101 unit + 5 integration + 2 doctests each; default 61 unit +
+  2 doctests.
+- `servo-script` check with the pilot is clean.
+
+Coverage: **422/486** (87%).
+
 ## 2026-10-06 - V8 migration Phase 4: fully qualified native calls; redeclared members (CP75)
 
 **Servo files:** `components/roves-v8/src/lib.rs` (test), `build.rs`, new fixtures

@@ -1,0 +1,394 @@
+diff --git a/components/roves-v8/build.rs b/components/roves-v8/build.rs
+index 293b2b24f3f..11360de8511 100644
+--- a/components/roves-v8/build.rs
++++ b/components/roves-v8/build.rs
+@@ -234,6 +234,7 @@ fn main() {
+         ("LenientProbe", &[][..]),
+         ("ShadowBase", &[][..]),
+         ("ShadowChild", &["ShadowBase"][..]),
++        ("TypeGapsProbe", &[][..]),
+     ] {
+         println!("cargo:rerun-if-changed={}", fixtures.join(format!("{interface}.webidl")).display());
+         println!("cargo:rerun-if-changed={}", fixtures.join("Bindings.conf").display());
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 9b00b2f8da8..fe262525e00 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -221,6 +221,10 @@ pub mod webidl {
+     pub mod shadow_child {
+         include!(concat!(env!("OUT_DIR"), "/ShadowChildV8Binding.rs"));
+     }
++    #[cfg(test)]
++    pub mod type_gaps_probe {
++        include!(concat!(env!("OUT_DIR"), "/TypeGapsProbeV8Binding.rs"));
++    }
+ }
+ 
+ use std::sync::Once;
+@@ -1192,12 +1196,72 @@ pub enum WebIdlType {
+     Union(Vec<WebIdlType>),
+     /// `Promise<T>`: any value, converted like `Promise.resolve(value)` ([`Value::Js`]).
+     Promise,
++    /// An integer type annotated `[Clamp]` or `[EnforceRange]`: `conversion` names the integer
++    /// type (`Byte` .. `UnsignedLongLong`).
++    Integer(WebIdlArgumentConversion, IntegerMode),
+     /// A buffer source type (`ArrayBuffer`, `ArrayBufferView`, a typed array, `DataView`):
+     /// type-checked and passed as [`Value::Js`] without copying; natives access the bytes in
+     /// place with [`ScriptContext::with_buffer_bytes`].
+     Buffer(BufferKind),
+ }
+ 
++/// The WebIDL conversion mode of an annotated integer type.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum IntegerMode {
++    /// `[Clamp]`: NaN is 0; otherwise clamp to the range and round half to even.
++    Clamp,
++    /// `[EnforceRange]`: non-finite or out-of-range (after truncation) values are TypeErrors.
++    EnforceRange,
++}
++
++/// The value range of a WebIDL integer type (64-bit types use the exactly representable
++/// ±(2^53 − 1), as WebIDL specifies).
++fn integer_range(conversion: WebIdlArgumentConversion) -> Option<(f64, f64)> {
++    let safe = 9007199254740991.0;
++    Some(match conversion {
++        WebIdlArgumentConversion::Byte => (-128.0, 127.0),
++        WebIdlArgumentConversion::Octet => (0.0, 255.0),
++        WebIdlArgumentConversion::Short => (-32768.0, 32767.0),
++        WebIdlArgumentConversion::UnsignedShort => (0.0, 65535.0),
++        WebIdlArgumentConversion::Long => (-2147483648.0, 2147483647.0),
++        WebIdlArgumentConversion::UnsignedLong => (0.0, 4294967295.0),
++        WebIdlArgumentConversion::LongLong => (-safe, safe),
++        WebIdlArgumentConversion::UnsignedLongLong => (0.0, safe),
++        _ => return None,
++    })
++}
++
++/// Applies `[Clamp]`/`[EnforceRange]` to an already ToNumber-converted value.
++fn convert_annotated_integer(number: f64, conversion: WebIdlArgumentConversion, mode: IntegerMode) -> Result<f64, String> {
++    let (min, max) = integer_range(conversion).ok_or("not an integer type")?;
++    match mode {
++        IntegerMode::EnforceRange => {
++            if !number.is_finite() {
++                return Err("value is not a finite number".into());
++            }
++            let truncated = number.trunc();
++            if truncated < min || truncated > max {
++                return Err(format!("value {truncated} is outside the range {min}..={max}"));
++            }
++            Ok(truncated + 0.0)
++        },
++        IntegerMode::Clamp => {
++            if number.is_nan() {
++                return Ok(0.0);
++            }
++            let clamped = number.clamp(min, max);
++            // Round half to even.
++            let floor = clamped.floor();
++            let rounded = if clamped - floor == 0.5 {
++                if floor % 2.0 == 0.0 { floor } else { floor + 1.0 }
++            } else {
++                clamped.round()
++            };
++            Ok(rounded + 0.0)
++        },
++    }
++}
++
+ /// The WebIDL buffer source types.
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub enum BufferKind {
+@@ -4228,6 +4292,16 @@ fn convert_typed_value<'s>(
+             Some(Value::Js(Handle(v8::Global::new(scope, value))))
+         },
+         WebIdlType::Union(members) => convert_union(scope, value, members),
++        WebIdlType::Integer(conversion, mode) => {
++            let number = value.number_value(scope)?;
++            match convert_annotated_integer(number, *conversion, *mode) {
++                Ok(number) => Some(Value::Number(number)),
++                Err(message) => {
++                    throw_type_error(scope, &message);
++                    None
++                },
++            }
++        },
+         WebIdlType::Buffer(kind) => {
+             if !kind.matches(value) {
+                 throw_type_error(scope, &format!("value is not {kind:?}"));
+@@ -4936,6 +5010,26 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn clamp_and_enforce_range_follow_webidl() {
++        use super::{convert_annotated_integer, IntegerMode, WebIdlArgumentConversion as C};
++        let clamp = |number, conversion| convert_annotated_integer(number, conversion, IntegerMode::Clamp).unwrap();
++        assert_eq!(clamp(300.0, C::Octet), 255.0);
++        assert_eq!(clamp(-5.0, C::Octet), 0.0);
++        assert_eq!(clamp(f64::NAN, C::Long), 0.0);
++        assert_eq!(clamp(2.5, C::Octet), 2.0);
++        assert_eq!(clamp(3.5, C::Octet), 4.0);
++        assert_eq!(clamp(-0.4, C::Long), 0.0);
++        assert!(clamp(-0.4, C::Long).is_sign_positive());
++        assert_eq!(clamp(f64::INFINITY, C::UnsignedLongLong), 9007199254740991.0);
++        let enforce = |number, conversion| convert_annotated_integer(number, conversion, IntegerMode::EnforceRange);
++        assert_eq!(enforce(255.9, C::Octet), Ok(255.0));
++        assert!(enforce(256.0, C::Octet).is_err());
++        assert!(enforce(-1.0, C::UnsignedLong).is_err());
++        assert!(enforce(f64::INFINITY, C::Long).is_err());
++        assert!(enforce(f64::NAN, C::Long).is_err());
++    }
++
+     #[test]
+     fn webidl_integer_conversion_is_exact_for_64_bit_types() {
+         assert_eq!(super::convert_webidl_integer(-5.0, 64, true), -5.0);
+@@ -8148,6 +8242,67 @@ mod tests {
+         );
+     }
+ 
++    #[cfg(feature = "webidl-pilot")]
++    #[test]
++    fn generated_enums_unions_bytestrings_and_annotated_integers() {
++        use crate::webidl::type_gaps_probe::{StringOrUnsignedLong, TypeGapsProbeBinding, TypeGapsProbeNative};
++        use crate::{Handle, ScriptContext, WebIdlError};
++        use std::cell::RefCell;
++        struct Probe {
++            state: RefCell<String>,
++            maybe: RefCell<Option<String>>,
++        }
++        #[allow(non_snake_case)]
++        impl TypeGapsProbeNative for Probe {
++            fn State(&self) -> String { self.state.borrow().clone() }
++            fn set_State(&self, value: String) { *self.state.borrow_mut() = value; }
++            fn MaybeState(&self) -> Option<String> { self.maybe.borrow().clone() }
++            fn set_MaybeState(&self, value: Option<String>) { *self.maybe.borrow_mut() = value; }
++            fn Raw(&self) -> Vec<u8> { vec![104, 105, 255] }
++            fn Next(&self) -> String { "closed".to_owned() }
++            fn Pick(&self, as_text: bool) -> Option<StringOrUnsignedLong> {
++                Some(if as_text { StringOrUnsignedLong::String("seven".encode_utf16().collect()) } else { StringOrUnsignedLong::UnsignedLong(7) })
++            }
++            fn Header(&self, present: bool) -> Option<Vec<u8>> { present.then(|| b"text/html".to_vec()) }
++            fn Clamp(&self, value: u8) -> u8 { value }
++            fn Strict(&self, value: i32) -> i32 { value }
++            fn Filtered(&self, cx: &mut ScriptContext, filter: Option<Handle>) -> Result<u32, WebIdlError> {
++                let Some(filter) = filter else { return Ok(0) };
++                match cx.call_user_object_operation(&filter, "acceptNode", &[Value::Null])? {
++                    Value::Js(result) => match cx.value(&result) {
++                        Value::Number(number) => Ok(number as u32),
++                        _ => Ok(0),
++                    },
++                    _ => Ok(0),
++                }
++            }
++        }
++        let mut runtime = Runtime::new();
++        let binding = TypeGapsProbeBinding::<Probe>::install(&mut runtime).unwrap();
++        let probe = binding.create(&mut runtime, Probe { state: RefCell::new("running".into()), maybe: RefCell::new(None) });
++        runtime.set_global_property("p", &probe).unwrap();
++        for (source, expected) in [
++            // Enumeration attributes: valid values set, invalid ones are silently ignored.
++            ("p.state = 'suspended'; p.state = 'bogus'; p.state", "suspended"),
++            ("p.maybeState = 'closed'; const a = p.maybeState; p.maybeState = null; [a, p.maybeState].join()", "closed,"),
++            ("p.next()", "closed"),
++            // ByteString attribute and nullable ByteString result.
++            ("[p.raw.length, p.raw.charCodeAt(2), p.header(true), p.header(false)].join()", "3,255,text/html,"),
++            // A nullable union result.
++            ("[p.pick(true), p.pick(false), typeof p.pick(false)].join()", "seven,7,number"),
++            // [Clamp]: clamp and round half to even; [EnforceRange]: truncate in range.
++            ("[p.clamp(300), p.clamp(-3), p.clamp(2.5), p.clamp(3.5), p.clamp(NaN)].join()", "255,0,2,4,0"),
++            ("[p.strict(5.9), p.strict(-2147483648)].join()", "5,-2147483648"),
++            // A nullable callback interface with a `= null` default.
++            ("[p.filtered(), p.filtered(null), p.filtered({ acceptNode: () => 3 }), p.filtered(() => 2)].join()", "0,0,3,2"),
++        ] {
++            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
++        }
++        for source in ["p.strict(2 ** 31)", "p.strict(Infinity)", "p.strict(NaN)"] {
++            assert!(runtime.eval(source).unwrap_err().contains("TypeError"), "{source}");
++        }
++    }
++
+     #[cfg(feature = "webidl-pilot")]
+     #[test]
+     fn generated_nullable_domstring_preserves_null_and_utf16_semantics() {
+diff --git a/components/roves-v8/tests/webidl/TypeGapsProbe.webidl b/components/roves-v8/tests/webidl/TypeGapsProbe.webidl
+new file mode 100644
+index 00000000000..06372fd890d
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/TypeGapsProbe.webidl
+@@ -0,0 +1,19 @@
++enum ProbeState { "running", "suspended", "closed" };
++
++[Exposed=Window]
++callback interface ProbeFilter {
++  unsigned short acceptNode(any node);
++};
++
++[Exposed=Window]
++interface TypeGapsProbe {
++  attribute ProbeState state;
++  attribute ProbeState? maybeState;
++  readonly attribute ByteString raw;
++  ProbeState next();
++  (DOMString or unsigned long)? pick(boolean asText);
++  ByteString? header(boolean present);
++  octet clamp([Clamp] octet value);
++  long strict([EnforceRange] long value);
++  unsigned long filtered(optional ProbeFilter? filter = null);
++};
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index d3a336012e6..ca9fd685bcb 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8353,6 +8353,8 @@ def v8_setter_conversion(idl_type, nullable: bool):
+         conversion, arm = "UsvString", "Value::String(value) => value.clone()"
+     elif idl_type.isByteString():
+         conversion, arm = "ByteString", "Value::ByteString(value) => value.clone()"
++    elif idl_type.isEnum():
++        conversion, arm = "UsvString", "Value::String(value) => value.clone()"
+     else:
+         return None
+     if nullable:
+@@ -8510,6 +8512,12 @@ def v8_typed_info(ty, name: str, member_name: str):
+             f'Value::Sequence(items) => items.iter().map(|item| match item {{ {arm}, _ => unreachable!("runtime conversion matches the generated WebIDL type") }}).collect()',
+             f"Value::Sequence(ITEM.into_iter().map(|item| {to_value.replace('ITEM', 'item')}).collect())",
+         )
++    if ty.isInteger() and (ty.hasClamp() or ty.hasEnforceRange()):
++        base = ty.name.replace("RangeEnforced", "").replace("Clamped", "")
++        rust, _, arm, to_value = V8_TYPED_PRIMITIVES[base]
++        mode = "Clamp" if ty.hasClamp() else "EnforceRange"
++        return (rust, f"roves_v8::WebIdlType::Integer(roves_v8::WebIdlArgumentConversion::{base}, roves_v8::IntegerMode::{mode})",
++                arm, to_value)
+     primitive = V8_TYPED_PRIMITIVES.get(ty.name) if (ty.isPrimitive() and not ty.isEnum()) else None
+     if primitive:
+         rust, conversion, arm, to_value = primitive
+@@ -8566,7 +8574,8 @@ def v8_contains_sequence(ty) -> bool:
+     if ty.nullable():
+         return v8_contains_sequence(ty.inner)
+     return (ty.isSequence() or ty.isDictionary() or ty.isUnion() or ty.isCallbackInterface()
+-            or ty.isPromise() or ty.isBufferSource())
++            or ty.isPromise() or ty.isBufferSource()
++            or (ty.isInteger() and (ty.hasClamp() or ty.hasEnforceRange())))
+ 
+ 
+ def v8_contains_handle(ty) -> bool:
+@@ -8634,6 +8643,8 @@ def v8_argument_types(name: str, member_name: str, arguments) -> list:
+         if default_value is not None and (
+             inner_type.isAny() or inner_type.isUnion() or inner_type.isObject()
+             or isinstance(default_value, IDLUndefinedValue)
++            or (isinstance(default_value, IDLNullValue) and ty.nullable()
++                and not (inner_type.isString() or inner_type.isPrimitive()))
+         ) and not isinstance(default_value, IDLDefaultDictionaryValue):
+             # The runtime applies the default (converted through the type) when the argument is
+             # missing or undefined, so the native always receives a value.
+@@ -8972,6 +8983,7 @@ class CGV8BindingRoot(CGThing):
+         operations = []
+         unforgeable_attributes = set()
+         typed_attributes = []
++        idl_attribute_types = {}
+         value_iterable = False
+         indexed_getter = None
+         named_getter = None
+@@ -9101,6 +9113,9 @@ class CGV8BindingRoot(CGThing):
+                         else:
+                             rust_type = rust
+                             value_expr = to_value.replace("ITEM", "native.{native}()")
++                    elif result_type.isUnion() or result_type.isEnum() or result_type.isByteString():
++                        rust_type, _, _, to_value = v8_typed_info(return_type, name, member.identifier.name)
++                        value_expr = to_value.replace("ITEM", "native.{native}()")
+                     elif result_type.isPromise():
+                         # WebIDL: a promise-returning operation rejects instead of throwing.
+                         promise_operations.add(MakeNativeName(member.identifier.name) + "_" * overload_index)
+@@ -9160,7 +9175,7 @@ class CGV8BindingRoot(CGThing):
+             if lenient_this and not (idl_type.isAny() or idl_type.isObject() or idl_type.isCallback()):
+                 raise TypeError(f"V8 backend only supports [LegacyLenientThis] on contextual attributes: {name}.{member.identifier.name}")
+             if ((idl_type.isUnion() and (not member.readonly or v8_contains_handle(member.type)))
+-                    or idl_type.isBufferSource()):
++                    or idl_type.isBufferSource() or idl_type.isPromise() or idl_type.isCallbackInterface()):
+                 # Structured attributes: the setter converts through the WebIDL type.
+                 rust, expr, arm, to_value = v8_typed_info(member.type, name, member.identifier.name)
+                 typed_attributes.append((
+@@ -9211,6 +9226,9 @@ class CGV8BindingRoot(CGThing):
+                 else:
+                     rust_type = native_type
+                     value_expr = f"Value::Number({to_number.replace('VALUE', 'native.{native}()')})"
++            elif idl_type.isEnum() or idl_type.isByteString():
++                rust_type, _, _, to_value = v8_typed_info(member.type, name, member.identifier.name)
++                value_expr = to_value.replace("{", "{{").replace("}", "}}").replace("ITEM", "native.{native}()")
+             elif member.readonly and idl_type.isUnion() and not v8_contains_handle(member.type):
+                 # Readonly union attributes reuse the union enum; the getter value template has
+                 # its braces escaped for the later `.format(native=...)`.
+@@ -9250,7 +9268,7 @@ class CGV8BindingRoot(CGThing):
+             getter_throws = bool({"Throws", "GetterThrows"} & set(extended))
+             setter_throws = setter and bool({"Throws", "SetterThrows"} & set(extended))
+             put_forwards = extended.get("PutForwards")
+-            if (getter_throws or setter_throws or put_forwards
++            if (getter_throws or setter_throws or put_forwards or (setter and idl_type.isEnum())
+                     or (setter and not idl_type.isDOMString() and conversion is None)):
+                 if put_forwards:
+                     if not member.readonly or not v8_is_dom_interface(idl_type) or member.type.nullable():
+@@ -9267,6 +9285,8 @@ class CGV8BindingRoot(CGThing):
+                     member.identifier.name, MakeNativeName(member.identifier.name), rust_type, value_expr,
+                     getter_throws, setter_throws, setter_info,
+                 ))
++                if idl_type.isEnum():
++                    idl_attribute_types[member.identifier.name] = idl_type
+                 continue
+             if setter and not idl_type.isDOMString() and conversion is None:
+                 raise TypeError(f"V8 backend does not support mutable attribute type: {name}.{member.identifier.name}")
+@@ -9392,6 +9412,15 @@ class CGV8BindingRoot(CGThing):
+                     )
+                 else:
+                     call = f"native.set_{native}(value)"
++                    enum_type = idl_attribute_types.get(idl)
++                    if enum_type is not None:
++                        # Assigning a string outside the enumeration is silently ignored.
++                        values = ", ".join(f'"{value}"' for value in enum_type.inner.values())
++                        check = "value.as_deref()" if nullable else "Some(value.as_str())"
++                        call = (
++                            f"if let Some(text) = {check} {{ if ![{values}].contains(&text) {{ return Ok(()); }} }}\n"
++                            f"            {call}"
++                        )
+                     setter_callback = (
+                         f"Some(|cx, native, value| {{\n            let _ = cx;\n{downcast}"
+                         f'            let value = match value {{ {arm}, _ => unreachable!("runtime conversion matches generated WebIDL attribute type") }};\n'
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index 0c060d27088..7d6af38c772 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -104,7 +104,7 @@ class V8GeneratorTests(unittest.TestCase):
+                 generate(path, Path(directory) / "output")
+ 
+     def test_unsupported_members_never_silently_disappear(self):
+-        for member in ["[LegacyLenientSetter] readonly attribute boolean value;", "readonly attribute Promise<any> value;", "static readonly attribute boolean valid;", "[LegacyLenientThis] readonly attribute boolean valid;", "attribute Unsupported? owner;"]:
++        for member in ["[LegacyLenientSetter] readonly attribute boolean value;", "static readonly attribute boolean valid;", "[LegacyLenientThis] readonly attribute boolean valid;", "attribute Unsupported? owner;"]:
+             with self.subTest(member=member):
+                 self.assert_unsupported("interface Unsupported { " + member + " };")
+ 
+@@ -733,6 +733,27 @@ class V8GeneratorTests(unittest.TestCase):
+                 self.assertIn(expected, source)
+             self.assertNotIn("fn set_Pixels", source)
+ 
++    def test_enums_bytestrings_unions_and_annotated_integers(self):
++        with tempfile.TemporaryDirectory() as directory:
++            path = Path(directory) / "Gaps.webidl"
++            path.write_text(
++                'enum Mode { "a", "b" }; [Exposed=Window] interface Gaps { attribute Mode mode; '
++                "readonly attribute ByteString raw; (DOMString or long) pick(); "
++                "octet clamp([Clamp] octet value); long strict([EnforceRange] long value); };",
++                encoding="utf-8",
++            )
++            source = generate(path, Path(directory) / "output")
++            for expected in [
++                "fn Mode(&self) -> String;",
++                "fn set_Mode(&self, value: String);",
++                ".contains(&text) { return Ok(()); }",
++                "fn Raw(&self) -> Vec<u8>;",
++                "fn Pick(&self) -> StringOrLong;",
++                "roves_v8::WebIdlType::Integer(roves_v8::WebIdlArgumentConversion::Octet, roves_v8::IntegerMode::Clamp)",
++                "roves_v8::WebIdlType::Integer(roves_v8::WebIdlArgumentConversion::Long, roves_v8::IntegerMode::EnforceRange)",
++            ]:
++                self.assertIn(expected, source)
++
+     def test_lenient_this_and_html_constructor(self):
+         with tempfile.TemporaryDirectory() as directory:
+             path = Path(directory) / "Element.webidl"
