@@ -939,6 +939,40 @@ class V8GeneratorTests(unittest.TestCase):
             )
             self.assertIn("fn set_Width(&self, value: u64);", source)
 
+    def test_maplike_and_setlike_use_servo_like_natives(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Scores.webidl"
+            path.write_text("[Exposed=Window] interface Scores { maplike<DOMString, long>; };", encoding="utf-8")
+            source = generate(path, Path(directory) / "output")
+            for expected in [
+                "fn get_index(&self, index: u32) -> Option<(Vec<u16>, i32)>;",
+                "fn size(&self) -> u32;",
+                "fn get(&self, key: Vec<u16>) -> Option<i32>;",
+                "fn set(&self, key: Vec<u16>, value: i32);",
+                "fn delete(&self, key: Vec<u16>) -> bool;",
+                "fn clear(&self);",
+                "runtime.define_maplike(&interface,",
+            ]:
+                self.assertIn(expected, source)
+            self.assertNotIn("fn Size", source)
+            # A setlike whose interface declares its own add/delete/clear (like FontFaceSet).
+            path.write_text(
+                "[Exposed=Window] interface Fonts { setlike<DOMString>; undefined add(DOMString font);"
+                " boolean delete(DOMString font); undefined clear(); };",
+                encoding="utf-8",
+            )
+            source = generate(path, Path(directory) / "output")
+            self.assertIn("fn get_index(&self, index: u32) -> Option<Vec<u16>>;", source)
+            self.assertIn("fn Add(&self, arg0: Vec<u16>) -> ();", source)
+            self.assertNotIn("fn add(&self", source)
+            self.assertIn("set: None", source)
+            self.assertIn("delete: None", source)
+            # A readonly maplike has no mutators.
+            path.write_text("[Exposed=Window] interface Fixed { readonly maplike<DOMString, long>; };", encoding="utf-8")
+            source = generate(path, Path(directory) / "output")
+            self.assertNotIn("fn set(&self", source)
+            self.assertIn("clear: None", source)
+
     def test_legacy_factory_functions_generate_fallible_natives(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "Picture.webidl"

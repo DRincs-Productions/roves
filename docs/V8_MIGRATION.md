@@ -206,6 +206,9 @@ constructors.** `DOMException` (and its descendants), `EventListener`, `NodeFilt
 `OffscreenCanvas`, `ClipboardItem` and `PasswordCredential` generate. Coverage 462/486 (95%).
 The remaining blockers are listed in the handoff.
 
+**CP86 (2026-10-06): maplike/setlike.** These are index-based natives, as in Servo's `like.rs`.
+`CustomStateSet`, `FontFaceSet` and `CSSFontFeatureValuesMap` generate. Coverage 468/486 (96%).
+
 CP37 exposes stable `NativeObjectId` through `DomObject` and updates generated `dom_struct`
 equality to use that engine-neutral contract. Local checks pass (reflector 2/2, macro 3/3,
 rustfmt, and patch 0101 reverse-check); CI is green: V8 37226916624 (6/6), Servo 37226916650

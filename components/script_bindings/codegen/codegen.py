@@ -9001,6 +9001,8 @@ class CGV8BindingRoot(CGThing):
         idl_attribute_types = {}
         value_iterable = False
         pair_iterable = None
+        maplike = None
+        synthesized_like_members = set()
         indexed_getter = None
         named_getter = None
         promise_operations = set()
@@ -9021,6 +9023,17 @@ class CGV8BindingRoot(CGThing):
             if copied_from_ancestor(member):
                 continue
             if callback_interface and not member.isConst():
+                continue
+            if type(member).__name__ == "IDLMaplikeOrSetlike":
+                maplike = member
+                continue
+            if (member.isMethod() or member.isAttr()) and getattr(member, "maplikeOrSetlike", None) is not None:
+                # size/has/get/set/add/delete/clear: installed by the runtime's define_maplike.
+                synthesized_like_members.add(member.identifier.name)
+                continue
+            if (member.isMethod() and member.isMaplikeOrSetlikeOrIterableMethod()
+                    and type(member.maplikeOrSetlikeOrIterable).__name__ == "IDLMaplikeOrSetlike"):
+                synthesized_like_members.add(member.identifier.name)
                 continue
             if type(member).__name__ == "IDLIterable":
                 if member.isPairIterator():
@@ -9928,6 +9941,70 @@ class CGV8BindingRoot(CGThing):
             )
         if value_iterable:
             registrations_list.append("        runtime.define_value_iterable(&interface);")
+        if maplike is not None:
+            # Servo's Maplike/Setlike traits (without the JSContext): entries by index.
+            set_like = maplike.isSetlike()
+            key_rust, key_expr, key_arm, key_to_value = v8_typed_info(maplike.keyType, name, "maplike key")
+            downcast = f'native.downcast_ref::<T>().expect("typed {name} wrapper")'
+            key_of = f'match key {{ {key_arm}, _ => unreachable!("runtime conversion matches the generated WebIDL type") }}'
+            if set_like:
+                index_type = key_rust
+                key_at = f"{key_to_value.replace('ITEM', 'item')}"
+                value_at = key_at
+                value_expr = "None"
+            else:
+                value_rust, value_expr, value_arm, value_to_value = v8_typed_info(maplike.valueType, name, "maplike value")
+                index_type = f"({key_rust}, {value_rust})"
+                key_at = f"{key_to_value.replace('ITEM', 'item.0')}"
+                value_at = f"{value_to_value.replace('ITEM', 'item.1')}"
+                value_expr = f"Some({value_expr})"
+            trait_methods += (
+                f"\n    fn get_index(&self, index: u32) -> Option<{index_type}>;"
+                "\n    fn size(&self) -> u32;"
+                f"\n    fn has(&self, key: {key_rust}) -> bool;"
+            )
+            item = f'<T as {name}Native>::get_index({downcast}, index).expect("index below size")'
+            natives = [
+                f"size: |native| <T as {name}Native>::size({downcast})",
+                f"key_at: |native, index| {{ let item = {item}; {key_at} }}",
+                f"value_at: |native, index| {{ let item = {item}; {value_at} }}",
+                f"has: |native, key| <T as {name}Native>::has({downcast}, {key_of})",
+            ]
+            if set_like:
+                natives.append("get: None")
+            else:
+                trait_methods += f"\n    fn get(&self, key: {key_rust}) -> Option<{value_rust}>;"
+                natives.append(
+                    f"get: Some(|native, key| <T as {name}Native>::get({downcast}, {key_of})"
+                    f".map(|item| {value_to_value.replace('ITEM', 'item')}).unwrap_or(Value::Undefined))"
+                )
+            mutator = "add" if set_like else "set"
+            if mutator in synthesized_like_members:
+                if set_like:
+                    trait_methods += f"\n    fn add(&self, key: {key_rust});"
+                    natives.append(f"set: Some(|native, key, _| <T as {name}Native>::add({downcast}, {key_of}))")
+                else:
+                    value_of = f'match value {{ {value_arm}, _ => unreachable!("runtime conversion matches the generated WebIDL type") }}'
+                    trait_methods += f"\n    fn set(&self, key: {key_rust}, value: {value_rust});"
+                    natives.append(f"set: Some(|native, key, value| <T as {name}Native>::set({downcast}, {key_of}, {value_of}))")
+            else:
+                natives.append("set: None")
+            if "delete" in synthesized_like_members:
+                trait_methods += f"\n    fn delete(&self, key: {key_rust}) -> bool;"
+                natives.append(f"delete: Some(|native, key| <T as {name}Native>::delete({downcast}, {key_of}))")
+            else:
+                natives.append("delete: None")
+            if "clear" in synthesized_like_members:
+                trait_methods += "\n    fn clear(&self);"
+                natives.append(f"clear: Some(|native| <T as {name}Native>::clear({downcast}))")
+            else:
+                natives.append("clear: None")
+            natives_source = "".join(f"            {native},\n" for native in natives)
+            registrations_list.append(
+                f"        runtime.define_maplike(&interface, {key_expr}, {value_expr}, roves_v8::WebIdlLikeNatives {{\n"
+                f"{natives_source}"
+                "        })?;"
+            )
         if pair_iterable is not None:
             # Servo's Iterable trait: the length, and the key and value at an index.
             key_rust, _, _, key_to_value = v8_typed_info(pair_iterable[0], name, "iterable key")

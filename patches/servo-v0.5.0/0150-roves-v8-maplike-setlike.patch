@@ -1,0 +1,567 @@
+diff --git a/components/roves-v8/build.rs b/components/roves-v8/build.rs
+index 85cbfe23ada..958c0270988 100644
+--- a/components/roves-v8/build.rs
++++ b/components/roves-v8/build.rs
+@@ -244,6 +244,8 @@ fn main() {
+         ("RecordProbe", &[][..]),
+         ("FailureProbe", &[][..]),
+         ("FilterProbe", &[][..]),
++        ("TokenSet", &[][..]),
++        ("ScoreMap", &[][..]),
+     ] {
+         println!("cargo:rerun-if-changed={}", fixtures.join(format!("{interface}.webidl")).display());
+         println!("cargo:rerun-if-changed={}", fixtures.join("Bindings.conf").display());
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index b6517d2622e..42c57f59020 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -206,6 +206,14 @@ pub mod webidl {
+         include!(concat!(env!("OUT_DIR"), "/FilterProbeV8Binding.rs"));
+     }
+     #[cfg(test)]
++    pub mod token_set {
++        include!(concat!(env!("OUT_DIR"), "/TokenSetV8Binding.rs"));
++    }
++    #[cfg(test)]
++    pub mod score_map {
++        include!(concat!(env!("OUT_DIR"), "/ScoreMapV8Binding.rs"));
++    }
++    #[cfg(test)]
+     pub mod promise_operations {
+         include!(concat!(env!("OUT_DIR"), "/PromiseOperationsV8Binding.rs"));
+     }
+@@ -460,6 +468,7 @@ pub struct Runtime {
+     static_overload_configs: Vec<Box<StaticOverloadConfig>>,
+     legacy_factory_configs: Vec<Box<LegacyFactoryConfig>>,
+     pair_iterable_configs: Vec<Box<PairIterableConfig>>,
++    like_configs: Vec<Box<LikeConfig>>,
+ }
+ 
+ struct WrappedFinalizer {
+@@ -1856,6 +1865,36 @@ fn pair_iterator_next(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgume
+     retval.set(result.into());
+ }
+ 
++/// The natives behind a WebIDL `maplike<K, V>` or `setlike<K>`, modelled on Servo's
++/// `Maplike`/`Setlike` traits: entries are read by index (in insertion order). Mutators are
++/// `None` for a readonly declaration, or when the interface defines that operation itself.
++pub struct WebIdlLikeNatives {
++    pub size: fn(&dyn std::any::Any) -> u32,
++    /// The key at an index below `size` (for a setlike, the element).
++    pub key_at: PairIterableItem,
++    /// The value at an index below `size` (for a setlike, the element again).
++    pub value_at: PairIterableItem,
++    pub has: fn(&dyn std::any::Any, &Value) -> bool,
++    /// Maplike `get`: the value, or [`Value::Undefined`] for a missing key.
++    pub get: Option<fn(&dyn std::any::Any, &Value) -> Value>,
++    /// Maplike `set(key, value)` or setlike `add(key)` (the value is [`Value::Undefined`]).
++    pub set: Option<fn(&dyn std::any::Any, &Value, &Value)>,
++    pub delete: Option<fn(&dyn std::any::Any, &Value) -> bool>,
++    pub clear: Option<fn(&dyn std::any::Any)>,
++}
++
++struct LikeConfig {
++    natives: WebIdlLikeNatives,
++    key: WebIdlArguments,
++    key_value: WebIdlArguments,
++}
++
++fn like_config<'c>(args: &v8::FunctionCallbackArguments) -> Option<&'c LikeConfig> {
++    let external = v8::Local::<v8::External>::try_from(args.data()).ok()?;
++    // SAFETY: the External points to this interface's boxed maplike/setlike config.
++    Some(unsafe { &*(external.value() as *const LikeConfig) })
++}
++
+ struct LegacyFactoryConfig {
+     constructor: NativeConstructor,
+     arguments: WebIdlArguments,
+@@ -1917,6 +1956,7 @@ impl Runtime {
+             static_overload_configs: Vec::new(),
+             legacy_factory_configs: Vec::new(),
+             pair_iterable_configs: Vec::new(),
++            like_configs: Vec::new(),
+             method_configs: Vec::new(),
+         }
+     }
+@@ -2670,6 +2710,177 @@ impl Runtime {
+         length: PairIterableLength,
+         key: PairIterableItem,
+         value: PairIterableItem,
++    ) -> Result<(), String> {
++        self.define_iteration(interface, length, key, value, false)
++    }
++
++    /// Makes `interface` a WebIDL `maplike<K, V>` (`value` is `Some`) or `setlike<K>`
++    /// (`CSSFontFeatureValuesMap`, `CustomStateSet`, `FontFaceSet`): `size`, `has`, `get`
++    /// (maplike), the iteration methods, `forEach`, and the mutators `natives` provides
++    /// (`set`/`add`, `delete`, `clear`). Keys and values convert through `key`/`value`; `set` and
++    /// `add` return the receiver.
++    pub fn define_maplike(
++        &mut self,
++        interface: &Interface,
++        key: WebIdlType,
++        value: Option<WebIdlType>,
++        natives: WebIdlLikeNatives,
++    ) -> Result<(), String> {
++        let set_like = value.is_none();
++        self.define_iteration(interface, natives.size, natives.key_at, natives.value_at, set_like)?;
++        let key_argument = WebIdlArgument { ty: key.clone(), optional: false, variadic: false, default: None };
++        let value_argument = WebIdlArgument {
++            ty: value.unwrap_or(WebIdlType::Primitive(WebIdlArgumentConversion::Any)),
++            optional: false,
++            variadic: false,
++            default: None,
++        };
++        let has_get = natives.get.is_some();
++        let has_set = natives.set.is_some();
++        let has_delete = natives.delete.is_some();
++        let has_clear = natives.clear.is_some();
++        let config = Box::new(LikeConfig {
++            natives,
++            key: WebIdlArguments::typed(std::slice::from_ref(&key_argument)),
++            key_value: WebIdlArguments::typed(&[key_argument.clone(), value_argument]),
++        });
++        let config_pointer = (&*config) as *const LikeConfig;
++        self.like_configs.push(config);
++        let context_handle = &self.context;
++        v8::scope!(let scope, &mut self.isolate);
++        let context = v8::Local::new(scope, context_handle);
++        let scope = &mut v8::ContextScope::new(scope, context);
++        let template = v8::Local::new(scope, &interface.template);
++        let signature = v8::Signature::new(scope, template);
++        let data = v8::External::new(scope, config_pointer as *mut std::ffi::c_void);
++        let prototype = template.prototype_template(scope);
++
++        let size = v8::FunctionTemplate::builder(
++            |scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut retval: v8::ReturnValue| {
++                let Some(config) = like_config(&args) else { return };
++                let Some(native) = receiver_native(scope, args.this()) else { return };
++                retval.set_uint32((config.natives.size)(native));
++            },
++        )
++        .data(data.into())
++        .signature(signature)
++        .length(0)
++        .constructor_behavior(v8::ConstructorBehavior::Throw)
++        .build(scope);
++        size.set_class_name(v8::String::new(scope, "get size").unwrap());
++        let size_key = v8::String::new(scope, "size").unwrap();
++        prototype.set_accessor_property(size_key.into(), Some(size), None, v8::PropertyAttribute::NONE);
++
++        let mut methods: Vec<(&str, v8::Local<v8::FunctionTemplate>)> = Vec::new();
++        let has = v8::FunctionTemplate::builder(
++            |scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut retval: v8::ReturnValue| {
++                let Some(config) = like_config(&args) else { return };
++                let Some(native) = receiver_native(scope, args.this()) else { return };
++                let Some(key) = convert_webidl_arguments(scope, &args, &config.key) else { return };
++                retval.set_bool((config.natives.has)(native, &key[0]));
++            },
++        )
++        .data(data.into())
++        .signature(signature)
++        .length(1)
++        .constructor_behavior(v8::ConstructorBehavior::Throw)
++        .build(scope);
++        methods.push(("has", has));
++        if has_get {
++            let get = v8::FunctionTemplate::builder(
++                |scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut retval: v8::ReturnValue| {
++                    let Some(config) = like_config(&args) else { return };
++                    let Some(native) = receiver_native(scope, args.this()) else { return };
++                    let Some(key) = convert_webidl_arguments(scope, &args, &config.key) else { return };
++                    let value = (config.natives.get.expect("get exists"))(native, &key[0]);
++                    let value = v8_result(scope, &value);
++                    retval.set(value);
++                },
++            )
++            .data(data.into())
++            .signature(signature)
++            .length(1)
++            .constructor_behavior(v8::ConstructorBehavior::Throw)
++            .build(scope);
++            methods.push(("get", get));
++        }
++        if has_set {
++            let set = if set_like {
++                v8::FunctionTemplate::builder(
++                    |scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut retval: v8::ReturnValue| {
++                        let Some(config) = like_config(&args) else { return };
++                        let Some(native) = receiver_native(scope, args.this()) else { return };
++                        let Some(key) = convert_webidl_arguments(scope, &args, &config.key) else { return };
++                        (config.natives.set.expect("add exists"))(native, &key[0], &Value::Undefined);
++                        retval.set(args.this().into());
++                    },
++                )
++            } else {
++                v8::FunctionTemplate::builder(
++                    |scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut retval: v8::ReturnValue| {
++                        let Some(config) = like_config(&args) else { return };
++                        let Some(native) = receiver_native(scope, args.this()) else { return };
++                        let Some(entry) = convert_webidl_arguments(scope, &args, &config.key_value) else { return };
++                        (config.natives.set.expect("set exists"))(native, &entry[0], &entry[1]);
++                        retval.set(args.this().into());
++                    },
++                )
++            }
++            .data(data.into())
++            .signature(signature)
++            .length(if set_like { 1 } else { 2 })
++            .constructor_behavior(v8::ConstructorBehavior::Throw)
++            .build(scope);
++            methods.push((if set_like { "add" } else { "set" }, set));
++        }
++        if has_delete {
++            let delete = v8::FunctionTemplate::builder(
++                |scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut retval: v8::ReturnValue| {
++                    let Some(config) = like_config(&args) else { return };
++                    let Some(native) = receiver_native(scope, args.this()) else { return };
++                    let Some(key) = convert_webidl_arguments(scope, &args, &config.key) else { return };
++                    retval.set_bool((config.natives.delete.expect("delete exists"))(native, &key[0]));
++                },
++            )
++            .data(data.into())
++            .signature(signature)
++            .length(1)
++            .constructor_behavior(v8::ConstructorBehavior::Throw)
++            .build(scope);
++            methods.push(("delete", delete));
++        }
++        if has_clear {
++            let clear = v8::FunctionTemplate::builder(
++                |scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _retval: v8::ReturnValue| {
++                    let Some(config) = like_config(&args) else { return };
++                    let Some(native) = receiver_native(scope, args.this()) else { return };
++                    (config.natives.clear.expect("clear exists"))(native);
++                },
++            )
++            .data(data.into())
++            .signature(signature)
++            .length(0)
++            .constructor_behavior(v8::ConstructorBehavior::Throw)
++            .build(scope);
++            methods.push(("clear", clear));
++        }
++        for (name, function) in methods {
++            let key = v8::String::new(scope, name).ok_or("invalid method name")?;
++            prototype.set(key.into(), function.into());
++        }
++        Ok(())
++    }
++
++    /// The iteration methods shared by pair iterables, maplike and setlike. For a setlike,
++    /// `keys` and `@@iterator` are the `values` function (WebIDL), otherwise `@@iterator` is
++    /// `entries`.
++    fn define_iteration(
++        &mut self,
++        interface: &Interface,
++        length: PairIterableLength,
++        key: PairIterableItem,
++        value: PairIterableItem,
++        set_like: bool,
+     ) -> Result<(), String> {
+         if interface.materialized.get() {
+             return Err("interface members must be defined before creating instances or descendants".into());
+@@ -2695,25 +2906,34 @@ impl Runtime {
+                 )
+             };
+         }
+-        for (name, builder) in [
+-            ("entries", iterator_method!(PairIteratorKind::Entry)),
+-            ("keys", iterator_method!(PairIteratorKind::Key)),
+-            ("values", iterator_method!(PairIteratorKind::Value)),
++        let mut functions = Vec::new();
++        for builder in [
++            iterator_method!(PairIteratorKind::Entry),
++            iterator_method!(PairIteratorKind::Key),
++            iterator_method!(PairIteratorKind::Value),
+         ] {
+-            let function = builder
+-                .data(data.into())
+-                .signature(signature)
+-                .length(0)
+-                .constructor_behavior(v8::ConstructorBehavior::Throw)
+-                .build(scope);
++            functions.push(
++                builder
++                    .data(data.into())
++                    .signature(signature)
++                    .length(0)
++                    .constructor_behavior(v8::ConstructorBehavior::Throw)
++                    .build(scope),
++            );
++        }
++        let (entries, mut keys, values) = (functions[0], functions[1], functions[2]);
++        if set_like {
++            // A set's keys are its values: `keys` is the `values` function object itself.
++            keys = values;
++        }
++        for (name, function) in [("entries", entries), ("keys", keys), ("values", values)] {
+             let key = v8::String::new(scope, name).ok_or("invalid method name")?;
+             prototype.set(key.into(), function.into());
+-            if name == "entries" {
+-                // WebIDL: @@iterator is the same function object as `entries`.
+-                let iterator = v8::Symbol::get_iterator(scope);
+-                prototype.set_with_attr(iterator.into(), function.into(), v8::PropertyAttribute::DONT_ENUM);
+-            }
+         }
++        // WebIDL: @@iterator is the same function object as `entries` (`values` for a setlike).
++        let iterator = v8::Symbol::get_iterator(scope);
++        let default_iterator = if set_like { values } else { entries };
++        prototype.set_with_attr(iterator.into(), default_iterator.into(), v8::PropertyAttribute::DONT_ENUM);
+         let for_each = v8::FunctionTemplate::builder(
+             |scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _retval: v8::ReturnValue| {
+                 let Ok(external) = v8::Local::<v8::External>::try_from(args.data()) else { return };
+@@ -8963,6 +9183,84 @@ mod tests {
+         );
+     }
+ 
++    #[cfg(feature = "webidl-pilot")]
++    #[test]
++    fn generated_maplike_and_setlike_follow_map_and_set() {
++        use crate::webidl::score_map::{ScoreMapBinding, ScoreMapNative};
++        use crate::webidl::token_set::{TokenSetBinding, TokenSetNative};
++        use std::cell::RefCell;
++        struct Tokens(RefCell<Vec<Vec<u16>>>);
++        impl TokenSetNative for Tokens {
++            fn get_index(&self, index: u32) -> Option<Vec<u16>> { self.0.borrow().get(index as usize).cloned() }
++            fn size(&self) -> u32 { self.0.borrow().len() as u32 }
++            fn has(&self, key: Vec<u16>) -> bool { self.0.borrow().contains(&key) }
++            fn add(&self, key: Vec<u16>) {
++                if !self.has(key.clone()) {
++                    self.0.borrow_mut().push(key);
++                }
++            }
++            fn delete(&self, key: Vec<u16>) -> bool {
++                let before = self.size();
++                self.0.borrow_mut().retain(|item| *item != key);
++                before != self.size()
++            }
++            fn clear(&self) { self.0.borrow_mut().clear() }
++        }
++        struct Scores(RefCell<Vec<(Vec<u16>, i32)>>);
++        impl ScoreMapNative for Scores {
++            fn get_index(&self, index: u32) -> Option<(Vec<u16>, i32)> { self.0.borrow().get(index as usize).cloned() }
++            fn size(&self) -> u32 { self.0.borrow().len() as u32 }
++            fn has(&self, key: Vec<u16>) -> bool { self.0.borrow().iter().any(|(item, _)| *item == key) }
++            fn get(&self, key: Vec<u16>) -> Option<i32> {
++                self.0.borrow().iter().find(|(item, _)| *item == key).map(|(_, value)| *value)
++            }
++            fn set(&self, key: Vec<u16>, value: i32) {
++                let mut entries = self.0.borrow_mut();
++                match entries.iter_mut().find(|(item, _)| *item == key) {
++                    Some(entry) => entry.1 = value,
++                    None => entries.push((key, value)),
++                }
++            }
++            fn delete(&self, key: Vec<u16>) -> bool {
++                let before = self.size();
++                self.0.borrow_mut().retain(|(item, _)| *item != key);
++                before != self.size()
++            }
++            fn clear(&self) { self.0.borrow_mut().clear() }
++        }
++        let mut runtime = Runtime::new();
++        let tokens = TokenSetBinding::<Tokens>::install(&mut runtime).unwrap();
++        let scores = ScoreMapBinding::<Scores>::install(&mut runtime).unwrap();
++        let set = tokens.create(&mut runtime, Tokens(RefCell::new(Vec::new())));
++        runtime.set_global_property("set", &set).unwrap();
++        let map = scores.create(&mut runtime, Scores(RefCell::new(Vec::new())));
++        runtime.set_global_property("map", &map).unwrap();
++        for (source, expected) in [
++            // Setlike: add returns the set (chainable), keys/@@iterator are values.
++            ("set.add('a').add('b').add('a') === set", "true"),
++            ("[set.size, set.has('a'), set.has('z'), [...set].join()].join()", "2,true,false,a,b"),
++            ("[TokenSet.prototype.keys === TokenSet.prototype.values, TokenSet.prototype[Symbol.iterator] === TokenSet.prototype.values].join()", "true,true"),
++            ("JSON.stringify([...set.entries()])", "[[\"a\",\"a\"],[\"b\",\"b\"]]"),
++            ("const seen = []; set.forEach((v, k, s) => seen.push(v + k + (s === set))); seen.join()", "aatrue,bbtrue"),
++            ("[set.delete('a'), set.delete('a'), set.size].join()", "true,false,1"),
++            ("set.clear(); set.size", "0"),
++            ("[set.add.length, set.has.length, typeof Object.getOwnPropertyDescriptor(TokenSet.prototype, 'size').get].join()", "1,1,function"),
++            ("(() => { try { Object.getOwnPropertyDescriptor(TokenSet.prototype, 'size').get.call({}); } catch (e) { return e.name; } })()", "TypeError"),
++            // Maplike: get/set/has, entries/@@iterator, keys and values.
++            ("map.set('x', 1).set('y', '2.9').set('x', 3) === map", "true"),
++            ("[map.size, map.get('x'), map.get('y'), map.get('z'), map.has('y')].join()", "2,3,2,,true"),
++            ("JSON.stringify([...map])", "[[\"x\",3],[\"y\",2]]"),
++            ("[[...map.keys()].join(), [...map.values()].join(), ScoreMap.prototype[Symbol.iterator] === ScoreMap.prototype.entries].join('|')", "x,y|3,2|true"),
++            ("const pairs = []; map.forEach((v, k) => pairs.push(k + '=' + v)); pairs.join()", "x=3,y=2"),
++            ("[map.set.length, map.get.length].join()", "2,1"),
++            // Values convert through the value type.
++            ("(() => { try { map.set('s', Symbol()); } catch (e) { return e.name + map.size; } })()", "TypeError2"),
++            ("[map.delete('x'), map.size, (map.clear(), map.size)].join()", "true,1,0"),
++        ] {
++            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
++        }
++    }
++
+     #[cfg(feature = "webidl-pilot")]
+     #[test]
+     fn generated_promise_operations_resolve_reject_and_settle_later() {
+diff --git a/components/roves-v8/tests/webidl/ScoreMap.webidl b/components/roves-v8/tests/webidl/ScoreMap.webidl
+new file mode 100644
+index 00000000000..1629efb6d4a
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/ScoreMap.webidl
+@@ -0,0 +1,5 @@
++// A maplike (like CSSFontFeatureValuesMap).
++[Exposed=Window]
++interface ScoreMap {
++  maplike<DOMString, long>;
++};
+diff --git a/components/roves-v8/tests/webidl/TokenSet.webidl b/components/roves-v8/tests/webidl/TokenSet.webidl
+new file mode 100644
+index 00000000000..3256bcfa07a
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/TokenSet.webidl
+@@ -0,0 +1,5 @@
++// A setlike (like CustomStateSet).
++[Exposed=Window]
++interface TokenSet {
++  setlike<DOMString>;
++};
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index dad6e8589a4..6be7cecfd04 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -9001,6 +9001,8 @@ class CGV8BindingRoot(CGThing):
+         idl_attribute_types = {}
+         value_iterable = False
+         pair_iterable = None
++        maplike = None
++        synthesized_like_members = set()
+         indexed_getter = None
+         named_getter = None
+         promise_operations = set()
+@@ -9022,6 +9024,17 @@ class CGV8BindingRoot(CGThing):
+                 continue
+             if callback_interface and not member.isConst():
+                 continue
++            if type(member).__name__ == "IDLMaplikeOrSetlike":
++                maplike = member
++                continue
++            if (member.isMethod() or member.isAttr()) and getattr(member, "maplikeOrSetlike", None) is not None:
++                # size/has/get/set/add/delete/clear: installed by the runtime's define_maplike.
++                synthesized_like_members.add(member.identifier.name)
++                continue
++            if (member.isMethod() and member.isMaplikeOrSetlikeOrIterableMethod()
++                    and type(member.maplikeOrSetlikeOrIterable).__name__ == "IDLMaplikeOrSetlike"):
++                synthesized_like_members.add(member.identifier.name)
++                continue
+             if type(member).__name__ == "IDLIterable":
+                 if member.isPairIterator():
+                     pair_iterable = (member.keyType, member.valueType)
+@@ -9928,6 +9941,70 @@ class CGV8BindingRoot(CGThing):
+             )
+         if value_iterable:
+             registrations_list.append("        runtime.define_value_iterable(&interface);")
++        if maplike is not None:
++            # Servo's Maplike/Setlike traits (without the JSContext): entries by index.
++            set_like = maplike.isSetlike()
++            key_rust, key_expr, key_arm, key_to_value = v8_typed_info(maplike.keyType, name, "maplike key")
++            downcast = f'native.downcast_ref::<T>().expect("typed {name} wrapper")'
++            key_of = f'match key {{ {key_arm}, _ => unreachable!("runtime conversion matches the generated WebIDL type") }}'
++            if set_like:
++                index_type = key_rust
++                key_at = f"{key_to_value.replace('ITEM', 'item')}"
++                value_at = key_at
++                value_expr = "None"
++            else:
++                value_rust, value_expr, value_arm, value_to_value = v8_typed_info(maplike.valueType, name, "maplike value")
++                index_type = f"({key_rust}, {value_rust})"
++                key_at = f"{key_to_value.replace('ITEM', 'item.0')}"
++                value_at = f"{value_to_value.replace('ITEM', 'item.1')}"
++                value_expr = f"Some({value_expr})"
++            trait_methods += (
++                f"\n    fn get_index(&self, index: u32) -> Option<{index_type}>;"
++                "\n    fn size(&self) -> u32;"
++                f"\n    fn has(&self, key: {key_rust}) -> bool;"
++            )
++            item = f'<T as {name}Native>::get_index({downcast}, index).expect("index below size")'
++            natives = [
++                f"size: |native| <T as {name}Native>::size({downcast})",
++                f"key_at: |native, index| {{ let item = {item}; {key_at} }}",
++                f"value_at: |native, index| {{ let item = {item}; {value_at} }}",
++                f"has: |native, key| <T as {name}Native>::has({downcast}, {key_of})",
++            ]
++            if set_like:
++                natives.append("get: None")
++            else:
++                trait_methods += f"\n    fn get(&self, key: {key_rust}) -> Option<{value_rust}>;"
++                natives.append(
++                    f"get: Some(|native, key| <T as {name}Native>::get({downcast}, {key_of})"
++                    f".map(|item| {value_to_value.replace('ITEM', 'item')}).unwrap_or(Value::Undefined))"
++                )
++            mutator = "add" if set_like else "set"
++            if mutator in synthesized_like_members:
++                if set_like:
++                    trait_methods += f"\n    fn add(&self, key: {key_rust});"
++                    natives.append(f"set: Some(|native, key, _| <T as {name}Native>::add({downcast}, {key_of}))")
++                else:
++                    value_of = f'match value {{ {value_arm}, _ => unreachable!("runtime conversion matches the generated WebIDL type") }}'
++                    trait_methods += f"\n    fn set(&self, key: {key_rust}, value: {value_rust});"
++                    natives.append(f"set: Some(|native, key, value| <T as {name}Native>::set({downcast}, {key_of}, {value_of}))")
++            else:
++                natives.append("set: None")
++            if "delete" in synthesized_like_members:
++                trait_methods += f"\n    fn delete(&self, key: {key_rust}) -> bool;"
++                natives.append(f"delete: Some(|native, key| <T as {name}Native>::delete({downcast}, {key_of}))")
++            else:
++                natives.append("delete: None")
++            if "clear" in synthesized_like_members:
++                trait_methods += "\n    fn clear(&self);"
++                natives.append(f"clear: Some(|native| <T as {name}Native>::clear({downcast}))")
++            else:
++                natives.append("clear: None")
++            natives_source = "".join(f"            {native},\n" for native in natives)
++            registrations_list.append(
++                f"        runtime.define_maplike(&interface, {key_expr}, {value_expr}, roves_v8::WebIdlLikeNatives {{\n"
++                f"{natives_source}"
++                "        })?;"
++            )
+         if pair_iterable is not None:
+             # Servo's Iterable trait: the length, and the key and value at an index.
+             key_rust, _, _, key_to_value = v8_typed_info(pair_iterable[0], name, "iterable key")
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index e3f7101eae7..f008ec62480 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -939,6 +939,40 @@ class V8GeneratorTests(unittest.TestCase):
+             )
+             self.assertIn("fn set_Width(&self, value: u64);", source)
+ 
++    def test_maplike_and_setlike_use_servo_like_natives(self):
++        with tempfile.TemporaryDirectory() as directory:
++            path = Path(directory) / "Scores.webidl"
++            path.write_text("[Exposed=Window] interface Scores { maplike<DOMString, long>; };", encoding="utf-8")
++            source = generate(path, Path(directory) / "output")
++            for expected in [
++                "fn get_index(&self, index: u32) -> Option<(Vec<u16>, i32)>;",
++                "fn size(&self) -> u32;",
++                "fn get(&self, key: Vec<u16>) -> Option<i32>;",
++                "fn set(&self, key: Vec<u16>, value: i32);",
++                "fn delete(&self, key: Vec<u16>) -> bool;",
++                "fn clear(&self);",
++                "runtime.define_maplike(&interface,",
++            ]:
++                self.assertIn(expected, source)
++            self.assertNotIn("fn Size", source)
++            # A setlike whose interface declares its own add/delete/clear (like FontFaceSet).
++            path.write_text(
++                "[Exposed=Window] interface Fonts { setlike<DOMString>; undefined add(DOMString font);"
++                " boolean delete(DOMString font); undefined clear(); };",
++                encoding="utf-8",
++            )
++            source = generate(path, Path(directory) / "output")
++            self.assertIn("fn get_index(&self, index: u32) -> Option<Vec<u16>>;", source)
++            self.assertIn("fn Add(&self, arg0: Vec<u16>) -> ();", source)
++            self.assertNotIn("fn add(&self", source)
++            self.assertIn("set: None", source)
++            self.assertIn("delete: None", source)
++            # A readonly maplike has no mutators.
++            path.write_text("[Exposed=Window] interface Fixed { readonly maplike<DOMString, long>; };", encoding="utf-8")
++            source = generate(path, Path(directory) / "output")
++            self.assertNotIn("fn set(&self", source)
++            self.assertIn("clear: None", source)
++
+     def test_legacy_factory_functions_generate_fallible_natives(self):
+         with tempfile.TemporaryDirectory() as directory:
+             path = Path(directory) / "Picture.webidl"

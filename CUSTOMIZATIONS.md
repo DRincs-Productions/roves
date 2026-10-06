@@ -11,6 +11,49 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: maplike and setlike (CP86)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `components/roves-v8/build.rs`,
+`components/roves-v8/tests/webidl/TokenSet.webidl`, `ScoreMap.webidl` (new),
+`components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0150-roves-v8-maplike-setlike.patch` after 0149.
+
+`Runtime::define_maplike(interface, key, value, WebIdlLikeNatives)` covers `maplike<K, V>`
+(`value` is `Some`) and `setlike<K>`. The natives follow Servo's `Maplike`/`Setlike` traits
+(`script_bindings/like.rs`), without the `JSContext`: entries are read by index, in insertion
+order. It installs:
+- a `size` getter, and `has`;
+- `get`, for a maplike;
+- the iteration methods and `forEach`, through the CP83 pair-iterable machinery, now
+  `define_iteration`. For a setlike, `keys` and `@@iterator` are the `values` function object,
+  and `entries` yields `[v, v]`. For a maplike, `@@iterator` is `entries`;
+- the mutators that apply: `set` or `add` (both return the receiver), `delete`, `clear`.
+
+Keys and values convert through their WebIDL types. A mutator is absent for a `readonly`
+declaration, or when the interface declares that operation itself: `FontFaceSet` has its own
+`add`, `delete` and `clear`, and the parser then does not synthesize them.
+
+**Pilot deviation:** the iterators are the interface's own default iterator objects
+("<Interface> Iterator"), not the `Map`/`Set` iterators of a backing map. Servo also has no
+backing map.
+
+Generator: the trait methods use Servo's names (`get_index`, `size`, `has`, `get`, `set`/`add`,
+`delete`, `clear`). The parser's synthesized members are skipped.
+
+Tests: generator 71/71 (maplike, a setlike with its own mutators, a readonly maplike). The new
+runtime fixtures `TokenSet` and `ScoreMap` cover:
+- chainable `add`/`set`, `size`, `has` and `get`;
+- the setlike `keys`/`@@iterator` identities;
+- `entries` and `forEach` arguments;
+- `delete`, `clear` and `length`;
+- receiver checks, and value conversion errors that leave the map unchanged.
+
+`roves-v8` passes 110 + 5 + 2 (also `jitless`), and 61 + 2 by default. The `servo-script`
+pilot check is clean.
+
+Coverage: **468/486 (96%)**. **`CustomStateSet`, `FontFaceSet` and `CSSFontFeatureValuesMap`
+now generate**, together with their synthesized interfaces.
+
 ## 2026-10-06 - V8 migration Phase 4: callback interfaces, `[ExceptionClass]`, `[Replaceable]`, secure constructors (CP85)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `components/roves-v8/build.rs`,

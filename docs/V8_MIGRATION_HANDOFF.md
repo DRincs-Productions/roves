@@ -320,6 +320,11 @@ generatore 70/70, `roves-v8` 109+5+2. Copertura **462/486 (95%)**. **Rimasti (24
 - `[LegacyUnforgeable]` sull'interfaccia (`Location`);
 - `undefined` nelle union (`URLPattern`).
 
+**CP86 (2026-10-06):** maplike/setlike (`define_maplike`, `WebIdlLikeNatives`, patch 0150). I
+natives usano i nomi di Servo (`get_index`, `size`, `has`, `get`, `set`/`add`, `delete`,
+`clear`). **Generano `CustomStateSet`, `FontFaceSet`, `CSSFontFeatureValuesMap`.** Test:
+generatore 71/71, `roves-v8` 110+5+2. Copertura **468/486 (96%)**.
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,
