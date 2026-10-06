@@ -144,6 +144,10 @@ defaults are converted through their WebIDL type at runtime; `[LegacyWindowAlias
 accessed in place (`ScriptContext::with_buffer_bytes`), created with `new_array_buffer`/
 `new_typed_array`; readonly union attributes supported. Coverage 255/486.
 
+**CP70 (2026-10-06): full overload resolution.** Overloads indistinguishable by count resolve by
+the distinguishing argument's type (`define_typed_overloaded_webidl_method`, reusing the union
+selection). Coverage 259/486.
+
 CP37 exposes stable `NativeObjectId` through `DomObject` and updates generated `dom_struct`
 equality to use that engine-neutral contract. Local checks pass (reflector 2/2, macro 3/3,
 rustfmt, and patch 0101 reverse-check); CI is green: V8 37226916624 (6/6), Servo 37226916650

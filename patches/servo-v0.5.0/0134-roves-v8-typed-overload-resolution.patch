@@ -1,0 +1,532 @@
+diff --git a/components/roves-v8/build.rs b/components/roves-v8/build.rs
+index 413332dd656..56c7ba6e134 100644
+--- a/components/roves-v8/build.rs
++++ b/components/roves-v8/build.rs
+@@ -224,6 +224,8 @@ fn main() {
+         ("PromiseOperations", &[][..]),
+         ("DefaultsProbe", &[][..]),
+         ("BufferOperations", &[][..]),
++        ("PathProbe", &[][..]),
++        ("DrawProbe", &["PathProbe"][..]),
+     ] {
+         println!("cargo:rerun-if-changed={}", fixtures.join(format!("{interface}.webidl")).display());
+         println!("cargo:rerun-if-changed={}", fixtures.join("Bindings.conf").display());
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 0f04e10162d..3e1ffccbcac 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -181,6 +181,14 @@ pub mod webidl {
+     pub mod buffer_operations {
+         include!(concat!(env!("OUT_DIR"), "/BufferOperationsV8Binding.rs"));
+     }
++    #[cfg(test)]
++    pub mod path_probe {
++        include!(concat!(env!("OUT_DIR"), "/PathProbeV8Binding.rs"));
++    }
++    #[cfg(test)]
++    pub mod draw_probe {
++        include!(concat!(env!("OUT_DIR"), "/DrawProbeV8Binding.rs"));
++    }
+ }
+ 
+ use std::sync::Once;
+@@ -354,6 +362,7 @@ pub struct Runtime {
+     constructor_configs: Vec<Box<WebIdlConstructorConfig>>,
+     /// Per-overloaded-method callback data, kept alive for the same reason.
+     overload_configs: Vec<Box<WebIdlOverloadConfig>>,
++    typed_overload_configs: Vec<Box<TypedOverloadConfig>>,
+     /// Per-contextual-attribute callback data, kept alive for the same reason.
+     attribute_configs: Vec<Box<ContextualAttributeConfig>>,
+     /// Per-static-method and default-toJSON callback data, kept alive for the same reason.
+@@ -1385,6 +1394,92 @@ struct WebIdlOverloadConfig {
+     overloads: Vec<(FallibleNativeMethod, WebIdlArguments)>,
+ }
+ 
++/// One overload of an operation registered with
++/// [`Runtime::define_typed_overloaded_webidl_method`].
++pub struct WebIdlTypedOverload<'a> {
++    pub method: WebIdlNativeOperation,
++    pub arguments: &'a [WebIdlArgument],
++}
++
++struct TypedOverloadConfig {
++    overloads: Vec<(NativeMethodKind, WebIdlArguments, Vec<WebIdlArgument>)>,
++}
++
++/// WebIDL overload resolution over structured overloads: the argument count (capped at the
++/// longest overload) narrows the candidates; if several remain, the first argument position
++/// where their types differ is the distinguishing argument, and its value selects the overload
++/// (an optional argument for `undefined`, a nullable/dictionary type for `null`/`undefined`,
++/// otherwise the union selection steps). `Err` means an exception is pending.
++fn select_overload(
++    scope: &mut v8::PinScope,
++    args: &v8::FunctionCallbackArguments,
++    overloads: &[(NativeMethodKind, WebIdlArguments, Vec<WebIdlArgument>)],
++) -> Result<usize, ()> {
++    let longest = overloads
++        .iter()
++        .map(|(_, _, arguments)| if arguments.last().is_some_and(|argument| argument.variadic) { usize::MAX } else { arguments.len() })
++        .max()
++        .unwrap_or(0);
++    let count = (args.length().max(0) as usize).min(longest);
++    let candidates: Vec<usize> = overloads
++        .iter()
++        .enumerate()
++        .filter(|(_, (_, _, arguments))| {
++            let required = arguments.iter().filter(|argument| !argument.optional && !argument.variadic && argument.default.is_none()).count();
++            let variadic = arguments.last().is_some_and(|argument| argument.variadic);
++            required <= count && (count <= arguments.len() || variadic)
++        })
++        .map(|(index, _)| index)
++        .collect();
++    match candidates.len() {
++        0 => {
++            throw_type_error(scope, "no overload accepts this number of arguments");
++            return Err(());
++        },
++        1 => return Ok(candidates[0]),
++        _ => {},
++    }
++    let type_at = |overload: usize, position: usize| -> Option<WebIdlType> {
++        let arguments = &overloads[overload].2;
++        arguments
++            .get(position)
++            .or_else(|| arguments.last().filter(|argument| argument.variadic))
++            .map(|argument| argument.ty.clone())
++    };
++    let Some(position) = (0..count.max(1)).find(|position| {
++        let first = type_at(candidates[0], *position);
++        candidates.iter().any(|candidate| type_at(*candidate, *position) != first)
++    }) else {
++        // Indistinguishable within the given arguments: the first candidate wins.
++        return Ok(candidates[0]);
++    };
++    let value = args.get(position as i32);
++    if value.is_undefined() {
++        if let Some(candidate) = candidates.iter().find(|candidate| {
++            overloads[**candidate].2.get(position).is_some_and(|argument| argument.optional || argument.default.is_some())
++        }) {
++            return Ok(*candidate);
++        }
++    }
++    if value.is_null_or_undefined() {
++        if let Some(candidate) = candidates.iter().find(|candidate| {
++            matches!(type_at(**candidate, position), Some(WebIdlType::Nullable(_) | WebIdlType::Dictionary(_)))
++        }) {
++            return Ok(*candidate);
++        }
++    }
++    let types: Vec<WebIdlType> = candidates
++        .iter()
++        .map(|candidate| match type_at(*candidate, position) {
++            Some(WebIdlType::Nullable(inner)) => *inner,
++            Some(ty) => ty,
++            None => WebIdlType::Primitive(WebIdlArgumentConversion::Any),
++        })
++        .collect();
++    let index = select_union_member(scope, value, &types)?;
++    Ok(candidates[index])
++}
++
+ /// The native behind a [`Runtime::define_typed_webidl_method`] operation.
+ pub enum WebIdlNativeOperation {
+     Plain(NativeMethod),
+@@ -1437,6 +1532,7 @@ impl Runtime {
+             wrapped_finalizers: Default::default(),
+             constructor_configs: Vec::new(),
+             overload_configs: Vec::new(),
++            typed_overload_configs: Vec::new(),
+             attribute_configs: Vec::new(),
+             static_configs: Vec::new(),
+             to_json_configs: Vec::new(),
+@@ -3053,6 +3149,83 @@ impl Runtime {
+         Ok(())
+     }
+ 
++    /// Defines an overloaded operation resolved by the full WebIDL overload resolution
++    /// algorithm (argument count, then the distinguishing argument's type). Each overload may
++    /// be plain, fallible or contextual.
++    pub fn define_typed_overloaded_webidl_method(
++        &mut self,
++        interface: &Interface,
++        name: &str,
++        overloads: Vec<WebIdlTypedOverload>,
++    ) -> Result<(), String> {
++        if interface.materialized.get() {
++            return Err("interface members must be defined before creating instances or descendants".into());
++        }
++        let length = overloads
++            .iter()
++            .map(|overload| {
++                overload.arguments.iter().filter(|argument| !argument.optional && !argument.variadic && argument.default.is_none()).count()
++            })
++            .min()
++            .unwrap_or(0);
++        let config = Box::new(TypedOverloadConfig {
++            overloads: overloads
++                .into_iter()
++                .map(|overload| {
++                    let kind = match overload.method {
++                        WebIdlNativeOperation::Plain(method) => NativeMethodKind::Infallible(method),
++                        WebIdlNativeOperation::Fallible(method) => NativeMethodKind::Fallible(method),
++                        WebIdlNativeOperation::Contextual(method) => NativeMethodKind::Contextual(method),
++                    };
++                    (kind, WebIdlArguments::typed(overload.arguments), overload.arguments.to_vec())
++                })
++                .collect(),
++        });
++        let config_pointer = (&*config) as *const TypedOverloadConfig;
++        self.typed_overload_configs.push(config);
++        let context_handle = &self.context;
++        v8::scope!(let scope, &mut self.isolate);
++        let context = v8::Local::new(scope, context_handle);
++        let scope = &mut v8::ContextScope::new(scope, context);
++        let template = v8::Local::new(scope, &interface.template);
++        let signature = v8::Signature::new(scope, template);
++        let key = v8::String::new(scope, name).ok_or("invalid method name")?;
++        let data = v8::External::new(scope, config_pointer as *mut std::ffi::c_void);
++        let function_template = v8::FunctionTemplate::builder(
++            |scope: &mut v8::PinScope,
++             args: v8::FunctionCallbackArguments,
++             mut retval: v8::ReturnValue| {
++                let external = v8::Local::<v8::External>::try_from(args.data()).unwrap();
++                // SAFETY: the External points to this method's boxed overload config.
++                let config = unsafe { &*(external.value() as *const TypedOverloadConfig) };
++                let Some(native) = receiver_native(scope, args.this()) else { return };
++                let Ok(selected) = select_overload(scope, &args, &config.overloads) else { return };
++                let (method, arguments, _) = &config.overloads[selected];
++                let Some(converted) = convert_webidl_arguments(scope, &args, arguments) else { return };
++                let result = match method {
++                    NativeMethodKind::Infallible(method) => Ok(method(native, &converted)),
++                    NativeMethodKind::Fallible(method) => method(native, &converted),
++                    NativeMethodKind::Contextual(method) => method(&mut ScriptContext { scope }, native, &converted),
++                };
++                match result {
++                    Ok(result) => {
++                        let result = v8_result(scope, &result);
++                        retval.set(result);
++                    },
++                    Err(error) => throw_webidl_error(scope, &error),
++                }
++            },
++        )
++        .data(data.into())
++        .signature(signature)
++        .length(length as i32)
++        .constructor_behavior(v8::ConstructorBehavior::Throw)
++        .build(scope);
++        let function_value: v8::Local<v8::Data> = function_template.into();
++        template.prototype_template(scope).set(key.into(), function_value);
++        Ok(())
++    }
++
+     /// Like [`Runtime::define_webidl_method_with_argument_flags_and_enums`] for an operation
+     /// that may throw: an `Err` from `method` is thrown to JS as the matching exception.
+     pub fn define_fallible_webidl_method(
+@@ -3925,20 +4098,30 @@ fn convert_typed_value<'s>(
+     }
+ }
+ 
+-/// The WebIDL ES-to-union conversion over the member types this runtime supports. Steps follow
+-/// the specification's order: nullish values to a dictionary, platform objects to an interface,
+-/// callables to a callback, objects to a sequence/dictionary/callback interface/object, then
+-/// boolean and number values, then the string, numeric and boolean fallbacks.
++/// The WebIDL ES-to-union conversion over the member types this runtime supports: selects the
++/// member with [`select_union_member`], then converts the value by it.
+ fn convert_union<'s>(
+     scope: &mut v8::PinScope<'s, '_>,
+     value: v8::Local<'_, v8::Value>,
+     members: &[WebIdlType],
+ ) -> Option<Value> {
++    let index = select_union_member(scope, value, members).ok()?;
++    let converted = convert_typed_value(scope, value, &members[index])?;
++    Some(Value::Union(index, Box::new(converted)))
++}
++
++/// The member type a value selects by the WebIDL union conversion algorithm (also the type
++/// step of overload resolution). Steps follow the specification's order: nullish values to a
++/// dictionary, platform objects to an interface, buffers, callables to a callback, objects to
++/// a sequence/dictionary/callback interface/object, then boolean and number values, then the
++/// string, numeric and boolean fallbacks. `Err` means a TypeError (or a getter's exception) is
++/// pending.
++fn select_union_member<'s>(
++    scope: &mut v8::PinScope<'s, '_>,
++    value: v8::Local<'_, v8::Value>,
++    members: &[WebIdlType],
++) -> Result<usize, ()> {
+     let find = |predicate: &dyn Fn(&WebIdlType) -> bool| members.iter().position(|member| predicate(member));
+-    let select = |scope: &mut v8::PinScope<'s, '_>, index: usize| -> Option<Value> {
+-        let converted = convert_typed_value(scope, value, &members[index])?;
+-        Some(Value::Union(index, Box::new(converted)))
+-    };
+     let is_numeric = |member: &WebIdlType| {
+         matches!(member, WebIdlType::Primitive(conversion) if !matches!(conversion,
+             WebIdlArgumentConversion::Boolean | WebIdlArgumentConversion::DomString |
+@@ -3957,64 +4140,64 @@ fn convert_union<'s>(
+ 
+     if value.is_null_or_undefined() {
+         if let Some(index) = find(&|member| matches!(member, WebIdlType::Dictionary(_))) {
+-            return select(scope, index);
++            return Ok(index);
+         }
+     }
+     if value.is_object() {
+         for (index, member) in members.iter().enumerate() {
+             if let WebIdlType::Interface(name) = member {
+-                if let Some(native) = implementing_native(scope, value, name) {
+-                    return Some(Value::Union(index, Box::new(Value::Native(native))));
++                if implementing_native(scope, value, name).is_some() {
++                    return Ok(index);
+                 }
+             }
+         }
+         for (index, member) in members.iter().enumerate() {
+             if let WebIdlType::Buffer(kind) = member {
+                 if kind.matches(value) {
+-                    return select(scope, index);
++                    return Ok(index);
+                 }
+             }
+         }
+         if value.is_function() {
+             if let Some(index) = find(&|member| matches!(member, WebIdlType::Primitive(WebIdlArgumentConversion::Callback))) {
+-                return select(scope, index);
++                return Ok(index);
+             }
+         }
+         if let Some(index) = find(&|member| matches!(member, WebIdlType::Sequence(_))) {
+             let object = v8::Local::<v8::Object>::try_from(value).unwrap();
+             let iterator_symbol = v8::Symbol::get_iterator(scope);
+-            let method = object.get(scope, iterator_symbol.into())?;
++            let method = object.get(scope, iterator_symbol.into()).ok_or(())?;
+             if !method.is_undefined() {
+-                return select(scope, index);
++                return Ok(index);
+             }
+         }
+         if let Some(index) = find(&|member| matches!(member, WebIdlType::Dictionary(_))) {
+-            return select(scope, index);
++            return Ok(index);
+         }
+         if let Some(index) = find(&|member| matches!(member, WebIdlType::CallbackInterface)) {
+-            return select(scope, index);
++            return Ok(index);
+         }
+         if let Some(index) = find(&is_object) {
+-            return select(scope, index);
++            return Ok(index);
+         }
+     }
+     if value.is_boolean() {
+         if let Some(index) = find(&is_boolean) {
+-            return select(scope, index);
++            return Ok(index);
+         }
+     }
+     if value.is_number() {
+         if let Some(index) = find(&is_numeric) {
+-            return select(scope, index);
++            return Ok(index);
+         }
+     }
+     for predicate in [&is_string as &dyn Fn(&WebIdlType) -> bool, &is_numeric, &is_boolean] {
+         if let Some(index) = find(predicate) {
+-            return select(scope, index);
++            return Ok(index);
+         }
+     }
+     throw_type_error(scope, "value does not match any member of the union");
+-    None
++    Err(())
+ }
+ 
+ fn settle_promise(scope: &mut v8::PinScope, resolver: &PromiseResolver, outcome: Result<&Value, &WebIdlError>) {
+@@ -7466,6 +7649,60 @@ mod tests {
+         }
+     }
+ 
++    #[cfg(feature = "webidl-pilot")]
++    #[test]
++    fn generated_overloads_resolve_by_the_distinguishing_argument_type() {
++        use crate::webidl::draw_probe::{DrawProbeBinding, DrawProbeNative};
++        use crate::webidl::path_probe::{PathProbeBinding, PathProbeNative};
++        use crate::{NativeRef, Trace, Tracer, WebIdlOptionalArgument};
++        struct Path;
++        impl Trace for Path {
++            fn trace(&self, _tracer: &mut Tracer) {}
++        }
++        impl PathProbeNative for Path {
++            fn Constructor() -> Self { Path }
++        }
++        struct Draw;
++        impl Trace for Draw {
++            fn trace(&self, _tracer: &mut Tracer) {}
++        }
++        fn text(value: String) -> Vec<u16> { value.encode_utf16().collect() }
++        fn rule(rule: WebIdlOptionalArgument<String>) -> String {
++            let WebIdlOptionalArgument::Present(rule) = rule else { unreachable!("declared default") };
++            rule
++        }
++        #[allow(non_snake_case)]
++        impl DrawProbeNative for Draw {
++            fn Constructor() -> Self { Draw }
++            fn Fill(&self, fill_rule: WebIdlOptionalArgument<String>) -> Vec<u16> { text(format!("rule:{}", rule(fill_rule))) }
++            fn Fill_(&self, path: NativeRef, fill_rule: WebIdlOptionalArgument<String>) -> Vec<u16> {
++                text(format!("path:{}:{}", path.interface(), rule(fill_rule)))
++            }
++            fn Measure(&self, value: Vec<u16>) -> Vec<u16> { text(format!("text:{}", String::from_utf16_lossy(&value))) }
++            fn Measure_(&self, count: u32) -> Vec<u16> { text(format!("count:{count}")) }
++            fn Draw(&self, points: Vec<i32>) -> Vec<u16> { text(format!("points:{}", points.len())) }
++            fn Draw_(&self, label: Vec<u16>) -> Vec<u16> { text(format!("label:{}", String::from_utf16_lossy(&label))) }
++        }
++        let mut runtime = Runtime::new();
++        let _paths = PathProbeBinding::<Path>::install(&mut runtime).unwrap();
++        let _draws = DrawProbeBinding::<Draw>::install(&mut runtime).unwrap();
++        for (source, expected) in [
++            // Count first: no arguments selects the overload that accepts zero.
++            ("const d = new DrawProbe(); d.fill()", "rule:nonzero"),
++            // One argument: both overloads accept it; the platform object picks the Path one.
++            ("[d.fill('evenodd'), d.fill(new PathProbe()), d.fill(new PathProbe(), 'evenodd')].join('|')", "rule:evenodd|path:PathProbe:nonzero|path:PathProbe:evenodd"),
++            // String versus number, with the string fallback for other primitives.
++            ("[d.measure('abc'), d.measure(3), d.measure(true)].join('|')", "text:abc|count:3|text:true"),
++            // An iterable selects the sequence overload; anything else falls back to the string.
++            ("[d.draw([1, 2, 3]), d.draw(new Set([1])), d.draw('x'), d.draw({})].join('|')", "points:3|points:1|label:x|label:[object Object]"),
++            ("DrawProbe.prototype.fill.length", "0"),
++        ] {
++            assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
++        }
++        // The selected overload still converts its own arguments.
++        assert!(runtime.eval("d.fill('sideways')").unwrap_err().contains("TypeError"));
++    }
++
+     #[cfg(feature = "webidl-pilot")]
+     #[test]
+     fn generated_nullable_domstring_preserves_null_and_utf16_semantics() {
+diff --git a/components/roves-v8/tests/webidl/DrawProbe.webidl b/components/roves-v8/tests/webidl/DrawProbe.webidl
+new file mode 100644
+index 00000000000..15c3073aa70
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/DrawProbe.webidl
+@@ -0,0 +1,12 @@
++enum ProbeFillRule { "nonzero", "evenodd" };
++
++[Exposed=Window]
++interface DrawProbe {
++  constructor();
++  DOMString fill(optional ProbeFillRule rule = "nonzero");
++  DOMString fill(PathProbe path, optional ProbeFillRule rule = "nonzero");
++  DOMString measure(DOMString text);
++  DOMString measure(unsigned long count);
++  DOMString draw(sequence<long> points);
++  DOMString draw(DOMString label);
++};
+diff --git a/components/roves-v8/tests/webidl/PathProbe.webidl b/components/roves-v8/tests/webidl/PathProbe.webidl
+new file mode 100644
+index 00000000000..40574f93ca7
+--- /dev/null
++++ b/components/roves-v8/tests/webidl/PathProbe.webidl
+@@ -0,0 +1,4 @@
++[Exposed=Window]
++interface PathProbe {
++  constructor();
++};
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index f753d120248..40a2879922f 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8963,6 +8963,8 @@ class CGV8BindingRoot(CGThing):
+         operations = []
+         unforgeable_attributes = set()
+         promise_operations = set()
++        typed_overload_members = set()
++        typed_overload_entries = []
+         contextual_attributes = []
+         static_operations = []
+         unscopables = []
+@@ -9009,7 +9011,8 @@ class CGV8BindingRoot(CGThing):
+                 if operation_attributes or (member.isStatic() and len(signatures) > 1):
+                     raise TypeError(f"V8 backend only supports single-signature instance operations: {name}.{member.identifier.name}")
+                 if len(signatures) > 1 and not v8_overloads_distinguishable_by_count(signatures):
+-                    raise TypeError(f"V8 backend only supports overloads distinguishable by argument count: {name}.{member.identifier.name}")
++                    # Needs the type step of overload resolution (the runtime's typed overloads).
++                    typed_overload_members.add(member.identifier.name)
+                 throws = "Throws" in member._extendedAttrDict
+                 for overload_index, (return_type, arguments) in enumerate(signatures):
+                     argument_types = v8_argument_types(name, member.identifier.name, arguments)
+@@ -9097,8 +9100,8 @@ class CGV8BindingRoot(CGThing):
+                         or v8_contains_handle(result_type)
+                         or MakeNativeName(member.identifier.name) in v8_context_members().get(name, set())
+                     )
+-                    if contextual and len(signatures) > 1:
+-                        raise TypeError(f"V8 backend does not support overloads needing a script context: {name}.{member.identifier.name}")
++                    if len(signatures) > 1 and (contextual or any(argument_type[6] for argument_type in argument_types)):
++                        typed_overload_members.add(member.identifier.name)
+                     if member.isStatic():
+                         static_operations.append((member.identifier.name, native_name, rust_type, value_expr, argument_types))
+                         continue
+@@ -9436,8 +9439,27 @@ class CGV8BindingRoot(CGThing):
+                 any(argument_type[6] for argument_type in argument_types)
+                 or "Value::Sequence(" in value_expr or ".into_value()" in value_expr
+             )
+-            if typed and overload_count > 1:
+-                raise TypeError(f"V8 backend does not support overloads with sequence types: {name}.{idl}")
++            if overload_count > 1 and idl in typed_overload_members:
++                kind = "Contextual" if contextual else "Fallible" if throws else "Plain"
++                typed_arguments = ", ".join(
++                    v8_webidl_argument(argument_type, argument_type[6] or v8_flat_webidl_type(argument_type))
++                    for argument_type in argument_types
++                )
++                typed_overload_entries.append(
++                    f"            roves_v8::WebIdlTypedOverload {{\n"
++                    f"                method: roves_v8::WebIdlNativeOperation::{kind}({callback}),\n"
++                    f"                arguments: &[{typed_arguments}],\n"
++                    f"            }},"
++                )
++                if overload_index + 1 < overload_count:
++                    continue
++                entries = "\n".join(typed_overload_entries)
++                typed_overload_entries = []
++                registrations_list.append(
++                    f'        runtime.define_typed_overloaded_webidl_method(&interface, "{idl}", vec![\n{entries}\n        ])?;'
++                )
++                gate_last_registration(idl)
++                continue
+             if typed:
+                 typed_arguments = []
+                 for argument_type in argument_types:
+@@ -9631,7 +9653,8 @@ class CGV8BindingRoot(CGThing):
+             # `new` creates a traced platform object (see roves_v8::TracedNative).
+             native_bound += " + roves_v8::Trace"
+         dictionary_structs = "".join(f"\n{source}" for source in V8_DICTIONARIES.values())
+-        return AUTOGENERATED_WARNING_COMMENT + f"""use roves_v8::{{Handle, Interface, Runtime, Value}};
++        return AUTOGENERATED_WARNING_COMMENT + f"""#[allow(unused_imports)]
++use roves_v8::{{Handle, Interface, Runtime, Value}};
+ {dictionary_structs}
+ #[allow(non_snake_case)]
+ pub trait {name}Native: {native_bound} {{
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index 2ab66efa3fb..91e41918c28 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -715,9 +715,18 @@ class V8GeneratorTests(unittest.TestCase):
+             ]:
+                 self.assertIn(expected, source)
+ 
+-    def test_overloads_needing_type_distinction_fail_closed(self):
+-        self.assert_unsupported("interface Unsupported { undefined f(DOMString a); undefined f(boolean a); };")
+-        self.assert_unsupported("interface Unsupported { undefined f(DOMString a); undefined f(boolean a, optional boolean b); };")
++    def test_overloads_needing_type_distinction_use_typed_overloads(self):
++        with tempfile.TemporaryDirectory() as directory:
++            path = Path(directory) / "Draw.webidl"
++            path.write_text(
++                "[Exposed=Window] interface Draw { undefined f(DOMString a); undefined f(boolean a, optional boolean b); };",
++                encoding="utf-8",
++            )
++            source = generate(path, Path(directory) / "output")
++            self.assertIn('runtime.define_typed_overloaded_webidl_method(&interface, "f", vec![', source)
++            self.assertEqual(source.count("roves_v8::WebIdlTypedOverload {"), 2)
++            self.assertIn("fn F(&self, arg0: Vec<u16>) -> ();", source)
++            self.assertIn("fn F_(&self, arg0: bool, arg1: roves_v8::WebIdlOptionalArgument<bool>) -> ();", source)
+ 
+     def test_unsupported_and_overloaded_constructors_fail_closed(self):
+         for constructor, message in [

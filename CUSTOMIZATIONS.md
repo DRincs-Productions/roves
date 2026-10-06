@@ -11,6 +11,52 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: full WebIDL overload resolution (CP70)
+
+**Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixtures
+`components/roves-v8/tests/webidl/PathProbe.webidl` and `DrawProbe.webidl`;
+`components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0134-roves-v8-typed-overload-resolution.patch` after 0133.
+
+Overloads that the argument count alone cannot separate (`CanvasRenderingContext2D.fill(rule)` /
+`fill(Path2D, rule)`, `Element.scroll`, and others) now dispatch through the WebIDL overload
+resolution algorithm.
+
+**Runtime.** It adds `Runtime::define_typed_overloaded_webidl_method(interface, name,
+Vec<WebIdlTypedOverload { method: WebIdlNativeOperation, arguments }>)`. Overloads may be plain,
+fallible or contextual, with structured arguments. The new `select_overload` does the resolution:
+1. Narrow the candidates by argument count, capped at the longest overload (counting variadics and
+   defaults).
+2. Find the distinguishing argument: the first position where the candidates' types differ.
+3. Choose by its value. An `undefined` value picks an optional argument; `null`/`undefined` picks
+   a nullable or dictionary type; anything else uses the union selection steps.
+
+The union algorithm was split into `select_union_member` (choose an index) and `convert_union` (choose
+and convert), with no behaviour change, so overloads reuse it. The function's `length` is the
+shortest overload's required count.
+
+**Generator.**
+- Overloads with overlapping count ranges, contextual overloads and overloads with structured
+  arguments go through the typed path instead of failing closed. Count-distinguishable overloads
+  keep the simpler count dispatcher.
+- Generated bindings silence the unused `Value` import of member-less interfaces.
+
+**Tests.**
+- New runtime test on a Canvas-like generated pair:
+  - count-only resolution;
+  - an enumeration versus a platform-object distinguishing argument, with and without the optional
+    second argument;
+  - string versus number, with the string fallback for booleans;
+  - sequence versus string, for arrays, `Set`s and objects;
+  - `length`;
+  - the selected overload's own enumeration conversion rejecting a bad value.
+- Generator tests: 58/58.
+- `roves-v8` pilot and pilot+JIT-less: 94 unit + 5 integration + 2 doctests each, warning-free;
+  default 60 unit + 2 doctests.
+- `servo-script` check with the pilot is clean.
+
+Coverage: **259/486**.
+
 ## 2026-10-06 - V8 migration Phase 4: buffer sources and readonly union attributes (CP69)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixture

@@ -715,9 +715,18 @@ class V8GeneratorTests(unittest.TestCase):
             ]:
                 self.assertIn(expected, source)
 
-    def test_overloads_needing_type_distinction_fail_closed(self):
-        self.assert_unsupported("interface Unsupported { undefined f(DOMString a); undefined f(boolean a); };")
-        self.assert_unsupported("interface Unsupported { undefined f(DOMString a); undefined f(boolean a, optional boolean b); };")
+    def test_overloads_needing_type_distinction_use_typed_overloads(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Draw.webidl"
+            path.write_text(
+                "[Exposed=Window] interface Draw { undefined f(DOMString a); undefined f(boolean a, optional boolean b); };",
+                encoding="utf-8",
+            )
+            source = generate(path, Path(directory) / "output")
+            self.assertIn('runtime.define_typed_overloaded_webidl_method(&interface, "f", vec![', source)
+            self.assertEqual(source.count("roves_v8::WebIdlTypedOverload {"), 2)
+            self.assertIn("fn F(&self, arg0: Vec<u16>) -> ();", source)
+            self.assertIn("fn F_(&self, arg0: bool, arg1: roves_v8::WebIdlOptionalArgument<bool>) -> ();", source)
 
     def test_unsupported_and_overloaded_constructors_fail_closed(self):
         for constructor, message in [

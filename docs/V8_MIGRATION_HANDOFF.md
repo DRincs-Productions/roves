@@ -232,6 +232,11 @@ byte in place con `ScriptContext::with_buffer_bytes`, creazione con `new_array_b
 `new_typed_array`; supportati gli attributi union readonly. Test generatore 58/58, `roves-v8`
 93+5+2, default 60+2, check pulito. Copertura **255/486**.
 
+**CP70 (2026-10-06):** risoluzione completa degli overload (patch 0134): per conteggio, poi per
+il tipo dell'argomento distintivo (`define_typed_overloaded_webidl_method`, `select_overload`,
+selezione union riusata). Test generatore 58/58, `roves-v8` 94+5+2 senza warning, default 60+2,
+check pulito. Copertura **259/486**.
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,
