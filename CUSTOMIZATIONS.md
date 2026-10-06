@@ -11,6 +11,36 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-06 - V8 migration Phase 4: fully qualified native calls; redeclared members (CP75)
+
+**Servo files:** `components/roves-v8/src/lib.rs` (test), `build.rs`, new fixtures
+`components/roves-v8/tests/webidl/ShadowBase.webidl` and `ShadowChild.webidl`;
+`components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0139-roves-v8-qualified-native-calls.patch` after 0138.
+
+Generated bindings used to call `native.X(..)`. That is ambiguous when a derived interface
+redeclares a member of its ancestor (for example `HTMLScriptElement.innerText` over
+`HTMLElement.innerText`), so the generator rejected redeclaration (10 definitions).
+- Every call to one of the interface's own native methods is now fully qualified,
+  `<T as XNative>::Method(native, ..)`, as Servo's own bindings do. Each redeclared member is a
+  separate method of its own trait.
+- Inherited indexed and named getters use the declaring ancestor's trait path
+  (`super::<module>::<Owner>Native`), because Rust does not resolve supertrait methods through the
+  subtrait path.
+- The shadowing rejection is removed.
+
+**Tests.**
+- New runtime test: one native type implements a base and a derived `label`. The derived getter
+  and the base prototype's getter, called on the same object, each reach their own native method.
+- Generator expectations were updated to the qualified form. The former "redeclaration fails
+  closed" test now checks the separate qualified method.
+- Generator tests: 61/61.
+- `roves-v8` pilot and pilot+JIT-less: 99 unit + 5 integration + 2 doctests each; default 60 unit +
+  2 doctests.
+- `servo-script` check with the pilot is clean (the `Screen` adapter is unaffected).
+
+Coverage: **357/486**.
+
 ## 2026-10-06 - V8 migration Phase 4: `[LegacyLenientThis]` and `[HTMLConstructor]` (CP74)
 
 **Servo files:** `components/roves-v8/src/lib.rs`, `build.rs`, new fixture

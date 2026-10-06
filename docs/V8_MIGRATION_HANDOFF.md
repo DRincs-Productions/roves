@@ -262,6 +262,10 @@ custom element sono una lacuna documentata. Test generatore 61/61, `roves-v8` 98
 interfacce nullable (`Document`), `[LegacyFactoryFunction]` (`Image`, `Audio`), membri ridefiniti
 (`innerText`), `[Global]` (`Window`).
 
+**CP75 (2026-10-06):** chiamate native qualificate `<T as XNative>::M(native, ..)` (patch 0139):
+i membri ridefiniti nei discendenti (`innerText`) ora funzionano; i getter ereditati usano il
+trait dell'antenato. Test generatore 61/61, `roves-v8` 99+5+2. Copertura **357/486**.
+
 **Audit `get_jsobject` (Phase 3):** La scope chain degli event handler
 (`eventtarget.rs`) è API di compilazione dell'engine: va con la categoria (d). Restano (c)
 (global per definizione interfacce, debugger, windowproxy) e (d) (Promise, structured clone,

@@ -8966,8 +8966,8 @@ class CGV8BindingRoot(CGThing):
             default_to_json_member = (
                 member.isMethod() and member.identifier.name == "toJSON" and "Default" in member._extendedAttrDict
             )
-            if member.identifier.name in inherited and not copied_from_ancestor(member) and not default_to_json_member:
-                raise TypeError(f"V8 backend does not support members shadowing an inherited member: {name}.{member.identifier.name}")
+            # A redeclared member (e.g. HTMLScriptElement.innerText) is a separate method of
+            # the child's native trait; generated calls are fully qualified, so this is fine.
         attributes = []
         operations = []
         unforgeable_attributes = set()
@@ -9732,12 +9732,15 @@ class CGV8BindingRoot(CGThing):
         # Indexed getter: declared on the interface that has it, and re-registered on every
         # descendant because V8 does not inherit indexed interceptors.
         getter_type = indexed_getter
+        getter_trait = f"{name}Native"
         ancestor = interface.parent
         while getter_type is None and ancestor is not None:
             for ancestor_member in ancestor.members:
                 if ancestor_member.isMethod() and ancestor_member.isGetter() and not ancestor_member.isNamed():
                     ancestor_type = ancestor_member.signatures()[0][0]
                     getter_type = ancestor_type.inner if ancestor_type.nullable() else ancestor_type
+                    owner = ancestor.identifier.name
+                    getter_trait = f"super::{v8_module_name(owner)}::{owner}Native"
             ancestor = ancestor.parent
         if getter_type is not None:
             rust, _, _, to_value = v8_typed_info(getter_type, name, "IndexedGetter")
@@ -9748,16 +9751,19 @@ class CGV8BindingRoot(CGThing):
             registrations_list.append(
                 f"        runtime.define_indexed_property_getter(&interface, |native, index| {{\n"
                 f'            let native = native.downcast_ref::<T>().expect("typed {name} wrapper");\n'
-                f"            native.IndexedGetter(index).map(|item| {to_value.replace('ITEM', 'item')})\n"
+                f"            <T as {getter_trait}>::IndexedGetter(native, index).map(|item| {to_value.replace('ITEM', 'item')})\n"
                 f"        }})?;"
             )
         named_type = named_getter
+        named_trait = f"{name}Native"
         ancestor = interface.parent
         while named_type is None and ancestor is not None:
             for ancestor_member in ancestor.members:
                 if ancestor_member.isMethod() and ancestor_member.isGetter() and ancestor_member.isNamed():
                     ancestor_type = ancestor_member.signatures()[0][0]
                     named_type = ancestor_type.inner if ancestor_type.nullable() else ancestor_type
+                    owner = ancestor.identifier.name
+                    named_trait = f"super::{v8_module_name(owner)}::{owner}Native"
             ancestor = ancestor.parent
         if named_type is not None:
             rust, _, _, to_value = v8_typed_info(named_type, name, "NamedGetter")
@@ -9768,11 +9774,18 @@ class CGV8BindingRoot(CGThing):
             registrations_list.append(
                 f"        runtime.define_named_property_getter(&interface, |native, name| {{\n"
                 f'            let native = native.downcast_ref::<T>().expect("typed {name} wrapper");\n'
-                f"            native.NamedGetter(name.encode_utf16().collect()).map(|item| {to_value.replace('ITEM', 'item')})\n"
+                f"            <T as {named_trait}>::NamedGetter(native, name.encode_utf16().collect()).map(|item| {to_value.replace('ITEM', 'item')})\n"
                 f"        }})?;"
             )
         if value_iterable:
             registrations_list.append("        runtime.define_value_iterable(&interface);")
+        own_methods = sorted(set(re.findall(r"fn (\w+)\(&self", trait_methods)) - {"IndexedGetter", "NamedGetter"})
+        if own_methods:
+            call = re.compile(r"\bnative\.(" + "|".join(own_methods) + r")\(")
+            registrations_list = [
+                call.sub(f"<T as {name}Native>::\\1(native, ", registration).replace("(native, )", "(native)")
+                for registration in registrations_list
+            ]
         registrations = "\n".join(registrations_list)
         if ce_reaction_members:
             native_bound += " + roves_v8::CeReactions"

@@ -166,6 +166,9 @@ with the WebIDL visibility and assignment rules (`define_named_property_getter`)
 accessors and non-constructible HTML element interfaces (custom elements remain a gap). Coverage
 349/486: `HTMLElement` and most element interfaces generate.
 
+**CP75 (2026-10-06): qualified native calls.** Generated calls use `<T as XNative>::M(native, ..)`,
+so derived interfaces may redeclare inherited members. Coverage 357/486.
+
 CP37 exposes stable `NativeObjectId` through `DomObject` and updates generated `dom_struct`
 equality to use that engine-neutral contract. Local checks pass (reflector 2/2, macro 3/3,
 rustfmt, and patch 0101 reverse-check); CI is green: V8 37226916624 (6/6), Servo 37226916650

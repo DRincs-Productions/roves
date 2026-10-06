@@ -213,6 +213,14 @@ pub mod webidl {
     pub mod lenient_probe {
         include!(concat!(env!("OUT_DIR"), "/LenientProbeV8Binding.rs"));
     }
+    #[cfg(test)]
+    pub mod shadow_base {
+        include!(concat!(env!("OUT_DIR"), "/ShadowBaseV8Binding.rs"));
+    }
+    #[cfg(test)]
+    pub mod shadow_child {
+        include!(concat!(env!("OUT_DIR"), "/ShadowChildV8Binding.rs"));
+    }
 }
 
 use std::sync::Once;
@@ -8111,6 +8119,33 @@ mod tests {
         ] {
             assert_eq!(runtime.eval(source).unwrap(), expected, "{source}");
         }
+    }
+
+    #[cfg(feature = "webidl-pilot")]
+    #[test]
+    fn generated_redeclared_members_dispatch_to_their_own_native_methods() {
+        use crate::webidl::shadow_base::{ShadowBaseBinding, ShadowBaseNative};
+        use crate::webidl::shadow_child::{ShadowChildBinding, ShadowChildNative};
+        struct Node;
+        // One native type implements both traits' `Label` (like HTMLElement/HTMLScriptElement
+        // `innerText`); fully qualified generated calls keep them apart.
+        #[allow(non_snake_case)]
+        impl ShadowBaseNative for Node {
+            fn Label(&self) -> Vec<u16> { "base".encode_utf16().collect() }
+        }
+        #[allow(non_snake_case)]
+        impl ShadowChildNative for Node {
+            fn Label(&self) -> Vec<u16> { "child".encode_utf16().collect() }
+        }
+        let mut runtime = Runtime::new();
+        let base = ShadowBaseBinding::<Node>::install(&mut runtime).unwrap();
+        let child = ShadowChildBinding::<Node>::install(&mut runtime, &base).unwrap();
+        let node = child.create(&mut runtime, Node);
+        runtime.set_global_property("node", &node).unwrap();
+        assert_eq!(
+            runtime.eval("[node.label, Object.getOwnPropertyDescriptor(ShadowBase.prototype, 'label').get.call(node)].join()").unwrap(),
+            "child,base"
+        );
     }
 
     #[cfg(feature = "webidl-pilot")]

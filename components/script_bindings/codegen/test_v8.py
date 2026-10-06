@@ -31,8 +31,8 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertEqual(source.count("runtime.define_property("), 6)
             self.assertIn("fn AvailWidth(&self) -> roves_v8::FiniteF64;", source)
             self.assertIn("fn ColorDepth(&self) -> u32;", source)
-            self.assertIn("Value::Number(native.AvailWidth().get())", source)
-            self.assertIn("Value::Number(native.ColorDepth() as f64)", source)
+            self.assertIn("Value::Number(<T as ScreenNative>::AvailWidth(native).get())", source)
+            self.assertIn("Value::Number(<T as ScreenNative>::ColorDepth(native) as f64)", source)
 
     def test_domstring_getters_preserve_utf16_code_units(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -123,9 +123,9 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn("fn Count(&self) -> u32;", source)
             self.assertIn('runtime.define_method(&interface, "reset"', source)
             self.assertIn("Value::Undefined", source)
-            self.assertIn("Value::Bool(native.Ready())", source)
-            self.assertIn("Value::Number(native.Ratio().get())", source)
-            self.assertIn("Value::Number(native.Count() as f64)", source)
+            self.assertIn("Value::Bool(<T as OperationsNative>::Ready(native))", source)
+            self.assertIn("Value::Number(<T as OperationsNative>::Ratio(native).get())", source)
+            self.assertIn("Value::Number(<T as OperationsNative>::Count(native) as f64)", source)
 
     def test_string_operation_returns_preserve_domstring_and_usvstring_types(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -140,9 +140,9 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn("fn OptionalLabel(&self) -> Option<Vec<u16>>;", source)
             self.assertIn("fn UsvLabel(&self) -> String;", source)
             self.assertIn("fn OptionalUsvLabel(&self) -> Option<String>;", source)
-            self.assertIn("Value::Utf16String(native.Label())", source)
+            self.assertIn("Value::Utf16String(<T as OperationsNative>::Label(native))", source)
             self.assertIn("map(Value::Utf16String).unwrap_or(Value::Null)", source)
-            self.assertIn("Value::String(native.UsvLabel())", source)
+            self.assertIn("Value::String(<T as OperationsNative>::UsvLabel(native))", source)
             self.assertIn("map(Value::String).unwrap_or(Value::Null)", source)
 
     def test_nullable_primitive_operation_returns_use_optional_native_values(self):
@@ -172,10 +172,10 @@ class V8GeneratorTests(unittest.TestCase):
             source = generate(webidl, root / "out")
             for rust_type, method in [("i8", "SignedByte"), ("u8", "OctetValue"), ("i16", "ShortValue"), ("u16", "UnsignedShortValue"), ("i32", "LongValue"), ("i64", "LongLongValue"), ("u64", "UnsignedLongLongValue"), ("roves_v8::FiniteF32", "FloatValue"), ("Option<roves_v8::FiniteF32>", "NullableFloat"), ("f32", "UnrestrictedFloat"), ("Option<f32>", "NullableUnrestrictedFloat"), ("roves_v8::FiniteF64", "DoubleValue"), ("Option<roves_v8::FiniteF64>", "NullableDouble"), ("f64", "UnrestrictedDouble"), ("Option<f64>", "NullableUnrestrictedDouble"), ("Option<i64>", "NullableLongLong")]:
                 self.assertIn(f"fn {method}(&self) -> {rust_type};", source)
-            self.assertIn("Value::Number(native.FloatValue().get() as f64)", source)
-            self.assertIn("Value::Number(native.UnrestrictedFloat() as f64)", source)
-            self.assertIn("Value::Number(native.DoubleValue().get())", source)
-            self.assertIn("Value::Number(native.UnsignedLongLongValue() as f64)", source)
+            self.assertIn("Value::Number(<T as NumbersNative>::FloatValue(native).get() as f64)", source)
+            self.assertIn("Value::Number(<T as NumbersNative>::UnrestrictedFloat(native) as f64)", source)
+            self.assertIn("Value::Number(<T as NumbersNative>::DoubleValue(native).get())", source)
+            self.assertIn("Value::Number(<T as NumbersNative>::UnsignedLongLongValue(native) as f64)", source)
 
     def test_operations_accept_required_boolean_arguments(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -190,8 +190,8 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn("fn Combine(&self, arg0: bool, arg1: bool) -> ();", source)
             self.assertIn("args.get(0).unwrap_or(&Value::Undefined)", source)
             self.assertIn("let arg0 = match args.get(0)", source)
-            self.assertIn("native.Accepts(arg0)", source)
-            self.assertIn("native.Combine(arg0, arg1)", source)
+            self.assertIn("<T as OperationsNative>::Accepts(native, arg0)", source)
+            self.assertIn("<T as OperationsNative>::Combine(native, arg0, arg1)", source)
 
     def test_operations_generate_required_numeric_argument_coercions(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -440,8 +440,8 @@ class V8GeneratorTests(unittest.TestCase):
                 "fn Fill_(&self, arg0: Vec<u16>, arg1: roves_v8::WebIdlOptionalArgument<bool>) -> bool;",
                 'runtime.define_overloaded_webidl_method(&interface, "fill", &[',
                 "roves_v8::WebIdlOverload {",
-                "Ok(Value::Bool(native.Fill()))",
-                "Ok(Value::Bool(native.Fill_(arg0, arg1)))",
+                "Ok(Value::Bool(<T as OverNative>::Fill(native)))",
+                "Ok(Value::Bool(<T as OverNative>::Fill_(native, arg0, arg1)))",
                 'runtime.define_webidl_method_with_argument_flags_and_enums(&interface, "at"',
             ]:
                 self.assertIn(expected, source)
@@ -488,7 +488,7 @@ class V8GeneratorTests(unittest.TestCase):
                 # Setters take &self: natives may re-enter JS, so mutation is interior.
                 "fn set_State(&self, value: bool);",
                 'runtime.define_contextual_webidl_method(&interface, "echo", |cx, native, args| {',
-                "let result = native.Echo(cx, arg0)?;",
+                "let result = <T as EngineNative>::Echo(native, cx, arg0)?;",
                 "roves_v8::WebIdlArgumentConversion::Callback, roves_v8::WebIdlArgumentConversion::Object",
             ]:
                 self.assertIn(expected, source)
@@ -560,7 +560,7 @@ class V8GeneratorTests(unittest.TestCase):
                 # The optional dictionary argument is never missing: undefined converts to defaults.
                 "optional: false",
                 "fn Echo(&self, arg0: Derived) -> Derived;",
-                "native.Echo(arg0).into_value()",
+                "<T as DictNative>::Echo(native, arg0).into_value()",
             ]:
                 self.assertIn(expected, source)
 
@@ -822,7 +822,7 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn("fn Reset(&self) -> Result<(), roves_v8::WebIdlError>;", source)
             self.assertIn("fn Plain(&self) -> bool;", source)
             self.assertIn('runtime.define_fallible_webidl_method(&interface, "parse"', source)
-            self.assertIn("let result = native.Parse(arg0)?;", source)
+            self.assertIn("let result = <T as RiskyNative>::Parse(native, arg0)?;", source)
             self.assertIn("Ok(Value::Number(result as f64))", source)
             self.assertIn('runtime.define_fallible_webidl_method(&interface, "reset"', source)
             self.assertIn('runtime.define_method(&interface, "plain"', source)
@@ -850,12 +850,14 @@ class V8GeneratorTests(unittest.TestCase):
             self.assertIn('runtime.define_interface("Base", None)', base_source)
             self.assertIn("pub fn interface(&self) -> &Interface", base_source)
 
-    def test_redeclaring_an_inherited_member_fails_closed(self):
+    def test_redeclared_inherited_members_are_separate_qualified_methods(self):
         with tempfile.TemporaryDirectory() as directory:
             base, derived = self.write_hierarchy(directory, "readonly attribute boolean base;")
-            with self.assertRaisesRegex(TypeError, "shadowing an inherited member"):
-                generate(derived, Path(directory) / "output", (base,))
-
+            source = generate(derived, Path(directory) / "output", (base,))
+            # The child's own `Base` lives on HTMLDerivedNative; calls are fully qualified, so
+            # the supertrait's method of the same name is never ambiguous.
+            self.assertIn("fn Base(&self) -> bool;", source)
+            self.assertIn("Value::Bool(<T as HTMLDerivedNative>::Base(native))", source)
     def test_unforgeable_attributes_install_once_on_the_declaring_interface(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory) / "Base.webidl"
@@ -890,8 +892,8 @@ class V8GeneratorTests(unittest.TestCase):
             for expected in [
                 "fn A(&self) -> i16;", "fn B(&self) -> i64;", "fn C(&self) -> roves_v8::FiniteF32;",
                 "fn D(&self) -> f64;", "fn E(&self) -> Option<u16>;",
-                "Value::Number(native.C().get() as f64)", "Value::Number(native.D())",
-                "native.E().map(|value| Value::Number(value as f64)).unwrap_or(Value::Null)",
+                "Value::Number(<T as NumbersNative>::C(native).get() as f64)", "Value::Number(<T as NumbersNative>::D(native))",
+                "<T as NumbersNative>::E(native).map(|value| Value::Number(value as f64)).unwrap_or(Value::Null)",
                 'runtime.define_constant(&interface, "ONE", &Value::Number(1.0))?;',
                 'runtime.define_constant(&interface, "INF", &Value::Number(f64::INFINITY))?;',
             ]:
@@ -911,8 +913,8 @@ class V8GeneratorTests(unittest.TestCase):
                 "fn Root(&self) -> roves_v8::NativeRef;",
                 "fn ChildAt(&self, arg0: u32) -> Option<roves_v8::NativeRef>;",
                 "fn Contains(&self, arg0: Option<roves_v8::NativeRef>) -> bool;",
-                "native.Parent().map(Value::Native).unwrap_or(Value::Null)",
-                "Value::Native(native.Root())",
+                "<T as TreeNative>::Parent(native).map(Value::Native).unwrap_or(Value::Null)",
+                "Value::Native(<T as TreeNative>::Root(native))",
                 "roves_v8::WebIdlArgumentConversion::Interface",
                 '&[Some(&["Tree"])]',
             ]:
