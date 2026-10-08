@@ -208,6 +208,8 @@ unsafe impl GarbageCollected for RootSet {
             crate::jsapi_impl::trace_atoms(unsafe { cx.as_ref() }, visitor);
             // SAFETY: as above. The embedder's roots (Servo's DOM root lists).
             crate::runtime_impl::trace_extra_roots(unsafe { cx.as_ref() }, visitor);
+            // SAFETY: as above.
+            crate::script_impl::trace_scripts(unsafe { cx.as_ref() }, visitor);
         }
         // RootedVec / RootedTraceableBox contents.
         // SAFETY: the tracer is this GC's visitor.
@@ -396,6 +398,7 @@ impl Runtime {
             proxy_handlers: RefCell::new(Default::default()),
             atoms: Default::default(),
             hooks: Default::default(),
+            scripts: Default::default(),
             current_realm: std::cell::Cell::new(std::ptr::null_mut()),
             realms: RefCell::new(Vec::new()),
         });
@@ -605,5 +608,265 @@ impl std::ops::Deref for RealmOptions {
 impl std::ops::DerefMut for RealmOptions {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
+    }
+}
+
+// --- Scripts, errors and stacks (mozjs's `rust` helpers) ---------------------------------------
+
+pub fn transform_str_to_source_text(source: &str) -> crate::jsapi::SourceText<crate::jsapi::Utf8Unit> {
+    crate::jsapi::SourceText {
+        units_: source.as_ptr() as *const _,
+        length_: source.len() as u32,
+        ownsUnits_: false,
+        _phantom_0: std::marker::PhantomData,
+    }
+}
+
+pub fn transform_u16_to_source_text(source: &[u16]) -> crate::jsapi::SourceText<u16> {
+    crate::jsapi::SourceText {
+        units_: source.as_ptr() as *const _,
+        length_: source.len() as u32,
+        ownsUnits_: false,
+        _phantom_0: std::marker::PhantomData,
+    }
+}
+
+/// Owned compile options (mozjs's `CompileOptionsWrapper`).
+pub struct CompileOptionsWrapper {
+    pub ptr: *mut crate::jsapi::ReadOnlyCompileOptions,
+    filename: std::ffi::CString,
+}
+
+impl CompileOptionsWrapper {
+    pub fn new(cx: &crate::context::JSContext, filename: std::ffi::CString, line: u32) -> Self {
+        // SAFETY: the options keep a pointer to `filename`, which this wrapper owns.
+        let ptr = unsafe { crate::script_impl::NewCompileOptions(cx.raw_ref() as *const _ as *mut _, filename.as_ptr(), line) };
+        assert!(!ptr.is_null());
+        Self { ptr, filename }
+    }
+
+    /// # Safety
+    /// `cx` must point to a live context.
+    #[deprecated(note = "Use CompileOptionsWrapper::new instead")]
+    pub unsafe fn new_raw(cx: *mut RawJSContext, filename: std::ffi::CString, line: u32) -> Self {
+        // SAFETY: as above.
+        let ptr = unsafe { crate::script_impl::NewCompileOptions(cx, filename.as_ptr(), line) };
+        Self { ptr, filename }
+    }
+
+    pub fn filename(&self) -> &str {
+        self.filename.to_str().expect("Guaranteed by new")
+    }
+
+    pub fn set_introduction_type(&mut self, introduction_type: &'static std::ffi::CStr) {
+        // SAFETY: the options are owned by this wrapper.
+        unsafe { (*self.ptr)._base.introductionType = introduction_type.as_ptr() };
+    }
+
+    pub fn set_muted_errors(&mut self, muted_errors: bool) {
+        // SAFETY: as above.
+        unsafe { (*self.ptr)._base.mutedErrors_ = muted_errors };
+    }
+
+    pub fn set_is_run_once(&mut self, is_run_once: bool) {
+        // SAFETY: as above.
+        unsafe { (*self.ptr).isRunOnce = is_run_once };
+    }
+
+    pub fn set_no_script_rval(&mut self, no_script_rval: bool) {
+        // SAFETY: as above.
+        unsafe { (*self.ptr).noScriptRval = no_script_rval };
+    }
+}
+
+impl Drop for CompileOptionsWrapper {
+    fn drop(&mut self) {
+        // SAFETY: created by `NewCompileOptions`.
+        unsafe { crate::script_impl::DeleteCompileOptions(self.ptr) }
+    }
+}
+
+/// Compiles and runs `script` in `glob`'s realm (mozjs's `evaluate_script`).
+pub fn evaluate_script(
+    cx: &mut crate::context::JSContext,
+    glob: HandleObject,
+    script: &str,
+    rval: MutableHandleValue,
+    options: CompileOptionsWrapper,
+) -> Result<(), ()> {
+    let mut realm = crate::realm::AutoRealm::new_from_handle(cx, glob);
+    let mut source = transform_str_to_source_text(script);
+    // SAFETY: the realm's context is live; the options and source outlive the call.
+    let ok = unsafe { crate::script_impl::Evaluate2(realm.raw_cx(), options.ptr, &mut source, rval.into()) };
+    if ok { Ok(()) } else { Err(()) }
+}
+
+/// An environment chain for function compilation (mozjs's `EnvironmentChain`).
+pub struct EnvironmentChain {
+    chain: *mut crate::jsapi::EnvironmentChain,
+}
+
+impl EnvironmentChain {
+    pub fn new(cx: *mut RawJSContext, support_unscopables: crate::jsapi::SupportUnscopables) -> Self {
+        // SAFETY: a new, owned chain.
+        Self { chain: unsafe { crate::script_impl::NewEnvironmentChain(cx, support_unscopables) } }
+    }
+
+    pub fn append(&self, obj: *mut crate::jsapi::JSObject) {
+        // SAFETY: the chain is owned by this wrapper.
+        assert!(unsafe { crate::script_impl::AppendToEnvironmentChain(self.chain, obj) });
+    }
+
+    pub fn get(&self) -> *mut crate::jsapi::EnvironmentChain {
+        self.chain
+    }
+}
+
+impl Drop for EnvironmentChain {
+    fn drop(&mut self) {
+        // SAFETY: as above.
+        unsafe { crate::script_impl::DeleteEnvironmentChain(self.chain) }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct ScriptedCaller {
+    pub filename: String,
+    pub line: u32,
+    pub col: u32,
+}
+
+pub fn describe_scripted_caller_safe(cx: &crate::context::JSContext) -> Result<ScriptedCaller, ()> {
+    let mut buf = [0 as std::ffi::c_char; 1024];
+    let mut line = 0;
+    let mut col = 0;
+    // SAFETY: a live context and a buffer of the given length.
+    if !unsafe { crate::script_impl::DescribeScriptedCaller(cx.raw_ref() as *const _ as *mut _, buf.as_mut_ptr(), buf.len(), &mut line, &mut col) } {
+        return Err(());
+    }
+    // SAFETY: NUL-terminated by `DescribeScriptedCaller`.
+    let filename = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) };
+    Ok(ScriptedCaller { filename: String::from_utf8_lossy(filename.to_bytes()).into_owned(), line, col })
+}
+
+pub struct ErrorInfo {
+    pub message: String,
+    pub filename: String,
+    pub line: u32,
+    pub col: u32,
+}
+
+unsafe extern "C" fn fill_string_callback(ptr: *const std::ffi::c_char, len: usize, target: *mut std::ffi::c_void) {
+    // SAFETY: `target` is a `String` and the bytes are UTF-8 (`PendingExceptionStackInfo`).
+    let target = unsafe { &mut *(target as *mut String) };
+    let slice = unsafe { std::slice::from_raw_parts(ptr as *const u8, len) };
+    target.push_str(&String::from_utf8_lossy(slice));
+}
+
+/// Takes the pending exception into `rval` and describes it (mozjs's helper).
+pub fn error_info_from_exception_stack_safe(cx: &mut crate::context::JSContext, rval: MutableHandleValue) -> Option<ErrorInfo> {
+    let mut message = String::new();
+    let mut filename = String::new();
+    let mut line = 0;
+    let mut col = 0;
+    // SAFETY: a live context; the targets are `String`s for `fill_string_callback`.
+    let found = unsafe {
+        crate::script_impl::PendingExceptionStackInfo(
+            cx.raw_cx(),
+            Some(fill_string_callback),
+            &raw mut message as *mut std::ffi::c_void,
+            &raw mut filename as *mut std::ffi::c_void,
+            &mut line,
+            &mut col,
+            rval.into(),
+        )
+    };
+    found.then_some(ErrorInfo { message, filename, line, col })
+}
+
+/// A captured JS stack (mozjs's `CapturedJSStack`).
+pub struct CapturedJSStack<'a> {
+    cx: *mut RawJSContext,
+    stack: RootedGuard<'a, *mut crate::jsapi::JSObject>,
+}
+
+impl<'a> CapturedJSStack<'a> {
+    /// # Safety
+    /// `cx` must be this thread's live context.
+    pub unsafe fn new(cx: *mut RawJSContext, mut guard: RootedGuard<'a, *mut crate::jsapi::JSObject>, max_frame_count: Option<u32>) -> Option<Self> {
+        // SAFETY: zeroed storage is a valid capture before initialization.
+        let mut capture: crate::jsapi::StackCapture = unsafe { std::mem::zeroed() };
+        // SAFETY: initializes the capture.
+        unsafe {
+            match max_frame_count {
+                None => crate::script_impl::JS_StackCapture_AllFrames(&mut capture),
+                Some(count) => crate::script_impl::JS_StackCapture_MaxFrames(count, &mut capture),
+            }
+        }
+        let start_after = std::ptr::null_mut::<crate::jsapi::JSObject>();
+        let start_after = crate::jsapi::Handle { _phantom_0: std::marker::PhantomData, ptr: &start_after };
+        // SAFETY: a rooted out location.
+        if !unsafe { crate::script_impl::CaptureCurrentStack(cx, guard.handle_mut().into(), &mut capture, start_after) } {
+            None
+        } else {
+            Some(CapturedJSStack { cx, stack: guard })
+        }
+    }
+
+    pub fn as_string(&self, indent: Option<usize>, format: crate::jsapi::StackFormat) -> Option<String> {
+        let cx = self.cx;
+        crate::rooted!(in(cx) let mut js_string = std::ptr::null_mut::<crate::jsapi::JSString>());
+        // SAFETY: rooted arguments.
+        if !unsafe {
+            crate::script_impl::BuildStackString(cx, std::ptr::null_mut(), self.stack.handle().into(), js_string.handle_mut().into(), indent.unwrap_or(0), format)
+        } {
+            return None;
+        }
+        let string = std::ptr::NonNull::new(js_string.get())?;
+        // SAFETY: this thread's live context and a live, rooted string.
+        let safe_cx = unsafe { crate::context::JSContext::from_ptr(std::ptr::NonNull::new(cx)?) };
+        Some(unsafe { crate::conversions::jsstr_to_string(&safe_cx, string) })
+    }
+
+    /// Calls `f` for each frame, innermost first.
+    pub fn for_each_stack_frame<F>(&self, mut f: F)
+    where
+        F: FnMut(Handle<*mut crate::jsapi::JSObject>),
+    {
+        let cx = self.cx;
+        crate::rooted!(in(cx) let mut current = self.stack.get());
+        crate::rooted!(in(cx) let mut next = std::ptr::null_mut::<crate::jsapi::JSObject>());
+        loop {
+            f(current.handle());
+            // SAFETY: rooted arguments.
+            let result = unsafe {
+                crate::script_impl::GetSavedFrameParent(
+                    cx,
+                    std::ptr::null_mut(),
+                    current.handle().into(),
+                    next.handle_mut().into(),
+                    crate::jsapi::SavedFrameSelfHosted::Include,
+                )
+            };
+            if result != crate::jsapi::SavedFrameResult::Ok || next.get().is_null() {
+                return;
+            }
+            current.set(next.get());
+        }
+    }
+}
+
+#[macro_export]
+macro_rules! capture_stack {
+    (&in($cx:expr) $($t:tt)*) => {
+        $crate::capture_stack!(in(unsafe { $cx.raw_cx() }) $($t)*);
+    };
+    (in($cx:expr) let $name:ident = with max depth($max_frame_count:expr)) => {
+        $crate::rooted!(in($cx) let mut __obj = ::std::ptr::null_mut());
+        let $name = $crate::rust::CapturedJSStack::new($cx, __obj, Some($max_frame_count));
+    };
+    (in($cx:expr) let $name:ident ) => {
+        $crate::rooted!(in($cx) let mut __obj = ::std::ptr::null_mut());
+        let $name = $crate::rust::CapturedJSStack::new($cx, __obj, None);
     }
 }

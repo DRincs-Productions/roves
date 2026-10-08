@@ -61,6 +61,12 @@ errors.
   - mozjs's runtime model (`JSEngine`, child runtimes, `ThreadSafeJSContext`);
   - the runtime hooks: interrupts, extra GC roots, promise rejection tracking, and the job
     queue on V8's microtask queue with the explicit policy.
+  CP101 adds:
+  - script compilation and execution: `UnboundScript` cells, compile options,
+    `CompileFunction` with the environment chain as context extensions;
+  - script privates, found again for a scripted caller through V8's stack trace;
+  - error reports;
+  - SpiderMonkey-style saved stacks.
 
 **Surface.** An inventory of `script`, `script_bindings` and `script_webgpu` found about 590
 distinct `js::` items:

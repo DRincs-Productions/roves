@@ -11,6 +11,64 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-08 - V8 cutover: script compilation and execution, errors and saved stacks (CP101)
+
+**Servo files:**
+- `components/roves-js/src/`:
+  - new: `script_impl.rs`;
+  - changed: `cell.rs`, `rust.rs`, `glue.rs`, `jsapi.rs`, `lib.rs`, `tests.rs`,
+    `jsapi_types.rs`, `glue_types.rs` and `wrappers2.in.rs`;
+- `support/roves_js/extract_jsapi_types.py`, `support/roves_js/jsapi_type_names.txt` and
+  `support/roves_js/gen_wrappers2.py`.
+
+**Patch:** `0166-roves-js-scripts.patch` after 0165.
+
+**Scripts.**
+- A `*mut JSScript` is a cell holding V8's `UnboundScript`. Cells gain an optional traced
+  script reference for this.
+- `NewCompileOptions` returns bindgen's own `ReadOnlyCompileOptions`. The fields Servo sets are
+  honoured: filename, line, column, muted errors (opaque origin), run-once/no-rval flags.
+- `Compile1` and `Evaluate2` compile against a V8 `ScriptOrigin` built from those options.
+  `JS_ExecuteScript` binds the script to the current realm.
+- `CompileFunction` uses V8's `CompileFunction`: the argument names, plus the environment
+  chain's objects as *context extensions*. This gives event-handler bodies their
+  element/form/document scopes. Environment chains are rooted vectors.
+
+**Script privates and callers.**
+- `SetScriptPrivate`/`JS_GetScriptPrivate` key privates by V8 script id, honouring
+  `SetScriptPrivateReferenceHooks`.
+- `JS_GetScriptedCallerPrivate` and `DescribeScriptedCaller` read the innermost frame of V8's
+  stack trace, so a function from script A called later still reports A's private and
+  location.
+- `GetScriptedCallerGlobal` uses V8's entered context.
+- Gap: privates live as long as the runtime (SpiderMonkey frees them with the script).
+
+**Errors.**
+- `PendingExceptionStackInfo` takes the pending exception and reports V8's message
+  (`TypeError: ...`), file, line and column. mozjs's `error_info_from_exception_stack_safe`
+  is built on it.
+- `JS_ErrorFromException` returns bindgen's `JSErrorReport`, filled from V8's message. The
+  report and its strings stay valid until the next call.
+- `RUST_js_GetErrorMessage` returns null: SpiderMonkey's error-number table does not exist on
+  V8, and Servo only logs it.
+
+**Saved stacks.**
+- `CaptureCurrentStack` builds SpiderMonkey-style saved-frame objects from V8's current stack
+  trace. The fields are V8 private properties.
+- `GetSavedFrame{Parent,Source,Line,Column,FunctionDisplayName}` and `BuildStackString`
+  (SpiderMonkey's `name@source:line:column` format, or V8's) work on those objects.
+- mozjs's `CapturedJSStack`, `capture_stack!`, `describe_scripted_caller_safe`,
+  `CompileOptionsWrapper`, `EnvironmentChain`, `transform_*_to_source_text` and
+  `evaluate_script` are ported.
+
+**Tests:** `roves-js` 18/18. The new test covers:
+- compiling, attaching a private and executing;
+- a function from script A, called from another script after a GC, reporting A's private,
+  file, line and stack frame;
+- an event-handler function with an argument and a scope object;
+- a runtime error's message, file, line and error report;
+- a syntax error leaving a pending exception.
+
 ## 2026-10-08 - V8 cutover: lazy globals, atoms, mozjs's runtime model and runtime hooks (CP100)
 
 **Servo files:**

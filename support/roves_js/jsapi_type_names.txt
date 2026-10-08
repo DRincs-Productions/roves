@@ -1,4 +1,5 @@
 AddAssociatedMemory
+AllFrames
 AppendToIdVector
 AsmJSOption
 AtomToLinearString
@@ -14,6 +15,7 @@ CallValueTracer
 CheckedUnwrapStatic
 ClippedTime
 CloneDataPolicy
+ColumnNumberOneOrigin
 Compartment
 CompartmentIterResult
 CompartmentSpecifier
@@ -36,7 +38,9 @@ DispatchablePointer
 Dispatchable_MaybeShuttingDown
 DumpJSStack
 ESClass
+EnvironmentChain
 ExceptionStackBehavior
+FirstSubsumedFrame
 GCContext
 GCDescription
 GCOptions
@@ -114,6 +118,8 @@ JSContextasUnsafeJSContext
 JSDOMCallbacks
 JSDestroyPrincipalsOp
 JSErrNum
+JSErrorFormatString
+JSErrorReport
 JSFUN_CONSTRUCTOR
 JSFailed
 JSFunctionSpec
@@ -219,6 +225,7 @@ JS_WriteBytes
 JS_WriteUint32Pair
 JobQueue
 JobQueueTraps
+MaxFrames
 MemoryUse
 MimeType
 ModuleErrorBehaviour
@@ -252,6 +259,7 @@ ProxyOptions
 ProxyTraps
 RUST_FUNCTION_VALUE_TO_JITINFO
 RUST_js_GetErrorMessage
+ReadOnlyCompileOptions
 RealmOptions
 RegExpFlag_UnicodeSets
 RegExpFlags
@@ -262,8 +270,10 @@ ReportStreamErrorCallback
 RunScriptEnvironmentPreparerClosure
 RuntimeCode
 RuntimeHeapState
+SavedFrameResult
 SavedFrameSelfHosted
 ScriptEnvironmentPreparer_Closure
+ScriptPrivateReferenceHook
 ServoSizes
 SetBuildId
 SetDOMProxyInformation
@@ -278,6 +288,8 @@ SetProxyPrivate
 SetProxyReservedSlot
 SetScriptPrivate
 SetScriptPrivateReferenceHooks
+SourceText
+StackCapture
 StackFormat
 StackFormatasJSStackFormat
 StreamConsumer
@@ -290,8 +302,10 @@ StringIsArrayIndex
 StructuredCloneScope
 SupportUnscopables
 SymbolCode
+TaggedColumnNumberOneOrigin
 TraceKind
 TransferableOwnership
+TransitiveCompileOptions
 TrueHandleValue
 Type
 UncheckedUnwrapObject
@@ -299,6 +313,7 @@ UndefinedHandleValue
 UnhideScriptedCaller
 UnwrapObjectDynamic
 UnwrapObjectStatic
+Utf8Unit
 Value
 ValueasJSValue
 WriteBytesToJSStructuredCloneData
@@ -306,6 +321,7 @@ __BindgenBitfieldUnit
 context
 conversions
 error
+false_type
 gc
 glue
 jsapi

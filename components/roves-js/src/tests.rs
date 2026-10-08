@@ -992,3 +992,111 @@ mod runtime_hooks {
         .unwrap();
     }
 }
+
+mod scripts {
+    use std::cell::RefCell;
+    use std::ffi::CString;
+
+    use super::{describe, eval};
+    use crate::jsapi::*;
+    use crate::jsval::*;
+    use crate::rust::{CompileOptionsWrapper, EnvironmentChain, JSEngineHandle, Runtime, transform_str_to_source_text, transform_u16_to_source_text};
+
+    thread_local! {
+        static SEEN: RefCell<Vec<std::string::String>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// A native that records its scripted caller (private and location) and the stack.
+    unsafe extern "C" fn whoami(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+        crate::rooted!(in(cx) let mut private = UndefinedValue());
+        unsafe { JS_GetScriptedCallerPrivate(cx, private.handle_mut().into()) };
+        let safe = unsafe { crate::context::JSContext::from_ptr(std::ptr::NonNull::new(cx).unwrap()) };
+        let caller = crate::rust::describe_scripted_caller_safe(&safe).unwrap();
+        crate::capture_stack!(in(cx) let stack);
+        let stack = unsafe { stack }.unwrap().as_string(None, StackFormat::SpiderMonkey).unwrap();
+        SEEN.with(|seen| {
+            seen.borrow_mut().push(format!(
+                "{}|{}:{}|{}",
+                if private.get().is_int32() { private.get().to_int32() } else { -1 },
+                caller.filename,
+                caller.line,
+                stack.lines().next().unwrap_or("")
+            ))
+        });
+        unsafe { *vp = UndefinedValue() };
+        true
+    }
+
+    #[test]
+    fn scripts_compile_run_carry_privates_and_report_errors() {
+        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
+        let whoami_fn = unsafe { JS_NewFunction(cx, Some(whoami), 0, 0, c"whoami".as_ptr()) };
+        rooted!(in(cx) let whoami_value = ObjectValue(whoami_fn as *mut JSObject));
+        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"whoami".as_ptr(), whoami_value.handle().into_handle()) });
+
+        // Compile, attach a private, run.
+        let options = CompileOptionsWrapper::new(runtime.cx_no_gc(), CString::new("https://example.test/a.js").unwrap(), 10);
+        let code = "function fromA() { whoami(); }\nvar ran = 'yes'; 6 * 7";
+        let mut source = transform_str_to_source_text(code);
+        rooted!(in(cx) let script = unsafe { Compile1(cx, options.ptr, &mut source) });
+        assert!(!script.get().is_null());
+        unsafe { SetScriptPrivate(script.get(), &Int32Value(11)) };
+        rooted!(in(cx) let mut private = UndefinedValue());
+        unsafe { JS_GetScriptPrivate(script.get(), private.handle_mut().into()) };
+        assert_eq!(private.get().to_int32(), 11);
+        rooted!(in(cx) let mut result = UndefinedValue());
+        assert!(unsafe { JS_ExecuteScript(cx, script.handle().into(), result.handle_mut().into()) });
+        assert_eq!(result.get().to_int32(), 42);
+        assert_eq!(describe(&runtime, eval(&runtime, "ran")), "yes");
+
+        // A function from script A, called later from another script, reports A's private
+        // and location.
+        runtime.gc_for_testing();
+        eval(&runtime, "fromA()");
+        let seen = SEEN.with(|seen| seen.borrow().clone());
+        assert_eq!(seen.len(), 1);
+        assert!(seen[0].starts_with("11|https://example.test/a.js:10|fromA@https://example.test/a.js:10:"), "{}", seen[0]);
+
+        // Event-handler style functions: arguments and an environment chain.
+        let chain = EnvironmentChain::new(cx, SupportUnscopables::Yes);
+        rooted!(in(cx) let scope_object = eval(&runtime, "({ fromScope: 5 })").to_object());
+        chain.append(scope_object.get());
+        let body: Vec<u16> = "return event + fromScope;".encode_utf16().collect();
+        let mut body_source = transform_u16_to_source_text(&body);
+        let argument = c"event".as_ptr();
+        let function = unsafe { CompileFunction(cx, chain.get(), options.ptr, c"onclick".as_ptr(), 1, &argument, &mut body_source) };
+        assert!(!function.is_null());
+        rooted!(in(cx) let function_value = ObjectValue(function as *mut JSObject));
+        let arguments = [Int32Value(2)];
+        let array = HandleValueArray { length_: 1, elements_: arguments.as_ptr() };
+        rooted!(in(cx) let this = UndefinedValue());
+        rooted!(in(cx) let mut call_result = UndefinedValue());
+        assert!(unsafe { Call(cx, this.handle().into_handle(), function_value.handle().into_handle(), &array, call_result.handle_mut().into_handle()) });
+        assert_eq!(call_result.get().to_int32(), 7);
+
+        // Errors: the pending exception's message and location, and error reports.
+        let failing = CompileOptionsWrapper::new(runtime.cx_no_gc(), CString::new("https://example.test/b.js").unwrap(), 1);
+        let mut bad = transform_str_to_source_text("\nnull.boom");
+        rooted!(in(cx) let mut ignored = UndefinedValue());
+        assert!(!unsafe { Evaluate2(cx, failing.ptr, &mut bad, ignored.handle_mut().into()) });
+        rooted!(in(cx) let mut exception = UndefinedValue());
+        let info = crate::rust::error_info_from_exception_stack_safe(runtime.cx(), exception.handle_mut()).unwrap();
+        assert!(info.message.starts_with("TypeError"), "{}", info.message);
+        assert_eq!((info.filename.as_str(), info.line), ("https://example.test/b.js", 2));
+        assert!(exception.get().is_object());
+        rooted!(in(cx) let error = exception.get().to_object());
+        let report = unsafe { JS_ErrorFromException(cx, error.handle().into_handle()) };
+        assert!(!report.is_null());
+        assert_eq!(unsafe { (*report)._base.lineno }, 2);
+        let message = unsafe { std::ffi::CStr::from_ptr((*report)._base.message_.data_) }.to_string_lossy().into_owned();
+        assert!(message.contains("null"), "{message}");
+
+        // Syntax errors fail compilation with a pending exception.
+        let mut syntax = transform_str_to_source_text("let = ;");
+        assert!(unsafe { Compile1(cx, failing.ptr, &mut syntax) }.is_null());
+        assert!(unsafe { crate::api::JS_IsExceptionPending(cx) });
+        unsafe { crate::api::JS_ClearPendingException(cx) };
+    }
+}

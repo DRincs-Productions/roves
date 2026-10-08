@@ -24,6 +24,7 @@ OPAQUE = {
     "RootingContext", "AutoRequireNoGC",
     # C++ classes and containers behind pointers.
     "BuildIdCharVector", "JobQueue", "StreamConsumer", "ScriptEnvironmentPreparer_Closure",
+    "EnvironmentChain",
 }
 
 

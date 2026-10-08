@@ -1,0 +1,1994 @@
+diff --git a/components/roves-js/src/cell.rs b/components/roves-js/src/cell.rs
+index 32669b9b0d1..2410d1665c6 100644
+--- a/components/roves-js/src/cell.rs
++++ b/components/roves-js/src/cell.rs
+@@ -80,6 +80,8 @@ pub(crate) struct Cell {
+     chars: std::cell::OnceCell<StringChars>,
+     /// A class-based object's box (see `object`): reserved slots and hooks.
+     class: Option<Member<crate::object::ClassBox>>,
++    /// A `JSScript` cell's compiled script (see `script_impl`).
++    script: Option<TracedReference<v8::UnboundScript>>,
+ }
+ 
+ pub(crate) enum StringChars {
+@@ -107,6 +109,9 @@ unsafe impl GarbageCollected for Cell {
+         if let Some(class) = &self.class {
+             visitor.trace(class);
+         }
++        if let Some(script) = &self.script {
++            visitor.trace(script);
++        }
+     }
+ 
+     fn get_name(&self) -> &'static std::ffi::CStr {
+@@ -179,11 +184,37 @@ pub(crate) fn new_cell_with_class(
+     // SAFETY: the returned pointer is handed straight to the caller, who roots or stores it
+     // (the documented contract of an unrooted GC-thing pointer).
+     let cell = unsafe {
+-        v8::cppgc::make_garbage_collected(heap, Cell { value: reference, chars: std::cell::OnceCell::new(), class })
++        v8::cppgc::make_garbage_collected(heap, Cell { value: reference, chars: std::cell::OnceCell::new(), class, script: None })
++    };
++    to_raw(cell)
++}
++
++/// A cell for a compiled script (`*mut JSScript`); its value is the script's id.
++pub(crate) fn new_script_cell(scope: &mut v8::PinScope, script: v8::Local<v8::UnboundScript>) -> *mut c_void {
++    let id = v8::Integer::new(scope, script.script_id());
++    let reference = TracedReference::new(scope, id.into());
++    let script = TracedReference::new(scope, script);
++    let heap = scope.get_cpp_heap().expect("roves-js isolates carry a cppgc heap");
++    // SAFETY: as for `new_cell_with_class`.
++    let cell = unsafe {
++        v8::cppgc::make_garbage_collected(
++            heap,
++            Cell { value: reference, chars: std::cell::OnceCell::new(), class: None, script: Some(script) },
++        )
+     };
+     to_raw(cell)
+ }
+ 
++/// The compiled script of a `JSScript` cell.
++///
++/// # Safety
++/// `pointer` must be a live script cell.
++pub(crate) unsafe fn cell_script<'s>(scope: &mut v8::PinScope<'s, '_>, pointer: *mut c_void) -> Option<v8::Local<'s, v8::UnboundScript>> {
++    let cell = from_raw(pointer)?;
++    // SAFETY: the caller guarantees the cell is alive.
++    unsafe { cell.as_ref() }.script.as_ref()?.get(scope)
++}
++
+ /// The JS value a live cell holds.
+ ///
+ /// # Safety
+diff --git a/components/roves-js/src/glue.rs b/components/roves-js/src/glue.rs
+index 51c5b8944fa..e5907c436ce 100644
+--- a/components/roves-js/src/glue.rs
++++ b/components/roves-js/src/glue.rs
+@@ -24,6 +24,11 @@ pub use crate::runtime_impl::{
+     CollectServoSizes, CreateJobQueue, DeleteJobQueue, DispatchableRun, InitializeMemoryReporter,
+     RegisterScriptEnvironmentPreparer, RunScriptEnvironmentPreparerClosure, SetBuildId, SetUpEventLoopDispatch,
+ };
++pub use crate::script_impl::{
++    DeleteCompileOptions, DescribeScriptedCaller, DumpJSStack, JS_GetScriptPrivate, JS_GetScriptedCallerPrivate,
++    JS_StackCapture_AllFrames, JS_StackCapture_MaxFrames, NewCompileOptions, PendingExceptionStackInfo,
++    RUST_js_GetErrorMessage,
++};
+ pub use crate::proxy::{
+     CreateProxyHandler, GetProxyHandler, GetProxyHandlerExtra, GetProxyHandlerFamily, GetProxyPrivate,
+     GetProxyReservedSlot, InvokeGetOwnPropertyDescriptor, IsProxyHandlerFamily, NewProxyObject, SetProxyPrivate,
+diff --git a/components/roves-js/src/glue_types.rs b/components/roves-js/src/glue_types.rs
+index f7803698c17..05148d0251d 100644
+--- a/components/roves-js/src/glue_types.rs
++++ b/components/roves-js/src/glue_types.rs
+@@ -288,6 +288,14 @@
+         ) -> bool,
+     >;
+ 
++    pub type StringCallback = ::std::option::Option<
++        unsafe extern "C" fn(
++            ptr: *const std::os::raw::c_char,
++            len: usize,
++            target: *mut std::os::raw::c_void,
++        ),
++    >;
++
+     pub type WantToMeasure =
+         ::std::option::Option<unsafe extern "C" fn(obj: *mut JSObject) -> bool>;
+ 
+diff --git a/components/roves-js/src/jsapi.rs b/components/roves-js/src/jsapi.rs
+index 044abf463ef..1bbb68df768 100644
+--- a/components/roves-js/src/jsapi.rs
++++ b/components/roves-js/src/jsapi.rs
+@@ -20,6 +20,7 @@ pub use crate::binding::{CallJitGetterOp, CallJitMethodOp, CallJitSetterOp, JS_D
+ pub use crate::jsapi_impl::*;
+ pub use crate::typedarray_impl::*;
+ pub use crate::runtime_impl::*;
++pub use crate::script_impl::*;
+ pub use crate::proxy::{SetDOMProxyInformation, SetPropertyIgnoringNamedGetter};
+ pub use crate::object::RuntimeHeapState;
+ 
+@@ -127,6 +128,8 @@ pub struct JSContext {
+     pub(crate) atoms: crate::jsapi_impl::Atoms,
+     /// The embedder's runtime hooks and settings (see `runtime_impl`).
+     pub(crate) hooks: crate::runtime_impl::RuntimeHooks,
++    /// Script privates and error reports (see `script_impl`).
++    pub(crate) scripts: crate::script_impl::Scripts,
+ }
+ 
+ impl JSContext {
+diff --git a/components/roves-js/src/jsapi_types.rs b/components/roves-js/src/jsapi_types.rs
+index 4a766b90bd7..7379367ce05 100644
+--- a/components/roves-js/src/jsapi_types.rs
++++ b/components/roves-js/src/jsapi_types.rs
+@@ -1,5 +1,12 @@
+ // Generated by extract_types.py from mozjs_sys's bindgen output.
+ 
++        #[doc = " Capture all frames."]
++        #[repr(C)]
++        #[derive(Debug, Copy, Clone, PartialEq)]
++        pub struct AllFrames {
++            pub _address: u8,
++        }
++
+         #[repr(C)]
+         #[derive(Debug, Copy, Clone, PartialEq)]
+         pub struct ArrayBuffer {
+@@ -192,6 +199,19 @@ pub struct ClassSpec {
+             pub allowSharedMemoryObjects_: bool,
+         }
+ 
++        #[repr(C, packed)]
++        #[derive(Debug, Copy, Clone, PartialEq)]
++        pub struct ColumnNumberOneOrigin {
++            pub _base: u32,
++        }
++
++        #[doc = " CompactPair is the logical concatenation of an instance of A with an instance\n B. Space is conserved when possible.  Neither A nor B may be a final class.\n\n In general if space conservation is not critical is preferred to use\n std::pair.\n\n It's typically clearer to have individual A and B member fields.  Except if\n you want the space-conserving qualities of CompactPair, you're probably\n better off not using this!\n\n No guarantees are provided about the memory layout of A and B, the order of\n initialization or destruction of A and B, and so on.  (This is approximately\n required to optimize space usage.)  The first/second names are merely\n conceptual!"]
++        #[repr(C)]
++        #[derive(Debug, Copy, Clone, PartialEq)]
++        pub struct CompactPair {
++            pub _address: u8,
++        }
++
+ #[repr(C)]
+ #[derive(Debug, Copy, Clone, PartialEq)]
+ pub struct Compartment {
+@@ -225,6 +245,19 @@ pub struct Compartment {
+             Undefined = 3,
+         }
+ 
++        #[doc = " Compilation options stored on the stack. An instance of this type\n simply holds references to dynamically allocated resources (element;\n filename; source map URL) that are owned by something else. If you\n create an instance of this type, it's up to you to guarantee that\n everything you store in it will outlive it."]
++        #[repr(C)]
++        #[derive(Debug, Copy, Clone, PartialEq)]
++        pub struct CompileOptions {
++            pub _base: ReadOnlyCompileOptions,
++        }
++
++        #[repr(C, packed)]
++        #[derive(Debug, Copy, Clone, PartialEq)]
++        pub struct ConstUTF8CharsZ {
++            pub data_: *const std::os::raw::c_char,
++        }
++
+         pub type ConsumeStreamCallback = ::std::option::Option<
+             unsafe extern "C" fn(
+                 arg1: *mut JSContext,
+@@ -754,6 +787,13 @@ pub struct Compartment {
+             _unused: [u8; 0],
+         }
+ 
++        #[doc = " A default deletion policy using plain old operator delete.\n\n Note that this type can be specialized, but authors should beware of the risk\n that the specialization may at some point cease to match (either because it\n gets moved to a different compilation unit or the signature changes). If the\n non-specialized (|delete|-based) version compiles for that type but does the\n wrong thing, bad things could happen.\n\n This is a non-issue for types which are always incomplete (i.e. opaque handle\n types), since |delete|-ing such a type will always trigger a compilation\n error."]
++        #[repr(C)]
++        #[derive(Debug, Copy, Clone, PartialEq)]
++        pub struct DefaultDelete {
++            pub _address: u8,
++        }
++
+         pub type DefinePropertyOp = ::std::option::Option<
+             unsafe extern "C" fn(
+                 cx: *mut JSContext,
+@@ -764,6 +804,16 @@ pub struct Compartment {
+             ) -> bool,
+         >;
+ 
++        #[repr(u8)]
++        #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
++        pub enum DelazificationOption {
++            OnDemandOnly = 0,
++            CheckConcurrentWithOnDemand = 1,
++            ConcurrentDepthFirst = 2,
++            ConcurrentLargeFirst = 3,
++            ParseEverythingEagerly = 4,
++        }
++
+         pub type DeletePropertyOp = ::std::option::Option<
+             unsafe extern "C" fn(
+                 cx: *mut JSContext,
+@@ -821,6 +871,12 @@ pub struct Compartment {
+             GetElement = 1,
+         }
+ 
++#[repr(C)]
++#[derive(Debug, Copy, Clone, PartialEq)]
++pub struct EnvironmentChain {
++    _private: [u8; 0],
++}
++
+         #[doc = " Type representing a JS error or exception. At the moment this only\n \"represents\" an error in a rather abstract way."]
+         #[repr(C)]
+         #[derive(Debug, Copy, Clone, PartialEq)]
+@@ -842,12 +898,27 @@ pub struct Compartment {
+             Capture = 1,
+         }
+ 
++        #[doc = " Capture the first frame with the given principals. By default, do not\n consider self-hosted frames with the given principals as satisfying the stack\n capture."]
++        #[repr(C)]
++        #[derive(Debug, PartialEq)]
++        pub struct FirstSubsumedFrame {
++            pub cx: *mut JSContext,
++            pub principals: *mut JSPrincipals,
++            pub ignoreSelfHosted: bool,
++        }
++
+         #[repr(C, packed)]
+         #[derive(Debug, Copy, Clone, PartialEq)]
+         pub struct ForwardingProxyHandler {
+             pub _base: BaseProxyHandler,
+         }
+ 
++            #[repr(C)]
++            #[derive(Debug, Copy, Clone, PartialEq)]
++            pub struct FreePolicy {
++                pub _address: u8,
++            }
++
+     #[doc = " Called when freeing a transferable handled by the embedding. Note that it\n should never trigger a garbage collection (and will assert in a\n debug build if it does.)\n\n This callback will be used to release ownership in three situations:\n\n 1. During serialization: an object is Transferred from, then an error is\n    encountered later and the incomplete serialization is discarded.\n\n 2. During deserialization: before an object is Transferred to, an error\n    is encountered and the incompletely deserialized clone is discarded. This\n    will happen with internally-implemented Transferables as well as those\n    where the readTransfer hook returns false.\n\n 3. Serialized data that includes Transferring is never deserialized (eg when\n    the receiver disappears before reading in the message), and the clone data\n    is destroyed.\n"]
+     pub type FreeTransferStructuredCloneOp = ::std::option::Option<
+         unsafe extern "C" fn(
+@@ -1047,6 +1118,12 @@ pub struct GCContext {
+             pub elements_: *const Value,
+         }
+ 
++            #[repr(C)]
++            #[derive(Debug, Copy, Clone, PartialEq)]
++            pub struct HasFreeLSB {
++                pub _address: u8,
++            }
++
+         pub type HasPropertyOp = ::std::option::Option<
+             unsafe extern "C" fn(
+                 cx: *mut JSContext,
+@@ -1078,6 +1155,12 @@ pub struct InlinableNative {
+         pub type IsAcceptableThis =
+             ::std::option::Option<unsafe extern "C" fn(v: HandleValue) -> bool>;
+ 
++            #[repr(C)]
++            #[derive(Debug, Copy, Clone, PartialEq)]
++            pub struct IsResult {
++                pub _base: false_type,
++            }
++
+     #[doc = " Add a property named by id to obj."]
+     pub type JSAddPropertyOp = ::std::option::Option<
+         unsafe extern "C" fn(
+@@ -1199,6 +1282,8 @@ pub struct JSAtom {
+     pub type JSDestroyPrincipalsOp =
+         ::std::option::Option<unsafe extern "C" fn(principals: *mut JSPrincipals)>;
+ 
++        pub const JSEXN_WARN: JSExnType = JSExnType::JSEXN_ERROR_LIMIT;
++
+     #[doc = " The old-style JSClass.enumerate op should define all lazy properties not\n yet reflected in obj."]
+     pub type JSEnumerateOp = ::std::option::Option<
+         unsafe extern "C" fn(cx: *mut JSContext, obj: HandleObject) -> bool,
+@@ -2021,6 +2106,250 @@ pub struct JSAtom {
+         JSErr_Limit = 811,
+     }
+ 
++    #[doc = " Base class that implements parts shared by JSErrorReport and\n JSErrorNotes::Note."]
++    #[repr(C)]
++    #[derive(Debug, PartialEq)]
++    pub struct JSErrorBase {
++        pub message_: ConstUTF8CharsZ,
++        pub filename: ConstUTF8CharsZ,
++        pub sourceId: std::os::raw::c_uint,
++        pub lineno: u32,
++        pub column: ColumnNumberOneOrigin,
++        pub errorNumber: std::os::raw::c_uint,
++        pub errorMessageName: *const std::os::raw::c_char,
++        pub _bitfield_align_1: [u8; 0],
++        pub _bitfield_1: __BindgenBitfieldUnit<[u8; 1usize]>,
++        pub __bindgen_padding_0: [u8; 7usize],
++    }
++
++    impl JSErrorBase {
++        #[inline]
++        pub fn ownsMessage_(&self) -> bool {
++            unsafe { ::std::mem::transmute(self._bitfield_1.get(0usize, 1u8) as u8) }
++        }
++        #[inline]
++        pub fn set_ownsMessage_(&mut self, val: bool) {
++            unsafe {
++                let val: u8 = ::std::mem::transmute(val);
++                self._bitfield_1.set(0usize, 1u8, val as u64)
++            }
++        }
++        #[inline]
++        pub unsafe fn ownsMessage__raw(this: *const Self) -> bool {
++            unsafe {
++                ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 1usize]>>::raw_get(
++                    ::std::ptr::addr_of!((*this)._bitfield_1),
++                    0usize,
++                    1u8,
++                ) as u8)
++            }
++        }
++        #[inline]
++        pub unsafe fn set_ownsMessage__raw(this: *mut Self, val: bool) {
++            unsafe {
++                let val: u8 = ::std::mem::transmute(val);
++                <__BindgenBitfieldUnit<[u8; 1usize]>>::raw_set(
++                    ::std::ptr::addr_of_mut!((*this)._bitfield_1),
++                    0usize,
++                    1u8,
++                    val as u64,
++                )
++            }
++        }
++        #[inline]
++        pub fn new_bitfield_1(ownsMessage_: bool) -> __BindgenBitfieldUnit<[u8; 1usize]> {
++            let mut __bindgen_bitfield_unit: __BindgenBitfieldUnit<[u8; 1usize]> =
++                Default::default();
++            __bindgen_bitfield_unit.set(0usize, 1u8, {
++                let ownsMessage_: u8 = unsafe { ::std::mem::transmute(ownsMessage_) };
++                ownsMessage_ as u64
++            });
++            __bindgen_bitfield_unit
++        }
++    }
++
++    #[repr(C)]
++    #[derive(Debug, Copy, Clone, PartialEq)]
++    pub struct JSErrorFormatString {
++        #[doc = " The error message name in ASCII."]
++        pub name: *const std::os::raw::c_char,
++        #[doc = " The error format string in ASCII."]
++        pub format: *const std::os::raw::c_char,
++        #[doc = " The number of arguments to expand in the formatted error message."]
++        pub argCount: u16,
++        #[doc = " One of the JSExnType constants above."]
++        pub exnType: i16,
++    }
++
++    #[doc = " Notes associated with JSErrorReport."]
++    #[repr(C)]
++    #[derive(Debug, PartialEq)]
++    pub struct JSErrorNotes {
++        pub notes_: __BindgenOpaqueArray<u64, 4usize>,
++    }
++
++    #[doc = " Describes a single error or warning that occurs in the execution of script."]
++    #[repr(C)]
++    #[derive(Debug, PartialEq)]
++    pub struct JSErrorReport {
++        pub _base: JSErrorBase,
++        pub linebuf_: *const u16,
++        pub linebufLength_: usize,
++        pub tokenOffset_: usize,
++        pub notes: u64,
++        pub exnType: i16,
++        pub _bitfield_align_1: [u8; 0],
++        pub _bitfield_1: __BindgenBitfieldUnit<[u8; 1usize]>,
++        pub __bindgen_padding_0: [u8; 5usize],
++    }
++
++    impl JSErrorReport {
++        #[inline]
++        pub fn isMuted(&self) -> bool {
++            unsafe { ::std::mem::transmute(self._bitfield_1.get(0usize, 1u8) as u8) }
++        }
++        #[inline]
++        pub fn set_isMuted(&mut self, val: bool) {
++            unsafe {
++                let val: u8 = ::std::mem::transmute(val);
++                self._bitfield_1.set(0usize, 1u8, val as u64)
++            }
++        }
++        #[inline]
++        pub unsafe fn isMuted_raw(this: *const Self) -> bool {
++            unsafe {
++                ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 1usize]>>::raw_get(
++                    ::std::ptr::addr_of!((*this)._bitfield_1),
++                    0usize,
++                    1u8,
++                ) as u8)
++            }
++        }
++        #[inline]
++        pub unsafe fn set_isMuted_raw(this: *mut Self, val: bool) {
++            unsafe {
++                let val: u8 = ::std::mem::transmute(val);
++                <__BindgenBitfieldUnit<[u8; 1usize]>>::raw_set(
++                    ::std::ptr::addr_of_mut!((*this)._bitfield_1),
++                    0usize,
++                    1u8,
++                    val as u64,
++                )
++            }
++        }
++        #[inline]
++        pub fn isWarning_(&self) -> bool {
++            unsafe { ::std::mem::transmute(self._bitfield_1.get(1usize, 1u8) as u8) }
++        }
++        #[inline]
++        pub fn set_isWarning_(&mut self, val: bool) {
++            unsafe {
++                let val: u8 = ::std::mem::transmute(val);
++                self._bitfield_1.set(1usize, 1u8, val as u64)
++            }
++        }
++        #[inline]
++        pub unsafe fn isWarning__raw(this: *const Self) -> bool {
++            unsafe {
++                ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 1usize]>>::raw_get(
++                    ::std::ptr::addr_of!((*this)._bitfield_1),
++                    1usize,
++                    1u8,
++                ) as u8)
++            }
++        }
++        #[inline]
++        pub unsafe fn set_isWarning__raw(this: *mut Self, val: bool) {
++            unsafe {
++                let val: u8 = ::std::mem::transmute(val);
++                <__BindgenBitfieldUnit<[u8; 1usize]>>::raw_set(
++                    ::std::ptr::addr_of_mut!((*this)._bitfield_1),
++                    1usize,
++                    1u8,
++                    val as u64,
++                )
++            }
++        }
++        #[inline]
++        pub fn ownsLinebuf_(&self) -> bool {
++            unsafe { ::std::mem::transmute(self._bitfield_1.get(2usize, 1u8) as u8) }
++        }
++        #[inline]
++        pub fn set_ownsLinebuf_(&mut self, val: bool) {
++            unsafe {
++                let val: u8 = ::std::mem::transmute(val);
++                self._bitfield_1.set(2usize, 1u8, val as u64)
++            }
++        }
++        #[inline]
++        pub unsafe fn ownsLinebuf__raw(this: *const Self) -> bool {
++            unsafe {
++                ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 1usize]>>::raw_get(
++                    ::std::ptr::addr_of!((*this)._bitfield_1),
++                    2usize,
++                    1u8,
++                ) as u8)
++            }
++        }
++        #[inline]
++        pub unsafe fn set_ownsLinebuf__raw(this: *mut Self, val: bool) {
++            unsafe {
++                let val: u8 = ::std::mem::transmute(val);
++                <__BindgenBitfieldUnit<[u8; 1usize]>>::raw_set(
++                    ::std::ptr::addr_of_mut!((*this)._bitfield_1),
++                    2usize,
++                    1u8,
++                    val as u64,
++                )
++            }
++        }
++        #[inline]
++        pub fn new_bitfield_1(
++            isMuted: bool,
++            isWarning_: bool,
++            ownsLinebuf_: bool,
++        ) -> __BindgenBitfieldUnit<[u8; 1usize]> {
++            let mut __bindgen_bitfield_unit: __BindgenBitfieldUnit<[u8; 1usize]> =
++                Default::default();
++            __bindgen_bitfield_unit.set(0usize, 1u8, {
++                let isMuted: u8 = unsafe { ::std::mem::transmute(isMuted) };
++                isMuted as u64
++            });
++            __bindgen_bitfield_unit.set(1usize, 1u8, {
++                let isWarning_: u8 = unsafe { ::std::mem::transmute(isWarning_) };
++                isWarning_ as u64
++            });
++            __bindgen_bitfield_unit.set(2usize, 1u8, {
++                let ownsLinebuf_: u8 = unsafe { ::std::mem::transmute(ownsLinebuf_) };
++                ownsLinebuf_ as u64
++            });
++            __bindgen_bitfield_unit
++        }
++    }
++
++    #[repr(i32)]
++    #[doc = " Possible exception types. These types are part of a JSErrorFormatString\n structure. They define which error to throw in case of a runtime error.\n\n JSEXN_WARN is used for warnings, that are not strictly errors but are handled\n using the generalized error reporting mechanism.  (One side effect of this\n type is to not prepend 'Error:' to warning messages.)  This value can go away\n if we ever decide to use an entirely separate mechanism for warnings.\n\n The errors and warnings are arranged in alphabetically within their\n respective categories as defined in the comments below."]
++    #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
++    pub enum JSExnType {
++        JSEXN_ERR = 0,
++        JSEXN_INTERNALERR = 1,
++        JSEXN_AGGREGATEERR = 2,
++        JSEXN_EVALERR = 3,
++        JSEXN_RANGEERR = 4,
++        JSEXN_REFERENCEERR = 5,
++        JSEXN_SYNTAXERR = 6,
++        JSEXN_TYPEERR = 7,
++        JSEXN_URIERR = 8,
++        JSEXN_DEBUGGEEWOULDRUN = 9,
++        JSEXN_WASMCOMPILEERROR = 10,
++        JSEXN_WASMLINKERROR = 11,
++        JSEXN_WASMRUNTIMEERROR = 12,
++        JSEXN_WASMSUSPENDERROR = 13,
++        JSEXN_ERROR_LIMIT = 14,
++        JSEXN_NOTE = 15,
++        JSEXN_LIMIT = 16,
++    }
++
+     #[doc = " Each external string has a pointer to JSExternalStringCallbacks. Embedders\n can use this to implement custom finalization or memory reporting behavior."]
+     #[repr(C)]
+     #[derive(Debug, Copy, Clone, PartialEq)]
+@@ -3189,6 +3518,13 @@ pub struct JobQueue {
+             ) -> bool,
+         >;
+ 
++        #[doc = " Capture at most this many frames."]
++        #[repr(C)]
++        #[derive(Debug, Copy, Clone, PartialEq)]
++        pub struct MaxFrames {
++            pub maxFrames: u32,
++        }
++
+         #[repr(u8)]
+         #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+         pub enum MemoryUse {
+@@ -3314,6 +3650,13 @@ pub struct JobQueue {
+             pub funToString: JSFunToStringOp,
+         }
+ 
++        #[doc = " Empty struct, indicating success for operations that have no return value.\n For example, if you declare another empty struct `struct OutOfMemory {};`,\n then `Result<Ok, OutOfMemory>` represents either success or OOM."]
++        #[repr(C)]
++        #[derive(Debug, Copy, Clone, PartialEq)]
++        pub struct Ok {
++            pub _address: u8,
++        }
++
+         #[repr(i32)]
+         #[doc = " During global creation, we fire notifications to callbacks registered\n via the Debugger API. These callbacks are arbitrary script, and can touch\n the global in arbitrary ways. When that happens, the global should not be\n in a half-baked state. But this creates a problem for consumers that need\n to set slots on the global to put it in a consistent state.\n\n This API provides a way for consumers to set slots atomically (immediately\n after the global is created), before any debugger hooks are fired. It's\n unfortunately on the clunky side, but that's the way the cookie crumbles.\n\n If callers have no additional state on the global to set up, they may pass\n |FireOnNewGlobalHook| to JS_NewGlobalObject, which causes that function to\n fire the hook as its final act before returning. Otherwise, callers should\n pass |DontFireOnNewGlobalHook|, which means that they are responsible for\n invoking JS_FireOnNewGlobalObject upon successfully creating the global. If\n an error occurs and the operation aborts, callers should skip firing the\n hook. But otherwise, callers must take care to fire the hook exactly once\n before compiling any script in the global's scope (we have assertions in\n place to enforce this). This lets us be sure that debugger clients never miss\n breakpoints."]
+         #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+@@ -3333,6 +3676,13 @@ pub struct JobQueue {
+         NoTransferables = 2,
+     }
+ 
++        #[doc = " Compilation options, with dynamic lifetime. An instance of this type\n makes a copy of / holds / roots all dynamically allocated resources\n (principals; elements; strings) that it refers to. Its destructor frees\n / drops / unroots them. This is heavier than CompileOptions, below, but\n unlike CompileOptions, it can outlive any given stack frame.\n\n Note that this *roots* any JS values it refers to - they're live\n unconditionally. Thus, instances of this type can't be owned, directly\n or indirectly, by a JavaScript object: if any value that this roots ever\n comes to refer to the object that owns this, then the whole cycle, and\n anything else it entrains, will never be freed."]
++        #[repr(C)]
++        #[derive(Debug, PartialEq)]
++        pub struct OwningCompileOptions {
++            pub _base: ReadOnlyCompileOptions,
++        }
++
+         #[repr(C, packed)]
+         #[derive(Debug, Copy, Clone, PartialEq)]
+         pub struct PrefableCompileOptions {
+@@ -3929,6 +4279,18 @@ pub struct JobQueue {
+             pub clasp_: *const JSClass,
+         }
+ 
++        #[doc = " The class representing a full set of compile options.\n\n Use this in code that only needs to access compilation options created\n elsewhere, like the compiler.  Don't instantiate this class (the constructor\n is protected anyway); instead, create instances only of the derived classes:\n CompileOptions and OwningCompileOptions."]
++        #[repr(C, packed)]
++        #[derive(Debug, Copy, Clone, PartialEq)]
++        pub struct ReadOnlyCompileOptions {
++            pub _base: TransitiveCompileOptions,
++            pub lineno: u32,
++            pub column: ColumnNumberOneOrigin,
++            pub scriptSourceOffset: std::os::raw::c_uint,
++            pub isRunOnce: bool,
++            pub noScriptRval: bool,
++        }
++
+     #[doc = " Read structured data from the reader r. This hook is used to read a value\n previously serialized by a call to the WriteStructuredCloneOp hook.\n\n tag and data are the pair of uint32_t values from the header. The callback\n may use the JS_Read* APIs to read any other relevant parts of the object\n from the reader r. closure is any value passed to the JS_ReadStructuredClone\n function.\n\n Return the new object on success, or raise an exception and return nullptr on\n error."]
+     pub type ReadStructuredCloneOp = ::std::option::Option<
+         unsafe extern "C" fn(
+@@ -4042,6 +4404,15 @@ pub struct Realm {
+         pub type ReportStreamErrorCallback =
+             ::std::option::Option<unsafe extern "C" fn(arg1: *mut JSContext, arg2: usize)>;
+ 
++        #[doc = " Result<V, E> represents the outcome of an operation that can either succeed\n or fail. It contains either a success value of type V or an error value of\n type E.\n\n All Result methods are const, so results are basically immutable.\n This is just like Variant<V, E> but with a slightly different API, and the\n following cases are optimized so Result can be stored more efficiently:\n\n - If both the success and error types do not use their least significant bit,\n are trivially copyable and destructible, Result<V, E> is guaranteed to be as\n large as the larger type. This is determined via the HasFreeLSB trait. By\n default, empty classes (in particular Ok) and aligned pointer types are\n assumed to have a free LSB, but you can specialize this trait for other\n types. If the success type is empty, the representation is guaranteed to be\n all zero bits on success. Do not change this representation! There is JIT\n code that depends on it. (Implementation note: The lowest bit is used as a\n tag bit: 0 to indicate the Result's bits are a success value, 1 to indicate\n the Result's bits (with the 1 masked out) encode an error value)\n\n - Else, if the error type can't have a all-zero bits representation and is\n not larger than a pointer, a CompactPair is used to represent this rather\n than a Variant. This has shown to be better optimizable, and the template\n code is much simpler than that of Variant, so it should also compile faster.\n Whether an error type can't be all-zero bits, is determined via the\n UnusedZero trait. MFBT doesn't declare any public type UnusedZero, but\n nsresult is declared UnusedZero in XPCOM.\n\n The purpose of Result is to reduce the screwups caused by using `false` or\n `nullptr` to indicate errors.\n What screwups? See <https://bugzilla.mozilla.org/show_bug.cgi?id=912928> for\n a partial list.\n\n Result<const V, E> or Result<V, const E> are not meaningful. The success or\n error values in a Result instance are non-modifiable in-place anyway. This\n guarantee must also be maintained when evolving Result. They can be\n unwrap()ped, but this loses const qualification. However, Result<const V, E>\n or Result<V, const E> may be misleading and prevent movability. Just use\n Result<V, E>. (Result<const V*, E> may make sense though, just Result<const\n V* const, E> is not possible.)"]
++        #[repr(C)]
++        #[derive(Debug, Copy, Clone, PartialEq)]
++        pub struct Result {
++            pub mImpl: Result_Impl,
++        }
++
++        pub type Result_Impl = SelectResultImpl;
++
+         #[doc = " Local variable of type T whose value is always rooted. This is typically\n used for local variables, or for non-rooted values being passed to a\n function that requires a handle, e.g. Foo(Root<T>(cx, x)).\n\n If you want to add additional methods to Rooted for a specific\n specialization, define a RootedOperations<T> specialization containing them."]
+         pub type RootedObject = Rooted<*mut JSObject>;
+ 
+@@ -4058,6 +4429,13 @@ pub struct Realm {
+             WASM = 1,
+         }
+ 
++        #[repr(i32)]
++        #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
++        pub enum SavedFrameResult {
++            Ok = 0,
++            AccessDenied = 1,
++        }
++
+         #[repr(i32)]
+         #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+         pub enum SavedFrameSelfHosted {
+@@ -4077,6 +4455,16 @@ pub struct ScriptEnvironmentPreparer_Closure {
+     _private: [u8; 0],
+ }
+ 
++        #[doc = " Hooks called when references to a script private value are created or\n destroyed. This allows use of a reference counted object as the\n script private."]
++        pub type ScriptPrivateReferenceHook =
++            ::std::option::Option<unsafe extern "C" fn(arg1: *const Value)>;
++
++            #[repr(C)]
++            #[derive(Debug, Copy, Clone, PartialEq)]
++            pub struct SelectResultImpl {
++                pub _address: u8,
++            }
++
+         #[doc = " These are the measurements used by Servo."]
+         #[repr(C)]
+         #[derive(Debug, Copy, Clone, PartialEq)]
+@@ -4127,6 +4515,21 @@ pub struct ScriptEnvironmentPreparer_Closure {
+                 _unused: [u8; 0],
+             }
+ 
++        #[repr(C)]
++        #[derive(Debug, PartialEq)]
++        pub struct SourceText<Unit> {
++            pub _phantom_0: ::std::marker::PhantomData<::std::cell::UnsafeCell<Unit>>,
++            #[doc = " |char16_t| or |Utf8Unit| source units of uncertain validity."]
++            pub units_: *const Unit,
++            #[doc = " The length in code units of |units_|."]
++            pub length_: u32,
++            #[doc = " Whether this owns |units_| or merely observes source units owned by some\n other object."]
++            pub ownsUnits_: bool,
++        }
++
++        #[doc = " # mozilla::Variant\n\n A variant / tagged union / heterogenous disjoint union / sum-type template\n class. Similar in concept to (but not derived from) `boost::variant`.\n\n Sometimes, you may wish to use a C union with non-POD types. However, this is\n forbidden in C++ because it is not clear which type in the union should have\n its constructor and destructor run on creation and deletion\n respectively. This is the problem that `mozilla::Variant` solves.\n\n ## Usage\n\n A `mozilla::Variant` instance is constructed (via move or copy) from one of\n its variant types (ignoring const and references). It does *not* support\n construction from subclasses of variant types or types that coerce to one of\n the variant types.\n\n     Variant<char, uint32_t> v1('a');\n     Variant<UniquePtr<A>, B, C> v2(MakeUnique<A>());\n     Variant<bool, char> v3(VariantType<char>, 0); // disambiguation needed\n     Variant<int, int> v4(VariantIndex<1>, 0); // 2nd int\n\n Because specifying the full type of a Variant value is often verbose,\n there are two easier ways to construct values:\n\n A. AsVariant() can be used to construct a Variant value using type inference\n in contexts such as expressions or when returning values from functions.\n Because AsVariant() must copy or move the value into a temporary and this\n cannot necessarily be elided by the compiler, it's mostly appropriate only\n for use with primitive or very small types.\n\n     Variant<char, uint32_t> Foo() { return AsVariant('x'); }\n     // ...\n     Variant<char, uint32_t> v1 = Foo();  // v1 holds char('x').\n\n B. Brace-construction with VariantType or VariantIndex; this also allows\n in-place construction with any number of arguments.\n\n     struct AB { AB(int, int){...} };\n     static Variant<AB, bool> foo()\n     {\n       return {VariantIndex<0>{}, 1, 2};\n     }\n     // ...\n     Variant<AB, bool> v0 = Foo();  // v0 holds AB(1,2).\n\n All access to the contained value goes through type-safe accessors.\n Either the stored type, or the type index may be provided.\n\n     void\n     Foo(Variant<A, B, C> v)\n     {\n       if (v.is<A>()) {\n         A& ref = v.as<A>();\n         ...\n       } else (v.is<1>()) { // Instead of v.is<B>.\n         ...\n       } else {\n         ...\n       }\n     }\n\n In some situation, a Variant may be constructed from templated types, in\n which case it is possible that the same type could be given multiple times by\n an external developer. Or seemingly-different types could be aliases.\n In this case, repeated types can only be accessed through their index, to\n prevent ambiguous access by type.\n\n    // Bad!\n    template <typename T>\n    struct ResultOrError\n    {\n      Variant<T, int> m;\n      ResultOrError() : m(int(0)) {} // Error '0' by default\n      ResultOrError(const T& r) : m(r) {}\n      bool IsResult() const { return m.is<T>(); }\n      bool IsError() const { return m.is<int>(); }\n    };\n    // Now instantiante with the result being an int too:\n    ResultOrError<int> myResult(123); // Fail!\n    // In Variant<int, int>, which 'int' are we refering to, from inside\n    // ResultOrError functions?\n\n    // Good!\n    template <typename T>\n    struct ResultOrError\n    {\n      Variant<T, int> m;\n      ResultOrError() : m(VariantIndex<1>{}, 0) {} // Error '0' by default\n      ResultOrError(const T& r) : m(VariantIndex<0>{}, r) {}\n      bool IsResult() const { return m.is<0>(); } // 0 -> T\n      bool IsError() const { return m.is<1>(); } // 1 -> int\n    };\n    // Now instantiante with the result being an int too:\n    ResultOrError<int> myResult(123); // It now works!\n\n Attempting to use the contained value as type `T1` when the `Variant`\n instance contains a value of type `T2` causes an assertion failure.\n\n     A a;\n     Variant<A, B, C> v(a);\n     v.as<B>(); // <--- Assertion failure!\n\n Trying to use a `Variant<Ts...>` instance as some type `U` that is not a\n member of the set of `Ts...` is a compiler error.\n\n     A a;\n     Variant<A, B, C> v(a);\n     v.as<SomeRandomType>(); // <--- Compiler error!\n\n Additionally, you can turn a `Variant` that `is<T>` into a `T` by moving it\n out of the containing `Variant` instance with the `extract<T>` method:\n\n     Variant<UniquePtr<A>, B, C> v(MakeUnique<A>());\n     auto ptr = v.extract<UniquePtr<A>>();\n\n Finally, you can exhaustively match on the contained variant and branch into\n different code paths depending on which type is contained. This is preferred\n to manually checking every variant type T with is<T>() because it provides\n compile-time checking that you handled every type, rather than runtime\n assertion failures.\n\n     // Bad!\n     char* foo(Variant<A, B, C, D>& v) {\n       if (v.is<A>()) {\n         return ...;\n       } else if (v.is<B>()) {\n         return ...;\n       } else {\n         return doSomething(v.as<C>()); // Forgot about case D!\n       }\n     }\n\n     // Instead, a single function object (that can deal with all possible\n     // options) may be provided:\n     struct FooMatcher\n     {\n       // The return type of all matchers must be identical.\n       char* operator()(A& a) { ... }\n       char* operator()(B& b) { ... }\n       char* operator()(C& c) { ... }\n       char* operator()(D& d) { ... } // Compile-time error to forget D!\n     }\n     char* foo(Variant<A, B, C, D>& v) {\n       return v.match(FooMatcher());\n     }\n\n     // In some situations, a single generic lambda may also be appropriate:\n     char* foo(Variant<A, B, C, D>& v) {\n       return v.match([](auto&) {...});\n     }\n\n     // Alternatively, multiple function objects may be provided, each one\n     // corresponding to an option, in the same order:\n     char* foo(Variant<A, B, C, D>& v) {\n       return v.match([](A&) { ... },\n                      [](B&) { ... },\n                      [](C&) { ... },\n                      [](D&) { ... });\n     }\n\n     // In rare cases, the index of the currently-active alternative is\n     // needed, it may be obtained by adding a first parameter in the matcner\n     // callback, which will receive the index in its most compact type (just\n     // use `size_t` if the exact type is not important), e.g.:\n     char* foo(Variant<A, B, C, D>& v) {\n       return v.match([](auto aIndex, auto& aAlternative) {...});\n       // --OR--\n       return v.match([](size_t aIndex, auto& aAlternative) {...});\n     }\n\n ## Examples\n\n A tree is either an empty leaf, or a node with a value and two children:\n\n     struct Leaf { };\n\n     template<typename T>\n     struct Node\n     {\n       T value;\n       Tree<T>* left;\n       Tree<T>* right;\n     };\n\n     template<typename T>\n     using Tree = Variant<Leaf, Node<T>>;\n\n A copy-on-write string is either a non-owning reference to some existing\n string, or an owning reference to our copy:\n\n     class CopyOnWriteString\n     {\n       Variant<const char*, UniquePtr<char[]>> string;\n\n       ...\n     };\n\n Because Variant must be aligned suitable to hold any value stored within it,\n and because |alignas| requirements don't affect platform ABI with respect to\n how parameters are laid out in memory, Variant can't be used as the type of a\n function parameter.  Pass Variant to functions by pointer or reference\n instead."]
++        pub type StackCapture = __BindgenOpaqueArray<u64, 4usize>;
++
+         #[repr(i32)]
+         #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+         pub enum StackFormat {
+@@ -4214,6 +4617,12 @@ pub struct StreamConsumer {
+             UniqueSymbol = 4294967295,
+         }
+ 
++        #[repr(C)]
++        #[derive(Debug, Copy, Clone, PartialEq)]
++        pub struct TaggedColumnNumberOneOrigin {
++            pub value_: u32,
++        }
++
+         #[repr(C)]
+         #[derive(Debug, Copy, Clone, PartialEq)]
+         pub struct TempAllocPolicy {
+@@ -4276,6 +4685,37 @@ pub struct TrampolineNative {
+             SCTAG_TMO_USER_MIN = 5,
+         }
+ 
++        #[doc = " The common base class for the CompileOptions hierarchy.\n\n Use this in code that needs to propagate compile options from one\n compilation unit to another."]
++        #[repr(C, packed)]
++        #[derive(Debug, Copy, Clone, PartialEq)]
++        pub struct TransitiveCompileOptions {
++            pub filename_: ConstUTF8CharsZ,
++            pub introducerFilename_: ConstUTF8CharsZ,
++            pub sourceMapURL_: *const u16,
++            #[doc = " The Web Platform allows scripts to be loaded from arbitrary cross-origin\n sources. This allows an attack by which a malicious website loads a\n sensitive file (say, a bank statement) cross-origin (using the user's\n cookies), and sniffs the generated syntax errors (via a window.onerror\n handler) for juicy morsels of its contents.\n\n To counter this attack, HTML5 specifies that script errors should be\n sanitized (\"muted\") when the script is not same-origin with the global\n for which it is loaded. Callers should set this flag for cross-origin\n scripts, and it will be propagated appropriately to child scripts and\n passed back in JSErrorReports."]
++            pub mutedErrors_: bool,
++            pub forceStrictMode_: bool,
++            pub alwaysUseFdlibm_: bool,
++            pub skipFilenameValidation_: bool,
++            pub hideScriptFromDebugger_: bool,
++            pub deferDebugMetadata_: bool,
++            pub eagerDelazificationStrategy_: DelazificationOption,
++            pub selfHostingMode: bool,
++            pub discardSource: bool,
++            pub sourceIsLazy: bool,
++            pub allowHTMLComments: bool,
++            pub nonSyntacticScope: bool,
++            pub topLevelAwait: bool,
++            pub borrowBuffer: bool,
++            pub usePinnedBytecode: bool,
++            pub prefableOptions_: PrefableCompileOptions,
++            #[doc = " |introductionType| is a statically allocated C string. See JSScript.h\n for more information."]
++            pub introductionType: *const std::os::raw::c_char,
++            pub introductionLineno: std::os::raw::c_uint,
++            pub introductionOffset: u32,
++            pub hasIntroductionInfo: bool,
++        }
++
+             #[repr(i32)]
+             #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+             pub enum Type {
+@@ -4303,6 +4743,39 @@ pub struct TrampolineNative {
+                 Simd128 = 14,
+             }
+ 
++        #[doc = " UniquePtr is a smart pointer that wholly owns a resource.  Ownership may be\n transferred out of a UniquePtr through explicit action, but otherwise the\n resource is destroyed when the UniquePtr is destroyed.\n\n UniquePtr is similar to C++98's std::auto_ptr, but it improves upon auto_ptr\n in one crucial way: it's impossible to copy a UniquePtr.  Copying an auto_ptr\n obviously *can't* copy ownership of its singly-owned resource.  So what\n happens if you try to copy one?  Bizarrely, ownership is implicitly\n *transferred*, preserving single ownership but breaking code that assumes a\n copy of an object is identical to the original.  (This is why auto_ptr is\n prohibited in STL containers.)\n\n UniquePtr solves this problem by being *movable* rather than copyable.\n Instead of passing a |UniquePtr u| directly to the constructor or assignment\n operator, you pass |Move(u)|.  In doing so you indicate that you're *moving*\n ownership out of |u|, into the target of the construction/assignment.  After\n the transfer completes, |u| contains |nullptr| and may be safely destroyed.\n This preserves single ownership but also allows UniquePtr to be moved by\n algorithms that have been made move-safe.  (Note: if |u| is instead a\n temporary expression, don't use |Move()|: just pass the expression, because\n it's already move-ready.  For more information see Move.h.)\n\n UniquePtr is also better than std::auto_ptr in that the deletion operation is\n customizable.  An optional second template parameter specifies a class that\n (through its operator()(T*)) implements the desired deletion policy.  If no\n policy is specified, mozilla::DefaultDelete<T> is used -- which will either\n |delete| or |delete[]| the resource, depending whether the resource is an\n array.  Custom deletion policies ideally should be empty classes (no member\n fields, no member fields in base classes, no virtual methods/inheritance),\n because then UniquePtr can be just as efficient as a raw pointer.\n\n Use of UniquePtr proceeds like so:\n\n   UniquePtr<int> g1; // initializes to nullptr\n   g1.reset(new int); // switch resources using reset()\n   g1 = nullptr; // clears g1, deletes the int\n\n   UniquePtr<int> g2(new int); // owns that int\n   int* p = g2.release(); // g2 leaks its int -- still requires deletion\n   delete p; // now freed\n\n   struct S { int x; S(int x) : x(x) {} };\n   UniquePtr<S> g3, g4(new S(5));\n   g3 = std::move(g4); // g3 owns the S, g4 cleared\n   S* p = g3.get(); // g3 still owns |p|\n   assert(g3->x == 5); // operator-> works (if .get() != nullptr)\n   assert((*g3).x == 5); // also operator* (again, if not cleared)\n   std::swap(g3, g4); // g4 now owns the S, g3 cleared\n   g3.swap(g4);  // g3 now owns the S, g4 cleared\n   UniquePtr<S> g5(std::move(g3)); // g5 owns the S, g3 cleared\n   g5.reset(); // deletes the S, g5 cleared\n\n   struct FreePolicy { void operator()(void* p) { free(p); } };\n   UniquePtr<int, FreePolicy> g6(static_cast<int*>(malloc(sizeof(int))));\n   int* ptr = g6.get();\n   g6 = nullptr; // calls free(ptr)\n\n Now, carefully note a few things you *can't* do:\n\n   UniquePtr<int> b1;\n   b1 = new int; // BAD: can only assign another UniquePtr\n   int* ptr = b1; // BAD: no auto-conversion to pointer, use get()\n\n   UniquePtr<int> b2(b1); // BAD: can't copy a UniquePtr\n   UniquePtr<int> b3 = b1; // BAD: can't copy-assign a UniquePtr\n\n (Note that changing a UniquePtr to store a direct |new| expression is\n permitted, but usually you should use MakeUnique, defined at the end of this\n header.)\n\n A few miscellaneous notes:\n\n UniquePtr, when not instantiated for an array type, can be move-constructed\n and move-assigned, not only from itself but from \"derived\" UniquePtr<U, E>\n instantiations where U converts to T and E converts to D.  If you want to use\n this, you're going to have to specify a deletion policy for both UniquePtr\n instantations, and T pretty much has to have a virtual destructor.  In other\n words, this doesn't work:\n\n   struct Base { virtual ~Base() {} };\n   struct Derived : Base {};\n\n   UniquePtr<Base> b1;\n   // BAD: DefaultDelete<Base> and DefaultDelete<Derived> don't interconvert\n   UniquePtr<Derived> d1(std::move(b));\n\n   UniquePtr<Base> b2;\n   UniquePtr<Derived, DefaultDelete<Base>> d2(std::move(b2)); // okay\n\n UniquePtr is specialized for array types.  Specializing with an array type\n creates a smart-pointer version of that array -- not a pointer to such an\n array.\n\n   UniquePtr<int[]> arr(new int[5]);\n   arr[0] = 4;\n\n What else is different?  Deletion of course uses |delete[]|.  An operator[]\n is provided.  Functionality that doesn't make sense for arrays is removed.\n The constructors and mutating methods only accept array pointers (not T*, U*\n that converts to T*, or UniquePtr<U[]> or UniquePtr<U>) or |nullptr|.\n\n It's perfectly okay for a function to return a UniquePtr. This transfers\n the UniquePtr's sole ownership of the data, to the fresh UniquePtr created\n in the calling function, that will then solely own that data. Such functions\n can return a local variable UniquePtr, |nullptr|, |UniquePtr(ptr)| where\n |ptr| is a |T*|, or a UniquePtr |Move()|'d from elsewhere.\n\n UniquePtr will commonly be a member of a class, with lifetime equivalent to\n that of that class.  If you want to expose the related resource, you could\n expose a raw pointer via |get()|, but ownership of a raw pointer is\n inherently unclear.  So it's better to expose a |const UniquePtr&| instead.\n This prohibits mutation but still allows use of |get()| when needed (but\n operator-> is preferred).  Of course, you can only use this smart pointer as\n long as the enclosing class instance remains live -- no different than if you\n exposed the |get()| raw pointer.\n\n To pass a UniquePtr-managed resource as a pointer, use a |const UniquePtr&|\n argument.  To specify an inout parameter (where the method may or may not\n take ownership of the resource, or reset it), or to specify an out parameter\n (where simply returning a |UniquePtr| isn't possible), use a |UniquePtr&|\n argument.  To unconditionally transfer ownership of a UniquePtr\n into a method, use a |UniquePtr| argument.  To conditionally transfer\n ownership of a resource into a method, should the method want it, use a\n |UniquePtr&&| argument."]
++        #[repr(C)]
++        #[derive(Debug, Copy, Clone, PartialEq)]
++        pub struct UniquePtr {
++            pub _address: u8,
++        }
++
++            #[repr(C)]
++            #[derive(Debug, Copy, Clone, PartialEq)]
++            pub struct UnusedZero {
++                pub _address: u8,
++            }
++
++        #[doc = " A code unit within a UTF-8 encoded string.  (A code unit is the smallest\n unit within the Unicode encoding of a string.  For UTF-8 this is an 8-bit\n number; for UTF-16 it would be a 16-bit number.)\n\n This is *not* the same as a single code point: in UTF-8, non-ASCII code\n points are constituted by multiple code units."]
++        #[repr(C)]
++        #[derive(Copy, Clone)]
++        pub union Utf8Unit {
++            pub mValue: std::os::raw::c_char,
++        }
++
++        #[doc = " # mozilla::Variant\n\n A variant / tagged union / heterogenous disjoint union / sum-type template\n class. Similar in concept to (but not derived from) `boost::variant`.\n\n Sometimes, you may wish to use a C union with non-POD types. However, this is\n forbidden in C++ because it is not clear which type in the union should have\n its constructor and destructor run on creation and deletion\n respectively. This is the problem that `mozilla::Variant` solves.\n\n ## Usage\n\n A `mozilla::Variant` instance is constructed (via move or copy) from one of\n its variant types (ignoring const and references). It does *not* support\n construction from subclasses of variant types or types that coerce to one of\n the variant types.\n\n     Variant<char, uint32_t> v1('a');\n     Variant<UniquePtr<A>, B, C> v2(MakeUnique<A>());\n     Variant<bool, char> v3(VariantType<char>, 0); // disambiguation needed\n     Variant<int, int> v4(VariantIndex<1>, 0); // 2nd int\n\n Because specifying the full type of a Variant value is often verbose,\n there are two easier ways to construct values:\n\n A. AsVariant() can be used to construct a Variant value using type inference\n in contexts such as expressions or when returning values from functions.\n Because AsVariant() must copy or move the value into a temporary and this\n cannot necessarily be elided by the compiler, it's mostly appropriate only\n for use with primitive or very small types.\n\n     Variant<char, uint32_t> Foo() { return AsVariant('x'); }\n     // ...\n     Variant<char, uint32_t> v1 = Foo();  // v1 holds char('x').\n\n B. Brace-construction with VariantType or VariantIndex; this also allows\n in-place construction with any number of arguments.\n\n     struct AB { AB(int, int){...} };\n     static Variant<AB, bool> foo()\n     {\n       return {VariantIndex<0>{}, 1, 2};\n     }\n     // ...\n     Variant<AB, bool> v0 = Foo();  // v0 holds AB(1,2).\n\n All access to the contained value goes through type-safe accessors.\n Either the stored type, or the type index may be provided.\n\n     void\n     Foo(Variant<A, B, C> v)\n     {\n       if (v.is<A>()) {\n         A& ref = v.as<A>();\n         ...\n       } else (v.is<1>()) { // Instead of v.is<B>.\n         ...\n       } else {\n         ...\n       }\n     }\n\n In some situation, a Variant may be constructed from templated types, in\n which case it is possible that the same type could be given multiple times by\n an external developer. Or seemingly-different types could be aliases.\n In this case, repeated types can only be accessed through their index, to\n prevent ambiguous access by type.\n\n    // Bad!\n    template <typename T>\n    struct ResultOrError\n    {\n      Variant<T, int> m;\n      ResultOrError() : m(int(0)) {} // Error '0' by default\n      ResultOrError(const T& r) : m(r) {}\n      bool IsResult() const { return m.is<T>(); }\n      bool IsError() const { return m.is<int>(); }\n    };\n    // Now instantiante with the result being an int too:\n    ResultOrError<int> myResult(123); // Fail!\n    // In Variant<int, int>, which 'int' are we refering to, from inside\n    // ResultOrError functions?\n\n    // Good!\n    template <typename T>\n    struct ResultOrError\n    {\n      Variant<T, int> m;\n      ResultOrError() : m(VariantIndex<1>{}, 0) {} // Error '0' by default\n      ResultOrError(const T& r) : m(VariantIndex<0>{}, r) {}\n      bool IsResult() const { return m.is<0>(); } // 0 -> T\n      bool IsError() const { return m.is<1>(); } // 1 -> int\n    };\n    // Now instantiante with the result being an int too:\n    ResultOrError<int> myResult(123); // It now works!\n\n Attempting to use the contained value as type `T1` when the `Variant`\n instance contains a value of type `T2` causes an assertion failure.\n\n     A a;\n     Variant<A, B, C> v(a);\n     v.as<B>(); // <--- Assertion failure!\n\n Trying to use a `Variant<Ts...>` instance as some type `U` that is not a\n member of the set of `Ts...` is a compiler error.\n\n     A a;\n     Variant<A, B, C> v(a);\n     v.as<SomeRandomType>(); // <--- Compiler error!\n\n Additionally, you can turn a `Variant` that `is<T>` into a `T` by moving it\n out of the containing `Variant` instance with the `extract<T>` method:\n\n     Variant<UniquePtr<A>, B, C> v(MakeUnique<A>());\n     auto ptr = v.extract<UniquePtr<A>>();\n\n Finally, you can exhaustively match on the contained variant and branch into\n different code paths depending on which type is contained. This is preferred\n to manually checking every variant type T with is<T>() because it provides\n compile-time checking that you handled every type, rather than runtime\n assertion failures.\n\n     // Bad!\n     char* foo(Variant<A, B, C, D>& v) {\n       if (v.is<A>()) {\n         return ...;\n       } else if (v.is<B>()) {\n         return ...;\n       } else {\n         return doSomething(v.as<C>()); // Forgot about case D!\n       }\n     }\n\n     // Instead, a single function object (that can deal with all possible\n     // options) may be provided:\n     struct FooMatcher\n     {\n       // The return type of all matchers must be identical.\n       char* operator()(A& a) { ... }\n       char* operator()(B& b) { ... }\n       char* operator()(C& c) { ... }\n       char* operator()(D& d) { ... } // Compile-time error to forget D!\n     }\n     char* foo(Variant<A, B, C, D>& v) {\n       return v.match(FooMatcher());\n     }\n\n     // In some situations, a single generic lambda may also be appropriate:\n     char* foo(Variant<A, B, C, D>& v) {\n       return v.match([](auto&) {...});\n     }\n\n     // Alternatively, multiple function objects may be provided, each one\n     // corresponding to an option, in the same order:\n     char* foo(Variant<A, B, C, D>& v) {\n       return v.match([](A&) { ... },\n                      [](B&) { ... },\n                      [](C&) { ... },\n                      [](D&) { ... });\n     }\n\n     // In rare cases, the index of the currently-active alternative is\n     // needed, it may be obtained by adding a first parameter in the matcner\n     // callback, which will receive the index in its most compact type (just\n     // use `size_t` if the exact type is not important), e.g.:\n     char* foo(Variant<A, B, C, D>& v) {\n       return v.match([](auto aIndex, auto& aAlternative) {...});\n       // --OR--\n       return v.match([](size_t aIndex, auto& aAlternative) {...});\n     }\n\n ## Examples\n\n A tree is either an empty leaf, or a node with a value and two children:\n\n     struct Leaf { };\n\n     template<typename T>\n     struct Node\n     {\n       T value;\n       Tree<T>* left;\n       Tree<T>* right;\n     };\n\n     template<typename T>\n     using Tree = Variant<Leaf, Node<T>>;\n\n A copy-on-write string is either a non-owning reference to some existing\n string, or an owning reference to our copy:\n\n     class CopyOnWriteString\n     {\n       Variant<const char*, UniquePtr<char[]>> string;\n\n       ...\n     };\n\n Because Variant must be aligned suitable to hold any value stored within it,\n and because |alignas| requirements don't affect platform ABI with respect to\n how parameters are laid out in memory, Variant can't be used as the type of a\n function parameter.  Pass Variant to functions by pointer or reference\n instead."]
++        #[repr(C)]
++        #[derive(Debug, Copy, Clone, PartialEq)]
++        pub struct Variant {
++            pub _address: u8,
++        }
++
++        #[repr(C)]
++        #[derive(Debug, Copy, Clone, PartialEq)]
++        pub struct VariantType {
++            pub _address: u8,
++        }
++
+         #[repr(C, packed)]
+         #[derive(Debug, Copy, Clone, PartialEq)]
+         pub struct Wrapper {
+@@ -4480,3 +4953,5 @@ pub struct Zone {
+     #[repr(C)]
+     pub struct __BindgenOpaqueArray<T: Copy, const N: usize>(pub [T; N]);
+ 
++        pub type false_type = u8;
++
+diff --git a/components/roves-js/src/lib.rs b/components/roves-js/src/lib.rs
+index 43bc1c6d937..d1b0b84083b 100644
+--- a/components/roves-js/src/lib.rs
++++ b/components/roves-js/src/lib.rs
+@@ -28,6 +28,7 @@ mod native;
+ mod object;
+ mod proxy;
+ mod runtime_impl;
++mod script_impl;
+ mod typedarray_impl;
+ pub mod typedarray;
+ mod realm_impl;
+diff --git a/components/roves-js/src/rust.rs b/components/roves-js/src/rust.rs
+index c51ed382e56..35815bc7b94 100644
+--- a/components/roves-js/src/rust.rs
++++ b/components/roves-js/src/rust.rs
+@@ -208,6 +208,8 @@ unsafe impl GarbageCollected for RootSet {
+             crate::jsapi_impl::trace_atoms(unsafe { cx.as_ref() }, visitor);
+             // SAFETY: as above. The embedder's roots (Servo's DOM root lists).
+             crate::runtime_impl::trace_extra_roots(unsafe { cx.as_ref() }, visitor);
++            // SAFETY: as above.
++            crate::script_impl::trace_scripts(unsafe { cx.as_ref() }, visitor);
+         }
+         // RootedVec / RootedTraceableBox contents.
+         // SAFETY: the tracer is this GC's visitor.
+@@ -396,6 +398,7 @@ impl Runtime {
+             proxy_handlers: RefCell::new(Default::default()),
+             atoms: Default::default(),
+             hooks: Default::default(),
++            scripts: Default::default(),
+             current_realm: std::cell::Cell::new(std::ptr::null_mut()),
+             realms: RefCell::new(Vec::new()),
+         });
+@@ -607,3 +610,263 @@ impl std::ops::DerefMut for RealmOptions {
+         &mut self.0
+     }
+ }
++
++// --- Scripts, errors and stacks (mozjs's `rust` helpers) ---------------------------------------
++
++pub fn transform_str_to_source_text(source: &str) -> crate::jsapi::SourceText<crate::jsapi::Utf8Unit> {
++    crate::jsapi::SourceText {
++        units_: source.as_ptr() as *const _,
++        length_: source.len() as u32,
++        ownsUnits_: false,
++        _phantom_0: std::marker::PhantomData,
++    }
++}
++
++pub fn transform_u16_to_source_text(source: &[u16]) -> crate::jsapi::SourceText<u16> {
++    crate::jsapi::SourceText {
++        units_: source.as_ptr() as *const _,
++        length_: source.len() as u32,
++        ownsUnits_: false,
++        _phantom_0: std::marker::PhantomData,
++    }
++}
++
++/// Owned compile options (mozjs's `CompileOptionsWrapper`).
++pub struct CompileOptionsWrapper {
++    pub ptr: *mut crate::jsapi::ReadOnlyCompileOptions,
++    filename: std::ffi::CString,
++}
++
++impl CompileOptionsWrapper {
++    pub fn new(cx: &crate::context::JSContext, filename: std::ffi::CString, line: u32) -> Self {
++        // SAFETY: the options keep a pointer to `filename`, which this wrapper owns.
++        let ptr = unsafe { crate::script_impl::NewCompileOptions(cx.raw_ref() as *const _ as *mut _, filename.as_ptr(), line) };
++        assert!(!ptr.is_null());
++        Self { ptr, filename }
++    }
++
++    /// # Safety
++    /// `cx` must point to a live context.
++    #[deprecated(note = "Use CompileOptionsWrapper::new instead")]
++    pub unsafe fn new_raw(cx: *mut RawJSContext, filename: std::ffi::CString, line: u32) -> Self {
++        // SAFETY: as above.
++        let ptr = unsafe { crate::script_impl::NewCompileOptions(cx, filename.as_ptr(), line) };
++        Self { ptr, filename }
++    }
++
++    pub fn filename(&self) -> &str {
++        self.filename.to_str().expect("Guaranteed by new")
++    }
++
++    pub fn set_introduction_type(&mut self, introduction_type: &'static std::ffi::CStr) {
++        // SAFETY: the options are owned by this wrapper.
++        unsafe { (*self.ptr)._base.introductionType = introduction_type.as_ptr() };
++    }
++
++    pub fn set_muted_errors(&mut self, muted_errors: bool) {
++        // SAFETY: as above.
++        unsafe { (*self.ptr)._base.mutedErrors_ = muted_errors };
++    }
++
++    pub fn set_is_run_once(&mut self, is_run_once: bool) {
++        // SAFETY: as above.
++        unsafe { (*self.ptr).isRunOnce = is_run_once };
++    }
++
++    pub fn set_no_script_rval(&mut self, no_script_rval: bool) {
++        // SAFETY: as above.
++        unsafe { (*self.ptr).noScriptRval = no_script_rval };
++    }
++}
++
++impl Drop for CompileOptionsWrapper {
++    fn drop(&mut self) {
++        // SAFETY: created by `NewCompileOptions`.
++        unsafe { crate::script_impl::DeleteCompileOptions(self.ptr) }
++    }
++}
++
++/// Compiles and runs `script` in `glob`'s realm (mozjs's `evaluate_script`).
++pub fn evaluate_script(
++    cx: &mut crate::context::JSContext,
++    glob: HandleObject,
++    script: &str,
++    rval: MutableHandleValue,
++    options: CompileOptionsWrapper,
++) -> Result<(), ()> {
++    let mut realm = crate::realm::AutoRealm::new_from_handle(cx, glob);
++    let mut source = transform_str_to_source_text(script);
++    // SAFETY: the realm's context is live; the options and source outlive the call.
++    let ok = unsafe { crate::script_impl::Evaluate2(realm.raw_cx(), options.ptr, &mut source, rval.into()) };
++    if ok { Ok(()) } else { Err(()) }
++}
++
++/// An environment chain for function compilation (mozjs's `EnvironmentChain`).
++pub struct EnvironmentChain {
++    chain: *mut crate::jsapi::EnvironmentChain,
++}
++
++impl EnvironmentChain {
++    pub fn new(cx: *mut RawJSContext, support_unscopables: crate::jsapi::SupportUnscopables) -> Self {
++        // SAFETY: a new, owned chain.
++        Self { chain: unsafe { crate::script_impl::NewEnvironmentChain(cx, support_unscopables) } }
++    }
++
++    pub fn append(&self, obj: *mut crate::jsapi::JSObject) {
++        // SAFETY: the chain is owned by this wrapper.
++        assert!(unsafe { crate::script_impl::AppendToEnvironmentChain(self.chain, obj) });
++    }
++
++    pub fn get(&self) -> *mut crate::jsapi::EnvironmentChain {
++        self.chain
++    }
++}
++
++impl Drop for EnvironmentChain {
++    fn drop(&mut self) {
++        // SAFETY: as above.
++        unsafe { crate::script_impl::DeleteEnvironmentChain(self.chain) }
++    }
++}
++
++#[derive(Debug, Default)]
++pub struct ScriptedCaller {
++    pub filename: String,
++    pub line: u32,
++    pub col: u32,
++}
++
++pub fn describe_scripted_caller_safe(cx: &crate::context::JSContext) -> Result<ScriptedCaller, ()> {
++    let mut buf = [0 as std::ffi::c_char; 1024];
++    let mut line = 0;
++    let mut col = 0;
++    // SAFETY: a live context and a buffer of the given length.
++    if !unsafe { crate::script_impl::DescribeScriptedCaller(cx.raw_ref() as *const _ as *mut _, buf.as_mut_ptr(), buf.len(), &mut line, &mut col) } {
++        return Err(());
++    }
++    // SAFETY: NUL-terminated by `DescribeScriptedCaller`.
++    let filename = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) };
++    Ok(ScriptedCaller { filename: String::from_utf8_lossy(filename.to_bytes()).into_owned(), line, col })
++}
++
++pub struct ErrorInfo {
++    pub message: String,
++    pub filename: String,
++    pub line: u32,
++    pub col: u32,
++}
++
++unsafe extern "C" fn fill_string_callback(ptr: *const std::ffi::c_char, len: usize, target: *mut std::ffi::c_void) {
++    // SAFETY: `target` is a `String` and the bytes are UTF-8 (`PendingExceptionStackInfo`).
++    let target = unsafe { &mut *(target as *mut String) };
++    let slice = unsafe { std::slice::from_raw_parts(ptr as *const u8, len) };
++    target.push_str(&String::from_utf8_lossy(slice));
++}
++
++/// Takes the pending exception into `rval` and describes it (mozjs's helper).
++pub fn error_info_from_exception_stack_safe(cx: &mut crate::context::JSContext, rval: MutableHandleValue) -> Option<ErrorInfo> {
++    let mut message = String::new();
++    let mut filename = String::new();
++    let mut line = 0;
++    let mut col = 0;
++    // SAFETY: a live context; the targets are `String`s for `fill_string_callback`.
++    let found = unsafe {
++        crate::script_impl::PendingExceptionStackInfo(
++            cx.raw_cx(),
++            Some(fill_string_callback),
++            &raw mut message as *mut std::ffi::c_void,
++            &raw mut filename as *mut std::ffi::c_void,
++            &mut line,
++            &mut col,
++            rval.into(),
++        )
++    };
++    found.then_some(ErrorInfo { message, filename, line, col })
++}
++
++/// A captured JS stack (mozjs's `CapturedJSStack`).
++pub struct CapturedJSStack<'a> {
++    cx: *mut RawJSContext,
++    stack: RootedGuard<'a, *mut crate::jsapi::JSObject>,
++}
++
++impl<'a> CapturedJSStack<'a> {
++    /// # Safety
++    /// `cx` must be this thread's live context.
++    pub unsafe fn new(cx: *mut RawJSContext, mut guard: RootedGuard<'a, *mut crate::jsapi::JSObject>, max_frame_count: Option<u32>) -> Option<Self> {
++        // SAFETY: zeroed storage is a valid capture before initialization.
++        let mut capture: crate::jsapi::StackCapture = unsafe { std::mem::zeroed() };
++        // SAFETY: initializes the capture.
++        unsafe {
++            match max_frame_count {
++                None => crate::script_impl::JS_StackCapture_AllFrames(&mut capture),
++                Some(count) => crate::script_impl::JS_StackCapture_MaxFrames(count, &mut capture),
++            }
++        }
++        let start_after = std::ptr::null_mut::<crate::jsapi::JSObject>();
++        let start_after = crate::jsapi::Handle { _phantom_0: std::marker::PhantomData, ptr: &start_after };
++        // SAFETY: a rooted out location.
++        if !unsafe { crate::script_impl::CaptureCurrentStack(cx, guard.handle_mut().into(), &mut capture, start_after) } {
++            None
++        } else {
++            Some(CapturedJSStack { cx, stack: guard })
++        }
++    }
++
++    pub fn as_string(&self, indent: Option<usize>, format: crate::jsapi::StackFormat) -> Option<String> {
++        let cx = self.cx;
++        crate::rooted!(in(cx) let mut js_string = std::ptr::null_mut::<crate::jsapi::JSString>());
++        // SAFETY: rooted arguments.
++        if !unsafe {
++            crate::script_impl::BuildStackString(cx, std::ptr::null_mut(), self.stack.handle().into(), js_string.handle_mut().into(), indent.unwrap_or(0), format)
++        } {
++            return None;
++        }
++        let string = std::ptr::NonNull::new(js_string.get())?;
++        // SAFETY: this thread's live context and a live, rooted string.
++        let safe_cx = unsafe { crate::context::JSContext::from_ptr(std::ptr::NonNull::new(cx)?) };
++        Some(unsafe { crate::conversions::jsstr_to_string(&safe_cx, string) })
++    }
++
++    /// Calls `f` for each frame, innermost first.
++    pub fn for_each_stack_frame<F>(&self, mut f: F)
++    where
++        F: FnMut(Handle<*mut crate::jsapi::JSObject>),
++    {
++        let cx = self.cx;
++        crate::rooted!(in(cx) let mut current = self.stack.get());
++        crate::rooted!(in(cx) let mut next = std::ptr::null_mut::<crate::jsapi::JSObject>());
++        loop {
++            f(current.handle());
++            // SAFETY: rooted arguments.
++            let result = unsafe {
++                crate::script_impl::GetSavedFrameParent(
++                    cx,
++                    std::ptr::null_mut(),
++                    current.handle().into(),
++                    next.handle_mut().into(),
++                    crate::jsapi::SavedFrameSelfHosted::Include,
++                )
++            };
++            if result != crate::jsapi::SavedFrameResult::Ok || next.get().is_null() {
++                return;
++            }
++            current.set(next.get());
++        }
++    }
++}
++
++#[macro_export]
++macro_rules! capture_stack {
++    (&in($cx:expr) $($t:tt)*) => {
++        $crate::capture_stack!(in(unsafe { $cx.raw_cx() }) $($t)*);
++    };
++    (in($cx:expr) let $name:ident = with max depth($max_frame_count:expr)) => {
++        $crate::rooted!(in($cx) let mut __obj = ::std::ptr::null_mut());
++        let $name = $crate::rust::CapturedJSStack::new($cx, __obj, Some($max_frame_count));
++    };
++    (in($cx:expr) let $name:ident ) => {
++        $crate::rooted!(in($cx) let mut __obj = ::std::ptr::null_mut());
++        let $name = $crate::rust::CapturedJSStack::new($cx, __obj, None);
++    }
++}
+diff --git a/components/roves-js/src/script_impl.rs b/components/roves-js/src/script_impl.rs
+new file mode 100644
+index 00000000000..617b6bc427a
+--- /dev/null
++++ b/components/roves-js/src/script_impl.rs
+@@ -0,0 +1,614 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! Script compilation and execution, script privates, scripted callers, error reports and
++//! saved stacks (SpiderMonkey's `SavedFrame` objects) on V8.
++//!
++//! - A `*mut JSScript` is a cell holding V8's `UnboundScript`; it runs in the current realm.
++//! - Script privates are kept by script id, so the private of the script a running function
++//!   came from (`JS_GetScriptedCallerPrivate`) is found from V8's stack trace. They live as
++//!   long as the runtime (SpiderMonkey frees them with the script).
++//! - Saved frames are plain objects whose fields are V8 private properties, built from V8's
++//!   current stack trace when captured.
++
++use std::collections::HashMap;
++use std::ffi::{CStr, CString, c_char, c_void};
++
++use crate::glue::StringCallback;
++use crate::jsapi::{
++    EnvironmentChain, Handle, HandleObject, JSContext, JSErrorReport, JSErrorFormatString, JSFunction, JSObject,
++    JSPrincipals, JSRuntime, JSScript, JSString, MutableHandle, MutableHandleObject, MutableHandleValue,
++    ReadOnlyCompileOptions, SavedFrameResult, SavedFrameSelfHosted, ScriptPrivateReferenceHook, SourceText,
++    StackCapture, StackFormat, SupportUnscopables, TaggedColumnNumberOneOrigin, Utf8Unit,
++};
++use crate::jsval::{JSVal, UndefinedValue, from_v8};
++
++fn raw<'a>(cx: *mut JSContext) -> &'a JSContext {
++    // SAFETY: JSAPI callers pass this thread's live context.
++    unsafe { &*cx }
++}
++
++/// The runtime's script state: privates by script id, the reference hooks, and the last
++/// error report handed out (with the strings it points at).
++#[derive(Default)]
++pub(crate) struct Scripts {
++    privates: std::cell::RefCell<HashMap<i32, JSVal>>,
++    reference_hooks: std::cell::Cell<(ScriptPrivateReferenceHook, ScriptPrivateReferenceHook)>,
++    last_report: std::cell::RefCell<Option<(Box<JSErrorReport>, CString, CString)>>,
++}
++
++/// Keeps the script privates alive.
++pub(crate) fn trace_scripts(cx: &JSContext, visitor: &mut v8::cppgc::Visitor) {
++    use crate::gc::RootKind;
++    let Ok(privates) = cx.scripts.privates.try_borrow() else { return };
++    for private in privates.values() {
++        private.trace_root(visitor);
++    }
++}
++
++// --- Compile options and sources -----------------------------------------------------------
++
++/// New compile options for `file` (which the caller keeps alive) starting at `line`.
++pub unsafe fn NewCompileOptions(_cx: *mut JSContext, file: *const c_char, line: u32) -> *mut ReadOnlyCompileOptions {
++    // SAFETY: SpiderMonkey's compile options are plain data, valid when zeroed.
++    let mut options: Box<ReadOnlyCompileOptions> = Box::new(unsafe { std::mem::zeroed() });
++    options._base.filename_.data_ = file;
++    options.lineno = line;
++    options.column._base = 1;
++    Box::into_raw(options)
++}
++
++pub unsafe fn DeleteCompileOptions(options: *mut ReadOnlyCompileOptions) {
++    // SAFETY: options come from `NewCompileOptions`.
++    drop(unsafe { Box::from_raw(options) });
++}
++
++fn filename(options: &ReadOnlyCompileOptions) -> String {
++    let data = options._base.filename_.data_;
++    if data.is_null() {
++        return String::new();
++    }
++    // SAFETY: filenames are NUL-terminated (kept alive by the options' owner).
++    unsafe { CStr::from_ptr(data) }.to_string_lossy().into_owned()
++}
++
++fn script_origin<'s>(scope: &mut v8::PinScope<'s, '_>, options: &ReadOnlyCompileOptions, is_module: bool) -> v8::ScriptOrigin<'s> {
++    let name = v8::String::new(scope, &filename(options)).unwrap_or_else(|| v8::String::empty(scope));
++    v8::ScriptOrigin::new(
++        scope,
++        name.into(),
++        options.lineno.saturating_sub(1) as i32,
++        options.column._base.saturating_sub(1) as i32,
++        !options._base.mutedErrors_,
++        -1,
++        None,
++        options._base.mutedErrors_,
++        false,
++        is_module,
++        None,
++    )
++}
++
++fn utf8_source<'s>(scope: &mut v8::PinScope<'s, '_>, source: *mut SourceText<Utf8Unit>) -> Option<v8::Local<'s, v8::String>> {
++    // SAFETY: callers pass a valid source text whose units outlive the call.
++    let source = unsafe { &*source };
++    let bytes = if source.length_ == 0 {
++        &[][..]
++    } else {
++        unsafe { std::slice::from_raw_parts(source.units_ as *const u8, source.length_ as usize) }
++    };
++    v8::String::new_from_utf8(scope, bytes, v8::NewStringType::Normal)
++}
++
++fn utf16_source<'s>(scope: &mut v8::PinScope<'s, '_>, source: *mut SourceText<u16>) -> Option<v8::Local<'s, v8::String>> {
++    // SAFETY: as above.
++    let source = unsafe { &*source };
++    let units = if source.length_ == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(source.units_, source.length_ as usize) } };
++    v8::String::new_from_two_byte(scope, units, v8::NewStringType::Normal)
++}
++
++/// Compiles a classic script (not yet bound to a realm).
++pub(crate) fn compile_script<'s>(
++    scope: &mut v8::PinScope<'s, '_>,
++    options: &ReadOnlyCompileOptions,
++    code: v8::Local<'s, v8::String>,
++) -> Option<v8::Local<'s, v8::UnboundScript>> {
++    let origin = script_origin(scope, options, false);
++    let mut source = v8::script_compiler::Source::new(code, Some(&origin));
++    v8::script_compiler::compile_unbound_script(
++        scope,
++        &mut source,
++        v8::script_compiler::CompileOptions::NoCompileOptions,
++        v8::script_compiler::NoCacheReason::NoReason,
++    )
++}
++
++pub unsafe fn Compile1(cx: *mut JSContext, options: *const ReadOnlyCompileOptions, source: *mut SourceText<Utf8Unit>) -> *mut JSScript {
++    // SAFETY: callers pass valid options.
++    let options = unsafe { &*options };
++    raw(cx)
++        .catching(|scope| {
++            let code = utf8_source(scope, source)?;
++            let script = compile_script(scope, options, code)?;
++            Some(crate::cell::new_script_cell(scope, script) as *mut JSScript)
++        })
++        .unwrap_or(std::ptr::null_mut())
++}
++
++/// Runs a compiled script in the current realm.
++pub unsafe fn JS_ExecuteScript(cx: *mut JSContext, script: Handle<*mut JSScript>, mut rval: MutableHandle<JSVal>) -> bool {
++    let script = script.get();
++    let result = raw(cx).catching(|scope| {
++        // SAFETY: a rooted script cell.
++        let unbound = unsafe { crate::cell::cell_script(scope, script as *mut c_void) }?;
++        let bound = unbound.bind_to_current_context(scope);
++        let value = bound.run(scope)?;
++        Some(from_v8(scope, value))
++    });
++    match result {
++        Some(value) => {
++            rval.set(value);
++            true
++        },
++        None => false,
++    }
++}
++
++/// Compiles and runs a classic script in the current realm.
++pub unsafe fn Evaluate2(cx: *mut JSContext, options: *const ReadOnlyCompileOptions, source: *mut SourceText<Utf8Unit>, mut rval: MutableHandle<JSVal>) -> bool {
++    // SAFETY: callers pass valid options.
++    let options = unsafe { &*options };
++    let result = raw(cx).catching(|scope| {
++        let code = utf8_source(scope, source)?;
++        let script = compile_script(scope, options, code)?;
++        let value = script.bind_to_current_context(scope).run(scope)?;
++        Some(from_v8(scope, value))
++    });
++    match result {
++        Some(value) => {
++            rval.set(value);
++            true
++        },
++        None => false,
++    }
++}
++
++/// The objects of an environment chain (`with`-like scopes for event handler bodies).
++pub(crate) struct EnvChain {
++    objects: Vec<*mut JSObject>,
++}
++
++unsafe fn trace_env_chain(location: *const c_void, visitor: &mut v8::cppgc::Visitor) {
++    // SAFETY: the chain is unregistered before it is freed.
++    let chain = unsafe { &*(location as *const EnvChain) };
++    for object in &chain.objects {
++        crate::cell::trace_cell(*object as *mut c_void, visitor);
++    }
++}
++
++pub unsafe fn NewEnvironmentChain(_cx: *mut JSContext, _support_unscopables: SupportUnscopables) -> *mut EnvironmentChain {
++    let chain = Box::new(EnvChain { objects: Vec::new() });
++    let pointer = Box::into_raw(chain);
++    crate::gc::register_custom_root(pointer as *const c_void, trace_env_chain);
++    pointer as *mut EnvironmentChain
++}
++
++pub unsafe fn AppendToEnvironmentChain(chain: *mut EnvironmentChain, obj: *mut JSObject) -> bool {
++    // SAFETY: chains come from `NewEnvironmentChain`.
++    unsafe { &mut *(chain as *mut EnvChain) }.objects.push(obj);
++    true
++}
++
++pub unsafe fn DeleteEnvironmentChain(chain: *mut EnvironmentChain) {
++    crate::gc::unregister_custom_root(chain as *const c_void);
++    // SAFETY: as above.
++    drop(unsafe { Box::from_raw(chain as *mut EnvChain) });
++}
++
++/// Compiles a function body with `nargs` named arguments, scoped by the environment chain's
++/// objects (V8's context extensions: name lookups go through them first, innermost last).
++pub unsafe fn CompileFunction(
++    cx: *mut JSContext,
++    env_chain: *const EnvironmentChain,
++    options: *const ReadOnlyCompileOptions,
++    name: *const c_char,
++    nargs: u32,
++    argnames: *const *const c_char,
++    source: *mut SourceText<u16>,
++) -> *mut JSFunction {
++    // SAFETY: callers pass valid options, names and chain.
++    let options = unsafe { &*options };
++    let objects: Vec<*mut JSObject> = unsafe { env_chain.as_ref() }.map_or(Vec::new(), |chain| unsafe { &*(chain as *const EnvironmentChain as *const EnvChain) }.objects.clone());
++    raw(cx)
++        .catching(|scope| {
++            let code = utf16_source(scope, source)?;
++            let mut arguments = Vec::with_capacity(nargs as usize);
++            for index in 0..nargs as usize {
++                // SAFETY: `argnames` holds `nargs` NUL-terminated names.
++                let argument = unsafe { CStr::from_ptr(*argnames.add(index)) }.to_string_lossy();
++                arguments.push(v8::String::new(scope, &argument)?);
++            }
++            let mut extensions = Vec::with_capacity(objects.len());
++            for object in &objects {
++                // SAFETY: the chain roots its objects.
++                let value = unsafe { crate::cell::cell_value(scope, *object as *mut c_void) };
++                extensions.push(v8::Local::<v8::Object>::try_from(value).ok()?);
++            }
++            // SpiderMonkey's chain lists the innermost scope last; V8 looks up the extensions
++            // from the last one too.
++            let origin = script_origin(scope, options, false);
++            let mut source = v8::script_compiler::Source::new(code, Some(&origin));
++            let function = v8::script_compiler::compile_function(
++                scope,
++                &mut source,
++                &arguments,
++                &extensions,
++                v8::script_compiler::CompileOptions::NoCompileOptions,
++                v8::script_compiler::NoCacheReason::NoReason,
++            )?;
++            if !name.is_null() {
++                // SAFETY: a NUL-terminated name.
++                let name = unsafe { CStr::from_ptr(name) }.to_string_lossy();
++                let name = v8::String::new(scope, &name)?;
++                function.set_name(name);
++            }
++            Some(from_v8(scope, function.into()).to_object() as *mut JSFunction)
++        })
++        .unwrap_or(std::ptr::null_mut())
++}
++
++// --- Script privates and the scripted caller -------------------------------------------------
++
++fn script_id(scope: &mut v8::PinScope, script: *mut JSScript) -> Option<i32> {
++    // SAFETY: callers pass live script cells.
++    unsafe { crate::cell::cell_script(scope, script as *mut c_void) }.map(|script| script.script_id())
++}
++
++pub unsafe fn SetScriptPrivate(script: *mut JSScript, value: *const JSVal) {
++    let cx = JSContext::current();
++    let Some(id) = cx.with_scope(|scope| script_id(scope, script)) else { return };
++    // SAFETY: callers pass a valid value.
++    let value = unsafe { *value };
++    let (add_ref, release) = cx.scripts.reference_hooks.get();
++    if let (Some(add_ref), false) = (add_ref, value.is_undefined()) {
++        // SAFETY: SpiderMonkey's reference-hook contract.
++        unsafe { add_ref(&value) };
++    }
++    let old = cx.scripts.privates.borrow_mut().insert(id, value);
++    if let (Some(release), Some(old)) = (release, old) {
++        if !old.is_undefined() {
++            // SAFETY: as above.
++            unsafe { release(&old) };
++        }
++    }
++}
++
++pub unsafe fn JS_GetScriptPrivate(script: *mut JSScript, mut dest: MutableHandleValue) {
++    let cx = JSContext::current();
++    let id = cx.with_scope(|scope| script_id(scope, script));
++    let private = id.and_then(|id| cx.scripts.privates.borrow().get(&id).copied()).unwrap_or(UndefinedValue());
++    dest.set(private);
++}
++
++pub unsafe fn SetScriptPrivateReferenceHooks(rt: *mut JSRuntime, add_ref: ScriptPrivateReferenceHook, release: ScriptPrivateReferenceHook) {
++    // A runtime pointer is its raw context (see `rust::Runtime::rt`).
++    raw(rt as *mut JSContext).scripts.reference_hooks.set((add_ref, release));
++}
++
++/// The innermost scripted frame: script id, name, line and column.
++fn caller_frame(scope: &mut v8::PinScope) -> Option<(i32, String, u32, u32)> {
++    let trace = v8::StackTrace::current_stack_trace(scope, 1)?;
++    let frame = trace.get_frame(scope, 0)?;
++    let name = frame.get_script_name_or_source_url(scope).map(|name| name.to_rust_string_lossy(scope)).unwrap_or_default();
++    Some((frame.get_script_id() as i32, name, frame.get_line_number() as u32, frame.get_column() as u32))
++}
++
++pub unsafe fn JS_GetScriptedCallerPrivate(cx: *mut JSContext, mut dest: MutableHandleValue) {
++    let raw = raw(cx);
++    let id = raw.with_scope(|scope| caller_frame(scope).map(|frame| frame.0));
++    let private = id.and_then(|id| raw.scripts.privates.borrow().get(&id).copied()).unwrap_or(UndefinedValue());
++    dest.set(private);
++}
++
++/// The global of the realm whose script is running (the entered realm).
++pub unsafe fn GetScriptedCallerGlobal(cx: *mut JSContext) -> *mut JSObject {
++    raw(cx).with_scope(|scope| {
++        let context = scope.get_entered_or_microtask_context();
++        let realm = crate::realm_impl::realm_of_context(context);
++        // SAFETY: realms come from `register_realm`.
++        unsafe { crate::realm_impl::GetRealmGlobalOrNull(realm) }
++    })
++}
++
++pub unsafe fn DescribeScriptedCaller(cx: *mut JSContext, buffer: *mut c_char, buflen: usize, line: *mut u32, col: *mut u32) -> bool {
++    let Some((_, name, frame_line, frame_column)) = raw(cx).with_scope(caller_frame) else { return false };
++    let bytes = name.as_bytes();
++    let length = bytes.len().min(buflen.saturating_sub(1));
++    // SAFETY: callers pass a buffer of `buflen` bytes and valid out pointers.
++    unsafe {
++        std::ptr::copy_nonoverlapping(bytes.as_ptr(), buffer as *mut u8, length);
++        *buffer.add(length) = 0;
++        *line = frame_line;
++        *col = frame_column;
++    }
++    true
++}
++
++// --- Errors ----------------------------------------------------------------------------------
++
++/// The message, file, line and column V8 reports for an exception value.
++fn exception_info(scope: &mut v8::PinScope, exception: v8::Local<v8::Value>) -> (String, String, u32, u32) {
++    let message = v8::Exception::create_message(scope, exception);
++    let mut text = message.get(scope).to_rust_string_lossy(scope);
++    if let Some(stripped) = text.strip_prefix("Uncaught ") {
++        text = stripped.to_owned();
++    }
++    let file = message.get_script_resource_name(scope).and_then(|name| name.to_string(scope)).map(|name| name.to_rust_string_lossy(scope)).unwrap_or_default();
++    let line = message.get_line_number(scope).unwrap_or(0) as u32;
++    let column = message.get_start_column() as u32 + 1;
++    (text, file, line, column)
++}
++
++/// Takes the pending exception into `dest` and reports its message and location.
++pub unsafe fn PendingExceptionStackInfo(
++    cx: *mut JSContext,
++    callback: StringCallback,
++    message_target: *mut c_void,
++    filename_target: *mut c_void,
++    line: *mut u32,
++    col: *mut u32,
++    mut dest: MutableHandleValue,
++) -> bool {
++    let raw = raw(cx);
++    let Some(exception) = raw.pending_exception.borrow_mut().take() else { return false };
++    let (value, (message, file, line_number, column)) = raw.with_scope(|scope| {
++        let exception = v8::Local::new(scope, &exception);
++        (from_v8(scope, exception), exception_info(scope, exception))
++    });
++    dest.set(value);
++    if let Some(callback) = callback {
++        // SAFETY: the callback copies the bytes into its target.
++        unsafe {
++            callback(message.as_ptr() as *const c_char, message.len(), message_target);
++            callback(file.as_ptr() as *const c_char, file.len(), filename_target);
++        }
++    }
++    // SAFETY: callers pass valid out pointers.
++    unsafe {
++        *line = line_number;
++        *col = column;
++    }
++    true
++}
++
++/// The error report of an error object (null for other values). The report and its strings
++/// stay valid until the next call, as SpiderMonkey's live as long as the error.
++pub unsafe fn JS_ErrorFromException(cx: *mut JSContext, obj: HandleObject) -> *mut JSErrorReport {
++    let raw = raw(cx);
++    let info = raw.with_scope(|scope| {
++        // SAFETY: callers pass a live object.
++        let value = unsafe { crate::cell::cell_value(scope, obj.get() as *mut c_void) };
++        value.is_native_error().then(|| exception_info(scope, value))
++    });
++    let Some((message, file, line, column)) = info else { return std::ptr::null_mut() };
++    let message = CString::new(message.replace('\0', "")).unwrap_or_default();
++    let file = CString::new(file.replace('\0', "")).unwrap_or_default();
++    // SAFETY: SpiderMonkey's error report is plain data, valid when zeroed.
++    let mut report: Box<JSErrorReport> = Box::new(unsafe { std::mem::zeroed() });
++    report._base.message_.data_ = message.as_ptr();
++    report._base.filename.data_ = file.as_ptr();
++    report._base.lineno = line;
++    report._base.column._base = column;
++    let pointer = &mut *report as *mut JSErrorReport;
++    *raw.scripts.last_report.borrow_mut() = Some((report, message, file));
++    pointer
++}
++
++/// SpiderMonkey's error-number table is not available on V8.
++pub unsafe fn RUST_js_GetErrorMessage(_user_ref: *mut c_void, _error_number: u32) -> *const JSErrorFormatString {
++    std::ptr::null()
++}
++
++pub unsafe fn DumpJSStack(cx: *mut JSContext, _show_args: bool, _show_locals: bool, _show_this_props: bool) {
++    let text = raw(cx).with_scope(|scope| stack_text(scope, usize::MAX));
++    eprintln!("{text}");
++}
++
++pub unsafe fn JS_DefineDebuggerObject(_cx: *mut JSContext, _obj: HandleObject) -> bool {
++    true
++}
++
++// --- Saved stacks ----------------------------------------------------------------------------
++
++pub unsafe fn JS_StackCapture_AllFrames(capture: *mut StackCapture) {
++    // SAFETY: callers pass storage for a capture; word 0 holds the frame limit (0: all).
++    unsafe { std::ptr::write_bytes(capture, 0, 1) };
++}
++
++pub unsafe fn JS_StackCapture_MaxFrames(max_frames: u32, capture: *mut StackCapture) {
++    // SAFETY: as above.
++    unsafe {
++        std::ptr::write_bytes(capture, 0, 1);
++        *(capture as *mut u64) = max_frames as u64;
++    }
++}
++
++const FRAME_FIELDS: [&str; 5] = ["source", "line", "column", "functionDisplayName", "parent"];
++
++fn frame_key<'s>(scope: &mut v8::PinScope<'s, '_>, field: &str) -> v8::Local<'s, v8::Private> {
++    let name = v8::String::new(scope, &format!("roves-js SavedFrame.{field}")).expect("a short string");
++    v8::Private::for_api(scope, Some(name))
++}
++
++fn frame_field<'s>(scope: &mut v8::PinScope<'s, '_>, frame: *mut JSObject, field: &str) -> Option<v8::Local<'s, v8::Value>> {
++    // SAFETY: callers pass live frames.
++    let object = unsafe { crate::cell::cell_value(scope, frame as *mut c_void) };
++    let object = v8::Local::<v8::Object>::try_from(object).ok()?;
++    let key = frame_key(scope, field);
++    object.get_private(scope, key)
++}
++
++/// Captures the current stack as a chain of saved-frame objects.
++pub unsafe fn CaptureCurrentStack(cx: *mut JSContext, mut stackp: MutableHandleObject, capture: *mut StackCapture, _start_after: HandleObject) -> bool {
++    // SAFETY: callers pass an initialized capture.
++    let limit = match unsafe { *(capture as *const u64) } {
++        0 => usize::MAX,
++        limit => limit as usize,
++    };
++    let stack = raw(cx).catching(|scope| {
++        let trace = v8::StackTrace::current_stack_trace(scope, limit.min(1000))?;
++        let mut parent: v8::Local<v8::Value> = v8::null(scope).into();
++        for index in (0..trace.get_frame_count()).rev() {
++            let frame = trace.get_frame(scope, index)?;
++            let object = v8::Object::new(scope);
++            let source: v8::Local<v8::Value> = match frame.get_script_name_or_source_url(scope) {
++                Some(name) => name.into(),
++                None => v8::String::empty(scope).into(),
++            };
++            let line = v8::Integer::new_from_unsigned(scope, frame.get_line_number() as u32);
++            let column = v8::Integer::new_from_unsigned(scope, frame.get_column() as u32);
++            let name: v8::Local<v8::Value> = match frame.get_function_name(scope) {
++                Some(name) if name.length() > 0 => name.into(),
++                _ => v8::null(scope).into(),
++            };
++            let values = [source, line.into(), column.into(), name, parent];
++            for (field, value) in FRAME_FIELDS.iter().zip(values) {
++                let key = frame_key(scope, field);
++                object.set_private(scope, key, value)?;
++            }
++            parent = object.into();
++        }
++        Some(if parent.is_object() { from_v8(scope, parent).to_object() } else { std::ptr::null_mut() })
++    });
++    match stack {
++        Some(stack) => {
++            stackp.set(stack);
++            true
++        },
++        None => false,
++    }
++}
++
++pub unsafe fn GetSavedFrameParent(
++    cx: *mut JSContext,
++    _principals: *mut JSPrincipals,
++    saved_frame: Handle<*mut JSObject>,
++    mut parentp: MutableHandle<*mut JSObject>,
++    _self_hosted: SavedFrameSelfHosted,
++) -> SavedFrameResult {
++    let parent = raw(cx).with_scope(|scope| {
++        let parent = frame_field(scope, saved_frame.get(), "parent")?;
++        parent.is_object().then(|| from_v8(scope, parent).to_object())
++    });
++    parentp.set(parent.unwrap_or(std::ptr::null_mut()));
++    SavedFrameResult::Ok
++}
++
++pub unsafe fn GetSavedFrameSource(
++    cx: *mut JSContext,
++    _principals: *mut JSPrincipals,
++    saved_frame: Handle<*mut JSObject>,
++    mut sourcep: MutableHandle<*mut JSString>,
++    _self_hosted: SavedFrameSelfHosted,
++) -> SavedFrameResult {
++    let source = raw(cx).with_scope(|scope| {
++        let source = frame_field(scope, saved_frame.get(), "source")?;
++        source.is_string().then(|| from_v8(scope, source).to_string())
++    });
++    sourcep.set(source.unwrap_or(std::ptr::null_mut()));
++    SavedFrameResult::Ok
++}
++
++pub unsafe fn GetSavedFrameLine(
++    cx: *mut JSContext,
++    _principals: *mut JSPrincipals,
++    saved_frame: Handle<*mut JSObject>,
++    linep: *mut u32,
++    _self_hosted: SavedFrameSelfHosted,
++) -> SavedFrameResult {
++    let line = raw(cx).with_scope(|scope| frame_field(scope, saved_frame.get(), "line").and_then(|line| line.uint32_value(scope)));
++    // SAFETY: callers pass a valid out pointer.
++    unsafe { *linep = line.unwrap_or(0) };
++    SavedFrameResult::Ok
++}
++
++pub unsafe fn GetSavedFrameColumn(
++    cx: *mut JSContext,
++    _principals: *mut JSPrincipals,
++    saved_frame: Handle<*mut JSObject>,
++    columnp: *mut TaggedColumnNumberOneOrigin,
++    _self_hosted: SavedFrameSelfHosted,
++) -> SavedFrameResult {
++    let column = raw(cx).with_scope(|scope| frame_field(scope, saved_frame.get(), "column").and_then(|column| column.uint32_value(scope)));
++    // SAFETY: callers pass a valid out pointer.
++    unsafe { (*columnp).value_ = column.unwrap_or(0) };
++    SavedFrameResult::Ok
++}
++
++pub unsafe fn GetSavedFrameFunctionDisplayName(
++    cx: *mut JSContext,
++    _principals: *mut JSPrincipals,
++    saved_frame: Handle<*mut JSObject>,
++    mut namep: MutableHandle<*mut JSString>,
++    _self_hosted: SavedFrameSelfHosted,
++) -> SavedFrameResult {
++    let name = raw(cx).with_scope(|scope| {
++        let name = frame_field(scope, saved_frame.get(), "functionDisplayName")?;
++        name.is_string().then(|| from_v8(scope, name).to_string())
++    });
++    namep.set(name.unwrap_or(std::ptr::null_mut()));
++    SavedFrameResult::Ok
++}
++
++/// The current stack in SpiderMonkey's format (`name@source:line:column`, one frame a line).
++fn stack_text(scope: &mut v8::PinScope, limit: usize) -> String {
++    let Some(trace) = v8::StackTrace::current_stack_trace(scope, limit.min(1000)) else { return String::new() };
++    let mut text = String::new();
++    for index in 0..trace.get_frame_count() {
++        let Some(frame) = trace.get_frame(scope, index) else { continue };
++        let name = frame.get_function_name(scope).map(|name| name.to_rust_string_lossy(scope)).unwrap_or_default();
++        let source = frame.get_script_name_or_source_url(scope).map(|name| name.to_rust_string_lossy(scope)).unwrap_or_default();
++        text.push_str(&format!("{name}@{source}:{}:{}\n", frame.get_line_number(), frame.get_column()));
++    }
++    text
++}
++
++/// Formats a saved stack (SpiderMonkey's format; V8's when asked).
++pub unsafe fn BuildStackString(
++    cx: *mut JSContext,
++    _principals: *mut JSPrincipals,
++    stack: HandleObject,
++    mut stringp: MutableHandle<*mut JSString>,
++    indent: usize,
++    format: StackFormat,
++) -> bool {
++    let mut frame = stack.get();
++    let raw = raw(cx);
++    let text = raw.with_scope(|scope| {
++        let mut text = String::new();
++        while !frame.is_null() {
++            let source = frame_field(scope, frame, "source").map(|value| value.to_rust_string_lossy(scope)).unwrap_or_default();
++            let line = frame_field(scope, frame, "line").and_then(|value| value.uint32_value(scope)).unwrap_or(0);
++            let column = frame_field(scope, frame, "column").and_then(|value| value.uint32_value(scope)).unwrap_or(0);
++            let name = frame_field(scope, frame, "functionDisplayName").filter(|value| value.is_string()).map(|value| value.to_rust_string_lossy(scope)).unwrap_or_default();
++            text.push_str(&" ".repeat(indent));
++            match format {
++                StackFormat::V8 => text.push_str(&format!("    at {name} ({source}:{line}:{column})\n")),
++                _ => text.push_str(&format!("{name}@{source}:{line}:{column}\n")),
++            }
++            frame = match frame_field(scope, frame, "parent") {
++                Some(parent) if parent.is_object() => from_v8(scope, parent).to_object(),
++                _ => std::ptr::null_mut(),
++            };
++        }
++        text
++    });
++    let units: Vec<u16> = text.encode_utf16().collect();
++    let string = crate::api::new_string_utf16(raw, &units);
++    if string.is_null() {
++        return false;
++    }
++    stringp.set(string);
++    true
++}
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 4543b7fec78..9e74c0cd3bb 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -992,3 +992,111 @@ mod runtime_hooks {
+         .unwrap();
+     }
+ }
++
++mod scripts {
++    use std::cell::RefCell;
++    use std::ffi::CString;
++
++    use super::{describe, eval};
++    use crate::jsapi::*;
++    use crate::jsval::*;
++    use crate::rust::{CompileOptionsWrapper, EnvironmentChain, JSEngineHandle, Runtime, transform_str_to_source_text, transform_u16_to_source_text};
++
++    thread_local! {
++        static SEEN: RefCell<Vec<std::string::String>> = const { RefCell::new(Vec::new()) };
++    }
++
++    /// A native that records its scripted caller (private and location) and the stack.
++    unsafe extern "C" fn whoami(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
++        crate::rooted!(in(cx) let mut private = UndefinedValue());
++        unsafe { JS_GetScriptedCallerPrivate(cx, private.handle_mut().into()) };
++        let safe = unsafe { crate::context::JSContext::from_ptr(std::ptr::NonNull::new(cx).unwrap()) };
++        let caller = crate::rust::describe_scripted_caller_safe(&safe).unwrap();
++        crate::capture_stack!(in(cx) let stack);
++        let stack = unsafe { stack }.unwrap().as_string(None, StackFormat::SpiderMonkey).unwrap();
++        SEEN.with(|seen| {
++            seen.borrow_mut().push(format!(
++                "{}|{}:{}|{}",
++                if private.get().is_int32() { private.get().to_int32() } else { -1 },
++                caller.filename,
++                caller.line,
++                stack.lines().next().unwrap_or("")
++            ))
++        });
++        unsafe { *vp = UndefinedValue() };
++        true
++    }
++
++    #[test]
++    fn scripts_compile_run_carry_privates_and_report_errors() {
++        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
++        let whoami_fn = unsafe { JS_NewFunction(cx, Some(whoami), 0, 0, c"whoami".as_ptr()) };
++        rooted!(in(cx) let whoami_value = ObjectValue(whoami_fn as *mut JSObject));
++        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"whoami".as_ptr(), whoami_value.handle().into_handle()) });
++
++        // Compile, attach a private, run.
++        let options = CompileOptionsWrapper::new(runtime.cx_no_gc(), CString::new("https://example.test/a.js").unwrap(), 10);
++        let code = "function fromA() { whoami(); }\nvar ran = 'yes'; 6 * 7";
++        let mut source = transform_str_to_source_text(code);
++        rooted!(in(cx) let script = unsafe { Compile1(cx, options.ptr, &mut source) });
++        assert!(!script.get().is_null());
++        unsafe { SetScriptPrivate(script.get(), &Int32Value(11)) };
++        rooted!(in(cx) let mut private = UndefinedValue());
++        unsafe { JS_GetScriptPrivate(script.get(), private.handle_mut().into()) };
++        assert_eq!(private.get().to_int32(), 11);
++        rooted!(in(cx) let mut result = UndefinedValue());
++        assert!(unsafe { JS_ExecuteScript(cx, script.handle().into(), result.handle_mut().into()) });
++        assert_eq!(result.get().to_int32(), 42);
++        assert_eq!(describe(&runtime, eval(&runtime, "ran")), "yes");
++
++        // A function from script A, called later from another script, reports A's private
++        // and location.
++        runtime.gc_for_testing();
++        eval(&runtime, "fromA()");
++        let seen = SEEN.with(|seen| seen.borrow().clone());
++        assert_eq!(seen.len(), 1);
++        assert!(seen[0].starts_with("11|https://example.test/a.js:10|fromA@https://example.test/a.js:10:"), "{}", seen[0]);
++
++        // Event-handler style functions: arguments and an environment chain.
++        let chain = EnvironmentChain::new(cx, SupportUnscopables::Yes);
++        rooted!(in(cx) let scope_object = eval(&runtime, "({ fromScope: 5 })").to_object());
++        chain.append(scope_object.get());
++        let body: Vec<u16> = "return event + fromScope;".encode_utf16().collect();
++        let mut body_source = transform_u16_to_source_text(&body);
++        let argument = c"event".as_ptr();
++        let function = unsafe { CompileFunction(cx, chain.get(), options.ptr, c"onclick".as_ptr(), 1, &argument, &mut body_source) };
++        assert!(!function.is_null());
++        rooted!(in(cx) let function_value = ObjectValue(function as *mut JSObject));
++        let arguments = [Int32Value(2)];
++        let array = HandleValueArray { length_: 1, elements_: arguments.as_ptr() };
++        rooted!(in(cx) let this = UndefinedValue());
++        rooted!(in(cx) let mut call_result = UndefinedValue());
++        assert!(unsafe { Call(cx, this.handle().into_handle(), function_value.handle().into_handle(), &array, call_result.handle_mut().into_handle()) });
++        assert_eq!(call_result.get().to_int32(), 7);
++
++        // Errors: the pending exception's message and location, and error reports.
++        let failing = CompileOptionsWrapper::new(runtime.cx_no_gc(), CString::new("https://example.test/b.js").unwrap(), 1);
++        let mut bad = transform_str_to_source_text("\nnull.boom");
++        rooted!(in(cx) let mut ignored = UndefinedValue());
++        assert!(!unsafe { Evaluate2(cx, failing.ptr, &mut bad, ignored.handle_mut().into()) });
++        rooted!(in(cx) let mut exception = UndefinedValue());
++        let info = crate::rust::error_info_from_exception_stack_safe(runtime.cx(), exception.handle_mut()).unwrap();
++        assert!(info.message.starts_with("TypeError"), "{}", info.message);
++        assert_eq!((info.filename.as_str(), info.line), ("https://example.test/b.js", 2));
++        assert!(exception.get().is_object());
++        rooted!(in(cx) let error = exception.get().to_object());
++        let report = unsafe { JS_ErrorFromException(cx, error.handle().into_handle()) };
++        assert!(!report.is_null());
++        assert_eq!(unsafe { (*report)._base.lineno }, 2);
++        let message = unsafe { std::ffi::CStr::from_ptr((*report)._base.message_.data_) }.to_string_lossy().into_owned();
++        assert!(message.contains("null"), "{message}");
++
++        // Syntax errors fail compilation with a pending exception.
++        let mut syntax = transform_str_to_source_text("let = ;");
++        assert!(unsafe { Compile1(cx, failing.ptr, &mut syntax) }.is_null());
++        assert!(unsafe { crate::api::JS_IsExceptionPending(cx) });
++        unsafe { crate::api::JS_ClearPendingException(cx) };
++    }
++}
+diff --git a/components/roves-js/src/wrappers2.in.rs b/components/roves-js/src/wrappers2.in.rs
+index bfa9098108c..3b02b6c487f 100644
+--- a/components/roves-js/src/wrappers2.in.rs
++++ b/components/roves-js/src/wrappers2.in.rs
+@@ -20,10 +20,16 @@ wrap!(jsapi: pub fn SetGCSliceCallback(cx: &JSContext, callback: GCSliceCallback
+ wrap!(jsapi: pub fn CurrentGlobalOrNull(cx: &JSContext) -> *mut JSObject);
+ wrap!(jsapi: pub fn CurrentGlobal(cx: &JSContext) -> *const *mut JSObject);
+ wrap!(jsapi: pub fn GetWellKnownSymbol(cx: &JSContext, which: SymbolCode) -> *mut Symbol);
++wrap!(jsapi: pub fn CaptureCurrentStack(cx: &mut JSContext, stackp: MutableHandleObject, capture: *mut StackCapture, startAfter: HandleObject) -> bool);
++wrap!(jsapi: pub fn BuildStackString(cx: &mut JSContext, principals: *mut JSPrincipals, stack: HandleObject, stringp: MutableHandleString, indent: usize, stackFormat: StackFormat) -> bool);
+ wrap!(jsapi: pub fn InitConsumeStreamCallback(cx: &JSContext, consume: ConsumeStreamCallback, report: ReportStreamErrorCallback));
++wrap!(jsapi: pub fn GetScriptedCallerGlobal(cx: &JSContext) -> *mut JSObject);
+ wrap!(jsapi: pub fn HideScriptedCaller(cx: &JSContext));
+ wrap!(jsapi: pub fn UnhideScriptedCaller(cx: &JSContext));
+ wrap!(jsapi: pub fn NewArrayBuffer(cx: &mut JSContext, nbytes: usize) -> *mut JSObject);
++wrap!(jsapi: pub fn Evaluate2(cx: &mut JSContext, options: *const ReadOnlyCompileOptions, srcBuf: *mut SourceText<Utf8Unit>, rval: MutableHandle<Value>) -> bool);
++wrap!(jsapi: pub fn Compile1(cx: &mut JSContext, options: *const ReadOnlyCompileOptions, srcBuf: *mut SourceText<Utf8Unit>) -> *mut JSScript);
++wrap!(jsapi: pub fn CompileFunction(cx: &mut JSContext, envChain: *const EnvironmentChain, options: *const ReadOnlyCompileOptions, name: *const ::std::os::raw::c_char, nargs: ::std::os::raw::c_uint, argnames: *const *const ::std::os::raw::c_char, srcBuf: *mut SourceText<u16>) -> *mut JSFunction);
+ wrap!(jsapi: pub fn ContextOptionsRef(cx: &JSContext) -> *mut ContextOptions);
+ wrap!(jsapi: pub fn ToJSON(cx: &mut JSContext, value: Handle<Value>, replacer: Handle<*mut JSObject>, space: Handle<Value>, callback: JSONWriteCallback, data: *mut ::std::os::raw::c_void) -> bool);
+ wrap!(jsapi: pub fn SetJobQueue(cx: &JSContext, queue: *mut JobQueue));
+@@ -32,14 +38,21 @@ wrap!(jsapi: pub fn JobQueueIsEmpty(cx: &JSContext));
+ wrap!(jsapi: pub fn JobQueueMayNotBeEmpty(cx: &JSContext));
+ wrap!(jsapi: pub fn CallOriginalPromiseReject(cx: &mut JSContext, rejectionValue: HandleValue) -> *mut JSObject);
+ wrap!(jsapi: pub fn IsArrayObject(cx: &mut JSContext, value: Handle<Value>, isArray: *mut bool) -> bool);
++wrap!(jsapi: pub fn GetSavedFrameSource(cx: &mut JSContext, principals: *mut JSPrincipals, savedFrame: Handle<*mut JSObject>, sourcep: MutableHandle<*mut JSString>, selfHosted: SavedFrameSelfHosted) -> SavedFrameResult);
++wrap!(jsapi: pub fn GetSavedFrameLine(cx: &mut JSContext, principals: *mut JSPrincipals, savedFrame: Handle<*mut JSObject>, linep: *mut u32, selfHosted: SavedFrameSelfHosted) -> SavedFrameResult);
++wrap!(jsapi: pub fn GetSavedFrameColumn(cx: &mut JSContext, principals: *mut JSPrincipals, savedFrame: Handle<*mut JSObject>, columnp: *mut TaggedColumnNumberOneOrigin, selfHosted: SavedFrameSelfHosted) -> SavedFrameResult);
++wrap!(jsapi: pub fn GetSavedFrameFunctionDisplayName(cx: &mut JSContext, principals: *mut JSPrincipals, savedFrame: Handle<*mut JSObject>, namep: MutableHandle<*mut JSString>, selfHosted: SavedFrameSelfHosted) -> SavedFrameResult);
++wrap!(jsapi: pub fn GetSavedFrameParent(cx: &mut JSContext, principals: *mut JSPrincipals, savedFrame: Handle<*mut JSObject>, parentp: MutableHandle<*mut JSObject>, selfHosted: SavedFrameSelfHosted) -> SavedFrameResult);
+ wrap!(jsapi: pub fn JS_AddExtraGCRootsTracer(cx: &JSContext, traceOp: JSTraceDataOp, data: *mut ::std::os::raw::c_void) -> bool);
+ wrap!(jsapi: pub fn JS_RemoveExtraGCRootsTracer(cx: &JSContext, traceOp: JSTraceDataOp, data: *mut ::std::os::raw::c_void));
+ wrap!(jsapi: pub fn JS_GC(cx: &mut JSContext, reason: GCReason));
+ wrap!(jsapi: pub fn JS_SetGCCallback(cx: &JSContext, cb: JSGCCallback, data: *mut ::std::os::raw::c_void));
+ wrap!(jsapi: pub fn JS_SetGCParameter(cx: &mut JSContext, key: JSGCParamKey, value: u32));
+ wrap!(jsapi: pub fn JS_GetGCParameter(cx: &JSContext, key: JSGCParamKey) -> u32);
++wrap!(jsapi: pub fn JS_DefineDebuggerObject(cx: &mut JSContext, obj: HandleObject) -> bool);
+ wrap!(jsapi: pub fn JS_GetPendingException(cx: &mut JSContext, vp: MutableHandleValue) -> bool);
+ wrap!(jsapi: pub fn JS_SetPendingException(cx: &mut JSContext, v: HandleValue, behavior: ExceptionStackBehavior));
++wrap!(jsapi: pub fn JS_ErrorFromException(cx: &JSContext, obj: HandleObject) -> *mut JSErrorReport);
+ wrap!(jsapi: pub fn JS_NewGlobalObject(cx: &mut JSContext, clasp: *const JSClass, principals: *mut JSPrincipals, hookOption: OnNewGlobalHookOption, options: *const RealmOptions) -> *mut JSObject);
+ wrap!(jsapi: pub fn JS_FireOnNewGlobalObject(cx: &mut JSContext, global: HandleObject));
+ wrap!(jsapi: pub fn JS_AddInterruptCallback(cx: &JSContext, callback: JSInterruptCallback) -> bool);
+@@ -91,17 +104,20 @@ wrap!(jsapi: pub fn JS_SetImmutablePrototype(cx: &mut JSContext, obj: HandleObje
+ wrap!(jsapi: pub fn JS_NewFunction(cx: &mut JSContext, call: JSNative, nargs: ::std::os::raw::c_uint, flags: ::std::os::raw::c_uint, name: *const ::std::os::raw::c_char) -> *mut JSFunction);
+ wrap!(jsapi: pub fn JS_SetOffthreadIonCompilationEnabled(cx: &JSContext, enabled: bool));
+ wrap!(jsapi: pub fn JS_SetGlobalJitCompilerOption(cx: &JSContext, opt: JSJitCompilerOption, value: u32));
++wrap!(jsapi: pub fn JS_ExecuteScript(cx: &mut JSContext, script: Handle<*mut JSScript>, rval: MutableHandle<Value>) -> bool);
+ wrap!(jsapi: pub fn JS_GetArrayBufferViewBuffer(cx: &mut JSContext, obj: Handle<*mut JSObject>, isSharedMemory: *mut bool) -> *mut JSObject);
+ wrap!(jsapi: pub fn JS_NewObjectWithoutMetadata(cx: &mut JSContext, clasp: *const JSClass, proto: Handle<*mut JSObject>) -> *mut JSObject);
+ wrap!(jsapi: pub fn JS_InitializePropertiesFromCompatibleNativeObject(cx: &mut JSContext, dst: HandleObject, src: HandleObject) -> bool);
+ wrap!(jsapi: pub fn JS_GetOwnPropertyDescriptorById(cx: &mut JSContext, obj: HandleObject, id: HandleId, desc: MutableHandle<PropertyDescriptor>, isNone: *mut bool) -> bool);
+ wrap!(jsapi: pub fn JS_GetPropertyDescriptorById(cx: &mut JSContext, obj: HandleObject, id: HandleId, desc: MutableHandle<PropertyDescriptor>, holder: MutableHandleObject, isNone: *mut bool) -> bool);
++wrap!(jsapi: pub fn NewEnvironmentChain(cx: &mut JSContext, supportUnscopables: SupportUnscopables) -> *mut EnvironmentChain);
+ wrap!(glue: pub fn RegisterScriptEnvironmentPreparer(cx: &mut JSContext, hook: InvokeScriptPreparerHook));
+ wrap!(glue: pub fn RunScriptEnvironmentPreparerClosure(cx: &mut JSContext, closure: *mut ScriptEnvironmentPreparer_Closure) -> bool);
+ wrap!(glue: pub fn InvokeGetOwnPropertyDescriptor(handler: *const ::std::os::raw::c_void, cx: &mut JSContext, proxy: HandleObject, id: HandleId, desc: MutableHandle<PropertyDescriptor>, isNone: *mut bool) -> bool);
+ wrap!(glue: pub fn CallJitGetterOp(info: *const JSJitInfo, cx: &mut JSContext, thisObj: HandleObject, specializedThis: *mut ::std::os::raw::c_void, argc: ::std::os::raw::c_uint, vp: *mut Value) -> bool);
+ wrap!(glue: pub fn CallJitSetterOp(info: *const JSJitInfo, cx: &mut JSContext, thisObj: HandleObject, specializedThis: *mut ::std::os::raw::c_void, argc: ::std::os::raw::c_uint, vp: *mut Value) -> bool);
+ wrap!(glue: pub fn CallJitMethodOp(info: *const JSJitInfo, cx: &mut JSContext, thisObj: HandleObject, specializedThis: *mut ::std::os::raw::c_void, argc: u32, vp: *mut Value) -> bool);
++wrap!(glue: pub fn NewCompileOptions(aCx: &JSContext, aFile: *const ::std::os::raw::c_char, aLine: ::std::os::raw::c_uint) -> *mut ReadOnlyCompileOptions);
+ wrap!(glue: pub fn NewProxyObject(aCx: &mut JSContext, aHandler: *const ::std::os::raw::c_void, aPriv: HandleValue, proto: *mut JSObject, aClass: *const JSClass, aLazyProto: bool) -> *mut JSObject);
+ wrap!(glue: pub fn int_to_jsid(i: i32, id: MutableHandleId));
+ wrap!(glue: pub fn RUST_SYMBOL_TO_JSID(sym: *mut Symbol, id: MutableHandleId));
+@@ -110,6 +126,11 @@ wrap!(glue: pub fn RUST_INTERNED_STRING_TO_JSID(cx: &mut JSContext, str_: *mut J
+ wrap!(glue: pub fn UnwrapObjectDynamic(obj: *mut JSObject, cx: &mut JSContext, stopAtWindowProxy: bool) -> *mut JSObject);
+ wrap!(glue: pub fn AppendToIdVector(v: MutableHandleIdVector, id: HandleId) -> bool);
+ wrap!(glue: pub fn CollectServoSizes(cx: &mut JSContext, sizes: *mut ServoSizes, gs: GetSize) -> bool);
++wrap!(glue: pub fn JS_GetScriptPrivate(script: *mut JSScript, dest: MutableHandleValue));
++wrap!(glue: pub fn JS_GetScriptedCallerPrivate(cx: &mut JSContext, dest: MutableHandleValue));
+ wrap!(glue: pub fn SetUpEventLoopDispatch(cx: &mut JSContext, callback: RustDispatchToEventLoopCallback, closure: *mut ::std::os::raw::c_void));
+ wrap!(glue: pub fn DispatchableRun(cx: &mut JSContext, ptr: *mut DispatchablePointer, mb: Dispatchable_MaybeShuttingDown));
++wrap!(glue: pub fn DescribeScriptedCaller(cx: &JSContext, buffer: *mut ::std::os::raw::c_char, buflen: usize, line: *mut u32, col: *mut u32) -> bool);
++wrap!(glue: pub fn PendingExceptionStackInfo(cx: &mut JSContext, callback: StringCallback, message_target: *mut ::std::os::raw::c_void, filename_target: *mut ::std::os::raw::c_void, line: *mut u32, col: *mut u32, dest: MutableHandleValue) -> bool);
+ wrap!(glue: pub fn SetDataPropertyDescriptor(desc: MutableHandle<PropertyDescriptor>, value: HandleValue, attrs: u32));
++wrap!(glue: pub fn DumpJSStack(cx: &mut JSContext, showArgs: bool, showLocals: bool, showThisProps: bool));
+diff --git a/support/roves_js/extract_jsapi_types.py b/support/roves_js/extract_jsapi_types.py
+index 26d904c6c3e..f3d78c43a6b 100644
+--- a/support/roves_js/extract_jsapi_types.py
++++ b/support/roves_js/extract_jsapi_types.py
+@@ -24,6 +24,7 @@ OPAQUE = {
+     "RootingContext", "AutoRequireNoGC",
+     # C++ classes and containers behind pointers.
+     "BuildIdCharVector", "JobQueue", "StreamConsumer", "ScriptEnvironmentPreparer_Closure",
++    "EnvironmentChain",
+ }
+ 
+ 
+diff --git a/support/roves_js/gen_wrappers2.py b/support/roves_js/gen_wrappers2.py
+index f35a113a2eb..91aed0f9115 100644
+--- a/support/roves_js/gen_wrappers2.py
++++ b/support/roves_js/gen_wrappers2.py
+@@ -43,7 +43,7 @@ def visible(src, module_file):
+     """The function names a module (`jsapi.rs` / `glue.rs`) makes reachable."""
+     text = read(os.path.join(src, module_file))
+     names = defined(os.path.join(src, module_file))
+-    for module in ("jsapi_impl", "binding", "realm_impl", "api", "object", "native", "proxy", "typedarray_impl", "runtime_impl"):
++    for module in ("jsapi_impl", "binding", "realm_impl", "api", "object", "native", "proxy", "typedarray_impl", "runtime_impl", "script_impl"):
+         explicit, glob = reexports(text, module)
+         path = os.path.join(src, module + ".rs")
+         if glob:
+diff --git a/support/roves_js/jsapi_type_names.txt b/support/roves_js/jsapi_type_names.txt
+index 3be31a858f0..c147f76a936 100644
+--- a/support/roves_js/jsapi_type_names.txt
++++ b/support/roves_js/jsapi_type_names.txt
+@@ -1,4 +1,5 @@
+ AddAssociatedMemory
++AllFrames
+ AppendToIdVector
+ AsmJSOption
+ AtomToLinearString
+@@ -14,6 +15,7 @@ CallValueTracer
+ CheckedUnwrapStatic
+ ClippedTime
+ CloneDataPolicy
++ColumnNumberOneOrigin
+ Compartment
+ CompartmentIterResult
+ CompartmentSpecifier
+@@ -36,7 +38,9 @@ DispatchablePointer
+ Dispatchable_MaybeShuttingDown
+ DumpJSStack
+ ESClass
++EnvironmentChain
+ ExceptionStackBehavior
++FirstSubsumedFrame
+ GCContext
+ GCDescription
+ GCOptions
+@@ -114,6 +118,8 @@ JSContextasUnsafeJSContext
+ JSDOMCallbacks
+ JSDestroyPrincipalsOp
+ JSErrNum
++JSErrorFormatString
++JSErrorReport
+ JSFUN_CONSTRUCTOR
+ JSFailed
+ JSFunctionSpec
+@@ -219,6 +225,7 @@ JS_WriteBytes
+ JS_WriteUint32Pair
+ JobQueue
+ JobQueueTraps
++MaxFrames
+ MemoryUse
+ MimeType
+ ModuleErrorBehaviour
+@@ -252,6 +259,7 @@ ProxyOptions
+ ProxyTraps
+ RUST_FUNCTION_VALUE_TO_JITINFO
+ RUST_js_GetErrorMessage
++ReadOnlyCompileOptions
+ RealmOptions
+ RegExpFlag_UnicodeSets
+ RegExpFlags
+@@ -262,8 +270,10 @@ ReportStreamErrorCallback
+ RunScriptEnvironmentPreparerClosure
+ RuntimeCode
+ RuntimeHeapState
++SavedFrameResult
+ SavedFrameSelfHosted
+ ScriptEnvironmentPreparer_Closure
++ScriptPrivateReferenceHook
+ ServoSizes
+ SetBuildId
+ SetDOMProxyInformation
+@@ -278,6 +288,8 @@ SetProxyPrivate
+ SetProxyReservedSlot
+ SetScriptPrivate
+ SetScriptPrivateReferenceHooks
++SourceText
++StackCapture
+ StackFormat
+ StackFormatasJSStackFormat
+ StreamConsumer
+@@ -290,8 +302,10 @@ StringIsArrayIndex
+ StructuredCloneScope
+ SupportUnscopables
+ SymbolCode
++TaggedColumnNumberOneOrigin
+ TraceKind
+ TransferableOwnership
++TransitiveCompileOptions
+ TrueHandleValue
+ Type
+ UncheckedUnwrapObject
+@@ -299,6 +313,7 @@ UndefinedHandleValue
+ UnhideScriptedCaller
+ UnwrapObjectDynamic
+ UnwrapObjectStatic
++Utf8Unit
+ Value
+ ValueasJSValue
+ WriteBytesToJSStructuredCloneData
+@@ -306,6 +321,7 @@ __BindgenBitfieldUnit
+ context
+ conversions
+ error
++false_type
+ gc
+ glue
+ jsapi

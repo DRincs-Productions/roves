@@ -415,9 +415,12 @@ strategia completa è in `docs/V8_MIGRATION.md` ("Cutover strategy"). Metrica:
   per gli id stringa, `Runtime` come in mozjs (`JSEngine`, runtime figli, `ThreadSafeJSContext`
   sull'`IsolateHandle`), hook di runtime (interrupt, radici extra per il GC, tracker dei
   rifiuti di promise; job queue = coda microtask V8 con policy esplicita). Test: 17/17.
-- **Prossimi passi (dopo CP100):** compilazione/esecuzione (`CompileOptionsWrapper`,
-  `Compile1`, `JS_ExecuteScript`, `CompileFunction`), errori e stack, promise, JSON,
-  Date/RegExp, moduli, structured clone, `WindowProxy`; poi rimisurare `servo-script`.
+- **CP101:** script (`JSScript` = cella con `UnboundScript`; `Compile1`/`Evaluate2`/
+  `JS_ExecuteScript`; `CompileFunction` con la catena d'ambiente come context extensions),
+  private degli script per id (anche per il chiamante, dallo stack V8), report d'errore,
+  saved frame stile SpiderMonkey. Test: 18/18.
+- **Prossimi passi (dopo CP101):** promise, JSON, Date/RegExp e valori vari, moduli,
+  structured clone e ArrayBuffer, `WindowProxy`; poi rimisurare `servo-script`.
 - **Storico (prima di CP95).** Le operazioni dell'API usata dal DOM:
   1. stringhe e conversioni (`jsstr_to_string`, `ToJSValConvertible`/`FromJSValConvertible`);
   2. oggetti e proprietà (`JS_NewObject`, `JS_GetProperty`/`SetProperty`/`DefineProperty`);

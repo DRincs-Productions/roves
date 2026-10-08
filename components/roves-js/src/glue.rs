@@ -24,6 +24,11 @@ pub use crate::runtime_impl::{
     CollectServoSizes, CreateJobQueue, DeleteJobQueue, DispatchableRun, InitializeMemoryReporter,
     RegisterScriptEnvironmentPreparer, RunScriptEnvironmentPreparerClosure, SetBuildId, SetUpEventLoopDispatch,
 };
+pub use crate::script_impl::{
+    DeleteCompileOptions, DescribeScriptedCaller, DumpJSStack, JS_GetScriptPrivate, JS_GetScriptedCallerPrivate,
+    JS_StackCapture_AllFrames, JS_StackCapture_MaxFrames, NewCompileOptions, PendingExceptionStackInfo,
+    RUST_js_GetErrorMessage,
+};
 pub use crate::proxy::{
     CreateProxyHandler, GetProxyHandler, GetProxyHandlerExtra, GetProxyHandlerFamily, GetProxyPrivate,
     GetProxyReservedSlot, InvokeGetOwnPropertyDescriptor, IsProxyHandlerFamily, NewProxyObject, SetProxyPrivate,

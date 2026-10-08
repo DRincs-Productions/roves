@@ -288,6 +288,14 @@
         ) -> bool,
     >;
 
+    pub type StringCallback = ::std::option::Option<
+        unsafe extern "C" fn(
+            ptr: *const std::os::raw::c_char,
+            len: usize,
+            target: *mut std::os::raw::c_void,
+        ),
+    >;
+
     pub type WantToMeasure =
         ::std::option::Option<unsafe extern "C" fn(obj: *mut JSObject) -> bool>;
 

@@ -20,6 +20,7 @@ pub use crate::binding::{CallJitGetterOp, CallJitMethodOp, CallJitSetterOp, JS_D
 pub use crate::jsapi_impl::*;
 pub use crate::typedarray_impl::*;
 pub use crate::runtime_impl::*;
+pub use crate::script_impl::*;
 pub use crate::proxy::{SetDOMProxyInformation, SetPropertyIgnoringNamedGetter};
 pub use crate::object::RuntimeHeapState;
 
@@ -127,6 +128,8 @@ pub struct JSContext {
     pub(crate) atoms: crate::jsapi_impl::Atoms,
     /// The embedder's runtime hooks and settings (see `runtime_impl`).
     pub(crate) hooks: crate::runtime_impl::RuntimeHooks,
+    /// Script privates and error reports (see `script_impl`).
+    pub(crate) scripts: crate::script_impl::Scripts,
 }
 
 impl JSContext {

@@ -80,6 +80,8 @@ pub(crate) struct Cell {
     chars: std::cell::OnceCell<StringChars>,
     /// A class-based object's box (see `object`): reserved slots and hooks.
     class: Option<Member<crate::object::ClassBox>>,
+    /// A `JSScript` cell's compiled script (see `script_impl`).
+    script: Option<TracedReference<v8::UnboundScript>>,
 }
 
 pub(crate) enum StringChars {
@@ -106,6 +108,9 @@ unsafe impl GarbageCollected for Cell {
         visitor.trace(&self.value);
         if let Some(class) = &self.class {
             visitor.trace(class);
+        }
+        if let Some(script) = &self.script {
+            visitor.trace(script);
         }
     }
 
@@ -179,9 +184,35 @@ pub(crate) fn new_cell_with_class(
     // SAFETY: the returned pointer is handed straight to the caller, who roots or stores it
     // (the documented contract of an unrooted GC-thing pointer).
     let cell = unsafe {
-        v8::cppgc::make_garbage_collected(heap, Cell { value: reference, chars: std::cell::OnceCell::new(), class })
+        v8::cppgc::make_garbage_collected(heap, Cell { value: reference, chars: std::cell::OnceCell::new(), class, script: None })
     };
     to_raw(cell)
+}
+
+/// A cell for a compiled script (`*mut JSScript`); its value is the script's id.
+pub(crate) fn new_script_cell(scope: &mut v8::PinScope, script: v8::Local<v8::UnboundScript>) -> *mut c_void {
+    let id = v8::Integer::new(scope, script.script_id());
+    let reference = TracedReference::new(scope, id.into());
+    let script = TracedReference::new(scope, script);
+    let heap = scope.get_cpp_heap().expect("roves-js isolates carry a cppgc heap");
+    // SAFETY: as for `new_cell_with_class`.
+    let cell = unsafe {
+        v8::cppgc::make_garbage_collected(
+            heap,
+            Cell { value: reference, chars: std::cell::OnceCell::new(), class: None, script: Some(script) },
+        )
+    };
+    to_raw(cell)
+}
+
+/// The compiled script of a `JSScript` cell.
+///
+/// # Safety
+/// `pointer` must be a live script cell.
+pub(crate) unsafe fn cell_script<'s>(scope: &mut v8::PinScope<'s, '_>, pointer: *mut c_void) -> Option<v8::Local<'s, v8::UnboundScript>> {
+    let cell = from_raw(pointer)?;
+    // SAFETY: the caller guarantees the cell is alive.
+    unsafe { cell.as_ref() }.script.as_ref()?.get(scope)
 }
 
 /// The JS value a live cell holds.
