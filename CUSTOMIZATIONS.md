@@ -11,6 +11,43 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-08 - V8 cutover: `roves-js` tracing layer, `jsid`, `panic` (CP97)
+
+**Servo files:**
+- `components/roves-js/src/` — `gc/` (now a module: `root`, `traceable`, `collections`,
+  `custom`, `rooted_traceables`), `glue.rs`, `jsid.rs`, `panic.rs`, `jsapi.rs`, `lib.rs`;
+- `components/roves-js/Cargo.toml` (`doctest = false`);
+- `support/roves_js/extract_jsapi_types.py`;
+- `support/v8_cutover_check.py`, which now saves the full compiler log under
+  `target/v8-cutover/`.
+
+**Patch:** `0162-roves-js-tracing-layer.patch` after 0161.
+
+**The tracer.** Every roves-js trace hook passes the running GC's cppgc `Visitor` as the
+`*mut JSTracer`. The `glue` tracer calls (`CallObjectTracer`, `CallValueTracer`,
+`CallIdTracer`, `CallPropertyDescriptorTracer`, the root tracers, ...) mark the referenced
+cells through it. So do Servo's `JSTraceable` impls once their hooks run.
+
+**Ported from mozjs/mozjs_sys onto the roves-js root stack:**
+- the `Traceable` trait with its impls (`Heap<T>`, containers, primitives);
+- `RootedTraceableSet` with `RootedTraceableBox`/`RootableVec`/`RootedVec`. The runtime's
+  root set now also traces them;
+- `CustomAutoRooter`/`CustomTrace`, registered on the root stack;
+- the `auto_root!` and `rooted_vec!` macros;
+- the `panic` module (`wrap_panic`, `maybe_resume_unwind`);
+- `jsid` (`PropertyKey`, tagged like SpiderMonkey's, where string and symbol ids carry cell
+  pointers). This also **fixes an upstream bug**: mozjs_sys's `is_gcthing` used `&&` and was
+  never true.
+
+**Handles.** `Heap::handle` returns the raw (`jsapi`) handle, and `rust::Handle`/
+`MutableHandle` have `from_raw`/`into_handle`/`From`, as in mozjs. `jsid` is rootable. The
+binding tables (`JSClass`, `JSFunctionSpec`, `JSNativeWrapper`, `JSPropertySpec`,
+`JSTypedMethodJitInfo`) are `Sync`, as in mozjs_sys's bindgen header; this was 2,395 of the
+2,543 errors.
+
+**Progress:** `servo-script-bindings` went from 7,252 to 2,543 errors before the `Sync` impls.
+Tests: `roves-js` 7/7.
+
 ## 2026-10-08 - V8 cutover: bindgen types and the binding-machinery decision (CP96)
 
 **Servo files:**

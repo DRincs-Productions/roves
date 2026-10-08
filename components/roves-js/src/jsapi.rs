@@ -16,6 +16,7 @@ pub use crate::gc::Heap;
 mod types {
     #![allow(dead_code, non_camel_case_types, non_snake_case, non_upper_case_globals, clippy::all)]
     use super::{BigInt, JSContext, JSFunction, JSObject, JSScript, JSString, Symbol};
+    use crate::jsid::{PropertyKey, jsid};
     use crate::jsval::Value;
 
     /// SpiderMonkey's stack-rooted GC vector (opaque here; its uses are emulated).
@@ -26,8 +27,16 @@ mod types {
     }
 
     include!("jsapi_types.rs");
+
+    // As in mozjs_sys's bindgen output: the static binding tables are shared read-only.
+    unsafe impl Sync for JSClass {}
+    unsafe impl Sync for JSFunctionSpec {}
+    unsafe impl Sync for JSNativeWrapper {}
+    unsafe impl Sync for JSPropertySpec {}
+    unsafe impl Sync for JSTypedMethodJitInfo {}
 }
 pub use types::*;
+pub use crate::jsid::{PropertyKey, jsid};
 pub use crate::jsval::{JSVal, Value};
 pub use crate::api::{
     ExceptionStackBehavior, JS_ClearPendingException, JS_DeprecatedStringHasLatin1Chars,

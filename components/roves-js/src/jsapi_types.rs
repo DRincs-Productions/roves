@@ -2084,12 +2084,6 @@ pub struct ObjectOps {
             pub value_: Value,
         }
 
-#[repr(C)]
-#[derive(Debug, Copy, Clone, PartialEq)]
-pub struct PropertyKey {
-    _private: [u8; 0],
-}
-
     #[doc = " Read structured data from the reader r. This hook is used to read a value\n previously serialized by a call to the WriteStructuredCloneOp hook.\n\n tag and data are the pair of uint32_t values from the header. The callback\n may use the JS_Read* APIs to read any other relevant parts of the object\n from the reader r. closure is any value passed to the JS_ReadStructuredClone\n function.\n\n Return the new object on success, or raise an exception and return nullptr on\n error."]
     pub type ReadStructuredCloneOp = ::std::option::Option<
         unsafe extern "C" fn(
@@ -2400,6 +2394,4 @@ pub struct TrampolineNative {
     #[derive(PartialEq, Copy, Clone, Debug, Hash)]
     #[repr(C)]
     pub struct __BindgenOpaqueArray<T: Copy, const N: usize>(pub [T; N]);
-
-    pub type jsid = PropertyKey;
 

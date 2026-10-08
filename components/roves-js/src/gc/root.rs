@@ -53,6 +53,20 @@ macro_rules! gc_thing_pointer {
 
 gc_thing_pointer!(JSObject, JSString, JSFunction, Symbol, BigInt, JSScript);
 
+impl RootKind for crate::jsid::jsid {
+    fn trace_root(&self, visitor: &mut Visitor) {
+        if let Some(pointer) = self.gcthing() {
+            trace_cell(pointer, visitor);
+        }
+    }
+}
+
+impl GCMethods for crate::jsid::jsid {
+    unsafe fn initial() -> Self {
+        crate::jsid::VoidId()
+    }
+}
+
 impl RootKind for JSVal {
     fn trace_root(&self, visitor: &mut Visitor) {
         if self.is_gcthing() {
@@ -119,6 +133,15 @@ fn register_root<T: RootKind>(location: *const T) {
     ROOT_STACK.with(|stack| {
         stack.borrow_mut().push(RootEntry { location: location as *const c_void, trace: trace_location::<T> })
     });
+}
+
+/// Registers a custom-traced root location (`CustomAutoRooter`).
+pub(crate) fn register_custom_root(location: *const c_void, trace: unsafe fn(*const c_void, &mut Visitor)) {
+    ROOT_STACK.with(|stack| stack.borrow_mut().push(RootEntry { location, trace }));
+}
+
+pub(crate) fn unregister_custom_root(location: *const c_void) {
+    unregister_root(location);
 }
 
 fn unregister_root(location: *const c_void) {
@@ -228,6 +251,26 @@ impl<'a, T> Handle<'a, T> {
     pub fn as_ptr(&self) -> *const T {
         self.ptr
     }
+
+    /// From a raw (`jsapi`) handle.
+    ///
+    /// # Safety
+    /// The raw handle must point at a marked location that outlives `'a`.
+    pub unsafe fn from_raw(handle: crate::jsapi::Handle<T>) -> Self {
+        // SAFETY: forwarded to the caller.
+        unsafe { Handle::from_marked_location(handle.ptr) }
+    }
+
+    /// The raw (`jsapi`) handle.
+    pub fn into_handle(self) -> crate::jsapi::Handle<T> {
+        crate::jsapi::Handle { _phantom_0: PhantomData, ptr: self.ptr }
+    }
+}
+
+impl<'a, T> From<Handle<'a, T>> for crate::jsapi::Handle<T> {
+    fn from(handle: Handle<'a, T>) -> Self {
+        handle.into_handle()
+    }
 }
 
 impl<T> Deref for Handle<'_, T> {
@@ -271,6 +314,31 @@ impl<'a, T> MutableHandle<'a, T> {
 
     pub fn as_ptr(&self) -> *mut T {
         self.ptr
+    }
+
+    /// From a raw (`jsapi`) mutable handle.
+    ///
+    /// # Safety
+    /// The raw handle must point at a marked location that outlives `'a`.
+    pub unsafe fn from_raw(handle: crate::jsapi::MutableHandle<T>) -> Self {
+        // SAFETY: forwarded to the caller.
+        unsafe { MutableHandle::from_marked_location(handle.ptr) }
+    }
+
+    /// The raw (`jsapi`) mutable handle.
+    pub fn into_handle(self) -> crate::jsapi::MutableHandle<T> {
+        crate::jsapi::MutableHandle { _phantom_0: PhantomData, ptr: self.ptr }
+    }
+
+    /// A shorter-lived mutable handle to the same location.
+    pub fn reborrow<'b>(&'b mut self) -> MutableHandle<'b, T> {
+        MutableHandle { ptr: self.ptr, anchor: PhantomData }
+    }
+}
+
+impl<'a, T> From<MutableHandle<'a, T>> for crate::jsapi::MutableHandle<T> {
+    fn from(handle: MutableHandle<'a, T>) -> Self {
+        handle.into_handle()
     }
 }
 
@@ -325,9 +393,9 @@ impl<T: Copy + GCMethods> Heap<T> {
         self.value.get()
     }
 
-    pub fn handle(&self) -> Handle<'_, T> {
-        // SAFETY: a traced heap location.
-        unsafe { Handle::from_marked_location(self.value.get()) }
+    /// A raw (`jsapi`) handle to the location, as in mozjs.
+    pub fn handle(&self) -> crate::jsapi::Handle<T> {
+        crate::jsapi::Handle { _phantom_0: PhantomData, ptr: self.value.get() }
     }
 }
 

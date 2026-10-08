@@ -82,6 +82,9 @@ struct RootSet;
 unsafe impl GarbageCollected for RootSet {
     fn trace(&self, visitor: &mut Visitor) {
         crate::gc::trace_roots(visitor);
+        // RootedVec / RootedTraceableBox contents.
+        // SAFETY: the tracer is this GC's visitor.
+        unsafe { crate::gc::trace_traceables(crate::glue::tracer(visitor), std::ptr::null_mut()) };
     }
 
     fn get_name(&self) -> &'static std::ffi::CStr {

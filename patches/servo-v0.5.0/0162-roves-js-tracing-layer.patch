@@ -1,0 +1,1445 @@
+diff --git a/components/roves-js/Cargo.toml b/components/roves-js/Cargo.toml
+index 8c5d76c97e5..4ad28523d92 100644
+--- a/components/roves-js/Cargo.toml
++++ b/components/roves-js/Cargo.toml
+@@ -9,6 +9,8 @@ description = "The `js` (mozjs) API surface Servo's script crates use, implement
+ [lib]
+ name = "js"
+ path = "src/lib.rs"
++# The bindgen types keep SpiderMonkey's C++ doc comments, whose code blocks are not Rust.
++doctest = false
+ 
+ [dependencies]
+ roves-v8 = { path = "../roves-v8" }
+diff --git a/components/roves-js/src/gc/collections.rs b/components/roves-js/src/gc/collections.rs
+new file mode 100644
+index 00000000000..34e5fec7b77
+--- /dev/null
++++ b/components/roves-js/src/gc/collections.rs
+@@ -0,0 +1,190 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++// Ported from mozjs 0.21.6 (same license) onto the roves-js root stack and tracer.
++
++use crate::gc::{GCMethods, Heap, RootedTraceableSet, Traceable};
++use crate::jsapi::{HandleValueArray, JSTracer};
++use crate::jsval::JSVal;
++use crate::rust::Handle;
++use std::ops::{Deref, DerefMut};
++use std::ptr;
++
++/// A vector of items to be rooted with `RootedVec`.
++/// Guaranteed to be empty when not rooted.
++#[cfg_attr(feature = "crown", allow(crown::unrooted_must_root))]
++#[cfg_attr(
++    feature = "crown",
++    crown::unrooted_must_root_lint::allow_unrooted_interior
++)]
++pub struct RootableVec<T: Traceable> {
++    v: Vec<T>,
++}
++
++impl<T: Traceable> RootableVec<T> {
++    /// Create a vector of items of type T that can be rooted later.
++    pub fn new_unrooted() -> RootableVec<T> {
++        RootableVec { v: Vec::new() }
++    }
++}
++
++unsafe impl<T: Traceable> Traceable for RootableVec<T> {
++    unsafe fn trace(&self, trc: *mut JSTracer) {
++        self.v.trace(trc);
++    }
++}
++
++/// A vector of items rooted for the lifetime 'a.
++#[cfg_attr(
++    feature = "crown",
++    crown::unrooted_must_root_lint::allow_unrooted_interior
++)]
++pub struct RootedVec<'a, T: Traceable + 'static> {
++    root: &'a mut RootableVec<T>,
++}
++
++impl From<&RootedVec<'_, JSVal>> for HandleValueArray {
++    fn from(vec: &RootedVec<'_, JSVal>) -> HandleValueArray {
++        HandleValueArray {
++            length_: vec.root.v.len(),
++            elements_: vec.root.v.as_ptr(),
++        }
++    }
++}
++
++impl From<&super::RootedGuard<'_, Vec<JSVal>>> for HandleValueArray {
++    fn from(vec: &super::RootedGuard<'_, Vec<JSVal>>) -> HandleValueArray {
++        HandleValueArray {
++            length_: vec.len(),
++            elements_: vec.deref().as_ptr(),
++        }
++    }
++}
++
++impl<'a, T: Traceable + 'static> RootedVec<'a, T> {
++    pub fn new(root: &'a mut RootableVec<T>) -> RootedVec<'a, T> {
++        unsafe {
++            RootedTraceableSet::add(root);
++        }
++        RootedVec { root }
++    }
++
++    pub fn from_iter<I>(root: &'a mut RootableVec<T>, iter: I) -> Self
++    where
++        I: Iterator<Item = T>,
++    {
++        unsafe {
++            RootedTraceableSet::add(root);
++        }
++        root.v.extend(iter);
++        RootedVec { root }
++    }
++}
++
++impl<'a, T: Traceable + 'static> Drop for RootedVec<'a, T> {
++    fn drop(&mut self) {
++        self.clear();
++        unsafe {
++            RootedTraceableSet::remove(self.root);
++        }
++    }
++}
++
++impl<'a, T: Traceable> Deref for RootedVec<'a, T> {
++    type Target = Vec<T>;
++    fn deref(&self) -> &Vec<T> {
++        &self.root.v
++    }
++}
++
++impl<'a, T: Traceable> DerefMut for RootedVec<'a, T> {
++    fn deref_mut(&mut self) -> &mut Vec<T> {
++        &mut self.root.v
++    }
++}
++
++#[cfg_attr(
++    feature = "crown",
++    crown::unrooted_must_root_lint::allow_unrooted_interior
++)]
++/// Roots any JSTraceable thing
++///
++/// If you have GC things like *mut JSObject or JSVal, use rooted!.
++/// If you know what you're doing, use this.
++pub struct RootedTraceableBox<T: Traceable + 'static> {
++    ptr: *mut T,
++}
++
++impl<T: Traceable + 'static> RootedTraceableBox<T> {
++    /// Root a JSTraceable thing for the life of this RootedTraceableBox
++    pub fn new(traceable: T) -> RootedTraceableBox<T> {
++        Self::from_box(Box::new(traceable))
++    }
++
++    /// Consumes a boxed JSTraceable and roots it for the life of this RootedTraceableBox.
++    pub fn from_box(boxed_traceable: Box<T>) -> RootedTraceableBox<T> {
++        let traceable = Box::into_raw(boxed_traceable);
++        unsafe {
++            RootedTraceableSet::add(traceable);
++        }
++        RootedTraceableBox { ptr: traceable }
++    }
++
++    /// Returns underlying pointer
++    pub unsafe fn ptr(&self) -> *mut T {
++        self.ptr
++    }
++
++    /// Destroys this root and returns the boxed value.
++    /// This value is no longer rooted, but is still safe to stored
++    /// in some other rooted or traceable location.
++    pub fn into_box(mut self) -> Box<T> {
++        self.cleanup()
++    }
++
++    fn cleanup(&mut self) -> Box<T> {
++        unsafe {
++            let ptr = std::mem::replace(&mut self.ptr, ptr::null_mut());
++            RootedTraceableSet::remove(ptr);
++            Box::from_raw(ptr)
++        }
++    }
++}
++
++impl<T> RootedTraceableBox<Heap<T>>
++where
++    Heap<T>: Traceable + 'static,
++    T: GCMethods + Copy,
++{
++    pub fn handle(&'_ self) -> Handle<'_, T> {
++        unsafe { Handle::from_raw((*self.ptr).handle()) }
++    }
++}
++
++unsafe impl<T: Traceable + 'static> Traceable for RootedTraceableBox<T> {
++    unsafe fn trace(&self, trc: *mut JSTracer) {
++        (*self.ptr).trace(trc)
++    }
++}
++
++impl<T: Traceable> Deref for RootedTraceableBox<T> {
++    type Target = T;
++    fn deref(&self) -> &T {
++        unsafe { &*self.ptr }
++    }
++}
++
++impl<T: Traceable> DerefMut for RootedTraceableBox<T> {
++    fn deref_mut(&mut self) -> &mut T {
++        unsafe { &mut *self.ptr }
++    }
++}
++
++impl<T: Traceable + 'static> Drop for RootedTraceableBox<T> {
++    fn drop(&mut self) {
++        if !self.ptr.is_null() {
++            self.cleanup();
++        }
++    }
++}
+diff --git a/components/roves-js/src/gc/custom.rs b/components/roves-js/src/gc/custom.rs
+new file mode 100644
+index 00000000000..fab84340952
+--- /dev/null
++++ b/components/roves-js/src/gc/custom.rs
+@@ -0,0 +1,145 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++// Ported from mozjs 0.21.6 (same license) onto the roves-js root stack and tracer.
++
++use std::ops::{Deref, DerefMut};
++
++use crate::glue::{CallObjectRootTracer, CallValueRootTracer};
++use crate::jsapi::{JSContext, JSObject, JSTracer};
++use crate::jsval::Value;
++use crate::rust::{Handle, MutableHandle};
++use crate::gc::RootKind;
++
++/// Similarly to `Traceable` trait, it's used to specify tracing of various types
++/// that are used in conjunction with `CustomAutoRooter`.
++pub unsafe trait CustomTrace {
++    fn trace(&self, trc: *mut JSTracer);
++}
++
++unsafe impl CustomTrace for *mut JSObject {
++    fn trace(&self, trc: *mut JSTracer) {
++        let this = self as *const *mut _ as *mut *mut _;
++        unsafe {
++            CallObjectRootTracer(trc, this, c"object".as_ptr());
++        }
++    }
++}
++
++unsafe impl CustomTrace for Value {
++    fn trace(&self, trc: *mut JSTracer) {
++        let this = self as *const _ as *mut _;
++        unsafe {
++            CallValueRootTracer(trc, this, c"any".as_ptr());
++        }
++    }
++}
++
++unsafe impl<T: CustomTrace> CustomTrace for Option<T> {
++    fn trace(&self, trc: *mut JSTracer) {
++        if let Some(ref some) = *self {
++            some.trace(trc);
++        }
++    }
++}
++
++unsafe impl<T: CustomTrace> CustomTrace for Vec<T> {
++    fn trace(&self, trc: *mut JSTracer) {
++        for elem in self {
++            elem.trace(trc);
++        }
++    }
++}
++
++// This structure reimplements a C++ class that uses virtual dispatch, so
++// use C layout to guarantee that vftable in CustomAutoRooter is in right place.
++/// A rooter for a custom traceable value, registered on the root stack while its guard lives.
++pub struct CustomAutoRooter<T> {
++    data: T,
++}
++
++impl<T> CustomAutoRooter<T> {
++    unsafe fn add_to_root_stack(&mut self, _cx: *mut JSContext)
++    where
++        T: CustomTrace,
++    {
++        crate::gc::register_custom_root(&self.data as *const T as *const std::ffi::c_void, trace_custom::<T>);
++    }
++
++    unsafe fn remove_from_root_stack(&mut self) {
++        crate::gc::unregister_custom_root(&self.data as *const T as *const std::ffi::c_void);
++    }
++}
++
++unsafe fn trace_custom<T: CustomTrace>(location: *const std::ffi::c_void, visitor: &mut v8::cppgc::Visitor) {
++    // SAFETY: the guard unregisters the location before the rooter goes away.
++    unsafe { &*(location as *const T) }.trace(crate::glue::tracer(visitor));
++}
++
++impl<T: CustomTrace> CustomAutoRooter<T> {
++    pub fn new(data: T) -> Self {
++        CustomAutoRooter { data }
++    }
++
++    pub fn root(&'_ mut self, cx: *mut JSContext) -> CustomAutoRooterGuard<'_, T> {
++        CustomAutoRooterGuard::new(cx, self)
++    }
++}
++
++#[cfg_attr(
++    feature = "crown",
++    crown::unrooted_must_root_lint::allow_unrooted_interior
++)]
++pub struct CustomAutoRooterGuard<'a, T: 'a + CustomTrace> {
++    rooter: &'a mut CustomAutoRooter<T>,
++}
++
++impl<'a, T: 'a + CustomTrace> CustomAutoRooterGuard<'a, T> {
++    pub fn new(cx: *mut JSContext, rooter: &'a mut CustomAutoRooter<T>) -> Self {
++        unsafe {
++            rooter.add_to_root_stack(cx);
++        }
++        CustomAutoRooterGuard { rooter }
++    }
++
++    pub fn handle(&'a self) -> Handle<'a, T>
++    where
++        T: RootKind,
++    {
++        // SAFETY: This root is a marked location.
++        unsafe { Handle::from_marked_location(&raw const (self.rooter.data)) }
++    }
++
++    pub fn handle_mut(&'_ mut self) -> MutableHandle<'_, T>
++    where
++        T: RootKind,
++    {
++        // SAFETY: This root is a marked location.
++        unsafe { MutableHandle::from_marked_location(&mut self.rooter.data) }
++    }
++}
++
++impl<'a, T: 'a + CustomTrace> Deref for CustomAutoRooterGuard<'a, T> {
++    type Target = T;
++    fn deref(&self) -> &T {
++        &self.rooter.data
++    }
++}
++
++impl<'a, T: 'a + CustomTrace> DerefMut for CustomAutoRooterGuard<'a, T> {
++    fn deref_mut(&mut self) -> &mut T {
++        &mut self.rooter.data
++    }
++}
++
++impl<'a, T: 'a + CustomTrace> Drop for CustomAutoRooterGuard<'a, T> {
++    fn drop(&mut self) {
++        unsafe {
++            self.rooter.remove_from_root_stack();
++        }
++    }
++}
++
++pub type SequenceRooter<T> = CustomAutoRooter<Vec<T>>;
++pub type SequenceRooterGuard<'a, T> = CustomAutoRooterGuard<'a, Vec<T>>;
+diff --git a/components/roves-js/src/gc/mod.rs b/components/roves-js/src/gc/mod.rs
+new file mode 100644
+index 00000000000..9cbf85d599a
+--- /dev/null
++++ b/components/roves-js/src/gc/mod.rs
+@@ -0,0 +1,18 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! Rooting and tracing (mozjs's `gc` module). See `root` for the root-stack model; the other
++//! submodules are ported from mozjs/mozjs_sys onto it.
++
++mod collections;
++mod custom;
++mod root;
++mod rooted_traceables;
++mod traceable;
++
++pub use collections::*;
++pub use custom::*;
++pub use root::*;
++pub use rooted_traceables::*;
++pub use traceable::Traceable;
+diff --git a/components/roves-js/src/gc.rs b/components/roves-js/src/gc/root.rs
+similarity index 79%
+rename from components/roves-js/src/gc.rs
+rename to components/roves-js/src/gc/root.rs
+index 9329ec7e527..ed97d69b5b4 100644
+--- a/components/roves-js/src/gc.rs
++++ b/components/roves-js/src/gc/root.rs
+@@ -53,6 +53,20 @@ macro_rules! gc_thing_pointer {
+ 
+ gc_thing_pointer!(JSObject, JSString, JSFunction, Symbol, BigInt, JSScript);
+ 
++impl RootKind for crate::jsid::jsid {
++    fn trace_root(&self, visitor: &mut Visitor) {
++        if let Some(pointer) = self.gcthing() {
++            trace_cell(pointer, visitor);
++        }
++    }
++}
++
++impl GCMethods for crate::jsid::jsid {
++    unsafe fn initial() -> Self {
++        crate::jsid::VoidId()
++    }
++}
++
+ impl RootKind for JSVal {
+     fn trace_root(&self, visitor: &mut Visitor) {
+         if self.is_gcthing() {
+@@ -121,6 +135,15 @@ fn register_root<T: RootKind>(location: *const T) {
+     });
+ }
+ 
++/// Registers a custom-traced root location (`CustomAutoRooter`).
++pub(crate) fn register_custom_root(location: *const c_void, trace: unsafe fn(*const c_void, &mut Visitor)) {
++    ROOT_STACK.with(|stack| stack.borrow_mut().push(RootEntry { location, trace }));
++}
++
++pub(crate) fn unregister_custom_root(location: *const c_void) {
++    unregister_root(location);
++}
++
+ fn unregister_root(location: *const c_void) {
+     ROOT_STACK.with(|stack| {
+         let mut stack = stack.borrow_mut();
+@@ -228,6 +251,26 @@ impl<'a, T> Handle<'a, T> {
+     pub fn as_ptr(&self) -> *const T {
+         self.ptr
+     }
++
++    /// From a raw (`jsapi`) handle.
++    ///
++    /// # Safety
++    /// The raw handle must point at a marked location that outlives `'a`.
++    pub unsafe fn from_raw(handle: crate::jsapi::Handle<T>) -> Self {
++        // SAFETY: forwarded to the caller.
++        unsafe { Handle::from_marked_location(handle.ptr) }
++    }
++
++    /// The raw (`jsapi`) handle.
++    pub fn into_handle(self) -> crate::jsapi::Handle<T> {
++        crate::jsapi::Handle { _phantom_0: PhantomData, ptr: self.ptr }
++    }
++}
++
++impl<'a, T> From<Handle<'a, T>> for crate::jsapi::Handle<T> {
++    fn from(handle: Handle<'a, T>) -> Self {
++        handle.into_handle()
++    }
+ }
+ 
+ impl<T> Deref for Handle<'_, T> {
+@@ -272,6 +315,31 @@ impl<'a, T> MutableHandle<'a, T> {
+     pub fn as_ptr(&self) -> *mut T {
+         self.ptr
+     }
++
++    /// From a raw (`jsapi`) mutable handle.
++    ///
++    /// # Safety
++    /// The raw handle must point at a marked location that outlives `'a`.
++    pub unsafe fn from_raw(handle: crate::jsapi::MutableHandle<T>) -> Self {
++        // SAFETY: forwarded to the caller.
++        unsafe { MutableHandle::from_marked_location(handle.ptr) }
++    }
++
++    /// The raw (`jsapi`) mutable handle.
++    pub fn into_handle(self) -> crate::jsapi::MutableHandle<T> {
++        crate::jsapi::MutableHandle { _phantom_0: PhantomData, ptr: self.ptr }
++    }
++
++    /// A shorter-lived mutable handle to the same location.
++    pub fn reborrow<'b>(&'b mut self) -> MutableHandle<'b, T> {
++        MutableHandle { ptr: self.ptr, anchor: PhantomData }
++    }
++}
++
++impl<'a, T> From<MutableHandle<'a, T>> for crate::jsapi::MutableHandle<T> {
++    fn from(handle: MutableHandle<'a, T>) -> Self {
++        handle.into_handle()
++    }
+ }
+ 
+ impl<T> Deref for MutableHandle<'_, T> {
+@@ -325,9 +393,9 @@ impl<T: Copy + GCMethods> Heap<T> {
+         self.value.get()
+     }
+ 
+-    pub fn handle(&self) -> Handle<'_, T> {
+-        // SAFETY: a traced heap location.
+-        unsafe { Handle::from_marked_location(self.value.get()) }
++    /// A raw (`jsapi`) handle to the location, as in mozjs.
++    pub fn handle(&self) -> crate::jsapi::Handle<T> {
++        crate::jsapi::Handle { _phantom_0: PhantomData, ptr: self.value.get() }
+     }
+ }
+ 
+diff --git a/components/roves-js/src/gc/rooted_traceables.rs b/components/roves-js/src/gc/rooted_traceables.rs
+new file mode 100644
+index 00000000000..6cfdf9d4b1a
+--- /dev/null
++++ b/components/roves-js/src/gc/rooted_traceables.rs
+@@ -0,0 +1,67 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++// Ported from mozjs 0.21.6 (same license) onto the roves-js root stack and tracer.
++
++use crate::gc::Traceable;
++use crate::jsapi::JSTracer;
++use crate::rust::Runtime;
++use std::cell::RefCell;
++use std::ffi::c_void;
++
++
++
++unsafe impl Traceable for Runtime {
++    #[inline]
++    unsafe fn trace(&self, _: *mut JSTracer) {}
++}
++
++
++/// Holds a set of JSTraceables that need to be rooted
++pub struct RootedTraceableSet {
++    set: Vec<*const dyn Traceable>,
++}
++
++thread_local!(
++    static ROOTED_TRACEABLES: RefCell<RootedTraceableSet>  = RefCell::new(RootedTraceableSet::new())
++);
++
++impl RootedTraceableSet {
++    fn new() -> RootedTraceableSet {
++        RootedTraceableSet { set: Vec::new() }
++    }
++
++    pub unsafe fn add(traceable: *const dyn Traceable) {
++        ROOTED_TRACEABLES.with(|traceables| {
++            traceables.borrow_mut().set.push(traceable);
++        });
++    }
++
++    pub unsafe fn remove(traceable: *const dyn Traceable) {
++        ROOTED_TRACEABLES.with(|traceables| {
++            let mut traceables = traceables.borrow_mut();
++            let idx = match traceables
++                .set
++                .iter()
++                .rposition(|x| *x as *const () == traceable as *const ())
++            {
++                Some(idx) => idx,
++                None => return,
++            };
++            traceables.set.remove(idx);
++        });
++    }
++
++    pub(crate) unsafe fn trace(&self, trc: *mut JSTracer) {
++        for traceable in &self.set {
++            (**traceable).trace(trc);
++        }
++    }
++}
++
++pub unsafe extern "C" fn trace_traceables(trc: *mut JSTracer, _: *mut c_void) {
++    ROOTED_TRACEABLES.with(|traceables| {
++        traceables.borrow().trace(trc);
++    });
++}
+diff --git a/components/roves-js/src/gc/traceable.rs b/components/roves-js/src/gc/traceable.rs
+new file mode 100644
+index 00000000000..5134f41f5dc
+--- /dev/null
++++ b/components/roves-js/src/gc/traceable.rs
+@@ -0,0 +1,406 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// Ported from mozjs/mozjs_sys (same license) onto roves-js: the tracer is the cppgc
++// visitor of the running GC (see `glue`).
++
++use crate::glue::{
++    CallBigIntTracer, CallFunctionTracer, CallIdTracer, CallObjectTracer,
++    CallPropertyDescriptorTracer, CallScriptTracer, CallStringTracer, CallSymbolTracer,
++    CallValueRootTracer, CallValueTracer,
++};
++use crate::jsapi::PropertyDescriptor;
++use crate::jsval::Value;
++use crate::jsapi::{jsid, JSFunction, JSObject, JSScript, JSString, JSTracer};
++
++use crate::jsapi::{BigInt, Symbol};
++use crate::gc::Heap;
++use std::any::TypeId;
++use std::borrow::Cow;
++use std::cell::{Cell, RefCell, UnsafeCell};
++use std::collections::btree_map::BTreeMap;
++use std::collections::btree_set::BTreeSet;
++use std::collections::vec_deque::VecDeque;
++use std::collections::{HashMap, HashSet};
++use std::hash::{BuildHasher, Hash};
++use std::num::{
++    NonZeroI128, NonZeroI16, NonZeroI32, NonZeroI64, NonZeroI8, NonZeroIsize, NonZeroU128,
++    NonZeroU16, NonZeroU32, NonZeroU64, NonZeroU8, NonZeroUsize,
++};
++use std::ops::Range;
++use std::path::PathBuf;
++use std::rc::Rc;
++use std::sync::atomic::{
++    AtomicBool, AtomicI16, AtomicI32, AtomicI64, AtomicI8, AtomicIsize, AtomicU16, AtomicU32,
++    AtomicU64, AtomicU8, AtomicUsize,
++};
++use std::thread::JoinHandle;
++use std::time::{Duration, Instant, SystemTime};
++
++/// Types that can be traced.
++///
++/// This trait is unsafe; if it is implemented incorrectly, the GC may end up collecting objects
++/// that are still reachable.
++pub unsafe trait Traceable {
++    /// Trace `self`.
++    unsafe fn trace(&self, trc: *mut JSTracer);
++}
++
++unsafe impl Traceable for Heap<*mut JSFunction> {
++    #[inline]
++    unsafe fn trace(&self, trc: *mut JSTracer) {
++        if self.get().is_null() {
++            return;
++        }
++        CallFunctionTracer(trc, self as *const _ as *mut Self, c"function".as_ptr());
++    }
++}
++
++unsafe impl Traceable for Heap<*mut JSObject> {
++    #[inline]
++    unsafe fn trace(&self, trc: *mut JSTracer) {
++        if self.get().is_null() {
++            return;
++        }
++        CallObjectTracer(trc, self as *const _ as *mut Self, c"object".as_ptr());
++    }
++}
++
++unsafe impl Traceable for Heap<*mut Symbol> {
++    unsafe fn trace(&self, trc: *mut JSTracer) {
++        if self.get().is_null() {
++            return;
++        }
++        CallSymbolTracer(trc, self as *const _ as *mut Self, c"symbol".as_ptr());
++    }
++}
++
++unsafe impl Traceable for Heap<*mut BigInt> {
++    unsafe fn trace(&self, trc: *mut JSTracer) {
++        if self.get().is_null() {
++            return;
++        }
++        CallBigIntTracer(trc, self as *const _ as *mut Self, c"bigint".as_ptr());
++    }
++}
++
++unsafe impl Traceable for Heap<*mut JSScript> {
++    #[inline]
++    unsafe fn trace(&self, trc: *mut JSTracer) {
++        if self.get().is_null() {
++            return;
++        }
++        CallScriptTracer(trc, self as *const _ as *mut Self, c"script".as_ptr());
++    }
++}
++
++unsafe impl Traceable for Heap<*mut JSString> {
++    #[inline]
++    unsafe fn trace(&self, trc: *mut JSTracer) {
++        if self.get().is_null() {
++            return;
++        }
++        CallStringTracer(trc, self as *const _ as *mut Self, c"string".as_ptr());
++    }
++}
++
++unsafe impl Traceable for Heap<Value> {
++    #[inline]
++    unsafe fn trace(&self, trc: *mut JSTracer) {
++        CallValueTracer(trc, self as *const _ as *mut Self, c"value".as_ptr());
++    }
++}
++
++unsafe impl Traceable for Value {
++    #[inline]
++    unsafe fn trace(&self, trc: *mut JSTracer) {
++        CallValueRootTracer(trc, self as *const _ as *mut Self, c"value".as_ptr());
++    }
++}
++
++unsafe impl Traceable for Heap<jsid> {
++    #[inline]
++    unsafe fn trace(&self, trc: *mut JSTracer) {
++        CallIdTracer(trc, self as *const _ as *mut Self, c"id".as_ptr());
++    }
++}
++
++unsafe impl Traceable for PropertyDescriptor {
++    #[inline]
++    unsafe fn trace(&self, trc: *mut JSTracer) {
++        CallPropertyDescriptorTracer(trc, self as *const _ as *mut _);
++    }
++}
++
++unsafe impl<T: Traceable> Traceable for Rc<T> {
++    #[inline]
++    unsafe fn trace(&self, trc: *mut JSTracer) {
++        (**self).trace(trc);
++    }
++}
++
++unsafe impl<T: Traceable + ?Sized> Traceable for Box<T> {
++    #[inline]
++    unsafe fn trace(&self, trc: *mut JSTracer) {
++        (**self).trace(trc);
++    }
++}
++
++unsafe impl<T: Traceable + Copy> Traceable for Cell<T> {
++    #[inline]
++    unsafe fn trace(&self, trc: *mut JSTracer) {
++        self.get().trace(trc);
++    }
++}
++
++unsafe impl<T: Traceable> Traceable for UnsafeCell<T> {
++    #[inline]
++    unsafe fn trace(&self, trc: *mut JSTracer) {
++        (*self.get()).trace(trc);
++    }
++}
++
++unsafe impl<T: Traceable> Traceable for RefCell<T> {
++    #[inline]
++    unsafe fn trace(&self, trc: *mut JSTracer) {
++        (*self).borrow().trace(trc);
++    }
++}
++
++unsafe impl<T: Traceable> Traceable for Option<T> {
++    #[inline]
++    unsafe fn trace(&self, trc: *mut JSTracer) {
++        self.as_ref().map(|t| t.trace(trc));
++    }
++}
++
++unsafe impl<T: Traceable, E: Traceable> Traceable for Result<T, E> {
++    #[inline]
++    unsafe fn trace(&self, trc: *mut JSTracer) {
++        match self {
++            Ok(t) => t.trace(trc),
++            Err(e) => e.trace(trc),
++        }
++    }
++}
++
++unsafe impl<T: Traceable> Traceable for [T] {
++    #[inline]
++    unsafe fn trace(&self, trc: *mut JSTracer) {
++        for t in self.iter() {
++            t.trace(trc);
++        }
++    }
++}
++
++// jsmanaged array
++unsafe impl<T: Traceable, const COUNT: usize> Traceable for [T; COUNT] {
++    #[inline]
++    unsafe fn trace(&self, tracer: *mut JSTracer) {
++        for v in self.iter() {
++            v.trace(tracer);
++        }
++    }
++}
++
++
++// TODO: Check if the following two are optimized to no-ops
++// if e.trace() is a no-op (e.g it is an impl_traceable_simple type)
++unsafe impl<T: Traceable> Traceable for Vec<T> {
++    #[inline]
++    unsafe fn trace(&self, trc: *mut JSTracer) {
++        for t in &*self {
++            t.trace(trc);
++        }
++    }
++}
++
++unsafe impl<T: Traceable> Traceable for VecDeque<T> {
++    #[inline]
++    unsafe fn trace(&self, trc: *mut JSTracer) {
++        for t in &*self {
++            t.trace(trc);
++        }
++    }
++}
++
++unsafe impl<K: Traceable + Eq + Hash, V: Traceable, S: BuildHasher> Traceable for HashMap<K, V, S> {
++    #[inline]
++    unsafe fn trace(&self, trc: *mut JSTracer) {
++        for (k, v) in &*self {
++            k.trace(trc);
++            v.trace(trc);
++        }
++    }
++}
++
++unsafe impl<T: Traceable + Eq + Hash, S: BuildHasher> Traceable for HashSet<T, S> {
++    #[inline]
++    unsafe fn trace(&self, trc: *mut JSTracer) {
++        for t in &*self {
++            t.trace(trc);
++        }
++    }
++}
++
++unsafe impl<K: Traceable + Eq + Hash, V: Traceable> Traceable for BTreeMap<K, V> {
++    #[inline]
++    unsafe fn trace(&self, trc: *mut JSTracer) {
++        for (k, v) in &*self {
++            k.trace(trc);
++            v.trace(trc);
++        }
++    }
++}
++
++unsafe impl<T: Traceable> Traceable for BTreeSet<T> {
++    #[inline]
++    unsafe fn trace(&self, trc: *mut JSTracer) {
++        for t in &*self {
++            t.trace(trc);
++        }
++    }
++}
++
++macro_rules! impl_traceable_tuple {
++    () => {
++        unsafe impl Traceable for () {
++            #[inline]
++            unsafe fn trace(&self, _: *mut JSTracer) {}
++        }
++    };
++    ($($name:ident)+) => {
++        unsafe impl<$($name: Traceable,)+> Traceable for ($($name,)+) {
++            #[allow(non_snake_case)]
++            #[inline]
++            unsafe fn trace(&self, trc: *mut JSTracer) {
++                let ($(ref $name,)+) = *self;
++                $($name.trace(trc);)+
++            }
++        }
++    };
++}
++
++impl_traceable_tuple! {}
++impl_traceable_tuple! { A }
++impl_traceable_tuple! { A B }
++impl_traceable_tuple! { A B C }
++impl_traceable_tuple! { A B C D }
++impl_traceable_tuple! { A B C D E }
++impl_traceable_tuple! { A B C D E F }
++impl_traceable_tuple! { A B C D E F G }
++impl_traceable_tuple! { A B C D E F G H }
++impl_traceable_tuple! { A B C D E F G H I }
++impl_traceable_tuple! { A B C D E F G H I J }
++impl_traceable_tuple! { A B C D E F G H I J K }
++impl_traceable_tuple! { A B C D E F G H I J K L }
++
++macro_rules! impl_traceable_fnptr {
++    () => {
++        unsafe impl<Ret> Traceable for fn() -> Ret {
++            #[inline]
++            unsafe fn trace(&self, _: *mut JSTracer) {}
++        }
++        unsafe impl<Ret> Traceable for unsafe fn() -> Ret {
++            #[inline]
++            unsafe fn trace(&self, _: *mut JSTracer) {}
++        }
++        unsafe impl<Ret> Traceable for extern "C" fn() -> Ret {
++            #[inline]
++            unsafe fn trace(&self, _: *mut JSTracer) {}
++        }
++        unsafe impl<Ret> Traceable for unsafe extern "C" fn() -> Ret {
++            #[inline]
++            unsafe fn trace(&self, _: *mut JSTracer) {}
++        }
++    };
++    ($($arg:ident)+) => {
++        unsafe impl<Ret, $($arg,)+> Traceable for fn($($arg,)+) -> Ret {
++            #[inline]
++            unsafe fn trace(&self, _: *mut JSTracer) {}
++        }
++        unsafe impl<Ret, $($arg,)+> Traceable for unsafe fn($($arg,)+) -> Ret {
++            #[inline]
++            unsafe fn trace(&self, _: *mut JSTracer) {}
++        }
++        unsafe impl<Ret, $($arg,)+> Traceable for extern "C" fn($($arg,)+) -> Ret {
++            #[inline]
++            unsafe fn trace(&self, _: *mut JSTracer) {}
++        }
++        unsafe impl<Ret, $($arg,)+> Traceable for unsafe extern "C" fn($($arg,)+) -> Ret {
++            #[inline]
++            unsafe fn trace(&self, _: *mut JSTracer) {}
++        }
++        unsafe impl<Ret, $($arg,)+> Traceable for extern "C" fn($($arg),+, ...) -> Ret {
++            #[inline]
++            unsafe fn trace(&self, _: *mut JSTracer) {}
++        }
++        unsafe impl<Ret, $($arg,)+> Traceable for unsafe extern "C" fn($($arg),+, ...) -> Ret {
++            #[inline]
++            unsafe fn trace(&self, _: *mut JSTracer) {}
++        }
++    }
++}
++
++impl_traceable_fnptr! {}
++impl_traceable_fnptr! { A }
++impl_traceable_fnptr! { A B }
++impl_traceable_fnptr! { A B C }
++impl_traceable_fnptr! { A B C D }
++impl_traceable_fnptr! { A B C D E }
++impl_traceable_fnptr! { A B C D E F }
++impl_traceable_fnptr! { A B C D E F G }
++impl_traceable_fnptr! { A B C D E F G H }
++impl_traceable_fnptr! { A B C D E F G H I }
++impl_traceable_fnptr! { A B C D E F G H I J }
++impl_traceable_fnptr! { A B C D E F G H I J K }
++impl_traceable_fnptr! { A B C D E F G H I J K L }
++
++/// For use on non-jsmanaged types
++macro_rules! impl_traceable_simple {
++    ($($ty:ty $(,)?)+) => {
++        $(
++            unsafe impl Traceable for $ty {
++                #[inline]
++                unsafe fn trace(&self, _: *mut JSTracer) {}
++            }
++        )+
++    }
++}
++
++impl_traceable_simple!(bool);
++impl_traceable_simple!(i8, i16, i32, i64, isize);
++impl_traceable_simple!(u8, u16, u32, u64, usize);
++impl_traceable_simple!(f32, f64);
++impl_traceable_simple!(char, String);
++impl_traceable_simple!(
++    NonZeroI128,
++    NonZeroI16,
++    NonZeroI32,
++    NonZeroI64,
++    NonZeroI8,
++    NonZeroIsize
++);
++impl_traceable_simple!(
++    NonZeroU128,
++    NonZeroU16,
++    NonZeroU32,
++    NonZeroU64,
++    NonZeroU8,
++    NonZeroUsize
++);
++impl_traceable_simple!(AtomicBool);
++impl_traceable_simple!(AtomicI8, AtomicI16, AtomicI32, AtomicI64, AtomicIsize);
++impl_traceable_simple!(AtomicU8, AtomicU16, AtomicU32, AtomicU64, AtomicUsize);
++impl_traceable_simple!(Cow<'static, str>);
++impl_traceable_simple!(TypeId);
++impl_traceable_simple!(Duration, Instant, SystemTime);
++impl_traceable_simple!(PathBuf);
++impl_traceable_simple!(Range<u64>);
++impl_traceable_simple!(JoinHandle<()>);
++
++unsafe impl<'a> Traceable for &'a str {
++    #[inline]
++    unsafe fn trace(&self, _: *mut JSTracer) {}
++}
+diff --git a/components/roves-js/src/glue.rs b/components/roves-js/src/glue.rs
+new file mode 100644
+index 00000000000..fccbdf9afde
+--- /dev/null
++++ b/components/roves-js/src/glue.rs
+@@ -0,0 +1,100 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! mozjs's C++ glue, implemented on V8. The tracer calls receive the cppgc visitor of the
++//! running GC as their `*mut JSTracer` (roves-js passes it in every trace hook).
++
++use std::ffi::{c_char, c_void};
++
++use v8::cppgc::Visitor;
++
++use crate::cell::trace_cell;
++use crate::gc::Heap;
++use crate::jsapi::{BigInt, JSFunction, JSObject, JSScript, JSString, JSTracer, PropertyDescriptor, Symbol, jsid};
++use crate::jsval::Value;
++
++/// The cppgc visitor behind a tracer pointer.
++///
++/// # Safety
++/// `trc` must be a tracer handed out by roves-js during a GC (a cppgc `Visitor`).
++pub(crate) unsafe fn visitor<'v>(trc: *mut JSTracer) -> &'v mut Visitor {
++    // SAFETY: forwarded to the caller.
++    unsafe { &mut *(trc as *mut Visitor) }
++}
++
++/// The tracer pointer roves-js passes to trace hooks for `visitor`.
++pub(crate) fn tracer(visitor: &mut Visitor) -> *mut JSTracer {
++    visitor as *mut Visitor as *mut JSTracer
++}
++
++fn trace_value(trc: *mut JSTracer, value: Value) {
++    if value.is_gcthing() {
++        // SAFETY: tracer contract.
++        trace_cell(value.to_gcthing(), unsafe { visitor(trc) });
++    }
++}
++
++fn trace_pointer(trc: *mut JSTracer, pointer: *mut c_void) {
++    // SAFETY: tracer contract.
++    trace_cell(pointer, unsafe { visitor(trc) });
++}
++
++macro_rules! heap_tracer {
++    ($name:ident, $ty:ty) => {
++        /// # Safety
++        /// `trc` is a roves-js tracer and `location` a live heap location.
++        pub unsafe fn $name(trc: *mut JSTracer, location: *mut Heap<*mut $ty>, _name: *const c_char) {
++            // SAFETY: forwarded to the caller.
++            trace_pointer(trc, unsafe { (*location).get() } as *mut c_void);
++        }
++    };
++}
++
++heap_tracer!(CallObjectTracer, JSObject);
++heap_tracer!(CallStringTracer, JSString);
++heap_tracer!(CallFunctionTracer, JSFunction);
++heap_tracer!(CallSymbolTracer, Symbol);
++heap_tracer!(CallBigIntTracer, BigInt);
++heap_tracer!(CallScriptTracer, JSScript);
++
++/// # Safety
++/// `trc` is a roves-js tracer and `location` a live heap location.
++pub unsafe fn CallValueTracer(trc: *mut JSTracer, location: *mut Heap<Value>, _name: *const c_char) {
++    // SAFETY: forwarded to the caller.
++    trace_value(trc, unsafe { (*location).get() });
++}
++
++/// # Safety
++/// `trc` is a roves-js tracer and `location` a live heap location.
++pub unsafe fn CallIdTracer(trc: *mut JSTracer, location: *mut Heap<jsid>, _name: *const c_char) {
++    // SAFETY: forwarded to the caller.
++    let id = unsafe { (*location).get() };
++    if let Some(pointer) = id.gcthing() {
++        trace_pointer(trc, pointer);
++    }
++}
++
++/// # Safety
++/// `trc` is a roves-js tracer and `location` a live value.
++pub unsafe fn CallValueRootTracer(trc: *mut JSTracer, location: *mut Value, _name: *const c_char) {
++    // SAFETY: forwarded to the caller.
++    trace_value(trc, unsafe { *location });
++}
++
++/// # Safety
++/// `trc` is a roves-js tracer and `location` a live object pointer.
++pub unsafe fn CallObjectRootTracer(trc: *mut JSTracer, location: *mut *mut JSObject, _name: *const c_char) {
++    // SAFETY: forwarded to the caller.
++    trace_pointer(trc, unsafe { *location } as *mut c_void);
++}
++
++/// # Safety
++/// `trc` is a roves-js tracer and `descriptor` a live descriptor.
++pub unsafe fn CallPropertyDescriptorTracer(trc: *mut JSTracer, descriptor: *mut PropertyDescriptor) {
++    // SAFETY: forwarded to the caller.
++    let descriptor = unsafe { &*descriptor };
++    trace_value(trc, descriptor.value_);
++    trace_pointer(trc, descriptor.getter_ as *mut c_void);
++    trace_pointer(trc, descriptor.setter_ as *mut c_void);
++}
+diff --git a/components/roves-js/src/jsapi.rs b/components/roves-js/src/jsapi.rs
+index 5a23972d3cc..ff8bbd67940 100644
+--- a/components/roves-js/src/jsapi.rs
++++ b/components/roves-js/src/jsapi.rs
+@@ -16,6 +16,7 @@ pub use crate::gc::Heap;
+ mod types {
+     #![allow(dead_code, non_camel_case_types, non_snake_case, non_upper_case_globals, clippy::all)]
+     use super::{BigInt, JSContext, JSFunction, JSObject, JSScript, JSString, Symbol};
++    use crate::jsid::{PropertyKey, jsid};
+     use crate::jsval::Value;
+ 
+     /// SpiderMonkey's stack-rooted GC vector (opaque here; its uses are emulated).
+@@ -26,8 +27,16 @@ mod types {
+     }
+ 
+     include!("jsapi_types.rs");
++
++    // As in mozjs_sys's bindgen output: the static binding tables are shared read-only.
++    unsafe impl Sync for JSClass {}
++    unsafe impl Sync for JSFunctionSpec {}
++    unsafe impl Sync for JSNativeWrapper {}
++    unsafe impl Sync for JSPropertySpec {}
++    unsafe impl Sync for JSTypedMethodJitInfo {}
+ }
+ pub use types::*;
++pub use crate::jsid::{PropertyKey, jsid};
+ pub use crate::jsval::{JSVal, Value};
+ pub use crate::api::{
+     ExceptionStackBehavior, JS_ClearPendingException, JS_DeprecatedStringHasLatin1Chars,
+diff --git a/components/roves-js/src/jsapi_types.rs b/components/roves-js/src/jsapi_types.rs
+index 54c157e0e4b..9f5fbfd1563 100644
+--- a/components/roves-js/src/jsapi_types.rs
++++ b/components/roves-js/src/jsapi_types.rs
+@@ -2084,12 +2084,6 @@ pub struct ObjectOps {
+             pub value_: Value,
+         }
+ 
+-#[repr(C)]
+-#[derive(Debug, Copy, Clone, PartialEq)]
+-pub struct PropertyKey {
+-    _private: [u8; 0],
+-}
+-
+     #[doc = " Read structured data from the reader r. This hook is used to read a value\n previously serialized by a call to the WriteStructuredCloneOp hook.\n\n tag and data are the pair of uint32_t values from the header. The callback\n may use the JS_Read* APIs to read any other relevant parts of the object\n from the reader r. closure is any value passed to the JS_ReadStructuredClone\n function.\n\n Return the new object on success, or raise an exception and return nullptr on\n error."]
+     pub type ReadStructuredCloneOp = ::std::option::Option<
+         unsafe extern "C" fn(
+@@ -2401,5 +2395,3 @@ pub struct TrampolineNative {
+     #[repr(C)]
+     pub struct __BindgenOpaqueArray<T: Copy, const N: usize>(pub [T; N]);
+ 
+-    pub type jsid = PropertyKey;
+-
+diff --git a/components/roves-js/src/jsid.rs b/components/roves-js/src/jsid.rs
+new file mode 100644
+index 00000000000..924d56e228b
+--- /dev/null
++++ b/components/roves-js/src/jsid.rs
+@@ -0,0 +1,151 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#![allow(non_snake_case)]
++
++// Ported from mozjs_sys 140.14 (`src/jsid.rs`, same license). A string or symbol id's payload
++// is the thing's cell pointer (cells are 8-aligned, leaving the 3 tag bits free).
++
++use crate::jsapi::{JSString, Symbol};
++use std::ffi::c_void;
++
++/// SpiderMonkey's property key: a tagged word (`JS::PropertyKey`).
++#[repr(C)]
++#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
++pub struct PropertyKey {
++    pub asBits_: usize,
++}
++
++pub type jsid = PropertyKey;
++
++impl Default for PropertyKey {
++    fn default() -> Self {
++        VoidId()
++    }
++}
++
++#[deprecated]
++pub const JSID_VOID: jsid = VoidId();
++
++const JSID_TYPE_MASK: usize = 0x7;
++
++#[repr(usize)]
++enum PropertyKeyTag {
++    Int = 0x1,
++    String = 0x0,
++    Void = 0x2,
++    Symbol = 0x4,
++}
++
++#[inline(always)]
++const fn AsPropertyKey(bits: usize) -> jsid {
++    jsid { asBits_: bits }
++}
++
++#[inline(always)]
++pub const fn VoidId() -> jsid {
++    AsPropertyKey(PropertyKeyTag::Void as usize)
++}
++
++#[inline(always)]
++pub fn IntId(i: i32) -> jsid {
++    assert!(i >= 0);
++    AsPropertyKey((((i as u32) << 1) as usize) | (PropertyKeyTag::Int as usize))
++}
++
++#[inline(always)]
++pub fn SymbolId(symbol: *mut Symbol) -> jsid {
++    assert!(!symbol.is_null());
++    assert_eq!((symbol as usize) & JSID_TYPE_MASK, 0);
++    AsPropertyKey((symbol as usize) | (PropertyKeyTag::Symbol as usize))
++}
++
++#[inline(always)]
++/// <https://searchfox.org/mozilla-central/rev/1f65969e57c757146e3e548614b49d3a4168eeb8/js/public/Id.h#183>
++pub fn StringId(s: *mut JSString) -> jsid {
++    assert!(!s.is_null());
++    assert_eq!((s as usize) & JSID_TYPE_MASK, 0);
++    AsPropertyKey((s as usize) | (PropertyKeyTag::String as usize))
++}
++
++impl jsid {
++    #[inline(always)]
++    fn asBits(&self) -> usize {
++        self.asBits_
++    }
++
++    #[inline(always)]
++    pub fn is_void(&self) -> bool {
++        self.asBits() == (PropertyKeyTag::Void as usize)
++    }
++
++    #[inline(always)]
++    pub fn is_int(&self) -> bool {
++        (self.asBits() & (PropertyKeyTag::Int as usize)) != 0
++    }
++
++    #[inline(always)]
++    pub fn is_string(&self) -> bool {
++        (self.asBits() & JSID_TYPE_MASK) == (PropertyKeyTag::String as usize)
++    }
++
++    #[inline(always)]
++    pub fn is_symbol(&self) -> bool {
++        (self.asBits() & JSID_TYPE_MASK) == (PropertyKeyTag::Symbol as usize)
++    }
++
++    #[inline(always)]
++    pub fn is_gcthing(&self) -> bool {
++        // mozjs_sys has `&&` here, which is never true; a GC thing is a string or a symbol.
++        self.is_string() || self.is_symbol()
++    }
++
++    #[inline(always)]
++    pub fn to_int(&self) -> i32 {
++        assert!(self.is_int());
++        ((self.asBits() as u32) >> 1) as i32
++    }
++
++    #[inline(always)]
++    pub fn to_string(&self) -> *mut JSString {
++        assert!(self.is_string());
++        (self.asBits() ^ (PropertyKeyTag::String as usize)) as *mut JSString
++    }
++
++    #[inline(always)]
++    pub fn to_symbol(&self) -> *mut Symbol {
++        assert!(self.is_symbol());
++        (self.asBits() ^ (PropertyKeyTag::Symbol as usize)) as *mut Symbol
++    }
++
++    /// The cell pointer of a string or symbol id (for tracing).
++    pub(crate) fn gcthing(&self) -> Option<*mut c_void> {
++        if self.is_string() || self.is_symbol() {
++            Some((self.asBits() & !JSID_TYPE_MASK) as *mut c_void)
++        } else {
++            None
++        }
++    }
++
++    #[inline(always)]
++    pub fn to_gcthing(&self) -> *mut c_void {
++        assert!(self.is_gcthing());
++        (self.asBits() & !JSID_TYPE_MASK) as *mut c_void
++    }
++}
++
++#[test]
++fn test_representation() {
++    assert!(!IntId(3).is_gcthing());
++    let id = VoidId();
++    assert!(id.is_void());
++
++    let id = IntId(0);
++    assert!(id.is_int());
++    assert_eq!(id.to_int(), 0);
++
++    let id = IntId(i32::MAX);
++    assert!(id.is_int());
++    assert_eq!(id.to_int(), i32::MAX);
++}
+diff --git a/components/roves-js/src/lib.rs b/components/roves-js/src/lib.rs
+index cddb26295fe..672e9a55069 100644
+--- a/components/roves-js/src/lib.rs
++++ b/components/roves-js/src/lib.rs
+@@ -17,8 +17,11 @@ pub mod context;
+ pub mod conversions;
+ pub mod error;
+ pub mod gc;
++pub mod glue;
+ pub mod jsapi;
++pub mod jsid;
+ pub mod jsval;
++pub mod panic;
+ pub mod rust;
+ 
+ /// Roots a value on this thread's root stack for the enclosing scope (mozjs's `rooted!`).
+@@ -46,6 +49,39 @@ macro_rules! rooted {
+     };
+ }
+ 
++/// Roots a custom-traceable value for the enclosing scope (mozjs's `auto_root!`).
++#[macro_export]
++macro_rules! auto_root {
++    (&in($cx:expr) $($t:tt)*) => {
++        $crate::auto_root!(in(unsafe { $cx.raw_cx_no_gc() }) $($t)*);
++    };
++    (in($cx:expr) let $($var:ident)+ = $init:expr) => {
++        let mut __root = $crate::gc::CustomAutoRooter::new($init);
++        let $($var)+ = __root.root($cx);
++    };
++    (in($cx:expr) let $($var:ident)+: $type:ty = $init:expr) => {
++        let mut __root = $crate::gc::CustomAutoRooter::new($init);
++        let $($var)+: $crate::gc::CustomAutoRooterGuard<$type> = __root.root($cx);
++    };
++}
++
++/// A vector rooted for the enclosing scope (mozjs's `rooted_vec!`).
++#[macro_export]
++macro_rules! rooted_vec {
++    (let mut $name:ident) => {
++        let mut __root = $crate::gc::RootableVec::new_unrooted();
++        let mut $name = $crate::gc::RootedVec::new(&mut __root);
++    };
++    (let $name:ident <- $iter:expr) => {
++        let mut __root = $crate::gc::RootableVec::new_unrooted();
++        let $name = $crate::gc::RootedVec::from_iter(&mut __root, $iter);
++    };
++    (let mut $name:ident <- $iter:expr) => {
++        let mut __root = $crate::gc::RootableVec::new_unrooted();
++        let mut $name = $crate::gc::RootedVec::from_iter(&mut __root, $iter);
++    };
++}
++
+ /// Packs a `JSJitInfo`'s first bitfield (ported from mozjs 0.21.6; the generated bindings
+ /// use it in every getter/setter/method info).
+ #[macro_export]
+diff --git a/components/roves-js/src/panic.rs b/components/roves-js/src/panic.rs
+new file mode 100644
+index 00000000000..e8b68cfe5d9
+--- /dev/null
++++ b/components/roves-js/src/panic.rs
+@@ -0,0 +1,32 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++use std::any::Any;
++use std::cell::RefCell;
++use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
++
++thread_local!(static PANIC_PAYLOAD: RefCell<Option<Box<dyn Any + Send>>> = RefCell::new(None));
++
++/// If there is a pending panic, resume unwinding.
++pub fn maybe_resume_unwind() {
++    if let Some(error) = PANIC_PAYLOAD.with(|result| result.borrow_mut().take()) {
++        resume_unwind(error);
++    }
++}
++
++/// Generic wrapper for JS engine callbacks panic-catching
++// https://github.com/servo/servo/issues/26585
++#[inline(never)]
++pub fn wrap_panic(function: &mut dyn FnMut()) {
++    match catch_unwind(AssertUnwindSafe(function)) {
++        Ok(()) => {}
++        Err(payload) => {
++            PANIC_PAYLOAD.with(|opt_payload| {
++                let mut opt_payload = opt_payload.borrow_mut();
++                assert!(opt_payload.is_none());
++                *opt_payload = Some(payload);
++            });
++        }
++    }
++}
+diff --git a/components/roves-js/src/rust.rs b/components/roves-js/src/rust.rs
+index d9d1a766f13..35cac5668d1 100644
+--- a/components/roves-js/src/rust.rs
++++ b/components/roves-js/src/rust.rs
+@@ -82,6 +82,9 @@ struct RootSet;
+ unsafe impl GarbageCollected for RootSet {
+     fn trace(&self, visitor: &mut Visitor) {
+         crate::gc::trace_roots(visitor);
++        // RootedVec / RootedTraceableBox contents.
++        // SAFETY: the tracer is this GC's visitor.
++        unsafe { crate::gc::trace_traceables(crate::glue::tracer(visitor), std::ptr::null_mut()) };
+     }
+ 
+     fn get_name(&self) -> &'static std::ffi::CStr {
+diff --git a/support/roves_js/extract_jsapi_types.py b/support/roves_js/extract_jsapi_types.py
+index 39e21f57e28..eff54cbd844 100644
+--- a/support/roves_js/extract_jsapi_types.py
++++ b/support/roves_js/extract_jsapi_types.py
+@@ -13,7 +13,7 @@ import sys
+ # Provided by roves-js itself (never emitted; the generated file imports them).
+ EXTERNAL = {
+     "Value", "JSVal", "JSContext", "JSObject", "JSString", "Symbol", "BigInt", "JSFunction", "JSScript",
+-    "Heap", "JS_CALLEE", "StackGCVector",
++    "Heap", "JS_CALLEE", "StackGCVector", "PropertyKey", "jsid",
+ }
+ 
+ OPAQUE = {
+@@ -21,7 +21,7 @@ OPAQUE = {
+     "ClassSpec", "ClassExtension", "ObjectOps", "Realm", "Compartment", "Zone", "GCContext",
+     "JSRuntime", "JSAtom", "InlinableNative", "TrampolineNative", "JSTracer", "JSPrincipals",
+     "BaseProxyHandler",
+-    "RootingContext", "AutoRequireNoGC", "PropertyKey",
++    "RootingContext", "AutoRequireNoGC",
+ }
+ 
+ 
+diff --git a/support/v8_cutover_check.py b/support/v8_cutover_check.py
+index 0c68b2b2eb0..1c8a36902af 100644
+--- a/support/v8_cutover_check.py
++++ b/support/v8_cutover_check.py
+@@ -52,6 +52,10 @@ def main() -> int:
+         manifest.write_bytes(original_manifest)
+         lock.write_bytes(original_lock)
+ 
++    log = ROOT / "target" / "v8-cutover" / f"{args.crate}.log"
++    log.parent.mkdir(parents=True, exist_ok=True)
++    log.write_text(result.stderr, encoding="utf-8")
++    print(f"Full compiler output: {log}")
+     errors = [line for line in result.stderr.splitlines() if ": error" in line]
+     kinds = collections.Counter()
+     for line in errors:

@@ -17,8 +17,11 @@ pub mod context;
 pub mod conversions;
 pub mod error;
 pub mod gc;
+pub mod glue;
 pub mod jsapi;
+pub mod jsid;
 pub mod jsval;
+pub mod panic;
 pub mod rust;
 
 /// Roots a value on this thread's root stack for the enclosing scope (mozjs's `rooted!`).
@@ -43,6 +46,39 @@ macro_rules! rooted {
             &mut __root,
             unsafe { <$type as $crate::gc::GCMethods>::initial() },
         );
+    };
+}
+
+/// Roots a custom-traceable value for the enclosing scope (mozjs's `auto_root!`).
+#[macro_export]
+macro_rules! auto_root {
+    (&in($cx:expr) $($t:tt)*) => {
+        $crate::auto_root!(in(unsafe { $cx.raw_cx_no_gc() }) $($t)*);
+    };
+    (in($cx:expr) let $($var:ident)+ = $init:expr) => {
+        let mut __root = $crate::gc::CustomAutoRooter::new($init);
+        let $($var)+ = __root.root($cx);
+    };
+    (in($cx:expr) let $($var:ident)+: $type:ty = $init:expr) => {
+        let mut __root = $crate::gc::CustomAutoRooter::new($init);
+        let $($var)+: $crate::gc::CustomAutoRooterGuard<$type> = __root.root($cx);
+    };
+}
+
+/// A vector rooted for the enclosing scope (mozjs's `rooted_vec!`).
+#[macro_export]
+macro_rules! rooted_vec {
+    (let mut $name:ident) => {
+        let mut __root = $crate::gc::RootableVec::new_unrooted();
+        let mut $name = $crate::gc::RootedVec::new(&mut __root);
+    };
+    (let $name:ident <- $iter:expr) => {
+        let mut __root = $crate::gc::RootableVec::new_unrooted();
+        let $name = $crate::gc::RootedVec::from_iter(&mut __root, $iter);
+    };
+    (let mut $name:ident <- $iter:expr) => {
+        let mut __root = $crate::gc::RootableVec::new_unrooted();
+        let mut $name = $crate::gc::RootedVec::from_iter(&mut __root, $iter);
     };
 }
 

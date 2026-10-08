@@ -9,6 +9,8 @@ description = "The `js` (mozjs) API surface Servo's script crates use, implement
 [lib]
 name = "js"
 path = "src/lib.rs"
+# The bindgen types keep SpiderMonkey's C++ doc comments, whose code blocks are not Rust.
+doctest = false
 
 [dependencies]
 roves-v8 = { path = "../roves-v8" }

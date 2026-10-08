@@ -52,6 +52,10 @@ def main() -> int:
         manifest.write_bytes(original_manifest)
         lock.write_bytes(original_lock)
 
+    log = ROOT / "target" / "v8-cutover" / f"{args.crate}.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text(result.stderr, encoding="utf-8")
+    print(f"Full compiler output: {log}")
     errors = [line for line in result.stderr.splitlines() if ": error" in line]
     kinds = collections.Counter()
     for line in errors:

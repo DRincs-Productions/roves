@@ -13,7 +13,7 @@ import sys
 # Provided by roves-js itself (never emitted; the generated file imports them).
 EXTERNAL = {
     "Value", "JSVal", "JSContext", "JSObject", "JSString", "Symbol", "BigInt", "JSFunction", "JSScript",
-    "Heap", "JS_CALLEE", "StackGCVector",
+    "Heap", "JS_CALLEE", "StackGCVector", "PropertyKey", "jsid",
 }
 
 OPAQUE = {
@@ -21,7 +21,7 @@ OPAQUE = {
     "ClassSpec", "ClassExtension", "ObjectOps", "Realm", "Compartment", "Zone", "GCContext",
     "JSRuntime", "JSAtom", "InlinableNative", "TrampolineNative", "JSTracer", "JSPrincipals",
     "BaseProxyHandler",
-    "RootingContext", "AutoRequireNoGC", "PropertyKey",
+    "RootingContext", "AutoRequireNoGC",
 }
 
 
