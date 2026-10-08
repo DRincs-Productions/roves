@@ -87,6 +87,7 @@ fn isolate<'i>(cx: *mut JSContext) -> &'i mut v8::Isolate {
 pub(crate) fn configure_isolate(isolate: &mut v8::Isolate) {
     isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
     isolate.set_promise_reject_callback(promise_reject_callback);
+    crate::modules_impl::configure_isolate(isolate);
 }
 
 // --- Interrupts ------------------------------------------------------------------------------

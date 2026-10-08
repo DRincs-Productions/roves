@@ -82,6 +82,8 @@ pub(crate) struct Cell {
     class: Option<Member<crate::object::ClassBox>>,
     /// A `JSScript` cell's compiled script (see `script_impl`).
     script: Option<TracedReference<v8::UnboundScript>>,
+    /// A module record's module (see `modules_impl`).
+    module: Option<TracedReference<v8::Module>>,
 }
 
 pub(crate) enum StringChars {
@@ -111,6 +113,9 @@ unsafe impl GarbageCollected for Cell {
         }
         if let Some(script) = &self.script {
             visitor.trace(script);
+        }
+        if let Some(module) = &self.module {
+            visitor.trace(module);
         }
     }
 
@@ -184,7 +189,7 @@ pub(crate) fn new_cell_with_class(
     // SAFETY: the returned pointer is handed straight to the caller, who roots or stores it
     // (the documented contract of an unrooted GC-thing pointer).
     let cell = unsafe {
-        v8::cppgc::make_garbage_collected(heap, Cell { value: reference, chars: std::cell::OnceCell::new(), class, script: None })
+        v8::cppgc::make_garbage_collected(heap, Cell { value: reference, chars: std::cell::OnceCell::new(), class, script: None, module: None })
     };
     to_raw(cell)
 }
@@ -199,7 +204,7 @@ pub(crate) fn new_script_cell(scope: &mut v8::PinScope, script: v8::Local<v8::Un
     let cell = unsafe {
         v8::cppgc::make_garbage_collected(
             heap,
-            Cell { value: reference, chars: std::cell::OnceCell::new(), class: None, script: Some(script) },
+            Cell { value: reference, chars: std::cell::OnceCell::new(), class: None, script: Some(script), module: None },
         )
     };
     to_raw(cell)
@@ -264,4 +269,30 @@ pub(crate) fn cell_class_box(pointer: *mut c_void) -> Option<*mut c_void> {
     // SAFETY: the member is traced by the (live) cell.
     let class_box = unsafe { member.get() }?;
     Some(class_box as *const crate::object::ClassBox as *mut c_void)
+}
+
+/// A module record: a placeholder object whose cell holds the V8 module.
+pub(crate) fn new_module_cell(scope: &mut v8::PinScope, module: v8::Local<v8::Module>) -> *mut c_void {
+    let placeholder = v8::Object::new(scope);
+    let reference = TracedReference::new(scope, placeholder.into());
+    let module = TracedReference::new(scope, module);
+    let heap = scope.get_cpp_heap().expect("roves-js isolates carry a cppgc heap");
+    // SAFETY: as for `new_cell_with_class`.
+    let cell = unsafe {
+        v8::cppgc::make_garbage_collected(
+            heap,
+            Cell { value: reference, chars: std::cell::OnceCell::new(), class: None, script: None, module: Some(module) },
+        )
+    };
+    to_raw(cell)
+}
+
+/// The module of a module record cell.
+///
+/// # Safety
+/// `pointer` must be a live cell.
+pub(crate) unsafe fn cell_module<'s>(scope: &mut v8::PinScope<'s, '_>, pointer: *mut c_void) -> Option<v8::Local<'s, v8::Module>> {
+    let cell = from_raw(pointer)?;
+    // SAFETY: the caller guarantees the cell is alive.
+    unsafe { cell.as_ref() }.module.as_ref()?.get(scope)
 }

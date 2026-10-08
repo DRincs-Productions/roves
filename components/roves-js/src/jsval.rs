@@ -30,25 +30,25 @@ const CANONICAL_NAN: u64 = 0x7FF8_0000_0000_0000;
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(C)]
 pub struct Value {
-    bits: u64,
+    asBits_: u64,
 }
 
 pub type JSVal = Value;
 
-pub(crate) const NULL_BITS: Value = Value { bits: (TAG_NULL << TAG_SHIFT) };
-pub(crate) const UNDEFINED_BITS: Value = Value { bits: (TAG_UNDEFINED << TAG_SHIFT) };
-pub(crate) const TRUE_BITS: Value = Value { bits: (TAG_BOOLEAN << TAG_SHIFT) | 1 };
-pub(crate) const FALSE_BITS: Value = Value { bits: (TAG_BOOLEAN << TAG_SHIFT) };
+pub(crate) const NULL_BITS: Value = Value { asBits_: (TAG_NULL << TAG_SHIFT) };
+pub(crate) const UNDEFINED_BITS: Value = Value { asBits_: (TAG_UNDEFINED << TAG_SHIFT) };
+pub(crate) const TRUE_BITS: Value = Value { asBits_: (TAG_BOOLEAN << TAG_SHIFT) | 1 };
+pub(crate) const FALSE_BITS: Value = Value { asBits_: (TAG_BOOLEAN << TAG_SHIFT) };
 
 impl std::fmt::Debug for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "JSVal({:#x})", self.bits)
+        write!(f, "JSVal({:#x})", self.asBits_)
     }
 }
 
 const fn tagged(tag: u64, payload: u64) -> JSVal {
     debug_assert!(payload <= PAYLOAD_MASK, "payload does not fit in 47 bits");
-    JSVal { bits: (tag << TAG_SHIFT) | payload }
+    JSVal { asBits_: (tag << TAG_SHIFT) | payload }
 }
 
 fn gc_thing(tag: u64, pointer: *const c_void) -> JSVal {
@@ -75,7 +75,7 @@ pub fn Int32Value(i: i32) -> JSVal {
 #[inline]
 pub fn DoubleValue(f: f64) -> JSVal {
     let bits = if f.is_nan() { CANONICAL_NAN } else { f.to_bits() };
-    JSVal { bits }
+    JSVal { asBits_: bits }
 }
 
 #[inline]
@@ -133,17 +133,17 @@ impl Default for JSVal {
 impl JSVal {
     #[inline]
     fn tag(&self) -> u64 {
-        self.bits >> TAG_SHIFT
+        self.asBits_ >> TAG_SHIFT
     }
 
     #[inline]
     fn payload(&self) -> u64 {
-        self.bits & PAYLOAD_MASK
+        self.asBits_ & PAYLOAD_MASK
     }
 
     /// The raw 64 bits (`asBits_` in SpiderMonkey).
     pub fn as_bits(&self) -> u64 {
-        self.bits
+        self.asBits_
     }
 
     pub fn is_undefined(&self) -> bool {
@@ -223,7 +223,7 @@ impl JSVal {
 
     pub fn to_double(&self) -> f64 {
         assert!(self.is_double());
-        f64::from_bits(self.bits)
+        f64::from_bits(self.asBits_)
     }
 
     pub fn to_number(&self) -> f64 {
@@ -337,4 +337,20 @@ pub unsafe fn JS_CALLEE(_cx: *mut crate::jsapi::JSContext, vp: *mut JSVal) -> JS
 pub unsafe fn JS_ARGV(_cx: *mut crate::jsapi::JSContext, vp: *mut JSVal) -> *mut JSVal {
     // SAFETY: see above.
     unsafe { vp.offset(2) }
+}
+
+impl Value {
+    /// The kind of GC thing a markable value holds (mozjs's `trace_kind`).
+    pub fn trace_kind(&self) -> crate::jsapi::TraceKind {
+        assert!(self.is_gcthing());
+        if self.is_object() {
+            crate::jsapi::TraceKind::Object
+        } else if self.is_string() {
+            crate::jsapi::TraceKind::String
+        } else if self.is_symbol() {
+            crate::jsapi::TraceKind::Symbol
+        } else {
+            crate::jsapi::TraceKind::BigInt
+        }
+    }
 }

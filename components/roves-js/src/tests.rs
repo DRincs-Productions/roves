@@ -1226,3 +1226,110 @@ mod values {
         assert!(unsafe { IsDetachedArrayBufferObject(buffer.get()) });
     }
 }
+
+mod modules {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::ffi::CString;
+
+    use super::{describe, eval};
+    use crate::glue::JS_GetModulePrivate;
+    use crate::jsapi::*;
+    use crate::jsval::*;
+    use crate::rust::{CompileOptionsWrapper, JSEngineHandle, Runtime, transform_str_to_source_text};
+
+    thread_local! {
+        static REGISTRY: RefCell<HashMap<std::string::String, usize>> = RefCell::new(HashMap::new());
+        static DYNAMIC: RefCell<Option<(JSVal, usize, usize)>> = const { RefCell::new(None) };
+    }
+
+    fn specifier(cx: *mut JSContext, request: Handle<*mut JSObject>) -> std::string::String {
+        let string = unsafe { GetModuleRequestSpecifier(cx, request) };
+        let safe = unsafe { crate::context::JSContext::from_ptr(std::ptr::NonNull::new(cx).unwrap()) };
+        unsafe { crate::conversions::jsstr_to_string(&safe, std::ptr::NonNull::new(string).unwrap()) }
+    }
+
+    unsafe extern "C" fn resolve(cx: *mut JSContext, _private: Handle<JSVal>, request: Handle<*mut JSObject>) -> *mut JSObject {
+        let name = specifier(cx, request);
+        REGISTRY.with(|registry| registry.borrow().get(&name).copied()).map_or(std::ptr::null_mut(), |record| record as *mut JSObject)
+    }
+
+    unsafe extern "C" fn metadata(cx: *mut JSContext, private: Handle<JSVal>, meta: Handle<*mut JSObject>) -> bool {
+        crate::rooted!(in(cx) let url = private.get());
+        unsafe { JS_SetProperty(cx, meta, c"privateId".as_ptr(), url.handle().into_handle()) }
+    }
+
+    unsafe extern "C" fn dynamic_import(_cx: *mut JSContext, private: Handle<JSVal>, request: Handle<*mut JSObject>, promise: Handle<*mut JSObject>) -> bool {
+        DYNAMIC.with(|dynamic| *dynamic.borrow_mut() = Some((private.get(), request.get() as usize, promise.get() as usize)));
+        true
+    }
+
+    fn compile(runtime: &Runtime, name: &str, source: &str, json: bool) -> *mut JSObject {
+        let cx = runtime.raw_cx();
+        let options = CompileOptionsWrapper::new(runtime.cx_no_gc(), CString::new(name).unwrap(), 1);
+        let mut text = transform_str_to_source_text(source);
+        let record = unsafe { if json { CompileJsonModule1(cx, options.ptr, &mut text) } else { CompileModule1(cx, options.ptr, &mut text) } };
+        assert!(!record.is_null(), "{name} compiles");
+        REGISTRY.with(|registry| registry.borrow_mut().insert(name.to_owned(), record as usize));
+        record
+    }
+
+    #[test]
+    fn module_graphs_link_evaluate_and_import_dynamically() {
+        let runtime = Runtime::new(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        let rt = runtime.rt();
+        unsafe {
+            SetModuleResolveHook(rt, Some(resolve));
+            SetModuleMetadataHook(rt, Some(metadata));
+            SetModuleDynamicImportHook(rt, Some(dynamic_import));
+        }
+        compile(&runtime, "dep.js", "export const answer = 40;", false);
+        compile(&runtime, "data.json", r#"{"extra": 2}"#, true);
+        rooted!(in(cx) let main = compile(
+            &runtime,
+            "main.js",
+            "import { answer } from 'dep.js';\nimport data from 'data.json' with { type: 'json' };\nexport const total = answer + data.extra;\nexport const meta = import.meta.privateId;\nexport function later() { return import('dep.js'); }",
+            false,
+        ));
+        unsafe { SetModulePrivate(main.get(), &Int32Value(77)) };
+        rooted!(in(cx) let mut private = UndefinedValue());
+        unsafe { JS_GetModulePrivate(main.get(), private.handle_mut().into()) };
+        assert_eq!(private.get().to_int32(), 77);
+        assert!(unsafe { IsCyclicModule(main.get()) });
+        assert_eq!(unsafe { GetRequestedModulesCount(cx, main.handle().into()) }, 2);
+        assert_eq!(unsafe { GetRequestedModuleType(cx, main.handle().into(), 1) }, ModuleType::JSON);
+
+        assert!(unsafe { ModuleLink(cx, main.handle().into()) });
+        rooted!(in(cx) let mut evaluation = UndefinedValue());
+        assert!(unsafe { ModuleEvaluate(cx, main.handle().into(), evaluation.handle_mut().into()) });
+        unsafe { RunJobs(cx) };
+        rooted!(in(cx) let evaluation_promise = evaluation.get().to_object());
+        assert!(unsafe { ThrowOnModuleEvaluationFailure(cx, evaluation_promise.handle().into(), ModuleErrorBehaviour::ThrowModuleErrorsSync) });
+        rooted!(in(cx) let namespace = unsafe { GetModuleNamespace(cx, main.handle().into()) });
+        rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
+        rooted!(in(cx) let namespace_value = ObjectValue(namespace.get()));
+        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"ns".as_ptr(), namespace_value.handle().into_handle()) });
+        assert_eq!(eval(&runtime, "ns.total").to_int32(), 42);
+        assert_eq!(eval(&runtime, "ns.meta").to_int32(), 77, "import.meta comes from the metadata hook with the module's private");
+
+        // Dynamic import: the hook gets the importer's private, a request and a promise.
+        eval(&runtime, "globalThis.pending = ns.later(); pending.then((m) => { globalThis.dynamic = m.answer; });");
+        let (importer_private, request, promise) = DYNAMIC.with(|dynamic| dynamic.borrow_mut().take()).expect("the dynamic import hook ran");
+        assert_eq!(importer_private.to_int32(), 77);
+        rooted!(in(cx) let request = request as *mut JSObject);
+        assert_eq!(specifier(cx, request.handle().into()), "dep.js");
+        rooted!(in(cx) let promise = promise as *mut JSObject);
+        rooted!(in(cx) let dep = REGISTRY.with(|registry| registry.borrow()["dep.js"]) as *mut JSObject);
+        rooted!(in(cx) let mut dep_evaluation = UndefinedValue());
+        assert!(unsafe { ModuleEvaluate(cx, dep.handle().into(), dep_evaluation.handle_mut().into()) });
+        rooted!(in(cx) let dep_evaluation = dep_evaluation.get().to_object());
+        rooted!(in(cx) let importer = importer_private);
+        assert!(unsafe {
+            FinishDynamicModuleImport(cx, dep_evaluation.handle().into(), importer.handle().into(), request.handle().into(), promise.handle().into())
+        });
+        unsafe { RunJobs(cx) };
+        assert_eq!(eval(&runtime, "dynamic").to_int32(), 40);
+        assert_eq!(describe(&runtime, eval(&runtime, "typeof pending.then")), "function");
+    }
+}

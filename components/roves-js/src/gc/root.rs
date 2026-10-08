@@ -227,6 +227,15 @@ impl<'a, T: 'a + RootKind> RootedGuard<'a, T> {
         unsafe { *self.as_ptr() = value };
     }
 
+    /// The rooted value, mutably borrowed while no GC can run (`_no_gc`).
+    pub fn as_mut_ref<'s: 'r, 'cx: 'r, 'r>(&'s mut self, _no_gc: &'cx crate::context::NoGC) -> &'r mut T
+    where
+        'a: 's,
+    {
+        // SAFETY: no GC runs while the borrow lives.
+        unsafe { &mut *self.as_ptr() }
+    }
+
     /// # Safety
     /// No GC may run while the reference is alive (the value is not re-read after a GC).
     pub unsafe fn as_mut(&mut self) -> &mut T {
@@ -478,6 +487,18 @@ impl<T: GCMethods> Default for Heap<T> {
     fn default() -> Self {
         // SAFETY: the owner traces the location.
         Heap { ptr: std::cell::UnsafeCell::new(unsafe { T::initial() }) }
+    }
+}
+
+impl<T: Copy + GCMethods + PartialEq> PartialEq for Heap<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.get() == other.get()
+    }
+}
+
+impl<T: Copy + GCMethods + std::fmt::Debug> std::fmt::Debug for Heap<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Heap").field("ptr", &self.get()).finish()
     }
 }
 

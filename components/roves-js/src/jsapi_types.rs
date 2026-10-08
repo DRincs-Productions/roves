@@ -3551,12 +3551,40 @@ pub struct JobQueue {
             Wasm = 0,
         }
 
+        #[doc = " The HostImportModuleDynamically hook.\n\n See https://tc39.es/ecma262/#sec-hostimportmoduledynamically\n\n Used to implement dynamic module import. Called when evaluating import()\n expressions.\n\n This starts an asynchronous operation. Some time after this hook is called\n the embedding must call JS::FinishDynamicModuleImport() passing the\n |referencingPrivate|, |moduleRequest| and |promise| arguments from the\n call. This must happen for both success and failure cases.\n\n In the meantime the embedding can take whatever steps it needs to make the\n module available. If successful, after calling FinishDynamicModuleImport()\n the module should be returned by the resolve hook when passed\n |referencingPrivate| and |moduleRequest|."]
+        pub type ModuleDynamicImportHook = ::std::option::Option<
+            unsafe extern "C" fn(
+                cx: *mut JSContext,
+                referencingPrivate: Handle<Value>,
+                moduleRequest: Handle<*mut JSObject>,
+                promise: Handle<*mut JSObject>,
+            ) -> bool,
+        >;
+
         #[repr(i32)]
         #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
         pub enum ModuleErrorBehaviour {
             ReportModuleErrorsAsync = 0,
             ThrowModuleErrorsSync = 1,
         }
+
+        #[doc = " The module metadata hook.\n\n See: https://tc39.es/ecma262/#sec-hostgetimportmetaproperties\n\n Populate the |metaObject| object returned when import.meta is evaluated in\n the context of the script or module with private value |privateValue|.\n\n This is based on the spec's HostGetImportMetaProperties hook but defines\n properties on the meta object directly rather than returning a list."]
+        pub type ModuleMetadataHook = ::std::option::Option<
+            unsafe extern "C" fn(
+                cx: *mut JSContext,
+                privateValue: Handle<Value>,
+                metaObject: Handle<*mut JSObject>,
+            ) -> bool,
+        >;
+
+        #[doc = " The HostResolveImportedModule hook.\n\n See: https://tc39.es/ecma262/#sec-hostresolveimportedmodule\n\n This embedding-defined hook is used to implement module loading. It is called\n to get or create a module object corresponding to |moduleRequest| occurring\n in the context of the script or module with private value\n |referencingPrivate|.\n\n The module specifier string for the request can be obtained by calling\n JS::GetModuleRequestSpecifier.\n\n The private value for a script or module is set with JS::SetScriptPrivate or\n JS::SetModulePrivate. It's assumed that the embedding can handle receiving\n either here.\n\n This hook must obey the restrictions defined in the spec:\n  - Each time the hook is called with the same arguemnts, the same module must\n    be returned.\n  - If a module cannot be created for the given arguments, an exception must\n    be thrown.\n\n This is a synchronous operation."]
+        pub type ModuleResolveHook = ::std::option::Option<
+            unsafe extern "C" fn(
+                cx: *mut JSContext,
+                referencingPrivate: Handle<Value>,
+                moduleRequest: Handle<*mut JSObject>,
+            ) -> *mut JSObject,
+        >;
 
         #[repr(u32)]
         #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]

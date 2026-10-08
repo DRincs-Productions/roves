@@ -22,6 +22,7 @@ pub use crate::typedarray_impl::*;
 pub use crate::runtime_impl::*;
 pub use crate::script_impl::*;
 pub use crate::values_impl::*;
+pub use crate::modules_impl::*;
 pub use crate::proxy::{SetDOMProxyInformation, SetPropertyIgnoringNamedGetter};
 pub use crate::object::RuntimeHeapState;
 
@@ -38,7 +39,7 @@ mod types {
     /// SpiderMonkey's stack-rooted GC vector (opaque here; its uses are emulated).
     #[repr(C)]
     #[derive(Debug, Copy, Clone)]
-    pub struct StackGCVector<T, AllocPolicy> {
+    pub struct StackGCVector<T, AllocPolicy = TempAllocPolicy> {
         _marker: std::marker::PhantomData<(T, AllocPolicy)>,
     }
 
@@ -133,6 +134,8 @@ pub struct JSContext {
     pub(crate) scripts: crate::script_impl::Scripts,
     /// Helper functions written in JS, compiled once (see `values_impl::helper`).
     pub(crate) helpers: RefCell<std::collections::HashMap<&'static str, v8::Global<v8::Function>>>,
+    /// Module records and module hooks (see `modules_impl`).
+    pub(crate) modules: crate::modules_impl::Modules,
 }
 
 impl JSContext {

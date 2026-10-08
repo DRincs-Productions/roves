@@ -47,6 +47,11 @@ pub(crate) fn trace_scripts(cx: &JSContext, visitor: &mut v8::cppgc::Visitor) {
     }
 }
 
+/// The private of the script with V8 id `script_id`.
+pub(crate) fn script_private(cx: &JSContext, script_id: i32) -> Option<JSVal> {
+    cx.scripts.privates.borrow().get(&script_id).copied()
+}
+
 // --- Compile options and sources -----------------------------------------------------------
 
 /// New compile options for `file` (which the caller keeps alive) starting at `line`.
@@ -64,7 +69,7 @@ pub unsafe fn DeleteCompileOptions(options: *mut ReadOnlyCompileOptions) {
     drop(unsafe { Box::from_raw(options) });
 }
 
-fn filename(options: &ReadOnlyCompileOptions) -> String {
+pub(crate) fn options_filename(options: &ReadOnlyCompileOptions) -> String {
     let data = options._base.filename_.data_;
     if data.is_null() {
         return String::new();
@@ -73,8 +78,8 @@ fn filename(options: &ReadOnlyCompileOptions) -> String {
     unsafe { CStr::from_ptr(data) }.to_string_lossy().into_owned()
 }
 
-fn script_origin<'s>(scope: &mut v8::PinScope<'s, '_>, options: &ReadOnlyCompileOptions, is_module: bool) -> v8::ScriptOrigin<'s> {
-    let name = v8::String::new(scope, &filename(options)).unwrap_or_else(|| v8::String::empty(scope));
+pub(crate) fn script_origin<'s>(scope: &mut v8::PinScope<'s, '_>, options: &ReadOnlyCompileOptions, is_module: bool) -> v8::ScriptOrigin<'s> {
+    let name = v8::String::new(scope, &options_filename(options)).unwrap_or_else(|| v8::String::empty(scope));
     v8::ScriptOrigin::new(
         scope,
         name.into(),

@@ -456,3 +456,18 @@ impl Default for ObjectOpResult {
     }
 }
 
+
+impl crate::jsapi::Type {
+    /// The byte size of the scalar type, if it has one.
+    pub const fn byte_size(&self) -> Option<usize> {
+        use crate::jsapi::Type;
+        match self {
+            Type::Int8 | Type::Uint8 | Type::Uint8Clamped => Some(1),
+            Type::Int16 | Type::Uint16 | Type::Float16 => Some(2),
+            Type::Int32 | Type::Uint32 | Type::Float32 => Some(4),
+            Type::Int64 | Type::Float64 | Type::BigInt64 | Type::BigUint64 => Some(8),
+            Type::Simd128 => Some(16),
+            Type::MaxTypedArrayViewType => None,
+        }
+    }
+}

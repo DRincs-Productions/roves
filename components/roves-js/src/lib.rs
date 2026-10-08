@@ -30,6 +30,7 @@ mod proxy;
 mod runtime_impl;
 mod script_impl;
 mod values_impl;
+mod modules_impl;
 mod typedarray_impl;
 pub mod typedarray;
 mod realm_impl;

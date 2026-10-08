@@ -411,3 +411,8 @@ unsafe impl<T: crate::typedarray::TypedArrayElement> Traceable for crate::typeda
         unsafe { self.underlying_object().trace(trc) };
     }
 }
+
+unsafe impl Traceable for *mut crate::jsapi::JobQueue {
+    #[inline]
+    unsafe fn trace(&self, _: *mut JSTracer) {}
+}

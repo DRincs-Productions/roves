@@ -11,6 +11,70 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-08 - V8 cutover: ES modules on V8, plus mozjs API compatibility fixes (CP103)
+
+**Servo files:**
+- `components/roves-js/src/`:
+  - new: `modules_impl.rs`;
+  - changed: `cell.rs`, `script_impl.rs`, `runtime_impl.rs`, `jsapi.rs`, `glue.rs`, `rust.rs`,
+    `api.rs`, `jsval.rs`, `jsimpls.rs`, `gc/root.rs`, `gc/traceable.rs`, `lib.rs`,
+    `tests.rs`, `jsapi_types.rs` and `wrappers2.in.rs`;
+- `support/roves_js/gen_wrappers2.py` and `support/roves_js/jsapi_type_names.txt`.
+
+**Patch:** `0168-roves-js-modules.patch` after 0167.
+
+**Modules.**
+- A module record (a `*mut JSObject` in the JSAPI) is a placeholder object whose cell holds
+  the V8 `Module`. Cells gain an optional traced module reference.
+- The runtime keeps one entry per module: the cell, the private value and, for JSON modules,
+  the parsed value. An entry is found from a V8 module (by identity hash) and from running
+  code (by script id).
+- Implemented:
+  - `CompileModule1`;
+  - `CompileJsonModule1`: a V8 synthetic module whose `default` export is the parsed JSON;
+  - `IsCyclicModule`;
+  - `Set`/`JS_GetModulePrivate`;
+  - module requests: objects holding the specifier and type as V8 privates, with
+    `GetModuleRequestSpecifier`/`Type`;
+  - `GetRequestedModulesCount`/`Specifier`/`Type`: V8 module requests, with `type: "json"`
+    from the import attributes;
+  - `ModuleLink`: V8's resolve callback calls the embedder's resolve hook with the
+    referrer's private and a request object;
+  - `ModuleEvaluate`: the evaluation promise;
+  - `ThrowOnModuleEvaluationFailure`;
+  - `GetModuleNamespace`;
+  - the resolve, dynamic-import and metadata hooks.
+- Dynamic `import()` goes through V8's host callback. It hands the embedder's hook the
+  importer's private (found from the running script or module), a request and a new promise.
+  `FinishDynamicModuleImport` settles that promise with the namespace once the evaluation
+  promise fulfils, or with the pending exception.
+- `import.meta` goes through V8's initializer callback to the metadata hook.
+- Gap: module entries live as long as the runtime.
+
+**mozjs API compatibility** (from the `servo-script` measurement):
+- `JSVal`'s field is `asBits_`, and `trace_kind()` is added;
+- `ForOfIterationFailure: From<E>`;
+- `as_mut_ref` on rooted values;
+- `Heap<T>: PartialEq + Debug`;
+- `Type::byte_size`;
+- `StackGCVector`'s default allocation policy;
+- `Traceable` for `*mut JobQueue`;
+- `gen_wrappers2.py` now sees functions defined through roves-js's own macros. This adds the
+  typed-array-with-buffer wrappers, giving 215 generated entries.
+
+**Progress:** `servo-script` had **56 errors** after CP102, down from 106. The remaining work:
+- structured clone;
+- `WindowProxy`/transplant;
+- stream consumers;
+- the proxy class statics;
+- the type errors these fixes address.
+
+**Tests:** `roves-js` 20/20. The module test covers:
+- a JS + JSON module graph linked through a resolve hook and evaluated;
+- `import.meta` filled from the module's private;
+- a dynamic `import()` reporting the importer's private, settled by
+  `FinishDynamicModuleImport`.
+
 ## 2026-10-08 - V8 cutover: promises, JSON, values, dates, regexps and ArrayBuffers (CP102)
 
 **Servo files:**

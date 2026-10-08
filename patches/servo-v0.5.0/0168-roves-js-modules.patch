@@ -1,0 +1,1159 @@
+diff --git a/components/roves-js/src/api.rs b/components/roves-js/src/api.rs
+index e18838e7f7d..80e22d3476d 100644
+--- a/components/roves-js/src/api.rs
++++ b/components/roves-js/src/api.rs
+@@ -298,6 +298,12 @@ pub enum ForOfIterationFailure<OtherError> {
+     Other(OtherError),
+ }
+ 
++impl<OtherError> From<OtherError> for ForOfIterationFailure<OtherError> {
++    fn from(value: OtherError) -> Self {
++        Self::Other(value)
++    }
++}
++
+ /// Iterates `iterable` with the JS iterator protocol, calling `callback` with each element.
+ pub fn for_of<Callback, OtherError>(
+     cx: *mut JSContext,
+diff --git a/components/roves-js/src/cell.rs b/components/roves-js/src/cell.rs
+index 2410d1665c6..c6c21930f30 100644
+--- a/components/roves-js/src/cell.rs
++++ b/components/roves-js/src/cell.rs
+@@ -82,6 +82,8 @@ pub(crate) struct Cell {
+     class: Option<Member<crate::object::ClassBox>>,
+     /// A `JSScript` cell's compiled script (see `script_impl`).
+     script: Option<TracedReference<v8::UnboundScript>>,
++    /// A module record's module (see `modules_impl`).
++    module: Option<TracedReference<v8::Module>>,
+ }
+ 
+ pub(crate) enum StringChars {
+@@ -112,6 +114,9 @@ unsafe impl GarbageCollected for Cell {
+         if let Some(script) = &self.script {
+             visitor.trace(script);
+         }
++        if let Some(module) = &self.module {
++            visitor.trace(module);
++        }
+     }
+ 
+     fn get_name(&self) -> &'static std::ffi::CStr {
+@@ -184,7 +189,7 @@ pub(crate) fn new_cell_with_class(
+     // SAFETY: the returned pointer is handed straight to the caller, who roots or stores it
+     // (the documented contract of an unrooted GC-thing pointer).
+     let cell = unsafe {
+-        v8::cppgc::make_garbage_collected(heap, Cell { value: reference, chars: std::cell::OnceCell::new(), class, script: None })
++        v8::cppgc::make_garbage_collected(heap, Cell { value: reference, chars: std::cell::OnceCell::new(), class, script: None, module: None })
+     };
+     to_raw(cell)
+ }
+@@ -199,7 +204,7 @@ pub(crate) fn new_script_cell(scope: &mut v8::PinScope, script: v8::Local<v8::Un
+     let cell = unsafe {
+         v8::cppgc::make_garbage_collected(
+             heap,
+-            Cell { value: reference, chars: std::cell::OnceCell::new(), class: None, script: Some(script) },
++            Cell { value: reference, chars: std::cell::OnceCell::new(), class: None, script: Some(script), module: None },
+         )
+     };
+     to_raw(cell)
+@@ -265,3 +270,29 @@ pub(crate) fn cell_class_box(pointer: *mut c_void) -> Option<*mut c_void> {
+     let class_box = unsafe { member.get() }?;
+     Some(class_box as *const crate::object::ClassBox as *mut c_void)
+ }
++
++/// A module record: a placeholder object whose cell holds the V8 module.
++pub(crate) fn new_module_cell(scope: &mut v8::PinScope, module: v8::Local<v8::Module>) -> *mut c_void {
++    let placeholder = v8::Object::new(scope);
++    let reference = TracedReference::new(scope, placeholder.into());
++    let module = TracedReference::new(scope, module);
++    let heap = scope.get_cpp_heap().expect("roves-js isolates carry a cppgc heap");
++    // SAFETY: as for `new_cell_with_class`.
++    let cell = unsafe {
++        v8::cppgc::make_garbage_collected(
++            heap,
++            Cell { value: reference, chars: std::cell::OnceCell::new(), class: None, script: None, module: Some(module) },
++        )
++    };
++    to_raw(cell)
++}
++
++/// The module of a module record cell.
++///
++/// # Safety
++/// `pointer` must be a live cell.
++pub(crate) unsafe fn cell_module<'s>(scope: &mut v8::PinScope<'s, '_>, pointer: *mut c_void) -> Option<v8::Local<'s, v8::Module>> {
++    let cell = from_raw(pointer)?;
++    // SAFETY: the caller guarantees the cell is alive.
++    unsafe { cell.as_ref() }.module.as_ref()?.get(scope)
++}
+diff --git a/components/roves-js/src/gc/root.rs b/components/roves-js/src/gc/root.rs
+index c8b8d1aa576..e75e0687cb7 100644
+--- a/components/roves-js/src/gc/root.rs
++++ b/components/roves-js/src/gc/root.rs
+@@ -227,6 +227,15 @@ impl<'a, T: 'a + RootKind> RootedGuard<'a, T> {
+         unsafe { *self.as_ptr() = value };
+     }
+ 
++    /// The rooted value, mutably borrowed while no GC can run (`_no_gc`).
++    pub fn as_mut_ref<'s: 'r, 'cx: 'r, 'r>(&'s mut self, _no_gc: &'cx crate::context::NoGC) -> &'r mut T
++    where
++        'a: 's,
++    {
++        // SAFETY: no GC runs while the borrow lives.
++        unsafe { &mut *self.as_ptr() }
++    }
++
+     /// # Safety
+     /// No GC may run while the reference is alive (the value is not re-read after a GC).
+     pub unsafe fn as_mut(&mut self) -> &mut T {
+@@ -481,6 +490,18 @@ impl<T: GCMethods> Default for Heap<T> {
+     }
+ }
+ 
++impl<T: Copy + GCMethods + PartialEq> PartialEq for Heap<T> {
++    fn eq(&self, other: &Self) -> bool {
++        self.get() == other.get()
++    }
++}
++
++impl<T: Copy + GCMethods + std::fmt::Debug> std::fmt::Debug for Heap<T> {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.debug_struct("Heap").field("ptr", &self.get()).finish()
++    }
++}
++
+ impl<T: Copy + GCMethods> Heap<T> {
+     pub fn boxed(value: T) -> Box<Heap<T>> {
+         let heap = Box::<Heap<T>>::default();
+diff --git a/components/roves-js/src/gc/traceable.rs b/components/roves-js/src/gc/traceable.rs
+index 15e85488e5f..70ea19e78e3 100644
+--- a/components/roves-js/src/gc/traceable.rs
++++ b/components/roves-js/src/gc/traceable.rs
+@@ -411,3 +411,8 @@ unsafe impl<T: crate::typedarray::TypedArrayElement> Traceable for crate::typeda
+         unsafe { self.underlying_object().trace(trc) };
+     }
+ }
++
++unsafe impl Traceable for *mut crate::jsapi::JobQueue {
++    #[inline]
++    unsafe fn trace(&self, _: *mut JSTracer) {}
++}
+diff --git a/components/roves-js/src/glue.rs b/components/roves-js/src/glue.rs
+index 5f7858eef49..70254cc25e0 100644
+--- a/components/roves-js/src/glue.rs
++++ b/components/roves-js/src/glue.rs
+@@ -30,6 +30,7 @@ pub use crate::script_impl::{
+     RUST_js_GetErrorMessage,
+ };
+ pub use crate::values_impl::JS_GetPromiseResult;
++pub use crate::modules_impl::JS_GetModulePrivate;
+ pub use crate::proxy::{
+     CreateProxyHandler, GetProxyHandler, GetProxyHandlerExtra, GetProxyHandlerFamily, GetProxyPrivate,
+     GetProxyReservedSlot, InvokeGetOwnPropertyDescriptor, IsProxyHandlerFamily, NewProxyObject, SetProxyPrivate,
+diff --git a/components/roves-js/src/jsapi.rs b/components/roves-js/src/jsapi.rs
+index a2c8fda39a2..42f2d23c80a 100644
+--- a/components/roves-js/src/jsapi.rs
++++ b/components/roves-js/src/jsapi.rs
+@@ -22,6 +22,7 @@ pub use crate::typedarray_impl::*;
+ pub use crate::runtime_impl::*;
+ pub use crate::script_impl::*;
+ pub use crate::values_impl::*;
++pub use crate::modules_impl::*;
+ pub use crate::proxy::{SetDOMProxyInformation, SetPropertyIgnoringNamedGetter};
+ pub use crate::object::RuntimeHeapState;
+ 
+@@ -38,7 +39,7 @@ mod types {
+     /// SpiderMonkey's stack-rooted GC vector (opaque here; its uses are emulated).
+     #[repr(C)]
+     #[derive(Debug, Copy, Clone)]
+-    pub struct StackGCVector<T, AllocPolicy> {
++    pub struct StackGCVector<T, AllocPolicy = TempAllocPolicy> {
+         _marker: std::marker::PhantomData<(T, AllocPolicy)>,
+     }
+ 
+@@ -133,6 +134,8 @@ pub struct JSContext {
+     pub(crate) scripts: crate::script_impl::Scripts,
+     /// Helper functions written in JS, compiled once (see `values_impl::helper`).
+     pub(crate) helpers: RefCell<std::collections::HashMap<&'static str, v8::Global<v8::Function>>>,
++    /// Module records and module hooks (see `modules_impl`).
++    pub(crate) modules: crate::modules_impl::Modules,
+ }
+ 
+ impl JSContext {
+diff --git a/components/roves-js/src/jsapi_types.rs b/components/roves-js/src/jsapi_types.rs
+index 15898bb635c..fae1829d8c6 100644
+--- a/components/roves-js/src/jsapi_types.rs
++++ b/components/roves-js/src/jsapi_types.rs
+@@ -3551,6 +3551,16 @@ pub struct JobQueue {
+             Wasm = 0,
+         }
+ 
++        #[doc = " The HostImportModuleDynamically hook.\n\n See https://tc39.es/ecma262/#sec-hostimportmoduledynamically\n\n Used to implement dynamic module import. Called when evaluating import()\n expressions.\n\n This starts an asynchronous operation. Some time after this hook is called\n the embedding must call JS::FinishDynamicModuleImport() passing the\n |referencingPrivate|, |moduleRequest| and |promise| arguments from the\n call. This must happen for both success and failure cases.\n\n In the meantime the embedding can take whatever steps it needs to make the\n module available. If successful, after calling FinishDynamicModuleImport()\n the module should be returned by the resolve hook when passed\n |referencingPrivate| and |moduleRequest|."]
++        pub type ModuleDynamicImportHook = ::std::option::Option<
++            unsafe extern "C" fn(
++                cx: *mut JSContext,
++                referencingPrivate: Handle<Value>,
++                moduleRequest: Handle<*mut JSObject>,
++                promise: Handle<*mut JSObject>,
++            ) -> bool,
++        >;
++
+         #[repr(i32)]
+         #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+         pub enum ModuleErrorBehaviour {
+@@ -3558,6 +3568,24 @@ pub struct JobQueue {
+             ThrowModuleErrorsSync = 1,
+         }
+ 
++        #[doc = " The module metadata hook.\n\n See: https://tc39.es/ecma262/#sec-hostgetimportmetaproperties\n\n Populate the |metaObject| object returned when import.meta is evaluated in\n the context of the script or module with private value |privateValue|.\n\n This is based on the spec's HostGetImportMetaProperties hook but defines\n properties on the meta object directly rather than returning a list."]
++        pub type ModuleMetadataHook = ::std::option::Option<
++            unsafe extern "C" fn(
++                cx: *mut JSContext,
++                privateValue: Handle<Value>,
++                metaObject: Handle<*mut JSObject>,
++            ) -> bool,
++        >;
++
++        #[doc = " The HostResolveImportedModule hook.\n\n See: https://tc39.es/ecma262/#sec-hostresolveimportedmodule\n\n This embedding-defined hook is used to implement module loading. It is called\n to get or create a module object corresponding to |moduleRequest| occurring\n in the context of the script or module with private value\n |referencingPrivate|.\n\n The module specifier string for the request can be obtained by calling\n JS::GetModuleRequestSpecifier.\n\n The private value for a script or module is set with JS::SetScriptPrivate or\n JS::SetModulePrivate. It's assumed that the embedding can handle receiving\n either here.\n\n This hook must obey the restrictions defined in the spec:\n  - Each time the hook is called with the same arguemnts, the same module must\n    be returned.\n  - If a module cannot be created for the given arguments, an exception must\n    be thrown.\n\n This is a synchronous operation."]
++        pub type ModuleResolveHook = ::std::option::Option<
++            unsafe extern "C" fn(
++                cx: *mut JSContext,
++                referencingPrivate: Handle<Value>,
++                moduleRequest: Handle<*mut JSObject>,
++            ) -> *mut JSObject,
++        >;
++
+         #[repr(u32)]
+         #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+         pub enum ModuleType {
+diff --git a/components/roves-js/src/jsimpls.rs b/components/roves-js/src/jsimpls.rs
+index 03362813332..41930e47f7a 100644
+--- a/components/roves-js/src/jsimpls.rs
++++ b/components/roves-js/src/jsimpls.rs
+@@ -456,3 +456,18 @@ impl Default for ObjectOpResult {
+     }
+ }
+ 
++
++impl crate::jsapi::Type {
++    /// The byte size of the scalar type, if it has one.
++    pub const fn byte_size(&self) -> Option<usize> {
++        use crate::jsapi::Type;
++        match self {
++            Type::Int8 | Type::Uint8 | Type::Uint8Clamped => Some(1),
++            Type::Int16 | Type::Uint16 | Type::Float16 => Some(2),
++            Type::Int32 | Type::Uint32 | Type::Float32 => Some(4),
++            Type::Int64 | Type::Float64 | Type::BigInt64 | Type::BigUint64 => Some(8),
++            Type::Simd128 => Some(16),
++            Type::MaxTypedArrayViewType => None,
++        }
++    }
++}
+diff --git a/components/roves-js/src/jsval.rs b/components/roves-js/src/jsval.rs
+index 89a262f8695..4fe97fef3c0 100644
+--- a/components/roves-js/src/jsval.rs
++++ b/components/roves-js/src/jsval.rs
+@@ -30,25 +30,25 @@ const CANONICAL_NAN: u64 = 0x7FF8_0000_0000_0000;
+ #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+ #[repr(C)]
+ pub struct Value {
+-    bits: u64,
++    asBits_: u64,
+ }
+ 
+ pub type JSVal = Value;
+ 
+-pub(crate) const NULL_BITS: Value = Value { bits: (TAG_NULL << TAG_SHIFT) };
+-pub(crate) const UNDEFINED_BITS: Value = Value { bits: (TAG_UNDEFINED << TAG_SHIFT) };
+-pub(crate) const TRUE_BITS: Value = Value { bits: (TAG_BOOLEAN << TAG_SHIFT) | 1 };
+-pub(crate) const FALSE_BITS: Value = Value { bits: (TAG_BOOLEAN << TAG_SHIFT) };
++pub(crate) const NULL_BITS: Value = Value { asBits_: (TAG_NULL << TAG_SHIFT) };
++pub(crate) const UNDEFINED_BITS: Value = Value { asBits_: (TAG_UNDEFINED << TAG_SHIFT) };
++pub(crate) const TRUE_BITS: Value = Value { asBits_: (TAG_BOOLEAN << TAG_SHIFT) | 1 };
++pub(crate) const FALSE_BITS: Value = Value { asBits_: (TAG_BOOLEAN << TAG_SHIFT) };
+ 
+ impl std::fmt::Debug for Value {
+     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+-        write!(f, "JSVal({:#x})", self.bits)
++        write!(f, "JSVal({:#x})", self.asBits_)
+     }
+ }
+ 
+ const fn tagged(tag: u64, payload: u64) -> JSVal {
+     debug_assert!(payload <= PAYLOAD_MASK, "payload does not fit in 47 bits");
+-    JSVal { bits: (tag << TAG_SHIFT) | payload }
++    JSVal { asBits_: (tag << TAG_SHIFT) | payload }
+ }
+ 
+ fn gc_thing(tag: u64, pointer: *const c_void) -> JSVal {
+@@ -75,7 +75,7 @@ pub fn Int32Value(i: i32) -> JSVal {
+ #[inline]
+ pub fn DoubleValue(f: f64) -> JSVal {
+     let bits = if f.is_nan() { CANONICAL_NAN } else { f.to_bits() };
+-    JSVal { bits }
++    JSVal { asBits_: bits }
+ }
+ 
+ #[inline]
+@@ -133,17 +133,17 @@ impl Default for JSVal {
+ impl JSVal {
+     #[inline]
+     fn tag(&self) -> u64 {
+-        self.bits >> TAG_SHIFT
++        self.asBits_ >> TAG_SHIFT
+     }
+ 
+     #[inline]
+     fn payload(&self) -> u64 {
+-        self.bits & PAYLOAD_MASK
++        self.asBits_ & PAYLOAD_MASK
+     }
+ 
+     /// The raw 64 bits (`asBits_` in SpiderMonkey).
+     pub fn as_bits(&self) -> u64 {
+-        self.bits
++        self.asBits_
+     }
+ 
+     pub fn is_undefined(&self) -> bool {
+@@ -223,7 +223,7 @@ impl JSVal {
+ 
+     pub fn to_double(&self) -> f64 {
+         assert!(self.is_double());
+-        f64::from_bits(self.bits)
++        f64::from_bits(self.asBits_)
+     }
+ 
+     pub fn to_number(&self) -> f64 {
+@@ -338,3 +338,19 @@ pub unsafe fn JS_ARGV(_cx: *mut crate::jsapi::JSContext, vp: *mut JSVal) -> *mut
+     // SAFETY: see above.
+     unsafe { vp.offset(2) }
+ }
++
++impl Value {
++    /// The kind of GC thing a markable value holds (mozjs's `trace_kind`).
++    pub fn trace_kind(&self) -> crate::jsapi::TraceKind {
++        assert!(self.is_gcthing());
++        if self.is_object() {
++            crate::jsapi::TraceKind::Object
++        } else if self.is_string() {
++            crate::jsapi::TraceKind::String
++        } else if self.is_symbol() {
++            crate::jsapi::TraceKind::Symbol
++        } else {
++            crate::jsapi::TraceKind::BigInt
++        }
++    }
++}
+diff --git a/components/roves-js/src/lib.rs b/components/roves-js/src/lib.rs
+index eaf02e8c219..1045f237436 100644
+--- a/components/roves-js/src/lib.rs
++++ b/components/roves-js/src/lib.rs
+@@ -30,6 +30,7 @@ mod proxy;
+ mod runtime_impl;
+ mod script_impl;
+ mod values_impl;
++mod modules_impl;
+ mod typedarray_impl;
+ pub mod typedarray;
+ mod realm_impl;
+diff --git a/components/roves-js/src/modules_impl.rs b/components/roves-js/src/modules_impl.rs
+new file mode 100644
+index 00000000000..93cf2ff7537
+--- /dev/null
++++ b/components/roves-js/src/modules_impl.rs
+@@ -0,0 +1,503 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! ES modules: SpiderMonkey's module records and hooks on V8 modules.
++//!
++//! - A module record (`*mut JSObject` in the JSAPI) is a placeholder object whose cell holds
++//!   the V8 `Module`. The runtime keeps an entry per module (its cell, its private value and,
++//!   for JSON modules, the parsed value), found from a V8 module by identity hash and from a
++//!   running script by script id. Entries live as long as the runtime.
++//! - A module request (`ModuleRequestObject`) is an object holding the specifier and the
++//!   module type as V8 privates.
++//! - Linking calls the embedder's resolve hook from V8's resolve callback; dynamic `import()`
++//!   and `import.meta` go through V8's host callbacks to the embedder's hooks.
++
++use std::collections::HashMap;
++use std::ffi::c_void;
++
++use crate::jsapi::{
++    Handle, JSContext, JSObject, JSRuntime, JSString, ModuleDynamicImportHook, ModuleErrorBehaviour,
++    ModuleMetadataHook, ModuleResolveHook, ModuleType, MutableHandleValue, ReadOnlyCompileOptions, SourceText,
++    Utf8Unit,
++};
++use crate::jsval::{JSVal, UndefinedValue, from_v8};
++
++fn raw<'a>(cx: *mut JSContext) -> &'a JSContext {
++    // SAFETY: JSAPI callers pass this thread's live context.
++    unsafe { &*cx }
++}
++
++struct ModuleEntry {
++    cell: *mut c_void,
++    private: JSVal,
++    json: Option<v8::Global<v8::Value>>,
++}
++
++/// The runtime's modules and module hooks.
++#[derive(Default)]
++pub(crate) struct Modules {
++    entries: std::cell::RefCell<HashMap<i32, Vec<ModuleEntry>>>,
++    by_script_id: std::cell::RefCell<HashMap<i32, i32>>,
++    resolve_hook: std::cell::Cell<ModuleResolveHook>,
++    dynamic_import_hook: std::cell::Cell<ModuleDynamicImportHook>,
++    metadata_hook: std::cell::Cell<ModuleMetadataHook>,
++}
++
++/// Keeps the modules (and their privates) alive.
++pub(crate) fn trace_modules(cx: &JSContext, visitor: &mut v8::cppgc::Visitor) {
++    use crate::gc::RootKind;
++    let Ok(entries) = cx.modules.entries.try_borrow() else { return };
++    for entry in entries.values().flatten() {
++        crate::cell::trace_cell(entry.cell, visitor);
++        entry.private.trace_root(visitor);
++    }
++}
++
++/// The V8 module of a module record.
++fn module_of<'s>(scope: &mut v8::PinScope<'s, '_>, record: *mut JSObject) -> Option<v8::Local<'s, v8::Module>> {
++    // SAFETY: callers pass live module records.
++    unsafe { crate::cell::cell_module(scope, record as *mut c_void) }
++}
++
++/// The record (cell) of a V8 module, creating and registering it on first sight.
++fn record_of(scope: &mut v8::PinScope, module: v8::Local<v8::Module>, json: Option<v8::Local<v8::Value>>) -> *mut JSObject {
++    let cx = JSContext::current();
++    let hash = module.get_identity_hash().get();
++    if let Some(entries) = cx.modules.entries.borrow().get(&hash) {
++        for entry in entries {
++            // SAFETY: registered cells are alive (traced by the runtime).
++            if unsafe { crate::cell::cell_module(scope, entry.cell) }.is_some_and(|known| known == module) {
++                return entry.cell as *mut JSObject;
++            }
++        }
++    }
++    let cell = crate::cell::new_module_cell(scope, module);
++    let json = json.map(|json| v8::Global::new(scope, json));
++    cx.modules.entries.borrow_mut().entry(hash).or_default().push(ModuleEntry { cell, private: UndefinedValue(), json });
++    if let Some(script_id) = module.script_id() {
++        cx.modules.by_script_id.borrow_mut().insert(script_id, hash);
++    }
++    cell as *mut JSObject
++}
++
++fn with_entry<R>(scope: &mut v8::PinScope, module: v8::Local<v8::Module>, f: impl FnOnce(&mut ModuleEntry) -> R) -> Option<R> {
++    let cx = JSContext::current();
++    let hash = module.get_identity_hash().get();
++    let mut entries = cx.modules.entries.borrow_mut();
++    let entry = entries.get_mut(&hash)?.iter_mut().find(|entry| {
++        // SAFETY: as above.
++        unsafe { crate::cell::cell_module(scope, entry.cell) }.is_some_and(|known| known == module)
++    })?;
++    Some(f(entry))
++}
++
++fn promise_of<'s>(scope: &mut v8::PinScope<'s, '_>, obj: *mut JSObject) -> Option<v8::Local<'s, v8::Promise>> {
++    if obj.is_null() {
++        return None;
++    }
++    // SAFETY: callers pass live objects.
++    v8::Local::<v8::Promise>::try_from(unsafe { crate::cell::cell_value(scope, obj as *mut c_void) }).ok()
++}
++
++// --- Compilation ---------------------------------------------------------------------------
++
++pub unsafe fn CompileModule1(cx: *mut JSContext, options: *const ReadOnlyCompileOptions, source: *mut SourceText<Utf8Unit>) -> *mut JSObject {
++    // SAFETY: callers pass valid options and source.
++    let options = unsafe { &*options };
++    raw(cx)
++        .catching(|scope| {
++            let code = source_string(scope, source)?;
++            let origin = crate::script_impl::script_origin(scope, options, true);
++            let mut source = v8::script_compiler::Source::new(code, Some(&origin));
++            let module = v8::script_compiler::compile_module(scope, &mut source)?;
++            Some(record_of(scope, module, None))
++        })
++        .unwrap_or(std::ptr::null_mut())
++}
++
++fn source_string<'s>(scope: &mut v8::PinScope<'s, '_>, source: *mut SourceText<Utf8Unit>) -> Option<v8::Local<'s, v8::String>> {
++    // SAFETY: callers pass a valid source text.
++    let source = unsafe { &*source };
++    let bytes = if source.length_ == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(source.units_ as *const u8, source.length_ as usize) } };
++    v8::String::new_from_utf8(scope, bytes, v8::NewStringType::Normal)
++}
++
++fn json_module_steps<'s>(context: v8::Local<'s, v8::Context>, module: v8::Local<'s, v8::Module>) -> Option<v8::Local<'s, v8::Value>> {
++    // SAFETY: V8 runs the steps with this context entered.
++    v8::callback_scope!(unsafe scope, context);
++    let json = with_entry(scope, module, |entry| entry.json.clone())??;
++    let json = v8::Local::new(scope, &json);
++    let name = v8::String::new(scope, "default")?;
++    module.set_synthetic_module_export(scope, name, json)?;
++    let resolver = v8::PromiseResolver::new(scope)?;
++    let undefined = v8::undefined(scope).into();
++    resolver.resolve(scope, undefined)?;
++    Some(resolver.get_promise(scope).into())
++}
++
++/// A JSON module: a synthetic module whose `default` export is the parsed source.
++pub unsafe fn CompileJsonModule1(cx: *mut JSContext, options: *const ReadOnlyCompileOptions, source: *mut SourceText<Utf8Unit>) -> *mut JSObject {
++    // SAFETY: callers pass valid options.
++    let options = unsafe { &*options };
++    raw(cx)
++        .catching(|scope| {
++            let code = source_string(scope, source)?;
++            let parsed = v8::json::parse(scope, code)?;
++            let name = v8::String::new(scope, &crate::script_impl::options_filename(options))?;
++            let export = v8::String::new(scope, "default")?;
++            let module = v8::Module::create_synthetic_module(scope, name, &[export], json_module_steps);
++            Some(record_of(scope, module, Some(parsed)))
++        })
++        .unwrap_or(std::ptr::null_mut())
++}
++
++pub unsafe fn IsCyclicModule(module: *mut JSObject) -> bool {
++    JSContext::current().with_scope(|scope| module_of(scope, module).is_some_and(|module| module.is_source_text_module()))
++}
++
++// --- Privates and hooks ----------------------------------------------------------------------
++
++pub unsafe fn SetModulePrivate(module: *mut JSObject, value: *const JSVal) {
++    // SAFETY: callers pass a valid value.
++    let value = unsafe { *value };
++    JSContext::current().with_scope(|scope| {
++        if let Some(module) = module_of(scope, module) {
++            with_entry(scope, module, |entry| entry.private = value);
++        }
++    });
++}
++
++pub unsafe fn JS_GetModulePrivate(module: *mut JSObject, mut dest: MutableHandleValue) {
++    let private = JSContext::current().with_scope(|scope| {
++        let module = module_of(scope, module)?;
++        with_entry(scope, module, |entry| entry.private)
++    });
++    dest.set(private.unwrap_or(UndefinedValue()));
++}
++
++fn modules<'m>(rt: *mut JSRuntime) -> &'m Modules {
++    // A runtime pointer is its raw context (see `rust::Runtime::rt`).
++    &raw(rt as *mut JSContext).modules
++}
++
++pub unsafe fn SetModuleResolveHook(rt: *mut JSRuntime, hook: ModuleResolveHook) {
++    modules(rt).resolve_hook.set(hook);
++}
++
++pub unsafe fn GetModuleResolveHook(rt: *mut JSRuntime) -> ModuleResolveHook {
++    modules(rt).resolve_hook.get()
++}
++
++pub unsafe fn SetModuleDynamicImportHook(rt: *mut JSRuntime, hook: ModuleDynamicImportHook) {
++    modules(rt).dynamic_import_hook.set(hook);
++}
++
++pub unsafe fn SetModuleMetadataHook(rt: *mut JSRuntime, hook: ModuleMetadataHook) {
++    modules(rt).metadata_hook.set(hook);
++}
++
++// --- Module requests -----------------------------------------------------------------------
++
++fn request_key<'s>(scope: &mut v8::PinScope<'s, '_>, field: &str) -> v8::Local<'s, v8::Private> {
++    let name = v8::String::new(scope, &format!("roves-js ModuleRequest.{field}")).expect("a short string");
++    v8::Private::for_api(scope, Some(name))
++}
++
++/// The module type an import's attributes ask for (`with { type: "json" }`).
++fn attributes_type(scope: &mut v8::PinScope, attributes: v8::Local<v8::FixedArray>, stride: usize) -> ModuleType {
++    let mut index = 0;
++    while index + 1 < attributes.length() {
++        let key = attributes.get(scope, index).and_then(|key| v8::Local::<v8::Value>::try_from(key).ok());
++        let value = attributes.get(scope, index + 1).and_then(|value| v8::Local::<v8::Value>::try_from(value).ok());
++        if let (Some(key), Some(value)) = (key, value) {
++            if key.to_rust_string_lossy(scope) == "type" {
++                return if value.to_rust_string_lossy(scope) == "json" { ModuleType::JSON } else { ModuleType::Unknown };
++            }
++        }
++        index += stride;
++    }
++    ModuleType::JavaScript
++}
++
++/// A module request object for `specifier` with `module_type`.
++fn new_request<'s>(scope: &mut v8::PinScope<'s, '_>, specifier: v8::Local<'s, v8::String>, module_type: ModuleType) -> Option<v8::Local<'s, v8::Object>> {
++    let request = v8::Object::new(scope);
++    let key = request_key(scope, "specifier");
++    request.set_private(scope, key, specifier.into())?;
++    let key = request_key(scope, "type");
++    let module_type = v8::Integer::new(scope, module_type as i32);
++    request.set_private(scope, key, module_type.into())?;
++    Some(request)
++}
++
++fn request_field<'s>(scope: &mut v8::PinScope<'s, '_>, request: *mut JSObject, field: &str) -> Option<v8::Local<'s, v8::Value>> {
++    // SAFETY: callers pass live requests.
++    let object = v8::Local::<v8::Object>::try_from(unsafe { crate::cell::cell_value(scope, request as *mut c_void) }).ok()?;
++    let key = request_key(scope, field);
++    object.get_private(scope, key)
++}
++
++fn module_type_of(code: i32) -> ModuleType {
++    match code {
++        1 => ModuleType::JavaScript,
++        2 => ModuleType::JSON,
++        _ => ModuleType::Unknown,
++    }
++}
++
++pub unsafe fn GetModuleRequestSpecifier(cx: *mut JSContext, request: Handle<*mut JSObject>) -> *mut JSString {
++    raw(cx).with_scope(|scope| {
++        let specifier = request_field(scope, request.get(), "specifier").filter(|value| value.is_string());
++        specifier.map_or(std::ptr::null_mut(), |specifier| from_v8(scope, specifier).to_string())
++    })
++}
++
++pub unsafe fn GetModuleRequestType(cx: *mut JSContext, request: Handle<*mut JSObject>) -> ModuleType {
++    raw(cx).with_scope(|scope| {
++        let code = request_field(scope, request.get(), "type").and_then(|value| value.int32_value(scope));
++        module_type_of(code.unwrap_or(0))
++    })
++}
++
++fn requested<'s>(scope: &mut v8::PinScope<'s, '_>, record: *mut JSObject, index: u32) -> Option<v8::Local<'s, v8::ModuleRequest>> {
++    let module = module_of(scope, record)?;
++    let requests = module.get_module_requests();
++    let request = requests.get(scope, index as usize)?;
++    v8::Local::<v8::ModuleRequest>::try_from(request).ok()
++}
++
++pub unsafe fn GetRequestedModulesCount(cx: *mut JSContext, record: Handle<*mut JSObject>) -> u32 {
++    raw(cx).with_scope(|scope| module_of(scope, record.get()).map_or(0, |module| module.get_module_requests().length() as u32))
++}
++
++pub unsafe fn GetRequestedModuleSpecifier(cx: *mut JSContext, record: Handle<*mut JSObject>, index: u32) -> *mut JSString {
++    raw(cx).with_scope(|scope| match requested(scope, record.get(), index) {
++        Some(request) => {
++            let specifier = request.get_specifier();
++            from_v8(scope, specifier.into()).to_string()
++        },
++        None => std::ptr::null_mut(),
++    })
++}
++
++pub unsafe fn GetRequestedModuleType(cx: *mut JSContext, record: Handle<*mut JSObject>, index: u32) -> ModuleType {
++    raw(cx).with_scope(|scope| match requested(scope, record.get(), index) {
++        // Request attributes are (key, value, source offset) triples.
++        Some(request) => {
++            let attributes = request.get_import_attributes();
++            attributes_type(scope, attributes, 3)
++        },
++        None => ModuleType::Unknown,
++    })
++}
++
++// --- Linking and evaluation ------------------------------------------------------------------
++
++/// V8's resolve callback: asks the embedder's resolve hook for the requested module.
++fn resolve_callback<'s>(
++    context: v8::Local<'s, v8::Context>,
++    specifier: v8::Local<'s, v8::String>,
++    attributes: v8::Local<'s, v8::FixedArray>,
++    referrer: v8::Local<'s, v8::Module>,
++) -> Option<v8::Local<'s, v8::Module>> {
++    // SAFETY: V8 calls this with the context entered.
++    v8::callback_scope!(unsafe scope, context);
++    let cx = JSContext::current();
++    let raw_cx = cx as *const JSContext as *mut JSContext;
++    let Some(hook) = cx.modules.resolve_hook.get() else {
++        crate::native::throw_type_error(scope, "no module resolve hook");
++        return None;
++    };
++    let private = with_entry(scope, referrer, |entry| entry.private).unwrap_or(UndefinedValue());
++    let module_type = attributes_type(scope, attributes, 3);
++    let request = new_request(scope, specifier, module_type)?;
++    let request = from_v8(scope, request.into()).to_object();
++    crate::rooted!(in(raw_cx) let private = private);
++    crate::rooted!(in(raw_cx) let request = request);
++    // SAFETY: SpiderMonkey's resolve-hook contract (rooted arguments).
++    let resolved = unsafe { hook(raw_cx, private.handle().into(), request.handle().into()) };
++    if resolved.is_null() {
++        crate::native::rethrow_pending(scope, cx);
++        return None;
++    }
++    module_of(scope, resolved)
++}
++
++pub unsafe fn ModuleLink(cx: *mut JSContext, record: Handle<*mut JSObject>) -> bool {
++    let record = record.get();
++    raw(cx)
++        .catching(|scope| {
++            let module = module_of(scope, record)?;
++            module.instantiate_module(scope, resolve_callback)
++        })
++        .unwrap_or(false)
++}
++
++/// Evaluates a linked module; `rval` is its evaluation promise.
++pub unsafe fn ModuleEvaluate(cx: *mut JSContext, record: Handle<*mut JSObject>, mut rval: MutableHandleValue) -> bool {
++    let record = record.get();
++    let result = raw(cx).catching(|scope| {
++        let module = module_of(scope, record)?;
++        let result = module.evaluate(scope)?;
++        Some(from_v8(scope, result))
++    });
++    match result {
++        Some(result) => {
++            rval.set(result);
++            true
++        },
++        None => false,
++    }
++}
++
++/// Throws the reason of a rejected evaluation promise.
++pub unsafe fn ThrowOnModuleEvaluationFailure(cx: *mut JSContext, promise: Handle<*mut JSObject>, _behaviour: ModuleErrorBehaviour) -> bool {
++    let raw = raw(cx);
++    let reason = raw.with_scope(|scope| {
++        let promise = promise_of(scope, promise.get())?;
++        (promise.state() == v8::PromiseState::Rejected).then(|| v8::Global::new(scope, promise.result(scope)))
++    });
++    match reason {
++        Some(reason) => {
++            *raw.pending_exception.borrow_mut() = Some(reason);
++            false
++        },
++        None => true,
++    }
++}
++
++pub unsafe fn GetModuleNamespace(cx: *mut JSContext, record: Handle<*mut JSObject>) -> *mut JSObject {
++    raw(cx).with_scope(|scope| {
++        module_of(scope, record.get()).map_or(std::ptr::null_mut(), |module| {
++            let namespace = module.get_module_namespace();
++            from_v8(scope, namespace).to_object()
++        })
++    })
++}
++
++// --- Dynamic import and import.meta ----------------------------------------------------------
++
++/// The private of the script or module whose code is running.
++fn caller_private(scope: &mut v8::PinScope) -> JSVal {
++    let cx = JSContext::current();
++    let Some(trace) = v8::StackTrace::current_stack_trace(scope, 1) else { return UndefinedValue() };
++    let Some(frame) = trace.get_frame(scope, 0) else { return UndefinedValue() };
++    let script_id = frame.get_script_id() as i32;
++    let hash = cx.modules.by_script_id.borrow().get(&script_id).copied();
++    if let Some(entry) = hash.and_then(|hash| cx.modules.entries.borrow().get(&hash).and_then(|entries| entries.first().map(|entry| entry.private))) {
++        return entry;
++    }
++    crate::script_impl::script_private(cx, script_id).unwrap_or(UndefinedValue())
++}
++
++/// V8's dynamic `import()`: hands the request and a new promise to the embedder's hook,
++/// which settles the promise later through `FinishDynamicModuleImport`.
++fn dynamic_import<'s>(
++    scope: &mut v8::PinScope<'s, '_>,
++    _host_defined_options: v8::Local<'s, v8::Data>,
++    _resource_name: v8::Local<'s, v8::Value>,
++    specifier: v8::Local<'s, v8::String>,
++    attributes: v8::Local<'s, v8::FixedArray>,
++) -> Option<v8::Local<'s, v8::Promise>> {
++    let cx = JSContext::current();
++    let raw_cx = cx as *const JSContext as *mut JSContext;
++    let resolver = v8::PromiseResolver::new(scope)?;
++    let promise = resolver.get_promise(scope);
++    let Some(hook) = cx.modules.dynamic_import_hook.get() else {
++        let message = v8::String::new(scope, "dynamic import is not supported here")?;
++        let error = v8::Exception::type_error(scope, message);
++        resolver.reject(scope, error)?;
++        return Some(promise);
++    };
++    let private = caller_private(scope);
++    // Dynamic-import attributes are (key, value) pairs.
++    let module_type = attributes_type(scope, attributes, 2);
++    let request = new_request(scope, specifier, module_type)?;
++    let request = from_v8(scope, request.into()).to_object();
++    let promise_object = from_v8(scope, promise.into()).to_object();
++    crate::rooted!(in(raw_cx) let private = private);
++    crate::rooted!(in(raw_cx) let request = request);
++    crate::rooted!(in(raw_cx) let promise_object = promise_object);
++    // SAFETY: SpiderMonkey's dynamic-import hook contract.
++    let ok = unsafe { hook(raw_cx, private.handle().into(), request.handle().into(), promise_object.handle().into()) };
++    if !ok {
++        crate::native::rethrow_pending(scope, cx);
++        return None;
++    }
++    Some(promise)
++}
++
++/// Settles a dynamic import's promise with the module's namespace once `evaluation_promise`
++/// fulfils (or with the pending exception when there is no evaluation promise).
++pub unsafe fn FinishDynamicModuleImport(
++    cx: *mut JSContext,
++    evaluation_promise: Handle<*mut JSObject>,
++    referencing_private: Handle<JSVal>,
++    module_request: Handle<*mut JSObject>,
++    promise: Handle<*mut JSObject>,
++) -> bool {
++    let raw = raw(cx);
++    let (evaluation, promise_obj) = (evaluation_promise.get(), promise.get());
++    if evaluation.is_null() {
++        let exception = raw.pending_exception.borrow_mut().take();
++        return raw
++            .catching(|scope| {
++                let promise = promise_of(scope, promise_obj)?;
++                // SAFETY: a V8 promise is its own resolver.
++                let resolver = unsafe { std::mem::transmute::<v8::Local<v8::Promise>, v8::Local<v8::PromiseResolver>>(promise) };
++                let reason: v8::Local<v8::Value> = match &exception {
++                    Some(exception) => v8::Local::new(scope, exception),
++                    None => v8::undefined(scope).into(),
++                };
++                resolver.reject(scope, reason)
++            })
++            .unwrap_or(false);
++    }
++    let Some(hook) = raw.modules.resolve_hook.get() else { return false };
++    // SAFETY: SpiderMonkey's resolve-hook contract.
++    let record = unsafe { hook(cx, referencing_private, module_request) };
++    if record.is_null() {
++        return false;
++    }
++    crate::rooted!(in(cx) let record = record);
++    let record = record.get();
++    raw.catching(|scope| {
++        let module = module_of(scope, record)?;
++        let namespace = module.get_module_namespace();
++        let evaluation = promise_of(scope, evaluation)?;
++        let promise = promise_of(scope, promise_obj)?;
++        // SAFETY: as above.
++        let resolver = unsafe { std::mem::transmute::<v8::Local<v8::Promise>, v8::Local<v8::PromiseResolver>>(promise) };
++        let source = "(function (evaluation, namespace) { return evaluation.then(() => namespace); })";
++        let code = v8::String::new(scope, source)?;
++        let then = v8::Local::<v8::Function>::try_from(v8::Script::compile(scope, code, None)?.run(scope)?).ok()?;
++        let undefined = v8::undefined(scope).into();
++        let chained = then.call(scope, undefined, &[evaluation.into(), namespace])?;
++        resolver.resolve(scope, chained)
++    })
++    .unwrap_or(false)
++}
++
++/// V8's `import.meta` initialization: the embedder's metadata hook fills the object.
++unsafe extern "C" fn import_meta(context: v8::Local<v8::Context>, module: v8::Local<v8::Module>, meta: v8::Local<v8::Object>) {
++    // SAFETY: V8 calls this with the context entered.
++    v8::callback_scope!(unsafe scope, context);
++    let cx = JSContext::current();
++    let raw_cx = cx as *const JSContext as *mut JSContext;
++    let Some(hook) = cx.modules.metadata_hook.get() else { return };
++    let private = with_entry(scope, module, |entry| entry.private).unwrap_or(UndefinedValue());
++    let meta = from_v8(scope, meta.into()).to_object();
++    crate::rooted!(in(raw_cx) let private = private);
++    crate::rooted!(in(raw_cx) let meta = meta);
++    // SAFETY: SpiderMonkey's metadata-hook contract.
++    if !unsafe { hook(raw_cx, private.handle().into(), meta.handle().into()) } {
++        crate::native::rethrow_pending(scope, cx);
++    }
++}
++
++/// Installs V8's module host callbacks on a new runtime's isolate.
++pub(crate) fn configure_isolate(isolate: &mut v8::Isolate) {
++    isolate.set_host_import_module_dynamically_callback(dynamic_import);
++    isolate.set_host_initialize_import_meta_object_callback(import_meta);
++}
+diff --git a/components/roves-js/src/runtime_impl.rs b/components/roves-js/src/runtime_impl.rs
+index 8c496bce5f8..4ee3e67e981 100644
+--- a/components/roves-js/src/runtime_impl.rs
++++ b/components/roves-js/src/runtime_impl.rs
+@@ -87,6 +87,7 @@ fn isolate<'i>(cx: *mut JSContext) -> &'i mut v8::Isolate {
+ pub(crate) fn configure_isolate(isolate: &mut v8::Isolate) {
+     isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
+     isolate.set_promise_reject_callback(promise_reject_callback);
++    crate::modules_impl::configure_isolate(isolate);
+ }
+ 
+ // --- Interrupts ------------------------------------------------------------------------------
+diff --git a/components/roves-js/src/rust.rs b/components/roves-js/src/rust.rs
+index d3d59a28c4a..9f716fcb2a7 100644
+--- a/components/roves-js/src/rust.rs
++++ b/components/roves-js/src/rust.rs
+@@ -210,6 +210,8 @@ unsafe impl GarbageCollected for RootSet {
+             crate::runtime_impl::trace_extra_roots(unsafe { cx.as_ref() }, visitor);
+             // SAFETY: as above.
+             crate::script_impl::trace_scripts(unsafe { cx.as_ref() }, visitor);
++            // SAFETY: as above.
++            crate::modules_impl::trace_modules(unsafe { cx.as_ref() }, visitor);
+         }
+         // RootedVec / RootedTraceableBox contents.
+         // SAFETY: the tracer is this GC's visitor.
+@@ -400,6 +402,7 @@ impl Runtime {
+             hooks: Default::default(),
+             scripts: Default::default(),
+             helpers: RefCell::new(Default::default()),
++            modules: Default::default(),
+             current_realm: std::cell::Cell::new(std::ptr::null_mut()),
+             realms: RefCell::new(Vec::new()),
+         });
+diff --git a/components/roves-js/src/script_impl.rs b/components/roves-js/src/script_impl.rs
+index 617b6bc427a..04d6c7a6f07 100644
+--- a/components/roves-js/src/script_impl.rs
++++ b/components/roves-js/src/script_impl.rs
+@@ -47,6 +47,11 @@ pub(crate) fn trace_scripts(cx: &JSContext, visitor: &mut v8::cppgc::Visitor) {
+     }
+ }
+ 
++/// The private of the script with V8 id `script_id`.
++pub(crate) fn script_private(cx: &JSContext, script_id: i32) -> Option<JSVal> {
++    cx.scripts.privates.borrow().get(&script_id).copied()
++}
++
+ // --- Compile options and sources -----------------------------------------------------------
+ 
+ /// New compile options for `file` (which the caller keeps alive) starting at `line`.
+@@ -64,7 +69,7 @@ pub unsafe fn DeleteCompileOptions(options: *mut ReadOnlyCompileOptions) {
+     drop(unsafe { Box::from_raw(options) });
+ }
+ 
+-fn filename(options: &ReadOnlyCompileOptions) -> String {
++pub(crate) fn options_filename(options: &ReadOnlyCompileOptions) -> String {
+     let data = options._base.filename_.data_;
+     if data.is_null() {
+         return String::new();
+@@ -73,8 +78,8 @@ fn filename(options: &ReadOnlyCompileOptions) -> String {
+     unsafe { CStr::from_ptr(data) }.to_string_lossy().into_owned()
+ }
+ 
+-fn script_origin<'s>(scope: &mut v8::PinScope<'s, '_>, options: &ReadOnlyCompileOptions, is_module: bool) -> v8::ScriptOrigin<'s> {
+-    let name = v8::String::new(scope, &filename(options)).unwrap_or_else(|| v8::String::empty(scope));
++pub(crate) fn script_origin<'s>(scope: &mut v8::PinScope<'s, '_>, options: &ReadOnlyCompileOptions, is_module: bool) -> v8::ScriptOrigin<'s> {
++    let name = v8::String::new(scope, &options_filename(options)).unwrap_or_else(|| v8::String::empty(scope));
+     v8::ScriptOrigin::new(
+         scope,
+         name.into(),
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 0333f40d156..79219f4cfdd 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -1226,3 +1226,110 @@ mod values {
+         assert!(unsafe { IsDetachedArrayBufferObject(buffer.get()) });
+     }
+ }
++
++mod modules {
++    use std::cell::RefCell;
++    use std::collections::HashMap;
++    use std::ffi::CString;
++
++    use super::{describe, eval};
++    use crate::glue::JS_GetModulePrivate;
++    use crate::jsapi::*;
++    use crate::jsval::*;
++    use crate::rust::{CompileOptionsWrapper, JSEngineHandle, Runtime, transform_str_to_source_text};
++
++    thread_local! {
++        static REGISTRY: RefCell<HashMap<std::string::String, usize>> = RefCell::new(HashMap::new());
++        static DYNAMIC: RefCell<Option<(JSVal, usize, usize)>> = const { RefCell::new(None) };
++    }
++
++    fn specifier(cx: *mut JSContext, request: Handle<*mut JSObject>) -> std::string::String {
++        let string = unsafe { GetModuleRequestSpecifier(cx, request) };
++        let safe = unsafe { crate::context::JSContext::from_ptr(std::ptr::NonNull::new(cx).unwrap()) };
++        unsafe { crate::conversions::jsstr_to_string(&safe, std::ptr::NonNull::new(string).unwrap()) }
++    }
++
++    unsafe extern "C" fn resolve(cx: *mut JSContext, _private: Handle<JSVal>, request: Handle<*mut JSObject>) -> *mut JSObject {
++        let name = specifier(cx, request);
++        REGISTRY.with(|registry| registry.borrow().get(&name).copied()).map_or(std::ptr::null_mut(), |record| record as *mut JSObject)
++    }
++
++    unsafe extern "C" fn metadata(cx: *mut JSContext, private: Handle<JSVal>, meta: Handle<*mut JSObject>) -> bool {
++        crate::rooted!(in(cx) let url = private.get());
++        unsafe { JS_SetProperty(cx, meta, c"privateId".as_ptr(), url.handle().into_handle()) }
++    }
++
++    unsafe extern "C" fn dynamic_import(_cx: *mut JSContext, private: Handle<JSVal>, request: Handle<*mut JSObject>, promise: Handle<*mut JSObject>) -> bool {
++        DYNAMIC.with(|dynamic| *dynamic.borrow_mut() = Some((private.get(), request.get() as usize, promise.get() as usize)));
++        true
++    }
++
++    fn compile(runtime: &Runtime, name: &str, source: &str, json: bool) -> *mut JSObject {
++        let cx = runtime.raw_cx();
++        let options = CompileOptionsWrapper::new(runtime.cx_no_gc(), CString::new(name).unwrap(), 1);
++        let mut text = transform_str_to_source_text(source);
++        let record = unsafe { if json { CompileJsonModule1(cx, options.ptr, &mut text) } else { CompileModule1(cx, options.ptr, &mut text) } };
++        assert!(!record.is_null(), "{name} compiles");
++        REGISTRY.with(|registry| registry.borrow_mut().insert(name.to_owned(), record as usize));
++        record
++    }
++
++    #[test]
++    fn module_graphs_link_evaluate_and_import_dynamically() {
++        let runtime = Runtime::new(JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        let rt = runtime.rt();
++        unsafe {
++            SetModuleResolveHook(rt, Some(resolve));
++            SetModuleMetadataHook(rt, Some(metadata));
++            SetModuleDynamicImportHook(rt, Some(dynamic_import));
++        }
++        compile(&runtime, "dep.js", "export const answer = 40;", false);
++        compile(&runtime, "data.json", r#"{"extra": 2}"#, true);
++        rooted!(in(cx) let main = compile(
++            &runtime,
++            "main.js",
++            "import { answer } from 'dep.js';\nimport data from 'data.json' with { type: 'json' };\nexport const total = answer + data.extra;\nexport const meta = import.meta.privateId;\nexport function later() { return import('dep.js'); }",
++            false,
++        ));
++        unsafe { SetModulePrivate(main.get(), &Int32Value(77)) };
++        rooted!(in(cx) let mut private = UndefinedValue());
++        unsafe { JS_GetModulePrivate(main.get(), private.handle_mut().into()) };
++        assert_eq!(private.get().to_int32(), 77);
++        assert!(unsafe { IsCyclicModule(main.get()) });
++        assert_eq!(unsafe { GetRequestedModulesCount(cx, main.handle().into()) }, 2);
++        assert_eq!(unsafe { GetRequestedModuleType(cx, main.handle().into(), 1) }, ModuleType::JSON);
++
++        assert!(unsafe { ModuleLink(cx, main.handle().into()) });
++        rooted!(in(cx) let mut evaluation = UndefinedValue());
++        assert!(unsafe { ModuleEvaluate(cx, main.handle().into(), evaluation.handle_mut().into()) });
++        unsafe { RunJobs(cx) };
++        rooted!(in(cx) let evaluation_promise = evaluation.get().to_object());
++        assert!(unsafe { ThrowOnModuleEvaluationFailure(cx, evaluation_promise.handle().into(), ModuleErrorBehaviour::ThrowModuleErrorsSync) });
++        rooted!(in(cx) let namespace = unsafe { GetModuleNamespace(cx, main.handle().into()) });
++        rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
++        rooted!(in(cx) let namespace_value = ObjectValue(namespace.get()));
++        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"ns".as_ptr(), namespace_value.handle().into_handle()) });
++        assert_eq!(eval(&runtime, "ns.total").to_int32(), 42);
++        assert_eq!(eval(&runtime, "ns.meta").to_int32(), 77, "import.meta comes from the metadata hook with the module's private");
++
++        // Dynamic import: the hook gets the importer's private, a request and a promise.
++        eval(&runtime, "globalThis.pending = ns.later(); pending.then((m) => { globalThis.dynamic = m.answer; });");
++        let (importer_private, request, promise) = DYNAMIC.with(|dynamic| dynamic.borrow_mut().take()).expect("the dynamic import hook ran");
++        assert_eq!(importer_private.to_int32(), 77);
++        rooted!(in(cx) let request = request as *mut JSObject);
++        assert_eq!(specifier(cx, request.handle().into()), "dep.js");
++        rooted!(in(cx) let promise = promise as *mut JSObject);
++        rooted!(in(cx) let dep = REGISTRY.with(|registry| registry.borrow()["dep.js"]) as *mut JSObject);
++        rooted!(in(cx) let mut dep_evaluation = UndefinedValue());
++        assert!(unsafe { ModuleEvaluate(cx, dep.handle().into(), dep_evaluation.handle_mut().into()) });
++        rooted!(in(cx) let dep_evaluation = dep_evaluation.get().to_object());
++        rooted!(in(cx) let importer = importer_private);
++        assert!(unsafe {
++            FinishDynamicModuleImport(cx, dep_evaluation.handle().into(), importer.handle().into(), request.handle().into(), promise.handle().into())
++        });
++        unsafe { RunJobs(cx) };
++        assert_eq!(eval(&runtime, "dynamic").to_int32(), 40);
++        assert_eq!(describe(&runtime, eval(&runtime, "typeof pending.then")), "function");
++    }
++}
+diff --git a/components/roves-js/src/wrappers2.in.rs b/components/roves-js/src/wrappers2.in.rs
+index af728f71d40..4880f36f1f5 100644
+--- a/components/roves-js/src/wrappers2.in.rs
++++ b/components/roves-js/src/wrappers2.in.rs
+@@ -47,6 +47,18 @@ wrap!(jsapi: pub fn NewDateObject(cx: &mut JSContext, time: ClippedTime) -> *mut
+ wrap!(jsapi: pub fn ObjectIsDate(cx: &mut JSContext, obj: Handle<*mut JSObject>, isDate: *mut bool) -> bool);
+ wrap!(jsapi: pub fn SameValue(cx: &JSContext, v1: Handle<Value>, v2: Handle<Value>, same: *mut bool) -> bool);
+ wrap!(jsapi: pub fn ToJSON(cx: &mut JSContext, value: Handle<Value>, replacer: Handle<*mut JSObject>, space: Handle<Value>, callback: JSONWriteCallback, data: *mut ::std::os::raw::c_void) -> bool);
++wrap!(jsapi: pub fn FinishDynamicModuleImport(cx: &mut JSContext, evaluationPromise: Handle<*mut JSObject>, referencingPrivate: Handle<Value>, moduleRequest: Handle<*mut JSObject>, promise: Handle<*mut JSObject>) -> bool);
++wrap!(jsapi: pub fn CompileModule1(cx: &mut JSContext, options: *const ReadOnlyCompileOptions, srcBuf: *mut SourceText<Utf8Unit>) -> *mut JSObject);
++wrap!(jsapi: pub fn CompileJsonModule1(cx: &mut JSContext, options: *const ReadOnlyCompileOptions, srcBuf: *mut SourceText<Utf8Unit>) -> *mut JSObject);
++wrap!(jsapi: pub fn ModuleLink(cx: &mut JSContext, moduleRecord: Handle<*mut JSObject>) -> bool);
++wrap!(jsapi: pub fn ModuleEvaluate(cx: &mut JSContext, moduleRecord: Handle<*mut JSObject>, rval: MutableHandleValue) -> bool);
++wrap!(jsapi: pub fn ThrowOnModuleEvaluationFailure(cx: &mut JSContext, evaluationPromise: Handle<*mut JSObject>, errorBehaviour: ModuleErrorBehaviour) -> bool);
++wrap!(jsapi: pub fn GetRequestedModulesCount(cx: &JSContext, moduleRecord: Handle<*mut JSObject>) -> u32);
++wrap!(jsapi: pub fn GetRequestedModuleSpecifier(cx: &mut JSContext, moduleRecord: Handle<*mut JSObject>, index: u32) -> *mut JSString);
++wrap!(jsapi: pub fn GetRequestedModuleType(cx: &JSContext, moduleRecord: Handle<*mut JSObject>, index: u32) -> ModuleType);
++wrap!(jsapi: pub fn GetModuleRequestSpecifier(cx: &JSContext, moduleRequestArg: Handle<*mut JSObject>) -> *mut JSString);
++wrap!(jsapi: pub fn GetModuleRequestType(cx: &JSContext, moduleRequestArg: Handle<*mut JSObject>) -> ModuleType);
++wrap!(jsapi: pub fn GetModuleNamespace(cx: &mut JSContext, moduleRecord: Handle<*mut JSObject>) -> *mut JSObject);
+ wrap!(jsapi: pub fn GetBuiltinClass(cx: &mut JSContext, obj: Handle<*mut JSObject>, cls: *mut ESClass) -> bool);
+ wrap!(jsapi: pub fn SetJobQueue(cx: &JSContext, queue: *mut JobQueue));
+ wrap!(jsapi: pub fn SetPromiseRejectionTrackerCallback(cx: &JSContext, callback: PromiseRejectionTrackerCallback, data: *mut ::std::os::raw::c_void));
+@@ -149,6 +161,27 @@ wrap!(jsapi: pub fn JS_IsIdentifier(cx: &JSContext, str_: HandleString, isIdenti
+ wrap!(jsapi: pub fn JS_ExecuteScript(cx: &mut JSContext, script: Handle<*mut JSScript>, rval: MutableHandle<Value>) -> bool);
+ wrap!(jsapi: pub fn JS_Stringify(cx: &mut JSContext, value: MutableHandle<Value>, replacer: Handle<*mut JSObject>, space: Handle<Value>, callback: JSONWriteCallback, data: *mut ::std::os::raw::c_void) -> bool);
+ wrap!(jsapi: pub fn JS_ParseJSON(cx: &mut JSContext, chars: *const u16, len: u32, vp: MutableHandle<Value>) -> bool);
++wrap!(jsapi: pub fn JS_NewInt8Array(cx: &mut JSContext, nelements: usize) -> *mut JSObject);
++wrap!(jsapi: pub fn JS_NewInt8ArrayWithBuffer(cx: &mut JSContext, arrayBuffer: Handle<*mut JSObject>, byteOffset: usize, length: i64) -> *mut JSObject);
++wrap!(jsapi: pub fn JS_NewUint8Array(cx: &mut JSContext, nelements: usize) -> *mut JSObject);
++wrap!(jsapi: pub fn JS_NewUint8ArrayWithBuffer(cx: &mut JSContext, arrayBuffer: Handle<*mut JSObject>, byteOffset: usize, length: i64) -> *mut JSObject);
++wrap!(jsapi: pub fn JS_NewInt16Array(cx: &mut JSContext, nelements: usize) -> *mut JSObject);
++wrap!(jsapi: pub fn JS_NewInt16ArrayWithBuffer(cx: &mut JSContext, arrayBuffer: Handle<*mut JSObject>, byteOffset: usize, length: i64) -> *mut JSObject);
++wrap!(jsapi: pub fn JS_NewUint16Array(cx: &mut JSContext, nelements: usize) -> *mut JSObject);
++wrap!(jsapi: pub fn JS_NewUint16ArrayWithBuffer(cx: &mut JSContext, arrayBuffer: Handle<*mut JSObject>, byteOffset: usize, length: i64) -> *mut JSObject);
++wrap!(jsapi: pub fn JS_NewInt32Array(cx: &mut JSContext, nelements: usize) -> *mut JSObject);
++wrap!(jsapi: pub fn JS_NewInt32ArrayWithBuffer(cx: &mut JSContext, arrayBuffer: Handle<*mut JSObject>, byteOffset: usize, length: i64) -> *mut JSObject);
++wrap!(jsapi: pub fn JS_NewUint32Array(cx: &mut JSContext, nelements: usize) -> *mut JSObject);
++wrap!(jsapi: pub fn JS_NewUint32ArrayWithBuffer(cx: &mut JSContext, arrayBuffer: Handle<*mut JSObject>, byteOffset: usize, length: i64) -> *mut JSObject);
++wrap!(jsapi: pub fn JS_NewFloat32Array(cx: &mut JSContext, nelements: usize) -> *mut JSObject);
++wrap!(jsapi: pub fn JS_NewFloat32ArrayWithBuffer(cx: &mut JSContext, arrayBuffer: Handle<*mut JSObject>, byteOffset: usize, length: i64) -> *mut JSObject);
++wrap!(jsapi: pub fn JS_NewFloat64Array(cx: &mut JSContext, nelements: usize) -> *mut JSObject);
++wrap!(jsapi: pub fn JS_NewFloat64ArrayWithBuffer(cx: &mut JSContext, arrayBuffer: Handle<*mut JSObject>, byteOffset: usize, length: i64) -> *mut JSObject);
++wrap!(jsapi: pub fn JS_NewUint8ClampedArray(cx: &mut JSContext, nelements: usize) -> *mut JSObject);
++wrap!(jsapi: pub fn JS_NewUint8ClampedArrayWithBuffer(cx: &mut JSContext, arrayBuffer: Handle<*mut JSObject>, byteOffset: usize, length: i64) -> *mut JSObject);
++wrap!(jsapi: pub fn JS_NewBigInt64ArrayWithBuffer(cx: &mut JSContext, arrayBuffer: Handle<*mut JSObject>, byteOffset: usize, length: i64) -> *mut JSObject);
++wrap!(jsapi: pub fn JS_NewBigUint64ArrayWithBuffer(cx: &mut JSContext, arrayBuffer: Handle<*mut JSObject>, byteOffset: usize, length: i64) -> *mut JSObject);
++wrap!(jsapi: pub fn JS_NewFloat16ArrayWithBuffer(cx: &mut JSContext, arrayBuffer: Handle<*mut JSObject>, byteOffset: usize, length: i64) -> *mut JSObject);
+ wrap!(jsapi: pub fn JS_GetArrayBufferViewBuffer(cx: &mut JSContext, obj: Handle<*mut JSObject>, isSharedMemory: *mut bool) -> *mut JSObject);
+ wrap!(jsapi: pub fn JS_NewDataView(cx: &mut JSContext, buffer: Handle<*mut JSObject>, byteOffset: usize, byteLength: usize) -> *mut JSObject);
+ wrap!(jsapi: pub fn JS_NewObjectWithoutMetadata(cx: &mut JSContext, clasp: *const JSClass, proto: Handle<*mut JSObject>) -> *mut JSObject);
+@@ -174,6 +207,7 @@ wrap!(glue: pub fn AppendToIdVector(v: MutableHandleIdVector, id: HandleId) -> b
+ wrap!(glue: pub fn CollectServoSizes(cx: &mut JSContext, sizes: *mut ServoSizes, gs: GetSize) -> bool);
+ wrap!(glue: pub fn JS_GetPromiseResult(promise: HandleObject, dest: MutableHandleValue));
+ wrap!(glue: pub fn JS_GetScriptPrivate(script: *mut JSScript, dest: MutableHandleValue));
++wrap!(glue: pub fn JS_GetModulePrivate(module: *mut JSObject, dest: MutableHandleValue));
+ wrap!(glue: pub fn JS_GetScriptedCallerPrivate(cx: &mut JSContext, dest: MutableHandleValue));
+ wrap!(glue: pub fn SetUpEventLoopDispatch(cx: &mut JSContext, callback: RustDispatchToEventLoopCallback, closure: *mut ::std::os::raw::c_void));
+ wrap!(glue: pub fn DispatchableRun(cx: &mut JSContext, ptr: *mut DispatchablePointer, mb: Dispatchable_MaybeShuttingDown));
+diff --git a/support/roves_js/gen_wrappers2.py b/support/roves_js/gen_wrappers2.py
+index f771f947131..022bd8ea30b 100644
+--- a/support/roves_js/gen_wrappers2.py
++++ b/support/roves_js/gen_wrappers2.py
+@@ -20,8 +20,18 @@ def read(path):
+     return open(path, encoding="utf-8").read()
+ 
+ 
++# Functions generated by roves-js's own macros (`typed_array!` arguments and
++# `typed_array_with_buffer!` arms).
++MACRO_FN = re.compile(r"\b((?:JS_|Get|Unwrap)\w+)\b")
++
++
+ def defined(path):
+-    return set(FN.findall(read(path)))
++    text = read(path)
++    names = set(FN.findall(text))
++    for invocation in re.findall(r"typed_array!\((.*?)\);", text, re.S):
++        names.update(MACRO_FN.findall(invocation))
++    names.update(re.findall(r"^\s*(JS_\w+) =>", text, re.M))
++    return names
+ 
+ 
+ def reexports(text, module):
+@@ -43,7 +53,7 @@ def visible(src, module_file):
+     """The function names a module (`jsapi.rs` / `glue.rs`) makes reachable."""
+     text = read(os.path.join(src, module_file))
+     names = defined(os.path.join(src, module_file))
+-    for module in ("jsapi_impl", "binding", "realm_impl", "api", "object", "native", "proxy", "typedarray_impl", "runtime_impl", "script_impl", "values_impl"):
++    for module in ("jsapi_impl", "binding", "realm_impl", "api", "object", "native", "proxy", "typedarray_impl", "runtime_impl", "script_impl", "values_impl", "modules_impl"):
+         explicit, glob = reexports(text, module)
+         path = os.path.join(src, module + ".rs")
+         if glob:
+diff --git a/support/roves_js/jsapi_type_names.txt b/support/roves_js/jsapi_type_names.txt
+index d4b13db4e58..6b5c55317b1 100644
+--- a/support/roves_js/jsapi_type_names.txt
++++ b/support/roves_js/jsapi_type_names.txt
+@@ -228,7 +228,10 @@ JobQueueTraps
+ MaxFrames
+ MemoryUse
+ MimeType
++ModuleDynamicImportHook
+ ModuleErrorBehaviour
++ModuleMetadataHook
++ModuleResolveHook
+ ModuleType
+ MutableHandle
+ MutableHandleIdVector

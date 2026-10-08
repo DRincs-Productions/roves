@@ -298,6 +298,12 @@ pub enum ForOfIterationFailure<OtherError> {
     Other(OtherError),
 }
 
+impl<OtherError> From<OtherError> for ForOfIterationFailure<OtherError> {
+    fn from(value: OtherError) -> Self {
+        Self::Other(value)
+    }
+}
+
 /// Iterates `iterable` with the JS iterator protocol, calling `callback` with each element.
 pub fn for_of<Callback, OtherError>(
     cx: *mut JSContext,

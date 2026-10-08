@@ -421,8 +421,12 @@ strategia completa è in `docs/V8_MIGRATION.md` ("Cutover strategy"). Metrica:
   saved frame stile SpiderMonkey. Test: 18/18.
 - **CP102:** promise (una promise V8 è il proprio resolver), JSON, operazioni sui valori
   (`ToPrimitive` come helper JS compilato una volta), Date/RegExp, ArrayBuffer. Test: 19/19.
-- **Prossimi passi (dopo CP102):** rimisurare `servo-script`; moduli, structured clone,
-  `WindowProxy`/transplant, poi gli errori di tipo.
+- **`servo-script` dopo CP102:** 56 errori (da 106).
+- **CP103:** moduli ES su V8 (record = segnaposto con il `v8::Module` nella cella; resolve
+  hook via resolve callback V8; moduli JSON sintetici; `import()` dinamico e `import.meta`
+  via callback host V8) e correzioni di compatibilità con l'API mozjs. Test: 20/20.
+- **Prossimi passi (dopo CP103):** structured clone, `WindowProxy`/transplant, stream
+  consumer, statics delle classi proxy; rimisurare `servo-script`.
 - **Storico (prima di CP95).** Le operazioni dell'API usata dal DOM:
   1. stringhe e conversioni (`jsstr_to_string`, `ToJSValConvertible`/`FromJSValConvertible`);
   2. oggetti e proprietà (`JS_NewObject`, `JS_GetProperty`/`SetProperty`/`DefineProperty`);

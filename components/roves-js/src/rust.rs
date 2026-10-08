@@ -210,6 +210,8 @@ unsafe impl GarbageCollected for RootSet {
             crate::runtime_impl::trace_extra_roots(unsafe { cx.as_ref() }, visitor);
             // SAFETY: as above.
             crate::script_impl::trace_scripts(unsafe { cx.as_ref() }, visitor);
+            // SAFETY: as above.
+            crate::modules_impl::trace_modules(unsafe { cx.as_ref() }, visitor);
         }
         // RootedVec / RootedTraceableBox contents.
         // SAFETY: the tracer is this GC's visitor.
@@ -400,6 +402,7 @@ impl Runtime {
             hooks: Default::default(),
             scripts: Default::default(),
             helpers: RefCell::new(Default::default()),
+            modules: Default::default(),
             current_realm: std::cell::Cell::new(std::ptr::null_mut()),
             realms: RefCell::new(Vec::new()),
         });

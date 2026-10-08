@@ -73,6 +73,12 @@ errors.
   - value operations;
   - dates and regexps;
   - ArrayBuffer operations.
+- `servo-script` after CP102: **56 errors**.
+- CP103 adds:
+  - ES modules on V8: module records holding V8 modules, the resolve hook through V8's
+    resolve callback, JSON modules as synthetic modules, dynamic `import()` and
+    `import.meta` through V8's host callbacks;
+  - mozjs API compatibility fixes.
 
 **Surface.** An inventory of `script`, `script_bindings` and `script_webgpu` found about 590
 distinct `js::` items:

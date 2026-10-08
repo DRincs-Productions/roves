@@ -228,7 +228,10 @@ JobQueueTraps
 MaxFrames
 MemoryUse
 MimeType
+ModuleDynamicImportHook
 ModuleErrorBehaviour
+ModuleMetadataHook
+ModuleResolveHook
 ModuleType
 MutableHandle
 MutableHandleIdVector
