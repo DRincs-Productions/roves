@@ -1,5 +1,61 @@
 # Roves V8 migration plan
 
+## Cutover strategy — 2026-10-08 (decided)
+
+The user approved a production cutover to V8 and may fork from Servo permanently, so keeping
+the code upstream-friendly is no longer a constraint. V8 and mozjs cannot be linked into one
+binary (CP32), so the switch is a single-engine cutover. Its mechanism is
+**`components/roves-js`**:
+- It is a crate offering the subset of the `mozjs` API that Servo's script crates use,
+  implemented on V8.
+- The workspace declares the engine once (`js = { package = "mozjs", ... }` in the root
+  `Cargo.toml`). The cutover is the day that line points at `roves-js`, so the 721 DOM files
+  keep their `js::...` paths.
+- `support/v8_cutover_check.py [crate]` performs that swap temporarily, runs `cargo check`
+  and reports the error count and the most common error kinds. The count is the progress
+  metric; the swap becomes permanent when it reaches zero and the runtime tests pass.
+
+**Baseline (CP93, 2026-10-08).** `support/v8_cutover_check.py servo-script-bindings` reports
+**22,530 errors in 33 files** against the empty `roves-js` scaffold. The count includes the
+SpiderMonkey bindings that `script_bindings` generates at build time, which the V8 backend will
+replace.
+
+**Surface.** An inventory of `script`, `script_bindings` and `script_webgpu` found about 590
+distinct `js::` items:
+- `jsapi`: 212;
+- `rust::wrappers2`: 190 (thin `&mut JSContext` wrappers over the same operations);
+- `rust`: 51;
+- `glue`: 45;
+- `typedarray`: 26;
+- `gc`: 16;
+- `jsval`: 12;
+- the rest are small.
+
+There are two layers:
+- **The DOM code (`script`).** It uses a narrow vocabulary: `JSContext`, `Handle*`/`Rooted`/
+  `rooted!`, `Heap<T>`, `JSVal`, conversions, typed arrays, realms and a set of
+  object/property/exception/promise operations. `roves-js` emulates this vocabulary.
+- **The SpiderMonkey binding machinery (`script_bindings` internals and the generated
+  bindings).** This is `JSClass`, proxy handler families, JIT info and DOM class hooks. It is
+  *replaced*, not emulated: the generated bindings come from the V8 backend (`CGV8BindingRoot`,
+  486/486 shapes), and the runtime pieces come from `roves-v8`.
+
+**Value model.**
+- `JSVal` keeps immediates (undefined, null, booleans, int32, doubles) inline.
+- A GC thing (`*mut JSObject`, `*mut JSString`, symbols, BigInts) is a pointer to a
+  heap-allocated **cell** that holds a V8 handle:
+  - An object's cell is interned through a private symbol on the object, so one object always
+    has one pointer and pointer equality keeps working.
+  - A cell is strong while it is rooted (`Rooted`/`rooted!`/`Handle` keep a root count) and
+    weak otherwise. A weak cell is released when V8 collects its object.
+- An unrooted pointer has the same hazard it has under SpiderMonkey: it is only valid until the
+  next GC.
+- `Heap<T>` holds the cell plus a traced reference that the owning DOM object reports to cppgc
+  (`#[derive(Trace)]`/`JSTraceable` → `roves_v8::Tracer`).
+
+`roves-js` is the engine layer, like `mozjs`, so it may use `v8` directly. The hard rule still
+applies one level up: no `v8` type may appear in DOM or shell APIs.
+
 ## Status note — 2026-10-04 (CP37 complete; Phase 3 production ownership remains open)
 
 **CP45 (2026-10-06): generator coverage metric.** `components/script_bindings/codegen/v8_coverage.py`

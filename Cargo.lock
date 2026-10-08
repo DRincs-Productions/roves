@@ -7375,6 +7375,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "roves-js"
+version = "0.1.0"
+dependencies = [
+ "roves-v8",
+]
+
+[[package]]
 name = "roves-v8"
 version = "0.1.0"
 dependencies = [

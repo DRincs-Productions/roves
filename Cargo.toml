@@ -4,6 +4,7 @@ members = [
     "components/media/examples",
     "components/roves-v8",
     "components/roves-v8-derive",
+    "components/roves-js",
     "components/xpath",
     "ffi/capi",
     "ports/servoshell",

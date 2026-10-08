@@ -1,0 +1,134 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index daf1fa842e7..7cc3971eecd 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -4,6 +4,7 @@ members = [
+     "components/media/examples",
+     "components/roves-v8",
+     "components/roves-v8-derive",
++    "components/roves-js",
+     "components/xpath",
+     "ffi/capi",
+     "ports/servoshell",
+diff --git a/components/roves-js/Cargo.toml b/components/roves-js/Cargo.toml
+new file mode 100644
+index 00000000000..0e0d1362fab
+--- /dev/null
++++ b/components/roves-js/Cargo.toml
+@@ -0,0 +1,24 @@
++[package]
++name = "roves-js"
++version = "0.1.0"
++edition = "2024"
++license = "MPL-2.0"
++publish = false
++description = "The `js` (mozjs) API surface Servo's script crates use, implemented on V8 through roves-v8. Swapping the workspace `js` dependency to this crate is the V8 cutover (see ../../docs/V8_MIGRATION.md)."
++
++[lib]
++name = "js"
++path = "src/lib.rs"
++
++[dependencies]
++roves-v8 = { path = "../roves-v8" }
++
++# The mozjs features Servo's crates request; they have no meaning on V8.
++[features]
++crown = []
++debugmozjs = []
++intl = []
++jit = []
++jitspew = []
++libz-sys = []
++profilemozjs = []
+diff --git a/components/roves-js/src/lib.rs b/components/roves-js/src/lib.rs
+new file mode 100644
+index 00000000000..c0b6a67bd48
+--- /dev/null
++++ b/components/roves-js/src/lib.rs
+@@ -0,0 +1,9 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! The subset of the `mozjs` API that Servo's script crates use, implemented on V8.
++//!
++//! The V8 cutover swaps the workspace `js` dependency from `mozjs` to this crate, so the DOM
++//! code keeps its `js::...` paths. `support/v8_cutover_check.py` measures how far the
++//! workspace is from compiling against it. Modules mirror mozjs's layout.
+diff --git a/support/v8_cutover_check.py b/support/v8_cutover_check.py
+new file mode 100644
+index 00000000000..bcf994a2299
+--- /dev/null
++++ b/support/v8_cutover_check.py
+@@ -0,0 +1,71 @@
++#!/usr/bin/env python3
++# This Source Code Form is subject to the terms of the Mozilla Public
++# License, v. 2.0. If a copy of the MPL was not distributed with this
++# file, You can obtain one at https://mozilla.org/MPL/2.0/.
++
++"""Measures how far the workspace is from compiling against `roves-js` (mozjs on V8).
++
++The script temporarily points the workspace `js` dependency at components/roves-js, runs
++`cargo check` on the requested crate, and reports the number of errors and the most frequent
++error kinds. It restores Cargo.toml and Cargo.lock afterwards. It uses a separate target
++directory, so the normal SpiderMonkey build cache is untouched.
++
++    python support/v8_cutover_check.py [crate] [--top N]
++"""
++
++import argparse
++import collections
++import os
++import re
++import subprocess
++import sys
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parent.parent
++MOZJS_LINE = re.compile(r'^js = \{ package = "mozjs".*$', re.M)
++ROVES_JS_LINE = 'js = { package = "roves-js", path = "components/roves-js" }'
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("crate", nargs="?", default="servo-script-bindings")
++    parser.add_argument("--top", type=int, default=25)
++    args = parser.parse_args()
++
++    manifest = ROOT / "Cargo.toml"
++    lock = ROOT / "Cargo.lock"
++    original_manifest = manifest.read_bytes()
++    original_lock = lock.read_bytes()
++    text = original_manifest.decode("utf-8")
++    if not MOZJS_LINE.search(text):
++        print("Cargo.toml no longer depends on mozjs: nothing to swap", file=sys.stderr)
++        return 1
++    try:
++        manifest.write_text(MOZJS_LINE.sub(ROVES_JS_LINE, text), encoding="utf-8", newline="")
++        env = dict(os.environ, AWS_LC_SYS_NO_ASM="1")
++        result = subprocess.run(
++            ["cargo", "check", "-p", args.crate, "--offline", "--message-format=short",
++             "--target-dir", str(ROOT / "target" / "v8-cutover")],
++            cwd=ROOT, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
++        )
++    finally:
++        manifest.write_bytes(original_manifest)
++        lock.write_bytes(original_lock)
++
++    errors = [line for line in result.stderr.splitlines() if ": error" in line]
++    kinds = collections.Counter()
++    for line in errors:
++        message = line.split(": error", 1)[1]
++        message = re.sub(r"`[^`]*`", "`_`", message)
++        kinds[message.strip()] += 1
++    failing = sorted({line.split(":", 1)[0] for line in errors})
++    print(f"V8 cutover check ({args.crate}): {len(errors)} errors in {len(failing)} files")
++    for message, count in kinds.most_common(args.top):
++        print(f"{count:6}  {message}")
++    if not errors and result.returncode != 0:
++        print(result.stderr[-4000:])
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())

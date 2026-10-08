@@ -11,6 +11,31 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-08 - V8 cutover: `roves-js` scaffold and progress metric (CP93)
+
+**Servo files:**
+- `components/roves-js/` (new crate);
+- root `Cargo.toml` (new workspace member);
+- `support/v8_cutover_check.py` (new).
+
+**Patch:** `0158-roves-js-scaffold.patch` after 0157.
+
+The user approved a single-engine production cutover to V8, and may fork from Servo permanently.
+The cutover strategy is written down in `docs/V8_MIGRATION.md` ("Cutover strategy").
+
+**`roves-js`** will offer the subset of the `mozjs` API that Servo's script crates use,
+implemented on V8. Its package is `roves-js` and its library is named `js`. It declares the
+mozjs features those crates request (`crown`, `debugmozjs`, `intl`, `jit`, `jitspew`,
+`libz-sys`, `profilemozjs`), none of which means anything on V8. The cutover is the day the
+workspace's `js = { package = "mozjs", ... }` line points at it.
+
+**`support/v8_cutover_check.py [crate]`** measures progress. It performs that swap temporarily,
+runs `cargo check` in a separate target directory, reports the error count and the most common
+error kinds, and restores `Cargo.toml` and `Cargo.lock`.
+
+**Baseline:** `servo-script-bindings` has 22,530 errors in 33 files. Production is unchanged and
+still links mozjs.
+
 ## 2026-10-06 - Patch overlay fixes: root `Cargo.lock`, a missing fixture, mojibake (0155, 0157)
 
 Patch validation (pristine v0.5.0 plus every patch, the CI's `validate-servo-patches`) failed at

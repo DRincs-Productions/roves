@@ -1,0 +1,24 @@
+[package]
+name = "roves-js"
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+publish = false
+description = "The `js` (mozjs) API surface Servo's script crates use, implemented on V8 through roves-v8. Swapping the workspace `js` dependency to this crate is the V8 cutover (see ../../docs/V8_MIGRATION.md)."
+
+[lib]
+name = "js"
+path = "src/lib.rs"
+
+[dependencies]
+roves-v8 = { path = "../roves-v8" }
+
+# The mozjs features Servo's crates request; they have no meaning on V8.
+[features]
+crown = []
+debugmozjs = []
+intl = []
+jit = []
+jitspew = []
+libz-sys = []
+profilemozjs = []
