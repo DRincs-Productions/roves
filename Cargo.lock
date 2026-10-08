@@ -7378,6 +7378,10 @@ dependencies = [
 name = "roves-js"
 version = "0.1.0"
 dependencies = [
+ "encoding_rs",
+ "libc",
+ "log",
+ "num-traits",
  "roves-v8",
  "v8",
 ]

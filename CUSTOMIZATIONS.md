@@ -11,6 +11,49 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-08 - V8 cutover: `roves-js` exceptions, type conversions and strings (CP95)
+
+**Servo files:** `components/roves-js/`, mainly:
+- `src/api.rs` (new);
+- `src/conversions.rs` and `src/error.rs` (new, ported from mozjs);
+- `src/jsapi.rs`, `src/rust.rs`, `src/cell.rs`;
+- `Cargo.toml`/`Cargo.lock`.
+
+**Patch:** `0160-roves-js-conversions.patch` after 0159.
+
+- **Pending exceptions, as in SpiderMonkey.** Operations that can run script go through
+  `JSContext::catching` (a `TryCatch`). A caught exception becomes the context's pending
+  exception, read through `JS_IsExceptionPending`, `JS_GetPendingException`,
+  `JS_ClearPendingException` and `JS_SetPendingException`. `error::throw_*` creates
+  `TypeError`/`RangeError`/`Error` objects as the pending exception.
+- **The `js::rust` conversions.**
+  - `ToBoolean`, `ToNumber` (which runs `valueOf`/`toString`), and
+    `ToInt32`/`ToUint32`/`ToUint16`/`ToInt64`/`ToUint64` (ECMAScript modular conversion).
+  - `ToString`.
+  - `for_of` (the JS iterator protocol, including `IteratorClose` on break), with
+    `ForOfIterationFailure`.
+  - `maybe_wrap_*` are no-ops: V8 has no compartments.
+- **Strings.** A string cell lazily copies its characters (Latin-1 when every unit fits,
+  otherwise UTF-16) and lends stable pointers to them while the cell lives — SpiderMonkey's
+  contract for `JS_GetLatin1StringCharsAndLength` / `JS_GetTwoByteStringCharsAndLength`. Also
+  `JS_DeprecatedStringHasLatin1Chars`, `JS_GetStringLength` and new strings from UTF-8 or
+  UTF-16.
+- **Arrays.** `NewArrayObject1` and `JS_DefineElement` (`JSPROP_*` map to V8 attributes).
+- **`conversions.rs`** is ported from mozjs 0.21.6 (MPL) onto these primitives. It provides
+  `ToJSValConvertible`/`FromJSValConvertible` with mozjs's WebIDL integer behaviours (default,
+  `EnforceRange`, `Clamp`), plus strings, `Option`, sequences and objects. It is unchanged
+  except for its imports and the UTF-8 chars wrapper.
+
+Test: `conversions_follow_webidl_and_mozjs`. It covers:
+- modular, enforced and clamped (round-half-to-even) integers, including the pending TypeError;
+- a user `valueOf` exception surfacing as the pending exception;
+- booleans, Latin-1/two-byte/`toString` strings;
+- `Option` and a `Set` as a sequence, with a non-iterable rejected;
+- the object conversion's TypeError;
+- Rust → JS arrays and numbers.
+
+`roves-js` passes 6/6, also in the CI's isolated layout with `--locked`.
+
 ## 2026-10-08 - V8 cutover: `roves-js` value model, cells and rooting (CP94)
 
 **Servo files:**

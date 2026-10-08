@@ -155,3 +155,70 @@ fn heap_locations_are_traced_by_their_owner() {
     assert_eq!(finalized(), before + 1, "an overwritten heap location releases its cell");
     drop(owner);
 }
+
+#[test]
+fn conversions_follow_webidl_and_mozjs() {
+    use crate::conversions::{ConversionBehavior, ConversionResult, FromJSValConvertible, ToJSValConvertible};
+
+    fn from<T: FromJSValConvertible>(runtime: &mut Runtime, source: &str, option: T::Config) -> Result<ConversionResult<T>, ()> {
+        let value = eval(runtime, source);
+        let raw = runtime.cx();
+        rooted!(in(raw) let value = value);
+        let mut cx = runtime.cx_mut();
+        T::safe_from_jsval(&mut cx, value.handle(), option)
+    }
+    fn ok<T>(result: Result<ConversionResult<T>, ()>) -> T {
+        match result {
+            Ok(ConversionResult::Success(value)) => value,
+            _ => panic!("conversion failed"),
+        }
+    }
+
+    let mut runtime = Runtime::new();
+    // Integers: modular by default, EnforceRange throws, Clamp rounds half to even.
+    assert_eq!(ok(from::<i32>(&mut runtime, "2 ** 32 + 5", ConversionBehavior::Default)), 5);
+    assert_eq!(ok(from::<u8>(&mut runtime, "-1", ConversionBehavior::Default)), 255);
+    assert_eq!(ok(from::<u8>(&mut runtime, "300.7", ConversionBehavior::Clamp)), 255);
+    assert_eq!(ok(from::<u8>(&mut runtime, "2.5", ConversionBehavior::Clamp)), 2);
+    assert_eq!(ok(from::<i64>(&mut runtime, "'-12'", ConversionBehavior::Default)), -12);
+    assert!(from::<u8>(&mut runtime, "256", ConversionBehavior::EnforceRange).is_err());
+    // SAFETY: a live context.
+    assert!(unsafe { crate::jsapi::JS_IsExceptionPending(runtime.cx()) });
+    unsafe { crate::jsapi::JS_ClearPendingException(runtime.cx()) };
+    // ToNumber runs user code and propagates its exception as the pending one.
+    assert!(from::<f64>(&mut runtime, "({ valueOf() { throw new RangeError('mine'); } })", ()).is_err());
+    let raw = runtime.cx();
+    rooted!(in(raw) let mut exception = UndefinedValue());
+    assert!(unsafe { crate::jsapi::JS_GetPendingException(raw, exception.handle_mut()) });
+    assert_eq!(describe(&runtime, exception.get()), "RangeError: mine");
+    unsafe { crate::jsapi::JS_ClearPendingException(raw) };
+    assert!(ok(from::<bool>(&mut runtime, "'x'", ())) && !ok(from::<bool>(&mut runtime, "''", ())));
+    assert_eq!(ok(from::<f64>(&mut runtime, "'1.5'", ())), 1.5);
+    // Strings: Latin-1 and two-byte, through ToString.
+    assert_eq!(ok(from::<String>(&mut runtime, "'caf\\u00e9'", ())), "café");
+    assert_eq!(ok(from::<String>(&mut runtime, "'\\u4e2d\\u6587'", ())), "中文");
+    assert_eq!(ok(from::<String>(&mut runtime, "({ toString() { return 'custom'; } })", ())), "custom");
+    // Option and sequences (any iterable).
+    assert_eq!(ok(from::<Option<i32>>(&mut runtime, "null", ConversionBehavior::Default)), None);
+    assert_eq!(ok(from::<Vec<i32>>(&mut runtime, "new Set([3, 1, 2])", ConversionBehavior::Default)), vec![3, 1, 2]);
+    assert!(matches!(from::<Vec<i32>>(&mut runtime, "5", ConversionBehavior::Default), Ok(ConversionResult::Failure(_))));
+    // Non-objects are rejected as objects, with a pending TypeError.
+    assert!(from::<*mut JSObject>(&mut runtime, "1", ()).is_err());
+    unsafe { crate::jsapi::JS_ClearPendingException(raw) };
+
+    // Rust → JS: numbers, strings and arrays.
+    let raw = runtime.cx();
+    rooted!(in(raw) let mut value = UndefinedValue());
+    {
+        let mut cx = runtime.cx_mut();
+        vec![String::from("a"), String::from("é"), String::from("中")].safe_to_jsval(&mut cx, value.handle_mut());
+    }
+    assert!(value.get().is_object());
+    assert_eq!(describe(&runtime, value.get()), "a,é,中");
+    {
+        let mut cx = runtime.cx_mut();
+        u32::MAX.safe_to_jsval(&mut cx, value.handle_mut());
+    }
+    assert_eq!(describe(&runtime, value.get()), "4294967295");
+    runtime.gc_for_testing();
+}

@@ -56,7 +56,7 @@ impl JSContext {
         self.ptr.as_ptr()
     }
 
-    pub(crate) fn raw(&self) -> &RawJSContext {
+    pub(crate) fn raw_ref(&self) -> &RawJSContext {
         // SAFETY: the pointer is live for the wrapper's use (constructor contract).
         unsafe { self.ptr.as_ref() }
     }

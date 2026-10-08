@@ -20,6 +20,15 @@ use v8::cppgc::{GarbageCollected, Member, UnsafePtr, Visitor};
 
 pub(crate) struct Cell {
     value: TracedReference<v8::Value>,
+    /// A string cell's characters, copied out on first request: SpiderMonkey lends raw
+    /// character pointers that stay valid while the string lives, and the cell gives the same
+    /// guarantee (it does not move and is freed only with the string's last reference).
+    chars: std::cell::OnceCell<StringChars>,
+}
+
+pub(crate) enum StringChars {
+    Latin1(Vec<u8>),
+    TwoByte(Vec<u16>),
 }
 
 #[cfg(test)]
@@ -67,7 +76,9 @@ pub(crate) fn new_cell(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) ->
     let heap = scope.get_cpp_heap().expect("roves-js isolates carry a cppgc heap");
     // SAFETY: the returned pointer is handed straight to the caller, who roots or stores it
     // (the documented contract of an unrooted GC-thing pointer).
-    let cell = unsafe { v8::cppgc::make_garbage_collected(heap, Cell { value: reference }) };
+    let cell = unsafe {
+        v8::cppgc::make_garbage_collected(heap, Cell { value: reference, chars: std::cell::OnceCell::new() })
+    };
     to_raw(cell)
 }
 
@@ -87,4 +98,26 @@ pub(crate) fn trace_cell(pointer: *mut c_void, visitor: &mut Visitor) {
     if let Some(cell) = from_raw(pointer) {
         visitor.trace(&Member::new(&cell));
     }
+}
+
+/// A string cell's characters (Latin-1 when every code unit fits, else UTF-16), valid while
+/// the cell lives.
+///
+/// # Safety
+/// `pointer` must be a live string cell.
+pub(crate) unsafe fn string_chars<'c>(scope: &mut v8::PinScope, pointer: *mut c_void) -> &'c StringChars {
+    let cell = from_raw(pointer).expect("a non-null string pointer");
+    // SAFETY: the caller guarantees the cell is alive; the returned reference is tied to it.
+    let cell: &'c Cell = unsafe { &*(cell.as_ref() as *const Cell) };
+    cell.chars.get_or_init(|| {
+        let value = cell.value.get(scope).expect("a live cell holds its value");
+        let string = v8::Local::<v8::String>::try_from(value).expect("a string cell");
+        let mut units = vec![0u16; string.length()];
+        string.write_v2(scope, 0, &mut units, v8::WriteFlags::empty());
+        if units.iter().all(|unit| *unit <= 0xFF) {
+            StringChars::Latin1(units.into_iter().map(|unit| unit as u8).collect())
+        } else {
+            StringChars::TwoByte(units)
+        }
+    })
 }

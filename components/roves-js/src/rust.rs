@@ -14,6 +14,66 @@ pub use crate::gc::{
     MutableHandleObject, MutableHandleString, MutableHandleValue, RootKind, RootedGuard,
 };
 use crate::jsapi::JSContext as RawJSContext;
+pub use crate::api::{
+    ForOfIterationFailure, ToBoolean, ToInt32, ToInt64, ToNumber, ToString, ToUint16, ToUint32,
+    ToUint64, for_of, maybe_wrap_object_or_null_value, maybe_wrap_object_value, maybe_wrap_value,
+};
+
+/// The `&mut JSContext` forms of the JSAPI (mozjs generates these from jsapi).
+pub mod wrappers2 {
+    use crate::context::JSContext;
+    use crate::gc::{HandleObject, HandleValue};
+    use crate::jsapi::{JSObject, JSString, UTF8Chars};
+
+    pub fn JS_GetLatin1StringCharsAndLength(_cx: &JSContext, s: *mut JSString, length: &mut usize) -> *const u8 {
+        crate::api::latin1_chars(s, length)
+    }
+
+    pub fn JS_GetTwoByteStringCharsAndLength(_cx: &JSContext, s: *mut JSString, length: &mut usize) -> *const u16 {
+        crate::api::two_byte_chars(s, length)
+    }
+
+    /// # Safety
+    /// `chars` must point at valid UTF-8 for the call.
+    pub unsafe fn JS_NewStringCopyUTF8N(cx: &mut JSContext, chars: *const UTF8Chars) -> *mut JSString {
+        // SAFETY: forwarded to the caller.
+        crate::api::new_string_utf8(cx.raw_ref(), unsafe { &*chars })
+    }
+
+    pub fn JS_NewUCStringCopyN(cx: &mut JSContext, chars: *const u16, length: usize) -> *mut JSString {
+        // SAFETY: JSAPI callers pass `length` valid code units.
+        let units = unsafe { std::slice::from_raw_parts(chars, length) };
+        crate::api::new_string_utf16(cx.raw_ref(), units)
+    }
+
+    /// # Safety
+    /// As in mozjs.
+    pub unsafe fn NewArrayObject1(cx: &mut JSContext, length: usize) -> *mut JSObject {
+        crate::api::new_array(cx.raw_ref(), length)
+    }
+
+    /// # Safety
+    /// As in mozjs.
+    pub unsafe fn JS_DefineElement(cx: &mut JSContext, obj: HandleObject, index: u32, value: HandleValue, attrs: u32) -> bool {
+        crate::api::define_element(cx.raw_ref(), obj, index, value, attrs)
+    }
+
+    /// # Safety
+    /// As in mozjs.
+    pub unsafe fn AssertSameCompartment(cx: &JSContext, obj: *mut JSObject) {
+        crate::api::assert_same_compartment(cx, obj);
+    }
+
+    pub fn JS_IsExceptionPending(cx: &JSContext) -> bool {
+        // SAFETY: a live context.
+        unsafe { crate::api::JS_IsExceptionPending(cx.ptr.as_ptr()) }
+    }
+
+    pub fn JS_ClearPendingException(cx: &JSContext) {
+        // SAFETY: a live context.
+        unsafe { crate::api::JS_ClearPendingException(cx.ptr.as_ptr()) }
+    }
+}
 
 /// Traced on every GC through a persistent root: reports this thread's root stack.
 struct RootSet;
@@ -59,7 +119,11 @@ impl Runtime {
             let root_set = unsafe { v8::cppgc::make_garbage_collected(heap, RootSet) };
             (v8::Global::new(scope, context), Persistent::new(&root_set))
         };
-        let mut raw = Box::new(RawJSContext { isolate: std::ptr::null_mut(), context: RefCell::new(context) });
+        let mut raw = Box::new(RawJSContext {
+            isolate: std::ptr::null_mut(),
+            context: RefCell::new(context),
+            pending_exception: RefCell::new(None),
+        });
         raw.isolate = &mut **isolate as *mut v8::Isolate;
         let runtime = Runtime { root_set, raw, isolate };
         CURRENT.with(|current| current.set(Some(runtime.cx_ptr())));

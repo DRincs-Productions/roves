@@ -11,8 +11,11 @@
 
 #![allow(non_snake_case, non_camel_case_types, non_upper_case_globals)]
 
+mod api;
 mod cell;
 pub mod context;
+pub mod conversions;
+pub mod error;
 pub mod gc;
 pub mod jsapi;
 pub mod jsval;
