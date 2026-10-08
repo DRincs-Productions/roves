@@ -11,6 +11,36 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-08 - V8 cutover: bindgen types and the binding-machinery decision (CP96)
+
+**Servo files:**
+- `components/roves-js/src/{jsapi.rs, jsapi_types.rs (new, generated), lib.rs}`;
+- `support/roves_js/` (new: `extract_jsapi_types.py`, `jsapi_type_names.txt`);
+- `support/v8_cutover_check.py`, which now also lists the most frequent missing names.
+
+**Patch:** `0161-roves-js-bindgen-types.patch` after 0160.
+
+**Decision (recorded in `docs/V8_MIGRATION.md`).** SpiderMonkey's binding machinery is
+**emulated** in `roves-js` rather than replaced. Reading the generated bindings showed that they
+only reach the JSAPI through `script_bindings`' helpers and literal bindgen structs. Emulating
+those keeps Servo's WebIDL generator and its semantics unchanged:
+- a `JSClass` becomes an object template;
+- a reflector carries a cppgc box whose trace and finalize call the class hooks;
+- native callbacks are bridged through a `vp` array;
+- proxies map onto V8 interceptors.
+
+**Types.** `extract_jsapi_types.py` copies 193 type items (structs, unions, enums, aliases,
+constants) from mozjs_sys's bindgen `jsapi.rs` into `jsapi_types.rs`:
+- **Real layouts:** `JSJitInfo` with its bitfields, `JSPropertySpec`, `JSFunctionSpec`,
+  `JSClass`/`JSClassOps`, `CallArgs`, `ObjectOpResult`, the raw handle types, and others.
+- **Dependencies:** pulled in transitively; SpiderMonkey internals become opaque.
+- **Skipped:** types `roves-js` defines itself (`Value`, the GC-thing types, `JSContext`,
+  `Heap`).
+- `jsapi`'s handles are now the raw bindgen handles, as in mozjs. `rust::Handle` stays separate.
+
+**Macro.** `new_jsjitinfo_bitfield_1!` is ported from mozjs. It alone accounted for 6,609 of
+the 7,252 remaining `servo-script-bindings` errors.
+
 ## 2026-10-08 - V8 cutover: `roves-js` exceptions, type conversions and strings (CP95)
 
 **Servo files:** `components/roves-js/`, mainly:

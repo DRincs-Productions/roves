@@ -9,7 +9,25 @@
 
 use std::cell::RefCell;
 
-pub use crate::gc::{Handle, HandleObject, HandleValue, Heap, MutableHandle, MutableHandleObject, MutableHandleValue};
+pub use crate::gc::Heap;
+
+/// The bindgen types Servo uses (layouts copied from mozjs_sys by
+/// `support/roves_js/extract_jsapi_types.py`); roves-js gives them their behaviour.
+mod types {
+    #![allow(dead_code, non_camel_case_types, non_snake_case, non_upper_case_globals, clippy::all)]
+    use super::{BigInt, JSContext, JSFunction, JSObject, JSScript, JSString, Symbol};
+    use crate::jsval::Value;
+
+    /// SpiderMonkey's stack-rooted GC vector (opaque here; its uses are emulated).
+    #[repr(C)]
+    #[derive(Debug, Copy, Clone)]
+    pub struct StackGCVector<T, AllocPolicy> {
+        _marker: std::marker::PhantomData<(T, AllocPolicy)>,
+    }
+
+    include!("jsapi_types.rs");
+}
+pub use types::*;
 pub use crate::jsval::{JSVal, Value};
 pub use crate::api::{
     ExceptionStackBehavior, JS_ClearPendingException, JS_DeprecatedStringHasLatin1Chars,

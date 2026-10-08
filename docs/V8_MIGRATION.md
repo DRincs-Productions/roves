@@ -20,6 +20,10 @@ binary (CP32), so the switch is a single-engine cutover. Its mechanism is
 SpiderMonkey bindings that `script_bindings` generates at build time, which the V8 backend will
 replace.
 
+**Progress.** CP94–95 brought the count to 7,252. CP96 adds the 193 bindgen types, extracted
+from mozjs_sys with their layouts, and `new_jsjitinfo_bitfield_1!`, which alone caused 6,609
+errors.
+
 **Surface.** An inventory of `script`, `script_bindings` and `script_webgpu` found about 590
 distinct `js::` items:
 - `jsapi`: 212;
@@ -36,9 +40,24 @@ There are two layers:
   `rooted!`, `Heap<T>`, `JSVal`, conversions, typed arrays, realms and a set of
   object/property/exception/promise operations. `roves-js` emulates this vocabulary.
 - **The SpiderMonkey binding machinery (`script_bindings` internals and the generated
-  bindings).** This is `JSClass`, proxy handler families, JIT info and DOM class hooks. It is
-  *replaced*, not emulated: the generated bindings come from the V8 backend (`CGV8BindingRoot`,
-  486/486 shapes), and the runtime pieces come from `roves-v8`.
+  bindings).** This is `JSClass`, proxy handler families, JIT info and DOM class hooks.
+  - *Revised 2026-10-08 (CP95), after reading the generated code.* It is **emulated** too,
+    not replaced. The generated bindings only touch the JSAPI through `script_bindings`'
+    helpers (`init`, `wrap`, `interface`, `utils`, `proxyhandler`) and through literal
+    bindgen structs (`JSJitInfo`, `JSPropertySpec`, `JSFunctionSpec`, `JSClass`,
+    `JSClassOps`), which `roves-js` can define with the same names and fields. Emulating them
+    keeps Servo's mature WebIDL generator and its semantics unchanged, and avoids rewriting
+    about 520 bindings.
+  - How the emulation works on V8:
+    - A `JSClass` becomes an object template with internal fields for its reserved slots.
+    - A DOM reflector is wrapped (`Object::wrap`) with a cppgc box. The box's trace calls the
+      class trace hook with a `JSTracer` that forwards to the cppgc visitor, and its
+      destruction calls the finalize hook. This closes the GC graph: `Dom<T>` traces its
+      target's reflector, whose class hook traces the native's fields.
+    - Native callbacks (`JSNative`, JIT getters/setters/methods) are bridged through a
+      SpiderMonkey-style `vp` array (callee, this, arguments) of `JSVal`s.
+    - Proxy handler families map onto V8 named/indexed interceptors that call the proxy traps.
+  - The `CGV8BindingRoot` backend (486/486 shapes) stays as a reference and for tests.
 
 **Value model.**
 - `JSVal` keeps immediates (undefined, null, booleans, int32, doubles) inline.

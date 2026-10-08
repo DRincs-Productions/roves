@@ -58,10 +58,21 @@ def main() -> int:
         message = line.split(": error", 1)[1]
         message = re.sub(r"`[^`]*`", "`_`", message)
         kinds[message.strip()] += 1
+    missing = collections.Counter()
+    for line in errors:
+        found = re.search(r"cannot find (?:macro|type|value|trait|function[^`]*) `([^`]+)`", line)
+        if not found:
+            found = re.search(r"(?:unresolved import|no) `([^`]+)`", line)
+        if found:
+            missing[found.group(1)] += 1
     failing = sorted({line.split(":", 1)[0] for line in errors})
     print(f"V8 cutover check ({args.crate}): {len(errors)} errors in {len(failing)} files")
     for message, count in kinds.most_common(args.top):
         print(f"{count:6}  {message}")
+    if missing:
+        print("Most missing names:")
+        for name, count in missing.most_common(args.top):
+            print(f"{count:6}  {name}")
     if not errors and result.returncode != 0:
         print(result.stderr[-4000:])
     return 0
