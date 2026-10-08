@@ -120,6 +120,26 @@ pub mod wrappers2 {
 
     include!("wrappers2.in.rs");
 
+    /// As in mozjs (written by hand there too: `ownDesc` is optional).
+    ///
+    /// # Safety
+    /// As for `jsapi::SetPropertyIgnoringNamedGetter`.
+    #[inline]
+    pub unsafe fn SetPropertyIgnoringNamedGetter(
+        cx: &mut JSContext,
+        obj: HandleObject,
+        id: HandleId,
+        v: HandleValue,
+        receiver: HandleValue,
+        own_desc: Option<Handle<PropertyDescriptor>>,
+        result: *mut ObjectOpResult,
+    ) -> bool {
+        let own_desc: Option<jsapi::Handle<PropertyDescriptor>> = own_desc.map(Into::into);
+        let own_desc_ptr = own_desc.as_ref().map_or(std::ptr::null(), |desc| desc as *const _);
+        // SAFETY: forwarded.
+        unsafe { jsapi::SetPropertyIgnoringNamedGetter(cx.raw_cx(), obj.into(), id.into(), v.into(), receiver.into(), own_desc_ptr, result) }
+    }
+
     pub fn JS_GetLatin1StringCharsAndLength(_cx: &JSContext, s: *mut JSString, length: &mut usize) -> *const u8 {
         crate::api::latin1_chars(s, length)
     }
@@ -230,6 +250,7 @@ impl Runtime {
             class_templates: Default::default(),
             native_functions: RefCell::new(Vec::new()),
             interned: Default::default(),
+            proxy_handlers: RefCell::new(Default::default()),
             current_realm: std::cell::Cell::new(std::ptr::null_mut()),
             realms: RefCell::new(Vec::new()),
         });
@@ -400,3 +421,27 @@ pub static SIMPLE_GLOBAL_CLASS: crate::jsapi::JSClass = crate::jsapi::JSClass {
     ext: std::ptr::null(),
     oOps: std::ptr::null(),
 };
+
+/// Realm creation options (mozjs's owning wrapper of `JS::RealmOptions`).
+pub struct RealmOptions(Box<crate::jsapi::RealmOptions>);
+
+impl Default for RealmOptions {
+    fn default() -> RealmOptions {
+        // SAFETY: bindgen's plain option structs are valid when zeroed (null hooks and
+        // pointers, false flags, the first enum variants), as `JS_NewRealmOptions` makes them.
+        RealmOptions(Box::new(unsafe { std::mem::zeroed() }))
+    }
+}
+
+impl std::ops::Deref for RealmOptions {
+    type Target = crate::jsapi::RealmOptions;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for RealmOptions {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}

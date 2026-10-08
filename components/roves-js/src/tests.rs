@@ -568,14 +568,24 @@ mod realms {
         oOps: ptr::null(),
     };
 
+    thread_local! {
+        static GLOBAL_TRACED: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    }
+
+    unsafe extern "C" fn trace_global(_trc: *mut JSTracer, _global: *mut JSObject) {
+        GLOBAL_TRACED.with(|count| count.set(count.get() + 1));
+    }
+
     #[test]
     fn new_globals_are_separate_realms_with_class_identity() {
         let mut runtime = Runtime::new();
         let cx = runtime.cx();
         let first_realm = unsafe { GetCurrentRealmOrNull(cx) };
         let first_object_prototype = eval(&runtime, "Object.prototype").to_object();
+        let mut options = crate::rust::RealmOptions::default();
+        options.creationOptions_.traceGlobal_ = Some(trace_global);
         rooted!(in(cx) let global = unsafe {
-            JS_NewGlobalObject(cx, &GLOBAL_CLASS, ptr::null_mut(), OnNewGlobalHookOption::FireOnNewGlobalHook, ptr::null())
+            JS_NewGlobalObject(cx, &GLOBAL_CLASS, ptr::null_mut(), OnNewGlobalHookOption::FireOnNewGlobalHook, &*options)
         });
         assert!(!global.get().is_null());
         assert!(unsafe { JS_IsGlobalObject(global.get()) });
@@ -596,11 +606,210 @@ mod realms {
         assert_eq!(unsafe { GetCurrentRealmOrNull(cx) }, first_realm);
         assert!(eval(&runtime, "typeof inRealm === 'undefined'").to_boolean());
 
-        // The realm keeps its global (and its reserved slots) across GC.
+        // The realm keeps its global (and its reserved slots) across GC, tracing it with the
+        // realm's `traceGlobal` hook.
         runtime.gc_for_testing();
+        assert!(GLOBAL_TRACED.with(std::cell::Cell::get) > 0);
         let mut slot = UndefinedValue();
         unsafe { JS_GetReservedSlot(global.get(), crate::object::JSCLASS_GLOBAL_SLOT_COUNT, &mut slot) };
         assert_eq!(slot.to_int32(), 5);
         assert_eq!(unsafe { crate::realm_impl::get_object_realm(eval(&runtime, "({})").to_object()) }, first_realm);
+    }
+}
+
+mod proxies {
+    use std::cell::Cell;
+    use std::ptr;
+
+    use super::{describe, eval};
+    use crate::glue::*;
+    use crate::jsapi::*;
+    use crate::jsval::*;
+    use crate::rust::Runtime;
+
+    thread_local! {
+        static PROXY_FINALIZED: Cell<u32> = const { Cell::new(0) };
+        static PROXY_TRACED: Cell<u32> = const { Cell::new(0) };
+    }
+
+    /// The expando object (created on demand in the private slot, as Servo's DOM proxies do).
+    unsafe fn expando(cx: *mut JSContext, proxy: HandleObject) -> *mut JSObject {
+        let mut private = UndefinedValue();
+        unsafe { GetProxyPrivate(proxy.get(), &mut private) };
+        if private.is_object() {
+            return private.to_object();
+        }
+        let object = unsafe { JS_NewPlainObject(cx) };
+        unsafe { SetProxyPrivate(proxy.get(), &ObjectValue(object)) };
+        object
+    }
+
+    unsafe extern "C" fn get_own_property_descriptor(
+        cx: *mut JSContext,
+        proxy: HandleObject,
+        id: HandleId,
+        desc: MutableHandle<PropertyDescriptor>,
+        is_none: *mut bool,
+    ) -> bool {
+        let id_value = id.get();
+        if id_value.is_string() {
+            let mut length = 0;
+            let chars = crate::api::latin1_chars(id_value.to_string(), &mut length);
+            let name = if chars.is_null() { Vec::new() } else { unsafe { std::slice::from_raw_parts(chars, length) }.to_vec() };
+            if name == b"foo" {
+                let value = unsafe { JS_NewStringCopyN(cx, c"named-foo".as_ptr(), 9) };
+                crate::rooted!(in(cx) let value = StringValue(unsafe { &*value }));
+                unsafe { SetDataPropertyDescriptor(desc, value.handle().into_handle(), JSPROP_ENUMERATE as u32 | JSPROP_READONLY as u32) };
+                unsafe { *is_none = false };
+                return true;
+            }
+        }
+        crate::rooted!(in(cx) let expando = unsafe { expando(cx, proxy) });
+        unsafe { JS_GetOwnPropertyDescriptorById(cx, expando.handle().into_handle(), id, desc, is_none) }
+    }
+
+    unsafe extern "C" fn define_property(
+        cx: *mut JSContext,
+        proxy: HandleObject,
+        id: HandleId,
+        desc: Handle<PropertyDescriptor>,
+        result: *mut ObjectOpResult,
+    ) -> bool {
+        crate::rooted!(in(cx) let expando = unsafe { expando(cx, proxy) });
+        unsafe { JS_DefinePropertyById(cx, expando.handle().into_handle(), id, desc, result) }
+    }
+
+    unsafe extern "C" fn own_property_keys(cx: *mut JSContext, proxy: HandleObject, props: MutableHandleIdVector) -> bool {
+        let foo = unsafe { JS_AtomizeAndPinString(cx, c"foo".as_ptr()) };
+        crate::rooted!(in(cx) let mut id = crate::jsid::VoidId());
+        unsafe { RUST_INTERNED_STRING_TO_JSID(cx, foo, id.handle_mut().into_handle()) };
+        unsafe { AppendToIdVector(props, id.handle().into_handle()) };
+        crate::rooted!(in(cx) let expando = unsafe { expando(cx, proxy) });
+        unsafe { GetPropertyKeys(cx, expando.handle().into_handle(), JSITER_OWNONLY | JSITER_HIDDEN | JSITER_SYMBOLS, props) }
+    }
+
+    unsafe extern "C" fn delete(cx: *mut JSContext, proxy: HandleObject, id: HandleId, result: *mut ObjectOpResult) -> bool {
+        crate::rooted!(in(cx) let expando = unsafe { expando(cx, proxy) });
+        unsafe { JS_DeletePropertyById(cx, expando.handle().into_handle(), id, result) }
+    }
+
+    unsafe extern "C" fn trace(_trc: *mut JSTracer, _proxy: *mut JSObject) {
+        PROXY_TRACED.with(|count| count.set(count.get() + 1));
+    }
+
+    unsafe extern "C" fn finalize(_gcx: *mut GCContext, proxy: *mut JSObject) {
+        let mut slot = UndefinedValue();
+        unsafe { GetProxyReservedSlot(proxy, 0, &mut slot) };
+        if slot.is_int32() && slot.to_int32() == 77 {
+            PROXY_FINALIZED.with(|count| count.set(count.get() + 1));
+        }
+    }
+
+    fn traps() -> ProxyTraps {
+        // SAFETY: an all-`None` trap table is valid.
+        let mut traps: ProxyTraps = unsafe { std::mem::zeroed() };
+        traps.getOwnPropertyDescriptor = Some(get_own_property_descriptor);
+        traps.defineProperty = Some(define_property);
+        traps.ownPropertyKeys = Some(own_property_keys);
+        traps.delete_ = Some(delete);
+        traps.trace = Some(trace);
+        traps.finalize = Some(finalize);
+        traps
+    }
+
+    static EXTRA: u8 = 0;
+
+    #[test]
+    fn dom_style_proxies_use_traps_defaults_and_identity() {
+        let mut runtime = Runtime::new();
+        let cx = runtime.cx();
+        let traps = traps();
+        let handler = unsafe { CreateProxyHandler(&traps, &EXTRA as *const u8 as *const std::ffi::c_void) };
+        let finalized_before = PROXY_FINALIZED.with(Cell::get);
+        {
+            rooted!(in(cx) let proto = eval(&runtime, "({ hello() { return 'hi ' + this.foo; } })").to_object());
+            rooted!(in(cx) let private = UndefinedValue());
+            rooted!(in(cx) let proxy = unsafe { NewProxyObject(cx, handler, private.handle().into_handle(), proto.get(), ptr::null(), false) });
+            assert!(!proxy.get().is_null());
+            unsafe { SetProxyReservedSlot(proxy.get(), 0, &Int32Value(77)) };
+            assert!(unsafe { IsProxyHandlerFamily(proxy.get()) });
+            assert_eq!(unsafe { GetProxyHandler(proxy.get()) }, handler);
+            assert_eq!(unsafe { GetProxyHandlerExtra(proxy.get()) }, &EXTRA as *const u8 as *const std::ffi::c_void);
+            assert!(unsafe { crate::object::object_class(proxy.get()).as_ref() }.unwrap().flags & crate::object::JSCLASS_IS_PROXY != 0);
+
+            rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
+            rooted!(in(cx) let value = ObjectValue(proxy.get()));
+            assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"p".as_ptr(), value.handle().into_handle()) });
+            assert_eq!(eval(&runtime, "p").to_object(), proxy.get(), "a proxy keeps its identity");
+
+            // Named property from the trap, prototype methods with the proxy as `this`.
+            assert_eq!(describe(&runtime, eval(&runtime, "p.foo")), "named-foo");
+            assert_eq!(describe(&runtime, eval(&runtime, "p.hello()")), "hi named-foo");
+            assert!(eval(&runtime, "'foo' in p && 'hello' in p && !('nope' in p)").to_boolean());
+            // Assignment through the default set trap lands on the expando.
+            assert_eq!(eval(&runtime, "p.x = 5; p.x").to_int32(), 5);
+            assert_eq!(describe(&runtime, eval(&runtime, "Object.keys(p).join()")), "foo,x");
+            // A read-only named property rejects writes in strict mode.
+            assert!(
+                eval(&runtime, "(() => { 'use strict'; try { p.foo = 1; return false } catch (e) { return e instanceof TypeError } })()")
+                    .to_boolean()
+            );
+            // Non-configurable expandos satisfy V8's invariants.
+            assert_eq!(eval(&runtime, "Object.defineProperty(p, 'fixed', { value: 3, configurable: false }); p.fixed").to_int32(), 3);
+            assert!(eval(&runtime, "Object.getOwnPropertyDescriptor(p, 'fixed').configurable === false").to_boolean());
+            assert!(eval(&runtime, "delete p.x; !('x' in p)").to_boolean());
+            assert!(eval(&runtime, "Object.getPrototypeOf(p) !== null && typeof p.hello === 'function'").to_boolean());
+
+            runtime.gc_for_testing();
+            assert!(PROXY_TRACED.with(Cell::get) > 0, "the trace trap runs during GC");
+            eval(&runtime, "delete globalThis.p");
+        }
+        runtime.gc_for_testing();
+        runtime.gc_for_testing();
+        assert_eq!(PROXY_FINALIZED.with(Cell::get), finalized_before + 1, "the finalize trap runs once with the slots");
+    }
+}
+
+mod typed_arrays {
+    use super::{describe, eval};
+    use crate::jsapi::*;
+    use crate::jsval::*;
+    use crate::rust::Runtime;
+    use crate::typedarray::{ArrayBuffer, CreateWith, Float32Array, Uint8Array};
+
+    #[test]
+    fn typed_arrays_share_stable_data_with_script() {
+        let mut runtime = Runtime::new();
+        let cx = runtime.cx();
+        rooted!(in(cx) let mut array = std::ptr::null_mut::<JSObject>());
+        unsafe { Uint8Array::create(cx, CreateWith::Slice(&[1, 2, 3]), array.handle_mut()) }.unwrap();
+        rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
+        rooted!(in(cx) let value = ObjectValue(array.get()));
+        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"bytes".as_ptr(), value.handle().into_handle()) });
+        assert_eq!(describe(&runtime, eval(&runtime, "bytes instanceof Uint8Array && bytes.join()")), "1,2,3");
+
+        // Script writes are visible through the (stable) data pointer, also after a GC.
+        eval(&runtime, "bytes[1] = 42");
+        runtime.gc_for_testing();
+        let typed = Uint8Array::from(array.get()).unwrap();
+        assert_eq!(typed.to_vec(), Some(vec![1, 42, 3]));
+        assert!(!typed.is_shared());
+        assert_eq!(unsafe { JS_GetArrayBufferViewType(array.get()) }, Type::Uint8);
+        assert!(Float32Array::from(array.get()).is_err(), "typed arrays do not reinterpret");
+
+        // Float arrays and buffers.
+        rooted!(in(cx) let mut floats = std::ptr::null_mut::<JSObject>());
+        unsafe { Float32Array::create(cx, CreateWith::Slice(&[0.5, 1.5]), floats.handle_mut()) }.unwrap();
+        rooted!(in(cx) let floats_value = ObjectValue(floats.get()));
+        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"floats".as_ptr(), floats_value.handle().into_handle()) });
+        assert_eq!(eval(&runtime, "floats[0] + floats[1]").to_number(), 2.0);
+        rooted!(in(cx) let buffer = eval(&runtime, "new Uint8Array([9, 8, 7]).buffer").to_object());
+        let buffer = ArrayBuffer::from(buffer.get()).unwrap();
+        assert_eq!(buffer.to_vec(), Some(vec![9, 8, 7]));
+        let mut length = 0;
+        let mut shared = true;
+        let mut data = std::ptr::null_mut();
+        unsafe { GetArrayBufferViewLengthAndData(eval(&runtime, "bytes.subarray(1)").to_object(), &mut length, &mut shared, &mut data) };
+        assert_eq!((length, shared, unsafe { *data }), (2, false, 42));
     }
 }

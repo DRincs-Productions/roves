@@ -516,3 +516,34 @@ impl<T: RootKind> Heap<T> {
         unsafe { &*self.ptr.get() }.trace_root(visitor);
     }
 }
+
+/// Conversion to a raw (`jsapi`) handle (mozjs_sys's `jsgc::IntoHandle`).
+pub trait IntoHandle {
+    type Target;
+    fn into_handle(self) -> crate::jsapi::Handle<Self::Target>;
+}
+
+/// Conversion to a raw mutable handle (mozjs_sys's `jsgc::IntoMutableHandle`).
+pub trait IntoMutableHandle: IntoHandle {
+    fn into_handle_mut(self) -> crate::jsapi::MutableHandle<Self::Target>;
+}
+
+impl<'a, T> IntoHandle for Handle<'a, T> {
+    type Target = T;
+    fn into_handle(self) -> crate::jsapi::Handle<T> {
+        Handle::into_handle(self)
+    }
+}
+
+impl<'a, T> IntoHandle for MutableHandle<'a, T> {
+    type Target = T;
+    fn into_handle(self) -> crate::jsapi::Handle<T> {
+        crate::jsapi::Handle { _phantom_0: PhantomData, ptr: self.as_ptr() }
+    }
+}
+
+impl<'a, T> IntoMutableHandle for MutableHandle<'a, T> {
+    fn into_handle_mut(self) -> crate::jsapi::MutableHandle<T> {
+        MutableHandle::into_handle(self)
+    }
+}

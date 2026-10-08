@@ -34,6 +34,18 @@ errors.
   - realms and `JS_NewGlobalObject`;
   - about 100 JSAPI functions;
   - `wrappers2`, generated from mozjs's lists with mozjs's `wrap!` macro.
+- CP99 brings the count to **0**: `script_bindings`, generated bindings included, type-checks
+  on `roves-js`. CP99 adds:
+  - proxies, as V8 `Proxy` objects calling the `ProxyTraps` with `BaseProxyHandler`'s
+    defaults;
+  - typed arrays (mozjs's `typedarray` module, unchanged);
+  - realm options, including `traceGlobal`.
+
+  This is a compile milestone. The next work:
+  1. measure `servo-script`;
+  2. the runtime pieces the type check cannot see: globals' `resolve` hooks (lazy interface
+     objects, which need V8 non-masking interceptors on the global template), `WindowProxy`,
+     the job queue/promises, script compilation and modules.
 
 **Surface.** An inventory of `script`, `script_bindings` and `script_webgpu` found about 590
 distinct `js::` items:

@@ -145,7 +145,7 @@ pub unsafe fn JS_NewGlobalObject(
     clasp: *const crate::jsapi::JSClass,
     principals: *mut JSPrincipals,
     _hook_option: crate::jsapi::OnNewGlobalHookOption,
-    _options: *const crate::jsapi::RealmOptions,
+    options: *const crate::jsapi::RealmOptions,
 ) -> *mut JSObject {
     // SAFETY: callers pass a live context.
     let raw = unsafe { &*cx };
@@ -156,6 +156,12 @@ pub unsafe fn JS_NewGlobalObject(
         // anything converts it.
         let global = context.global(scope);
         let cell = crate::object::attach_class_box(scope, global, clasp);
+        // SAFETY: callers pass valid options (or null).
+        if let Some(options) = unsafe { options.as_ref() } {
+            if let Some(class_box) = crate::object::class_box(cell) {
+                class_box.global_trace.set(options.creationOptions_.traceGlobal_);
+            }
+        }
         let realm = register_realm(raw, scope, context, cell);
         let data = realm_data(realm)?;
         if !principals.is_null() {

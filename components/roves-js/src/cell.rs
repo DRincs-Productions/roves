@@ -139,6 +139,14 @@ pub(crate) fn new_cell(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) ->
                 return cell;
             }
         }
+        if let Ok(proxy) = v8::Local::<v8::Proxy>::try_from(value) {
+            if let Some(class_box) = crate::proxy::proxy_box_of_v8(scope, proxy) {
+                let cell = class_box.cell.get();
+                if !cell.is_null() {
+                    return cell;
+                }
+            }
+        }
         if object.is_function() {
             if let Some(function) = crate::jsapi_impl::native_function_of_v8(scope, object) {
                 let cell = function.cell.get();

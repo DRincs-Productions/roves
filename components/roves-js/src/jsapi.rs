@@ -18,6 +18,9 @@ pub use crate::realm_impl::{
 };
 pub use crate::binding::{CallJitGetterOp, CallJitMethodOp, CallJitSetterOp, JS_DefineFunctions, JS_DefineProperties};
 pub use crate::jsapi_impl::*;
+pub use crate::typedarray_impl::*;
+pub use crate::proxy::{SetDOMProxyInformation, SetPropertyIgnoringNamedGetter};
+pub use crate::object::RuntimeHeapState;
 
 /// The bindgen types Servo uses (layouts copied from mozjs_sys by
 /// `support/roves_js/extract_jsapi_types.py`); roves-js gives them their behaviour.
@@ -117,6 +120,8 @@ pub struct JSContext {
     pub(crate) native_functions: RefCell<Vec<Box<crate::jsapi_impl::NativeFunction>>>,
     /// The cells of plain objects and symbols (see `cell`).
     pub(crate) interned: crate::cell::Interned,
+    /// The V8 handler object of each proxy handler (see `proxy`).
+    pub(crate) proxy_handlers: RefCell<std::collections::HashMap<usize, v8::Global<v8::Object>>>,
 }
 
 impl JSContext {

@@ -46,9 +46,21 @@ pub(crate) struct ClassBox {
     pub(crate) cell: StdCell<*mut c_void>,
     /// For a global object: its realm.
     pub(crate) realm: RefCell<Option<v8::Global<v8::Context>>>,
+    /// For a proxy's target: the proxy handler (null for ordinary class objects). The box's
+    /// `cell` is then the proxy's cell, and trace/finalize go to the handler's traps.
+    pub(crate) proxy: StdCell<*const crate::proxy::ProxyHandler>,
+    /// A proxy's private value (`GetProxyPrivate`).
+    pub(crate) private: StdCell<JSVal>,
+    /// Whether a proxy's prototype comes from its handler (`getPrototype` trap).
+    pub(crate) lazy_proto: StdCell<bool>,
+    /// For a global: its realm's `traceGlobal` hook (`RealmCreationOptions`), which traces the
+    /// embedder's global state alongside the class hook.
+    pub(crate) global_trace: StdCell<crate::jsapi::JSTraceOp>,
 }
 
 thread_local! {
+    /// How many class-box traces or finalizers are running (`RuntimeHeapState`).
+    static IN_GC: StdCell<u32> = const { StdCell::new(0) };
     /// The box being finalized, and the stand-in object pointer its finalize hook receives.
     static FINALIZING: StdCell<Option<(*mut JSObject, *const ClassBox)>> = const { StdCell::new(None) };
 }
@@ -57,14 +69,31 @@ thread_local! {
 // reports the native object's references (Servo's `JSTraceable`).
 unsafe impl GarbageCollected for ClassBox {
     fn trace(&self, visitor: &mut Visitor) {
+        let _gc = GcScope::enter();
         for slot in self.slots.borrow().iter() {
             if slot.is_gcthing() {
                 trace_cell(slot.to_gcthing(), visitor);
             }
         }
         trace_cell(self.cell.get(), visitor);
+        let private = self.private.get();
+        if private.is_gcthing() {
+            trace_cell(private.to_gcthing(), visitor);
+        }
+        // SAFETY: handlers live for the whole process (`CreateProxyHandler`).
+        if let Some(handler) = unsafe { self.proxy.get().as_ref() } {
+            if let Some(trace) = handler.traps.trace {
+                // SAFETY: as for the class hook below.
+                unsafe { trace(crate::glue::tracer(visitor), self.cell.get() as *mut JSObject) };
+            }
+            return;
+        }
         // SAFETY: classes are static.
         let class = unsafe { &*self.class };
+        if let Some(trace) = self.global_trace.get() {
+            // SAFETY: as for the class hook below.
+            unsafe { trace(crate::glue::tracer(visitor), self.cell.get() as *mut JSObject) };
+        }
         if let Some(ops) = unsafe { class.cOps.as_ref() } {
             if let Some(trace) = ops.trace {
                 // SAFETY: the hook receives this GC's tracer and the object (its cell).
@@ -78,11 +107,37 @@ unsafe impl GarbageCollected for ClassBox {
     }
 }
 
+/// Marks the extent of GC work run by roves-js (traces and finalizers).
+struct GcScope;
+
+impl GcScope {
+    fn enter() -> GcScope {
+        IN_GC.with(|depth| depth.set(depth.get() + 1));
+        GcScope
+    }
+}
+
+impl Drop for GcScope {
+    fn drop(&mut self) {
+        IN_GC.with(|depth| depth.set(depth.get() - 1));
+    }
+}
+
+/// SpiderMonkey's heap state: collecting while roves-js runs GC hooks.
+pub unsafe fn RuntimeHeapState() -> crate::jsapi::HeapState {
+    if IN_GC.with(StdCell::get) > 0 { crate::jsapi::HeapState::MajorCollecting } else { crate::jsapi::HeapState::Idle }
+}
+
 impl Drop for ClassBox {
     fn drop(&mut self) {
-        // SAFETY: classes are static.
+        let _gc = GcScope::enter();
+        // SAFETY: classes are static; handlers live for the whole process.
         let class = unsafe { &*self.class };
-        let Some(finalize) = (unsafe { class.cOps.as_ref() }).and_then(|ops| ops.finalize) else { return };
+        let finalize = match unsafe { self.proxy.get().as_ref() } {
+            Some(handler) => handler.traps.finalize,
+            None => (unsafe { class.cOps.as_ref() }).and_then(|ops| ops.finalize),
+        };
+        let Some(finalize) = finalize else { return };
         // The V8 object (and possibly its cell) is gone: the hook gets a stand-in pointer that
         // the reserved-slot accessors resolve to this box.
         let stand_in = self as *const ClassBox as *mut JSObject;
@@ -220,6 +275,15 @@ pub(crate) fn new_object(cx: &JSContext, class: *const JSClass, proto: *mut JSOb
 
 /// Gives `object` (from a class template) its class box and cell; returns the cell.
 pub(crate) fn attach_class_box(scope: &mut v8::PinScope, object: v8::Local<v8::Object>, class: *const JSClass) -> *mut JSObject {
+    let class_box = make_class_box(scope, object, class);
+    let cell = crate::cell::new_cell_with_class(scope, object.into(), Some(Member::new(&class_box)));
+    // SAFETY: the box was just created and is alive (wrapped).
+    unsafe { class_box.as_ref() }.cell.set(cell);
+    cell as *mut JSObject
+}
+
+/// Creates `object`'s class box (stored in its internal field, kept alive by the object).
+pub(crate) fn make_class_box(scope: &mut v8::PinScope, object: v8::Local<v8::Object>, class: *const JSClass) -> UnsafePtr<ClassBox> {
     // SAFETY: classes are static.
     let slots = reserved_slot_count(unsafe { &*class });
     let heap = scope.get_cpp_heap().expect("roves-js isolates carry a cppgc heap");
@@ -232,6 +296,10 @@ pub(crate) fn attach_class_box(scope: &mut v8::PinScope, object: v8::Local<v8::O
                 slots: RefCell::new(vec![UndefinedValue(); slots]),
                 cell: StdCell::new(std::ptr::null_mut()),
                 realm: RefCell::new(None),
+                proxy: StdCell::new(std::ptr::null()),
+                private: StdCell::new(UndefinedValue()),
+                lazy_proto: StdCell::new(false),
+                global_trace: StdCell::new(None),
             },
         )
     };
@@ -240,10 +308,7 @@ pub(crate) fn attach_class_box(scope: &mut v8::PinScope, object: v8::Local<v8::O
     let root = v8::cppgc::Persistent::new(&class_box);
     // SAFETY: the object is an API object from a template with one internal field.
     unsafe { v8::Object::wrap::<CLASS_WRAP_TAG, ClassBox>(scope, object, &root) };
-    let cell = crate::cell::new_cell_with_class(scope, object.into(), Some(Member::new(&class_box)));
-    // SAFETY: the box was just created and is alive (wrapped).
-    unsafe { class_box.as_ref() }.cell.set(cell);
-    cell as *mut JSObject
+    class_box
 }
 
 /// `JS::GetClass` / mozjs's `get_object_class`: the class of a class-based object, or the

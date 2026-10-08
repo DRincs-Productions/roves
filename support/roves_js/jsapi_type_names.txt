@@ -3,6 +3,7 @@ AppendToIdVector
 AsmJSOption
 AtomToLinearString
 AutoRequireNoGC
+BaseProxyHandler_Action
 BuildIdCharVector
 CallArgs
 CallObjectTracer
@@ -73,6 +74,7 @@ Heap
 HeapState
 HideScriptedCaller
 InitializeMemoryReporter
+IsAcceptableThis
 IsArrayBufferObject
 IsCallable
 IsConstructor
@@ -219,6 +221,7 @@ MutableHandleObjectasRawMutableHandleObject
 MutableHandleString
 MutableHandleValueasRawMutableHandleValue
 MutableHandleasRawMutableHandle
+NativeImpl
 NewArrayObject
 NewArrayObject1
 ObjectOpResult

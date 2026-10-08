@@ -404,3 +404,10 @@ unsafe impl<'a> Traceable for &'a str {
     #[inline]
     unsafe fn trace(&self, _: *mut JSTracer) {}
 }
+
+unsafe impl<T: crate::typedarray::TypedArrayElement> Traceable for crate::typedarray::TypedArray<T, Box<Heap<*mut JSObject>>> {
+    unsafe fn trace(&self, trc: *mut JSTracer) {
+        // SAFETY: forwarded to the stored heap location.
+        unsafe { self.underlying_object().trace(trc) };
+    }
+}

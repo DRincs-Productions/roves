@@ -401,9 +401,17 @@ strategia completa è in `docs/V8_MIGRATION.md` ("Cutover strategy"). Metrica:
   - Realm = contesti V8; `JS_NewGlobalObject` mette il `ClassBox` sul global proxy.
   - `wrappers2` generato dagli elenchi di mozjs (`support/roves_js/gen_wrappers2.py`).
   - Lacune note: prototipi immutabili, `WindowProxy`, specifiche self-hosted.
-- **Prossimi passi (dopo CP98):** proxy (famiglie di handler → interceptor V8), typed array
-  (`js::typedarray`), gli import rimasti; poi gli errori di tipo che emergeranno, quindi
-  `servo-script`.
+- **CP99:** `servo-script-bindings` compila contro `roves-js` con **0 errori** (tutti i
+  binding WebIDL generati inclusi). Test `roves-js`: 15/15. È una milestone di compilazione,
+  non un DOM funzionante.
+  - Proxy → `Proxy` V8 con handler che chiama le `ProxyTraps` (default di
+    `BaseProxyHandler` per le trap assenti; proprietà non configurabili rispecchiate sul
+    target per gli invarianti V8).
+  - Typed array: modulo `typedarray` di mozjs invariato; dati stabili via buffer off-heap.
+  - `RealmOptions` con `traceGlobal_` (il trace vero del `Window`) chiamato a ogni GC.
+- **Prossimi passi (dopo CP99):** misurare `servo-script`; hook `resolve`/`newEnumerate` dei
+  globali (interceptor non-masking sul template del globale), `WindowProxy`, job queue e
+  promise, compilazione script/moduli.
 - **Storico (prima di CP95).** Le operazioni dell'API usata dal DOM:
   1. stringhe e conversioni (`jsstr_to_string`, `ToJSValConvertible`/`FromJSValConvertible`);
   2. oggetti e proprietà (`JS_NewObject`, `JS_GetProperty`/`SetProperty`/`DefineProperty`);

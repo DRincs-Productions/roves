@@ -11,6 +11,72 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-08 - V8 cutover: proxies, typed arrays, realm options; `script_bindings` compiles on V8 (CP99)
+
+**Servo files:**
+- `components/roves-js/src/`:
+  - new: `proxy.rs`, `typedarray_impl.rs`, and `typedarray.rs` (mozjs's module, unchanged);
+  - changed: `object.rs`, `cell.rs`, `glue.rs`, `jsapi.rs`, `rust.rs`, `realm_impl.rs`,
+    `gc/root.rs`, `gc/traceable.rs`, `lib.rs`, `tests.rs`, `jsapi_types.rs` and
+    `wrappers2.in.rs`;
+- `support/roves_js/gen_wrappers2.py` and `support/roves_js/jsapi_type_names.txt`.
+
+**Patch:** `0164-roves-js-proxies-typed-arrays.patch` after 0163.
+
+**Proxies.** mozjs's glue proxy handlers (`CreateProxyHandler` with `ProxyTraps`) become V8
+`Proxy` objects. An ES proxy has SpiderMonkey's proxy semantics, which interceptors would
+not.
+- The proxy's target is a class object of the proxy's `JSClass`. Its `ClassBox` holds the
+  handler, the private value and the reserved slots, and its cell is the proxy's cell, so
+  identity is kept.
+- Trace and finalize go to the handler's `trace`/`finalize` traps.
+- Each handler gets one V8 handler object. Its functions call the SpiderMonkey traps, with
+  `BaseProxyHandler`'s defaults where a trap is absent:
+  - `get`, `set` and `has` go through `getOwnPropertyDescriptor`, then the prototype;
+  - `set` uses `SetPropertyIgnoringNamedGetter` (`OrdinarySetWithOwnDescriptor`, now
+    implemented).
+- Lazy prototypes use the `getPrototype` trap.
+- V8 checks the ES invariants. Non-configurable properties that a trap reports or defines
+  are therefore mirrored onto the target.
+- Also implemented: `GetProxyHandler`/`Extra`/`Family`, `IsProxyHandlerFamily`,
+  `Get`/`SetProxyPrivate`, `Get`/`SetProxyReservedSlot`, `InvokeGetOwnPropertyDescriptor`
+  and `SetDOMProxyInformation` (recorded only: it is SpiderMonkey's JIT hook).
+
+**Typed arrays.** mozjs's `typedarray` module compiles unchanged over V8 implementations of
+the functions it uses:
+- `JS_New*Array`, `JS_Get*ArrayData`, `Get*ArrayLengthAndData`, `Unwrap*`, `NewArrayBuffer`;
+- the view and buffer queries.
+
+Every data access first takes the view's buffer. V8 keeps small typed arrays' elements on
+its moving heap, and taking the buffer moves them to a stable off-heap store, as the raw
+pointers SpiderMonkey lends require.
+
+**Realms.**
+- `rust::RealmOptions` is added.
+- `JS_NewGlobalObject` keeps `creationOptions_.traceGlobal_`, the hook Servo traces the
+  global's Rust state with. The global's box calls it on every GC.
+- `RuntimeHeapState` reports collecting while roves-js runs GC hooks.
+
+**Compatibility.**
+- `IntoHandle`/`IntoMutableHandle` are added.
+- `TypedArray<_, Box<Heap<_>>>` is `Traceable`.
+- `wrappers2` now has 85 generated entries plus mozjs's hand-written
+  `SetPropertyIgnoringNamedGetter`.
+
+**Progress:**
+- `python support/v8_cutover_check.py servo-script-bindings` reports **0 errors**: Servo's
+  `script_bindings` crate, including every generated WebIDL binding, type-checks against
+  `roves-js`.
+- This is a compile milestone, not a working DOM. Still to do:
+  - globals' `resolve`/`newEnumerate` hooks (lazy interface objects) are not called yet;
+  - `WindowProxy` is not emulated;
+  - `servo-script` itself is next.
+- Tests: `roves-js` 15/15:
+  - DOM-style proxies: named properties, expandos, defaults, invariants, identity,
+    trace/finalize;
+  - typed arrays: shared stable data and type checks;
+  - realm `traceGlobal`.
+
 ## 2026-10-08 - V8 cutover: `roves-js` object model, binding tables, realms and `wrappers2` (CP98)
 
 **Servo files:**

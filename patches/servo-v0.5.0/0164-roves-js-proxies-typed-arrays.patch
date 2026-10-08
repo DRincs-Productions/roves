@@ -1,0 +1,2455 @@
+diff --git a/components/roves-js/src/cell.rs b/components/roves-js/src/cell.rs
+index 8d77b177ea4..32669b9b0d1 100644
+--- a/components/roves-js/src/cell.rs
++++ b/components/roves-js/src/cell.rs
+@@ -139,6 +139,14 @@ pub(crate) fn new_cell(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) ->
+                 return cell;
+             }
+         }
++        if let Ok(proxy) = v8::Local::<v8::Proxy>::try_from(value) {
++            if let Some(class_box) = crate::proxy::proxy_box_of_v8(scope, proxy) {
++                let cell = class_box.cell.get();
++                if !cell.is_null() {
++                    return cell;
++                }
++            }
++        }
+         if object.is_function() {
+             if let Some(function) = crate::jsapi_impl::native_function_of_v8(scope, object) {
+                 let cell = function.cell.get();
+diff --git a/components/roves-js/src/gc/root.rs b/components/roves-js/src/gc/root.rs
+index 24a08881a3d..e70bf7e8e57 100644
+--- a/components/roves-js/src/gc/root.rs
++++ b/components/roves-js/src/gc/root.rs
+@@ -516,3 +516,34 @@ impl<T: RootKind> Heap<T> {
+         unsafe { &*self.ptr.get() }.trace_root(visitor);
+     }
+ }
++
++/// Conversion to a raw (`jsapi`) handle (mozjs_sys's `jsgc::IntoHandle`).
++pub trait IntoHandle {
++    type Target;
++    fn into_handle(self) -> crate::jsapi::Handle<Self::Target>;
++}
++
++/// Conversion to a raw mutable handle (mozjs_sys's `jsgc::IntoMutableHandle`).
++pub trait IntoMutableHandle: IntoHandle {
++    fn into_handle_mut(self) -> crate::jsapi::MutableHandle<Self::Target>;
++}
++
++impl<'a, T> IntoHandle for Handle<'a, T> {
++    type Target = T;
++    fn into_handle(self) -> crate::jsapi::Handle<T> {
++        Handle::into_handle(self)
++    }
++}
++
++impl<'a, T> IntoHandle for MutableHandle<'a, T> {
++    type Target = T;
++    fn into_handle(self) -> crate::jsapi::Handle<T> {
++        crate::jsapi::Handle { _phantom_0: PhantomData, ptr: self.as_ptr() }
++    }
++}
++
++impl<'a, T> IntoMutableHandle for MutableHandle<'a, T> {
++    fn into_handle_mut(self) -> crate::jsapi::MutableHandle<T> {
++        MutableHandle::into_handle(self)
++    }
++}
+diff --git a/components/roves-js/src/gc/traceable.rs b/components/roves-js/src/gc/traceable.rs
+index 5134f41f5dc..15e85488e5f 100644
+--- a/components/roves-js/src/gc/traceable.rs
++++ b/components/roves-js/src/gc/traceable.rs
+@@ -404,3 +404,10 @@ unsafe impl<'a> Traceable for &'a str {
+     #[inline]
+     unsafe fn trace(&self, _: *mut JSTracer) {}
+ }
++
++unsafe impl<T: crate::typedarray::TypedArrayElement> Traceable for crate::typedarray::TypedArray<T, Box<Heap<*mut JSObject>>> {
++    unsafe fn trace(&self, trc: *mut JSTracer) {
++        // SAFETY: forwarded to the stored heap location.
++        unsafe { self.underlying_object().trace(trc) };
++    }
++}
+diff --git a/components/roves-js/src/glue.rs b/components/roves-js/src/glue.rs
+index 2c7bc6edfdc..9aac0f6a7b6 100644
+--- a/components/roves-js/src/glue.rs
++++ b/components/roves-js/src/glue.rs
+@@ -15,6 +15,16 @@ use crate::jsapi::{BigInt, JSFunction, JSObject, JSScript, JSString, JSTracer, P
+ use crate::jsval::Value;
+ 
+ pub use crate::binding::{CallJitGetterOp, CallJitMethodOp, CallJitSetterOp};
++pub use crate::typedarray_impl::{
++    GetFloat32ArrayLengthAndData, GetFloat64ArrayLengthAndData, GetInt16ArrayLengthAndData, GetInt32ArrayLengthAndData,
++    GetInt8ArrayLengthAndData, GetUint16ArrayLengthAndData, GetUint32ArrayLengthAndData, GetUint8ArrayLengthAndData,
++    GetUint8ClampedArrayLengthAndData,
++};
++pub use crate::proxy::{
++    CreateProxyHandler, GetProxyHandler, GetProxyHandlerExtra, GetProxyHandlerFamily, GetProxyPrivate,
++    GetProxyReservedSlot, InvokeGetOwnPropertyDescriptor, IsProxyHandlerFamily, NewProxyObject, SetProxyPrivate,
++    SetProxyReservedSlot,
++};
+ pub use crate::jsapi_impl::{
+     AppendToIdVector, CheckedUnwrapStatic, CreateRustJSPrincipals, DestroyRustJSPrincipals,
+     GetRustJSPrincipalsPrivate, IsWrapper, JS_GetReservedSlot, RUST_FUNCTION_VALUE_TO_JITINFO,
+@@ -22,6 +32,226 @@ pub use crate::jsapi_impl::{
+     UncheckedUnwrapObject, UnwrapObjectDynamic, UnwrapObjectStatic, int_to_jsid,
+ };
+ 
++use crate::jsapi::{
++    BaseProxyHandler_Action, CallArgs, ESClass, GCContext, HandleId, HandleObject, HandleValue, IsAcceptableThis,
++    JSContext, JSType, MutableHandle, MutableHandleIdVector, MutableHandleObject, MutableHandleValue, NativeImpl,
++    ObjectOpResult,
++};
++#[allow(unused_imports)]
++use crate::jsapi::Handle;
++
++#[repr(C)]
++#[derive(Debug, Copy, Clone, PartialEq)]
++/// The traps of a proxy handler (mozjs's glue `ProxyTraps`), called by roves-js's V8 `Proxy`
++/// handlers (see `proxy`).
++pub struct ProxyTraps {
++    pub enter: ::std::option::Option<
++        unsafe extern "C" fn(
++            cx: *mut JSContext,
++            proxy: HandleObject,
++            id: HandleId,
++            action: BaseProxyHandler_Action,
++            bp: *mut bool,
++        ) -> bool,
++    >,
++    pub getOwnPropertyDescriptor: ::std::option::Option<
++        unsafe extern "C" fn(
++            cx: *mut JSContext,
++            proxy: HandleObject,
++            id: HandleId,
++            desc: MutableHandle<PropertyDescriptor>,
++            isNone: *mut bool,
++        ) -> bool,
++    >,
++    pub defineProperty: ::std::option::Option<
++        unsafe extern "C" fn(
++            cx: *mut JSContext,
++            proxy: HandleObject,
++            id: HandleId,
++            desc: Handle<PropertyDescriptor>,
++            result: *mut ObjectOpResult,
++        ) -> bool,
++    >,
++    pub ownPropertyKeys: ::std::option::Option<
++        unsafe extern "C" fn(
++            cx: *mut JSContext,
++            proxy: HandleObject,
++            props: MutableHandleIdVector,
++        ) -> bool,
++    >,
++    pub delete_: ::std::option::Option<
++        unsafe extern "C" fn(
++            cx: *mut JSContext,
++            proxy: HandleObject,
++            id: HandleId,
++            result: *mut ObjectOpResult,
++        ) -> bool,
++    >,
++    pub enumerate: ::std::option::Option<
++        unsafe extern "C" fn(
++            cx: *mut JSContext,
++            proxy: HandleObject,
++            props: MutableHandleIdVector,
++        ) -> bool,
++    >,
++    pub getPrototypeIfOrdinary: ::std::option::Option<
++        unsafe extern "C" fn(
++            cx: *mut JSContext,
++            proxy: HandleObject,
++            isOrdinary: *mut bool,
++            protop: MutableHandleObject,
++        ) -> bool,
++    >,
++    pub getPrototype: ::std::option::Option<
++        unsafe extern "C" fn(
++            cx: *mut JSContext,
++            proxy: HandleObject,
++            protop: MutableHandleObject,
++        ) -> bool,
++    >,
++    pub setPrototype: ::std::option::Option<
++        unsafe extern "C" fn(
++            cx: *mut JSContext,
++            proxy: HandleObject,
++            proto: HandleObject,
++            result: *mut ObjectOpResult,
++        ) -> bool,
++    >,
++    pub setImmutablePrototype: ::std::option::Option<
++        unsafe extern "C" fn(
++            cx: *mut JSContext,
++            proxy: HandleObject,
++            succeeded: *mut bool,
++        ) -> bool,
++    >,
++    pub preventExtensions: ::std::option::Option<
++        unsafe extern "C" fn(
++            cx: *mut JSContext,
++            proxy: HandleObject,
++            result: *mut ObjectOpResult,
++        ) -> bool,
++    >,
++    pub isExtensible: ::std::option::Option<
++        unsafe extern "C" fn(
++            cx: *mut JSContext,
++            proxy: HandleObject,
++            succeeded: *mut bool,
++        ) -> bool,
++    >,
++    pub has: ::std::option::Option<
++        unsafe extern "C" fn(
++            cx: *mut JSContext,
++            proxy: HandleObject,
++            id: HandleId,
++            bp: *mut bool,
++        ) -> bool,
++    >,
++    pub get: ::std::option::Option<
++        unsafe extern "C" fn(
++            cx: *mut JSContext,
++            proxy: HandleObject,
++            receiver: HandleValue,
++            id: HandleId,
++            vp: MutableHandleValue,
++        ) -> bool,
++    >,
++    pub set: ::std::option::Option<
++        unsafe extern "C" fn(
++            cx: *mut JSContext,
++            proxy: HandleObject,
++            id: HandleId,
++            v: HandleValue,
++            receiver: HandleValue,
++            result: *mut ObjectOpResult,
++        ) -> bool,
++    >,
++    pub call: ::std::option::Option<
++        unsafe extern "C" fn(
++            cx: *mut JSContext,
++            proxy: HandleObject,
++            args: *const CallArgs,
++        ) -> bool,
++    >,
++    pub construct: ::std::option::Option<
++        unsafe extern "C" fn(
++            cx: *mut JSContext,
++            proxy: HandleObject,
++            args: *const CallArgs,
++        ) -> bool,
++    >,
++    pub hasOwn: ::std::option::Option<
++        unsafe extern "C" fn(
++            cx: *mut JSContext,
++            proxy: HandleObject,
++            id: HandleId,
++            bp: *mut bool,
++        ) -> bool,
++    >,
++    pub getOwnEnumerablePropertyKeys: ::std::option::Option<
++        unsafe extern "C" fn(
++            cx: *mut JSContext,
++            proxy: HandleObject,
++            props: MutableHandleIdVector,
++        ) -> bool,
++    >,
++    pub nativeCall: ::std::option::Option<
++        unsafe extern "C" fn(
++            cx: *mut JSContext,
++            test: IsAcceptableThis,
++            impl_: NativeImpl,
++            args: CallArgs,
++        ) -> bool,
++    >,
++    pub objectClassIs: ::std::option::Option<
++        unsafe extern "C" fn(
++            obj: HandleObject,
++            classValue: ESClass,
++            cx: *mut JSContext,
++        ) -> bool,
++    >,
++    pub className: ::std::option::Option<
++        unsafe extern "C" fn(
++            cx: *mut JSContext,
++            proxy: HandleObject,
++        ) -> *const std::os::raw::c_char,
++    >,
++    pub fun_toString: ::std::option::Option<
++        unsafe extern "C" fn(
++            cx: *mut JSContext,
++            proxy: HandleObject,
++            isToString: bool,
++        ) -> *mut JSString,
++    >,
++    pub boxedValue_unbox: ::std::option::Option<
++        unsafe extern "C" fn(
++            cx: *mut JSContext,
++            proxy: HandleObject,
++            vp: MutableHandleValue,
++        ) -> bool,
++    >,
++    pub defaultValue: ::std::option::Option<
++        unsafe extern "C" fn(
++            cx: *mut JSContext,
++            obj: HandleObject,
++            hint: JSType,
++            vp: MutableHandleValue,
++        ) -> bool,
++    >,
++    pub trace: ::std::option::Option<
++        unsafe extern "C" fn(trc: *mut JSTracer, proxy: *mut JSObject),
++    >,
++    pub finalize: ::std::option::Option<
++        unsafe extern "C" fn(cx: *mut GCContext, proxy: *mut JSObject),
++    >,
++    pub objectMoved: ::std::option::Option<
++        unsafe extern "C" fn(proxy: *mut JSObject, old: *mut JSObject) -> usize,
++    >,
++    pub isCallable:
++        ::std::option::Option<unsafe extern "C" fn(obj: *mut JSObject) -> bool>,
++    pub isConstructor:
++        ::std::option::Option<unsafe extern "C" fn(obj: *mut JSObject) -> bool>,
++}
++
+ /// The principal callbacks of mozjs's `RustJSPrincipals` (structured-clone writing and the
+ /// system-principal check).
+ #[repr(C)]
+diff --git a/components/roves-js/src/jsapi.rs b/components/roves-js/src/jsapi.rs
+index a61170fe6f7..ce752077f0e 100644
+--- a/components/roves-js/src/jsapi.rs
++++ b/components/roves-js/src/jsapi.rs
+@@ -18,6 +18,9 @@ pub use crate::realm_impl::{
+ };
+ pub use crate::binding::{CallJitGetterOp, CallJitMethodOp, CallJitSetterOp, JS_DefineFunctions, JS_DefineProperties};
+ pub use crate::jsapi_impl::*;
++pub use crate::typedarray_impl::*;
++pub use crate::proxy::{SetDOMProxyInformation, SetPropertyIgnoringNamedGetter};
++pub use crate::object::RuntimeHeapState;
+ 
+ /// The bindgen types Servo uses (layouts copied from mozjs_sys by
+ /// `support/roves_js/extract_jsapi_types.py`); roves-js gives them their behaviour.
+@@ -117,6 +120,8 @@ pub struct JSContext {
+     pub(crate) native_functions: RefCell<Vec<Box<crate::jsapi_impl::NativeFunction>>>,
+     /// The cells of plain objects and symbols (see `cell`).
+     pub(crate) interned: crate::cell::Interned,
++    /// The V8 handler object of each proxy handler (see `proxy`).
++    pub(crate) proxy_handlers: RefCell<std::collections::HashMap<usize, v8::Global<v8::Object>>>,
+ }
+ 
+ impl JSContext {
+diff --git a/components/roves-js/src/jsapi_impl.rs b/components/roves-js/src/jsapi_impl.rs
+index 41b03481015..66edd2e11f1 100644
+--- a/components/roves-js/src/jsapi_impl.rs
++++ b/components/roves-js/src/jsapi_impl.rs
+@@ -78,7 +78,7 @@ pub(crate) fn key_id(scope: &mut v8::PinScope, key: v8::Local<v8::Value>) -> jsi
+ }
+ 
+ /// Writes V8's descriptor object into a SpiderMonkey `PropertyDescriptor`.
+-fn fill_descriptor(scope: &mut v8::PinScope, descriptor: v8::Local<v8::Object>, out: &mut PropertyDescriptor) {
++pub(crate) fn fill_descriptor(scope: &mut v8::PinScope, descriptor: v8::Local<v8::Object>, out: &mut PropertyDescriptor) {
+     *out = PropertyDescriptor::default();
+     fn field<'s>(scope: &mut v8::PinScope<'s, '_>, descriptor: v8::Local<v8::Object>, name: &str) -> Option<v8::Local<'s, v8::Value>> {
+         let key = v8::String::new(scope, name)?;
+@@ -118,7 +118,7 @@ fn fill_descriptor(scope: &mut v8::PinScope, descriptor: v8::Local<v8::Object>,
+ }
+ 
+ /// A V8 descriptor for a SpiderMonkey `PropertyDescriptor`.
+-fn v8_descriptor(scope: &mut v8::PinScope, descriptor: &PropertyDescriptor) -> v8::PropertyDescriptor {
++pub(crate) fn v8_descriptor(scope: &mut v8::PinScope, descriptor: &PropertyDescriptor) -> v8::PropertyDescriptor {
+     let mut result = if descriptor.hasGetter_() || descriptor.hasSetter_() {
+         let getter: v8::Local<v8::Value> = if descriptor.getter_.is_null() {
+             v8::undefined(scope).into()
+diff --git a/components/roves-js/src/jsapi_types.rs b/components/roves-js/src/jsapi_types.rs
+index db9f36ee3fa..22ad18b63a9 100644
+--- a/components/roves-js/src/jsapi_types.rs
++++ b/components/roves-js/src/jsapi_types.rs
+@@ -40,6 +40,8 @@ pub struct BaseProxyHandler {
+     _private: [u8; 0],
+ }
+ 
++        pub type BaseProxyHandler_Action = u32;
++
+         #[repr(C)]
+         #[derive(Debug, Copy, Clone)]
+         pub struct BaseShape {
+@@ -565,6 +567,9 @@ pub struct InlinableNative {
+     _private: [u8; 0],
+ }
+ 
++        pub type IsAcceptableThis =
++            ::std::option::Option<unsafe extern "C" fn(v: HandleValue) -> bool>;
++
+     #[doc = " Add a property named by id to obj."]
+     pub type JSAddPropertyOp = ::std::option::Option<
+         unsafe extern "C" fn(
+@@ -2727,6 +2732,10 @@ pub struct JSTracer {
+         #[doc = " Similar to a handle, but the underlying storage can be changed. This is\n useful for outparams.\n\n If you want to add additional methods to MutableHandle for a specific\n specialization, define a MutableHandleOperations<T> specialization containing\n them."]
+         pub type MutableHandleValue = MutableHandle<Value>;
+ 
++        pub type NativeImpl = ::std::option::Option<
++            unsafe extern "C" fn(cx: *mut JSContext, args: *const CallArgs) -> bool,
++        >;
++
+         #[repr(C)]
+         #[derive(Debug, Copy, Clone)]
+         pub struct Nursery {
+diff --git a/components/roves-js/src/lib.rs b/components/roves-js/src/lib.rs
+index 1f9b183f487..449a89dd378 100644
+--- a/components/roves-js/src/lib.rs
++++ b/components/roves-js/src/lib.rs
+@@ -26,6 +26,9 @@ mod jsimpls;
+ mod jsapi_impl;
+ mod native;
+ mod object;
++mod proxy;
++mod typedarray_impl;
++pub mod typedarray;
+ mod realm_impl;
+ pub mod realm;
+ pub mod panic;
+diff --git a/components/roves-js/src/object.rs b/components/roves-js/src/object.rs
+index 4d8e7b09893..c844d8647b0 100644
+--- a/components/roves-js/src/object.rs
++++ b/components/roves-js/src/object.rs
+@@ -46,9 +46,21 @@ pub(crate) struct ClassBox {
+     pub(crate) cell: StdCell<*mut c_void>,
+     /// For a global object: its realm.
+     pub(crate) realm: RefCell<Option<v8::Global<v8::Context>>>,
++    /// For a proxy's target: the proxy handler (null for ordinary class objects). The box's
++    /// `cell` is then the proxy's cell, and trace/finalize go to the handler's traps.
++    pub(crate) proxy: StdCell<*const crate::proxy::ProxyHandler>,
++    /// A proxy's private value (`GetProxyPrivate`).
++    pub(crate) private: StdCell<JSVal>,
++    /// Whether a proxy's prototype comes from its handler (`getPrototype` trap).
++    pub(crate) lazy_proto: StdCell<bool>,
++    /// For a global: its realm's `traceGlobal` hook (`RealmCreationOptions`), which traces the
++    /// embedder's global state alongside the class hook.
++    pub(crate) global_trace: StdCell<crate::jsapi::JSTraceOp>,
+ }
+ 
+ thread_local! {
++    /// How many class-box traces or finalizers are running (`RuntimeHeapState`).
++    static IN_GC: StdCell<u32> = const { StdCell::new(0) };
+     /// The box being finalized, and the stand-in object pointer its finalize hook receives.
+     static FINALIZING: StdCell<Option<(*mut JSObject, *const ClassBox)>> = const { StdCell::new(None) };
+ }
+@@ -57,14 +69,31 @@ thread_local! {
+ // reports the native object's references (Servo's `JSTraceable`).
+ unsafe impl GarbageCollected for ClassBox {
+     fn trace(&self, visitor: &mut Visitor) {
++        let _gc = GcScope::enter();
+         for slot in self.slots.borrow().iter() {
+             if slot.is_gcthing() {
+                 trace_cell(slot.to_gcthing(), visitor);
+             }
+         }
+         trace_cell(self.cell.get(), visitor);
++        let private = self.private.get();
++        if private.is_gcthing() {
++            trace_cell(private.to_gcthing(), visitor);
++        }
++        // SAFETY: handlers live for the whole process (`CreateProxyHandler`).
++        if let Some(handler) = unsafe { self.proxy.get().as_ref() } {
++            if let Some(trace) = handler.traps.trace {
++                // SAFETY: as for the class hook below.
++                unsafe { trace(crate::glue::tracer(visitor), self.cell.get() as *mut JSObject) };
++            }
++            return;
++        }
+         // SAFETY: classes are static.
+         let class = unsafe { &*self.class };
++        if let Some(trace) = self.global_trace.get() {
++            // SAFETY: as for the class hook below.
++            unsafe { trace(crate::glue::tracer(visitor), self.cell.get() as *mut JSObject) };
++        }
+         if let Some(ops) = unsafe { class.cOps.as_ref() } {
+             if let Some(trace) = ops.trace {
+                 // SAFETY: the hook receives this GC's tracer and the object (its cell).
+@@ -78,11 +107,37 @@ unsafe impl GarbageCollected for ClassBox {
+     }
+ }
+ 
++/// Marks the extent of GC work run by roves-js (traces and finalizers).
++struct GcScope;
++
++impl GcScope {
++    fn enter() -> GcScope {
++        IN_GC.with(|depth| depth.set(depth.get() + 1));
++        GcScope
++    }
++}
++
++impl Drop for GcScope {
++    fn drop(&mut self) {
++        IN_GC.with(|depth| depth.set(depth.get() - 1));
++    }
++}
++
++/// SpiderMonkey's heap state: collecting while roves-js runs GC hooks.
++pub unsafe fn RuntimeHeapState() -> crate::jsapi::HeapState {
++    if IN_GC.with(StdCell::get) > 0 { crate::jsapi::HeapState::MajorCollecting } else { crate::jsapi::HeapState::Idle }
++}
++
+ impl Drop for ClassBox {
+     fn drop(&mut self) {
+-        // SAFETY: classes are static.
++        let _gc = GcScope::enter();
++        // SAFETY: classes are static; handlers live for the whole process.
+         let class = unsafe { &*self.class };
+-        let Some(finalize) = (unsafe { class.cOps.as_ref() }).and_then(|ops| ops.finalize) else { return };
++        let finalize = match unsafe { self.proxy.get().as_ref() } {
++            Some(handler) => handler.traps.finalize,
++            None => (unsafe { class.cOps.as_ref() }).and_then(|ops| ops.finalize),
++        };
++        let Some(finalize) = finalize else { return };
+         // The V8 object (and possibly its cell) is gone: the hook gets a stand-in pointer that
+         // the reserved-slot accessors resolve to this box.
+         let stand_in = self as *const ClassBox as *mut JSObject;
+@@ -220,6 +275,15 @@ pub(crate) fn new_object(cx: &JSContext, class: *const JSClass, proto: *mut JSOb
+ 
+ /// Gives `object` (from a class template) its class box and cell; returns the cell.
+ pub(crate) fn attach_class_box(scope: &mut v8::PinScope, object: v8::Local<v8::Object>, class: *const JSClass) -> *mut JSObject {
++    let class_box = make_class_box(scope, object, class);
++    let cell = crate::cell::new_cell_with_class(scope, object.into(), Some(Member::new(&class_box)));
++    // SAFETY: the box was just created and is alive (wrapped).
++    unsafe { class_box.as_ref() }.cell.set(cell);
++    cell as *mut JSObject
++}
++
++/// Creates `object`'s class box (stored in its internal field, kept alive by the object).
++pub(crate) fn make_class_box(scope: &mut v8::PinScope, object: v8::Local<v8::Object>, class: *const JSClass) -> UnsafePtr<ClassBox> {
+     // SAFETY: classes are static.
+     let slots = reserved_slot_count(unsafe { &*class });
+     let heap = scope.get_cpp_heap().expect("roves-js isolates carry a cppgc heap");
+@@ -232,6 +296,10 @@ pub(crate) fn attach_class_box(scope: &mut v8::PinScope, object: v8::Local<v8::O
+                 slots: RefCell::new(vec![UndefinedValue(); slots]),
+                 cell: StdCell::new(std::ptr::null_mut()),
+                 realm: RefCell::new(None),
++                proxy: StdCell::new(std::ptr::null()),
++                private: StdCell::new(UndefinedValue()),
++                lazy_proto: StdCell::new(false),
++                global_trace: StdCell::new(None),
+             },
+         )
+     };
+@@ -240,10 +308,7 @@ pub(crate) fn attach_class_box(scope: &mut v8::PinScope, object: v8::Local<v8::O
+     let root = v8::cppgc::Persistent::new(&class_box);
+     // SAFETY: the object is an API object from a template with one internal field.
+     unsafe { v8::Object::wrap::<CLASS_WRAP_TAG, ClassBox>(scope, object, &root) };
+-    let cell = crate::cell::new_cell_with_class(scope, object.into(), Some(Member::new(&class_box)));
+-    // SAFETY: the box was just created and is alive (wrapped).
+-    unsafe { class_box.as_ref() }.cell.set(cell);
+-    cell as *mut JSObject
++    class_box
+ }
+ 
+ /// `JS::GetClass` / mozjs's `get_object_class`: the class of a class-based object, or the
+diff --git a/components/roves-js/src/proxy.rs b/components/roves-js/src/proxy.rs
+new file mode 100644
+index 00000000000..b5926b81502
+--- /dev/null
++++ b/components/roves-js/src/proxy.rs
+@@ -0,0 +1,714 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! SpiderMonkey proxies (mozjs's glue `ProxyTraps` handlers) as V8 `Proxy` objects.
++//!
++//! A proxy is a JS `Proxy` whose target is a class object of the proxy's `JSClass`. The
++//! target's [`ClassBox`](crate::object::ClassBox) holds what SpiderMonkey keeps in the proxy:
++//! the handler, the private value and the reserved slots. Its `cell` is the *proxy's* cell,
++//! so the proxy keeps one identity, and the box's trace/finalize go to the handler's traps.
++//! The target never reaches script: every operation goes through the V8 handler, whose
++//! functions call the SpiderMonkey traps (or `BaseProxyHandler`'s defaults where a trap is
++//! absent).
++//!
++//! V8 checks the ES proxy invariants on every trap result. SpiderMonkey's handlers report
++//! non-configurable properties that the (empty) target does not have, which V8 rejects, so
++//! such properties are mirrored onto the target when reported or defined.
++
++use std::ffi::c_void;
++
++use crate::glue::ProxyTraps;
++use crate::jsapi::{
++    HandleId, HandleObject, HandleValue, JSClass, JSContext, JSObject, MutableHandle,
++    ObjectOpResult, PropertyDescriptor, jsid,
++};
++use crate::jsval::{JSVal, UndefinedValue, from_v8, to_v8};
++use crate::object::ClassBox;
++
++/// A proxy handler: mozjs's glue handler with its traps and the embedder's extra pointer.
++pub(crate) struct ProxyHandler {
++    pub(crate) traps: ProxyTraps,
++    extra: *const c_void,
++    family: *const c_void,
++}
++
++/// The family of every handler made by `CreateProxyHandler` (the DOM proxy family).
++static HANDLER_FAMILY: u8 = 0;
++
++/// The class of proxies created without one (SpiderMonkey's `js::ProxyClass`).
++static PROXY_CLASS: JSClass = JSClass {
++    name: c"Proxy".as_ptr(),
++    flags: crate::object::JSCLASS_IS_PROXY | (1 << crate::object::JSCLASS_RESERVED_SLOTS_SHIFT),
++    cOps: std::ptr::null(),
++    spec: std::ptr::null(),
++    ext: std::ptr::null(),
++    oOps: std::ptr::null(),
++};
++
++thread_local! {
++    static DOM_PROXY_SHADOWS_CHECK: std::cell::Cell<crate::jsapi::DOMProxyShadowsCheck> = const { std::cell::Cell::new(None) };
++}
++
++pub unsafe fn CreateProxyHandler(traps: *const ProxyTraps, extra: *const c_void) -> *const c_void {
++    // SAFETY: callers pass a valid trap table (copied: handlers outlive their tables).
++    let handler = Box::new(ProxyHandler { traps: unsafe { *traps }, extra, family: GetProxyHandlerFamily() });
++    // Handlers live for the whole process, as in mozjs (they are created once per binding).
++    Box::into_raw(handler) as *const c_void
++}
++
++pub fn GetProxyHandlerFamily() -> *const c_void {
++    &HANDLER_FAMILY as *const u8 as *const c_void
++}
++
++/// The box of a proxy (the target's box), if `obj` is a roves-js proxy.
++fn proxy_box<'b>(obj: *mut JSObject) -> Option<&'b ClassBox> {
++    let class_box = crate::object::class_box(obj)?;
++    (!class_box.proxy.get().is_null()).then_some(class_box)
++}
++
++fn handler_of<'h>(obj: *mut JSObject) -> Option<&'h ProxyHandler> {
++    // SAFETY: handlers live for the whole process.
++    proxy_box(obj).map(|class_box| unsafe { &*class_box.proxy.get() })
++}
++
++pub unsafe fn IsProxyHandlerFamily(obj: *mut JSObject) -> bool {
++    handler_of(obj).is_some_and(|handler| handler.family == GetProxyHandlerFamily())
++}
++
++pub unsafe fn GetProxyHandler(obj: *mut JSObject) -> *const c_void {
++    proxy_box(obj).map_or(std::ptr::null(), |class_box| class_box.proxy.get() as *const c_void)
++}
++
++pub unsafe fn GetProxyHandlerExtra(obj: *mut JSObject) -> *const c_void {
++    handler_of(obj).map_or(std::ptr::null(), |handler| handler.extra)
++}
++
++pub unsafe fn GetProxyPrivate(obj: *mut JSObject, dest: *mut JSVal) {
++    let private = proxy_box(obj).map_or(UndefinedValue(), |class_box| class_box.private.get());
++    // SAFETY: callers pass a valid out pointer.
++    unsafe { *dest = private };
++}
++
++pub unsafe fn SetProxyPrivate(obj: *mut JSObject, value: *const JSVal) {
++    if let Some(class_box) = proxy_box(obj) {
++        // SAFETY: callers pass a valid value.
++        class_box.private.set(unsafe { *value });
++    }
++}
++
++pub unsafe fn GetProxyReservedSlot(obj: *mut JSObject, slot: u32, dest: *mut JSVal) {
++    // SAFETY: forwarded (a proxy's reserved slots are its box's).
++    unsafe { crate::jsapi_impl::JS_GetReservedSlot(obj, slot, dest) }
++}
++
++pub unsafe fn SetProxyReservedSlot(obj: *mut JSObject, slot: u32, value: *const JSVal) {
++    // SAFETY: forwarded.
++    unsafe { crate::jsapi_impl::JS_SetReservedSlot(obj, slot, value) }
++}
++
++/// SpiderMonkey's JIT hook for DOM proxies; V8 does not use it.
++pub unsafe fn SetDOMProxyInformation(
++    _dom_proxy_handler_family: *const c_void,
++    shadows_check: crate::jsapi::DOMProxyShadowsCheck,
++    _dom_remote_proxy_handler_family: *const c_void,
++) {
++    DOM_PROXY_SHADOWS_CHECK.with(|check| check.set(shadows_check));
++}
++
++/// A new proxy with `handler`, `private` and prototype `proto` (`lazy_proto`: the prototype
++/// comes from the handler's `getPrototype` trap). `class` may be null (`PROXY_CLASS`).
++pub unsafe fn NewProxyObject(
++    cx: *mut JSContext,
++    handler: *const c_void,
++    private: HandleValue,
++    proto: *mut JSObject,
++    class: *const JSClass,
++    lazy_proto: bool,
++) -> *mut JSObject {
++    // SAFETY: callers pass a live context.
++    let raw = unsafe { &*cx };
++    let class = if class.is_null() { &PROXY_CLASS as *const JSClass } else { class };
++    let private = private.get();
++    raw.catching(|scope| {
++        let template = raw.class_templates.template(scope, class);
++        let target = template.new_instance(scope)?;
++        let prototype: v8::Local<v8::Value> = if proto.is_null() || lazy_proto {
++            v8::null(scope).into()
++        } else {
++            // SAFETY: callers pass a live (rooted) prototype.
++            unsafe { crate::cell::cell_value(scope, proto as *mut c_void) }
++        };
++        target.set_prototype(scope, prototype)?;
++        let class_box = crate::object::make_class_box(scope, target, class);
++        // SAFETY: just created, kept alive by the target.
++        let box_ref = unsafe { class_box.as_ref() };
++        box_ref.proxy.set(handler as *const ProxyHandler);
++        box_ref.private.set(private);
++        box_ref.lazy_proto.set(lazy_proto);
++        let handler_object = handler_object(raw, scope, handler as *const ProxyHandler)?;
++        let proxy = v8::Proxy::new(scope, target, handler_object)?;
++        let member = v8::cppgc::Member::new(&class_box);
++        let cell = crate::cell::new_cell_with_class(scope, proxy.into(), Some(member));
++        box_ref.cell.set(cell);
++        Some(cell as *mut JSObject)
++    })
++    .unwrap_or(std::ptr::null_mut())
++}
++
++/// The box behind a V8 proxy created by `NewProxyObject`.
++pub(crate) fn proxy_box_of_v8<'b>(scope: &mut v8::PinScope, proxy: v8::Local<v8::Proxy>) -> Option<&'b ClassBox> {
++    let target = v8::Local::<v8::Object>::try_from(proxy.get_target(scope)).ok()?;
++    let class_box = crate::object::class_box_of_v8(target)?;
++    (!class_box.proxy.get().is_null()).then_some(class_box)
++}
++
++/// Calls the handler's `getOwnPropertyDescriptor` trap (mozjs's glue helper).
++pub unsafe fn InvokeGetOwnPropertyDescriptor(
++    handler: *const c_void,
++    cx: *mut JSContext,
++    proxy: HandleObject,
++    id: HandleId,
++    desc: MutableHandle<PropertyDescriptor>,
++    is_none: *mut bool,
++) -> bool {
++    // SAFETY: handlers come from `CreateProxyHandler`.
++    let handler = unsafe { &*(handler as *const ProxyHandler) };
++    match handler.traps.getOwnPropertyDescriptor {
++        // SAFETY: SpiderMonkey's trap contract.
++        Some(trap) => unsafe { trap(cx, proxy, id, desc, is_none) },
++        None => {
++            // SAFETY: callers pass a valid out pointer.
++            unsafe { *is_none = true };
++            true
++        },
++    }
++}
++
++// --- The V8 handler ------------------------------------------------------------------------
++
++/// The V8 handler object of `handler` (one per handler and runtime).
++fn handler_object<'s>(cx: &JSContext, scope: &mut v8::PinScope<'s, '_>, handler: *const ProxyHandler) -> Option<v8::Local<'s, v8::Object>> {
++    if let Some(object) = cx.proxy_handlers.borrow().get(&(handler as usize)) {
++        return Some(v8::Local::new(scope, object));
++    }
++    let object = v8::Object::new(scope);
++    let data = v8::External::new(scope, handler as *mut c_void);
++    // V8 callbacks must be function items (zero-sized), hence one call per trap.
++    macro_rules! install {
++        ($($name:literal => $callback:ident),* $(,)?) => {
++            $(
++                let function = v8::Function::builder($callback).data(data.into()).build(scope)?;
++                let key = v8::String::new(scope, $name)?;
++                object.set(scope, key.into(), function.into())?;
++            )*
++        };
++    }
++    install! {
++        "getOwnPropertyDescriptor" => trap_get_own_property_descriptor,
++        "defineProperty" => trap_define_property,
++        "ownKeys" => trap_own_keys,
++        "deleteProperty" => trap_delete_property,
++        "has" => trap_has,
++        "get" => trap_get,
++        "set" => trap_set,
++        "getPrototypeOf" => trap_get_prototype_of,
++        "setPrototypeOf" => trap_set_prototype_of,
++        "isExtensible" => trap_is_extensible,
++        "preventExtensions" => trap_prevent_extensions,
++    }
++    cx.proxy_handlers.borrow_mut().insert(handler as usize, v8::Global::new(scope, object));
++    Some(object)
++}
++
++/// What every trap callback needs: the handler, the proxy (its cell, rooted by the caller)
++/// and the target.
++struct TrapContext<'s, 'h> {
++    handler: &'h ProxyHandler,
++    proxy: *mut JSObject,
++    target: v8::Local<'s, v8::Object>,
++    cx: *mut JSContext,
++}
++
++fn trap_context<'s, 'h>(args: &v8::FunctionCallbackArguments<'s>) -> Option<TrapContext<'s, 'h>> {
++    let external = v8::Local::<v8::External>::try_from(args.data()).ok()?;
++    // SAFETY: handler objects carry their (process-lived) handler.
++    let handler = unsafe { &*(external.value() as *const ProxyHandler) };
++    let target = v8::Local::<v8::Object>::try_from(args.get(0)).ok()?;
++    let class_box = crate::object::class_box_of_v8(target)?;
++    let cx = JSContext::current() as *const JSContext as *mut JSContext;
++    Some(TrapContext { handler, proxy: class_box.cell.get() as *mut JSObject, target, cx })
++}
++
++/// Ends a trap: a SpiderMonkey failure rethrows the pending exception into V8.
++fn fail(scope: &mut v8::PinScope) {
++    crate::native::rethrow_pending(scope, JSContext::current());
++}
++
++/// A descriptor object (`{ value, writable, get, set, enumerable, configurable }`).
++fn descriptor_object<'s>(scope: &mut v8::PinScope<'s, '_>, descriptor: &PropertyDescriptor) -> Option<v8::Local<'s, v8::Object>> {
++    let object = v8::Object::new(scope);
++    let mut put = |scope: &mut v8::PinScope<'s, '_>, name: &str, value: v8::Local<'s, v8::Value>| -> Option<()> {
++        let key = v8::String::new(scope, name)?;
++        object.create_data_property(scope, key.into(), value)?;
++        Some(())
++    };
++    if descriptor.hasGetter_() || descriptor.hasSetter_() {
++        let getter: v8::Local<v8::Value> =
++            if descriptor.getter_.is_null() { v8::undefined(scope).into() } else { unsafe { to_v8(scope, crate::jsval::ObjectValue(descriptor.getter_)) } };
++        let setter: v8::Local<v8::Value> =
++            if descriptor.setter_.is_null() { v8::undefined(scope).into() } else { unsafe { to_v8(scope, crate::jsval::ObjectValue(descriptor.setter_)) } };
++        put(scope, "get", getter)?;
++        put(scope, "set", setter)?;
++    } else {
++        // SAFETY: descriptor values are rooted by the caller.
++        let value = unsafe { to_v8(scope, descriptor.value_) };
++        put(scope, "value", value)?;
++        let writable = v8::Boolean::new(scope, descriptor.writable_());
++        put(scope, "writable", writable.into())?;
++    }
++    let enumerable = v8::Boolean::new(scope, descriptor.enumerable_());
++    put(scope, "enumerable", enumerable.into())?;
++    let configurable = v8::Boolean::new(scope, descriptor.configurable_());
++    put(scope, "configurable", configurable.into())?;
++    Some(object)
++}
++
++/// Mirrors a non-configurable property onto the target (V8's proxy invariants).
++fn mirror_non_configurable(scope: &mut v8::PinScope, target: v8::Local<v8::Object>, key: v8::Local<v8::Name>, descriptor: &PropertyDescriptor) {
++    if descriptor.configurable_() {
++        return;
++    }
++    let mirrored = crate::jsapi_impl::v8_descriptor(scope, descriptor);
++    let _ = target.define_property(scope, key, &mirrored);
++}
++
++/// The own descriptor of `id` through the handler (`None` when absent, `Err` on failure).
++fn own_descriptor(context: &TrapContext, id: jsid) -> Result<Option<PropertyDescriptor>, ()> {
++    let Some(trap) = context.handler.traps.getOwnPropertyDescriptor else { return Ok(None) };
++    let cx = context.cx;
++    crate::rooted!(in(cx) let proxy = context.proxy);
++    crate::rooted!(in(cx) let id = id);
++    crate::rooted!(in(cx) let mut descriptor = PropertyDescriptor::default());
++    let mut is_none = true;
++    // SAFETY: SpiderMonkey's trap contract (rooted arguments).
++    let ok = unsafe { trap(cx, proxy.handle().into_handle(), id.handle().into_handle(), descriptor.handle_mut().into_handle(), &mut is_none) };
++    if !ok {
++        return Err(());
++    }
++    Ok((!is_none).then(|| descriptor.get()))
++}
++
++fn trap_get_own_property_descriptor<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
++    let Some(context) = trap_context(&args) else { return };
++    let Ok(key) = v8::Local::<v8::Name>::try_from(args.get(1)) else { return };
++    let id = crate::jsapi_impl::key_id(scope, key.into());
++    match own_descriptor(&context, id) {
++        Err(()) => fail(scope),
++        Ok(None) => retval.set_undefined(),
++        Ok(Some(descriptor)) => {
++            mirror_non_configurable(scope, context.target, key, &descriptor);
++            if let Some(object) = descriptor_object(scope, &descriptor) {
++                retval.set(object.into());
++            }
++        },
++    }
++}
++
++fn result_to_bool(ok: bool, result: &ObjectOpResult, retval: &mut v8::ReturnValue, scope: &mut v8::PinScope) {
++    if ok {
++        retval.set_bool(result.ok());
++    } else {
++        fail(scope);
++    }
++}
++
++fn trap_define_property<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
++    let Some(context) = trap_context(&args) else { return };
++    let Ok(key) = v8::Local::<v8::Name>::try_from(args.get(1)) else { return };
++    let Ok(descriptor_value) = v8::Local::<v8::Object>::try_from(args.get(2)) else { return };
++    let Some(trap) = context.handler.traps.defineProperty else {
++        retval.set_bool(false);
++        return;
++    };
++    let mut descriptor = PropertyDescriptor::default();
++    crate::jsapi_impl::fill_descriptor(scope, descriptor_value, &mut descriptor);
++    let cx = context.cx;
++    crate::rooted!(in(cx) let proxy = context.proxy);
++    crate::rooted!(in(cx) let id = crate::jsapi_impl::key_id(scope, key.into()));
++    crate::rooted!(in(cx) let rooted_descriptor = descriptor);
++    let mut result = ObjectOpResult { code_: 0 };
++    // SAFETY: SpiderMonkey's trap contract.
++    let ok = unsafe { trap(cx, proxy.handle().into_handle(), id.handle().into_handle(), rooted_descriptor.handle().into_handle(), &mut result) };
++    if ok && result.ok() && descriptor.hasConfigurable_() {
++        mirror_non_configurable(scope, context.target, key, &descriptor);
++    }
++    result_to_bool(ok, &result, &mut retval, scope);
++}
++
++fn trap_own_keys<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
++    let Some(context) = trap_context(&args) else { return };
++    let cx = context.cx;
++    // SAFETY: `cx` is this thread's live context.
++    let mut ids = unsafe { crate::rust::IdVector::new(cx) };
++    if let Some(trap) = context.handler.traps.ownPropertyKeys {
++        crate::rooted!(in(cx) let proxy = context.proxy);
++        // SAFETY: SpiderMonkey's trap contract.
++        if !unsafe { trap(cx, proxy.handle().into_handle(), ids.handle_mut()) } {
++            fail(scope);
++            return;
++        }
++    }
++    let keys: Vec<v8::Local<v8::Value>> = ids.iter().filter_map(|id| crate::jsapi_impl::id_key(scope, *id).map(Into::into)).collect();
++    let array = v8::Array::new_with_elements(scope, &keys);
++    retval.set(array.into());
++}
++
++fn trap_delete_property<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
++    let Some(context) = trap_context(&args) else { return };
++    let Some(trap) = context.handler.traps.delete_ else {
++        retval.set_bool(true);
++        return;
++    };
++    let cx = context.cx;
++    crate::rooted!(in(cx) let proxy = context.proxy);
++    crate::rooted!(in(cx) let id = crate::jsapi_impl::key_id(scope, args.get(1)));
++    let mut result = ObjectOpResult { code_: 0 };
++    // SAFETY: SpiderMonkey's trap contract.
++    let ok = unsafe { trap(cx, proxy.handle().into_handle(), id.handle().into_handle(), &mut result) };
++    result_to_bool(ok, &result, &mut retval, scope);
++}
++
++/// The prototype the proxy reports (its handler's, for lazy prototypes).
++fn prototype<'s>(scope: &mut v8::PinScope<'s, '_>, context: &TrapContext<'s, '_>) -> Result<v8::Local<'s, v8::Value>, ()> {
++    let lazy = crate::object::class_box_of_v8(context.target).is_some_and(|class_box| class_box.lazy_proto.get());
++    if lazy {
++        if let Some(trap) = context.handler.traps.getPrototype {
++            let cx = context.cx;
++            crate::rooted!(in(cx) let proxy = context.proxy);
++            crate::rooted!(in(cx) let mut proto = std::ptr::null_mut::<JSObject>());
++            // SAFETY: SpiderMonkey's trap contract.
++            if !unsafe { trap(cx, proxy.handle().into_handle(), proto.handle_mut().into_handle()) } {
++                return Err(());
++            }
++            return Ok(if proto.get().is_null() {
++                v8::null(scope).into()
++            } else {
++                // SAFETY: rooted above.
++                unsafe { to_v8(scope, crate::jsval::ObjectValue(proto.get())) }
++            });
++        }
++    }
++    context.target.get_prototype(scope).ok_or(())
++}
++
++fn trap_get_prototype_of<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
++    let Some(context) = trap_context(&args) else { return };
++    match prototype(scope, &context) {
++        Ok(prototype) => retval.set(prototype),
++        Err(()) => fail(scope),
++    }
++}
++
++fn trap_set_prototype_of<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
++    let Some(context) = trap_context(&args) else { return };
++    match context.handler.traps.setPrototype {
++        Some(trap) => {
++            let cx = context.cx;
++            crate::rooted!(in(cx) let proxy = context.proxy);
++            let proto = args.get(1);
++            crate::rooted!(in(cx) let proto = if proto.is_object() { from_v8(scope, proto).to_object() } else { std::ptr::null_mut() });
++            let mut result = ObjectOpResult { code_: 0 };
++            // SAFETY: SpiderMonkey's trap contract.
++            let ok = unsafe { trap(cx, proxy.handle().into_handle(), proto.handle().into_handle(), &mut result) };
++            result_to_bool(ok, &result, &mut retval, scope);
++        },
++        None => {
++            let set = context.target.set_prototype(scope, args.get(1)).unwrap_or(false);
++            retval.set_bool(set);
++        },
++    }
++}
++
++fn trap_is_extensible<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
++    let Some(context) = trap_context(&args) else { return };
++    // V8 requires the answer to match the target's; SpiderMonkey's DOM proxies are always
++    // extensible, as is the target unless `preventExtensions` succeeded.
++    if let Some(extensible) = reflect(scope, "isExtensible", &[context.target.into()]) {
++        let extensible = extensible.boolean_value(scope);
++        retval.set_bool(extensible);
++    }
++}
++
++fn trap_prevent_extensions<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
++    let Some(context) = trap_context(&args) else { return };
++    match context.handler.traps.preventExtensions {
++        Some(trap) => {
++            let cx = context.cx;
++            crate::rooted!(in(cx) let proxy = context.proxy);
++            let mut result = ObjectOpResult { code_: 0 };
++            // SAFETY: SpiderMonkey's trap contract.
++            let ok = unsafe { trap(cx, proxy.handle().into_handle(), &mut result) };
++            if ok && result.ok() {
++                let _ = reflect(scope, "preventExtensions", &[context.target.into()]);
++            }
++            result_to_bool(ok, &result, &mut retval, scope);
++        },
++        None => {
++            if let Some(prevented) = reflect(scope, "preventExtensions", &[context.target.into()]) {
++                let prevented = prevented.boolean_value(scope);
++                retval.set_bool(prevented);
++            }
++        },
++    }
++}
++
++fn trap_has<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
++    let Some(context) = trap_context(&args) else { return };
++    let key = args.get(1);
++    let id = crate::jsapi_impl::key_id(scope, key);
++    if let Some(trap) = context.handler.traps.has {
++        let cx = context.cx;
++        crate::rooted!(in(cx) let proxy = context.proxy);
++        crate::rooted!(in(cx) let id = id);
++        let mut found = false;
++        // SAFETY: SpiderMonkey's trap contract.
++        if unsafe { trap(cx, proxy.handle().into_handle(), id.handle().into_handle(), &mut found) } {
++            retval.set_bool(found);
++        } else {
++            fail(scope);
++        }
++        return;
++    }
++    // BaseProxyHandler::has: an own property, else the prototype chain.
++    match own_descriptor(&context, id) {
++        Err(()) => fail(scope),
++        Ok(Some(_)) => retval.set_bool(true),
++        Ok(None) => match prototype(scope, &context) {
++            Err(()) => fail(scope),
++            Ok(proto) => {
++                let found = v8::Local::<v8::Object>::try_from(proto).ok().and_then(|proto| proto.has(scope, key));
++                match found {
++                    Some(found) => retval.set_bool(found),
++                    None => retval.set_bool(false),
++                }
++            },
++        },
++    }
++}
++
++fn trap_get<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
++    let Some(context) = trap_context(&args) else { return };
++    let key = args.get(1);
++    let receiver = args.get(2);
++    let id = crate::jsapi_impl::key_id(scope, key);
++    let cx = context.cx;
++    if let Some(trap) = context.handler.traps.get {
++        crate::rooted!(in(cx) let proxy = context.proxy);
++        crate::rooted!(in(cx) let id = id);
++        crate::rooted!(in(cx) let receiver = from_v8(scope, receiver));
++        crate::rooted!(in(cx) let mut value = UndefinedValue());
++        // SAFETY: SpiderMonkey's trap contract.
++        let ok = unsafe { trap(cx, proxy.handle().into_handle(), receiver.handle().into_handle(), id.handle().into_handle(), value.handle_mut().into_handle()) };
++        if ok {
++            // SAFETY: rooted above.
++            let value = unsafe { to_v8(scope, value.get()) };
++            retval.set(value);
++        } else {
++            fail(scope);
++        }
++        return;
++    }
++    // BaseProxyHandler::get: an own property (value or getter), else the prototype chain.
++    match own_descriptor(&context, id) {
++        Err(()) => fail(scope),
++        Ok(Some(descriptor)) => {
++            crate::rooted!(in(cx) let descriptor = descriptor);
++            if descriptor.hasGetter_() || descriptor.hasSetter_() {
++                if descriptor.getter_.is_null() {
++                    retval.set_undefined();
++                    return;
++                }
++                // SAFETY: rooted above.
++                let getter = unsafe { to_v8(scope, crate::jsval::ObjectValue(descriptor.getter_)) };
++                let Ok(getter) = v8::Local::<v8::Function>::try_from(getter) else { return };
++                if let Some(value) = getter.call(scope, receiver, &[]) {
++                    retval.set(value);
++                }
++            } else {
++                // SAFETY: rooted above.
++                let value = unsafe { to_v8(scope, descriptor.value_) };
++                retval.set(value);
++            }
++        },
++        Ok(None) => match prototype(scope, &context) {
++            Err(()) => fail(scope),
++            Ok(proto) => {
++                let Ok(proto) = v8::Local::<v8::Object>::try_from(proto) else {
++                    retval.set_undefined();
++                    return;
++                };
++                if let Some(value) = reflect(scope, "get", &[proto.into(), key, receiver]) {
++                    retval.set(value);
++                }
++            },
++        },
++    }
++}
++
++/// Calls `Reflect[name](...args)`.
++fn reflect<'s>(scope: &mut v8::PinScope<'s, '_>, name: &str, args: &[v8::Local<'s, v8::Value>]) -> Option<v8::Local<'s, v8::Value>> {
++    let global = scope.get_current_context().global(scope);
++    let reflect_key = v8::String::new(scope, "Reflect")?;
++    let reflect = v8::Local::<v8::Object>::try_from(global.get(scope, reflect_key.into())?).ok()?;
++    let key = v8::String::new(scope, name)?;
++    let function = v8::Local::<v8::Function>::try_from(reflect.get(scope, key.into())?).ok()?;
++    function.call(scope, reflect.into(), args)
++}
++
++fn trap_set<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
++    let Some(context) = trap_context(&args) else { return };
++    let key = args.get(1);
++    let value = args.get(2);
++    let receiver = args.get(3);
++    let id = crate::jsapi_impl::key_id(scope, key);
++    let cx = context.cx;
++    crate::rooted!(in(cx) let proxy = context.proxy);
++    crate::rooted!(in(cx) let rooted_id = id);
++    crate::rooted!(in(cx) let rooted_value = from_v8(scope, value));
++    crate::rooted!(in(cx) let rooted_receiver = from_v8(scope, receiver));
++    let mut result = ObjectOpResult { code_: 0 };
++    if let Some(trap) = context.handler.traps.set {
++        // SAFETY: SpiderMonkey's trap contract.
++        let ok = unsafe {
++            trap(
++                cx,
++                proxy.handle().into_handle(),
++                rooted_id.handle().into_handle(),
++                rooted_value.handle().into_handle(),
++                rooted_receiver.handle().into_handle(),
++                &mut result,
++            )
++        };
++        result_to_bool(ok, &result, &mut retval, scope);
++        return;
++    }
++    // BaseProxyHandler::set: OrdinarySetWithOwnDescriptor with the handler's own descriptor.
++    match own_descriptor(&context, id) {
++        Err(()) => fail(scope),
++        Ok(Some(descriptor)) => {
++            crate::rooted!(in(cx) let descriptor = descriptor);
++            let own = descriptor.handle().into_handle();
++            // SAFETY: rooted arguments.
++            let ok = unsafe {
++                SetPropertyIgnoringNamedGetter(
++                    cx,
++                    proxy.handle().into_handle(),
++                    rooted_id.handle().into_handle(),
++                    rooted_value.handle().into_handle(),
++                    rooted_receiver.handle().into_handle(),
++                    &own,
++                    &mut result,
++                )
++            };
++            result_to_bool(ok, &result, &mut retval, scope);
++        },
++        Ok(None) => match prototype(scope, &context) {
++            Err(()) => fail(scope),
++            Ok(proto) => {
++                let set = match v8::Local::<v8::Object>::try_from(proto) {
++                    Ok(proto) => reflect(scope, "set", &[proto.into(), key, value, receiver]).map(|set| set.boolean_value(scope)),
++                    // No prototype: a new data property on the receiver.
++                    Err(_) => v8::Local::<v8::Object>::try_from(receiver)
++                        .ok()
++                        .and_then(|receiver| v8::Local::<v8::Name>::try_from(key).ok().and_then(|key| receiver.create_data_property(scope, key, value))),
++                };
++                if let Some(set) = set {
++                    retval.set_bool(set);
++                }
++            },
++        },
++    }
++}
++
++/// `OrdinarySetWithOwnDescriptor` with `ownDesc` (SpiderMonkey's helper for proxy `set`
++/// traps whose own lookup must skip named getters).
++pub unsafe fn SetPropertyIgnoringNamedGetter(
++    cx: *mut JSContext,
++    obj: HandleObject,
++    id: HandleId,
++    v: HandleValue,
++    receiver: HandleValue,
++    own_desc: *const crate::jsapi::Handle<PropertyDescriptor>,
++    result: *mut ObjectOpResult,
++) -> bool {
++    // SAFETY: callers pass valid, rooted arguments.
++    let result = unsafe { &mut *result };
++    let raw = unsafe { &*cx };
++    if own_desc.is_null() {
++        // No own property: OrdinarySet continues on the prototype (or defines on the receiver).
++        let outcome = raw.catching(|scope| {
++            let target = unsafe { crate::cell::cell_value(scope, obj.get() as *mut c_void) };
++            let target = v8::Local::<v8::Object>::try_from(target).ok()?;
++            let key: v8::Local<v8::Value> = crate::jsapi_impl::id_key(scope, id.get())?.into();
++            let value = unsafe { to_v8(scope, v.get()) };
++            let receiver = unsafe { to_v8(scope, receiver.get()) };
++            let proto = target.get_prototype(scope)?;
++            if proto.is_object() {
++                return reflect(scope, "set", &[proto, key, value, receiver]).map(|set| set.boolean_value(scope));
++            }
++            let receiver = v8::Local::<v8::Object>::try_from(receiver).ok()?;
++            receiver.create_data_property(scope, v8::Local::<v8::Name>::try_from(key).ok()?, value)
++        });
++        return match outcome {
++            Some(true) => result.succeed(),
++            Some(false) => result.fail_read_only(),
++            None => false,
++        };
++    }
++    let descriptor = unsafe { *(*own_desc).ptr };
++    let outcome = raw.catching(|scope| {
++        if descriptor.hasGetter_() || descriptor.hasSetter_() {
++            if descriptor.setter_.is_null() {
++                return Some(false);
++            }
++            // SAFETY: rooted by the caller's descriptor.
++            let setter = unsafe { to_v8(scope, crate::jsval::ObjectValue(descriptor.setter_)) };
++            let setter = v8::Local::<v8::Function>::try_from(setter).ok()?;
++            let receiver = unsafe { to_v8(scope, receiver.get()) };
++            let value = unsafe { to_v8(scope, v.get()) };
++            setter.call(scope, receiver, &[value])?;
++            return Some(true);
++        }
++        if descriptor.hasWritable_() && !descriptor.writable_() {
++            return Some(false);
++        }
++        let receiver = unsafe { to_v8(scope, receiver.get()) };
++        let Ok(receiver) = v8::Local::<v8::Object>::try_from(receiver) else { return Some(false) };
++        let key = crate::jsapi_impl::id_key(scope, id.get())?;
++        let value = unsafe { to_v8(scope, v.get()) };
++        // An existing own property of the receiver keeps its attributes.
++        let existing = receiver.get_own_property_descriptor(scope, key)?;
++        if let Ok(existing) = v8::Local::<v8::Object>::try_from(existing) {
++            let mut current = PropertyDescriptor::default();
++            crate::jsapi_impl::fill_descriptor(scope, existing, &mut current);
++            if current.hasGetter_() || current.hasSetter_() || (current.hasWritable_() && !current.writable_()) {
++                return Some(false);
++            }
++            let update = v8::PropertyDescriptor::new_from_value(value);
++            return receiver.define_property(scope, key, &update);
++        }
++        receiver.create_data_property(scope, key, value)
++    });
++    match outcome {
++        Some(true) => {
++            result.succeed();
++            true
++        },
++        Some(false) => {
++            result.fail_read_only();
++            true
++        },
++        None => false,
++    }
++}
+diff --git a/components/roves-js/src/realm_impl.rs b/components/roves-js/src/realm_impl.rs
+index 5b65d568e5a..c2874e245c2 100644
+--- a/components/roves-js/src/realm_impl.rs
++++ b/components/roves-js/src/realm_impl.rs
+@@ -145,7 +145,7 @@ pub unsafe fn JS_NewGlobalObject(
+     clasp: *const crate::jsapi::JSClass,
+     principals: *mut JSPrincipals,
+     _hook_option: crate::jsapi::OnNewGlobalHookOption,
+-    _options: *const crate::jsapi::RealmOptions,
++    options: *const crate::jsapi::RealmOptions,
+ ) -> *mut JSObject {
+     // SAFETY: callers pass a live context.
+     let raw = unsafe { &*cx };
+@@ -156,6 +156,12 @@ pub unsafe fn JS_NewGlobalObject(
+         // anything converts it.
+         let global = context.global(scope);
+         let cell = crate::object::attach_class_box(scope, global, clasp);
++        // SAFETY: callers pass valid options (or null).
++        if let Some(options) = unsafe { options.as_ref() } {
++            if let Some(class_box) = crate::object::class_box(cell) {
++                class_box.global_trace.set(options.creationOptions_.traceGlobal_);
++            }
++        }
+         let realm = register_realm(raw, scope, context, cell);
+         let data = realm_data(realm)?;
+         if !principals.is_null() {
+diff --git a/components/roves-js/src/rust.rs b/components/roves-js/src/rust.rs
+index 7a36cd065fb..7a20c4aad2b 100644
+--- a/components/roves-js/src/rust.rs
++++ b/components/roves-js/src/rust.rs
+@@ -120,6 +120,26 @@ pub mod wrappers2 {
+ 
+     include!("wrappers2.in.rs");
+ 
++    /// As in mozjs (written by hand there too: `ownDesc` is optional).
++    ///
++    /// # Safety
++    /// As for `jsapi::SetPropertyIgnoringNamedGetter`.
++    #[inline]
++    pub unsafe fn SetPropertyIgnoringNamedGetter(
++        cx: &mut JSContext,
++        obj: HandleObject,
++        id: HandleId,
++        v: HandleValue,
++        receiver: HandleValue,
++        own_desc: Option<Handle<PropertyDescriptor>>,
++        result: *mut ObjectOpResult,
++    ) -> bool {
++        let own_desc: Option<jsapi::Handle<PropertyDescriptor>> = own_desc.map(Into::into);
++        let own_desc_ptr = own_desc.as_ref().map_or(std::ptr::null(), |desc| desc as *const _);
++        // SAFETY: forwarded.
++        unsafe { jsapi::SetPropertyIgnoringNamedGetter(cx.raw_cx(), obj.into(), id.into(), v.into(), receiver.into(), own_desc_ptr, result) }
++    }
++
+     pub fn JS_GetLatin1StringCharsAndLength(_cx: &JSContext, s: *mut JSString, length: &mut usize) -> *const u8 {
+         crate::api::latin1_chars(s, length)
+     }
+@@ -230,6 +250,7 @@ impl Runtime {
+             class_templates: Default::default(),
+             native_functions: RefCell::new(Vec::new()),
+             interned: Default::default(),
++            proxy_handlers: RefCell::new(Default::default()),
+             current_realm: std::cell::Cell::new(std::ptr::null_mut()),
+             realms: RefCell::new(Vec::new()),
+         });
+@@ -400,3 +421,27 @@ pub static SIMPLE_GLOBAL_CLASS: crate::jsapi::JSClass = crate::jsapi::JSClass {
+     ext: std::ptr::null(),
+     oOps: std::ptr::null(),
+ };
++
++/// Realm creation options (mozjs's owning wrapper of `JS::RealmOptions`).
++pub struct RealmOptions(Box<crate::jsapi::RealmOptions>);
++
++impl Default for RealmOptions {
++    fn default() -> RealmOptions {
++        // SAFETY: bindgen's plain option structs are valid when zeroed (null hooks and
++        // pointers, false flags, the first enum variants), as `JS_NewRealmOptions` makes them.
++        RealmOptions(Box::new(unsafe { std::mem::zeroed() }))
++    }
++}
++
++impl std::ops::Deref for RealmOptions {
++    type Target = crate::jsapi::RealmOptions;
++    fn deref(&self) -> &Self::Target {
++        &self.0
++    }
++}
++
++impl std::ops::DerefMut for RealmOptions {
++    fn deref_mut(&mut self) -> &mut Self::Target {
++        &mut self.0
++    }
++}
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 1755bc1215b..7ee774a76ac 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -568,14 +568,24 @@ mod realms {
+         oOps: ptr::null(),
+     };
+ 
++    thread_local! {
++        static GLOBAL_TRACED: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
++    }
++
++    unsafe extern "C" fn trace_global(_trc: *mut JSTracer, _global: *mut JSObject) {
++        GLOBAL_TRACED.with(|count| count.set(count.get() + 1));
++    }
++
+     #[test]
+     fn new_globals_are_separate_realms_with_class_identity() {
+         let mut runtime = Runtime::new();
+         let cx = runtime.cx();
+         let first_realm = unsafe { GetCurrentRealmOrNull(cx) };
+         let first_object_prototype = eval(&runtime, "Object.prototype").to_object();
++        let mut options = crate::rust::RealmOptions::default();
++        options.creationOptions_.traceGlobal_ = Some(trace_global);
+         rooted!(in(cx) let global = unsafe {
+-            JS_NewGlobalObject(cx, &GLOBAL_CLASS, ptr::null_mut(), OnNewGlobalHookOption::FireOnNewGlobalHook, ptr::null())
++            JS_NewGlobalObject(cx, &GLOBAL_CLASS, ptr::null_mut(), OnNewGlobalHookOption::FireOnNewGlobalHook, &*options)
+         });
+         assert!(!global.get().is_null());
+         assert!(unsafe { JS_IsGlobalObject(global.get()) });
+@@ -596,11 +606,210 @@ mod realms {
+         assert_eq!(unsafe { GetCurrentRealmOrNull(cx) }, first_realm);
+         assert!(eval(&runtime, "typeof inRealm === 'undefined'").to_boolean());
+ 
+-        // The realm keeps its global (and its reserved slots) across GC.
++        // The realm keeps its global (and its reserved slots) across GC, tracing it with the
++        // realm's `traceGlobal` hook.
+         runtime.gc_for_testing();
++        assert!(GLOBAL_TRACED.with(std::cell::Cell::get) > 0);
+         let mut slot = UndefinedValue();
+         unsafe { JS_GetReservedSlot(global.get(), crate::object::JSCLASS_GLOBAL_SLOT_COUNT, &mut slot) };
+         assert_eq!(slot.to_int32(), 5);
+         assert_eq!(unsafe { crate::realm_impl::get_object_realm(eval(&runtime, "({})").to_object()) }, first_realm);
+     }
+ }
++
++mod proxies {
++    use std::cell::Cell;
++    use std::ptr;
++
++    use super::{describe, eval};
++    use crate::glue::*;
++    use crate::jsapi::*;
++    use crate::jsval::*;
++    use crate::rust::Runtime;
++
++    thread_local! {
++        static PROXY_FINALIZED: Cell<u32> = const { Cell::new(0) };
++        static PROXY_TRACED: Cell<u32> = const { Cell::new(0) };
++    }
++
++    /// The expando object (created on demand in the private slot, as Servo's DOM proxies do).
++    unsafe fn expando(cx: *mut JSContext, proxy: HandleObject) -> *mut JSObject {
++        let mut private = UndefinedValue();
++        unsafe { GetProxyPrivate(proxy.get(), &mut private) };
++        if private.is_object() {
++            return private.to_object();
++        }
++        let object = unsafe { JS_NewPlainObject(cx) };
++        unsafe { SetProxyPrivate(proxy.get(), &ObjectValue(object)) };
++        object
++    }
++
++    unsafe extern "C" fn get_own_property_descriptor(
++        cx: *mut JSContext,
++        proxy: HandleObject,
++        id: HandleId,
++        desc: MutableHandle<PropertyDescriptor>,
++        is_none: *mut bool,
++    ) -> bool {
++        let id_value = id.get();
++        if id_value.is_string() {
++            let mut length = 0;
++            let chars = crate::api::latin1_chars(id_value.to_string(), &mut length);
++            let name = if chars.is_null() { Vec::new() } else { unsafe { std::slice::from_raw_parts(chars, length) }.to_vec() };
++            if name == b"foo" {
++                let value = unsafe { JS_NewStringCopyN(cx, c"named-foo".as_ptr(), 9) };
++                crate::rooted!(in(cx) let value = StringValue(unsafe { &*value }));
++                unsafe { SetDataPropertyDescriptor(desc, value.handle().into_handle(), JSPROP_ENUMERATE as u32 | JSPROP_READONLY as u32) };
++                unsafe { *is_none = false };
++                return true;
++            }
++        }
++        crate::rooted!(in(cx) let expando = unsafe { expando(cx, proxy) });
++        unsafe { JS_GetOwnPropertyDescriptorById(cx, expando.handle().into_handle(), id, desc, is_none) }
++    }
++
++    unsafe extern "C" fn define_property(
++        cx: *mut JSContext,
++        proxy: HandleObject,
++        id: HandleId,
++        desc: Handle<PropertyDescriptor>,
++        result: *mut ObjectOpResult,
++    ) -> bool {
++        crate::rooted!(in(cx) let expando = unsafe { expando(cx, proxy) });
++        unsafe { JS_DefinePropertyById(cx, expando.handle().into_handle(), id, desc, result) }
++    }
++
++    unsafe extern "C" fn own_property_keys(cx: *mut JSContext, proxy: HandleObject, props: MutableHandleIdVector) -> bool {
++        let foo = unsafe { JS_AtomizeAndPinString(cx, c"foo".as_ptr()) };
++        crate::rooted!(in(cx) let mut id = crate::jsid::VoidId());
++        unsafe { RUST_INTERNED_STRING_TO_JSID(cx, foo, id.handle_mut().into_handle()) };
++        unsafe { AppendToIdVector(props, id.handle().into_handle()) };
++        crate::rooted!(in(cx) let expando = unsafe { expando(cx, proxy) });
++        unsafe { GetPropertyKeys(cx, expando.handle().into_handle(), JSITER_OWNONLY | JSITER_HIDDEN | JSITER_SYMBOLS, props) }
++    }
++
++    unsafe extern "C" fn delete(cx: *mut JSContext, proxy: HandleObject, id: HandleId, result: *mut ObjectOpResult) -> bool {
++        crate::rooted!(in(cx) let expando = unsafe { expando(cx, proxy) });
++        unsafe { JS_DeletePropertyById(cx, expando.handle().into_handle(), id, result) }
++    }
++
++    unsafe extern "C" fn trace(_trc: *mut JSTracer, _proxy: *mut JSObject) {
++        PROXY_TRACED.with(|count| count.set(count.get() + 1));
++    }
++
++    unsafe extern "C" fn finalize(_gcx: *mut GCContext, proxy: *mut JSObject) {
++        let mut slot = UndefinedValue();
++        unsafe { GetProxyReservedSlot(proxy, 0, &mut slot) };
++        if slot.is_int32() && slot.to_int32() == 77 {
++            PROXY_FINALIZED.with(|count| count.set(count.get() + 1));
++        }
++    }
++
++    fn traps() -> ProxyTraps {
++        // SAFETY: an all-`None` trap table is valid.
++        let mut traps: ProxyTraps = unsafe { std::mem::zeroed() };
++        traps.getOwnPropertyDescriptor = Some(get_own_property_descriptor);
++        traps.defineProperty = Some(define_property);
++        traps.ownPropertyKeys = Some(own_property_keys);
++        traps.delete_ = Some(delete);
++        traps.trace = Some(trace);
++        traps.finalize = Some(finalize);
++        traps
++    }
++
++    static EXTRA: u8 = 0;
++
++    #[test]
++    fn dom_style_proxies_use_traps_defaults_and_identity() {
++        let mut runtime = Runtime::new();
++        let cx = runtime.cx();
++        let traps = traps();
++        let handler = unsafe { CreateProxyHandler(&traps, &EXTRA as *const u8 as *const std::ffi::c_void) };
++        let finalized_before = PROXY_FINALIZED.with(Cell::get);
++        {
++            rooted!(in(cx) let proto = eval(&runtime, "({ hello() { return 'hi ' + this.foo; } })").to_object());
++            rooted!(in(cx) let private = UndefinedValue());
++            rooted!(in(cx) let proxy = unsafe { NewProxyObject(cx, handler, private.handle().into_handle(), proto.get(), ptr::null(), false) });
++            assert!(!proxy.get().is_null());
++            unsafe { SetProxyReservedSlot(proxy.get(), 0, &Int32Value(77)) };
++            assert!(unsafe { IsProxyHandlerFamily(proxy.get()) });
++            assert_eq!(unsafe { GetProxyHandler(proxy.get()) }, handler);
++            assert_eq!(unsafe { GetProxyHandlerExtra(proxy.get()) }, &EXTRA as *const u8 as *const std::ffi::c_void);
++            assert!(unsafe { crate::object::object_class(proxy.get()).as_ref() }.unwrap().flags & crate::object::JSCLASS_IS_PROXY != 0);
++
++            rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
++            rooted!(in(cx) let value = ObjectValue(proxy.get()));
++            assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"p".as_ptr(), value.handle().into_handle()) });
++            assert_eq!(eval(&runtime, "p").to_object(), proxy.get(), "a proxy keeps its identity");
++
++            // Named property from the trap, prototype methods with the proxy as `this`.
++            assert_eq!(describe(&runtime, eval(&runtime, "p.foo")), "named-foo");
++            assert_eq!(describe(&runtime, eval(&runtime, "p.hello()")), "hi named-foo");
++            assert!(eval(&runtime, "'foo' in p && 'hello' in p && !('nope' in p)").to_boolean());
++            // Assignment through the default set trap lands on the expando.
++            assert_eq!(eval(&runtime, "p.x = 5; p.x").to_int32(), 5);
++            assert_eq!(describe(&runtime, eval(&runtime, "Object.keys(p).join()")), "foo,x");
++            // A read-only named property rejects writes in strict mode.
++            assert!(
++                eval(&runtime, "(() => { 'use strict'; try { p.foo = 1; return false } catch (e) { return e instanceof TypeError } })()")
++                    .to_boolean()
++            );
++            // Non-configurable expandos satisfy V8's invariants.
++            assert_eq!(eval(&runtime, "Object.defineProperty(p, 'fixed', { value: 3, configurable: false }); p.fixed").to_int32(), 3);
++            assert!(eval(&runtime, "Object.getOwnPropertyDescriptor(p, 'fixed').configurable === false").to_boolean());
++            assert!(eval(&runtime, "delete p.x; !('x' in p)").to_boolean());
++            assert!(eval(&runtime, "Object.getPrototypeOf(p) !== null && typeof p.hello === 'function'").to_boolean());
++
++            runtime.gc_for_testing();
++            assert!(PROXY_TRACED.with(Cell::get) > 0, "the trace trap runs during GC");
++            eval(&runtime, "delete globalThis.p");
++        }
++        runtime.gc_for_testing();
++        runtime.gc_for_testing();
++        assert_eq!(PROXY_FINALIZED.with(Cell::get), finalized_before + 1, "the finalize trap runs once with the slots");
++    }
++}
++
++mod typed_arrays {
++    use super::{describe, eval};
++    use crate::jsapi::*;
++    use crate::jsval::*;
++    use crate::rust::Runtime;
++    use crate::typedarray::{ArrayBuffer, CreateWith, Float32Array, Uint8Array};
++
++    #[test]
++    fn typed_arrays_share_stable_data_with_script() {
++        let mut runtime = Runtime::new();
++        let cx = runtime.cx();
++        rooted!(in(cx) let mut array = std::ptr::null_mut::<JSObject>());
++        unsafe { Uint8Array::create(cx, CreateWith::Slice(&[1, 2, 3]), array.handle_mut()) }.unwrap();
++        rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
++        rooted!(in(cx) let value = ObjectValue(array.get()));
++        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"bytes".as_ptr(), value.handle().into_handle()) });
++        assert_eq!(describe(&runtime, eval(&runtime, "bytes instanceof Uint8Array && bytes.join()")), "1,2,3");
++
++        // Script writes are visible through the (stable) data pointer, also after a GC.
++        eval(&runtime, "bytes[1] = 42");
++        runtime.gc_for_testing();
++        let typed = Uint8Array::from(array.get()).unwrap();
++        assert_eq!(typed.to_vec(), Some(vec![1, 42, 3]));
++        assert!(!typed.is_shared());
++        assert_eq!(unsafe { JS_GetArrayBufferViewType(array.get()) }, Type::Uint8);
++        assert!(Float32Array::from(array.get()).is_err(), "typed arrays do not reinterpret");
++
++        // Float arrays and buffers.
++        rooted!(in(cx) let mut floats = std::ptr::null_mut::<JSObject>());
++        unsafe { Float32Array::create(cx, CreateWith::Slice(&[0.5, 1.5]), floats.handle_mut()) }.unwrap();
++        rooted!(in(cx) let floats_value = ObjectValue(floats.get()));
++        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"floats".as_ptr(), floats_value.handle().into_handle()) });
++        assert_eq!(eval(&runtime, "floats[0] + floats[1]").to_number(), 2.0);
++        rooted!(in(cx) let buffer = eval(&runtime, "new Uint8Array([9, 8, 7]).buffer").to_object());
++        let buffer = ArrayBuffer::from(buffer.get()).unwrap();
++        assert_eq!(buffer.to_vec(), Some(vec![9, 8, 7]));
++        let mut length = 0;
++        let mut shared = true;
++        let mut data = std::ptr::null_mut();
++        unsafe { GetArrayBufferViewLengthAndData(eval(&runtime, "bytes.subarray(1)").to_object(), &mut length, &mut shared, &mut data) };
++        assert_eq!((length, shared, unsafe { *data }), (2, false, 42));
++    }
++}
+diff --git a/components/roves-js/src/typedarray.rs b/components/roves-js/src/typedarray.rs
+new file mode 100644
+index 00000000000..558658af287
+--- /dev/null
++++ b/components/roves-js/src/typedarray.rs
+@@ -0,0 +1,515 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++//! High-level, safe bindings for JS typed array APIs. Allows creating new
++//! typed arrays or wrapping existing JS reflectors, and prevents reinterpreting
++//! existing buffers as different types except in well-defined cases.
++
++use std::ptr::NonNull;
++
++use crate::context::NoGC;
++use crate::conversions::ConversionResult;
++use crate::conversions::FromJSValConvertible;
++use crate::conversions::ToJSValConvertible;
++use crate::glue::GetFloat32ArrayLengthAndData;
++use crate::glue::GetFloat64ArrayLengthAndData;
++use crate::glue::GetInt16ArrayLengthAndData;
++use crate::glue::GetInt32ArrayLengthAndData;
++use crate::glue::GetInt8ArrayLengthAndData;
++use crate::glue::GetUint16ArrayLengthAndData;
++use crate::glue::GetUint32ArrayLengthAndData;
++use crate::glue::GetUint8ArrayLengthAndData;
++use crate::glue::GetUint8ClampedArrayLengthAndData;
++use crate::jsapi::GetArrayBufferData;
++use crate::jsapi::GetArrayBufferLengthAndData;
++use crate::jsapi::GetArrayBufferViewLengthAndData;
++use crate::jsapi::Heap;
++use crate::jsapi::JSContext;
++use crate::jsapi::JSObject;
++use crate::jsapi::JSTracer;
++use crate::jsapi::JS_GetArrayBufferViewType;
++use crate::jsapi::JS_GetFloat32ArrayData;
++use crate::jsapi::JS_GetFloat64ArrayData;
++use crate::jsapi::JS_GetInt16ArrayData;
++use crate::jsapi::JS_GetInt32ArrayData;
++use crate::jsapi::JS_GetInt8ArrayData;
++use crate::jsapi::JS_GetTypedArraySharedness;
++use crate::jsapi::JS_GetUint16ArrayData;
++use crate::jsapi::JS_GetUint32ArrayData;
++use crate::jsapi::JS_GetUint8ArrayData;
++use crate::jsapi::JS_GetUint8ClampedArrayData;
++use crate::jsapi::JS_NewFloat32Array;
++use crate::jsapi::JS_NewFloat64Array;
++use crate::jsapi::JS_NewInt16Array;
++use crate::jsapi::JS_NewInt32Array;
++use crate::jsapi::JS_NewInt8Array;
++use crate::jsapi::JS_NewUint16Array;
++use crate::jsapi::JS_NewUint32Array;
++use crate::jsapi::JS_NewUint8Array;
++use crate::jsapi::JS_NewUint8ClampedArray;
++use crate::jsapi::NewArrayBuffer;
++use crate::jsapi::Type;
++use crate::jsapi::UnwrapArrayBuffer;
++use crate::jsapi::UnwrapArrayBufferView;
++use crate::jsapi::UnwrapFloat32Array;
++use crate::jsapi::UnwrapFloat64Array;
++use crate::jsapi::UnwrapInt16Array;
++use crate::jsapi::UnwrapInt32Array;
++use crate::jsapi::UnwrapInt8Array;
++use crate::jsapi::UnwrapUint16Array;
++use crate::jsapi::UnwrapUint32Array;
++use crate::jsapi::UnwrapUint8Array;
++use crate::jsapi::UnwrapUint8ClampedArray;
++use crate::rust::CustomTrace;
++use crate::rust::{HandleValue, MutableHandleObject, MutableHandleValue};
++
++use std::cell::Cell;
++use std::ptr;
++
++/// Trait that specifies how pointers to wrapped objects are stored. It supports
++/// two variants, one with bare pointer (to be rooted on stack using
++/// CustomAutoRooter) and wrapped in a Box<Heap<T>>, which can be stored in a
++/// heap-allocated structure, to be rooted with JSTraceable-implementing tracers
++/// (currently implemented in Servo).
++pub trait JSObjectStorage {
++    fn as_raw(&self) -> *mut JSObject;
++    fn from_raw(raw: *mut JSObject) -> Self;
++}
++
++impl JSObjectStorage for *mut JSObject {
++    fn as_raw(&self) -> *mut JSObject {
++        *self
++    }
++    fn from_raw(raw: *mut JSObject) -> Self {
++        raw
++    }
++}
++
++impl JSObjectStorage for Box<Heap<*mut JSObject>> {
++    fn as_raw(&self) -> *mut JSObject {
++        self.get()
++    }
++    #[cfg_attr(feature = "crown", expect(crown::unrooted_must_root))]
++    fn from_raw(raw: *mut JSObject) -> Self {
++        let boxed = Box::new(Heap::default());
++        boxed.set(raw);
++        boxed
++    }
++}
++
++impl<T: TypedArrayElement, S: JSObjectStorage> FromJSValConvertible for TypedArray<T, S> {
++    type Config = ();
++
++    fn safe_from_jsval(
++        _cx: &mut crate::context::JSContext,
++        value: HandleValue,
++        _option: (),
++    ) -> Result<ConversionResult<Self>, ()> {
++        if value.get().is_object() {
++            Self::from(value.get().to_object()).map(ConversionResult::Success)
++        } else {
++            Err(())
++        }
++    }
++}
++
++impl<T: TypedArrayElement, S: JSObjectStorage> ToJSValConvertible for TypedArray<T, S> {
++    #[inline]
++    fn safe_to_jsval(&self, cx: &mut crate::context::JSContext, rval: MutableHandleValue) {
++        ToJSValConvertible::safe_to_jsval(&self.object.as_raw(), cx, rval);
++    }
++}
++
++pub enum CreateWith<'a, T: 'a> {
++    Length(usize),
++    Slice(&'a [T]),
++}
++
++#[derive(Clone, Copy)]
++enum ArrayData<T> {
++    NotYetComputed,
++    Detached,
++    Computed(NonNull<[T]>),
++}
++
++/// A typed array wrapper.
++pub struct TypedArray<T: TypedArrayElement, S: JSObjectStorage> {
++    object: S,
++    computed: Cell<ArrayData<T::Element>>,
++}
++
++unsafe impl<T> CustomTrace for TypedArray<T, *mut JSObject>
++where
++    T: TypedArrayElement,
++{
++    fn trace(&self, trc: *mut JSTracer) {
++        self.object.trace(trc);
++    }
++}
++
++impl<T: TypedArrayElement, S: JSObjectStorage> TypedArray<T, S> {
++    /// Create a typed array representation that wraps an existing JS reflector.
++    /// This operation will fail if attempted on a JS object that does not match
++    /// the expected typed array details.
++    pub fn from(object: *mut JSObject) -> Result<Self, ()> {
++        if object.is_null() {
++            return Err(());
++        }
++        unsafe {
++            let unwrapped = T::unwrap_array(object);
++            if unwrapped.is_null() {
++                return Err(());
++            }
++
++            Ok(TypedArray {
++                object: S::from_raw(unwrapped),
++                computed: Cell::new(ArrayData::NotYetComputed),
++            })
++        }
++    }
++
++    fn data(&self) -> Option<NonNull<[T::Element]>> {
++        if let ArrayData::Computed(data) = self.computed.get() {
++            return Some(data);
++        }
++
++        let data = unsafe { T::length_and_data(self.object.as_raw()) };
++        self.computed.set(if let Some(data) = data {
++            ArrayData::Computed(data)
++        } else {
++            ArrayData::Detached
++        });
++        data
++    }
++
++    /// Returns the number of elements in the underlying typed array.
++    pub fn len(&self) -> usize {
++        self.data().map_or(0, |data| data.len())
++    }
++
++    /// # Unsafety
++    ///
++    /// Returned wrapped pointer to the underlying `JSObject` is meant to be
++    /// read-only, modifying it can lead to Undefined Behaviour and violation
++    /// of TypedArray API guarantees.
++    ///
++    /// Practically, this exists only to implement `JSTraceable` trait in Servo
++    /// for Box<Heap<*mut JSObject>> variant.
++    pub unsafe fn underlying_object(&self) -> &S {
++        &self.object
++    }
++
++    /// Retrieves an owned data that's represented by the typed array.
++    /// Returns None if the underlying buffer is detached.
++    #[allow(deprecated)]
++    pub fn to_vec(&self) -> Option<Vec<T::Element>>
++    where
++        T::Element: Clone,
++    {
++        // This is safe, because we immediately copy from the underlying buffer
++        // to an owned collection. Otherwise, one needs to be careful, since
++        // the underlying buffer can easily invalidated when transferred with
++        // postMessage to another thread (To remedy that, we shouldn't
++        // execute any JS code between getting the data pointer and using it).
++        unsafe { self.as_slice().map(|slice| slice.to_vec()) }
++    }
++
++    /// # Unsafety
++    ///
++    /// The returned slice can be invalidated if the underlying typed array
++    /// is neutered.
++    ///
++    /// # Panics
++    ///
++    /// Panics if the underlying data points to a nullptr.
++    #[deprecated = "use as_slice_safe instead"]
++    pub unsafe fn as_slice(&self) -> Option<&[T::Element]> {
++        self.data().map(|data| data.as_ref())
++    }
++
++    /// Returns None if the underlying array buffer is detached.
++    /// Otherwise, returns Some with the slice data.
++    pub fn as_slice_safe<'a>(&self, _no_gc: &'a NoGC) -> Option<&'a [T::Element]> {
++        // SAFETY: The slice can only be invalidated by invoking JS engine
++        //         behaviour that detaches the underlying typed array.
++        //         The slice's lifetime is bounded by the provided NoGC token,
++        //         which prevents any JS engine interaction.
++        self.data().map(|data| unsafe { data.as_ref() })
++    }
++
++    /// # Unsafety
++    ///
++    /// The returned slice can be invalidated if the underlying typed array
++    /// is neutered.
++    ///
++    /// The underlying `JSObject` can be aliased, which can lead to
++    /// Undefined Behavior due to mutable aliasing.
++    ///
++    /// # Panics
++    ///
++    /// Panics if the underlying data points to a nullptr.
++    #[deprecated = "use as_mut_slice_safe instead"]
++    pub unsafe fn as_mut_slice(&mut self) -> Option<&mut [T::Element]> {
++        self.data().map(|mut data| data.as_mut())
++    }
++
++    pub fn as_mut_slice_safe<'a>(&mut self, _no_gc: &'a NoGC) -> Option<&'a mut [T::Element]> {
++        // SAFETY: The slice can only be invalidated by invoking JS engine
++        //         behaviour that detaches the underlying typed array.
++        //         The slice's lifetime is bounded by the provided NoGC token,
++        //         which prevents any JS engine interaction.
++        self.data().map(|mut data| unsafe { data.as_mut() })
++    }
++
++    /// Return a boolean flag which denotes whether the underlying buffer
++    /// is a SharedArrayBuffer.
++    pub fn is_shared(&self) -> bool {
++        unsafe { JS_GetTypedArraySharedness(self.object.as_raw()) }
++    }
++}
++
++impl<T: TypedArrayElementCreator + TypedArrayElement, S: JSObjectStorage> TypedArray<T, S> {
++    /// Create a new JS typed array, optionally providing initial data that will
++    /// be copied into the newly-allocated buffer. Returns the new JS reflector.
++    pub unsafe fn create(
++        cx: *mut JSContext,
++        with: CreateWith<T::Element>,
++        mut result: MutableHandleObject,
++    ) -> Result<(), ()> {
++        let length = match with {
++            CreateWith::Length(len) => len,
++            CreateWith::Slice(slice) => slice.len(),
++        };
++
++        result.set(T::create_new(cx, length));
++        if result.get().is_null() {
++            return Err(());
++        }
++
++        if let CreateWith::Slice(data) = with {
++            Self::update_raw(data, result.get());
++        }
++
++        Ok(())
++    }
++
++    ///  Update an existed JS typed array
++    pub fn update(&mut self, data: &[T::Element]) {
++        unsafe {
++            Self::update_raw(data, self.object.as_raw());
++        }
++    }
++
++    unsafe fn update_raw(data: &[T::Element], result: *mut JSObject) {
++        let Some(mut buffer) = T::length_and_data(result) else {
++            return;
++        };
++        assert!(data.len() <= buffer.len());
++        ptr::copy_nonoverlapping(
++            data.as_ptr(),
++            buffer.as_mut().as_mut_ptr(), /* as *mut T::Element*/
++            data.len(),
++        );
++    }
++}
++
++/// Internal trait used to associate an element type with an underlying representation
++/// and various functions required to manipulate typed arrays of that element type.
++pub trait TypedArrayElement {
++    /// Underlying primitive representation of this element type.
++    type Element: Copy;
++    /// Unwrap a typed array JS reflector for this element type.
++    unsafe fn unwrap_array(obj: *mut JSObject) -> *mut JSObject;
++    /// Retrieve the length and data of a typed array's buffer for this element type.
++    unsafe fn length_and_data(obj: *mut JSObject) -> Option<NonNull<[Self::Element]>>;
++}
++
++/// Internal trait for creating new typed arrays.
++pub trait TypedArrayElementCreator: TypedArrayElement {
++    /// Create a new typed array.
++    unsafe fn create_new(cx: *mut JSContext, length: usize) -> *mut JSObject;
++    /// Get the data.
++    unsafe fn get_data(obj: *mut JSObject) -> *mut Self::Element;
++}
++
++macro_rules! typed_array_element {
++    ($t: ident,
++     $element: ty,
++     $unwrap: ident,
++     $length_and_data: ident) => {
++        /// A kind of typed array.
++        pub struct $t;
++
++        impl TypedArrayElement for $t {
++            type Element = $element;
++            unsafe fn unwrap_array(obj: *mut JSObject) -> *mut JSObject {
++                $unwrap(obj)
++            }
++
++            unsafe fn length_and_data(obj: *mut JSObject) -> Option<NonNull<[Self::Element]>> {
++                let mut len = 0;
++                let mut shared = false;
++                let mut data = ptr::null_mut();
++                $length_and_data(obj, &mut len, &mut shared, &mut data);
++                assert!(!shared);
++                NonNull::new(data).map(|data| NonNull::slice_from_raw_parts(data, len))
++            }
++        }
++    };
++
++    ($t: ident,
++     $element: ty,
++     $unwrap: ident,
++     $length_and_data: ident,
++     $create_new: ident,
++     $get_data: ident) => {
++        typed_array_element!($t, $element, $unwrap, $length_and_data);
++
++        impl TypedArrayElementCreator for $t {
++            unsafe fn create_new(cx: *mut JSContext, length: usize) -> *mut JSObject {
++                $create_new(cx, length)
++            }
++
++            unsafe fn get_data(obj: *mut JSObject) -> *mut Self::Element {
++                let mut shared = false;
++                let data = $get_data(obj, &mut shared, ptr::null_mut());
++                assert!(!shared);
++                data
++            }
++        }
++    };
++}
++
++typed_array_element!(
++    Uint8,
++    u8,
++    UnwrapUint8Array,
++    GetUint8ArrayLengthAndData,
++    JS_NewUint8Array,
++    JS_GetUint8ArrayData
++);
++typed_array_element!(
++    Uint16,
++    u16,
++    UnwrapUint16Array,
++    GetUint16ArrayLengthAndData,
++    JS_NewUint16Array,
++    JS_GetUint16ArrayData
++);
++typed_array_element!(
++    Uint32,
++    u32,
++    UnwrapUint32Array,
++    GetUint32ArrayLengthAndData,
++    JS_NewUint32Array,
++    JS_GetUint32ArrayData
++);
++typed_array_element!(
++    Int8,
++    i8,
++    UnwrapInt8Array,
++    GetInt8ArrayLengthAndData,
++    JS_NewInt8Array,
++    JS_GetInt8ArrayData
++);
++typed_array_element!(
++    Int16,
++    i16,
++    UnwrapInt16Array,
++    GetInt16ArrayLengthAndData,
++    JS_NewInt16Array,
++    JS_GetInt16ArrayData
++);
++typed_array_element!(
++    Int32,
++    i32,
++    UnwrapInt32Array,
++    GetInt32ArrayLengthAndData,
++    JS_NewInt32Array,
++    JS_GetInt32ArrayData
++);
++typed_array_element!(
++    Float32,
++    f32,
++    UnwrapFloat32Array,
++    GetFloat32ArrayLengthAndData,
++    JS_NewFloat32Array,
++    JS_GetFloat32ArrayData
++);
++typed_array_element!(
++    Float64,
++    f64,
++    UnwrapFloat64Array,
++    GetFloat64ArrayLengthAndData,
++    JS_NewFloat64Array,
++    JS_GetFloat64ArrayData
++);
++typed_array_element!(
++    ClampedU8,
++    u8,
++    UnwrapUint8ClampedArray,
++    GetUint8ClampedArrayLengthAndData,
++    JS_NewUint8ClampedArray,
++    JS_GetUint8ClampedArrayData
++);
++typed_array_element!(
++    ArrayBufferU8,
++    u8,
++    UnwrapArrayBuffer,
++    GetArrayBufferLengthAndData,
++    NewArrayBuffer,
++    GetArrayBufferData
++);
++typed_array_element!(
++    ArrayBufferViewU8,
++    u8,
++    UnwrapArrayBufferView,
++    GetArrayBufferViewLengthAndData
++);
++
++// Default type aliases, uses bare pointer by default, since stack lifetime
++// should be the most common scenario
++macro_rules! array_alias {
++    ($arr: ident, $heap_arr: ident, $elem: ty) => {
++        pub type $arr = TypedArray<$elem, *mut JSObject>;
++        pub type $heap_arr = TypedArray<$elem, Box<Heap<*mut JSObject>>>;
++    };
++}
++
++array_alias!(Uint8ClampedArray, HeapUint8ClampedArray, ClampedU8);
++array_alias!(Uint8Array, HeapUint8Array, Uint8);
++array_alias!(Int8Array, HeapInt8Array, Int8);
++array_alias!(Uint16Array, HeapUint16Array, Uint16);
++array_alias!(Int16Array, HeapInt16Array, Int16);
++array_alias!(Uint32Array, HeapUint32Array, Uint32);
++array_alias!(Int32Array, HeapInt32Array, Int32);
++array_alias!(Float32Array, HeapFloat32Array, Float32);
++array_alias!(Float64Array, HeapFloat64Array, Float64);
++array_alias!(ArrayBuffer, HeapArrayBuffer, ArrayBufferU8);
++array_alias!(ArrayBufferView, HeapArrayBufferView, ArrayBufferViewU8);
++
++impl<S: JSObjectStorage> TypedArray<ArrayBufferViewU8, S> {
++    pub fn get_array_type(&self) -> Type {
++        unsafe { JS_GetArrayBufferViewType(self.object.as_raw()) }
++    }
++}
++
++#[macro_export]
++macro_rules! typedarray {
++    (&in($cx:expr) $($t:tt)*) => {
++        typedarray!(in(unsafe {$cx.raw_cx_no_gc()}) $($t)*);
++    };
++    (in($cx:expr) let $name:ident : $ty:ident = $init:expr) => {
++        let mut __array =
++            $crate::typedarray::$ty::from($init).map($crate::rust::CustomAutoRooter::new);
++
++        let $name = __array.as_mut().map(|ok| ok.root($cx));
++    };
++    (in($cx:expr) let mut $name:ident : $ty:ident = $init:expr) => {
++        let mut __array =
++            $crate::typedarray::$ty::from($init).map($crate::rust::CustomAutoRooter::new);
++
++        let mut $name = __array.as_mut().map(|ok| ok.root($cx));
++    };
++}
+diff --git a/components/roves-js/src/typedarray_impl.rs b/components/roves-js/src/typedarray_impl.rs
+new file mode 100644
+index 00000000000..9154f22605c
+--- /dev/null
++++ b/components/roves-js/src/typedarray_impl.rs
+@@ -0,0 +1,252 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! The JSAPI typed-array and ArrayBuffer functions under mozjs's `typedarray` module.
++//!
++//! SpiderMonkey lends raw data pointers that stay valid while no GC runs. V8 keeps small
++//! typed arrays' elements on its moving heap, so every data access first asks the view for
++//! its buffer, which moves the elements to a stable off-heap backing store.
++
++use std::ffi::c_void;
++
++use crate::jsapi::{AutoRequireNoGC, JSContext, JSObject, Type};
++use crate::jsval::from_v8;
++
++fn with_value<R>(obj: *mut JSObject, f: impl FnOnce(&mut v8::PinScope, v8::Local<v8::Value>) -> R) -> R {
++    JSContext::current().with_scope(|scope| {
++        // SAFETY: callers pass live objects.
++        let value = unsafe { crate::cell::cell_value(scope, obj as *mut c_void) };
++        f(scope, value)
++    })
++}
++
++/// A view's (or buffer's) stable data pointer, byte length and sharedness.
++fn data_of(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) -> Option<(*mut u8, usize, bool)> {
++    if let Ok(view) = v8::Local::<v8::ArrayBufferView>::try_from(value) {
++        let shared = view.has_buffer() && view.buffer(scope).is_some_and(|buffer| buffer.is_shared_array_buffer());
++        let buffer = view.buffer(scope)?;
++        let base = buffer.data().map_or(std::ptr::null_mut(), |data| data.as_ptr() as *mut u8);
++        // SAFETY: the view lies within its buffer.
++        let data = if base.is_null() { base } else { unsafe { base.add(view.byte_offset()) } };
++        return Some((data, view.byte_length(), shared));
++    }
++    if let Ok(buffer) = v8::Local::<v8::ArrayBuffer>::try_from(value) {
++        let data = buffer.data().map_or(std::ptr::null_mut(), |data| data.as_ptr() as *mut u8);
++        return Some((data, buffer.byte_length(), false));
++    }
++    if let Ok(buffer) = v8::Local::<v8::SharedArrayBuffer>::try_from(value) {
++        // The backing store outlives this reference: the buffer keeps it.
++        let data = buffer.get_backing_store().data().map_or(std::ptr::null_mut(), |data| data.as_ptr() as *mut u8);
++        return Some((data, buffer.byte_length(), true));
++    }
++    None
++}
++
++fn element_size(kind: Type) -> usize {
++    match kind {
++        Type::Int8 | Type::Uint8 | Type::Uint8Clamped => 1,
++        Type::Int16 | Type::Uint16 | Type::Float16 => 2,
++        Type::Int32 | Type::Uint32 | Type::Float32 => 4,
++        Type::Float64 | Type::BigInt64 | Type::BigUint64 | Type::Int64 => 8,
++        Type::Simd128 => 16,
++        Type::MaxTypedArrayViewType => 1,
++    }
++}
++
++fn view_type(value: v8::Local<v8::Value>) -> Option<Type> {
++    Some(if value.is_int8_array() {
++        Type::Int8
++    } else if value.is_uint8_array() {
++        Type::Uint8
++    } else if value.is_uint8_clamped_array() {
++        Type::Uint8Clamped
++    } else if value.is_int16_array() {
++        Type::Int16
++    } else if value.is_uint16_array() {
++        Type::Uint16
++    } else if value.is_int32_array() {
++        Type::Int32
++    } else if value.is_uint32_array() {
++        Type::Uint32
++    } else if value.is_float16_array() {
++        Type::Float16
++    } else if value.is_float32_array() {
++        Type::Float32
++    } else if value.is_float64_array() {
++        Type::Float64
++    } else if value.is_big_int64_array() {
++        Type::BigInt64
++    } else if value.is_big_uint64_array() {
++        Type::BigUint64
++    } else if value.is_data_view() {
++        Type::MaxTypedArrayViewType
++    } else {
++        return None;
++    })
++}
++
++pub unsafe fn JS_GetArrayBufferViewType(obj: *mut JSObject) -> Type {
++    with_value(obj, |_, value| view_type(value).unwrap_or(Type::MaxTypedArrayViewType))
++}
++
++pub unsafe fn JS_IsArrayBufferViewObject(obj: *mut JSObject) -> bool {
++    with_value(obj, |_, value| value.is_array_buffer_view())
++}
++
++pub unsafe fn JS_IsTypedArrayObject(obj: *mut JSObject) -> bool {
++    with_value(obj, |_, value| value.is_typed_array())
++}
++
++pub unsafe fn IsArrayBufferObject(obj: *mut JSObject) -> bool {
++    with_value(obj, |_, value| value.is_array_buffer())
++}
++
++pub unsafe fn IsSharedArrayBufferObject(obj: *mut JSObject) -> bool {
++    with_value(obj, |_, value| value.is_shared_array_buffer())
++}
++
++pub unsafe fn JS_GetTypedArraySharedness(obj: *mut JSObject) -> bool {
++    with_value(obj, |scope, value| data_of(scope, value).is_some_and(|(_, _, shared)| shared))
++}
++
++pub unsafe fn UnwrapArrayBuffer(obj: *mut JSObject) -> *mut JSObject {
++    with_value(obj, |_, value| if value.is_array_buffer() || value.is_shared_array_buffer() { obj } else { std::ptr::null_mut() })
++}
++
++pub unsafe fn UnwrapArrayBufferView(obj: *mut JSObject) -> *mut JSObject {
++    with_value(obj, |_, value| if value.is_array_buffer_view() { obj } else { std::ptr::null_mut() })
++}
++
++pub unsafe fn UnwrapSharedArrayBuffer(obj: *mut JSObject) -> *mut JSObject {
++    with_value(obj, |_, value| if value.is_shared_array_buffer() { obj } else { std::ptr::null_mut() })
++}
++
++/// Writes `obj`'s length (in elements of `kind`, or bytes), sharedness and data pointer.
++unsafe fn length_and_data<T>(obj: *mut JSObject, kind: Option<Type>, length: *mut usize, is_shared: *mut bool, data: *mut *mut T) {
++    let found = with_value(obj, |scope, value| data_of(scope, value));
++    let (pointer, bytes, shared) = found.unwrap_or((std::ptr::null_mut(), 0, false));
++    // SAFETY: callers pass valid out pointers.
++    unsafe {
++        *length = bytes / kind.map_or(1, element_size);
++        *is_shared = shared;
++        *data = pointer as *mut T;
++    }
++}
++
++pub unsafe fn GetArrayBufferLengthAndData(obj: *mut JSObject, length: *mut usize, is_shared: *mut bool, data: *mut *mut u8) {
++    // SAFETY: forwarded.
++    unsafe { length_and_data(obj, None, length, is_shared, data) }
++}
++
++pub unsafe fn GetArrayBufferViewLengthAndData(obj: *mut JSObject, length: *mut usize, is_shared: *mut bool, data: *mut *mut u8) {
++    // SAFETY: forwarded.
++    unsafe { length_and_data(obj, None, length, is_shared, data) }
++}
++
++pub unsafe fn GetArrayBufferData(obj: *mut JSObject, is_shared: *mut bool, _nogc: *const AutoRequireNoGC) -> *mut u8 {
++    let mut length = 0;
++    let mut data = std::ptr::null_mut();
++    // SAFETY: forwarded.
++    unsafe { length_and_data(obj, None, &mut length, is_shared, &mut data) };
++    data
++}
++
++pub unsafe fn GetArrayBufferByteLength(obj: *mut JSObject) -> usize {
++    with_value(obj, |scope, value| data_of(scope, value).map_or(0, |(_, bytes, _)| bytes))
++}
++
++pub unsafe fn JS_GetArrayBufferViewByteLength(obj: *mut JSObject) -> usize {
++    // SAFETY: forwarded.
++    unsafe { GetArrayBufferByteLength(obj) }
++}
++
++pub unsafe fn JS_GetArrayBufferViewByteOffset(obj: *mut JSObject) -> usize {
++    with_value(obj, |_, value| v8::Local::<v8::ArrayBufferView>::try_from(value).map_or(0, |view| view.byte_offset()))
++}
++
++pub unsafe fn JS_GetTypedArrayLength(obj: *mut JSObject) -> usize {
++    with_value(obj, |_, value| v8::Local::<v8::TypedArray>::try_from(value).map_or(0, |array| array.length()))
++}
++
++/// The buffer of a view (materialized off-heap).
++pub unsafe fn JS_GetArrayBufferViewBuffer(cx: *mut JSContext, obj: crate::jsapi::HandleObject, is_shared: *mut bool) -> *mut JSObject {
++    // SAFETY: callers pass a live context.
++    let raw = unsafe { &*cx };
++    let result = raw.catching(|scope| {
++        // SAFETY: callers pass live objects.
++        let value = unsafe { crate::cell::cell_value(scope, obj.get() as *mut c_void) };
++        let view = v8::Local::<v8::ArrayBufferView>::try_from(value).ok()?;
++        let buffer = view.buffer(scope)?;
++        Some((from_v8(scope, buffer.into()).to_object(), buffer.is_shared_array_buffer()))
++    });
++    match result {
++        Some((buffer, shared)) => {
++            // SAFETY: callers pass a valid out pointer.
++            unsafe { *is_shared = shared };
++            buffer
++        },
++        None => std::ptr::null_mut(),
++    }
++}
++
++pub unsafe fn NewArrayBuffer(cx: *mut JSContext, nbytes: usize) -> *mut JSObject {
++    // SAFETY: callers pass a live context.
++    let raw = unsafe { &*cx };
++    raw.catching(|scope| {
++        let buffer = v8::ArrayBuffer::new(scope, nbytes);
++        Some(from_v8(scope, buffer.into()).to_object())
++    })
++    .unwrap_or(std::ptr::null_mut())
++}
++
++macro_rules! typed_array {
++    ($v8:ident, $kind:ident, $element:ty, $is:ident, $new:ident, $get_data:ident, $length_and_data:ident, $unwrap:ident) => {
++        pub unsafe fn $new(cx: *mut JSContext, length: usize) -> *mut JSObject {
++            // SAFETY: callers pass a live context.
++            let raw = unsafe { &*cx };
++            raw.catching(|scope| {
++                let buffer = v8::ArrayBuffer::new(scope, length * std::mem::size_of::<$element>());
++                let array = v8::$v8::new(scope, buffer, 0, length)?;
++                Some(from_v8(scope, array.into()).to_object())
++            })
++            .unwrap_or(std::ptr::null_mut())
++        }
++
++        pub unsafe fn $get_data(obj: *mut JSObject, is_shared: *mut bool, _nogc: *const AutoRequireNoGC) -> *mut $element {
++            let mut length = 0;
++            let mut data = std::ptr::null_mut();
++            // SAFETY: forwarded.
++            unsafe { length_and_data(obj, Some(Type::$kind), &mut length, is_shared, &mut data) };
++            data
++        }
++
++        pub unsafe fn $length_and_data(obj: *mut JSObject, length: *mut usize, is_shared: *mut bool, data: *mut *mut $element) {
++            // SAFETY: forwarded.
++            unsafe { length_and_data(obj, Some(Type::$kind), length, is_shared, data) }
++        }
++
++        pub unsafe fn $unwrap(obj: *mut JSObject) -> *mut JSObject {
++            with_value(obj, |_, value| if value.$is() { obj } else { std::ptr::null_mut() })
++        }
++    };
++}
++
++typed_array!(Int8Array, Int8, i8, is_int8_array, JS_NewInt8Array, JS_GetInt8ArrayData, GetInt8ArrayLengthAndData, UnwrapInt8Array);
++typed_array!(Uint8Array, Uint8, u8, is_uint8_array, JS_NewUint8Array, JS_GetUint8ArrayData, GetUint8ArrayLengthAndData, UnwrapUint8Array);
++typed_array!(
++    Uint8ClampedArray,
++    Uint8Clamped,
++    u8,
++    is_uint8_clamped_array,
++    JS_NewUint8ClampedArray,
++    JS_GetUint8ClampedArrayData,
++    GetUint8ClampedArrayLengthAndData,
++    UnwrapUint8ClampedArray
++);
++typed_array!(Int16Array, Int16, i16, is_int16_array, JS_NewInt16Array, JS_GetInt16ArrayData, GetInt16ArrayLengthAndData, UnwrapInt16Array);
++typed_array!(Uint16Array, Uint16, u16, is_uint16_array, JS_NewUint16Array, JS_GetUint16ArrayData, GetUint16ArrayLengthAndData, UnwrapUint16Array);
++typed_array!(Int32Array, Int32, i32, is_int32_array, JS_NewInt32Array, JS_GetInt32ArrayData, GetInt32ArrayLengthAndData, UnwrapInt32Array);
++typed_array!(Uint32Array, Uint32, u32, is_uint32_array, JS_NewUint32Array, JS_GetUint32ArrayData, GetUint32ArrayLengthAndData, UnwrapUint32Array);
++typed_array!(Float32Array, Float32, f32, is_float32_array, JS_NewFloat32Array, JS_GetFloat32ArrayData, GetFloat32ArrayLengthAndData, UnwrapFloat32Array);
++typed_array!(Float64Array, Float64, f64, is_float64_array, JS_NewFloat64Array, JS_GetFloat64ArrayData, GetFloat64ArrayLengthAndData, UnwrapFloat64Array);
+diff --git a/components/roves-js/src/wrappers2.in.rs b/components/roves-js/src/wrappers2.in.rs
+index ebce00ca18f..513ab76198f 100644
+--- a/components/roves-js/src/wrappers2.in.rs
++++ b/components/roves-js/src/wrappers2.in.rs
+@@ -18,6 +18,7 @@ wrap!(jsapi: pub fn CurrentGlobal(cx: &JSContext) -> *const *mut JSObject);
+ wrap!(jsapi: pub fn GetWellKnownSymbol(cx: &JSContext, which: SymbolCode) -> *mut Symbol);
+ wrap!(jsapi: pub fn HideScriptedCaller(cx: &JSContext));
+ wrap!(jsapi: pub fn UnhideScriptedCaller(cx: &JSContext));
++wrap!(jsapi: pub fn NewArrayBuffer(cx: &mut JSContext, nbytes: usize) -> *mut JSObject);
+ wrap!(jsapi: pub fn ToJSON(cx: &mut JSContext, value: Handle<Value>, replacer: Handle<*mut JSObject>, space: Handle<Value>, callback: JSONWriteCallback, data: *mut ::std::os::raw::c_void) -> bool);
+ wrap!(jsapi: pub fn CallOriginalPromiseReject(cx: &mut JSContext, rejectionValue: HandleValue) -> *mut JSObject);
+ wrap!(jsapi: pub fn IsArrayObject(cx: &mut JSContext, value: Handle<Value>, isArray: *mut bool) -> bool);
+@@ -67,13 +68,16 @@ wrap!(jsapi: pub fn JS_GetPrototype(cx: &mut JSContext, obj: HandleObject, resul
+ wrap!(jsapi: pub fn JS_SetPrototype(cx: &mut JSContext, obj: HandleObject, proto: HandleObject) -> bool);
+ wrap!(jsapi: pub fn JS_SetImmutablePrototype(cx: &mut JSContext, obj: HandleObject, succeeded: *mut bool) -> bool);
+ wrap!(jsapi: pub fn JS_NewFunction(cx: &mut JSContext, call: JSNative, nargs: ::std::os::raw::c_uint, flags: ::std::os::raw::c_uint, name: *const ::std::os::raw::c_char) -> *mut JSFunction);
++wrap!(jsapi: pub fn JS_GetArrayBufferViewBuffer(cx: &mut JSContext, obj: Handle<*mut JSObject>, isSharedMemory: *mut bool) -> *mut JSObject);
+ wrap!(jsapi: pub fn JS_NewObjectWithoutMetadata(cx: &mut JSContext, clasp: *const JSClass, proto: Handle<*mut JSObject>) -> *mut JSObject);
+ wrap!(jsapi: pub fn JS_InitializePropertiesFromCompatibleNativeObject(cx: &mut JSContext, dst: HandleObject, src: HandleObject) -> bool);
+ wrap!(jsapi: pub fn JS_GetOwnPropertyDescriptorById(cx: &mut JSContext, obj: HandleObject, id: HandleId, desc: MutableHandle<PropertyDescriptor>, isNone: *mut bool) -> bool);
+ wrap!(jsapi: pub fn JS_GetPropertyDescriptorById(cx: &mut JSContext, obj: HandleObject, id: HandleId, desc: MutableHandle<PropertyDescriptor>, holder: MutableHandleObject, isNone: *mut bool) -> bool);
++wrap!(glue: pub fn InvokeGetOwnPropertyDescriptor(handler: *const ::std::os::raw::c_void, cx: &mut JSContext, proxy: HandleObject, id: HandleId, desc: MutableHandle<PropertyDescriptor>, isNone: *mut bool) -> bool);
+ wrap!(glue: pub fn CallJitGetterOp(info: *const JSJitInfo, cx: &mut JSContext, thisObj: HandleObject, specializedThis: *mut ::std::os::raw::c_void, argc: ::std::os::raw::c_uint, vp: *mut Value) -> bool);
+ wrap!(glue: pub fn CallJitSetterOp(info: *const JSJitInfo, cx: &mut JSContext, thisObj: HandleObject, specializedThis: *mut ::std::os::raw::c_void, argc: ::std::os::raw::c_uint, vp: *mut Value) -> bool);
+ wrap!(glue: pub fn CallJitMethodOp(info: *const JSJitInfo, cx: &mut JSContext, thisObj: HandleObject, specializedThis: *mut ::std::os::raw::c_void, argc: u32, vp: *mut Value) -> bool);
++wrap!(glue: pub fn NewProxyObject(aCx: &mut JSContext, aHandler: *const ::std::os::raw::c_void, aPriv: HandleValue, proto: *mut JSObject, aClass: *const JSClass, aLazyProto: bool) -> *mut JSObject);
+ wrap!(glue: pub fn int_to_jsid(i: i32, id: MutableHandleId));
+ wrap!(glue: pub fn RUST_SYMBOL_TO_JSID(sym: *mut Symbol, id: MutableHandleId));
+ wrap!(glue: pub fn RUST_JSID_IS_VOID(id: HandleId) -> bool);
+diff --git a/support/roves_js/gen_wrappers2.py b/support/roves_js/gen_wrappers2.py
+index 310c989c1c9..045eaa2e4e2 100644
+--- a/support/roves_js/gen_wrappers2.py
++++ b/support/roves_js/gen_wrappers2.py
+@@ -43,7 +43,7 @@ def visible(src, module_file):
+     """The function names a module (`jsapi.rs` / `glue.rs`) makes reachable."""
+     text = read(os.path.join(src, module_file))
+     names = defined(os.path.join(src, module_file))
+-    for module in ("jsapi_impl", "binding", "realm_impl", "api", "object", "native"):
++    for module in ("jsapi_impl", "binding", "realm_impl", "api", "object", "native", "proxy", "typedarray_impl"):
+         explicit, glob = reexports(text, module)
+         path = os.path.join(src, module + ".rs")
+         if glob:
+diff --git a/support/roves_js/jsapi_type_names.txt b/support/roves_js/jsapi_type_names.txt
+index 6978dda7356..25599e5bb84 100644
+--- a/support/roves_js/jsapi_type_names.txt
++++ b/support/roves_js/jsapi_type_names.txt
+@@ -3,6 +3,7 @@ AppendToIdVector
+ AsmJSOption
+ AtomToLinearString
+ AutoRequireNoGC
++BaseProxyHandler_Action
+ BuildIdCharVector
+ CallArgs
+ CallObjectTracer
+@@ -73,6 +74,7 @@ Heap
+ HeapState
+ HideScriptedCaller
+ InitializeMemoryReporter
++IsAcceptableThis
+ IsArrayBufferObject
+ IsCallable
+ IsConstructor
+@@ -219,6 +221,7 @@ MutableHandleObjectasRawMutableHandleObject
+ MutableHandleString
+ MutableHandleValueasRawMutableHandleValue
+ MutableHandleasRawMutableHandle
++NativeImpl
+ NewArrayObject
+ NewArrayObject1
+ ObjectOpResult

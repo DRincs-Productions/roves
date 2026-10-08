@@ -78,7 +78,7 @@ pub(crate) fn key_id(scope: &mut v8::PinScope, key: v8::Local<v8::Value>) -> jsi
 }
 
 /// Writes V8's descriptor object into a SpiderMonkey `PropertyDescriptor`.
-fn fill_descriptor(scope: &mut v8::PinScope, descriptor: v8::Local<v8::Object>, out: &mut PropertyDescriptor) {
+pub(crate) fn fill_descriptor(scope: &mut v8::PinScope, descriptor: v8::Local<v8::Object>, out: &mut PropertyDescriptor) {
     *out = PropertyDescriptor::default();
     fn field<'s>(scope: &mut v8::PinScope<'s, '_>, descriptor: v8::Local<v8::Object>, name: &str) -> Option<v8::Local<'s, v8::Value>> {
         let key = v8::String::new(scope, name)?;
@@ -118,7 +118,7 @@ fn fill_descriptor(scope: &mut v8::PinScope, descriptor: v8::Local<v8::Object>, 
 }
 
 /// A V8 descriptor for a SpiderMonkey `PropertyDescriptor`.
-fn v8_descriptor(scope: &mut v8::PinScope, descriptor: &PropertyDescriptor) -> v8::PropertyDescriptor {
+pub(crate) fn v8_descriptor(scope: &mut v8::PinScope, descriptor: &PropertyDescriptor) -> v8::PropertyDescriptor {
     let mut result = if descriptor.hasGetter_() || descriptor.hasSetter_() {
         let getter: v8::Local<v8::Value> = if descriptor.getter_.is_null() {
             v8::undefined(scope).into()

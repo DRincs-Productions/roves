@@ -40,6 +40,8 @@ pub struct BaseProxyHandler {
     _private: [u8; 0],
 }
 
+        pub type BaseProxyHandler_Action = u32;
+
         #[repr(C)]
         #[derive(Debug, Copy, Clone)]
         pub struct BaseShape {
@@ -564,6 +566,9 @@ pub struct GCContext {
 pub struct InlinableNative {
     _private: [u8; 0],
 }
+
+        pub type IsAcceptableThis =
+            ::std::option::Option<unsafe extern "C" fn(v: HandleValue) -> bool>;
 
     #[doc = " Add a property named by id to obj."]
     pub type JSAddPropertyOp = ::std::option::Option<
@@ -2726,6 +2731,10 @@ pub struct JSTracer {
 
         #[doc = " Similar to a handle, but the underlying storage can be changed. This is\n useful for outparams.\n\n If you want to add additional methods to MutableHandle for a specific\n specialization, define a MutableHandleOperations<T> specialization containing\n them."]
         pub type MutableHandleValue = MutableHandle<Value>;
+
+        pub type NativeImpl = ::std::option::Option<
+            unsafe extern "C" fn(cx: *mut JSContext, args: *const CallArgs) -> bool,
+        >;
 
         #[repr(C)]
         #[derive(Debug, Copy, Clone)]
