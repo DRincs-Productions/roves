@@ -11,6 +11,72 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-08 - V8 cutover: lazy globals, atoms, mozjs's runtime model and runtime hooks (CP100)
+
+**Servo files:**
+- `components/roves-js/src/`:
+  - new: `runtime_impl.rs`, and `glue_types.rs` (generated);
+  - changed: `object.rs`, `jsapi_impl.rs`, `rust.rs`, `glue.rs`, `jsapi.rs`, `gc/root.rs`,
+    `gc/mod.rs`, `lib.rs`, `tests.rs`, `jsapi_types.rs` and `wrappers2.in.rs`;
+- `support/roves_js/extract_jsapi_types.py`, `support/roves_js/jsapi_type_names.txt` and
+  `support/roves_js/gen_wrappers2.py`.
+
+**Patch:** `0165-roves-js-runtime-model.patch` after 0164.
+
+**Lazy globals.** Classes with `resolve`/`newEnumerate` hooks get V8 *non-masking*
+interceptors. Servo's globals define interface objects lazily through these hooks.
+- The interceptors are consulted only for properties the object does not have, as
+  SpiderMonkey's resolve hook is.
+- The getter/query interceptors run `mayResolve`, then `resolve`, then read the defined
+  property.
+- The enumerator lists the `newEnumerate` ids.
+- A per-(object, id) guard plays the role of `JSPROP_RESOLVING`, so lookups from inside the
+  hook do not recurse.
+
+**Atoms.** String ids are now atoms: there is one string per content, kept by the runtime,
+so `jsid`s compare by pointer as in SpiderMonkey. Two places depend on this: Servo's id
+comparisons and the resolve guard. Without atoms, the guard recursed forever.
+`JS_AtomizeAndPinString`/`JS_AtomizeStringN` return atoms; `JS_NewStringCopyN` returns an
+ordinary string.
+
+**Runtime model.** `rust::Runtime` now matches mozjs:
+- `JSEngine::init`/`handle`/`can_shutdown`, with counted `JSEngineHandle`s;
+- `Runtime::new(handle)`, `prepare_for_new_child`/`create_with_parent`;
+- `cx()` returning `&mut context::JSContext`, plus `cx_no_gc()` and `rt()`;
+- `thread_safe_js_context()`.
+
+On V8 every runtime, including a worker's child runtime, is an independent isolate.
+`ThreadSafeJSContext` requests interrupts through V8's thread-safe isolate handle.
+
+**Runtime hooks (`runtime_impl`).**
+- Implemented on V8:
+  - interrupt callbacks: a callback returning `false` terminates the running script;
+  - embedder root tracers (`JS_AddExtraGCRootsTracer`), called from the runtime's root
+    set. This is how Servo's DOM roots are traced;
+  - promise rejection tracking, from V8's promise-reject callback;
+  - `JS_GC`, through V8's low-memory notification;
+  - `CollectServoSizes`, from V8's heap statistics.
+- The job queue uses **V8's microtask queue as the only queue**. V8 cannot hand promise jobs
+  to the embedder, so runtimes use the explicit microtask policy and `RunJobs` performs a
+  checkpoint. The embedder's `JobQueueTraps` are kept but not called for promise jobs.
+- Recorded only: GC parameters, JIT options, the security/DOM/preserve-wrapper/read-principals
+  callbacks, build ids, stream consumers, event-loop dispatch and the script-environment
+  preparer. Each is documented where it is kept.
+
+**Compatibility.**
+- `gc::Rootable` is implemented: Servo types root through `Traceable`, via a blanket
+  `RootKind` impl. `gc::Initialize` and `gc::StackGCVector` are added too.
+- mozjs_sys's glue types (`ProxyTraps`, `JobQueueTraps`, `JSPrincipalsCallbacks`,
+  `DispatchablePointer`, ...) are now extracted from its bindgen output into `glue_types.rs`,
+  instead of being hand-copied.
+- `wrappers2` grows to 113 generated entries.
+
+**Tests:** `roves-js` 17/17, including:
+- lazy globals: the hook runs once and does not recurse, and enumeration works;
+- the runtime hooks: extra roots on GC; promise jobs only at the checkpoint;
+  unhandled/handled rejections; an interrupt from another thread stopping `for (;;) {}`;
+  a child runtime on its own thread.
+
 ## 2026-10-08 - V8 cutover: proxies, typed arrays, realm options; `script_bindings` compiles on V8 (CP99)
 
 **Servo files:**

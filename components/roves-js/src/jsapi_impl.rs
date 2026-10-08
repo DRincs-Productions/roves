@@ -71,10 +71,37 @@ pub(crate) fn key_id(scope: &mut v8::PinScope, key: v8::Local<v8::Value>) -> jsi
                 return IntId(index as i32);
             }
         }
-        let value = from_v8(scope, string.into());
-        return StringId(value.to_string());
+        return StringId(atomize(scope, string));
     }
     VoidId()
+}
+
+/// SpiderMonkey's atoms: one string per content, so string ids compare by pointer.
+#[derive(Default)]
+pub(crate) struct Atoms {
+    cells: std::cell::RefCell<std::collections::HashMap<Vec<u16>, *mut c_void>>,
+}
+
+/// The atom for `string`'s contents (kept for the runtime's lifetime, like pinned atoms).
+pub(crate) fn atomize(scope: &mut v8::PinScope, string: v8::Local<v8::String>) -> *mut JSString {
+    let mut units = vec![0u16; string.length()];
+    string.write_v2(scope, 0, &mut units, v8::WriteFlags::empty());
+    let atoms = &JSContext::current().atoms;
+    if let Some(cell) = atoms.cells.borrow().get(&units) {
+        return *cell as *mut JSString;
+    }
+    let internalized = v8::String::new_from_two_byte(scope, &units, v8::NewStringType::Internalized).unwrap_or(string);
+    let cell = crate::cell::new_cell_with_class(scope, internalized.into(), None);
+    atoms.cells.borrow_mut().insert(units, cell);
+    cell as *mut JSString
+}
+
+/// Keeps the atoms alive.
+pub(crate) fn trace_atoms(cx: &JSContext, visitor: &mut v8::cppgc::Visitor) {
+    let Ok(cells) = cx.atoms.cells.try_borrow() else { return };
+    for cell in cells.values() {
+        crate::cell::trace_cell(*cell, visitor);
+    }
 }
 
 /// Writes V8's descriptor object into a SpiderMonkey `PropertyDescriptor`.
@@ -607,23 +634,36 @@ fn new_string(cx: &JSContext, text: &str) -> *mut JSString {
     .unwrap_or(std::ptr::null_mut())
 }
 
-/// An atomized string. V8 strings are not pinned atoms: the result is an ordinary string.
+/// The atom of a (UTF-8) C string.
 pub unsafe fn JS_AtomizeAndPinString(cx: *mut JSContext, s: *const c_char) -> *mut JSString {
     // SAFETY: JSAPI callers pass NUL-terminated strings.
     let text = unsafe { CStr::from_ptr(s) }.to_string_lossy();
-    new_string(raw(cx), &text)
+    raw(cx)
+        .catching(|scope| {
+            let string = v8::String::new(scope, &text)?;
+            Some(atomize(scope, string))
+        })
+        .unwrap_or(std::ptr::null_mut())
 }
 
+/// The atom of `length` Latin-1 bytes.
 pub unsafe fn JS_AtomizeStringN(cx: *mut JSContext, s: *const c_char, length: usize) -> *mut JSString {
     // SAFETY: JSAPI callers pass `length` Latin-1 bytes.
     let bytes = unsafe { std::slice::from_raw_parts(s as *const u8, length) };
     let units: Vec<u16> = bytes.iter().map(|byte| *byte as u16).collect();
-    crate::api::new_string_utf16(raw(cx), &units)
+    raw(cx)
+        .catching(|scope| {
+            let string = v8::String::new_from_two_byte(scope, &units, v8::NewStringType::Normal)?;
+            Some(atomize(scope, string))
+        })
+        .unwrap_or(std::ptr::null_mut())
 }
 
 pub unsafe fn JS_NewStringCopyN(cx: *mut JSContext, s: *const c_char, n: usize) -> *mut JSString {
-    // SAFETY: as for `JS_AtomizeStringN`.
-    unsafe { JS_AtomizeStringN(cx, s, n) }
+    // SAFETY: JSAPI callers pass `n` Latin-1 bytes.
+    let bytes = unsafe { std::slice::from_raw_parts(s as *const u8, n) };
+    let units: Vec<u16> = bytes.iter().map(|byte| *byte as u16).collect();
+    crate::api::new_string_utf16(raw(cx), &units)
 }
 
 pub unsafe fn JS_GetLatin1StringCharsAndLength(_cx: *mut JSContext, _nogc: *const crate::jsapi::AutoRequireNoGC, s: *mut JSString, length: *mut usize) -> *const u8 {

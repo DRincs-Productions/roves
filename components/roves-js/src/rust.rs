@@ -114,6 +114,8 @@ pub mod wrappers2 {
         MutableHandleScript, MutableHandleString, MutableHandleSymbol, MutableHandleValue,
     };
     #[allow(unused_imports)]
+    use crate::glue::*;
+    #[allow(unused_imports)]
     use crate::jsapi::*;
     use crate::jsapi::{JSObject, JSString, UTF8Chars};
     use crate::{glue, jsapi};
@@ -202,6 +204,10 @@ unsafe impl GarbageCollected for RootSet {
             crate::jsapi_impl::trace_native_functions(unsafe { cx.as_ref() }, visitor);
             // SAFETY: as above.
             crate::realm_impl::trace_realms(unsafe { cx.as_ref() }, visitor);
+            // SAFETY: as above.
+            crate::jsapi_impl::trace_atoms(unsafe { cx.as_ref() }, visitor);
+            // SAFETY: as above. The embedder's roots (Servo's DOM root lists).
+            crate::runtime_impl::trace_extra_roots(unsafe { cx.as_ref() }, visitor);
         }
         // RootedVec / RootedTraceableBox contents.
         // SAFETY: the tracer is this GC's visitor.
@@ -217,24 +223,161 @@ thread_local! {
     static CURRENT: Cell<Option<NonNull<RawJSContext>>> = const { Cell::new(None) };
 }
 
+#[derive(PartialEq)]
+enum EngineState {
+    Uninitialized,
+    Initialized,
+    ShutDown,
+}
+
+static ENGINE_STATE: std::sync::Mutex<EngineState> = std::sync::Mutex::new(EngineState::Uninitialized);
+
+#[derive(Debug)]
+pub enum JSEngineError {
+    AlreadyInitialized,
+    AlreadyShutDown,
+    InitFailed,
+}
+
+/// The process-wide engine (mozjs's `JSEngine`): initializes V8 once. Runtimes hold
+/// [`JSEngineHandle`]s, which must all be gone before the engine is dropped.
+pub struct JSEngine {
+    outstanding_handles: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    marker: std::marker::PhantomData<*mut ()>,
+}
+
+pub struct JSEngineHandle(std::sync::Arc<std::sync::atomic::AtomicU32>);
+
+impl Clone for JSEngineHandle {
+    fn clone(&self) -> JSEngineHandle {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        JSEngineHandle(self.0.clone())
+    }
+}
+
+impl Drop for JSEngineHandle {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+fn initialize_v8() {
+    #[cfg(not(test))]
+    roves_v8::initialize_engine();
+    // Tests force collections, which V8 only allows with --expose-gc.
+    #[cfg(test)]
+    roves_v8::initialize_engine_with_flags("--expose-gc");
+}
+
+impl JSEngine {
+    pub fn init() -> Result<JSEngine, JSEngineError> {
+        let mut state = ENGINE_STATE.lock().unwrap();
+        match *state {
+            EngineState::Initialized => return Err(JSEngineError::AlreadyInitialized),
+            EngineState::ShutDown => return Err(JSEngineError::AlreadyShutDown),
+            EngineState::Uninitialized => (),
+        }
+        initialize_v8();
+        *state = EngineState::Initialized;
+        Ok(JSEngine { outstanding_handles: Default::default(), marker: std::marker::PhantomData })
+    }
+
+    pub fn can_shutdown(&self) -> bool {
+        self.outstanding_handles.load(std::sync::atomic::Ordering::SeqCst) == 0
+    }
+
+    pub fn handle(&self) -> JSEngineHandle {
+        self.outstanding_handles.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        JSEngineHandle(self.outstanding_handles.clone())
+    }
+}
+
+impl Drop for JSEngine {
+    fn drop(&mut self) {
+        let mut state = ENGINE_STATE.lock().unwrap();
+        if *state == EngineState::Initialized {
+            assert!(self.can_shutdown(), "There are outstanding JS engine handles");
+            // V8's platform cannot be initialized twice in a process, so it stays up.
+            *state = EngineState::ShutDown;
+        }
+    }
+}
+
+#[cfg(test)]
+impl JSEngineHandle {
+    /// A handle for tests, which create runtimes on many threads without one `JSEngine`.
+    pub(crate) fn for_tests() -> JSEngineHandle {
+        initialize_v8();
+        JSEngineHandle(Default::default())
+    }
+}
+
+/// What a child runtime needs from its parent (mozjs's `ParentRuntime`). On V8 every runtime
+/// is an independent isolate, so a child only shares the engine handle.
+pub struct ParentRuntime {
+    engine: JSEngineHandle,
+    children_of_parent: std::sync::Arc<()>,
+}
+
+// SAFETY: it only carries reference counts.
+unsafe impl Send for ParentRuntime {}
+
+/// The thread-safe side of a runtime (mozjs's `ThreadSafeJSContext`): interrupts from other
+/// threads, through V8's isolate handle.
+#[derive(Clone)]
+pub struct ThreadSafeJSContext(std::sync::Arc<std::sync::RwLock<Option<v8::IsolateHandle>>>);
+
+// SAFETY: `IsolateHandle` is V8's thread-safe isolate reference.
+unsafe impl Send for ThreadSafeJSContext {}
+unsafe impl Sync for ThreadSafeJSContext {}
+
+impl ThreadSafeJSContext {
+    /// Requests the runtime's interrupt callbacks (`JS_AddInterruptCallback`) to run soon on
+    /// the runtime's thread.
+    pub fn request_interrupt_callback(&self) {
+        if let Some(handle) = self.0.read().unwrap().as_ref() {
+            handle.request_interrupt(crate::runtime_impl::run_interrupt_callbacks, std::ptr::null_mut());
+        }
+    }
+
+    pub fn request_interrupt_callback_can_wait(&self) {
+        self.request_interrupt_callback();
+    }
+}
+
 /// One V8 isolate with its initial realm: the `JSRuntime`/`JSContext` pair of mozjs.
 pub struct Runtime {
     // Field order matters: the root and context must drop before the isolate.
+    cx: crate::context::JSContext,
     root_set: Persistent<RootSet>,
     raw: Box<RawJSContext>,
     /// Boxed: the raw context points at the `Isolate` value, which lives inside the
     /// `OwnedIsolate` and must not move.
     isolate: Box<v8::OwnedIsolate>,
+    engine: JSEngineHandle,
+    _parent_child_count: Option<std::sync::Arc<()>>,
+    outstanding_children: std::sync::Arc<()>,
+    thread_safe_handle: std::sync::Arc<std::sync::RwLock<Option<v8::IsolateHandle>>>,
 }
 
 impl Runtime {
-    pub fn new() -> Runtime {
-        #[cfg(not(test))]
-        roves_v8::initialize_engine();
-        // Tests force collections, which V8 only allows with --expose-gc.
-        #[cfg(test)]
-        roves_v8::initialize_engine_with_flags("--expose-gc");
+    pub fn new(engine: JSEngineHandle) -> Runtime {
+        Self::create(engine, None)
+    }
+
+    pub fn prepare_for_new_child(&self) -> ParentRuntime {
+        ParentRuntime { engine: self.engine.clone(), children_of_parent: self.outstanding_children.clone() }
+    }
+
+    /// # Safety
+    /// As in mozjs (the parent runtime must outlive this one).
+    pub unsafe fn create_with_parent(parent: ParentRuntime) -> Runtime {
+        Self::create(parent.engine.clone(), Some(parent))
+    }
+
+    fn create(engine: JSEngineHandle, parent: Option<ParentRuntime>) -> Runtime {
         let mut isolate = Box::new(v8::Isolate::new(v8::CreateParams::default()));
+        crate::runtime_impl::configure_isolate(&mut isolate);
         let (context, root_set) = {
             v8::scope!(let scope, &mut **isolate);
             let context = v8::Context::new(scope, Default::default());
@@ -251,34 +394,57 @@ impl Runtime {
             native_functions: RefCell::new(Vec::new()),
             interned: Default::default(),
             proxy_handlers: RefCell::new(Default::default()),
+            atoms: Default::default(),
+            hooks: Default::default(),
             current_realm: std::cell::Cell::new(std::ptr::null_mut()),
             realms: RefCell::new(Vec::new()),
         });
         raw.isolate = &mut **isolate as *mut v8::Isolate;
+        CURRENT.with(|current| {
+            assert!(current.get().is_none(), "one roves-js runtime per thread");
+            current.set(Some(NonNull::from(&*raw)));
+        });
         // The initial context is the runtime's first realm.
         let realm = raw.with_scope(|scope| {
             let context = scope.get_current_context();
             crate::realm_impl::register_realm(&raw, scope, context, std::ptr::null_mut())
         });
         raw.current_realm.set(realm);
-        let runtime = Runtime { root_set, raw, isolate };
-        CURRENT.with(|current| current.set(Some(runtime.cx_ptr())));
-        runtime
+        let thread_safe_handle = std::sync::Arc::new(std::sync::RwLock::new(Some(isolate.thread_safe_handle())));
+        // SAFETY: the raw context lives (boxed) as long as the runtime.
+        let cx = unsafe { crate::context::JSContext::from_ptr(NonNull::from(&*raw)) };
+        Runtime {
+            cx,
+            root_set,
+            raw,
+            isolate,
+            engine,
+            _parent_child_count: parent.map(|parent| parent.children_of_parent),
+            outstanding_children: std::sync::Arc::new(()),
+            thread_safe_handle,
+        }
     }
 
-    fn cx_ptr(&self) -> NonNull<RawJSContext> {
-        NonNull::from(&*self.raw)
+    pub fn thread_safe_js_context(&self) -> ThreadSafeJSContext {
+        ThreadSafeJSContext(self.thread_safe_handle.clone())
     }
 
-    /// The raw context (`Runtime::cx` in mozjs).
-    pub fn cx(&self) -> *mut RawJSContext {
-        self.cx_ptr().as_ptr()
+    /// The `JSRuntime` pointer (the raw context: one runtime per context on V8).
+    pub fn rt(&self) -> *mut crate::jsapi::JSRuntime {
+        NonNull::from(&*self.raw).as_ptr() as *mut crate::jsapi::JSRuntime
     }
 
-    /// The safe context wrapper for this runtime.
-    pub fn cx_mut(&mut self) -> crate::context::JSContext {
-        // SAFETY: the raw context lives as long as the runtime.
-        unsafe { crate::context::JSContext::from_ptr(self.cx_ptr()) }
+    pub fn cx<'rt>(&'rt mut self) -> &'rt mut crate::context::JSContext {
+        &mut self.cx
+    }
+
+    pub fn cx_no_gc<'rt>(&'rt self) -> &'rt crate::context::JSContext {
+        &self.cx
+    }
+
+    /// The raw context pointer.
+    pub fn raw_cx(&self) -> *mut RawJSContext {
+        NonNull::from(&*self.raw).as_ptr()
     }
 
     /// The raw context of this thread's runtime.
@@ -298,16 +464,12 @@ impl Runtime {
     }
 }
 
-impl Default for Runtime {
-    fn default() -> Self {
-        Runtime::new()
-    }
-}
-
 impl Drop for Runtime {
     fn drop(&mut self) {
+        self.thread_safe_handle.write().unwrap().take();
+        assert!(std::sync::Arc::get_mut(&mut self.outstanding_children).is_some(), "This runtime still has live children.");
         CURRENT.with(|current| {
-            if current.get() == Some(self.cx_ptr()) {
+            if current.get() == Some(NonNull::from(&*self.raw)) {
                 current.set(None);
             }
         });

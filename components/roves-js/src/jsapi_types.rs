@@ -48,8 +48,16 @@ pub struct BaseProxyHandler {
             _unused: [u8; 0],
         }
 
-        #[doc = " Vector of characters used for holding build ids."]
-        pub type BuildIdCharVector = u8;
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct BuildIdCharVector {
+    _private: [u8; 0],
+}
+
+        #[doc = " Return the buildId (represented as a sequence of characters) associated with\n the currently-executing build. If the JS engine is embedded such that a\n single cache entry can be observed by different compiled versions of the JS\n engine, it is critical that the buildId shall change for each new build of\n the JS engine."]
+        pub type BuildIdOp = ::std::option::Option<
+            unsafe extern "C" fn(buildId: *mut BuildIdCharVector) -> bool,
+        >;
 
         #[doc = " <div rustbindgen replaces=\"JS::CallArgs\"></div>"]
         #[repr(C)]
@@ -215,6 +223,495 @@ pub struct Compartment {
             IndirectEval = 1,
             Function = 2,
             Undefined = 3,
+        }
+
+        pub type ConsumeStreamCallback = ::std::option::Option<
+            unsafe extern "C" fn(
+                arg1: *mut JSContext,
+                arg2: HandleObject,
+                arg3: MimeType,
+                arg4: *mut StreamConsumer,
+            ) -> bool,
+        >;
+
+        #[repr(C)]
+        #[derive(Debug, Copy, Clone, PartialEq)]
+        pub struct ContextOptions {
+            pub _bitfield_align_1: [u8; 0],
+            pub _bitfield_1: __BindgenBitfieldUnit<[u8; 2usize]>,
+            pub compileOptions_: PrefableCompileOptions,
+        }
+
+        impl ContextOptions {
+            #[inline]
+            pub fn wasm_(&self) -> bool {
+                unsafe { ::std::mem::transmute(self._bitfield_1.get(0usize, 1u8) as u8) }
+            }
+            #[inline]
+            pub fn set_wasm_(&mut self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    self._bitfield_1.set(0usize, 1u8, val as u64)
+                }
+            }
+            #[inline]
+            pub unsafe fn wasm__raw(this: *const Self) -> bool {
+                unsafe {
+                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
+                        ::std::ptr::addr_of!((*this)._bitfield_1),
+                        0usize,
+                        1u8,
+                    ) as u8)
+                }
+            }
+            #[inline]
+            pub unsafe fn set_wasm__raw(this: *mut Self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
+                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                        0usize,
+                        1u8,
+                        val as u64,
+                    )
+                }
+            }
+            #[inline]
+            pub fn wasmForTrustedPrinciples_(&self) -> bool {
+                unsafe { ::std::mem::transmute(self._bitfield_1.get(1usize, 1u8) as u8) }
+            }
+            #[inline]
+            pub fn set_wasmForTrustedPrinciples_(&mut self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    self._bitfield_1.set(1usize, 1u8, val as u64)
+                }
+            }
+            #[inline]
+            pub unsafe fn wasmForTrustedPrinciples__raw(this: *const Self) -> bool {
+                unsafe {
+                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
+                        ::std::ptr::addr_of!((*this)._bitfield_1),
+                        1usize,
+                        1u8,
+                    ) as u8)
+                }
+            }
+            #[inline]
+            pub unsafe fn set_wasmForTrustedPrinciples__raw(this: *mut Self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
+                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                        1usize,
+                        1u8,
+                        val as u64,
+                    )
+                }
+            }
+            #[inline]
+            pub fn wasmBaseline_(&self) -> bool {
+                unsafe { ::std::mem::transmute(self._bitfield_1.get(2usize, 1u8) as u8) }
+            }
+            #[inline]
+            pub fn set_wasmBaseline_(&mut self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    self._bitfield_1.set(2usize, 1u8, val as u64)
+                }
+            }
+            #[inline]
+            pub unsafe fn wasmBaseline__raw(this: *const Self) -> bool {
+                unsafe {
+                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
+                        ::std::ptr::addr_of!((*this)._bitfield_1),
+                        2usize,
+                        1u8,
+                    ) as u8)
+                }
+            }
+            #[inline]
+            pub unsafe fn set_wasmBaseline__raw(this: *mut Self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
+                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                        2usize,
+                        1u8,
+                        val as u64,
+                    )
+                }
+            }
+            #[inline]
+            pub fn wasmIon_(&self) -> bool {
+                unsafe { ::std::mem::transmute(self._bitfield_1.get(3usize, 1u8) as u8) }
+            }
+            #[inline]
+            pub fn set_wasmIon_(&mut self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    self._bitfield_1.set(3usize, 1u8, val as u64)
+                }
+            }
+            #[inline]
+            pub unsafe fn wasmIon__raw(this: *const Self) -> bool {
+                unsafe {
+                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
+                        ::std::ptr::addr_of!((*this)._bitfield_1),
+                        3usize,
+                        1u8,
+                    ) as u8)
+                }
+            }
+            #[inline]
+            pub unsafe fn set_wasmIon__raw(this: *mut Self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
+                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                        3usize,
+                        1u8,
+                        val as u64,
+                    )
+                }
+            }
+            #[inline]
+            pub fn testWasmAwaitTier2_(&self) -> bool {
+                unsafe { ::std::mem::transmute(self._bitfield_1.get(4usize, 1u8) as u8) }
+            }
+            #[inline]
+            pub fn set_testWasmAwaitTier2_(&mut self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    self._bitfield_1.set(4usize, 1u8, val as u64)
+                }
+            }
+            #[inline]
+            pub unsafe fn testWasmAwaitTier2__raw(this: *const Self) -> bool {
+                unsafe {
+                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
+                        ::std::ptr::addr_of!((*this)._bitfield_1),
+                        4usize,
+                        1u8,
+                    ) as u8)
+                }
+            }
+            #[inline]
+            pub unsafe fn set_testWasmAwaitTier2__raw(this: *mut Self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
+                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                        4usize,
+                        1u8,
+                        val as u64,
+                    )
+                }
+            }
+            #[inline]
+            pub fn disableIon_(&self) -> bool {
+                unsafe { ::std::mem::transmute(self._bitfield_1.get(5usize, 1u8) as u8) }
+            }
+            #[inline]
+            pub fn set_disableIon_(&mut self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    self._bitfield_1.set(5usize, 1u8, val as u64)
+                }
+            }
+            #[inline]
+            pub unsafe fn disableIon__raw(this: *const Self) -> bool {
+                unsafe {
+                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
+                        ::std::ptr::addr_of!((*this)._bitfield_1),
+                        5usize,
+                        1u8,
+                    ) as u8)
+                }
+            }
+            #[inline]
+            pub unsafe fn set_disableIon__raw(this: *mut Self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
+                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                        5usize,
+                        1u8,
+                        val as u64,
+                    )
+                }
+            }
+            #[inline]
+            pub fn disableEvalSecurityChecks_(&self) -> bool {
+                unsafe { ::std::mem::transmute(self._bitfield_1.get(6usize, 1u8) as u8) }
+            }
+            #[inline]
+            pub fn set_disableEvalSecurityChecks_(&mut self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    self._bitfield_1.set(6usize, 1u8, val as u64)
+                }
+            }
+            #[inline]
+            pub unsafe fn disableEvalSecurityChecks__raw(this: *const Self) -> bool {
+                unsafe {
+                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
+                        ::std::ptr::addr_of!((*this)._bitfield_1),
+                        6usize,
+                        1u8,
+                    ) as u8)
+                }
+            }
+            #[inline]
+            pub unsafe fn set_disableEvalSecurityChecks__raw(this: *mut Self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
+                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                        6usize,
+                        1u8,
+                        val as u64,
+                    )
+                }
+            }
+            #[inline]
+            pub fn asyncStack_(&self) -> bool {
+                unsafe { ::std::mem::transmute(self._bitfield_1.get(7usize, 1u8) as u8) }
+            }
+            #[inline]
+            pub fn set_asyncStack_(&mut self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    self._bitfield_1.set(7usize, 1u8, val as u64)
+                }
+            }
+            #[inline]
+            pub unsafe fn asyncStack__raw(this: *const Self) -> bool {
+                unsafe {
+                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
+                        ::std::ptr::addr_of!((*this)._bitfield_1),
+                        7usize,
+                        1u8,
+                    ) as u8)
+                }
+            }
+            #[inline]
+            pub unsafe fn set_asyncStack__raw(this: *mut Self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
+                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                        7usize,
+                        1u8,
+                        val as u64,
+                    )
+                }
+            }
+            #[inline]
+            pub fn asyncStackCaptureDebuggeeOnly_(&self) -> bool {
+                unsafe { ::std::mem::transmute(self._bitfield_1.get(8usize, 1u8) as u8) }
+            }
+            #[inline]
+            pub fn set_asyncStackCaptureDebuggeeOnly_(&mut self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    self._bitfield_1.set(8usize, 1u8, val as u64)
+                }
+            }
+            #[inline]
+            pub unsafe fn asyncStackCaptureDebuggeeOnly__raw(this: *const Self) -> bool {
+                unsafe {
+                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
+                        ::std::ptr::addr_of!((*this)._bitfield_1),
+                        8usize,
+                        1u8,
+                    ) as u8)
+                }
+            }
+            #[inline]
+            pub unsafe fn set_asyncStackCaptureDebuggeeOnly__raw(this: *mut Self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
+                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                        8usize,
+                        1u8,
+                        val as u64,
+                    )
+                }
+            }
+            #[inline]
+            pub fn throwOnDebuggeeWouldRun_(&self) -> bool {
+                unsafe { ::std::mem::transmute(self._bitfield_1.get(9usize, 1u8) as u8) }
+            }
+            #[inline]
+            pub fn set_throwOnDebuggeeWouldRun_(&mut self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    self._bitfield_1.set(9usize, 1u8, val as u64)
+                }
+            }
+            #[inline]
+            pub unsafe fn throwOnDebuggeeWouldRun__raw(this: *const Self) -> bool {
+                unsafe {
+                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
+                        ::std::ptr::addr_of!((*this)._bitfield_1),
+                        9usize,
+                        1u8,
+                    ) as u8)
+                }
+            }
+            #[inline]
+            pub unsafe fn set_throwOnDebuggeeWouldRun__raw(this: *mut Self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
+                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                        9usize,
+                        1u8,
+                        val as u64,
+                    )
+                }
+            }
+            #[inline]
+            pub fn dumpStackOnDebuggeeWouldRun_(&self) -> bool {
+                unsafe { ::std::mem::transmute(self._bitfield_1.get(10usize, 1u8) as u8) }
+            }
+            #[inline]
+            pub fn set_dumpStackOnDebuggeeWouldRun_(&mut self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    self._bitfield_1.set(10usize, 1u8, val as u64)
+                }
+            }
+            #[inline]
+            pub unsafe fn dumpStackOnDebuggeeWouldRun__raw(this: *const Self) -> bool {
+                unsafe {
+                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
+                        ::std::ptr::addr_of!((*this)._bitfield_1),
+                        10usize,
+                        1u8,
+                    ) as u8)
+                }
+            }
+            #[inline]
+            pub unsafe fn set_dumpStackOnDebuggeeWouldRun__raw(this: *mut Self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
+                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                        10usize,
+                        1u8,
+                        val as u64,
+                    )
+                }
+            }
+            #[inline]
+            pub fn fuzzing_(&self) -> bool {
+                unsafe { ::std::mem::transmute(self._bitfield_1.get(11usize, 1u8) as u8) }
+            }
+            #[inline]
+            pub fn set_fuzzing_(&mut self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    self._bitfield_1.set(11usize, 1u8, val as u64)
+                }
+            }
+            #[inline]
+            pub unsafe fn fuzzing__raw(this: *const Self) -> bool {
+                unsafe {
+                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
+                        ::std::ptr::addr_of!((*this)._bitfield_1),
+                        11usize,
+                        1u8,
+                    ) as u8)
+                }
+            }
+            #[inline]
+            pub unsafe fn set_fuzzing__raw(this: *mut Self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
+                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                        11usize,
+                        1u8,
+                        val as u64,
+                    )
+                }
+            }
+            #[inline]
+            pub fn new_bitfield_1(
+                wasm_: bool,
+                wasmForTrustedPrinciples_: bool,
+                wasmBaseline_: bool,
+                wasmIon_: bool,
+                testWasmAwaitTier2_: bool,
+                disableIon_: bool,
+                disableEvalSecurityChecks_: bool,
+                asyncStack_: bool,
+                asyncStackCaptureDebuggeeOnly_: bool,
+                throwOnDebuggeeWouldRun_: bool,
+                dumpStackOnDebuggeeWouldRun_: bool,
+                fuzzing_: bool,
+            ) -> __BindgenBitfieldUnit<[u8; 2usize]> {
+                let mut __bindgen_bitfield_unit: __BindgenBitfieldUnit<[u8; 2usize]> =
+                    Default::default();
+                __bindgen_bitfield_unit.set(0usize, 1u8, {
+                    let wasm_: u8 = unsafe { ::std::mem::transmute(wasm_) };
+                    wasm_ as u64
+                });
+                __bindgen_bitfield_unit.set(1usize, 1u8, {
+                    let wasmForTrustedPrinciples_: u8 =
+                        unsafe { ::std::mem::transmute(wasmForTrustedPrinciples_) };
+                    wasmForTrustedPrinciples_ as u64
+                });
+                __bindgen_bitfield_unit.set(2usize, 1u8, {
+                    let wasmBaseline_: u8 = unsafe { ::std::mem::transmute(wasmBaseline_) };
+                    wasmBaseline_ as u64
+                });
+                __bindgen_bitfield_unit.set(3usize, 1u8, {
+                    let wasmIon_: u8 = unsafe { ::std::mem::transmute(wasmIon_) };
+                    wasmIon_ as u64
+                });
+                __bindgen_bitfield_unit.set(4usize, 1u8, {
+                    let testWasmAwaitTier2_: u8 =
+                        unsafe { ::std::mem::transmute(testWasmAwaitTier2_) };
+                    testWasmAwaitTier2_ as u64
+                });
+                __bindgen_bitfield_unit.set(5usize, 1u8, {
+                    let disableIon_: u8 = unsafe { ::std::mem::transmute(disableIon_) };
+                    disableIon_ as u64
+                });
+                __bindgen_bitfield_unit.set(6usize, 1u8, {
+                    let disableEvalSecurityChecks_: u8 =
+                        unsafe { ::std::mem::transmute(disableEvalSecurityChecks_) };
+                    disableEvalSecurityChecks_ as u64
+                });
+                __bindgen_bitfield_unit.set(7usize, 1u8, {
+                    let asyncStack_: u8 = unsafe { ::std::mem::transmute(asyncStack_) };
+                    asyncStack_ as u64
+                });
+                __bindgen_bitfield_unit.set(8usize, 1u8, {
+                    let asyncStackCaptureDebuggeeOnly_: u8 =
+                        unsafe { ::std::mem::transmute(asyncStackCaptureDebuggeeOnly_) };
+                    asyncStackCaptureDebuggeeOnly_ as u64
+                });
+                __bindgen_bitfield_unit.set(9usize, 1u8, {
+                    let throwOnDebuggeeWouldRun_: u8 =
+                        unsafe { ::std::mem::transmute(throwOnDebuggeeWouldRun_) };
+                    throwOnDebuggeeWouldRun_ as u64
+                });
+                __bindgen_bitfield_unit.set(10usize, 1u8, {
+                    let dumpStackOnDebuggeeWouldRun_: u8 =
+                        unsafe { ::std::mem::transmute(dumpStackOnDebuggeeWouldRun_) };
+                    dumpStackOnDebuggeeWouldRun_ as u64
+                });
+                __bindgen_bitfield_unit.set(11usize, 1u8, {
+                    let fuzzing_: u8 = unsafe { ::std::mem::transmute(fuzzing_) };
+                    fuzzing_ as u64
+                });
+                __bindgen_bitfield_unit
+            }
         }
 
         pub type DOMCallbacks = JSDOMCallbacks;
@@ -473,6 +970,14 @@ pub struct GCContext {
             NUM_REASONS = 100,
         }
 
+        pub type GCSliceCallback = ::std::option::Option<
+            unsafe extern "C" fn(
+                cx: *mut JSContext,
+                progress: GCProgress,
+                desc: *const GCDescription,
+            ),
+        >;
+
         pub type GetElementsOp = ::std::option::Option<
             unsafe extern "C" fn(
                 cx: *mut JSContext,
@@ -550,6 +1055,9 @@ pub struct GCContext {
                 foundp: *mut bool,
             ) -> bool,
         >;
+
+        pub type HasReleasedWrapperCallback =
+            ::std::option::Option<unsafe extern "C" fn(arg1: HandleObject) -> bool>;
 
         #[repr(i32)]
         #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
@@ -1551,6 +2059,15 @@ pub struct JSAtom {
 
     pub type JSFunctionSpec_Name = JSPropertySpec_Name;
 
+    pub type JSGCCallback = ::std::option::Option<
+        unsafe extern "C" fn(
+            cx: *mut JSContext,
+            status: JSGCStatus,
+            reason: GCReason,
+            data: *mut std::os::raw::c_void,
+        ),
+    >;
+
     #[repr(i32)]
     #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
     pub enum JSGCParamKey {
@@ -1666,6 +2183,9 @@ pub struct JSAtom {
     pub const JSITER_OWNONLY: u32 = 8;
 
     pub const JSITER_SYMBOLS: u32 = 32;
+
+    pub type JSInterruptCallback =
+        ::std::option::Option<unsafe extern "C" fn(arg1: *mut JSContext) -> bool>;
 
     pub type JSIterateCompartmentCallback = ::std::option::Option<
         unsafe extern "C" fn(
@@ -2463,6 +2983,14 @@ pub struct JSPrincipals {
         pub double_: f64,
     }
 
+    pub type JSReadPrincipalsOp = ::std::option::Option<
+        unsafe extern "C" fn(
+            cx: *mut JSContext,
+            reader: *mut JSStructuredCloneReader,
+            outPrincipals: *mut *mut JSPrincipals,
+        ) -> bool,
+    >;
+
     #[doc = " Resolve a lazy property named by id in obj by defining it directly in obj.\n Lazy properties are those reflected from some peer native property space\n (e.g., the DOM attributes for a given node reflected as obj) on demand.\n\n JS looks for a property in an object, and if not found, tries to resolve\n the given id. *resolvedp should be set to true iff the property was defined\n on |obj|.\n\n See JS::dbg::ShouldAvoidSideEffects in Debug.h if this function has any\n other side-effect than just resolving the property."]
     pub type JSResolveOp = ::std::option::Option<
         unsafe extern "C" fn(
@@ -2534,6 +3062,10 @@ pub struct JSRuntime {
             first: *mut JSPrincipals,
             second: *mut JSPrincipals,
         ) -> bool,
+    >;
+
+    pub type JSTraceDataOp = ::std::option::Option<
+        unsafe extern "C" fn(trc: *mut JSTracer, data: *mut std::os::raw::c_void),
     >;
 
     #[doc = " Function type for trace operation of the class called to enumerate all\n traceable things reachable from obj's private data structure. For each such\n thing, a trace implementation must call JS::TraceEdge on the thing's\n location.\n\n JSTraceOp implementation can assume that no other threads mutates object\n state. It must not change state of the object or corresponding native\n structures. The only exception for this rule is the case when the embedding\n needs a tight integration with GC. In that case the embedding can check if\n the traversal is a part of the marking phase through calling\n JS_IsGCMarkingTracer and apply a special code like emptying caches or\n marking its native structures."]
@@ -2630,15 +3162,11 @@ pub struct JSTracer {
                 _unused: [u8; 0],
             }
 
-        #[doc = " Abstract base class for an ECMAScript Job Queue:\n https://www.ecma-international.org/ecma-262/9.0/index.html#sec-jobs-and-job-queues\n\n SpiderMonkey doesn't schedule Promise resolution jobs itself; instead, the\n embedding can provide an instance of this class SpiderMonkey can use to do\n that scheduling.\n\n The JavaScript shell includes a simple implementation adequate for running\n tests. Browsers need to augment job handling to meet their own additional\n requirements, so they can provide their own implementation."]
-        #[repr(C)]
-        #[derive(Debug, PartialEq)]
-        pub struct JobQueue {
-            pub vtable_: *const JobQueue__bindgen_vtable,
-        }
-
-        #[repr(C)]
-        pub struct JobQueue__bindgen_vtable(std::os::raw::c_void);
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct JobQueue {
+    _private: [u8; 0],
+}
 
         pub type Latin1Char = std::os::raw::c_uchar;
 
@@ -2805,6 +3333,143 @@ pub struct JSTracer {
         NoTransferables = 2,
     }
 
+        #[repr(C, packed)]
+        #[derive(Debug, Copy, Clone, PartialEq)]
+        pub struct PrefableCompileOptions {
+            pub _bitfield_align_1: [u8; 0],
+            pub _bitfield_1: __BindgenBitfieldUnit<[u8; 1usize]>,
+            pub asmJSOption_: AsmJSOption,
+        }
+
+        impl PrefableCompileOptions {
+            #[inline]
+            pub fn importAttributes_(&self) -> bool {
+                unsafe { ::std::mem::transmute(self._bitfield_1.get(0usize, 1u8) as u8) }
+            }
+            #[inline]
+            pub fn set_importAttributes_(&mut self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    self._bitfield_1.set(0usize, 1u8, val as u64)
+                }
+            }
+            #[inline]
+            pub unsafe fn importAttributes__raw(this: *const Self) -> bool {
+                unsafe {
+                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 1usize]>>::raw_get(
+                        ::std::ptr::addr_of!((*this)._bitfield_1),
+                        0usize,
+                        1u8,
+                    ) as u8)
+                }
+            }
+            #[inline]
+            pub unsafe fn set_importAttributes__raw(this: *mut Self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    <__BindgenBitfieldUnit<[u8; 1usize]>>::raw_set(
+                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                        0usize,
+                        1u8,
+                        val as u64,
+                    )
+                }
+            }
+            #[inline]
+            pub fn sourcePragmas_(&self) -> bool {
+                unsafe { ::std::mem::transmute(self._bitfield_1.get(1usize, 1u8) as u8) }
+            }
+            #[inline]
+            pub fn set_sourcePragmas_(&mut self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    self._bitfield_1.set(1usize, 1u8, val as u64)
+                }
+            }
+            #[inline]
+            pub unsafe fn sourcePragmas__raw(this: *const Self) -> bool {
+                unsafe {
+                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 1usize]>>::raw_get(
+                        ::std::ptr::addr_of!((*this)._bitfield_1),
+                        1usize,
+                        1u8,
+                    ) as u8)
+                }
+            }
+            #[inline]
+            pub unsafe fn set_sourcePragmas__raw(this: *mut Self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    <__BindgenBitfieldUnit<[u8; 1usize]>>::raw_set(
+                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                        1usize,
+                        1u8,
+                        val as u64,
+                    )
+                }
+            }
+            #[inline]
+            pub fn throwOnAsmJSValidationFailure_(&self) -> bool {
+                unsafe { ::std::mem::transmute(self._bitfield_1.get(2usize, 1u8) as u8) }
+            }
+            #[inline]
+            pub fn set_throwOnAsmJSValidationFailure_(&mut self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    self._bitfield_1.set(2usize, 1u8, val as u64)
+                }
+            }
+            #[inline]
+            pub unsafe fn throwOnAsmJSValidationFailure__raw(this: *const Self) -> bool {
+                unsafe {
+                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 1usize]>>::raw_get(
+                        ::std::ptr::addr_of!((*this)._bitfield_1),
+                        2usize,
+                        1u8,
+                    ) as u8)
+                }
+            }
+            #[inline]
+            pub unsafe fn set_throwOnAsmJSValidationFailure__raw(this: *mut Self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    <__BindgenBitfieldUnit<[u8; 1usize]>>::raw_set(
+                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                        2usize,
+                        1u8,
+                        val as u64,
+                    )
+                }
+            }
+            #[inline]
+            pub fn new_bitfield_1(
+                importAttributes_: bool,
+                sourcePragmas_: bool,
+                throwOnAsmJSValidationFailure_: bool,
+            ) -> __BindgenBitfieldUnit<[u8; 1usize]> {
+                let mut __bindgen_bitfield_unit: __BindgenBitfieldUnit<[u8; 1usize]> =
+                    Default::default();
+                __bindgen_bitfield_unit.set(0usize, 1u8, {
+                    let importAttributes_: u8 = unsafe { ::std::mem::transmute(importAttributes_) };
+                    importAttributes_ as u64
+                });
+                __bindgen_bitfield_unit.set(1usize, 1u8, {
+                    let sourcePragmas_: u8 = unsafe { ::std::mem::transmute(sourcePragmas_) };
+                    sourcePragmas_ as u64
+                });
+                __bindgen_bitfield_unit.set(2usize, 1u8, {
+                    let throwOnAsmJSValidationFailure_: u8 =
+                        unsafe { ::std::mem::transmute(throwOnAsmJSValidationFailure_) };
+                    throwOnAsmJSValidationFailure_ as u64
+                });
+                __bindgen_bitfield_unit
+            }
+        }
+
+        pub type PreserveWrapperCallback = ::std::option::Option<
+            unsafe extern "C" fn(arg1: *mut JSContext, arg2: HandleObject) -> bool,
+        >;
+
         #[repr(i32)]
         #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
         pub enum ProfilerStringView_Ownership {
@@ -2817,6 +3482,16 @@ pub struct JSTracer {
             Unhandled = 0,
             Handled = 1,
         }
+
+        pub type PromiseRejectionTrackerCallback = ::std::option::Option<
+            unsafe extern "C" fn(
+                cx: *mut JSContext,
+                mutedErrors: bool,
+                promise: HandleObject,
+                state: PromiseRejectionHandlingState,
+                data: *mut std::os::raw::c_void,
+            ),
+        >;
 
         #[repr(i32)]
         #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
@@ -3364,6 +4039,9 @@ pub struct Realm {
             _unused: [u8; 0],
         }
 
+        pub type ReportStreamErrorCallback =
+            ::std::option::Option<unsafe extern "C" fn(arg1: *mut JSContext, arg2: usize)>;
+
         #[doc = " Local variable of type T whose value is always rooted. This is typically\n used for local variables, or for non-rooted values being passed to a\n function that requires a handle, e.g. Foo(Root<T>(cx, x)).\n\n If you want to add additional methods to Rooted for a specific\n specialization, define a RootedOperations<T> specialization containing them."]
         pub type RootedObject = Rooted<*mut JSObject>;
 
@@ -3393,14 +4071,23 @@ pub struct Realm {
             _unused: [u8; 0],
         }
 
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct ScriptEnvironmentPreparer_Closure {
+    _private: [u8; 0],
+}
+
+        #[doc = " These are the measurements used by Servo."]
         #[repr(C)]
         #[derive(Debug, Copy, Clone, PartialEq)]
-        pub struct ScriptEnvironmentPreparer_Closure {
-            pub vtable_: *const ScriptEnvironmentPreparer_Closure__bindgen_vtable,
+        pub struct ServoSizes {
+            pub gcHeapUsed: usize,
+            pub gcHeapUnused: usize,
+            pub gcHeapAdmin: usize,
+            pub gcHeapDecommitted: usize,
+            pub mallocHeap: usize,
+            pub nonHeap: usize,
         }
-
-        #[repr(C)]
-        pub struct ScriptEnvironmentPreparer_Closure__bindgen_vtable(std::os::raw::c_void);
 
         pub type SetPropertyOp = ::std::option::Option<
             unsafe extern "C" fn(
@@ -3447,6 +4134,12 @@ pub struct Realm {
             V8 = 1,
             Default = 2,
         }
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct StreamConsumer {
+    _private: [u8; 0],
+}
 
             #[repr(C)]
             #[derive(Copy, Clone)]
@@ -3609,8 +4302,6 @@ pub struct TrampolineNative {
                 #[doc = " Types that don't have their own TypedArray equivalent, for now.\n E.g. DataView"]
                 Simd128 = 14,
             }
-
-        pub type Vector = u8;
 
         #[repr(C, packed)]
         #[derive(Debug, Copy, Clone, PartialEq)]

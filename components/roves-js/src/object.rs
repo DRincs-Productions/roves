@@ -229,9 +229,130 @@ impl ClassTemplates {
             let data = v8::External::new(scope, class as *mut c_void);
             template.set_call_as_function_handler(call_class_hook, Some(data.into()));
         }
+        if ops.is_some_and(|ops| ops.resolve.is_some() || ops.newEnumerate.is_some()) {
+            // SpiderMonkey's lazy properties: consulted only for properties the object does
+            // not have yet (V8's non-masking interceptors), as SpiderMonkey's resolve hook is.
+            let data = v8::External::new(scope, class as *mut c_void);
+            let configuration = v8::NamedPropertyHandlerConfiguration::new()
+                .getter(resolve_getter)
+                .query(resolve_query)
+                .enumerator(resolve_enumerator)
+                .data(data.into())
+                .flags(v8::PropertyHandlerFlags::NON_MASKING | v8::PropertyHandlerFlags::ONLY_INTERCEPT_STRINGS);
+            template.set_named_property_handler(configuration);
+        }
         self.templates.borrow_mut().insert(class as usize, v8::Global::new(scope, template));
         template
     }
+}
+
+thread_local! {
+    /// The (object, key) pairs whose resolve hook is running: lookups of the same property
+    /// from inside the hook must not resolve it again (SpiderMonkey's `JSPROP_RESOLVING`).
+    static RESOLVING: RefCell<Vec<(*mut JSObject, crate::jsid::jsid)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The class object behind an interceptor's holder (a global's holder is its proxy).
+fn interceptor_object(holder: v8::Local<v8::Object>) -> Option<*mut JSObject> {
+    let class_box = class_box_of_v8(holder)?;
+    let cell = class_box.cell.get();
+    (!cell.is_null()).then_some(cell as *mut JSObject)
+}
+
+/// Runs the class resolve hook for `key` on the holder; `Some(true)` when it defined the
+/// property, `None` when it threw (the exception is rethrown into V8).
+fn run_resolve_hook(scope: &mut v8::PinScope, data: v8::Local<v8::Value>, holder: v8::Local<v8::Object>, key: v8::Local<v8::Name>) -> Option<bool> {
+    let external = v8::Local::<v8::External>::try_from(data).ok()?;
+    let class = external.value() as *const JSClass;
+    // SAFETY: only classes with a resolve or enumerate hook get these interceptors.
+    let ops = unsafe { &*(*class).cOps };
+    let resolve = ops.resolve?;
+    let obj = interceptor_object(holder)?;
+    let id = crate::jsapi_impl::key_id(scope, key.into());
+    if RESOLVING.with(|resolving| resolving.borrow().contains(&(obj, id))) {
+        return Some(false);
+    }
+    let cx = JSContext::current() as *const JSContext as *mut JSContext;
+    if let Some(may_resolve) = ops.mayResolve {
+        // SAFETY: SpiderMonkey's hook contract (the atom state is not used by Servo's hooks).
+        if !unsafe { may_resolve(std::ptr::null(), id, obj) } {
+            return Some(false);
+        }
+    }
+    crate::rooted!(in(cx) let object = obj);
+    crate::rooted!(in(cx) let rooted_id = id);
+    let mut resolved = false;
+    RESOLVING.with(|resolving| resolving.borrow_mut().push((obj, id)));
+    // SAFETY: SpiderMonkey's resolve contract (rooted arguments).
+    let ok = unsafe { resolve(cx, object.handle().into_handle(), rooted_id.handle().into_handle(), &mut resolved) };
+    RESOLVING.with(|resolving| resolving.borrow_mut().pop());
+    if !ok {
+        crate::native::rethrow_pending(scope, JSContext::current());
+        return None;
+    }
+    Some(resolved)
+}
+
+fn resolve_getter<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    key: v8::Local<'s, v8::Name>,
+    args: v8::PropertyCallbackArguments<'s>,
+    mut retval: v8::ReturnValue<v8::Value>,
+) -> v8::Intercepted {
+    let holder = args.holder();
+    match run_resolve_hook(scope, args.data(), holder, key) {
+        None => v8::Intercepted::kYes,
+        Some(false) => v8::Intercepted::kNo,
+        Some(true) => match holder.get_real_named_property(scope, key) {
+            Some(value) => {
+                retval.set(value);
+                v8::Intercepted::kYes
+            },
+            None => v8::Intercepted::kNo,
+        },
+    }
+}
+
+fn resolve_query<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    key: v8::Local<'s, v8::Name>,
+    args: v8::PropertyCallbackArguments<'s>,
+    mut retval: v8::ReturnValue<v8::Integer>,
+) -> v8::Intercepted {
+    let holder = args.holder();
+    match run_resolve_hook(scope, args.data(), holder, key) {
+        None => v8::Intercepted::kYes,
+        Some(false) => v8::Intercepted::kNo,
+        Some(true) => match holder.get_real_named_property_attributes(scope, key) {
+            Some(attributes) => {
+                retval.set_int32(attributes.as_u32() as i32);
+                v8::Intercepted::kYes
+            },
+            None => v8::Intercepted::kNo,
+        },
+    }
+}
+
+/// Lists the lazy properties through the class `newEnumerate` hook.
+fn resolve_enumerator<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::PropertyCallbackArguments<'s>, mut retval: v8::ReturnValue<v8::Array>) {
+    let Ok(external) = v8::Local::<v8::External>::try_from(args.data()) else { return };
+    let class = external.value() as *const JSClass;
+    // SAFETY: as for `run_resolve_hook`.
+    let ops = unsafe { &*(*class).cOps };
+    let Some(enumerate) = ops.newEnumerate else { return };
+    let Some(obj) = interceptor_object(args.holder()) else { return };
+    let cx = JSContext::current() as *const JSContext as *mut JSContext;
+    crate::rooted!(in(cx) let object = obj);
+    // SAFETY: `cx` is this thread's live context.
+    let mut ids = unsafe { crate::rust::IdVector::new(cx) };
+    // SAFETY: SpiderMonkey's enumerate contract.
+    if !unsafe { enumerate(cx, object.handle().into_handle(), ids.handle_mut(), false) } {
+        crate::native::rethrow_pending(scope, JSContext::current());
+        return;
+    }
+    let keys: Vec<v8::Local<v8::Value>> = ids.iter().filter_map(|id| crate::jsapi_impl::id_key(scope, *id).map(Into::into)).collect();
+    let array = v8::Array::new_with_elements(scope, &keys);
+    retval.set(array);
 }
 
 /// A callable class object was called (or constructed): run its `call`/`construct` hook.

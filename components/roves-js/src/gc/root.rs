@@ -547,3 +547,27 @@ impl<'a, T> IntoMutableHandle for MutableHandle<'a, T> {
         MutableHandle::into_handle(self)
     }
 }
+
+/// A Servo type that can be rooted (`rooted!`) through its `Traceable` impl (mozjs_sys's
+/// `jsgc::Rootable`).
+pub trait Rootable: crate::gc::Traceable + Sized {}
+
+impl<T: Rootable + 'static> RootKind for T {
+    fn trace_root(&self, visitor: &mut Visitor) {
+        // SAFETY: the tracer is this GC's visitor.
+        unsafe { crate::gc::Traceable::trace(self, crate::glue::tracer(visitor)) };
+    }
+}
+
+/// A default value for a rooted or heap location (mozjs_sys's `jsgc::Initialize`).
+pub trait Initialize: Sized {
+    /// # Safety
+    /// The default must not be a value that can be meaningfully garbage collected.
+    unsafe fn initial() -> Option<Self>;
+}
+
+impl<T> Initialize for Option<T> {
+    unsafe fn initial() -> Option<Self> {
+        Some(None)
+    }
+}

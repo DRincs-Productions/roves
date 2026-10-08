@@ -5,6 +5,7 @@ AtomToLinearString
 AutoRequireNoGC
 BaseProxyHandler_Action
 BuildIdCharVector
+BuildIdOp
 CallArgs
 CallObjectTracer
 CallScriptTracer
@@ -17,6 +18,8 @@ Compartment
 CompartmentIterResult
 CompartmentSpecifier
 CompilationType
+ConsumeStreamCallback
+ContextOptions
 CopyJSStructuredCloneData
 CreateJobQueue
 CreateProxyHandler
@@ -39,6 +42,7 @@ GCDescription
 GCOptions
 GCProgress
 GCReason
+GCSliceCallback
 GCTraceKindToAscii
 GetArrayBufferByteLength
 GetFunctionNativeReserved
@@ -70,6 +74,7 @@ HandleString
 HandleValueArray
 HandleValueasRawHandleValue
 HandleasRawHandle
+HasReleasedWrapperCallback
 Heap
 HeapState
 HideScriptedCaller
@@ -106,16 +111,19 @@ JSClass_NON_NATIVE
 JSContext
 JSContextasRawJSContext
 JSContextasUnsafeJSContext
+JSDOMCallbacks
 JSDestroyPrincipalsOp
 JSErrNum
 JSFUN_CONSTRUCTOR
 JSFailed
 JSFunctionSpec
+JSGCCallback
 JSGCParamKey
 JSGCStatus
 JSITER_HIDDEN
 JSITER_OWNONLY
 JSITER_SYMBOLS
+JSInterruptCallback
 JSIterateCompartmentCallback
 JSJitCompilerOption
 JSJitGetterCallArgs
@@ -146,6 +154,7 @@ JSPropertySpec_Name
 JSPropertySpec_ValueWrapper
 JSPropertySpec_ValueWrapper_Type
 JSPropertySpec_ValueWrapper__bindgen_ty_1
+JSReadPrincipalsOp
 JSRuntime
 JSScript
 JSSecurityCallbacks
@@ -153,6 +162,7 @@ JSString
 JSStructuredCloneCallbacks
 JSStructuredCloneReader
 JSStructuredCloneWriter
+JSTraceDataOp
 JSTraceable
 JSTracer
 JSType
@@ -228,7 +238,9 @@ ObjectOpResult
 ObjectOpResult_SpecialCodes
 ObjectOps
 OnNewGlobalHookOption
+PreserveWrapperCallback
 PromiseRejectionHandlingState
+PromiseRejectionTrackerCallback
 PromiseState
 PromiseUserInputEventHandlingState
 PropertyDescriptor
@@ -246,11 +258,13 @@ RegExpFlags
 RegisterScriptEnvironmentPreparer
 RemoveAssociatedMemory
 RemoveRawValueRoot
+ReportStreamErrorCallback
 RunScriptEnvironmentPreparerClosure
 RuntimeCode
 RuntimeHeapState
 SavedFrameSelfHosted
 ScriptEnvironmentPreparer_Closure
+ServoSizes
 SetBuildId
 SetDOMProxyInformation
 SetFunctionNativeReserved
@@ -266,6 +280,7 @@ SetScriptPrivate
 SetScriptPrivateReferenceHooks
 StackFormat
 StackFormatasJSStackFormat
+StreamConsumer
 StreamConsumerConsumeChunk
 StreamConsumerNoteResponseURLs
 StreamConsumerStreamEnd

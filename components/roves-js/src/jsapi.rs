@@ -19,6 +19,7 @@ pub use crate::realm_impl::{
 pub use crate::binding::{CallJitGetterOp, CallJitMethodOp, CallJitSetterOp, JS_DefineFunctions, JS_DefineProperties};
 pub use crate::jsapi_impl::*;
 pub use crate::typedarray_impl::*;
+pub use crate::runtime_impl::*;
 pub use crate::proxy::{SetDOMProxyInformation, SetPropertyIgnoringNamedGetter};
 pub use crate::object::RuntimeHeapState;
 
@@ -122,6 +123,10 @@ pub struct JSContext {
     pub(crate) interned: crate::cell::Interned,
     /// The V8 handler object of each proxy handler (see `proxy`).
     pub(crate) proxy_handlers: RefCell<std::collections::HashMap<usize, v8::Global<v8::Object>>>,
+    /// String atoms (see `jsapi_impl::atomize`).
+    pub(crate) atoms: crate::jsapi_impl::Atoms,
+    /// The embedder's runtime hooks and settings (see `runtime_impl`).
+    pub(crate) hooks: crate::runtime_impl::RuntimeHooks,
 }
 
 impl JSContext {

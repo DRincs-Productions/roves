@@ -22,6 +22,8 @@ OPAQUE = {
     "JSRuntime", "JSAtom", "JSLinearString", "InlinableNative", "TrampolineNative", "JSTracer", "JSPrincipals",
     "BaseProxyHandler",
     "RootingContext", "AutoRequireNoGC",
+    # C++ classes and containers behind pointers.
+    "BuildIdCharVector", "JobQueue", "StreamConsumer", "ScriptEnvironmentPreparer_Closure",
 }
 
 

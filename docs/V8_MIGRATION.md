@@ -46,6 +46,21 @@ errors.
   2. the runtime pieces the type check cannot see: globals' `resolve` hooks (lazy interface
      objects, which need V8 non-masking interceptors on the global template), `WindowProxy`,
      the job queue/promises, script compilation and modules.
+- `servo-script` baseline (after CP99): **106 errors**, which mean 171 missing names:
+  - the runtime;
+  - compilation and execution;
+  - modules;
+  - promises;
+  - structured clone;
+  - `WindowProxy`;
+  - plus 32 uses of the `Rootable` trait.
+
+  CP100 adds:
+  - lazy globals: the `resolve`/`newEnumerate` hooks through non-masking interceptors;
+  - atoms for string ids;
+  - mozjs's runtime model (`JSEngine`, child runtimes, `ThreadSafeJSContext`);
+  - the runtime hooks: interrupts, extra GC roots, promise rejection tracking, and the job
+    queue on V8's microtask queue with the explicit policy.
 
 **Surface.** An inventory of `script`, `script_bindings` and `script_webgpu` found about 590
 distinct `js::` items:

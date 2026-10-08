@@ -10,7 +10,7 @@ use crate::rust::Runtime;
 /// Evaluates `source` in the runtime's realm and returns the (unrooted) result.
 fn eval(runtime: &Runtime, source: &str) -> JSVal {
     // SAFETY: the runtime owns its raw context.
-    let raw = unsafe { &*runtime.cx() };
+    let raw = unsafe { &*runtime.raw_cx() };
     raw.with_scope(|scope| {
         let code = v8::String::new(scope, source).unwrap();
         let script = v8::Script::compile(scope, code, None).unwrap();
@@ -22,7 +22,7 @@ fn eval(runtime: &Runtime, source: &str) -> JSVal {
 /// Reads `value` back as a string through V8 (`String(value)`).
 fn describe(runtime: &Runtime, value: JSVal) -> String {
     // SAFETY: the runtime owns its raw context.
-    let raw = unsafe { &*runtime.cx() };
+    let raw = unsafe { &*runtime.raw_cx() };
     raw.with_scope(|scope| {
         // SAFETY: tests only describe live (rooted or fresh) values.
         let local = unsafe { to_v8(scope, value) };
@@ -52,7 +52,7 @@ fn immediates_round_trip_with_spidermonkey_semantics() {
 
 #[test]
 fn v8_values_convert_to_jsvals_and_back() {
-    let runtime = Runtime::new();
+    let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
     for (source, expected) in [("undefined", "undefined"), ("null", "null"), ("true", "true"), ("42", "42"), ("0.25", "0.25")] {
         assert_eq!(describe(&runtime, eval(&runtime, source)), expected);
     }
@@ -72,8 +72,8 @@ fn v8_values_convert_to_jsvals_and_back() {
 
 #[test]
 fn rooted_values_survive_gc_and_unrooted_cells_are_collected() {
-    let mut runtime = Runtime::new();
-    let cx = runtime.cx();
+    let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+    let cx = runtime.raw_cx();
     let before = finalized();
     {
         rooted!(in(cx) let kept = eval(&runtime, "({ marker: 'kept' })"));
@@ -98,8 +98,8 @@ fn rooted_values_survive_gc_and_unrooted_cells_are_collected() {
 
 #[test]
 fn handles_read_and_write_rooted_locations() {
-    let mut runtime = Runtime::new();
-    let cx = runtime.cx();
+    let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+    let cx = runtime.raw_cx();
     rooted!(in(cx) let mut value = UndefinedValue());
     {
         let mut handle = value.handle_mut();
@@ -136,9 +136,9 @@ fn heap_locations_are_traced_by_their_owner() {
         }
     }
 
-    let mut runtime = Runtime::new();
+    let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
     // SAFETY: the runtime owns its raw context.
-    let raw = unsafe { &*runtime.cx() };
+    let raw = unsafe { &*runtime.raw_cx() };
     let owner = raw.with_scope(|scope| {
         let heap = scope.get_cpp_heap().unwrap();
         // SAFETY: moved straight into a Persistent.
@@ -162,10 +162,10 @@ fn conversions_follow_webidl_and_mozjs() {
 
     fn from<T: FromJSValConvertible>(runtime: &mut Runtime, source: &str, option: T::Config) -> Result<ConversionResult<T>, ()> {
         let value = eval(runtime, source);
-        let raw = runtime.cx();
+        let raw = runtime.raw_cx();
         rooted!(in(raw) let value = value);
-        let mut cx = runtime.cx_mut();
-        T::safe_from_jsval(&mut cx, value.handle(), option)
+        let cx = runtime.cx();
+        T::safe_from_jsval(cx, value.handle(), option)
     }
     fn ok<T>(result: Result<ConversionResult<T>, ()>) -> T {
         match result {
@@ -174,7 +174,7 @@ fn conversions_follow_webidl_and_mozjs() {
         }
     }
 
-    let mut runtime = Runtime::new();
+    let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
     // Integers: modular by default, EnforceRange throws, Clamp rounds half to even.
     assert_eq!(ok(from::<i32>(&mut runtime, "2 ** 32 + 5", ConversionBehavior::Default)), 5);
     assert_eq!(ok(from::<u8>(&mut runtime, "-1", ConversionBehavior::Default)), 255);
@@ -183,11 +183,11 @@ fn conversions_follow_webidl_and_mozjs() {
     assert_eq!(ok(from::<i64>(&mut runtime, "'-12'", ConversionBehavior::Default)), -12);
     assert!(from::<u8>(&mut runtime, "256", ConversionBehavior::EnforceRange).is_err());
     // SAFETY: a live context.
-    assert!(unsafe { crate::jsapi::JS_IsExceptionPending(runtime.cx()) });
-    unsafe { crate::jsapi::JS_ClearPendingException(runtime.cx()) };
+    assert!(unsafe { crate::jsapi::JS_IsExceptionPending(runtime.raw_cx()) });
+    unsafe { crate::jsapi::JS_ClearPendingException(runtime.raw_cx()) };
     // ToNumber runs user code and propagates its exception as the pending one.
     assert!(from::<f64>(&mut runtime, "({ valueOf() { throw new RangeError('mine'); } })", ()).is_err());
-    let raw = runtime.cx();
+    let raw = runtime.raw_cx();
     rooted!(in(raw) let mut exception = UndefinedValue());
     assert!(unsafe { crate::jsapi::JS_GetPendingException(raw, exception.handle_mut()) });
     assert_eq!(describe(&runtime, exception.get()), "RangeError: mine");
@@ -207,17 +207,17 @@ fn conversions_follow_webidl_and_mozjs() {
     unsafe { crate::jsapi::JS_ClearPendingException(raw) };
 
     // Rust → JS: numbers, strings and arrays.
-    let raw = runtime.cx();
+    let raw = runtime.raw_cx();
     rooted!(in(raw) let mut value = UndefinedValue());
     {
-        let mut cx = runtime.cx_mut();
-        vec![String::from("a"), String::from("é"), String::from("中")].safe_to_jsval(&mut cx, value.handle_mut());
+        let cx = runtime.cx();
+        vec![String::from("a"), String::from("é"), String::from("中")].safe_to_jsval(cx, value.handle_mut());
     }
     assert!(value.get().is_object());
     assert_eq!(describe(&runtime, value.get()), "a,é,中");
     {
-        let mut cx = runtime.cx_mut();
-        u32::MAX.safe_to_jsval(&mut cx, value.handle_mut());
+        let cx = runtime.cx();
+        u32::MAX.safe_to_jsval(cx, value.handle_mut());
     }
     assert_eq!(describe(&runtime, value.get()), "4294967295");
     runtime.gc_for_testing();
@@ -282,8 +282,8 @@ mod object_model {
 
     #[test]
     fn class_objects_keep_identity_reserved_slots_and_run_hooks() {
-        let mut runtime = Runtime::new();
-        let cx = runtime.cx();
+        let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
         let finalized_before = HOOK_FINALIZED.with(Cell::get);
         {
             rooted!(in(cx) let thing = unsafe { JS_NewObject(cx, &CLASS) });
@@ -310,8 +310,8 @@ mod object_model {
 
     #[test]
     fn properties_by_name_and_id_and_descriptors() {
-        let runtime = Runtime::new();
-        let cx = runtime.cx();
+        let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
         rooted!(in(cx) let object = unsafe { JS_NewPlainObject(cx) });
         rooted!(in(cx) let value = Int32Value(7));
         let attrs = (JSPROP_ENUMERATE | JSPROP_READONLY) as u32;
@@ -419,8 +419,8 @@ mod object_model {
 
     #[test]
     fn natives_from_function_specs_calls_and_exceptions() {
-        let runtime = Runtime::new();
-        let cx = runtime.cx();
+        let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
         rooted!(in(cx) let object = unsafe { JS_NewPlainObject(cx) });
         assert!(unsafe { JS_DefineFunctions(cx, object.handle().into_handle(), FUNCTIONS.as_ptr()) });
         rooted!(in(cx) let global = global(&runtime).to_object());
@@ -495,8 +495,8 @@ mod object_model {
 
     #[test]
     fn property_specs_define_accessors_and_symbol_values() {
-        let runtime = Runtime::new();
-        let cx = runtime.cx();
+        let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
         rooted!(in(cx) let proto = unsafe { GetRealmObjectPrototype(cx) });
         rooted!(in(cx) let object = unsafe { JS_NewObjectWithGivenProto(cx, ptr::null(), proto.handle().into_handle()) });
         assert!(unsafe { JS_DefineProperties(cx, object.handle().into_handle(), PROPERTIES.as_ptr()) });
@@ -532,8 +532,8 @@ mod object_model {
 
 #[test]
 fn plain_objects_and_symbols_have_one_cell_while_it_lives() {
-    let mut runtime = Runtime::new();
-    let cx = runtime.cx();
+    let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+    let cx = runtime.raw_cx();
     eval(&runtime, "globalThis.kept = {}; globalThis.sym = Symbol('s')");
     assert_eq!(eval(&runtime, "kept").to_object(), eval(&runtime, "kept").to_object());
     assert_eq!(eval(&runtime, "sym").to_symbol(), eval(&runtime, "sym").to_symbol());
@@ -578,8 +578,8 @@ mod realms {
 
     #[test]
     fn new_globals_are_separate_realms_with_class_identity() {
-        let mut runtime = Runtime::new();
-        let cx = runtime.cx();
+        let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
         let first_realm = unsafe { GetCurrentRealmOrNull(cx) };
         let first_object_prototype = eval(&runtime, "Object.prototype").to_object();
         let mut options = crate::rust::RealmOptions::default();
@@ -721,8 +721,8 @@ mod proxies {
 
     #[test]
     fn dom_style_proxies_use_traps_defaults_and_identity() {
-        let mut runtime = Runtime::new();
-        let cx = runtime.cx();
+        let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
         let traps = traps();
         let handler = unsafe { CreateProxyHandler(&traps, &EXTRA as *const u8 as *const std::ffi::c_void) };
         let finalized_before = PROXY_FINALIZED.with(Cell::get);
@@ -779,8 +779,8 @@ mod typed_arrays {
 
     #[test]
     fn typed_arrays_share_stable_data_with_script() {
-        let mut runtime = Runtime::new();
-        let cx = runtime.cx();
+        let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
         rooted!(in(cx) let mut array = std::ptr::null_mut::<JSObject>());
         unsafe { Uint8Array::create(cx, CreateWith::Slice(&[1, 2, 3]), array.handle_mut()) }.unwrap();
         rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
@@ -811,5 +811,184 @@ mod typed_arrays {
         let mut data = std::ptr::null_mut();
         unsafe { GetArrayBufferViewLengthAndData(eval(&runtime, "bytes.subarray(1)").to_object(), &mut length, &mut shared, &mut data) };
         assert_eq!((length, shared, unsafe { *data }), (2, false, 42));
+    }
+}
+
+mod lazy_globals {
+    use std::cell::Cell;
+    use std::ptr;
+
+    use super::{describe, eval};
+    use crate::glue::*;
+    use crate::jsapi::*;
+    use crate::jsval::*;
+    use crate::rust::Runtime;
+
+    thread_local! {
+        static RESOLVE_CALLS: Cell<u32> = const { Cell::new(0) };
+    }
+
+    fn is_lazy_name(id: jsid) -> bool {
+        if !id.is_string() {
+            return false;
+        }
+        let mut length = 0;
+        let chars = crate::api::latin1_chars(id.to_string(), &mut length);
+        !chars.is_null() && unsafe { std::slice::from_raw_parts(chars, length) } == b"LazyThing"
+    }
+
+    unsafe extern "C" fn resolve(cx: *mut JSContext, obj: HandleObject, id: HandleId, resolved: *mut bool) -> bool {
+        if !is_lazy_name(id.get()) {
+            unsafe { *resolved = false };
+            return true;
+        }
+        RESOLVE_CALLS.with(|calls| calls.set(calls.get() + 1));
+        // A lookup of the same property from inside the hook does not recurse.
+        crate::rooted!(in(cx) let mut existing = UndefinedValue());
+        if !unsafe { JS_GetPropertyById(cx, obj, id, existing.handle_mut().into_handle()) } {
+            return false;
+        }
+        assert!(existing.get().is_undefined());
+        crate::rooted!(in(cx) let value = Int32Value(42));
+        if !unsafe { JS_DefinePropertyById2(cx, obj, id, value.handle().into_handle(), JSPROP_RESOLVING as u32) } {
+            return false;
+        }
+        unsafe { *resolved = true };
+        true
+    }
+
+    unsafe extern "C" fn may_resolve(_names: *const JSAtomState, id: jsid, _obj: *mut JSObject) -> bool {
+        is_lazy_name(id)
+    }
+
+    unsafe extern "C" fn enumerate(cx: *mut JSContext, _obj: HandleObject, props: MutableHandleIdVector, _enumerable_only: bool) -> bool {
+        let name = unsafe { JS_AtomizeAndPinString(cx, c"LazyThing".as_ptr()) };
+        crate::rooted!(in(cx) let mut id = crate::jsid::VoidId());
+        unsafe { RUST_INTERNED_STRING_TO_JSID(cx, name, id.handle_mut().into_handle()) };
+        unsafe { AppendToIdVector(props, id.handle().into_handle()) }
+    }
+
+    static OPS: JSClassOps = JSClassOps {
+        addProperty: None,
+        delProperty: None,
+        enumerate: None,
+        newEnumerate: Some(enumerate),
+        resolve: Some(resolve),
+        mayResolve: Some(may_resolve),
+        finalize: None,
+        call: None,
+        construct: None,
+        trace: Some(JS_GlobalObjectTraceHook),
+    };
+
+    static CLASS: JSClass = JSClass {
+        name: c"LazyGlobal".as_ptr(),
+        flags: crate::object::JSCLASS_IS_GLOBAL |
+            (crate::object::JSCLASS_GLOBAL_SLOT_COUNT << crate::object::JSCLASS_RESERVED_SLOTS_SHIFT),
+        cOps: &OPS,
+        spec: ptr::null(),
+        ext: ptr::null(),
+        oOps: ptr::null(),
+    };
+
+    #[test]
+    fn global_resolve_hooks_define_lazy_properties_once() {
+        let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let global = unsafe {
+            JS_NewGlobalObject(cx, &CLASS, ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, ptr::null())
+        });
+        let old = unsafe { EnterRealm(cx, global.get()) };
+        let before = RESOLVE_CALLS.with(Cell::get);
+        assert!(eval(&runtime, "typeof notLazy === 'undefined'").to_boolean(), "other names stay unresolved");
+        assert_eq!(eval(&runtime, "LazyThing").to_int32(), 42);
+        assert_eq!(eval(&runtime, "LazyThing + LazyThing").to_int32(), 84);
+        assert!(eval(&runtime, "'LazyThing' in globalThis && globalThis.hasOwnProperty('LazyThing')").to_boolean());
+        assert_eq!(RESOLVE_CALLS.with(Cell::get), before + 1, "the hook runs once; later lookups find the property");
+        assert_eq!(describe(&runtime, eval(&runtime, "Object.getOwnPropertyNames(globalThis).includes('LazyThing')")), "true");
+        unsafe { LeaveRealm(cx, old) };
+    }
+}
+
+mod runtime_hooks {
+    use std::cell::Cell;
+    use std::ffi::c_void;
+
+    use super::eval;
+    use crate::jsapi::*;
+    use crate::jsval::*;
+    use crate::rust::{JSEngineHandle, Runtime};
+
+    thread_local! {
+        static EXTRA_TRACED: Cell<u32> = const { Cell::new(0) };
+        static REJECTIONS: Cell<(u32, u32)> = const { Cell::new((0, 0)) };
+    }
+
+    unsafe extern "C" fn extra_roots(_trc: *mut JSTracer, data: *mut c_void) {
+        assert_eq!(data as usize, 7);
+        EXTRA_TRACED.with(|count| count.set(count.get() + 1));
+    }
+
+    unsafe extern "C" fn keep_going(_cx: *mut JSContext) -> bool {
+        false
+    }
+
+    unsafe extern "C" fn track(_cx: *mut JSContext, _muted: bool, promise: HandleObject, state: PromiseRejectionHandlingState, _data: *mut c_void) {
+        assert!(!promise.get().is_null());
+        REJECTIONS.with(|counts| {
+            let (unhandled, handled) = counts.get();
+            counts.set(match state {
+                PromiseRejectionHandlingState::Unhandled => (unhandled + 1, handled),
+                PromiseRejectionHandlingState::Handled => (unhandled, handled + 1),
+            });
+        });
+    }
+
+    #[test]
+    fn runtime_hooks_roots_interrupts_jobs_and_rejections() {
+        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        assert!(unsafe { JS_AddExtraGCRootsTracer(cx, Some(extra_roots), 7 as *mut c_void) });
+        runtime.gc_for_testing();
+        assert!(EXTRA_TRACED.with(Cell::get) > 0, "embedder root tracers run on every GC");
+
+        // Promise jobs run at the explicit checkpoint, not before.
+        eval(&runtime, "globalThis.done = false; Promise.resolve().then(() => { globalThis.done = true; })");
+        assert!(!eval(&runtime, "done").to_boolean());
+        unsafe { RunJobs(cx) };
+        assert!(eval(&runtime, "done").to_boolean());
+
+        // Unhandled rejections, then a late handler.
+        unsafe { SetPromiseRejectionTrackerCallback(cx, Some(track), std::ptr::null_mut()) };
+        eval(&runtime, "globalThis.rejected = Promise.reject(1)");
+        eval(&runtime, "rejected.catch(() => {})");
+        unsafe { RunJobs(cx) };
+        assert_eq!(REJECTIONS.with(Cell::get), (1, 1));
+
+        // An interrupt requested from another thread stops a runaway script when a callback
+        // returns false.
+        assert!(unsafe { JS_AddInterruptCallback(cx, Some(keep_going)) });
+        let thread_safe = runtime.thread_safe_js_context();
+        let interrupter = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            thread_safe.request_interrupt_callback();
+        });
+        let finished = unsafe { &*cx }.with_scope(|scope| {
+            let code = v8::String::new(scope, "for (;;) {}").unwrap();
+            let script = v8::Script::compile(scope, code, None).unwrap();
+            script.run(scope).is_some()
+        });
+        interrupter.join().unwrap();
+        assert!(!finished, "the loop was terminated");
+        unsafe { &mut *(*cx).isolate }.cancel_terminate_execution();
+
+        // A child runtime lives on its own thread (its own isolate).
+        let parent = runtime.prepare_for_new_child();
+        std::thread::spawn(move || {
+            let child = unsafe { Runtime::create_with_parent(parent) };
+            assert_eq!(eval(&child, "6 * 7").to_int32(), 42);
+        })
+        .join()
+        .unwrap();
     }
 }

@@ -14,5 +14,6 @@ mod traceable;
 pub use collections::*;
 pub use custom::*;
 pub use root::*;
+pub use crate::jsapi::StackGCVector;
 pub use rooted_traceables::*;
 pub use traceable::Traceable;

@@ -409,9 +409,15 @@ strategia completa è in `docs/V8_MIGRATION.md` ("Cutover strategy"). Metrica:
     target per gli invarianti V8).
   - Typed array: modulo `typedarray` di mozjs invariato; dati stabili via buffer off-heap.
   - `RealmOptions` con `traceGlobal_` (il trace vero del `Window`) chiamato a ogni GC.
-- **Prossimi passi (dopo CP99):** misurare `servo-script`; hook `resolve`/`newEnumerate` dei
-  globali (interceptor non-masking sul template del globale), `WindowProxy`, job queue e
-  promise, compilazione script/moduli.
+- **`servo-script` (baseline dopo CP99):** 106 errori, cioè 171 nomi mancanti, più 32 usi
+  di `Rootable`.
+- **CP100:** globali lazy (hook `resolve`/`newEnumerate` via interceptor non-masking), atomi
+  per gli id stringa, `Runtime` come in mozjs (`JSEngine`, runtime figli, `ThreadSafeJSContext`
+  sull'`IsolateHandle`), hook di runtime (interrupt, radici extra per il GC, tracker dei
+  rifiuti di promise; job queue = coda microtask V8 con policy esplicita). Test: 17/17.
+- **Prossimi passi (dopo CP100):** compilazione/esecuzione (`CompileOptionsWrapper`,
+  `Compile1`, `JS_ExecuteScript`, `CompileFunction`), errori e stack, promise, JSON,
+  Date/RegExp, moduli, structured clone, `WindowProxy`; poi rimisurare `servo-script`.
 - **Storico (prima di CP95).** Le operazioni dell'API usata dal DOM:
   1. stringhe e conversioni (`jsstr_to_string`, `ToJSValConvertible`/`FromJSValConvertible`);
   2. oggetti e proprietà (`JS_NewObject`, `JS_GetProperty`/`SetProperty`/`DefineProperty`);

@@ -1,0 +1,3084 @@
+diff --git a/components/roves-js/src/gc/mod.rs b/components/roves-js/src/gc/mod.rs
+index 9cbf85d599a..0c3f2c807c2 100644
+--- a/components/roves-js/src/gc/mod.rs
++++ b/components/roves-js/src/gc/mod.rs
+@@ -14,5 +14,6 @@ mod traceable;
+ pub use collections::*;
+ pub use custom::*;
+ pub use root::*;
++pub use crate::jsapi::StackGCVector;
+ pub use rooted_traceables::*;
+ pub use traceable::Traceable;
+diff --git a/components/roves-js/src/gc/root.rs b/components/roves-js/src/gc/root.rs
+index e70bf7e8e57..c8b8d1aa576 100644
+--- a/components/roves-js/src/gc/root.rs
++++ b/components/roves-js/src/gc/root.rs
+@@ -547,3 +547,27 @@ impl<'a, T> IntoMutableHandle for MutableHandle<'a, T> {
+         MutableHandle::into_handle(self)
+     }
+ }
++
++/// A Servo type that can be rooted (`rooted!`) through its `Traceable` impl (mozjs_sys's
++/// `jsgc::Rootable`).
++pub trait Rootable: crate::gc::Traceable + Sized {}
++
++impl<T: Rootable + 'static> RootKind for T {
++    fn trace_root(&self, visitor: &mut Visitor) {
++        // SAFETY: the tracer is this GC's visitor.
++        unsafe { crate::gc::Traceable::trace(self, crate::glue::tracer(visitor)) };
++    }
++}
++
++/// A default value for a rooted or heap location (mozjs_sys's `jsgc::Initialize`).
++pub trait Initialize: Sized {
++    /// # Safety
++    /// The default must not be a value that can be meaningfully garbage collected.
++    unsafe fn initial() -> Option<Self>;
++}
++
++impl<T> Initialize for Option<T> {
++    unsafe fn initial() -> Option<Self> {
++        Some(None)
++    }
++}
+diff --git a/components/roves-js/src/glue.rs b/components/roves-js/src/glue.rs
+index 9aac0f6a7b6..51c5b8944fa 100644
+--- a/components/roves-js/src/glue.rs
++++ b/components/roves-js/src/glue.rs
+@@ -20,6 +20,10 @@ pub use crate::typedarray_impl::{
+     GetInt8ArrayLengthAndData, GetUint16ArrayLengthAndData, GetUint32ArrayLengthAndData, GetUint8ArrayLengthAndData,
+     GetUint8ClampedArrayLengthAndData,
+ };
++pub use crate::runtime_impl::{
++    CollectServoSizes, CreateJobQueue, DeleteJobQueue, DispatchableRun, InitializeMemoryReporter,
++    RegisterScriptEnvironmentPreparer, RunScriptEnvironmentPreparerClosure, SetBuildId, SetUpEventLoopDispatch,
++};
+ pub use crate::proxy::{
+     CreateProxyHandler, GetProxyHandler, GetProxyHandlerExtra, GetProxyHandlerFamily, GetProxyPrivate,
+     GetProxyReservedSlot, InvokeGetOwnPropertyDescriptor, IsProxyHandlerFamily, NewProxyObject, SetProxyPrivate,
+@@ -32,240 +36,16 @@ pub use crate::jsapi_impl::{
+     UncheckedUnwrapObject, UnwrapObjectDynamic, UnwrapObjectStatic, int_to_jsid,
+ };
+ 
+-use crate::jsapi::{
+-    BaseProxyHandler_Action, CallArgs, ESClass, GCContext, HandleId, HandleObject, HandleValue, IsAcceptableThis,
+-    JSContext, JSType, MutableHandle, MutableHandleIdVector, MutableHandleObject, MutableHandleValue, NativeImpl,
+-    ObjectOpResult,
+-};
+-#[allow(unused_imports)]
+-use crate::jsapi::Handle;
+-
+-#[repr(C)]
+-#[derive(Debug, Copy, Clone, PartialEq)]
+-/// The traps of a proxy handler (mozjs's glue `ProxyTraps`), called by roves-js's V8 `Proxy`
+-/// handlers (see `proxy`).
+-pub struct ProxyTraps {
+-    pub enter: ::std::option::Option<
+-        unsafe extern "C" fn(
+-            cx: *mut JSContext,
+-            proxy: HandleObject,
+-            id: HandleId,
+-            action: BaseProxyHandler_Action,
+-            bp: *mut bool,
+-        ) -> bool,
+-    >,
+-    pub getOwnPropertyDescriptor: ::std::option::Option<
+-        unsafe extern "C" fn(
+-            cx: *mut JSContext,
+-            proxy: HandleObject,
+-            id: HandleId,
+-            desc: MutableHandle<PropertyDescriptor>,
+-            isNone: *mut bool,
+-        ) -> bool,
+-    >,
+-    pub defineProperty: ::std::option::Option<
+-        unsafe extern "C" fn(
+-            cx: *mut JSContext,
+-            proxy: HandleObject,
+-            id: HandleId,
+-            desc: Handle<PropertyDescriptor>,
+-            result: *mut ObjectOpResult,
+-        ) -> bool,
+-    >,
+-    pub ownPropertyKeys: ::std::option::Option<
+-        unsafe extern "C" fn(
+-            cx: *mut JSContext,
+-            proxy: HandleObject,
+-            props: MutableHandleIdVector,
+-        ) -> bool,
+-    >,
+-    pub delete_: ::std::option::Option<
+-        unsafe extern "C" fn(
+-            cx: *mut JSContext,
+-            proxy: HandleObject,
+-            id: HandleId,
+-            result: *mut ObjectOpResult,
+-        ) -> bool,
+-    >,
+-    pub enumerate: ::std::option::Option<
+-        unsafe extern "C" fn(
+-            cx: *mut JSContext,
+-            proxy: HandleObject,
+-            props: MutableHandleIdVector,
+-        ) -> bool,
+-    >,
+-    pub getPrototypeIfOrdinary: ::std::option::Option<
+-        unsafe extern "C" fn(
+-            cx: *mut JSContext,
+-            proxy: HandleObject,
+-            isOrdinary: *mut bool,
+-            protop: MutableHandleObject,
+-        ) -> bool,
+-    >,
+-    pub getPrototype: ::std::option::Option<
+-        unsafe extern "C" fn(
+-            cx: *mut JSContext,
+-            proxy: HandleObject,
+-            protop: MutableHandleObject,
+-        ) -> bool,
+-    >,
+-    pub setPrototype: ::std::option::Option<
+-        unsafe extern "C" fn(
+-            cx: *mut JSContext,
+-            proxy: HandleObject,
+-            proto: HandleObject,
+-            result: *mut ObjectOpResult,
+-        ) -> bool,
+-    >,
+-    pub setImmutablePrototype: ::std::option::Option<
+-        unsafe extern "C" fn(
+-            cx: *mut JSContext,
+-            proxy: HandleObject,
+-            succeeded: *mut bool,
+-        ) -> bool,
+-    >,
+-    pub preventExtensions: ::std::option::Option<
+-        unsafe extern "C" fn(
+-            cx: *mut JSContext,
+-            proxy: HandleObject,
+-            result: *mut ObjectOpResult,
+-        ) -> bool,
+-    >,
+-    pub isExtensible: ::std::option::Option<
+-        unsafe extern "C" fn(
+-            cx: *mut JSContext,
+-            proxy: HandleObject,
+-            succeeded: *mut bool,
+-        ) -> bool,
+-    >,
+-    pub has: ::std::option::Option<
+-        unsafe extern "C" fn(
+-            cx: *mut JSContext,
+-            proxy: HandleObject,
+-            id: HandleId,
+-            bp: *mut bool,
+-        ) -> bool,
+-    >,
+-    pub get: ::std::option::Option<
+-        unsafe extern "C" fn(
+-            cx: *mut JSContext,
+-            proxy: HandleObject,
+-            receiver: HandleValue,
+-            id: HandleId,
+-            vp: MutableHandleValue,
+-        ) -> bool,
+-    >,
+-    pub set: ::std::option::Option<
+-        unsafe extern "C" fn(
+-            cx: *mut JSContext,
+-            proxy: HandleObject,
+-            id: HandleId,
+-            v: HandleValue,
+-            receiver: HandleValue,
+-            result: *mut ObjectOpResult,
+-        ) -> bool,
+-    >,
+-    pub call: ::std::option::Option<
+-        unsafe extern "C" fn(
+-            cx: *mut JSContext,
+-            proxy: HandleObject,
+-            args: *const CallArgs,
+-        ) -> bool,
+-    >,
+-    pub construct: ::std::option::Option<
+-        unsafe extern "C" fn(
+-            cx: *mut JSContext,
+-            proxy: HandleObject,
+-            args: *const CallArgs,
+-        ) -> bool,
+-    >,
+-    pub hasOwn: ::std::option::Option<
+-        unsafe extern "C" fn(
+-            cx: *mut JSContext,
+-            proxy: HandleObject,
+-            id: HandleId,
+-            bp: *mut bool,
+-        ) -> bool,
+-    >,
+-    pub getOwnEnumerablePropertyKeys: ::std::option::Option<
+-        unsafe extern "C" fn(
+-            cx: *mut JSContext,
+-            proxy: HandleObject,
+-            props: MutableHandleIdVector,
+-        ) -> bool,
+-    >,
+-    pub nativeCall: ::std::option::Option<
+-        unsafe extern "C" fn(
+-            cx: *mut JSContext,
+-            test: IsAcceptableThis,
+-            impl_: NativeImpl,
+-            args: CallArgs,
+-        ) -> bool,
+-    >,
+-    pub objectClassIs: ::std::option::Option<
+-        unsafe extern "C" fn(
+-            obj: HandleObject,
+-            classValue: ESClass,
+-            cx: *mut JSContext,
+-        ) -> bool,
+-    >,
+-    pub className: ::std::option::Option<
+-        unsafe extern "C" fn(
+-            cx: *mut JSContext,
+-            proxy: HandleObject,
+-        ) -> *const std::os::raw::c_char,
+-    >,
+-    pub fun_toString: ::std::option::Option<
+-        unsafe extern "C" fn(
+-            cx: *mut JSContext,
+-            proxy: HandleObject,
+-            isToString: bool,
+-        ) -> *mut JSString,
+-    >,
+-    pub boxedValue_unbox: ::std::option::Option<
+-        unsafe extern "C" fn(
+-            cx: *mut JSContext,
+-            proxy: HandleObject,
+-            vp: MutableHandleValue,
+-        ) -> bool,
+-    >,
+-    pub defaultValue: ::std::option::Option<
+-        unsafe extern "C" fn(
+-            cx: *mut JSContext,
+-            obj: HandleObject,
+-            hint: JSType,
+-            vp: MutableHandleValue,
+-        ) -> bool,
+-    >,
+-    pub trace: ::std::option::Option<
+-        unsafe extern "C" fn(trc: *mut JSTracer, proxy: *mut JSObject),
+-    >,
+-    pub finalize: ::std::option::Option<
+-        unsafe extern "C" fn(cx: *mut GCContext, proxy: *mut JSObject),
+-    >,
+-    pub objectMoved: ::std::option::Option<
+-        unsafe extern "C" fn(proxy: *mut JSObject, old: *mut JSObject) -> usize,
+-    >,
+-    pub isCallable:
+-        ::std::option::Option<unsafe extern "C" fn(obj: *mut JSObject) -> bool>,
+-    pub isConstructor:
+-        ::std::option::Option<unsafe extern "C" fn(obj: *mut JSObject) -> bool>,
++/// mozjs_sys's glue types (`ProxyTraps`, `JobQueueTraps`, `JSPrincipalsCallbacks`, ...),
++/// generated from its bindgen output by `support/roves_js/extract_jsapi_types.py`.
++mod types {
++    #![allow(unused_imports)]
++    use crate::jsapi::*;
++    include!("glue_types.rs");
+ }
++pub use types::*;
++
+ 
+-/// The principal callbacks of mozjs's `RustJSPrincipals` (structured-clone writing and the
+-/// system-principal check).
+-#[repr(C)]
+-#[derive(Debug, Copy, Clone, PartialEq)]
+-pub struct JSPrincipalsCallbacks {
+-    pub write: Option<
+-        unsafe extern "C" fn(
+-            principals: *mut crate::jsapi::JSPrincipals,
+-            cx: *mut crate::jsapi::JSContext,
+-            writer: *mut crate::jsapi::JSStructuredCloneWriter,
+-        ) -> bool,
+-    >,
+-    pub isSystemOrAddonPrincipal: Option<unsafe extern "C" fn(principals: *mut crate::jsapi::JSPrincipals) -> bool>,
+-}
+ 
+ /// The cppgc visitor behind a tracer pointer.
+ ///
+diff --git a/components/roves-js/src/glue_types.rs b/components/roves-js/src/glue_types.rs
+new file mode 100644
+index 00000000000..f7803698c17
+--- /dev/null
++++ b/components/roves-js/src/glue_types.rs
+@@ -0,0 +1,293 @@
++// Generated by extract_types.py from mozjs_sys's bindgen output.
++
++    #[repr(C)]
++    #[derive(Debug, Copy, Clone, PartialEq)]
++    pub struct DispatchablePointer {
++        pub ptr: u64,
++    }
++
++    pub type GetSize =
++        ::std::option::Option<unsafe extern "C" fn(obj: *mut JSObject) -> usize>;
++
++    pub type InvokeScriptPreparerHook = ::std::option::Option<
++        unsafe extern "C" fn(
++            global: HandleObject,
++            closure: *mut ScriptEnvironmentPreparer_Closure,
++        ),
++    >;
++
++    #[repr(C)]
++    #[derive(Debug, Copy, Clone, PartialEq)]
++    pub struct JSPrincipalsCallbacks {
++        pub write: ::std::option::Option<
++            unsafe extern "C" fn(
++                arg1: *mut JSPrincipals,
++                cx: *mut JSContext,
++                writer: *mut JSStructuredCloneWriter,
++            ) -> bool,
++        >,
++        pub isSystemOrAddonPrincipal:
++            ::std::option::Option<unsafe extern "C" fn(arg1: *mut JSPrincipals) -> bool>,
++    }
++
++    #[repr(C)]
++    #[derive(Debug, Copy, Clone, PartialEq)]
++    pub struct JobQueueTraps {
++        pub getHostDefinedData: ::std::option::Option<
++            unsafe extern "C" fn(
++                queue: *const std::os::raw::c_void,
++                cx: *mut JSContext,
++                data: MutableHandle<*mut JSObject>,
++            ) -> bool,
++        >,
++        pub enqueuePromiseJob: ::std::option::Option<
++            unsafe extern "C" fn(
++                queue: *const std::os::raw::c_void,
++                cx: *mut JSContext,
++                promise: HandleObject,
++                job: HandleObject,
++                allocationSite: HandleObject,
++                hostDefinedData: HandleObject,
++            ) -> bool,
++        >,
++        pub runJobs: ::std::option::Option<
++            unsafe extern "C" fn(queue: *const std::os::raw::c_void, cx: *mut JSContext),
++        >,
++        pub empty: ::std::option::Option<
++            unsafe extern "C" fn(queue: *const std::os::raw::c_void) -> bool,
++        >,
++        pub pushNewInterruptQueue: ::std::option::Option<
++            unsafe extern "C" fn(
++                aInterruptQueues: *mut std::os::raw::c_void,
++            ) -> *const std::os::raw::c_void,
++        >,
++        pub popInterruptQueue: ::std::option::Option<
++            unsafe extern "C" fn(
++                aInterruptQueues: *mut std::os::raw::c_void,
++            ) -> *const std::os::raw::c_void,
++        >,
++        pub dropInterruptQueues: ::std::option::Option<
++            unsafe extern "C" fn(aInterruptQueues: *mut std::os::raw::c_void),
++        >,
++    }
++
++    #[repr(C)]
++    #[derive(Debug, Copy, Clone, PartialEq)]
++    pub struct ProxyTraps {
++        pub enter: ::std::option::Option<
++            unsafe extern "C" fn(
++                cx: *mut JSContext,
++                proxy: HandleObject,
++                id: HandleId,
++                action: BaseProxyHandler_Action,
++                bp: *mut bool,
++            ) -> bool,
++        >,
++        pub getOwnPropertyDescriptor: ::std::option::Option<
++            unsafe extern "C" fn(
++                cx: *mut JSContext,
++                proxy: HandleObject,
++                id: HandleId,
++                desc: MutableHandle<PropertyDescriptor>,
++                isNone: *mut bool,
++            ) -> bool,
++        >,
++        pub defineProperty: ::std::option::Option<
++            unsafe extern "C" fn(
++                cx: *mut JSContext,
++                proxy: HandleObject,
++                id: HandleId,
++                desc: Handle<PropertyDescriptor>,
++                result: *mut ObjectOpResult,
++            ) -> bool,
++        >,
++        pub ownPropertyKeys: ::std::option::Option<
++            unsafe extern "C" fn(
++                cx: *mut JSContext,
++                proxy: HandleObject,
++                props: MutableHandleIdVector,
++            ) -> bool,
++        >,
++        pub delete_: ::std::option::Option<
++            unsafe extern "C" fn(
++                cx: *mut JSContext,
++                proxy: HandleObject,
++                id: HandleId,
++                result: *mut ObjectOpResult,
++            ) -> bool,
++        >,
++        pub enumerate: ::std::option::Option<
++            unsafe extern "C" fn(
++                cx: *mut JSContext,
++                proxy: HandleObject,
++                props: MutableHandleIdVector,
++            ) -> bool,
++        >,
++        pub getPrototypeIfOrdinary: ::std::option::Option<
++            unsafe extern "C" fn(
++                cx: *mut JSContext,
++                proxy: HandleObject,
++                isOrdinary: *mut bool,
++                protop: MutableHandleObject,
++            ) -> bool,
++        >,
++        pub getPrototype: ::std::option::Option<
++            unsafe extern "C" fn(
++                cx: *mut JSContext,
++                proxy: HandleObject,
++                protop: MutableHandleObject,
++            ) -> bool,
++        >,
++        pub setPrototype: ::std::option::Option<
++            unsafe extern "C" fn(
++                cx: *mut JSContext,
++                proxy: HandleObject,
++                proto: HandleObject,
++                result: *mut ObjectOpResult,
++            ) -> bool,
++        >,
++        pub setImmutablePrototype: ::std::option::Option<
++            unsafe extern "C" fn(
++                cx: *mut JSContext,
++                proxy: HandleObject,
++                succeeded: *mut bool,
++            ) -> bool,
++        >,
++        pub preventExtensions: ::std::option::Option<
++            unsafe extern "C" fn(
++                cx: *mut JSContext,
++                proxy: HandleObject,
++                result: *mut ObjectOpResult,
++            ) -> bool,
++        >,
++        pub isExtensible: ::std::option::Option<
++            unsafe extern "C" fn(
++                cx: *mut JSContext,
++                proxy: HandleObject,
++                succeeded: *mut bool,
++            ) -> bool,
++        >,
++        pub has: ::std::option::Option<
++            unsafe extern "C" fn(
++                cx: *mut JSContext,
++                proxy: HandleObject,
++                id: HandleId,
++                bp: *mut bool,
++            ) -> bool,
++        >,
++        pub get: ::std::option::Option<
++            unsafe extern "C" fn(
++                cx: *mut JSContext,
++                proxy: HandleObject,
++                receiver: HandleValue,
++                id: HandleId,
++                vp: MutableHandleValue,
++            ) -> bool,
++        >,
++        pub set: ::std::option::Option<
++            unsafe extern "C" fn(
++                cx: *mut JSContext,
++                proxy: HandleObject,
++                id: HandleId,
++                v: HandleValue,
++                receiver: HandleValue,
++                result: *mut ObjectOpResult,
++            ) -> bool,
++        >,
++        pub call: ::std::option::Option<
++            unsafe extern "C" fn(
++                cx: *mut JSContext,
++                proxy: HandleObject,
++                args: *const CallArgs,
++            ) -> bool,
++        >,
++        pub construct: ::std::option::Option<
++            unsafe extern "C" fn(
++                cx: *mut JSContext,
++                proxy: HandleObject,
++                args: *const CallArgs,
++            ) -> bool,
++        >,
++        pub hasOwn: ::std::option::Option<
++            unsafe extern "C" fn(
++                cx: *mut JSContext,
++                proxy: HandleObject,
++                id: HandleId,
++                bp: *mut bool,
++            ) -> bool,
++        >,
++        pub getOwnEnumerablePropertyKeys: ::std::option::Option<
++            unsafe extern "C" fn(
++                cx: *mut JSContext,
++                proxy: HandleObject,
++                props: MutableHandleIdVector,
++            ) -> bool,
++        >,
++        pub nativeCall: ::std::option::Option<
++            unsafe extern "C" fn(
++                cx: *mut JSContext,
++                test: IsAcceptableThis,
++                impl_: NativeImpl,
++                args: CallArgs,
++            ) -> bool,
++        >,
++        pub objectClassIs: ::std::option::Option<
++            unsafe extern "C" fn(
++                obj: HandleObject,
++                classValue: ESClass,
++                cx: *mut JSContext,
++            ) -> bool,
++        >,
++        pub className: ::std::option::Option<
++            unsafe extern "C" fn(
++                cx: *mut JSContext,
++                proxy: HandleObject,
++            ) -> *const std::os::raw::c_char,
++        >,
++        pub fun_toString: ::std::option::Option<
++            unsafe extern "C" fn(
++                cx: *mut JSContext,
++                proxy: HandleObject,
++                isToString: bool,
++            ) -> *mut JSString,
++        >,
++        pub boxedValue_unbox: ::std::option::Option<
++            unsafe extern "C" fn(
++                cx: *mut JSContext,
++                proxy: HandleObject,
++                vp: MutableHandleValue,
++            ) -> bool,
++        >,
++        pub defaultValue: ::std::option::Option<
++            unsafe extern "C" fn(
++                cx: *mut JSContext,
++                obj: HandleObject,
++                hint: JSType,
++                vp: MutableHandleValue,
++            ) -> bool,
++        >,
++        pub trace: ::std::option::Option<
++            unsafe extern "C" fn(trc: *mut JSTracer, proxy: *mut JSObject),
++        >,
++        pub finalize: ::std::option::Option<
++            unsafe extern "C" fn(cx: *mut GCContext, proxy: *mut JSObject),
++        >,
++        pub objectMoved: ::std::option::Option<
++            unsafe extern "C" fn(proxy: *mut JSObject, old: *mut JSObject) -> usize,
++        >,
++        pub isCallable:
++            ::std::option::Option<unsafe extern "C" fn(obj: *mut JSObject) -> bool>,
++        pub isConstructor:
++            ::std::option::Option<unsafe extern "C" fn(obj: *mut JSObject) -> bool>,
++    }
++
++    pub type RustDispatchToEventLoopCallback = ::std::option::Option<
++        unsafe extern "C" fn(
++            closure: *mut std::os::raw::c_void,
++            ptr: *mut DispatchablePointer,
++        ) -> bool,
++    >;
++
++    pub type WantToMeasure =
++        ::std::option::Option<unsafe extern "C" fn(obj: *mut JSObject) -> bool>;
++
+diff --git a/components/roves-js/src/jsapi.rs b/components/roves-js/src/jsapi.rs
+index ce752077f0e..044abf463ef 100644
+--- a/components/roves-js/src/jsapi.rs
++++ b/components/roves-js/src/jsapi.rs
+@@ -19,6 +19,7 @@ pub use crate::realm_impl::{
+ pub use crate::binding::{CallJitGetterOp, CallJitMethodOp, CallJitSetterOp, JS_DefineFunctions, JS_DefineProperties};
+ pub use crate::jsapi_impl::*;
+ pub use crate::typedarray_impl::*;
++pub use crate::runtime_impl::*;
+ pub use crate::proxy::{SetDOMProxyInformation, SetPropertyIgnoringNamedGetter};
+ pub use crate::object::RuntimeHeapState;
+ 
+@@ -122,6 +123,10 @@ pub struct JSContext {
+     pub(crate) interned: crate::cell::Interned,
+     /// The V8 handler object of each proxy handler (see `proxy`).
+     pub(crate) proxy_handlers: RefCell<std::collections::HashMap<usize, v8::Global<v8::Object>>>,
++    /// String atoms (see `jsapi_impl::atomize`).
++    pub(crate) atoms: crate::jsapi_impl::Atoms,
++    /// The embedder's runtime hooks and settings (see `runtime_impl`).
++    pub(crate) hooks: crate::runtime_impl::RuntimeHooks,
+ }
+ 
+ impl JSContext {
+diff --git a/components/roves-js/src/jsapi_impl.rs b/components/roves-js/src/jsapi_impl.rs
+index 66edd2e11f1..a5614a7ffcd 100644
+--- a/components/roves-js/src/jsapi_impl.rs
++++ b/components/roves-js/src/jsapi_impl.rs
+@@ -71,12 +71,39 @@ pub(crate) fn key_id(scope: &mut v8::PinScope, key: v8::Local<v8::Value>) -> jsi
+                 return IntId(index as i32);
+             }
+         }
+-        let value = from_v8(scope, string.into());
+-        return StringId(value.to_string());
++        return StringId(atomize(scope, string));
+     }
+     VoidId()
+ }
+ 
++/// SpiderMonkey's atoms: one string per content, so string ids compare by pointer.
++#[derive(Default)]
++pub(crate) struct Atoms {
++    cells: std::cell::RefCell<std::collections::HashMap<Vec<u16>, *mut c_void>>,
++}
++
++/// The atom for `string`'s contents (kept for the runtime's lifetime, like pinned atoms).
++pub(crate) fn atomize(scope: &mut v8::PinScope, string: v8::Local<v8::String>) -> *mut JSString {
++    let mut units = vec![0u16; string.length()];
++    string.write_v2(scope, 0, &mut units, v8::WriteFlags::empty());
++    let atoms = &JSContext::current().atoms;
++    if let Some(cell) = atoms.cells.borrow().get(&units) {
++        return *cell as *mut JSString;
++    }
++    let internalized = v8::String::new_from_two_byte(scope, &units, v8::NewStringType::Internalized).unwrap_or(string);
++    let cell = crate::cell::new_cell_with_class(scope, internalized.into(), None);
++    atoms.cells.borrow_mut().insert(units, cell);
++    cell as *mut JSString
++}
++
++/// Keeps the atoms alive.
++pub(crate) fn trace_atoms(cx: &JSContext, visitor: &mut v8::cppgc::Visitor) {
++    let Ok(cells) = cx.atoms.cells.try_borrow() else { return };
++    for cell in cells.values() {
++        crate::cell::trace_cell(*cell, visitor);
++    }
++}
++
+ /// Writes V8's descriptor object into a SpiderMonkey `PropertyDescriptor`.
+ pub(crate) fn fill_descriptor(scope: &mut v8::PinScope, descriptor: v8::Local<v8::Object>, out: &mut PropertyDescriptor) {
+     *out = PropertyDescriptor::default();
+@@ -607,23 +634,36 @@ fn new_string(cx: &JSContext, text: &str) -> *mut JSString {
+     .unwrap_or(std::ptr::null_mut())
+ }
+ 
+-/// An atomized string. V8 strings are not pinned atoms: the result is an ordinary string.
++/// The atom of a (UTF-8) C string.
+ pub unsafe fn JS_AtomizeAndPinString(cx: *mut JSContext, s: *const c_char) -> *mut JSString {
+     // SAFETY: JSAPI callers pass NUL-terminated strings.
+     let text = unsafe { CStr::from_ptr(s) }.to_string_lossy();
+-    new_string(raw(cx), &text)
++    raw(cx)
++        .catching(|scope| {
++            let string = v8::String::new(scope, &text)?;
++            Some(atomize(scope, string))
++        })
++        .unwrap_or(std::ptr::null_mut())
+ }
+ 
++/// The atom of `length` Latin-1 bytes.
+ pub unsafe fn JS_AtomizeStringN(cx: *mut JSContext, s: *const c_char, length: usize) -> *mut JSString {
+     // SAFETY: JSAPI callers pass `length` Latin-1 bytes.
+     let bytes = unsafe { std::slice::from_raw_parts(s as *const u8, length) };
+     let units: Vec<u16> = bytes.iter().map(|byte| *byte as u16).collect();
+-    crate::api::new_string_utf16(raw(cx), &units)
++    raw(cx)
++        .catching(|scope| {
++            let string = v8::String::new_from_two_byte(scope, &units, v8::NewStringType::Normal)?;
++            Some(atomize(scope, string))
++        })
++        .unwrap_or(std::ptr::null_mut())
+ }
+ 
+ pub unsafe fn JS_NewStringCopyN(cx: *mut JSContext, s: *const c_char, n: usize) -> *mut JSString {
+-    // SAFETY: as for `JS_AtomizeStringN`.
+-    unsafe { JS_AtomizeStringN(cx, s, n) }
++    // SAFETY: JSAPI callers pass `n` Latin-1 bytes.
++    let bytes = unsafe { std::slice::from_raw_parts(s as *const u8, n) };
++    let units: Vec<u16> = bytes.iter().map(|byte| *byte as u16).collect();
++    crate::api::new_string_utf16(raw(cx), &units)
+ }
+ 
+ pub unsafe fn JS_GetLatin1StringCharsAndLength(_cx: *mut JSContext, _nogc: *const crate::jsapi::AutoRequireNoGC, s: *mut JSString, length: *mut usize) -> *const u8 {
+diff --git a/components/roves-js/src/jsapi_types.rs b/components/roves-js/src/jsapi_types.rs
+index 22ad18b63a9..4a766b90bd7 100644
+--- a/components/roves-js/src/jsapi_types.rs
++++ b/components/roves-js/src/jsapi_types.rs
+@@ -48,8 +48,16 @@ pub struct BaseProxyHandler {
+             _unused: [u8; 0],
+         }
+ 
+-        #[doc = " Vector of characters used for holding build ids."]
+-        pub type BuildIdCharVector = u8;
++#[repr(C)]
++#[derive(Debug, Copy, Clone, PartialEq)]
++pub struct BuildIdCharVector {
++    _private: [u8; 0],
++}
++
++        #[doc = " Return the buildId (represented as a sequence of characters) associated with\n the currently-executing build. If the JS engine is embedded such that a\n single cache entry can be observed by different compiled versions of the JS\n engine, it is critical that the buildId shall change for each new build of\n the JS engine."]
++        pub type BuildIdOp = ::std::option::Option<
++            unsafe extern "C" fn(buildId: *mut BuildIdCharVector) -> bool,
++        >;
+ 
+         #[doc = " <div rustbindgen replaces=\"JS::CallArgs\"></div>"]
+         #[repr(C)]
+@@ -118,12 +126,514 @@ pub struct BaseProxyHandler {
+                 }
+             }
+             #[inline]
+-            pub unsafe fn set_ignoresReturnValue__raw(this: *mut Self, val: bool) {
++            pub unsafe fn set_ignoresReturnValue__raw(this: *mut Self, val: bool) {
++                unsafe {
++                    let val: u8 = ::std::mem::transmute(val);
++                    <__BindgenBitfieldUnit<[u8; 1usize]>>::raw_set(
++                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
++                        1usize,
++                        1u8,
++                        val as u64,
++                    )
++                }
++            }
++            #[inline]
++            pub fn new_bitfield_1(
++                constructing_: bool,
++                ignoresReturnValue_: bool,
++            ) -> __BindgenBitfieldUnit<[u8; 1usize]> {
++                let mut __bindgen_bitfield_unit: __BindgenBitfieldUnit<[u8; 1usize]> =
++                    Default::default();
++                __bindgen_bitfield_unit.set(0usize, 1u8, {
++                    let constructing_: u8 = unsafe { ::std::mem::transmute(constructing_) };
++                    constructing_ as u64
++                });
++                __bindgen_bitfield_unit.set(1usize, 1u8, {
++                    let ignoresReturnValue_: u8 =
++                        unsafe { ::std::mem::transmute(ignoresReturnValue_) };
++                    ignoresReturnValue_ as u64
++                });
++                __bindgen_bitfield_unit
++            }
++        }
++
++    #[doc = " Called when the transferring objects are checked. If this function returns\n false, the serialization ends throwing a DataCloneError exception."]
++    pub type CanTransferStructuredCloneOp = ::std::option::Option<
++        unsafe extern "C" fn(
++            cx: *mut JSContext,
++            obj: Handle<*mut JSObject>,
++            sameProcessScopeRequired: *mut bool,
++            closure: *mut std::os::raw::c_void,
++        ) -> bool,
++    >;
++
++#[repr(C)]
++#[derive(Debug, Copy, Clone, PartialEq)]
++pub struct ClassExtension {
++    _private: [u8; 0],
++}
++
++#[repr(C)]
++#[derive(Debug, Copy, Clone, PartialEq)]
++pub struct ClassSpec {
++    _private: [u8; 0],
++}
++
++        #[repr(C)]
++        #[derive(Debug, Copy, Clone, PartialEq)]
++        pub struct ClippedTime {
++            pub t: f64,
++        }
++
++        #[repr(C)]
++        #[derive(Debug, Copy, Clone, PartialEq)]
++        pub struct CloneDataPolicy {
++            pub allowIntraClusterClonableSharedObjects_: bool,
++            pub allowSharedMemoryObjects_: bool,
++        }
++
++#[repr(C)]
++#[derive(Debug, Copy, Clone, PartialEq)]
++pub struct Compartment {
++    _private: [u8; 0],
++}
++
++        #[repr(i32)]
++        #[doc = " An enum that JSIterateCompartmentCallback can return to indicate\n whether to keep iterating."]
++        #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
++        pub enum CompartmentIterResult {
++            KeepGoing = 0,
++            Stop = 1,
++        }
++
++        #[repr(i32)]
++        #[doc = " Specification for which compartment/zone a newly created realm should use."]
++        #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
++        pub enum CompartmentSpecifier {
++            NewCompartmentInSystemZone = 0,
++            NewCompartmentInExistingZone = 1,
++            NewCompartmentAndZone = 2,
++            ExistingCompartment = 3,
++        }
++
++        #[repr(i32)]
++        #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
++        pub enum CompilationType {
++            DirectEval = 0,
++            IndirectEval = 1,
++            Function = 2,
++            Undefined = 3,
++        }
++
++        pub type ConsumeStreamCallback = ::std::option::Option<
++            unsafe extern "C" fn(
++                arg1: *mut JSContext,
++                arg2: HandleObject,
++                arg3: MimeType,
++                arg4: *mut StreamConsumer,
++            ) -> bool,
++        >;
++
++        #[repr(C)]
++        #[derive(Debug, Copy, Clone, PartialEq)]
++        pub struct ContextOptions {
++            pub _bitfield_align_1: [u8; 0],
++            pub _bitfield_1: __BindgenBitfieldUnit<[u8; 2usize]>,
++            pub compileOptions_: PrefableCompileOptions,
++        }
++
++        impl ContextOptions {
++            #[inline]
++            pub fn wasm_(&self) -> bool {
++                unsafe { ::std::mem::transmute(self._bitfield_1.get(0usize, 1u8) as u8) }
++            }
++            #[inline]
++            pub fn set_wasm_(&mut self, val: bool) {
++                unsafe {
++                    let val: u8 = ::std::mem::transmute(val);
++                    self._bitfield_1.set(0usize, 1u8, val as u64)
++                }
++            }
++            #[inline]
++            pub unsafe fn wasm__raw(this: *const Self) -> bool {
++                unsafe {
++                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
++                        ::std::ptr::addr_of!((*this)._bitfield_1),
++                        0usize,
++                        1u8,
++                    ) as u8)
++                }
++            }
++            #[inline]
++            pub unsafe fn set_wasm__raw(this: *mut Self, val: bool) {
++                unsafe {
++                    let val: u8 = ::std::mem::transmute(val);
++                    <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
++                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
++                        0usize,
++                        1u8,
++                        val as u64,
++                    )
++                }
++            }
++            #[inline]
++            pub fn wasmForTrustedPrinciples_(&self) -> bool {
++                unsafe { ::std::mem::transmute(self._bitfield_1.get(1usize, 1u8) as u8) }
++            }
++            #[inline]
++            pub fn set_wasmForTrustedPrinciples_(&mut self, val: bool) {
++                unsafe {
++                    let val: u8 = ::std::mem::transmute(val);
++                    self._bitfield_1.set(1usize, 1u8, val as u64)
++                }
++            }
++            #[inline]
++            pub unsafe fn wasmForTrustedPrinciples__raw(this: *const Self) -> bool {
++                unsafe {
++                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
++                        ::std::ptr::addr_of!((*this)._bitfield_1),
++                        1usize,
++                        1u8,
++                    ) as u8)
++                }
++            }
++            #[inline]
++            pub unsafe fn set_wasmForTrustedPrinciples__raw(this: *mut Self, val: bool) {
++                unsafe {
++                    let val: u8 = ::std::mem::transmute(val);
++                    <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
++                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
++                        1usize,
++                        1u8,
++                        val as u64,
++                    )
++                }
++            }
++            #[inline]
++            pub fn wasmBaseline_(&self) -> bool {
++                unsafe { ::std::mem::transmute(self._bitfield_1.get(2usize, 1u8) as u8) }
++            }
++            #[inline]
++            pub fn set_wasmBaseline_(&mut self, val: bool) {
++                unsafe {
++                    let val: u8 = ::std::mem::transmute(val);
++                    self._bitfield_1.set(2usize, 1u8, val as u64)
++                }
++            }
++            #[inline]
++            pub unsafe fn wasmBaseline__raw(this: *const Self) -> bool {
++                unsafe {
++                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
++                        ::std::ptr::addr_of!((*this)._bitfield_1),
++                        2usize,
++                        1u8,
++                    ) as u8)
++                }
++            }
++            #[inline]
++            pub unsafe fn set_wasmBaseline__raw(this: *mut Self, val: bool) {
++                unsafe {
++                    let val: u8 = ::std::mem::transmute(val);
++                    <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
++                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
++                        2usize,
++                        1u8,
++                        val as u64,
++                    )
++                }
++            }
++            #[inline]
++            pub fn wasmIon_(&self) -> bool {
++                unsafe { ::std::mem::transmute(self._bitfield_1.get(3usize, 1u8) as u8) }
++            }
++            #[inline]
++            pub fn set_wasmIon_(&mut self, val: bool) {
++                unsafe {
++                    let val: u8 = ::std::mem::transmute(val);
++                    self._bitfield_1.set(3usize, 1u8, val as u64)
++                }
++            }
++            #[inline]
++            pub unsafe fn wasmIon__raw(this: *const Self) -> bool {
++                unsafe {
++                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
++                        ::std::ptr::addr_of!((*this)._bitfield_1),
++                        3usize,
++                        1u8,
++                    ) as u8)
++                }
++            }
++            #[inline]
++            pub unsafe fn set_wasmIon__raw(this: *mut Self, val: bool) {
++                unsafe {
++                    let val: u8 = ::std::mem::transmute(val);
++                    <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
++                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
++                        3usize,
++                        1u8,
++                        val as u64,
++                    )
++                }
++            }
++            #[inline]
++            pub fn testWasmAwaitTier2_(&self) -> bool {
++                unsafe { ::std::mem::transmute(self._bitfield_1.get(4usize, 1u8) as u8) }
++            }
++            #[inline]
++            pub fn set_testWasmAwaitTier2_(&mut self, val: bool) {
++                unsafe {
++                    let val: u8 = ::std::mem::transmute(val);
++                    self._bitfield_1.set(4usize, 1u8, val as u64)
++                }
++            }
++            #[inline]
++            pub unsafe fn testWasmAwaitTier2__raw(this: *const Self) -> bool {
++                unsafe {
++                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
++                        ::std::ptr::addr_of!((*this)._bitfield_1),
++                        4usize,
++                        1u8,
++                    ) as u8)
++                }
++            }
++            #[inline]
++            pub unsafe fn set_testWasmAwaitTier2__raw(this: *mut Self, val: bool) {
++                unsafe {
++                    let val: u8 = ::std::mem::transmute(val);
++                    <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
++                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
++                        4usize,
++                        1u8,
++                        val as u64,
++                    )
++                }
++            }
++            #[inline]
++            pub fn disableIon_(&self) -> bool {
++                unsafe { ::std::mem::transmute(self._bitfield_1.get(5usize, 1u8) as u8) }
++            }
++            #[inline]
++            pub fn set_disableIon_(&mut self, val: bool) {
++                unsafe {
++                    let val: u8 = ::std::mem::transmute(val);
++                    self._bitfield_1.set(5usize, 1u8, val as u64)
++                }
++            }
++            #[inline]
++            pub unsafe fn disableIon__raw(this: *const Self) -> bool {
++                unsafe {
++                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
++                        ::std::ptr::addr_of!((*this)._bitfield_1),
++                        5usize,
++                        1u8,
++                    ) as u8)
++                }
++            }
++            #[inline]
++            pub unsafe fn set_disableIon__raw(this: *mut Self, val: bool) {
++                unsafe {
++                    let val: u8 = ::std::mem::transmute(val);
++                    <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
++                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
++                        5usize,
++                        1u8,
++                        val as u64,
++                    )
++                }
++            }
++            #[inline]
++            pub fn disableEvalSecurityChecks_(&self) -> bool {
++                unsafe { ::std::mem::transmute(self._bitfield_1.get(6usize, 1u8) as u8) }
++            }
++            #[inline]
++            pub fn set_disableEvalSecurityChecks_(&mut self, val: bool) {
++                unsafe {
++                    let val: u8 = ::std::mem::transmute(val);
++                    self._bitfield_1.set(6usize, 1u8, val as u64)
++                }
++            }
++            #[inline]
++            pub unsafe fn disableEvalSecurityChecks__raw(this: *const Self) -> bool {
++                unsafe {
++                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
++                        ::std::ptr::addr_of!((*this)._bitfield_1),
++                        6usize,
++                        1u8,
++                    ) as u8)
++                }
++            }
++            #[inline]
++            pub unsafe fn set_disableEvalSecurityChecks__raw(this: *mut Self, val: bool) {
++                unsafe {
++                    let val: u8 = ::std::mem::transmute(val);
++                    <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
++                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
++                        6usize,
++                        1u8,
++                        val as u64,
++                    )
++                }
++            }
++            #[inline]
++            pub fn asyncStack_(&self) -> bool {
++                unsafe { ::std::mem::transmute(self._bitfield_1.get(7usize, 1u8) as u8) }
++            }
++            #[inline]
++            pub fn set_asyncStack_(&mut self, val: bool) {
++                unsafe {
++                    let val: u8 = ::std::mem::transmute(val);
++                    self._bitfield_1.set(7usize, 1u8, val as u64)
++                }
++            }
++            #[inline]
++            pub unsafe fn asyncStack__raw(this: *const Self) -> bool {
++                unsafe {
++                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
++                        ::std::ptr::addr_of!((*this)._bitfield_1),
++                        7usize,
++                        1u8,
++                    ) as u8)
++                }
++            }
++            #[inline]
++            pub unsafe fn set_asyncStack__raw(this: *mut Self, val: bool) {
++                unsafe {
++                    let val: u8 = ::std::mem::transmute(val);
++                    <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
++                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
++                        7usize,
++                        1u8,
++                        val as u64,
++                    )
++                }
++            }
++            #[inline]
++            pub fn asyncStackCaptureDebuggeeOnly_(&self) -> bool {
++                unsafe { ::std::mem::transmute(self._bitfield_1.get(8usize, 1u8) as u8) }
++            }
++            #[inline]
++            pub fn set_asyncStackCaptureDebuggeeOnly_(&mut self, val: bool) {
++                unsafe {
++                    let val: u8 = ::std::mem::transmute(val);
++                    self._bitfield_1.set(8usize, 1u8, val as u64)
++                }
++            }
++            #[inline]
++            pub unsafe fn asyncStackCaptureDebuggeeOnly__raw(this: *const Self) -> bool {
++                unsafe {
++                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
++                        ::std::ptr::addr_of!((*this)._bitfield_1),
++                        8usize,
++                        1u8,
++                    ) as u8)
++                }
++            }
++            #[inline]
++            pub unsafe fn set_asyncStackCaptureDebuggeeOnly__raw(this: *mut Self, val: bool) {
++                unsafe {
++                    let val: u8 = ::std::mem::transmute(val);
++                    <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
++                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
++                        8usize,
++                        1u8,
++                        val as u64,
++                    )
++                }
++            }
++            #[inline]
++            pub fn throwOnDebuggeeWouldRun_(&self) -> bool {
++                unsafe { ::std::mem::transmute(self._bitfield_1.get(9usize, 1u8) as u8) }
++            }
++            #[inline]
++            pub fn set_throwOnDebuggeeWouldRun_(&mut self, val: bool) {
++                unsafe {
++                    let val: u8 = ::std::mem::transmute(val);
++                    self._bitfield_1.set(9usize, 1u8, val as u64)
++                }
++            }
++            #[inline]
++            pub unsafe fn throwOnDebuggeeWouldRun__raw(this: *const Self) -> bool {
++                unsafe {
++                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
++                        ::std::ptr::addr_of!((*this)._bitfield_1),
++                        9usize,
++                        1u8,
++                    ) as u8)
++                }
++            }
++            #[inline]
++            pub unsafe fn set_throwOnDebuggeeWouldRun__raw(this: *mut Self, val: bool) {
++                unsafe {
++                    let val: u8 = ::std::mem::transmute(val);
++                    <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
++                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
++                        9usize,
++                        1u8,
++                        val as u64,
++                    )
++                }
++            }
++            #[inline]
++            pub fn dumpStackOnDebuggeeWouldRun_(&self) -> bool {
++                unsafe { ::std::mem::transmute(self._bitfield_1.get(10usize, 1u8) as u8) }
++            }
++            #[inline]
++            pub fn set_dumpStackOnDebuggeeWouldRun_(&mut self, val: bool) {
++                unsafe {
++                    let val: u8 = ::std::mem::transmute(val);
++                    self._bitfield_1.set(10usize, 1u8, val as u64)
++                }
++            }
++            #[inline]
++            pub unsafe fn dumpStackOnDebuggeeWouldRun__raw(this: *const Self) -> bool {
++                unsafe {
++                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
++                        ::std::ptr::addr_of!((*this)._bitfield_1),
++                        10usize,
++                        1u8,
++                    ) as u8)
++                }
++            }
++            #[inline]
++            pub unsafe fn set_dumpStackOnDebuggeeWouldRun__raw(this: *mut Self, val: bool) {
++                unsafe {
++                    let val: u8 = ::std::mem::transmute(val);
++                    <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
++                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
++                        10usize,
++                        1u8,
++                        val as u64,
++                    )
++                }
++            }
++            #[inline]
++            pub fn fuzzing_(&self) -> bool {
++                unsafe { ::std::mem::transmute(self._bitfield_1.get(11usize, 1u8) as u8) }
++            }
++            #[inline]
++            pub fn set_fuzzing_(&mut self, val: bool) {
++                unsafe {
++                    let val: u8 = ::std::mem::transmute(val);
++                    self._bitfield_1.set(11usize, 1u8, val as u64)
++                }
++            }
++            #[inline]
++            pub unsafe fn fuzzing__raw(this: *const Self) -> bool {
++                unsafe {
++                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
++                        ::std::ptr::addr_of!((*this)._bitfield_1),
++                        11usize,
++                        1u8,
++                    ) as u8)
++                }
++            }
++            #[inline]
++            pub unsafe fn set_fuzzing__raw(this: *mut Self, val: bool) {
+                 unsafe {
+                     let val: u8 = ::std::mem::transmute(val);
+-                    <__BindgenBitfieldUnit<[u8; 1usize]>>::raw_set(
++                    <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
+                         ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+-                        1usize,
++                        11usize,
+                         1u8,
+                         val as u64,
+                     )
+@@ -131,92 +641,79 @@ pub struct BaseProxyHandler {
+             }
+             #[inline]
+             pub fn new_bitfield_1(
+-                constructing_: bool,
+-                ignoresReturnValue_: bool,
+-            ) -> __BindgenBitfieldUnit<[u8; 1usize]> {
+-                let mut __bindgen_bitfield_unit: __BindgenBitfieldUnit<[u8; 1usize]> =
++                wasm_: bool,
++                wasmForTrustedPrinciples_: bool,
++                wasmBaseline_: bool,
++                wasmIon_: bool,
++                testWasmAwaitTier2_: bool,
++                disableIon_: bool,
++                disableEvalSecurityChecks_: bool,
++                asyncStack_: bool,
++                asyncStackCaptureDebuggeeOnly_: bool,
++                throwOnDebuggeeWouldRun_: bool,
++                dumpStackOnDebuggeeWouldRun_: bool,
++                fuzzing_: bool,
++            ) -> __BindgenBitfieldUnit<[u8; 2usize]> {
++                let mut __bindgen_bitfield_unit: __BindgenBitfieldUnit<[u8; 2usize]> =
+                     Default::default();
+                 __bindgen_bitfield_unit.set(0usize, 1u8, {
+-                    let constructing_: u8 = unsafe { ::std::mem::transmute(constructing_) };
+-                    constructing_ as u64
++                    let wasm_: u8 = unsafe { ::std::mem::transmute(wasm_) };
++                    wasm_ as u64
+                 });
+                 __bindgen_bitfield_unit.set(1usize, 1u8, {
+-                    let ignoresReturnValue_: u8 =
+-                        unsafe { ::std::mem::transmute(ignoresReturnValue_) };
+-                    ignoresReturnValue_ as u64
++                    let wasmForTrustedPrinciples_: u8 =
++                        unsafe { ::std::mem::transmute(wasmForTrustedPrinciples_) };
++                    wasmForTrustedPrinciples_ as u64
++                });
++                __bindgen_bitfield_unit.set(2usize, 1u8, {
++                    let wasmBaseline_: u8 = unsafe { ::std::mem::transmute(wasmBaseline_) };
++                    wasmBaseline_ as u64
++                });
++                __bindgen_bitfield_unit.set(3usize, 1u8, {
++                    let wasmIon_: u8 = unsafe { ::std::mem::transmute(wasmIon_) };
++                    wasmIon_ as u64
++                });
++                __bindgen_bitfield_unit.set(4usize, 1u8, {
++                    let testWasmAwaitTier2_: u8 =
++                        unsafe { ::std::mem::transmute(testWasmAwaitTier2_) };
++                    testWasmAwaitTier2_ as u64
++                });
++                __bindgen_bitfield_unit.set(5usize, 1u8, {
++                    let disableIon_: u8 = unsafe { ::std::mem::transmute(disableIon_) };
++                    disableIon_ as u64
++                });
++                __bindgen_bitfield_unit.set(6usize, 1u8, {
++                    let disableEvalSecurityChecks_: u8 =
++                        unsafe { ::std::mem::transmute(disableEvalSecurityChecks_) };
++                    disableEvalSecurityChecks_ as u64
++                });
++                __bindgen_bitfield_unit.set(7usize, 1u8, {
++                    let asyncStack_: u8 = unsafe { ::std::mem::transmute(asyncStack_) };
++                    asyncStack_ as u64
++                });
++                __bindgen_bitfield_unit.set(8usize, 1u8, {
++                    let asyncStackCaptureDebuggeeOnly_: u8 =
++                        unsafe { ::std::mem::transmute(asyncStackCaptureDebuggeeOnly_) };
++                    asyncStackCaptureDebuggeeOnly_ as u64
++                });
++                __bindgen_bitfield_unit.set(9usize, 1u8, {
++                    let throwOnDebuggeeWouldRun_: u8 =
++                        unsafe { ::std::mem::transmute(throwOnDebuggeeWouldRun_) };
++                    throwOnDebuggeeWouldRun_ as u64
++                });
++                __bindgen_bitfield_unit.set(10usize, 1u8, {
++                    let dumpStackOnDebuggeeWouldRun_: u8 =
++                        unsafe { ::std::mem::transmute(dumpStackOnDebuggeeWouldRun_) };
++                    dumpStackOnDebuggeeWouldRun_ as u64
++                });
++                __bindgen_bitfield_unit.set(11usize, 1u8, {
++                    let fuzzing_: u8 = unsafe { ::std::mem::transmute(fuzzing_) };
++                    fuzzing_ as u64
+                 });
+                 __bindgen_bitfield_unit
+             }
+         }
+ 
+-    #[doc = " Called when the transferring objects are checked. If this function returns\n false, the serialization ends throwing a DataCloneError exception."]
+-    pub type CanTransferStructuredCloneOp = ::std::option::Option<
+-        unsafe extern "C" fn(
+-            cx: *mut JSContext,
+-            obj: Handle<*mut JSObject>,
+-            sameProcessScopeRequired: *mut bool,
+-            closure: *mut std::os::raw::c_void,
+-        ) -> bool,
+-    >;
+-
+-#[repr(C)]
+-#[derive(Debug, Copy, Clone, PartialEq)]
+-pub struct ClassExtension {
+-    _private: [u8; 0],
+-}
+-
+-#[repr(C)]
+-#[derive(Debug, Copy, Clone, PartialEq)]
+-pub struct ClassSpec {
+-    _private: [u8; 0],
+-}
+-
+-        #[repr(C)]
+-        #[derive(Debug, Copy, Clone, PartialEq)]
+-        pub struct ClippedTime {
+-            pub t: f64,
+-        }
+-
+-        #[repr(C)]
+-        #[derive(Debug, Copy, Clone, PartialEq)]
+-        pub struct CloneDataPolicy {
+-            pub allowIntraClusterClonableSharedObjects_: bool,
+-            pub allowSharedMemoryObjects_: bool,
+-        }
+-
+-#[repr(C)]
+-#[derive(Debug, Copy, Clone, PartialEq)]
+-pub struct Compartment {
+-    _private: [u8; 0],
+-}
+-
+-        #[repr(i32)]
+-        #[doc = " An enum that JSIterateCompartmentCallback can return to indicate\n whether to keep iterating."]
+-        #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+-        pub enum CompartmentIterResult {
+-            KeepGoing = 0,
+-            Stop = 1,
+-        }
+-
+-        #[repr(i32)]
+-        #[doc = " Specification for which compartment/zone a newly created realm should use."]
+-        #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+-        pub enum CompartmentSpecifier {
+-            NewCompartmentInSystemZone = 0,
+-            NewCompartmentInExistingZone = 1,
+-            NewCompartmentAndZone = 2,
+-            ExistingCompartment = 3,
+-        }
+-
+-        #[repr(i32)]
+-        #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+-        pub enum CompilationType {
+-            DirectEval = 0,
+-            IndirectEval = 1,
+-            Function = 2,
+-            Undefined = 3,
+-        }
+-
+         pub type DOMCallbacks = JSDOMCallbacks;
+ 
+         pub type DOMInstanceClassHasProtoAtDepth = ::std::option::Option<
+@@ -473,6 +970,14 @@ pub struct GCContext {
+             NUM_REASONS = 100,
+         }
+ 
++        pub type GCSliceCallback = ::std::option::Option<
++            unsafe extern "C" fn(
++                cx: *mut JSContext,
++                progress: GCProgress,
++                desc: *const GCDescription,
++            ),
++        >;
++
+         pub type GetElementsOp = ::std::option::Option<
+             unsafe extern "C" fn(
+                 cx: *mut JSContext,
+@@ -551,6 +1056,9 @@ pub struct GCContext {
+             ) -> bool,
+         >;
+ 
++        pub type HasReleasedWrapperCallback =
++            ::std::option::Option<unsafe extern "C" fn(arg1: HandleObject) -> bool>;
++
+         #[repr(i32)]
+         #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+         pub enum HeapState {
+@@ -1551,6 +2059,15 @@ pub struct JSAtom {
+ 
+     pub type JSFunctionSpec_Name = JSPropertySpec_Name;
+ 
++    pub type JSGCCallback = ::std::option::Option<
++        unsafe extern "C" fn(
++            cx: *mut JSContext,
++            status: JSGCStatus,
++            reason: GCReason,
++            data: *mut std::os::raw::c_void,
++        ),
++    >;
++
+     #[repr(i32)]
+     #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+     pub enum JSGCParamKey {
+@@ -1667,6 +2184,9 @@ pub struct JSAtom {
+ 
+     pub const JSITER_SYMBOLS: u32 = 32;
+ 
++    pub type JSInterruptCallback =
++        ::std::option::Option<unsafe extern "C" fn(arg1: *mut JSContext) -> bool>;
++
+     pub type JSIterateCompartmentCallback = ::std::option::Option<
+         unsafe extern "C" fn(
+             arg1: *mut JSContext,
+@@ -2463,6 +2983,14 @@ pub struct JSPrincipals {
+         pub double_: f64,
+     }
+ 
++    pub type JSReadPrincipalsOp = ::std::option::Option<
++        unsafe extern "C" fn(
++            cx: *mut JSContext,
++            reader: *mut JSStructuredCloneReader,
++            outPrincipals: *mut *mut JSPrincipals,
++        ) -> bool,
++    >;
++
+     #[doc = " Resolve a lazy property named by id in obj by defining it directly in obj.\n Lazy properties are those reflected from some peer native property space\n (e.g., the DOM attributes for a given node reflected as obj) on demand.\n\n JS looks for a property in an object, and if not found, tries to resolve\n the given id. *resolvedp should be set to true iff the property was defined\n on |obj|.\n\n See JS::dbg::ShouldAvoidSideEffects in Debug.h if this function has any\n other side-effect than just resolving the property."]
+     pub type JSResolveOp = ::std::option::Option<
+         unsafe extern "C" fn(
+@@ -2536,6 +3064,10 @@ pub struct JSRuntime {
+         ) -> bool,
+     >;
+ 
++    pub type JSTraceDataOp = ::std::option::Option<
++        unsafe extern "C" fn(trc: *mut JSTracer, data: *mut std::os::raw::c_void),
++    >;
++
+     #[doc = " Function type for trace operation of the class called to enumerate all\n traceable things reachable from obj's private data structure. For each such\n thing, a trace implementation must call JS::TraceEdge on the thing's\n location.\n\n JSTraceOp implementation can assume that no other threads mutates object\n state. It must not change state of the object or corresponding native\n structures. The only exception for this rule is the case when the embedding\n needs a tight integration with GC. In that case the embedding can check if\n the traversal is a part of the marking phase through calling\n JS_IsGCMarkingTracer and apply a special code like emptying caches or\n marking its native structures."]
+     pub type JSTraceOp = ::std::option::Option<
+         unsafe extern "C" fn(trc: *mut JSTracer, obj: *mut JSObject),
+@@ -2630,15 +3162,11 @@ pub struct JSTracer {
+                 _unused: [u8; 0],
+             }
+ 
+-        #[doc = " Abstract base class for an ECMAScript Job Queue:\n https://www.ecma-international.org/ecma-262/9.0/index.html#sec-jobs-and-job-queues\n\n SpiderMonkey doesn't schedule Promise resolution jobs itself; instead, the\n embedding can provide an instance of this class SpiderMonkey can use to do\n that scheduling.\n\n The JavaScript shell includes a simple implementation adequate for running\n tests. Browsers need to augment job handling to meet their own additional\n requirements, so they can provide their own implementation."]
+-        #[repr(C)]
+-        #[derive(Debug, PartialEq)]
+-        pub struct JobQueue {
+-            pub vtable_: *const JobQueue__bindgen_vtable,
+-        }
+-
+-        #[repr(C)]
+-        pub struct JobQueue__bindgen_vtable(std::os::raw::c_void);
++#[repr(C)]
++#[derive(Debug, Copy, Clone, PartialEq)]
++pub struct JobQueue {
++    _private: [u8; 0],
++}
+ 
+         pub type Latin1Char = std::os::raw::c_uchar;
+ 
+@@ -2805,6 +3333,143 @@ pub struct JSTracer {
+         NoTransferables = 2,
+     }
+ 
++        #[repr(C, packed)]
++        #[derive(Debug, Copy, Clone, PartialEq)]
++        pub struct PrefableCompileOptions {
++            pub _bitfield_align_1: [u8; 0],
++            pub _bitfield_1: __BindgenBitfieldUnit<[u8; 1usize]>,
++            pub asmJSOption_: AsmJSOption,
++        }
++
++        impl PrefableCompileOptions {
++            #[inline]
++            pub fn importAttributes_(&self) -> bool {
++                unsafe { ::std::mem::transmute(self._bitfield_1.get(0usize, 1u8) as u8) }
++            }
++            #[inline]
++            pub fn set_importAttributes_(&mut self, val: bool) {
++                unsafe {
++                    let val: u8 = ::std::mem::transmute(val);
++                    self._bitfield_1.set(0usize, 1u8, val as u64)
++                }
++            }
++            #[inline]
++            pub unsafe fn importAttributes__raw(this: *const Self) -> bool {
++                unsafe {
++                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 1usize]>>::raw_get(
++                        ::std::ptr::addr_of!((*this)._bitfield_1),
++                        0usize,
++                        1u8,
++                    ) as u8)
++                }
++            }
++            #[inline]
++            pub unsafe fn set_importAttributes__raw(this: *mut Self, val: bool) {
++                unsafe {
++                    let val: u8 = ::std::mem::transmute(val);
++                    <__BindgenBitfieldUnit<[u8; 1usize]>>::raw_set(
++                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
++                        0usize,
++                        1u8,
++                        val as u64,
++                    )
++                }
++            }
++            #[inline]
++            pub fn sourcePragmas_(&self) -> bool {
++                unsafe { ::std::mem::transmute(self._bitfield_1.get(1usize, 1u8) as u8) }
++            }
++            #[inline]
++            pub fn set_sourcePragmas_(&mut self, val: bool) {
++                unsafe {
++                    let val: u8 = ::std::mem::transmute(val);
++                    self._bitfield_1.set(1usize, 1u8, val as u64)
++                }
++            }
++            #[inline]
++            pub unsafe fn sourcePragmas__raw(this: *const Self) -> bool {
++                unsafe {
++                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 1usize]>>::raw_get(
++                        ::std::ptr::addr_of!((*this)._bitfield_1),
++                        1usize,
++                        1u8,
++                    ) as u8)
++                }
++            }
++            #[inline]
++            pub unsafe fn set_sourcePragmas__raw(this: *mut Self, val: bool) {
++                unsafe {
++                    let val: u8 = ::std::mem::transmute(val);
++                    <__BindgenBitfieldUnit<[u8; 1usize]>>::raw_set(
++                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
++                        1usize,
++                        1u8,
++                        val as u64,
++                    )
++                }
++            }
++            #[inline]
++            pub fn throwOnAsmJSValidationFailure_(&self) -> bool {
++                unsafe { ::std::mem::transmute(self._bitfield_1.get(2usize, 1u8) as u8) }
++            }
++            #[inline]
++            pub fn set_throwOnAsmJSValidationFailure_(&mut self, val: bool) {
++                unsafe {
++                    let val: u8 = ::std::mem::transmute(val);
++                    self._bitfield_1.set(2usize, 1u8, val as u64)
++                }
++            }
++            #[inline]
++            pub unsafe fn throwOnAsmJSValidationFailure__raw(this: *const Self) -> bool {
++                unsafe {
++                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 1usize]>>::raw_get(
++                        ::std::ptr::addr_of!((*this)._bitfield_1),
++                        2usize,
++                        1u8,
++                    ) as u8)
++                }
++            }
++            #[inline]
++            pub unsafe fn set_throwOnAsmJSValidationFailure__raw(this: *mut Self, val: bool) {
++                unsafe {
++                    let val: u8 = ::std::mem::transmute(val);
++                    <__BindgenBitfieldUnit<[u8; 1usize]>>::raw_set(
++                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
++                        2usize,
++                        1u8,
++                        val as u64,
++                    )
++                }
++            }
++            #[inline]
++            pub fn new_bitfield_1(
++                importAttributes_: bool,
++                sourcePragmas_: bool,
++                throwOnAsmJSValidationFailure_: bool,
++            ) -> __BindgenBitfieldUnit<[u8; 1usize]> {
++                let mut __bindgen_bitfield_unit: __BindgenBitfieldUnit<[u8; 1usize]> =
++                    Default::default();
++                __bindgen_bitfield_unit.set(0usize, 1u8, {
++                    let importAttributes_: u8 = unsafe { ::std::mem::transmute(importAttributes_) };
++                    importAttributes_ as u64
++                });
++                __bindgen_bitfield_unit.set(1usize, 1u8, {
++                    let sourcePragmas_: u8 = unsafe { ::std::mem::transmute(sourcePragmas_) };
++                    sourcePragmas_ as u64
++                });
++                __bindgen_bitfield_unit.set(2usize, 1u8, {
++                    let throwOnAsmJSValidationFailure_: u8 =
++                        unsafe { ::std::mem::transmute(throwOnAsmJSValidationFailure_) };
++                    throwOnAsmJSValidationFailure_ as u64
++                });
++                __bindgen_bitfield_unit
++            }
++        }
++
++        pub type PreserveWrapperCallback = ::std::option::Option<
++            unsafe extern "C" fn(arg1: *mut JSContext, arg2: HandleObject) -> bool,
++        >;
++
+         #[repr(i32)]
+         #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+         pub enum ProfilerStringView_Ownership {
+@@ -2818,6 +3483,16 @@ pub struct JSTracer {
+             Handled = 1,
+         }
+ 
++        pub type PromiseRejectionTrackerCallback = ::std::option::Option<
++            unsafe extern "C" fn(
++                cx: *mut JSContext,
++                mutedErrors: bool,
++                promise: HandleObject,
++                state: PromiseRejectionHandlingState,
++                data: *mut std::os::raw::c_void,
++            ),
++        >;
++
+         #[repr(i32)]
+         #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+         pub enum PromiseState {
+@@ -3364,6 +4039,9 @@ pub struct Realm {
+             _unused: [u8; 0],
+         }
+ 
++        pub type ReportStreamErrorCallback =
++            ::std::option::Option<unsafe extern "C" fn(arg1: *mut JSContext, arg2: usize)>;
++
+         #[doc = " Local variable of type T whose value is always rooted. This is typically\n used for local variables, or for non-rooted values being passed to a\n function that requires a handle, e.g. Foo(Root<T>(cx, x)).\n\n If you want to add additional methods to Rooted for a specific\n specialization, define a RootedOperations<T> specialization containing them."]
+         pub type RootedObject = Rooted<*mut JSObject>;
+ 
+@@ -3393,15 +4071,24 @@ pub struct Realm {
+             _unused: [u8; 0],
+         }
+ 
++#[repr(C)]
++#[derive(Debug, Copy, Clone, PartialEq)]
++pub struct ScriptEnvironmentPreparer_Closure {
++    _private: [u8; 0],
++}
++
++        #[doc = " These are the measurements used by Servo."]
+         #[repr(C)]
+         #[derive(Debug, Copy, Clone, PartialEq)]
+-        pub struct ScriptEnvironmentPreparer_Closure {
+-            pub vtable_: *const ScriptEnvironmentPreparer_Closure__bindgen_vtable,
++        pub struct ServoSizes {
++            pub gcHeapUsed: usize,
++            pub gcHeapUnused: usize,
++            pub gcHeapAdmin: usize,
++            pub gcHeapDecommitted: usize,
++            pub mallocHeap: usize,
++            pub nonHeap: usize,
+         }
+ 
+-        #[repr(C)]
+-        pub struct ScriptEnvironmentPreparer_Closure__bindgen_vtable(std::os::raw::c_void);
+-
+         pub type SetPropertyOp = ::std::option::Option<
+             unsafe extern "C" fn(
+                 cx: *mut JSContext,
+@@ -3448,6 +4135,12 @@ pub struct Realm {
+             Default = 2,
+         }
+ 
++#[repr(C)]
++#[derive(Debug, Copy, Clone, PartialEq)]
++pub struct StreamConsumer {
++    _private: [u8; 0],
++}
++
+             #[repr(C)]
+             #[derive(Copy, Clone)]
+             pub struct String {
+@@ -3610,8 +4303,6 @@ pub struct TrampolineNative {
+                 Simd128 = 14,
+             }
+ 
+-        pub type Vector = u8;
+-
+         #[repr(C, packed)]
+         #[derive(Debug, Copy, Clone, PartialEq)]
+         pub struct Wrapper {
+diff --git a/components/roves-js/src/lib.rs b/components/roves-js/src/lib.rs
+index 449a89dd378..43bc1c6d937 100644
+--- a/components/roves-js/src/lib.rs
++++ b/components/roves-js/src/lib.rs
+@@ -27,6 +27,7 @@ mod jsapi_impl;
+ mod native;
+ mod object;
+ mod proxy;
++mod runtime_impl;
+ mod typedarray_impl;
+ pub mod typedarray;
+ mod realm_impl;
+diff --git a/components/roves-js/src/object.rs b/components/roves-js/src/object.rs
+index c844d8647b0..a622e77df2e 100644
+--- a/components/roves-js/src/object.rs
++++ b/components/roves-js/src/object.rs
+@@ -229,11 +229,132 @@ impl ClassTemplates {
+             let data = v8::External::new(scope, class as *mut c_void);
+             template.set_call_as_function_handler(call_class_hook, Some(data.into()));
+         }
++        if ops.is_some_and(|ops| ops.resolve.is_some() || ops.newEnumerate.is_some()) {
++            // SpiderMonkey's lazy properties: consulted only for properties the object does
++            // not have yet (V8's non-masking interceptors), as SpiderMonkey's resolve hook is.
++            let data = v8::External::new(scope, class as *mut c_void);
++            let configuration = v8::NamedPropertyHandlerConfiguration::new()
++                .getter(resolve_getter)
++                .query(resolve_query)
++                .enumerator(resolve_enumerator)
++                .data(data.into())
++                .flags(v8::PropertyHandlerFlags::NON_MASKING | v8::PropertyHandlerFlags::ONLY_INTERCEPT_STRINGS);
++            template.set_named_property_handler(configuration);
++        }
+         self.templates.borrow_mut().insert(class as usize, v8::Global::new(scope, template));
+         template
+     }
+ }
+ 
++thread_local! {
++    /// The (object, key) pairs whose resolve hook is running: lookups of the same property
++    /// from inside the hook must not resolve it again (SpiderMonkey's `JSPROP_RESOLVING`).
++    static RESOLVING: RefCell<Vec<(*mut JSObject, crate::jsid::jsid)>> = const { RefCell::new(Vec::new()) };
++}
++
++/// The class object behind an interceptor's holder (a global's holder is its proxy).
++fn interceptor_object(holder: v8::Local<v8::Object>) -> Option<*mut JSObject> {
++    let class_box = class_box_of_v8(holder)?;
++    let cell = class_box.cell.get();
++    (!cell.is_null()).then_some(cell as *mut JSObject)
++}
++
++/// Runs the class resolve hook for `key` on the holder; `Some(true)` when it defined the
++/// property, `None` when it threw (the exception is rethrown into V8).
++fn run_resolve_hook(scope: &mut v8::PinScope, data: v8::Local<v8::Value>, holder: v8::Local<v8::Object>, key: v8::Local<v8::Name>) -> Option<bool> {
++    let external = v8::Local::<v8::External>::try_from(data).ok()?;
++    let class = external.value() as *const JSClass;
++    // SAFETY: only classes with a resolve or enumerate hook get these interceptors.
++    let ops = unsafe { &*(*class).cOps };
++    let resolve = ops.resolve?;
++    let obj = interceptor_object(holder)?;
++    let id = crate::jsapi_impl::key_id(scope, key.into());
++    if RESOLVING.with(|resolving| resolving.borrow().contains(&(obj, id))) {
++        return Some(false);
++    }
++    let cx = JSContext::current() as *const JSContext as *mut JSContext;
++    if let Some(may_resolve) = ops.mayResolve {
++        // SAFETY: SpiderMonkey's hook contract (the atom state is not used by Servo's hooks).
++        if !unsafe { may_resolve(std::ptr::null(), id, obj) } {
++            return Some(false);
++        }
++    }
++    crate::rooted!(in(cx) let object = obj);
++    crate::rooted!(in(cx) let rooted_id = id);
++    let mut resolved = false;
++    RESOLVING.with(|resolving| resolving.borrow_mut().push((obj, id)));
++    // SAFETY: SpiderMonkey's resolve contract (rooted arguments).
++    let ok = unsafe { resolve(cx, object.handle().into_handle(), rooted_id.handle().into_handle(), &mut resolved) };
++    RESOLVING.with(|resolving| resolving.borrow_mut().pop());
++    if !ok {
++        crate::native::rethrow_pending(scope, JSContext::current());
++        return None;
++    }
++    Some(resolved)
++}
++
++fn resolve_getter<'s>(
++    scope: &mut v8::PinScope<'s, '_>,
++    key: v8::Local<'s, v8::Name>,
++    args: v8::PropertyCallbackArguments<'s>,
++    mut retval: v8::ReturnValue<v8::Value>,
++) -> v8::Intercepted {
++    let holder = args.holder();
++    match run_resolve_hook(scope, args.data(), holder, key) {
++        None => v8::Intercepted::kYes,
++        Some(false) => v8::Intercepted::kNo,
++        Some(true) => match holder.get_real_named_property(scope, key) {
++            Some(value) => {
++                retval.set(value);
++                v8::Intercepted::kYes
++            },
++            None => v8::Intercepted::kNo,
++        },
++    }
++}
++
++fn resolve_query<'s>(
++    scope: &mut v8::PinScope<'s, '_>,
++    key: v8::Local<'s, v8::Name>,
++    args: v8::PropertyCallbackArguments<'s>,
++    mut retval: v8::ReturnValue<v8::Integer>,
++) -> v8::Intercepted {
++    let holder = args.holder();
++    match run_resolve_hook(scope, args.data(), holder, key) {
++        None => v8::Intercepted::kYes,
++        Some(false) => v8::Intercepted::kNo,
++        Some(true) => match holder.get_real_named_property_attributes(scope, key) {
++            Some(attributes) => {
++                retval.set_int32(attributes.as_u32() as i32);
++                v8::Intercepted::kYes
++            },
++            None => v8::Intercepted::kNo,
++        },
++    }
++}
++
++/// Lists the lazy properties through the class `newEnumerate` hook.
++fn resolve_enumerator<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::PropertyCallbackArguments<'s>, mut retval: v8::ReturnValue<v8::Array>) {
++    let Ok(external) = v8::Local::<v8::External>::try_from(args.data()) else { return };
++    let class = external.value() as *const JSClass;
++    // SAFETY: as for `run_resolve_hook`.
++    let ops = unsafe { &*(*class).cOps };
++    let Some(enumerate) = ops.newEnumerate else { return };
++    let Some(obj) = interceptor_object(args.holder()) else { return };
++    let cx = JSContext::current() as *const JSContext as *mut JSContext;
++    crate::rooted!(in(cx) let object = obj);
++    // SAFETY: `cx` is this thread's live context.
++    let mut ids = unsafe { crate::rust::IdVector::new(cx) };
++    // SAFETY: SpiderMonkey's enumerate contract.
++    if !unsafe { enumerate(cx, object.handle().into_handle(), ids.handle_mut(), false) } {
++        crate::native::rethrow_pending(scope, JSContext::current());
++        return;
++    }
++    let keys: Vec<v8::Local<v8::Value>> = ids.iter().filter_map(|id| crate::jsapi_impl::id_key(scope, *id).map(Into::into)).collect();
++    let array = v8::Array::new_with_elements(scope, &keys);
++    retval.set(array);
++}
++
+ /// A callable class object was called (or constructed): run its `call`/`construct` hook.
+ fn call_class_hook(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut retval: v8::ReturnValue) {
+     let Ok(external) = v8::Local::<v8::External>::try_from(args.data()) else { return };
+diff --git a/components/roves-js/src/runtime_impl.rs b/components/roves-js/src/runtime_impl.rs
+new file mode 100644
+index 00000000000..8c496bce5f8
+--- /dev/null
++++ b/components/roves-js/src/runtime_impl.rs
+@@ -0,0 +1,302 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! Runtime hooks and settings of the JSAPI (interrupts, extra GC roots, the job queue,
++//! promise rejection tracking, GC and JIT settings) on V8.
++//!
++//! **Promise jobs.** SpiderMonkey hands every promise job to the embedder's job queue
++//! (`JobQueueTraps::enqueuePromiseJob`), and the embedder runs it. V8 has no such hook: its
++//! microtask queue is the only queue. Runtimes use V8's explicit microtask policy, and
++//! [`RunJobs`] performs a microtask checkpoint; the embedder's job-queue traps are kept but
++//! not called for promise jobs.
++//!
++//! Settings with no V8 counterpart (SpiderMonkey's GC parameters, JIT options, build ids,
++//! memory reporters) are recorded and otherwise ignored.
++
++use std::cell::{Cell, RefCell};
++use std::collections::HashMap;
++use std::ffi::{c_char, c_void};
++
++use crate::glue::{
++    DispatchablePointer, GetSize, InvokeScriptPreparerHook, JobQueueTraps, RustDispatchToEventLoopCallback,
++    WantToMeasure,
++};
++use crate::jsapi::{
++    BuildIdCharVector, BuildIdOp, ConsumeStreamCallback, ContextOptions, DOMCallbacks, Dispatchable_MaybeShuttingDown,
++    GCReason, GCSliceCallback, HasReleasedWrapperCallback, JSContext, JSGCCallback, JSGCParamKey, JSInterruptCallback,
++    JSJitCompilerOption, JSReadPrincipalsOp, JSSecurityCallbacks, JSTraceDataOp, JobQueue, PreserveWrapperCallback,
++    PromiseRejectionHandlingState, PromiseRejectionTrackerCallback, ReportStreamErrorCallback,
++    ScriptEnvironmentPreparer_Closure, ServoSizes,
++};
++use crate::jsval::from_v8;
++
++/// The hooks and settings an embedder installs on a runtime.
++pub(crate) struct RuntimeHooks {
++    interrupt_callbacks: RefCell<Vec<JSInterruptCallback>>,
++    extra_roots: RefCell<Vec<(JSTraceDataOp, *mut c_void)>>,
++    gc_callback: Cell<(JSGCCallback, *mut c_void)>,
++    gc_slice_callback: Cell<GCSliceCallback>,
++    gc_parameters: RefCell<HashMap<i32, u32>>,
++    context_options: Box<ContextOptions>,
++    security_callbacks: Cell<*const JSSecurityCallbacks>,
++    dom_callbacks: Cell<*const DOMCallbacks>,
++    preserve_wrapper: Cell<(PreserveWrapperCallback, HasReleasedWrapperCallback)>,
++    read_principals: Cell<JSReadPrincipalsOp>,
++    job_queue: Cell<*mut JobQueue>,
++    promise_rejection_tracker: Cell<(PromiseRejectionTrackerCallback, *mut c_void)>,
++    event_loop_dispatch: Cell<(RustDispatchToEventLoopCallback, *mut c_void)>,
++    consume_stream: Cell<(ConsumeStreamCallback, ReportStreamErrorCallback)>,
++    script_environment_preparer: Cell<InvokeScriptPreparerHook>,
++}
++
++impl Default for RuntimeHooks {
++    fn default() -> Self {
++        RuntimeHooks {
++            interrupt_callbacks: Default::default(),
++            extra_roots: Default::default(),
++            gc_callback: Cell::new((None, std::ptr::null_mut())),
++            gc_slice_callback: Cell::new(None),
++            gc_parameters: Default::default(),
++            // SAFETY: SpiderMonkey's context options are plain flags (all off when zeroed).
++            context_options: Box::new(unsafe { std::mem::zeroed() }),
++            security_callbacks: Cell::new(std::ptr::null()),
++            dom_callbacks: Cell::new(std::ptr::null()),
++            preserve_wrapper: Cell::new((None, None)),
++            read_principals: Cell::new(None),
++            job_queue: Cell::new(std::ptr::null_mut()),
++            promise_rejection_tracker: Cell::new((None, std::ptr::null_mut())),
++            event_loop_dispatch: Cell::new((None, std::ptr::null_mut())),
++            consume_stream: Cell::new((None, None)),
++            script_environment_preparer: Cell::new(None),
++        }
++    }
++}
++
++fn hooks<'h>(cx: *mut JSContext) -> &'h RuntimeHooks {
++    // SAFETY: callers pass this thread's live context.
++    unsafe { &(*cx).hooks }
++}
++
++fn isolate<'i>(cx: *mut JSContext) -> &'i mut v8::Isolate {
++    // SAFETY: as above; the isolate is only used from its own thread.
++    unsafe { &mut *(*cx).isolate }
++}
++
++/// Configures a new runtime's isolate for the JSAPI's model.
++pub(crate) fn configure_isolate(isolate: &mut v8::Isolate) {
++    isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
++    isolate.set_promise_reject_callback(promise_reject_callback);
++}
++
++// --- Interrupts ------------------------------------------------------------------------------
++
++pub unsafe fn JS_AddInterruptCallback(cx: *mut JSContext, callback: JSInterruptCallback) -> bool {
++    hooks(cx).interrupt_callbacks.borrow_mut().push(callback);
++    true
++}
++
++pub unsafe fn JS_RequestInterruptCallback(cx: *mut JSContext) {
++    let handle = isolate(cx).thread_safe_handle();
++    handle.request_interrupt(run_interrupt_callbacks, std::ptr::null_mut());
++}
++
++pub unsafe fn JS_RequestInterruptCallbackCanWait(cx: *mut JSContext) {
++    // SAFETY: forwarded.
++    unsafe { JS_RequestInterruptCallback(cx) }
++}
++
++/// V8's interrupt: runs the interrupt callbacks; one returning `false` stops the script.
++pub(crate) unsafe extern "C" fn run_interrupt_callbacks(_isolate: v8::UnsafeRawIsolatePtr, _data: *mut c_void) {
++    let Some(cx) = crate::rust::Runtime::get() else { return };
++    let cx = cx.as_ptr();
++    let callbacks = hooks(cx).interrupt_callbacks.borrow().clone();
++    let mut keep_running = true;
++    for callback in callbacks.into_iter().flatten() {
++        // SAFETY: SpiderMonkey's interrupt callback contract.
++        keep_running &= unsafe { callback(cx) };
++    }
++    if !keep_running {
++        isolate(cx).terminate_execution();
++    }
++}
++
++// --- GC --------------------------------------------------------------------------------------
++
++/// Registers an embedder root tracer, called on every GC (Servo traces its DOM roots here).
++pub unsafe fn JS_AddExtraGCRootsTracer(cx: *mut JSContext, trace: JSTraceDataOp, data: *mut c_void) -> bool {
++    hooks(cx).extra_roots.borrow_mut().push((trace, data));
++    true
++}
++
++pub unsafe fn JS_RemoveExtraGCRootsTracer(cx: *mut JSContext, trace: JSTraceDataOp, data: *mut c_void) {
++    hooks(cx).extra_roots.borrow_mut().retain(|entry| *entry != (trace, data));
++}
++
++/// Runs the embedder root tracers (from the runtime's root set).
++pub(crate) fn trace_extra_roots(cx: &JSContext, visitor: &mut v8::cppgc::Visitor) {
++    let Ok(roots) = cx.hooks.extra_roots.try_borrow() else { return };
++    let trc = crate::glue::tracer(visitor);
++    for (trace, data) in roots.iter() {
++        if let Some(trace) = trace {
++            // SAFETY: SpiderMonkey's trace-data contract.
++            unsafe { trace(trc, *data) };
++        }
++    }
++}
++
++/// Records the GC callback (V8's collections are not reported to it yet).
++pub unsafe fn JS_SetGCCallback(cx: *mut JSContext, callback: JSGCCallback, data: *mut c_void) {
++    hooks(cx).gc_callback.set((callback, data));
++}
++
++pub unsafe fn SetGCSliceCallback(cx: *mut JSContext, callback: GCSliceCallback) -> GCSliceCallback {
++    hooks(cx).gc_slice_callback.replace(callback)
++}
++
++pub unsafe fn JS_SetGCParameter(cx: *mut JSContext, key: JSGCParamKey, value: u32) {
++    hooks(cx).gc_parameters.borrow_mut().insert(key as i32, value);
++}
++
++pub unsafe fn JS_GetGCParameter(cx: *mut JSContext, key: JSGCParamKey) -> u32 {
++    hooks(cx).gc_parameters.borrow().get(&(key as i32)).copied().unwrap_or(0)
++}
++
++/// A full collection (V8's low-memory notification).
++pub unsafe fn JS_GC(cx: *mut JSContext, _reason: GCReason) {
++    isolate(cx).low_memory_notification();
++}
++
++// --- Job queue and promises ------------------------------------------------------------------
++
++/// The embedder's job queue (mozjs's glue `RustJobQueue`): its traps, kept for reference.
++pub struct RustJobQueue {
++    _traps: JobQueueTraps,
++    _queue: *const c_void,
++    _interrupt_queues: *mut c_void,
++}
++
++pub unsafe fn CreateJobQueue(traps: *const JobQueueTraps, queue: *const c_void, interrupt_queues: *mut c_void) -> *mut JobQueue {
++    // SAFETY: callers pass a valid trap table.
++    let job_queue = Box::new(RustJobQueue { _traps: unsafe { *traps }, _queue: queue, _interrupt_queues: interrupt_queues });
++    Box::into_raw(job_queue) as *mut JobQueue
++}
++
++pub unsafe fn DeleteJobQueue(queue: *mut JobQueue) {
++    // SAFETY: queues come from `CreateJobQueue`.
++    drop(unsafe { Box::from_raw(queue as *mut RustJobQueue) });
++}
++
++pub unsafe fn SetJobQueue(cx: *mut JSContext, queue: *mut JobQueue) {
++    hooks(cx).job_queue.set(queue);
++}
++
++pub unsafe fn JobQueueIsEmpty(_cx: *mut JSContext) {}
++
++pub unsafe fn JobQueueMayNotBeEmpty(_cx: *mut JSContext) {}
++
++/// Runs the pending promise jobs (a V8 microtask checkpoint).
++pub unsafe fn RunJobs(cx: *mut JSContext) {
++    isolate(cx).perform_microtask_checkpoint();
++}
++
++pub unsafe fn SetPromiseRejectionTrackerCallback(cx: *mut JSContext, callback: PromiseRejectionTrackerCallback, data: *mut c_void) {
++    hooks(cx).promise_rejection_tracker.set((callback, data));
++}
++
++/// V8's promise rejection events, reported to the embedder's tracker.
++unsafe extern "C" fn promise_reject_callback(message: v8::PromiseRejectMessage) {
++    let Some(cx) = crate::rust::Runtime::get() else { return };
++    let cx = cx.as_ptr();
++    let (Some(callback), data) = hooks(cx).promise_rejection_tracker.get() else { return };
++    let state = match message.get_event() {
++        v8::PromiseRejectEvent::PromiseRejectWithNoHandler => PromiseRejectionHandlingState::Unhandled,
++        v8::PromiseRejectEvent::PromiseHandlerAddedAfterReject => PromiseRejectionHandlingState::Handled,
++        _ => return,
++    };
++    // SAFETY: the callback runs on the isolate's thread, inside V8.
++    let raw = unsafe { &*cx };
++    let promise = raw.with_scope(|scope| {
++        let promise = v8::Local::new(scope, message.get_promise());
++        from_v8(scope, promise.into()).to_object()
++    });
++    crate::rooted!(in(cx) let promise = promise);
++    // SAFETY: SpiderMonkey's tracker contract.
++    unsafe { callback(cx, false, promise.handle().into_handle(), state, data) };
++}
++
++// --- Settings and callbacks kept for the embedder --------------------------------------------
++
++pub unsafe fn ContextOptionsRef(cx: *mut JSContext) -> *mut ContextOptions {
++    &*hooks(cx).context_options as *const ContextOptions as *mut ContextOptions
++}
++
++pub unsafe fn JS_SetGlobalJitCompilerOption(_cx: *mut JSContext, _option: JSJitCompilerOption, _value: u32) {}
++
++pub unsafe fn JS_SetOffthreadIonCompilationEnabled(_cx: *mut JSContext, _enabled: bool) {}
++
++pub unsafe fn DisableJitBackend() {}
++
++/// Records the security callbacks (CSP checks of `eval` are not wired to V8 yet).
++pub unsafe fn JS_SetSecurityCallbacks(cx: *mut JSContext, callbacks: *const JSSecurityCallbacks) {
++    hooks(cx).security_callbacks.set(callbacks);
++}
++
++pub unsafe fn SetDOMCallbacks(cx: *mut JSContext, callbacks: *const DOMCallbacks) {
++    hooks(cx).dom_callbacks.set(callbacks);
++}
++
++pub unsafe fn SetPreserveWrapperCallbacks(cx: *mut JSContext, preserve: PreserveWrapperCallback, has_released: HasReleasedWrapperCallback) {
++    hooks(cx).preserve_wrapper.set((preserve, has_released));
++}
++
++pub unsafe fn JS_InitReadPrincipalsCallback(cx: *mut JSContext, read: JSReadPrincipalsOp) {
++    hooks(cx).read_principals.set(read);
++}
++
++thread_local! {
++    static BUILD_ID_OP: Cell<BuildIdOp> = const { Cell::new(None) };
++}
++
++pub unsafe fn SetProcessBuildIdOp(op: BuildIdOp) {
++    BUILD_ID_OP.with(|build_id| build_id.set(op));
++}
++
++/// SpiderMonkey's build id vector is a C++ container; V8 has its own cache keys.
++pub unsafe fn SetBuildId(_build_id: *mut BuildIdCharVector, _chars: *const c_char, _len: usize) -> bool {
++    true
++}
++
++pub unsafe fn InitializeMemoryReporter(_want_to_measure: WantToMeasure) {}
++
++/// Fills in V8's heap statistics.
++pub unsafe fn CollectServoSizes(cx: *mut JSContext, sizes: *mut ServoSizes, _get_size: GetSize) -> bool {
++    let statistics = isolate(cx).get_heap_statistics();
++    // SAFETY: callers pass a valid out pointer.
++    let sizes = unsafe { &mut *sizes };
++    sizes.gcHeapUsed = statistics.used_heap_size();
++    sizes.gcHeapUnused = statistics.total_heap_size().saturating_sub(statistics.used_heap_size());
++    sizes.mallocHeap = statistics.malloced_memory();
++    sizes.nonHeap = statistics.external_memory();
++    true
++}
++
++pub unsafe fn SetUpEventLoopDispatch(cx: *mut JSContext, callback: RustDispatchToEventLoopCallback, closure: *mut c_void) {
++    hooks(cx).event_loop_dispatch.set((callback, closure));
++}
++
++/// Runs a dispatched task (SpiderMonkey's off-thread work); none are dispatched on V8.
++pub unsafe fn DispatchableRun(_cx: *mut JSContext, _ptr: *mut DispatchablePointer, _maybe_shutting_down: Dispatchable_MaybeShuttingDown) {}
++
++pub unsafe fn InitConsumeStreamCallback(cx: *mut JSContext, consume: ConsumeStreamCallback, report: ReportStreamErrorCallback) {
++    hooks(cx).consume_stream.set((consume, report));
++}
++
++pub unsafe fn RegisterScriptEnvironmentPreparer(cx: *mut JSContext, hook: InvokeScriptPreparerHook) {
++    hooks(cx).script_environment_preparer.set(hook);
++}
++
++/// SpiderMonkey hands its C++ closure to the preparer hook; V8 never calls the hook.
++pub unsafe fn RunScriptEnvironmentPreparerClosure(_cx: *mut JSContext, _closure: *mut ScriptEnvironmentPreparer_Closure) -> bool {
++    false
++}
+diff --git a/components/roves-js/src/rust.rs b/components/roves-js/src/rust.rs
+index 7a20c4aad2b..c51ed382e56 100644
+--- a/components/roves-js/src/rust.rs
++++ b/components/roves-js/src/rust.rs
+@@ -114,6 +114,8 @@ pub mod wrappers2 {
+         MutableHandleScript, MutableHandleString, MutableHandleSymbol, MutableHandleValue,
+     };
+     #[allow(unused_imports)]
++    use crate::glue::*;
++    #[allow(unused_imports)]
+     use crate::jsapi::*;
+     use crate::jsapi::{JSObject, JSString, UTF8Chars};
+     use crate::{glue, jsapi};
+@@ -202,6 +204,10 @@ unsafe impl GarbageCollected for RootSet {
+             crate::jsapi_impl::trace_native_functions(unsafe { cx.as_ref() }, visitor);
+             // SAFETY: as above.
+             crate::realm_impl::trace_realms(unsafe { cx.as_ref() }, visitor);
++            // SAFETY: as above.
++            crate::jsapi_impl::trace_atoms(unsafe { cx.as_ref() }, visitor);
++            // SAFETY: as above. The embedder's roots (Servo's DOM root lists).
++            crate::runtime_impl::trace_extra_roots(unsafe { cx.as_ref() }, visitor);
+         }
+         // RootedVec / RootedTraceableBox contents.
+         // SAFETY: the tracer is this GC's visitor.
+@@ -217,24 +223,161 @@ thread_local! {
+     static CURRENT: Cell<Option<NonNull<RawJSContext>>> = const { Cell::new(None) };
+ }
+ 
++#[derive(PartialEq)]
++enum EngineState {
++    Uninitialized,
++    Initialized,
++    ShutDown,
++}
++
++static ENGINE_STATE: std::sync::Mutex<EngineState> = std::sync::Mutex::new(EngineState::Uninitialized);
++
++#[derive(Debug)]
++pub enum JSEngineError {
++    AlreadyInitialized,
++    AlreadyShutDown,
++    InitFailed,
++}
++
++/// The process-wide engine (mozjs's `JSEngine`): initializes V8 once. Runtimes hold
++/// [`JSEngineHandle`]s, which must all be gone before the engine is dropped.
++pub struct JSEngine {
++    outstanding_handles: std::sync::Arc<std::sync::atomic::AtomicU32>,
++    marker: std::marker::PhantomData<*mut ()>,
++}
++
++pub struct JSEngineHandle(std::sync::Arc<std::sync::atomic::AtomicU32>);
++
++impl Clone for JSEngineHandle {
++    fn clone(&self) -> JSEngineHandle {
++        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
++        JSEngineHandle(self.0.clone())
++    }
++}
++
++impl Drop for JSEngineHandle {
++    fn drop(&mut self) {
++        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
++    }
++}
++
++fn initialize_v8() {
++    #[cfg(not(test))]
++    roves_v8::initialize_engine();
++    // Tests force collections, which V8 only allows with --expose-gc.
++    #[cfg(test)]
++    roves_v8::initialize_engine_with_flags("--expose-gc");
++}
++
++impl JSEngine {
++    pub fn init() -> Result<JSEngine, JSEngineError> {
++        let mut state = ENGINE_STATE.lock().unwrap();
++        match *state {
++            EngineState::Initialized => return Err(JSEngineError::AlreadyInitialized),
++            EngineState::ShutDown => return Err(JSEngineError::AlreadyShutDown),
++            EngineState::Uninitialized => (),
++        }
++        initialize_v8();
++        *state = EngineState::Initialized;
++        Ok(JSEngine { outstanding_handles: Default::default(), marker: std::marker::PhantomData })
++    }
++
++    pub fn can_shutdown(&self) -> bool {
++        self.outstanding_handles.load(std::sync::atomic::Ordering::SeqCst) == 0
++    }
++
++    pub fn handle(&self) -> JSEngineHandle {
++        self.outstanding_handles.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
++        JSEngineHandle(self.outstanding_handles.clone())
++    }
++}
++
++impl Drop for JSEngine {
++    fn drop(&mut self) {
++        let mut state = ENGINE_STATE.lock().unwrap();
++        if *state == EngineState::Initialized {
++            assert!(self.can_shutdown(), "There are outstanding JS engine handles");
++            // V8's platform cannot be initialized twice in a process, so it stays up.
++            *state = EngineState::ShutDown;
++        }
++    }
++}
++
++#[cfg(test)]
++impl JSEngineHandle {
++    /// A handle for tests, which create runtimes on many threads without one `JSEngine`.
++    pub(crate) fn for_tests() -> JSEngineHandle {
++        initialize_v8();
++        JSEngineHandle(Default::default())
++    }
++}
++
++/// What a child runtime needs from its parent (mozjs's `ParentRuntime`). On V8 every runtime
++/// is an independent isolate, so a child only shares the engine handle.
++pub struct ParentRuntime {
++    engine: JSEngineHandle,
++    children_of_parent: std::sync::Arc<()>,
++}
++
++// SAFETY: it only carries reference counts.
++unsafe impl Send for ParentRuntime {}
++
++/// The thread-safe side of a runtime (mozjs's `ThreadSafeJSContext`): interrupts from other
++/// threads, through V8's isolate handle.
++#[derive(Clone)]
++pub struct ThreadSafeJSContext(std::sync::Arc<std::sync::RwLock<Option<v8::IsolateHandle>>>);
++
++// SAFETY: `IsolateHandle` is V8's thread-safe isolate reference.
++unsafe impl Send for ThreadSafeJSContext {}
++unsafe impl Sync for ThreadSafeJSContext {}
++
++impl ThreadSafeJSContext {
++    /// Requests the runtime's interrupt callbacks (`JS_AddInterruptCallback`) to run soon on
++    /// the runtime's thread.
++    pub fn request_interrupt_callback(&self) {
++        if let Some(handle) = self.0.read().unwrap().as_ref() {
++            handle.request_interrupt(crate::runtime_impl::run_interrupt_callbacks, std::ptr::null_mut());
++        }
++    }
++
++    pub fn request_interrupt_callback_can_wait(&self) {
++        self.request_interrupt_callback();
++    }
++}
++
+ /// One V8 isolate with its initial realm: the `JSRuntime`/`JSContext` pair of mozjs.
+ pub struct Runtime {
+     // Field order matters: the root and context must drop before the isolate.
++    cx: crate::context::JSContext,
+     root_set: Persistent<RootSet>,
+     raw: Box<RawJSContext>,
+     /// Boxed: the raw context points at the `Isolate` value, which lives inside the
+     /// `OwnedIsolate` and must not move.
+     isolate: Box<v8::OwnedIsolate>,
++    engine: JSEngineHandle,
++    _parent_child_count: Option<std::sync::Arc<()>>,
++    outstanding_children: std::sync::Arc<()>,
++    thread_safe_handle: std::sync::Arc<std::sync::RwLock<Option<v8::IsolateHandle>>>,
+ }
+ 
+ impl Runtime {
+-    pub fn new() -> Runtime {
+-        #[cfg(not(test))]
+-        roves_v8::initialize_engine();
+-        // Tests force collections, which V8 only allows with --expose-gc.
+-        #[cfg(test)]
+-        roves_v8::initialize_engine_with_flags("--expose-gc");
++    pub fn new(engine: JSEngineHandle) -> Runtime {
++        Self::create(engine, None)
++    }
++
++    pub fn prepare_for_new_child(&self) -> ParentRuntime {
++        ParentRuntime { engine: self.engine.clone(), children_of_parent: self.outstanding_children.clone() }
++    }
++
++    /// # Safety
++    /// As in mozjs (the parent runtime must outlive this one).
++    pub unsafe fn create_with_parent(parent: ParentRuntime) -> Runtime {
++        Self::create(parent.engine.clone(), Some(parent))
++    }
++
++    fn create(engine: JSEngineHandle, parent: Option<ParentRuntime>) -> Runtime {
+         let mut isolate = Box::new(v8::Isolate::new(v8::CreateParams::default()));
++        crate::runtime_impl::configure_isolate(&mut isolate);
+         let (context, root_set) = {
+             v8::scope!(let scope, &mut **isolate);
+             let context = v8::Context::new(scope, Default::default());
+@@ -251,34 +394,57 @@ impl Runtime {
+             native_functions: RefCell::new(Vec::new()),
+             interned: Default::default(),
+             proxy_handlers: RefCell::new(Default::default()),
++            atoms: Default::default(),
++            hooks: Default::default(),
+             current_realm: std::cell::Cell::new(std::ptr::null_mut()),
+             realms: RefCell::new(Vec::new()),
+         });
+         raw.isolate = &mut **isolate as *mut v8::Isolate;
++        CURRENT.with(|current| {
++            assert!(current.get().is_none(), "one roves-js runtime per thread");
++            current.set(Some(NonNull::from(&*raw)));
++        });
+         // The initial context is the runtime's first realm.
+         let realm = raw.with_scope(|scope| {
+             let context = scope.get_current_context();
+             crate::realm_impl::register_realm(&raw, scope, context, std::ptr::null_mut())
+         });
+         raw.current_realm.set(realm);
+-        let runtime = Runtime { root_set, raw, isolate };
+-        CURRENT.with(|current| current.set(Some(runtime.cx_ptr())));
+-        runtime
++        let thread_safe_handle = std::sync::Arc::new(std::sync::RwLock::new(Some(isolate.thread_safe_handle())));
++        // SAFETY: the raw context lives (boxed) as long as the runtime.
++        let cx = unsafe { crate::context::JSContext::from_ptr(NonNull::from(&*raw)) };
++        Runtime {
++            cx,
++            root_set,
++            raw,
++            isolate,
++            engine,
++            _parent_child_count: parent.map(|parent| parent.children_of_parent),
++            outstanding_children: std::sync::Arc::new(()),
++            thread_safe_handle,
++        }
+     }
+ 
+-    fn cx_ptr(&self) -> NonNull<RawJSContext> {
+-        NonNull::from(&*self.raw)
++    pub fn thread_safe_js_context(&self) -> ThreadSafeJSContext {
++        ThreadSafeJSContext(self.thread_safe_handle.clone())
+     }
+ 
+-    /// The raw context (`Runtime::cx` in mozjs).
+-    pub fn cx(&self) -> *mut RawJSContext {
+-        self.cx_ptr().as_ptr()
++    /// The `JSRuntime` pointer (the raw context: one runtime per context on V8).
++    pub fn rt(&self) -> *mut crate::jsapi::JSRuntime {
++        NonNull::from(&*self.raw).as_ptr() as *mut crate::jsapi::JSRuntime
+     }
+ 
+-    /// The safe context wrapper for this runtime.
+-    pub fn cx_mut(&mut self) -> crate::context::JSContext {
+-        // SAFETY: the raw context lives as long as the runtime.
+-        unsafe { crate::context::JSContext::from_ptr(self.cx_ptr()) }
++    pub fn cx<'rt>(&'rt mut self) -> &'rt mut crate::context::JSContext {
++        &mut self.cx
++    }
++
++    pub fn cx_no_gc<'rt>(&'rt self) -> &'rt crate::context::JSContext {
++        &self.cx
++    }
++
++    /// The raw context pointer.
++    pub fn raw_cx(&self) -> *mut RawJSContext {
++        NonNull::from(&*self.raw).as_ptr()
+     }
+ 
+     /// The raw context of this thread's runtime.
+@@ -298,16 +464,12 @@ impl Runtime {
+     }
+ }
+ 
+-impl Default for Runtime {
+-    fn default() -> Self {
+-        Runtime::new()
+-    }
+-}
+-
+ impl Drop for Runtime {
+     fn drop(&mut self) {
++        self.thread_safe_handle.write().unwrap().take();
++        assert!(std::sync::Arc::get_mut(&mut self.outstanding_children).is_some(), "This runtime still has live children.");
+         CURRENT.with(|current| {
+-            if current.get() == Some(self.cx_ptr()) {
++            if current.get() == Some(NonNull::from(&*self.raw)) {
+                 current.set(None);
+             }
+         });
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 7ee774a76ac..4543b7fec78 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -10,7 +10,7 @@ use crate::rust::Runtime;
+ /// Evaluates `source` in the runtime's realm and returns the (unrooted) result.
+ fn eval(runtime: &Runtime, source: &str) -> JSVal {
+     // SAFETY: the runtime owns its raw context.
+-    let raw = unsafe { &*runtime.cx() };
++    let raw = unsafe { &*runtime.raw_cx() };
+     raw.with_scope(|scope| {
+         let code = v8::String::new(scope, source).unwrap();
+         let script = v8::Script::compile(scope, code, None).unwrap();
+@@ -22,7 +22,7 @@ fn eval(runtime: &Runtime, source: &str) -> JSVal {
+ /// Reads `value` back as a string through V8 (`String(value)`).
+ fn describe(runtime: &Runtime, value: JSVal) -> String {
+     // SAFETY: the runtime owns its raw context.
+-    let raw = unsafe { &*runtime.cx() };
++    let raw = unsafe { &*runtime.raw_cx() };
+     raw.with_scope(|scope| {
+         // SAFETY: tests only describe live (rooted or fresh) values.
+         let local = unsafe { to_v8(scope, value) };
+@@ -52,7 +52,7 @@ fn immediates_round_trip_with_spidermonkey_semantics() {
+ 
+ #[test]
+ fn v8_values_convert_to_jsvals_and_back() {
+-    let runtime = Runtime::new();
++    let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+     for (source, expected) in [("undefined", "undefined"), ("null", "null"), ("true", "true"), ("42", "42"), ("0.25", "0.25")] {
+         assert_eq!(describe(&runtime, eval(&runtime, source)), expected);
+     }
+@@ -72,8 +72,8 @@ fn v8_values_convert_to_jsvals_and_back() {
+ 
+ #[test]
+ fn rooted_values_survive_gc_and_unrooted_cells_are_collected() {
+-    let mut runtime = Runtime::new();
+-    let cx = runtime.cx();
++    let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++    let cx = runtime.raw_cx();
+     let before = finalized();
+     {
+         rooted!(in(cx) let kept = eval(&runtime, "({ marker: 'kept' })"));
+@@ -98,8 +98,8 @@ fn rooted_values_survive_gc_and_unrooted_cells_are_collected() {
+ 
+ #[test]
+ fn handles_read_and_write_rooted_locations() {
+-    let mut runtime = Runtime::new();
+-    let cx = runtime.cx();
++    let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++    let cx = runtime.raw_cx();
+     rooted!(in(cx) let mut value = UndefinedValue());
+     {
+         let mut handle = value.handle_mut();
+@@ -136,9 +136,9 @@ fn heap_locations_are_traced_by_their_owner() {
+         }
+     }
+ 
+-    let mut runtime = Runtime::new();
++    let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+     // SAFETY: the runtime owns its raw context.
+-    let raw = unsafe { &*runtime.cx() };
++    let raw = unsafe { &*runtime.raw_cx() };
+     let owner = raw.with_scope(|scope| {
+         let heap = scope.get_cpp_heap().unwrap();
+         // SAFETY: moved straight into a Persistent.
+@@ -162,10 +162,10 @@ fn conversions_follow_webidl_and_mozjs() {
+ 
+     fn from<T: FromJSValConvertible>(runtime: &mut Runtime, source: &str, option: T::Config) -> Result<ConversionResult<T>, ()> {
+         let value = eval(runtime, source);
+-        let raw = runtime.cx();
++        let raw = runtime.raw_cx();
+         rooted!(in(raw) let value = value);
+-        let mut cx = runtime.cx_mut();
+-        T::safe_from_jsval(&mut cx, value.handle(), option)
++        let cx = runtime.cx();
++        T::safe_from_jsval(cx, value.handle(), option)
+     }
+     fn ok<T>(result: Result<ConversionResult<T>, ()>) -> T {
+         match result {
+@@ -174,7 +174,7 @@ fn conversions_follow_webidl_and_mozjs() {
+         }
+     }
+ 
+-    let mut runtime = Runtime::new();
++    let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+     // Integers: modular by default, EnforceRange throws, Clamp rounds half to even.
+     assert_eq!(ok(from::<i32>(&mut runtime, "2 ** 32 + 5", ConversionBehavior::Default)), 5);
+     assert_eq!(ok(from::<u8>(&mut runtime, "-1", ConversionBehavior::Default)), 255);
+@@ -183,11 +183,11 @@ fn conversions_follow_webidl_and_mozjs() {
+     assert_eq!(ok(from::<i64>(&mut runtime, "'-12'", ConversionBehavior::Default)), -12);
+     assert!(from::<u8>(&mut runtime, "256", ConversionBehavior::EnforceRange).is_err());
+     // SAFETY: a live context.
+-    assert!(unsafe { crate::jsapi::JS_IsExceptionPending(runtime.cx()) });
+-    unsafe { crate::jsapi::JS_ClearPendingException(runtime.cx()) };
++    assert!(unsafe { crate::jsapi::JS_IsExceptionPending(runtime.raw_cx()) });
++    unsafe { crate::jsapi::JS_ClearPendingException(runtime.raw_cx()) };
+     // ToNumber runs user code and propagates its exception as the pending one.
+     assert!(from::<f64>(&mut runtime, "({ valueOf() { throw new RangeError('mine'); } })", ()).is_err());
+-    let raw = runtime.cx();
++    let raw = runtime.raw_cx();
+     rooted!(in(raw) let mut exception = UndefinedValue());
+     assert!(unsafe { crate::jsapi::JS_GetPendingException(raw, exception.handle_mut()) });
+     assert_eq!(describe(&runtime, exception.get()), "RangeError: mine");
+@@ -207,17 +207,17 @@ fn conversions_follow_webidl_and_mozjs() {
+     unsafe { crate::jsapi::JS_ClearPendingException(raw) };
+ 
+     // Rust → JS: numbers, strings and arrays.
+-    let raw = runtime.cx();
++    let raw = runtime.raw_cx();
+     rooted!(in(raw) let mut value = UndefinedValue());
+     {
+-        let mut cx = runtime.cx_mut();
+-        vec![String::from("a"), String::from("é"), String::from("中")].safe_to_jsval(&mut cx, value.handle_mut());
++        let cx = runtime.cx();
++        vec![String::from("a"), String::from("é"), String::from("中")].safe_to_jsval(cx, value.handle_mut());
+     }
+     assert!(value.get().is_object());
+     assert_eq!(describe(&runtime, value.get()), "a,é,中");
+     {
+-        let mut cx = runtime.cx_mut();
+-        u32::MAX.safe_to_jsval(&mut cx, value.handle_mut());
++        let cx = runtime.cx();
++        u32::MAX.safe_to_jsval(cx, value.handle_mut());
+     }
+     assert_eq!(describe(&runtime, value.get()), "4294967295");
+     runtime.gc_for_testing();
+@@ -282,8 +282,8 @@ mod object_model {
+ 
+     #[test]
+     fn class_objects_keep_identity_reserved_slots_and_run_hooks() {
+-        let mut runtime = Runtime::new();
+-        let cx = runtime.cx();
++        let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
+         let finalized_before = HOOK_FINALIZED.with(Cell::get);
+         {
+             rooted!(in(cx) let thing = unsafe { JS_NewObject(cx, &CLASS) });
+@@ -310,8 +310,8 @@ mod object_model {
+ 
+     #[test]
+     fn properties_by_name_and_id_and_descriptors() {
+-        let runtime = Runtime::new();
+-        let cx = runtime.cx();
++        let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
+         rooted!(in(cx) let object = unsafe { JS_NewPlainObject(cx) });
+         rooted!(in(cx) let value = Int32Value(7));
+         let attrs = (JSPROP_ENUMERATE | JSPROP_READONLY) as u32;
+@@ -419,8 +419,8 @@ mod object_model {
+ 
+     #[test]
+     fn natives_from_function_specs_calls_and_exceptions() {
+-        let runtime = Runtime::new();
+-        let cx = runtime.cx();
++        let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
+         rooted!(in(cx) let object = unsafe { JS_NewPlainObject(cx) });
+         assert!(unsafe { JS_DefineFunctions(cx, object.handle().into_handle(), FUNCTIONS.as_ptr()) });
+         rooted!(in(cx) let global = global(&runtime).to_object());
+@@ -495,8 +495,8 @@ mod object_model {
+ 
+     #[test]
+     fn property_specs_define_accessors_and_symbol_values() {
+-        let runtime = Runtime::new();
+-        let cx = runtime.cx();
++        let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
+         rooted!(in(cx) let proto = unsafe { GetRealmObjectPrototype(cx) });
+         rooted!(in(cx) let object = unsafe { JS_NewObjectWithGivenProto(cx, ptr::null(), proto.handle().into_handle()) });
+         assert!(unsafe { JS_DefineProperties(cx, object.handle().into_handle(), PROPERTIES.as_ptr()) });
+@@ -532,8 +532,8 @@ mod object_model {
+ 
+ #[test]
+ fn plain_objects_and_symbols_have_one_cell_while_it_lives() {
+-    let mut runtime = Runtime::new();
+-    let cx = runtime.cx();
++    let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++    let cx = runtime.raw_cx();
+     eval(&runtime, "globalThis.kept = {}; globalThis.sym = Symbol('s')");
+     assert_eq!(eval(&runtime, "kept").to_object(), eval(&runtime, "kept").to_object());
+     assert_eq!(eval(&runtime, "sym").to_symbol(), eval(&runtime, "sym").to_symbol());
+@@ -578,8 +578,8 @@ mod realms {
+ 
+     #[test]
+     fn new_globals_are_separate_realms_with_class_identity() {
+-        let mut runtime = Runtime::new();
+-        let cx = runtime.cx();
++        let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
+         let first_realm = unsafe { GetCurrentRealmOrNull(cx) };
+         let first_object_prototype = eval(&runtime, "Object.prototype").to_object();
+         let mut options = crate::rust::RealmOptions::default();
+@@ -721,8 +721,8 @@ mod proxies {
+ 
+     #[test]
+     fn dom_style_proxies_use_traps_defaults_and_identity() {
+-        let mut runtime = Runtime::new();
+-        let cx = runtime.cx();
++        let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
+         let traps = traps();
+         let handler = unsafe { CreateProxyHandler(&traps, &EXTRA as *const u8 as *const std::ffi::c_void) };
+         let finalized_before = PROXY_FINALIZED.with(Cell::get);
+@@ -779,8 +779,8 @@ mod typed_arrays {
+ 
+     #[test]
+     fn typed_arrays_share_stable_data_with_script() {
+-        let mut runtime = Runtime::new();
+-        let cx = runtime.cx();
++        let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
+         rooted!(in(cx) let mut array = std::ptr::null_mut::<JSObject>());
+         unsafe { Uint8Array::create(cx, CreateWith::Slice(&[1, 2, 3]), array.handle_mut()) }.unwrap();
+         rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
+@@ -813,3 +813,182 @@ mod typed_arrays {
+         assert_eq!((length, shared, unsafe { *data }), (2, false, 42));
+     }
+ }
++
++mod lazy_globals {
++    use std::cell::Cell;
++    use std::ptr;
++
++    use super::{describe, eval};
++    use crate::glue::*;
++    use crate::jsapi::*;
++    use crate::jsval::*;
++    use crate::rust::Runtime;
++
++    thread_local! {
++        static RESOLVE_CALLS: Cell<u32> = const { Cell::new(0) };
++    }
++
++    fn is_lazy_name(id: jsid) -> bool {
++        if !id.is_string() {
++            return false;
++        }
++        let mut length = 0;
++        let chars = crate::api::latin1_chars(id.to_string(), &mut length);
++        !chars.is_null() && unsafe { std::slice::from_raw_parts(chars, length) } == b"LazyThing"
++    }
++
++    unsafe extern "C" fn resolve(cx: *mut JSContext, obj: HandleObject, id: HandleId, resolved: *mut bool) -> bool {
++        if !is_lazy_name(id.get()) {
++            unsafe { *resolved = false };
++            return true;
++        }
++        RESOLVE_CALLS.with(|calls| calls.set(calls.get() + 1));
++        // A lookup of the same property from inside the hook does not recurse.
++        crate::rooted!(in(cx) let mut existing = UndefinedValue());
++        if !unsafe { JS_GetPropertyById(cx, obj, id, existing.handle_mut().into_handle()) } {
++            return false;
++        }
++        assert!(existing.get().is_undefined());
++        crate::rooted!(in(cx) let value = Int32Value(42));
++        if !unsafe { JS_DefinePropertyById2(cx, obj, id, value.handle().into_handle(), JSPROP_RESOLVING as u32) } {
++            return false;
++        }
++        unsafe { *resolved = true };
++        true
++    }
++
++    unsafe extern "C" fn may_resolve(_names: *const JSAtomState, id: jsid, _obj: *mut JSObject) -> bool {
++        is_lazy_name(id)
++    }
++
++    unsafe extern "C" fn enumerate(cx: *mut JSContext, _obj: HandleObject, props: MutableHandleIdVector, _enumerable_only: bool) -> bool {
++        let name = unsafe { JS_AtomizeAndPinString(cx, c"LazyThing".as_ptr()) };
++        crate::rooted!(in(cx) let mut id = crate::jsid::VoidId());
++        unsafe { RUST_INTERNED_STRING_TO_JSID(cx, name, id.handle_mut().into_handle()) };
++        unsafe { AppendToIdVector(props, id.handle().into_handle()) }
++    }
++
++    static OPS: JSClassOps = JSClassOps {
++        addProperty: None,
++        delProperty: None,
++        enumerate: None,
++        newEnumerate: Some(enumerate),
++        resolve: Some(resolve),
++        mayResolve: Some(may_resolve),
++        finalize: None,
++        call: None,
++        construct: None,
++        trace: Some(JS_GlobalObjectTraceHook),
++    };
++
++    static CLASS: JSClass = JSClass {
++        name: c"LazyGlobal".as_ptr(),
++        flags: crate::object::JSCLASS_IS_GLOBAL |
++            (crate::object::JSCLASS_GLOBAL_SLOT_COUNT << crate::object::JSCLASS_RESERVED_SLOTS_SHIFT),
++        cOps: &OPS,
++        spec: ptr::null(),
++        ext: ptr::null(),
++        oOps: ptr::null(),
++    };
++
++    #[test]
++    fn global_resolve_hooks_define_lazy_properties_once() {
++        let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        rooted!(in(cx) let global = unsafe {
++            JS_NewGlobalObject(cx, &CLASS, ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, ptr::null())
++        });
++        let old = unsafe { EnterRealm(cx, global.get()) };
++        let before = RESOLVE_CALLS.with(Cell::get);
++        assert!(eval(&runtime, "typeof notLazy === 'undefined'").to_boolean(), "other names stay unresolved");
++        assert_eq!(eval(&runtime, "LazyThing").to_int32(), 42);
++        assert_eq!(eval(&runtime, "LazyThing + LazyThing").to_int32(), 84);
++        assert!(eval(&runtime, "'LazyThing' in globalThis && globalThis.hasOwnProperty('LazyThing')").to_boolean());
++        assert_eq!(RESOLVE_CALLS.with(Cell::get), before + 1, "the hook runs once; later lookups find the property");
++        assert_eq!(describe(&runtime, eval(&runtime, "Object.getOwnPropertyNames(globalThis).includes('LazyThing')")), "true");
++        unsafe { LeaveRealm(cx, old) };
++    }
++}
++
++mod runtime_hooks {
++    use std::cell::Cell;
++    use std::ffi::c_void;
++
++    use super::eval;
++    use crate::jsapi::*;
++    use crate::jsval::*;
++    use crate::rust::{JSEngineHandle, Runtime};
++
++    thread_local! {
++        static EXTRA_TRACED: Cell<u32> = const { Cell::new(0) };
++        static REJECTIONS: Cell<(u32, u32)> = const { Cell::new((0, 0)) };
++    }
++
++    unsafe extern "C" fn extra_roots(_trc: *mut JSTracer, data: *mut c_void) {
++        assert_eq!(data as usize, 7);
++        EXTRA_TRACED.with(|count| count.set(count.get() + 1));
++    }
++
++    unsafe extern "C" fn keep_going(_cx: *mut JSContext) -> bool {
++        false
++    }
++
++    unsafe extern "C" fn track(_cx: *mut JSContext, _muted: bool, promise: HandleObject, state: PromiseRejectionHandlingState, _data: *mut c_void) {
++        assert!(!promise.get().is_null());
++        REJECTIONS.with(|counts| {
++            let (unhandled, handled) = counts.get();
++            counts.set(match state {
++                PromiseRejectionHandlingState::Unhandled => (unhandled + 1, handled),
++                PromiseRejectionHandlingState::Handled => (unhandled, handled + 1),
++            });
++        });
++    }
++
++    #[test]
++    fn runtime_hooks_roots_interrupts_jobs_and_rejections() {
++        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        assert!(unsafe { JS_AddExtraGCRootsTracer(cx, Some(extra_roots), 7 as *mut c_void) });
++        runtime.gc_for_testing();
++        assert!(EXTRA_TRACED.with(Cell::get) > 0, "embedder root tracers run on every GC");
++
++        // Promise jobs run at the explicit checkpoint, not before.
++        eval(&runtime, "globalThis.done = false; Promise.resolve().then(() => { globalThis.done = true; })");
++        assert!(!eval(&runtime, "done").to_boolean());
++        unsafe { RunJobs(cx) };
++        assert!(eval(&runtime, "done").to_boolean());
++
++        // Unhandled rejections, then a late handler.
++        unsafe { SetPromiseRejectionTrackerCallback(cx, Some(track), std::ptr::null_mut()) };
++        eval(&runtime, "globalThis.rejected = Promise.reject(1)");
++        eval(&runtime, "rejected.catch(() => {})");
++        unsafe { RunJobs(cx) };
++        assert_eq!(REJECTIONS.with(Cell::get), (1, 1));
++
++        // An interrupt requested from another thread stops a runaway script when a callback
++        // returns false.
++        assert!(unsafe { JS_AddInterruptCallback(cx, Some(keep_going)) });
++        let thread_safe = runtime.thread_safe_js_context();
++        let interrupter = std::thread::spawn(move || {
++            std::thread::sleep(std::time::Duration::from_millis(50));
++            thread_safe.request_interrupt_callback();
++        });
++        let finished = unsafe { &*cx }.with_scope(|scope| {
++            let code = v8::String::new(scope, "for (;;) {}").unwrap();
++            let script = v8::Script::compile(scope, code, None).unwrap();
++            script.run(scope).is_some()
++        });
++        interrupter.join().unwrap();
++        assert!(!finished, "the loop was terminated");
++        unsafe { &mut *(*cx).isolate }.cancel_terminate_execution();
++
++        // A child runtime lives on its own thread (its own isolate).
++        let parent = runtime.prepare_for_new_child();
++        std::thread::spawn(move || {
++            let child = unsafe { Runtime::create_with_parent(parent) };
++            assert_eq!(eval(&child, "6 * 7").to_int32(), 42);
++        })
++        .join()
++        .unwrap();
++    }
++}
+diff --git a/components/roves-js/src/wrappers2.in.rs b/components/roves-js/src/wrappers2.in.rs
+index 513ab76198f..bfa9098108c 100644
+--- a/components/roves-js/src/wrappers2.in.rs
++++ b/components/roves-js/src/wrappers2.in.rs
+@@ -2,8 +2,11 @@
+ // the entries roves-js implements. Do not edit by hand.
+ wrap!(jsapi: pub fn AddRawValueRoot(cx: &JSContext, vp: *mut Value, name: *const ::std::os::raw::c_char) -> bool);
+ wrap!(jsapi: pub fn RemoveRawValueRoot(cx: &JSContext, vp: *mut Value));
++wrap!(jsapi: pub fn RunJobs(cx: &mut JSContext));
+ wrap!(jsapi: pub fn GetObjectProto(cx: &mut JSContext, obj: HandleObject, proto: MutableHandleObject) -> bool);
+ wrap!(jsapi: pub fn GetPropertyKeys(cx: &mut JSContext, obj: HandleObject, flags: ::std::os::raw::c_uint, props: MutableHandleIdVector) -> bool);
++wrap!(jsapi: pub fn SetPreserveWrapperCallbacks(cx: &JSContext, preserveWrapper: PreserveWrapperCallback, hasReleasedWrapper: HasReleasedWrapperCallback));
++wrap!(jsapi: pub fn SetDOMCallbacks(cx: &JSContext, callbacks: *const DOMCallbacks));
+ wrap!(jsapi: pub fn GetCurrentRealmOrNull(cx: &JSContext) -> *mut Realm);
+ wrap!(jsapi: pub fn GetRealmObjectPrototype(cx: &JSContext) -> *mut JSObject);
+ wrap!(jsapi: pub fn GetRealmFunctionPrototype(cx: &JSContext) -> *mut JSObject);
+@@ -13,22 +16,40 @@ wrap!(jsapi: pub fn GetFunctionRealm(cx: &mut JSContext, objArg: HandleObject) -
+ wrap!(jsapi: pub fn EnterRealm(cx: &JSContext, target: *mut JSObject) -> *mut Realm);
+ wrap!(jsapi: pub fn LeaveRealm(cx: &JSContext, oldRealm: *mut Realm));
+ wrap!(jsapi: pub fn Call(cx: &mut JSContext, thisv: Handle<Value>, fun: Handle<Value>, args: *const HandleValueArray, rval: MutableHandle<Value>) -> bool);
++wrap!(jsapi: pub fn SetGCSliceCallback(cx: &JSContext, callback: GCSliceCallback) -> GCSliceCallback);
+ wrap!(jsapi: pub fn CurrentGlobalOrNull(cx: &JSContext) -> *mut JSObject);
+ wrap!(jsapi: pub fn CurrentGlobal(cx: &JSContext) -> *const *mut JSObject);
+ wrap!(jsapi: pub fn GetWellKnownSymbol(cx: &JSContext, which: SymbolCode) -> *mut Symbol);
++wrap!(jsapi: pub fn InitConsumeStreamCallback(cx: &JSContext, consume: ConsumeStreamCallback, report: ReportStreamErrorCallback));
+ wrap!(jsapi: pub fn HideScriptedCaller(cx: &JSContext));
+ wrap!(jsapi: pub fn UnhideScriptedCaller(cx: &JSContext));
+ wrap!(jsapi: pub fn NewArrayBuffer(cx: &mut JSContext, nbytes: usize) -> *mut JSObject);
++wrap!(jsapi: pub fn ContextOptionsRef(cx: &JSContext) -> *mut ContextOptions);
+ wrap!(jsapi: pub fn ToJSON(cx: &mut JSContext, value: Handle<Value>, replacer: Handle<*mut JSObject>, space: Handle<Value>, callback: JSONWriteCallback, data: *mut ::std::os::raw::c_void) -> bool);
++wrap!(jsapi: pub fn SetJobQueue(cx: &JSContext, queue: *mut JobQueue));
++wrap!(jsapi: pub fn SetPromiseRejectionTrackerCallback(cx: &JSContext, callback: PromiseRejectionTrackerCallback, data: *mut ::std::os::raw::c_void));
++wrap!(jsapi: pub fn JobQueueIsEmpty(cx: &JSContext));
++wrap!(jsapi: pub fn JobQueueMayNotBeEmpty(cx: &JSContext));
+ wrap!(jsapi: pub fn CallOriginalPromiseReject(cx: &mut JSContext, rejectionValue: HandleValue) -> *mut JSObject);
+ wrap!(jsapi: pub fn IsArrayObject(cx: &mut JSContext, value: Handle<Value>, isArray: *mut bool) -> bool);
++wrap!(jsapi: pub fn JS_AddExtraGCRootsTracer(cx: &JSContext, traceOp: JSTraceDataOp, data: *mut ::std::os::raw::c_void) -> bool);
++wrap!(jsapi: pub fn JS_RemoveExtraGCRootsTracer(cx: &JSContext, traceOp: JSTraceDataOp, data: *mut ::std::os::raw::c_void));
++wrap!(jsapi: pub fn JS_GC(cx: &mut JSContext, reason: GCReason));
++wrap!(jsapi: pub fn JS_SetGCCallback(cx: &JSContext, cb: JSGCCallback, data: *mut ::std::os::raw::c_void));
++wrap!(jsapi: pub fn JS_SetGCParameter(cx: &mut JSContext, key: JSGCParamKey, value: u32));
++wrap!(jsapi: pub fn JS_GetGCParameter(cx: &JSContext, key: JSGCParamKey) -> u32);
+ wrap!(jsapi: pub fn JS_GetPendingException(cx: &mut JSContext, vp: MutableHandleValue) -> bool);
+ wrap!(jsapi: pub fn JS_SetPendingException(cx: &mut JSContext, v: HandleValue, behavior: ExceptionStackBehavior));
+ wrap!(jsapi: pub fn JS_NewGlobalObject(cx: &mut JSContext, clasp: *const JSClass, principals: *mut JSPrincipals, hookOption: OnNewGlobalHookOption, options: *const RealmOptions) -> *mut JSObject);
+ wrap!(jsapi: pub fn JS_FireOnNewGlobalObject(cx: &mut JSContext, global: HandleObject));
++wrap!(jsapi: pub fn JS_AddInterruptCallback(cx: &JSContext, callback: JSInterruptCallback) -> bool);
++wrap!(jsapi: pub fn JS_RequestInterruptCallback(cx: &JSContext));
++wrap!(jsapi: pub fn JS_RequestInterruptCallbackCanWait(cx: &JSContext));
+ wrap!(jsapi: pub fn JS_DropPrincipals(cx: &JSContext, principals: *mut JSPrincipals));
++wrap!(jsapi: pub fn JS_SetSecurityCallbacks(cx: &JSContext, callbacks: *const JSSecurityCallbacks));
+ wrap!(jsapi: pub fn JS_SetTrustedPrincipals(cx: &JSContext, prin: *mut JSPrincipals));
+ wrap!(jsapi: pub fn JS_InitDestroyPrincipalsCallback(cx: &JSContext, destroyPrincipals: JSDestroyPrincipalsOp));
++wrap!(jsapi: pub fn JS_InitReadPrincipalsCallback(cx: &JSContext, read: JSReadPrincipalsOp));
+ wrap!(jsapi: pub fn JS_DefinePropertyById(cx: &mut JSContext, obj: Handle<*mut JSObject>, id: Handle<jsid>, desc: Handle<PropertyDescriptor>, result: *mut ObjectOpResult) -> bool);
+ wrap!(jsapi: pub fn JS_DefinePropertyById2(cx: &mut JSContext, obj: Handle<*mut JSObject>, id: Handle<jsid>, value: Handle<Value>, attrs: ::std::os::raw::c_uint) -> bool);
+ wrap!(jsapi: pub fn JS_DefinePropertyById5(cx: &mut JSContext, obj: Handle<*mut JSObject>, id: Handle<jsid>, value: Handle<*mut JSObject>, attrs: ::std::os::raw::c_uint) -> bool);
+@@ -68,11 +89,15 @@ wrap!(jsapi: pub fn JS_GetPrototype(cx: &mut JSContext, obj: HandleObject, resul
+ wrap!(jsapi: pub fn JS_SetPrototype(cx: &mut JSContext, obj: HandleObject, proto: HandleObject) -> bool);
+ wrap!(jsapi: pub fn JS_SetImmutablePrototype(cx: &mut JSContext, obj: HandleObject, succeeded: *mut bool) -> bool);
+ wrap!(jsapi: pub fn JS_NewFunction(cx: &mut JSContext, call: JSNative, nargs: ::std::os::raw::c_uint, flags: ::std::os::raw::c_uint, name: *const ::std::os::raw::c_char) -> *mut JSFunction);
++wrap!(jsapi: pub fn JS_SetOffthreadIonCompilationEnabled(cx: &JSContext, enabled: bool));
++wrap!(jsapi: pub fn JS_SetGlobalJitCompilerOption(cx: &JSContext, opt: JSJitCompilerOption, value: u32));
+ wrap!(jsapi: pub fn JS_GetArrayBufferViewBuffer(cx: &mut JSContext, obj: Handle<*mut JSObject>, isSharedMemory: *mut bool) -> *mut JSObject);
+ wrap!(jsapi: pub fn JS_NewObjectWithoutMetadata(cx: &mut JSContext, clasp: *const JSClass, proto: Handle<*mut JSObject>) -> *mut JSObject);
+ wrap!(jsapi: pub fn JS_InitializePropertiesFromCompatibleNativeObject(cx: &mut JSContext, dst: HandleObject, src: HandleObject) -> bool);
+ wrap!(jsapi: pub fn JS_GetOwnPropertyDescriptorById(cx: &mut JSContext, obj: HandleObject, id: HandleId, desc: MutableHandle<PropertyDescriptor>, isNone: *mut bool) -> bool);
+ wrap!(jsapi: pub fn JS_GetPropertyDescriptorById(cx: &mut JSContext, obj: HandleObject, id: HandleId, desc: MutableHandle<PropertyDescriptor>, holder: MutableHandleObject, isNone: *mut bool) -> bool);
++wrap!(glue: pub fn RegisterScriptEnvironmentPreparer(cx: &mut JSContext, hook: InvokeScriptPreparerHook));
++wrap!(glue: pub fn RunScriptEnvironmentPreparerClosure(cx: &mut JSContext, closure: *mut ScriptEnvironmentPreparer_Closure) -> bool);
+ wrap!(glue: pub fn InvokeGetOwnPropertyDescriptor(handler: *const ::std::os::raw::c_void, cx: &mut JSContext, proxy: HandleObject, id: HandleId, desc: MutableHandle<PropertyDescriptor>, isNone: *mut bool) -> bool);
+ wrap!(glue: pub fn CallJitGetterOp(info: *const JSJitInfo, cx: &mut JSContext, thisObj: HandleObject, specializedThis: *mut ::std::os::raw::c_void, argc: ::std::os::raw::c_uint, vp: *mut Value) -> bool);
+ wrap!(glue: pub fn CallJitSetterOp(info: *const JSJitInfo, cx: &mut JSContext, thisObj: HandleObject, specializedThis: *mut ::std::os::raw::c_void, argc: ::std::os::raw::c_uint, vp: *mut Value) -> bool);
+@@ -84,4 +109,7 @@ wrap!(glue: pub fn RUST_JSID_IS_VOID(id: HandleId) -> bool);
+ wrap!(glue: pub fn RUST_INTERNED_STRING_TO_JSID(cx: &mut JSContext, str_: *mut JSString, id: MutableHandleId));
+ wrap!(glue: pub fn UnwrapObjectDynamic(obj: *mut JSObject, cx: &mut JSContext, stopAtWindowProxy: bool) -> *mut JSObject);
+ wrap!(glue: pub fn AppendToIdVector(v: MutableHandleIdVector, id: HandleId) -> bool);
++wrap!(glue: pub fn CollectServoSizes(cx: &mut JSContext, sizes: *mut ServoSizes, gs: GetSize) -> bool);
++wrap!(glue: pub fn SetUpEventLoopDispatch(cx: &mut JSContext, callback: RustDispatchToEventLoopCallback, closure: *mut ::std::os::raw::c_void));
++wrap!(glue: pub fn DispatchableRun(cx: &mut JSContext, ptr: *mut DispatchablePointer, mb: Dispatchable_MaybeShuttingDown));
+ wrap!(glue: pub fn SetDataPropertyDescriptor(desc: MutableHandle<PropertyDescriptor>, value: HandleValue, attrs: u32));
+diff --git a/support/roves_js/extract_jsapi_types.py b/support/roves_js/extract_jsapi_types.py
+index 505d822e9b5..26d904c6c3e 100644
+--- a/support/roves_js/extract_jsapi_types.py
++++ b/support/roves_js/extract_jsapi_types.py
+@@ -22,6 +22,8 @@ OPAQUE = {
+     "JSRuntime", "JSAtom", "JSLinearString", "InlinableNative", "TrampolineNative", "JSTracer", "JSPrincipals",
+     "BaseProxyHandler",
+     "RootingContext", "AutoRequireNoGC",
++    # C++ classes and containers behind pointers.
++    "BuildIdCharVector", "JobQueue", "StreamConsumer", "ScriptEnvironmentPreparer_Closure",
+ }
+ 
+ 
+diff --git a/support/roves_js/gen_wrappers2.py b/support/roves_js/gen_wrappers2.py
+index 045eaa2e4e2..f35a113a2eb 100644
+--- a/support/roves_js/gen_wrappers2.py
++++ b/support/roves_js/gen_wrappers2.py
+@@ -43,7 +43,7 @@ def visible(src, module_file):
+     """The function names a module (`jsapi.rs` / `glue.rs`) makes reachable."""
+     text = read(os.path.join(src, module_file))
+     names = defined(os.path.join(src, module_file))
+-    for module in ("jsapi_impl", "binding", "realm_impl", "api", "object", "native", "proxy", "typedarray_impl"):
++    for module in ("jsapi_impl", "binding", "realm_impl", "api", "object", "native", "proxy", "typedarray_impl", "runtime_impl"):
+         explicit, glob = reexports(text, module)
+         path = os.path.join(src, module + ".rs")
+         if glob:
+diff --git a/support/roves_js/jsapi_type_names.txt b/support/roves_js/jsapi_type_names.txt
+index 25599e5bb84..3be31a858f0 100644
+--- a/support/roves_js/jsapi_type_names.txt
++++ b/support/roves_js/jsapi_type_names.txt
+@@ -5,6 +5,7 @@ AtomToLinearString
+ AutoRequireNoGC
+ BaseProxyHandler_Action
+ BuildIdCharVector
++BuildIdOp
+ CallArgs
+ CallObjectTracer
+ CallScriptTracer
+@@ -17,6 +18,8 @@ Compartment
+ CompartmentIterResult
+ CompartmentSpecifier
+ CompilationType
++ConsumeStreamCallback
++ContextOptions
+ CopyJSStructuredCloneData
+ CreateJobQueue
+ CreateProxyHandler
+@@ -39,6 +42,7 @@ GCDescription
+ GCOptions
+ GCProgress
+ GCReason
++GCSliceCallback
+ GCTraceKindToAscii
+ GetArrayBufferByteLength
+ GetFunctionNativeReserved
+@@ -70,6 +74,7 @@ HandleString
+ HandleValueArray
+ HandleValueasRawHandleValue
+ HandleasRawHandle
++HasReleasedWrapperCallback
+ Heap
+ HeapState
+ HideScriptedCaller
+@@ -106,16 +111,19 @@ JSClass_NON_NATIVE
+ JSContext
+ JSContextasRawJSContext
+ JSContextasUnsafeJSContext
++JSDOMCallbacks
+ JSDestroyPrincipalsOp
+ JSErrNum
+ JSFUN_CONSTRUCTOR
+ JSFailed
+ JSFunctionSpec
++JSGCCallback
+ JSGCParamKey
+ JSGCStatus
+ JSITER_HIDDEN
+ JSITER_OWNONLY
+ JSITER_SYMBOLS
++JSInterruptCallback
+ JSIterateCompartmentCallback
+ JSJitCompilerOption
+ JSJitGetterCallArgs
+@@ -146,6 +154,7 @@ JSPropertySpec_Name
+ JSPropertySpec_ValueWrapper
+ JSPropertySpec_ValueWrapper_Type
+ JSPropertySpec_ValueWrapper__bindgen_ty_1
++JSReadPrincipalsOp
+ JSRuntime
+ JSScript
+ JSSecurityCallbacks
+@@ -153,6 +162,7 @@ JSString
+ JSStructuredCloneCallbacks
+ JSStructuredCloneReader
+ JSStructuredCloneWriter
++JSTraceDataOp
+ JSTraceable
+ JSTracer
+ JSType
+@@ -228,7 +238,9 @@ ObjectOpResult
+ ObjectOpResult_SpecialCodes
+ ObjectOps
+ OnNewGlobalHookOption
++PreserveWrapperCallback
+ PromiseRejectionHandlingState
++PromiseRejectionTrackerCallback
+ PromiseState
+ PromiseUserInputEventHandlingState
+ PropertyDescriptor
+@@ -246,11 +258,13 @@ RegExpFlags
+ RegisterScriptEnvironmentPreparer
+ RemoveAssociatedMemory
+ RemoveRawValueRoot
++ReportStreamErrorCallback
+ RunScriptEnvironmentPreparerClosure
+ RuntimeCode
+ RuntimeHeapState
+ SavedFrameSelfHosted
+ ScriptEnvironmentPreparer_Closure
++ServoSizes
+ SetBuildId
+ SetDOMProxyInformation
+ SetFunctionNativeReserved
+@@ -266,6 +280,7 @@ SetScriptPrivate
+ SetScriptPrivateReferenceHooks
+ StackFormat
+ StackFormatasJSStackFormat
++StreamConsumer
+ StreamConsumerConsumeChunk
+ StreamConsumerNoteResponseURLs
+ StreamConsumerStreamEnd
