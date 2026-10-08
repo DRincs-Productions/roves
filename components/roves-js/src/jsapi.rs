@@ -10,6 +10,14 @@
 use std::cell::RefCell;
 
 pub use crate::gc::Heap;
+pub use crate::realm_impl::{
+    CurrentGlobal, CurrentGlobalOrNull, EnterRealm, GetCurrentRealmOrNull, GetObjectRealmOrNull,
+    GetRealmGlobalOrNull, GetRealmPrincipals, JS_FireOnNewGlobalObject, JS_GlobalObjectTraceHook,
+    JS_MayResolveStandardClass, JS_NewEnumerateStandardClasses, JS_NewGlobalObject,
+    JS_ResolveStandardClass, LeaveRealm,
+};
+pub use crate::binding::{CallJitGetterOp, CallJitMethodOp, CallJitSetterOp, JS_DefineFunctions, JS_DefineProperties};
+pub use crate::jsapi_impl::*;
 
 /// The bindgen types Servo uses (layouts copied from mozjs_sys by
 /// `support/roves_js/extract_jsapi_types.py`); roves-js gives them their behaviour.
@@ -17,6 +25,8 @@ mod types {
     #![allow(dead_code, non_camel_case_types, non_snake_case, non_upper_case_globals, clippy::all)]
     use super::{BigInt, JSContext, JSFunction, JSObject, JSScript, JSString, Symbol};
     use crate::jsid::{PropertyKey, jsid};
+    #[allow(unused_imports)]
+    use crate::gc::Rooted;
     use crate::jsval::Value;
 
     /// SpiderMonkey's stack-rooted GC vector (opaque here; its uses are emulated).
@@ -34,14 +44,43 @@ mod types {
     unsafe impl Sync for JSNativeWrapper {}
     unsafe impl Sync for JSPropertySpec {}
     unsafe impl Sync for JSTypedMethodJitInfo {}
+    // Raw handles are plain pointers; the static handles below are shared read-only.
+    unsafe impl<T> Sync for Handle<T> {}
 }
 pub use types::*;
+
+/// SpiderMonkey's `JS::` namespace (bindgen's `jsapi::JS` module): the same flat items.
+#[allow(non_snake_case)]
+pub mod JS {
+    pub use super::*;
+}
+
+pub type MutableHandleValue = MutableHandle<Value>;
+pub type MutableHandleObject = MutableHandle<*mut JSObject>;
+pub type MutableHandleString = MutableHandle<*mut JSString>;
+pub type MutableHandleId = MutableHandle<jsid>;
+
+static NULL_VALUE: Value = crate::jsval::NULL_BITS;
+static UNDEFINED_VALUE: Value = crate::jsval::UNDEFINED_BITS;
+static TRUE_VALUE: Value = crate::jsval::TRUE_BITS;
+static FALSE_VALUE: Value = crate::jsval::FALSE_BITS;
+
+macro_rules! static_handle {
+    ($name:ident, $value:ident) => {
+        pub static $name: Handle<Value> = Handle { _phantom_0: std::marker::PhantomData, ptr: &$value };
+    };
+}
+
+static_handle!(NullHandleValue, NULL_VALUE);
+static_handle!(UndefinedHandleValue, UNDEFINED_VALUE);
+static_handle!(TrueHandleValue, TRUE_VALUE);
+static_handle!(FalseHandleValue, FALSE_VALUE);
 pub use crate::jsid::{PropertyKey, jsid};
 pub use crate::jsval::{JSVal, Value};
 pub use crate::api::{
     ExceptionStackBehavior, JS_ClearPendingException, JS_DeprecatedStringHasLatin1Chars,
     JS_GetPendingException, JS_GetStringLength, JS_IsExceptionPending, JS_SetPendingException,
-    JSPROP_ENUMERATE, JSPROP_PERMANENT, JSPROP_READONLY, UTF8Chars,
+    UTF8Chars,
 };
 
 macro_rules! opaque {
@@ -62,12 +101,22 @@ opaque!(JSObject, JSString, JSFunction, Symbol, BigInt, JSScript);
 /// plus this thread's root stack (see `gc`).
 pub struct JSContext {
     pub(crate) isolate: *mut v8::Isolate,
-    /// The current realm's V8 context.
+    /// The current realm's V8 context (kept in sync with `current_realm`).
     pub(crate) context: RefCell<v8::Global<v8::Context>>,
+    /// The current realm (see `realm_impl`).
+    pub(crate) current_realm: std::cell::Cell<*mut Realm>,
+    /// Every realm of this runtime.
+    pub(crate) realms: RefCell<Vec<Box<crate::realm_impl::RealmData>>>,
     /// SpiderMonkey's pending exception: set when an API call catches a JS exception (or a
     /// native throws one), read and cleared through `JS_GetPendingException` and friends, and
     /// rethrown into V8 when control returns to script.
     pub(crate) pending_exception: RefCell<Option<v8::Global<v8::Value>>>,
+    /// Object templates of the `JSClass`es used in this runtime.
+    pub(crate) class_templates: crate::object::ClassTemplates,
+    /// Functions made from natives (`JS_NewFunction`); see `jsapi_impl::NativeFunction`.
+    pub(crate) native_functions: RefCell<Vec<Box<crate::jsapi_impl::NativeFunction>>>,
+    /// The cells of plain objects and symbols (see `cell`).
+    pub(crate) interned: crate::cell::Interned,
 }
 
 impl JSContext {
@@ -96,6 +145,14 @@ impl JSContext {
             }
             result
         })
+    }
+
+    /// Makes `realm` the current realm.
+    pub(crate) fn set_current_realm(&self, realm: *mut Realm) {
+        if let Some(data) = crate::realm_impl::realm_data(realm) {
+            *self.context.borrow_mut() = data.context.clone();
+            self.current_realm.set(realm);
+        }
     }
 
     /// Makes `exception` the pending exception.

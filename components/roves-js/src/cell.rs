@@ -12,11 +12,65 @@
 //! A cell lives while something traces it: a root (`Rooted`/`rooted!`), a `Heap<T>` inside a
 //! traced object, or another cell. An unrooted cell pointer is only valid until the next GC,
 //! which is the same rule SpiderMonkey has for unrooted GC-thing pointers.
+//!
+//! Objects and symbols have **one cell each** while the cell lives, so pointer comparison is
+//! identity as in SpiderMonkey: class objects and native functions find theirs through their
+//! own storage, other objects through the runtime's weak [`Interned`] table.
 
 use std::ffi::c_void;
 
 use v8::TracedReference;
-use v8::cppgc::{GarbageCollected, Member, UnsafePtr, Visitor};
+use v8::cppgc::{GarbageCollected, Member, UnsafePtr, Visitor, WeakPersistent};
+
+/// The cells of objects and symbols by identity hash, held weakly (a cell lives while it is
+/// traced; its V8 value does not keep it alive). Owned by the runtime's raw context.
+#[derive(Default)]
+pub(crate) struct Interned {
+    cells: std::cell::RefCell<std::collections::HashMap<i32, Vec<WeakPersistent<Cell>>>>,
+    inserted: std::cell::Cell<usize>,
+}
+
+impl Interned {
+    fn find(&self, scope: &mut v8::PinScope, hash: i32, value: v8::Local<v8::Value>) -> Option<*mut c_void> {
+        let mut cells = self.cells.borrow_mut();
+        let entries = cells.get_mut(&hash)?;
+        entries.retain(|entry| entry.get().is_some());
+        for entry in entries.iter() {
+            let cell = entry.get()?;
+            if cell.value.get(scope).is_some_and(|held| held.strict_equals(value)) {
+                // SAFETY: the entry is alive (checked above) and stays so for this call.
+                let pointer = unsafe { UnsafePtr::new(entry) }?;
+                return Some(to_raw(pointer));
+            }
+        }
+        None
+    }
+
+    fn insert(&self, hash: i32, cell: *mut c_void) {
+        let Some(pointer) = from_raw(cell) else { return };
+        let mut cells = self.cells.borrow_mut();
+        cells.entry(hash).or_default().push(WeakPersistent::new(&pointer));
+        // Drop the entries of collected cells now and then.
+        let inserted = self.inserted.get() + 1;
+        self.inserted.set(inserted);
+        if inserted % 4096 == 0 {
+            cells.retain(|_, entries| {
+                entries.retain(|entry| entry.get().is_some());
+                !entries.is_empty()
+            });
+        }
+    }
+}
+
+fn identity_hash(value: v8::Local<v8::Value>) -> Option<i32> {
+    if let Ok(object) = v8::Local::<v8::Object>::try_from(value) {
+        return Some(object.get_identity_hash().get());
+    }
+    if let Ok(symbol) = v8::Local::<v8::Symbol>::try_from(value) {
+        return Some(symbol.get_identity_hash().get());
+    }
+    None
+}
 
 pub(crate) struct Cell {
     value: TracedReference<v8::Value>,
@@ -24,6 +78,8 @@ pub(crate) struct Cell {
     /// character pointers that stay valid while the string lives, and the cell gives the same
     /// guarantee (it does not move and is freed only with the string's last reference).
     chars: std::cell::OnceCell<StringChars>,
+    /// A class-based object's box (see `object`): reserved slots and hooks.
+    class: Option<Member<crate::object::ClassBox>>,
 }
 
 pub(crate) enum StringChars {
@@ -48,6 +104,9 @@ impl Drop for Cell {
 unsafe impl GarbageCollected for Cell {
     fn trace(&self, visitor: &mut Visitor) {
         visitor.trace(&self.value);
+        if let Some(class) = &self.class {
+            visitor.trace(class);
+        }
     }
 
     fn get_name(&self) -> &'static std::ffi::CStr {
@@ -71,13 +130,48 @@ fn from_raw(pointer: *mut c_void) -> Option<UnsafePtr<Cell>> {
 }
 
 /// Allocates a cell for `value`. The cell is unrooted: root or store it before the next GC.
+/// A class-based object keeps one cell (its identity), which this returns instead.
 pub(crate) fn new_cell(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) -> *mut c_void {
+    if let Ok(object) = v8::Local::<v8::Object>::try_from(value) {
+        if let Some(class_box) = crate::object::class_box_of_v8(object) {
+            let cell = class_box.cell.get();
+            if !cell.is_null() {
+                return cell;
+            }
+        }
+        if object.is_function() {
+            if let Some(function) = crate::jsapi_impl::native_function_of_v8(scope, object) {
+                let cell = function.cell.get();
+                if !cell.is_null() {
+                    return cell;
+                }
+            }
+        }
+    }
+    let Some(hash) = identity_hash(value) else { return new_cell_with_class(scope, value, None) };
+    let Some(cx) = crate::rust::Runtime::get() else { return new_cell_with_class(scope, value, None) };
+    // SAFETY: the runtime's raw context outlives its scopes.
+    let interned = unsafe { &cx.as_ref().interned };
+    if let Some(cell) = interned.find(scope, hash, value) {
+        return cell;
+    }
+    let cell = new_cell_with_class(scope, value, None);
+    interned.insert(hash, cell);
+    cell
+}
+
+/// Allocates a cell, optionally tied to a class box.
+pub(crate) fn new_cell_with_class(
+    scope: &mut v8::PinScope,
+    value: v8::Local<v8::Value>,
+    class: Option<Member<crate::object::ClassBox>>,
+) -> *mut c_void {
     let reference = TracedReference::new(scope, value);
     let heap = scope.get_cpp_heap().expect("roves-js isolates carry a cppgc heap");
     // SAFETY: the returned pointer is handed straight to the caller, who roots or stores it
     // (the documented contract of an unrooted GC-thing pointer).
     let cell = unsafe {
-        v8::cppgc::make_garbage_collected(heap, Cell { value: reference, chars: std::cell::OnceCell::new() })
+        v8::cppgc::make_garbage_collected(heap, Cell { value: reference, chars: std::cell::OnceCell::new(), class })
     };
     to_raw(cell)
 }
@@ -120,4 +214,15 @@ pub(crate) unsafe fn string_chars<'c>(scope: &mut v8::PinScope, pointer: *mut c_
             StringChars::TwoByte(units)
         }
     })
+}
+
+/// The raw class box pointer of a class-based object's cell (no V8 access: safe during GC).
+pub(crate) fn cell_class_box(pointer: *mut c_void) -> Option<*mut c_void> {
+    let cell = from_raw(pointer)?;
+    // SAFETY: JSAPI callers pass live object pointers.
+    let cell = unsafe { cell.as_ref() };
+    let member = cell.class.as_ref()?;
+    // SAFETY: the member is traced by the (live) cell.
+    let class_box = unsafe { member.get() }?;
+    Some(class_box as *const crate::object::ClassBox as *mut c_void)
 }

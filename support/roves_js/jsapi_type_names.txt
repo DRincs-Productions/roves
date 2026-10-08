@@ -2,6 +2,7 @@ AddAssociatedMemory
 AppendToIdVector
 AsmJSOption
 AtomToLinearString
+AutoRequireNoGC
 BuildIdCharVector
 CallArgs
 CallObjectTracer
@@ -21,6 +22,7 @@ CreateProxyHandler
 CreateRustJSPrincipals
 CreateWrapperProxyHandler
 DOMCallbacks
+DOMProxyShadowsCheck
 DOMProxyShadowsResult
 DeleteJobQueue
 DeleteWrapperProxyHandler
@@ -102,6 +104,7 @@ JSClass_NON_NATIVE
 JSContext
 JSContextasRawJSContext
 JSContextasUnsafeJSContext
+JSDestroyPrincipalsOp
 JSErrNum
 JSFUN_CONSTRUCTOR
 JSFailed
@@ -111,6 +114,7 @@ JSGCStatus
 JSITER_HIDDEN
 JSITER_OWNONLY
 JSITER_SYMBOLS
+JSIterateCompartmentCallback
 JSJitCompilerOption
 JSJitGetterCallArgs
 JSJitInfo
@@ -122,14 +126,15 @@ JSJitInfo__bindgen_ty_2
 JSJitInfo__bindgen_ty_3
 JSJitMethodCallArgs
 JSJitSetterCallArgs
+JSLinearString
 JSNativeWrapper
+JSONWriteCallback
 JSObject
 JSPROP_ENUMERATE
 JSPROP_PERMANENT
 JSPROP_READONLY
 JSPROP_RESOLVING
 JSPrincipals
-JSPrincipalsCallbacks
 JSPropertySpec
 JSPropertySpec_Accessor
 JSPropertySpec_AccessorsOrValue
@@ -152,6 +157,7 @@ JSType
 JSTypedMethodJitInfo
 JSVal
 JSValueType
+JSWhyMagic
 JS_AddInterruptCallback
 JS_AtomizeStringN
 JS_CALLEE
@@ -216,6 +222,7 @@ MutableHandleasRawMutableHandle
 NewArrayObject
 NewArrayObject1
 ObjectOpResult
+ObjectOpResult_SpecialCodes
 ObjectOps
 OnNewGlobalHookOption
 PromiseRejectionHandlingState
@@ -226,9 +233,11 @@ PropertyKey
 ProxyClassExtension
 ProxyClassOps
 ProxyObjectOps
+ProxyOptions
 ProxyTraps
 RUST_FUNCTION_VALUE_TO_JITINFO
 RUST_js_GetErrorMessage
+RealmOptions
 RegExpFlag_UnicodeSets
 RegExpFlags
 RegisterScriptEnvironmentPreparer

@@ -12,6 +12,7 @@
 #![allow(non_snake_case, non_camel_case_types, non_upper_case_globals)]
 
 mod api;
+mod binding;
 mod cell;
 pub mod context;
 pub mod conversions;
@@ -21,8 +22,20 @@ pub mod glue;
 pub mod jsapi;
 pub mod jsid;
 pub mod jsval;
+mod jsimpls;
+mod jsapi_impl;
+mod native;
+mod object;
+mod realm_impl;
+pub mod realm;
 pub mod panic;
 pub mod rust;
+
+pub use crate::jsval::{JS_ARGV, JS_CALLEE};
+pub use crate::object::{
+    JSCLASS_FOREGROUND_FINALIZE, JSCLASS_GLOBAL_SLOT_COUNT, JSCLASS_IS_DOMJSCLASS, JSCLASS_IS_GLOBAL,
+    JSCLASS_IS_PROXY, JSCLASS_RESERVED_SLOTS_MASK, JSCLASS_RESERVED_SLOTS_SHIFT, JSCLASS_USERBIT1,
+};
 
 /// Roots a value on this thread's root stack for the enclosing scope (mozjs's `rooted!`).
 #[macro_export]

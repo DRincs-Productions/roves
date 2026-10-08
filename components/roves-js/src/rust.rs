@@ -9,11 +9,10 @@ use std::ptr::NonNull;
 
 use v8::cppgc::{GarbageCollected, Persistent, Visitor};
 
-pub use crate::gc::{
-    GCMethods, Handle, HandleFunction, HandleObject, HandleString, HandleValue, MutableHandle,
-    MutableHandleObject, MutableHandleString, MutableHandleValue, RootKind, RootedGuard,
-};
+pub use crate::gc::*;
+pub use crate::gc::Traceable as Trace;
 use crate::jsapi::JSContext as RawJSContext;
+pub use crate::realm_impl::{get_context_realm, get_object_realm};
 pub use crate::api::{
     ForOfIterationFailure, ToBoolean, ToInt32, ToInt64, ToNumber, ToString, ToUint16, ToUint32,
     ToUint64, for_of, maybe_wrap_object_or_null_value, maybe_wrap_object_value, maybe_wrap_value,
@@ -21,9 +20,105 @@ pub use crate::api::{
 
 /// The `&mut JSContext` forms of the JSAPI (mozjs generates these from jsapi).
 pub mod wrappers2 {
+    // mozjs's `wrap!` macro: turns a raw JSAPI signature into a wrapper taking the safe
+    // context and Rust handles. The list it runs over is generated (`wrappers2.in.rs`).
+    macro_rules! wrap {
+        // The invocation of @inner has the following form:
+        // @inner (input args) <> (arg signture accumulator) <> (arg expr accumulator) <> unparsed tokens
+        // when `unparsed tokens == \eps`, accumulator contains the final result
+        (@inner $saved:tt <> ($($arg_sig_acc:tt)*) <> ($($arg_expr_acc:expr,)*) <> $arg:ident: Handle<$gentype:ty>, $($rest:tt)*) => {
+            wrap!(@inner $saved <> ($($arg_sig_acc)* , $arg: Handle<$gentype>) <> ($($arg_expr_acc,)* $arg.into(),) <> $($rest)*);
+        };
+        (@inner $saved:tt <> ($($arg_sig_acc:tt)*) <> ($($arg_expr_acc:expr,)*) <> $arg:ident: MutableHandle<$gentype:ty>, $($rest:tt)*) => {
+            wrap!(@inner $saved <> ($($arg_sig_acc)* , $arg: MutableHandle<$gentype>) <> ($($arg_expr_acc,)* $arg.into(),) <> $($rest)*);
+        };
+        (@inner $saved:tt <> ($($arg_sig_acc:tt)*) <> ($($arg_expr_acc:expr,)*) <> $arg:ident: Handle, $($rest:tt)*) => {
+            wrap!(@inner $saved <> ($($arg_sig_acc)* , $arg: Handle) <> ($($arg_expr_acc,)* $arg.into(),) <> $($rest)*);
+        };
+        (@inner $saved:tt <> ($($arg_sig_acc:tt)*) <> ($($arg_expr_acc:expr,)*) <> $arg:ident: MutableHandle, $($rest:tt)*) => {
+            wrap!(@inner $saved <> ($($arg_sig_acc)* , $arg: MutableHandle) <> ($($arg_expr_acc,)* $arg.into(),) <> $($rest)*);
+        };
+        (@inner $saved:tt <> ($($arg_sig_acc:tt)*) <> ($($arg_expr_acc:expr,)*) <> $arg:ident: HandleFunction , $($rest:tt)*) => {
+            wrap!(@inner $saved <> ($($arg_sig_acc)* , $arg: HandleFunction) <> ($($arg_expr_acc,)* $arg.into(),) <> $($rest)*);
+        };
+        (@inner $saved:tt <> ($($arg_sig_acc:tt)*) <> ($($arg_expr_acc:expr,)*) <> $arg:ident: HandleId , $($rest:tt)*) => {
+            wrap!(@inner $saved <> ($($arg_sig_acc)* , $arg: HandleId) <> ($($arg_expr_acc,)* $arg.into(),) <> $($rest)*);
+        };
+        (@inner $saved:tt <> ($($arg_sig_acc:tt)*) <> ($($arg_expr_acc:expr,)*) <> $arg:ident: HandleObject , $($rest:tt)*) => {
+            wrap!(@inner $saved <> ($($arg_sig_acc)* , $arg: HandleObject) <> ($($arg_expr_acc,)* $arg.into(),) <> $($rest)*);
+        };
+        (@inner $saved:tt <> ($($arg_sig_acc:tt)*) <> ($($arg_expr_acc:expr,)*) <> $arg:ident: HandleScript , $($rest:tt)*) => {
+            wrap!(@inner $saved <> ($($arg_sig_acc)* , $arg: HandleScript) <> ($($arg_expr_acc,)* $arg.into(),) <> $($rest)*);
+        };
+        (@inner $saved:tt <> ($($arg_sig_acc:tt)*) <> ($($arg_expr_acc:expr,)*) <> $arg:ident: HandleString , $($rest:tt)*) => {
+            wrap!(@inner $saved <> ($($arg_sig_acc)* , $arg: HandleString) <> ($($arg_expr_acc,)* $arg.into(),) <> $($rest)*);
+        };
+        (@inner $saved:tt <> ($($arg_sig_acc:tt)*) <> ($($arg_expr_acc:expr,)*) <> $arg:ident: HandleSymbol , $($rest:tt)*) => {
+            wrap!(@inner $saved <> ($($arg_sig_acc)* , $arg: HandleSymbol) <> ($($arg_expr_acc,)* $arg.into(),) <> $($rest)*);
+        };
+        (@inner $saved:tt <> ($($arg_sig_acc:tt)*) <> ($($arg_expr_acc:expr,)*) <> $arg:ident: HandleValue , $($rest:tt)*) => {
+            wrap!(@inner $saved <> ($($arg_sig_acc)* , $arg: HandleValue) <> ($($arg_expr_acc,)* $arg.into(),) <> $($rest)*);
+        };
+        (@inner $saved:tt <> ($($arg_sig_acc:tt)*) <> ($($arg_expr_acc:expr,)*) <> $arg:ident: MutableHandleFunction , $($rest:tt)*) => {
+            wrap!(@inner $saved <> ($($arg_sig_acc)* , $arg: MutableHandleFunction) <> ($($arg_expr_acc,)* $arg.into(),) <> $($rest)*);
+        };
+        (@inner $saved:tt <> ($($arg_sig_acc:tt)*) <> ($($arg_expr_acc:expr,)*) <> $arg:ident: MutableHandleId , $($rest:tt)*) => {
+            wrap!(@inner $saved <> ($($arg_sig_acc)* , $arg: MutableHandleId) <> ($($arg_expr_acc,)* $arg.into(),) <> $($rest)*);
+        };
+        (@inner $saved:tt <> ($($arg_sig_acc:tt)*) <> ($($arg_expr_acc:expr,)*) <> $arg:ident: MutableHandleObject , $($rest:tt)*) => {
+            wrap!(@inner $saved <> ($($arg_sig_acc)* , $arg: MutableHandleObject) <> ($($arg_expr_acc,)* $arg.into(),) <> $($rest)*);
+        };
+        (@inner $saved:tt <> ($($arg_sig_acc:tt)*) <> ($($arg_expr_acc:expr,)*) <> $arg:ident: MutableHandleScript , $($rest:tt)*) => {
+            wrap!(@inner $saved <> ($($arg_sig_acc)* , $arg: MutableHandleScript) <> ($($arg_expr_acc,)* $arg.into(),) <> $($rest)*);
+        };
+        (@inner $saved:tt <> ($($arg_sig_acc:tt)*) <> ($($arg_expr_acc:expr,)*) <> $arg:ident: MutableHandleString , $($rest:tt)*) => {
+            wrap!(@inner $saved <> ($($arg_sig_acc)* , $arg: MutableHandleString) <> ($($arg_expr_acc,)* $arg.into(),) <> $($rest)*);
+        };
+        (@inner $saved:tt <> ($($arg_sig_acc:tt)*) <> ($($arg_expr_acc:expr,)*) <> $arg:ident: MutableHandleSymbol , $($rest:tt)*) => {
+            wrap!(@inner $saved <> ($($arg_sig_acc)* , $arg: MutableHandleSymbol) <> ($($arg_expr_acc,)* $arg.into(),) <> $($rest)*);
+        };
+        (@inner $saved:tt <> ($($arg_sig_acc:tt)*) <> ($($arg_expr_acc:expr,)*) <> $arg:ident: MutableHandleValue , $($rest:tt)*) => {
+            wrap!(@inner $saved <> ($($arg_sig_acc)* , $arg: MutableHandleValue) <> ($($arg_expr_acc,)* $arg.into(),) <> $($rest)*);
+        };
+        (@inner $saved:tt <> ($($arg_sig_acc:tt)*) <> ($($arg_expr_acc:expr,)*) <> $arg:ident: &mut JSContext , $($rest:tt)*) => {
+            wrap!(@inner $saved <> ($($arg_sig_acc)* , $arg: &mut JSContext) <> ($($arg_expr_acc,)* $arg.raw_cx(),) <> $($rest)*);
+        };
+        (@inner $saved:tt <> ($($arg_sig_acc:tt)*) <> ($($arg_expr_acc:expr,)*) <> $arg:ident: &JSContext , $($rest:tt)*) => {
+            wrap!(@inner $saved <> ($($arg_sig_acc)* , $arg: &JSContext) <> ($($arg_expr_acc,)* $arg.raw_cx_no_gc(),) <> $($rest)*);
+        };
+        // functions that take *const AutoRequireNoGC already have &JSContext, so we can remove this mareker argument
+        (@inner $saved:tt <> ($($arg_sig_acc:tt)*) <> ($($arg_expr_acc:expr,)*) <> $arg:ident: *const AutoRequireNoGC , $($rest:tt)*) => {
+            wrap!(@inner $saved <> ($($arg_sig_acc)*) <> ($($arg_expr_acc,)* ::std::ptr::null(),) <> $($rest)*);
+        };
+        (@inner $saved:tt <> ($($arg_sig_acc:tt)*) <> ($($arg_expr_acc:expr,)*) <> $arg:ident: $type:ty, $($rest:tt)*) => {
+            wrap!(@inner $saved <> ($($arg_sig_acc)* , $arg: $type) <> ($($arg_expr_acc,)* $arg,) <> $($rest)*);
+        };
+        (@inner ($module:tt: $func_name:ident -> $outtype:ty) <> (, $($args:tt)*) <> ($($argexprs:expr,)*) <> ) => {
+            #[inline]
+            pub unsafe fn $func_name($($args)*) -> $outtype {
+                $module::$func_name($($argexprs),*)
+            }
+        };
+        ($module:tt: pub fn $func_name:ident($($args:tt)*) -> $outtype:ty) => {
+            wrap!(@inner ($module: $func_name -> $outtype) <> () <> () <> $($args)* ,);
+        };
+        ($module:tt: pub fn $func_name:ident($($args:tt)*)) => {
+            wrap!($module: pub fn $func_name($($args)*) -> ());
+        }
+    }
+
     use crate::context::JSContext;
-    use crate::gc::{HandleObject, HandleValue};
+    use crate::gc::{
+        Handle, HandleFunction, HandleId, HandleObject, HandleScript, HandleString, HandleSymbol,
+        HandleValue, MutableHandle, MutableHandleFunction, MutableHandleId, MutableHandleObject,
+        MutableHandleScript, MutableHandleString, MutableHandleSymbol, MutableHandleValue,
+    };
+    #[allow(unused_imports)]
+    use crate::jsapi::*;
     use crate::jsapi::{JSObject, JSString, UTF8Chars};
+    use crate::{glue, jsapi};
+
+    include!("wrappers2.in.rs");
 
     pub fn JS_GetLatin1StringCharsAndLength(_cx: &JSContext, s: *mut JSString, length: &mut usize) -> *const u8 {
         crate::api::latin1_chars(s, length)
@@ -82,6 +177,12 @@ struct RootSet;
 unsafe impl GarbageCollected for RootSet {
     fn trace(&self, visitor: &mut Visitor) {
         crate::gc::trace_roots(visitor);
+        if let Some(cx) = Runtime::get() {
+            // SAFETY: the runtime outlives its collections.
+            crate::jsapi_impl::trace_native_functions(unsafe { cx.as_ref() }, visitor);
+            // SAFETY: as above.
+            crate::realm_impl::trace_realms(unsafe { cx.as_ref() }, visitor);
+        }
         // RootedVec / RootedTraceableBox contents.
         // SAFETY: the tracer is this GC's visitor.
         unsafe { crate::gc::trace_traceables(crate::glue::tracer(visitor), std::ptr::null_mut()) };
@@ -126,8 +227,19 @@ impl Runtime {
             isolate: std::ptr::null_mut(),
             context: RefCell::new(context),
             pending_exception: RefCell::new(None),
+            class_templates: Default::default(),
+            native_functions: RefCell::new(Vec::new()),
+            interned: Default::default(),
+            current_realm: std::cell::Cell::new(std::ptr::null_mut()),
+            realms: RefCell::new(Vec::new()),
         });
         raw.isolate = &mut **isolate as *mut v8::Isolate;
+        // The initial context is the runtime's first realm.
+        let realm = raw.with_scope(|scope| {
+            let context = scope.get_current_context();
+            crate::realm_impl::register_realm(&raw, scope, context, std::ptr::null_mut())
+        });
+        raw.current_realm.set(realm);
         let runtime = Runtime { root_set, raw, isolate };
         CURRENT.with(|current| current.set(Some(runtime.cx_ptr())));
         runtime
@@ -181,3 +293,110 @@ impl Drop for Runtime {
         let _ = &self.root_set;
     }
 }
+
+/// A rooted vector of ids (`JS::RootedIdVector`), filled through its handle
+/// (`GetPropertyKeys`, `AppendToIdVector`).
+pub struct IdVector(Box<Vec<crate::jsid::jsid>>);
+
+unsafe fn trace_id_vector(location: *const std::ffi::c_void, visitor: &mut Visitor) {
+    use crate::gc::RootKind;
+    // SAFETY: the vector is unregistered before it is dropped.
+    unsafe { &*(location as *const Vec<crate::jsid::jsid>) }.trace_root(visitor);
+}
+
+impl IdVector {
+    /// # Safety
+    /// `cx` must be the live context of this thread (as for every mozjs constructor).
+    pub unsafe fn new(_cx: *mut RawJSContext) -> IdVector {
+        let vector = Box::new(Vec::new());
+        crate::gc::register_custom_root(&*vector as *const Vec<_> as *const std::ffi::c_void, trace_id_vector);
+        IdVector(vector)
+    }
+
+    pub fn handle_mut(&mut self) -> crate::jsapi::MutableHandleIdVector {
+        crate::jsapi::MutableHandleIdVector { ptr: &mut *self.0 as *mut Vec<_> as *mut std::ffi::c_void }
+    }
+}
+
+impl Drop for IdVector {
+    fn drop(&mut self) {
+        crate::gc::unregister_custom_root(&*self.0 as *const Vec<_> as *const std::ffi::c_void);
+    }
+}
+
+impl std::ops::Deref for IdVector {
+    type Target = [crate::jsid::jsid];
+
+    fn deref(&self) -> &[crate::jsid::jsid] {
+        &self.0
+    }
+}
+
+/// Appends to the vector behind an `IdVector` handle.
+///
+/// # Safety
+/// `handle` must come from [`IdVector::handle_mut`] of a live vector.
+pub(crate) unsafe fn append_to_id_vector(handle: crate::jsapi::MutableHandleIdVector, id: crate::jsid::jsid) {
+    // SAFETY: see above.
+    unsafe { &mut *(handle.ptr as *mut Vec<crate::jsid::jsid>) }.push(id);
+}
+
+/// Defines `methods` (a `JS_FS_END`-terminated table) on `obj`.
+///
+/// # Safety
+/// `cx` must be the live context of this thread.
+pub unsafe fn define_methods(cx: *mut RawJSContext, obj: HandleObject, methods: &'static [crate::jsapi::JSFunctionSpec]) -> Result<(), ()> {
+    // SAFETY: both name variants are pointer-sized; the terminator's is null.
+    assert!(methods.last().is_some_and(|spec| unsafe { spec.name.string_ }.is_null()));
+    // SAFETY: forwarded.
+    if unsafe { crate::jsapi::JS_DefineFunctions(cx, obj.into(), methods.as_ptr()) } { Ok(()) } else { Err(()) }
+}
+
+/// Defines `properties` (a `JS_PS_END`-terminated table) on `obj`.
+///
+/// # Safety
+/// `cx` must be the live context of this thread.
+pub unsafe fn define_properties(cx: *mut RawJSContext, obj: HandleObject, properties: &'static [crate::jsapi::JSPropertySpec]) -> Result<(), ()> {
+    // SAFETY: as above.
+    assert!(properties.last().is_some_and(|spec| unsafe { spec.name.string_ }.is_null()));
+    // SAFETY: forwarded.
+    if unsafe { crate::jsapi::JS_DefineProperties(cx, obj.into(), properties.as_ptr()) } { Ok(()) } else { Err(()) }
+}
+
+/// The `JSClass` of an object (a shared plain class for ordinary objects).
+///
+/// # Safety
+/// `obj` must be a live object.
+pub unsafe fn get_object_class(obj: *mut crate::jsapi::JSObject) -> *const crate::jsapi::JSClass {
+    crate::object::object_class(obj)
+}
+
+pub fn is_dom_class(class: &crate::jsapi::JSClass) -> bool {
+    class.flags & crate::object::JSCLASS_IS_DOMJSCLASS != 0
+}
+
+/// # Safety
+/// `obj` must be a live object.
+pub unsafe fn is_dom_object(obj: *mut crate::jsapi::JSObject) -> bool {
+    // SAFETY: classes are static binding tables.
+    is_dom_class(unsafe { &*get_object_class(obj) })
+}
+
+/// Wraps `obj` for the current realm. V8 shares objects across realms, so this is the
+/// identity (WindowProxy outerization is not emulated yet).
+///
+/// # Safety
+/// `cx` must be the live context of this thread.
+pub unsafe fn maybe_wrap_object(_cx: *mut RawJSContext, _obj: MutableHandleObject) {}
+
+/// The global class mozjs offers for simple embeddings and tests.
+pub static SIMPLE_GLOBAL_CLASS: crate::jsapi::JSClass = crate::jsapi::JSClass {
+    name: c"Global".as_ptr(),
+    flags: crate::object::JSCLASS_IS_GLOBAL |
+        ((crate::object::JSCLASS_GLOBAL_SLOT_COUNT & crate::object::JSCLASS_RESERVED_SLOTS_MASK) <<
+            crate::object::JSCLASS_RESERVED_SLOTS_SHIFT),
+    cOps: std::ptr::null(),
+    spec: std::ptr::null(),
+    ext: std::ptr::null(),
+    oOps: std::ptr::null(),
+};

@@ -14,6 +14,29 @@ use crate::gc::Heap;
 use crate::jsapi::{BigInt, JSFunction, JSObject, JSScript, JSString, JSTracer, PropertyDescriptor, Symbol, jsid};
 use crate::jsval::Value;
 
+pub use crate::binding::{CallJitGetterOp, CallJitMethodOp, CallJitSetterOp};
+pub use crate::jsapi_impl::{
+    AppendToIdVector, CheckedUnwrapStatic, CreateRustJSPrincipals, DestroyRustJSPrincipals,
+    GetRustJSPrincipalsPrivate, IsWrapper, JS_GetReservedSlot, RUST_FUNCTION_VALUE_TO_JITINFO,
+    RUST_INTERNED_STRING_TO_JSID, RUST_JSID_IS_VOID, RUST_SYMBOL_TO_JSID, SetDataPropertyDescriptor,
+    UncheckedUnwrapObject, UnwrapObjectDynamic, UnwrapObjectStatic, int_to_jsid,
+};
+
+/// The principal callbacks of mozjs's `RustJSPrincipals` (structured-clone writing and the
+/// system-principal check).
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct JSPrincipalsCallbacks {
+    pub write: Option<
+        unsafe extern "C" fn(
+            principals: *mut crate::jsapi::JSPrincipals,
+            cx: *mut crate::jsapi::JSContext,
+            writer: *mut crate::jsapi::JSStructuredCloneWriter,
+        ) -> bool,
+    >,
+    pub isSystemOrAddonPrincipal: Option<unsafe extern "C" fn(principals: *mut crate::jsapi::JSPrincipals) -> bool>,
+}
+
 /// The cppgc visitor behind a tracer pointer.
 ///
 /// # Safety

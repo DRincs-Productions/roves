@@ -23,6 +23,17 @@ replace.
 **Progress.** CP94–95 brought the count to 7,252. CP96 adds the 193 bindgen types, extracted
 from mozjs_sys with their layouts, and `new_jsjitinfo_bitfield_1!`, which alone caused 6,609
 errors.
+- CP97 added the tracing layer and the `Sync` impls of the binding tables, leaving about 150
+  missing JSAPI names.
+- CP98 brings the count to **14**, all unresolved imports (typed arrays, proxies,
+  `RealmOptions`, `IntoHandle`, `RuntimeHeapState`). CP98 adds:
+  - the object model: class objects with a cppgc `ClassBox`, and one cell per object
+    through a weak identity table;
+  - natives through a `vp` array;
+  - `JS_DefineProperties`/`JS_DefineFunctions` and the JIT ops;
+  - realms and `JS_NewGlobalObject`;
+  - about 100 JSAPI functions;
+  - `wrappers2`, generated from mozjs's lists with mozjs's `wrap!` macro.
 
 **Surface.** An inventory of `script`, `script_bindings` and `script_webgpu` found about 590
 distinct `js::` items:

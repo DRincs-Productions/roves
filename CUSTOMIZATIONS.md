@@ -11,6 +11,109 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-08 - V8 cutover: `roves-js` object model, binding tables, realms and `wrappers2` (CP98)
+
+**Servo files:**
+- `components/roves-js/src/`:
+  - new modules: `object.rs`, `native.rs`, `realm_impl.rs`, `jsapi_impl.rs`, `binding.rs`,
+    `realm.rs` (ported from mozjs), `jsimpls.rs` (ported from mozjs_sys);
+  - `wrappers2.in.rs`, which is generated;
+  - changes to `cell.rs`, `jsapi.rs`, `jsval.rs`, `rust.rs`, `glue.rs`, `gc/root.rs`,
+    `api.rs`, `lib.rs`, `tests.rs` and the regenerated `jsapi_types.rs`;
+- `support/roves_js/gen_wrappers2.py` (new);
+- `support/roves_js/extract_jsapi_types.py` and `support/roves_js/jsapi_type_names.txt`.
+
+**Patch:** `0163-roves-js-object-model.patch` after 0162.
+
+**Objects.**
+- A `JSClass` object is an instance of a per-class V8 object template with one internal
+  field.
+- That field holds a cppgc `ClassBox` with the reserved slots. The box's trace runs the
+  class trace hook and its destruction runs the finalize hook.
+- Classes with `call`/`construct` hooks get a call-as-function handler.
+- `JS_NewObject*`, the property operations by name and by id, descriptors, prototypes,
+  `JS_DefinePropertyById`, deletion and `GetPropertyKeys` (into a rooted `IdVector`) are
+  implemented on V8.
+
+**Identity.** Every object and symbol has **one cell while that cell lives**, so pointer
+comparison is identity, as in SpiderMonkey:
+- class objects find their cell through their box;
+- native functions find theirs through a V8 private;
+- every other object goes through a weak table (`cppgc::WeakPersistent`) keyed by V8's
+  identity hash.
+
+**Natives.**
+- A `JSNative` is called with a rooted SpiderMonkey-style `vp` array. A failure rethrows the
+  pending exception into V8.
+- `JS_NewFunction` functions keep their native, their two "native reserved" slots and their
+  `JSJitInfo` (`RUST_FUNCTION_VALUE_TO_JITINFO`), all traced by the runtime.
+- JSAPI calls nested inside a native work. Each opens its own scope on the same isolate.
+
+**Binding tables.**
+- `JS_DefineProperties` turns native accessors into V8 accessor pairs (`get x`/`set x`
+  functions carrying their JIT info) and value specs into data properties, including
+  well-known-symbol names.
+- `JS_DefineFunctions` defines the methods.
+- `CallJitGetterOp`/`SetterOp`/`MethodOp` call `JSJitInfo` ops the way mozjs's glue does.
+
+**Realms.**
+- `JS_NewGlobalObject` creates a new V8 context from the global class's template. The class
+  box goes on the global proxy, which is what scripts see as `globalThis`.
+- The context is registered as a realm, and the realm roots its global.
+- Implemented: `EnterRealm`/`LeaveRealm`, `GetCurrentRealmOrNull`, `CurrentGlobal(OrNull)`
+  and the realm intrinsics (`GetRealm*Prototype`).
+- mozjs's `realm` module (`AutoRealm`/`CurrentRealm`) is ported unchanged.
+
+**Other functions.**
+- `Call`, `ToJSON`, `JS_ValueToSource` (approximate), atoms, linear strings and
+  `StringIsArrayIndex`;
+- principals (`CreateRustJSPrincipals`, hold/drop with the destroy callback);
+- raw value roots;
+- associated memory, reported to V8's external-memory counter.
+
+These are identities: V8 has no compartments or cross-compartment wrappers, so `JS_Wrap*`,
+`IsWrapper`, `UncheckedUnwrapObject` and `UnwrapObjectDynamic` change nothing.
+
+**Compatibility.**
+- `wrappers2` is now generated as in mozjs. mozjs's `wrap!` macro runs over the entries of
+  `jsapi2_wrappers.in.rs`/`glue2_wrappers.in.rs` that `roves-js` implements (81 so far).
+  `gen_wrappers2.py` selects them.
+- `glue` re-exports the glue-side functions and defines `JSPrincipalsCallbacks`.
+- `jsapi::JS` mirrors bindgen's namespace.
+- `JSPROP_*` are bindgen's `u8` constants again, as in mozjs.
+- These now match mozjs:
+  - `Heap<T>` has the public `ptr` field. Its visitor trace is `trace_visitor`, so
+    `Traceable::trace(*mut JSTracer)` is the method Servo's derives call.
+  - `GCMethods::post_barrier`, which is a no-op on V8.
+  - `Handle::{null, undefined, as_ref}` and `RootedGuard<Vec<T>>::{handle_at,
+    handle_mut_at, set_index, take}`.
+  - The root-level `JS_CALLEE`/`JS_ARGV`/`JSCLASS_*` and `rust::{define_methods,
+    define_properties, get_object_class, is_dom_class, is_dom_object, SIMPLE_GLOBAL_CLASS,
+    Trace}`.
+- The type extractor now prefers bindgen's full enum over its empty placeholders
+  (`MemoryUse`). It also emits `ObjectOps` concretely and treats `Rooted` as provided by
+  `roves-js`.
+
+**Gaps (documented in the code):**
+- immutable prototypes are not enforced;
+- self-hosted specs are rejected;
+- `WindowProxy` outerization is not emulated yet;
+- proxies and typed arrays are the next blocks.
+
+**Progress:**
+- `servo-script-bindings` goes from about 150 missing names (plus the type errors behind
+  them) to **14 errors**.
+- All 14 are unresolved imports: `typedarray`, the proxy functions, `rust::RealmOptions`,
+  `rust::IntoHandle` and `JS::RuntimeHeapState`.
+- Once those resolve, the remaining type-check errors become visible.
+- Tests: `roves-js` 13/13. They cover:
+  - class hooks and slots across GC;
+  - object identity;
+  - properties, ids and descriptors;
+  - natives from specs, nested JSAPI calls, exceptions and `Call`;
+  - accessor and symbol specs, and `ToJSON`;
+  - separate realms with class globals.
+
 ## 2026-10-08 - V8 cutover: `roves-js` tracing layer, `jsid`, `panic` (CP97)
 
 **Servo files:**

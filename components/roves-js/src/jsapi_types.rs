@@ -30,6 +30,12 @@
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq)]
+pub struct AutoRequireNoGC {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub struct BaseProxyHandler {
     _private: [u8; 0],
 }
@@ -52,6 +58,93 @@ pub struct BaseProxyHandler {
             pub _bitfield_align_1: [u8; 0],
             pub _bitfield_1: __BindgenBitfieldUnit<[u8; 1usize]>,
             pub __bindgen_padding_0: [u8; 3usize],
+        }
+
+        impl CallArgs {
+            #[inline]
+            pub fn constructing_(&self) -> bool {
+                unsafe { ::std::mem::transmute(self._bitfield_1.get(0usize, 1u8) as u8) }
+            }
+            #[inline]
+            pub fn set_constructing_(&mut self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    self._bitfield_1.set(0usize, 1u8, val as u64)
+                }
+            }
+            #[inline]
+            pub unsafe fn constructing__raw(this: *const Self) -> bool {
+                unsafe {
+                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 1usize]>>::raw_get(
+                        ::std::ptr::addr_of!((*this)._bitfield_1),
+                        0usize,
+                        1u8,
+                    ) as u8)
+                }
+            }
+            #[inline]
+            pub unsafe fn set_constructing__raw(this: *mut Self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    <__BindgenBitfieldUnit<[u8; 1usize]>>::raw_set(
+                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                        0usize,
+                        1u8,
+                        val as u64,
+                    )
+                }
+            }
+            #[inline]
+            pub fn ignoresReturnValue_(&self) -> bool {
+                unsafe { ::std::mem::transmute(self._bitfield_1.get(1usize, 1u8) as u8) }
+            }
+            #[inline]
+            pub fn set_ignoresReturnValue_(&mut self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    self._bitfield_1.set(1usize, 1u8, val as u64)
+                }
+            }
+            #[inline]
+            pub unsafe fn ignoresReturnValue__raw(this: *const Self) -> bool {
+                unsafe {
+                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 1usize]>>::raw_get(
+                        ::std::ptr::addr_of!((*this)._bitfield_1),
+                        1usize,
+                        1u8,
+                    ) as u8)
+                }
+            }
+            #[inline]
+            pub unsafe fn set_ignoresReturnValue__raw(this: *mut Self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    <__BindgenBitfieldUnit<[u8; 1usize]>>::raw_set(
+                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                        1usize,
+                        1u8,
+                        val as u64,
+                    )
+                }
+            }
+            #[inline]
+            pub fn new_bitfield_1(
+                constructing_: bool,
+                ignoresReturnValue_: bool,
+            ) -> __BindgenBitfieldUnit<[u8; 1usize]> {
+                let mut __bindgen_bitfield_unit: __BindgenBitfieldUnit<[u8; 1usize]> =
+                    Default::default();
+                __bindgen_bitfield_unit.set(0usize, 1u8, {
+                    let constructing_: u8 = unsafe { ::std::mem::transmute(constructing_) };
+                    constructing_ as u64
+                });
+                __bindgen_bitfield_unit.set(1usize, 1u8, {
+                    let ignoresReturnValue_: u8 =
+                        unsafe { ::std::mem::transmute(ignoresReturnValue_) };
+                    ignoresReturnValue_ as u64
+                });
+                __bindgen_bitfield_unit
+            }
         }
 
     #[doc = " Called when the transferring objects are checked. If this function returns\n false, the serialization ends throwing a DataCloneError exception."]
@@ -131,6 +224,14 @@ pub struct Compartment {
         pub type DOMInstanceClassIsError =
             ::std::option::Option<unsafe extern "C" fn(arg1: *const JSClass) -> bool>;
 
+        pub type DOMProxyShadowsCheck = ::std::option::Option<
+            unsafe extern "C" fn(
+                arg1: *mut JSContext,
+                arg2: Handle<*mut JSObject>,
+                arg3: Handle<PropertyKey>,
+            ) -> DOMProxyShadowsResult,
+        >;
+
         #[repr(i32)]
         #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
         pub enum DOMProxyShadowsResult {
@@ -153,6 +254,25 @@ pub struct Compartment {
         pub struct Debugger {
             _unused: [u8; 0],
         }
+
+        pub type DefinePropertyOp = ::std::option::Option<
+            unsafe extern "C" fn(
+                cx: *mut JSContext,
+                obj: HandleObject,
+                id: HandleId,
+                desc: Handle<PropertyDescriptor>,
+                result: *mut ObjectOpResult,
+            ) -> bool,
+        >;
+
+        pub type DeletePropertyOp = ::std::option::Option<
+            unsafe extern "C" fn(
+                cx: *mut JSContext,
+                obj: HandleObject,
+                id: HandleId,
+                result: *mut ObjectOpResult,
+            ) -> bool,
+        >;
 
         #[repr(i32)]
         #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
@@ -185,6 +305,21 @@ pub struct Compartment {
             Function = 17,
             #[doc = " None of the above."]
             Other = 18,
+        }
+
+        #[repr(C)]
+        pub struct ElementAdder {
+            pub resObj_: RootedObject,
+            pub vp_: *mut Value,
+            pub index_: u32,
+            pub getBehavior_: ElementAdder_GetBehavior,
+        }
+
+        #[repr(i32)]
+        #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+        pub enum ElementAdder_GetBehavior {
+            CheckHasElemPreserveHoles = 0,
+            GetElement = 1,
         }
 
         #[doc = " Type representing a JS error or exception. At the moment this only\n \"represents\" an error in a rather abstract way."]
@@ -336,6 +471,35 @@ pub struct GCContext {
             NUM_REASONS = 100,
         }
 
+        pub type GetElementsOp = ::std::option::Option<
+            unsafe extern "C" fn(
+                cx: *mut JSContext,
+                obj: HandleObject,
+                begin: u32,
+                end: u32,
+                adder: *mut ElementAdder,
+            ) -> bool,
+        >;
+
+        pub type GetOwnPropertyOp = ::std::option::Option<
+            unsafe extern "C" fn(
+                cx: *mut JSContext,
+                obj: HandleObject,
+                id: HandleId,
+                desc: u64,
+            ) -> bool,
+        >;
+
+        pub type GetPropertyOp = ::std::option::Option<
+            unsafe extern "C" fn(
+                cx: *mut JSContext,
+                obj: HandleObject,
+                receiver: HandleValue,
+                id: HandleId,
+                vp: MutableHandleValue,
+            ) -> bool,
+        >;
+
         #[repr(C)]
         #[derive(Debug, Copy, Clone)]
         pub struct GetterSetter {
@@ -375,6 +539,15 @@ pub struct GCContext {
             pub length_: usize,
             pub elements_: *const Value,
         }
+
+        pub type HasPropertyOp = ::std::option::Option<
+            unsafe extern "C" fn(
+                cx: *mut JSContext,
+                obj: HandleObject,
+                id: HandleId,
+                foundp: *mut bool,
+            ) -> bool,
+        >;
 
         #[repr(i32)]
         #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
@@ -509,6 +682,9 @@ pub struct JSAtom {
             result: *mut ObjectOpResult,
         ) -> bool,
     >;
+
+    pub type JSDestroyPrincipalsOp =
+        ::std::option::Option<unsafe extern "C" fn(principals: *mut JSPrincipals)>;
 
     #[doc = " The old-style JSClass.enumerate op should define all lazy properties not\n yet reflected in obj."]
     pub type JSEnumerateOp = ::std::option::Option<
@@ -1349,6 +1525,15 @@ pub struct JSAtom {
         unsafe extern "C" fn(gcx: *mut GCContext, obj: *mut JSObject),
     >;
 
+    #[doc = " The type of ObjectOps::funToString.  This callback allows an object to\n provide a custom string to use when Function.prototype.toString is invoked on\n that object.  A null return value means OOM."]
+    pub type JSFunToStringOp = ::std::option::Option<
+        unsafe extern "C" fn(
+            cx: *mut JSContext,
+            obj: HandleObject,
+            isToSource: bool,
+        ) -> *mut JSString,
+    >;
+
     #[repr(C)]
     #[derive(Copy, Clone)]
     pub struct JSFunctionSpec {
@@ -1552,6 +1737,397 @@ pub struct JSAtom {
         pub _bitfield_1: __BindgenBitfieldUnit<[u8; 4usize]>,
     }
 
+    impl JSJitInfo {
+        #[inline]
+        pub fn type_(&self) -> u32 {
+            unsafe { ::std::mem::transmute(self._bitfield_1.get(0usize, 4u8) as u32) }
+        }
+        #[inline]
+        pub fn set_type_(&mut self, val: u32) {
+            unsafe {
+                let val: u32 = ::std::mem::transmute(val);
+                self._bitfield_1.set(0usize, 4u8, val as u64)
+            }
+        }
+        #[inline]
+        pub unsafe fn type__raw(this: *const Self) -> u32 {
+            unsafe {
+                ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 4usize]>>::raw_get(
+                    ::std::ptr::addr_of!((*this)._bitfield_1),
+                    0usize,
+                    4u8,
+                ) as u32)
+            }
+        }
+        #[inline]
+        pub unsafe fn set_type__raw(this: *mut Self, val: u32) {
+            unsafe {
+                let val: u32 = ::std::mem::transmute(val);
+                <__BindgenBitfieldUnit<[u8; 4usize]>>::raw_set(
+                    ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                    0usize,
+                    4u8,
+                    val as u64,
+                )
+            }
+        }
+        #[inline]
+        pub fn aliasSet_(&self) -> u32 {
+            unsafe { ::std::mem::transmute(self._bitfield_1.get(4usize, 4u8) as u32) }
+        }
+        #[inline]
+        pub fn set_aliasSet_(&mut self, val: u32) {
+            unsafe {
+                let val: u32 = ::std::mem::transmute(val);
+                self._bitfield_1.set(4usize, 4u8, val as u64)
+            }
+        }
+        #[inline]
+        pub unsafe fn aliasSet__raw(this: *const Self) -> u32 {
+            unsafe {
+                ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 4usize]>>::raw_get(
+                    ::std::ptr::addr_of!((*this)._bitfield_1),
+                    4usize,
+                    4u8,
+                ) as u32)
+            }
+        }
+        #[inline]
+        pub unsafe fn set_aliasSet__raw(this: *mut Self, val: u32) {
+            unsafe {
+                let val: u32 = ::std::mem::transmute(val);
+                <__BindgenBitfieldUnit<[u8; 4usize]>>::raw_set(
+                    ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                    4usize,
+                    4u8,
+                    val as u64,
+                )
+            }
+        }
+        #[inline]
+        pub fn returnType_(&self) -> u32 {
+            unsafe { ::std::mem::transmute(self._bitfield_1.get(8usize, 8u8) as u32) }
+        }
+        #[inline]
+        pub fn set_returnType_(&mut self, val: u32) {
+            unsafe {
+                let val: u32 = ::std::mem::transmute(val);
+                self._bitfield_1.set(8usize, 8u8, val as u64)
+            }
+        }
+        #[inline]
+        pub unsafe fn returnType__raw(this: *const Self) -> u32 {
+            unsafe {
+                ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 4usize]>>::raw_get(
+                    ::std::ptr::addr_of!((*this)._bitfield_1),
+                    8usize,
+                    8u8,
+                ) as u32)
+            }
+        }
+        #[inline]
+        pub unsafe fn set_returnType__raw(this: *mut Self, val: u32) {
+            unsafe {
+                let val: u32 = ::std::mem::transmute(val);
+                <__BindgenBitfieldUnit<[u8; 4usize]>>::raw_set(
+                    ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                    8usize,
+                    8u8,
+                    val as u64,
+                )
+            }
+        }
+        #[inline]
+        pub fn isInfallible(&self) -> u32 {
+            unsafe { ::std::mem::transmute(self._bitfield_1.get(16usize, 1u8) as u32) }
+        }
+        #[inline]
+        pub fn set_isInfallible(&mut self, val: u32) {
+            unsafe {
+                let val: u32 = ::std::mem::transmute(val);
+                self._bitfield_1.set(16usize, 1u8, val as u64)
+            }
+        }
+        #[inline]
+        pub unsafe fn isInfallible_raw(this: *const Self) -> u32 {
+            unsafe {
+                ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 4usize]>>::raw_get(
+                    ::std::ptr::addr_of!((*this)._bitfield_1),
+                    16usize,
+                    1u8,
+                ) as u32)
+            }
+        }
+        #[inline]
+        pub unsafe fn set_isInfallible_raw(this: *mut Self, val: u32) {
+            unsafe {
+                let val: u32 = ::std::mem::transmute(val);
+                <__BindgenBitfieldUnit<[u8; 4usize]>>::raw_set(
+                    ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                    16usize,
+                    1u8,
+                    val as u64,
+                )
+            }
+        }
+        #[inline]
+        pub fn isMovable(&self) -> u32 {
+            unsafe { ::std::mem::transmute(self._bitfield_1.get(17usize, 1u8) as u32) }
+        }
+        #[inline]
+        pub fn set_isMovable(&mut self, val: u32) {
+            unsafe {
+                let val: u32 = ::std::mem::transmute(val);
+                self._bitfield_1.set(17usize, 1u8, val as u64)
+            }
+        }
+        #[inline]
+        pub unsafe fn isMovable_raw(this: *const Self) -> u32 {
+            unsafe {
+                ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 4usize]>>::raw_get(
+                    ::std::ptr::addr_of!((*this)._bitfield_1),
+                    17usize,
+                    1u8,
+                ) as u32)
+            }
+        }
+        #[inline]
+        pub unsafe fn set_isMovable_raw(this: *mut Self, val: u32) {
+            unsafe {
+                let val: u32 = ::std::mem::transmute(val);
+                <__BindgenBitfieldUnit<[u8; 4usize]>>::raw_set(
+                    ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                    17usize,
+                    1u8,
+                    val as u64,
+                )
+            }
+        }
+        #[inline]
+        pub fn isEliminatable(&self) -> u32 {
+            unsafe { ::std::mem::transmute(self._bitfield_1.get(18usize, 1u8) as u32) }
+        }
+        #[inline]
+        pub fn set_isEliminatable(&mut self, val: u32) {
+            unsafe {
+                let val: u32 = ::std::mem::transmute(val);
+                self._bitfield_1.set(18usize, 1u8, val as u64)
+            }
+        }
+        #[inline]
+        pub unsafe fn isEliminatable_raw(this: *const Self) -> u32 {
+            unsafe {
+                ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 4usize]>>::raw_get(
+                    ::std::ptr::addr_of!((*this)._bitfield_1),
+                    18usize,
+                    1u8,
+                ) as u32)
+            }
+        }
+        #[inline]
+        pub unsafe fn set_isEliminatable_raw(this: *mut Self, val: u32) {
+            unsafe {
+                let val: u32 = ::std::mem::transmute(val);
+                <__BindgenBitfieldUnit<[u8; 4usize]>>::raw_set(
+                    ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                    18usize,
+                    1u8,
+                    val as u64,
+                )
+            }
+        }
+        #[inline]
+        pub fn isAlwaysInSlot(&self) -> u32 {
+            unsafe { ::std::mem::transmute(self._bitfield_1.get(19usize, 1u8) as u32) }
+        }
+        #[inline]
+        pub fn set_isAlwaysInSlot(&mut self, val: u32) {
+            unsafe {
+                let val: u32 = ::std::mem::transmute(val);
+                self._bitfield_1.set(19usize, 1u8, val as u64)
+            }
+        }
+        #[inline]
+        pub unsafe fn isAlwaysInSlot_raw(this: *const Self) -> u32 {
+            unsafe {
+                ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 4usize]>>::raw_get(
+                    ::std::ptr::addr_of!((*this)._bitfield_1),
+                    19usize,
+                    1u8,
+                ) as u32)
+            }
+        }
+        #[inline]
+        pub unsafe fn set_isAlwaysInSlot_raw(this: *mut Self, val: u32) {
+            unsafe {
+                let val: u32 = ::std::mem::transmute(val);
+                <__BindgenBitfieldUnit<[u8; 4usize]>>::raw_set(
+                    ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                    19usize,
+                    1u8,
+                    val as u64,
+                )
+            }
+        }
+        #[inline]
+        pub fn isLazilyCachedInSlot(&self) -> u32 {
+            unsafe { ::std::mem::transmute(self._bitfield_1.get(20usize, 1u8) as u32) }
+        }
+        #[inline]
+        pub fn set_isLazilyCachedInSlot(&mut self, val: u32) {
+            unsafe {
+                let val: u32 = ::std::mem::transmute(val);
+                self._bitfield_1.set(20usize, 1u8, val as u64)
+            }
+        }
+        #[inline]
+        pub unsafe fn isLazilyCachedInSlot_raw(this: *const Self) -> u32 {
+            unsafe {
+                ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 4usize]>>::raw_get(
+                    ::std::ptr::addr_of!((*this)._bitfield_1),
+                    20usize,
+                    1u8,
+                ) as u32)
+            }
+        }
+        #[inline]
+        pub unsafe fn set_isLazilyCachedInSlot_raw(this: *mut Self, val: u32) {
+            unsafe {
+                let val: u32 = ::std::mem::transmute(val);
+                <__BindgenBitfieldUnit<[u8; 4usize]>>::raw_set(
+                    ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                    20usize,
+                    1u8,
+                    val as u64,
+                )
+            }
+        }
+        #[inline]
+        pub fn isTypedMethod(&self) -> u32 {
+            unsafe { ::std::mem::transmute(self._bitfield_1.get(21usize, 1u8) as u32) }
+        }
+        #[inline]
+        pub fn set_isTypedMethod(&mut self, val: u32) {
+            unsafe {
+                let val: u32 = ::std::mem::transmute(val);
+                self._bitfield_1.set(21usize, 1u8, val as u64)
+            }
+        }
+        #[inline]
+        pub unsafe fn isTypedMethod_raw(this: *const Self) -> u32 {
+            unsafe {
+                ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 4usize]>>::raw_get(
+                    ::std::ptr::addr_of!((*this)._bitfield_1),
+                    21usize,
+                    1u8,
+                ) as u32)
+            }
+        }
+        #[inline]
+        pub unsafe fn set_isTypedMethod_raw(this: *mut Self, val: u32) {
+            unsafe {
+                let val: u32 = ::std::mem::transmute(val);
+                <__BindgenBitfieldUnit<[u8; 4usize]>>::raw_set(
+                    ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                    21usize,
+                    1u8,
+                    val as u64,
+                )
+            }
+        }
+        #[inline]
+        pub fn slotIndex(&self) -> u32 {
+            unsafe { ::std::mem::transmute(self._bitfield_1.get(22usize, 10u8) as u32) }
+        }
+        #[inline]
+        pub fn set_slotIndex(&mut self, val: u32) {
+            unsafe {
+                let val: u32 = ::std::mem::transmute(val);
+                self._bitfield_1.set(22usize, 10u8, val as u64)
+            }
+        }
+        #[inline]
+        pub unsafe fn slotIndex_raw(this: *const Self) -> u32 {
+            unsafe {
+                ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 4usize]>>::raw_get(
+                    ::std::ptr::addr_of!((*this)._bitfield_1),
+                    22usize,
+                    10u8,
+                ) as u32)
+            }
+        }
+        #[inline]
+        pub unsafe fn set_slotIndex_raw(this: *mut Self, val: u32) {
+            unsafe {
+                let val: u32 = ::std::mem::transmute(val);
+                <__BindgenBitfieldUnit<[u8; 4usize]>>::raw_set(
+                    ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                    22usize,
+                    10u8,
+                    val as u64,
+                )
+            }
+        }
+        #[inline]
+        pub fn new_bitfield_1(
+            type_: u32,
+            aliasSet_: u32,
+            returnType_: u32,
+            isInfallible: u32,
+            isMovable: u32,
+            isEliminatable: u32,
+            isAlwaysInSlot: u32,
+            isLazilyCachedInSlot: u32,
+            isTypedMethod: u32,
+            slotIndex: u32,
+        ) -> __BindgenBitfieldUnit<[u8; 4usize]> {
+            let mut __bindgen_bitfield_unit: __BindgenBitfieldUnit<[u8; 4usize]> =
+                Default::default();
+            __bindgen_bitfield_unit.set(0usize, 4u8, {
+                let type_: u32 = unsafe { ::std::mem::transmute(type_) };
+                type_ as u64
+            });
+            __bindgen_bitfield_unit.set(4usize, 4u8, {
+                let aliasSet_: u32 = unsafe { ::std::mem::transmute(aliasSet_) };
+                aliasSet_ as u64
+            });
+            __bindgen_bitfield_unit.set(8usize, 8u8, {
+                let returnType_: u32 = unsafe { ::std::mem::transmute(returnType_) };
+                returnType_ as u64
+            });
+            __bindgen_bitfield_unit.set(16usize, 1u8, {
+                let isInfallible: u32 = unsafe { ::std::mem::transmute(isInfallible) };
+                isInfallible as u64
+            });
+            __bindgen_bitfield_unit.set(17usize, 1u8, {
+                let isMovable: u32 = unsafe { ::std::mem::transmute(isMovable) };
+                isMovable as u64
+            });
+            __bindgen_bitfield_unit.set(18usize, 1u8, {
+                let isEliminatable: u32 = unsafe { ::std::mem::transmute(isEliminatable) };
+                isEliminatable as u64
+            });
+            __bindgen_bitfield_unit.set(19usize, 1u8, {
+                let isAlwaysInSlot: u32 = unsafe { ::std::mem::transmute(isAlwaysInSlot) };
+                isAlwaysInSlot as u64
+            });
+            __bindgen_bitfield_unit.set(20usize, 1u8, {
+                let isLazilyCachedInSlot: u32 =
+                    unsafe { ::std::mem::transmute(isLazilyCachedInSlot) };
+                isLazilyCachedInSlot as u64
+            });
+            __bindgen_bitfield_unit.set(21usize, 1u8, {
+                let isTypedMethod: u32 = unsafe { ::std::mem::transmute(isTypedMethod) };
+                isTypedMethod as u64
+            });
+            __bindgen_bitfield_unit.set(22usize, 10u8, {
+                let slotIndex: u32 = unsafe { ::std::mem::transmute(slotIndex) };
+                slotIndex as u64
+            });
+            __bindgen_bitfield_unit
+        }
+    }
+
     #[repr(i32)]
     #[doc = " An enum that describes what this getter/setter/method aliases.  This\n determines what things can be hoisted past this call, and if this\n call is movable what it can be hoisted past."]
     #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
@@ -1632,6 +2208,92 @@ pub struct JSAtom {
         pub __bindgen_padding_0: [u8; 3usize],
     }
 
+    impl JSJitMethodCallArgs {
+        #[inline]
+        pub fn constructing_(&self) -> bool {
+            unsafe { ::std::mem::transmute(self._bitfield_1.get(0usize, 1u8) as u8) }
+        }
+        #[inline]
+        pub fn set_constructing_(&mut self, val: bool) {
+            unsafe {
+                let val: u8 = ::std::mem::transmute(val);
+                self._bitfield_1.set(0usize, 1u8, val as u64)
+            }
+        }
+        #[inline]
+        pub unsafe fn constructing__raw(this: *const Self) -> bool {
+            unsafe {
+                ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 1usize]>>::raw_get(
+                    ::std::ptr::addr_of!((*this)._bitfield_1),
+                    0usize,
+                    1u8,
+                ) as u8)
+            }
+        }
+        #[inline]
+        pub unsafe fn set_constructing__raw(this: *mut Self, val: bool) {
+            unsafe {
+                let val: u8 = ::std::mem::transmute(val);
+                <__BindgenBitfieldUnit<[u8; 1usize]>>::raw_set(
+                    ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                    0usize,
+                    1u8,
+                    val as u64,
+                )
+            }
+        }
+        #[inline]
+        pub fn ignoresReturnValue_(&self) -> bool {
+            unsafe { ::std::mem::transmute(self._bitfield_1.get(1usize, 1u8) as u8) }
+        }
+        #[inline]
+        pub fn set_ignoresReturnValue_(&mut self, val: bool) {
+            unsafe {
+                let val: u8 = ::std::mem::transmute(val);
+                self._bitfield_1.set(1usize, 1u8, val as u64)
+            }
+        }
+        #[inline]
+        pub unsafe fn ignoresReturnValue__raw(this: *const Self) -> bool {
+            unsafe {
+                ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 1usize]>>::raw_get(
+                    ::std::ptr::addr_of!((*this)._bitfield_1),
+                    1usize,
+                    1u8,
+                ) as u8)
+            }
+        }
+        #[inline]
+        pub unsafe fn set_ignoresReturnValue__raw(this: *mut Self, val: bool) {
+            unsafe {
+                let val: u8 = ::std::mem::transmute(val);
+                <__BindgenBitfieldUnit<[u8; 1usize]>>::raw_set(
+                    ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                    1usize,
+                    1u8,
+                    val as u64,
+                )
+            }
+        }
+        #[inline]
+        pub fn new_bitfield_1(
+            constructing_: bool,
+            ignoresReturnValue_: bool,
+        ) -> __BindgenBitfieldUnit<[u8; 1usize]> {
+            let mut __bindgen_bitfield_unit: __BindgenBitfieldUnit<[u8; 1usize]> =
+                Default::default();
+            __bindgen_bitfield_unit.set(0usize, 1u8, {
+                let constructing_: u8 = unsafe { ::std::mem::transmute(constructing_) };
+                constructing_ as u64
+            });
+            __bindgen_bitfield_unit.set(1usize, 1u8, {
+                let ignoresReturnValue_: u8 = unsafe { ::std::mem::transmute(ignoresReturnValue_) };
+                ignoresReturnValue_ as u64
+            });
+            __bindgen_bitfield_unit
+        }
+    }
+
     pub type JSJitMethodOp = ::std::option::Option<
         unsafe extern "C" fn(
             arg1: *mut JSContext,
@@ -1656,6 +2318,12 @@ pub struct JSAtom {
             arg4: JSJitSetterCallArgs,
         ) -> bool,
     >;
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct JSLinearString {
+    _private: [u8; 0],
+}
 
     #[doc = " A class with a resolve hook can optionally have a mayResolve hook. This hook\n must have no side effects and must return true for a given id if the resolve\n hook may resolve this id. This is useful when we're doing a \"pure\" lookup: if\n mayResolve returns false, we know we don't have to call the effectful resolve\n hook.\n\n maybeObj, if non-null, is the object on which we're doing the lookup. This\n can be nullptr: during JIT compilation we sometimes know the Class but not\n the object."]
     pub type JSMayResolveOp = ::std::option::Option<
@@ -1690,6 +2358,10 @@ pub struct JSAtom {
             properties: MutableHandleIdVector,
             enumerableOnly: bool,
         ) -> bool,
+    >;
+
+    pub type JSONWriteCallback = ::std::option::Option<
+        unsafe extern "C" fn(buf: *const u16, len: u32, data: *mut std::os::raw::c_void) -> bool,
     >;
 
     #[doc = " The property is visible in for/in loops."]
@@ -1908,6 +2580,43 @@ pub struct JSTracer {
         JSVAL_TYPE_UNKNOWN = 32,
     }
 
+    #[repr(i32)]
+    #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+    pub enum JSWhyMagic {
+        #[doc = " a hole in a native object's elements"]
+        JS_ELEMENTS_HOLE = 0,
+        #[doc = " there is not a pending iterator value"]
+        JS_NO_ITER_VALUE = 1,
+        #[doc = " exception value thrown when closing a generator"]
+        JS_GENERATOR_CLOSING = 2,
+        #[doc = " used in debug builds to catch tracing errors"]
+        JS_ARG_POISON = 3,
+        #[doc = " an empty subnode in the AST serializer"]
+        JS_SERIALIZE_NO_NODE = 4,
+        #[doc = " magic value passed to natives to indicate construction"]
+        JS_IS_CONSTRUCTING = 5,
+        #[doc = " see class js::HashableValue"]
+        JS_HASH_KEY_EMPTY = 6,
+        #[doc = " error while running Ion code"]
+        JS_ION_ERROR = 7,
+        #[doc = " missing recover instruction result"]
+        JS_ION_BAILOUT = 8,
+        #[doc = " optimized out slot"]
+        JS_OPTIMIZED_OUT = 9,
+        #[doc = " uninitialized lexical bindings that produce ReferenceError on touch."]
+        JS_UNINITIALIZED_LEXICAL = 10,
+        #[doc = " arguments object can't be created because environment is dead."]
+        JS_MISSING_ARGUMENTS = 11,
+        #[doc = " exception value thrown when interrupting irregexp"]
+        JS_INTERRUPT_REGEXP = 12,
+        #[doc = " for local use"]
+        JS_GENERIC_MAGIC = 13,
+        #[doc = " When an error object is created without the error cause argument, we set\n the error's cause slot to this magic value."]
+        JS_ERROR_WITHOUT_CAUSE = 14,
+        #[doc = " When an error object is created without the error cause argument, we set\n the error's cause slot to this magic value."]
+        JS_WHY_MAGIC_COUNT = 15,
+    }
+
     pub const JS_STRUCTURED_CLONE_VERSION: u32 = 8;
 
             #[repr(C)]
@@ -1930,10 +2639,41 @@ pub struct JSTracer {
 
             pub const Limit: ModuleType = ModuleType::JSON;
 
+        #[repr(C)]
+        #[derive(Debug, PartialEq)]
+        pub struct LocaleString {
+            pub _base: RefCounted,
+            pub chars_: *const std::os::raw::c_char,
+        }
+
+        pub type LookupPropertyOp = ::std::option::Option<
+            unsafe extern "C" fn(
+                cx: *mut JSContext,
+                obj: HandleObject,
+                id: HandleId,
+                objp: MutableHandleObject,
+                propp: *mut PropertyResult,
+            ) -> bool,
+        >;
+
         #[repr(u8)]
         #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
         pub enum MemoryUse {
-            __bindgen_cannot_repr_c_on_empty_enum = 0,
+            XPCWrappedNative = 0,
+            DOMBinding = 1,
+            CTypeFFIType = 2,
+            CTypeFFITypeElements = 3,
+            CTypeFunctionInfo = 4,
+            CTypeFieldInfo = 5,
+            CDataBufferPtr = 6,
+            CDataBuffer = 7,
+            CClosureInfo = 8,
+            CTypesInt64 = 9,
+            Embedding1 = 10,
+            Embedding2 = 11,
+            Embedding3 = 12,
+            Embedding4 = 13,
+            Embedding5 = 14,
         }
 
         #[repr(i32)]
@@ -1984,6 +2724,9 @@ pub struct JSTracer {
         #[doc = " Similar to a handle, but the underlying storage can be changed. This is\n useful for outparams.\n\n If you want to add additional methods to MutableHandle for a specific\n specialization, define a MutableHandleOperations<T> specialization containing\n them."]
         pub type MutableHandleString = MutableHandle<*mut JSString>;
 
+        #[doc = " Similar to a handle, but the underlying storage can be changed. This is\n useful for outparams.\n\n If you want to add additional methods to MutableHandle for a specific\n specialization, define a MutableHandleOperations<T> specialization containing\n them."]
+        pub type MutableHandleValue = MutableHandle<Value>;
+
         #[repr(C)]
         #[derive(Debug, Copy, Clone)]
         pub struct Nursery {
@@ -2013,11 +2756,26 @@ pub struct JSTracer {
             pub code_: usize,
         }
 
-#[repr(C)]
-#[derive(Debug, Copy, Clone, PartialEq)]
-pub struct ObjectOps {
-    _private: [u8; 0],
-}
+        #[repr(u64)]
+        #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+        pub enum ObjectOpResult_SpecialCodes {
+            OkCode = 0,
+            Uninitialized = 18446744073709551615,
+        }
+
+        #[repr(C)]
+        #[derive(Debug, Copy, Clone, PartialEq)]
+        pub struct ObjectOps {
+            pub lookupProperty: LookupPropertyOp,
+            pub defineProperty: DefinePropertyOp,
+            pub hasProperty: HasPropertyOp,
+            pub getProperty: GetPropertyOp,
+            pub setProperty: SetPropertyOp,
+            pub getOwnPropertyDescriptor: GetOwnPropertyOp,
+            pub deleteProperty: DeletePropertyOp,
+            pub getElements: GetElementsOp,
+            pub funToString: JSFunToStringOp,
+        }
 
         #[repr(i32)]
         #[doc = " During global creation, we fire notifications to callbacks registered\n via the Debugger API. These callbacks are arbitrary script, and can touch\n the global in arbitrary ways. When that happens, the global should not be\n in a half-baked state. But this creates a problem for consumers that need\n to set slots on the global to put it in a consistent state.\n\n This API provides a way for consumers to set slots atomically (immediately\n after the global is created), before any debugger hooks are fired. It's\n unfortunately on the clunky side, but that's the way the cookie crumbles.\n\n If callers have no additional state on the global to set up, they may pass\n |FireOnNewGlobalHook| to JS_NewGlobalObject, which causes that function to\n fire the hook as its final act before returning. Otherwise, callers should\n pass |DontFireOnNewGlobalHook|, which means that they are responsible for\n invoking JS_FireOnNewGlobalObject upon successfully creating the global. If\n an error occurs and the operation aborts, callers should skip firing the\n hook. But otherwise, callers must take care to fire the hook exactly once\n before compiling any script in the global's scope (we have assertions in\n place to enforce this). This lets us be sure that debugger clients never miss\n breakpoints."]
@@ -2084,6 +2842,409 @@ pub struct ObjectOps {
             pub value_: Value,
         }
 
+        impl PropertyDescriptor {
+            #[inline]
+            pub fn hasConfigurable_(&self) -> bool {
+                unsafe { ::std::mem::transmute(self._bitfield_1.get(0usize, 1u8) as u8) }
+            }
+            #[inline]
+            pub fn set_hasConfigurable_(&mut self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    self._bitfield_1.set(0usize, 1u8, val as u64)
+                }
+            }
+            #[inline]
+            pub unsafe fn hasConfigurable__raw(this: *const Self) -> bool {
+                unsafe {
+                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
+                        ::std::ptr::addr_of!((*this)._bitfield_1),
+                        0usize,
+                        1u8,
+                    ) as u8)
+                }
+            }
+            #[inline]
+            pub unsafe fn set_hasConfigurable__raw(this: *mut Self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
+                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                        0usize,
+                        1u8,
+                        val as u64,
+                    )
+                }
+            }
+            #[inline]
+            pub fn configurable_(&self) -> bool {
+                unsafe { ::std::mem::transmute(self._bitfield_1.get(1usize, 1u8) as u8) }
+            }
+            #[inline]
+            pub fn set_configurable_(&mut self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    self._bitfield_1.set(1usize, 1u8, val as u64)
+                }
+            }
+            #[inline]
+            pub unsafe fn configurable__raw(this: *const Self) -> bool {
+                unsafe {
+                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
+                        ::std::ptr::addr_of!((*this)._bitfield_1),
+                        1usize,
+                        1u8,
+                    ) as u8)
+                }
+            }
+            #[inline]
+            pub unsafe fn set_configurable__raw(this: *mut Self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
+                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                        1usize,
+                        1u8,
+                        val as u64,
+                    )
+                }
+            }
+            #[inline]
+            pub fn hasEnumerable_(&self) -> bool {
+                unsafe { ::std::mem::transmute(self._bitfield_1.get(2usize, 1u8) as u8) }
+            }
+            #[inline]
+            pub fn set_hasEnumerable_(&mut self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    self._bitfield_1.set(2usize, 1u8, val as u64)
+                }
+            }
+            #[inline]
+            pub unsafe fn hasEnumerable__raw(this: *const Self) -> bool {
+                unsafe {
+                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
+                        ::std::ptr::addr_of!((*this)._bitfield_1),
+                        2usize,
+                        1u8,
+                    ) as u8)
+                }
+            }
+            #[inline]
+            pub unsafe fn set_hasEnumerable__raw(this: *mut Self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
+                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                        2usize,
+                        1u8,
+                        val as u64,
+                    )
+                }
+            }
+            #[inline]
+            pub fn enumerable_(&self) -> bool {
+                unsafe { ::std::mem::transmute(self._bitfield_1.get(3usize, 1u8) as u8) }
+            }
+            #[inline]
+            pub fn set_enumerable_(&mut self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    self._bitfield_1.set(3usize, 1u8, val as u64)
+                }
+            }
+            #[inline]
+            pub unsafe fn enumerable__raw(this: *const Self) -> bool {
+                unsafe {
+                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
+                        ::std::ptr::addr_of!((*this)._bitfield_1),
+                        3usize,
+                        1u8,
+                    ) as u8)
+                }
+            }
+            #[inline]
+            pub unsafe fn set_enumerable__raw(this: *mut Self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
+                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                        3usize,
+                        1u8,
+                        val as u64,
+                    )
+                }
+            }
+            #[inline]
+            pub fn hasWritable_(&self) -> bool {
+                unsafe { ::std::mem::transmute(self._bitfield_1.get(4usize, 1u8) as u8) }
+            }
+            #[inline]
+            pub fn set_hasWritable_(&mut self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    self._bitfield_1.set(4usize, 1u8, val as u64)
+                }
+            }
+            #[inline]
+            pub unsafe fn hasWritable__raw(this: *const Self) -> bool {
+                unsafe {
+                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
+                        ::std::ptr::addr_of!((*this)._bitfield_1),
+                        4usize,
+                        1u8,
+                    ) as u8)
+                }
+            }
+            #[inline]
+            pub unsafe fn set_hasWritable__raw(this: *mut Self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
+                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                        4usize,
+                        1u8,
+                        val as u64,
+                    )
+                }
+            }
+            #[inline]
+            pub fn writable_(&self) -> bool {
+                unsafe { ::std::mem::transmute(self._bitfield_1.get(5usize, 1u8) as u8) }
+            }
+            #[inline]
+            pub fn set_writable_(&mut self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    self._bitfield_1.set(5usize, 1u8, val as u64)
+                }
+            }
+            #[inline]
+            pub unsafe fn writable__raw(this: *const Self) -> bool {
+                unsafe {
+                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
+                        ::std::ptr::addr_of!((*this)._bitfield_1),
+                        5usize,
+                        1u8,
+                    ) as u8)
+                }
+            }
+            #[inline]
+            pub unsafe fn set_writable__raw(this: *mut Self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
+                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                        5usize,
+                        1u8,
+                        val as u64,
+                    )
+                }
+            }
+            #[inline]
+            pub fn hasValue_(&self) -> bool {
+                unsafe { ::std::mem::transmute(self._bitfield_1.get(6usize, 1u8) as u8) }
+            }
+            #[inline]
+            pub fn set_hasValue_(&mut self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    self._bitfield_1.set(6usize, 1u8, val as u64)
+                }
+            }
+            #[inline]
+            pub unsafe fn hasValue__raw(this: *const Self) -> bool {
+                unsafe {
+                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
+                        ::std::ptr::addr_of!((*this)._bitfield_1),
+                        6usize,
+                        1u8,
+                    ) as u8)
+                }
+            }
+            #[inline]
+            pub unsafe fn set_hasValue__raw(this: *mut Self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
+                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                        6usize,
+                        1u8,
+                        val as u64,
+                    )
+                }
+            }
+            #[inline]
+            pub fn hasGetter_(&self) -> bool {
+                unsafe { ::std::mem::transmute(self._bitfield_1.get(7usize, 1u8) as u8) }
+            }
+            #[inline]
+            pub fn set_hasGetter_(&mut self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    self._bitfield_1.set(7usize, 1u8, val as u64)
+                }
+            }
+            #[inline]
+            pub unsafe fn hasGetter__raw(this: *const Self) -> bool {
+                unsafe {
+                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
+                        ::std::ptr::addr_of!((*this)._bitfield_1),
+                        7usize,
+                        1u8,
+                    ) as u8)
+                }
+            }
+            #[inline]
+            pub unsafe fn set_hasGetter__raw(this: *mut Self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
+                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                        7usize,
+                        1u8,
+                        val as u64,
+                    )
+                }
+            }
+            #[inline]
+            pub fn hasSetter_(&self) -> bool {
+                unsafe { ::std::mem::transmute(self._bitfield_1.get(8usize, 1u8) as u8) }
+            }
+            #[inline]
+            pub fn set_hasSetter_(&mut self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    self._bitfield_1.set(8usize, 1u8, val as u64)
+                }
+            }
+            #[inline]
+            pub unsafe fn hasSetter__raw(this: *const Self) -> bool {
+                unsafe {
+                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
+                        ::std::ptr::addr_of!((*this)._bitfield_1),
+                        8usize,
+                        1u8,
+                    ) as u8)
+                }
+            }
+            #[inline]
+            pub unsafe fn set_hasSetter__raw(this: *mut Self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
+                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                        8usize,
+                        1u8,
+                        val as u64,
+                    )
+                }
+            }
+            #[inline]
+            pub fn resolving_(&self) -> bool {
+                unsafe { ::std::mem::transmute(self._bitfield_1.get(9usize, 1u8) as u8) }
+            }
+            #[inline]
+            pub fn set_resolving_(&mut self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    self._bitfield_1.set(9usize, 1u8, val as u64)
+                }
+            }
+            #[inline]
+            pub unsafe fn resolving__raw(this: *const Self) -> bool {
+                unsafe {
+                    ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 2usize]>>::raw_get(
+                        ::std::ptr::addr_of!((*this)._bitfield_1),
+                        9usize,
+                        1u8,
+                    ) as u8)
+                }
+            }
+            #[inline]
+            pub unsafe fn set_resolving__raw(this: *mut Self, val: bool) {
+                unsafe {
+                    let val: u8 = ::std::mem::transmute(val);
+                    <__BindgenBitfieldUnit<[u8; 2usize]>>::raw_set(
+                        ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                        9usize,
+                        1u8,
+                        val as u64,
+                    )
+                }
+            }
+            #[inline]
+            pub fn new_bitfield_1(
+                hasConfigurable_: bool,
+                configurable_: bool,
+                hasEnumerable_: bool,
+                enumerable_: bool,
+                hasWritable_: bool,
+                writable_: bool,
+                hasValue_: bool,
+                hasGetter_: bool,
+                hasSetter_: bool,
+                resolving_: bool,
+            ) -> __BindgenBitfieldUnit<[u8; 2usize]> {
+                let mut __bindgen_bitfield_unit: __BindgenBitfieldUnit<[u8; 2usize]> =
+                    Default::default();
+                __bindgen_bitfield_unit.set(0usize, 1u8, {
+                    let hasConfigurable_: u8 = unsafe { ::std::mem::transmute(hasConfigurable_) };
+                    hasConfigurable_ as u64
+                });
+                __bindgen_bitfield_unit.set(1usize, 1u8, {
+                    let configurable_: u8 = unsafe { ::std::mem::transmute(configurable_) };
+                    configurable_ as u64
+                });
+                __bindgen_bitfield_unit.set(2usize, 1u8, {
+                    let hasEnumerable_: u8 = unsafe { ::std::mem::transmute(hasEnumerable_) };
+                    hasEnumerable_ as u64
+                });
+                __bindgen_bitfield_unit.set(3usize, 1u8, {
+                    let enumerable_: u8 = unsafe { ::std::mem::transmute(enumerable_) };
+                    enumerable_ as u64
+                });
+                __bindgen_bitfield_unit.set(4usize, 1u8, {
+                    let hasWritable_: u8 = unsafe { ::std::mem::transmute(hasWritable_) };
+                    hasWritable_ as u64
+                });
+                __bindgen_bitfield_unit.set(5usize, 1u8, {
+                    let writable_: u8 = unsafe { ::std::mem::transmute(writable_) };
+                    writable_ as u64
+                });
+                __bindgen_bitfield_unit.set(6usize, 1u8, {
+                    let hasValue_: u8 = unsafe { ::std::mem::transmute(hasValue_) };
+                    hasValue_ as u64
+                });
+                __bindgen_bitfield_unit.set(7usize, 1u8, {
+                    let hasGetter_: u8 = unsafe { ::std::mem::transmute(hasGetter_) };
+                    hasGetter_ as u64
+                });
+                __bindgen_bitfield_unit.set(8usize, 1u8, {
+                    let hasSetter_: u8 = unsafe { ::std::mem::transmute(hasSetter_) };
+                    hasSetter_ as u64
+                });
+                __bindgen_bitfield_unit.set(9usize, 1u8, {
+                    let resolving_: u8 = unsafe { ::std::mem::transmute(resolving_) };
+                    resolving_ as u64
+                });
+                __bindgen_bitfield_unit
+            }
+        }
+
+        #[repr(C)]
+        #[derive(Debug, Copy, Clone)]
+        pub struct PropertyResult {
+            _unused: [u8; 0],
+        }
+
+        #[repr(C)]
+        #[derive(Debug, Copy, Clone, PartialEq)]
+        pub struct ProxyOptions {
+            pub lazyProto_: bool,
+            pub clasp_: *const JSClass,
+        }
+
     #[doc = " Read structured data from the reader r. This hook is used to read a value\n previously serialized by a call to the WriteStructuredCloneOp hook.\n\n tag and data are the pair of uint32_t values from the header. The callback\n may use the JS_Read* APIs to read any other relevant parts of the object\n from the reader r. closure is any value passed to the JS_ReadStructuredClone\n function.\n\n Return the new object on success, or raise an exception and return nullptr on\n error."]
     pub type ReadStructuredCloneOp = ::std::option::Option<
         unsafe extern "C" fn(
@@ -2116,6 +3277,63 @@ pub struct Realm {
     _private: [u8; 0],
 }
 
+        #[doc = " RealmBehaviors specifies behaviors of a realm that can be changed after the\n realm's been created."]
+        #[repr(C)]
+        #[derive(Debug, Copy, Clone, PartialEq)]
+        pub struct RealmBehaviors {
+            pub rtpCallerType: __BindgenOpaqueArray<u8, 2usize>,
+            pub discardSource_: bool,
+            pub clampAndJitterTime_: bool,
+            pub isNonLive_: bool,
+        }
+
+        #[doc = " RealmCreationOptions specifies options relevant to creating a new realm, that\n are either immutable characteristics of that realm or that are discarded\n after the realm has been created.\n\n Access to these options on an existing realm is read-only: if you need\n particular selections, you must make them before you create the realm."]
+        #[repr(C)]
+        pub struct RealmCreationOptions {
+            pub traceGlobal_: JSTraceOp,
+            pub compSpec_: CompartmentSpecifier,
+            pub __bindgen_anon_1: RealmCreationOptions__bindgen_ty_1,
+            pub profilerRealmID_: u64,
+            pub locale_: RefPtr<LocaleString>,
+            pub invisibleToDebugger_: bool,
+            pub preserveJitCode_: bool,
+            pub sharedMemoryAndAtomics_: bool,
+            pub defineSharedArrayBufferConstructor_: bool,
+            pub coopAndCoep_: bool,
+            pub toSource_: bool,
+            pub secureContext_: bool,
+            pub freezeBuiltins_: bool,
+            pub forceUTC_: bool,
+            pub alwaysUseFdlibm_: bool,
+        }
+
+        #[repr(C)]
+        #[derive(Copy, Clone)]
+        pub union RealmCreationOptions__bindgen_ty_1 {
+            pub comp_: *mut Compartment,
+            pub zone_: *mut Zone,
+        }
+
+        #[doc = " RealmOptions specifies realm characteristics: both those that can't be\n changed on a realm once it's been created (RealmCreationOptions), and those\n that can be changed on an existing realm (RealmBehaviors)."]
+        #[repr(C)]
+        pub struct RealmOptions {
+            pub creationOptions_: RealmCreationOptions,
+            pub behaviors_: RealmBehaviors,
+        }
+
+        #[repr(C)]
+        #[derive(Debug, PartialEq)]
+        pub struct RefCounted {
+            pub _address: u8,
+        }
+
+    #[repr(C)]
+    #[derive(Debug, PartialEq)]
+    pub struct RefPtr<T> {
+        pub _phantom_0: ::std::marker::PhantomData<::std::cell::UnsafeCell<T>>,
+        pub mRawPtr: *mut T,
+    }
+
             pub const Reference: ProfilerStringView_Ownership =
                 ProfilerStringView_Ownership::Literal;
 
@@ -2135,6 +3353,15 @@ pub struct Realm {
         #[derive(Debug, Copy, Clone)]
         pub struct RegExpShared {
             _unused: [u8; 0],
+        }
+
+        #[doc = " Local variable of type T whose value is always rooted. This is typically\n used for local variables, or for non-rooted values being passed to a\n function that requires a handle, e.g. Foo(Root<T>(cx, x)).\n\n If you want to add additional methods to Rooted for a specific\n specialization, define a RootedOperations<T> specialization containing them."]
+        pub type RootedObject = Rooted<*mut JSObject>;
+
+        #[repr(C)]
+        #[derive(Debug, Copy, Clone, PartialEq)]
+        pub struct RootedOperations {
+            pub _address: u8,
         }
 
         #[repr(i32)]
@@ -2165,6 +3392,17 @@ pub struct Realm {
 
         #[repr(C)]
         pub struct ScriptEnvironmentPreparer_Closure__bindgen_vtable(std::os::raw::c_void);
+
+        pub type SetPropertyOp = ::std::option::Option<
+            unsafe extern "C" fn(
+                cx: *mut JSContext,
+                obj: HandleObject,
+                id: HandleId,
+                v: HandleValue,
+                receiver: HandleValue,
+                result: *mut ObjectOpResult,
+            ) -> bool,
+        >;
 
         #[repr(C)]
         #[derive(Debug, Copy, Clone)]
@@ -2383,10 +3621,157 @@ pub struct TrampolineNative {
         ) -> bool,
     >;
 
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct Zone {
+    _private: [u8; 0],
+}
+
     #[repr(C)]
     #[derive(Copy, Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
     pub struct __BindgenBitfieldUnit<Storage> {
         storage: Storage,
+    }
+
+    impl<Storage> __BindgenBitfieldUnit<Storage> {
+        #[inline]
+        pub const fn new(storage: Storage) -> Self {
+            Self { storage }
+        }
+    }
+
+    impl<Storage> __BindgenBitfieldUnit<Storage>
+    where
+        Storage: AsRef<[u8]> + AsMut<[u8]>,
+    {
+        #[inline]
+        fn extract_bit(byte: u8, index: usize) -> bool {
+            let bit_index = if cfg!(target_endian = "big") {
+                7 - (index % 8)
+            } else {
+                index % 8
+            };
+            let mask = 1 << bit_index;
+            byte & mask == mask
+        }
+        #[inline]
+        pub fn get_bit(&self, index: usize) -> bool {
+            debug_assert!(index / 8 < self.storage.as_ref().len());
+            let byte_index = index / 8;
+            let byte = self.storage.as_ref()[byte_index];
+            Self::extract_bit(byte, index)
+        }
+        #[inline]
+        pub unsafe fn raw_get_bit(this: *const Self, index: usize) -> bool {
+            debug_assert!(index / 8 < core::mem::size_of::<Storage>());
+            let byte_index = index / 8;
+            let byte = unsafe {
+                *(core::ptr::addr_of!((*this).storage) as *const u8).offset(byte_index as isize)
+            };
+            Self::extract_bit(byte, index)
+        }
+        #[inline]
+        fn change_bit(byte: u8, index: usize, val: bool) -> u8 {
+            let bit_index = if cfg!(target_endian = "big") {
+                7 - (index % 8)
+            } else {
+                index % 8
+            };
+            let mask = 1 << bit_index;
+            if val {
+                byte | mask
+            } else {
+                byte & !mask
+            }
+        }
+        #[inline]
+        pub fn set_bit(&mut self, index: usize, val: bool) {
+            debug_assert!(index / 8 < self.storage.as_ref().len());
+            let byte_index = index / 8;
+            let byte = &mut self.storage.as_mut()[byte_index];
+            *byte = Self::change_bit(*byte, index, val);
+        }
+        #[inline]
+        pub unsafe fn raw_set_bit(this: *mut Self, index: usize, val: bool) {
+            debug_assert!(index / 8 < core::mem::size_of::<Storage>());
+            let byte_index = index / 8;
+            let byte = unsafe {
+                (core::ptr::addr_of_mut!((*this).storage) as *mut u8).offset(byte_index as isize)
+            };
+            unsafe { *byte = Self::change_bit(*byte, index, val) };
+        }
+        #[inline]
+        pub fn get(&self, bit_offset: usize, bit_width: u8) -> u64 {
+            debug_assert!(bit_width <= 64);
+            debug_assert!(bit_offset / 8 < self.storage.as_ref().len());
+            debug_assert!((bit_offset + (bit_width as usize)) / 8 <= self.storage.as_ref().len());
+            let mut val = 0;
+            for i in 0..(bit_width as usize) {
+                if self.get_bit(i + bit_offset) {
+                    let index = if cfg!(target_endian = "big") {
+                        bit_width as usize - 1 - i
+                    } else {
+                        i
+                    };
+                    val |= 1 << index;
+                }
+            }
+            val
+        }
+        #[inline]
+        pub unsafe fn raw_get(this: *const Self, bit_offset: usize, bit_width: u8) -> u64 {
+            debug_assert!(bit_width <= 64);
+            debug_assert!(bit_offset / 8 < core::mem::size_of::<Storage>());
+            debug_assert!(
+                (bit_offset + (bit_width as usize)) / 8 <= core::mem::size_of::<Storage>()
+            );
+            let mut val = 0;
+            for i in 0..(bit_width as usize) {
+                if unsafe { Self::raw_get_bit(this, i + bit_offset) } {
+                    let index = if cfg!(target_endian = "big") {
+                        bit_width as usize - 1 - i
+                    } else {
+                        i
+                    };
+                    val |= 1 << index;
+                }
+            }
+            val
+        }
+        #[inline]
+        pub fn set(&mut self, bit_offset: usize, bit_width: u8, val: u64) {
+            debug_assert!(bit_width <= 64);
+            debug_assert!(bit_offset / 8 < self.storage.as_ref().len());
+            debug_assert!((bit_offset + (bit_width as usize)) / 8 <= self.storage.as_ref().len());
+            for i in 0..(bit_width as usize) {
+                let mask = 1 << i;
+                let val_bit_is_set = val & mask == mask;
+                let index = if cfg!(target_endian = "big") {
+                    bit_width as usize - 1 - i
+                } else {
+                    i
+                };
+                self.set_bit(index + bit_offset, val_bit_is_set);
+            }
+        }
+        #[inline]
+        pub unsafe fn raw_set(this: *mut Self, bit_offset: usize, bit_width: u8, val: u64) {
+            debug_assert!(bit_width <= 64);
+            debug_assert!(bit_offset / 8 < core::mem::size_of::<Storage>());
+            debug_assert!(
+                (bit_offset + (bit_width as usize)) / 8 <= core::mem::size_of::<Storage>()
+            );
+            for i in 0..(bit_width as usize) {
+                let mask = 1 << i;
+                let val_bit_is_set = val & mask == mask;
+                let index = if cfg!(target_endian = "big") {
+                    bit_width as usize - 1 - i
+                } else {
+                    i
+                };
+                unsafe { Self::raw_set_bit(this, index + bit_offset, val_bit_is_set) };
+            }
+        }
     }
 
     #[doc = r" If Bindgen could only determine the size and alignment of a"]

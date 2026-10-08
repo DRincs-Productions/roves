@@ -31,6 +31,17 @@ pub trait GCMethods {
     /// # Safety
     /// The value must be stored in a rooted or traced location before the next GC.
     unsafe fn initial() -> Self;
+
+    /// SpiderMonkey's post-write barrier for a heap location. V8's cppgc heap is not
+    /// generational for cells, so there is nothing to record.
+    ///
+    /// # Safety
+    /// `_location` must be a valid heap location.
+    unsafe fn post_barrier(_location: *mut Self, _prev: Self, _next: Self)
+    where
+        Self: Sized,
+    {
+    }
 }
 
 macro_rules! gc_thing_pointer {
@@ -78,6 +89,20 @@ impl RootKind for JSVal {
 impl GCMethods for JSVal {
     unsafe fn initial() -> Self {
         UndefinedValue()
+    }
+}
+
+impl RootKind for crate::jsapi::PropertyDescriptor {
+    fn trace_root(&self, visitor: &mut Visitor) {
+        self.value_.trace_root(visitor);
+        self.getter_.trace_root(visitor);
+        self.setter_.trace_root(visitor);
+    }
+}
+
+impl GCMethods for crate::jsapi::PropertyDescriptor {
+    unsafe fn initial() -> Self {
+        Self::default()
     }
 }
 
@@ -201,6 +226,40 @@ impl<'a, T: 'a + RootKind> RootedGuard<'a, T> {
         // SAFETY: as for `as_ptr`.
         unsafe { *self.as_ptr() = value };
     }
+
+    /// # Safety
+    /// No GC may run while the reference is alive (the value is not re-read after a GC).
+    pub unsafe fn as_mut(&mut self) -> &mut T {
+        // SAFETY: as for `as_ptr`.
+        unsafe { &mut *self.as_ptr() }
+    }
+}
+
+impl<'a, T: 'a + RootKind> RootedGuard<'a, Vec<T>>
+where
+    Vec<T>: RootKind,
+{
+    pub fn set_index(&mut self, index: usize, value: T) {
+        // SAFETY: no GC runs during the store.
+        unsafe { self.as_mut()[index] = value };
+    }
+
+    pub fn handle_at(&'_ self, index: usize) -> Handle<'_, T> {
+        assert!(index < self.len());
+        // SAFETY: the elements of a rooted vector are traced.
+        unsafe { Handle::from_marked_location(self.deref().as_ptr().add(index)) }
+    }
+
+    pub fn handle_mut_at(&'_ mut self, index: usize) -> MutableHandle<'_, T> {
+        assert!(index < self.len());
+        // SAFETY: as above.
+        unsafe { MutableHandle::from_marked_location(self.as_mut().as_mut_ptr().add(index)) }
+    }
+
+    pub fn take(&'_ mut self) -> Vec<T> {
+        // SAFETY: no GC runs during the swap.
+        std::mem::take(unsafe { self.as_mut() })
+    }
 }
 
 impl<'a, T: 'a + RootKind> Deref for RootedGuard<'a, T> {
@@ -209,6 +268,13 @@ impl<'a, T: 'a + RootKind> Deref for RootedGuard<'a, T> {
     fn deref(&self) -> &T {
         // SAFETY: as for `as_ptr`.
         unsafe { &*self.as_ptr() }
+    }
+}
+
+impl<'a, T: 'a + RootKind> std::ops::DerefMut for RootedGuard<'a, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        // SAFETY: as for `as_ptr`; the location stays rooted while borrowed.
+        unsafe { &mut *self.as_ptr() }
     }
 }
 
@@ -249,6 +315,14 @@ impl<'a, T> Handle<'a, T> {
     }
 
     pub fn as_ptr(&self) -> *const T {
+        self.ptr
+    }
+
+    /// The referenced value, borrowed while no GC can run (`_no_gc`).
+    pub fn as_ref<'s: 'r, 'cx: 'r, 'r>(&'s self, _no_gc: &'cx crate::context::NoGC) -> &'r T
+    where
+        'a: 's,
+    {
         self.ptr
     }
 
@@ -351,6 +425,33 @@ impl<T> Deref for MutableHandle<'_, T> {
     }
 }
 
+impl HandleValue<'static> {
+    pub fn null() -> Self {
+        // SAFETY: a static, immutable location.
+        unsafe { Handle::from_marked_location(&NULL_VALUE) }
+    }
+
+    pub fn undefined() -> Self {
+        // SAFETY: as above.
+        unsafe { Handle::from_marked_location(&UNDEFINED_VALUE) }
+    }
+}
+
+impl HandleObject<'static> {
+    pub fn null() -> Self {
+        // SAFETY: as above.
+        unsafe { Handle::from_marked_location(&NULL_OBJECT.0) }
+    }
+}
+
+struct SyncObject(*mut JSObject);
+// SAFETY: a null pointer, never written.
+unsafe impl Sync for SyncObject {}
+
+static NULL_VALUE: JSVal = crate::jsval::NullValue();
+static UNDEFINED_VALUE: JSVal = UndefinedValue();
+static NULL_OBJECT: SyncObject = SyncObject(std::ptr::null_mut());
+
 pub type HandleObject<'a> = Handle<'a, *mut JSObject>;
 pub type HandleValue<'a> = Handle<'a, JSVal>;
 pub type HandleString<'a> = Handle<'a, *mut JSString>;
@@ -358,17 +459,25 @@ pub type HandleFunction<'a> = Handle<'a, *mut JSFunction>;
 pub type MutableHandleObject<'a> = MutableHandle<'a, *mut JSObject>;
 pub type MutableHandleValue<'a> = MutableHandle<'a, JSVal>;
 pub type MutableHandleString<'a> = MutableHandle<'a, *mut JSString>;
+pub type HandleId<'a> = Handle<'a, crate::jsid::jsid>;
+pub type HandleScript<'a> = Handle<'a, *mut crate::jsapi::JSScript>;
+pub type HandleSymbol<'a> = Handle<'a, *mut crate::jsapi::Symbol>;
+pub type MutableHandleFunction<'a> = MutableHandle<'a, *mut JSFunction>;
+pub type MutableHandleId<'a> = MutableHandle<'a, crate::jsid::jsid>;
+pub type MutableHandleScript<'a> = MutableHandle<'a, *mut crate::jsapi::JSScript>;
+pub type MutableHandleSymbol<'a> = MutableHandle<'a, *mut crate::jsapi::Symbol>;
 
 /// A GC-thing location inside a traced native object (`JS::Heap<T>`). Its owner reports it
-/// from its trace method (`Heap::trace`), so the referenced thing lives as long as the owner.
+/// from its trace method (`Traceable::trace`), so the referenced thing lives as long as the
+/// owner.
 pub struct Heap<T> {
-    value: std::cell::UnsafeCell<T>,
+    pub ptr: std::cell::UnsafeCell<T>,
 }
 
 impl<T: GCMethods> Default for Heap<T> {
     fn default() -> Self {
         // SAFETY: the owner traces the location.
-        Heap { value: std::cell::UnsafeCell::new(unsafe { T::initial() }) }
+        Heap { ptr: std::cell::UnsafeCell::new(unsafe { T::initial() }) }
     }
 }
 
@@ -381,28 +490,29 @@ impl<T: Copy + GCMethods> Heap<T> {
 
     pub fn set(&self, value: T) {
         // SAFETY: single-threaded; no reference into the cell escapes.
-        unsafe { *self.value.get() = value };
+        unsafe { *self.ptr.get() = value };
     }
 
     pub fn get(&self) -> T {
         // SAFETY: as for `set`.
-        unsafe { *self.value.get() }
+        unsafe { *self.ptr.get() }
     }
 
     pub fn get_unsafe(&self) -> *mut T {
-        self.value.get()
+        self.ptr.get()
     }
 
     /// A raw (`jsapi`) handle to the location, as in mozjs.
     pub fn handle(&self) -> crate::jsapi::Handle<T> {
-        crate::jsapi::Handle { _phantom_0: PhantomData, ptr: self.value.get() }
+        crate::jsapi::Handle { _phantom_0: PhantomData, ptr: self.ptr.get() }
     }
 }
 
 impl<T: RootKind> Heap<T> {
-    /// Reports the referenced GC thing, from the owner's trace method.
-    pub fn trace(&self, visitor: &mut Visitor) {
+    /// Reports the referenced GC thing to a cppgc visitor (roves-js's own trace methods; the
+    /// `*mut JSTracer` form is `Traceable::trace`).
+    pub fn trace_visitor(&self, visitor: &mut Visitor) {
         // SAFETY: tracing only reads the location, on the mutator thread.
-        unsafe { &*self.value.get() }.trace_root(visitor);
+        unsafe { &*self.ptr.get() }.trace_root(visitor);
     }
 }

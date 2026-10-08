@@ -128,7 +128,7 @@ fn heap_locations_are_traced_by_their_owner() {
 
     unsafe impl GarbageCollected for Owner {
         fn trace(&self, visitor: &mut Visitor) {
-            self.slot.trace(visitor);
+            self.slot.trace_visitor(visitor);
         }
 
         fn get_name(&self) -> &'static std::ffi::CStr {
@@ -221,4 +221,386 @@ fn conversions_follow_webidl_and_mozjs() {
     }
     assert_eq!(describe(&runtime, value.get()), "4294967295");
     runtime.gc_for_testing();
+}
+
+
+// --- CP98: object model, binding tables and the JSAPI object/property surface ---------------
+
+mod object_model {
+    use std::cell::Cell;
+    use std::ffi::c_void;
+    use std::ptr;
+
+    use super::{describe, eval};
+    use crate::jsapi::*;
+    use crate::jsval::*;
+    use crate::rust::{IdVector, Runtime};
+
+    thread_local! {
+        static HOOK_FINALIZED: Cell<u32> = const { Cell::new(0) };
+        static HOOK_TRACED: Cell<u32> = const { Cell::new(0) };
+    }
+
+    unsafe extern "C" fn finalize_hook(_gcx: *mut GCContext, obj: *mut JSObject) {
+        let mut slot = UndefinedValue();
+        // SAFETY: the finalize hook may read the reserved slots.
+        unsafe { JS_GetReservedSlot(obj, 0, &mut slot) };
+        if slot.is_int32() && slot.to_int32() == 42 {
+            HOOK_FINALIZED.with(|count| count.set(count.get() + 1));
+        }
+    }
+
+    unsafe extern "C" fn trace_hook(_trc: *mut JSTracer, _obj: *mut JSObject) {
+        HOOK_TRACED.with(|count| count.set(count.get() + 1));
+    }
+
+    static OPS: JSClassOps = JSClassOps {
+        addProperty: None,
+        delProperty: None,
+        enumerate: None,
+        newEnumerate: None,
+        resolve: None,
+        mayResolve: None,
+        finalize: Some(finalize_hook),
+        call: None,
+        construct: None,
+        trace: Some(trace_hook),
+    };
+
+    static CLASS: JSClass = JSClass {
+        name: c"Thing".as_ptr(),
+        flags: 2 << crate::object::JSCLASS_RESERVED_SLOTS_SHIFT | crate::object::JSCLASS_FOREGROUND_FINALIZE,
+        cOps: &OPS,
+        spec: ptr::null(),
+        ext: ptr::null(),
+        oOps: ptr::null(),
+    };
+
+    fn global(runtime: &Runtime) -> JSVal {
+        eval(runtime, "globalThis")
+    }
+
+    #[test]
+    fn class_objects_keep_identity_reserved_slots_and_run_hooks() {
+        let mut runtime = Runtime::new();
+        let cx = runtime.cx();
+        let finalized_before = HOOK_FINALIZED.with(Cell::get);
+        {
+            rooted!(in(cx) let thing = unsafe { JS_NewObject(cx, &CLASS) });
+            assert!(!thing.get().is_null());
+            unsafe { JS_SetReservedSlot(thing.get(), 0, &Int32Value(42)) };
+            let mut slot = UndefinedValue();
+            unsafe { JS_GetReservedSlot(thing.get(), 0, &mut slot) };
+            assert_eq!(slot.to_int32(), 42);
+            assert_eq!(crate::object::object_class(thing.get()), &CLASS as *const JSClass);
+            // Converting the V8 object back yields the same pointer (class objects are interned).
+            rooted!(in(cx) let global = global(&runtime).to_object());
+            rooted!(in(cx) let value = ObjectValue(thing.get()));
+            assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"thing".as_ptr(), value.handle().into_handle()) });
+            assert_eq!(eval(&runtime, "thing").to_object(), thing.get());
+            assert_eq!(describe(&runtime, eval(&runtime, "Object.prototype.toString.call(thing)")), "[object Object]");
+            runtime.gc_for_testing();
+            assert!(HOOK_TRACED.with(Cell::get) > 0, "the class trace hook runs during GC");
+            eval(&runtime, "delete globalThis.thing");
+        }
+        runtime.gc_for_testing();
+        runtime.gc_for_testing();
+        assert_eq!(HOOK_FINALIZED.with(Cell::get), finalized_before + 1, "finalize sees the reserved slots once");
+    }
+
+    #[test]
+    fn properties_by_name_and_id_and_descriptors() {
+        let runtime = Runtime::new();
+        let cx = runtime.cx();
+        rooted!(in(cx) let object = unsafe { JS_NewPlainObject(cx) });
+        rooted!(in(cx) let value = Int32Value(7));
+        let attrs = (JSPROP_ENUMERATE | JSPROP_READONLY) as u32;
+        assert!(unsafe { JS_DefineProperty(cx, object.handle().into_handle(), c"seven".as_ptr(), value.handle().into_handle(), attrs) });
+        let mut found = false;
+        assert!(unsafe { JS_HasOwnProperty(cx, object.handle().into_handle(), c"seven".as_ptr(), &mut found) } && found);
+        rooted!(in(cx) let mut read = UndefinedValue());
+        assert!(unsafe { JS_GetProperty(cx, object.handle().into_handle(), c"seven".as_ptr(), read.handle_mut().into_handle()) });
+        assert_eq!(read.get().to_int32(), 7);
+
+        // Index ids and the descriptor of a read-only data property.
+        rooted!(in(cx) let mut id = crate::jsid::VoidId());
+        unsafe { int_to_jsid(3, id.handle_mut().into_handle()) };
+        assert!(unsafe { JS_DefinePropertyById2(cx, object.handle().into_handle(), id.handle().into_handle(), value.handle().into_handle(), 0) });
+        assert!(unsafe { JS_HasPropertyById(cx, object.handle().into_handle(), id.handle().into_handle(), &mut found) } && found);
+        rooted!(in(cx) let mut desc = PropertyDescriptor::default());
+        let mut is_none = true;
+        let seven = unsafe { JS_AtomizeAndPinString(cx, c"seven".as_ptr()) };
+        rooted!(in(cx) let mut seven_id = crate::jsid::VoidId());
+        unsafe { RUST_INTERNED_STRING_TO_JSID(cx, seven, seven_id.handle_mut().into_handle()) };
+        assert!(seven_id.get().is_string());
+        assert!(unsafe {
+            JS_GetOwnPropertyDescriptorById(cx, object.handle().into_handle(), seven_id.handle().into_handle(), desc.handle_mut().into_handle(), &mut is_none)
+        });
+        assert!(!is_none);
+        assert!(desc.hasWritable_() && !desc.writable_() && desc.enumerable_() && desc.configurable_());
+        assert_eq!(desc.value_.to_int32(), 7);
+
+        // An array-index string becomes an int id.
+        let index = unsafe { JS_NewStringCopyN(cx, c"12".as_ptr(), 2) };
+        rooted!(in(cx) let mut index_id = crate::jsid::VoidId());
+        unsafe { RUST_INTERNED_STRING_TO_JSID(cx, index, index_id.handle_mut().into_handle()) };
+        assert!(index_id.get().is_int() && index_id.get().to_int() == 12);
+
+        // Own keys, then deletion.
+        let mut keys = unsafe { IdVector::new(cx) };
+        assert!(unsafe { GetPropertyKeys(cx, object.handle().into_handle(), JSITER_OWNONLY | JSITER_HIDDEN, keys.handle_mut()) });
+        assert_eq!(keys.len(), 2);
+        assert!(keys.iter().any(|id| id.is_int() && id.to_int() == 3));
+        let mut result = ObjectOpResult { code_: 0 };
+        assert!(unsafe { JS_DeletePropertyById(cx, object.handle().into_handle(), id.handle().into_handle(), &mut result) });
+        assert!(result.ok());
+        assert!(unsafe { JS_HasOwnPropertyById(cx, object.handle().into_handle(), id.handle().into_handle(), &mut found) } && !found);
+    }
+
+    unsafe extern "C" fn add_native(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+        // SAFETY: the JSNative contract.
+        let args = unsafe { std::slice::from_raw_parts_mut(vp, argc as usize + 2) };
+        let mut sum = 0;
+        for value in &args[2..] {
+            sum += value.to_int32();
+        }
+        // A nested JSAPI call inside a native (nested V8 scopes on the same isolate).
+        rooted!(in(cx) let this = args[1].to_object());
+        rooted!(in(cx) let mut base = UndefinedValue());
+        if !unsafe { JS_GetProperty(cx, this.handle().into_handle(), c"base".as_ptr(), base.handle_mut().into_handle()) } {
+            return false;
+        }
+        if base.get().is_int32() {
+            sum += base.get().to_int32();
+        }
+        args[0] = Int32Value(sum);
+        true
+    }
+
+    unsafe extern "C" fn throwing_native(cx: *mut JSContext, _argc: u32, _vp: *mut JSVal) -> bool {
+        rooted!(in(cx) let error = unsafe { JS_NewStringCopyN(cx, c"boom".as_ptr(), 4) });
+        rooted!(in(cx) let value = StringValue(unsafe { &*error.get() }));
+        unsafe { JS_SetPendingException(cx, value.handle(), ExceptionStackBehavior::Capture) };
+        false
+    }
+
+    unsafe extern "C" fn reserved_getter(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+        // SAFETY: the JSNative contract.
+        let args = unsafe { std::slice::from_raw_parts_mut(vp, 2) };
+        let callee = args[0].to_object();
+        let reserved = unsafe { GetFunctionNativeReserved(callee, 0) };
+        args[0] = if reserved.is_null() { UndefinedValue() } else { unsafe { *reserved } };
+        true
+    }
+
+    static FUNCTIONS: [JSFunctionSpec; 3] = [
+        JSFunctionSpec {
+            name: JSFunctionSpec_Name { string_: c"add".as_ptr() },
+            call: JSNativeWrapper { op: Some(add_native), info: ptr::null() },
+            nargs: 2,
+            flags: JSPROP_ENUMERATE as u16,
+            selfHostedName: ptr::null(),
+        },
+        JSFunctionSpec {
+            name: JSFunctionSpec_Name { string_: c"fail".as_ptr() },
+            call: JSNativeWrapper { op: Some(throwing_native), info: ptr::null() },
+            nargs: 0,
+            flags: 0,
+            selfHostedName: ptr::null(),
+        },
+        JSFunctionSpec {
+            name: JSFunctionSpec_Name { string_: ptr::null() },
+            call: JSNativeWrapper { op: None, info: ptr::null() },
+            nargs: 0,
+            flags: 0,
+            selfHostedName: ptr::null(),
+        },
+    ];
+
+    #[test]
+    fn natives_from_function_specs_calls_and_exceptions() {
+        let runtime = Runtime::new();
+        let cx = runtime.cx();
+        rooted!(in(cx) let object = unsafe { JS_NewPlainObject(cx) });
+        assert!(unsafe { JS_DefineFunctions(cx, object.handle().into_handle(), FUNCTIONS.as_ptr()) });
+        rooted!(in(cx) let global = global(&runtime).to_object());
+        rooted!(in(cx) let value = ObjectValue(object.get()));
+        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"api".as_ptr(), value.handle().into_handle()) });
+        assert_eq!(eval(&runtime, "api.base = 100; api.add(1, 2, 3)").to_int32(), 106);
+        assert_eq!(describe(&runtime, eval(&runtime, "Object.keys(api).join()")), "add,base");
+        assert_eq!(describe(&runtime, eval(&runtime, "try { api.fail(); 'no' } catch (e) { e }")), "boom");
+
+        // JS::Call from Rust.
+        rooted!(in(cx) let function = eval(&runtime, "(function (a, b) { return this.base * a + b; })"));
+        let arguments = [Int32Value(2), Int32Value(5)];
+        let array = HandleValueArray { length_: 2, elements_: arguments.as_ptr() };
+        rooted!(in(cx) let mut result = UndefinedValue());
+        assert!(unsafe { Call(cx, value.handle().into_handle(), function.handle().into_handle(), &array, result.handle_mut().into_handle()) });
+        assert_eq!(result.get().to_int32(), 205);
+
+        // A native function with reserved slots, identified again as its callee.
+        let function = unsafe { JS_NewFunction(cx, Some(reserved_getter), 0, 0, c"reserved".as_ptr()) };
+        rooted!(in(cx) let function = unsafe { JS_GetFunctionObject(function) });
+        unsafe { SetFunctionNativeReserved(function.get(), 0, &Int32Value(9)) };
+        rooted!(in(cx) let function_value = ObjectValue(function.get()));
+        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"reserved".as_ptr(), function_value.handle().into_handle()) });
+        assert_eq!(eval(&runtime, "reserved()").to_int32(), 9);
+        assert_eq!(eval(&runtime, "reserved").to_object(), function.get(), "native functions keep their identity");
+        let mut callable = false;
+        assert!(unsafe { IsCallable(function.get()) });
+        assert!(unsafe { IsArrayObject(cx, function_value.handle().into_handle(), &mut callable) } && !callable);
+    }
+
+    unsafe extern "C" fn answer_getter(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+        // SAFETY: the JSNative contract.
+        unsafe { *vp = Int32Value(42) };
+        true
+    }
+
+    static PROPERTIES: [JSPropertySpec; 3] = [
+        JSPropertySpec {
+            name: JSPropertySpec_Name { string_: c"answer".as_ptr() },
+            attributes_: JSPROP_ENUMERATE,
+            kind_: JSPropertySpec_Kind::NativeAccessor,
+            u: JSPropertySpec_AccessorsOrValue {
+                accessors: JSPropertySpec_AccessorsOrValue_Accessors {
+                    getter: JSPropertySpec_Accessor { native: JSNativeWrapper { op: Some(answer_getter), info: ptr::null() } },
+                    setter: JSPropertySpec_Accessor { native: JSNativeWrapper { op: None, info: ptr::null() } },
+                },
+            },
+        },
+        JSPropertySpec {
+            name: JSPropertySpec_Name { symbol_: crate::jsapi::SymbolCode::toStringTag as usize + 1 },
+            attributes_: JSPROP_READONLY,
+            kind_: JSPropertySpec_Kind::Value,
+            u: JSPropertySpec_AccessorsOrValue {
+                value: JSPropertySpec_ValueWrapper {
+                    type_: JSPropertySpec_ValueWrapper_Type::String,
+                    __bindgen_anon_1: JSPropertySpec_ValueWrapper__bindgen_ty_1 { string: c"Answer".as_ptr() },
+                },
+            },
+        },
+        JSPropertySpec {
+            name: JSPropertySpec_Name { string_: ptr::null() },
+            attributes_: 0,
+            kind_: JSPropertySpec_Kind::Value,
+            u: JSPropertySpec_AccessorsOrValue {
+                value: JSPropertySpec_ValueWrapper {
+                    type_: JSPropertySpec_ValueWrapper_Type::Int32,
+                    __bindgen_anon_1: JSPropertySpec_ValueWrapper__bindgen_ty_1 { int32: 0 },
+                },
+            },
+        },
+    ];
+
+    #[test]
+    fn property_specs_define_accessors_and_symbol_values() {
+        let runtime = Runtime::new();
+        let cx = runtime.cx();
+        rooted!(in(cx) let proto = unsafe { GetRealmObjectPrototype(cx) });
+        rooted!(in(cx) let object = unsafe { JS_NewObjectWithGivenProto(cx, ptr::null(), proto.handle().into_handle()) });
+        assert!(unsafe { JS_DefineProperties(cx, object.handle().into_handle(), PROPERTIES.as_ptr()) });
+        rooted!(in(cx) let global = global(&runtime).to_object());
+        rooted!(in(cx) let value = ObjectValue(object.get()));
+        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"spec".as_ptr(), value.handle().into_handle()) });
+        assert_eq!(eval(&runtime, "spec.answer").to_int32(), 42);
+        assert_eq!(describe(&runtime, eval(&runtime, "String(spec)")), "[object Answer]");
+        assert_eq!(
+            describe(&runtime, eval(&runtime, "Object.getOwnPropertyDescriptor(spec, 'answer').get.name")),
+            "get answer"
+        );
+        rooted!(in(cx) let mut prototype = ptr::null_mut::<JSObject>());
+        assert!(unsafe { JS_GetPrototype(cx, object.handle().into_handle(), prototype.handle_mut().into_handle()) });
+        assert_eq!(prototype.get(), proto.get());
+
+        // JSON through the streaming callback.
+        unsafe extern "C" fn collect(buf: *const u16, len: u32, data: *mut c_void) -> bool {
+            // SAFETY: the callback contract (chars, length, closure data).
+            let units = unsafe { std::slice::from_raw_parts(buf, len as usize) };
+            unsafe { &mut *(data as *mut std::string::String) }.push_str(&std::string::String::from_utf16_lossy(units));
+            true
+        }
+        let mut json = std::string::String::new();
+        rooted!(in(cx) let space = UndefinedValue());
+        rooted!(in(cx) let replacer = ptr::null_mut::<JSObject>());
+        assert!(unsafe {
+            ToJSON(cx, value.handle().into_handle(), replacer.handle().into_handle(), space.handle().into_handle(), Some(collect), &mut json as *mut std::string::String as *mut c_void)
+        });
+        assert_eq!(json, r#"{"answer":42}"#);
+    }
+}
+
+#[test]
+fn plain_objects_and_symbols_have_one_cell_while_it_lives() {
+    let mut runtime = Runtime::new();
+    let cx = runtime.cx();
+    eval(&runtime, "globalThis.kept = {}; globalThis.sym = Symbol('s')");
+    assert_eq!(eval(&runtime, "kept").to_object(), eval(&runtime, "kept").to_object());
+    assert_eq!(eval(&runtime, "sym").to_symbol(), eval(&runtime, "sym").to_symbol());
+    assert_ne!(eval(&runtime, "kept").to_object(), eval(&runtime, "({})").to_object());
+    {
+        rooted!(in(cx) let kept = eval(&runtime, "kept").to_object());
+        runtime.gc_for_testing();
+        assert_eq!(eval(&runtime, "kept").to_object(), kept.get(), "a rooted cell stays the object's cell");
+    }
+    // Once the cell is collected, the object gets a new, working cell.
+    runtime.gc_for_testing();
+    let again = eval(&runtime, "kept.marker = 'alive'; kept");
+    assert_eq!(describe(&runtime, eval(&runtime, "kept.marker")), "alive");
+    assert_eq!(again.to_object(), eval(&runtime, "kept").to_object());
+}
+
+mod realms {
+    use std::ptr;
+
+    use super::eval;
+    use crate::jsapi::*;
+    use crate::jsval::*;
+    use crate::rust::Runtime;
+
+    static GLOBAL_CLASS: JSClass = JSClass {
+        name: c"TestGlobal".as_ptr(),
+        flags: crate::object::JSCLASS_IS_GLOBAL |
+            ((crate::object::JSCLASS_GLOBAL_SLOT_COUNT + 1) << crate::object::JSCLASS_RESERVED_SLOTS_SHIFT),
+        cOps: ptr::null(),
+        spec: ptr::null(),
+        ext: ptr::null(),
+        oOps: ptr::null(),
+    };
+
+    #[test]
+    fn new_globals_are_separate_realms_with_class_identity() {
+        let mut runtime = Runtime::new();
+        let cx = runtime.cx();
+        let first_realm = unsafe { GetCurrentRealmOrNull(cx) };
+        let first_object_prototype = eval(&runtime, "Object.prototype").to_object();
+        rooted!(in(cx) let global = unsafe {
+            JS_NewGlobalObject(cx, &GLOBAL_CLASS, ptr::null_mut(), OnNewGlobalHookOption::FireOnNewGlobalHook, ptr::null())
+        });
+        assert!(!global.get().is_null());
+        assert!(unsafe { JS_IsGlobalObject(global.get()) });
+        unsafe { JS_SetReservedSlot(global.get(), crate::object::JSCLASS_GLOBAL_SLOT_COUNT, &Int32Value(5)) };
+        let realm = unsafe { GetObjectRealmOrNull(global.get()) };
+        assert!(!realm.is_null() && realm != first_realm);
+        assert_eq!(unsafe { GetRealmGlobalOrNull(realm) }, global.get());
+
+        // Entering the realm switches where scripts run.
+        let old = unsafe { EnterRealm(cx, global.get()) };
+        assert_eq!(old, first_realm);
+        assert_eq!(unsafe { GetCurrentRealmOrNull(cx) }, realm);
+        assert_eq!(eval(&runtime, "globalThis").to_object(), global.get(), "the global proxy is the class object");
+        assert_ne!(eval(&runtime, "Object.prototype").to_object(), first_object_prototype);
+        assert_eq!(unsafe { CurrentGlobalOrNull(cx) }, global.get());
+        eval(&runtime, "globalThis.inRealm = 1");
+        unsafe { LeaveRealm(cx, old) };
+        assert_eq!(unsafe { GetCurrentRealmOrNull(cx) }, first_realm);
+        assert!(eval(&runtime, "typeof inRealm === 'undefined'").to_boolean());
+
+        // The realm keeps its global (and its reserved slots) across GC.
+        runtime.gc_for_testing();
+        let mut slot = UndefinedValue();
+        unsafe { JS_GetReservedSlot(global.get(), crate::object::JSCLASS_GLOBAL_SLOT_COUNT, &mut slot) };
+        assert_eq!(slot.to_int32(), 5);
+        assert_eq!(unsafe { crate::realm_impl::get_object_realm(eval(&runtime, "({})").to_object()) }, first_realm);
+    }
 }

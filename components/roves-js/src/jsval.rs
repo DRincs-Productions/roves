@@ -35,13 +35,18 @@ pub struct Value {
 
 pub type JSVal = Value;
 
+pub(crate) const NULL_BITS: Value = Value { bits: (TAG_NULL << TAG_SHIFT) };
+pub(crate) const UNDEFINED_BITS: Value = Value { bits: (TAG_UNDEFINED << TAG_SHIFT) };
+pub(crate) const TRUE_BITS: Value = Value { bits: (TAG_BOOLEAN << TAG_SHIFT) | 1 };
+pub(crate) const FALSE_BITS: Value = Value { bits: (TAG_BOOLEAN << TAG_SHIFT) };
+
 impl std::fmt::Debug for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "JSVal({:#x})", self.bits)
     }
 }
 
-fn tagged(tag: u64, payload: u64) -> JSVal {
+const fn tagged(tag: u64, payload: u64) -> JSVal {
     debug_assert!(payload <= PAYLOAD_MASK, "payload does not fit in 47 bits");
     JSVal { bits: (tag << TAG_SHIFT) | payload }
 }
@@ -53,12 +58,12 @@ fn gc_thing(tag: u64, pointer: *const c_void) -> JSVal {
 }
 
 #[inline]
-pub fn NullValue() -> JSVal {
+pub const fn NullValue() -> JSVal {
     tagged(TAG_NULL, 0)
 }
 
 #[inline]
-pub fn UndefinedValue() -> JSVal {
+pub const fn UndefinedValue() -> JSVal {
     tagged(TAG_UNDEFINED, 0)
 }
 
@@ -107,6 +112,11 @@ pub fn SymbolValue(s: &Symbol) -> JSVal {
 #[inline]
 pub fn BigIntValue(b: &BigInt) -> JSVal {
     gc_thing(TAG_BIGINT, b as *const BigInt as *const c_void)
+}
+
+/// A magic value (SpiderMonkey's `JS_IS_CONSTRUCTING` marker in a native's `this` slot).
+pub(crate) fn magic_value() -> JSVal {
+    tagged(TAG_MAGIC, 0)
 }
 
 #[inline]
@@ -307,4 +317,24 @@ pub(crate) unsafe fn to_v8<'s>(scope: &mut v8::PinScope<'s, '_>, value: JSVal) -
         // Magic and private values have no JS representation.
         v8::undefined(scope).into()
     }
+}
+
+/// The callee of a native's `vp` array.
+///
+/// # Safety
+/// `vp` must be a native's argument array.
+#[inline(always)]
+pub unsafe fn JS_CALLEE(_cx: *mut crate::jsapi::JSContext, vp: *mut JSVal) -> JSVal {
+    // SAFETY: see above.
+    unsafe { *vp }
+}
+
+/// The arguments of a native's `vp` array.
+///
+/// # Safety
+/// `vp` must be a native's argument array.
+#[inline(always)]
+pub unsafe fn JS_ARGV(_cx: *mut crate::jsapi::JSContext, vp: *mut JSVal) -> *mut JSVal {
+    // SAFETY: see above.
+    unsafe { vp.offset(2) }
 }

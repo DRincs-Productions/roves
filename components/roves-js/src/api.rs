@@ -20,10 +20,7 @@ use crate::gc::{HandleObject, HandleValue, MutableHandleValue};
 use crate::jsapi::{JSContext, JSObject, JSString};
 use crate::jsval::{from_v8, to_v8};
 
-/// `JSPROP_*` attribute flags (SpiderMonkey's values).
-pub const JSPROP_ENUMERATE: u32 = 0x01;
-pub const JSPROP_READONLY: u32 = 0x02;
-pub const JSPROP_PERMANENT: u32 = 0x04;
+use crate::jsapi::{JSPROP_ENUMERATE, JSPROP_PERMANENT, JSPROP_READONLY};
 
 /// Whether `JS_SetPendingException` records a stack (V8 records one on error objects anyway).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -281,13 +278,13 @@ pub fn define_element(cx: &JSContext, obj: HandleObject, index: u32, value: Hand
 /// V8 attributes for `JSPROP_*` flags.
 pub(crate) fn property_attributes(flags: u32) -> v8::PropertyAttribute {
     let mut attributes = v8::PropertyAttribute::NONE;
-    if flags & JSPROP_ENUMERATE == 0 {
+    if flags & JSPROP_ENUMERATE as u32 == 0 {
         attributes = attributes | v8::PropertyAttribute::DONT_ENUM;
     }
-    if flags & JSPROP_READONLY != 0 {
+    if flags & JSPROP_READONLY as u32 != 0 {
         attributes = attributes | v8::PropertyAttribute::READ_ONLY;
     }
-    if flags & JSPROP_PERMANENT != 0 {
+    if flags & JSPROP_PERMANENT as u32 != 0 {
         attributes = attributes | v8::PropertyAttribute::DONT_DELETE;
     }
     attributes

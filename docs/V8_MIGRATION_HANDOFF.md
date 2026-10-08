@@ -387,7 +387,24 @@ strategia completa è in `docs/V8_MIGRATION.md` ("Cutover strategy"). Metrica:
     `Member` tramite `UnsafePtr`.
   - Marking incrementale/concorrente disattivato (in `roves_v8::initialize_engine`).
   - Test: 5.
-- **Prossimi passi.** Le operazioni dell'API usata dal DOM:
+- **CP95–CP97:** conversioni, eccezioni pendenti, tipi bindgen (estratti da mozjs_sys),
+  tracer cppgc, `jsid`, rooting completo; decisione di emulare la macchina dei binding.
+- **CP98:** modello a oggetti e superficie JSAPI. `servo-script-bindings`: **14 errori**,
+  solo import mancanti (typed array, proxy, `RealmOptions`, `IntoHandle`,
+  `RuntimeHeapState`). Test `roves-js`: 13/13.
+  - `JSClass` → template V8 con campo interno → `ClassBox` cppgc (slot riservati, hook
+    trace/finalize, call/construct).
+  - Identità: ogni oggetto/simbolo ha una sola cella finché vive (tabella debole per
+    identity hash).
+  - Native con array `vp`; `JS_NewFunction` con slot riservati e `JSJitInfo`.
+  - `JS_DefineProperties`/`JS_DefineFunctions` e le operazioni JIT.
+  - Realm = contesti V8; `JS_NewGlobalObject` mette il `ClassBox` sul global proxy.
+  - `wrappers2` generato dagli elenchi di mozjs (`support/roves_js/gen_wrappers2.py`).
+  - Lacune note: prototipi immutabili, `WindowProxy`, specifiche self-hosted.
+- **Prossimi passi (dopo CP98):** proxy (famiglie di handler → interceptor V8), typed array
+  (`js::typedarray`), gli import rimasti; poi gli errori di tipo che emergeranno, quindi
+  `servo-script`.
+- **Storico (prima di CP95).** Le operazioni dell'API usata dal DOM:
   1. stringhe e conversioni (`jsstr_to_string`, `ToJSValConvertible`/`FromJSValConvertible`);
   2. oggetti e proprietà (`JS_NewObject`, `JS_GetProperty`/`SetProperty`/`DefineProperty`);
   3. eccezioni, realm, Promise, typed array.
