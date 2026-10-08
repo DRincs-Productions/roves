@@ -1,0 +1,1270 @@
+diff --git a/components/roves-js/src/glue.rs b/components/roves-js/src/glue.rs
+index e5907c436ce..5f7858eef49 100644
+--- a/components/roves-js/src/glue.rs
++++ b/components/roves-js/src/glue.rs
+@@ -29,6 +29,7 @@ pub use crate::script_impl::{
+     JS_StackCapture_AllFrames, JS_StackCapture_MaxFrames, NewCompileOptions, PendingExceptionStackInfo,
+     RUST_js_GetErrorMessage,
+ };
++pub use crate::values_impl::JS_GetPromiseResult;
+ pub use crate::proxy::{
+     CreateProxyHandler, GetProxyHandler, GetProxyHandlerExtra, GetProxyHandlerFamily, GetProxyPrivate,
+     GetProxyReservedSlot, InvokeGetOwnPropertyDescriptor, IsProxyHandlerFamily, NewProxyObject, SetProxyPrivate,
+diff --git a/components/roves-js/src/jsapi.rs b/components/roves-js/src/jsapi.rs
+index 1bbb68df768..a2c8fda39a2 100644
+--- a/components/roves-js/src/jsapi.rs
++++ b/components/roves-js/src/jsapi.rs
+@@ -21,6 +21,7 @@ pub use crate::jsapi_impl::*;
+ pub use crate::typedarray_impl::*;
+ pub use crate::runtime_impl::*;
+ pub use crate::script_impl::*;
++pub use crate::values_impl::*;
+ pub use crate::proxy::{SetDOMProxyInformation, SetPropertyIgnoringNamedGetter};
+ pub use crate::object::RuntimeHeapState;
+ 
+@@ -130,6 +131,8 @@ pub struct JSContext {
+     pub(crate) hooks: crate::runtime_impl::RuntimeHooks,
+     /// Script privates and error reports (see `script_impl`).
+     pub(crate) scripts: crate::script_impl::Scripts,
++    /// Helper functions written in JS, compiled once (see `values_impl::helper`).
++    pub(crate) helpers: RefCell<std::collections::HashMap<&'static str, v8::Global<v8::Function>>>,
+ }
+ 
+ impl JSContext {
+diff --git a/components/roves-js/src/jsapi_types.rs b/components/roves-js/src/jsapi_types.rs
+index 7379367ce05..15898bb635c 100644
+--- a/components/roves-js/src/jsapi_types.rs
++++ b/components/roves-js/src/jsapi_types.rs
+@@ -4383,6 +4383,26 @@ pub struct Realm {
+             pub const Reference: ProfilerStringView_Ownership =
+                 ProfilerStringView_Ownership::Literal;
+ 
++        pub const RegExpFlag_DotAll: u8 = 32;
++
++        #[doc = " Act globally and find *all* matches (rather than stopping after just the\n first one), i.e. /g."]
++        pub const RegExpFlag_Global: u8 = 2;
++
++        #[doc = " Add .indices property to the match result, i.e. /d"]
++        pub const RegExpFlag_HasIndices: u8 = 64;
++
++        #[doc = " Interpret regular expression source text case-insensitively by folding\n uppercase letters to lowercase, i.e. /i."]
++        pub const RegExpFlag_IgnoreCase: u8 = 1;
++
++        #[doc = " Treat ^ and $ as begin and end of line, i.e. /m."]
++        pub const RegExpFlag_Multiline: u8 = 4;
++
++        #[doc = " Only match starting from <regular expression>.lastIndex, i.e. /y."]
++        pub const RegExpFlag_Sticky: u8 = 8;
++
++        #[doc = " Use Unicode semantics, i.e. /u."]
++        pub const RegExpFlag_Unicode: u8 = 16;
++
+         #[doc = " Use Unicode Sets semantics, i.e. /v."]
+         pub const RegExpFlag_UnicodeSets: u8 = 128;
+ 
+diff --git a/components/roves-js/src/lib.rs b/components/roves-js/src/lib.rs
+index d1b0b84083b..eaf02e8c219 100644
+--- a/components/roves-js/src/lib.rs
++++ b/components/roves-js/src/lib.rs
+@@ -29,6 +29,7 @@ mod object;
+ mod proxy;
+ mod runtime_impl;
+ mod script_impl;
++mod values_impl;
+ mod typedarray_impl;
+ pub mod typedarray;
+ mod realm_impl;
+diff --git a/components/roves-js/src/rust.rs b/components/roves-js/src/rust.rs
+index 35815bc7b94..d3d59a28c4a 100644
+--- a/components/roves-js/src/rust.rs
++++ b/components/roves-js/src/rust.rs
+@@ -399,6 +399,7 @@ impl Runtime {
+             atoms: Default::default(),
+             hooks: Default::default(),
+             scripts: Default::default(),
++            helpers: RefCell::new(Default::default()),
+             current_realm: std::cell::Cell::new(std::ptr::null_mut()),
+             realms: RefCell::new(Vec::new()),
+         });
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 9e74c0cd3bb..0333f40d156 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -1100,3 +1100,129 @@ mod scripts {
+         unsafe { crate::api::JS_ClearPendingException(cx) };
+     }
+ }
++
++mod values {
++    use std::ptr;
++
++    use super::{describe, eval};
++    use crate::jsapi::*;
++    use crate::jsval::*;
++    use crate::rust::{JSEngineHandle, Runtime};
++
++    fn set_global(runtime: &Runtime, name: &std::ffi::CStr, value: JSVal) {
++        let cx = runtime.raw_cx();
++        rooted!(in(cx) let global = eval(runtime, "globalThis").to_object());
++        rooted!(in(cx) let value = value);
++        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), name.as_ptr(), value.handle().into_handle()) });
++    }
++
++    #[test]
++    fn promises_json_and_value_operations() {
++        let runtime = Runtime::new(JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++
++        // Promises without an executor, settled from Rust, with reactions.
++        rooted!(in(cx) let null_executor = ptr::null_mut::<JSObject>());
++        rooted!(in(cx) let promise = unsafe { NewPromiseObject(cx, null_executor.handle().into_handle()) });
++        assert!(unsafe { IsPromiseObject(promise.handle().into_handle()) });
++        assert_eq!(unsafe { GetPromiseState(promise.handle().into_handle()) }, PromiseState::Pending);
++        rooted!(in(cx) let on_fulfilled = eval(&runtime, "(v) => { globalThis.got = v; }").to_object());
++        rooted!(in(cx) let none = ptr::null_mut::<JSObject>());
++        assert!(unsafe { AddPromiseReactions(cx, promise.handle().into_handle(), on_fulfilled.handle().into_handle(), none.handle().into_handle()) });
++        rooted!(in(cx) let five = Int32Value(5));
++        assert!(unsafe { ResolvePromise(cx, promise.handle().into_handle(), five.handle().into_handle()) });
++        assert_eq!(unsafe { GetPromiseState(promise.handle().into_handle()) }, PromiseState::Fulfilled);
++        rooted!(in(cx) let mut result = UndefinedValue());
++        unsafe { JS_GetPromiseResult(promise.handle().into_handle(), result.handle_mut().into()) };
++        assert_eq!(result.get().to_int32(), 5);
++        unsafe { RunJobs(cx) };
++        assert_eq!(eval(&runtime, "got").to_int32(), 5);
++        assert!(unsafe { SetPromiseUserInputEventHandlingState(promise.handle().into_handle(), PromiseUserInputEventHandlingState::HadUserInteractionAtCreation) });
++        assert_eq!(
++            unsafe { GetPromiseUserInputEventHandlingState(promise.handle().into_handle()) },
++            PromiseUserInputEventHandlingState::HadUserInteractionAtCreation
++        );
++
++        // JSON.
++        let text: Vec<u16> = r#"{"a":[1,2]}"#.encode_utf16().collect();
++        rooted!(in(cx) let mut parsed = UndefinedValue());
++        assert!(unsafe { JS_ParseJSON(cx, text.as_ptr(), text.len() as u32, parsed.handle_mut().into()) });
++        set_global(&runtime, c"parsed", parsed.get());
++        assert_eq!(eval(&runtime, "parsed.a[1]").to_int32(), 2);
++
++        // Values.
++        rooted!(in(cx) let nan = DoubleValue(f64::NAN));
++        let mut same = false;
++        assert!(unsafe { SameValue(cx, nan.handle().into_handle(), nan.handle().into_handle(), &mut same) } && same);
++        rooted!(in(cx) let function = eval(&runtime, "(function named(a, b) { return this })"));
++        assert_eq!(unsafe { JS_TypeOfValue(cx, function.handle().into_handle()) }, JSType::JSTYPE_FUNCTION);
++        assert_eq!(unsafe { JS_GetFunctionArity(function.get().to_object() as *mut JSFunction) }, 2);
++        rooted!(in(cx) let mut name = ptr::null_mut::<JSString>());
++        rooted!(in(cx) let function_object = function.get().to_object() as *mut JSFunction);
++        assert!(unsafe { JS_GetFunctionId(cx, function_object.handle().into_handle(), name.handle_mut().into()) });
++        assert_eq!(describe(&runtime, StringValue(unsafe { &*name.get() })), "named");
++        rooted!(in(cx) let date_like = eval(&runtime, "({ valueOf() { return 7 }, toString() { return 'seven' } })").to_object());
++        rooted!(in(cx) let mut primitive = UndefinedValue());
++        assert!(unsafe { ToPrimitive(cx, date_like.handle().into_handle(), JSType::JSTYPE_STRING, primitive.handle_mut().into()) });
++        assert_eq!(describe(&runtime, primitive.get()), "seven");
++        assert!(unsafe { ToPrimitive(cx, date_like.handle().into_handle(), JSType::JSTYPE_UNDEFINED, primitive.handle_mut().into()) });
++        assert_eq!(primitive.get().to_int32(), 7);
++        rooted!(in(cx) let map_constructor = eval(&runtime, "Map"));
++        let no_arguments = HandleValueArray { length_: 0, elements_: ptr::null() };
++        rooted!(in(cx) let mut map = ptr::null_mut::<JSObject>());
++        assert!(unsafe { Construct1(cx, map_constructor.handle().into_handle(), &no_arguments, map.handle_mut().into()) });
++        let entry = [StringValue(unsafe { &*JS_AtomizeAndPinString(cx, c"k".as_ptr()) }), Int32Value(1)];
++        let entry_arguments = HandleValueArray { length_: 2, elements_: entry.as_ptr() };
++        rooted!(in(cx) let mut ignored = UndefinedValue());
++        assert!(unsafe { JS_CallFunctionName(cx, map.handle().into_handle(), c"set".as_ptr(), &entry_arguments, ignored.handle_mut().into()) });
++        assert_eq!(unsafe { MapSize(cx, map.handle().into_handle()) }, 1);
++        let mut class = ESClass::Other;
++        assert!(unsafe { GetBuiltinClass(cx, map.handle().into_handle(), &mut class) } && class == ESClass::Map);
++        let contents = [Int32Value(4), Int32Value(5)];
++        let contents = HandleValueArray { length_: 2, elements_: contents.as_ptr() };
++        rooted!(in(cx) let array = unsafe { NewArrayObject(cx, &contents) });
++        let mut length = 0;
++        assert!(unsafe { GetArrayLength(cx, array.handle().into_handle(), &mut length) } && length == 2);
++        rooted!(in(cx) let mut element = UndefinedValue());
++        assert!(unsafe { JS_GetElement(cx, array.handle().into_handle(), 1, element.handle_mut().into()) });
++        assert_eq!(element.get().to_int32(), 5);
++        rooted!(in(cx) let identifier = unsafe { JS_AtomizeAndPinString(cx, c"fooBar$1".as_ptr()) });
++        let mut is_identifier = false;
++        assert!(unsafe { JS_IsIdentifier(cx, identifier.handle().into(), &mut is_identifier) } && is_identifier);
++
++        // Dates and regular expressions.
++        rooted!(in(cx) let date = unsafe { NewDateObject(cx, ClippedTime { t: 86_400_000.0 }) });
++        let mut msec = 0.0;
++        assert!(unsafe { DateGetMsecSinceEpoch(cx, date.handle().into_handle(), &mut msec) } && msec == 86_400_000.0);
++        let pattern: Vec<u16> = "b+".encode_utf16().collect();
++        rooted!(in(cx) let regexp = unsafe { NewUCRegExpObject(cx, pattern.as_ptr(), pattern.len(), RegExpFlags { flags_: 0 }) });
++        let input: Vec<u16> = "abbbc".encode_utf16().collect();
++        let mut index = 0;
++        rooted!(in(cx) let mut matched = UndefinedValue());
++        assert!(unsafe { ExecuteRegExpNoStatics(cx, regexp.handle().into_handle(), input.as_ptr(), input.len(), &mut index, true, matched.handle_mut().into()) });
++        assert!(matched.get().to_boolean());
++        assert_eq!(index, 4);
++        let bad: Vec<u16> = "(".encode_utf16().collect();
++        rooted!(in(cx) let mut error = UndefinedValue());
++        assert!(unsafe { CheckRegExpSyntax(cx, bad.as_ptr(), bad.len(), RegExpFlags { flags_: 0 }, error.handle_mut().into()) });
++        assert!(error.get().is_object(), "an invalid pattern reports its SyntaxError");
++
++        // ArrayBuffers.
++        let bytes = unsafe { libc::malloc(4) } as *mut u8;
++        unsafe { std::ptr::copy_nonoverlapping([1u8, 2, 3, 4].as_ptr(), bytes, 4) };
++        rooted!(in(cx) let buffer = unsafe { NewArrayBufferWithContents(cx, 4, bytes as *mut std::ffi::c_void) });
++        rooted!(in(cx) let clone = unsafe { ArrayBufferClone(cx, buffer.handle().into_handle(), 1, 2) });
++        rooted!(in(cx) let view = unsafe { JS_NewUint8ArrayWithBuffer(cx, clone.handle().into_handle(), 0, -1) });
++        set_global(&runtime, c"view", ObjectValue(view.get()));
++        assert_eq!(describe(&runtime, eval(&runtime, "view.join()")), "2,3");
++        assert!(unsafe { ArrayBufferCopyData(cx, clone.handle().into_handle(), 0, buffer.handle().into_handle(), 3, 1) });
++        assert_eq!(describe(&runtime, eval(&runtime, "view.join()")), "4,3");
++        rooted!(in(cx) let data_view = unsafe { JS_NewDataView(cx, buffer.handle().into_handle(), 0, 4) });
++        set_global(&runtime, c"dv", ObjectValue(data_view.get()));
++        assert_eq!(eval(&runtime, "dv.getUint8(2)").to_int32(), 3);
++        let stolen = unsafe { StealArrayBufferContents(cx, buffer.handle().into_handle()) } as *mut u8;
++        assert_eq!(unsafe { std::slice::from_raw_parts(stolen, 4) }, &[1, 2, 3, 4]);
++        unsafe { libc::free(stolen as *mut std::ffi::c_void) };
++        assert!(unsafe { IsDetachedArrayBufferObject(buffer.get()) });
++    }
++}
+diff --git a/components/roves-js/src/values_impl.rs b/components/roves-js/src/values_impl.rs
+new file mode 100644
+index 00000000000..f9c7b354183
+--- /dev/null
++++ b/components/roves-js/src/values_impl.rs
+@@ -0,0 +1,880 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! Promises, JSON, value operations, functions, dates, regular expressions and ArrayBuffer
++//! operations of the JSAPI on V8.
++
++use std::ffi::{CStr, c_char, c_void};
++
++use crate::jsapi::{
++    ClippedTime, ESClass, Handle, HandleObject, HandleValue, HandleValueArray, JSContext, JSFunction, JSNative,
++    JSONWriteCallback, JSObject, JSString, JSType, MutableHandle, MutableHandleId, MutableHandleValue, ObjectOpResult,
++    PromiseState, PromiseUserInputEventHandlingState, RegExpFlags, jsid,
++};
++use crate::jsval::{JSVal, from_v8, to_v8};
++
++fn raw<'a>(cx: *mut JSContext) -> &'a JSContext {
++    // SAFETY: JSAPI callers pass this thread's live context.
++    unsafe { &*cx }
++}
++
++fn object<'s>(scope: &mut v8::PinScope<'s, '_>, obj: *mut JSObject) -> Option<v8::Local<'s, v8::Object>> {
++    if obj.is_null() {
++        return None;
++    }
++    // SAFETY: JSAPI callers pass live (rooted) objects.
++    v8::Local::<v8::Object>::try_from(unsafe { crate::cell::cell_value(scope, obj as *mut c_void) }).ok()
++}
++
++fn value<'s>(scope: &mut v8::PinScope<'s, '_>, v: JSVal) -> v8::Local<'s, v8::Value> {
++    // SAFETY: JSAPI callers pass live (rooted) values.
++    unsafe { to_v8(scope, v) }
++}
++
++fn arguments<'s>(scope: &mut v8::PinScope<'s, '_>, args: *const HandleValueArray) -> Vec<v8::Local<'s, v8::Value>> {
++    // SAFETY: callers pass a valid array of rooted values.
++    let args = unsafe { &*args };
++    if args.length_ == 0 {
++        return Vec::new();
++    }
++    let values = unsafe { std::slice::from_raw_parts(args.elements_, args.length_) };
++    values.iter().map(|v| value(scope, *v)).collect()
++}
++
++fn with_object<R>(obj: *mut JSObject, default: R, f: impl FnOnce(&mut v8::PinScope, v8::Local<v8::Object>) -> R) -> R {
++    JSContext::current().with_scope(|scope| match object(scope, obj) {
++        Some(target) => f(scope, target),
++        None => default,
++    })
++}
++
++/// Stores a JSAPI result: `Some(value)` into `out`, `None` reports failure.
++fn set_value(result: Option<JSVal>, mut out: MutableHandleValue) -> bool {
++    match result {
++        Some(result) => {
++            out.set(result);
++            true
++        },
++        None => false,
++    }
++}
++
++/// A function compiled once per runtime from `source` (helpers written in JS).
++fn helper<'s>(scope: &mut v8::PinScope<'s, '_>, name: &'static str, source: &str) -> Option<v8::Local<'s, v8::Function>> {
++    let cx = JSContext::current();
++    if let Some(function) = cx.helpers.borrow().get(name) {
++        return Some(v8::Local::new(scope, function));
++    }
++    let code = v8::String::new(scope, source)?;
++    let script = v8::Script::compile(scope, code, None)?;
++    let function = v8::Local::<v8::Function>::try_from(script.run(scope)?).ok()?;
++    cx.helpers.borrow_mut().insert(name, v8::Global::new(scope, function));
++    Some(function)
++}
++
++// --- Promises --------------------------------------------------------------------------------
++
++fn promise<'s>(scope: &mut v8::PinScope<'s, '_>, obj: *mut JSObject) -> Option<v8::Local<'s, v8::Promise>> {
++    object(scope, obj).and_then(|object| v8::Local::<v8::Promise>::try_from(object).ok())
++}
++
++pub unsafe fn IsPromiseObject(obj: HandleObject) -> bool {
++    with_object(obj.get(), false, |_, object| object.is_promise())
++}
++
++/// A new promise: with an `executor`, as `new Promise(executor)`; without one, a pending
++/// promise to settle with `ResolvePromise`/`RejectPromise`.
++pub unsafe fn NewPromiseObject(cx: *mut JSContext, executor: HandleObject) -> *mut JSObject {
++    let executor = executor.get();
++    raw(cx)
++        .catching(|scope| {
++            if executor.is_null() {
++                let resolver = v8::PromiseResolver::new(scope)?;
++                let promise = resolver.get_promise(scope);
++                return Some(from_v8(scope, promise.into()).to_object());
++            }
++            let executor = object(scope, executor)?;
++            let global = scope.get_current_context().global(scope);
++            let key = v8::String::new(scope, "Promise")?;
++            let constructor = v8::Local::<v8::Function>::try_from(global.get(scope, key.into())?).ok()?;
++            let promise = constructor.new_instance(scope, &[executor.into()])?;
++            Some(from_v8(scope, promise.into()).to_object())
++        })
++        .unwrap_or(std::ptr::null_mut())
++}
++
++/// A promise is its own resolver in V8 (`Promise::Resolver::GetPromise` returns it).
++fn settle(cx: *mut JSContext, obj: *mut JSObject, v: JSVal, resolve: bool) -> bool {
++    raw(cx)
++        .catching(|scope| {
++            let promise = promise(scope, obj)?;
++            // SAFETY: V8's promise resolver is the promise object itself.
++            let resolver = unsafe { std::mem::transmute::<v8::Local<v8::Promise>, v8::Local<v8::PromiseResolver>>(promise) };
++            let v = value(scope, v);
++            if resolve { resolver.resolve(scope, v) } else { resolver.reject(scope, v) }
++        })
++        .unwrap_or(false)
++}
++
++pub unsafe fn ResolvePromise(cx: *mut JSContext, promise: HandleObject, resolution: HandleValue) -> bool {
++    settle(cx, promise.get(), resolution.get(), true)
++}
++
++pub unsafe fn RejectPromise(cx: *mut JSContext, promise: HandleObject, rejection: HandleValue) -> bool {
++    settle(cx, promise.get(), rejection.get(), false)
++}
++
++pub unsafe fn CallOriginalPromiseResolve(cx: *mut JSContext, resolution: HandleValue) -> *mut JSObject {
++    let resolution = resolution.get();
++    raw(cx)
++        .catching(|scope| {
++            let resolution = value(scope, resolution);
++            if resolution.is_promise() {
++                return Some(from_v8(scope, resolution).to_object());
++            }
++            let resolver = v8::PromiseResolver::new(scope)?;
++            resolver.resolve(scope, resolution)?;
++            let promise = resolver.get_promise(scope);
++            Some(from_v8(scope, promise.into()).to_object())
++        })
++        .unwrap_or(std::ptr::null_mut())
++}
++
++pub unsafe fn GetPromiseState(promise_obj: HandleObject) -> PromiseState {
++    JSContext::current().with_scope(|scope| match promise(scope, promise_obj.get()).map(|promise| promise.state()) {
++        Some(v8::PromiseState::Fulfilled) => PromiseState::Fulfilled,
++        Some(v8::PromiseState::Rejected) => PromiseState::Rejected,
++        _ => PromiseState::Pending,
++    })
++}
++
++pub unsafe fn JS_GetPromiseResult(promise_obj: HandleObject, mut dest: MutableHandleValue) {
++    let result = JSContext::current().with_scope(|scope| {
++        let promise = promise(scope, promise_obj.get())?;
++        let result = promise.result(scope);
++        Some(from_v8(scope, result))
++    });
++    dest.set(result.unwrap_or(crate::jsval::UndefinedValue()));
++}
++
++pub unsafe fn GetPromiseIsHandled(promise_obj: HandleObject) -> bool {
++    JSContext::current().with_scope(|scope| promise(scope, promise_obj.get()).is_some_and(|promise| promise.has_handler()))
++}
++
++pub unsafe fn SetAnyPromiseIsHandled(cx: *mut JSContext, promise_obj: HandleObject) -> bool {
++    raw(cx).with_scope(|scope| {
++        if let Some(promise) = promise(scope, promise_obj.get()) {
++            promise.mark_as_handled();
++        }
++    });
++    true
++}
++
++/// `promise.then(onFulfilled, onRejected)` without user-visible lookups.
++pub unsafe fn AddPromiseReactions(cx: *mut JSContext, promise_obj: HandleObject, on_fulfilled: HandleObject, on_rejected: HandleObject) -> bool {
++    raw(cx)
++        .catching(|scope| {
++            let promise = promise(scope, promise_obj.get())?;
++            let fulfilled = object(scope, on_fulfilled.get()).and_then(|f| v8::Local::<v8::Function>::try_from(f).ok());
++            let rejected = object(scope, on_rejected.get()).and_then(|f| v8::Local::<v8::Function>::try_from(f).ok());
++            match (fulfilled, rejected) {
++                (Some(fulfilled), Some(rejected)) => promise.then2(scope, fulfilled, rejected),
++                (Some(fulfilled), None) => promise.then(scope, fulfilled),
++                (None, Some(rejected)) => promise.catch(scope, rejected),
++                (None, None) => Some(promise),
++            }
++            .map(|_| true)
++        })
++        .unwrap_or(false)
++}
++
++fn user_input_key<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Private> {
++    let name = v8::String::new(scope, "roves-js promise user input").expect("a short string");
++    v8::Private::for_api(scope, Some(name))
++}
++
++/// SpiderMonkey's per-promise user-input flag, kept as a V8 private on the promise.
++pub unsafe fn SetPromiseUserInputEventHandlingState(promise_obj: HandleObject, state: PromiseUserInputEventHandlingState) -> bool {
++    with_object(promise_obj.get(), false, |scope, object| {
++        let key = user_input_key(scope);
++        let state = v8::Integer::new(scope, state as i32);
++        object.set_private(scope, key, state.into()).unwrap_or(false)
++    })
++}
++
++pub unsafe fn GetPromiseUserInputEventHandlingState(promise_obj: HandleObject) -> PromiseUserInputEventHandlingState {
++    with_object(promise_obj.get(), PromiseUserInputEventHandlingState::DontCare, |scope, object| {
++        let key = user_input_key(scope);
++        match object.get_private(scope, key).and_then(|state| state.int32_value(scope)) {
++            Some(1) => PromiseUserInputEventHandlingState::HadUserInteractionAtCreation,
++            Some(2) => PromiseUserInputEventHandlingState::DidntHaveUserInteractionAtCreation,
++            _ => PromiseUserInputEventHandlingState::DontCare,
++        }
++    })
++}
++
++// --- JSON ------------------------------------------------------------------------------------
++
++pub unsafe fn JS_ParseJSON(cx: *mut JSContext, chars: *const u16, len: u32, vp: MutableHandle<JSVal>) -> bool {
++    // SAFETY: callers pass `len` code units.
++    let units = if len == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(chars, len as usize) } };
++    let result = raw(cx).catching(|scope| {
++        let text = v8::String::new_from_two_byte(scope, units, v8::NewStringType::Normal)?;
++        let parsed = v8::json::parse(scope, text)?;
++        Some(from_v8(scope, parsed))
++    });
++    set_value(result, vp)
++}
++
++/// `JSON.stringify`, streamed to `callback` (the value may be replaced by the result).
++pub unsafe fn JS_Stringify(cx: *mut JSContext, v: MutableHandle<JSVal>, replacer: Handle<*mut JSObject>, space: Handle<JSVal>, callback: JSONWriteCallback, data: *mut c_void) -> bool {
++    let value_handle = crate::jsapi::Handle { _phantom_0: std::marker::PhantomData, ptr: v.ptr as *const JSVal };
++    // SAFETY: forwarded.
++    unsafe { crate::jsapi_impl::ToJSON(cx, value_handle, replacer, space, callback, data) }
++}
++
++// --- Values ----------------------------------------------------------------------------------
++
++pub unsafe fn SameValue(cx: *mut JSContext, v1: Handle<JSVal>, v2: Handle<JSVal>, same: *mut bool) -> bool {
++    let result = raw(cx).with_scope(|scope| {
++        let first = value(scope, v1.get());
++        let second = value(scope, v2.get());
++        first.same_value(second)
++    });
++    // SAFETY: callers pass a valid out pointer.
++    unsafe { *same = result };
++    true
++}
++
++pub unsafe fn JS_TypeOfValue(cx: *mut JSContext, v: Handle<JSVal>) -> JSType {
++    let v = v.get();
++    if v.is_undefined() {
++        return JSType::JSTYPE_UNDEFINED;
++    }
++    if v.is_null() {
++        return JSType::JSTYPE_OBJECT;
++    }
++    raw(cx).with_scope(|scope| {
++        let local = value(scope, v);
++        if local.is_function() {
++            JSType::JSTYPE_FUNCTION
++        } else if local.is_string() {
++            JSType::JSTYPE_STRING
++        } else if local.is_number() {
++            JSType::JSTYPE_NUMBER
++        } else if local.is_boolean() {
++            JSType::JSTYPE_BOOLEAN
++        } else if local.is_symbol() {
++            JSType::JSTYPE_SYMBOL
++        } else if local.is_big_int() {
++            JSType::JSTYPE_BIGINT
++        } else {
++            JSType::JSTYPE_OBJECT
++        }
++    })
++}
++
++const TO_PRIMITIVE: &str = "(function (o, hint) {
++    const exotic = o[Symbol.toPrimitive];
++    if (exotic !== undefined && exotic !== null) {
++        const result = exotic.call(o, hint);
++        if (Object(result) !== result) return result;
++        throw new TypeError('Cannot convert object to primitive value');
++    }
++    const order = hint === 'string' ? ['toString', 'valueOf'] : ['valueOf', 'toString'];
++    for (const name of order) {
++        const method = o[name];
++        if (typeof method === 'function') {
++            const result = method.call(o);
++            if (Object(result) !== result) return result;
++        }
++    }
++    throw new TypeError('Cannot convert object to primitive value');
++})";
++
++/// ECMAScript's `ToPrimitive(obj, hint)`.
++pub unsafe fn ToPrimitive(cx: *mut JSContext, obj: HandleObject, hint: JSType, vp: MutableHandleValue) -> bool {
++    let obj = obj.get();
++    let result = raw(cx).catching(|scope| {
++        let target = object(scope, obj)?;
++        let to_primitive = helper(scope, "ToPrimitive", TO_PRIMITIVE)?;
++        let hint = match hint {
++            JSType::JSTYPE_STRING => "string",
++            JSType::JSTYPE_NUMBER => "number",
++            _ => "default",
++        };
++        let hint = v8::String::new(scope, hint)?;
++        let undefined = v8::undefined(scope).into();
++        let result = to_primitive.call(scope, undefined, &[target.into(), hint.into()])?;
++        Some(from_v8(scope, result))
++    });
++    set_value(result, vp)
++}
++
++/// `new fun(...args)`.
++pub unsafe fn Construct1(cx: *mut JSContext, fun: Handle<JSVal>, args: *const HandleValueArray, mut objp: MutableHandle<*mut JSObject>) -> bool {
++    let fun = fun.get();
++    let result = raw(cx).catching(|scope| {
++        let constructor = value(scope, fun);
++        let Ok(constructor) = v8::Local::<v8::Function>::try_from(constructor) else {
++            crate::native::throw_type_error(scope, "value is not a constructor");
++            return None;
++        };
++        let arguments = arguments(scope, args);
++        let created = constructor.new_instance(scope, &arguments)?;
++        Some(from_v8(scope, created.into()).to_object())
++    });
++    match result {
++        Some(created) => {
++            objp.set(created);
++            true
++        },
++        None => false,
++    }
++}
++
++/// `obj[name](...args)`.
++pub unsafe fn JS_CallFunctionName(cx: *mut JSContext, obj: Handle<*mut JSObject>, name: *const c_char, args: *const HandleValueArray, rval: MutableHandle<JSVal>) -> bool {
++    let obj = obj.get();
++    // SAFETY: callers pass a NUL-terminated name.
++    let name = unsafe { CStr::from_ptr(name) }.to_string_lossy().into_owned();
++    let result = raw(cx).catching(|scope| {
++        let target = object(scope, obj)?;
++        let key = v8::String::new(scope, &name)?;
++        let method = target.get(scope, key.into())?;
++        let Ok(method) = v8::Local::<v8::Function>::try_from(method) else {
++            crate::native::throw_type_error(scope, &format!("{name} is not a function"));
++            return None;
++        };
++        let arguments = arguments(scope, args);
++        let result = method.call(scope, target.into(), &arguments)?;
++        Some(from_v8(scope, result))
++    });
++    set_value(result, rval)
++}
++
++pub unsafe fn GetArrayLength(cx: *mut JSContext, obj: Handle<*mut JSObject>, lengthp: *mut u32) -> bool {
++    let obj = obj.get();
++    let length = raw(cx).catching(|scope| {
++        let target = object(scope, obj)?;
++        let key = v8::String::new(scope, "length")?;
++        target.get(scope, key.into())?.uint32_value(scope)
++    });
++    match length {
++        Some(length) => {
++            // SAFETY: callers pass a valid out pointer.
++            unsafe { *lengthp = length };
++            true
++        },
++        None => false,
++    }
++}
++
++pub unsafe fn NewArrayObject(cx: *mut JSContext, contents: *const HandleValueArray) -> *mut JSObject {
++    raw(cx)
++        .catching(|scope| {
++            let elements = arguments(scope, contents);
++            let array = v8::Array::new_with_elements(scope, &elements);
++            Some(from_v8(scope, array.into()).to_object())
++        })
++        .unwrap_or(std::ptr::null_mut())
++}
++
++pub unsafe fn NewArrayObject1(cx: *mut JSContext, length: usize) -> *mut JSObject {
++    crate::api::new_array(raw(cx), length)
++}
++
++pub unsafe fn JS_GetElement(cx: *mut JSContext, obj: Handle<*mut JSObject>, index: u32, vp: MutableHandleValue) -> bool {
++    let obj = obj.get();
++    let result = raw(cx).catching(|scope| {
++        let target = object(scope, obj)?;
++        let element = target.get_index(scope, index)?;
++        Some(from_v8(scope, element))
++    });
++    set_value(result, vp)
++}
++
++pub unsafe fn JS_IndexToId(cx: *mut JSContext, index: u32, mut id: MutableHandleId) -> bool {
++    if index <= i32::MAX as u32 {
++        id.set(crate::jsid::IntId(index as i32));
++        return true;
++    }
++    let result = raw(cx).with_scope(|scope| {
++        let key = v8::String::new(scope, &index.to_string())?;
++        Some(crate::jsapi_impl::key_id(scope, key.into()))
++    });
++    match result {
++        Some(result) => {
++            id.set(result);
++            true
++        },
++        None => false,
++    }
++}
++
++const RESERVED_WORDS: &[&str] = &[
++    "break", "case", "catch", "class", "const", "continue", "debugger", "default", "delete", "do", "else", "enum", "export",
++    "extends", "false", "finally", "for", "function", "if", "import", "in", "instanceof", "new", "null", "return", "super",
++    "switch", "this", "throw", "true", "try", "typeof", "var", "void", "while", "with",
++];
++
++/// Whether the string is an IdentifierName that is not a reserved word.
++pub unsafe fn JS_IsIdentifier(cx: *mut JSContext, s: Handle<*mut JSString>, is_identifier: *mut bool) -> bool {
++    let text = raw(cx).with_scope(|scope| value(scope, crate::jsval::StringValue(unsafe { &*s.get() })).to_rust_string_lossy(scope));
++    let mut chars = text.chars();
++    let valid = match chars.next() {
++        Some(first) => {
++            (first.is_alphabetic() || first == '$' || first == '_') &&
++                chars.all(|c| c.is_alphanumeric() || c == '$' || c == '_' || c == '\u{200C}' || c == '\u{200D}') &&
++                !RESERVED_WORDS.contains(&text.as_str())
++        },
++        None => false,
++    };
++    // SAFETY: callers pass a valid out pointer.
++    unsafe { *is_identifier = valid };
++    true
++}
++
++// --- Functions -------------------------------------------------------------------------------
++
++fn function_name(cx: *mut JSContext, fun: *mut JSFunction, mut name: MutableHandle<*mut JSString>) -> bool {
++    let result = raw(cx).with_scope(|scope| {
++        let function = v8::Local::<v8::Function>::try_from(object(scope, fun as *mut JSObject)?).ok()?;
++        let function_name = function.get_name(scope);
++        (function_name.length() > 0).then(|| from_v8(scope, function_name.into()).to_string())
++    });
++    name.set(result.unwrap_or(std::ptr::null_mut()));
++    true
++}
++
++pub unsafe fn JS_GetFunctionId(cx: *mut JSContext, fun: Handle<*mut JSFunction>, name: MutableHandle<*mut JSString>) -> bool {
++    function_name(cx, fun.get(), name)
++}
++
++pub unsafe fn JS_GetFunctionDisplayId(cx: *mut JSContext, fun: Handle<*mut JSFunction>, name: MutableHandle<*mut JSString>) -> bool {
++    function_name(cx, fun.get(), name)
++}
++
++/// The function's `length`.
++pub unsafe fn JS_GetFunctionArity(fun: *mut JSFunction) -> u16 {
++    with_object(fun as *mut JSObject, 0, |scope, function| {
++        let key = v8::String::new(scope, "length").expect("a short string");
++        function.get(scope, key.into()).and_then(|length| length.uint32_value(scope)).unwrap_or(0) as u16
++    })
++}
++
++pub unsafe fn JS_ValueToFunction(cx: *mut JSContext, v: HandleValue) -> *mut JSFunction {
++    let v = v.get();
++    raw(cx)
++        .catching(|scope| {
++            let function = value(scope, v);
++            if !function.is_function() {
++                crate::native::throw_type_error(scope, "value is not a function");
++                return None;
++            }
++            Some(from_v8(scope, function).to_object() as *mut JSFunction)
++        })
++        .unwrap_or(std::ptr::null_mut())
++}
++
++pub unsafe fn NewFunctionWithReserved(cx: *mut JSContext, call: JSNative, nargs: u32, flags: u32, name: *const c_char) -> *mut JSFunction {
++    // SAFETY: forwarded.
++    unsafe { crate::jsapi_impl::JS_NewFunction(cx, call, nargs, flags, name) }
++}
++
++pub unsafe fn DefineFunctionWithReserved(cx: *mut JSContext, obj: *mut JSObject, name: *const c_char, call: JSNative, nargs: u32, attrs: u32) -> *mut JSFunction {
++    // SAFETY: forwarded.
++    let function = unsafe { NewFunctionWithReserved(cx, call, nargs, 0, name) };
++    if function.is_null() {
++        return function;
++    }
++    crate::rooted!(in(cx) let target = obj);
++    crate::rooted!(in(cx) let function_value = crate::jsval::ObjectValue(function as *mut JSObject));
++    // SAFETY: rooted arguments.
++    let defined = unsafe { crate::jsapi_impl::JS_DefineProperty(cx, target.handle().into(), name, function_value.handle().into(), attrs) };
++    if defined { function } else { std::ptr::null_mut() }
++}
++
++/// `Reflect.set(obj, id, v, receiver)`.
++pub unsafe fn JS_ForwardSetPropertyTo(cx: *mut JSContext, obj: Handle<*mut JSObject>, id: Handle<jsid>, v: Handle<JSVal>, receiver: Handle<JSVal>, result: *mut ObjectOpResult) -> bool {
++    let (obj, id, v, receiver) = (obj.get(), id.get(), v.get(), receiver.get());
++    let set = raw(cx).catching(|scope| {
++        let target = object(scope, obj)?;
++        let key = crate::jsapi_impl::id_key(scope, id)?;
++        let v = value(scope, v);
++        let receiver = value(scope, receiver);
++        let reflect_set = helper(scope, "ReflectSet", "(function (t, k, v, r) { return Reflect.set(t, k, v, r); })")?;
++        let undefined = v8::undefined(scope).into();
++        let set = reflect_set.call(scope, undefined, &[target.into(), key.into(), v, receiver])?;
++        Some(set.boolean_value(scope))
++    });
++    match set {
++        Some(set) => {
++            // SAFETY: callers pass a valid result.
++            let result = unsafe { &mut *result };
++            if set { result.succeed() } else { result.fail_read_only() }
++        },
++        None => false,
++    }
++}
++
++pub unsafe fn GetBuiltinClass(cx: *mut JSContext, obj: Handle<*mut JSObject>, cls: *mut ESClass) -> bool {
++    let class = raw(cx).with_scope(|scope| {
++        let Some(target) = object(scope, obj.get()) else { return ESClass::Other };
++        let v: v8::Local<v8::Value> = target.into();
++        if v.is_array() {
++            ESClass::Array
++        } else if v.is_number_object() {
++            ESClass::Number
++        } else if v.is_string_object() {
++            ESClass::String
++        } else if v.is_boolean_object() {
++            ESClass::Boolean
++        } else if v.is_reg_exp() {
++            ESClass::RegExp
++        } else if v.is_array_buffer() {
++            ESClass::ArrayBuffer
++        } else if v.is_shared_array_buffer() {
++            ESClass::SharedArrayBuffer
++        } else if v.is_date() {
++            ESClass::Date
++        } else if v.is_set() {
++            ESClass::Set
++        } else if v.is_map() {
++            ESClass::Map
++        } else if v.is_promise() {
++            ESClass::Promise
++        } else if v.is_map_iterator() {
++            ESClass::MapIterator
++        } else if v.is_set_iterator() {
++            ESClass::SetIterator
++        } else if v.is_arguments_object() {
++            ESClass::Arguments
++        } else if v.is_native_error() {
++            ESClass::Error
++        } else if v.is_big_int_object() {
++            ESClass::BigInt
++        } else if v.is_function() {
++            ESClass::Function
++        } else if v.is_proxy() || crate::object::class_box_of_v8(target).is_some() {
++            ESClass::Other
++        } else {
++            ESClass::Object
++        }
++    });
++    // SAFETY: callers pass a valid out pointer.
++    unsafe { *cls = class };
++    true
++}
++
++/// `Map.prototype.entries.call(map)`.
++pub unsafe fn MapEntries(cx: *mut JSContext, obj: HandleObject, rval: MutableHandleValue) -> bool {
++    let obj = obj.get();
++    let result = raw(cx).catching(|scope| {
++        let target = object(scope, obj)?;
++        let entries = helper(scope, "MapEntries", "(function (m) { return Map.prototype.entries.call(m); })")?;
++        let undefined = v8::undefined(scope).into();
++        let iterator = entries.call(scope, undefined, &[target.into()])?;
++        Some(from_v8(scope, iterator))
++    });
++    set_value(result, rval)
++}
++
++pub unsafe fn MapSize(cx: *mut JSContext, obj: HandleObject) -> u32 {
++    raw(cx).with_scope(|scope| {
++        object(scope, obj.get()).and_then(|map| v8::Local::<v8::Map>::try_from(map).ok()).map_or(0, |map| map.size() as u32)
++    })
++}
++
++// --- Dates and regular expressions -----------------------------------------------------------
++
++pub unsafe fn NewDateObject(cx: *mut JSContext, time: ClippedTime) -> *mut JSObject {
++    raw(cx)
++        .catching(|scope| {
++            let date = v8::Date::new(scope, time.t)?;
++            Some(from_v8(scope, date.into()).to_object())
++        })
++        .unwrap_or(std::ptr::null_mut())
++}
++
++pub unsafe fn ObjectIsDate(cx: *mut JSContext, obj: Handle<*mut JSObject>, is_date: *mut bool) -> bool {
++    let result = raw(cx).with_scope(|scope| object(scope, obj.get()).is_some_and(|object| object.is_date()));
++    // SAFETY: callers pass a valid out pointer.
++    unsafe { *is_date = result };
++    true
++}
++
++pub unsafe fn DateGetMsecSinceEpoch(cx: *mut JSContext, obj: HandleObject, msec: *mut f64) -> bool {
++    let time = raw(cx).with_scope(|scope| object(scope, obj.get()).and_then(|date| v8::Local::<v8::Date>::try_from(date).ok()).map(|date| date.value_of()));
++    match time {
++        Some(time) => {
++            // SAFETY: callers pass a valid out pointer.
++            unsafe { *msec = time };
++            true
++        },
++        None => false,
++    }
++}
++
++fn regexp_flags(flags: RegExpFlags) -> v8::RegExpCreationFlags {
++    use crate::jsapi::{
++        RegExpFlag_DotAll, RegExpFlag_Global, RegExpFlag_HasIndices, RegExpFlag_IgnoreCase, RegExpFlag_Multiline,
++        RegExpFlag_Sticky, RegExpFlag_Unicode, RegExpFlag_UnicodeSets,
++    };
++    let bits = flags.flags_;
++    let mut result = v8::RegExpCreationFlags::empty();
++    for (bit, flag) in [
++        (RegExpFlag_Global, v8::RegExpCreationFlags::GLOBAL),
++        (RegExpFlag_IgnoreCase, v8::RegExpCreationFlags::IGNORE_CASE),
++        (RegExpFlag_Multiline, v8::RegExpCreationFlags::MULTILINE),
++        (RegExpFlag_Sticky, v8::RegExpCreationFlags::STICKY),
++        (RegExpFlag_Unicode, v8::RegExpCreationFlags::UNICODE),
++        (RegExpFlag_DotAll, v8::RegExpCreationFlags::DOT_ALL),
++        (RegExpFlag_HasIndices, v8::RegExpCreationFlags::HAS_INDICES),
++        (RegExpFlag_UnicodeSets, v8::RegExpCreationFlags::UNICODE_SETS),
++    ] {
++        if bits & bit != 0 {
++            result |= flag;
++        }
++    }
++    result
++}
++
++fn utf16<'s>(scope: &mut v8::PinScope<'s, '_>, chars: *const u16, length: usize) -> Option<v8::Local<'s, v8::String>> {
++    // SAFETY: callers pass `length` code units.
++    let units = if length == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(chars, length) } };
++    v8::String::new_from_two_byte(scope, units, v8::NewStringType::Normal)
++}
++
++pub unsafe fn NewUCRegExpObject(cx: *mut JSContext, chars: *const u16, length: usize, flags: RegExpFlags) -> *mut JSObject {
++    raw(cx)
++        .catching(|scope| {
++            let pattern = utf16(scope, chars, length)?;
++            let regexp = v8::RegExp::new(scope, pattern, regexp_flags(flags))?;
++            Some(from_v8(scope, regexp.into()).to_object())
++        })
++        .unwrap_or(std::ptr::null_mut())
++}
++
++pub unsafe fn ObjectIsRegExp(cx: *mut JSContext, obj: Handle<*mut JSObject>, is_regexp: *mut bool) -> bool {
++    let result = raw(cx).with_scope(|scope| object(scope, obj.get()).is_some_and(|object| object.is_reg_exp()));
++    // SAFETY: callers pass a valid out pointer.
++    unsafe { *is_regexp = result };
++    true
++}
++
++/// Checks a pattern: an invalid one stores its `SyntaxError` in `error` (still `true`).
++pub unsafe fn CheckRegExpSyntax(cx: *mut JSContext, chars: *const u16, length: usize, flags: RegExpFlags, mut error: MutableHandle<JSVal>) -> bool {
++    let raw = raw(cx);
++    let created = raw.catching(|scope| {
++        let pattern = utf16(scope, chars, length)?;
++        v8::RegExp::new(scope, pattern, regexp_flags(flags)).map(|_| ())
++    });
++    if created.is_none() {
++        let exception = raw.pending_exception.borrow_mut().take();
++        let exception = raw.with_scope(|scope| exception.map(|exception| from_v8(scope, v8::Local::new(scope, &exception).into())));
++        error.set(exception.unwrap_or(crate::jsval::UndefinedValue()));
++    } else {
++        error.set(crate::jsval::UndefinedValue());
++    }
++    true
++}
++
++const EXECUTE_REGEXP: &str = "(function (re, input, index, test) {
++    const flags = re.flags.includes('g') || re.flags.includes('y') ? re.flags : re.flags + 'g';
++    const copy = new RegExp(re.source, flags);
++    copy.lastIndex = index;
++    const match = copy.exec(input);
++    return [test ? match !== null : match, copy.lastIndex];
++})";
++
++/// Runs `reobj` on `chars` from `*indexp` without touching the regexp's state; `*indexp`
++/// becomes the end of the match.
++pub unsafe fn ExecuteRegExpNoStatics(
++    cx: *mut JSContext,
++    reobj: Handle<*mut JSObject>,
++    chars: *const u16,
++    length: usize,
++    indexp: *mut usize,
++    test: bool,
++    rval: MutableHandle<JSVal>,
++) -> bool {
++    let reobj = reobj.get();
++    // SAFETY: callers pass a valid index.
++    let index = unsafe { *indexp };
++    let result = raw(cx).catching(|scope| {
++        let regexp = object(scope, reobj)?;
++        let input = utf16(scope, chars, length)?;
++        let execute = helper(scope, "ExecuteRegExp", EXECUTE_REGEXP)?;
++        let undefined = v8::undefined(scope).into();
++        let index_value = v8::Number::new(scope, index as f64);
++        let test_value = v8::Boolean::new(scope, test);
++        let pair = execute.call(scope, undefined, &[regexp.into(), input.into(), index_value.into(), test_value.into()])?;
++        let pair = v8::Local::<v8::Array>::try_from(pair).ok()?;
++        let outcome = pair.get_index(scope, 0)?;
++        let last_index = pair.get_index(scope, 1)?.uint32_value(scope)?;
++        Some((from_v8(scope, outcome), last_index as usize))
++    });
++    match result {
++        Some((outcome, last_index)) => {
++            // SAFETY: as above.
++            unsafe { *indexp = last_index };
++            set_value(Some(outcome), rval)
++        },
++        None => false,
++    }
++}
++
++// --- ArrayBuffers ----------------------------------------------------------------------------
++
++fn buffer<'s>(scope: &mut v8::PinScope<'s, '_>, obj: *mut JSObject) -> Option<v8::Local<'s, v8::ArrayBuffer>> {
++    object(scope, obj).and_then(|object| v8::Local::<v8::ArrayBuffer>::try_from(object).ok())
++}
++
++fn buffer_bytes(scope: &mut v8::PinScope, obj: *mut JSObject) -> Option<(*mut u8, usize)> {
++    let buffer = buffer(scope, obj)?;
++    let data = buffer.data().map_or(std::ptr::null_mut(), |data| data.as_ptr() as *mut u8);
++    Some((data, buffer.byte_length()))
++}
++
++pub unsafe fn ArrayBufferClone(cx: *mut JSContext, src: Handle<*mut JSObject>, offset: usize, length: usize) -> *mut JSObject {
++    let src = src.get();
++    raw(cx)
++        .catching(|scope| {
++            let (data, available) = buffer_bytes(scope, src)?;
++            if offset.checked_add(length)? > available {
++                crate::native::throw_type_error(scope, "ArrayBuffer clone out of range");
++                return None;
++            }
++            let clone = v8::ArrayBuffer::new(scope, length);
++            if length > 0 {
++                let target = clone.data()?.as_ptr() as *mut u8;
++                // SAFETY: both ranges are in bounds and distinct buffers.
++                unsafe { std::ptr::copy_nonoverlapping(data.add(offset), target, length) };
++            }
++            Some(from_v8(scope, clone.into()).to_object())
++        })
++        .unwrap_or(std::ptr::null_mut())
++}
++
++pub unsafe fn ArrayBufferCopyData(cx: *mut JSContext, to: Handle<*mut JSObject>, to_index: usize, from: Handle<*mut JSObject>, from_index: usize, count: usize) -> bool {
++    let (to, from) = (to.get(), from.get());
++    raw(cx)
++        .catching(|scope| {
++            let (target, target_length) = buffer_bytes(scope, to)?;
++            let (source, source_length) = buffer_bytes(scope, from)?;
++            if to_index.checked_add(count)? > target_length || from_index.checked_add(count)? > source_length {
++                crate::native::throw_type_error(scope, "ArrayBuffer copy out of range");
++                return None;
++            }
++            if count > 0 {
++                // SAFETY: in-bounds ranges (possibly of the same buffer).
++                unsafe { std::ptr::copy(source.add(from_index), target.add(to_index), count) };
++            }
++            Some(true)
++        })
++        .unwrap_or(false)
++}
++
++pub unsafe fn DetachArrayBuffer(cx: *mut JSContext, obj: Handle<*mut JSObject>) -> bool {
++    let obj = obj.get();
++    raw(cx).catching(|scope| buffer(scope, obj)?.detach(None)).unwrap_or(false)
++}
++
++pub unsafe fn HasDefinedArrayBufferDetachKey(_cx: *mut JSContext, _obj: Handle<*mut JSObject>, is_defined: *mut bool) -> bool {
++    // SAFETY: callers pass a valid out pointer.
++    unsafe { *is_defined = false };
++    true
++}
++
++pub unsafe fn IsDetachedArrayBufferObject(obj: *mut JSObject) -> bool {
++    JSContext::current().with_scope(|scope| buffer(scope, obj).is_some_and(|buffer| buffer.was_detached()))
++}
++
++unsafe extern "C" fn free_contents(data: *mut c_void, _length: usize, _deleter_data: *mut c_void) {
++    // SAFETY: the contents were allocated with `malloc` (the JSAPI contract).
++    unsafe { libc::free(data) };
++}
++
++/// A buffer taking ownership of `malloc`ed `contents`.
++pub unsafe fn NewArrayBufferWithContents(cx: *mut JSContext, nbytes: usize, contents: *mut c_void) -> *mut JSObject {
++    raw(cx)
++        .catching(|scope| {
++            // SAFETY: the buffer takes the allocation and frees it with `free`.
++            let store = unsafe { v8::ArrayBuffer::new_backing_store_from_ptr(contents, nbytes, free_contents, std::ptr::null_mut()) };
++            let buffer = v8::ArrayBuffer::with_backing_store(scope, &store.make_shared());
++            Some(from_v8(scope, buffer.into()).to_object())
++        })
++        .unwrap_or(std::ptr::null_mut())
++}
++
++/// Detaches the buffer, handing its contents to the caller (a `malloc`ed copy).
++pub unsafe fn StealArrayBufferContents(cx: *mut JSContext, obj: Handle<*mut JSObject>) -> *mut c_void {
++    let obj = obj.get();
++    raw(cx)
++        .catching(|scope| {
++            let target = buffer(scope, obj)?;
++            let length = target.byte_length();
++            // SAFETY: a fresh allocation of `length` bytes (at least one).
++            let copy = unsafe { libc::malloc(length.max(1)) };
++            if copy.is_null() {
++                return None;
++            }
++            if length > 0 {
++                let data = target.data()?.as_ptr() as *const u8;
++                // SAFETY: both ranges hold `length` bytes.
++                unsafe { std::ptr::copy_nonoverlapping(data, copy as *mut u8, length) };
++            }
++            target.detach(None)?;
++            Some(copy)
++        })
++        .unwrap_or(std::ptr::null_mut())
++}
++
++pub unsafe fn JS_NewDataView(cx: *mut JSContext, buffer_obj: Handle<*mut JSObject>, byte_offset: usize, byte_length: usize) -> *mut JSObject {
++    let buffer_obj = buffer_obj.get();
++    raw(cx)
++        .catching(|scope| {
++            let target = buffer(scope, buffer_obj)?;
++            let view = v8::DataView::new(scope, target, byte_offset, byte_length);
++            Some(from_v8(scope, view.into()).to_object())
++        })
++        .unwrap_or(std::ptr::null_mut())
++}
++
++macro_rules! typed_array_with_buffer {
++    ($($name:ident => $v8:ident, $size:expr;)*) => {
++        $(
++            /// A typed array on `buffer` (`length` -1: the rest of the buffer).
++            pub unsafe fn $name(cx: *mut JSContext, buffer_obj: Handle<*mut JSObject>, byte_offset: usize, length: i64) -> *mut JSObject {
++                let buffer_obj = buffer_obj.get();
++                raw(cx)
++                    .catching(|scope| {
++                        let target = buffer(scope, buffer_obj)?;
++                        let length = if length < 0 { target.byte_length().saturating_sub(byte_offset) / $size } else { length as usize };
++                        let array = v8::$v8::new(scope, target, byte_offset, length)?;
++                        // SAFETY: every typed array is a value (rusty_v8 lacks some upcasts).
++                        let array = unsafe { std::mem::transmute::<v8::Local<v8::$v8>, v8::Local<v8::Value>>(array) };
++                        Some(from_v8(scope, array).to_object())
++                    })
++                    .unwrap_or(std::ptr::null_mut())
++            }
++        )*
++    };
++}
++
++typed_array_with_buffer! {
++    JS_NewInt8ArrayWithBuffer => Int8Array, 1;
++    JS_NewUint8ArrayWithBuffer => Uint8Array, 1;
++    JS_NewUint8ClampedArrayWithBuffer => Uint8ClampedArray, 1;
++    JS_NewInt16ArrayWithBuffer => Int16Array, 2;
++    JS_NewUint16ArrayWithBuffer => Uint16Array, 2;
++    JS_NewInt32ArrayWithBuffer => Int32Array, 4;
++    JS_NewUint32ArrayWithBuffer => Uint32Array, 4;
++    JS_NewFloat16ArrayWithBuffer => Float16Array, 2;
++    JS_NewFloat32ArrayWithBuffer => Float32Array, 4;
++    JS_NewFloat64ArrayWithBuffer => Float64Array, 8;
++    JS_NewBigInt64ArrayWithBuffer => BigInt64Array, 8;
++    JS_NewBigUint64ArrayWithBuffer => BigUint64Array, 8;
++}
+diff --git a/components/roves-js/src/wrappers2.in.rs b/components/roves-js/src/wrappers2.in.rs
+index 3b02b6c487f..af728f71d40 100644
+--- a/components/roves-js/src/wrappers2.in.rs
++++ b/components/roves-js/src/wrappers2.in.rs
+@@ -3,10 +3,13 @@
+ wrap!(jsapi: pub fn AddRawValueRoot(cx: &JSContext, vp: *mut Value, name: *const ::std::os::raw::c_char) -> bool);
+ wrap!(jsapi: pub fn RemoveRawValueRoot(cx: &JSContext, vp: *mut Value));
+ wrap!(jsapi: pub fn RunJobs(cx: &mut JSContext));
++wrap!(jsapi: pub fn DefineFunctionWithReserved(cx: &mut JSContext, obj: *mut JSObject, name: *const ::std::os::raw::c_char, call: JSNative, nargs: ::std::os::raw::c_uint, attrs: ::std::os::raw::c_uint) -> *mut JSFunction);
++wrap!(jsapi: pub fn NewFunctionWithReserved(cx: &mut JSContext, call: JSNative, nargs: ::std::os::raw::c_uint, flags: ::std::os::raw::c_uint, name: *const ::std::os::raw::c_char) -> *mut JSFunction);
+ wrap!(jsapi: pub fn GetObjectProto(cx: &mut JSContext, obj: HandleObject, proto: MutableHandleObject) -> bool);
+ wrap!(jsapi: pub fn GetPropertyKeys(cx: &mut JSContext, obj: HandleObject, flags: ::std::os::raw::c_uint, props: MutableHandleIdVector) -> bool);
+ wrap!(jsapi: pub fn SetPreserveWrapperCallbacks(cx: &JSContext, preserveWrapper: PreserveWrapperCallback, hasReleasedWrapper: HasReleasedWrapperCallback));
+ wrap!(jsapi: pub fn SetDOMCallbacks(cx: &JSContext, callbacks: *const DOMCallbacks));
++wrap!(jsapi: pub fn DateGetMsecSinceEpoch(cx: &mut JSContext, obj: HandleObject, msecSinceEpoch: *mut f64) -> bool);
+ wrap!(jsapi: pub fn GetCurrentRealmOrNull(cx: &JSContext) -> *mut Realm);
+ wrap!(jsapi: pub fn GetRealmObjectPrototype(cx: &JSContext) -> *mut JSObject);
+ wrap!(jsapi: pub fn GetRealmFunctionPrototype(cx: &JSContext) -> *mut JSObject);
+@@ -16,33 +19,64 @@ wrap!(jsapi: pub fn GetFunctionRealm(cx: &mut JSContext, objArg: HandleObject) -
+ wrap!(jsapi: pub fn EnterRealm(cx: &JSContext, target: *mut JSObject) -> *mut Realm);
+ wrap!(jsapi: pub fn LeaveRealm(cx: &JSContext, oldRealm: *mut Realm));
+ wrap!(jsapi: pub fn Call(cx: &mut JSContext, thisv: Handle<Value>, fun: Handle<Value>, args: *const HandleValueArray, rval: MutableHandle<Value>) -> bool);
++wrap!(jsapi: pub fn Construct1(cx: &mut JSContext, fun: Handle<Value>, args: *const HandleValueArray, objp: MutableHandle<*mut JSObject>) -> bool);
+ wrap!(jsapi: pub fn SetGCSliceCallback(cx: &JSContext, callback: GCSliceCallback) -> GCSliceCallback);
+ wrap!(jsapi: pub fn CurrentGlobalOrNull(cx: &JSContext) -> *mut JSObject);
+ wrap!(jsapi: pub fn CurrentGlobal(cx: &JSContext) -> *const *mut JSObject);
++wrap!(jsapi: pub fn MapSize(cx: &JSContext, obj: HandleObject) -> u32);
++wrap!(jsapi: pub fn MapEntries(cx: &mut JSContext, obj: HandleObject, rval: MutableHandleValue) -> bool);
+ wrap!(jsapi: pub fn GetWellKnownSymbol(cx: &JSContext, which: SymbolCode) -> *mut Symbol);
+ wrap!(jsapi: pub fn CaptureCurrentStack(cx: &mut JSContext, stackp: MutableHandleObject, capture: *mut StackCapture, startAfter: HandleObject) -> bool);
+ wrap!(jsapi: pub fn BuildStackString(cx: &mut JSContext, principals: *mut JSPrincipals, stack: HandleObject, stringp: MutableHandleString, indent: usize, stackFormat: StackFormat) -> bool);
+ wrap!(jsapi: pub fn InitConsumeStreamCallback(cx: &JSContext, consume: ConsumeStreamCallback, report: ReportStreamErrorCallback));
++wrap!(jsapi: pub fn ToPrimitive(cx: &mut JSContext, obj: HandleObject, hint: JSType, vp: MutableHandleValue) -> bool);
+ wrap!(jsapi: pub fn GetScriptedCallerGlobal(cx: &JSContext) -> *mut JSObject);
+ wrap!(jsapi: pub fn HideScriptedCaller(cx: &JSContext));
+ wrap!(jsapi: pub fn UnhideScriptedCaller(cx: &JSContext));
+ wrap!(jsapi: pub fn NewArrayBuffer(cx: &mut JSContext, nbytes: usize) -> *mut JSObject);
++wrap!(jsapi: pub fn DetachArrayBuffer(cx: &mut JSContext, obj: Handle<*mut JSObject>) -> bool);
++wrap!(jsapi: pub fn HasDefinedArrayBufferDetachKey(cx: &mut JSContext, obj: Handle<*mut JSObject>, isDefined: *mut bool) -> bool);
++wrap!(jsapi: pub fn StealArrayBufferContents(cx: &mut JSContext, obj: Handle<*mut JSObject>) -> *mut ::std::os::raw::c_void);
++wrap!(jsapi: pub fn ArrayBufferCopyData(cx: &mut JSContext, toBlock: Handle<*mut JSObject>, toIndex: usize, fromBlock: Handle<*mut JSObject>, fromIndex: usize, count: usize) -> bool);
++wrap!(jsapi: pub fn ArrayBufferClone(cx: &mut JSContext, srcBuffer: Handle<*mut JSObject>, srcByteOffset: usize, srcLength: usize) -> *mut JSObject);
+ wrap!(jsapi: pub fn Evaluate2(cx: &mut JSContext, options: *const ReadOnlyCompileOptions, srcBuf: *mut SourceText<Utf8Unit>, rval: MutableHandle<Value>) -> bool);
+ wrap!(jsapi: pub fn Compile1(cx: &mut JSContext, options: *const ReadOnlyCompileOptions, srcBuf: *mut SourceText<Utf8Unit>) -> *mut JSScript);
+ wrap!(jsapi: pub fn CompileFunction(cx: &mut JSContext, envChain: *const EnvironmentChain, options: *const ReadOnlyCompileOptions, name: *const ::std::os::raw::c_char, nargs: ::std::os::raw::c_uint, argnames: *const *const ::std::os::raw::c_char, srcBuf: *mut SourceText<u16>) -> *mut JSFunction);
+ wrap!(jsapi: pub fn ContextOptionsRef(cx: &JSContext) -> *mut ContextOptions);
++wrap!(jsapi: pub fn NewDateObject(cx: &mut JSContext, time: ClippedTime) -> *mut JSObject);
++wrap!(jsapi: pub fn ObjectIsDate(cx: &mut JSContext, obj: Handle<*mut JSObject>, isDate: *mut bool) -> bool);
++wrap!(jsapi: pub fn SameValue(cx: &JSContext, v1: Handle<Value>, v2: Handle<Value>, same: *mut bool) -> bool);
+ wrap!(jsapi: pub fn ToJSON(cx: &mut JSContext, value: Handle<Value>, replacer: Handle<*mut JSObject>, space: Handle<Value>, callback: JSONWriteCallback, data: *mut ::std::os::raw::c_void) -> bool);
++wrap!(jsapi: pub fn GetBuiltinClass(cx: &mut JSContext, obj: Handle<*mut JSObject>, cls: *mut ESClass) -> bool);
+ wrap!(jsapi: pub fn SetJobQueue(cx: &JSContext, queue: *mut JobQueue));
+ wrap!(jsapi: pub fn SetPromiseRejectionTrackerCallback(cx: &JSContext, callback: PromiseRejectionTrackerCallback, data: *mut ::std::os::raw::c_void));
+ wrap!(jsapi: pub fn JobQueueIsEmpty(cx: &JSContext));
+ wrap!(jsapi: pub fn JobQueueMayNotBeEmpty(cx: &JSContext));
++wrap!(jsapi: pub fn NewPromiseObject(cx: &mut JSContext, executor: HandleObject) -> *mut JSObject);
++wrap!(jsapi: pub fn IsPromiseObject(obj: HandleObject) -> bool);
++wrap!(jsapi: pub fn GetPromiseState(promise: HandleObject) -> PromiseState);
++wrap!(jsapi: pub fn GetPromiseIsHandled(promise: HandleObject) -> bool);
++wrap!(jsapi: pub fn SetAnyPromiseIsHandled(cx: &mut JSContext, promise: HandleObject) -> bool);
++wrap!(jsapi: pub fn CallOriginalPromiseResolve(cx: &mut JSContext, resolutionValue: HandleValue) -> *mut JSObject);
+ wrap!(jsapi: pub fn CallOriginalPromiseReject(cx: &mut JSContext, rejectionValue: HandleValue) -> *mut JSObject);
++wrap!(jsapi: pub fn ResolvePromise(cx: &mut JSContext, promiseObj: HandleObject, resolutionValue: HandleValue) -> bool);
++wrap!(jsapi: pub fn RejectPromise(cx: &mut JSContext, promiseObj: HandleObject, rejectionValue: HandleValue) -> bool);
++wrap!(jsapi: pub fn AddPromiseReactions(cx: &mut JSContext, promise: HandleObject, onFulfilled: HandleObject, onRejected: HandleObject) -> bool);
++wrap!(jsapi: pub fn GetPromiseUserInputEventHandlingState(promise: HandleObject) -> PromiseUserInputEventHandlingState);
++wrap!(jsapi: pub fn SetPromiseUserInputEventHandlingState(promise: HandleObject, state: PromiseUserInputEventHandlingState) -> bool);
++wrap!(jsapi: pub fn NewArrayObject(cx: &mut JSContext, contents: *const HandleValueArray) -> *mut JSObject);
+ wrap!(jsapi: pub fn IsArrayObject(cx: &mut JSContext, value: Handle<Value>, isArray: *mut bool) -> bool);
++wrap!(jsapi: pub fn GetArrayLength(cx: &mut JSContext, obj: Handle<*mut JSObject>, lengthp: *mut u32) -> bool);
++wrap!(jsapi: pub fn NewUCRegExpObject(cx: &mut JSContext, chars: *const u16, length: usize, flags: RegExpFlags) -> *mut JSObject);
++wrap!(jsapi: pub fn ExecuteRegExpNoStatics(cx: &mut JSContext, reobj: Handle<*mut JSObject>, chars: *const u16, length: usize, indexp: *mut usize, test: bool, rval: MutableHandle<Value>) -> bool);
++wrap!(jsapi: pub fn ObjectIsRegExp(cx: &mut JSContext, obj: Handle<*mut JSObject>, isRegExp: *mut bool) -> bool);
++wrap!(jsapi: pub fn CheckRegExpSyntax(cx: &mut JSContext, chars: *const u16, length: usize, flags: RegExpFlags, error: MutableHandle<Value>) -> bool);
+ wrap!(jsapi: pub fn GetSavedFrameSource(cx: &mut JSContext, principals: *mut JSPrincipals, savedFrame: Handle<*mut JSObject>, sourcep: MutableHandle<*mut JSString>, selfHosted: SavedFrameSelfHosted) -> SavedFrameResult);
+ wrap!(jsapi: pub fn GetSavedFrameLine(cx: &mut JSContext, principals: *mut JSPrincipals, savedFrame: Handle<*mut JSObject>, linep: *mut u32, selfHosted: SavedFrameSelfHosted) -> SavedFrameResult);
+ wrap!(jsapi: pub fn GetSavedFrameColumn(cx: &mut JSContext, principals: *mut JSPrincipals, savedFrame: Handle<*mut JSObject>, columnp: *mut TaggedColumnNumberOneOrigin, selfHosted: SavedFrameSelfHosted) -> SavedFrameResult);
+ wrap!(jsapi: pub fn GetSavedFrameFunctionDisplayName(cx: &mut JSContext, principals: *mut JSPrincipals, savedFrame: Handle<*mut JSObject>, namep: MutableHandle<*mut JSString>, selfHosted: SavedFrameSelfHosted) -> SavedFrameResult);
+ wrap!(jsapi: pub fn GetSavedFrameParent(cx: &mut JSContext, principals: *mut JSPrincipals, savedFrame: Handle<*mut JSObject>, parentp: MutableHandle<*mut JSObject>, selfHosted: SavedFrameSelfHosted) -> SavedFrameResult);
++wrap!(jsapi: pub fn JS_CallFunctionName(cx: &mut JSContext, obj: Handle<*mut JSObject>, name: *const ::std::os::raw::c_char, args: *const HandleValueArray, rval: MutableHandle<Value>) -> bool);
+ wrap!(jsapi: pub fn JS_AddExtraGCRootsTracer(cx: &JSContext, traceOp: JSTraceDataOp, data: *mut ::std::os::raw::c_void) -> bool);
+ wrap!(jsapi: pub fn JS_RemoveExtraGCRootsTracer(cx: &JSContext, traceOp: JSTraceDataOp, data: *mut ::std::os::raw::c_void));
+ wrap!(jsapi: pub fn JS_GC(cx: &mut JSContext, reason: GCReason));
+@@ -78,6 +112,8 @@ wrap!(jsapi: pub fn JS_HasOwnProperty(cx: &mut JSContext, obj: Handle<*mut JSObj
+ wrap!(jsapi: pub fn JS_ForwardGetPropertyTo(cx: &mut JSContext, obj: Handle<*mut JSObject>, id: Handle<jsid>, receiver: Handle<Value>, vp: MutableHandleValue) -> bool);
+ wrap!(jsapi: pub fn JS_GetPropertyById(cx: &mut JSContext, obj: Handle<*mut JSObject>, id: Handle<jsid>, vp: MutableHandleValue) -> bool);
+ wrap!(jsapi: pub fn JS_GetProperty(cx: &mut JSContext, obj: Handle<*mut JSObject>, name: *const ::std::os::raw::c_char, vp: MutableHandleValue) -> bool);
++wrap!(jsapi: pub fn JS_GetElement(cx: &mut JSContext, obj: Handle<*mut JSObject>, index: u32, vp: MutableHandleValue) -> bool);
++wrap!(jsapi: pub fn JS_ForwardSetPropertyTo(cx: &mut JSContext, obj: Handle<*mut JSObject>, id: Handle<jsid>, v: Handle<Value>, receiver: Handle<Value>, result: *mut ObjectOpResult) -> bool);
+ wrap!(jsapi: pub fn JS_SetProperty(cx: &mut JSContext, obj: Handle<*mut JSObject>, name: *const ::std::os::raw::c_char, v: Handle<Value>) -> bool);
+ wrap!(jsapi: pub fn JS_DeletePropertyById(cx: &mut JSContext, obj: Handle<*mut JSObject>, id: Handle<jsid>, result: *mut ObjectOpResult) -> bool);
+ wrap!(jsapi: pub fn JS_DefineProperties(cx: &mut JSContext, obj: Handle<*mut JSObject>, ps: *const JSPropertySpec) -> bool);
+@@ -87,7 +123,9 @@ wrap!(jsapi: pub fn JS_IterateCompartments(cx: &mut JSContext, data: *mut ::std:
+ wrap!(jsapi: pub fn JS_NewStringCopyN(cx: &mut JSContext, s: *const ::std::os::raw::c_char, n: usize) -> *mut JSString);
+ wrap!(jsapi: pub fn JS_AtomizeStringN(cx: &JSContext, s: *const ::std::os::raw::c_char, length: usize) -> *mut JSString);
+ wrap!(jsapi: pub fn JS_AtomizeAndPinString(cx: &JSContext, s: *const ::std::os::raw::c_char) -> *mut JSString);
++wrap!(jsapi: pub fn JS_ValueToFunction(cx: &mut JSContext, v: HandleValue) -> *mut JSFunction);
+ wrap!(jsapi: pub fn JS_ValueToSource(cx: &mut JSContext, v: Handle<Value>) -> *mut JSString);
++wrap!(jsapi: pub fn JS_TypeOfValue(cx: &JSContext, v: Handle<Value>) -> JSType);
+ wrap!(jsapi: pub fn JS_WrapObject(cx: &mut JSContext, objp: MutableHandleObject) -> bool);
+ wrap!(jsapi: pub fn JS_WrapValue(cx: &mut JSContext, vp: MutableHandleValue) -> bool);
+ wrap!(jsapi: pub fn JS_ResolveStandardClass(cx: &mut JSContext, obj: HandleObject, id: HandleId, resolved: *mut bool) -> bool);
+@@ -102,12 +140,20 @@ wrap!(jsapi: pub fn JS_GetPrototype(cx: &mut JSContext, obj: HandleObject, resul
+ wrap!(jsapi: pub fn JS_SetPrototype(cx: &mut JSContext, obj: HandleObject, proto: HandleObject) -> bool);
+ wrap!(jsapi: pub fn JS_SetImmutablePrototype(cx: &mut JSContext, obj: HandleObject, succeeded: *mut bool) -> bool);
+ wrap!(jsapi: pub fn JS_NewFunction(cx: &mut JSContext, call: JSNative, nargs: ::std::os::raw::c_uint, flags: ::std::os::raw::c_uint, name: *const ::std::os::raw::c_char) -> *mut JSFunction);
++wrap!(jsapi: pub fn JS_GetFunctionId(cx: &JSContext, fun: Handle<*mut JSFunction>, name: MutableHandle<*mut JSString>) -> bool);
++wrap!(jsapi: pub fn JS_GetFunctionDisplayId(cx: &JSContext, fun: Handle<*mut JSFunction>, name: MutableHandle<*mut JSString>) -> bool);
+ wrap!(jsapi: pub fn JS_SetOffthreadIonCompilationEnabled(cx: &JSContext, enabled: bool));
+ wrap!(jsapi: pub fn JS_SetGlobalJitCompilerOption(cx: &JSContext, opt: JSJitCompilerOption, value: u32));
++wrap!(jsapi: pub fn JS_IndexToId(cx: &JSContext, index: u32, arg1: MutableHandleId) -> bool);
++wrap!(jsapi: pub fn JS_IsIdentifier(cx: &JSContext, str_: HandleString, isIdentifier: *mut bool) -> bool);
+ wrap!(jsapi: pub fn JS_ExecuteScript(cx: &mut JSContext, script: Handle<*mut JSScript>, rval: MutableHandle<Value>) -> bool);
++wrap!(jsapi: pub fn JS_Stringify(cx: &mut JSContext, value: MutableHandle<Value>, replacer: Handle<*mut JSObject>, space: Handle<Value>, callback: JSONWriteCallback, data: *mut ::std::os::raw::c_void) -> bool);
++wrap!(jsapi: pub fn JS_ParseJSON(cx: &mut JSContext, chars: *const u16, len: u32, vp: MutableHandle<Value>) -> bool);
+ wrap!(jsapi: pub fn JS_GetArrayBufferViewBuffer(cx: &mut JSContext, obj: Handle<*mut JSObject>, isSharedMemory: *mut bool) -> *mut JSObject);
++wrap!(jsapi: pub fn JS_NewDataView(cx: &mut JSContext, buffer: Handle<*mut JSObject>, byteOffset: usize, byteLength: usize) -> *mut JSObject);
+ wrap!(jsapi: pub fn JS_NewObjectWithoutMetadata(cx: &mut JSContext, clasp: *const JSClass, proto: Handle<*mut JSObject>) -> *mut JSObject);
+ wrap!(jsapi: pub fn JS_InitializePropertiesFromCompatibleNativeObject(cx: &mut JSContext, dst: HandleObject, src: HandleObject) -> bool);
++wrap!(jsapi: pub fn NewArrayBufferWithContents(cx: &mut JSContext, nbytes: usize, contents: *mut ::std::os::raw::c_void) -> *mut JSObject);
+ wrap!(jsapi: pub fn JS_GetOwnPropertyDescriptorById(cx: &mut JSContext, obj: HandleObject, id: HandleId, desc: MutableHandle<PropertyDescriptor>, isNone: *mut bool) -> bool);
+ wrap!(jsapi: pub fn JS_GetPropertyDescriptorById(cx: &mut JSContext, obj: HandleObject, id: HandleId, desc: MutableHandle<PropertyDescriptor>, holder: MutableHandleObject, isNone: *mut bool) -> bool);
+ wrap!(jsapi: pub fn NewEnvironmentChain(cx: &mut JSContext, supportUnscopables: SupportUnscopables) -> *mut EnvironmentChain);
+@@ -126,6 +172,7 @@ wrap!(glue: pub fn RUST_INTERNED_STRING_TO_JSID(cx: &mut JSContext, str_: *mut J
+ wrap!(glue: pub fn UnwrapObjectDynamic(obj: *mut JSObject, cx: &mut JSContext, stopAtWindowProxy: bool) -> *mut JSObject);
+ wrap!(glue: pub fn AppendToIdVector(v: MutableHandleIdVector, id: HandleId) -> bool);
+ wrap!(glue: pub fn CollectServoSizes(cx: &mut JSContext, sizes: *mut ServoSizes, gs: GetSize) -> bool);
++wrap!(glue: pub fn JS_GetPromiseResult(promise: HandleObject, dest: MutableHandleValue));
+ wrap!(glue: pub fn JS_GetScriptPrivate(script: *mut JSScript, dest: MutableHandleValue));
+ wrap!(glue: pub fn JS_GetScriptedCallerPrivate(cx: &mut JSContext, dest: MutableHandleValue));
+ wrap!(glue: pub fn SetUpEventLoopDispatch(cx: &mut JSContext, callback: RustDispatchToEventLoopCallback, closure: *mut ::std::os::raw::c_void));
+diff --git a/support/roves_js/gen_wrappers2.py b/support/roves_js/gen_wrappers2.py
+index 91aed0f9115..f771f947131 100644
+--- a/support/roves_js/gen_wrappers2.py
++++ b/support/roves_js/gen_wrappers2.py
+@@ -43,7 +43,7 @@ def visible(src, module_file):
+     """The function names a module (`jsapi.rs` / `glue.rs`) makes reachable."""
+     text = read(os.path.join(src, module_file))
+     names = defined(os.path.join(src, module_file))
+-    for module in ("jsapi_impl", "binding", "realm_impl", "api", "object", "native", "proxy", "typedarray_impl", "runtime_impl", "script_impl"):
++    for module in ("jsapi_impl", "binding", "realm_impl", "api", "object", "native", "proxy", "typedarray_impl", "runtime_impl", "script_impl", "values_impl"):
+         explicit, glob = reexports(text, module)
+         path = os.path.join(src, module + ".rs")
+         if glob:
+diff --git a/support/roves_js/jsapi_type_names.txt b/support/roves_js/jsapi_type_names.txt
+index c147f76a936..d4b13db4e58 100644
+--- a/support/roves_js/jsapi_type_names.txt
++++ b/support/roves_js/jsapi_type_names.txt
+@@ -261,6 +261,13 @@ RUST_FUNCTION_VALUE_TO_JITINFO
+ RUST_js_GetErrorMessage
+ ReadOnlyCompileOptions
+ RealmOptions
++RegExpFlag_DotAll
++RegExpFlag_Global
++RegExpFlag_HasIndices
++RegExpFlag_IgnoreCase
++RegExpFlag_Multiline
++RegExpFlag_Sticky
++RegExpFlag_Unicode
+ RegExpFlag_UnicodeSets
+ RegExpFlags
+ RegisterScriptEnvironmentPreparer

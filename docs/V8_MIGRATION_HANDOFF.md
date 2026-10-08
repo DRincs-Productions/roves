@@ -419,8 +419,10 @@ strategia completa è in `docs/V8_MIGRATION.md` ("Cutover strategy"). Metrica:
   `JS_ExecuteScript`; `CompileFunction` con la catena d'ambiente come context extensions),
   private degli script per id (anche per il chiamante, dallo stack V8), report d'errore,
   saved frame stile SpiderMonkey. Test: 18/18.
-- **Prossimi passi (dopo CP101):** promise, JSON, Date/RegExp e valori vari, moduli,
-  structured clone e ArrayBuffer, `WindowProxy`; poi rimisurare `servo-script`.
+- **CP102:** promise (una promise V8 è il proprio resolver), JSON, operazioni sui valori
+  (`ToPrimitive` come helper JS compilato una volta), Date/RegExp, ArrayBuffer. Test: 19/19.
+- **Prossimi passi (dopo CP102):** rimisurare `servo-script`; moduli, structured clone,
+  `WindowProxy`/transplant, poi gli errori di tipo.
 - **Storico (prima di CP95).** Le operazioni dell'API usata dal DOM:
   1. stringhe e conversioni (`jsstr_to_string`, `ToJSValConvertible`/`FromJSValConvertible`);
   2. oggetti e proprietà (`JS_NewObject`, `JS_GetProperty`/`SetProperty`/`DefineProperty`);

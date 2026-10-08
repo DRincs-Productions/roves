@@ -261,6 +261,13 @@ RUST_FUNCTION_VALUE_TO_JITINFO
 RUST_js_GetErrorMessage
 ReadOnlyCompileOptions
 RealmOptions
+RegExpFlag_DotAll
+RegExpFlag_Global
+RegExpFlag_HasIndices
+RegExpFlag_IgnoreCase
+RegExpFlag_Multiline
+RegExpFlag_Sticky
+RegExpFlag_Unicode
 RegExpFlag_UnicodeSets
 RegExpFlags
 RegisterScriptEnvironmentPreparer

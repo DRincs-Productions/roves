@@ -4383,6 +4383,26 @@ pub struct Realm {
             pub const Reference: ProfilerStringView_Ownership =
                 ProfilerStringView_Ownership::Literal;
 
+        pub const RegExpFlag_DotAll: u8 = 32;
+
+        #[doc = " Act globally and find *all* matches (rather than stopping after just the\n first one), i.e. /g."]
+        pub const RegExpFlag_Global: u8 = 2;
+
+        #[doc = " Add .indices property to the match result, i.e. /d"]
+        pub const RegExpFlag_HasIndices: u8 = 64;
+
+        #[doc = " Interpret regular expression source text case-insensitively by folding\n uppercase letters to lowercase, i.e. /i."]
+        pub const RegExpFlag_IgnoreCase: u8 = 1;
+
+        #[doc = " Treat ^ and $ as begin and end of line, i.e. /m."]
+        pub const RegExpFlag_Multiline: u8 = 4;
+
+        #[doc = " Only match starting from <regular expression>.lastIndex, i.e. /y."]
+        pub const RegExpFlag_Sticky: u8 = 8;
+
+        #[doc = " Use Unicode semantics, i.e. /u."]
+        pub const RegExpFlag_Unicode: u8 = 16;
+
         #[doc = " Use Unicode Sets semantics, i.e. /v."]
         pub const RegExpFlag_UnicodeSets: u8 = 128;
 

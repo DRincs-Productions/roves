@@ -11,6 +11,59 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-08 - V8 cutover: promises, JSON, values, dates, regexps and ArrayBuffers (CP102)
+
+**Servo files:**
+- `components/roves-js/src/`:
+  - new: `values_impl.rs`;
+  - changed: `jsapi.rs`, `glue.rs`, `rust.rs`, `lib.rs`, `tests.rs`, `jsapi_types.rs` and
+    `wrappers2.in.rs`;
+- `support/roves_js/jsapi_type_names.txt` and `support/roves_js/gen_wrappers2.py`.
+
+**Patch:** `0167-roves-js-values.patch` after 0166.
+
+On V8:
+- **Promises:**
+  - `NewPromiseObject`: without an executor, a V8 promise resolver; otherwise
+    `new Promise(executor)`;
+  - `ResolvePromise`/`RejectPromise`, using the fact that a V8 promise is its own resolver;
+  - `CallOriginalPromiseResolve`, `GetPromiseState`/`Result`/`IsHandled`,
+    `SetAnyPromiseIsHandled` and `AddPromiseReactions`;
+  - the user-input handling state, kept as a V8 private on the promise.
+- **JSON:** `JS_ParseJSON`, and `JS_Stringify` streamed through `ToJSON`.
+- **Values:**
+  - `SameValue`, `JS_TypeOfValue` and `ToPrimitive` (the spec algorithm, as a
+    once-compiled JS helper, which also serves `Reflect.set` and `Map` entries);
+  - `Construct1`, `JS_CallFunctionName`, `GetArrayLength`, `NewArrayObject`/`1`,
+    `JS_GetElement`, `JS_IndexToId` and `JS_IsIdentifier`;
+  - function ids and arity, `JS_ValueToFunction`, `New`/`DefineFunctionWithReserved`;
+  - `JS_ForwardSetPropertyTo`, `GetBuiltinClass` (V8's type checks mapped to `ESClass`),
+    `MapEntries`/`MapSize`.
+- **Dates and regexps:**
+  - `NewDateObject`, `DateGetMsecSinceEpoch`, `ObjectIsDate`;
+  - `NewUCRegExpObject` with SpiderMonkey's flag bits mapped to V8's, `ObjectIsRegExp`;
+  - `CheckRegExpSyntax`, which reports the `SyntaxError` value;
+  - `ExecuteRegExpNoStatics`, which runs a copy of the regexp from an index without
+    touching its state.
+- **ArrayBuffers:**
+  - `ArrayBufferClone`, `ArrayBufferCopyData`, `DetachArrayBuffer`,
+    `IsDetachedArrayBufferObject`;
+  - `NewArrayBufferWithContents`, whose V8 backing store takes the `malloc`ed contents and
+    frees them;
+  - `StealArrayBufferContents`, a `malloc`ed copy, then detach;
+  - `JS_New*ArrayWithBuffer` and `JS_NewDataView`.
+
+**Wrappers:** `wrappers2` grows to 181 generated entries.
+
+**Tests:** `roves-js` 19/19, including:
+- a promise settled from Rust running its reaction at the checkpoint;
+- JSON;
+- `ToPrimitive` with both hints;
+- `Map` construction and calls;
+- dates;
+- regexp execution and syntax errors;
+- buffer clone, copy, views and steal/detach.
+
 ## 2026-10-08 - V8 cutover: script compilation and execution, errors and saved stacks (CP101)
 
 **Servo files:**

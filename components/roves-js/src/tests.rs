@@ -1100,3 +1100,129 @@ mod scripts {
         unsafe { crate::api::JS_ClearPendingException(cx) };
     }
 }
+
+mod values {
+    use std::ptr;
+
+    use super::{describe, eval};
+    use crate::jsapi::*;
+    use crate::jsval::*;
+    use crate::rust::{JSEngineHandle, Runtime};
+
+    fn set_global(runtime: &Runtime, name: &std::ffi::CStr, value: JSVal) {
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let global = eval(runtime, "globalThis").to_object());
+        rooted!(in(cx) let value = value);
+        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), name.as_ptr(), value.handle().into_handle()) });
+    }
+
+    #[test]
+    fn promises_json_and_value_operations() {
+        let runtime = Runtime::new(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+
+        // Promises without an executor, settled from Rust, with reactions.
+        rooted!(in(cx) let null_executor = ptr::null_mut::<JSObject>());
+        rooted!(in(cx) let promise = unsafe { NewPromiseObject(cx, null_executor.handle().into_handle()) });
+        assert!(unsafe { IsPromiseObject(promise.handle().into_handle()) });
+        assert_eq!(unsafe { GetPromiseState(promise.handle().into_handle()) }, PromiseState::Pending);
+        rooted!(in(cx) let on_fulfilled = eval(&runtime, "(v) => { globalThis.got = v; }").to_object());
+        rooted!(in(cx) let none = ptr::null_mut::<JSObject>());
+        assert!(unsafe { AddPromiseReactions(cx, promise.handle().into_handle(), on_fulfilled.handle().into_handle(), none.handle().into_handle()) });
+        rooted!(in(cx) let five = Int32Value(5));
+        assert!(unsafe { ResolvePromise(cx, promise.handle().into_handle(), five.handle().into_handle()) });
+        assert_eq!(unsafe { GetPromiseState(promise.handle().into_handle()) }, PromiseState::Fulfilled);
+        rooted!(in(cx) let mut result = UndefinedValue());
+        unsafe { JS_GetPromiseResult(promise.handle().into_handle(), result.handle_mut().into()) };
+        assert_eq!(result.get().to_int32(), 5);
+        unsafe { RunJobs(cx) };
+        assert_eq!(eval(&runtime, "got").to_int32(), 5);
+        assert!(unsafe { SetPromiseUserInputEventHandlingState(promise.handle().into_handle(), PromiseUserInputEventHandlingState::HadUserInteractionAtCreation) });
+        assert_eq!(
+            unsafe { GetPromiseUserInputEventHandlingState(promise.handle().into_handle()) },
+            PromiseUserInputEventHandlingState::HadUserInteractionAtCreation
+        );
+
+        // JSON.
+        let text: Vec<u16> = r#"{"a":[1,2]}"#.encode_utf16().collect();
+        rooted!(in(cx) let mut parsed = UndefinedValue());
+        assert!(unsafe { JS_ParseJSON(cx, text.as_ptr(), text.len() as u32, parsed.handle_mut().into()) });
+        set_global(&runtime, c"parsed", parsed.get());
+        assert_eq!(eval(&runtime, "parsed.a[1]").to_int32(), 2);
+
+        // Values.
+        rooted!(in(cx) let nan = DoubleValue(f64::NAN));
+        let mut same = false;
+        assert!(unsafe { SameValue(cx, nan.handle().into_handle(), nan.handle().into_handle(), &mut same) } && same);
+        rooted!(in(cx) let function = eval(&runtime, "(function named(a, b) { return this })"));
+        assert_eq!(unsafe { JS_TypeOfValue(cx, function.handle().into_handle()) }, JSType::JSTYPE_FUNCTION);
+        assert_eq!(unsafe { JS_GetFunctionArity(function.get().to_object() as *mut JSFunction) }, 2);
+        rooted!(in(cx) let mut name = ptr::null_mut::<JSString>());
+        rooted!(in(cx) let function_object = function.get().to_object() as *mut JSFunction);
+        assert!(unsafe { JS_GetFunctionId(cx, function_object.handle().into_handle(), name.handle_mut().into()) });
+        assert_eq!(describe(&runtime, StringValue(unsafe { &*name.get() })), "named");
+        rooted!(in(cx) let date_like = eval(&runtime, "({ valueOf() { return 7 }, toString() { return 'seven' } })").to_object());
+        rooted!(in(cx) let mut primitive = UndefinedValue());
+        assert!(unsafe { ToPrimitive(cx, date_like.handle().into_handle(), JSType::JSTYPE_STRING, primitive.handle_mut().into()) });
+        assert_eq!(describe(&runtime, primitive.get()), "seven");
+        assert!(unsafe { ToPrimitive(cx, date_like.handle().into_handle(), JSType::JSTYPE_UNDEFINED, primitive.handle_mut().into()) });
+        assert_eq!(primitive.get().to_int32(), 7);
+        rooted!(in(cx) let map_constructor = eval(&runtime, "Map"));
+        let no_arguments = HandleValueArray { length_: 0, elements_: ptr::null() };
+        rooted!(in(cx) let mut map = ptr::null_mut::<JSObject>());
+        assert!(unsafe { Construct1(cx, map_constructor.handle().into_handle(), &no_arguments, map.handle_mut().into()) });
+        let entry = [StringValue(unsafe { &*JS_AtomizeAndPinString(cx, c"k".as_ptr()) }), Int32Value(1)];
+        let entry_arguments = HandleValueArray { length_: 2, elements_: entry.as_ptr() };
+        rooted!(in(cx) let mut ignored = UndefinedValue());
+        assert!(unsafe { JS_CallFunctionName(cx, map.handle().into_handle(), c"set".as_ptr(), &entry_arguments, ignored.handle_mut().into()) });
+        assert_eq!(unsafe { MapSize(cx, map.handle().into_handle()) }, 1);
+        let mut class = ESClass::Other;
+        assert!(unsafe { GetBuiltinClass(cx, map.handle().into_handle(), &mut class) } && class == ESClass::Map);
+        let contents = [Int32Value(4), Int32Value(5)];
+        let contents = HandleValueArray { length_: 2, elements_: contents.as_ptr() };
+        rooted!(in(cx) let array = unsafe { NewArrayObject(cx, &contents) });
+        let mut length = 0;
+        assert!(unsafe { GetArrayLength(cx, array.handle().into_handle(), &mut length) } && length == 2);
+        rooted!(in(cx) let mut element = UndefinedValue());
+        assert!(unsafe { JS_GetElement(cx, array.handle().into_handle(), 1, element.handle_mut().into()) });
+        assert_eq!(element.get().to_int32(), 5);
+        rooted!(in(cx) let identifier = unsafe { JS_AtomizeAndPinString(cx, c"fooBar$1".as_ptr()) });
+        let mut is_identifier = false;
+        assert!(unsafe { JS_IsIdentifier(cx, identifier.handle().into(), &mut is_identifier) } && is_identifier);
+
+        // Dates and regular expressions.
+        rooted!(in(cx) let date = unsafe { NewDateObject(cx, ClippedTime { t: 86_400_000.0 }) });
+        let mut msec = 0.0;
+        assert!(unsafe { DateGetMsecSinceEpoch(cx, date.handle().into_handle(), &mut msec) } && msec == 86_400_000.0);
+        let pattern: Vec<u16> = "b+".encode_utf16().collect();
+        rooted!(in(cx) let regexp = unsafe { NewUCRegExpObject(cx, pattern.as_ptr(), pattern.len(), RegExpFlags { flags_: 0 }) });
+        let input: Vec<u16> = "abbbc".encode_utf16().collect();
+        let mut index = 0;
+        rooted!(in(cx) let mut matched = UndefinedValue());
+        assert!(unsafe { ExecuteRegExpNoStatics(cx, regexp.handle().into_handle(), input.as_ptr(), input.len(), &mut index, true, matched.handle_mut().into()) });
+        assert!(matched.get().to_boolean());
+        assert_eq!(index, 4);
+        let bad: Vec<u16> = "(".encode_utf16().collect();
+        rooted!(in(cx) let mut error = UndefinedValue());
+        assert!(unsafe { CheckRegExpSyntax(cx, bad.as_ptr(), bad.len(), RegExpFlags { flags_: 0 }, error.handle_mut().into()) });
+        assert!(error.get().is_object(), "an invalid pattern reports its SyntaxError");
+
+        // ArrayBuffers.
+        let bytes = unsafe { libc::malloc(4) } as *mut u8;
+        unsafe { std::ptr::copy_nonoverlapping([1u8, 2, 3, 4].as_ptr(), bytes, 4) };
+        rooted!(in(cx) let buffer = unsafe { NewArrayBufferWithContents(cx, 4, bytes as *mut std::ffi::c_void) });
+        rooted!(in(cx) let clone = unsafe { ArrayBufferClone(cx, buffer.handle().into_handle(), 1, 2) });
+        rooted!(in(cx) let view = unsafe { JS_NewUint8ArrayWithBuffer(cx, clone.handle().into_handle(), 0, -1) });
+        set_global(&runtime, c"view", ObjectValue(view.get()));
+        assert_eq!(describe(&runtime, eval(&runtime, "view.join()")), "2,3");
+        assert!(unsafe { ArrayBufferCopyData(cx, clone.handle().into_handle(), 0, buffer.handle().into_handle(), 3, 1) });
+        assert_eq!(describe(&runtime, eval(&runtime, "view.join()")), "4,3");
+        rooted!(in(cx) let data_view = unsafe { JS_NewDataView(cx, buffer.handle().into_handle(), 0, 4) });
+        set_global(&runtime, c"dv", ObjectValue(data_view.get()));
+        assert_eq!(eval(&runtime, "dv.getUint8(2)").to_int32(), 3);
+        let stolen = unsafe { StealArrayBufferContents(cx, buffer.handle().into_handle()) } as *mut u8;
+        assert_eq!(unsafe { std::slice::from_raw_parts(stolen, 4) }, &[1, 2, 3, 4]);
+        unsafe { libc::free(stolen as *mut std::ffi::c_void) };
+        assert!(unsafe { IsDetachedArrayBufferObject(buffer.get()) });
+    }
+}

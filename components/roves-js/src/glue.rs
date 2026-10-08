@@ -29,6 +29,7 @@ pub use crate::script_impl::{
     JS_StackCapture_AllFrames, JS_StackCapture_MaxFrames, NewCompileOptions, PendingExceptionStackInfo,
     RUST_js_GetErrorMessage,
 };
+pub use crate::values_impl::JS_GetPromiseResult;
 pub use crate::proxy::{
     CreateProxyHandler, GetProxyHandler, GetProxyHandlerExtra, GetProxyHandlerFamily, GetProxyPrivate,
     GetProxyReservedSlot, InvokeGetOwnPropertyDescriptor, IsProxyHandlerFamily, NewProxyObject, SetProxyPrivate,

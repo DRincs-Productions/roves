@@ -21,6 +21,7 @@ pub use crate::jsapi_impl::*;
 pub use crate::typedarray_impl::*;
 pub use crate::runtime_impl::*;
 pub use crate::script_impl::*;
+pub use crate::values_impl::*;
 pub use crate::proxy::{SetDOMProxyInformation, SetPropertyIgnoringNamedGetter};
 pub use crate::object::RuntimeHeapState;
 
@@ -130,6 +131,8 @@ pub struct JSContext {
     pub(crate) hooks: crate::runtime_impl::RuntimeHooks,
     /// Script privates and error reports (see `script_impl`).
     pub(crate) scripts: crate::script_impl::Scripts,
+    /// Helper functions written in JS, compiled once (see `values_impl::helper`).
+    pub(crate) helpers: RefCell<std::collections::HashMap<&'static str, v8::Global<v8::Function>>>,
 }
 
 impl JSContext {

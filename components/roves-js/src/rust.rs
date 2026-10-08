@@ -399,6 +399,7 @@ impl Runtime {
             atoms: Default::default(),
             hooks: Default::default(),
             scripts: Default::default(),
+            helpers: RefCell::new(Default::default()),
             current_realm: std::cell::Cell::new(std::ptr::null_mut()),
             realms: RefCell::new(Vec::new()),
         });

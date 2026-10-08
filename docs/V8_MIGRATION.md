@@ -67,6 +67,12 @@ errors.
   - script privates, found again for a scripted caller through V8's stack trace;
   - error reports;
   - SpiderMonkey-style saved stacks.
+  CP102 adds:
+  - promises;
+  - JSON;
+  - value operations;
+  - dates and regexps;
+  - ArrayBuffer operations.
 
 **Surface.** An inventory of `script`, `script_bindings` and `script_webgpu` found about 590
 distinct `js::` items:
