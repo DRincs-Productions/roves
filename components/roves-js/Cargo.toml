@@ -12,6 +12,9 @@ path = "src/lib.rs"
 
 [dependencies]
 roves-v8 = { path = "../roves-v8" }
+# roves-js is the engine layer (as mozjs is for SpiderMonkey), so it uses V8 directly; no V8
+# type may appear in the DOM or shell APIs built on top of it.
+v8 = "=152.2.0"
 
 # The mozjs features Servo's crates request; they have no meaning on V8.
 [features]

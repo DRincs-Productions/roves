@@ -11,6 +11,50 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-08 - V8 cutover: `roves-js` value model, cells and rooting (CP94)
+
+**Servo files:**
+- `components/roves-js/` (`Cargo.toml`, `Cargo.lock`, `src/{lib,cell,jsapi,jsval,context,gc,rust,tests}.rs`);
+- `components/roves-v8/src/lib.rs` (shared engine initialization).
+
+**Patch:** `0159-roves-js-value-model.patch` after 0158. Also `.github/workflows/v8.yml`, which
+is not part of the patch series.
+
+This is the core of the mozjs API on V8, following the model in `docs/V8_MIGRATION.md` ("Cutover
+strategy"):
+- **Cells.** A GC-thing pointer (`*mut JSObject`, `*mut JSString`, ...) points at a cell: a
+  small object on V8's non-moving cppgc heap that holds a `TracedReference` to the JS value. It
+  converts to and from `UnsafePtr` with a compile-time size check.
+- **`JSVal`.** A 64-bit `Copy` value with SpiderMonkey's punboxing layout: doubles are stored as
+  raw bits, NaNs are canonical, other kinds carry a 17-bit tag above a 47-bit payload, and a GC
+  thing's payload is its cell pointer. It has the mozjs constructors and accessors.
+  Crate-internal `from_v8`/`to_v8` convert to and from V8 values.
+- **Rooting.** `RootedGuard`/`rooted!` (the same macro syntax as mozjs) register their location
+  on a thread-local root stack. A persistent cppgc root set reads every location's current
+  value at GC time, exactly as SpiderMonkey scans roots, so writes need no bookkeeping. Roots
+  can hold GC-thing pointers, `JSVal`, `Option`, `Vec` and arrays. There are `Handle`/
+  `MutableHandle` with the usual aliases, and `Heap<T>` for traced owners
+  (`Heap::trace(visitor)`).
+- **`context::JSContext`/`NoGC`.** These are mozjs-compatible wrappers. The raw context holds
+  the isolate and the current realm. `rust::Runtime` owns the isolate (boxed, because in
+  rusty_v8 152 the raw context points at the `Isolate` value inside `OwnedIsolate`), the realm
+  and the root set.
+- **Engine initialization (`roves-v8`).** `initialize_engine` and
+  `initialize_engine_with_flags` are shared by both crates. Incremental, concurrent and
+  parallel marking are **disabled**, so the root-stack scan happens in one atomic pause. This
+  favours correctness; root write barriers would let marking be incremental again.
+
+Tests (`roves-js`, 5/5, stable in parallel):
+- the immediates' semantics;
+- V8 ↔ `JSVal` round trips for every kind;
+- rooted cells surviving precise GCs while an unrooted cell is collected, and both roots
+  collected after their scope ends;
+- handles writing a rooted location, and a rooted `Vec`;
+- a cppgc owner's `Heap<JSVal>` keeping its cell alive until overwritten.
+
+`roves-v8` is unchanged (114 + 5 + 2, and 62 + 2). The isolated V8 CI now also runs the
+`roves-js` tests, with its own lockfile.
+
 ## 2026-10-08 - V8 cutover: `roves-js` scaffold and progress metric (CP93)
 
 **Servo files:**

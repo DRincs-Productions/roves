@@ -301,8 +301,34 @@ static V8_PLATFORM_INIT: Once = Once::new();
 
 /// Initializes the V8 platform exactly once per process. Safe to call repeatedly; only the
 /// first call has an effect. Must run before any [`Runtime`] is created.
-fn ensure_platform_initialized() {
+/// Initializes the process-wide V8 platform once, for every crate that creates isolates
+/// (`roves-js`, the mozjs API on V8, shares it). Idempotent.
+#[doc(hidden)]
+pub fn initialize_engine() {
+    ensure_platform_initialized();
+}
+
+/// Like [`initialize_engine`], also applying `flags` (for example `--expose-gc` in another
+/// crate's tests) if the platform is not initialized yet; later calls cannot change flags.
+#[doc(hidden)]
+pub fn initialize_engine_with_flags(flags: &str) {
     V8_PLATFORM_INIT.call_once(|| {
+        v8::V8::set_flags_from_string(flags);
+        initialize_platform();
+    });
+}
+
+fn ensure_platform_initialized() {
+    V8_PLATFORM_INIT.call_once(initialize_platform);
+}
+
+fn initialize_platform() {
+    {
+        // roves-js scans its root stack when cppgc traces its root set, like SpiderMonkey
+        // scans rooted values at GC time. Without incremental/concurrent marking that scan
+        // happens in one atomic pause and sees every root (correctness first; revisit with
+        // write barriers on root updates).
+        v8::V8::set_flags_from_string("--no-incremental-marking --no-concurrent-marking --no-parallel-marking");
         // See ../../docs/V8_MIGRATION.md's "Console-oriented requirement: JIT-less" — a
         // first-class supported configuration from the start. This must run before
         // `initialize_platform`/`initialize` below, not after.
@@ -320,7 +346,7 @@ fn ensure_platform_initialized() {
         let platform = v8::new_default_platform(0, false).make_shared();
         v8::V8::initialize_platform(platform);
         v8::V8::initialize();
-    });
+    }
 }
 
 /// An engine-neutral snapshot of a JS value — see this module's own doc comment on why no

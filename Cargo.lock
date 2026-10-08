@@ -7379,6 +7379,7 @@ name = "roves-js"
 version = "0.1.0"
 dependencies = [
  "roves-v8",
+ "v8",
 ]
 
 [[package]]

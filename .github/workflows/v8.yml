@@ -7,6 +7,7 @@ on:
     paths:
       - 'components/roves-v8/**'
       - 'components/roves-v8-derive/**'
+      - 'components/roves-js/**'
       - 'components/script_bindings/**'
       - '.github/workflows/v8.yml'
   workflow_dispatch: {}
@@ -40,6 +41,8 @@ jobs:
           cp -R components/script_bindings "$RUNNER_TEMP/script_bindings"
           # `#[derive(Trace)]` (a path dependency of roves-v8).
           cp -R components/roves-v8-derive "$RUNNER_TEMP/roves-v8-derive"
+          # roves-js (the mozjs API on V8) builds next to roves-v8, with its own lockfile.
+          cp -R components/roves-js "$RUNNER_TEMP/roves-js"
           if [ -f components/roves-v8/build.rs ]; then
             cp components/roves-v8/build.rs "$RUNNER_TEMP/roves-v8/"
           fi
@@ -66,3 +69,6 @@ jobs:
             args=(--features webidl-pilot)
           fi
           cargo test --locked "${args[@]}"
+          # The mozjs-on-V8 layer of the cutover (value model, cells, rooting).
+          cd "$RUNNER_TEMP/roves-js"
+          cargo test --locked

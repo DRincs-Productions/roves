@@ -370,6 +370,30 @@ quelli statici e sovraccarichi.
 estensioni WebGL, compile). Il toolchain locale Windows è completo: verificare ogni modifica in
 locale prima della CI.
 
+## Cutover (decisione 2026-10-08) — stato
+
+L'utente ha approvato il cutover a V8 in produzione, e valuta di separarsi da Servo per sempre.
+Il meccanismo è `components/roves-js`: l'API mozjs reimplementata su V8. Il cutover consiste nel
+far puntare la riga `js = { package = "mozjs", ... }` del `Cargo.toml` radice a `roves-js`. La
+strategia completa è in `docs/V8_MIGRATION.md` ("Cutover strategy"). Metrica:
+`python support/v8_cutover_check.py <crate>` (baseline CP93: 22.530 errori su
+`servo-script-bindings`).
+
+- **CP93:** scaffold `roves-js` e misura.
+- **CP94:** il modello dei valori.
+  - Celle cppgc per i GC thing; `JSVal` con lo stesso punboxing di SpiderMonkey.
+  - Stack delle radici letto al GC dal root set persistente: `rooted!`, `Handle`,
+    `MutableHandle`, `Heap<T>`. Nel trace, i puntatori grezzi delle celle tornano a essere
+    `Member` tramite `UnsafePtr`.
+  - Marking incrementale/concorrente disattivato (in `roves_v8::initialize_engine`).
+  - Test: 5.
+- **Prossimi passi.** Le operazioni dell'API usata dal DOM:
+  1. stringhe e conversioni (`jsstr_to_string`, `ToJSValConvertible`/`FromJSValConvertible`);
+  2. oggetti e proprietà (`JS_NewObject`, `JS_GetProperty`/`SetProperty`/`DefineProperty`);
+  3. eccezioni, realm, Promise, typed array.
+
+  Poi il passaggio dei binding generati al backend V8. Rimisurare con lo script a ogni blocco.
+
 ## Piano per la prossima fase (dopo CP92): il DOM di Servo sull'heap V8
 
 La copertura del generatore è al 100%: ora il lavoro è il cutover del DOM reale. Analisi del
