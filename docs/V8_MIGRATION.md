@@ -119,6 +119,12 @@ errors.
   streaming goes through Servo's consume-stream callback.
 - CP113: promise drain jobs belong to the promise's realm (foreground tasks run with no realm).
 - CP114: **the permanent swap**: the workspace `js` dependency is roves-js (V8).
+- Phase 5 started: `support/v8-smoke/games.html` (PixiJS 8, Three.js, audio, Wasm in a module
+  Worker, dynamic import, rAF, Gamepad, IndexedDB saves, a JS-heavy workload) passes in CI on
+  normal and JIT-less V8. JIT-less V8 has no WebAssembly (rusty_v8's prebuilt V8 has no Wasm
+  interpreter).
+- Phase 6 started: SpiderMonkey build features and options removed (`--debug-mozjs` kept as a
+  deprecated no-op); the SpiderMonkey devtools debugger script is not run.
   Remaining: devtools on V8's inspector; cross-origin window proxy traps; immutable
   prototypes; realms live as long as the runtime (navigated-away pages are not collected); `eval` of `TrustedScript`; script/module privates and per-realm callable
   class boxes still live as long as the runtime; WPT-scale coverage; the permanent swap.

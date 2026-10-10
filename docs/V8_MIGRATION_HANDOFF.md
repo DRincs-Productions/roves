@@ -475,6 +475,17 @@ strategia completa è in `docs/V8_MIGRATION.md` ("Cutover strategy"). Metrica:
   Worker modulo, import dinamico, rAF, gamepad, IndexedDB, carico JS). servoshell JIT-less in
   CI (`--features roves-js/jitless`). **Scoperta:** V8 JIT-less non ha WebAssembly (rusty_v8
   prebuilt senza interprete wasm): i controlli wasm sono `SKIP` in JIT-less.
+- **Stato al 2026-10-10 (sera):** tutto verde su `main` (b9d247a e precedenti):
+  `test.yml` completo su V8 (bundle portable/deb/msi/dmg + smoke su 3 piattaforme, emulatore
+  Steam); `v8.yml` con servoshell V8 su Linux/Windows/macOS + JIT-less Linux; suite 34/34,
+  suite2 38/38 (JIT-less 36/36, 2 skip wasm), games.html 9/9 (1 skip audio senza dispositivo;
+  JIT-less 8/8, 2 skip). Fase 6: rimosse feature/opzioni di build SpiderMonkey (patch 0185),
+  `--debug-mozjs` deprecato e ignorato (anche in roves-action); `debugger.js` non eseguito
+  (patch 0187).
+- **Restante per i criteri di completamento:** release + pin in roves-action/roves-packmaster
+  (chiedere conferma all'utente prima: cambia motore a tutti i consumatori); README e wiki
+  (Fase 7, ultimi per scelta dell'utente); lacune note: inspector V8 per devtools, durata dei
+  realm, prototipi immutabili, `eval(TrustedScript)`, trap cross-origin, WPT su larga scala.
 - **Prossimi passi (dopo CP112):** correggere i fallimenti di suite2 in CI (ora 38 controlli, incluso wasm); durata di
   privates di script/moduli e box delle classi chiamabili; devtools/inspector; swap permanente.
 - **Storico (dopo CP105):** global proxy V8 = `WindowProxy` di Servo; uscita pulita
