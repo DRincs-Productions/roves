@@ -160,7 +160,7 @@ pub unsafe fn NewProxyObject(
         box_ref.proxy.set(handler as *const ProxyHandler);
         box_ref.private.set(private);
         box_ref.lazy_proto.set(lazy_proto);
-        let handler_object = handler_object(raw, scope, handler as *const ProxyHandler)?;
+        let handler_object = handler_object(scope, handler as *const ProxyHandler)?;
         let proxy = v8::Proxy::new(scope, target, handler_object)?;
         let member = v8::cppgc::Member::new(&class_box);
         let cell = crate::cell::new_cell_with_class(scope, proxy.into(), Some(member));
@@ -201,11 +201,14 @@ pub unsafe fn InvokeGetOwnPropertyDescriptor(
 
 // --- The V8 handler ------------------------------------------------------------------------
 
-/// The V8 handler object of `handler` (one per handler and runtime).
-fn handler_object<'s>(cx: &JSContext, scope: &mut v8::PinScope<'s, '_>, handler: *const ProxyHandler) -> Option<v8::Local<'s, v8::Object>> {
-    if let Some(object) = cx.proxy_handlers.borrow().get(&(handler as usize)) {
-        return Some(v8::Local::new(scope, object));
-    }
+/// The V8 handler object of `handler` (one per handler and realm).
+fn handler_object<'s>(scope: &mut v8::PinScope<'s, '_>, handler: *const ProxyHandler) -> Option<v8::Local<'s, v8::Object>> {
+    let key = format!("proxy handler {}", handler as usize);
+    let object = crate::realm_impl::realm_cached(scope, &key, |scope| new_handler_object(scope, handler).map(Into::into))?;
+    v8::Local::<v8::Object>::try_from(object).ok()
+}
+
+fn new_handler_object<'s>(scope: &mut v8::PinScope<'s, '_>, handler: *const ProxyHandler) -> Option<v8::Local<'s, v8::Object>> {
     let object = v8::Object::new(scope);
     let data = v8::External::new(scope, handler as *mut c_void);
     // V8 callbacks must be function items (zero-sized), hence one call per trap.
@@ -231,7 +234,6 @@ fn handler_object<'s>(cx: &JSContext, scope: &mut v8::PinScope<'s, '_>, handler:
         "isExtensible" => trap_is_extensible,
         "preventExtensions" => trap_prevent_extensions,
     }
-    cx.proxy_handlers.borrow_mut().insert(handler as usize, v8::Global::new(scope, object));
     Some(object)
 }
 

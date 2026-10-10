@@ -452,6 +452,10 @@ strategia completa è in `docs/V8_MIGRATION.md` ("Cutover strategy"). Metrica:
   (`JS_NewFunction`/`NewFunctionWithReserved`, una per ogni promise creata da Servo) sono
   deboli: slot riservati come private V8, stato liberato da uno sweep ammortizzato. 26 test.
   Prototipi immutabili: lacuna documentata (V8 li ha solo sui template).
+- **CP110:** helper JS e oggetti handler dei proxy per realm (cache nei dati embedder del
+  contesto); prima venivano creati nel primo realm che li usava (prototipi sbagliati dopo una
+  navigazione/in un iframe). Lacuna nota: i realm (contesto, globale, window proxy, moduli)
+  vivono quanto il runtime.
 - **Prossimi passi (dopo CP109):** correggere i fallimenti di suite2 in CI; durata di
   privates di script/moduli e box delle classi chiamabili; devtools/inspector; swap permanente.
 - **Storico (dopo CP105):** global proxy V8 = `WindowProxy` di Servo; uscita pulita

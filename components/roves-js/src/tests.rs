@@ -650,6 +650,30 @@ mod realms {
         assert_eq!(slot.to_int32(), 5);
         assert_eq!(unsafe { crate::realm_impl::get_object_realm(eval(&runtime, "({})").to_object()) }, first_realm);
     }
+
+    #[test]
+    fn helpers_and_proxy_handlers_belong_to_the_current_realm() {
+        let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        // The initial realm uses the helper first.
+        rooted!(in(cx) let map = eval(&runtime, "new Map([[1, 2]])").to_object());
+        rooted!(in(cx) let mut iterator = UndefinedValue());
+        assert!(unsafe { MapEntries(cx, map.handle().into_handle(), iterator.handle_mut().into_handle()) });
+        rooted!(in(cx) let global = unsafe {
+            JS_NewGlobalObject(cx, &GLOBAL_CLASS, ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, ptr::null())
+        });
+        let old = unsafe { EnterRealm(cx, global.get()) };
+        rooted!(in(cx) let other_map = eval(&runtime, "new Map([[3, 4]])").to_object());
+        rooted!(in(cx) let mut other = UndefinedValue());
+        assert!(unsafe { MapEntries(cx, other_map.handle().into_handle(), other.handle_mut().into_handle()) });
+        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"it".as_ptr(), other.handle().into_handle()) });
+        assert!(
+            eval(&runtime, "Object.getPrototypeOf(it) === Object.getPrototypeOf(new Map().entries()) && it.next().value[0] === 3").to_boolean(),
+            "the iterator comes from the current realm"
+        );
+        unsafe { LeaveRealm(cx, old) };
+        assert!(eval(&runtime, "typeof it === 'undefined'").to_boolean());
+    }
 }
 
 mod proxies {

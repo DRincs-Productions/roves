@@ -1,0 +1,194 @@
+diff --git a/components/roves-js/src/jsapi.rs b/components/roves-js/src/jsapi.rs
+index 5033e1f88c9..01b5086697a 100644
+--- a/components/roves-js/src/jsapi.rs
++++ b/components/roves-js/src/jsapi.rs
+@@ -136,16 +136,12 @@ pub struct JSContext {
+     pub(crate) native_function_sweep: std::cell::Cell<usize>,
+     /// The cells of plain objects and symbols (see `cell`).
+     pub(crate) interned: crate::cell::Interned,
+-    /// The V8 handler object of each proxy handler (see `proxy`).
+-    pub(crate) proxy_handlers: RefCell<std::collections::HashMap<usize, v8::Global<v8::Object>>>,
+     /// String atoms (see `jsapi_impl::atomize`).
+     pub(crate) atoms: crate::jsapi_impl::Atoms,
+     /// The embedder's runtime hooks and settings (see `runtime_impl`).
+     pub(crate) hooks: crate::runtime_impl::RuntimeHooks,
+     /// Script privates and error reports (see `script_impl`).
+     pub(crate) scripts: crate::script_impl::Scripts,
+-    /// Helper functions written in JS, compiled once (see `values_impl::helper`).
+-    pub(crate) helpers: RefCell<std::collections::HashMap<&'static str, v8::Global<v8::Function>>>,
+     /// Module records and module hooks (see `modules_impl`).
+     pub(crate) modules: crate::modules_impl::Modules,
+     /// The boxes of callable class objects (see `object::new_callable_class_object`).
+diff --git a/components/roves-js/src/proxy.rs b/components/roves-js/src/proxy.rs
+index 433d803ede0..89dfa2c4df7 100644
+--- a/components/roves-js/src/proxy.rs
++++ b/components/roves-js/src/proxy.rs
+@@ -160,7 +160,7 @@ pub unsafe fn NewProxyObject(
+         box_ref.proxy.set(handler as *const ProxyHandler);
+         box_ref.private.set(private);
+         box_ref.lazy_proto.set(lazy_proto);
+-        let handler_object = handler_object(raw, scope, handler as *const ProxyHandler)?;
++        let handler_object = handler_object(scope, handler as *const ProxyHandler)?;
+         let proxy = v8::Proxy::new(scope, target, handler_object)?;
+         let member = v8::cppgc::Member::new(&class_box);
+         let cell = crate::cell::new_cell_with_class(scope, proxy.into(), Some(member));
+@@ -201,11 +201,14 @@ pub unsafe fn InvokeGetOwnPropertyDescriptor(
+ 
+ // --- The V8 handler ------------------------------------------------------------------------
+ 
+-/// The V8 handler object of `handler` (one per handler and runtime).
+-fn handler_object<'s>(cx: &JSContext, scope: &mut v8::PinScope<'s, '_>, handler: *const ProxyHandler) -> Option<v8::Local<'s, v8::Object>> {
+-    if let Some(object) = cx.proxy_handlers.borrow().get(&(handler as usize)) {
+-        return Some(v8::Local::new(scope, object));
+-    }
++/// The V8 handler object of `handler` (one per handler and realm).
++fn handler_object<'s>(scope: &mut v8::PinScope<'s, '_>, handler: *const ProxyHandler) -> Option<v8::Local<'s, v8::Object>> {
++    let key = format!("proxy handler {}", handler as usize);
++    let object = crate::realm_impl::realm_cached(scope, &key, |scope| new_handler_object(scope, handler).map(Into::into))?;
++    v8::Local::<v8::Object>::try_from(object).ok()
++}
++
++fn new_handler_object<'s>(scope: &mut v8::PinScope<'s, '_>, handler: *const ProxyHandler) -> Option<v8::Local<'s, v8::Object>> {
+     let object = v8::Object::new(scope);
+     let data = v8::External::new(scope, handler as *mut c_void);
+     // V8 callbacks must be function items (zero-sized), hence one call per trap.
+@@ -231,7 +234,6 @@ fn handler_object<'s>(cx: &JSContext, scope: &mut v8::PinScope<'s, '_>, handler:
+         "isExtensible" => trap_is_extensible,
+         "preventExtensions" => trap_prevent_extensions,
+     }
+-    cx.proxy_handlers.borrow_mut().insert(handler as usize, v8::Global::new(scope, object));
+     Some(object)
+ }
+ 
+diff --git a/components/roves-js/src/realm_impl.rs b/components/roves-js/src/realm_impl.rs
+index 50c63892ad4..f852455ba23 100644
+--- a/components/roves-js/src/realm_impl.rs
++++ b/components/roves-js/src/realm_impl.rs
+@@ -13,6 +13,8 @@ use crate::jsapi::{JSContext, JSObject, JSPrincipals, Realm};
+ 
+ /// Embedder-data slot of a context holding its `RealmData` pointer.
+ const REALM_SLOT: i32 = 2;
++/// Embedder-data slot of a context holding its cache object (see [`realm_cached`]).
++const CACHE_SLOT: i32 = 3;
+ 
+ pub(crate) struct RealmData {
+     pub(crate) context: v8::Global<v8::Context>,
+@@ -45,6 +47,10 @@ pub(crate) fn register_realm(cx: &JSContext, scope: &mut v8::PinScope, context:
+     context.set_security_token(token.into());
+     // SAFETY: the realm data lives as long as the runtime (it owns the context).
+     unsafe { context.set_aligned_pointer_in_embedder_data(REALM_SLOT, pointer) };
++    let cache = v8::Object::new(scope);
++    let null = v8::null(scope).into();
++    cache.set_prototype(scope, null);
++    context.set_embedder_data(CACHE_SLOT, cache.into());
+     cx.realms.borrow_mut().push(data);
+     pointer as *mut Realm
+ }
+@@ -54,6 +60,27 @@ pub(crate) fn realm_data<'r>(realm: *mut Realm) -> Option<&'r RealmData> {
+     (!realm.is_null()).then(|| unsafe { &*(realm as *const RealmData) })
+ }
+ 
++/// The value cached under `key` in the current realm, made by `make` on first use. The cache
++/// belongs to the realm's V8 context: helpers written in JS and proxy handler objects are
++/// per realm, so the objects they create get that realm's prototypes, and they live as long
++/// as the realm.
++pub(crate) fn realm_cached<'s>(
++    scope: &mut v8::PinScope<'s, '_>,
++    key: &str,
++    make: impl FnOnce(&mut v8::PinScope<'s, '_>) -> Option<v8::Local<'s, v8::Value>>,
++) -> Option<v8::Local<'s, v8::Value>> {
++    let context = scope.get_current_context();
++    let cache = v8::Local::<v8::Object>::try_from(context.get_embedder_data(scope, CACHE_SLOT)?).ok()?;
++    let key = v8::String::new(scope, key)?;
++    let cached = cache.get(scope, key.into())?;
++    if !cached.is_undefined() {
++        return Some(cached);
++    }
++    let value = make(scope)?;
++    cache.set(scope, key.into(), value)?;
++    Some(value)
++}
++
+ /// The realm a context belongs to.
+ pub(crate) fn realm_of_context(context: v8::Local<v8::Context>) -> *mut Realm {
+     context.get_aligned_pointer_from_embedder_data(REALM_SLOT) as *mut Realm
+diff --git a/components/roves-js/src/rust.rs b/components/roves-js/src/rust.rs
+index 575d7d96f98..2f23d312daa 100644
+--- a/components/roves-js/src/rust.rs
++++ b/components/roves-js/src/rust.rs
+@@ -398,11 +398,9 @@ impl Runtime {
+             native_functions: RefCell::new(Vec::new()),
+             native_function_sweep: std::cell::Cell::new(crate::jsapi_impl::NATIVE_FUNCTION_SWEEP_MIN),
+             interned: Default::default(),
+-            proxy_handlers: RefCell::new(Default::default()),
+             atoms: Default::default(),
+             hooks: Default::default(),
+             scripts: Default::default(),
+-            helpers: RefCell::new(Default::default()),
+             modules: Default::default(),
+             callable_class_boxes: RefCell::new(Vec::new()),
+             current_realm: std::cell::Cell::new(std::ptr::null_mut()),
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 46e813b6ddd..c72063ab63a 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -650,6 +650,30 @@ mod realms {
+         assert_eq!(slot.to_int32(), 5);
+         assert_eq!(unsafe { crate::realm_impl::get_object_realm(eval(&runtime, "({})").to_object()) }, first_realm);
+     }
++
++    #[test]
++    fn helpers_and_proxy_handlers_belong_to_the_current_realm() {
++        let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        // The initial realm uses the helper first.
++        rooted!(in(cx) let map = eval(&runtime, "new Map([[1, 2]])").to_object());
++        rooted!(in(cx) let mut iterator = UndefinedValue());
++        assert!(unsafe { MapEntries(cx, map.handle().into_handle(), iterator.handle_mut().into_handle()) });
++        rooted!(in(cx) let global = unsafe {
++            JS_NewGlobalObject(cx, &GLOBAL_CLASS, ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, ptr::null())
++        });
++        let old = unsafe { EnterRealm(cx, global.get()) };
++        rooted!(in(cx) let other_map = eval(&runtime, "new Map([[3, 4]])").to_object());
++        rooted!(in(cx) let mut other = UndefinedValue());
++        assert!(unsafe { MapEntries(cx, other_map.handle().into_handle(), other.handle_mut().into_handle()) });
++        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"it".as_ptr(), other.handle().into_handle()) });
++        assert!(
++            eval(&runtime, "Object.getPrototypeOf(it) === Object.getPrototypeOf(new Map().entries()) && it.next().value[0] === 3").to_boolean(),
++            "the iterator comes from the current realm"
++        );
++        unsafe { LeaveRealm(cx, old) };
++        assert!(eval(&runtime, "typeof it === 'undefined'").to_boolean());
++    }
+ }
+ 
+ mod proxies {
+diff --git a/components/roves-js/src/values_impl.rs b/components/roves-js/src/values_impl.rs
+index f360883c522..959fba34fae 100644
+--- a/components/roves-js/src/values_impl.rs
++++ b/components/roves-js/src/values_impl.rs
+@@ -60,17 +60,14 @@ fn set_value(result: Option<JSVal>, mut out: MutableHandleValue) -> bool {
+     }
+ }
+ 
+-/// A function compiled once per runtime from `source` (helpers written in JS).
++/// A function compiled from `source` once per realm (helpers written in JS).
+ pub(crate) fn helper<'s>(scope: &mut v8::PinScope<'s, '_>, name: &'static str, source: &str) -> Option<v8::Local<'s, v8::Function>> {
+-    let cx = JSContext::current();
+-    if let Some(function) = cx.helpers.borrow().get(name) {
+-        return Some(v8::Local::new(scope, function));
+-    }
+-    let code = v8::String::new(scope, source)?;
+-    let script = v8::Script::compile(scope, code, None)?;
+-    let function = v8::Local::<v8::Function>::try_from(script.run(scope)?).ok()?;
+-    cx.helpers.borrow_mut().insert(name, v8::Global::new(scope, function));
+-    Some(function)
++    let function = crate::realm_impl::realm_cached(scope, &format!("helper {name}"), |scope| {
++        let code = v8::String::new(scope, source)?;
++        let script = v8::Script::compile(scope, code, None)?;
++        script.run(scope)
++    })?;
++    v8::Local::<v8::Function>::try_from(function).ok()
+ }
+ 
+ // --- Promises --------------------------------------------------------------------------------

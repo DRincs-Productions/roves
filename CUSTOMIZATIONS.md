@@ -12530,3 +12530,26 @@ creation, which would then fail.
 
 **Tests:** `roves-js` 26/26, adding GC callback reporting and the collection of dynamic native
 functions, with reserved slots surviving GC through the function.
+
+## 2026-10-10 - V8 cutover: per-realm helpers and proxy handler objects (CP110)
+
+**Servo files:** `components/roves-js/src/realm_impl.rs`, `values_impl.rs`, `proxy.rs`,
+`jsapi.rs`, `rust.rs` and `tests.rs`.
+
+**Patch:** `0177-roves-js-per-realm-helpers.patch` after 0176.
+
+roves-js compiles a few JSAPI operations as small JS functions (`MapEntries`, `ToPrimitive`,
+`Reflect.set`, regexp execution, proxy trap forwarding), and it builds one V8 handler object per
+proxy handler. Both used to be cached once per runtime, in whichever realm used them first. After
+a navigation, or inside an iframe, the objects they created therefore had another realm's
+prototypes: for example a `Map` iterator whose prototype was not the page's. They also kept that
+first realm alive.
+
+Each realm's V8 context now carries a cache object in its embedder data, and helpers and handler
+objects are per realm.
+
+**Realm lifetime is still a known gap.** Realms (their V8 context, global, window proxy and
+module records) live as long as the runtime. A page left by navigation or a removed iframe is
+not collected. This matters for multi-page sites, much less for single-page games.
+
+**Tests:** `roves-js` 27/27, adding a helper used from a second realm after the first.

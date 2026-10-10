@@ -13,6 +13,8 @@ use crate::jsapi::{JSContext, JSObject, JSPrincipals, Realm};
 
 /// Embedder-data slot of a context holding its `RealmData` pointer.
 const REALM_SLOT: i32 = 2;
+/// Embedder-data slot of a context holding its cache object (see [`realm_cached`]).
+const CACHE_SLOT: i32 = 3;
 
 pub(crate) struct RealmData {
     pub(crate) context: v8::Global<v8::Context>,
@@ -45,6 +47,10 @@ pub(crate) fn register_realm(cx: &JSContext, scope: &mut v8::PinScope, context: 
     context.set_security_token(token.into());
     // SAFETY: the realm data lives as long as the runtime (it owns the context).
     unsafe { context.set_aligned_pointer_in_embedder_data(REALM_SLOT, pointer) };
+    let cache = v8::Object::new(scope);
+    let null = v8::null(scope).into();
+    cache.set_prototype(scope, null);
+    context.set_embedder_data(CACHE_SLOT, cache.into());
     cx.realms.borrow_mut().push(data);
     pointer as *mut Realm
 }
@@ -52,6 +58,27 @@ pub(crate) fn register_realm(cx: &JSContext, scope: &mut v8::PinScope, context: 
 pub(crate) fn realm_data<'r>(realm: *mut Realm) -> Option<&'r RealmData> {
     // SAFETY: realm pointers come from `register_realm` and live as long as the runtime.
     (!realm.is_null()).then(|| unsafe { &*(realm as *const RealmData) })
+}
+
+/// The value cached under `key` in the current realm, made by `make` on first use. The cache
+/// belongs to the realm's V8 context: helpers written in JS and proxy handler objects are
+/// per realm, so the objects they create get that realm's prototypes, and they live as long
+/// as the realm.
+pub(crate) fn realm_cached<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    key: &str,
+    make: impl FnOnce(&mut v8::PinScope<'s, '_>) -> Option<v8::Local<'s, v8::Value>>,
+) -> Option<v8::Local<'s, v8::Value>> {
+    let context = scope.get_current_context();
+    let cache = v8::Local::<v8::Object>::try_from(context.get_embedder_data(scope, CACHE_SLOT)?).ok()?;
+    let key = v8::String::new(scope, key)?;
+    let cached = cache.get(scope, key.into())?;
+    if !cached.is_undefined() {
+        return Some(cached);
+    }
+    let value = make(scope)?;
+    cache.set(scope, key.into(), value)?;
+    Some(value)
 }
 
 /// The realm a context belongs to.

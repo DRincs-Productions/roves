@@ -60,17 +60,14 @@ fn set_value(result: Option<JSVal>, mut out: MutableHandleValue) -> bool {
     }
 }
 
-/// A function compiled once per runtime from `source` (helpers written in JS).
+/// A function compiled from `source` once per realm (helpers written in JS).
 pub(crate) fn helper<'s>(scope: &mut v8::PinScope<'s, '_>, name: &'static str, source: &str) -> Option<v8::Local<'s, v8::Function>> {
-    let cx = JSContext::current();
-    if let Some(function) = cx.helpers.borrow().get(name) {
-        return Some(v8::Local::new(scope, function));
-    }
-    let code = v8::String::new(scope, source)?;
-    let script = v8::Script::compile(scope, code, None)?;
-    let function = v8::Local::<v8::Function>::try_from(script.run(scope)?).ok()?;
-    cx.helpers.borrow_mut().insert(name, v8::Global::new(scope, function));
-    Some(function)
+    let function = crate::realm_impl::realm_cached(scope, &format!("helper {name}"), |scope| {
+        let code = v8::String::new(scope, source)?;
+        let script = v8::Script::compile(scope, code, None)?;
+        script.run(scope)
+    })?;
+    v8::Local::<v8::Function>::try_from(function).ok()
 }
 
 // --- Promises --------------------------------------------------------------------------------

@@ -136,16 +136,12 @@ pub struct JSContext {
     pub(crate) native_function_sweep: std::cell::Cell<usize>,
     /// The cells of plain objects and symbols (see `cell`).
     pub(crate) interned: crate::cell::Interned,
-    /// The V8 handler object of each proxy handler (see `proxy`).
-    pub(crate) proxy_handlers: RefCell<std::collections::HashMap<usize, v8::Global<v8::Object>>>,
     /// String atoms (see `jsapi_impl::atomize`).
     pub(crate) atoms: crate::jsapi_impl::Atoms,
     /// The embedder's runtime hooks and settings (see `runtime_impl`).
     pub(crate) hooks: crate::runtime_impl::RuntimeHooks,
     /// Script privates and error reports (see `script_impl`).
     pub(crate) scripts: crate::script_impl::Scripts,
-    /// Helper functions written in JS, compiled once (see `values_impl::helper`).
-    pub(crate) helpers: RefCell<std::collections::HashMap<&'static str, v8::Global<v8::Function>>>,
     /// Module records and module hooks (see `modules_impl`).
     pub(crate) modules: crate::modules_impl::Modules,
     /// The boxes of callable class objects (see `object::new_callable_class_object`).
