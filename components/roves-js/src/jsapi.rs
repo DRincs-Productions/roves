@@ -132,6 +132,8 @@ pub struct JSContext {
     pub(crate) class_templates: crate::object::ClassTemplates,
     /// Functions made from natives (`JS_NewFunction`); see `jsapi_impl::NativeFunction`.
     pub(crate) native_functions: RefCell<Vec<Box<crate::jsapi_impl::NativeFunction>>>,
+    /// The size of `native_functions` at which the states of dead functions are dropped.
+    pub(crate) native_function_sweep: std::cell::Cell<usize>,
     /// The cells of plain objects and symbols (see `cell`).
     pub(crate) interned: crate::cell::Interned,
     /// The V8 handler object of each proxy handler (see `proxy`).

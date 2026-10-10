@@ -72,7 +72,7 @@ fn wrapper_function<'s>(
     if wrapper.op.is_none() {
         return Some(None);
     }
-    let function = crate::jsapi_impl::new_native_function(cx, wrapper.op, nargs, name, constructor, wrapper.info);
+    let function = crate::jsapi_impl::new_native_function(cx, wrapper.op, nargs, name, constructor, wrapper.info, true);
     if function.is_null() {
         return None;
     }

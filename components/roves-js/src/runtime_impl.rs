@@ -91,6 +91,9 @@ pub(crate) fn configure_isolate(isolate: &mut v8::Isolate) {
     isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
     isolate.set_promise_hook(promise_hook);
     isolate.set_promise_reject_callback(promise_reject_callback);
+    let full = v8::GCType::kGCTypeMarkSweepCompact;
+    isolate.add_gc_prologue_callback(gc_prologue, std::ptr::null_mut(), full);
+    isolate.add_gc_epilogue_callback(gc_epilogue, std::ptr::null_mut(), full);
     crate::modules_impl::configure_isolate(isolate);
 }
 
@@ -150,13 +153,56 @@ pub(crate) fn trace_extra_roots(cx: &JSContext, visitor: &mut v8::cppgc::Visitor
     }
 }
 
-/// Records the GC callback (V8's collections are not reported to it yet).
+/// Sets the GC callback, told when each of V8's full collections (mark-compact, the ones that
+/// trace the embedder's roots) begins and ends. Young-generation collections are not reported.
 pub unsafe fn JS_SetGCCallback(cx: *mut JSContext, callback: JSGCCallback, data: *mut c_void) {
     hooks(cx).gc_callback.set((callback, data));
 }
 
 pub unsafe fn SetGCSliceCallback(cx: *mut JSContext, callback: GCSliceCallback) -> GCSliceCallback {
     hooks(cx).gc_slice_callback.replace(callback)
+}
+
+/// Reports a full collection's start or end to the embedder's GC and GC-slice callbacks (a V8
+/// collection is reported as one cycle of one slice, without a description).
+fn report_gc(status: crate::jsapi::JSGCStatus) {
+    use crate::jsapi::{GCProgress, JSGCStatus};
+    let Some(cx) = crate::rust::Runtime::get() else { return };
+    let cx = cx.as_ptr();
+    let (callback, data) = hooks(cx).gc_callback.get();
+    let slice = hooks(cx).gc_slice_callback.get();
+    let begin = status == JSGCStatus::JSGC_BEGIN;
+    // SAFETY: SpiderMonkey's GC callback contracts; no JS runs in them.
+    unsafe {
+        if begin {
+            if let Some(callback) = callback {
+                callback(cx, status, GCReason::API, data);
+            }
+        }
+        if let Some(slice) = slice {
+            let steps = if begin {
+                [GCProgress::GC_CYCLE_BEGIN, GCProgress::GC_SLICE_BEGIN]
+            } else {
+                [GCProgress::GC_SLICE_END, GCProgress::GC_CYCLE_END]
+            };
+            for progress in steps {
+                slice(cx, progress, std::ptr::null());
+            }
+        }
+        if !begin {
+            if let Some(callback) = callback {
+                callback(cx, status, GCReason::API, data);
+            }
+        }
+    }
+}
+
+unsafe extern "C" fn gc_prologue(_: v8::UnsafeRawIsolatePtr, _: v8::GCType, _: v8::GCCallbackFlags, _: *mut c_void) {
+    report_gc(crate::jsapi::JSGCStatus::JSGC_BEGIN);
+}
+
+unsafe extern "C" fn gc_epilogue(_: v8::UnsafeRawIsolatePtr, _: v8::GCType, _: v8::GCCallbackFlags, _: *mut c_void) {
+    report_gc(crate::jsapi::JSGCStatus::JSGC_END);
 }
 
 pub unsafe fn JS_SetGCParameter(cx: *mut JSContext, key: JSGCParamKey, value: u32) {

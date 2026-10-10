@@ -104,6 +104,16 @@ errors.
   - navigation (global proxy reuse);
   - devtools on V8's inspector;
   - WPT coverage.
+- CP107: navigation (a transplanted global window proxy returns the replacement); bfcache.
+- CP108: interface objects are V8 functions (custom elements); promise jobs at Servo's
+  checkpoints; the CI job `servoshell-v8` builds servoshell on V8 and runs the smoke pages in
+  `support/v8-smoke/` headlessly. End-to-end verification is in CI, not on developer machines.
+- CP109: a second smoke suite (`suite2.html`: streams, fetch types, observers, crypto,
+  graphics); GC callbacks report V8's full collections; dynamic native functions (one per
+  promise Servo creates) are no longer runtime-lifetime roots.
+  Remaining: devtools on V8's inspector; cross-origin window proxy traps; immutable
+  prototypes; wasm streaming; CSP for `eval`; script/module privates and per-realm callable
+  class boxes still live as long as the runtime; WPT-scale coverage; the permanent swap.
 
 **Surface.** An inventory of `script`, `script_bindings` and `script_webgpu` found about 590
 distinct `js::` items:

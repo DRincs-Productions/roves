@@ -12499,3 +12499,34 @@ the integrated `servo-script` check. Pristine patch-series validation and CI are
 
 `run.sh` now reports both suites the same way: one warning with all failures, a notice with
 the total and a section in the step summary.
+
+## 2026-10-10 - V8 cutover: GC callbacks and collectable native functions (CP109)
+
+**Servo files:** `components/roves-js/src/runtime_impl.rs`, `jsapi_impl.rs`, `binding.rs`,
+`jsapi.rs`, `rust.rs` and `tests.rs`.
+
+**Patch:** `0176-roves-js-gc-callbacks-weak-native-functions.patch` after 0175.
+
+**GC callbacks.** `JS_SetGCCallback` and `SetGCSliceCallback` were recorded but never called.
+V8's GC prologue and epilogue for full (mark-compact) collections now report each one as
+`JSGC_BEGIN`/`JSGC_END` and as one cycle of one slice, without a description. These are the
+collections that trace Servo's roots. Servo uses them for its debug-build `IN_GC` thread state
+and for the `gc-profile` diagnostics option. Young-generation collections are not reported.
+
+**Native functions no longer leak.** Every function made from a native used to be a GC root for
+the runtime's lifetime, together with its reserved slots. Servo makes such a function for every
+promise it creates (`Promise::new`'s executor) and for every native promise handler, whose
+reserved slot holds the handler. A long-running game that fetches, streams or decodes audio
+therefore grew without bound. Now:
+- *defined* functions (`JS_DefineFunctions`, property accessors: a bounded set) are still kept
+  by the runtime;
+- *dynamic* ones (`JS_NewFunction`, `NewFunctionWithReserved`) are held weakly. Their reserved
+  slots are V8 private properties of the function, traced by V8 and with no root. Their
+  per-function state is dropped by an amortized sweep once the function is collected.
+
+**Immutable prototypes** remain a documented gap. V8 only offers them on object templates,
+where they hold from the instance's creation. Servo sets its globals' canonical prototype after
+creation, which would then fail.
+
+**Tests:** `roves-js` 26/26, adding GC callback reporting and the collection of dynamic native
+functions, with reserved slots surviving GC through the function.

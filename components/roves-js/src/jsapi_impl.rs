@@ -285,8 +285,10 @@ pub unsafe fn JS_SetPrototype(cx: *mut JSContext, obj: HandleObject, proto: Hand
         .unwrap_or(false)
 }
 
-/// SpiderMonkey's immutable-prototype flag (WindowProxy, Location, Object.prototype). V8 has
-/// no public API for it on ordinary objects: the prototype stays mutable (documented gap).
+/// SpiderMonkey's immutable-prototype flag (Servo sets it on its globals after giving them their
+/// canonical prototype). V8 only has it on object templates (`SetImmutableProto`), where it holds
+/// from the instance's creation, so `JS_SetPrototype` with the canonical prototype would then
+/// fail: the prototype stays mutable (documented gap; `Object.prototype` is immutable in V8).
 pub unsafe fn JS_SetImmutablePrototype(_cx: *mut JSContext, _obj: HandleObject, succeeded: *mut bool) -> bool {
     // SAFETY: JSAPI callers pass a valid out pointer.
     unsafe { *succeeded = true };
@@ -771,32 +773,64 @@ pub unsafe fn Call(cx: *mut JSContext, thisv: HandleValue, fun: HandleValue, arg
 }
 
 /// The per-function state of a function made from a native (`JS_NewFunction`,
-/// `JS_DefineFunctions`): the native, the function's cell (its `callee`) and SpiderMonkey's
-/// two extended "native reserved" slots. Owned by the runtime and traced by its root set
-/// (such functions live as long as the runtime; DOM method functions are a bounded set).
+/// `JS_DefineFunctions`): the native, its JIT info and a handle on the function (its `callee`).
+///
+/// *Defined* functions (spec-defined methods and accessors, a bounded set) keep their cell,
+/// which the runtime traces: they live as long as the runtime. *Dynamic* functions
+/// (`JS_NewFunction`, `NewFunctionWithReserved`; Servo makes one per promise it creates and per
+/// native promise handler) are only weakly held: they die like any other function, their two
+/// extended "native reserved" slots are V8 private properties of the function (traced by V8,
+/// with no root), and their state is dropped once the function is gone.
 pub(crate) struct NativeFunction {
     pub(crate) native: JSNative,
+    /// The cell of a defined function (null for a dynamic one).
     pub(crate) cell: std::cell::Cell<*mut c_void>,
-    pub(crate) reserved: std::cell::RefCell<[JSVal; 2]>,
+    /// A dynamic function, weakly.
+    weak: std::cell::OnceCell<v8::Weak<v8::Function>>,
+    /// Where `GetFunctionNativeReserved` hands out a slot's value (refreshed on every read).
+    reserved: std::cell::RefCell<[JSVal; 2]>,
     /// For a spec-defined method: its JIT info (`RUST_FUNCTION_VALUE_TO_JITINFO`).
     pub(crate) info: *const crate::jsapi::JSJitInfo,
 }
 
+impl NativeFunction {
+    /// Whether the function may still be called (always true for a defined function).
+    fn alive(&self) -> bool {
+        !self.cell.get().is_null() || self.weak.get().is_some_and(|weak| !weak.is_empty())
+    }
+}
+
 fn native_function_callback(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut retval: v8::ReturnValue) {
     let Ok(external) = v8::Local::<v8::External>::try_from(args.data()) else { return };
-    // SAFETY: the External points at this function's (runtime-owned) state.
+    // SAFETY: the External points at this function's state, alive while the function is.
     let function = unsafe { &*(external.value() as *const NativeFunction) };
-    // SAFETY: the function's own cell is alive (traced by the runtime).
-    let callee = unsafe { crate::cell::cell_value(scope, function.cell.get()) };
+    let callee = match function.weak.get() {
+        Some(weak) => match weak.to_local(scope) {
+            Some(callee) => callee.into(),
+            None => return,
+        },
+        // SAFETY: a defined function's cell is traced by the runtime.
+        None => unsafe { crate::cell::cell_value(scope, function.cell.get()) },
+    };
     let constructing = !args.new_target().is_undefined();
     crate::native::call_native(scope, &args, &mut retval, function.native, callee, constructing);
 }
 
-/// A function object calling `native` (null on failure).
-pub(crate) fn new_native_function(cx: &JSContext, native: JSNative, nargs: u32, name: &str, constructor: bool, info: *const crate::jsapi::JSJitInfo) -> *mut JSFunction {
+/// A function object calling `native` (null on failure): a defined function (kept by the
+/// runtime) when `defined`, else a dynamic one (see [`NativeFunction`]).
+pub(crate) fn new_native_function(
+    cx: &JSContext,
+    native: JSNative,
+    nargs: u32,
+    name: &str,
+    constructor: bool,
+    info: *const crate::jsapi::JSJitInfo,
+    defined: bool,
+) -> *mut JSFunction {
     let state = Box::new(NativeFunction {
         native,
         cell: std::cell::Cell::new(std::ptr::null_mut()),
+        weak: std::cell::OnceCell::new(),
         reserved: std::cell::RefCell::new([UndefinedValue(); 2]),
         info,
     });
@@ -808,40 +842,42 @@ pub(crate) fn new_native_function(cx: &JSContext, native: JSNative, nargs: u32, 
         let function = builder.build(scope)?;
         let name = v8::String::new(scope, name)?;
         function.set_name(name);
+        let key = native_function_key(scope);
+        let data = v8::External::new(scope, state_pointer);
+        function.set_private(scope, key, data.into());
+        if !defined {
+            let _ = state.weak.set(v8::Weak::new(scope, function));
+        }
         Some(from_v8(scope, function.into()).to_object())
     });
     let Some(function) = created else { return std::ptr::null_mut() };
-    state.cell.set(function as *mut c_void);
-    cx.with_scope(|scope| {
-        // SAFETY: the cell was just created (and is traced from here on).
-        let object = unsafe { crate::cell::cell_value(scope, function as *mut c_void) };
-        let object = v8::Local::<v8::Object>::try_from(object).expect("a function object");
-        let key = native_function_key(scope);
-        let data = v8::External::new(scope, state_pointer);
-        object.set_private(scope, key, data.into());
-    });
-    cx.native_functions.borrow_mut().push(state);
+    if defined {
+        state.cell.set(function as *mut c_void);
+    }
+    let mut functions = cx.native_functions.borrow_mut();
+    if functions.len() >= cx.native_function_sweep.get() {
+        functions.retain(|function| function.alive());
+        cx.native_function_sweep.set((functions.len() * 2).max(NATIVE_FUNCTION_SWEEP_MIN));
+    }
+    functions.push(state);
     function as *mut JSFunction
 }
 
-/// Keeps native functions (their cells) and their reserved slots alive.
+/// How many native function states accumulate before the first sweep of dead ones.
+pub(crate) const NATIVE_FUNCTION_SWEEP_MIN: usize = 1024;
+
+/// Keeps defined native functions (their cells) alive.
 pub(crate) fn trace_native_functions(cx: &JSContext, visitor: &mut v8::cppgc::Visitor) {
-    use crate::gc::RootKind;
     let Ok(functions) = cx.native_functions.try_borrow() else { return };
     for function in functions.iter() {
         crate::cell::trace_cell(function.cell.get(), visitor);
-        if let Ok(reserved) = function.reserved.try_borrow() {
-            for slot in reserved.iter() {
-                slot.trace_root(visitor);
-            }
-        }
     }
 }
 
 pub unsafe fn JS_NewFunction(cx: *mut JSContext, call: JSNative, nargs: u32, flags: u32, name: *const c_char) -> *mut JSFunction {
     let name = if name.is_null() { String::new() } else { unsafe { CStr::from_ptr(name) }.to_string_lossy().into_owned() };
     let constructor = flags & crate::jsapi::JSFUN_CONSTRUCTOR != 0;
-    new_native_function(raw(cx), call, nargs, &name, constructor, std::ptr::null())
+    new_native_function(raw(cx), call, nargs, &name, constructor, std::ptr::null(), false)
 }
 
 pub unsafe fn JS_GetFunctionObject(fun: *mut JSFunction) -> *mut JSObject {
@@ -869,19 +905,38 @@ fn native_function_of<'f>(cx: &JSContext, fun: *mut JSObject) -> Option<&'f Nati
     })
 }
 
+fn native_reserved_key<'s>(scope: &mut v8::PinScope<'s, '_>, which: usize) -> v8::Local<'s, v8::Private> {
+    let name = if which == 0 { "roves-js native reserved 0" } else { "roves-js native reserved 1" };
+    let name = v8::String::new(scope, name).expect("a short string");
+    v8::Private::for_api(scope, Some(name))
+}
+
+/// A native function's reserved slot: its value, read from the function's private property,
+/// in a location of the function's state (valid until the next read of that slot).
 pub unsafe fn GetFunctionNativeReserved(fun: *mut JSObject, which: usize) -> *const JSVal {
-    match native_function_of(JSContext::current(), fun) {
-        // SAFETY: the slots live with the function state.
-        Some(function) => unsafe { (*function.reserved.as_ptr()).as_ptr().add(which) },
-        None => std::ptr::null(),
-    }
+    let cx = JSContext::current();
+    cx.with_scope(|scope| {
+        let target = object(scope, fun)?;
+        let function = native_function_of_v8(scope, target)?;
+        let key = native_reserved_key(scope, which);
+        let slot = target.get_private(scope, key)?;
+        let mut reserved = function.reserved.borrow_mut();
+        reserved[which] = from_v8(scope, slot);
+        Some(&reserved[which] as *const JSVal)
+    })
+    .unwrap_or(std::ptr::null())
 }
 
 pub unsafe fn SetFunctionNativeReserved(fun: *mut JSObject, which: usize, val: *const JSVal) {
-    if let Some(function) = native_function_of(JSContext::current(), fun) {
+    let cx = JSContext::current();
+    cx.with_scope(|scope| {
+        let target = object(scope, fun)?;
+        native_function_of_v8(scope, target)?;
+        let key = native_reserved_key(scope, which);
         // SAFETY: JSAPI callers pass a valid value.
-        function.reserved.borrow_mut()[which] = unsafe { *val };
-    }
+        let slot = value(scope, unsafe { *val });
+        target.set_private(scope, key, slot)
+    });
 }
 
 /// The JIT info of a spec-defined method value (null for other functions).

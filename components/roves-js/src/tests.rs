@@ -451,6 +451,40 @@ mod object_model {
         assert!(unsafe { IsArrayObject(cx, function_value.handle().into_handle(), &mut callable) } && !callable);
     }
 
+    #[test]
+    fn dynamic_native_functions_die_with_their_function() {
+        let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        // SAFETY: the runtime's live context.
+        let states = || unsafe { (*cx).native_functions.borrow().len() };
+        // A rooted function keeps a reserved slot's object alive through its private property.
+        let function = unsafe { JS_NewFunction(cx, Some(reserved_getter), 0, 0, c"reserved".as_ptr()) };
+        rooted!(in(cx) let function = unsafe { JS_GetFunctionObject(function) });
+        let held = eval(&runtime, "({ toString() { return 'held by the slot'; } })");
+        unsafe { SetFunctionNativeReserved(function.get(), 0, &held) };
+        unsafe { SetFunctionNativeReserved(function.get(), 1, &Int32Value(3)) };
+        runtime.gc_for_testing();
+        let slot = unsafe { *GetFunctionNativeReserved(function.get(), 0) };
+        assert_eq!(describe(&runtime, slot), "held by the slot");
+        assert_eq!(unsafe { *GetFunctionNativeReserved(function.get(), 1) }.to_int32(), 3);
+        // Unrooted dynamic functions are collected, and their states dropped at the next sweep.
+        let before = states();
+        for _ in 0..1000 {
+            assert!(!unsafe { JS_NewFunction(cx, Some(reserved_getter), 0, 0, ptr::null()) }.is_null());
+        }
+        assert_eq!(states(), before + 1000);
+        runtime.gc_for_testing();
+        for _ in 0..100 {
+            assert!(!unsafe { JS_NewFunction(cx, Some(reserved_getter), 0, 0, ptr::null()) }.is_null());
+        }
+        assert!(states() < 200, "dead states are swept: {}", states());
+        // The rooted one still works.
+        rooted!(in(cx) let global = global(&runtime).to_object());
+        rooted!(in(cx) let function_value = ObjectValue(function.get()));
+        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"reserved".as_ptr(), function_value.handle().into_handle()) });
+        assert_eq!(describe(&runtime, eval(&runtime, "String(reserved())")), "held by the slot");
+    }
+
     unsafe extern "C" fn answer_getter(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
         // SAFETY: the JSNative contract.
         unsafe { *vp = Int32Value(42) };
@@ -1686,4 +1720,50 @@ mod embedder_job_queue {
         eval(&runtime, "Promise.resolve(3).then(v => log.push(v))");
         assert_eq!(JOBS.with(|jobs| jobs.borrow().len()), 1);
     }
+}
+
+thread_local! {
+    static GC_EVENTS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+unsafe extern "C" fn record_gc(
+    _: *mut crate::jsapi::JSContext,
+    status: crate::jsapi::JSGCStatus,
+    _: crate::jsapi::GCReason,
+    data: *mut std::os::raw::c_void,
+) {
+    GC_EVENTS.with(|events| events.borrow_mut().push(format!("{status:?} {}", data as usize)));
+}
+
+unsafe extern "C" fn record_gc_slice(
+    _: *mut crate::jsapi::JSContext,
+    progress: crate::jsapi::GCProgress,
+    _: *const crate::jsapi::GCDescription,
+) {
+    GC_EVENTS.with(|events| events.borrow_mut().push(format!("{progress:?}")));
+}
+
+#[test]
+fn gc_callbacks_report_full_collections() {
+    let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+    let cx = runtime.raw_cx();
+    // SAFETY: the runtime's live context.
+    unsafe {
+        crate::jsapi::JS_SetGCCallback(cx, Some(record_gc), 7 as *mut _);
+        crate::jsapi::SetGCSliceCallback(cx, Some(record_gc_slice));
+    }
+    runtime.gc_for_testing();
+    let events = GC_EVENTS.with(|events| events.take());
+    let cycle = ["JSGC_BEGIN 7", "GC_CYCLE_BEGIN", "GC_SLICE_BEGIN", "GC_SLICE_END", "GC_CYCLE_END", "JSGC_END 7"];
+    assert!(events.len() >= cycle.len() && events.len() % cycle.len() == 0, "{events:?}");
+    for chunk in events.chunks(cycle.len()) {
+        assert_eq!(chunk, cycle);
+    }
+    // SAFETY: as above.
+    unsafe {
+        crate::jsapi::JS_SetGCCallback(cx, None, std::ptr::null_mut());
+        crate::jsapi::SetGCSliceCallback(cx, None);
+    }
+    runtime.gc_for_testing();
+    assert!(GC_EVENTS.with(|events| events.borrow().is_empty()));
 }

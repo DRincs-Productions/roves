@@ -396,6 +396,7 @@ impl Runtime {
             pending_exception: RefCell::new(None),
             class_templates: Default::default(),
             native_functions: RefCell::new(Vec::new()),
+            native_function_sweep: std::cell::Cell::new(crate::jsapi_impl::NATIVE_FUNCTION_SWEEP_MIN),
             interned: Default::default(),
             proxy_handlers: RefCell::new(Default::default()),
             atoms: Default::default(),
