@@ -61,6 +61,11 @@ def main() -> int:
         if args.build and args.release:
             command.append("--release")
         if args.features:
+            # `pkg/feature` only names a direct dependency of the selected package: selecting the
+            # feature's own package too unifies it into the same build (roves-js/jitless reaches
+            # servoshell's roves-v8 this way).
+            for package in sorted({feature.split("/", 1)[0] for feature in args.features.replace(",", " ").split() if "/" in feature}):
+                command += ["-p", package]
             command += ["--features", args.features]
         result = subprocess.run(
             command,

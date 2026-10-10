@@ -12762,3 +12762,23 @@ Workflows passing it, including `roves-action`'s `debug-mozjs` input, therefore 
 Its `roves-action` description now says it is deprecated and ignored by V8 engine releases
 (roves-action commit a1397d9). It is not a `mach bundle` option, so `roves-packmaster` has no
 setting for it.
+
+## 2026-10-10 - V8 migration Phase 5: first game-workload results; JIT-less build fix
+
+**Servo files:** `support/v8_cutover_check.py`, `support/v8-smoke/games.html`.
+**Patch:** `0186-v8-jitless-build-and-audio-check.patch` after 0185.
+
+First CI run of `games.html` on the V8 servoshell: **9/10**. These pass:
+- PixiJS 8 and Three.js render, with their pixels checked;
+- `OfflineAudioContext`;
+- WebAssembly in a module Worker;
+- a dynamic blob import with top-level await;
+- `requestAnimationFrame`, the Gamepad API, IndexedDB saves and a JS-heavy workload.
+
+The real `AudioContext` reached "running" but its clock stayed at 0, because the runner has no
+audio output device. The check now reports `SUITE SKIP` in that case.
+
+The JIT-less servoshell build had not started. Cargo accepts `roves-js/jitless` only for a
+direct dependency of the selected package, and servoshell is not one. `v8_cutover_check.py
+--features pkg/feature` now also selects `pkg`, so the feature unifies into the same build
+(checked with `cargo tree`).
