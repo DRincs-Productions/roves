@@ -975,8 +975,10 @@ mod runtime_hooks {
         runtime.gc_for_testing();
         assert!(EXTRA_TRACED.with(Cell::get) > 0, "embedder root tracers run on every GC");
 
-        // Promise jobs run once the script that queued them returns (not inside it).
-        assert!(!eval(&runtime, "globalThis.done = false; Promise.resolve().then(() => { globalThis.done = true; }); done").to_boolean());
+        // Without an embedder job queue, promise jobs run at an explicit checkpoint only.
+        eval(&runtime, "globalThis.done = false; Promise.resolve().then(() => { globalThis.done = true; })");
+        assert!(!eval(&runtime, "done").to_boolean());
+        unsafe { RunJobs(cx) };
         assert!(eval(&runtime, "done").to_boolean());
 
         // Unhandled rejections, then a late handler.
@@ -1572,5 +1574,116 @@ mod window_proxies {
         let transplanted = unsafe { JS_TransplantObject(cx, proxy.handle().into(), replacement.handle().into()) };
         assert_eq!(transplanted, replacement.get());
         assert_eq!(unsafe { ToWindowIfWindowProxy(transplanted) }, other_window.get());
+    }
+}
+
+mod callable_classes {
+    use std::ptr;
+
+    use super::{describe, eval};
+    use crate::jsapi::*;
+    use crate::jsval::*;
+    use crate::rust::{JSEngineHandle, Runtime};
+
+    /// A constructor native that returns `{ newTarget }` (`vp` holds new.target after the args).
+    unsafe extern "C" fn construct(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+        let args = unsafe { std::slice::from_raw_parts_mut(vp, argc as usize + 3) };
+        let new_target = args[argc as usize + 2];
+        crate::rooted!(in(cx) let result = unsafe { JS_NewPlainObject(cx) });
+        crate::rooted!(in(cx) let new_target = new_target);
+        unsafe { JS_SetProperty(cx, result.handle().into_handle(), c"newTarget".as_ptr(), new_target.handle().into_handle()) };
+        args[0] = ObjectValue(result.get());
+        true
+    }
+
+    static OPS: JSClassOps = JSClassOps {
+        addProperty: None,
+        delProperty: None,
+        enumerate: None,
+        newEnumerate: None,
+        resolve: None,
+        mayResolve: None,
+        finalize: None,
+        call: Some(construct),
+        construct: Some(construct),
+        trace: None,
+    };
+
+    static CLASS: JSClass = JSClass {
+        name: c"Iface".as_ptr(),
+        flags: 0,
+        cOps: &OPS,
+        spec: ptr::null(),
+        ext: ptr::null(),
+        oOps: ptr::null(),
+    };
+
+    #[test]
+    fn callable_class_objects_are_functions_with_new_target() {
+        let runtime = Runtime::new(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let iface = unsafe { JS_NewObject(cx, &CLASS) });
+        rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
+        rooted!(in(cx) let value = ObjectValue(iface.get()));
+        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"Iface".as_ptr(), value.handle().into_handle()) });
+        assert_eq!(describe(&runtime, eval(&runtime, "typeof Iface")), "function");
+        assert_eq!(eval(&runtime, "Iface").to_object(), iface.get(), "the function keeps its identity");
+        assert!(eval(&runtime, "new Iface().newTarget === Iface").to_boolean());
+        assert!(eval(&runtime, "class Sub extends Iface {}; new Sub().newTarget === Sub").to_boolean(), "super() passes the subclass as new.target");
+        assert!(eval(&runtime, "Reflect.construct(Iface, [], Array).newTarget === Array").to_boolean());
+    }
+}
+
+mod embedder_job_queue {
+    use std::cell::RefCell;
+    use std::ffi::c_void;
+
+    use super::eval;
+    use crate::glue::{CreateJobQueue, JobQueueTraps};
+    use crate::jsapi::*;
+    use crate::jsval::*;
+    use crate::rust::{JSEngineHandle, Runtime};
+
+    thread_local! {
+        static JOBS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+    }
+
+    unsafe extern "C" fn enqueue(
+        _queue: *const c_void,
+        _cx: *mut JSContext,
+        _promise: HandleObject,
+        job: HandleObject,
+        _site: HandleObject,
+        _data: HandleObject,
+    ) -> bool {
+        JOBS.with(|jobs| jobs.borrow_mut().push(job.get() as usize));
+        true
+    }
+
+    #[test]
+    fn promise_jobs_run_at_the_embedders_checkpoint() {
+        let runtime = Runtime::new(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        // SAFETY: an all-`None` trap table, plus the enqueue trap.
+        let mut traps: JobQueueTraps = unsafe { std::mem::zeroed() };
+        traps.enqueuePromiseJob = Some(enqueue);
+        let queue = unsafe { CreateJobQueue(&traps, std::ptr::null(), std::ptr::null_mut()) };
+        unsafe { SetJobQueue(cx, queue) };
+
+        eval(&runtime, "globalThis.log = []; Promise.resolve(1).then(v => log.push(v)); Promise.resolve(2).then(v => log.push(v));");
+        assert_eq!(eval(&runtime, "log.length").to_int32(), 0, "V8 does not run promise jobs by itself");
+        let jobs = JOBS.with(|jobs| jobs.borrow_mut().split_off(0));
+        assert_eq!(jobs.len(), 1, "one drain job per checkpoint");
+
+        // The embedder's checkpoint runs the job: V8's pending reactions run, in order.
+        rooted!(in(cx) let job = ObjectValue(jobs[0] as *mut JSObject));
+        rooted!(in(cx) let this = UndefinedValue());
+        rooted!(in(cx) let mut rval = UndefinedValue());
+        let no_args = HandleValueArray { length_: 0, elements_: std::ptr::null() };
+        assert!(unsafe { Call(cx, this.handle().into_handle(), job.handle().into_handle(), &no_args, rval.handle_mut().into_handle()) });
+        assert_eq!(super::describe(&runtime, eval(&runtime, "log.join()")), "1,2");
+        // Later promises request a new drain job.
+        eval(&runtime, "Promise.resolve(3).then(v => log.push(v))");
+        assert_eq!(JOBS.with(|jobs| jobs.borrow().len()), 1);
     }
 }

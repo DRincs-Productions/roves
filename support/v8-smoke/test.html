@@ -1,0 +1,18 @@
+<!doctype html>
+<html><head><title>v8 test</title></head>
+<body><div id="out">initial</div>
+<script>
+console.log("ROVES-V8 URL", typeof URL, typeof URLSearchParams, typeof HTMLDivElement);
+console.log("ROVES-V8 script start, engine typeof window:", typeof window);
+const div = document.getElementById("out");
+div.textContent = "changed by js";
+console.log("ROVES-V8 dom:", div.textContent, document.title, document.querySelectorAll("div").length);
+const el = document.createElement("span"); el.className = "x"; document.body.appendChild(el);
+console.log("ROVES-V8 children:", document.body.children.length, el instanceof HTMLElement, el.tagName);
+el.addEventListener("click", (e) => console.log("ROVES-V8 click event", e.type, e.target === el));
+el.click();
+Promise.resolve(5).then(v => console.log("ROVES-V8 promise", v));
+setTimeout(() => console.log("ROVES-V8 timeout fired"), 10);
+class A { constructor(){ this.x = 1 } get y(){ return this.x + 1 } }
+console.log("ROVES-V8 class", new A().y, JSON.stringify({a:[1,2]}), window === globalThis, window.document === document);
+</script></body></html>

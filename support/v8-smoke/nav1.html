@@ -1,0 +1,6 @@
+<!doctype html><html><body>
+<script>
+console.log("ROVES-V8 nav1 loaded", location.pathname.split("/").pop());
+addEventListener("pageshow", (e) => console.log("ROVES-V8 nav1 pageshow persisted=" + e.persisted));
+if (!sessionStorage.getItem("went")) { sessionStorage.setItem("went", "1"); setTimeout(() => { location.href = "nav2.html"; }, 50); }
+</script></body></html>

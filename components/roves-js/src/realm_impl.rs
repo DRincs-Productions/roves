@@ -22,6 +22,8 @@ pub(crate) struct RealmData {
     pub(crate) principals: Cell<*mut JSPrincipals>,
     /// The realm's window proxy (`SetWindowProxy`), for a Window global.
     pub(crate) window_proxy: Cell<*mut JSObject>,
+    /// The realm's promise-job drain function (see `runtime_impl`).
+    pub(crate) drain_function: Cell<*mut JSObject>,
 }
 
 /// Registers a new realm for `context` with its `global` cell (null: the context's plain
@@ -33,6 +35,7 @@ pub(crate) fn register_realm(cx: &JSContext, scope: &mut v8::PinScope, context: 
         global: Cell::new(global),
         principals: Cell::new(std::ptr::null_mut()),
         window_proxy: Cell::new(std::ptr::null_mut()),
+        drain_function: Cell::new(std::ptr::null_mut()),
     });
     let pointer = &*data as *const RealmData as *mut c_void;
     // SpiderMonkey has no access checks between realms (Servo checks cross-origin access
@@ -130,6 +133,7 @@ pub(crate) fn trace_realms(cx: &JSContext, visitor: &mut v8::cppgc::Visitor) {
     for realm in realms.iter() {
         crate::cell::trace_cell(realm.global.get() as *mut c_void, visitor);
         crate::cell::trace_cell(realm.window_proxy.get() as *mut c_void, visitor);
+        crate::cell::trace_cell(realm.drain_function.get() as *mut c_void, visitor);
     }
 }
 

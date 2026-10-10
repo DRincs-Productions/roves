@@ -1,0 +1,65 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>roves-js smoke suite</title></head>
+<body>
+<div id="host" data-foo-bar="baz"><p class="a b">one</p><p name="second">two</p><form name="f"><input name="i" value="v"></form></div>
+<script>
+const results = [];
+const pending = [];
+function check(name, fn) {
+  try {
+    const value = fn();
+    if (value && typeof value.then === "function") {
+      pending.push(value.then(ok => results.push([name, ok === true, ok]), e => results.push([name, false, String(e)])));
+    } else {
+      results.push([name, value === true, value]);
+    }
+  } catch (e) {
+    results.push([name, false, String(e && e.stack || e)]);
+  }
+}
+const host = document.getElementById("host");
+check("dataset proxy", () => host.dataset.fooBar === "baz" && (host.dataset.x = "1", host.getAttribute("data-x") === "1") && Object.keys(host.dataset).join() === "fooBar,x");
+check("classList", () => { const p = host.querySelector("p"); p.classList.add("c"); p.classList.toggle("a"); return p.className === "b c" && p.classList.contains("c") && [...p.classList].join() === "b,c"; });
+check("NodeList iteration", () => { const ps = document.querySelectorAll("p"); let n = 0; ps.forEach(() => n++); return n === 2 && [...ps].length === 2 && [...ps.keys()].join() === "0,1" && ps[1].textContent === "two"; });
+check("HTMLCollection named", () => document.getElementsByTagName("p").namedItem("second").textContent === "two" && document.forms.f.i.value === "v");
+check("localStorage proxy", () => { localStorage.clear(); localStorage.k = "v"; localStorage.setItem("n", 1); return localStorage.getItem("k") === "v" && localStorage.n === "1" && localStorage.length === 2 && ("k" in localStorage); });
+check("Event dispatch + bubbling", () => { let order = []; host.addEventListener("x", e => order.push("host:" + e.eventPhase)); const p = host.querySelector("p"); p.addEventListener("x", e => order.push("p")); p.dispatchEvent(new Event("x", { bubbles: true })); return order.join() === "p,host:3"; });
+check("CustomEvent detail", () => { let d; document.addEventListener("ce", e => d = e.detail); document.dispatchEvent(new CustomEvent("ce", { detail: { a: 1 } })); return d.a === 1; });
+check("MutationObserver", () => new Promise(r => { const mo = new MutationObserver(recs => r(recs.length === 1 && recs[0].addedNodes.length === 1)); mo.observe(host, { childList: true }); host.appendChild(document.createElement("span")); }));
+check("custom elements", () => { class XEl extends HTMLElement { connectedCallback() { this.textContent = "x-el!"; } get answer() { return 42; } } customElements.define("x-el", XEl); const e = document.createElement("x-el"); host.appendChild(e); return e.textContent === "x-el!" && e.answer === 42 && e instanceof XEl && e instanceof HTMLElement; });
+check("shadow DOM", () => { const d = document.createElement("div"); const root = d.attachShadow({ mode: "open" }); root.innerHTML = "<b>in</b>"; return d.shadowRoot.querySelector("b").textContent === "in"; });
+check("innerHTML/outerHTML", () => { const d = document.createElement("div"); d.innerHTML = "<i>a</i><u>b</u>"; return d.children.length === 2 && d.outerHTML === "<div><i>a</i><u>b</u></div>"; });
+check("getComputedStyle", () => getComputedStyle(document.body).display === "block");
+check("URL & URLSearchParams", () => { const u = new URL("https://a.b/c?x=1&y=2#h"); u.searchParams.append("z", "3"); return u.href === "https://a.b/c?x=1&y=2&z=3#h" && [...u.searchParams.keys()].join() === "x,y,z"; });
+check("TextEncoder/Decoder", () => new TextDecoder().decode(new TextEncoder().encode("héllo")) === "héllo");
+check("structuredClone", () => { const o = { d: new Date(1), m: new Map([[1, 2]]), a: new Uint8Array([3]) }; const c = structuredClone(o); return c !== o && c.d.getTime() === 1 && c.m.get(1) === 2 && c.a[0] === 3; });
+check("postMessage self", () => new Promise(r => { addEventListener("message", e => r(e.data.n === 7 && e.data.list.length === 2), { once: true }); postMessage({ n: 7, list: [1, 2] }, "*"); }));
+check("Worker", () => new Promise((r) => { const w = new Worker(URL.createObjectURL(new Blob(["onmessage = e => postMessage(e.data * 2)"], { type: "text/javascript" }))); w.onmessage = e => r(e.data === 42); w.onerror = e => r("worker error " + e.message); w.postMessage(21); }));
+check("MessageChannel", () => new Promise(r => { const c = new MessageChannel(); c.port1.onmessage = e => r(e.data === "hi"); c.port2.postMessage("hi"); }));
+check("Blob/FileReader", () => new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result === "blob!"); fr.readAsText(new Blob(["blob!"])); }));
+check("async/await + generators", () => (async () => { function* g() { yield 1; yield 2; } const v = await Promise.all([1, Promise.resolve(2)]); return [...g()].join() === "1,2" && v.join() === "1,2"; })());
+check("Intl", () => new Intl.NumberFormat("de-DE").format(1234.5) === "1.234,5" && typeof Intl.DateTimeFormat().format(0) === "string");
+check("canvas 2d", () => { const c = document.createElement("canvas"); c.width = 4; c.height = 4; const g = c.getContext("2d"); g.fillStyle = "#ff0000"; g.fillRect(0, 0, 4, 4); const d = g.getImageData(1, 1, 1, 1).data; return d[0] === 255 && d[1] === 0 && d[3] === 255; });
+check("webgl context", () => { const c = document.createElement("canvas"); const gl = c.getContext("webgl2") || c.getContext("webgl"); return !!gl && typeof gl.getParameter(gl.VERSION) === "string"; });
+check("IndexedDB", () => new Promise(r => { const req = indexedDB.open("suite", 1); req.onupgradeneeded = () => req.result.createObjectStore("s"); req.onerror = () => r("idb error"); req.onsuccess = () => { const db = req.result; const tx = db.transaction("s", "readwrite"); tx.objectStore("s").put({ v: 5 }, "k"); tx.oncomplete = () => { db.transaction("s").objectStore("s").get("k").onsuccess = e => r(e.target.result.v === 5); }; }; }));
+check("requestAnimationFrame", () => new Promise(r => requestAnimationFrame(t => r(typeof t === "number"))));
+check("queueMicrotask order", () => new Promise(r => { const log = []; queueMicrotask(() => log.push("m")); Promise.resolve().then(() => log.push("p")); setTimeout(() => r(log.length === 2), 0); }));
+check("DOMParser", () => new DOMParser().parseFromString("<a><b>t</b></a>", "text/xml").querySelector("b").textContent === "t");
+check("instanceof / prototype chain", () => host instanceof HTMLDivElement && host instanceof Element && host instanceof Node && Object.getPrototypeOf(host) === HTMLDivElement.prototype && HTMLDivElement.name === "HTMLDivElement");
+check("exceptions are DOMException", () => { try { document.querySelector("!!"); return false; } catch (e) { return e instanceof DOMException && e.name === "SyntaxError"; } });
+check("JSON of DOM data", () => JSON.stringify({ a: [1, "x", null] }) === '{"a":[1,"x",null]}' && JSON.parse('{"b":2}').b === 2);
+check("fetch blob url", () => fetch(URL.createObjectURL(new Blob(["fetched"]))).then(r => r.text()).then(t => t === "fetched"));
+check("Proxy + Reflect", () => { const p = new Proxy({}, { get: (t, k) => k }); return p.hello === "hello" && Reflect.ownKeys({ a: 1 }).join() === "a"; });
+check("WeakRef / FinalizationRegistry exist", () => typeof WeakRef === "function" && typeof FinalizationRegistry === "function");
+check("document.all-ish getters", () => document.documentElement.tagName === "HTML" && document.body === document.querySelector("body"));
+
+Promise.all(pending).then(() => {
+  let passed = 0;
+  for (const [name, ok, detail] of results) {
+    if (ok) passed++;
+    console.log((ok ? "SUITE PASS " : "SUITE FAIL ") + name + (ok ? "" : " :: " + detail));
+  }
+  console.log("SUITE TOTAL " + passed + "/" + results.length);
+});
+</script>
+</body></html>

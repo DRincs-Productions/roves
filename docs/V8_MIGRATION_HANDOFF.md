@@ -441,8 +441,13 @@ strategia completa è in `docs/V8_MIGRATION.md` ("Cutover strategy"). Metrica:
   (inspector V8), copertura WPT.
 - **CP107:** navigazione: il transplant di un `WindowProxy` globale restituisce il nuovo proxy
   (adottato da Servo); verificati `location.href` e `history.back()` con bfcache.
-- **Prossimi passi (dopo CP107):** WPT su un sottoinsieme; devtools/inspector; swap
-  permanente.
+- **CP108:** oggetti interfaccia = vere funzioni V8 (custom element con `super()` /
+  `new.target`); job delle promise ai checkpoint di Servo (drain via `enqueuePromiseJob` +
+  promise hook V8, policy esplicita); job CI `servoshell-v8` in `v8.yml` (build su V8 +
+  smoke suite headless da `support/v8-smoke/`). **Niente più build locali di servoshell**: la
+  verifica end-to-end è in CI (richiesta dell'utente, `lld-link` satura la CPU).
+- **Prossimi passi (dopo CP108):** leggere i risultati della smoke suite in CI e correggere i
+  fallimenti; devtools/inspector; swap permanente.
 - **Storico (dopo CP105):** global proxy V8 = `WindowProxy` di Servo; uscita pulita
   in headless; più pagine e WPT; poi swap permanente (`engine-v8`).
 - **Storico (dopo CP104):** `cargo check` dell'intero workspace con lo swap

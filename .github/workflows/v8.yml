@@ -9,6 +9,8 @@ on:
       - 'components/roves-v8-derive/**'
       - 'components/roves-js/**'
       - 'components/script_bindings/**'
+      - 'support/v8_cutover_check.py'
+      - 'support/v8-smoke/**'
       - '.github/workflows/v8.yml'
   workflow_dispatch: {}
 
@@ -72,3 +74,44 @@ jobs:
           # The mozjs-on-V8 layer of the cutover (value model, cells, rooting).
           cd "$RUNNER_TEMP/roves-js"
           cargo test --locked
+
+  # servoshell built against roves-js (the mozjs API on V8) instead of SpiderMonkey, then the
+  # smoke pages in support/v8-smoke/ run headlessly. This is the end-to-end check of the V8
+  # cutover, kept in CI so no local machine has to link the browser.
+  servoshell-v8:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - name: make mach executable
+        run: chmod +x mach
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v5
+      # See release.yml: background apt jobs can hold the dpkg lock right after boot.
+      - name: stop background apt processes
+        run: |
+          sudo systemctl stop apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+          sudo systemctl kill --kill-who=all apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
+          sudo pkill -9 -f unattended-upgrade 2>/dev/null || true
+          for i in $(seq 1 60); do
+            sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock >/dev/null 2>&1 || exit 0
+            sleep 1
+          done
+      - name: mach bootstrap (system build dependencies)
+        timeout-minutes: 20
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: ./mach bootstrap --force --yes --skip-lints --skip-nextest
+      - name: free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+      - name: build servoshell on roves-js (V8)
+        run: |
+          python support/v8_cutover_check.py servoshell --build --online --top 40
+          test -x target/v8-cutover/debug/servoshell
+      - name: run the V8 smoke pages headlessly
+        run: |
+          sudo apt-get install -y --no-install-recommends xvfb
+          chmod +x support/v8-smoke/run.sh
+          support/v8-smoke/run.sh "$PWD/target/v8-cutover/debug/servoshell" xvfb-run -a --server-args="-screen 0 1280x720x24"

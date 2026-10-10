@@ -11,6 +11,58 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-10 - V8 cutover: interface objects as functions, promise jobs at Servo's checkpoints, end-to-end CI (CP108)
+
+**Servo files:**
+- `components/roves-js/src/object.rs`, `cell.rs`, `runtime_impl.rs`, `realm_impl.rs`,
+  `jsapi.rs`, `rust.rs` and `tests.rs`;
+- `support/v8_cutover_check.py`, which gains `--online`;
+- `support/v8-smoke/`, new: `suite.html`, `test.html`, `nav1.html`, `nav2.html` and `run.sh`.
+
+**Patch:** `0173-roves-js-interface-functions-promise-jobs.patch` after 0172.
+`.github/workflows/v8.yml` is CI-only and not part of the patch series.
+
+**Interface objects are V8 functions.** Objects of classes with `call`/`construct` hooks (Servo's
+interface objects) are now real V8 functions, not API objects with a call-as-function handler.
+- V8 does not give such a handler the actual `new.target` for `super()` or
+  `Reflect.construct`. Custom elements (`class X extends HTMLElement`) therefore failed with
+  "Illegal constructor": Servo's HTML constructor looks the definition up by `new.target`.
+- `typeof` is now "function", as the spec requires.
+- The class box is found through a V8 private and kept alive by the runtime.
+
+**Promise jobs at Servo's microtask checkpoints.** V8's automatic microtask policy (CP105) ran
+promise reactions whenever a JSAPI call from Rust returned to depth zero. That could be while
+Servo held a `RefCell`: the smoke suite panicked in the streams code. Now:
+- the explicit policy is back;
+- V8's promise hook detects that jobs may be pending (a promise created or resolved);
+- roves-js then enqueues one job in the embedder's job queue through Servo's own
+  `enqueuePromiseJob` trap. The job is a per-realm native that performs V8's microtask
+  checkpoint.
+
+Promise jobs thus run at Servo's checkpoints, in its order, as with SpiderMonkey. A promise hook
+disables some of V8's promise fast paths; revisit for performance.
+
+**End-to-end in CI, not on developer machines.**
+- `.github/workflows/v8.yml` gains `servoshell-v8` (Linux):
+  1. `mach bootstrap`;
+  2. `python support/v8_cutover_check.py servoshell --build --online`;
+  3. `support/v8-smoke/run.sh` under `xvfb`.
+- `run.sh` runs a DOM smoke suite of 34 checks headlessly:
+  - DOM proxies (`dataset`, `Storage`, `HTMLCollection`);
+  - `MutationObserver`, custom elements and shadow DOM;
+  - `URL`, `TextEncoder`, `structuredClone`, `postMessage`, `Worker`, `MessageChannel`,
+    `Blob`/`FileReader`;
+  - async code, `Intl`, canvas 2D, WebGL, IndexedDB, `requestAnimationFrame`, microtask
+    order, `DOMParser`, `DOMException`, `fetch` and more.
+- It also runs the basic test page and the navigation pages, reporting every result as an
+  annotation.
+- A local build of the V8 servoshell is no longer needed to verify changes.
+
+**Tests:** `roves-js` 24/24, adding:
+- callable class objects: `typeof`, identity, and `new.target` through `new`, `super()` and
+  `Reflect.construct`;
+- promise jobs that wait for the embedder's checkpoint, with one drain job per checkpoint.
+
 ## 2026-10-10 - V8 cutover: navigation with window proxies on V8 global proxies (CP107)
 
 **Servo files:** `components/roves-js/src/proxy.rs` and `tests.rs`.

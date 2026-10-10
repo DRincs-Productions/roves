@@ -429,6 +429,69 @@ fn resolve_enumerator<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::PropertyCa
     retval.set(array);
 }
 
+fn is_callable_class(class: *const JSClass) -> bool {
+    // SAFETY: classes are static.
+    unsafe { (*class).cOps.as_ref() }.is_some_and(|ops| ops.call.is_some() || ops.construct.is_some())
+}
+
+fn callable_class_key<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Private> {
+    let name = v8::String::new(scope, "roves-js callable class box").expect("a short string");
+    v8::Private::for_api(scope, Some(name))
+}
+
+/// An object of a class with `call`/`construct` hooks (Servo's interface objects): a real V8
+/// function, so constructing it through `super()` or `Reflect.construct` passes the actual
+/// `new.target` (an API object's call-as-function handler does not get it) and `typeof` is
+/// "function". Its box is found through a V8 private and kept alive by the runtime.
+fn new_callable_class_object(cx: &JSContext, class: *const JSClass, proto: *mut JSObject, default_proto: bool) -> *mut JSObject {
+    cx.catching(|scope| {
+        let class_box = new_class_box(scope, class);
+        let raw = box_to_raw(&class_box);
+        let data = v8::External::new(scope, raw);
+        let function = v8::Function::builder(callable_class_callback).data(data.into()).build(scope)?;
+        if !proto.is_null() {
+            // SAFETY: JSAPI callers pass live (rooted) prototypes.
+            let proto = unsafe { crate::cell::cell_value(scope, proto as *mut c_void) };
+            function.set_prototype(scope, proto)?;
+        } else if !default_proto {
+            let null = v8::null(scope).into();
+            function.set_prototype(scope, null)?;
+        }
+        let key = callable_class_key(scope);
+        let pointer = v8::External::new(scope, raw);
+        function.set_private(scope, key, pointer.into())?;
+        let cell = crate::cell::new_cell_with_class(scope, function.into(), Some(Member::new(&class_box)));
+        // SAFETY: just created; the persistent below keeps it alive.
+        unsafe { class_box.as_ref() }.cell.set(cell);
+        cx.callable_class_boxes.borrow_mut().push(v8::cppgc::Persistent::new(&class_box));
+        Some(cell as *mut JSObject)
+    })
+    .unwrap_or(std::ptr::null_mut())
+}
+
+/// The box of a function made by `new_callable_class_object`.
+pub(crate) fn callable_class_box_of<'b>(scope: &mut v8::PinScope, function: v8::Local<v8::Object>) -> Option<&'b ClassBox> {
+    let key = callable_class_key(scope);
+    let pointer = v8::Local::<v8::External>::try_from(function.get_private(scope, key)?).ok()?;
+    box_from_raw(pointer.value())
+}
+
+fn callable_class_callback(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut retval: v8::ReturnValue) {
+    let Ok(external) = v8::Local::<v8::External>::try_from(args.data()) else { return };
+    let Some(class_box) = box_from_raw(external.value()) else { return };
+    // SAFETY: only callable classes get this callback.
+    let ops = unsafe { &*(*class_box.class).cOps };
+    let constructing = !args.new_target().is_undefined();
+    let native = if constructing { ops.construct.or(ops.call) } else { ops.call };
+    let Some(native) = native else {
+        crate::native::throw_type_error(scope, "object is not callable");
+        return;
+    };
+    // SAFETY: the box's cell is the function's (alive while it is called).
+    let callee = unsafe { crate::cell::cell_value(scope, class_box.cell.get()) };
+    crate::native::call_native(scope, &args, &mut retval, Some(native), callee, constructing);
+}
+
 /// A callable class object was called (or constructed): run its `call`/`construct` hook.
 fn call_class_hook(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut retval: v8::ReturnValue) {
     let Ok(external) = v8::Local::<v8::External>::try_from(args.data()) else { return };
@@ -452,6 +515,9 @@ fn call_class_hook(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments
 /// Allocates a class-based object with `proto` (or the realm's `Object.prototype` when
 /// `default_proto` and `proto` is null). Returns its cell, or null with a pending exception.
 pub(crate) fn new_object(cx: &JSContext, class: *const JSClass, proto: *mut JSObject, default_proto: bool) -> *mut JSObject {
+    if is_callable_class(class) {
+        return new_callable_class_object(cx, class, proto, default_proto);
+    }
     cx.catching(|scope| {
         let template = cx.class_templates.template(scope, class);
         let object = template.new_instance(scope)?;

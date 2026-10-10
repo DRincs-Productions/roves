@@ -1,0 +1,591 @@
+diff --git a/components/roves-js/src/cell.rs b/components/roves-js/src/cell.rs
+index 118051d0156..82833cd4b66 100644
+--- a/components/roves-js/src/cell.rs
++++ b/components/roves-js/src/cell.rs
+@@ -159,6 +159,12 @@ pub(crate) fn new_cell(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) ->
+             }
+         }
+         if object.is_function() {
++            if let Some(class_box) = crate::object::callable_class_box_of(scope, object) {
++                let cell = class_box.cell.get();
++                if !cell.is_null() {
++                    return cell;
++                }
++            }
+             if let Some(function) = crate::jsapi_impl::native_function_of_v8(scope, object) {
+                 let cell = function.cell.get();
+                 if !cell.is_null() {
+diff --git a/components/roves-js/src/jsapi.rs b/components/roves-js/src/jsapi.rs
+index 079e159af26..a1f2329155c 100644
+--- a/components/roves-js/src/jsapi.rs
++++ b/components/roves-js/src/jsapi.rs
+@@ -146,6 +146,8 @@ pub struct JSContext {
+     pub(crate) helpers: RefCell<std::collections::HashMap<&'static str, v8::Global<v8::Function>>>,
+     /// Module records and module hooks (see `modules_impl`).
+     pub(crate) modules: crate::modules_impl::Modules,
++    /// The boxes of callable class objects (see `object::new_callable_class_object`).
++    pub(crate) callable_class_boxes: RefCell<Vec<v8::cppgc::Persistent<crate::object::ClassBox>>>,
+ }
+ 
+ impl JSContext {
+diff --git a/components/roves-js/src/object.rs b/components/roves-js/src/object.rs
+index f0ed8a0f085..853d2a63e16 100644
+--- a/components/roves-js/src/object.rs
++++ b/components/roves-js/src/object.rs
+@@ -429,6 +429,69 @@ fn resolve_enumerator<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::PropertyCa
+     retval.set(array);
+ }
+ 
++fn is_callable_class(class: *const JSClass) -> bool {
++    // SAFETY: classes are static.
++    unsafe { (*class).cOps.as_ref() }.is_some_and(|ops| ops.call.is_some() || ops.construct.is_some())
++}
++
++fn callable_class_key<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Private> {
++    let name = v8::String::new(scope, "roves-js callable class box").expect("a short string");
++    v8::Private::for_api(scope, Some(name))
++}
++
++/// An object of a class with `call`/`construct` hooks (Servo's interface objects): a real V8
++/// function, so constructing it through `super()` or `Reflect.construct` passes the actual
++/// `new.target` (an API object's call-as-function handler does not get it) and `typeof` is
++/// "function". Its box is found through a V8 private and kept alive by the runtime.
++fn new_callable_class_object(cx: &JSContext, class: *const JSClass, proto: *mut JSObject, default_proto: bool) -> *mut JSObject {
++    cx.catching(|scope| {
++        let class_box = new_class_box(scope, class);
++        let raw = box_to_raw(&class_box);
++        let data = v8::External::new(scope, raw);
++        let function = v8::Function::builder(callable_class_callback).data(data.into()).build(scope)?;
++        if !proto.is_null() {
++            // SAFETY: JSAPI callers pass live (rooted) prototypes.
++            let proto = unsafe { crate::cell::cell_value(scope, proto as *mut c_void) };
++            function.set_prototype(scope, proto)?;
++        } else if !default_proto {
++            let null = v8::null(scope).into();
++            function.set_prototype(scope, null)?;
++        }
++        let key = callable_class_key(scope);
++        let pointer = v8::External::new(scope, raw);
++        function.set_private(scope, key, pointer.into())?;
++        let cell = crate::cell::new_cell_with_class(scope, function.into(), Some(Member::new(&class_box)));
++        // SAFETY: just created; the persistent below keeps it alive.
++        unsafe { class_box.as_ref() }.cell.set(cell);
++        cx.callable_class_boxes.borrow_mut().push(v8::cppgc::Persistent::new(&class_box));
++        Some(cell as *mut JSObject)
++    })
++    .unwrap_or(std::ptr::null_mut())
++}
++
++/// The box of a function made by `new_callable_class_object`.
++pub(crate) fn callable_class_box_of<'b>(scope: &mut v8::PinScope, function: v8::Local<v8::Object>) -> Option<&'b ClassBox> {
++    let key = callable_class_key(scope);
++    let pointer = v8::Local::<v8::External>::try_from(function.get_private(scope, key)?).ok()?;
++    box_from_raw(pointer.value())
++}
++
++fn callable_class_callback(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut retval: v8::ReturnValue) {
++    let Ok(external) = v8::Local::<v8::External>::try_from(args.data()) else { return };
++    let Some(class_box) = box_from_raw(external.value()) else { return };
++    // SAFETY: only callable classes get this callback.
++    let ops = unsafe { &*(*class_box.class).cOps };
++    let constructing = !args.new_target().is_undefined();
++    let native = if constructing { ops.construct.or(ops.call) } else { ops.call };
++    let Some(native) = native else {
++        crate::native::throw_type_error(scope, "object is not callable");
++        return;
++    };
++    // SAFETY: the box's cell is the function's (alive while it is called).
++    let callee = unsafe { crate::cell::cell_value(scope, class_box.cell.get()) };
++    crate::native::call_native(scope, &args, &mut retval, Some(native), callee, constructing);
++}
++
+ /// A callable class object was called (or constructed): run its `call`/`construct` hook.
+ fn call_class_hook(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut retval: v8::ReturnValue) {
+     let Ok(external) = v8::Local::<v8::External>::try_from(args.data()) else { return };
+@@ -452,6 +515,9 @@ fn call_class_hook(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments
+ /// Allocates a class-based object with `proto` (or the realm's `Object.prototype` when
+ /// `default_proto` and `proto` is null). Returns its cell, or null with a pending exception.
+ pub(crate) fn new_object(cx: &JSContext, class: *const JSClass, proto: *mut JSObject, default_proto: bool) -> *mut JSObject {
++    if is_callable_class(class) {
++        return new_callable_class_object(cx, class, proto, default_proto);
++    }
+     cx.catching(|scope| {
+         let template = cx.class_templates.template(scope, class);
+         let object = template.new_instance(scope)?;
+diff --git a/components/roves-js/src/realm_impl.rs b/components/roves-js/src/realm_impl.rs
+index 1f0547de5d5..50c63892ad4 100644
+--- a/components/roves-js/src/realm_impl.rs
++++ b/components/roves-js/src/realm_impl.rs
+@@ -22,6 +22,8 @@ pub(crate) struct RealmData {
+     pub(crate) principals: Cell<*mut JSPrincipals>,
+     /// The realm's window proxy (`SetWindowProxy`), for a Window global.
+     pub(crate) window_proxy: Cell<*mut JSObject>,
++    /// The realm's promise-job drain function (see `runtime_impl`).
++    pub(crate) drain_function: Cell<*mut JSObject>,
+ }
+ 
+ /// Registers a new realm for `context` with its `global` cell (null: the context's plain
+@@ -33,6 +35,7 @@ pub(crate) fn register_realm(cx: &JSContext, scope: &mut v8::PinScope, context:
+         global: Cell::new(global),
+         principals: Cell::new(std::ptr::null_mut()),
+         window_proxy: Cell::new(std::ptr::null_mut()),
++        drain_function: Cell::new(std::ptr::null_mut()),
+     });
+     let pointer = &*data as *const RealmData as *mut c_void;
+     // SpiderMonkey has no access checks between realms (Servo checks cross-origin access
+@@ -130,6 +133,7 @@ pub(crate) fn trace_realms(cx: &JSContext, visitor: &mut v8::cppgc::Visitor) {
+     for realm in realms.iter() {
+         crate::cell::trace_cell(realm.global.get() as *mut c_void, visitor);
+         crate::cell::trace_cell(realm.window_proxy.get() as *mut c_void, visitor);
++        crate::cell::trace_cell(realm.drain_function.get() as *mut c_void, visitor);
+     }
+ }
+ 
+diff --git a/components/roves-js/src/runtime_impl.rs b/components/roves-js/src/runtime_impl.rs
+index af7082d37e5..b448e5a6fe3 100644
+--- a/components/roves-js/src/runtime_impl.rs
++++ b/components/roves-js/src/runtime_impl.rs
+@@ -6,11 +6,13 @@
+ //! promise rejection tracking, GC and JIT settings) on V8.
+ //!
+ //! **Promise jobs.** SpiderMonkey hands every promise job to the embedder's job queue
+-//! (`JobQueueTraps::enqueuePromiseJob`), and the embedder runs it. V8 has no such hook: its
+-//! microtask queue is the only queue. Runtimes use V8's automatic microtask policy (jobs
+-//! run when the script call depth returns to zero, after each script or callback, like
+-//! HTML's microtask checkpoint after running script), and [`RunJobs`] performs a checkpoint
+-//! on demand; the embedder's job-queue traps are kept but not called for promise jobs.
++//! (`JobQueueTraps::enqueuePromiseJob`), and the embedder runs it at its microtask
++//! checkpoint. V8 keeps promise jobs in its own microtask queue (explicit policy here: V8
++//! never runs them by itself). When V8 may have queued jobs (its promise hook reports a promise
++//! created or resolved), roves-js enqueues one job in the embedder's queue, a native "drain"
++//! function of the current realm, which performs V8's microtask checkpoint when the embedder
++//! runs it. Promise jobs thus run at the embedder's checkpoints, in its order, as with
++//! SpiderMonkey. Without an embedder job queue, [`RunJobs`] performs a checkpoint.
+ //!
+ //! Settings with no V8 counterpart (SpiderMonkey's GC parameters, JIT options, build ids,
+ //! memory reporters) are recorded and otherwise ignored.
+@@ -86,7 +88,8 @@ fn isolate<'i>(cx: *mut JSContext) -> &'i mut v8::Isolate {
+ 
+ /// Configures a new runtime's isolate for the JSAPI's model.
+ pub(crate) fn configure_isolate(isolate: &mut v8::Isolate) {
+-    isolate.set_microtasks_policy(v8::MicrotasksPolicy::Auto);
++    isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
++    isolate.set_promise_hook(promise_hook);
+     isolate.set_promise_reject_callback(promise_reject_callback);
+     crate::modules_impl::configure_isolate(isolate);
+ }
+@@ -195,6 +198,69 @@ pub unsafe fn SetJobQueue(cx: *mut JSContext, queue: *mut JobQueue) {
+ 
+ pub unsafe fn JobQueueIsEmpty(_cx: *mut JSContext) {}
+ 
++thread_local! {
++    /// Whether a drain job is in the embedder's queue (one is enough per checkpoint).
++    static DRAIN_PENDING: Cell<bool> = const { Cell::new(false) };
++}
++
++/// V8's promise hook: a promise created or resolved may have queued promise jobs.
++unsafe extern "C" fn promise_hook(kind: v8::PromiseHookType, _promise: v8::Local<v8::Promise>, _parent: v8::Local<v8::Value>) {
++    if matches!(kind, v8::PromiseHookType::Init | v8::PromiseHookType::Resolve) {
++        request_drain();
++    }
++}
++
++/// Enqueues the current realm's drain job in the embedder's job queue (once until it runs).
++fn request_drain() {
++    if DRAIN_PENDING.with(Cell::get) {
++        return;
++    }
++    let Some(cx) = crate::rust::Runtime::get() else { return };
++    let cx = cx.as_ptr();
++    let queue = hooks(cx).job_queue.get();
++    if queue.is_null() {
++        return;
++    }
++    // SAFETY: embedder job queues come from `CreateJobQueue`.
++    let queue = unsafe { &*(queue as *const RustJobQueue) };
++    let Some(enqueue) = queue._traps.enqueuePromiseJob else { return };
++    let Some(drain) = drain_function(cx) else { return };
++    DRAIN_PENDING.with(|pending| pending.set(true));
++    crate::rooted!(in(cx) let drain = drain);
++    crate::rooted!(in(cx) let none = std::ptr::null_mut::<crate::jsapi::JSObject>());
++    // SAFETY: SpiderMonkey's enqueue contract (no promise, allocation site or host data).
++    let ok = unsafe {
++        enqueue(queue._queue, cx, none.handle().into(), drain.handle().into(), none.handle().into(), none.handle().into())
++    };
++    if !ok {
++        DRAIN_PENDING.with(|pending| pending.set(false));
++    }
++}
++
++/// The current realm's drain function (made once per realm, kept by the realm).
++fn drain_function(cx: *mut JSContext) -> Option<*mut crate::jsapi::JSObject> {
++    let realm = crate::realm_impl::get_context_realm(cx);
++    let data = crate::realm_impl::realm_data(realm)?;
++    if data.drain_function.get().is_null() {
++        // SAFETY: a live context; the function is stored in (and traced by) the realm.
++        let function = unsafe { crate::jsapi_impl::JS_NewFunction(cx, Some(drain_microtasks), 0, 0, c"runPromiseJobs".as_ptr()) };
++        if function.is_null() {
++            return None;
++        }
++        data.drain_function.set(function as *mut crate::jsapi::JSObject);
++    }
++    Some(data.drain_function.get())
++}
++
++/// The drain job: runs V8's pending promise jobs (at the embedder's checkpoint).
++unsafe extern "C" fn drain_microtasks(cx: *mut JSContext, _argc: u32, vp: *mut crate::jsval::JSVal) -> bool {
++    DRAIN_PENDING.with(|pending| pending.set(false));
++    isolate(cx).perform_microtask_checkpoint();
++    // SAFETY: the JSNative contract.
++    unsafe { *vp = crate::jsval::UndefinedValue() };
++    true
++}
++
+ pub unsafe fn JobQueueMayNotBeEmpty(_cx: *mut JSContext) {}
+ 
+ /// Runs the pending promise jobs (a V8 microtask checkpoint).
+diff --git a/components/roves-js/src/rust.rs b/components/roves-js/src/rust.rs
+index 0c73ea4d9e5..c09a780291b 100644
+--- a/components/roves-js/src/rust.rs
++++ b/components/roves-js/src/rust.rs
+@@ -403,6 +403,7 @@ impl Runtime {
+             scripts: Default::default(),
+             helpers: RefCell::new(Default::default()),
+             modules: Default::default(),
++            callable_class_boxes: RefCell::new(Vec::new()),
+             current_realm: std::cell::Cell::new(std::ptr::null_mut()),
+             realms: RefCell::new(Vec::new()),
+         });
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 912d163112e..3f4fc28992c 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -975,8 +975,10 @@ mod runtime_hooks {
+         runtime.gc_for_testing();
+         assert!(EXTRA_TRACED.with(Cell::get) > 0, "embedder root tracers run on every GC");
+ 
+-        // Promise jobs run once the script that queued them returns (not inside it).
+-        assert!(!eval(&runtime, "globalThis.done = false; Promise.resolve().then(() => { globalThis.done = true; }); done").to_boolean());
++        // Without an embedder job queue, promise jobs run at an explicit checkpoint only.
++        eval(&runtime, "globalThis.done = false; Promise.resolve().then(() => { globalThis.done = true; })");
++        assert!(!eval(&runtime, "done").to_boolean());
++        unsafe { RunJobs(cx) };
+         assert!(eval(&runtime, "done").to_boolean());
+ 
+         // Unhandled rejections, then a late handler.
+@@ -1574,3 +1576,114 @@ mod window_proxies {
+         assert_eq!(unsafe { ToWindowIfWindowProxy(transplanted) }, other_window.get());
+     }
+ }
++
++mod callable_classes {
++    use std::ptr;
++
++    use super::{describe, eval};
++    use crate::jsapi::*;
++    use crate::jsval::*;
++    use crate::rust::{JSEngineHandle, Runtime};
++
++    /// A constructor native that returns `{ newTarget }` (`vp` holds new.target after the args).
++    unsafe extern "C" fn construct(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
++        let args = unsafe { std::slice::from_raw_parts_mut(vp, argc as usize + 3) };
++        let new_target = args[argc as usize + 2];
++        crate::rooted!(in(cx) let result = unsafe { JS_NewPlainObject(cx) });
++        crate::rooted!(in(cx) let new_target = new_target);
++        unsafe { JS_SetProperty(cx, result.handle().into_handle(), c"newTarget".as_ptr(), new_target.handle().into_handle()) };
++        args[0] = ObjectValue(result.get());
++        true
++    }
++
++    static OPS: JSClassOps = JSClassOps {
++        addProperty: None,
++        delProperty: None,
++        enumerate: None,
++        newEnumerate: None,
++        resolve: None,
++        mayResolve: None,
++        finalize: None,
++        call: Some(construct),
++        construct: Some(construct),
++        trace: None,
++    };
++
++    static CLASS: JSClass = JSClass {
++        name: c"Iface".as_ptr(),
++        flags: 0,
++        cOps: &OPS,
++        spec: ptr::null(),
++        ext: ptr::null(),
++        oOps: ptr::null(),
++    };
++
++    #[test]
++    fn callable_class_objects_are_functions_with_new_target() {
++        let runtime = Runtime::new(JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        rooted!(in(cx) let iface = unsafe { JS_NewObject(cx, &CLASS) });
++        rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
++        rooted!(in(cx) let value = ObjectValue(iface.get()));
++        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"Iface".as_ptr(), value.handle().into_handle()) });
++        assert_eq!(describe(&runtime, eval(&runtime, "typeof Iface")), "function");
++        assert_eq!(eval(&runtime, "Iface").to_object(), iface.get(), "the function keeps its identity");
++        assert!(eval(&runtime, "new Iface().newTarget === Iface").to_boolean());
++        assert!(eval(&runtime, "class Sub extends Iface {}; new Sub().newTarget === Sub").to_boolean(), "super() passes the subclass as new.target");
++        assert!(eval(&runtime, "Reflect.construct(Iface, [], Array).newTarget === Array").to_boolean());
++    }
++}
++
++mod embedder_job_queue {
++    use std::cell::RefCell;
++    use std::ffi::c_void;
++
++    use super::eval;
++    use crate::glue::{CreateJobQueue, JobQueueTraps};
++    use crate::jsapi::*;
++    use crate::jsval::*;
++    use crate::rust::{JSEngineHandle, Runtime};
++
++    thread_local! {
++        static JOBS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
++    }
++
++    unsafe extern "C" fn enqueue(
++        _queue: *const c_void,
++        _cx: *mut JSContext,
++        _promise: HandleObject,
++        job: HandleObject,
++        _site: HandleObject,
++        _data: HandleObject,
++    ) -> bool {
++        JOBS.with(|jobs| jobs.borrow_mut().push(job.get() as usize));
++        true
++    }
++
++    #[test]
++    fn promise_jobs_run_at_the_embedders_checkpoint() {
++        let runtime = Runtime::new(JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        // SAFETY: an all-`None` trap table, plus the enqueue trap.
++        let mut traps: JobQueueTraps = unsafe { std::mem::zeroed() };
++        traps.enqueuePromiseJob = Some(enqueue);
++        let queue = unsafe { CreateJobQueue(&traps, std::ptr::null(), std::ptr::null_mut()) };
++        unsafe { SetJobQueue(cx, queue) };
++
++        eval(&runtime, "globalThis.log = []; Promise.resolve(1).then(v => log.push(v)); Promise.resolve(2).then(v => log.push(v));");
++        assert_eq!(eval(&runtime, "log.length").to_int32(), 0, "V8 does not run promise jobs by itself");
++        let jobs = JOBS.with(|jobs| jobs.borrow_mut().split_off(0));
++        assert_eq!(jobs.len(), 1, "one drain job per checkpoint");
++
++        // The embedder's checkpoint runs the job: V8's pending reactions run, in order.
++        rooted!(in(cx) let job = ObjectValue(jobs[0] as *mut JSObject));
++        rooted!(in(cx) let this = UndefinedValue());
++        rooted!(in(cx) let mut rval = UndefinedValue());
++        let no_args = HandleValueArray { length_: 0, elements_: std::ptr::null() };
++        assert!(unsafe { Call(cx, this.handle().into_handle(), job.handle().into_handle(), &no_args, rval.handle_mut().into_handle()) });
++        assert_eq!(super::describe(&runtime, eval(&runtime, "log.join()")), "1,2");
++        // Later promises request a new drain job.
++        eval(&runtime, "Promise.resolve(3).then(v => log.push(v))");
++        assert_eq!(JOBS.with(|jobs| jobs.borrow().len()), 1);
++    }
++}
+diff --git a/support/v8-smoke/nav1.html b/support/v8-smoke/nav1.html
+new file mode 100644
+index 00000000000..61dfd676547
+--- /dev/null
++++ b/support/v8-smoke/nav1.html
+@@ -0,0 +1,6 @@
++<!doctype html><html><body>
++<script>
++console.log("ROVES-V8 nav1 loaded", location.pathname.split("/").pop());
++addEventListener("pageshow", (e) => console.log("ROVES-V8 nav1 pageshow persisted=" + e.persisted));
++if (!sessionStorage.getItem("went")) { sessionStorage.setItem("went", "1"); setTimeout(() => { location.href = "nav2.html"; }, 50); }
++</script></body></html>
+diff --git a/support/v8-smoke/nav2.html b/support/v8-smoke/nav2.html
+new file mode 100644
+index 00000000000..d541efe7992
+--- /dev/null
++++ b/support/v8-smoke/nav2.html
+@@ -0,0 +1,6 @@
++<!doctype html><html><body><div id="d">second page</div>
++<script>
++console.log("ROVES-V8 nav2 loaded", location.pathname.split("/").pop(), window === globalThis, document.getElementById("d").textContent);
++history.back();
++setTimeout(() => console.log("ROVES-V8 nav2 still here"), 500);
++</script></body></html>
+diff --git a/support/v8-smoke/run.sh b/support/v8-smoke/run.sh
+new file mode 100644
+index 00000000000..1efc35e3b00
+--- /dev/null
++++ b/support/v8-smoke/run.sh
+@@ -0,0 +1,52 @@
++#!/usr/bin/env bash
++# Runs the V8 smoke pages headlessly with a servoshell built on roves-js
++# (`python support/v8_cutover_check.py servoshell --build`) and reports each result as a
++# GitHub annotation (readable without a token). Fails when a page crashes the browser, when
++# the smoke suite does not report its total, or when the basic page checks fail.
++#
++#     support/v8-smoke/run.sh path/to/servoshell [runner args...]
++set -u
++BIN="$1"
++shift
++RUNNER=("$@")
++DIR="$(cd "$(dirname "$0")" && pwd)"
++STATUS=0
++
++run_page() {
++  local page="$1" seconds="$2" log="$3"
++  timeout "$seconds" "${RUNNER[@]}" "$BIN" -z "file://$DIR/$page" > "$log" 2>&1
++  local code=$?
++  # 124: the timeout ended the run (pages keep the browser open); anything else but 0 crashed.
++  if [ "$code" -ne 0 ] && [ "$code" -ne 124 ]; then
++    echo "::error::$page: servoshell exited with $code"
++    grep -a -v '^\s*$' "$log" | tail -20 | sed 's/^/::error::  /'
++    STATUS=1
++  fi
++}
++
++run_page suite.html 60 suite.log
++while IFS= read -r line; do
++  case "$line" in
++    "SUITE PASS "*) echo "::notice::$line" ;;
++    "SUITE FAIL "*) echo "::warning::$line" ;;
++    "SUITE TOTAL "*) echo "::notice::$line" ;;
++  esac
++done < <(grep -a "^SUITE " suite.log)
++if ! grep -aq "^SUITE TOTAL " suite.log; then
++  echo "::error::suite.html did not report its total"
++  grep -a -v '^\s*$' suite.log | tail -20 | sed 's/^/::error::  /'
++  STATUS=1
++fi
++
++run_page test.html 30 test.log
++for expected in "ROVES-V8 dom: changed by js" "ROVES-V8 click event click true" "ROVES-V8 promise 5" "ROVES-V8 timeout fired"; do
++  if grep -aq "$expected" test.log; then echo "::notice::test.html: $expected"; else echo "::error::test.html: missing '$expected'"; STATUS=1; fi
++done
++if grep -aq "ROVES-V8 class 2 {\"a\":\[1,2\]} true true" test.log; then echo "::notice::test.html: window === globalThis"; else echo "::warning::test.html: window === globalThis not confirmed"; fi
++
++run_page nav1.html 30 nav.log
++for expected in "ROVES-V8 nav2 loaded nav2.html true second page" "ROVES-V8 nav1 pageshow persisted=true"; do
++  if grep -aq "$expected" nav.log; then echo "::notice::navigation: $expected"; else echo "::error::navigation: missing '$expected'"; STATUS=1; fi
++done
++
++exit $STATUS
+diff --git a/support/v8-smoke/suite.html b/support/v8-smoke/suite.html
+new file mode 100644
+index 00000000000..edaa8b19148
+--- /dev/null
++++ b/support/v8-smoke/suite.html
+@@ -0,0 +1,65 @@
++<!doctype html>
++<html><head><meta charset="utf-8"><title>roves-js smoke suite</title></head>
++<body>
++<div id="host" data-foo-bar="baz"><p class="a b">one</p><p name="second">two</p><form name="f"><input name="i" value="v"></form></div>
++<script>
++const results = [];
++const pending = [];
++function check(name, fn) {
++  try {
++    const value = fn();
++    if (value && typeof value.then === "function") {
++      pending.push(value.then(ok => results.push([name, ok === true, ok]), e => results.push([name, false, String(e)])));
++    } else {
++      results.push([name, value === true, value]);
++    }
++  } catch (e) {
++    results.push([name, false, String(e && e.stack || e)]);
++  }
++}
++const host = document.getElementById("host");
++check("dataset proxy", () => host.dataset.fooBar === "baz" && (host.dataset.x = "1", host.getAttribute("data-x") === "1") && Object.keys(host.dataset).join() === "fooBar,x");
++check("classList", () => { const p = host.querySelector("p"); p.classList.add("c"); p.classList.toggle("a"); return p.className === "b c" && p.classList.contains("c") && [...p.classList].join() === "b,c"; });
++check("NodeList iteration", () => { const ps = document.querySelectorAll("p"); let n = 0; ps.forEach(() => n++); return n === 2 && [...ps].length === 2 && [...ps.keys()].join() === "0,1" && ps[1].textContent === "two"; });
++check("HTMLCollection named", () => document.getElementsByTagName("p").namedItem("second").textContent === "two" && document.forms.f.i.value === "v");
++check("localStorage proxy", () => { localStorage.clear(); localStorage.k = "v"; localStorage.setItem("n", 1); return localStorage.getItem("k") === "v" && localStorage.n === "1" && localStorage.length === 2 && ("k" in localStorage); });
++check("Event dispatch + bubbling", () => { let order = []; host.addEventListener("x", e => order.push("host:" + e.eventPhase)); const p = host.querySelector("p"); p.addEventListener("x", e => order.push("p")); p.dispatchEvent(new Event("x", { bubbles: true })); return order.join() === "p,host:3"; });
++check("CustomEvent detail", () => { let d; document.addEventListener("ce", e => d = e.detail); document.dispatchEvent(new CustomEvent("ce", { detail: { a: 1 } })); return d.a === 1; });
++check("MutationObserver", () => new Promise(r => { const mo = new MutationObserver(recs => r(recs.length === 1 && recs[0].addedNodes.length === 1)); mo.observe(host, { childList: true }); host.appendChild(document.createElement("span")); }));
++check("custom elements", () => { class XEl extends HTMLElement { connectedCallback() { this.textContent = "x-el!"; } get answer() { return 42; } } customElements.define("x-el", XEl); const e = document.createElement("x-el"); host.appendChild(e); return e.textContent === "x-el!" && e.answer === 42 && e instanceof XEl && e instanceof HTMLElement; });
++check("shadow DOM", () => { const d = document.createElement("div"); const root = d.attachShadow({ mode: "open" }); root.innerHTML = "<b>in</b>"; return d.shadowRoot.querySelector("b").textContent === "in"; });
++check("innerHTML/outerHTML", () => { const d = document.createElement("div"); d.innerHTML = "<i>a</i><u>b</u>"; return d.children.length === 2 && d.outerHTML === "<div><i>a</i><u>b</u></div>"; });
++check("getComputedStyle", () => getComputedStyle(document.body).display === "block");
++check("URL & URLSearchParams", () => { const u = new URL("https://a.b/c?x=1&y=2#h"); u.searchParams.append("z", "3"); return u.href === "https://a.b/c?x=1&y=2&z=3#h" && [...u.searchParams.keys()].join() === "x,y,z"; });
++check("TextEncoder/Decoder", () => new TextDecoder().decode(new TextEncoder().encode("héllo")) === "héllo");
++check("structuredClone", () => { const o = { d: new Date(1), m: new Map([[1, 2]]), a: new Uint8Array([3]) }; const c = structuredClone(o); return c !== o && c.d.getTime() === 1 && c.m.get(1) === 2 && c.a[0] === 3; });
++check("postMessage self", () => new Promise(r => { addEventListener("message", e => r(e.data.n === 7 && e.data.list.length === 2), { once: true }); postMessage({ n: 7, list: [1, 2] }, "*"); }));
++check("Worker", () => new Promise((r) => { const w = new Worker(URL.createObjectURL(new Blob(["onmessage = e => postMessage(e.data * 2)"], { type: "text/javascript" }))); w.onmessage = e => r(e.data === 42); w.onerror = e => r("worker error " + e.message); w.postMessage(21); }));
++check("MessageChannel", () => new Promise(r => { const c = new MessageChannel(); c.port1.onmessage = e => r(e.data === "hi"); c.port2.postMessage("hi"); }));
++check("Blob/FileReader", () => new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result === "blob!"); fr.readAsText(new Blob(["blob!"])); }));
++check("async/await + generators", () => (async () => { function* g() { yield 1; yield 2; } const v = await Promise.all([1, Promise.resolve(2)]); return [...g()].join() === "1,2" && v.join() === "1,2"; })());
++check("Intl", () => new Intl.NumberFormat("de-DE").format(1234.5) === "1.234,5" && typeof Intl.DateTimeFormat().format(0) === "string");
++check("canvas 2d", () => { const c = document.createElement("canvas"); c.width = 4; c.height = 4; const g = c.getContext("2d"); g.fillStyle = "#ff0000"; g.fillRect(0, 0, 4, 4); const d = g.getImageData(1, 1, 1, 1).data; return d[0] === 255 && d[1] === 0 && d[3] === 255; });
++check("webgl context", () => { const c = document.createElement("canvas"); const gl = c.getContext("webgl2") || c.getContext("webgl"); return !!gl && typeof gl.getParameter(gl.VERSION) === "string"; });
++check("IndexedDB", () => new Promise(r => { const req = indexedDB.open("suite", 1); req.onupgradeneeded = () => req.result.createObjectStore("s"); req.onerror = () => r("idb error"); req.onsuccess = () => { const db = req.result; const tx = db.transaction("s", "readwrite"); tx.objectStore("s").put({ v: 5 }, "k"); tx.oncomplete = () => { db.transaction("s").objectStore("s").get("k").onsuccess = e => r(e.target.result.v === 5); }; }; }));
++check("requestAnimationFrame", () => new Promise(r => requestAnimationFrame(t => r(typeof t === "number"))));
++check("queueMicrotask order", () => new Promise(r => { const log = []; queueMicrotask(() => log.push("m")); Promise.resolve().then(() => log.push("p")); setTimeout(() => r(log.length === 2), 0); }));
++check("DOMParser", () => new DOMParser().parseFromString("<a><b>t</b></a>", "text/xml").querySelector("b").textContent === "t");
++check("instanceof / prototype chain", () => host instanceof HTMLDivElement && host instanceof Element && host instanceof Node && Object.getPrototypeOf(host) === HTMLDivElement.prototype && HTMLDivElement.name === "HTMLDivElement");
++check("exceptions are DOMException", () => { try { document.querySelector("!!"); return false; } catch (e) { return e instanceof DOMException && e.name === "SyntaxError"; } });
++check("JSON of DOM data", () => JSON.stringify({ a: [1, "x", null] }) === '{"a":[1,"x",null]}' && JSON.parse('{"b":2}').b === 2);
++check("fetch blob url", () => fetch(URL.createObjectURL(new Blob(["fetched"]))).then(r => r.text()).then(t => t === "fetched"));
++check("Proxy + Reflect", () => { const p = new Proxy({}, { get: (t, k) => k }); return p.hello === "hello" && Reflect.ownKeys({ a: 1 }).join() === "a"; });
++check("WeakRef / FinalizationRegistry exist", () => typeof WeakRef === "function" && typeof FinalizationRegistry === "function");
++check("document.all-ish getters", () => document.documentElement.tagName === "HTML" && document.body === document.querySelector("body"));
++
++Promise.all(pending).then(() => {
++  let passed = 0;
++  for (const [name, ok, detail] of results) {
++    if (ok) passed++;
++    console.log((ok ? "SUITE PASS " : "SUITE FAIL ") + name + (ok ? "" : " :: " + detail));
++  }
++  console.log("SUITE TOTAL " + passed + "/" + results.length);
++});
++</script>
++</body></html>
+diff --git a/support/v8-smoke/test.html b/support/v8-smoke/test.html
+new file mode 100644
+index 00000000000..7dc189c4e5a
+--- /dev/null
++++ b/support/v8-smoke/test.html
+@@ -0,0 +1,18 @@
++<!doctype html>
++<html><head><title>v8 test</title></head>
++<body><div id="out">initial</div>
++<script>
++console.log("ROVES-V8 URL", typeof URL, typeof URLSearchParams, typeof HTMLDivElement);
++console.log("ROVES-V8 script start, engine typeof window:", typeof window);
++const div = document.getElementById("out");
++div.textContent = "changed by js";
++console.log("ROVES-V8 dom:", div.textContent, document.title, document.querySelectorAll("div").length);
++const el = document.createElement("span"); el.className = "x"; document.body.appendChild(el);
++console.log("ROVES-V8 children:", document.body.children.length, el instanceof HTMLElement, el.tagName);
++el.addEventListener("click", (e) => console.log("ROVES-V8 click event", e.type, e.target === el));
++el.click();
++Promise.resolve(5).then(v => console.log("ROVES-V8 promise", v));
++setTimeout(() => console.log("ROVES-V8 timeout fired"), 10);
++class A { constructor(){ this.x = 1 } get y(){ return this.x + 1 } }
++console.log("ROVES-V8 class", new A().y, JSON.stringify({a:[1,2]}), window === globalThis, window.document === document);
++</script></body></html>
+diff --git a/support/v8_cutover_check.py b/support/v8_cutover_check.py
+index 821db883201..29d74bf3b38 100644
+--- a/support/v8_cutover_check.py
++++ b/support/v8_cutover_check.py
+@@ -35,6 +35,7 @@ def main() -> int:
+     parser.add_argument("--top", type=int, default=25)
+     parser.add_argument("--build", action="store_true", help="cargo build instead of cargo check")
+     parser.add_argument("--release", action="store_true", help="with --build: a release build")
++    parser.add_argument("--online", action="store_true", help="let cargo fetch dependencies (CI)")
+     args = parser.parse_args()
+ 
+     manifest = ROOT / "Cargo.toml"
+@@ -48,8 +49,10 @@ def main() -> int:
+     try:
+         manifest.write_text(MOZJS_LINE.sub(ROVES_JS_LINE, text), encoding="utf-8", newline="")
+         env = dict(os.environ, AWS_LC_SYS_NO_ASM="1")
+-        command = ["cargo", "build" if args.build else "check", "-p", args.crate, "--offline",
++        command = ["cargo", "build" if args.build else "check", "-p", args.crate,
+                    "--message-format=short", "--target-dir", str(ROOT / "target" / "v8-cutover")]
++        if not args.online:
++            command.append("--offline")
+         if args.build and args.release:
+             command.append("--release")
+         result = subprocess.run(

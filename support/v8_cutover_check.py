@@ -35,6 +35,7 @@ def main() -> int:
     parser.add_argument("--top", type=int, default=25)
     parser.add_argument("--build", action="store_true", help="cargo build instead of cargo check")
     parser.add_argument("--release", action="store_true", help="with --build: a release build")
+    parser.add_argument("--online", action="store_true", help="let cargo fetch dependencies (CI)")
     args = parser.parse_args()
 
     manifest = ROOT / "Cargo.toml"
@@ -48,8 +49,10 @@ def main() -> int:
     try:
         manifest.write_text(MOZJS_LINE.sub(ROVES_JS_LINE, text), encoding="utf-8", newline="")
         env = dict(os.environ, AWS_LC_SYS_NO_ASM="1")
-        command = ["cargo", "build" if args.build else "check", "-p", args.crate, "--offline",
+        command = ["cargo", "build" if args.build else "check", "-p", args.crate,
                    "--message-format=short", "--target-dir", str(ROOT / "target" / "v8-cutover")]
+        if not args.online:
+            command.append("--offline")
         if args.build and args.release:
             command.append("--release")
         result = subprocess.run(

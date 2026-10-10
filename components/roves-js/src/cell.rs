@@ -159,6 +159,12 @@ pub(crate) fn new_cell(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) ->
             }
         }
         if object.is_function() {
+            if let Some(class_box) = crate::object::callable_class_box_of(scope, object) {
+                let cell = class_box.cell.get();
+                if !cell.is_null() {
+                    return cell;
+                }
+            }
             if let Some(function) = crate::jsapi_impl::native_function_of_v8(scope, object) {
                 let cell = function.cell.get();
                 if !cell.is_null() {

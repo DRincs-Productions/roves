@@ -6,11 +6,13 @@
 //! promise rejection tracking, GC and JIT settings) on V8.
 //!
 //! **Promise jobs.** SpiderMonkey hands every promise job to the embedder's job queue
-//! (`JobQueueTraps::enqueuePromiseJob`), and the embedder runs it. V8 has no such hook: its
-//! microtask queue is the only queue. Runtimes use V8's automatic microtask policy (jobs
-//! run when the script call depth returns to zero, after each script or callback, like
-//! HTML's microtask checkpoint after running script), and [`RunJobs`] performs a checkpoint
-//! on demand; the embedder's job-queue traps are kept but not called for promise jobs.
+//! (`JobQueueTraps::enqueuePromiseJob`), and the embedder runs it at its microtask
+//! checkpoint. V8 keeps promise jobs in its own microtask queue (explicit policy here: V8
+//! never runs them by itself). When V8 may have queued jobs (its promise hook reports a promise
+//! created or resolved), roves-js enqueues one job in the embedder's queue, a native "drain"
+//! function of the current realm, which performs V8's microtask checkpoint when the embedder
+//! runs it. Promise jobs thus run at the embedder's checkpoints, in its order, as with
+//! SpiderMonkey. Without an embedder job queue, [`RunJobs`] performs a checkpoint.
 //!
 //! Settings with no V8 counterpart (SpiderMonkey's GC parameters, JIT options, build ids,
 //! memory reporters) are recorded and otherwise ignored.
@@ -86,7 +88,8 @@ fn isolate<'i>(cx: *mut JSContext) -> &'i mut v8::Isolate {
 
 /// Configures a new runtime's isolate for the JSAPI's model.
 pub(crate) fn configure_isolate(isolate: &mut v8::Isolate) {
-    isolate.set_microtasks_policy(v8::MicrotasksPolicy::Auto);
+    isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
+    isolate.set_promise_hook(promise_hook);
     isolate.set_promise_reject_callback(promise_reject_callback);
     crate::modules_impl::configure_isolate(isolate);
 }
@@ -194,6 +197,69 @@ pub unsafe fn SetJobQueue(cx: *mut JSContext, queue: *mut JobQueue) {
 }
 
 pub unsafe fn JobQueueIsEmpty(_cx: *mut JSContext) {}
+
+thread_local! {
+    /// Whether a drain job is in the embedder's queue (one is enough per checkpoint).
+    static DRAIN_PENDING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// V8's promise hook: a promise created or resolved may have queued promise jobs.
+unsafe extern "C" fn promise_hook(kind: v8::PromiseHookType, _promise: v8::Local<v8::Promise>, _parent: v8::Local<v8::Value>) {
+    if matches!(kind, v8::PromiseHookType::Init | v8::PromiseHookType::Resolve) {
+        request_drain();
+    }
+}
+
+/// Enqueues the current realm's drain job in the embedder's job queue (once until it runs).
+fn request_drain() {
+    if DRAIN_PENDING.with(Cell::get) {
+        return;
+    }
+    let Some(cx) = crate::rust::Runtime::get() else { return };
+    let cx = cx.as_ptr();
+    let queue = hooks(cx).job_queue.get();
+    if queue.is_null() {
+        return;
+    }
+    // SAFETY: embedder job queues come from `CreateJobQueue`.
+    let queue = unsafe { &*(queue as *const RustJobQueue) };
+    let Some(enqueue) = queue._traps.enqueuePromiseJob else { return };
+    let Some(drain) = drain_function(cx) else { return };
+    DRAIN_PENDING.with(|pending| pending.set(true));
+    crate::rooted!(in(cx) let drain = drain);
+    crate::rooted!(in(cx) let none = std::ptr::null_mut::<crate::jsapi::JSObject>());
+    // SAFETY: SpiderMonkey's enqueue contract (no promise, allocation site or host data).
+    let ok = unsafe {
+        enqueue(queue._queue, cx, none.handle().into(), drain.handle().into(), none.handle().into(), none.handle().into())
+    };
+    if !ok {
+        DRAIN_PENDING.with(|pending| pending.set(false));
+    }
+}
+
+/// The current realm's drain function (made once per realm, kept by the realm).
+fn drain_function(cx: *mut JSContext) -> Option<*mut crate::jsapi::JSObject> {
+    let realm = crate::realm_impl::get_context_realm(cx);
+    let data = crate::realm_impl::realm_data(realm)?;
+    if data.drain_function.get().is_null() {
+        // SAFETY: a live context; the function is stored in (and traced by) the realm.
+        let function = unsafe { crate::jsapi_impl::JS_NewFunction(cx, Some(drain_microtasks), 0, 0, c"runPromiseJobs".as_ptr()) };
+        if function.is_null() {
+            return None;
+        }
+        data.drain_function.set(function as *mut crate::jsapi::JSObject);
+    }
+    Some(data.drain_function.get())
+}
+
+/// The drain job: runs V8's pending promise jobs (at the embedder's checkpoint).
+unsafe extern "C" fn drain_microtasks(cx: *mut JSContext, _argc: u32, vp: *mut crate::jsval::JSVal) -> bool {
+    DRAIN_PENDING.with(|pending| pending.set(false));
+    isolate(cx).perform_microtask_checkpoint();
+    // SAFETY: the JSNative contract.
+    unsafe { *vp = crate::jsval::UndefinedValue() };
+    true
+}
 
 pub unsafe fn JobQueueMayNotBeEmpty(_cx: *mut JSContext) {}
 
