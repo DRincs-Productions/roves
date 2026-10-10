@@ -25,13 +25,17 @@ run_page() {
 }
 
 run_page suite.html 60 suite.log
-while IFS= read -r line; do
-  case "$line" in
-    "SUITE PASS "*) echo "::notice::$line" ;;
-    "SUITE FAIL "*) echo "::warning::$line" ;;
-    "SUITE TOTAL "*) echo "::notice::$line" ;;
-  esac
-done < <(grep -a "^SUITE " suite.log)
+# GitHub shows at most 10 annotations of a kind per step: one summary carries every failure.
+TOTAL_LINE=$(grep -a "^SUITE TOTAL " suite.log | head -1)
+FAILURES=$(grep -a "^SUITE FAIL " suite.log | sed 's/^SUITE FAIL //' | tr '
+' '|' | sed 's/|/%0A/g')
+if [ -n "$FAILURES" ]; then
+  echo "::warning title=V8 smoke suite failures (${TOTAL_LINE#SUITE TOTAL })::$FAILURES"
+fi
+if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+  { echo "## V8 smoke suite: ${TOTAL_LINE#SUITE TOTAL }"; echo; grep -a "^SUITE " suite.log | sed 's/^/- /'; } >> "$GITHUB_STEP_SUMMARY"
+fi
+[ -n "$TOTAL_LINE" ] && echo "::notice title=V8 smoke suite::$TOTAL_LINE"
 if ! grep -aq "^SUITE TOTAL " suite.log; then
   echo "::error::suite.html did not report its total"
   grep -a -v '^\s*$' suite.log | tail -20 | sed 's/^/::error::  /'

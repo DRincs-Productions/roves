@@ -11,6 +11,19 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-10 - V8 smoke suite: readable results in CI
+
+**Servo files:** `support/v8-smoke/run.sh`, `support/v8-smoke/suite.html`.
+**Patch:** `0174-v8-smoke-summary.patch` after 0173.
+
+GitHub shows at most 10 annotations of a kind per step, which hid most smoke-suite results
+of the first `servoshell-v8` run (CI green; the total and the page checks passed).
+- `run.sh` now emits one warning listing every failure and one notice with the total.
+- The full list goes to the step summary.
+- The `MutationObserver` check observes its own element. It shared `host` with the next check,
+  whose synchronous mutation landed in the same callback (two records): a test bug, not an
+  engine one.
+
 ## 2026-10-10 - V8 cutover: interface objects as functions, promise jobs at Servo's checkpoints, end-to-end CI (CP108)
 
 **Servo files:**
