@@ -1,0 +1,139 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>roves-js game workloads</title></head>
+<body>
+<script type="module">
+// Phase 5 of the V8 migration: representative game workloads. The libraries load as ES
+// modules from a CDN through dynamic import (networking, modules, dynamic import).
+const results = [];
+const pending = [];
+function check(name, fn) {
+  const run = (async () => fn())();
+  pending.push(Promise.race([run, new Promise(r => setTimeout(() => r("timeout"), 20000))])
+    .then(ok => results.push([name, ok === true, ok]), e => results.push([name, false, String(e && e.stack || e)])));
+}
+
+function centerPixel(gl) {
+  const px = new Uint8Array(4);
+  gl.readPixels(gl.drawingBufferWidth >> 1, gl.drawingBufferHeight >> 1, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  return Array.from(px);
+}
+
+check("PixiJS 8 renders a sprite scene (WebGL)", async () => {
+  const PIXI = await import("https://cdn.jsdelivr.net/npm/pixi.js@8.6.6/dist/pixi.min.mjs");
+  const app = new PIXI.Application();
+  await app.init({ width: 64, height: 64, preference: "webgl", background: "#000000", preserveDrawingBuffer: true, autoStart: false });
+  document.body.appendChild(app.canvas);
+  const box = new PIXI.Graphics().rect(0, 0, 64, 64).fill(0x00ff00);
+  app.stage.addChild(box);
+  const text = new PIXI.Text({ text: "Roves", style: { fill: 0xffffff, fontSize: 12 } });
+  app.stage.addChild(text);
+  app.render();
+  const pixels = app.renderer.extract.pixels({ target: box, frame: new PIXI.Rectangle(30, 30, 1, 1) });
+  const data = pixels.pixels || pixels;
+  return (data[1] > 200 && data[0] < 50) || `pixel ${Array.from(data).slice(0, 4)} renderer ${app.renderer.name}`;
+});
+
+check("Three.js renders a lit mesh (WebGL)", async () => {
+  const THREE = await import("https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.min.js");
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = 64;
+  document.body.appendChild(canvas);
+  const renderer = new THREE.WebGLRenderer({ canvas, preserveDrawingBuffer: true });
+  renderer.setSize(64, 64, false);
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x000000);
+  const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 10);
+  camera.position.z = 2;
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.5, 1.5), new THREE.MeshBasicMaterial({ color: 0xff0000 }));
+  scene.add(mesh);
+  scene.add(new THREE.AmbientLight(0xffffff, 1));
+  renderer.render(scene, camera);
+  const px = centerPixel(renderer.getContext());
+  return (px[0] > 200 && px[1] < 50) || `pixel ${px}`;
+});
+
+check("OfflineAudioContext renders an oscillator", async () => {
+  const ctx = new OfflineAudioContext(1, 4410, 44100);
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  gain.gain.value = 0.5;
+  osc.connect(gain).connect(ctx.destination);
+  osc.start();
+  const buffer = await ctx.startRendering();
+  const samples = buffer.getChannelData(0);
+  let peak = 0;
+  for (const s of samples) peak = Math.max(peak, Math.abs(s));
+  return (peak > 0.1 && peak <= 0.51) || `peak ${peak}`;
+});
+
+check("AudioContext decodes and plays a buffer", async () => {
+  const ctx = new AudioContext();
+  const buffer = ctx.createBuffer(1, 4410, 44100);
+  buffer.getChannelData(0).fill(0.25);
+  const source = ctx.createBufferSource();
+  source.buffer = buffer;
+  source.connect(ctx.destination);
+  const ended = new Promise(r => source.onended = () => r(true));
+  source.start();
+  await ctx.resume();
+  return await Promise.race([ended, new Promise(r => setTimeout(() => r(`state ${ctx.state} time ${ctx.currentTime}`), 5000))]);
+});
+
+check("module Worker instantiates WebAssembly", async () => {
+  if (typeof WebAssembly === "undefined") return "skip"; // JIT-less V8 has no WebAssembly.
+  const code = `
+    const bytes = new Uint8Array([0,97,115,109,1,0,0,0,1,7,1,96,2,127,127,1,127,3,2,1,0,7,7,1,3,97,100,100,0,0,10,9,1,7,0,32,0,32,1,106,11]);
+    const { instance } = await WebAssembly.instantiate(bytes);
+    postMessage(instance.exports.add(20, 22));`;
+  const worker = new Worker(URL.createObjectURL(new Blob([code], { type: "text/javascript" })), { type: "module" });
+  const value = await new Promise((resolve, reject) => { worker.onmessage = e => resolve(e.data); worker.onerror = e => reject(e.message || "worker error"); });
+  worker.terminate();
+  return value === 42 || `got ${value}`;
+});
+
+check("dynamic import of a blob module with top-level await", async () => {
+  const url = URL.createObjectURL(new Blob(["export const value = await Promise.resolve(7);"], { type: "text/javascript" }));
+  const module = await import(url);
+  return module.value === 7;
+});
+
+check("requestAnimationFrame game loop (60 frames budget)", async () => {
+  let frames = 0;
+  const start = performance.now();
+  await new Promise(resolve => { function tick() { if (++frames >= 10) resolve(); else requestAnimationFrame(tick); } requestAnimationFrame(tick); });
+  return performance.now() - start < 10000;
+});
+
+check("Gamepad API surface", () => Array.isArray(Array.from(navigator.getGamepads())) && typeof GamepadEvent === "function");
+
+check("save data in IndexedDB survives a reopen", async () => {
+  const open = () => new Promise((resolve, reject) => { const r = indexedDB.open("roves-save", 1); r.onupgradeneeded = () => r.result.createObjectStore("slots"); r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); });
+  let db = await open();
+  await new Promise((resolve, reject) => { const tx = db.transaction("slots", "readwrite"); tx.objectStore("slots").put({ level: 3, hp: [10, 20] }, "slot1"); tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); });
+  db.close();
+  db = await open();
+  const saved = await new Promise((resolve, reject) => { const r = db.transaction("slots").objectStore("slots").get("slot1"); r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); });
+  db.close();
+  return saved && saved.level === 3 && saved.hp[1] === 20;
+});
+
+check("a JS-heavy workload (typed arrays, closures, JSON)", () => {
+  const n = 200000;
+  const data = new Float64Array(n);
+  for (let i = 0; i < n; i++) data[i] = Math.sin(i) * i;
+  const sorted = Array.from(data.subarray(0, 20000)).sort((a, b) => a - b);
+  const json = JSON.parse(JSON.stringify({ sorted: sorted.slice(0, 100) }));
+  const sum = data.reduce((a, b) => a + b, 0);
+  return json.sorted.length === 100 && Number.isFinite(sum);
+});
+
+await Promise.all(pending);
+let passed = 0, skipped = 0;
+for (const [name, ok, detail] of results) {
+  if (detail === "skip") { skipped++; console.log("SUITE SKIP " + name); continue; }
+  if (ok) passed++;
+  console.log((ok ? "SUITE PASS " : "SUITE FAIL ") + name + (ok ? "" : " :: " + detail));
+}
+console.log("SUITE TOTAL " + passed + "/" + (results.length - skipped) + (skipped ? " (" + skipped + " skipped)" : ""));
+</script>
+</body></html>

@@ -12700,3 +12700,38 @@ nothing: roves-js declares them empty. `mach build` and `mach bundle` flags are 
 - cross-origin window proxy traps.
 
 README and wiki are updated at release time (the user's ordering).
+
+## 2026-10-10 - V8 migration Phase 5: game workloads and JIT-less servoshell in CI
+
+**Servo files:**
+- `components/roves-js/Cargo.toml` (new `jitless` feature) and `src/tests.rs`;
+- `support/v8_cutover_check.py` (`--features`);
+- `support/v8-smoke/run.sh`, `suite2.html`, and `games.html`, new.
+
+**Patch:** `0184-v8-game-workloads-jitless.patch` after 0183. `.github/workflows/v8.yml` is
+CI-only.
+
+**Game workloads.** `games.html` is the start of the migration's Phase 5 validation. The
+libraries load as ES modules from a CDN through dynamic import, which covers networking, modules
+and dynamic import. The page:
+- renders a PixiJS 8 scene (WebGL) and a Three.js mesh, and checks the pixels;
+- renders an oscillator with `OfflineAudioContext` and plays an `AudioContext` buffer;
+- instantiates WebAssembly in a module Worker;
+- imports a blob module with top-level await;
+- runs a `requestAnimationFrame` loop;
+- checks the Gamepad API surface;
+- persists save data in IndexedDB across a reopen;
+- runs a JS-heavy typed-array/JSON workload.
+
+The CI smoke run executes it after the two suites.
+
+**JIT-less.** roves-js gains `jitless`, forwarded to roves-v8, which passes `--jitless` to V8.
+- The `servoshell-v8` matrix gains a Linux JIT-less entry: servoshell is built with
+  `--features roves-js/jitless` and runs the same smoke pages.
+- The `runtime` job's JIT-less entries also run roves-js's tests in that mode: 30 pass, 1 is
+  ignored.
+- **Finding: V8 without its JIT has no WebAssembly at all.** rusty_v8's prebuilt V8 has no Wasm
+  interpreter, so `WebAssembly` is undefined. The wasm parts of the tests run only with the JIT.
+  The smoke pages report wasm checks as `SUITE SKIP` there, counted apart from failures.
+  Wasm games therefore need the JIT build. A console port would need a V8 built with its Wasm
+  interpreter.

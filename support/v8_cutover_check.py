@@ -36,6 +36,7 @@ def main() -> int:
     parser.add_argument("--build", action="store_true", help="cargo build instead of cargo check")
     parser.add_argument("--release", action="store_true", help="with --build: a release build")
     parser.add_argument("--online", action="store_true", help="let cargo fetch dependencies (CI)")
+    parser.add_argument("--features", default="", help="cargo features to enable (e.g. roves-js/jitless)")
     args = parser.parse_args()
 
     manifest = ROOT / "Cargo.toml"
@@ -59,6 +60,8 @@ def main() -> int:
             command.append("--offline")
         if args.build and args.release:
             command.append("--release")
+        if args.features:
+            command += ["--features", args.features]
         result = subprocess.run(
             command,
             cwd=ROOT, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",

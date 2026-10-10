@@ -471,6 +471,10 @@ strategia completa è in `docs/V8_MIGRATION.md` ("Cutover strategy"). Metrica:
   perde mozjs/mozjs_sys/ICU). servoshell su V8 compila su Linux/Windows/macOS; suite 34/34,
   suite2, test page, navigazione, CSP in CI. Da verificare: `test.yml` completo (bundle e smoke
   sulle 3 piattaforme), poi release, pin in roves-action/roves-packmaster, README e wiki.
+- **Fase 5 (avvio):** `support/v8-smoke/games.html` (PixiJS 8, Three.js, audio, wasm in
+  Worker modulo, import dinamico, rAF, gamepad, IndexedDB, carico JS). servoshell JIT-less in
+  CI (`--features roves-js/jitless`). **Scoperta:** V8 JIT-less non ha WebAssembly (rusty_v8
+  prebuilt senza interprete wasm): i controlli wasm sono `SKIP` in JIT-less.
 - **Prossimi passi (dopo CP112):** correggere i fallimenti di suite2 in CI (ora 38 controlli, incluso wasm); durata di
   privates di script/moduli e box delle classi chiamabili; devtools/inspector; swap permanente.
 - **Storico (dopo CP105):** global proxy V8 = `WindowProxy` di Servo; uscita pulita

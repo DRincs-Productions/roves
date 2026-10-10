@@ -73,7 +73,11 @@ jobs:
           cargo test --locked "${args[@]}"
           # The mozjs-on-V8 layer of the cutover (value model, cells, rooting).
           cd "$RUNNER_TEMP/roves-js"
-          cargo test --locked
+          if [ "$V8_TEST_MODE" = jitless ]; then
+            cargo test --locked --features jitless
+          else
+            cargo test --locked
+          fi
 
   # servoshell built against roves-js (the mozjs API on V8) instead of SpiderMonkey on every
   # desktop platform Roves ships, then (Linux) the smoke pages in support/v8-smoke/ run
@@ -84,6 +88,11 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, windows-latest, macos-latest]
+        mode: [normal]
+        include:
+          # V8 without its JIT, the console configuration (docs/V8_MIGRATION.md, "JIT-less").
+          - os: ubuntu-24.04
+            mode: jitless
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
     steps:
@@ -140,7 +149,9 @@ jobs:
       - name: build servoshell on roves-js (V8)
         shell: bash
         run: |
-          python support/v8_cutover_check.py servoshell --build --online --top 40
+          features=""
+          if [ "${{ matrix.mode }}" = jitless ]; then features="--features roves-js/jitless"; fi
+          python support/v8_cutover_check.py servoshell --build --online --top 40 $features
           ls target/v8-cutover/debug/servoshell*
       - name: run the V8 smoke pages headlessly
         if: runner.os == 'Linux'

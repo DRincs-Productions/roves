@@ -49,6 +49,7 @@ run_suite() {
 
 run_suite suite.html suite.log
 run_suite suite2.html suite2.log
+run_suite games.html games.log
 
 run_page test.html 30 test.log
 for expected in "ROVES-V8 dom: changed by js" "ROVES-V8 click event click true" "ROVES-V8 promise 5" "ROVES-V8 timeout fired"; do

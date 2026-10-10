@@ -32,3 +32,7 @@ jit = []
 jitspew = []
 libz-sys = []
 profilemozjs = []
+
+# V8 without its JIT compilers (see ../../docs/V8_MIGRATION.md, "JIT-less"): servoshell
+# builds it with `--features roves-js/jitless`.
+jitless = ["roves-v8/jitless"]

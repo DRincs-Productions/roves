@@ -1067,12 +1067,15 @@ mod runtime_hooks {
         let mut runtime = Runtime::new(JSEngineHandle::for_tests());
         let cx = runtime.raw_cx();
         let compile = "globalThis.done = 0; WebAssembly.compile(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])).then(m => done = m instanceof WebAssembly.Module ? 1 : 2); 0";
+        // V8 has no WebAssembly without its JIT: then only finalization is checked.
+        let wasm = cfg!(not(feature = "jitless"));
         // Without a dispatch callback, `RunJobs` runs the tasks.
-        eval(&runtime, compile);
-        assert!(wait_for(&runtime, "done === 1", || unsafe { RunJobs(cx) }), "WebAssembly.compile resolves");
+        if wasm {
+            eval(&runtime, compile);
+            assert!(wait_for(&runtime, "done === 1", || unsafe { RunJobs(cx) }), "WebAssembly.compile resolves");
+        }
         // With one, the tasks reach the embedder's event loop and run in `DispatchableRun`.
         unsafe { SetUpEventLoopDispatch(cx, Some(dispatch), 11 as *mut c_void) };
-        eval(&runtime, compile);
         let run_dispatched = || {
             let tasks = std::mem::take(&mut *DISPATCHED.lock().unwrap());
             for task in tasks {
@@ -1080,7 +1083,10 @@ mod runtime_hooks {
             }
             unsafe { RunJobs(cx) };
         };
-        assert!(wait_for(&runtime, "done === 1", run_dispatched), "WebAssembly.compile resolves through dispatch");
+        if wasm {
+            eval(&runtime, compile);
+            assert!(wait_for(&runtime, "done === 1", run_dispatched), "WebAssembly.compile resolves through dispatch");
+        }
         // `FinalizationRegistry` callbacks run from a foreground task after a collection.
         eval(&runtime, "globalThis.cleaned = ''; globalThis.registry = new FinalizationRegistry(held => cleaned = held); (function () { registry.register({}, 'held'); })(); 0");
         let mut collected = false;
@@ -1103,6 +1109,7 @@ mod runtime_hooks {
     }
 
     #[test]
+    #[cfg_attr(feature = "jitless", ignore = "V8 has no WebAssembly without its JIT")]
     fn wasm_streaming_feeds_the_embedders_stream() {
         let runtime = Runtime::new(JSEngineHandle::for_tests());
         let cx = runtime.raw_cx();
@@ -1135,14 +1142,19 @@ mod runtime_hooks {
         assert_eq!(eval(&runtime, "new Function('a', 'b', 'return a + b')(2, 3)").to_int32(), 5);
         assert!(eval(&runtime, "try { Function('return \"blocked\"'); false } catch (e) { e instanceof EvalError }").to_boolean());
         assert!(eval(&runtime, "const o = {}; eval(o) === o").to_boolean(), "non-strings are returned unchanged");
+        // V8 has no WebAssembly without its JIT.
         let wasm = "new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])) instanceof WebAssembly.Module";
-        assert!(eval(&runtime, wasm).to_boolean());
+        if cfg!(not(feature = "jitless")) {
+            assert!(eval(&runtime, wasm).to_boolean());
+        }
         let checks = CSP_CHECKS.with(|checks| checks.take());
         assert_eq!(checks[0], "JS DirectEval null []");
         assert_eq!(checks[1], "JS DirectEval null []");
         assert_eq!(checks[2], "JS Function return a + b [a,b]");
         assert_eq!(checks[3], "JS Function return \"blocked\" []");
-        assert_eq!(checks.last().map(std::string::String::as_str), Some("WASM DirectEval null []"));
+        if cfg!(not(feature = "jitless")) {
+            assert_eq!(checks.last().map(std::string::String::as_str), Some("WASM DirectEval null []"));
+        }
     }
 
     unsafe extern "C" fn extra_roots(_trc: *mut JSTracer, data: *mut c_void) {
