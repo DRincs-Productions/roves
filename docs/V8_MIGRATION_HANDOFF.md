@@ -439,8 +439,10 @@ strategia completa è in `docs/V8_MIGRATION.md` ("Cutover strategy"). Metrica:
   uscita pulita con `-z -x -o`; la **test-page di Roves** (React/Vite, moduli ES, Tone.js,
   WebGL) viene renderizzata su V8. Lacune: navigazione (riuso del global proxy), devtools
   (inspector V8), copertura WPT.
-- **Prossimi passi (dopo CP106):** navigazione/transplant con riuso del global proxy; WPT
-  su un sottoinsieme; swap permanente.
+- **CP107:** navigazione: il transplant di un `WindowProxy` globale restituisce il nuovo proxy
+  (adottato da Servo); verificati `location.href` e `history.back()` con bfcache.
+- **Prossimi passi (dopo CP107):** WPT su un sottoinsieme; devtools/inspector; swap
+  permanente.
 - **Storico (dopo CP105):** global proxy V8 = `WindowProxy` di Servo; uscita pulita
   in headless; più pagine e WPT; poi swap permanente (`engine-v8`).
 - **Storico (dopo CP104):** `cargo check` dell'intero workspace con lo swap

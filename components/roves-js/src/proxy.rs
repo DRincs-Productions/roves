@@ -908,6 +908,19 @@ pub unsafe fn ToWindowIfWindowProxy(obj: *mut JSObject) -> *mut JSObject {
     obj
 }
 
+/// Whether a proxy box is a window proxy made on a V8 global proxy (`NewWindowProxy`): its
+/// cell's object carries another box (the window's) in its internal field.
+fn is_global_window_proxy(class_box: &ClassBox) -> bool {
+    JSContext::current().with_scope(|scope| {
+        // SAFETY: the box's cell is alive (it is the proxy's).
+        let value = unsafe { crate::cell::cell_value(scope, class_box.cell.get()) };
+        v8::Local::<v8::Object>::try_from(value)
+            .ok()
+            .and_then(crate::object::class_box_of_v8)
+            .is_some_and(|object_box| !std::ptr::eq(object_box, class_box))
+    })
+}
+
 /// SpiderMonkey swaps `origobj`'s identity onto `target`. V8 objects cannot swap identity,
 /// so `origobj` takes `target`'s proxy state (handler, private, slots) and keeps its own
 /// identity, which is what callers observe; `origobj` is returned.
@@ -916,6 +929,12 @@ pub unsafe fn JS_TransplantObject(_cx: *mut JSContext, origobj: HandleObject, ta
     let (Some(original_box), Some(replacement_box)) = (proxy_box(original), proxy_box(replacement)) else {
         return std::ptr::null_mut();
     };
+    if is_global_window_proxy(original_box) || is_global_window_proxy(replacement_box) {
+        // A window proxy that is a V8 global proxy cannot take another window's state (script
+        // reaches its own global natively): the replacement becomes the window proxy, which
+        // Servo adopts as its reflector. Code holding the old one sees the old window.
+        return replacement;
+    }
     original_box.proxy.set(replacement_box.proxy.get());
     original_box.private.set(replacement_box.private.get());
     original_box.lazy_proto.set(replacement_box.lazy_proto.get());

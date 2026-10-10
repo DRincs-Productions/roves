@@ -1,0 +1,55 @@
+diff --git a/components/roves-js/src/proxy.rs b/components/roves-js/src/proxy.rs
+index aa0df4e89db..433d803ede0 100644
+--- a/components/roves-js/src/proxy.rs
++++ b/components/roves-js/src/proxy.rs
+@@ -908,6 +908,19 @@ pub unsafe fn ToWindowIfWindowProxy(obj: *mut JSObject) -> *mut JSObject {
+     obj
+ }
+ 
++/// Whether a proxy box is a window proxy made on a V8 global proxy (`NewWindowProxy`): its
++/// cell's object carries another box (the window's) in its internal field.
++fn is_global_window_proxy(class_box: &ClassBox) -> bool {
++    JSContext::current().with_scope(|scope| {
++        // SAFETY: the box's cell is alive (it is the proxy's).
++        let value = unsafe { crate::cell::cell_value(scope, class_box.cell.get()) };
++        v8::Local::<v8::Object>::try_from(value)
++            .ok()
++            .and_then(crate::object::class_box_of_v8)
++            .is_some_and(|object_box| !std::ptr::eq(object_box, class_box))
++    })
++}
++
+ /// SpiderMonkey swaps `origobj`'s identity onto `target`. V8 objects cannot swap identity,
+ /// so `origobj` takes `target`'s proxy state (handler, private, slots) and keeps its own
+ /// identity, which is what callers observe; `origobj` is returned.
+@@ -916,6 +929,12 @@ pub unsafe fn JS_TransplantObject(_cx: *mut JSContext, origobj: HandleObject, ta
+     let (Some(original_box), Some(replacement_box)) = (proxy_box(original), proxy_box(replacement)) else {
+         return std::ptr::null_mut();
+     };
++    if is_global_window_proxy(original_box) || is_global_window_proxy(replacement_box) {
++        // A window proxy that is a V8 global proxy cannot take another window's state (script
++        // reaches its own global natively): the replacement becomes the window proxy, which
++        // Servo adopts as its reflector. Code holding the old one sees the old window.
++        return replacement;
++    }
+     original_box.proxy.set(replacement_box.proxy.get());
+     original_box.private.set(replacement_box.private.get());
+     original_box.lazy_proto.set(replacement_box.lazy_proto.get());
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index b1e7972321f..912d163112e 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -1568,10 +1568,9 @@ mod window_proxies {
+         eval(&runtime, "globalThis.answer = 1");
+         unsafe { LeaveRealm(cx, old) };
+         rooted!(in(cx) let replacement = unsafe { NewWindowProxy(cx, other_window.handle().into(), handler) });
++        // Window proxies on V8 global proxies: the replacement becomes the window proxy.
+         let transplanted = unsafe { JS_TransplantObject(cx, proxy.handle().into(), replacement.handle().into()) };
+-        assert_eq!(transplanted, proxy.get());
+-        // The proxy now wraps the other window (script accesses to a global window proxy
+-        // still reach V8's own global: navigation needs global proxy reuse, a known gap).
+-        assert_eq!(unsafe { ToWindowIfWindowProxy(proxy.get()) }, other_window.get());
++        assert_eq!(transplanted, replacement.get());
++        assert_eq!(unsafe { ToWindowIfWindowProxy(transplanted) }, other_window.get());
+     }
+ }

@@ -1568,10 +1568,9 @@ mod window_proxies {
         eval(&runtime, "globalThis.answer = 1");
         unsafe { LeaveRealm(cx, old) };
         rooted!(in(cx) let replacement = unsafe { NewWindowProxy(cx, other_window.handle().into(), handler) });
+        // Window proxies on V8 global proxies: the replacement becomes the window proxy.
         let transplanted = unsafe { JS_TransplantObject(cx, proxy.handle().into(), replacement.handle().into()) };
-        assert_eq!(transplanted, proxy.get());
-        // The proxy now wraps the other window (script accesses to a global window proxy
-        // still reach V8's own global: navigation needs global proxy reuse, a known gap).
-        assert_eq!(unsafe { ToWindowIfWindowProxy(proxy.get()) }, other_window.get());
+        assert_eq!(transplanted, replacement.get());
+        assert_eq!(unsafe { ToWindowIfWindowProxy(transplanted) }, other_window.get());
     }
 }

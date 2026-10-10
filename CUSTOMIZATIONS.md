@@ -11,6 +11,31 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-10 - V8 cutover: navigation with window proxies on V8 global proxies (CP107)
+
+**Servo files:** `components/roves-js/src/proxy.rs` and `tests.rs`.
+
+**Patch:** `0172-roves-js-navigation.patch` after 0171.
+
+**`JS_TransplantObject` on window proxies made on V8 global proxies.** The original cannot
+take the new window's state: script reaches its own V8 global natively. So the replacement
+becomes the window proxy.
+- Servo adopts the returned object as its `WindowProxy` reflector and registers it with
+  `SetWindowProxy`.
+- Servo already clears the old proxy's slot before transplanting, so finalizing the old proxy
+  does not free the shared `WindowProxy`.
+- Code that still holds the old proxy sees the old window, as with a new window proxy per
+  navigation.
+- Transplants between ordinary proxies still move state onto the original identity.
+
+**Verified with the V8 servoshell:**
+- a page that navigates with `location.href` loads the second page, where
+  `window === globalThis`;
+- `history.back()` restores the first page from the bfcache: `pageshow` reports
+  `persisted=true`.
+
+**Tests:** `roves-js` 22/22.
+
 ## 2026-10-10 - V8 cutover: `window === globalThis`, clean exit; the Roves test page runs on V8 (CP106)
 
 **Servo files:** `components/roves-js/src/proxy.rs`, `object.rs`, `cell.rs`, `realm_impl.rs`,
