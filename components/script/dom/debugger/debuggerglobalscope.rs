@@ -10,7 +10,6 @@ use devtools_traits::{
 };
 use dom_struct::dom_struct;
 use embedder_traits::ScriptToEmbedderChan;
-use embedder_traits::resources::{self, Resource};
 use js::context::JSContext;
 use js::rust::wrappers2::JS_DefineDebuggerObject;
 use net_traits::ResourceThreads;
@@ -148,17 +147,11 @@ impl DebuggerGlobalScope {
         self.upcast::<GlobalScope>()
     }
 
-    pub(crate) fn execute(&self, cx: &mut JSContext) {
-        let mut realm = enter_auto_realm(cx, self);
-        let cx = &mut realm.current_realm();
-
-        let _ = self.global_scope.evaluate_js_on_global(
-            cx,
-            resources::read_string(Resource::DebuggerJS).into(),
-            "",
-            None,
-            None,
-        );
+    /// The devtools debugger script (`debugger.js`) drives SpiderMonkey's `Debugger` API, which
+    /// V8 does not have (its inspector protocol is not wired yet): it is not run, so devtools
+    /// JavaScript debugging is unavailable and the debugger global only receives events.
+    pub(crate) fn execute(&self, _cx: &mut JSContext) {
+        log::debug!("devtools JavaScript debugging is unavailable: the V8 inspector is not wired yet");
     }
 
     pub(crate) fn fire_add_debuggee(

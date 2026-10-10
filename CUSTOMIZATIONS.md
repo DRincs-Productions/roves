@@ -12782,3 +12782,17 @@ The JIT-less servoshell build had not started. Cargo accepts `roves-js/jitless` 
 direct dependency of the selected package, and servoshell is not one. `v8_cutover_check.py
 --features pkg/feature` now also selects `pkg`, so the feature unifies into the same build
 (checked with `cargo tree`).
+
+## 2026-10-10 - V8 migration: the SpiderMonkey devtools debugger script is not run
+
+**Servo files:** `components/script/dom/debugger/debuggerglobalscope.rs`.
+**Patch:** `0187-v8-skip-spidermonkey-debugger-script.patch` after 0186.
+
+Every script thread and worker created a debugger global and evaluated `resources/debugger.js`
+in it. That script drives SpiderMonkey's `Debugger` API, which V8 does not have, so on V8 each
+start logged `ReferenceError: Debugger is not defined`. `DebuggerGlobalScope::execute` no longer
+evaluates it and logs at debug level that devtools JavaScript debugging is unavailable. The
+debugger global still exists and receives its events, with no listener.
+
+Devtools JavaScript debugging on V8 needs the V8 inspector protocol. That is a known gap of the
+migration.
