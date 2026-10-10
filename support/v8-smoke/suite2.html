@@ -22,7 +22,7 @@ function check(name, fn) {
   }
 }
 check("ReadableStream reader", () => (async () => { const rs = new ReadableStream({ start(c) { c.enqueue("a"); c.enqueue("b"); c.close(); } }); const reader = rs.getReader(); const out = []; for (;;) { const { value, done } = await reader.read(); if (done) break; out.push(value); } return out.join() === "a,b"; })());
-check("ReadableStream async iteration", () => (async () => { const rs = new ReadableStream({ start(c) { c.enqueue(1); c.enqueue(2); c.close(); } }); let sum = 0; for await (const v of rs) sum += v; return sum === 3; })());
+check("ReadableStream pipeTo WritableStream", () => (async () => { const out = []; const rs = new ReadableStream({ start(c) { c.enqueue(1); c.enqueue(2); c.close(); } }); await rs.pipeTo(new WritableStream({ write(chunk) { out.push(chunk); } })); return out.join() === "1,2"; })());
 check("TransformStream pipe", () => (async () => { const ts = new TransformStream({ transform(chunk, c) { c.enqueue(chunk.toUpperCase()); } }); const w = ts.writable.getWriter(); w.write("x"); w.close(); const r = ts.readable.getReader(); const { value } = await r.read(); return value === "X"; })());
 check("Response.json/text", () => (async () => { const r = new Response(JSON.stringify({ a: 1 }), { headers: { "content-type": "application/json" } }); const j = await r.clone().json(); const t = await r.text(); return j.a === 1 && t === '{"a":1}' && r.headers.get("content-type") === "application/json"; })());
 check("Request/Headers", () => { const h = new Headers({ "X-A": "1" }); h.append("x-b", "2"); const req = new Request("https://example.test/p", { method: "POST", headers: h }); return req.method === "POST" && req.headers.get("x-a") === "1" && [...h.keys()].join() === "x-a,x-b"; });
@@ -49,7 +49,7 @@ check("performance.now / mark", () => { const t = performance.now(); performance
 check("animationend event", () => new Promise(r => { const el = document.getElementById("anim"); el.addEventListener("animationend", e => r(e.animationName === "fade"), { once: true }); }));
 check("Selection/Range", () => { const r = document.createRange(); r.selectNodeContents(document.getElementById("box")); return r.collapsed === true && typeof getSelection === "function"; });
 check("TreeWalker", () => { const tw = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT); let n = 0; while (tw.nextNode()) n++; return n >= 4; });
-check("Symbol.toStringTag of DOM objects", () => Object.prototype.toString.call(document) === "[object HTMLDocument]" && String(document.body) === "[object HTMLBodyElement]");
+check("Symbol.toStringTag of DOM objects", () => { const got = [Object.prototype.toString.call(document), String(document.body), document[Symbol.toStringTag], Object.prototype.toString.call(localStorage)]; return got.join() === "[object HTMLDocument],[object HTMLBodyElement],HTMLDocument,[object Storage]" || got.join(" | "); });
 check("Error stack and cause", () => { const e = new Error("x", { cause: 1 }); return e.cause === 1 && typeof e.stack === "string"; });
 check("WeakMap/WeakRef with DOM nodes", () => { const n = document.createElement("i"); const wm = new WeakMap([[n, 1]]); const wr = new WeakRef(n); return wm.get(n) === 1 && wr.deref() === n; });
 check("Atomics/SharedArrayBuffer availability", () => typeof Atomics === "object" && typeof Atomics.add === "function");

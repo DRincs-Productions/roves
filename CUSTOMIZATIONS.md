@@ -12611,3 +12611,14 @@ through the `StreamConsumer*` functions into V8's streaming compiler.
   rejection of a source that is not a `Response`. The first one fails with V8's default platform.
 - `roves-v8` 62/62.
 - `suite2.html` gains `WebAssembly.instantiate` and `WebAssembly.compileStreaming` checks.
+
+## 2026-10-10 - V8 cutover: smoke suite 2 adjustments
+
+**Servo files:** `support/v8-smoke/suite2.html`. **Patch:** `0180-v8-smoke-suite2-servo-gaps.patch`
+after 0179.
+
+The first CI run of `suite2.html` passed 34 of 36 checks.
+- `ReadableStream` async iteration is commented out in Servo's own WebIDL. It is a Servo gap,
+  not an engine one, and is replaced by a `pipeTo` check.
+- The `Symbol.toStringTag` check of DOM objects (`document` is a DOM proxy, because
+  `HTMLDocument` has a named getter) now reports the values it got, to locate the failure.
