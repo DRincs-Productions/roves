@@ -208,6 +208,13 @@ jobs:
             echo "::error::No patches found in patches/servo-v${SERVO_TAG}/ — nothing to test."
             exit 1
           fi
+          # macOS ships BSD patch, which rejects some of the generated patches that GNU patch
+          # (what validate-servo-patches checks with) applies cleanly: use GNU patch there too.
+          PATCH=patch
+          if [ "$(uname)" = "Darwin" ]; then
+            command -v gpatch >/dev/null || brew install gpatch
+            PATCH=gpatch
+          fi
           cd servo-src
           chmod +x mach
           for p in "${patches[@]}"; do
@@ -220,7 +227,7 @@ jobs:
                 ;;
             esac
             echo "Applying $(basename "$p")..."
-            patch -p1 < "../$p"
+            "$PATCH" -p1 < "../$p"
           done
 
           # test-page/ isn't part of any patch (../CUSTOMIZATIONS.md: plain test
@@ -1197,6 +1204,13 @@ jobs:
             echo "::error::No patches found in patches/servo-v${SERVO_TAG}/ — nothing to test."
             exit 1
           fi
+          # macOS ships BSD patch, which rejects some of the generated patches that GNU patch
+          # (what validate-servo-patches checks with) applies cleanly: use GNU patch there too.
+          PATCH=patch
+          if [ "$(uname)" = "Darwin" ]; then
+            command -v gpatch >/dev/null || brew install gpatch
+            PATCH=gpatch
+          fi
           cd servo-src
           chmod +x mach
           for p in "${patches[@]}"; do
@@ -1207,7 +1221,7 @@ jobs:
                 ;;
             esac
             echo "Applying $(basename "$p")..."
-            patch -p1 < "../$p"
+            "$PATCH" -p1 < "../$p"
           done
 
           mkdir -p test-page
