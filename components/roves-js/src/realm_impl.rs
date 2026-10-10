@@ -207,3 +207,15 @@ pub unsafe extern "C" fn JS_MayResolveStandardClass(_names: *const crate::jsapi:
 pub unsafe extern "C" fn JS_NewEnumerateStandardClasses(_cx: *mut JSContext, _obj: crate::jsapi::HandleObject, _properties: crate::jsapi::MutableHandleIdVector, _enumerable_only: bool) -> bool {
     true
 }
+
+/// The window proxy registered for the realm whose global is `global` (a cell), if any.
+pub(crate) fn window_proxy_of_global(global: *mut c_void) -> Option<*mut c_void> {
+    let cx = crate::rust::Runtime::get()?;
+    // SAFETY: the runtime outlives its scopes.
+    let realms = unsafe { cx.as_ref() }.realms.try_borrow().ok()?;
+    realms
+        .iter()
+        .find(|realm| realm.global.get() as *mut c_void == global)
+        .map(|realm| realm.window_proxy.get() as *mut c_void)
+        .filter(|proxy| !proxy.is_null())
+}

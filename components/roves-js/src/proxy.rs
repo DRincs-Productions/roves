@@ -831,11 +831,38 @@ pub fn GetWindowProxyClass() -> *const JSClass {
     if class.is_null() { &DEFAULT_WINDOW_PROXY_CLASS } else { class }
 }
 
-/// A window proxy for `obj` (a Window global): a wrapper proxy whose private is the window.
+/// A window proxy for `obj`.
+///
+/// For a global (a V8 context's global, as a Window is), the window proxy is V8's own global
+/// proxy, the object scripts see as `globalThis`: a second cell on it carries the proxy state
+/// (handler, private = the window, reserved slots), and conversions of the global proxy yield
+/// that cell once `SetWindowProxy` registers it, so `window === globalThis`. Script property
+/// accesses use V8's global object semantics; the handler's traps are not run. For other
+/// objects it is a wrapper proxy whose private is `obj`.
 pub unsafe fn NewWindowProxy(cx: *mut JSContext, obj: HandleObject, handler: *const c_void) -> *mut JSObject {
-    crate::rooted!(in(cx) let window = crate::jsval::ObjectValue(obj.get()));
-    // SAFETY: forwarded; the prototype comes from the window (lazy, forwarded).
-    unsafe { NewProxyObject(cx, handler, window.handle().into(), std::ptr::null_mut(), GetWindowProxyClass(), true) }
+    let window = obj.get();
+    // SAFETY: callers pass a live context.
+    let raw = unsafe { &*cx };
+    let realm = crate::realm_impl::realm_of_object(raw, window);
+    let is_global = crate::realm_impl::realm_data(realm).is_some_and(|data| data.global.get() == window);
+    if !is_global {
+        crate::rooted!(in(cx) let window = crate::jsval::ObjectValue(window));
+        // SAFETY: forwarded; the prototype comes from the window (lazy, forwarded).
+        return unsafe { NewProxyObject(cx, handler, window.handle().into(), std::ptr::null_mut(), GetWindowProxyClass(), true) };
+    }
+    raw.with_scope(|scope| {
+        // SAFETY: a live global cell; its value is the V8 global proxy.
+        let global_proxy = unsafe { crate::cell::cell_value(scope, window as *mut c_void) };
+        let class_box = crate::object::new_class_box(scope, GetWindowProxyClass());
+        // SAFETY: just created; the cell below keeps it alive.
+        let box_ref = unsafe { class_box.as_ref() };
+        box_ref.proxy.set(handler as *const ProxyHandler);
+        box_ref.private.set(crate::jsval::ObjectValue(window));
+        box_ref.lazy_proto.set(true);
+        let cell = crate::cell::new_cell_with_class(scope, global_proxy, Some(v8::cppgc::Member::new(&class_box)));
+        box_ref.cell.set(cell);
+        cell as *mut JSObject
+    })
 }
 
 pub unsafe fn IsWindowProxy(obj: *mut JSObject) -> bool {

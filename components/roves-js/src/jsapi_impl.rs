@@ -1024,13 +1024,17 @@ pub unsafe fn RemoveRawValueRoot(_cx: *mut JSContext, vp: *mut JSVal) {
 /// Reports `nbytes` of memory owned by `obj` to the GC (V8's external memory counter).
 pub unsafe fn AddAssociatedMemory(_obj: *mut JSObject, nbytes: usize, _use: crate::jsapi::MemoryUse) {
     // SAFETY: the current runtime's isolate, used from its own thread.
-    let isolate = unsafe { &mut *JSContext::current().isolate };
+    // Finalizers may run while the runtime is being torn down: nothing to account then.
+    let Some(cx) = crate::rust::Runtime::get() else { return };
+    let isolate = unsafe { &mut *cx.as_ref().isolate };
     isolate.adjust_amount_of_external_allocated_memory(nbytes as i64);
 }
 
 pub unsafe fn RemoveAssociatedMemory(_obj: *mut JSObject, nbytes: usize, _use: crate::jsapi::MemoryUse) {
     // SAFETY: as above.
-    let isolate = unsafe { &mut *JSContext::current().isolate };
+    // Finalizers may run while the runtime is being torn down: nothing to account then.
+    let Some(cx) = crate::rust::Runtime::get() else { return };
+    let isolate = unsafe { &mut *cx.as_ref().isolate };
     isolate.adjust_amount_of_external_allocated_memory(-(nbytes as i64));
 }
 

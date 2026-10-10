@@ -146,7 +146,8 @@ pub(crate) fn new_cell(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) ->
         if let Some(class_box) = crate::object::class_box_of_v8(object) {
             let cell = class_box.cell.get();
             if !cell.is_null() {
-                return cell;
+                // Scripts see a Window global as its window proxy.
+                return crate::realm_impl::window_proxy_of_global(cell).unwrap_or(cell);
             }
         }
         if let Ok(proxy) = v8::Local::<v8::Proxy>::try_from(value) {

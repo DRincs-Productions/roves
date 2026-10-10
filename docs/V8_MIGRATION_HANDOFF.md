@@ -435,7 +435,13 @@ strategia completa è in `docs/V8_MIGRATION.md` ("Cutover strategy"). Metrica:
   esegue DOM, eventi, classi, JSON, promise, timer, interfacce lazy, `console.log` e viene
   renderizzata. Correzioni in CUSTOMIZATIONS (CP105). Lacune: `window === globalThis` falso,
   debugger devtools (serve l'inspector V8), l'esecuzione headless non termina da sola.
-- **Prossimi passi (dopo CP105):** global proxy V8 = `WindowProxy` di Servo; uscita pulita
+- **CP106:** `window === globalThis` (il `WindowProxy` di Servo è il global proxy V8);
+  uscita pulita con `-z -x -o`; la **test-page di Roves** (React/Vite, moduli ES, Tone.js,
+  WebGL) viene renderizzata su V8. Lacune: navigazione (riuso del global proxy), devtools
+  (inspector V8), copertura WPT.
+- **Prossimi passi (dopo CP106):** navigazione/transplant con riuso del global proxy; WPT
+  su un sottoinsieme; swap permanente.
+- **Storico (dopo CP105):** global proxy V8 = `WindowProxy` di Servo; uscita pulita
   in headless; più pagine e WPT; poi swap permanente (`engine-v8`).
 - **Storico (dopo CP104):** `cargo check` dell'intero workspace con lo swap
   (servoshell); rendere lo swap permanente (`engine-v8`); avviare pagine reali e chiudere le

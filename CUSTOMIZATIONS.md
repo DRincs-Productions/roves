@@ -11,6 +11,43 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-10 - V8 cutover: `window === globalThis`, clean exit; the Roves test page runs on V8 (CP106)
+
+**Servo files:** `components/roves-js/src/proxy.rs`, `object.rs`, `cell.rs`, `realm_impl.rs`,
+`jsapi_impl.rs` and `tests.rs`.
+
+**Patch:** `0171-roves-js-window-identity.patch` after 0170.
+
+**Window proxies are V8's global proxy.**
+- For a global, which is what a Window is, `NewWindowProxy` makes a second cell on the
+  context's V8 global proxy, the object scripts see as `globalThis`. That cell has its own
+  class box, not stored in any internal field: handler, private = the window, and the
+  reserved slots where Servo keeps its `WindowProxy`.
+- Once `SetWindowProxy` registers it, converting the global proxy yields that cell. Natives
+  called on the global get the window proxy, which they unwrap to the window (CP105).
+- So `window === globalThis` holds, and the window object stays Servo's global reflector.
+- Script property accesses use V8's global object semantics; the handler's traps (Servo's
+  cross-origin checks, indexed frames) are not run for them.
+- `JS_TransplantObject` on such a proxy changes the wrapped window, but script still reaches
+  the old global. Navigation needs a global proxy reused by the new context
+  (`ContextOptions.global_object`): a known gap.
+
+**Teardown.** `Add`/`RemoveAssociatedMemory` do nothing once the runtime is torn down. Servo's
+reflector finalizers run while the isolate is disposed, after the context is gone, and the
+lookup of the current context panicked on exit.
+
+**Verified.** `target/v8-cutover/debug/servoshell.exe` (built with
+`python support/v8_cutover_check.py servoshell --build`):
+- runs the test page with `window === globalThis` and exits cleanly with `-z -x -o`;
+- renders the Roves **test page** (`test-page/dist`, a React app built with Vite), with:
+  - its module graph;
+  - Tone.js loading;
+  - the WebGL 2 info panel;
+  - the Steam autotest.
+
+**Tests:** `roves-js` 22/22. The window-proxy test now checks `globalThis` identity, and that
+a transplant changes the wrapped window.
+
 ## 2026-10-10 - V8 cutover: servoshell builds, links and runs pages on V8 (CP105)
 
 **Servo files:**

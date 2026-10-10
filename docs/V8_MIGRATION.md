@@ -98,6 +98,12 @@ errors.
     - devtools on V8's inspector;
     - clean headless exit;
     - broad page and WPT coverage.
+- CP106: `window === globalThis` (Servo's window proxy is V8's global proxy) and a clean
+  exit. The **Roves test page** (React/Vite, ES modules, Tone.js, WebGL) renders on V8.
+  Remaining gaps:
+  - navigation (global proxy reuse);
+  - devtools on V8's inspector;
+  - WPT coverage.
 
 **Surface.** An inventory of `script`, `script_bindings` and `script_webgpu` found about 590
 distinct `js::` items:

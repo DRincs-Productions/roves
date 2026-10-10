@@ -479,11 +479,22 @@ pub(crate) fn attach_class_box(scope: &mut v8::PinScope, object: v8::Local<v8::O
 
 /// Creates `object`'s class box (stored in its internal field, kept alive by the object).
 pub(crate) fn make_class_box(scope: &mut v8::PinScope, object: v8::Local<v8::Object>, class: *const JSClass) -> UnsafePtr<ClassBox> {
+    let class_box = new_class_box(scope, class);
+    let raw = box_to_raw(&class_box);
+    object.set_aligned_pointer_in_internal_field(0, raw, CLASS_BOX_TAG);
+    let root = v8::cppgc::Persistent::new(&class_box);
+    // SAFETY: the object is an API object from a template with one internal field.
+    unsafe { v8::Object::wrap::<CLASS_WRAP_TAG, ClassBox>(scope, object, &root) };
+    class_box
+}
+
+/// A new class box. The caller attaches it to an object or a cell before the next GC.
+pub(crate) fn new_class_box(scope: &mut v8::PinScope, class: *const JSClass) -> UnsafePtr<ClassBox> {
     // SAFETY: classes are static.
     let slots = reserved_slot_count(unsafe { &*class });
     let heap = scope.get_cpp_heap().expect("roves-js isolates carry a cppgc heap");
-    // SAFETY: the box is attached to the object (wrap) right away, before any GC can run.
-    let class_box = unsafe {
+    // SAFETY: the caller stores the box (in an object's internal field or a cell) at once.
+    unsafe {
         v8::cppgc::make_garbage_collected(
             heap,
             ClassBox {
@@ -497,13 +508,7 @@ pub(crate) fn make_class_box(scope: &mut v8::PinScope, object: v8::Local<v8::Obj
                 global_trace: StdCell::new(None),
             },
         )
-    };
-    let raw = box_to_raw(&class_box);
-    object.set_aligned_pointer_in_internal_field(0, raw, CLASS_BOX_TAG);
-    let root = v8::cppgc::Persistent::new(&class_box);
-    // SAFETY: the object is an API object from a template with one internal field.
-    unsafe { v8::Object::wrap::<CLASS_WRAP_TAG, ClassBox>(scope, object, &root) };
-    class_box
+    }
 }
 
 /// `JS::GetClass` / mozjs's `get_object_class`: the class of a class-based object, or the

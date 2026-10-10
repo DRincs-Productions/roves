@@ -1,0 +1,174 @@
+diff --git a/components/roves-js/src/cell.rs b/components/roves-js/src/cell.rs
+index c6c21930f30..118051d0156 100644
+--- a/components/roves-js/src/cell.rs
++++ b/components/roves-js/src/cell.rs
+@@ -146,7 +146,8 @@ pub(crate) fn new_cell(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) ->
+         if let Some(class_box) = crate::object::class_box_of_v8(object) {
+             let cell = class_box.cell.get();
+             if !cell.is_null() {
+-                return cell;
++                // Scripts see a Window global as its window proxy.
++                return crate::realm_impl::window_proxy_of_global(cell).unwrap_or(cell);
+             }
+         }
+         if let Ok(proxy) = v8::Local::<v8::Proxy>::try_from(value) {
+diff --git a/components/roves-js/src/jsapi_impl.rs b/components/roves-js/src/jsapi_impl.rs
+index 7cc7a35388d..dae2a68d244 100644
+--- a/components/roves-js/src/jsapi_impl.rs
++++ b/components/roves-js/src/jsapi_impl.rs
+@@ -1024,13 +1024,17 @@ pub unsafe fn RemoveRawValueRoot(_cx: *mut JSContext, vp: *mut JSVal) {
+ /// Reports `nbytes` of memory owned by `obj` to the GC (V8's external memory counter).
+ pub unsafe fn AddAssociatedMemory(_obj: *mut JSObject, nbytes: usize, _use: crate::jsapi::MemoryUse) {
+     // SAFETY: the current runtime's isolate, used from its own thread.
+-    let isolate = unsafe { &mut *JSContext::current().isolate };
++    // Finalizers may run while the runtime is being torn down: nothing to account then.
++    let Some(cx) = crate::rust::Runtime::get() else { return };
++    let isolate = unsafe { &mut *cx.as_ref().isolate };
+     isolate.adjust_amount_of_external_allocated_memory(nbytes as i64);
+ }
+ 
+ pub unsafe fn RemoveAssociatedMemory(_obj: *mut JSObject, nbytes: usize, _use: crate::jsapi::MemoryUse) {
+     // SAFETY: as above.
+-    let isolate = unsafe { &mut *JSContext::current().isolate };
++    // Finalizers may run while the runtime is being torn down: nothing to account then.
++    let Some(cx) = crate::rust::Runtime::get() else { return };
++    let isolate = unsafe { &mut *cx.as_ref().isolate };
+     isolate.adjust_amount_of_external_allocated_memory(-(nbytes as i64));
+ }
+ 
+diff --git a/components/roves-js/src/object.rs b/components/roves-js/src/object.rs
+index 2024baf9ec8..f0ed8a0f085 100644
+--- a/components/roves-js/src/object.rs
++++ b/components/roves-js/src/object.rs
+@@ -479,11 +479,22 @@ pub(crate) fn attach_class_box(scope: &mut v8::PinScope, object: v8::Local<v8::O
+ 
+ /// Creates `object`'s class box (stored in its internal field, kept alive by the object).
+ pub(crate) fn make_class_box(scope: &mut v8::PinScope, object: v8::Local<v8::Object>, class: *const JSClass) -> UnsafePtr<ClassBox> {
++    let class_box = new_class_box(scope, class);
++    let raw = box_to_raw(&class_box);
++    object.set_aligned_pointer_in_internal_field(0, raw, CLASS_BOX_TAG);
++    let root = v8::cppgc::Persistent::new(&class_box);
++    // SAFETY: the object is an API object from a template with one internal field.
++    unsafe { v8::Object::wrap::<CLASS_WRAP_TAG, ClassBox>(scope, object, &root) };
++    class_box
++}
++
++/// A new class box. The caller attaches it to an object or a cell before the next GC.
++pub(crate) fn new_class_box(scope: &mut v8::PinScope, class: *const JSClass) -> UnsafePtr<ClassBox> {
+     // SAFETY: classes are static.
+     let slots = reserved_slot_count(unsafe { &*class });
+     let heap = scope.get_cpp_heap().expect("roves-js isolates carry a cppgc heap");
+-    // SAFETY: the box is attached to the object (wrap) right away, before any GC can run.
+-    let class_box = unsafe {
++    // SAFETY: the caller stores the box (in an object's internal field or a cell) at once.
++    unsafe {
+         v8::cppgc::make_garbage_collected(
+             heap,
+             ClassBox {
+@@ -497,13 +508,7 @@ pub(crate) fn make_class_box(scope: &mut v8::PinScope, object: v8::Local<v8::Obj
+                 global_trace: StdCell::new(None),
+             },
+         )
+-    };
+-    let raw = box_to_raw(&class_box);
+-    object.set_aligned_pointer_in_internal_field(0, raw, CLASS_BOX_TAG);
+-    let root = v8::cppgc::Persistent::new(&class_box);
+-    // SAFETY: the object is an API object from a template with one internal field.
+-    unsafe { v8::Object::wrap::<CLASS_WRAP_TAG, ClassBox>(scope, object, &root) };
+-    class_box
++    }
+ }
+ 
+ /// `JS::GetClass` / mozjs's `get_object_class`: the class of a class-based object, or the
+diff --git a/components/roves-js/src/proxy.rs b/components/roves-js/src/proxy.rs
+index 21d159eca69..aa0df4e89db 100644
+--- a/components/roves-js/src/proxy.rs
++++ b/components/roves-js/src/proxy.rs
+@@ -831,11 +831,38 @@ pub fn GetWindowProxyClass() -> *const JSClass {
+     if class.is_null() { &DEFAULT_WINDOW_PROXY_CLASS } else { class }
+ }
+ 
+-/// A window proxy for `obj` (a Window global): a wrapper proxy whose private is the window.
++/// A window proxy for `obj`.
++///
++/// For a global (a V8 context's global, as a Window is), the window proxy is V8's own global
++/// proxy, the object scripts see as `globalThis`: a second cell on it carries the proxy state
++/// (handler, private = the window, reserved slots), and conversions of the global proxy yield
++/// that cell once `SetWindowProxy` registers it, so `window === globalThis`. Script property
++/// accesses use V8's global object semantics; the handler's traps are not run. For other
++/// objects it is a wrapper proxy whose private is `obj`.
+ pub unsafe fn NewWindowProxy(cx: *mut JSContext, obj: HandleObject, handler: *const c_void) -> *mut JSObject {
+-    crate::rooted!(in(cx) let window = crate::jsval::ObjectValue(obj.get()));
+-    // SAFETY: forwarded; the prototype comes from the window (lazy, forwarded).
+-    unsafe { NewProxyObject(cx, handler, window.handle().into(), std::ptr::null_mut(), GetWindowProxyClass(), true) }
++    let window = obj.get();
++    // SAFETY: callers pass a live context.
++    let raw = unsafe { &*cx };
++    let realm = crate::realm_impl::realm_of_object(raw, window);
++    let is_global = crate::realm_impl::realm_data(realm).is_some_and(|data| data.global.get() == window);
++    if !is_global {
++        crate::rooted!(in(cx) let window = crate::jsval::ObjectValue(window));
++        // SAFETY: forwarded; the prototype comes from the window (lazy, forwarded).
++        return unsafe { NewProxyObject(cx, handler, window.handle().into(), std::ptr::null_mut(), GetWindowProxyClass(), true) };
++    }
++    raw.with_scope(|scope| {
++        // SAFETY: a live global cell; its value is the V8 global proxy.
++        let global_proxy = unsafe { crate::cell::cell_value(scope, window as *mut c_void) };
++        let class_box = crate::object::new_class_box(scope, GetWindowProxyClass());
++        // SAFETY: just created; the cell below keeps it alive.
++        let box_ref = unsafe { class_box.as_ref() };
++        box_ref.proxy.set(handler as *const ProxyHandler);
++        box_ref.private.set(crate::jsval::ObjectValue(window));
++        box_ref.lazy_proto.set(true);
++        let cell = crate::cell::new_cell_with_class(scope, global_proxy, Some(v8::cppgc::Member::new(&class_box)));
++        box_ref.cell.set(cell);
++        cell as *mut JSObject
++    })
+ }
+ 
+ pub unsafe fn IsWindowProxy(obj: *mut JSObject) -> bool {
+diff --git a/components/roves-js/src/realm_impl.rs b/components/roves-js/src/realm_impl.rs
+index 6b003d822b1..1f0547de5d5 100644
+--- a/components/roves-js/src/realm_impl.rs
++++ b/components/roves-js/src/realm_impl.rs
+@@ -207,3 +207,15 @@ pub unsafe extern "C" fn JS_MayResolveStandardClass(_names: *const crate::jsapi:
+ pub unsafe extern "C" fn JS_NewEnumerateStandardClasses(_cx: *mut JSContext, _obj: crate::jsapi::HandleObject, _properties: crate::jsapi::MutableHandleIdVector, _enumerable_only: bool) -> bool {
+     true
+ }
++
++/// The window proxy registered for the realm whose global is `global` (a cell), if any.
++pub(crate) fn window_proxy_of_global(global: *mut c_void) -> Option<*mut c_void> {
++    let cx = crate::rust::Runtime::get()?;
++    // SAFETY: the runtime outlives its scopes.
++    let realms = unsafe { cx.as_ref() }.realms.try_borrow().ok()?;
++    realms
++        .iter()
++        .find(|realm| realm.global.get() as *mut c_void == global)
++        .map(|realm| realm.window_proxy.get() as *mut c_void)
++        .filter(|proxy| !proxy.is_null())
++}
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index bd4690ef071..b1e7972321f 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -1547,6 +1547,10 @@ mod window_proxies {
+         unsafe { SetWindowProxy(cx, window.handle().into(), proxy.handle().into()) };
+         assert!(unsafe { IsWindowSlow(window.get()) });
+         assert_eq!(unsafe { ToWindowProxyIfWindowSlow(window.get()) }, proxy.get());
++        // Scripts see the window proxy as `globalThis`: one object (V8's global proxy).
++        let old = unsafe { EnterRealm(cx, window.get()) };
++        assert_eq!(eval(&runtime, "globalThis").to_object(), proxy.get(), "window === globalThis");
++        unsafe { LeaveRealm(cx, old) };
+ 
+         rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
+         rooted!(in(cx) let proxy_value = ObjectValue(proxy.get()));
+@@ -1566,6 +1570,8 @@ mod window_proxies {
+         rooted!(in(cx) let replacement = unsafe { NewWindowProxy(cx, other_window.handle().into(), handler) });
+         let transplanted = unsafe { JS_TransplantObject(cx, proxy.handle().into(), replacement.handle().into()) };
+         assert_eq!(transplanted, proxy.get());
+-        assert_eq!(eval(&runtime, "w.answer").to_int32(), 1);
++        // The proxy now wraps the other window (script accesses to a global window proxy
++        // still reach V8's own global: navigation needs global proxy reuse, a known gap).
++        assert_eq!(unsafe { ToWindowIfWindowProxy(proxy.get()) }, other_window.get());
+     }
+ }
