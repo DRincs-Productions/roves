@@ -56,6 +56,12 @@ for expected in "ROVES-V8 dom: changed by js" "ROVES-V8 click event click true" 
 done
 if grep -aq "ROVES-V8 class 2 {\"a\":\[1,2\]} true true" test.log; then echo "::notice::test.html: window === globalThis"; else echo "::warning::test.html: window === globalThis not confirmed"; fi
 
+run_page csp.html 30 csp.log
+for expected in "ROVES-V8 csp eval EvalError" "ROVES-V8 csp function EvalError"; do
+  if grep -aq "$expected" csp.log; then echo "::notice::csp.html: $expected"; else echo "::warning::csp.html: missing '$expected' ($(grep -a 'ROVES-V8 csp' csp.log | tr '
+' ' '))"; fi
+done
+
 run_page nav1.html 30 nav.log
 for expected in "ROVES-V8 nav2 loaded nav2.html true second page" "ROVES-V8 nav1 pageshow persisted=true"; do
   if grep -aq "$expected" nav.log; then echo "::notice::navigation: $expected"; else echo "::error::navigation: missing '$expected'"; STATUS=1; fi

@@ -12553,3 +12553,25 @@ module records) live as long as the runtime. A page left by navigation or a remo
 not collected. This matters for multi-page sites, much less for single-page games.
 
 **Tests:** `roves-js` 27/27, adding a helper used from a second realm after the first.
+
+## 2026-10-10 - V8 cutover: Content Security Policy for eval, Function and WebAssembly (CP111)
+
+**Servo files:** `components/roves-js/src/runtime_impl.rs`, `realm_impl.rs` and `tests.rs`;
+`support/v8-smoke/run.sh`; `support/v8-smoke/csp.html`, new.
+
+**Patch:** `0178-roves-js-csp-eval.patch` after 0177.
+
+Servo's CSP check for compiled strings (`JSSecurityCallbacks::contentSecurityPolicyAllows`,
+which also applies Trusted Types) was registered but never called on V8. Now:
+- every realm's context disallows code generation from strings;
+- V8 therefore asks roves-js before compiling an `eval` or `Function` string or WebAssembly
+  bytes, and roves-js calls Servo's check in the realm doing the compilation;
+- a refusal throws V8's `EvalError` (or `CompileError` for WebAssembly).
+
+For the `Function` constructor, the parameters and body are recovered from the source V8 builds.
+The parameters come as one joined string, because V8 does not keep them apart. `eval` of a
+`TrustedScript` object is still not compiled: that needs V8's "code-like" objects, which rusty_v8
+does not expose.
+
+**Tests:** `roves-js` 28/28, adding a CSP check that allows and blocks `eval`, `Function` and
+WebAssembly. The CI smoke run gains `csp.html`, a page whose meta CSP forbids `eval`.

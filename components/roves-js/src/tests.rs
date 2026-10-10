@@ -1003,6 +1003,62 @@ mod runtime_hooks {
     thread_local! {
         static EXTRA_TRACED: Cell<u32> = const { Cell::new(0) };
         static REJECTIONS: Cell<(u32, u32)> = const { Cell::new((0, 0)) };
+        static CSP_CHECKS: std::cell::RefCell<Vec<std::string::String>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    fn text(string: *mut JSString) -> std::string::String {
+        if string.is_null() {
+            return "null".into();
+        }
+        crate::jsapi::JSContext::current().with_scope(|scope| {
+            // SAFETY: the checker's strings are rooted.
+            unsafe { crate::cell::cell_value(scope, string as *mut c_void) }.to_rust_string_lossy(scope)
+        })
+    }
+
+    unsafe extern "C" fn csp_check(
+        _cx: *mut JSContext,
+        kind: RuntimeCode,
+        code: Handle<*mut JSString>,
+        compilation_type: CompilationType,
+        parameters: Handle<StackGCVector<*mut JSString>>,
+        body: Handle<*mut JSString>,
+        _arguments: Handle<StackGCVector<JSVal>>,
+        _body_argument: Handle<JSVal>,
+        allowed: *mut bool,
+    ) -> bool {
+        // SAFETY: the checker's arguments are valid handles.
+        let (code, body) = unsafe { (text(*code.ptr), text(*body.ptr)) };
+        let parameters = unsafe { &*(parameters.ptr as *const Vec<*mut JSString>) };
+        let parameters: Vec<std::string::String> = parameters.iter().map(|parameter| text(*parameter)).collect();
+        CSP_CHECKS.with(|checks| checks.borrow_mut().push(format!("{kind:?} {compilation_type:?} {body} [{}]", parameters.join(","))));
+        // SAFETY: a valid out pointer.
+        unsafe { *allowed = !code.contains("blocked") };
+        true
+    }
+
+    static SECURITY_CALLBACKS: JSSecurityCallbacks =
+        JSSecurityCallbacks { contentSecurityPolicyAllows: Some(csp_check), codeForEvalGets: None, subsumes: None };
+
+    #[test]
+    fn csp_checks_eval_function_and_wasm() {
+        let runtime = Runtime::new(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        assert_eq!(eval(&runtime, "eval('1 + 1')").to_int32(), 2, "no check installed");
+        unsafe { JS_SetSecurityCallbacks(cx, &SECURITY_CALLBACKS) };
+        assert_eq!(eval(&runtime, "eval('2 + 2')").to_int32(), 4);
+        assert!(eval(&runtime, "try { eval('\"blocked\"'); false } catch (e) { e instanceof EvalError }").to_boolean());
+        assert_eq!(eval(&runtime, "new Function('a', 'b', 'return a + b')(2, 3)").to_int32(), 5);
+        assert!(eval(&runtime, "try { Function('return \"blocked\"'); false } catch (e) { e instanceof EvalError }").to_boolean());
+        assert!(eval(&runtime, "const o = {}; eval(o) === o").to_boolean(), "non-strings are returned unchanged");
+        let wasm = "new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])) instanceof WebAssembly.Module";
+        assert!(eval(&runtime, wasm).to_boolean());
+        let checks = CSP_CHECKS.with(|checks| checks.take());
+        assert_eq!(checks[0], "JS DirectEval null []");
+        assert_eq!(checks[1], "JS DirectEval null []");
+        assert_eq!(checks[2], "JS Function return a + b [a,b]");
+        assert_eq!(checks[3], "JS Function return \"blocked\" []");
+        assert_eq!(checks.last().map(std::string::String::as_str), Some("WASM DirectEval null []"));
     }
 
     unsafe extern "C" fn extra_roots(_trc: *mut JSTracer, data: *mut c_void) {

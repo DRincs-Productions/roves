@@ -95,6 +95,8 @@ pub(crate) fn configure_isolate(isolate: &mut v8::Isolate) {
     isolate.add_gc_prologue_callback(gc_prologue, std::ptr::null_mut(), full);
     isolate.add_gc_epilogue_callback(gc_epilogue, std::ptr::null_mut(), full);
     crate::modules_impl::configure_isolate(isolate);
+    isolate.set_modify_code_generation_from_strings_callback(code_generation_from_strings);
+    isolate.set_allow_wasm_code_generation_callback(wasm_code_generation);
 }
 
 // --- Interrupts ------------------------------------------------------------------------------
@@ -351,9 +353,89 @@ pub unsafe fn JS_SetOffthreadIonCompilationEnabled(_cx: *mut JSContext, _enabled
 
 pub unsafe fn DisableJitBackend() {}
 
-/// Records the security callbacks (CSP checks of `eval` are not wired to V8 yet).
+/// Sets the security callbacks. Their CSP check (`contentSecurityPolicyAllows`) decides on
+/// `eval`, `Function` and WebAssembly compilation: realms disallow code generation from
+/// strings, so V8 asks [`code_generation_from_strings`] and [`wasm_code_generation`].
 pub unsafe fn JS_SetSecurityCallbacks(cx: *mut JSContext, callbacks: *const JSSecurityCallbacks) {
     hooks(cx).security_callbacks.set(callbacks);
+}
+
+/// The source V8 builds for the `Function` constructor: `(function anonymous(<params>\n) {\n<body>\n})`
+/// (or the async/generator forms). Returns the parameters and the body.
+fn function_constructor_parts(source: &str) -> Option<(&str, &str)> {
+    let rest = ["(function anonymous(", "(async function anonymous(", "(function* anonymous(", "(async function* anonymous("]
+        .iter()
+        .find_map(|prefix| source.strip_prefix(prefix))?;
+    let (parameters, body) = rest.split_once("\n) {\n")?;
+    Some((parameters, body.strip_suffix("\n})")?))
+}
+
+/// Asks the embedder's CSP check whether `kind` code may be compiled in the realm of `context`
+/// (true without a check). `source` is the code (JS) or null (WebAssembly).
+fn csp_allows(scope: &mut v8::PinScope, kind: crate::jsapi::RuntimeCode, source: Option<v8::Local<v8::String>>) -> bool {
+    use crate::jsapi::{CompilationType, JSString, StackGCVector};
+    let Some(cx) = crate::rust::Runtime::get() else { return true };
+    let cx = cx.as_ptr();
+    // SAFETY: security callbacks are static tables (JSAPI contract).
+    let Some(check) = (unsafe { hooks(cx).security_callbacks.get().as_ref() }).and_then(|callbacks| callbacks.contentSecurityPolicyAllows) else {
+        return true;
+    };
+    let text = source.map(|source| source.to_rust_string_lossy(scope));
+    let function = text.as_deref().and_then(function_constructor_parts);
+    let compilation_type = if function.is_some() { CompilationType::Function } else { CompilationType::DirectEval };
+    let to_string = |scope: &mut v8::PinScope, text: Option<&str>| -> *mut JSString {
+        match text.and_then(|text| v8::String::new(scope, text)) {
+            Some(string) => crate::jsval::from_v8(scope, string.into()).to_string(),
+            None => std::ptr::null_mut(),
+        }
+    };
+    let code = to_string(scope, text.as_deref());
+    let body = to_string(scope, function.map(|(_, body)| body));
+    let parameter = to_string(scope, function.map(|(parameters, _)| parameters));
+    crate::rooted!(in(cx) let code = code);
+    crate::rooted!(in(cx) let body = body);
+    // V8 joins the parameters into one list: they are reported as one string.
+    let mut parameters: Vec<*mut JSString> = Vec::new();
+    if !parameter.is_null() {
+        parameters.push(parameter);
+    }
+    crate::rooted!(in(cx) let parameter = parameter);
+    let arguments: Vec<crate::jsval::JSVal> = Vec::new();
+    crate::rooted!(in(cx) let body_argument = crate::jsval::UndefinedValue());
+    let parameter_handle = crate::jsapi::Handle { _phantom_0: std::marker::PhantomData, ptr: &parameters as *const Vec<*mut JSString> as *const StackGCVector<*mut JSString> };
+    let argument_handle = crate::jsapi::Handle { _phantom_0: std::marker::PhantomData, ptr: &arguments as *const Vec<crate::jsval::JSVal> as *const StackGCVector<crate::jsval::JSVal> };
+    // The check runs in the realm compiling the code.
+    // SAFETY: the runtime's live context.
+    let raw = unsafe { &*cx };
+    let old = raw.current_realm.get();
+    raw.set_current_realm(crate::realm_impl::realm_of_context(scope.get_current_context()));
+    let mut allowed = false;
+    // SAFETY: SpiderMonkey's CSP-check contract (rooted strings, valid vectors).
+    let ok = unsafe {
+        check(cx, kind, code.handle().into(), compilation_type, parameter_handle, body.handle().into(), argument_handle, body_argument.handle().into(), &mut allowed)
+    };
+    raw.set_current_realm(old);
+    let _ = parameter;
+    ok && allowed
+}
+
+fn code_generation_from_strings<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    source: v8::Local<'s, v8::Value>,
+    _is_code_like: bool,
+) -> v8::ModifyCodeGenerationFromStringsResult<'s> {
+    // A non-string `eval` argument is returned unchanged (nothing is compiled).
+    let Ok(string) = v8::Local::<v8::String>::try_from(source) else {
+        return v8::ModifyCodeGenerationFromStringsResult { codegen_allowed: true, modified_source: None };
+    };
+    let allowed = csp_allows(scope, crate::jsapi::RuntimeCode::JS, Some(string));
+    v8::ModifyCodeGenerationFromStringsResult { codegen_allowed: allowed, modified_source: allowed.then_some(string) }
+}
+
+unsafe extern "C" fn wasm_code_generation(context: v8::Local<v8::Context>, _source: v8::Local<v8::String>) -> bool {
+    // SAFETY: V8 calls this with the context entered.
+    v8::callback_scope!(unsafe scope, context);
+    csp_allows(scope, crate::jsapi::RuntimeCode::WASM, None)
 }
 
 pub unsafe fn SetDOMCallbacks(cx: *mut JSContext, callbacks: *const DOMCallbacks) {

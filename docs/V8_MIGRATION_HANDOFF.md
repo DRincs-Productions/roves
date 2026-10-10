@@ -456,7 +456,10 @@ strategia completa è in `docs/V8_MIGRATION.md` ("Cutover strategy"). Metrica:
   contesto); prima venivano creati nel primo realm che li usava (prototipi sbagliati dopo una
   navigazione/in un iframe). Lacuna nota: i realm (contesto, globale, window proxy, moduli)
   vivono quanto il runtime.
-- **Prossimi passi (dopo CP109):** correggere i fallimenti di suite2 in CI; durata di
+- **CP111:** CSP per `eval`/`Function`/WebAssembly: i contesti vietano la generazione di
+  codice da stringhe e V8 chiama il controllo CSP di Servo (`contentSecurityPolicyAllows`).
+  Pagina smoke `csp.html`. Lacuna: `eval(TrustedScript)` (serve `SetCodeLike`).
+- **Prossimi passi (dopo CP111):** correggere i fallimenti di suite2 in CI; durata di
   privates di script/moduli e box delle classi chiamabili; devtools/inspector; swap permanente.
 - **Storico (dopo CP105):** global proxy V8 = `WindowProxy` di Servo; uscita pulita
   in headless; più pagine e WPT; poi swap permanente (`engine-v8`).

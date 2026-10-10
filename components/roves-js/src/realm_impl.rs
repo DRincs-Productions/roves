@@ -51,6 +51,9 @@ pub(crate) fn register_realm(cx: &JSContext, scope: &mut v8::PinScope, context: 
     let null = v8::null(scope).into();
     cache.set_prototype(scope, null);
     context.set_embedder_data(CACHE_SLOT, cache.into());
+    // `eval`, `Function` and WebAssembly compilation then go through the embedder's CSP check
+    // (see `runtime_impl::JS_SetSecurityCallbacks`).
+    context.set_allow_generation_from_strings(false);
     cx.realms.borrow_mut().push(data);
     pointer as *mut Realm
 }

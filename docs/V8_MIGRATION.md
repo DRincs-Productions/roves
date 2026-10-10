@@ -113,8 +113,9 @@ errors.
   promise Servo creates) are no longer runtime-lifetime roots.
 - CP110: JS helpers and proxy handler objects are per realm (they were made in the first realm
   that used them).
+- CP111: Servo's CSP check applies to `eval`, `Function` and WebAssembly compilation.
   Remaining: devtools on V8's inspector; cross-origin window proxy traps; immutable
-  prototypes; realms live as long as the runtime (navigated-away pages are not collected); wasm streaming; CSP for `eval`; script/module privates and per-realm callable
+  prototypes; realms live as long as the runtime (navigated-away pages are not collected); wasm streaming; `eval` of `TrustedScript`; script/module privates and per-realm callable
   class boxes still live as long as the runtime; WPT-scale coverage; the permanent swap.
 
 **Surface.** An inventory of `script`, `script_bindings` and `script_webgpu` found about 590
