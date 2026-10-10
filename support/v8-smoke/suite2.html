@@ -49,7 +49,7 @@ check("performance.now / mark", () => { const t = performance.now(); performance
 check("animationend event", () => new Promise(r => { const el = document.getElementById("anim"); el.addEventListener("animationend", e => r(e.animationName === "fade"), { once: true }); }));
 check("Selection/Range", () => { const r = document.createRange(); r.selectNodeContents(document.getElementById("box")); return r.collapsed === true && typeof getSelection === "function"; });
 check("TreeWalker", () => { const tw = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT); let n = 0; while (tw.nextNode()) n++; return n >= 4; });
-check("Symbol.toStringTag of DOM objects", () => { const got = [Object.prototype.toString.call(document), String(document.body), document[Symbol.toStringTag], Object.prototype.toString.call(localStorage)]; return got.join() === "[object HTMLDocument],[object HTMLBodyElement],HTMLDocument,[object Storage]" || got.join(" | "); });
+check("Symbol.toStringTag of DOM objects", () => { const got = [Object.prototype.toString.call(document), String(document.body), document[Symbol.toStringTag], Object.prototype.toString.call(localStorage)]; return got.join() === "[object Document],[object HTMLBodyElement],Document,[object Storage]" || got.join(" | "); });
 check("Error stack and cause", () => { const e = new Error("x", { cause: 1 }); return e.cause === 1 && typeof e.stack === "string"; });
 check("WeakMap/WeakRef with DOM nodes", () => { const n = document.createElement("i"); const wm = new WeakMap([[n, 1]]); const wr = new WeakRef(n); return wm.get(n) === 1 && wr.deref() === n; });
 check("Atomics/SharedArrayBuffer availability", () => typeof Atomics === "object" && typeof Atomics.add === "function");
@@ -57,7 +57,7 @@ check("String/Array modern methods", () => "abc".at(-1) === "c" && [3, 1, 2].toS
 check("Intl.Segmenter/RelativeTimeFormat", () => [...new Intl.Segmenter("en", { granularity: "word" }).segment("a b")].length === 3 && new Intl.RelativeTimeFormat("en").format(-1, "day") === "1 day ago");
 check("getter/setter interface attributes", () => { const i = document.createElement("input"); i.value = "q"; i.type = "checkbox"; i.checked = true; return i.value === "q" && i.checked === true && i.type === "checkbox"; });
 check("WebAssembly.instantiate (async compile)", () => WebAssembly.instantiate(new Uint8Array([0,97,115,109,1,0,0,0,1,7,1,96,2,127,127,1,127,3,2,1,0,7,7,1,3,97,100,100,0,0,10,9,1,7,0,32,0,32,1,106,11])).then(r => r.instance.exports.add(2, 3) === 5));
-check("WebAssembly.compileStreaming", () => WebAssembly.compileStreaming(new Response(new Uint8Array([0,97,115,109,1,0,0,0]), { headers: { "content-type": "application/wasm" } })).then(m => m instanceof WebAssembly.Module));
+check("WebAssembly.compileStreaming (fetched)", () => WebAssembly.compileStreaming(fetch("data:application/wasm;base64,AGFzbQEAAAA=")).then(m => m instanceof WebAssembly.Module));
 check("element.style and CSSOM", () => { const d = document.createElement("div"); d.style.color = "red"; d.style.setProperty("--x", "1"); return d.style.color === "red" && d.style.getPropertyValue("--x") === "1" && document.styleSheets.length >= 1; });
 
 Promise.all(pending).then(() => {

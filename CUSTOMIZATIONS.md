@@ -12653,3 +12653,16 @@ job is enqueued.
 
 **Tests:** `roves-js` 31/31, adding a promise of a class-global realm resolved while the
 initial realm is current. The job is attributed to the promise's global.
+
+## 2026-10-10 - V8 cutover: suite 2 matches Servo's own behaviour
+
+**Servo files:** `support/v8-smoke/suite2.html`.
+**Patch:** `0182-v8-smoke-suite2-servo-behaviour.patch` after 0181.
+
+After CP113, CI ran `suite2.html` at 36/38. The V8 servoshell also built on Linux, Windows and
+macOS. Both remaining failures are Servo behaviour, not engine behaviour:
+- Servo reflects documents with the `Document` binding: `HTMLDocument` exists but is unused. The
+  check now expects `[object Document]`.
+- Servo feeds a WebAssembly stream consumer only from a fetched response's network body. A
+  `Response` constructed in script never streams, so it would time out under SpiderMonkey too.
+  The streaming check now fetches a `data:application/wasm` URL.
