@@ -12622,3 +12622,13 @@ The first CI run of `suite2.html` passed 34 of 36 checks.
   not an engine one, and is replaced by a `pipeTo` check.
 - The `Symbol.toStringTag` check of DOM objects (`document` is a DOM proxy, because
   `HTMLDocument` has a named getter) now reports the values it got, to locate the failure.
+
+## 2026-10-10 - V8 cutover: servoshell on V8 built on Windows and macOS too (CI only)
+
+**Files:** `.github/workflows/v8.yml`, which is CI-only and not part of the patch series.
+
+The `servoshell-v8` job now runs on Linux, Windows and macOS, the three desktop platforms
+Roves ships. It builds and links servoshell on roves-js on each of them. Windows installs
+GStreamer the way `test.yml` does. The headless smoke pages still run on Linux only: running
+headless on Windows needs the GStreamer and ANGLE DLLs next to the binary. Before the swap
+becomes permanent, this shows that V8 builds and links wherever SpiderMonkey did.

@@ -75,15 +75,21 @@ jobs:
           cd "$RUNNER_TEMP/roves-js"
           cargo test --locked
 
-  # servoshell built against roves-js (the mozjs API on V8) instead of SpiderMonkey, then the
-  # smoke pages in support/v8-smoke/ run headlessly. This is the end-to-end check of the V8
-  # cutover, kept in CI so no local machine has to link the browser.
+  # servoshell built against roves-js (the mozjs API on V8) instead of SpiderMonkey on every
+  # desktop platform Roves ships, then (Linux) the smoke pages in support/v8-smoke/ run
+  # headlessly. This is the end-to-end check of the V8 cutover, kept in CI so no local machine
+  # has to link the browser.
   servoshell-v8:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
       - name: make mach executable
+        if: runner.os != 'Windows'
         run: chmod +x mach
       - uses: actions/setup-python@v5
         with:
@@ -91,6 +97,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       # See release.yml: background apt jobs can hold the dpkg lock right after boot.
       - name: stop background apt processes
+        if: runner.os == 'Linux'
         run: |
           sudo systemctl stop apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
           sudo systemctl kill --kill-who=all apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
@@ -99,18 +106,44 @@ jobs:
             sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock >/dev/null 2>&1 || exit 0
             sleep 1
           done
+      # See test.yml: GStreamer's Windows installer, run without elevation, at the path mach
+      # expects; `--skip-platform` then keeps bootstrap from trying again.
+      - name: install GStreamer (Windows, non-interactive)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = "1.28.7"
+          $name = "gstreamer-1.0-msvc-x86_64-$version.exe"
+          $installer = Join-Path $env:RUNNER_TEMP $name
+          Invoke-WebRequest -Uri "https://gstreamer.freedesktop.org/data/pkg/windows/$version/msvc/$name" -OutFile $installer
+          $installDir = Join-Path (Get-Location) "target\dependencies\gstreamer\1.0\msvc_X86_64"
+          New-Item -ItemType Directory -Force -Path (Split-Path $installDir) | Out-Null
+          $proc = Start-Process -FilePath $installer -ArgumentList @(
+            "/CURRENTUSER", "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=`"$installDir`""
+          ) -Wait -PassThru
+          if ($proc.ExitCode -ne 0) { throw "GStreamer installer failed with exit code $($proc.ExitCode)" }
       - name: mach bootstrap (system build dependencies)
-        timeout-minutes: 20
+        timeout-minutes: 30
+        shell: bash
         env:
           DEBIAN_FRONTEND: noninteractive
-        run: ./mach bootstrap --force --yes --skip-lints --skip-nextest
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            ./mach bootstrap --force --yes --skip-lints --skip-nextest --skip-platform
+          else
+            ./mach bootstrap --force --yes --skip-lints --skip-nextest
+          fi
       - name: free disk space
+        if: runner.os == 'Linux'
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
       - name: build servoshell on roves-js (V8)
+        shell: bash
         run: |
           python support/v8_cutover_check.py servoshell --build --online --top 40
-          test -x target/v8-cutover/debug/servoshell
+          ls target/v8-cutover/debug/servoshell*
       - name: run the V8 smoke pages headlessly
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get install -y --no-install-recommends xvfb
           chmod +x support/v8-smoke/run.sh
