@@ -467,6 +467,10 @@ strategia completa è in `docs/V8_MIGRATION.md` ("Cutover strategy"). Metrica:
 - **CP113:** il job di drain delle promise appartiene al realm della promise (un task in primo
   piano gira senza realm entrato: Servo andava in panic su un globale non DOM). CSP verificata
   in CI (eval/Function → EvalError). 31 test.
+- **CP114 — swap permanente:** `Cargo.toml` punta `js` a roves-js (patch 0183; il lockfile
+  perde mozjs/mozjs_sys/ICU). servoshell su V8 compila su Linux/Windows/macOS; suite 34/34,
+  suite2, test page, navigazione, CSP in CI. Da verificare: `test.yml` completo (bundle e smoke
+  sulle 3 piattaforme), poi release, pin in roves-action/roves-packmaster, README e wiki.
 - **Prossimi passi (dopo CP112):** correggere i fallimenti di suite2 in CI (ora 38 controlli, incluso wasm); durata di
   privates di script/moduli e box delle classi chiamabili; devtools/inspector; swap permanente.
 - **Storico (dopo CP105):** global proxy V8 = `WindowProxy` di Servo; uscita pulita

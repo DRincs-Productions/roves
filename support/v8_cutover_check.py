@@ -5,7 +5,7 @@
 
 """Measures how far the workspace is from compiling against `roves-js` (mozjs on V8).
 
-The script temporarily points the workspace `js` dependency at components/roves-js, runs
+While the workspace still depends on mozjs, the script temporarily points the workspace `js` dependency at components/roves-js, runs
 `cargo check` on the requested crate, and reports the number of errors and the most frequent
 error kinds. It restores Cargo.toml and Cargo.lock afterwards. It uses a separate target
 directory, so the normal SpiderMonkey build cache is untouched.
@@ -43,11 +43,15 @@ def main() -> int:
     original_manifest = manifest.read_bytes()
     original_lock = lock.read_bytes()
     text = original_manifest.decode("utf-8")
-    if not MOZJS_LINE.search(text):
-        print("Cargo.toml no longer depends on mozjs: nothing to swap", file=sys.stderr)
+    swap = MOZJS_LINE.search(text) is not None
+    if not swap and ROVES_JS_LINE not in text:
+        print("Cargo.toml depends on neither mozjs nor roves-js", file=sys.stderr)
         return 1
     try:
-        manifest.write_text(MOZJS_LINE.sub(ROVES_JS_LINE, text), encoding="utf-8", newline="")
+        # Once the workspace depends on roves-js itself (the permanent cutover), nothing is
+        # swapped: the crate is checked or built as it is.
+        if swap:
+            manifest.write_text(MOZJS_LINE.sub(ROVES_JS_LINE, text), encoding="utf-8", newline="")
         env = dict(os.environ, AWS_LC_SYS_NO_ASM="1")
         command = ["cargo", "build" if args.build else "check", "-p", args.crate,
                    "--message-format=short", "--target-dir", str(ROOT / "target" / "v8-cutover")]

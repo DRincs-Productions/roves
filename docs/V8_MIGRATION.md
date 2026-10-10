@@ -117,6 +117,8 @@ errors.
 - CP112: V8's foreground tasks reach Servo's event loop through a custom platform, so async
   WebAssembly compilation and `FinalizationRegistry` callbacks complete. WebAssembly
   streaming goes through Servo's consume-stream callback.
+- CP113: promise drain jobs belong to the promise's realm (foreground tasks run with no realm).
+- CP114: **the permanent swap**: the workspace `js` dependency is roves-js (V8).
   Remaining: devtools on V8's inspector; cross-origin window proxy traps; immutable
   prototypes; realms live as long as the runtime (navigated-away pages are not collected); `eval` of `TrustedScript`; script/module privates and per-realm callable
   class boxes still live as long as the runtime; WPT-scale coverage; the permanent swap.

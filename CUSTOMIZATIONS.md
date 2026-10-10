@@ -12666,3 +12666,37 @@ macOS. Both remaining failures are Servo behaviour, not engine behaviour:
 - Servo feeds a WebAssembly stream consumer only from a fetched response's network body. A
   `Response` constructed in script never streams, so it would time out under SpiderMonkey too.
   The streaming check now fetches a `data:application/wasm` URL.
+
+## 2026-10-10 - V8 cutover: the workspace depends on roves-js (permanent swap, CP114)
+
+**Servo files:** `Cargo.toml`, `support/v8_cutover_check.py`. `Cargo.lock` is updated too but,
+as with every patch here, is not part of the patch.
+**Patch:** `0183-v8-permanent-cutover.patch` after 0182.
+
+The workspace `js` dependency is now
+`js = { package = "roves-js", path = "components/roves-js" }` instead of mozjs 0.21.6. Every
+build is now on V8: `mach build`, `test.yml`, `release.yml`, and `roves-action` once a release
+is cut. The lockfile loses mozjs, mozjs_sys and their ICU crates.
+
+This step had these prerequisites:
+- servoshell built on V8 on Linux, Windows and macOS (CI job `servoshell-v8`);
+- the smoke pages passing headlessly on Linux: suite 34/34, suite 2, the test page,
+  navigation and CSP;
+- `roves-js` 31/31 and `roves-v8` 62/62.
+
+`support/v8_cutover_check.py` now builds without swapping when the workspace already depends on
+roves-js. The CI job keeps using it unchanged.
+
+`mach build --debug-mozjs` and the `debugmozjs`/`profilemozjs` features still exist but do
+nothing: roves-js declares them empty. `mach build` and `mach bundle` flags are unchanged, so
+`roves-action` and `roves-packmaster` need no change before the next release.
+
+**Known gaps on V8:**
+- devtools: the JS debugger needs the V8 inspector, and Servo's debugger script logs
+  "Debugger is not defined";
+- realms live as long as the runtime;
+- immutable prototypes;
+- `eval(TrustedScript)`;
+- cross-origin window proxy traps.
+
+README and wiki are updated at release time (the user's ordering).
