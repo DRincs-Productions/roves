@@ -417,20 +417,6 @@ jobs:
         shell: pwsh
         run: echo "$env:WIX\bin" >> $env:GITHUB_PATH
 
-      # mozjs_sys builds its configure probes with `-fuse-ld=lld`. Recent
-      # macos-latest ARM images do not expose lld on PATH by default. Keep
-      # Homebrew LLVM's clang off PATH: mozangle's bindgen build uses Xcode clang.
-      - name: ensure LLVM lld is available (macOS)
-        if: matrix.os_name == 'macos'
-        shell: bash
-        run: |
-          if ! brew list --versions lld >/dev/null 2>&1; then
-            brew install lld
-          fi
-          LLD_PREFIX="$(brew --prefix lld)"
-          echo "$LLD_PREFIX/bin" >> "$GITHUB_PATH"
-          "$LLD_PREFIX/bin/ld.lld" --version
-          /usr/bin/clang++ --version
 
       # Debug build, not --release: this workflow exists to smoke-test behavior
       # (e.g. "are the tabs really gone?"), not to ship an optimized binary. Debug

@@ -253,7 +253,7 @@ class AndroidTarget(CrossBuildTarget):
         #
         # fatal error: 'limits' file not found
         #   -- add -I cxx_include
-        # unknown type name '__locale_t' (when running bindgen in mozjs_sys)
+        # unknown type name '__locale_t' (when running bindgen on C++ headers)
         #   -- add -isystem sysroot_include
         # error: use of undeclared identifier 'UINTMAX_C'
         #   -- add -D__STDC_CONSTANT_MACROS
@@ -263,7 +263,7 @@ class AndroidTarget(CrossBuildTarget):
         env["TARGET_CFLAGS"] = env.get("TARGET_CFLAGS", "") + " " + "--target=" + android_toolchain_name
         env["TARGET_CXXFLAGS"] = env.get("TARGET_CXXFLAGS", "") + " " + "--target=" + android_toolchain_name
 
-        # These two variables are needed for the mozjs compilation.
+        # Native build scripts read these two variables.
         env["ANDROID_API_LEVEL"] = android_api
         env["ANDROID_NDK_HOME"] = env["ANDROID_NDK_ROOT"]
         env["TARGET_PKG_CONFIG_SYSROOT_DIR"] = path.join(llvm_toolchain, "sysroot")

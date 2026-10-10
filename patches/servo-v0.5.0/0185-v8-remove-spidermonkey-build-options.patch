@@ -1,0 +1,243 @@
+diff --git a/components/roves-js/Cargo.toml b/components/roves-js/Cargo.toml
+index 24ac8d2e136..136a6d9fe09 100644
+--- a/components/roves-js/Cargo.toml
++++ b/components/roves-js/Cargo.toml
+@@ -26,12 +26,10 @@ num-traits = "0.2.19"
+ # The mozjs features Servo's crates request; they have no meaning on V8.
+ [features]
+ crown = []
+-debugmozjs = []
+ intl = []
+ jit = []
+ jitspew = []
+ libz-sys = []
+-profilemozjs = []
+ 
+ # V8 without its JIT compilers (see ../../docs/V8_MIGRATION.md, "JIT-less"): servoshell
+ # builds it with `--features roves-js/jitless`.
+diff --git a/components/script/Cargo.toml b/components/script/Cargo.toml
+index a01bfc43e99..70050e727d8 100644
+--- a/components/script/Cargo.toml
++++ b/components/script/Cargo.toml
+@@ -17,13 +17,11 @@ path = "lib.rs"
+ [features]
+ bluetooth = ['servo-bluetooth-traits', 'script_bindings/bluetooth']
+ crown = ['js/crown']
+-debugmozjs = ['js/debugmozjs']
+ gamepad = ["script_bindings/gamepad", "embedder_traits/gamepad"]
+ jitspew = ['js/jitspew']
+ js_backtrace = []
+ js_jit = ["js/jit"]
+ v8-bindings-pilot = ["script_bindings/v8-bindings-pilot", "dep:roves-v8"]
+-profilemozjs = ['js/profilemozjs']
+ testbinding = ["script_bindings/testbinding"]
+ tracing = ["dep:tracing", "script_bindings/tracing"]
+ webgl_backtrace = ["servo-canvas-traits/webgl_backtrace"]
+diff --git a/components/script/script_runtime.rs b/components/script/script_runtime.rs
+index 5ea795c9661..ae88d7fb9bd 100644
+--- a/components/script/script_runtime.rs
++++ b/components/script/script_runtime.rs
+@@ -1208,27 +1208,9 @@ unsafe extern "C" fn servo_build_id(build_id: *mut BuildIdCharVector) -> bool {
+     unsafe { SetBuildId(build_id, servo_id[0] as *const c_char, servo_id.len()) }
+ }
+ 
++/// GC zeal (`js_mem_gc_zeal_*`) was a debugging mode of SpiderMonkey's debug builds; V8 has
++/// no counterpart, so the preferences have no effect.
+ #[expect(unsafe_code)]
+-#[cfg(feature = "debugmozjs")]
+-unsafe fn set_gc_zeal_options(cx: *mut RawJSContext) {
+-    use js::jsapi::SetGCZeal;
+-
+-    let level = match pref!(js_mem_gc_zeal_level) {
+-        level @ 0..=14 => level as u8,
+-        _ => return,
+-    };
+-    let frequency = match pref!(js_mem_gc_zeal_frequency) {
+-        frequency if frequency >= 0 => frequency as u32,
+-        // https://searchfox.org/mozilla-esr128/source/js/public/GCAPI.h#1392
+-        _ => 5000,
+-    };
+-    unsafe {
+-        SetGCZeal(cx, level, frequency);
+-    }
+-}
+-
+-#[expect(unsafe_code)]
+-#[cfg(not(feature = "debugmozjs"))]
+ unsafe fn set_gc_zeal_options(_: *mut RawJSContext) {}
+ 
+ #[expect(unsafe_code)]
+diff --git a/components/servo/Cargo.toml b/components/servo/Cargo.toml
+index 03fc34cd602..727efe2c7b3 100644
+--- a/components/servo/Cargo.toml
++++ b/components/servo/Cargo.toml
+@@ -34,7 +34,6 @@ bluetooth = [
+ bundled_freetype = ["fonts/bundled_freetype"]
+ clipboard = ["dep:arboard"]
+ crown = ["script/crown"]
+-debugmozjs = ["script/debugmozjs"]
+ dynamic_freetype = ["webrender/dynamic_freetype"]
+ gamepad = [
+     "script/gamepad",
+@@ -47,7 +46,6 @@ js_jit = ["script/js_jit"]
+ media-gstreamer = ["servo-media-gstreamer", "gstreamer"]
+ native-bluetooth = ["servo-bluetooth/native-bluetooth"]
+ no-wgl = ["mozangle/egl", "mozangle/build_dlls", "surfman/sm-angle-default", "paint_api/no-wgl"]
+-profilemozjs = ["script/profilemozjs"]
+ testbinding = ["script/testbinding"]
+ tracing = [
+     "dep:tracing",
+diff --git a/ports/servoshell/Cargo.toml b/ports/servoshell/Cargo.toml
+index 617055f50e4..1f3cbdf546f 100644
+--- a/ports/servoshell/Cargo.toml
++++ b/ports/servoshell/Cargo.toml
+@@ -45,7 +45,6 @@ default = ["baked-in-resources", "bundled_freetype", "gamepad", "servo/clipboard
+ baked-in-resources = ["servo/baked-in-resources"]
+ bundled_freetype = ["servo/bundled_freetype"]
+ crown = ["servo/crown"]
+-debugmozjs = ["servo/debugmozjs"]
+ gamepad = ["servo/gamepad"]
+ jitspew = ["servo/jitspew"]
+ js_backtrace = ["servo/js_backtrace"]
+@@ -53,7 +52,6 @@ js_jit = ["servo/js_jit"]
+ max_log_level = ["log/release_max_level_info"]
+ media-gstreamer = ["servo/media-gstreamer"]
+ native-bluetooth = ["servo/native-bluetooth"]
+-profilemozjs = ["servo/profilemozjs"]
+ tracing = ["dep:tracing", "dep:tracing-subscriber", "servo/tracing"]
+ tracing-hitrace = ["tracing", "dep:hitrace"]
+ tracing-perfetto = ["tracing", "dep:tracing-perfetto"]
+diff --git a/ports/servoshell/prefs.rs b/ports/servoshell/prefs.rs
+index 429493fc062..ddbf7a28a24 100644
+--- a/ports/servoshell/prefs.rs
++++ b/ports/servoshell/prefs.rs
+@@ -649,10 +649,7 @@ fn update_preferences_from_command_line_arguments(
+     }
+ 
+     if cmd_args.zealous_gc {
+-        #[cfg(not(feature = "debugmozjs"))]
+-        warn!(
+-            "The zealous-gc option requires Servo to be compiled with debug-mozjs to take effect."
+-        );
++        warn!("The zealous-gc option has no effect: V8 has no GC zeal mode.");
+ 
+         preferences.js_mem_gc_zeal_level = 2;
+         preferences.js_mem_gc_zeal_frequency = 1;
+diff --git a/python/servo/build_commands.py b/python/servo/build_commands.py
+index da8163db1c1..da66a96ad74 100644
+--- a/python/servo/build_commands.py
++++ b/python/servo/build_commands.py
+@@ -278,9 +278,6 @@ class MachCommands(CommandBase):
+             # we can try and fallback to the default clang.
+             env.setdefault("TARGET_CC", target_clang)
+             env.setdefault("TARGET_CXX", target_cxx)
+-        # By default, build mozjs from source to enable Sanitizers in mozjs.
+-        env.setdefault("MOZJS_FROM_SOURCE", "1")
+-
+         # We need to use `TARGET_CFLAGS`, since we don't want to compile host dependencies with ASAN,
+         # since that causes issues when building build-scripts / proc macros.
+         # The actual flags will be appended below depending on the sanitizer kind.
+diff --git a/python/servo/command_base.py b/python/servo/command_base.py
+index 1d8b9616e36..701d108d0be 100644
+--- a/python/servo/command_base.py
++++ b/python/servo/command_base.py
+@@ -521,7 +521,7 @@ class CommandBase(object):
+                     default=False,
+                     group="Feature Selection",
+                     action="store_true",
+-                    help="Enable debug assertions in mozjs",
++                    help="Deprecated and ignored: Roves runs JavaScript on V8, not SpiderMonkey (mozjs)",
+                 ),
+                 CommandArgument(
+                     "--with-debug-assertions",
+@@ -814,11 +814,10 @@ class CommandBase(object):
+             if self.enable_media:
+                 features.append("media-gstreamer")
+             if self.config["build"]["debug-mozjs"] or debug_mozjs:
+-                features.append("debugmozjs")
++                print("Warning: --debug-mozjs is ignored: Roves runs JavaScript on V8, not SpiderMonkey.")
+ 
+             if with_frame_pointer:
+                 env["RUSTFLAGS"] = env.get("RUSTFLAGS", "") + " -C force-frame-pointers=yes"
+-                features.append("profilemozjs")
+             if self.config["build"]["webgl-backtrace"]:
+                 features.append("webgl-backtrace")
+             if self.config["build"]["dom-backtrace"]:
+@@ -828,7 +827,7 @@ class CommandBase(object):
+         if with_debug_assertions or self.config["build"]["debug-assertions"]:
+             env["RUSTFLAGS"] = env.get("RUSTFLAGS", "") + " -C debug_assertions"
+ 
+-        # mozjs gets its Python from `env['PYTHON3']`, which defaults to `python3`,
++        # Build scripts that run Python read `env['PYTHON3']`, which defaults to `python3`,
+         # but uv venv on Windows only provides a `python`, not `python3`.
+         env["PYTHON3"] = "python"
+ 
+diff --git a/python/servo/platform/build_target.py b/python/servo/platform/build_target.py
+index fedc691bdbc..66adacda2af 100644
+--- a/python/servo/platform/build_target.py
++++ b/python/servo/platform/build_target.py
+@@ -253,7 +253,7 @@ class AndroidTarget(CrossBuildTarget):
+         #
+         # fatal error: 'limits' file not found
+         #   -- add -I cxx_include
+-        # unknown type name '__locale_t' (when running bindgen in mozjs_sys)
++        # unknown type name '__locale_t' (when running bindgen on C++ headers)
+         #   -- add -isystem sysroot_include
+         # error: use of undeclared identifier 'UINTMAX_C'
+         #   -- add -D__STDC_CONSTANT_MACROS
+@@ -263,7 +263,7 @@ class AndroidTarget(CrossBuildTarget):
+         env["TARGET_CFLAGS"] = env.get("TARGET_CFLAGS", "") + " " + "--target=" + android_toolchain_name
+         env["TARGET_CXXFLAGS"] = env.get("TARGET_CXXFLAGS", "") + " " + "--target=" + android_toolchain_name
+ 
+-        # These two variables are needed for the mozjs compilation.
++        # Native build scripts read these two variables.
+         env["ANDROID_API_LEVEL"] = android_api
+         env["ANDROID_NDK_HOME"] = env["ANDROID_NDK_ROOT"]
+         env["TARGET_PKG_CONFIG_SYSROOT_DIR"] = path.join(llvm_toolchain, "sysroot")
+diff --git a/python/servo/try_parser.py b/python/servo/try_parser.py
+index d8c86aecde5..6099165591b 100644
+--- a/python/servo/try_parser.py
++++ b/python/servo/try_parser.py
+@@ -87,8 +87,6 @@ class JobConfig(object):
+         modifier = []
+         if self.profile != "checked-release":
+             modifier.append(self.profile.title())
+-        if "--debug-mozjs" in self.build_args:
+-            modifier.append("Debug Mozjs")
+         if self.unit_tests:
+             modifier.append("Unit Tests")
+         if self.devtools_tests:
+@@ -173,11 +171,6 @@ def handle_modifier(config: Optional[JobConfig], s: str) -> Optional[JobConfig]:
+         config.devtools_tests = True
+     if "build-libservo" in s:
+         config.build_libservo = True
+-    if "debugmozjs" in s:
+-        # We need to remove the modifier here, so the profile check
+-        # below doesn't match on `debug` and force the `dev` profile.
+-        s = s.replace("debugmozjs", "")
+-        config.build_args = f"{config.build_args} --debug-mozjs".strip()
+     if "production" in s:
+         config.profile = "production"
+     elif "release" in s:
+@@ -506,21 +499,6 @@ class TestParser(unittest.TestCase):
+     def test_wpt_alias(self) -> None:
+         self.assertDictEqual(json.loads(Config("wpt").to_json()), json.loads(Config("linux-wpt").to_json()))
+ 
+-    def test_debugmozjs(self) -> None:
+-        matrix_result = json.loads(Config("linux-debugmozjs").to_json())["matrix"][0]
+-
+-        self.assertEqual(matrix_result["name"], "Linux (Debug Mozjs)")
+-        self.assertEqual(matrix_result["workflow"], "linux")
+-        self.assertEqual(matrix_result["build_args"], "--debug-mozjs")
+-        # `debugmozjs` should not force the `dev` profile.
+-        self.assertEqual(matrix_result["profile"], "checked-release")
+-
+-        matrix_result = json.loads(Config("linux-debugmozjs-wpt").to_json())["matrix"][0]
+-        self.assertEqual(matrix_result["name"], "Linux (Debug Mozjs, WPT)")
+-        self.assertEqual(matrix_result["build_args"], "--debug-mozjs")
+-        self.assertEqual(matrix_result["profile"], "checked-release")
+-        self.assertTrue(matrix_result["wpt"])
+-
+     def test_devtools_tests(self) -> None:
+         matrix_result = json.loads(Config("linux-devtools").to_json())["matrix"][0]
+ 

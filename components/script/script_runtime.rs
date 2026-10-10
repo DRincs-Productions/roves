@@ -1208,27 +1208,9 @@ unsafe extern "C" fn servo_build_id(build_id: *mut BuildIdCharVector) -> bool {
     unsafe { SetBuildId(build_id, servo_id[0] as *const c_char, servo_id.len()) }
 }
 
+/// GC zeal (`js_mem_gc_zeal_*`) was a debugging mode of SpiderMonkey's debug builds; V8 has
+/// no counterpart, so the preferences have no effect.
 #[expect(unsafe_code)]
-#[cfg(feature = "debugmozjs")]
-unsafe fn set_gc_zeal_options(cx: *mut RawJSContext) {
-    use js::jsapi::SetGCZeal;
-
-    let level = match pref!(js_mem_gc_zeal_level) {
-        level @ 0..=14 => level as u8,
-        _ => return,
-    };
-    let frequency = match pref!(js_mem_gc_zeal_frequency) {
-        frequency if frequency >= 0 => frequency as u32,
-        // https://searchfox.org/mozilla-esr128/source/js/public/GCAPI.h#1392
-        _ => 5000,
-    };
-    unsafe {
-        SetGCZeal(cx, level, frequency);
-    }
-}
-
-#[expect(unsafe_code)]
-#[cfg(not(feature = "debugmozjs"))]
 unsafe fn set_gc_zeal_options(_: *mut RawJSContext) {}
 
 #[expect(unsafe_code)]

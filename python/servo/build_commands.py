@@ -278,9 +278,6 @@ class MachCommands(CommandBase):
             # we can try and fallback to the default clang.
             env.setdefault("TARGET_CC", target_clang)
             env.setdefault("TARGET_CXX", target_cxx)
-        # By default, build mozjs from source to enable Sanitizers in mozjs.
-        env.setdefault("MOZJS_FROM_SOURCE", "1")
-
         # We need to use `TARGET_CFLAGS`, since we don't want to compile host dependencies with ASAN,
         # since that causes issues when building build-scripts / proc macros.
         # The actual flags will be appended below depending on the sanitizer kind.

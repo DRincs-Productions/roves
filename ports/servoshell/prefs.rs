@@ -649,10 +649,7 @@ fn update_preferences_from_command_line_arguments(
     }
 
     if cmd_args.zealous_gc {
-        #[cfg(not(feature = "debugmozjs"))]
-        warn!(
-            "The zealous-gc option requires Servo to be compiled with debug-mozjs to take effect."
-        );
+        warn!("The zealous-gc option has no effect: V8 has no GC zeal mode.");
 
         preferences.js_mem_gc_zeal_level = 2;
         preferences.js_mem_gc_zeal_frequency = 1;

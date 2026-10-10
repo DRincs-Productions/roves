@@ -521,7 +521,7 @@ class CommandBase(object):
                     default=False,
                     group="Feature Selection",
                     action="store_true",
-                    help="Enable debug assertions in mozjs",
+                    help="Deprecated and ignored: Roves runs JavaScript on V8, not SpiderMonkey (mozjs)",
                 ),
                 CommandArgument(
                     "--with-debug-assertions",
@@ -814,11 +814,10 @@ class CommandBase(object):
             if self.enable_media:
                 features.append("media-gstreamer")
             if self.config["build"]["debug-mozjs"] or debug_mozjs:
-                features.append("debugmozjs")
+                print("Warning: --debug-mozjs is ignored: Roves runs JavaScript on V8, not SpiderMonkey.")
 
             if with_frame_pointer:
                 env["RUSTFLAGS"] = env.get("RUSTFLAGS", "") + " -C force-frame-pointers=yes"
-                features.append("profilemozjs")
             if self.config["build"]["webgl-backtrace"]:
                 features.append("webgl-backtrace")
             if self.config["build"]["dom-backtrace"]:
@@ -828,7 +827,7 @@ class CommandBase(object):
         if with_debug_assertions or self.config["build"]["debug-assertions"]:
             env["RUSTFLAGS"] = env.get("RUSTFLAGS", "") + " -C debug_assertions"
 
-        # mozjs gets its Python from `env['PYTHON3']`, which defaults to `python3`,
+        # Build scripts that run Python read `env['PYTHON3']`, which defaults to `python3`,
         # but uv venv on Windows only provides a `python`, not `python3`.
         env["PYTHON3"] = "python"
 

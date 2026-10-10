@@ -12735,3 +12735,30 @@ The CI smoke run executes it after the two suites.
   The smoke pages report wasm checks as `SUITE SKIP` there, counted apart from failures.
   Wasm games therefore need the JIT build. A console port would need a V8 built with its Wasm
   interpreter.
+
+## 2026-10-10 - V8 migration Phase 6: SpiderMonkey build options removed
+
+**Servo files:**
+- `components/script/script_runtime.rs`, `ports/servoshell/prefs.rs`;
+- `Cargo.toml` of `ports/servoshell`, `components/servo`, `components/script` and
+  `components/roves-js`;
+- `python/servo/command_base.py`, `build_commands.py`, `platform/build_target.py` and
+  `try_parser.py`.
+
+**Patch:** `0185-v8-remove-spidermonkey-build-options.patch` after 0184.
+`.github/workflows/test.yml` is CI-only.
+
+With V8 as the engine (CP114), these SpiderMonkey build options have no effect and are removed:
+- the `debugmozjs` and `profilemozjs` Cargo features (servoshell → servo → script → js);
+- SpiderMonkey's GC zeal hookup (`SetGCZeal`). The `js_mem_gc_zeal_*` preferences and
+  `--zealous-gc` now only log that V8 has no GC zeal mode;
+- `MOZJS_FROM_SOURCE` for sanitizer builds, the `profilemozjs` feature that
+  `--with-frame-pointer` added, and the `debugmozjs` try preset;
+- `test.yml`'s macOS step installing Homebrew lld, which only mozjs_sys's configure probes
+  needed. The V8 servoshell builds on macOS without it.
+
+**`mach build --debug-mozjs` is kept as a deprecated, ignored option** that prints a warning.
+Workflows passing it, including `roves-action`'s `debug-mozjs` input, therefore keep working.
+Its `roves-action` description now says it is deprecated and ignored by V8 engine releases
+(roves-action commit a1397d9). It is not a `mach bundle` option, so `roves-packmaster` has no
+setting for it.

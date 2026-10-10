@@ -26,12 +26,10 @@ num-traits = "0.2.19"
 # The mozjs features Servo's crates request; they have no meaning on V8.
 [features]
 crown = []
-debugmozjs = []
 intl = []
 jit = []
 jitspew = []
 libz-sys = []
-profilemozjs = []
 
 # V8 without its JIT compilers (see ../../docs/V8_MIGRATION.md, "JIT-less"): servoshell
 # builds it with `--features roves-js/jitless`.
