@@ -12480,3 +12480,22 @@ while preserving exceptions from coercion. `run_v8.py` now permits enum declarat
 an interface in a pilot IDL file. Local validation passes 26 generator tests; 64 unit + 3
 integration + 2 doctests in normal and JIT-less pilot modes; 52 default unit + 2 doctests; and
 the integrated `servo-script` check. Pristine patch-series validation and CI are pending.
+
+## 2026-10-10 - V8 cutover: second smoke suite (web APIs beyond the DOM core)
+
+**Servo files:** `support/v8-smoke/run.sh`; `support/v8-smoke/suite2.html`, new.
+
+**Patch:** `0175-v8-smoke-suite2.patch` after 0174.
+
+`suite2.html` adds 36 checks that the CI `servoshell-v8` job runs on the V8 servoshell:
+- streams (`ReadableStream` readers and async iteration, `TransformStream`, `CompressionStream`);
+- fetch types (`Response`, `Request`, `Headers`, `FormData`), `AbortController`, `XMLHttpRequest`
+  on a blob URL;
+- `crypto` (random values, `subtle.digest`), `BroadcastChannel`;
+- `ResizeObserver`, `IntersectionObserver`, layout queries, CSS animation events, CSSOM;
+- history and `hashchange`, `DOMMatrix`, `OffscreenCanvas`, `createImageBitmap`, WebGL
+  `readPixels`, `ImageData` cloning;
+- ranges, tree walkers, DOM `toStringTag`, `WeakRef` on DOM nodes, modern ECMAScript and `Intl`.
+
+`run.sh` now reports both suites the same way: one warning with all failures, a notice with
+the total and a section in the step summary.

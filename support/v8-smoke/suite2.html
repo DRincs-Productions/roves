@@ -1,0 +1,70 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>roves-js smoke suite 2</title>
+<style>#box { width: 50px; height: 20px; margin: 5px; } @keyframes fade { from { opacity: 0 } to { opacity: 1 } } #anim { animation: fade 10ms; }</style>
+</head>
+<body>
+<div id="box"></div><div id="anim"></div>
+<form id="form"><input name="a" value="1"><input name="b" value="two"></form>
+<script>
+const results = [];
+const pending = [];
+function check(name, fn) {
+  try {
+    const value = fn();
+    if (value && typeof value.then === "function") {
+      pending.push(Promise.race([value, new Promise(r => setTimeout(() => r("timeout"), 5000))])
+        .then(ok => results.push([name, ok === true, ok]), e => results.push([name, false, String(e)])));
+    } else {
+      results.push([name, value === true, value]);
+    }
+  } catch (e) {
+    results.push([name, false, String(e && e.stack || e)]);
+  }
+}
+check("ReadableStream reader", () => (async () => { const rs = new ReadableStream({ start(c) { c.enqueue("a"); c.enqueue("b"); c.close(); } }); const reader = rs.getReader(); const out = []; for (;;) { const { value, done } = await reader.read(); if (done) break; out.push(value); } return out.join() === "a,b"; })());
+check("ReadableStream async iteration", () => (async () => { const rs = new ReadableStream({ start(c) { c.enqueue(1); c.enqueue(2); c.close(); } }); let sum = 0; for await (const v of rs) sum += v; return sum === 3; })());
+check("TransformStream pipe", () => (async () => { const ts = new TransformStream({ transform(chunk, c) { c.enqueue(chunk.toUpperCase()); } }); const w = ts.writable.getWriter(); w.write("x"); w.close(); const r = ts.readable.getReader(); const { value } = await r.read(); return value === "X"; })());
+check("Response.json/text", () => (async () => { const r = new Response(JSON.stringify({ a: 1 }), { headers: { "content-type": "application/json" } }); const j = await r.clone().json(); const t = await r.text(); return j.a === 1 && t === '{"a":1}' && r.headers.get("content-type") === "application/json"; })());
+check("Request/Headers", () => { const h = new Headers({ "X-A": "1" }); h.append("x-b", "2"); const req = new Request("https://example.test/p", { method: "POST", headers: h }); return req.method === "POST" && req.headers.get("x-a") === "1" && [...h.keys()].join() === "x-a,x-b"; });
+check("FormData from form", () => { const fd = new FormData(document.getElementById("form")); return fd.get("a") === "1" && fd.get("b") === "two" && [...fd.keys()].join() === "a,b"; });
+check("AbortController", () => { const ac = new AbortController(); let fired = false; ac.signal.addEventListener("abort", () => fired = true); ac.abort("why"); return fired && ac.signal.aborted && ac.signal.reason === "why"; });
+check("crypto.getRandomValues/randomUUID", () => { const a = crypto.getRandomValues(new Uint8Array(16)); return a.length === 16 && /^[0-9a-f-]{36}$/.test(crypto.randomUUID()); });
+check("crypto.subtle digest", () => crypto.subtle.digest("SHA-256", new TextEncoder().encode("abc")).then(d => new Uint8Array(d)[0] === 0xba));
+check("BroadcastChannel", () => new Promise(r => { const a = new BroadcastChannel("ch"), b = new BroadcastChannel("ch"); b.onmessage = e => r(e.data === "hello"); a.postMessage("hello"); }));
+check("ResizeObserver", () => new Promise(r => { const ro = new ResizeObserver(entries => r(entries.length >= 1 && entries[0].contentRect.width === 50)); ro.observe(document.getElementById("box")); }));
+check("IntersectionObserver", () => new Promise(r => { const io = new IntersectionObserver(entries => r(entries.length >= 1 && typeof entries[0].isIntersecting === "boolean")); io.observe(document.getElementById("box")); }));
+check("getBoundingClientRect", () => { const rect = document.getElementById("box").getBoundingClientRect(); return rect.width === 50 && rect.height === 20; });
+check("history.pushState / popstate data", () => { history.pushState({ s: 1 }, "", "#pushed"); return history.state.s === 1 && location.hash === "#pushed"; });
+check("hashchange", () => new Promise(r => { addEventListener("hashchange", () => r(location.hash === "#changed"), { once: true }); location.hash = "changed"; }));
+check("XMLHttpRequest blob url", () => new Promise(r => { const x = new XMLHttpRequest(); x.open("GET", URL.createObjectURL(new Blob(["xhr!"]))); x.onload = () => r(x.responseText === "xhr!" && x.status === 200); x.onerror = () => r("xhr error"); x.send(); }));
+check("DOMMatrix/DOMPoint", () => { const m = new DOMMatrix().translate(10, 20).scale(2); const p = m.transformPoint(new DOMPoint(1, 1)); return p.x === 12 && p.y === 22; });
+check("OffscreenCanvas 2d", () => { const oc = new OffscreenCanvas(2, 2); const g = oc.getContext("2d"); g.fillStyle = "#00ff00"; g.fillRect(0, 0, 2, 2); return g.getImageData(0, 0, 1, 1).data[1] === 255; });
+check("createImageBitmap", () => { const c = document.createElement("canvas"); c.width = 3; c.height = 2; return createImageBitmap(c).then(b => b.width === 3 && b.height === 2); });
+check("WebGL draw + readPixels", () => { const c = document.createElement("canvas"); c.width = c.height = 2; const gl = c.getContext("webgl"); if (!gl) return "no webgl"; gl.clearColor(0, 0, 1, 1); gl.clear(gl.COLOR_BUFFER_BIT); const px = new Uint8Array(4); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); return px[2] === 255 && px[0] === 0; });
+check("ImageData structuredClone", () => { const d = new ImageData(2, 2); d.data[0] = 9; const c = structuredClone(d); return c.width === 2 && c.data[0] === 9; });
+check("Promise.withResolvers / allSettled / any", () => (async () => { const { promise, resolve } = Promise.withResolvers(); resolve(1); const s = await Promise.allSettled([promise, Promise.reject(2)]); const a = await Promise.any([Promise.reject(0), Promise.resolve(3)]); return s[0].value === 1 && s[1].reason === 2 && a === 3; })());
+check("CompressionStream round trip", () => (async () => { const data = new TextEncoder().encode("compress me compress me"); const cs = new Blob([data]).stream().pipeThrough(new CompressionStream("gzip")); const ds = cs.pipeThrough(new DecompressionStream("gzip")); const out = await new Response(ds).text(); return out === "compress me compress me"; })());
+check("document.cookie", () => { document.cookie = "k=v"; return typeof document.cookie === "string"; });
+check("performance.now / mark", () => { const t = performance.now(); performance.mark("m"); return typeof t === "number" && performance.getEntriesByName("m").length === 1; });
+check("animationend event", () => new Promise(r => { const el = document.getElementById("anim"); el.addEventListener("animationend", e => r(e.animationName === "fade"), { once: true }); }));
+check("Selection/Range", () => { const r = document.createRange(); r.selectNodeContents(document.getElementById("box")); return r.collapsed === true && typeof getSelection === "function"; });
+check("TreeWalker", () => { const tw = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT); let n = 0; while (tw.nextNode()) n++; return n >= 4; });
+check("Symbol.toStringTag of DOM objects", () => Object.prototype.toString.call(document) === "[object HTMLDocument]" && String(document.body) === "[object HTMLBodyElement]");
+check("Error stack and cause", () => { const e = new Error("x", { cause: 1 }); return e.cause === 1 && typeof e.stack === "string"; });
+check("WeakMap/WeakRef with DOM nodes", () => { const n = document.createElement("i"); const wm = new WeakMap([[n, 1]]); const wr = new WeakRef(n); return wm.get(n) === 1 && wr.deref() === n; });
+check("Atomics/SharedArrayBuffer availability", () => typeof Atomics === "object" && typeof Atomics.add === "function");
+check("String/Array modern methods", () => "abc".at(-1) === "c" && [3, 1, 2].toSorted().join() === "1,2,3" && Object.groupBy([1, 2, 3], x => x % 2 ? "o" : "e").o.length === 2);
+check("Intl.Segmenter/RelativeTimeFormat", () => [...new Intl.Segmenter("en", { granularity: "word" }).segment("a b")].length === 3 && new Intl.RelativeTimeFormat("en").format(-1, "day") === "1 day ago");
+check("getter/setter interface attributes", () => { const i = document.createElement("input"); i.value = "q"; i.type = "checkbox"; i.checked = true; return i.value === "q" && i.checked === true && i.type === "checkbox"; });
+check("element.style and CSSOM", () => { const d = document.createElement("div"); d.style.color = "red"; d.style.setProperty("--x", "1"); return d.style.color === "red" && d.style.getPropertyValue("--x") === "1" && document.styleSheets.length >= 1; });
+
+Promise.all(pending).then(() => {
+  let passed = 0;
+  for (const [name, ok, detail] of results) {
+    if (ok) passed++;
+    console.log((ok ? "SUITE PASS " : "SUITE FAIL ") + name + (ok ? "" : " :: " + detail));
+  }
+  console.log("SUITE TOTAL " + passed + "/" + results.length);
+});
+</script>
+</body></html>

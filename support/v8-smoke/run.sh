@@ -24,23 +24,31 @@ run_page() {
   fi
 }
 
-run_page suite.html 60 suite.log
-# GitHub shows at most 10 annotations of a kind per step: one summary carries every failure.
-TOTAL_LINE=$(grep -a "^SUITE TOTAL " suite.log | head -1)
-FAILURES=$(grep -a "^SUITE FAIL " suite.log | sed 's/^SUITE FAIL //' | tr '
+run_suite() {
+  local page="$1" log="$2"
+  run_page "$page" 60 "$log"
+  # GitHub shows at most 10 annotations of a kind per step: one summary carries every failure.
+  local total failures
+  total=$(grep -a "^SUITE TOTAL " "$log" | head -1)
+  failures=$(grep -a "^SUITE FAIL " "$log" | sed 's/^SUITE FAIL //' | tr '
 ' '|' | sed 's/|/%0A/g')
-if [ -n "$FAILURES" ]; then
-  echo "::warning title=V8 smoke suite failures (${TOTAL_LINE#SUITE TOTAL })::$FAILURES"
-fi
-if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-  { echo "## V8 smoke suite: ${TOTAL_LINE#SUITE TOTAL }"; echo; grep -a "^SUITE " suite.log | sed 's/^/- /'; } >> "$GITHUB_STEP_SUMMARY"
-fi
-[ -n "$TOTAL_LINE" ] && echo "::notice title=V8 smoke suite::$TOTAL_LINE"
-if ! grep -aq "^SUITE TOTAL " suite.log; then
-  echo "::error::suite.html did not report its total"
-  grep -a -v '^\s*$' suite.log | tail -20 | sed 's/^/::error::  /'
-  STATUS=1
-fi
+  if [ -n "$failures" ]; then
+    echo "::warning title=$page failures (${total#SUITE TOTAL })::$failures"
+  fi
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    { echo "## $page: ${total#SUITE TOTAL }"; echo; grep -a "^SUITE " "$log" | sed 's/^/- /'; } >> "$GITHUB_STEP_SUMMARY"
+  fi
+  if [ -n "$total" ]; then
+    echo "::notice title=$page::$total"
+  else
+    echo "::error::$page did not report its total"
+    grep -a -v '^\s*$' "$log" | tail -20 | sed 's/^/::error::  /'
+    STATUS=1
+  fi
+}
+
+run_suite suite.html suite.log
+run_suite suite2.html suite2.log
 
 run_page test.html 30 test.log
 for expected in "ROVES-V8 dom: changed by js" "ROVES-V8 click event click true" "ROVES-V8 promise 5" "ROVES-V8 timeout fired"; do
