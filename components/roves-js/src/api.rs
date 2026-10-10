@@ -390,11 +390,30 @@ where
 
 /// Cross-compartment wrapping does not exist on V8: objects are usable in any realm of the
 /// isolate. These keep mozjs's call sites compiling.
-pub fn maybe_wrap_value(_cx: &mut SafeJSContext, _rval: MutableHandleValue) {}
-pub fn maybe_wrap_object_or_null_value(_cx: &mut SafeJSContext, _rval: MutableHandleValue) {}
+pub fn maybe_wrap_value(cx: &mut SafeJSContext, rval: MutableHandleValue) {
+    if rval.get().is_object() {
+        // SAFETY: an object value.
+        unsafe { maybe_wrap_object_value(cx, rval) };
+    }
+}
+
+pub fn maybe_wrap_object_or_null_value(cx: &mut SafeJSContext, rval: MutableHandleValue) {
+    maybe_wrap_value(cx, rval);
+}
+
+/// No compartments on V8; a Window global becomes its window proxy ("outerizing"), as
+/// SpiderMonkey's wrapping does.
+///
 /// # Safety
 /// As in mozjs (a live object value).
-pub unsafe fn maybe_wrap_object_value(_cx: &mut SafeJSContext, _rval: MutableHandleValue) {}
+pub unsafe fn maybe_wrap_object_value(_cx: &mut SafeJSContext, mut rval: MutableHandleValue) {
+    let object = rval.get().to_object();
+    // SAFETY: a live object.
+    let outer = unsafe { crate::proxy::ToWindowProxyIfWindowSlow(object) };
+    if outer != object {
+        rval.set(crate::jsval::ObjectValue(outer));
+    }
+}
 
 /// No compartments on V8 (see `maybe_wrap_value`).
 pub fn assert_same_compartment(_cx: &SafeJSContext, _obj: *mut JSObject) {}

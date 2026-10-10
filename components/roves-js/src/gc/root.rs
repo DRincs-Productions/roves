@@ -592,3 +592,25 @@ impl<T> Initialize for Option<T> {
         Some(None)
     }
 }
+
+// A `StackGCVector<T>` handle points at a `Vec<T>` in roves-js (as `IdVector` does).
+impl<'a, T: Copy> Handle<'a, crate::jsapi::StackGCVector<T>> {
+    fn vector(&self) -> &'a Vec<T> {
+        // SAFETY: roves-js only makes these handles from rooted `Vec<T>`s.
+        unsafe { &*(self.ptr as *const crate::jsapi::StackGCVector<T> as *const Vec<T>) }
+    }
+
+    pub fn len(&self) -> u32 {
+        self.vector().len() as u32
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.vector().is_empty()
+    }
+
+    pub fn at(&'a self, index: u32) -> Option<Handle<'a, T>> {
+        let vector = self.vector();
+        // SAFETY: the elements of a rooted vector are traced.
+        vector.get(index as usize).map(|element| unsafe { Handle::from_marked_location(element) })
+    }
+}

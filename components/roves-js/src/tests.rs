@@ -1333,3 +1333,218 @@ mod modules {
         assert_eq!(describe(&runtime, eval(&runtime, "typeof pending.then")), "function");
     }
 }
+
+mod structured_clone {
+    use std::cell::Cell;
+    use std::ffi::c_void;
+    use std::ptr;
+
+    use super::{describe, eval};
+    use crate::jsapi::*;
+    use crate::jsval::*;
+    use crate::glue::{CopyJSStructuredCloneData, GetLengthOfJSStructuredCloneData, WriteBytesToJSStructuredCloneData};
+    use crate::rust::{JSAutoStructuredCloneBufferWrapper, JSEngineHandle, Runtime};
+
+    static CLASS: JSClass = JSClass {
+        name: c"Thing".as_ptr(),
+        flags: 1 << crate::object::JSCLASS_RESERVED_SLOTS_SHIFT,
+        cOps: ptr::null(),
+        spec: ptr::null(),
+        ext: ptr::null(),
+        oOps: ptr::null(),
+    };
+
+    thread_local! {
+        static REPORTED: Cell<u32> = const { Cell::new(0) };
+    }
+
+    unsafe extern "C" fn write(_cx: *mut JSContext, w: *mut JSStructuredCloneWriter, obj: HandleObject, _same: *mut bool, _closure: *mut c_void) -> bool {
+        let mut slot = UndefinedValue();
+        unsafe { JS_GetReservedSlot(obj.get(), 0, &mut slot) };
+        unsafe { JS_WriteUint32Pair(w, 0xBEEF, slot.to_int32() as u32) && JS_WriteBytes(w, b"abc".as_ptr() as *const c_void, 3) }
+    }
+
+    unsafe extern "C" fn read(cx: *mut JSContext, r: *mut JSStructuredCloneReader, _policy: *const CloneDataPolicy, tag: u32, data: u32, _closure: *mut c_void) -> *mut JSObject {
+        assert_eq!(tag, 0xBEEF);
+        let mut bytes = [0u8; 3];
+        assert!(unsafe { JS_ReadBytes(r, bytes.as_mut_ptr() as *mut c_void, 3) });
+        assert_eq!(&bytes, b"abc");
+        let object = unsafe { JS_NewObject(cx, &CLASS) };
+        unsafe { JS_SetReservedSlot(object, 0, &Int32Value(data as i32 + 1)) };
+        object
+    }
+
+    unsafe extern "C" fn report(_cx: *mut JSContext, _error: u32, _closure: *mut c_void, _message: *const std::ffi::c_char) {
+        REPORTED.with(|count| count.set(count.get() + 1));
+    }
+
+    unsafe extern "C" fn write_transfer(
+        _cx: *mut JSContext,
+        _obj: Handle<*mut JSObject>,
+        _closure: *mut c_void,
+        tag: *mut u32,
+        ownership: *mut TransferableOwnership,
+        content: *mut *mut c_void,
+        extra: *mut u64,
+    ) -> bool {
+        unsafe {
+            *tag = 9;
+            *ownership = TransferableOwnership::SCTAG_TMO_CUSTOM;
+            *content = 0x1000 as *mut c_void;
+            *extra = 5;
+        }
+        true
+    }
+
+    unsafe extern "C" fn read_transfer(
+        cx: *mut JSContext,
+        _r: *mut JSStructuredCloneReader,
+        _policy: *const CloneDataPolicy,
+        tag: u32,
+        content: *mut c_void,
+        extra: u64,
+        _closure: *mut c_void,
+        mut out: MutableHandleObject,
+    ) -> bool {
+        assert_eq!((tag, content as usize, extra), (9, 0x1000, 5));
+        let object = unsafe { JS_NewObject(cx, &CLASS) };
+        unsafe { JS_SetReservedSlot(object, 0, &Int32Value(100)) };
+        out.set(object);
+        true
+    }
+
+    static CALLBACKS: JSStructuredCloneCallbacks = JSStructuredCloneCallbacks {
+        read: Some(read),
+        write: Some(write),
+        reportError: Some(report),
+        readTransfer: Some(read_transfer),
+        writeTransfer: Some(write_transfer),
+        freeTransfer: None,
+        canTransfer: None,
+        sabCloned: None,
+    };
+
+    fn slot(object: *mut JSObject) -> i32 {
+        let mut value = UndefinedValue();
+        unsafe { JS_GetReservedSlot(object, 0, &mut value) };
+        value.to_int32()
+    }
+
+    #[test]
+    fn structured_clone_round_trips_values_host_objects_and_transfers() {
+        let runtime = Runtime::new(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let thing = unsafe { JS_NewObject(cx, &CLASS) });
+        unsafe { JS_SetReservedSlot(thing.get(), 0, &Int32Value(41)) };
+        rooted!(in(cx) let port = unsafe { JS_NewObject(cx, &CLASS) });
+        rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
+        for (name, object) in [(c"thing", thing.get()), (c"port", port.get())] {
+            rooted!(in(cx) let value = ObjectValue(object));
+            assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), name.as_ptr(), value.handle().into_handle()) });
+        }
+        rooted!(in(cx) let message = eval(
+            &runtime,
+            "globalThis.buffer = new Uint8Array([1, 2, 3]).buffer; \
+             ({ text: 'hi', list: [1, { deep: true }], map: new Map([['k', 2]]), when: new Date(5), thing, port, buffer })",
+        ));
+        rooted!(in(cx) let transfer = eval(&runtime, "[buffer, port]"));
+        let policy = CloneDataPolicy { allowIntraClusterClonableSharedObjects_: false, allowSharedMemoryObjects_: false };
+        let buffer = unsafe { JSAutoStructuredCloneBufferWrapper::new(StructuredCloneScope::DifferentProcess, &CALLBACKS) };
+        let data = unsafe { &mut (*buffer.as_raw_ptr()).data_ };
+        assert!(unsafe {
+            JS_WriteStructuredClone(cx, message.handle().into(), data, StructuredCloneScope::DifferentProcess, &policy, &CALLBACKS, ptr::null_mut(), transfer.handle().into())
+        });
+        assert!(eval(&runtime, "buffer.byteLength === 0").to_boolean(), "transferred buffers are detached");
+
+        // Bytes only: as if they crossed a process boundary.
+        let mut bytes = vec![0u8; unsafe { GetLengthOfJSStructuredCloneData(data) }];
+        unsafe { CopyJSStructuredCloneData(data, bytes.as_mut_ptr()) };
+        let received = unsafe { JSAutoStructuredCloneBufferWrapper::new(StructuredCloneScope::DifferentProcess, &CALLBACKS) };
+        let received_data = unsafe { &mut (*received.as_raw_ptr()).data_ };
+        assert!(unsafe { WriteBytesToJSStructuredCloneData(bytes.as_ptr(), bytes.len(), received_data) });
+        rooted!(in(cx) let mut copy = UndefinedValue());
+        assert!(unsafe {
+            JS_ReadStructuredClone(cx, received_data, JS_STRUCTURED_CLONE_VERSION, StructuredCloneScope::DifferentProcess, copy.handle_mut().into(), &policy, &CALLBACKS, ptr::null_mut())
+        });
+        rooted!(in(cx) let copy_value = copy.get());
+        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"copy".as_ptr(), copy_value.handle().into_handle()) });
+        assert_eq!(describe(&runtime, eval(&runtime, "copy.text + copy.list[1].deep + copy.map.get('k') + copy.when.getTime()")), "hitrue25");
+        assert_eq!(describe(&runtime, eval(&runtime, "Array.from(new Uint8Array(copy.buffer)).join()")), "1,2,3");
+        assert_eq!(slot(eval(&runtime, "copy.thing").to_object()), 42, "host objects go through the read/write callbacks");
+        assert_eq!(slot(eval(&runtime, "copy.port").to_object()), 100, "transferred host objects come from readTransfer");
+        assert!(eval(&runtime, "copy.thing !== thing").to_boolean());
+
+        // Unclonable values report through the callback without a pending exception.
+        rooted!(in(cx) let bad = eval(&runtime, "({ f() {} })"));
+        rooted!(in(cx) let no_transfer = UndefinedValue());
+        let failing = unsafe { JSAutoStructuredCloneBufferWrapper::new(StructuredCloneScope::DifferentProcess, &CALLBACKS) };
+        let failing_data = unsafe { &mut (*failing.as_raw_ptr()).data_ };
+        assert!(!unsafe {
+            JS_WriteStructuredClone(cx, bad.handle().into(), failing_data, StructuredCloneScope::DifferentProcess, &policy, &CALLBACKS, ptr::null_mut(), no_transfer.handle().into())
+        });
+        assert_eq!(REPORTED.with(Cell::get), 1);
+        assert!(!unsafe { crate::api::JS_IsExceptionPending(cx) });
+    }
+}
+
+mod window_proxies {
+    use std::ptr;
+
+    use super::{describe, eval};
+    use crate::glue::*;
+    use crate::jsapi::*;
+    use crate::jsval::*;
+    use crate::rust::{JSEngineHandle, Runtime};
+
+    static WINDOW_CLASS: JSClass = JSClass {
+        name: c"Window".as_ptr(),
+        flags: crate::object::JSCLASS_IS_GLOBAL | (crate::object::JSCLASS_GLOBAL_SLOT_COUNT << crate::object::JSCLASS_RESERVED_SLOTS_SHIFT),
+        cOps: ptr::null(),
+        spec: ptr::null(),
+        ext: ptr::null(),
+        oOps: ptr::null(),
+    };
+
+    #[test]
+    fn window_proxies_forward_outerize_and_transplant() {
+        let runtime = Runtime::new(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let window = unsafe {
+            JS_NewGlobalObject(cx, &WINDOW_CLASS, ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, ptr::null())
+        });
+        let old = unsafe { EnterRealm(cx, window.get()) };
+        eval(&runtime, "globalThis.answer = 42; globalThis.greet = function () { return 'hi'; }");
+        unsafe { LeaveRealm(cx, old) };
+
+        // SAFETY: an all-`None` trap table: every operation forwards to the window.
+        let traps: ProxyTraps = unsafe { std::mem::zeroed() };
+        let handler = unsafe { CreateWrapperProxyHandler(&traps) };
+        rooted!(in(cx) let proxy = unsafe { NewWindowProxy(cx, window.handle().into(), handler) });
+        assert!(!proxy.get().is_null());
+        assert!(unsafe { IsWindowProxy(proxy.get()) });
+        assert_eq!(unsafe { ToWindowIfWindowProxy(proxy.get()) }, window.get());
+        unsafe { SetWindowProxy(cx, window.handle().into(), proxy.handle().into()) };
+        assert!(unsafe { IsWindowSlow(window.get()) });
+        assert_eq!(unsafe { ToWindowProxyIfWindowSlow(window.get()) }, proxy.get());
+
+        rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
+        rooted!(in(cx) let proxy_value = ObjectValue(proxy.get()));
+        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"w".as_ptr(), proxy_value.handle().into_handle()) });
+        assert_eq!(eval(&runtime, "w.answer").to_int32(), 42);
+        assert_eq!(describe(&runtime, eval(&runtime, "w.greet()")), "hi");
+        assert_eq!(eval(&runtime, "w.added = 7; w.added").to_int32(), 7);
+        assert!(eval(&runtime, "'answer' in w && Object.keys(w).includes('added')").to_boolean());
+
+        // Transplanting keeps the proxy's identity and takes the new wrapped window.
+        rooted!(in(cx) let other_window = unsafe {
+            JS_NewGlobalObject(cx, &WINDOW_CLASS, ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, ptr::null())
+        });
+        let old = unsafe { EnterRealm(cx, other_window.get()) };
+        eval(&runtime, "globalThis.answer = 1");
+        unsafe { LeaveRealm(cx, old) };
+        rooted!(in(cx) let replacement = unsafe { NewWindowProxy(cx, other_window.handle().into(), handler) });
+        let transplanted = unsafe { JS_TransplantObject(cx, proxy.handle().into(), replacement.handle().into()) };
+        assert_eq!(transplanted, proxy.get());
+        assert_eq!(eval(&runtime, "w.answer").to_int32(), 1);
+    }
+}

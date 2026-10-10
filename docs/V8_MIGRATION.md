@@ -79,6 +79,15 @@ errors.
     resolve callback, JSON modules as synthetic modules, dynamic `import()` and
     `import.meta` through V8's host callbacks;
   - mozjs API compatibility fixes.
+- CP104 adds structured clone on V8's serializer and window proxies, and brings
+  `servo-script` to **0 errors**: the whole `script` crate type-checks on `roves-js`.
+- Next:
+  1. check the full workspace with the swap (servoshell);
+  2. make the swap permanent;
+  3. run pages.
+
+  The runtime gaps to close are listed in CUSTOMIZATIONS (CP104), among them V8's global
+  proxy as Servo's `WindowProxy`.
 
 **Surface.** An inventory of `script`, `script_bindings` and `script_webgpu` found about 590
 distinct `js::` items:

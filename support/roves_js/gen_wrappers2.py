@@ -53,7 +53,7 @@ def visible(src, module_file):
     """The function names a module (`jsapi.rs` / `glue.rs`) makes reachable."""
     text = read(os.path.join(src, module_file))
     names = defined(os.path.join(src, module_file))
-    for module in ("jsapi_impl", "binding", "realm_impl", "api", "object", "native", "proxy", "typedarray_impl", "runtime_impl", "script_impl", "values_impl", "modules_impl"):
+    for module in ("jsapi_impl", "binding", "realm_impl", "api", "object", "native", "proxy", "typedarray_impl", "runtime_impl", "script_impl", "values_impl", "modules_impl", "structured_clone_impl"):
         explicit, glob = reexports(text, module)
         path = os.path.join(src, module + ".rs")
         if glob:

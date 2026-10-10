@@ -14,6 +14,7 @@ import sys
 EXTERNAL = {
     "Value", "JSVal", "JSContext", "JSObject", "JSString", "Symbol", "BigInt", "JSFunction", "JSScript",
     "Heap", "JS_CALLEE", "StackGCVector", "PropertyKey", "jsid", "Rooted",
+    "JSStructuredCloneData", "JSAutoStructuredCloneBuffer",
 }
 
 OPAQUE = {
@@ -125,7 +126,7 @@ def main():
         if name in emitted or name in EXTERNAL:
             continue
         if name in OPAQUE:
-            emitted[name] = f"#[repr(C)]\n#[derive(Debug, Copy, Clone, PartialEq)]\npub struct {name} {{\n    _private: [u8; 0],\n}}"
+            emitted[name] = f"#[repr(C)]\n#[derive(Debug, Copy, Clone, PartialEq)]\npub struct {name} {{\n    pub _private: [u8; 0],\n}}"
             continue
         found = lookup(name)
         if not found:

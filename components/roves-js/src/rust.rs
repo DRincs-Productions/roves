@@ -874,3 +874,29 @@ macro_rules! capture_stack {
         let $name = $crate::rust::CapturedJSStack::new($cx, __obj, None);
     }
 }
+
+/// An owned structured-clone buffer (mozjs's `JSAutoStructuredCloneBufferWrapper`).
+pub struct JSAutoStructuredCloneBufferWrapper {
+    ptr: std::ptr::NonNull<crate::jsapi::JSAutoStructuredCloneBuffer>,
+}
+
+impl JSAutoStructuredCloneBufferWrapper {
+    /// # Safety
+    /// `callbacks` must be valid (or null) for the buffer's lifetime.
+    pub unsafe fn new(scope: crate::jsapi::StructuredCloneScope, callbacks: *const crate::jsapi::JSStructuredCloneCallbacks) -> Self {
+        // SAFETY: forwarded.
+        let raw_ptr = unsafe { crate::structured_clone_impl::NewJSAutoStructuredCloneBuffer(scope, callbacks) };
+        Self { ptr: std::ptr::NonNull::new(raw_ptr).unwrap() }
+    }
+
+    pub fn as_raw_ptr(&self) -> *mut crate::jsapi::JSAutoStructuredCloneBuffer {
+        self.ptr.as_ptr()
+    }
+}
+
+impl Drop for JSAutoStructuredCloneBufferWrapper {
+    fn drop(&mut self) {
+        // SAFETY: created by `NewJSAutoStructuredCloneBuffer`.
+        unsafe { crate::structured_clone_impl::DeleteJSAutoStructuredCloneBuffer(self.ptr.as_ptr()) }
+    }
+}

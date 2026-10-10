@@ -11,6 +11,72 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-10 - V8 cutover: structured clone, window proxies; `servo-script` type-checks on V8 (CP104)
+
+**Servo files:**
+- `components/roves-js/src/`:
+  - new: `structured_clone_impl.rs`;
+  - changed: `proxy.rs`, `realm_impl.rs`, `object.rs`, `api.rs`, `jsval.rs`, `values_impl.rs`,
+    `runtime_impl.rs`, `jsapi_impl.rs`, `jsapi.rs`, `glue.rs`, `rust.rs`, `gc/root.rs`,
+    `lib.rs`, `tests.rs`, `jsapi_types.rs` and `wrappers2.in.rs`;
+- `support/roves_js/extract_jsapi_types.py`, `support/roves_js/jsapi_type_names.txt` and
+  `support/roves_js/gen_wrappers2.py`.
+
+**Patch:** `0169-roves-js-structured-clone-window-proxies.patch` after 0168.
+
+**Structured clone** runs on V8's `ValueSerializer`/`ValueDeserializer`.
+- The stream is V8's header, then a transfer table, then the value:
+  - transferred `ArrayBuffer`s are copied into the table and detached, then handed to V8 by
+    transfer id;
+  - other transferables go through the embedder's `writeTransfer`/`readTransfer`;
+  - DOM objects are V8 API objects, which V8 hands to the delegate as host objects. The
+    delegate runs the embedder's `write`/`read` callbacks with a writer/reader pointing at
+    V8's serializer (`JS_WriteUint32Pair`, `JS_WriteBytes`, `JS_ReadUint32Pair`,
+    `JS_ReadBytes`).
+- Unclonable values and failing callbacks report through `reportError` and leave no pending
+  exception, as in SpiderMonkey.
+- `JSStructuredCloneData`/`JSAutoStructuredCloneBuffer` and their glue functions are
+  roves-js types, as is mozjs's `JSAutoStructuredCloneBufferWrapper`.
+
+**Window proxies.**
+- `CreateWrapperProxyHandler` creates a wrapper family: absent traps forward to the wrapped
+  object, the proxy's private, through `Reflect`. Forwarded non-configurable descriptors are
+  mirrored onto the proxy target. A lazy prototype comes from the wrapped object.
+- Also implemented: `NewWindowProxy`, `SetWindowProxy` (kept by the realm, traced),
+  `IsWindowProxy`, `IsWindowSlow`, `ToWindowProxyIfWindowSlow`, `ToWindowIfWindowProxy`,
+  `Set`/`GetWindowProxyClass`.
+- `maybe_wrap_*` now outerize a Window global to its window proxy, as mozjs does.
+- `JS_TransplantObject`: V8 objects cannot swap identity, so the original proxy takes the
+  target's state (handler, private, slots) and keeps its identity. Trap handlers therefore
+  read the handler from the proxy's box, not from the V8 handler object.
+- All contexts of a runtime share one V8 security token (an internalized string: V8 compares
+  tokens by identity). SpiderMonkey has no access checks between realms; Servo does its own
+  cross-origin checks, and V8's checks rejected cross-realm global access with "no access".
+
+**Other.**
+- `ProxyClassOps`/`ProxyClassExtension`/`ProxyObjectOps` statics are added.
+- Stream-consumer functions are no-ops, because V8's WebAssembly streaming is not wired.
+- `JSVal::asBits_` is public.
+- `Handle<StackGCVector<T>>::{len, at}` is added.
+- Opaque bindgen structs get a public field, so statics can be built as in mozjs.
+
+**Progress:**
+- `python support/v8_cutover_check.py servo-script` reports **0 errors**: Servo's whole
+  `script` crate type-checks against `roves-js`, as `script_bindings` did since CP99.
+- This is a compile milestone. Next comes the full workspace (servoshell), then running
+  pages.
+- Known runtime gaps:
+  - V8's own global proxy is not yet Servo's `WindowProxy` (`window === globalThis`);
+  - GC callbacks are recorded, not reported;
+  - immutable prototypes are not enforced;
+  - WebAssembly streaming is not wired.
+
+**Tests:** `roves-js` 22/22. The new tests cover:
+- structured clone of values, host objects via callbacks, a transferred buffer
+  (detached), a transferred host object, and an unclonable value reported without an
+  exception;
+- window proxies forwarding to their window, outerizing, and transplanting.
+
 ## 2026-10-08 - V8 cutover: ES modules on V8, plus mozjs API compatibility fixes (CP103)
 
 **Servo files:**

@@ -425,8 +425,14 @@ strategia completa è in `docs/V8_MIGRATION.md` ("Cutover strategy"). Metrica:
 - **CP103:** moduli ES su V8 (record = segnaposto con il `v8::Module` nella cella; resolve
   hook via resolve callback V8; moduli JSON sintetici; `import()` dinamico e `import.meta`
   via callback host V8) e correzioni di compatibilità con l'API mozjs. Test: 20/20.
-- **Prossimi passi (dopo CP103):** structured clone, `WindowProxy`/transplant, stream
-  consumer, statics delle classi proxy; rimisurare `servo-script`.
+- **CP104:** structured clone su `ValueSerializer` V8 (tabella di trasferimento, oggetti
+  host tramite le callback di Servo), `WindowProxy` (handler wrapper che inoltrano al
+  `Window`, outerize, transplant che preserva l'identità), stesso token di sicurezza V8 per
+  tutti i realm. **`servo-script`: 0 errori.** Test: 22/22.
+- **Prossimi passi (dopo CP104):** `cargo check` dell'intero workspace con lo swap
+  (servoshell); rendere lo swap permanente (`engine-v8`); avviare pagine reali e chiudere le
+  lacune runtime (global proxy V8 = `WindowProxy`, callback GC, prototipi immutabili,
+  streaming wasm).
 - **Storico (prima di CP95).** Le operazioni dell'API usata dal DOM:
   1. stringhe e conversioni (`jsstr_to_string`, `ToJSValConvertible`/`FromJSValConvertible`);
   2. oggetti e proprietà (`JS_NewObject`, `JS_GetProperty`/`SetProperty`/`DefineProperty`);

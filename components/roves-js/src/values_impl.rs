@@ -61,7 +61,7 @@ fn set_value(result: Option<JSVal>, mut out: MutableHandleValue) -> bool {
 }
 
 /// A function compiled once per runtime from `source` (helpers written in JS).
-fn helper<'s>(scope: &mut v8::PinScope<'s, '_>, name: &'static str, source: &str) -> Option<v8::Local<'s, v8::Function>> {
+pub(crate) fn helper<'s>(scope: &mut v8::PinScope<'s, '_>, name: &'static str, source: &str) -> Option<v8::Local<'s, v8::Function>> {
     let cx = JSContext::current();
     if let Some(function) = cx.helpers.borrow().get(name) {
         return Some(v8::Local::new(scope, function));

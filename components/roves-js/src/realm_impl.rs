@@ -20,6 +20,8 @@ pub(crate) struct RealmData {
     /// plain global of the runtime's initial realm.
     pub(crate) global: Cell<*mut JSObject>,
     pub(crate) principals: Cell<*mut JSPrincipals>,
+    /// The realm's window proxy (`SetWindowProxy`), for a Window global.
+    pub(crate) window_proxy: Cell<*mut JSObject>,
 }
 
 /// Registers a new realm for `context` with its `global` cell (null: the context's plain
@@ -30,8 +32,14 @@ pub(crate) fn register_realm(cx: &JSContext, scope: &mut v8::PinScope, context: 
         context: v8::Global::new(scope, context),
         global: Cell::new(global),
         principals: Cell::new(std::ptr::null_mut()),
+        window_proxy: Cell::new(std::ptr::null_mut()),
     });
     let pointer = &*data as *const RealmData as *mut c_void;
+    // SpiderMonkey has no access checks between realms (Servo checks cross-origin access
+    // itself), so all of a runtime's contexts share one security token.
+    // Tokens compare by identity: an internalized string is one object per isolate.
+    let token = v8::String::new_from_utf8(scope, b"roves-js runtime", v8::NewStringType::Internalized).expect("a short string");
+    context.set_security_token(token.into());
     // SAFETY: the realm data lives as long as the runtime (it owns the context).
     unsafe { context.set_aligned_pointer_in_embedder_data(REALM_SLOT, pointer) };
     cx.realms.borrow_mut().push(data);
@@ -121,6 +129,7 @@ pub(crate) fn trace_realms(cx: &JSContext, visitor: &mut v8::cppgc::Visitor) {
     let Ok(realms) = cx.realms.try_borrow() else { return };
     for realm in realms.iter() {
         crate::cell::trace_cell(realm.global.get() as *mut c_void, visitor);
+        crate::cell::trace_cell(realm.window_proxy.get() as *mut c_void, visitor);
     }
 }
 

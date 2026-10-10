@@ -1169,10 +1169,6 @@ pub unsafe fn IsWrapper(_obj: *mut JSObject) -> bool {
     false
 }
 
-pub unsafe fn IsWindowProxy(_obj: *mut JSObject) -> bool {
-    false
-}
-
 pub unsafe fn CheckedUnwrapStatic(obj: *mut JSObject) -> *mut JSObject {
     obj
 }

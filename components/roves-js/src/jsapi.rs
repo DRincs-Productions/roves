@@ -23,7 +23,15 @@ pub use crate::runtime_impl::*;
 pub use crate::script_impl::*;
 pub use crate::values_impl::*;
 pub use crate::modules_impl::*;
-pub use crate::proxy::{SetDOMProxyInformation, SetPropertyIgnoringNamedGetter};
+pub use crate::structured_clone_impl::{
+    JS_ReadBytes, JS_ReadStructuredClone, JS_ReadUint32Pair, JS_WriteBytes, JS_WriteStructuredClone,
+    JS_WriteUint32Pair, JSAutoStructuredCloneBuffer, JSStructuredCloneData,
+};
+pub use crate::proxy::{ProxyClassExtension, ProxyClassOps, ProxyObjectOps};
+pub use crate::proxy::{
+    IsWindowProxy, IsWindowSlow, JS_TransplantObject, SetDOMProxyInformation, SetPropertyIgnoringNamedGetter,
+    SetWindowProxy, SetWindowProxyClass, ToWindowIfWindowProxy, ToWindowProxyIfWindowSlow,
+};
 pub use crate::object::RuntimeHeapState;
 
 /// The bindgen types Servo uses (layouts copied from mozjs_sys by
@@ -34,6 +42,8 @@ mod types {
     use crate::jsid::{PropertyKey, jsid};
     #[allow(unused_imports)]
     use crate::gc::Rooted;
+    #[allow(unused_imports)]
+    use crate::structured_clone_impl::{JSAutoStructuredCloneBuffer, JSStructuredCloneData};
     use crate::jsval::Value;
 
     /// SpiderMonkey's stack-rooted GC vector (opaque here; its uses are emulated).

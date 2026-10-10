@@ -187,6 +187,12 @@ pub(crate) fn class_box_of_v8<'b>(object: v8::Local<v8::Object>) -> Option<&'b C
 }
 
 impl ClassBox {
+    /// Replaces the reserved slots with `other`'s (`JS_TransplantObject`).
+    pub(crate) fn copy_slots_from(&self, other: &ClassBox) {
+        let slots = other.slots.borrow().clone();
+        *self.slots.borrow_mut() = slots;
+    }
+
     pub(crate) fn reserved_slot(&self, index: u32) -> JSVal {
         self.slots.borrow().get(index as usize).copied().unwrap_or_else(UndefinedValue)
     }

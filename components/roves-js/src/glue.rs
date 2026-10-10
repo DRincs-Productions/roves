@@ -21,6 +21,9 @@ pub use crate::typedarray_impl::{
     GetUint8ClampedArrayLengthAndData,
 };
 pub use crate::runtime_impl::{
+    StreamConsumerConsumeChunk, StreamConsumerNoteResponseURLs, StreamConsumerStreamEnd, StreamConsumerStreamError,
+};
+pub use crate::runtime_impl::{
     CollectServoSizes, CreateJobQueue, DeleteJobQueue, DispatchableRun, InitializeMemoryReporter,
     RegisterScriptEnvironmentPreparer, RunScriptEnvironmentPreparerClosure, SetBuildId, SetUpEventLoopDispatch,
 };
@@ -31,6 +34,13 @@ pub use crate::script_impl::{
 };
 pub use crate::values_impl::JS_GetPromiseResult;
 pub use crate::modules_impl::JS_GetModulePrivate;
+pub use crate::structured_clone_impl::{
+    CopyJSStructuredCloneData, DeleteJSAutoStructuredCloneBuffer, GetLengthOfJSStructuredCloneData,
+    NewJSAutoStructuredCloneBuffer, WriteBytesToJSStructuredCloneData,
+};
+pub use crate::proxy::{
+    CreateWrapperProxyHandler, DeleteWrapperProxyHandler, GetWindowProxyClass, NewWindowProxy,
+};
 pub use crate::proxy::{
     CreateProxyHandler, GetProxyHandler, GetProxyHandlerExtra, GetProxyHandlerFamily, GetProxyPrivate,
     GetProxyReservedSlot, InvokeGetOwnPropertyDescriptor, IsProxyHandlerFamily, NewProxyObject, SetProxyPrivate,

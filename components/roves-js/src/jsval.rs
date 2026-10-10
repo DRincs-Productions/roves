@@ -30,7 +30,7 @@ const CANONICAL_NAN: u64 = 0x7FF8_0000_0000_0000;
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(C)]
 pub struct Value {
-    asBits_: u64,
+    pub asBits_: u64,
 }
 
 pub type JSVal = Value;

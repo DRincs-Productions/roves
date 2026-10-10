@@ -38,13 +38,13 @@
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct AutoRequireNoGC {
-    _private: [u8; 0],
+    pub _private: [u8; 0],
 }
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct BaseProxyHandler {
-    _private: [u8; 0],
+    pub _private: [u8; 0],
 }
 
         pub type BaseProxyHandler_Action = u32;
@@ -58,7 +58,7 @@ pub struct BaseProxyHandler {
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct BuildIdCharVector {
-    _private: [u8; 0],
+    pub _private: [u8; 0],
 }
 
         #[doc = " Return the buildId (represented as a sequence of characters) associated with\n the currently-executing build. If the JS engine is embedded such that a\n single cache entry can be observed by different compiled versions of the JS\n engine, it is critical that the buildId shall change for each new build of\n the JS engine."]
@@ -177,13 +177,13 @@ pub struct BuildIdCharVector {
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct ClassExtension {
-    _private: [u8; 0],
+    pub _private: [u8; 0],
 }
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct ClassSpec {
-    _private: [u8; 0],
+    pub _private: [u8; 0],
 }
 
         #[repr(C)]
@@ -215,7 +215,7 @@ pub struct ClassSpec {
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct Compartment {
-    _private: [u8; 0],
+    pub _private: [u8; 0],
 }
 
         #[repr(i32)]
@@ -874,7 +874,7 @@ pub struct Compartment {
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct EnvironmentChain {
-    _private: [u8; 0],
+    pub _private: [u8; 0],
 }
 
         #[doc = " Type representing a JS error or exception. At the moment this only\n \"represents\" an error in a rather abstract way."]
@@ -939,7 +939,7 @@ pub struct EnvironmentChain {
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct GCContext {
-    _private: [u8; 0],
+    pub _private: [u8; 0],
 }
 
         #[repr(C)]
@@ -1149,7 +1149,7 @@ pub struct GCContext {
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct InlinableNative {
-    _private: [u8; 0],
+    pub _private: [u8; 0],
 }
 
         pub type IsAcceptableThis =
@@ -1174,7 +1174,7 @@ pub struct InlinableNative {
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct JSAtom {
-    _private: [u8; 0],
+    pub _private: [u8; 0],
 }
 
     #[repr(C)]
@@ -3176,7 +3176,7 @@ pub struct JSAtom {
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct JSLinearString {
-    _private: [u8; 0],
+    pub _private: [u8; 0],
 }
 
     #[doc = " A class with a resolve hook can optionally have a mayResolve hook. This hook\n must have no side effects and must return true for a given id if the resolve\n hook may resolve this id. This is useful when we're doing a \"pure\" lookup: if\n mayResolve returns false, we know we don't have to call the effectful resolve\n hook.\n\n maybeObj, if non-null, is the object on which we're doing the lookup. This\n can be nullptr: during JIT compilation we sometimes know the Class but not\n the object."]
@@ -3233,7 +3233,7 @@ pub struct JSLinearString {
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct JSPrincipals {
-    _private: [u8; 0],
+    pub _private: [u8; 0],
 }
 
     #[doc = " Description of a property. JS_DefineProperties and JS_InitClass take arrays\n of these and define many properties at once. JS_PSG, JS_PSGS and JS_PS_END\n are helper macros for defining such arrays."]
@@ -3333,7 +3333,7 @@ pub struct JSPrincipals {
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct JSRuntime {
-    _private: [u8; 0],
+    pub _private: [u8; 0],
 }
 
     #[repr(C)]
@@ -3356,23 +3356,6 @@ pub struct JSRuntime {
         pub canTransfer: CanTransferStructuredCloneOp,
         pub sabCloned: SharedArrayBufferClonedOp,
     }
-
-    #[doc = " JSStructuredCloneData represents structured clone data together with the\n information needed to read/write/transfer/free the records within it, in the\n form of a set of callbacks."]
-    #[repr(C)]
-    #[derive(Debug, PartialEq)]
-    pub struct JSStructuredCloneData {
-        pub bufList_: JSStructuredCloneData_BufferList,
-        pub scope_: StructuredCloneScope,
-        pub callbacks_: *const JSStructuredCloneCallbacks,
-        pub closure_: *mut std::os::raw::c_void,
-        pub ownTransferables_: OwnTransferablePolicy,
-        pub refsHeld_: SharedArrayRawBufferRefs,
-        pub stringBufferRefsHeld_: JSStructuredCloneData_StringBuffers,
-    }
-
-    pub type JSStructuredCloneData_BufferList = __BindgenOpaqueArray<u64, 9usize>;
-
-    pub type JSStructuredCloneData_StringBuffers = __BindgenOpaqueArray<u64, 7usize>;
 
     #[repr(C)]
     #[derive(Debug, Copy, Clone)]
@@ -3405,7 +3388,7 @@ pub struct JSRuntime {
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct JSTracer {
-    _private: [u8; 0],
+    pub _private: [u8; 0],
 }
 
     #[repr(i32)]
@@ -3483,6 +3466,14 @@ pub struct JSTracer {
         JS_WHY_MAGIC_COUNT = 15,
     }
 
+    pub const JS_SCERR_DUP_TRANSFERABLE: u32 = 2;
+
+    pub const JS_SCERR_NOT_CLONABLE: u32 = 7;
+
+    pub const JS_SCERR_TRANSFERABLE: u32 = 1;
+
+    pub const JS_SCERR_UNSUPPORTED_TYPE: u32 = 3;
+
     pub const JS_STRUCTURED_CLONE_VERSION: u32 = 8;
 
             #[repr(C)]
@@ -3494,7 +3485,7 @@ pub struct JSTracer {
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct JobQueue {
-    _private: [u8; 0],
+    pub _private: [u8; 0],
 }
 
         pub type Latin1Char = std::os::raw::c_uchar;
@@ -3692,17 +3683,6 @@ pub struct JobQueue {
             FireOnNewGlobalHook = 0,
             DontFireOnNewGlobalHook = 1,
         }
-
-    #[repr(i32)]
-    #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-    pub enum OwnTransferablePolicy {
-        #[doc = " The buffer owns any Transferables that it might contain, and should\n properly release them upon destruction."]
-        OwnsTransferablesIfAny = 0,
-        #[doc = " Do not free any Transferables within this buffer when deleting it. This\n is used to mark a clone buffer as containing data from another process,\n and so it can't legitimately contain pointers. If the buffer claims to\n have transferables, it's a bug or an attack. This is also used for\n abandon(), where a buffer still contains raw data but the ownership has\n been given over to some other entity."]
-        IgnoreTransferablesIfAny = 1,
-        #[doc = " A buffer that cannot contain Transferables at all. This usually means\n the buffer is empty (not yet filled in, or having been cleared)."]
-        NoTransferables = 2,
-    }
 
         #[doc = " Compilation options, with dynamic lifetime. An instance of this type\n makes a copy of / holds / roots all dynamically allocated resources\n (principals; elements; strings) that it refers to. Its destructor frees\n / drops / unroots them. This is heavier than CompileOptions, below, but\n unlike CompileOptions, it can outlive any given stack frame.\n\n Note that this *roots* any JS values it refers to - they're live\n unconditionally. Thus, instances of this type can't be owned, directly\n or indirectly, by a JavaScript object: if any value that this roots ever\n comes to refer to the object that owns this, then the whole cycle, and\n anything else it entrains, will never be freed."]
         #[repr(C)]
@@ -4348,7 +4328,7 @@ pub struct JobQueue {
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct Realm {
-    _private: [u8; 0],
+    pub _private: [u8; 0],
 }
 
         #[doc = " RealmBehaviors specifies behaviors of a realm that can be changed after the\n realm's been created."]
@@ -4500,7 +4480,7 @@ pub struct Realm {
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct ScriptEnvironmentPreparer_Closure {
-    _private: [u8; 0],
+    pub _private: [u8; 0],
 }
 
         #[doc = " Hooks called when references to a script private value are created or\n destroyed. This allows use of a reference counted object as the\n script private."]
@@ -4551,12 +4531,6 @@ pub struct ScriptEnvironmentPreparer_Closure {
         ) -> bool,
     >;
 
-        #[repr(C)]
-        #[derive(Debug, PartialEq)]
-        pub struct SharedArrayRawBufferRefs {
-            pub refs_: __BindgenOpaqueArray<u64, 3usize>,
-        }
-
             #[repr(C)]
             #[derive(Debug, Copy, Clone)]
             pub struct SmallBuffer {
@@ -4589,7 +4563,7 @@ pub struct ScriptEnvironmentPreparer_Closure {
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct StreamConsumer {
-    _private: [u8; 0],
+    pub _private: [u8; 0],
 }
 
             #[repr(C)]
@@ -4699,7 +4673,7 @@ pub struct StreamConsumer {
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct TrampolineNative {
-    _private: [u8; 0],
+    pub _private: [u8; 0],
 }
 
     #[doc = " Called when JS_WriteStructuredClone receives a transferable object not\n handled by the engine. If this hook does not exist or returns false, the JS\n engine will call the reportError hook or fall back to throwing a\n DATA_CLONE_ERR DOM Exception. This method is called before any other\n callback.\n\n  tag: indicates what type of transferable this is. Must be greater than\n       0xFFFF0201 (value of the internal SCTAG_TRANSFER_MAP_PENDING_ENTRY)\n\n  ownership: see TransferableOwnership, above. Used to communicate any needed\n       ownership info to the FreeTransferStructuredCloneOp.\n\n  content, extraData: what the ReadTransferStructuredCloneOp will receive"]
@@ -4845,7 +4819,7 @@ pub struct TrampolineNative {
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct Zone {
-    _private: [u8; 0],
+    pub _private: [u8; 0],
 }
 
     #[repr(C)]

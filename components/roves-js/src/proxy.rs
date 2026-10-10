@@ -35,6 +35,9 @@ pub(crate) struct ProxyHandler {
 
 /// The family of every handler made by `CreateProxyHandler` (the DOM proxy family).
 static HANDLER_FAMILY: u8 = 0;
+/// The family of wrapper handlers (`CreateWrapperProxyHandler`): absent traps forward to the
+/// wrapped object, the proxy's private.
+static WRAPPER_FAMILY: u8 = 0;
 
 /// The class of proxies created without one (SpiderMonkey's `js::ProxyClass`).
 static PROXY_CLASS: JSClass = JSClass {
@@ -55,6 +58,17 @@ pub unsafe fn CreateProxyHandler(traps: *const ProxyTraps, extra: *const c_void)
     let handler = Box::new(ProxyHandler { traps: unsafe { *traps }, extra, family: GetProxyHandlerFamily() });
     // Handlers live for the whole process, as in mozjs (they are created once per binding).
     Box::into_raw(handler) as *const c_void
+}
+
+pub unsafe fn CreateWrapperProxyHandler(traps: *const ProxyTraps) -> *const c_void {
+    // SAFETY: callers pass a valid trap table.
+    let handler = Box::new(ProxyHandler { traps: unsafe { *traps }, extra: std::ptr::null(), family: &WRAPPER_FAMILY as *const u8 as *const c_void });
+    Box::into_raw(handler) as *const c_void
+}
+
+pub unsafe fn DeleteWrapperProxyHandler(handler: *const c_void) {
+    // SAFETY: handlers come from `CreateWrapperProxyHandler` and are no longer used.
+    drop(unsafe { Box::from_raw(handler as *mut ProxyHandler) });
 }
 
 pub fn GetProxyHandlerFamily() -> *const c_void {
@@ -231,13 +245,45 @@ struct TrapContext<'s, 'h> {
 }
 
 fn trap_context<'s, 'h>(args: &v8::FunctionCallbackArguments<'s>) -> Option<TrapContext<'s, 'h>> {
-    let external = v8::Local::<v8::External>::try_from(args.data()).ok()?;
-    // SAFETY: handler objects carry their (process-lived) handler.
-    let handler = unsafe { &*(external.value() as *const ProxyHandler) };
     let target = v8::Local::<v8::Object>::try_from(args.get(0)).ok()?;
     let class_box = crate::object::class_box_of_v8(target)?;
+    // The proxy's current handler (a transplant may have replaced the one the V8 handler
+    // object was made for). SAFETY: handlers live for the whole process.
+    let handler = unsafe { class_box.proxy.get().as_ref() }?;
     let cx = JSContext::current() as *const JSContext as *mut JSContext;
     Some(TrapContext { handler, proxy: class_box.cell.get() as *mut JSObject, target, cx })
+}
+
+const FORWARD_TRAP: &str = "(function (name, target, a, b, c) { return Reflect[name](target, a, b, c); })";
+
+/// A wrapper handler's absent trap: `Reflect[name](wrapped, ...)` on the wrapped object.
+/// Returns whether the trap was forwarded (its result is in `retval`, or an exception is
+/// pending in V8).
+fn forward<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    context: &TrapContext<'s, '_>,
+    name: &str,
+    args: &v8::FunctionCallbackArguments<'s>,
+    retval: &mut v8::ReturnValue<'s>,
+) -> bool {
+    if context.handler.family != &WRAPPER_FAMILY as *const u8 as *const c_void {
+        return false;
+    }
+    let Some(class_box) = crate::object::class_box_of_v8(context.target) else { return false };
+    let wrapped = class_box.private.get();
+    if !wrapped.is_object() {
+        return false;
+    }
+    // SAFETY: the private is traced by the box.
+    let wrapped = unsafe { to_v8(scope, wrapped) };
+    let Some(function) = crate::values_impl::helper(scope, "ForwardTrap", FORWARD_TRAP) else { return true };
+    let Some(name) = v8::String::new(scope, name) else { return true };
+    let undefined = v8::undefined(scope).into();
+    let call_args = [name.into(), wrapped, args.get(1), args.get(2), args.get(3)];
+    if let Some(result) = function.call(scope, undefined, &call_args) {
+        retval.set(result);
+    }
+    true
 }
 
 /// Ends a trap: a SpiderMonkey failure rethrows the pending exception into V8.
@@ -301,6 +347,14 @@ fn own_descriptor(context: &TrapContext, id: jsid) -> Result<Option<PropertyDesc
 
 fn trap_get_own_property_descriptor<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
     let Some(context) = trap_context(&args) else { return };
+    if context.handler.traps.getOwnPropertyDescriptor.is_none() && forward(scope, &context, "getOwnPropertyDescriptor", &args, &mut retval) {
+        if let (Ok(key), Some(descriptor)) = (v8::Local::<v8::Name>::try_from(args.get(1)), v8::Local::<v8::Object>::try_from(retval.get(scope)).ok()) {
+            let mut converted = PropertyDescriptor::default();
+            crate::jsapi_impl::fill_descriptor(scope, descriptor, &mut converted);
+            mirror_non_configurable(scope, context.target, key, &converted);
+        }
+        return;
+    }
     let Ok(key) = v8::Local::<v8::Name>::try_from(args.get(1)) else { return };
     let id = crate::jsapi_impl::key_id(scope, key.into());
     match own_descriptor(&context, id) {
@@ -325,6 +379,9 @@ fn result_to_bool(ok: bool, result: &ObjectOpResult, retval: &mut v8::ReturnValu
 
 fn trap_define_property<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
     let Some(context) = trap_context(&args) else { return };
+    if context.handler.traps.defineProperty.is_none() && forward(scope, &context, "defineProperty", &args, &mut retval) {
+        return;
+    }
     let Ok(key) = v8::Local::<v8::Name>::try_from(args.get(1)) else { return };
     let Ok(descriptor_value) = v8::Local::<v8::Object>::try_from(args.get(2)) else { return };
     let Some(trap) = context.handler.traps.defineProperty else {
@@ -348,6 +405,9 @@ fn trap_define_property<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::Function
 
 fn trap_own_keys<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
     let Some(context) = trap_context(&args) else { return };
+    if context.handler.traps.ownPropertyKeys.is_none() && forward(scope, &context, "ownKeys", &args, &mut retval) {
+        return;
+    }
     let cx = context.cx;
     // SAFETY: `cx` is this thread's live context.
     let mut ids = unsafe { crate::rust::IdVector::new(cx) };
@@ -366,6 +426,9 @@ fn trap_own_keys<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbac
 
 fn trap_delete_property<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
     let Some(context) = trap_context(&args) else { return };
+    if context.handler.traps.delete_.is_none() && forward(scope, &context, "deleteProperty", &args, &mut retval) {
+        return;
+    }
     let Some(trap) = context.handler.traps.delete_ else {
         retval.set_bool(true);
         return;
@@ -399,11 +462,26 @@ fn prototype<'s>(scope: &mut v8::PinScope<'s, '_>, context: &TrapContext<'s, '_>
             });
         }
     }
+    if lazy && context.handler.family == &WRAPPER_FAMILY as *const u8 as *const c_void {
+        if let Some(class_box) = crate::object::class_box_of_v8(context.target) {
+            let wrapped = class_box.private.get();
+            if wrapped.is_object() {
+                // SAFETY: the private is traced by the box.
+                let wrapped = unsafe { to_v8(scope, wrapped) };
+                if let Ok(wrapped) = v8::Local::<v8::Object>::try_from(wrapped) {
+                    return wrapped.get_prototype(scope).ok_or(());
+                }
+            }
+        }
+    }
     context.target.get_prototype(scope).ok_or(())
 }
 
 fn trap_get_prototype_of<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
     let Some(context) = trap_context(&args) else { return };
+    if context.handler.traps.getPrototype.is_none() && forward(scope, &context, "getPrototypeOf", &args, &mut retval) {
+        return;
+    }
     match prototype(scope, &context) {
         Ok(prototype) => retval.set(prototype),
         Err(()) => fail(scope),
@@ -412,6 +490,9 @@ fn trap_get_prototype_of<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::Functio
 
 fn trap_set_prototype_of<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
     let Some(context) = trap_context(&args) else { return };
+    if context.handler.traps.setPrototype.is_none() && forward(scope, &context, "setPrototypeOf", &args, &mut retval) {
+        return;
+    }
     match context.handler.traps.setPrototype {
         Some(trap) => {
             let cx = context.cx;
@@ -442,6 +523,9 @@ fn trap_is_extensible<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCa
 
 fn trap_prevent_extensions<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
     let Some(context) = trap_context(&args) else { return };
+    if context.handler.traps.preventExtensions.is_none() && forward(scope, &context, "preventExtensions", &args, &mut retval) {
+        return;
+    }
     match context.handler.traps.preventExtensions {
         Some(trap) => {
             let cx = context.cx;
@@ -465,6 +549,9 @@ fn trap_prevent_extensions<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::Funct
 
 fn trap_has<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
     let Some(context) = trap_context(&args) else { return };
+    if context.handler.traps.has.is_none() && forward(scope, &context, "has", &args, &mut retval) {
+        return;
+    }
     let key = args.get(1);
     let id = crate::jsapi_impl::key_id(scope, key);
     if let Some(trap) = context.handler.traps.has {
@@ -499,6 +586,9 @@ fn trap_has<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArgu
 
 fn trap_get<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
     let Some(context) = trap_context(&args) else { return };
+    if context.handler.traps.get.is_none() && forward(scope, &context, "get", &args, &mut retval) {
+        return;
+    }
     let key = args.get(1);
     let receiver = args.get(2);
     let id = crate::jsapi_impl::key_id(scope, key);
@@ -568,6 +658,9 @@ fn reflect<'s>(scope: &mut v8::PinScope<'s, '_>, name: &str, args: &[v8::Local<'
 
 fn trap_set<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
     let Some(context) = trap_context(&args) else { return };
+    if context.handler.traps.set.is_none() && forward(scope, &context, "set", &args, &mut retval) {
+        return;
+    }
     let key = args.get(1);
     let value = args.get(2);
     let receiver = args.get(3);
@@ -712,3 +805,125 @@ pub unsafe fn SetPropertyIgnoringNamedGetter(
         None => false,
     }
 }
+
+// --- Window proxies --------------------------------------------------------------------------
+
+thread_local! {
+    static WINDOW_PROXY_CLASS: std::cell::Cell<*const JSClass> = const { std::cell::Cell::new(std::ptr::null()) };
+}
+
+/// The class of window proxies (SpiderMonkey's default when the embedder sets none).
+static DEFAULT_WINDOW_PROXY_CLASS: JSClass = JSClass {
+    name: c"WindowProxy".as_ptr(),
+    flags: crate::object::JSCLASS_IS_PROXY | (1 << crate::object::JSCLASS_RESERVED_SLOTS_SHIFT),
+    cOps: std::ptr::null(),
+    spec: std::ptr::null(),
+    ext: std::ptr::null(),
+    oOps: std::ptr::null(),
+};
+
+pub unsafe fn SetWindowProxyClass(_cx: *mut JSContext, clasp: *const JSClass) {
+    WINDOW_PROXY_CLASS.with(|class| class.set(clasp));
+}
+
+pub fn GetWindowProxyClass() -> *const JSClass {
+    let class = WINDOW_PROXY_CLASS.with(std::cell::Cell::get);
+    if class.is_null() { &DEFAULT_WINDOW_PROXY_CLASS } else { class }
+}
+
+/// A window proxy for `obj` (a Window global): a wrapper proxy whose private is the window.
+pub unsafe fn NewWindowProxy(cx: *mut JSContext, obj: HandleObject, handler: *const c_void) -> *mut JSObject {
+    crate::rooted!(in(cx) let window = crate::jsval::ObjectValue(obj.get()));
+    // SAFETY: forwarded; the prototype comes from the window (lazy, forwarded).
+    unsafe { NewProxyObject(cx, handler, window.handle().into(), std::ptr::null_mut(), GetWindowProxyClass(), true) }
+}
+
+pub unsafe fn IsWindowProxy(obj: *mut JSObject) -> bool {
+    proxy_box(obj).is_some_and(|class_box| class_box.class == GetWindowProxyClass())
+}
+
+/// Records `window_proxy` as the proxy of the window `global`.
+pub unsafe fn SetWindowProxy(cx: *mut JSContext, global: crate::jsapi::Handle<*mut JSObject>, window_proxy: crate::jsapi::Handle<*mut JSObject>) {
+    // SAFETY: callers pass a live context.
+    let raw = unsafe { &*cx };
+    let realm = crate::realm_impl::realm_of_object(raw, global.get());
+    if let Some(data) = crate::realm_impl::realm_data(realm) {
+        data.window_proxy.set(window_proxy.get());
+    }
+}
+
+/// Whether `obj` is a global with a window proxy.
+pub unsafe fn IsWindowSlow(obj: *mut JSObject) -> bool {
+    // SAFETY: forwarded.
+    let outer = unsafe { ToWindowProxyIfWindowSlow(obj) };
+    outer != obj
+}
+
+pub unsafe fn ToWindowProxyIfWindowSlow(obj: *mut JSObject) -> *mut JSObject {
+    let cx = JSContext::current();
+    let realm = crate::realm_impl::realm_of_object(cx, obj);
+    match crate::realm_impl::realm_data(realm) {
+        Some(data) if data.global.get() == obj && !data.window_proxy.get().is_null() => data.window_proxy.get(),
+        _ => obj,
+    }
+}
+
+pub unsafe fn ToWindowIfWindowProxy(obj: *mut JSObject) -> *mut JSObject {
+    // SAFETY: forwarded.
+    if unsafe { IsWindowProxy(obj) } {
+        if let Some(class_box) = proxy_box(obj) {
+            let window = class_box.private.get();
+            if window.is_object() {
+                return window.to_object();
+            }
+        }
+    }
+    obj
+}
+
+/// SpiderMonkey swaps `origobj`'s identity onto `target`. V8 objects cannot swap identity,
+/// so `origobj` takes `target`'s proxy state (handler, private, slots) and keeps its own
+/// identity, which is what callers observe; `origobj` is returned.
+pub unsafe fn JS_TransplantObject(_cx: *mut JSContext, origobj: HandleObject, target: HandleObject) -> *mut JSObject {
+    let (original, replacement) = (origobj.get(), target.get());
+    let (Some(original_box), Some(replacement_box)) = (proxy_box(original), proxy_box(replacement)) else {
+        return std::ptr::null_mut();
+    };
+    original_box.proxy.set(replacement_box.proxy.get());
+    original_box.private.set(replacement_box.private.get());
+    original_box.lazy_proto.set(replacement_box.lazy_proto.get());
+    original_box.copy_slots_from(replacement_box);
+    original
+}
+
+// --- Proxy class statics -------------------------------------------------------------------
+//
+// SpiderMonkey's proxy classes use these; roves-js proxies take their behaviour from the
+// handler, so they are empty.
+
+pub static ProxyClassOps: crate::jsapi::JSClassOps = crate::jsapi::JSClassOps {
+    addProperty: None,
+    delProperty: None,
+    enumerate: None,
+    newEnumerate: None,
+    resolve: None,
+    mayResolve: None,
+    finalize: None,
+    call: None,
+    construct: None,
+    trace: None,
+};
+
+pub static ProxyClassExtension: crate::jsapi::ClassExtension = crate::jsapi::ClassExtension { _private: [] };
+
+pub static ProxyObjectOps: crate::jsapi::ObjectOps = crate::jsapi::ObjectOps {
+    lookupProperty: None,
+    defineProperty: None,
+    hasProperty: None,
+    getProperty: None,
+    setProperty: None,
+    getOwnPropertyDescriptor: None,
+    deleteProperty: None,
+    getElements: None,
+    funToString: None,
+};

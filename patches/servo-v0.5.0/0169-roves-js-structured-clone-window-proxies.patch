@@ -1,0 +1,1647 @@
+diff --git a/components/roves-js/src/api.rs b/components/roves-js/src/api.rs
+index 80e22d3476d..f82b529da84 100644
+--- a/components/roves-js/src/api.rs
++++ b/components/roves-js/src/api.rs
+@@ -390,11 +390,30 @@ where
+ 
+ /// Cross-compartment wrapping does not exist on V8: objects are usable in any realm of the
+ /// isolate. These keep mozjs's call sites compiling.
+-pub fn maybe_wrap_value(_cx: &mut SafeJSContext, _rval: MutableHandleValue) {}
+-pub fn maybe_wrap_object_or_null_value(_cx: &mut SafeJSContext, _rval: MutableHandleValue) {}
++pub fn maybe_wrap_value(cx: &mut SafeJSContext, rval: MutableHandleValue) {
++    if rval.get().is_object() {
++        // SAFETY: an object value.
++        unsafe { maybe_wrap_object_value(cx, rval) };
++    }
++}
++
++pub fn maybe_wrap_object_or_null_value(cx: &mut SafeJSContext, rval: MutableHandleValue) {
++    maybe_wrap_value(cx, rval);
++}
++
++/// No compartments on V8; a Window global becomes its window proxy ("outerizing"), as
++/// SpiderMonkey's wrapping does.
++///
+ /// # Safety
+ /// As in mozjs (a live object value).
+-pub unsafe fn maybe_wrap_object_value(_cx: &mut SafeJSContext, _rval: MutableHandleValue) {}
++pub unsafe fn maybe_wrap_object_value(_cx: &mut SafeJSContext, mut rval: MutableHandleValue) {
++    let object = rval.get().to_object();
++    // SAFETY: a live object.
++    let outer = unsafe { crate::proxy::ToWindowProxyIfWindowSlow(object) };
++    if outer != object {
++        rval.set(crate::jsval::ObjectValue(outer));
++    }
++}
+ 
+ /// No compartments on V8 (see `maybe_wrap_value`).
+ pub fn assert_same_compartment(_cx: &SafeJSContext, _obj: *mut JSObject) {}
+diff --git a/components/roves-js/src/gc/root.rs b/components/roves-js/src/gc/root.rs
+index e75e0687cb7..8ddd0f285da 100644
+--- a/components/roves-js/src/gc/root.rs
++++ b/components/roves-js/src/gc/root.rs
+@@ -592,3 +592,25 @@ impl<T> Initialize for Option<T> {
+         Some(None)
+     }
+ }
++
++// A `StackGCVector<T>` handle points at a `Vec<T>` in roves-js (as `IdVector` does).
++impl<'a, T: Copy> Handle<'a, crate::jsapi::StackGCVector<T>> {
++    fn vector(&self) -> &'a Vec<T> {
++        // SAFETY: roves-js only makes these handles from rooted `Vec<T>`s.
++        unsafe { &*(self.ptr as *const crate::jsapi::StackGCVector<T> as *const Vec<T>) }
++    }
++
++    pub fn len(&self) -> u32 {
++        self.vector().len() as u32
++    }
++
++    pub fn is_empty(&self) -> bool {
++        self.vector().is_empty()
++    }
++
++    pub fn at(&'a self, index: u32) -> Option<Handle<'a, T>> {
++        let vector = self.vector();
++        // SAFETY: the elements of a rooted vector are traced.
++        vector.get(index as usize).map(|element| unsafe { Handle::from_marked_location(element) })
++    }
++}
+diff --git a/components/roves-js/src/glue.rs b/components/roves-js/src/glue.rs
+index 70254cc25e0..6c8bd0465fd 100644
+--- a/components/roves-js/src/glue.rs
++++ b/components/roves-js/src/glue.rs
+@@ -20,6 +20,9 @@ pub use crate::typedarray_impl::{
+     GetInt8ArrayLengthAndData, GetUint16ArrayLengthAndData, GetUint32ArrayLengthAndData, GetUint8ArrayLengthAndData,
+     GetUint8ClampedArrayLengthAndData,
+ };
++pub use crate::runtime_impl::{
++    StreamConsumerConsumeChunk, StreamConsumerNoteResponseURLs, StreamConsumerStreamEnd, StreamConsumerStreamError,
++};
+ pub use crate::runtime_impl::{
+     CollectServoSizes, CreateJobQueue, DeleteJobQueue, DispatchableRun, InitializeMemoryReporter,
+     RegisterScriptEnvironmentPreparer, RunScriptEnvironmentPreparerClosure, SetBuildId, SetUpEventLoopDispatch,
+@@ -31,6 +34,13 @@ pub use crate::script_impl::{
+ };
+ pub use crate::values_impl::JS_GetPromiseResult;
+ pub use crate::modules_impl::JS_GetModulePrivate;
++pub use crate::structured_clone_impl::{
++    CopyJSStructuredCloneData, DeleteJSAutoStructuredCloneBuffer, GetLengthOfJSStructuredCloneData,
++    NewJSAutoStructuredCloneBuffer, WriteBytesToJSStructuredCloneData,
++};
++pub use crate::proxy::{
++    CreateWrapperProxyHandler, DeleteWrapperProxyHandler, GetWindowProxyClass, NewWindowProxy,
++};
+ pub use crate::proxy::{
+     CreateProxyHandler, GetProxyHandler, GetProxyHandlerExtra, GetProxyHandlerFamily, GetProxyPrivate,
+     GetProxyReservedSlot, InvokeGetOwnPropertyDescriptor, IsProxyHandlerFamily, NewProxyObject, SetProxyPrivate,
+diff --git a/components/roves-js/src/jsapi.rs b/components/roves-js/src/jsapi.rs
+index 42f2d23c80a..079e159af26 100644
+--- a/components/roves-js/src/jsapi.rs
++++ b/components/roves-js/src/jsapi.rs
+@@ -23,7 +23,15 @@ pub use crate::runtime_impl::*;
+ pub use crate::script_impl::*;
+ pub use crate::values_impl::*;
+ pub use crate::modules_impl::*;
+-pub use crate::proxy::{SetDOMProxyInformation, SetPropertyIgnoringNamedGetter};
++pub use crate::structured_clone_impl::{
++    JS_ReadBytes, JS_ReadStructuredClone, JS_ReadUint32Pair, JS_WriteBytes, JS_WriteStructuredClone,
++    JS_WriteUint32Pair, JSAutoStructuredCloneBuffer, JSStructuredCloneData,
++};
++pub use crate::proxy::{ProxyClassExtension, ProxyClassOps, ProxyObjectOps};
++pub use crate::proxy::{
++    IsWindowProxy, IsWindowSlow, JS_TransplantObject, SetDOMProxyInformation, SetPropertyIgnoringNamedGetter,
++    SetWindowProxy, SetWindowProxyClass, ToWindowIfWindowProxy, ToWindowProxyIfWindowSlow,
++};
+ pub use crate::object::RuntimeHeapState;
+ 
+ /// The bindgen types Servo uses (layouts copied from mozjs_sys by
+@@ -34,6 +42,8 @@ mod types {
+     use crate::jsid::{PropertyKey, jsid};
+     #[allow(unused_imports)]
+     use crate::gc::Rooted;
++    #[allow(unused_imports)]
++    use crate::structured_clone_impl::{JSAutoStructuredCloneBuffer, JSStructuredCloneData};
+     use crate::jsval::Value;
+ 
+     /// SpiderMonkey's stack-rooted GC vector (opaque here; its uses are emulated).
+diff --git a/components/roves-js/src/jsapi_impl.rs b/components/roves-js/src/jsapi_impl.rs
+index a5614a7ffcd..99f6f5b4a9c 100644
+--- a/components/roves-js/src/jsapi_impl.rs
++++ b/components/roves-js/src/jsapi_impl.rs
+@@ -1169,10 +1169,6 @@ pub unsafe fn IsWrapper(_obj: *mut JSObject) -> bool {
+     false
+ }
+ 
+-pub unsafe fn IsWindowProxy(_obj: *mut JSObject) -> bool {
+-    false
+-}
+-
+ pub unsafe fn CheckedUnwrapStatic(obj: *mut JSObject) -> *mut JSObject {
+     obj
+ }
+diff --git a/components/roves-js/src/jsapi_types.rs b/components/roves-js/src/jsapi_types.rs
+index fae1829d8c6..a56d4944286 100644
+--- a/components/roves-js/src/jsapi_types.rs
++++ b/components/roves-js/src/jsapi_types.rs
+@@ -38,13 +38,13 @@
+ #[repr(C)]
+ #[derive(Debug, Copy, Clone, PartialEq)]
+ pub struct AutoRequireNoGC {
+-    _private: [u8; 0],
++    pub _private: [u8; 0],
+ }
+ 
+ #[repr(C)]
+ #[derive(Debug, Copy, Clone, PartialEq)]
+ pub struct BaseProxyHandler {
+-    _private: [u8; 0],
++    pub _private: [u8; 0],
+ }
+ 
+         pub type BaseProxyHandler_Action = u32;
+@@ -58,7 +58,7 @@ pub struct BaseProxyHandler {
+ #[repr(C)]
+ #[derive(Debug, Copy, Clone, PartialEq)]
+ pub struct BuildIdCharVector {
+-    _private: [u8; 0],
++    pub _private: [u8; 0],
+ }
+ 
+         #[doc = " Return the buildId (represented as a sequence of characters) associated with\n the currently-executing build. If the JS engine is embedded such that a\n single cache entry can be observed by different compiled versions of the JS\n engine, it is critical that the buildId shall change for each new build of\n the JS engine."]
+@@ -177,13 +177,13 @@ pub struct BuildIdCharVector {
+ #[repr(C)]
+ #[derive(Debug, Copy, Clone, PartialEq)]
+ pub struct ClassExtension {
+-    _private: [u8; 0],
++    pub _private: [u8; 0],
+ }
+ 
+ #[repr(C)]
+ #[derive(Debug, Copy, Clone, PartialEq)]
+ pub struct ClassSpec {
+-    _private: [u8; 0],
++    pub _private: [u8; 0],
+ }
+ 
+         #[repr(C)]
+@@ -215,7 +215,7 @@ pub struct ClassSpec {
+ #[repr(C)]
+ #[derive(Debug, Copy, Clone, PartialEq)]
+ pub struct Compartment {
+-    _private: [u8; 0],
++    pub _private: [u8; 0],
+ }
+ 
+         #[repr(i32)]
+@@ -874,7 +874,7 @@ pub struct Compartment {
+ #[repr(C)]
+ #[derive(Debug, Copy, Clone, PartialEq)]
+ pub struct EnvironmentChain {
+-    _private: [u8; 0],
++    pub _private: [u8; 0],
+ }
+ 
+         #[doc = " Type representing a JS error or exception. At the moment this only\n \"represents\" an error in a rather abstract way."]
+@@ -939,7 +939,7 @@ pub struct EnvironmentChain {
+ #[repr(C)]
+ #[derive(Debug, Copy, Clone, PartialEq)]
+ pub struct GCContext {
+-    _private: [u8; 0],
++    pub _private: [u8; 0],
+ }
+ 
+         #[repr(C)]
+@@ -1149,7 +1149,7 @@ pub struct GCContext {
+ #[repr(C)]
+ #[derive(Debug, Copy, Clone, PartialEq)]
+ pub struct InlinableNative {
+-    _private: [u8; 0],
++    pub _private: [u8; 0],
+ }
+ 
+         pub type IsAcceptableThis =
+@@ -1174,7 +1174,7 @@ pub struct InlinableNative {
+ #[repr(C)]
+ #[derive(Debug, Copy, Clone, PartialEq)]
+ pub struct JSAtom {
+-    _private: [u8; 0],
++    pub _private: [u8; 0],
+ }
+ 
+     #[repr(C)]
+@@ -3176,7 +3176,7 @@ pub struct JSAtom {
+ #[repr(C)]
+ #[derive(Debug, Copy, Clone, PartialEq)]
+ pub struct JSLinearString {
+-    _private: [u8; 0],
++    pub _private: [u8; 0],
+ }
+ 
+     #[doc = " A class with a resolve hook can optionally have a mayResolve hook. This hook\n must have no side effects and must return true for a given id if the resolve\n hook may resolve this id. This is useful when we're doing a \"pure\" lookup: if\n mayResolve returns false, we know we don't have to call the effectful resolve\n hook.\n\n maybeObj, if non-null, is the object on which we're doing the lookup. This\n can be nullptr: during JIT compilation we sometimes know the Class but not\n the object."]
+@@ -3233,7 +3233,7 @@ pub struct JSLinearString {
+ #[repr(C)]
+ #[derive(Debug, Copy, Clone, PartialEq)]
+ pub struct JSPrincipals {
+-    _private: [u8; 0],
++    pub _private: [u8; 0],
+ }
+ 
+     #[doc = " Description of a property. JS_DefineProperties and JS_InitClass take arrays\n of these and define many properties at once. JS_PSG, JS_PSGS and JS_PS_END\n are helper macros for defining such arrays."]
+@@ -3333,7 +3333,7 @@ pub struct JSPrincipals {
+ #[repr(C)]
+ #[derive(Debug, Copy, Clone, PartialEq)]
+ pub struct JSRuntime {
+-    _private: [u8; 0],
++    pub _private: [u8; 0],
+ }
+ 
+     #[repr(C)]
+@@ -3357,23 +3357,6 @@ pub struct JSRuntime {
+         pub sabCloned: SharedArrayBufferClonedOp,
+     }
+ 
+-    #[doc = " JSStructuredCloneData represents structured clone data together with the\n information needed to read/write/transfer/free the records within it, in the\n form of a set of callbacks."]
+-    #[repr(C)]
+-    #[derive(Debug, PartialEq)]
+-    pub struct JSStructuredCloneData {
+-        pub bufList_: JSStructuredCloneData_BufferList,
+-        pub scope_: StructuredCloneScope,
+-        pub callbacks_: *const JSStructuredCloneCallbacks,
+-        pub closure_: *mut std::os::raw::c_void,
+-        pub ownTransferables_: OwnTransferablePolicy,
+-        pub refsHeld_: SharedArrayRawBufferRefs,
+-        pub stringBufferRefsHeld_: JSStructuredCloneData_StringBuffers,
+-    }
+-
+-    pub type JSStructuredCloneData_BufferList = __BindgenOpaqueArray<u64, 9usize>;
+-
+-    pub type JSStructuredCloneData_StringBuffers = __BindgenOpaqueArray<u64, 7usize>;
+-
+     #[repr(C)]
+     #[derive(Debug, Copy, Clone)]
+     pub struct JSStructuredCloneReader {
+@@ -3405,7 +3388,7 @@ pub struct JSRuntime {
+ #[repr(C)]
+ #[derive(Debug, Copy, Clone, PartialEq)]
+ pub struct JSTracer {
+-    _private: [u8; 0],
++    pub _private: [u8; 0],
+ }
+ 
+     #[repr(i32)]
+@@ -3483,6 +3466,14 @@ pub struct JSTracer {
+         JS_WHY_MAGIC_COUNT = 15,
+     }
+ 
++    pub const JS_SCERR_DUP_TRANSFERABLE: u32 = 2;
++
++    pub const JS_SCERR_NOT_CLONABLE: u32 = 7;
++
++    pub const JS_SCERR_TRANSFERABLE: u32 = 1;
++
++    pub const JS_SCERR_UNSUPPORTED_TYPE: u32 = 3;
++
+     pub const JS_STRUCTURED_CLONE_VERSION: u32 = 8;
+ 
+             #[repr(C)]
+@@ -3494,7 +3485,7 @@ pub struct JSTracer {
+ #[repr(C)]
+ #[derive(Debug, Copy, Clone, PartialEq)]
+ pub struct JobQueue {
+-    _private: [u8; 0],
++    pub _private: [u8; 0],
+ }
+ 
+         pub type Latin1Char = std::os::raw::c_uchar;
+@@ -3693,17 +3684,6 @@ pub struct JobQueue {
+             DontFireOnNewGlobalHook = 1,
+         }
+ 
+-    #[repr(i32)]
+-    #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+-    pub enum OwnTransferablePolicy {
+-        #[doc = " The buffer owns any Transferables that it might contain, and should\n properly release them upon destruction."]
+-        OwnsTransferablesIfAny = 0,
+-        #[doc = " Do not free any Transferables within this buffer when deleting it. This\n is used to mark a clone buffer as containing data from another process,\n and so it can't legitimately contain pointers. If the buffer claims to\n have transferables, it's a bug or an attack. This is also used for\n abandon(), where a buffer still contains raw data but the ownership has\n been given over to some other entity."]
+-        IgnoreTransferablesIfAny = 1,
+-        #[doc = " A buffer that cannot contain Transferables at all. This usually means\n the buffer is empty (not yet filled in, or having been cleared)."]
+-        NoTransferables = 2,
+-    }
+-
+         #[doc = " Compilation options, with dynamic lifetime. An instance of this type\n makes a copy of / holds / roots all dynamically allocated resources\n (principals; elements; strings) that it refers to. Its destructor frees\n / drops / unroots them. This is heavier than CompileOptions, below, but\n unlike CompileOptions, it can outlive any given stack frame.\n\n Note that this *roots* any JS values it refers to - they're live\n unconditionally. Thus, instances of this type can't be owned, directly\n or indirectly, by a JavaScript object: if any value that this roots ever\n comes to refer to the object that owns this, then the whole cycle, and\n anything else it entrains, will never be freed."]
+         #[repr(C)]
+         #[derive(Debug, PartialEq)]
+@@ -4348,7 +4328,7 @@ pub struct JobQueue {
+ #[repr(C)]
+ #[derive(Debug, Copy, Clone, PartialEq)]
+ pub struct Realm {
+-    _private: [u8; 0],
++    pub _private: [u8; 0],
+ }
+ 
+         #[doc = " RealmBehaviors specifies behaviors of a realm that can be changed after the\n realm's been created."]
+@@ -4500,7 +4480,7 @@ pub struct Realm {
+ #[repr(C)]
+ #[derive(Debug, Copy, Clone, PartialEq)]
+ pub struct ScriptEnvironmentPreparer_Closure {
+-    _private: [u8; 0],
++    pub _private: [u8; 0],
+ }
+ 
+         #[doc = " Hooks called when references to a script private value are created or\n destroyed. This allows use of a reference counted object as the\n script private."]
+@@ -4551,12 +4531,6 @@ pub struct ScriptEnvironmentPreparer_Closure {
+         ) -> bool,
+     >;
+ 
+-        #[repr(C)]
+-        #[derive(Debug, PartialEq)]
+-        pub struct SharedArrayRawBufferRefs {
+-            pub refs_: __BindgenOpaqueArray<u64, 3usize>,
+-        }
+-
+             #[repr(C)]
+             #[derive(Debug, Copy, Clone)]
+             pub struct SmallBuffer {
+@@ -4589,7 +4563,7 @@ pub struct ScriptEnvironmentPreparer_Closure {
+ #[repr(C)]
+ #[derive(Debug, Copy, Clone, PartialEq)]
+ pub struct StreamConsumer {
+-    _private: [u8; 0],
++    pub _private: [u8; 0],
+ }
+ 
+             #[repr(C)]
+@@ -4699,7 +4673,7 @@ pub struct StreamConsumer {
+ #[repr(C)]
+ #[derive(Debug, Copy, Clone, PartialEq)]
+ pub struct TrampolineNative {
+-    _private: [u8; 0],
++    pub _private: [u8; 0],
+ }
+ 
+     #[doc = " Called when JS_WriteStructuredClone receives a transferable object not\n handled by the engine. If this hook does not exist or returns false, the JS\n engine will call the reportError hook or fall back to throwing a\n DATA_CLONE_ERR DOM Exception. This method is called before any other\n callback.\n\n  tag: indicates what type of transferable this is. Must be greater than\n       0xFFFF0201 (value of the internal SCTAG_TRANSFER_MAP_PENDING_ENTRY)\n\n  ownership: see TransferableOwnership, above. Used to communicate any needed\n       ownership info to the FreeTransferStructuredCloneOp.\n\n  content, extraData: what the ReadTransferStructuredCloneOp will receive"]
+@@ -4845,7 +4819,7 @@ pub struct TrampolineNative {
+ #[repr(C)]
+ #[derive(Debug, Copy, Clone, PartialEq)]
+ pub struct Zone {
+-    _private: [u8; 0],
++    pub _private: [u8; 0],
+ }
+ 
+     #[repr(C)]
+diff --git a/components/roves-js/src/jsval.rs b/components/roves-js/src/jsval.rs
+index 4fe97fef3c0..4b2bee98e0f 100644
+--- a/components/roves-js/src/jsval.rs
++++ b/components/roves-js/src/jsval.rs
+@@ -30,7 +30,7 @@ const CANONICAL_NAN: u64 = 0x7FF8_0000_0000_0000;
+ #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+ #[repr(C)]
+ pub struct Value {
+-    asBits_: u64,
++    pub asBits_: u64,
+ }
+ 
+ pub type JSVal = Value;
+diff --git a/components/roves-js/src/lib.rs b/components/roves-js/src/lib.rs
+index 1045f237436..ec88a15c598 100644
+--- a/components/roves-js/src/lib.rs
++++ b/components/roves-js/src/lib.rs
+@@ -31,6 +31,7 @@ mod runtime_impl;
+ mod script_impl;
+ mod values_impl;
+ mod modules_impl;
++mod structured_clone_impl;
+ mod typedarray_impl;
+ pub mod typedarray;
+ mod realm_impl;
+diff --git a/components/roves-js/src/object.rs b/components/roves-js/src/object.rs
+index a622e77df2e..74e28abe53b 100644
+--- a/components/roves-js/src/object.rs
++++ b/components/roves-js/src/object.rs
+@@ -187,6 +187,12 @@ pub(crate) fn class_box_of_v8<'b>(object: v8::Local<v8::Object>) -> Option<&'b C
+ }
+ 
+ impl ClassBox {
++    /// Replaces the reserved slots with `other`'s (`JS_TransplantObject`).
++    pub(crate) fn copy_slots_from(&self, other: &ClassBox) {
++        let slots = other.slots.borrow().clone();
++        *self.slots.borrow_mut() = slots;
++    }
++
+     pub(crate) fn reserved_slot(&self, index: u32) -> JSVal {
+         self.slots.borrow().get(index as usize).copied().unwrap_or_else(UndefinedValue)
+     }
+diff --git a/components/roves-js/src/proxy.rs b/components/roves-js/src/proxy.rs
+index b5926b81502..9b2fdb9cdc1 100644
+--- a/components/roves-js/src/proxy.rs
++++ b/components/roves-js/src/proxy.rs
+@@ -35,6 +35,9 @@ pub(crate) struct ProxyHandler {
+ 
+ /// The family of every handler made by `CreateProxyHandler` (the DOM proxy family).
+ static HANDLER_FAMILY: u8 = 0;
++/// The family of wrapper handlers (`CreateWrapperProxyHandler`): absent traps forward to the
++/// wrapped object, the proxy's private.
++static WRAPPER_FAMILY: u8 = 0;
+ 
+ /// The class of proxies created without one (SpiderMonkey's `js::ProxyClass`).
+ static PROXY_CLASS: JSClass = JSClass {
+@@ -57,6 +60,17 @@ pub unsafe fn CreateProxyHandler(traps: *const ProxyTraps, extra: *const c_void)
+     Box::into_raw(handler) as *const c_void
+ }
+ 
++pub unsafe fn CreateWrapperProxyHandler(traps: *const ProxyTraps) -> *const c_void {
++    // SAFETY: callers pass a valid trap table.
++    let handler = Box::new(ProxyHandler { traps: unsafe { *traps }, extra: std::ptr::null(), family: &WRAPPER_FAMILY as *const u8 as *const c_void });
++    Box::into_raw(handler) as *const c_void
++}
++
++pub unsafe fn DeleteWrapperProxyHandler(handler: *const c_void) {
++    // SAFETY: handlers come from `CreateWrapperProxyHandler` and are no longer used.
++    drop(unsafe { Box::from_raw(handler as *mut ProxyHandler) });
++}
++
+ pub fn GetProxyHandlerFamily() -> *const c_void {
+     &HANDLER_FAMILY as *const u8 as *const c_void
+ }
+@@ -231,15 +245,47 @@ struct TrapContext<'s, 'h> {
+ }
+ 
+ fn trap_context<'s, 'h>(args: &v8::FunctionCallbackArguments<'s>) -> Option<TrapContext<'s, 'h>> {
+-    let external = v8::Local::<v8::External>::try_from(args.data()).ok()?;
+-    // SAFETY: handler objects carry their (process-lived) handler.
+-    let handler = unsafe { &*(external.value() as *const ProxyHandler) };
+     let target = v8::Local::<v8::Object>::try_from(args.get(0)).ok()?;
+     let class_box = crate::object::class_box_of_v8(target)?;
++    // The proxy's current handler (a transplant may have replaced the one the V8 handler
++    // object was made for). SAFETY: handlers live for the whole process.
++    let handler = unsafe { class_box.proxy.get().as_ref() }?;
+     let cx = JSContext::current() as *const JSContext as *mut JSContext;
+     Some(TrapContext { handler, proxy: class_box.cell.get() as *mut JSObject, target, cx })
+ }
+ 
++const FORWARD_TRAP: &str = "(function (name, target, a, b, c) { return Reflect[name](target, a, b, c); })";
++
++/// A wrapper handler's absent trap: `Reflect[name](wrapped, ...)` on the wrapped object.
++/// Returns whether the trap was forwarded (its result is in `retval`, or an exception is
++/// pending in V8).
++fn forward<'s>(
++    scope: &mut v8::PinScope<'s, '_>,
++    context: &TrapContext<'s, '_>,
++    name: &str,
++    args: &v8::FunctionCallbackArguments<'s>,
++    retval: &mut v8::ReturnValue<'s>,
++) -> bool {
++    if context.handler.family != &WRAPPER_FAMILY as *const u8 as *const c_void {
++        return false;
++    }
++    let Some(class_box) = crate::object::class_box_of_v8(context.target) else { return false };
++    let wrapped = class_box.private.get();
++    if !wrapped.is_object() {
++        return false;
++    }
++    // SAFETY: the private is traced by the box.
++    let wrapped = unsafe { to_v8(scope, wrapped) };
++    let Some(function) = crate::values_impl::helper(scope, "ForwardTrap", FORWARD_TRAP) else { return true };
++    let Some(name) = v8::String::new(scope, name) else { return true };
++    let undefined = v8::undefined(scope).into();
++    let call_args = [name.into(), wrapped, args.get(1), args.get(2), args.get(3)];
++    if let Some(result) = function.call(scope, undefined, &call_args) {
++        retval.set(result);
++    }
++    true
++}
++
+ /// Ends a trap: a SpiderMonkey failure rethrows the pending exception into V8.
+ fn fail(scope: &mut v8::PinScope) {
+     crate::native::rethrow_pending(scope, JSContext::current());
+@@ -301,6 +347,14 @@ fn own_descriptor(context: &TrapContext, id: jsid) -> Result<Option<PropertyDesc
+ 
+ fn trap_get_own_property_descriptor<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
+     let Some(context) = trap_context(&args) else { return };
++    if context.handler.traps.getOwnPropertyDescriptor.is_none() && forward(scope, &context, "getOwnPropertyDescriptor", &args, &mut retval) {
++        if let (Ok(key), Some(descriptor)) = (v8::Local::<v8::Name>::try_from(args.get(1)), v8::Local::<v8::Object>::try_from(retval.get(scope)).ok()) {
++            let mut converted = PropertyDescriptor::default();
++            crate::jsapi_impl::fill_descriptor(scope, descriptor, &mut converted);
++            mirror_non_configurable(scope, context.target, key, &converted);
++        }
++        return;
++    }
+     let Ok(key) = v8::Local::<v8::Name>::try_from(args.get(1)) else { return };
+     let id = crate::jsapi_impl::key_id(scope, key.into());
+     match own_descriptor(&context, id) {
+@@ -325,6 +379,9 @@ fn result_to_bool(ok: bool, result: &ObjectOpResult, retval: &mut v8::ReturnValu
+ 
+ fn trap_define_property<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
+     let Some(context) = trap_context(&args) else { return };
++    if context.handler.traps.defineProperty.is_none() && forward(scope, &context, "defineProperty", &args, &mut retval) {
++        return;
++    }
+     let Ok(key) = v8::Local::<v8::Name>::try_from(args.get(1)) else { return };
+     let Ok(descriptor_value) = v8::Local::<v8::Object>::try_from(args.get(2)) else { return };
+     let Some(trap) = context.handler.traps.defineProperty else {
+@@ -348,6 +405,9 @@ fn trap_define_property<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::Function
+ 
+ fn trap_own_keys<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
+     let Some(context) = trap_context(&args) else { return };
++    if context.handler.traps.ownPropertyKeys.is_none() && forward(scope, &context, "ownKeys", &args, &mut retval) {
++        return;
++    }
+     let cx = context.cx;
+     // SAFETY: `cx` is this thread's live context.
+     let mut ids = unsafe { crate::rust::IdVector::new(cx) };
+@@ -366,6 +426,9 @@ fn trap_own_keys<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbac
+ 
+ fn trap_delete_property<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
+     let Some(context) = trap_context(&args) else { return };
++    if context.handler.traps.delete_.is_none() && forward(scope, &context, "deleteProperty", &args, &mut retval) {
++        return;
++    }
+     let Some(trap) = context.handler.traps.delete_ else {
+         retval.set_bool(true);
+         return;
+@@ -399,11 +462,26 @@ fn prototype<'s>(scope: &mut v8::PinScope<'s, '_>, context: &TrapContext<'s, '_>
+             });
+         }
+     }
++    if lazy && context.handler.family == &WRAPPER_FAMILY as *const u8 as *const c_void {
++        if let Some(class_box) = crate::object::class_box_of_v8(context.target) {
++            let wrapped = class_box.private.get();
++            if wrapped.is_object() {
++                // SAFETY: the private is traced by the box.
++                let wrapped = unsafe { to_v8(scope, wrapped) };
++                if let Ok(wrapped) = v8::Local::<v8::Object>::try_from(wrapped) {
++                    return wrapped.get_prototype(scope).ok_or(());
++                }
++            }
++        }
++    }
+     context.target.get_prototype(scope).ok_or(())
+ }
+ 
+ fn trap_get_prototype_of<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
+     let Some(context) = trap_context(&args) else { return };
++    if context.handler.traps.getPrototype.is_none() && forward(scope, &context, "getPrototypeOf", &args, &mut retval) {
++        return;
++    }
+     match prototype(scope, &context) {
+         Ok(prototype) => retval.set(prototype),
+         Err(()) => fail(scope),
+@@ -412,6 +490,9 @@ fn trap_get_prototype_of<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::Functio
+ 
+ fn trap_set_prototype_of<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
+     let Some(context) = trap_context(&args) else { return };
++    if context.handler.traps.setPrototype.is_none() && forward(scope, &context, "setPrototypeOf", &args, &mut retval) {
++        return;
++    }
+     match context.handler.traps.setPrototype {
+         Some(trap) => {
+             let cx = context.cx;
+@@ -442,6 +523,9 @@ fn trap_is_extensible<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCa
+ 
+ fn trap_prevent_extensions<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
+     let Some(context) = trap_context(&args) else { return };
++    if context.handler.traps.preventExtensions.is_none() && forward(scope, &context, "preventExtensions", &args, &mut retval) {
++        return;
++    }
+     match context.handler.traps.preventExtensions {
+         Some(trap) => {
+             let cx = context.cx;
+@@ -465,6 +549,9 @@ fn trap_prevent_extensions<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::Funct
+ 
+ fn trap_has<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
+     let Some(context) = trap_context(&args) else { return };
++    if context.handler.traps.has.is_none() && forward(scope, &context, "has", &args, &mut retval) {
++        return;
++    }
+     let key = args.get(1);
+     let id = crate::jsapi_impl::key_id(scope, key);
+     if let Some(trap) = context.handler.traps.has {
+@@ -499,6 +586,9 @@ fn trap_has<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArgu
+ 
+ fn trap_get<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
+     let Some(context) = trap_context(&args) else { return };
++    if context.handler.traps.get.is_none() && forward(scope, &context, "get", &args, &mut retval) {
++        return;
++    }
+     let key = args.get(1);
+     let receiver = args.get(2);
+     let id = crate::jsapi_impl::key_id(scope, key);
+@@ -568,6 +658,9 @@ fn reflect<'s>(scope: &mut v8::PinScope<'s, '_>, name: &str, args: &[v8::Local<'
+ 
+ fn trap_set<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
+     let Some(context) = trap_context(&args) else { return };
++    if context.handler.traps.set.is_none() && forward(scope, &context, "set", &args, &mut retval) {
++        return;
++    }
+     let key = args.get(1);
+     let value = args.get(2);
+     let receiver = args.get(3);
+@@ -712,3 +805,125 @@ pub unsafe fn SetPropertyIgnoringNamedGetter(
+         None => false,
+     }
+ }
++
++// --- Window proxies --------------------------------------------------------------------------
++
++thread_local! {
++    static WINDOW_PROXY_CLASS: std::cell::Cell<*const JSClass> = const { std::cell::Cell::new(std::ptr::null()) };
++}
++
++/// The class of window proxies (SpiderMonkey's default when the embedder sets none).
++static DEFAULT_WINDOW_PROXY_CLASS: JSClass = JSClass {
++    name: c"WindowProxy".as_ptr(),
++    flags: crate::object::JSCLASS_IS_PROXY | (1 << crate::object::JSCLASS_RESERVED_SLOTS_SHIFT),
++    cOps: std::ptr::null(),
++    spec: std::ptr::null(),
++    ext: std::ptr::null(),
++    oOps: std::ptr::null(),
++};
++
++pub unsafe fn SetWindowProxyClass(_cx: *mut JSContext, clasp: *const JSClass) {
++    WINDOW_PROXY_CLASS.with(|class| class.set(clasp));
++}
++
++pub fn GetWindowProxyClass() -> *const JSClass {
++    let class = WINDOW_PROXY_CLASS.with(std::cell::Cell::get);
++    if class.is_null() { &DEFAULT_WINDOW_PROXY_CLASS } else { class }
++}
++
++/// A window proxy for `obj` (a Window global): a wrapper proxy whose private is the window.
++pub unsafe fn NewWindowProxy(cx: *mut JSContext, obj: HandleObject, handler: *const c_void) -> *mut JSObject {
++    crate::rooted!(in(cx) let window = crate::jsval::ObjectValue(obj.get()));
++    // SAFETY: forwarded; the prototype comes from the window (lazy, forwarded).
++    unsafe { NewProxyObject(cx, handler, window.handle().into(), std::ptr::null_mut(), GetWindowProxyClass(), true) }
++}
++
++pub unsafe fn IsWindowProxy(obj: *mut JSObject) -> bool {
++    proxy_box(obj).is_some_and(|class_box| class_box.class == GetWindowProxyClass())
++}
++
++/// Records `window_proxy` as the proxy of the window `global`.
++pub unsafe fn SetWindowProxy(cx: *mut JSContext, global: crate::jsapi::Handle<*mut JSObject>, window_proxy: crate::jsapi::Handle<*mut JSObject>) {
++    // SAFETY: callers pass a live context.
++    let raw = unsafe { &*cx };
++    let realm = crate::realm_impl::realm_of_object(raw, global.get());
++    if let Some(data) = crate::realm_impl::realm_data(realm) {
++        data.window_proxy.set(window_proxy.get());
++    }
++}
++
++/// Whether `obj` is a global with a window proxy.
++pub unsafe fn IsWindowSlow(obj: *mut JSObject) -> bool {
++    // SAFETY: forwarded.
++    let outer = unsafe { ToWindowProxyIfWindowSlow(obj) };
++    outer != obj
++}
++
++pub unsafe fn ToWindowProxyIfWindowSlow(obj: *mut JSObject) -> *mut JSObject {
++    let cx = JSContext::current();
++    let realm = crate::realm_impl::realm_of_object(cx, obj);
++    match crate::realm_impl::realm_data(realm) {
++        Some(data) if data.global.get() == obj && !data.window_proxy.get().is_null() => data.window_proxy.get(),
++        _ => obj,
++    }
++}
++
++pub unsafe fn ToWindowIfWindowProxy(obj: *mut JSObject) -> *mut JSObject {
++    // SAFETY: forwarded.
++    if unsafe { IsWindowProxy(obj) } {
++        if let Some(class_box) = proxy_box(obj) {
++            let window = class_box.private.get();
++            if window.is_object() {
++                return window.to_object();
++            }
++        }
++    }
++    obj
++}
++
++/// SpiderMonkey swaps `origobj`'s identity onto `target`. V8 objects cannot swap identity,
++/// so `origobj` takes `target`'s proxy state (handler, private, slots) and keeps its own
++/// identity, which is what callers observe; `origobj` is returned.
++pub unsafe fn JS_TransplantObject(_cx: *mut JSContext, origobj: HandleObject, target: HandleObject) -> *mut JSObject {
++    let (original, replacement) = (origobj.get(), target.get());
++    let (Some(original_box), Some(replacement_box)) = (proxy_box(original), proxy_box(replacement)) else {
++        return std::ptr::null_mut();
++    };
++    original_box.proxy.set(replacement_box.proxy.get());
++    original_box.private.set(replacement_box.private.get());
++    original_box.lazy_proto.set(replacement_box.lazy_proto.get());
++    original_box.copy_slots_from(replacement_box);
++    original
++}
++
++// --- Proxy class statics -------------------------------------------------------------------
++//
++// SpiderMonkey's proxy classes use these; roves-js proxies take their behaviour from the
++// handler, so they are empty.
++
++pub static ProxyClassOps: crate::jsapi::JSClassOps = crate::jsapi::JSClassOps {
++    addProperty: None,
++    delProperty: None,
++    enumerate: None,
++    newEnumerate: None,
++    resolve: None,
++    mayResolve: None,
++    finalize: None,
++    call: None,
++    construct: None,
++    trace: None,
++};
++
++pub static ProxyClassExtension: crate::jsapi::ClassExtension = crate::jsapi::ClassExtension { _private: [] };
++
++pub static ProxyObjectOps: crate::jsapi::ObjectOps = crate::jsapi::ObjectOps {
++    lookupProperty: None,
++    defineProperty: None,
++    hasProperty: None,
++    getProperty: None,
++    setProperty: None,
++    getOwnPropertyDescriptor: None,
++    deleteProperty: None,
++    getElements: None,
++    funToString: None,
++};
+diff --git a/components/roves-js/src/realm_impl.rs b/components/roves-js/src/realm_impl.rs
+index c2874e245c2..e944dee5397 100644
+--- a/components/roves-js/src/realm_impl.rs
++++ b/components/roves-js/src/realm_impl.rs
+@@ -20,6 +20,8 @@ pub(crate) struct RealmData {
+     /// plain global of the runtime's initial realm.
+     pub(crate) global: Cell<*mut JSObject>,
+     pub(crate) principals: Cell<*mut JSPrincipals>,
++    /// The realm's window proxy (`SetWindowProxy`), for a Window global.
++    pub(crate) window_proxy: Cell<*mut JSObject>,
+ }
+ 
+ /// Registers a new realm for `context` with its `global` cell (null: the context's plain
+@@ -30,8 +32,14 @@ pub(crate) fn register_realm(cx: &JSContext, scope: &mut v8::PinScope, context:
+         context: v8::Global::new(scope, context),
+         global: Cell::new(global),
+         principals: Cell::new(std::ptr::null_mut()),
++        window_proxy: Cell::new(std::ptr::null_mut()),
+     });
+     let pointer = &*data as *const RealmData as *mut c_void;
++    // SpiderMonkey has no access checks between realms (Servo checks cross-origin access
++    // itself), so all of a runtime's contexts share one security token.
++    // Tokens compare by identity: an internalized string is one object per isolate.
++    let token = v8::String::new_from_utf8(scope, b"roves-js runtime", v8::NewStringType::Internalized).expect("a short string");
++    context.set_security_token(token.into());
+     // SAFETY: the realm data lives as long as the runtime (it owns the context).
+     unsafe { context.set_aligned_pointer_in_embedder_data(REALM_SLOT, pointer) };
+     cx.realms.borrow_mut().push(data);
+@@ -121,6 +129,7 @@ pub(crate) fn trace_realms(cx: &JSContext, visitor: &mut v8::cppgc::Visitor) {
+     let Ok(realms) = cx.realms.try_borrow() else { return };
+     for realm in realms.iter() {
+         crate::cell::trace_cell(realm.global.get() as *mut c_void, visitor);
++        crate::cell::trace_cell(realm.window_proxy.get() as *mut c_void, visitor);
+     }
+ }
+ 
+diff --git a/components/roves-js/src/runtime_impl.rs b/components/roves-js/src/runtime_impl.rs
+index 4ee3e67e981..07879377bb1 100644
+--- a/components/roves-js/src/runtime_impl.rs
++++ b/components/roves-js/src/runtime_impl.rs
+@@ -301,3 +301,19 @@ pub unsafe fn RegisterScriptEnvironmentPreparer(cx: *mut JSContext, hook: Invoke
+ pub unsafe fn RunScriptEnvironmentPreparerClosure(_cx: *mut JSContext, _closure: *mut ScriptEnvironmentPreparer_Closure) -> bool {
+     false
+ }
++
++// --- Stream consumers ------------------------------------------------------------------------
++//
++// SpiderMonkey hands streamed WebAssembly sources to the embedder's consume-stream callback,
++// which feeds them back through these. V8's WebAssembly streaming is not wired, so the
++// callback is never called and these are never reached with a live consumer.
++
++pub unsafe fn StreamConsumerConsumeChunk(_sc: *mut crate::jsapi::StreamConsumer, _begin: *const u8, _length: usize) -> bool {
++    false
++}
++
++pub unsafe fn StreamConsumerStreamEnd(_sc: *mut crate::jsapi::StreamConsumer) {}
++
++pub unsafe fn StreamConsumerStreamError(_sc: *mut crate::jsapi::StreamConsumer, _error_code: usize) {}
++
++pub unsafe fn StreamConsumerNoteResponseURLs(_sc: *mut crate::jsapi::StreamConsumer, _maybe_url: *const c_char, _maybe_source_map_url: *const c_char) {}
+diff --git a/components/roves-js/src/rust.rs b/components/roves-js/src/rust.rs
+index 9f716fcb2a7..0c73ea4d9e5 100644
+--- a/components/roves-js/src/rust.rs
++++ b/components/roves-js/src/rust.rs
+@@ -874,3 +874,29 @@ macro_rules! capture_stack {
+         let $name = $crate::rust::CapturedJSStack::new($cx, __obj, None);
+     }
+ }
++
++/// An owned structured-clone buffer (mozjs's `JSAutoStructuredCloneBufferWrapper`).
++pub struct JSAutoStructuredCloneBufferWrapper {
++    ptr: std::ptr::NonNull<crate::jsapi::JSAutoStructuredCloneBuffer>,
++}
++
++impl JSAutoStructuredCloneBufferWrapper {
++    /// # Safety
++    /// `callbacks` must be valid (or null) for the buffer's lifetime.
++    pub unsafe fn new(scope: crate::jsapi::StructuredCloneScope, callbacks: *const crate::jsapi::JSStructuredCloneCallbacks) -> Self {
++        // SAFETY: forwarded.
++        let raw_ptr = unsafe { crate::structured_clone_impl::NewJSAutoStructuredCloneBuffer(scope, callbacks) };
++        Self { ptr: std::ptr::NonNull::new(raw_ptr).unwrap() }
++    }
++
++    pub fn as_raw_ptr(&self) -> *mut crate::jsapi::JSAutoStructuredCloneBuffer {
++        self.ptr.as_ptr()
++    }
++}
++
++impl Drop for JSAutoStructuredCloneBufferWrapper {
++    fn drop(&mut self) {
++        // SAFETY: created by `NewJSAutoStructuredCloneBuffer`.
++        unsafe { crate::structured_clone_impl::DeleteJSAutoStructuredCloneBuffer(self.ptr.as_ptr()) }
++    }
++}
+diff --git a/components/roves-js/src/structured_clone_impl.rs b/components/roves-js/src/structured_clone_impl.rs
+new file mode 100644
+index 00000000000..5c31fcc9221
+--- /dev/null
++++ b/components/roves-js/src/structured_clone_impl.rs
+@@ -0,0 +1,461 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! Structured clone on V8's `ValueSerializer`/`ValueDeserializer`.
++//!
++//! The stream is V8's header, then a transfer table, then the value:
++//! - transferred `ArrayBuffer`s are copied into the table and detached (SpiderMonkey's
++//!   behaviour for data that crosses processes), then handed to V8 by transfer id;
++//! - other transferred objects go through the embedder's `writeTransfer`/`readTransfer`
++//!   callbacks, and the value refers to them by index;
++//! - embedder (DOM) objects are V8 API objects, which V8 treats as host objects: the
++//!   embedder's `write`/`read` callbacks serialize them through a writer/reader that points
++//!   at V8's serializer (`JS_WriteUint32Pair`, `JS_ReadBytes`, ...).
++//!
++//! As in SpiderMonkey, a failing embedder callback or an unclonable value reports through
++//! `reportError` and leaves no pending exception.
++
++use std::cell::{Cell, RefCell};
++use std::ffi::{CString, c_void};
++
++use crate::jsapi::{
++    CloneDataPolicy, HandleValue, JSContext, JSObject, JSStructuredCloneCallbacks, JSStructuredCloneReader,
++    JSStructuredCloneWriter, MutableHandleValue, StructuredCloneScope, TransferableOwnership,
++};
++use crate::jsval::{UndefinedValue, from_v8};
++use v8::{ValueDeserializerHelper, ValueSerializerHelper};
++
++/// Serialized structured-clone data (SpiderMonkey's `JSStructuredCloneData`).
++#[derive(Default)]
++pub struct JSStructuredCloneData {
++    pub(crate) bytes: Vec<u8>,
++}
++
++/// SpiderMonkey's `JSAutoStructuredCloneBuffer`: data plus the version.
++pub struct JSAutoStructuredCloneBuffer {
++    pub data_: JSStructuredCloneData,
++    pub version_: u32,
++}
++
++pub unsafe fn NewJSAutoStructuredCloneBuffer(_scope: StructuredCloneScope, _callbacks: *const JSStructuredCloneCallbacks) -> *mut JSAutoStructuredCloneBuffer {
++    Box::into_raw(Box::new(JSAutoStructuredCloneBuffer { data_: JSStructuredCloneData::default(), version_: crate::jsapi::JS_STRUCTURED_CLONE_VERSION }))
++}
++
++pub unsafe fn DeleteJSAutoStructuredCloneBuffer(buffer: *mut JSAutoStructuredCloneBuffer) {
++    // SAFETY: buffers come from `NewJSAutoStructuredCloneBuffer`.
++    drop(unsafe { Box::from_raw(buffer) });
++}
++
++pub unsafe fn GetLengthOfJSStructuredCloneData(data: *mut JSStructuredCloneData) -> usize {
++    // SAFETY: callers pass valid data.
++    unsafe { &*data }.bytes.len()
++}
++
++pub unsafe fn CopyJSStructuredCloneData(src: *mut JSStructuredCloneData, dest: *mut u8) {
++    // SAFETY: `dest` has room for the data (`GetLengthOfJSStructuredCloneData`).
++    let bytes = unsafe { &(*src).bytes };
++    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), dest, bytes.len()) };
++}
++
++pub unsafe fn WriteBytesToJSStructuredCloneData(src: *const u8, len: usize, dest: *mut JSStructuredCloneData) -> bool {
++    // SAFETY: callers pass `len` readable bytes and valid data.
++    let bytes = if len == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(src, len) } };
++    unsafe { &mut *dest }.bytes.extend_from_slice(bytes);
++    true
++}
++
++// Markers of embedder objects in the stream.
++const HOST_OBJECT: u32 = 0;
++const HOST_TRANSFERRED: u32 = 1;
++// Kinds of transfer-table records.
++const TRANSFER_ARRAY_BUFFER: u32 = 0;
++const TRANSFER_HOST: u32 = 1;
++
++/// What `JS_Write*` reach through a `*mut JSStructuredCloneWriter`.
++struct Writer {
++    helper: *const dyn v8::ValueSerializerHelper,
++}
++
++/// What `JS_Read*` reach through a `*mut JSStructuredCloneReader`.
++struct Reader {
++    helper: *const dyn v8::ValueDeserializerHelper,
++}
++
++pub unsafe fn JS_WriteUint32Pair(w: *mut JSStructuredCloneWriter, tag: u32, data: u32) -> bool {
++    // SAFETY: writers are only handed out during a host-object write.
++    let helper = unsafe { &*(*(w as *const Writer)).helper };
++    helper.write_uint32(tag);
++    helper.write_uint32(data);
++    true
++}
++
++pub unsafe fn JS_WriteBytes(w: *mut JSStructuredCloneWriter, p: *const c_void, len: usize) -> bool {
++    // SAFETY: as above; callers pass `len` readable bytes.
++    let helper = unsafe { &*(*(w as *const Writer)).helper };
++    helper.write_uint64(len as u64);
++    if len > 0 {
++        helper.write_raw_bytes(unsafe { std::slice::from_raw_parts(p as *const u8, len) });
++    }
++    true
++}
++
++pub unsafe fn JS_ReadUint32Pair(r: *mut JSStructuredCloneReader, p1: *mut u32, p2: *mut u32) -> bool {
++    // SAFETY: readers are only handed out during a host-object read; valid out pointers.
++    let helper = unsafe { &*(*(r as *const Reader)).helper };
++    unsafe { helper.read_uint32(&mut *p1) && helper.read_uint32(&mut *p2) }
++}
++
++pub unsafe fn JS_ReadBytes(r: *mut JSStructuredCloneReader, p: *mut c_void, len: usize) -> bool {
++    // SAFETY: as above; `p` has room for `len` bytes.
++    let helper = unsafe { &*(*(r as *const Reader)).helper };
++    let mut written = 0u64;
++    if !helper.read_uint64(&mut written) || written as usize != len {
++        return false;
++    }
++    if len == 0 {
++        return true;
++    }
++    match helper.read_raw_bytes(len) {
++        Some(bytes) => {
++            unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), p as *mut u8, len) };
++            true
++        },
++        None => false,
++    }
++}
++
++fn raw_cx() -> *mut JSContext {
++    JSContext::current() as *const JSContext as *mut JSContext
++}
++
++/// The serializer delegate: embedder objects through the embedder's callbacks.
++struct SerializerDelegate {
++    callbacks: *const JSStructuredCloneCallbacks,
++    closure: *mut c_void,
++    /// Host objects being transferred (by identity), with their table index.
++    transferred: Vec<v8::Global<v8::Object>>,
++    /// Set when a failure was reported to the embedder (no exception should remain).
++    reported: Cell<bool>,
++}
++
++impl SerializerDelegate {
++    fn report(&self, error: u32, message: &str) {
++        // SAFETY: callers pass valid callbacks (or null).
++        if let Some(report) = unsafe { self.callbacks.as_ref() }.and_then(|callbacks| callbacks.reportError) {
++            let message = CString::new(message.replace('\0', "")).unwrap_or_default();
++            // SAFETY: SpiderMonkey's error-callback contract.
++            unsafe { report(raw_cx(), error, self.closure, message.as_ptr()) };
++            self.reported.set(true);
++        }
++    }
++}
++
++fn throw_marker(scope: &mut v8::PinScope) {
++    let message = v8::String::new(scope, "DataCloneError").expect("a short string");
++    let error = v8::Exception::error(scope, message);
++    scope.throw_exception(error);
++}
++
++impl v8::ValueSerializerImpl for SerializerDelegate {
++    fn throw_data_clone_error<'s>(&self, scope: &mut v8::PinScope<'s, '_>, message: v8::Local<'s, v8::String>) {
++        let text = message.to_rust_string_lossy(scope);
++        self.report(crate::jsapi::JS_SCERR_UNSUPPORTED_TYPE, &text);
++        let error = v8::Exception::error(scope, message);
++        scope.throw_exception(error);
++    }
++
++    fn write_host_object<'s>(
++        &self,
++        scope: &mut v8::PinScope<'s, '_>,
++        object: v8::Local<'s, v8::Object>,
++        value_serializer: &dyn v8::ValueSerializerHelper,
++    ) -> Option<bool> {
++        if let Some(index) = self.transferred.iter().position(|transferred| v8::Local::new(scope, transferred) == object) {
++            value_serializer.write_uint32(HOST_TRANSFERRED);
++            value_serializer.write_uint32(index as u32);
++            return Some(true);
++        }
++        // SAFETY: callers pass valid callbacks (or null).
++        let Some(write) = (unsafe { self.callbacks.as_ref() }).and_then(|callbacks| callbacks.write) else {
++            self.report(crate::jsapi::JS_SCERR_UNSUPPORTED_TYPE, "object is not cloneable");
++            throw_marker(scope);
++            return None;
++        };
++        value_serializer.write_uint32(HOST_OBJECT);
++        // The helper outlives this call; the writer is only used during it.
++        // SAFETY: lifetime erasure of a reference that stays valid for the call.
++        let helper: *const dyn v8::ValueSerializerHelper = unsafe { std::mem::transmute(value_serializer as *const dyn v8::ValueSerializerHelper) };
++        let writer = Writer { helper };
++        let cx = raw_cx();
++        let obj = from_v8(scope, object.into()).to_object();
++        crate::rooted!(in(cx) let obj = obj);
++        let mut same_process = false;
++        // SAFETY: SpiderMonkey's write-callback contract.
++        let ok = unsafe { write(cx, &writer as *const Writer as *mut JSStructuredCloneWriter, obj.handle().into(), &mut same_process, self.closure) };
++        if !ok {
++            self.reported.set(true);
++            throw_marker(scope);
++            return None;
++        }
++        Some(true)
++    }
++}
++
++/// Serializes `v` (transferring `transferable`'s objects) into `data`.
++pub unsafe fn JS_WriteStructuredClone(
++    cx: *mut JSContext,
++    v: HandleValue,
++    data: *mut JSStructuredCloneData,
++    _scope: StructuredCloneScope,
++    _policy: *const CloneDataPolicy,
++    callbacks: *const JSStructuredCloneCallbacks,
++    closure: *mut c_void,
++    transferable: HandleValue,
++) -> bool {
++    // SAFETY: callers pass a live context.
++    let raw = unsafe { &*cx };
++    let (v, transferable) = (v.get(), transferable.get());
++    let mut reported = false;
++    let result = raw.catching(|scope| {
++        // The transfer list: buffers and host objects.
++        let mut buffers = Vec::new();
++        let mut hosts = Vec::new();
++        if transferable.is_object() {
++            // SAFETY: a rooted value.
++            let list = unsafe { crate::jsval::to_v8(scope, transferable) };
++            let list = v8::Local::<v8::Object>::try_from(list).ok()?;
++            let length_key = v8::String::new(scope, "length")?;
++            let length = list.get(scope, length_key.into())?.uint32_value(scope)?;
++            for index in 0..length {
++                let item = list.get_index(scope, index)?;
++                if let Ok(buffer) = v8::Local::<v8::ArrayBuffer>::try_from(item) {
++                    buffers.push(buffer);
++                } else if let Ok(object) = v8::Local::<v8::Object>::try_from(item) {
++                    hosts.push(object);
++                } else {
++                    crate::native::throw_type_error(scope, "transferable is not an object");
++                    return None;
++                }
++            }
++        }
++        let delegate = Box::new(SerializerDelegate {
++            callbacks,
++            closure,
++            transferred: hosts.iter().map(|host| v8::Global::new(scope, *host)).collect(),
++            reported: Cell::new(false),
++        });
++        let delegate_pointer = &*delegate as *const SerializerDelegate;
++        let serializer = v8::ValueSerializer::new(scope, delegate);
++        serializer.write_header();
++        // The transfer table.
++        serializer.write_uint32((buffers.len() + hosts.len()) as u32);
++        for (index, buffer) in buffers.iter().enumerate() {
++            serializer.write_uint32(TRANSFER_ARRAY_BUFFER);
++            let length = buffer.byte_length();
++            serializer.write_uint64(length as u64);
++            if length > 0 {
++                let bytes = buffer.data()?.as_ptr() as *const u8;
++                // SAFETY: the buffer holds `length` bytes.
++                serializer.write_raw_bytes(unsafe { std::slice::from_raw_parts(bytes, length) });
++            }
++            serializer.transfer_array_buffer(index as u32, *buffer);
++        }
++        // SAFETY: callers pass valid callbacks (or null).
++        let callbacks_ref = unsafe { callbacks.as_ref() };
++        for host in &hosts {
++            let Some(write_transfer) = callbacks_ref.and_then(|callbacks| callbacks.writeTransfer) else {
++                // SAFETY: the delegate lives inside the serializer.
++                unsafe { &*delegate_pointer }.report(crate::jsapi::JS_SCERR_TRANSFERABLE, "object is not transferable");
++                throw_marker(scope);
++                return None;
++            };
++            let obj = from_v8(scope, (*host).into()).to_object();
++            crate::rooted!(in(cx) let obj = obj);
++            let mut tag = 0u32;
++            let mut ownership = TransferableOwnership::SCTAG_TMO_UNFILLED;
++            let mut content = std::ptr::null_mut();
++            let mut extra = 0u64;
++            // SAFETY: SpiderMonkey's transfer-callback contract.
++            if !unsafe { write_transfer(cx, obj.handle().into(), closure, &mut tag, &mut ownership, &mut content, &mut extra) } {
++                unsafe { &*delegate_pointer }.reported.set(true);
++                throw_marker(scope);
++                return None;
++            }
++            serializer.write_uint32(TRANSFER_HOST);
++            serializer.write_uint32(tag);
++            serializer.write_uint32(ownership as u32);
++            serializer.write_uint64(content as u64);
++            serializer.write_uint64(extra);
++        }
++        // SAFETY: a rooted value.
++        let value = unsafe { crate::jsval::to_v8(scope, v) };
++        let context = scope.get_current_context();
++        let written = serializer.write_value(context, value);
++        // SAFETY: as above.
++        reported = unsafe { &*delegate_pointer }.reported.get();
++        written?;
++        for buffer in &buffers {
++            buffer.detach(None)?;
++        }
++        Some(serializer.release())
++    });
++    match result {
++        Some(bytes) => {
++            // SAFETY: callers pass valid data.
++            unsafe { &mut *data }.bytes = bytes;
++            true
++        },
++        None => {
++            if reported {
++                // SpiderMonkey reports through the callback without a pending exception.
++                raw.pending_exception.borrow_mut().take();
++            }
++            false
++        },
++    }
++}
++
++/// The deserializer delegate: transferred and embedder objects.
++struct DeserializerDelegate {
++    callbacks: *const JSStructuredCloneCallbacks,
++    policy: *const CloneDataPolicy,
++    closure: *mut c_void,
++    transferred: RefCell<Vec<v8::Global<v8::Object>>>,
++    /// Set when an embedder callback failed (no exception should remain).
++    embedder_failed: Cell<bool>,
++}
++
++impl v8::ValueDeserializerImpl for DeserializerDelegate {
++    fn read_host_object<'s>(&self, scope: &mut v8::PinScope<'s, '_>, value_deserializer: &dyn v8::ValueDeserializerHelper) -> Option<v8::Local<'s, v8::Object>> {
++        let mut kind = 0;
++        if !value_deserializer.read_uint32(&mut kind) {
++            return None;
++        }
++        if kind == HOST_TRANSFERRED {
++            let mut index = 0;
++            value_deserializer.read_uint32(&mut index).then_some(())?;
++            let transferred = self.transferred.borrow();
++            return transferred.get(index as usize).map(|object| v8::Local::new(scope, object));
++        }
++        let (mut tag, mut data) = (0, 0);
++        (value_deserializer.read_uint32(&mut tag) && value_deserializer.read_uint32(&mut data)).then_some(())?;
++        // SAFETY: callers pass valid callbacks (or null).
++        let read = unsafe { self.callbacks.as_ref() }.and_then(|callbacks| callbacks.read)?;
++        // SAFETY: lifetime erasure of a reference that stays valid for the call.
++        let helper: *const dyn v8::ValueDeserializerHelper = unsafe { std::mem::transmute(value_deserializer as *const dyn v8::ValueDeserializerHelper) };
++        let reader = Reader { helper };
++        // SAFETY: SpiderMonkey's read-callback contract.
++        let object = unsafe { read(raw_cx(), &reader as *const Reader as *mut JSStructuredCloneReader, self.policy, tag, data, self.closure) };
++        if object.is_null() {
++            self.embedder_failed.set(true);
++            throw_marker(scope);
++            return None;
++        }
++        // SAFETY: a live object returned by the embedder.
++        let object = unsafe { crate::cell::cell_value(scope, object as *mut c_void) };
++        v8::Local::<v8::Object>::try_from(object).ok()
++    }
++}
++
++/// Deserializes `data` into `vp` in the current realm.
++pub unsafe fn JS_ReadStructuredClone(
++    cx: *mut JSContext,
++    data: *const JSStructuredCloneData,
++    _version: u32,
++    _scope: StructuredCloneScope,
++    mut vp: MutableHandleValue,
++    policy: *const CloneDataPolicy,
++    callbacks: *const JSStructuredCloneCallbacks,
++    closure: *mut c_void,
++) -> bool {
++    // SAFETY: callers pass a live context and valid data.
++    let raw = unsafe { &*cx };
++    let bytes = unsafe { &(*data).bytes };
++    let embedder_failed = Cell::new(false);
++    let result = raw.catching(|scope| {
++        let delegate = Box::new(DeserializerDelegate { callbacks, policy, closure, transferred: RefCell::new(Vec::new()), embedder_failed: Cell::new(false) });
++        let delegate_pointer = &*delegate as *const DeserializerDelegate;
++        let deserializer = v8::ValueDeserializer::new(scope, delegate, bytes);
++        let context = scope.get_current_context();
++        deserializer.read_header(context)?.then_some(())?;
++        let mut count = 0;
++        deserializer.read_uint32(&mut count).then_some(())?;
++        let mut buffer_index = 0u32;
++        for _ in 0..count {
++            let mut kind = 0;
++            deserializer.read_uint32(&mut kind).then_some(())?;
++            if kind == TRANSFER_ARRAY_BUFFER {
++                let mut length = 0u64;
++                deserializer.read_uint64(&mut length).then_some(())?;
++                let buffer = v8::ArrayBuffer::new(scope, length as usize);
++                if length > 0 {
++                    let source = deserializer.read_raw_bytes(length as usize)?;
++                    let target = buffer.data()?.as_ptr() as *mut u8;
++                    // SAFETY: both hold `length` bytes.
++                    unsafe { std::ptr::copy_nonoverlapping(source.as_ptr(), target, length as usize) };
++                }
++                deserializer.transfer_array_buffer(buffer_index, buffer);
++                buffer_index += 1;
++                continue;
++            }
++            let (mut tag, mut ownership) = (0u32, 0u32);
++            let (mut content, mut extra) = (0u64, 0u64);
++            (deserializer.read_uint32(&mut tag) &&
++                deserializer.read_uint32(&mut ownership) &&
++                deserializer.read_uint64(&mut content) &&
++                deserializer.read_uint64(&mut extra))
++                .then_some(())?;
++            // SAFETY: callers pass valid callbacks (or null).
++            let read_transfer = unsafe { callbacks.as_ref() }.and_then(|callbacks| callbacks.readTransfer)?;
++            crate::rooted!(in(cx) let mut object = std::ptr::null_mut::<JSObject>());
++            let helper: &dyn v8::ValueDeserializerHelper = &deserializer;
++            // SAFETY: lifetime erasure of a reference that stays valid for the call.
++            let reader = Reader { helper: unsafe { std::mem::transmute::<&dyn v8::ValueDeserializerHelper, *const dyn v8::ValueDeserializerHelper>(helper) } };
++            // SAFETY: SpiderMonkey's transfer-read contract.
++            let ok = unsafe {
++                read_transfer(
++                    cx,
++                    &reader as *const Reader as *mut JSStructuredCloneReader,
++                    policy,
++                    tag,
++                    content as *mut c_void,
++                    extra,
++                    closure,
++                    object.handle_mut().into(),
++                )
++            };
++            if !ok || object.get().is_null() {
++                embedder_failed.set(true);
++                throw_marker(scope);
++                return None;
++            }
++            // SAFETY: a live, rooted object.
++            let local = unsafe { crate::cell::cell_value(scope, object.get() as *mut c_void) };
++            let local = v8::Local::<v8::Object>::try_from(local).ok()?;
++            // SAFETY: the delegate lives inside the deserializer.
++            unsafe { &*delegate_pointer }.transferred.borrow_mut().push(v8::Global::new(scope, local));
++        }
++        let value = deserializer.read_value(context);
++        // SAFETY: the delegate lives inside the deserializer.
++        if unsafe { &*delegate_pointer }.embedder_failed.get() {
++            embedder_failed.set(true);
++        }
++        let value = value?;
++        Some(from_v8(scope, value))
++    });
++    match result {
++        Some(value) => {
++            vp.set(value);
++            true
++        },
++        None => {
++            if embedder_failed.get() {
++                // SpiderMonkey leaves no exception when an embedder callback fails.
++                raw.pending_exception.borrow_mut().take();
++            }
++            vp.set(UndefinedValue());
++            false
++        },
++    }
++}
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 79219f4cfdd..f8df78a4d4e 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -1333,3 +1333,218 @@ mod modules {
+         assert_eq!(describe(&runtime, eval(&runtime, "typeof pending.then")), "function");
+     }
+ }
++
++mod structured_clone {
++    use std::cell::Cell;
++    use std::ffi::c_void;
++    use std::ptr;
++
++    use super::{describe, eval};
++    use crate::jsapi::*;
++    use crate::jsval::*;
++    use crate::glue::{CopyJSStructuredCloneData, GetLengthOfJSStructuredCloneData, WriteBytesToJSStructuredCloneData};
++    use crate::rust::{JSAutoStructuredCloneBufferWrapper, JSEngineHandle, Runtime};
++
++    static CLASS: JSClass = JSClass {
++        name: c"Thing".as_ptr(),
++        flags: 1 << crate::object::JSCLASS_RESERVED_SLOTS_SHIFT,
++        cOps: ptr::null(),
++        spec: ptr::null(),
++        ext: ptr::null(),
++        oOps: ptr::null(),
++    };
++
++    thread_local! {
++        static REPORTED: Cell<u32> = const { Cell::new(0) };
++    }
++
++    unsafe extern "C" fn write(_cx: *mut JSContext, w: *mut JSStructuredCloneWriter, obj: HandleObject, _same: *mut bool, _closure: *mut c_void) -> bool {
++        let mut slot = UndefinedValue();
++        unsafe { JS_GetReservedSlot(obj.get(), 0, &mut slot) };
++        unsafe { JS_WriteUint32Pair(w, 0xBEEF, slot.to_int32() as u32) && JS_WriteBytes(w, b"abc".as_ptr() as *const c_void, 3) }
++    }
++
++    unsafe extern "C" fn read(cx: *mut JSContext, r: *mut JSStructuredCloneReader, _policy: *const CloneDataPolicy, tag: u32, data: u32, _closure: *mut c_void) -> *mut JSObject {
++        assert_eq!(tag, 0xBEEF);
++        let mut bytes = [0u8; 3];
++        assert!(unsafe { JS_ReadBytes(r, bytes.as_mut_ptr() as *mut c_void, 3) });
++        assert_eq!(&bytes, b"abc");
++        let object = unsafe { JS_NewObject(cx, &CLASS) };
++        unsafe { JS_SetReservedSlot(object, 0, &Int32Value(data as i32 + 1)) };
++        object
++    }
++
++    unsafe extern "C" fn report(_cx: *mut JSContext, _error: u32, _closure: *mut c_void, _message: *const std::ffi::c_char) {
++        REPORTED.with(|count| count.set(count.get() + 1));
++    }
++
++    unsafe extern "C" fn write_transfer(
++        _cx: *mut JSContext,
++        _obj: Handle<*mut JSObject>,
++        _closure: *mut c_void,
++        tag: *mut u32,
++        ownership: *mut TransferableOwnership,
++        content: *mut *mut c_void,
++        extra: *mut u64,
++    ) -> bool {
++        unsafe {
++            *tag = 9;
++            *ownership = TransferableOwnership::SCTAG_TMO_CUSTOM;
++            *content = 0x1000 as *mut c_void;
++            *extra = 5;
++        }
++        true
++    }
++
++    unsafe extern "C" fn read_transfer(
++        cx: *mut JSContext,
++        _r: *mut JSStructuredCloneReader,
++        _policy: *const CloneDataPolicy,
++        tag: u32,
++        content: *mut c_void,
++        extra: u64,
++        _closure: *mut c_void,
++        mut out: MutableHandleObject,
++    ) -> bool {
++        assert_eq!((tag, content as usize, extra), (9, 0x1000, 5));
++        let object = unsafe { JS_NewObject(cx, &CLASS) };
++        unsafe { JS_SetReservedSlot(object, 0, &Int32Value(100)) };
++        out.set(object);
++        true
++    }
++
++    static CALLBACKS: JSStructuredCloneCallbacks = JSStructuredCloneCallbacks {
++        read: Some(read),
++        write: Some(write),
++        reportError: Some(report),
++        readTransfer: Some(read_transfer),
++        writeTransfer: Some(write_transfer),
++        freeTransfer: None,
++        canTransfer: None,
++        sabCloned: None,
++    };
++
++    fn slot(object: *mut JSObject) -> i32 {
++        let mut value = UndefinedValue();
++        unsafe { JS_GetReservedSlot(object, 0, &mut value) };
++        value.to_int32()
++    }
++
++    #[test]
++    fn structured_clone_round_trips_values_host_objects_and_transfers() {
++        let runtime = Runtime::new(JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        rooted!(in(cx) let thing = unsafe { JS_NewObject(cx, &CLASS) });
++        unsafe { JS_SetReservedSlot(thing.get(), 0, &Int32Value(41)) };
++        rooted!(in(cx) let port = unsafe { JS_NewObject(cx, &CLASS) });
++        rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
++        for (name, object) in [(c"thing", thing.get()), (c"port", port.get())] {
++            rooted!(in(cx) let value = ObjectValue(object));
++            assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), name.as_ptr(), value.handle().into_handle()) });
++        }
++        rooted!(in(cx) let message = eval(
++            &runtime,
++            "globalThis.buffer = new Uint8Array([1, 2, 3]).buffer; \
++             ({ text: 'hi', list: [1, { deep: true }], map: new Map([['k', 2]]), when: new Date(5), thing, port, buffer })",
++        ));
++        rooted!(in(cx) let transfer = eval(&runtime, "[buffer, port]"));
++        let policy = CloneDataPolicy { allowIntraClusterClonableSharedObjects_: false, allowSharedMemoryObjects_: false };
++        let buffer = unsafe { JSAutoStructuredCloneBufferWrapper::new(StructuredCloneScope::DifferentProcess, &CALLBACKS) };
++        let data = unsafe { &mut (*buffer.as_raw_ptr()).data_ };
++        assert!(unsafe {
++            JS_WriteStructuredClone(cx, message.handle().into(), data, StructuredCloneScope::DifferentProcess, &policy, &CALLBACKS, ptr::null_mut(), transfer.handle().into())
++        });
++        assert!(eval(&runtime, "buffer.byteLength === 0").to_boolean(), "transferred buffers are detached");
++
++        // Bytes only: as if they crossed a process boundary.
++        let mut bytes = vec![0u8; unsafe { GetLengthOfJSStructuredCloneData(data) }];
++        unsafe { CopyJSStructuredCloneData(data, bytes.as_mut_ptr()) };
++        let received = unsafe { JSAutoStructuredCloneBufferWrapper::new(StructuredCloneScope::DifferentProcess, &CALLBACKS) };
++        let received_data = unsafe { &mut (*received.as_raw_ptr()).data_ };
++        assert!(unsafe { WriteBytesToJSStructuredCloneData(bytes.as_ptr(), bytes.len(), received_data) });
++        rooted!(in(cx) let mut copy = UndefinedValue());
++        assert!(unsafe {
++            JS_ReadStructuredClone(cx, received_data, JS_STRUCTURED_CLONE_VERSION, StructuredCloneScope::DifferentProcess, copy.handle_mut().into(), &policy, &CALLBACKS, ptr::null_mut())
++        });
++        rooted!(in(cx) let copy_value = copy.get());
++        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"copy".as_ptr(), copy_value.handle().into_handle()) });
++        assert_eq!(describe(&runtime, eval(&runtime, "copy.text + copy.list[1].deep + copy.map.get('k') + copy.when.getTime()")), "hitrue25");
++        assert_eq!(describe(&runtime, eval(&runtime, "Array.from(new Uint8Array(copy.buffer)).join()")), "1,2,3");
++        assert_eq!(slot(eval(&runtime, "copy.thing").to_object()), 42, "host objects go through the read/write callbacks");
++        assert_eq!(slot(eval(&runtime, "copy.port").to_object()), 100, "transferred host objects come from readTransfer");
++        assert!(eval(&runtime, "copy.thing !== thing").to_boolean());
++
++        // Unclonable values report through the callback without a pending exception.
++        rooted!(in(cx) let bad = eval(&runtime, "({ f() {} })"));
++        rooted!(in(cx) let no_transfer = UndefinedValue());
++        let failing = unsafe { JSAutoStructuredCloneBufferWrapper::new(StructuredCloneScope::DifferentProcess, &CALLBACKS) };
++        let failing_data = unsafe { &mut (*failing.as_raw_ptr()).data_ };
++        assert!(!unsafe {
++            JS_WriteStructuredClone(cx, bad.handle().into(), failing_data, StructuredCloneScope::DifferentProcess, &policy, &CALLBACKS, ptr::null_mut(), no_transfer.handle().into())
++        });
++        assert_eq!(REPORTED.with(Cell::get), 1);
++        assert!(!unsafe { crate::api::JS_IsExceptionPending(cx) });
++    }
++}
++
++mod window_proxies {
++    use std::ptr;
++
++    use super::{describe, eval};
++    use crate::glue::*;
++    use crate::jsapi::*;
++    use crate::jsval::*;
++    use crate::rust::{JSEngineHandle, Runtime};
++
++    static WINDOW_CLASS: JSClass = JSClass {
++        name: c"Window".as_ptr(),
++        flags: crate::object::JSCLASS_IS_GLOBAL | (crate::object::JSCLASS_GLOBAL_SLOT_COUNT << crate::object::JSCLASS_RESERVED_SLOTS_SHIFT),
++        cOps: ptr::null(),
++        spec: ptr::null(),
++        ext: ptr::null(),
++        oOps: ptr::null(),
++    };
++
++    #[test]
++    fn window_proxies_forward_outerize_and_transplant() {
++        let runtime = Runtime::new(JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        rooted!(in(cx) let window = unsafe {
++            JS_NewGlobalObject(cx, &WINDOW_CLASS, ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, ptr::null())
++        });
++        let old = unsafe { EnterRealm(cx, window.get()) };
++        eval(&runtime, "globalThis.answer = 42; globalThis.greet = function () { return 'hi'; }");
++        unsafe { LeaveRealm(cx, old) };
++
++        // SAFETY: an all-`None` trap table: every operation forwards to the window.
++        let traps: ProxyTraps = unsafe { std::mem::zeroed() };
++        let handler = unsafe { CreateWrapperProxyHandler(&traps) };
++        rooted!(in(cx) let proxy = unsafe { NewWindowProxy(cx, window.handle().into(), handler) });
++        assert!(!proxy.get().is_null());
++        assert!(unsafe { IsWindowProxy(proxy.get()) });
++        assert_eq!(unsafe { ToWindowIfWindowProxy(proxy.get()) }, window.get());
++        unsafe { SetWindowProxy(cx, window.handle().into(), proxy.handle().into()) };
++        assert!(unsafe { IsWindowSlow(window.get()) });
++        assert_eq!(unsafe { ToWindowProxyIfWindowSlow(window.get()) }, proxy.get());
++
++        rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
++        rooted!(in(cx) let proxy_value = ObjectValue(proxy.get()));
++        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"w".as_ptr(), proxy_value.handle().into_handle()) });
++        assert_eq!(eval(&runtime, "w.answer").to_int32(), 42);
++        assert_eq!(describe(&runtime, eval(&runtime, "w.greet()")), "hi");
++        assert_eq!(eval(&runtime, "w.added = 7; w.added").to_int32(), 7);
++        assert!(eval(&runtime, "'answer' in w && Object.keys(w).includes('added')").to_boolean());
++
++        // Transplanting keeps the proxy's identity and takes the new wrapped window.
++        rooted!(in(cx) let other_window = unsafe {
++            JS_NewGlobalObject(cx, &WINDOW_CLASS, ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, ptr::null())
++        });
++        let old = unsafe { EnterRealm(cx, other_window.get()) };
++        eval(&runtime, "globalThis.answer = 1");
++        unsafe { LeaveRealm(cx, old) };
++        rooted!(in(cx) let replacement = unsafe { NewWindowProxy(cx, other_window.handle().into(), handler) });
++        let transplanted = unsafe { JS_TransplantObject(cx, proxy.handle().into(), replacement.handle().into()) };
++        assert_eq!(transplanted, proxy.get());
++        assert_eq!(eval(&runtime, "w.answer").to_int32(), 1);
++    }
++}
+diff --git a/components/roves-js/src/values_impl.rs b/components/roves-js/src/values_impl.rs
+index f9c7b354183..2190f41865d 100644
+--- a/components/roves-js/src/values_impl.rs
++++ b/components/roves-js/src/values_impl.rs
+@@ -61,7 +61,7 @@ fn set_value(result: Option<JSVal>, mut out: MutableHandleValue) -> bool {
+ }
+ 
+ /// A function compiled once per runtime from `source` (helpers written in JS).
+-fn helper<'s>(scope: &mut v8::PinScope<'s, '_>, name: &'static str, source: &str) -> Option<v8::Local<'s, v8::Function>> {
++pub(crate) fn helper<'s>(scope: &mut v8::PinScope<'s, '_>, name: &'static str, source: &str) -> Option<v8::Local<'s, v8::Function>> {
+     let cx = JSContext::current();
+     if let Some(function) = cx.helpers.borrow().get(name) {
+         return Some(v8::Local::new(scope, function));
+diff --git a/components/roves-js/src/wrappers2.in.rs b/components/roves-js/src/wrappers2.in.rs
+index 4880f36f1f5..05873006a2a 100644
+--- a/components/roves-js/src/wrappers2.in.rs
++++ b/components/roves-js/src/wrappers2.in.rs
+@@ -1,5 +1,7 @@
+ // Generated by support/roves_js/gen_wrappers2.py from mozjs's wrapper lists:
+ // the entries roves-js implements. Do not edit by hand.
++wrap!(jsapi: pub fn SetWindowProxyClass(cx: &JSContext, clasp: *const JSClass));
++wrap!(jsapi: pub fn SetWindowProxy(cx: &JSContext, global: Handle<*mut JSObject>, windowProxy: Handle<*mut JSObject>));
+ wrap!(jsapi: pub fn AddRawValueRoot(cx: &JSContext, vp: *mut Value, name: *const ::std::os::raw::c_char) -> bool);
+ wrap!(jsapi: pub fn RemoveRawValueRoot(cx: &JSContext, vp: *mut Value));
+ wrap!(jsapi: pub fn RunJobs(cx: &mut JSContext));
+@@ -140,6 +142,7 @@ wrap!(jsapi: pub fn JS_ValueToSource(cx: &mut JSContext, v: Handle<Value>) -> *m
+ wrap!(jsapi: pub fn JS_TypeOfValue(cx: &JSContext, v: Handle<Value>) -> JSType);
+ wrap!(jsapi: pub fn JS_WrapObject(cx: &mut JSContext, objp: MutableHandleObject) -> bool);
+ wrap!(jsapi: pub fn JS_WrapValue(cx: &mut JSContext, vp: MutableHandleValue) -> bool);
++wrap!(jsapi: pub fn JS_TransplantObject(cx: &mut JSContext, origobj: HandleObject, target: HandleObject) -> *mut JSObject);
+ wrap!(jsapi: pub fn JS_ResolveStandardClass(cx: &mut JSContext, obj: HandleObject, id: HandleId, resolved: *mut bool) -> bool);
+ wrap!(jsapi: pub fn JS_NewEnumerateStandardClasses(cx: &mut JSContext, obj: HandleObject, properties: MutableHandleIdVector, enumerableOnly: bool) -> bool);
+ wrap!(jsapi: pub fn JS_IdToValue(cx: &JSContext, id: jsid, vp: MutableHandle<Value>) -> bool);
+@@ -161,6 +164,8 @@ wrap!(jsapi: pub fn JS_IsIdentifier(cx: &JSContext, str_: HandleString, isIdenti
+ wrap!(jsapi: pub fn JS_ExecuteScript(cx: &mut JSContext, script: Handle<*mut JSScript>, rval: MutableHandle<Value>) -> bool);
+ wrap!(jsapi: pub fn JS_Stringify(cx: &mut JSContext, value: MutableHandle<Value>, replacer: Handle<*mut JSObject>, space: Handle<Value>, callback: JSONWriteCallback, data: *mut ::std::os::raw::c_void) -> bool);
+ wrap!(jsapi: pub fn JS_ParseJSON(cx: &mut JSContext, chars: *const u16, len: u32, vp: MutableHandle<Value>) -> bool);
++wrap!(jsapi: pub fn JS_ReadStructuredClone(cx: &mut JSContext, data: *const JSStructuredCloneData, version: u32, scope: StructuredCloneScope, vp: MutableHandleValue, cloneDataPolicy: *const CloneDataPolicy, optionalCallbacks: *const JSStructuredCloneCallbacks, closure: *mut ::std::os::raw::c_void) -> bool);
++wrap!(jsapi: pub fn JS_WriteStructuredClone(cx: &mut JSContext, v: HandleValue, data: *mut JSStructuredCloneData, scope: StructuredCloneScope, cloneDataPolicy: *const CloneDataPolicy, optionalCallbacks: *const JSStructuredCloneCallbacks, closure: *mut ::std::os::raw::c_void, transferable: HandleValue) -> bool);
+ wrap!(jsapi: pub fn JS_NewInt8Array(cx: &mut JSContext, nelements: usize) -> *mut JSObject);
+ wrap!(jsapi: pub fn JS_NewInt8ArrayWithBuffer(cx: &mut JSContext, arrayBuffer: Handle<*mut JSObject>, byteOffset: usize, length: i64) -> *mut JSObject);
+ wrap!(jsapi: pub fn JS_NewUint8Array(cx: &mut JSContext, nelements: usize) -> *mut JSObject);
+@@ -198,6 +203,7 @@ wrap!(glue: pub fn CallJitSetterOp(info: *const JSJitInfo, cx: &mut JSContext, t
+ wrap!(glue: pub fn CallJitMethodOp(info: *const JSJitInfo, cx: &mut JSContext, thisObj: HandleObject, specializedThis: *mut ::std::os::raw::c_void, argc: u32, vp: *mut Value) -> bool);
+ wrap!(glue: pub fn NewCompileOptions(aCx: &JSContext, aFile: *const ::std::os::raw::c_char, aLine: ::std::os::raw::c_uint) -> *mut ReadOnlyCompileOptions);
+ wrap!(glue: pub fn NewProxyObject(aCx: &mut JSContext, aHandler: *const ::std::os::raw::c_void, aPriv: HandleValue, proto: *mut JSObject, aClass: *const JSClass, aLazyProto: bool) -> *mut JSObject);
++wrap!(glue: pub fn NewWindowProxy(aCx: &mut JSContext, aObj: HandleObject, aHandler: *const ::std::os::raw::c_void) -> *mut JSObject);
+ wrap!(glue: pub fn int_to_jsid(i: i32, id: MutableHandleId));
+ wrap!(glue: pub fn RUST_SYMBOL_TO_JSID(sym: *mut Symbol, id: MutableHandleId));
+ wrap!(glue: pub fn RUST_JSID_IS_VOID(id: HandleId) -> bool);
+diff --git a/support/roves_js/extract_jsapi_types.py b/support/roves_js/extract_jsapi_types.py
+index f3d78c43a6b..1d9510d67f2 100644
+--- a/support/roves_js/extract_jsapi_types.py
++++ b/support/roves_js/extract_jsapi_types.py
+@@ -14,6 +14,7 @@ import sys
+ EXTERNAL = {
+     "Value", "JSVal", "JSContext", "JSObject", "JSString", "Symbol", "BigInt", "JSFunction", "JSScript",
+     "Heap", "JS_CALLEE", "StackGCVector", "PropertyKey", "jsid", "Rooted",
++    "JSStructuredCloneData", "JSAutoStructuredCloneBuffer",
+ }
+ 
+ OPAQUE = {
+@@ -125,7 +126,7 @@ def main():
+         if name in emitted or name in EXTERNAL:
+             continue
+         if name in OPAQUE:
+-            emitted[name] = f"#[repr(C)]\n#[derive(Debug, Copy, Clone, PartialEq)]\npub struct {name} {{\n    _private: [u8; 0],\n}}"
++            emitted[name] = f"#[repr(C)]\n#[derive(Debug, Copy, Clone, PartialEq)]\npub struct {name} {{\n    pub _private: [u8; 0],\n}}"
+             continue
+         found = lookup(name)
+         if not found:
+diff --git a/support/roves_js/gen_wrappers2.py b/support/roves_js/gen_wrappers2.py
+index 022bd8ea30b..77e39c217a8 100644
+--- a/support/roves_js/gen_wrappers2.py
++++ b/support/roves_js/gen_wrappers2.py
+@@ -53,7 +53,7 @@ def visible(src, module_file):
+     """The function names a module (`jsapi.rs` / `glue.rs`) makes reachable."""
+     text = read(os.path.join(src, module_file))
+     names = defined(os.path.join(src, module_file))
+-    for module in ("jsapi_impl", "binding", "realm_impl", "api", "object", "native", "proxy", "typedarray_impl", "runtime_impl", "script_impl", "values_impl", "modules_impl"):
++    for module in ("jsapi_impl", "binding", "realm_impl", "api", "object", "native", "proxy", "typedarray_impl", "runtime_impl", "script_impl", "values_impl", "modules_impl", "structured_clone_impl"):
+         explicit, glob = reexports(text, module)
+         path = os.path.join(src, module + ".rs")
+         if glob:
+diff --git a/support/roves_js/jsapi_type_names.txt b/support/roves_js/jsapi_type_names.txt
+index 6b5c55317b1..07d14d13ad8 100644
+--- a/support/roves_js/jsapi_type_names.txt
++++ b/support/roves_js/jsapi_type_names.txt
+@@ -215,6 +215,10 @@ JS_NewStringCopyN
+ JS_ReadBytes
+ JS_ReadUint32Pair
+ JS_ResolveStandardClass
++JS_SCERR_DUP_TRANSFERABLE
++JS_SCERR_NOT_CLONABLE
++JS_SCERR_TRANSFERABLE
++JS_SCERR_UNSUPPORTED_TYPE
+ JS_STRUCTURED_CLONE_VERSION
+ JS_SetImmutablePrototype
+ JS_SetPendingException

@@ -301,3 +301,19 @@ pub unsafe fn RegisterScriptEnvironmentPreparer(cx: *mut JSContext, hook: Invoke
 pub unsafe fn RunScriptEnvironmentPreparerClosure(_cx: *mut JSContext, _closure: *mut ScriptEnvironmentPreparer_Closure) -> bool {
     false
 }
+
+// --- Stream consumers ------------------------------------------------------------------------
+//
+// SpiderMonkey hands streamed WebAssembly sources to the embedder's consume-stream callback,
+// which feeds them back through these. V8's WebAssembly streaming is not wired, so the
+// callback is never called and these are never reached with a live consumer.
+
+pub unsafe fn StreamConsumerConsumeChunk(_sc: *mut crate::jsapi::StreamConsumer, _begin: *const u8, _length: usize) -> bool {
+    false
+}
+
+pub unsafe fn StreamConsumerStreamEnd(_sc: *mut crate::jsapi::StreamConsumer) {}
+
+pub unsafe fn StreamConsumerStreamError(_sc: *mut crate::jsapi::StreamConsumer, _error_code: usize) {}
+
+pub unsafe fn StreamConsumerNoteResponseURLs(_sc: *mut crate::jsapi::StreamConsumer, _maybe_url: *const c_char, _maybe_source_map_url: *const c_char) {}
