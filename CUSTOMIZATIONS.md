@@ -12632,3 +12632,24 @@ Roves ships. It builds and links servoshell on roves-js on each of them. Windows
 GStreamer the way `test.yml` does. The headless smoke pages still run on Linux only: running
 headless on Windows needs the GStreamer and ANGLE DLLs next to the binary. Before the swap
 becomes permanent, this shows that V8 builds and links wherever SpiderMonkey did.
+
+## 2026-10-10 - V8 cutover: promise drain jobs belong to the promise's realm (CP113)
+
+**Servo files:** `components/roves-js/src/runtime_impl.rs` and `tests.rs`.
+**Patch:** `0181-roves-js-drain-realm.patch` after 0180.
+
+CI ran `suite2.html`, which now includes the WebAssembly checks, and servoshell panicked in
+`global_scope_from_global`: a job's global was not a DOM global. The chain was:
+1. a V8 foreground task (CP112) ran from Servo's dispatch task, with no realm entered;
+2. the task resolved a promise;
+3. roves-js enqueued its promise drain job in the *current* realm, which was the runtime's
+   initial plain realm;
+4. Servo attributes enqueued jobs to the current realm's global.
+
+The drain job now belongs to the promise's realm (its creation context), or else to the
+current realm. Either must have an embedder global. Failing both, it goes to any realm with
+one, since a drain runs every pending job of the isolate. That realm is current only while the
+job is enqueued.
+
+**Tests:** `roves-js` 31/31, adding a promise of a class-global realm resolved while the
+initial realm is current. The job is attributed to the promise's global.

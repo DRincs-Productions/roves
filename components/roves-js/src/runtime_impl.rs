@@ -316,14 +316,33 @@ thread_local! {
 }
 
 /// V8's promise hook: a promise created or resolved may have queued promise jobs.
-unsafe extern "C" fn promise_hook(kind: v8::PromiseHookType, _promise: v8::Local<v8::Promise>, _parent: v8::Local<v8::Value>) {
+unsafe extern "C" fn promise_hook(kind: v8::PromiseHookType, promise: v8::Local<v8::Promise>, _parent: v8::Local<v8::Value>) {
     if matches!(kind, v8::PromiseHookType::Init | v8::PromiseHookType::Resolve) {
-        request_drain();
+        if DRAIN_PENDING.with(Cell::get) {
+            return;
+        }
+        // SAFETY: V8 calls the hook on the isolate's thread, inside a handle scope.
+        v8::callback_scope!(unsafe scope, promise);
+        let realm = promise.get_creation_context(scope).map(crate::realm_impl::realm_of_context);
+        request_drain(realm.unwrap_or(std::ptr::null_mut()));
     }
 }
 
-/// Enqueues the current realm's drain job in the embedder's job queue (once until it runs).
-fn request_drain() {
+/// Whether `realm` has an embedder global (a class object, such as a DOM global), unlike the
+/// runtime's initial realm.
+fn has_embedder_global(realm: *mut crate::jsapi::Realm) -> bool {
+    // SAFETY: realms come from `register_realm`.
+    let global = unsafe { crate::realm_impl::GetRealmGlobalOrNull(realm) };
+    crate::object::class_box(global).is_some()
+}
+
+/// Enqueues a drain job in the embedder's job queue (once until it runs). The job belongs to
+/// `promise_realm` (the realm of the promise that queued V8 jobs) or else to the current realm:
+/// the embedder attributes it to the current realm's global, which must be an embedder global
+/// (a foreground task, for example, runs with no realm entered). Failing both, another realm
+/// with an embedder global takes it (a drain runs every pending job of the isolate), and only
+/// without any such realm the current one.
+fn request_drain(promise_realm: *mut crate::jsapi::Realm) {
     if DRAIN_PENDING.with(Cell::get) {
         return;
     }
@@ -336,15 +355,36 @@ fn request_drain() {
     // SAFETY: embedder job queues come from `CreateJobQueue`.
     let queue = unsafe { &*(queue as *const RustJobQueue) };
     let Some(enqueue) = queue._traps.enqueuePromiseJob else { return };
-    let Some(drain) = drain_function(cx) else { return };
-    DRAIN_PENDING.with(|pending| pending.set(true));
-    crate::rooted!(in(cx) let drain = drain);
-    crate::rooted!(in(cx) let none = std::ptr::null_mut::<crate::jsapi::JSObject>());
-    // SAFETY: SpiderMonkey's enqueue contract (no promise, allocation site or host data).
-    let ok = unsafe {
-        enqueue(queue._queue, cx, none.handle().into(), drain.handle().into(), none.handle().into(), none.handle().into())
+    let current = crate::realm_impl::get_context_realm(cx);
+    let embedder_realm = || {
+        // SAFETY: the runtime's live context.
+        let realms = unsafe { &*cx }.realms.borrow();
+        realms.iter().map(|data| &**data as *const crate::realm_impl::RealmData as *mut crate::jsapi::Realm).find(|realm| has_embedder_global(*realm))
     };
-    if !ok {
+    let realm = [promise_realm, current]
+        .into_iter()
+        .find(|realm| !realm.is_null() && has_embedder_global(*realm))
+        .or_else(embedder_realm)
+        .unwrap_or(current);
+    if realm.is_null() {
+        return;
+    }
+    // SAFETY: the runtime's live context.
+    let raw = unsafe { &*cx };
+    raw.set_current_realm(realm);
+    let enqueued = (|| {
+        let drain = drain_function(cx)?;
+        DRAIN_PENDING.with(|pending| pending.set(true));
+        crate::rooted!(in(cx) let drain = drain);
+        crate::rooted!(in(cx) let none = std::ptr::null_mut::<crate::jsapi::JSObject>());
+        // SAFETY: SpiderMonkey's enqueue contract (no promise, allocation site or host data).
+        let ok = unsafe {
+            enqueue(queue._queue, cx, none.handle().into(), drain.handle().into(), none.handle().into(), none.handle().into())
+        };
+        Some(ok)
+    })();
+    raw.set_current_realm(current);
+    if enqueued != Some(true) {
         DRAIN_PENDING.with(|pending| pending.set(false));
     }
 }

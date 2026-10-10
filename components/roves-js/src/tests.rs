@@ -1884,6 +1884,77 @@ mod embedder_job_queue {
         eval(&runtime, "Promise.resolve(3).then(v => log.push(v))");
         assert_eq!(JOBS.with(|jobs| jobs.borrow().len()), 1);
     }
+
+    thread_local! {
+        static ENQUEUE_GLOBALS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+    }
+
+    unsafe extern "C" fn enqueue_recording_global(
+        _queue: *const c_void,
+        cx: *mut JSContext,
+        _promise: HandleObject,
+        job: HandleObject,
+        _site: HandleObject,
+        _data: HandleObject,
+    ) -> bool {
+        JOBS.with(|jobs| jobs.borrow_mut().push(job.get() as usize));
+        // Servo attributes the job to the current realm's global.
+        ENQUEUE_GLOBALS.with(|globals| globals.borrow_mut().push(unsafe { CurrentGlobalOrNull(cx) } as usize));
+        true
+    }
+
+    static WINDOW_LIKE: JSClass = JSClass {
+        name: c"WindowLike".as_ptr(),
+        flags: crate::object::JSCLASS_IS_GLOBAL | (crate::object::JSCLASS_GLOBAL_SLOT_COUNT << crate::object::JSCLASS_RESERVED_SLOTS_SHIFT),
+        cOps: std::ptr::null(),
+        spec: std::ptr::null(),
+        ext: std::ptr::null(),
+        oOps: std::ptr::null(),
+    };
+
+    fn run_job(runtime: &Runtime, job: usize) {
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let job = ObjectValue(job as *mut JSObject));
+        rooted!(in(cx) let this = UndefinedValue());
+        rooted!(in(cx) let mut rval = UndefinedValue());
+        let no_args = HandleValueArray { length_: 0, elements_: std::ptr::null() };
+        assert!(unsafe { Call(cx, this.handle().into_handle(), job.handle().into_handle(), &no_args, rval.handle_mut().into_handle()) });
+    }
+
+    #[test]
+    fn drain_jobs_belong_to_an_embedder_global_outside_any_realm() {
+        let runtime = Runtime::new(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        let mut traps: JobQueueTraps = unsafe { std::mem::zeroed() };
+        traps.enqueuePromiseJob = Some(enqueue_recording_global);
+        let queue = unsafe { CreateJobQueue(&traps, std::ptr::null(), std::ptr::null_mut()) };
+        unsafe { SetJobQueue(cx, queue) };
+        rooted!(in(cx) let global = unsafe {
+            JS_NewGlobalObject(cx, &WINDOW_LIKE, std::ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, std::ptr::null())
+        });
+        let old = unsafe { EnterRealm(cx, global.get()) };
+        rooted!(in(cx) let resolve = eval(&runtime, "globalThis.log = []; new Promise(r => globalThis.resolveIt = r).then(v => log.push(v)); resolveIt"));
+        for job in JOBS.with(|jobs| jobs.borrow_mut().split_off(0)) {
+            run_job(&runtime, job);
+        }
+        unsafe { LeaveRealm(cx, old) };
+        ENQUEUE_GLOBALS.with(|globals| globals.borrow_mut().clear());
+        // Like a foreground task: the promise resolves while the runtime's initial realm is
+        // current. The drain job is still attributed to the promise's (embedder) global.
+        rooted!(in(cx) let this = UndefinedValue());
+        let arguments = [Int32Value(5)];
+        let array = HandleValueArray { length_: 1, elements_: arguments.as_ptr() };
+        rooted!(in(cx) let mut rval = UndefinedValue());
+        assert!(unsafe { Call(cx, this.handle().into_handle(), resolve.handle().into_handle(), &array, rval.handle_mut().into_handle()) });
+        assert_eq!(ENQUEUE_GLOBALS.with(|globals| globals.borrow().clone()), vec![global.get() as usize]);
+        assert!(unsafe { CurrentGlobalOrNull(cx) } != global.get(), "the current realm is restored");
+        for job in JOBS.with(|jobs| jobs.borrow_mut().split_off(0)) {
+            run_job(&runtime, job);
+        }
+        let old = unsafe { EnterRealm(cx, global.get()) };
+        assert_eq!(super::describe(&runtime, eval(&runtime, "log.join()")), "5");
+        unsafe { LeaveRealm(cx, old) };
+    }
 }
 
 thread_local! {
