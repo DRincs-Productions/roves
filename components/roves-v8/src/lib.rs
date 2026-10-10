@@ -295,6 +295,8 @@ pub mod webidl {
     }
 }
 
+pub mod foreground;
+
 use std::sync::Once;
 
 static V8_PLATFORM_INIT: Once = Once::new();
@@ -343,7 +345,8 @@ fn initialize_platform() {
         #[cfg(test)]
         v8::V8::set_flags_from_string("--expose-gc");
 
-        let platform = v8::new_default_platform(0, false).make_shared();
+        // Foreground tasks go to the handler of their isolate (see `foreground`).
+        let platform = v8::new_custom_platform(0, false, false, foreground::Platform).make_shared();
         v8::V8::initialize_platform(platform);
         v8::V8::initialize();
     }

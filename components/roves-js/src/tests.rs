@@ -1040,6 +1040,90 @@ mod runtime_hooks {
     static SECURITY_CALLBACKS: JSSecurityCallbacks =
         JSSecurityCallbacks { contentSecurityPolicyAllows: Some(csp_check), codeForEvalGets: None, subsumes: None };
 
+    static DISPATCHED: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+
+    /// An embedder's dispatch callback: may run on any thread.
+    unsafe extern "C" fn dispatch(closure: *mut c_void, task: *mut crate::glue::DispatchablePointer) -> bool {
+        assert_eq!(closure as usize, 11);
+        DISPATCHED.lock().unwrap().push(task as usize);
+        true
+    }
+
+    /// Runs foreground work until `condition` (a script) holds, for at most five seconds.
+    fn wait_for(runtime: &Runtime, condition: &str, mut step: impl FnMut()) -> bool {
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_secs(5) {
+            step();
+            if eval(runtime, condition).to_boolean() {
+                return true;
+            }
+            std::thread::yield_now();
+        }
+        false
+    }
+
+    #[test]
+    fn foreground_tasks_finish_async_wasm_and_finalization() {
+        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        let compile = "globalThis.done = 0; WebAssembly.compile(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])).then(m => done = m instanceof WebAssembly.Module ? 1 : 2); 0";
+        // Without a dispatch callback, `RunJobs` runs the tasks.
+        eval(&runtime, compile);
+        assert!(wait_for(&runtime, "done === 1", || unsafe { RunJobs(cx) }), "WebAssembly.compile resolves");
+        // With one, the tasks reach the embedder's event loop and run in `DispatchableRun`.
+        unsafe { SetUpEventLoopDispatch(cx, Some(dispatch), 11 as *mut c_void) };
+        eval(&runtime, compile);
+        let run_dispatched = || {
+            let tasks = std::mem::take(&mut *DISPATCHED.lock().unwrap());
+            for task in tasks {
+                unsafe { DispatchableRun(cx, task as *mut _, Dispatchable_MaybeShuttingDown::NotShuttingDown) };
+            }
+            unsafe { RunJobs(cx) };
+        };
+        assert!(wait_for(&runtime, "done === 1", run_dispatched), "WebAssembly.compile resolves through dispatch");
+        // `FinalizationRegistry` callbacks run from a foreground task after a collection.
+        eval(&runtime, "globalThis.cleaned = ''; globalThis.registry = new FinalizationRegistry(held => cleaned = held); (function () { registry.register({}, 'held'); })(); 0");
+        let mut collected = false;
+        let start = std::time::Instant::now();
+        while !collected && start.elapsed() < std::time::Duration::from_secs(5) {
+            runtime.gc_for_testing();
+            run_dispatched();
+            collected = eval(&runtime, "cleaned === 'held'").to_boolean();
+        }
+        assert!(collected, "the FinalizationRegistry callback ran");
+    }
+
+    thread_local! {
+        static CONSUMER: Cell<usize> = const { Cell::new(0) };
+    }
+
+    unsafe extern "C" fn consume(_cx: *mut JSContext, _response: HandleObject, _mime_type: MimeType, consumer: *mut StreamConsumer) -> bool {
+        CONSUMER.with(|slot| slot.set(consumer as usize));
+        true
+    }
+
+    #[test]
+    fn wasm_streaming_feeds_the_embedders_stream() {
+        let runtime = Runtime::new(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        unsafe { InitConsumeStreamCallback(cx, Some(consume), None) };
+        eval(&runtime, "globalThis.done = 0; WebAssembly.compileStreaming({ response: true }).then(m => done = m instanceof WebAssembly.Module ? 1 : 2, e => done = String(e)); 0");
+        assert!(wait_for(&runtime, "true", || unsafe { RunJobs(cx) }));
+        let consumer = CONSUMER.with(Cell::get) as *mut StreamConsumer;
+        assert!(!consumer.is_null(), "the response reached the consume-stream callback");
+        let bytes = [0u8, 97, 115, 109, 1, 0, 0, 0];
+        unsafe {
+            StreamConsumerNoteResponseURLs(consumer, c"https://example.test/m.wasm".as_ptr(), std::ptr::null());
+            assert!(StreamConsumerConsumeChunk(consumer, bytes.as_ptr(), 4));
+            assert!(StreamConsumerConsumeChunk(consumer, bytes[4..].as_ptr(), 4));
+            StreamConsumerStreamEnd(consumer);
+        }
+        assert!(wait_for(&runtime, "done === 1", || unsafe { RunJobs(cx) }), "{}", super::describe(&runtime, eval(&runtime, "String(done)")));
+        // A source that is not a response is rejected.
+        eval(&runtime, "done = 0; WebAssembly.compileStreaming(Promise.resolve(5)).then(() => done = 1, e => done = e instanceof TypeError ? 3 : 4); 0");
+        assert!(wait_for(&runtime, "done === 3", || unsafe { RunJobs(cx) }));
+    }
+
     #[test]
     fn csp_checks_eval_function_and_wasm() {
         let runtime = Runtime::new(JSEngineHandle::for_tests());

@@ -459,7 +459,12 @@ strategia completa è in `docs/V8_MIGRATION.md` ("Cutover strategy"). Metrica:
 - **CP111:** CSP per `eval`/`Function`/WebAssembly: i contesti vietano la generazione di
   codice da stringhe e V8 chiama il controllo CSP di Servo (`contentSecurityPolicyAllows`).
   Pagina smoke `csp.html`. Lacuna: `eval(TrustedScript)` (serve `SetCodeLike`).
-- **Prossimi passi (dopo CP111):** correggere i fallimenti di suite2 in CI; durata di
+- **CP112:** piattaforma V8 personalizzata (`roves_v8::foreground`): i task in primo piano
+  di V8 (fine compilazione wasm asincrona, `FinalizationRegistry`, `Atomics.waitAsync`)
+  arrivano all'event loop di Servo via `SetUpEventLoopDispatch`/`DispatchableRun`. Prima non
+  giravano mai: `WebAssembly.instantiate` non si risolveva (bloccante per giochi wasm).
+  Streaming wasm collegato al consume-stream di Servo. roves-js 30 test, roves-v8 62.
+- **Prossimi passi (dopo CP112):** correggere i fallimenti di suite2 in CI (ora 38 controlli, incluso wasm); durata di
   privates di script/moduli e box delle classi chiamabili; devtools/inspector; swap permanente.
 - **Storico (dopo CP105):** global proxy V8 = `WindowProxy` di Servo; uscita pulita
   in headless; più pagine e WPT; poi swap permanente (`engine-v8`).

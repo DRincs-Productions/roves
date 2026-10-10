@@ -417,6 +417,7 @@ impl Runtime {
             crate::realm_impl::register_realm(&raw, scope, context, std::ptr::null_mut())
         });
         raw.current_realm.set(realm);
+        crate::runtime_impl::register_foreground(&raw, &isolate);
         let thread_safe_handle = std::sync::Arc::new(std::sync::RwLock::new(Some(isolate.thread_safe_handle())));
         // SAFETY: the raw context lives (boxed) as long as the runtime.
         let cx = unsafe { crate::context::JSContext::from_ptr(NonNull::from(&*raw)) };
@@ -474,6 +475,7 @@ impl Runtime {
 impl Drop for Runtime {
     fn drop(&mut self) {
         self.thread_safe_handle.write().unwrap().take();
+        crate::runtime_impl::unregister_foreground(&self.raw, &self.isolate);
         assert!(std::sync::Arc::get_mut(&mut self.outstanding_children).is_some(), "This runtime still has live children.");
         CURRENT.with(|current| {
             if current.get() == Some(NonNull::from(&*self.raw)) {

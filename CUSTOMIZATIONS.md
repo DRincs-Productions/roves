@@ -12575,3 +12575,39 @@ does not expose.
 
 **Tests:** `roves-js` 28/28, adding a CSP check that allows and blocks `eval`, `Function` and
 WebAssembly. The CI smoke run gains `csp.html`, a page whose meta CSP forbids `eval`.
+
+## 2026-10-10 - V8 cutover: V8 foreground tasks and WebAssembly streaming (CP112)
+
+**Servo files:** `components/roves-v8/src/lib.rs`; `components/roves-v8/src/foreground.rs`, new;
+`components/roves-js/src/runtime_impl.rs`, `rust.rs` and `tests.rs`;
+`support/v8-smoke/suite2.html`.
+
+**Patch:** `0179-roves-js-foreground-tasks-wasm-streaming.patch` after 0178.
+
+**Foreground tasks (a blocking bug for WebAssembly games).** V8 posts some work, often from its
+background threads, to run on the isolate's thread:
+- finishing an asynchronous WebAssembly compilation (`WebAssembly.compile`, `instantiate` with
+  bytes, which is what Unity, Godot and emscripten exports use);
+- `FinalizationRegistry` cleanup;
+- `Atomics.waitAsync` timeouts.
+
+The default V8 platform keeps these tasks until the embedder pumps its message loop, and nothing
+did. Those promises therefore never settled. Now:
+- the process-wide platform is a custom one (`roves_v8::foreground`). Each task goes to the
+  handler registered for its isolate, and delayed tasks wait on one timer thread;
+- roves-js registers a handler per runtime that brings tasks to Servo's event loop. This is
+  SpiderMonkey's off-thread model: Servo's `SetUpEventLoopDispatch` callback queues a task, and
+  `DispatchableRun` runs it on the script thread;
+- without a dispatch callback (tests), tasks wait for `RunJobs`.
+
+**WebAssembly streaming.** `WebAssembly.compileStreaming`/`instantiateStreaming` now work. V8's
+streaming callback waits for the source to settle, then hands the `Response` to Servo's
+consume-stream callback, which checks it (MIME type, CORS, status). Servo then feeds the body
+through the `StreamConsumer*` functions into V8's streaming compiler.
+
+**Tests:**
+- `roves-js` 30/30, adding async `WebAssembly.compile` (alone and through an embedder dispatch
+  callback), a `FinalizationRegistry` callback, and streaming fed by the embedder, including
+  rejection of a source that is not a `Response`. The first one fails with V8's default platform.
+- `roves-v8` 62/62.
+- `suite2.html` gains `WebAssembly.instantiate` and `WebAssembly.compileStreaming` checks.

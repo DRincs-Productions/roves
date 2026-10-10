@@ -1,0 +1,616 @@
+diff --git a/components/roves-js/src/runtime_impl.rs b/components/roves-js/src/runtime_impl.rs
+index 50030502155..57dd4a4d98b 100644
+--- a/components/roves-js/src/runtime_impl.rs
++++ b/components/roves-js/src/runtime_impl.rs
+@@ -14,6 +14,12 @@
+ //! runs it. Promise jobs thus run at the embedder's checkpoints, in its order, as with
+ //! SpiderMonkey. Without an embedder job queue, [`RunJobs`] performs a checkpoint.
+ //!
++//! **Foreground tasks.** V8 posts some work to run on the isolate's thread: finishing an
++//! asynchronous WebAssembly compilation, `FinalizationRegistry` cleanup, `Atomics.waitAsync`
++//! timeouts (see `roves_v8::foreground`). Like SpiderMonkey's off-thread work, each task goes
++//! to the embedder's event loop through its dispatch callback (`SetUpEventLoopDispatch`) and
++//! runs in `DispatchableRun`. Without a dispatch callback, tasks wait for [`RunJobs`].
++//!
+ //! Settings with no V8 counterpart (SpiderMonkey's GC parameters, JIT options, build ids,
+ //! memory reporters) are recorded and otherwise ignored.
+ 
+@@ -48,7 +54,7 @@ pub(crate) struct RuntimeHooks {
+     read_principals: Cell<JSReadPrincipalsOp>,
+     job_queue: Cell<*mut JobQueue>,
+     promise_rejection_tracker: Cell<(PromiseRejectionTrackerCallback, *mut c_void)>,
+-    event_loop_dispatch: Cell<(RustDispatchToEventLoopCallback, *mut c_void)>,
++    foreground: std::sync::Arc<Foreground>,
+     consume_stream: Cell<(ConsumeStreamCallback, ReportStreamErrorCallback)>,
+     script_environment_preparer: Cell<InvokeScriptPreparerHook>,
+ }
+@@ -69,13 +75,70 @@ impl Default for RuntimeHooks {
+             read_principals: Cell::new(None),
+             job_queue: Cell::new(std::ptr::null_mut()),
+             promise_rejection_tracker: Cell::new((None, std::ptr::null_mut())),
+-            event_loop_dispatch: Cell::new((None, std::ptr::null_mut())),
++            foreground: Default::default(),
+             consume_stream: Cell::new((None, None)),
+             script_environment_preparer: Cell::new(None),
+         }
+     }
+ }
+ 
++/// The embedder's dispatch callback and its closure (`SetUpEventLoopDispatch`).
++#[derive(Clone, Copy)]
++struct Dispatch(RustDispatchToEventLoopCallback, *mut c_void);
++
++// SAFETY: SpiderMonkey calls the dispatch callback from its helper threads: embedders make it
++// thread-safe (Servo's sends a task to the script thread).
++unsafe impl Send for Dispatch {}
++
++/// A runtime's foreground tasks (see the module documentation).
++#[derive(Default)]
++pub(crate) struct Foreground {
++    dispatch: std::sync::Mutex<Option<Dispatch>>,
++    /// Tasks waiting for a dispatch callback or for [`RunJobs`].
++    pending: std::sync::Mutex<Vec<v8::Task>>,
++}
++
++impl Foreground {
++    /// Hands `task` to the embedder's event loop, or keeps it.
++    fn post(&self, task: v8::Task) {
++        let dispatch = *self.dispatch.lock().unwrap();
++        let Some(Dispatch(Some(callback), closure)) = dispatch else {
++            self.pending.lock().unwrap().push(task);
++            return;
++        };
++        let pointer = Box::into_raw(Box::new(task)) as *mut DispatchablePointer;
++        // SAFETY: the embedder's dispatch contract (the task comes back in `DispatchableRun`).
++        if !unsafe { callback(closure, pointer) } {
++            // The event loop is gone: so may be the isolate (see `roves_v8::foreground`).
++            // SAFETY: the pointer was not taken.
++            std::mem::forget(unsafe { Box::from_raw(pointer as *mut v8::Task) });
++        }
++    }
++}
++
++/// Registers `cx`'s runtime to receive its isolate's foreground tasks.
++pub(crate) fn register_foreground(cx: &JSContext, isolate: &v8::Isolate) {
++    let foreground = cx.hooks.foreground.clone();
++    roves_v8::foreground::set_handler(roves_v8::foreground::isolate_key(isolate), Some(std::sync::Arc::new(move |task| foreground.post(task))));
++}
++
++/// Stops the foreground tasks of `cx`'s runtime and drops the waiting ones (before the isolate
++/// is disposed).
++pub(crate) fn unregister_foreground(cx: &JSContext, isolate: &v8::Isolate) {
++    roves_v8::foreground::set_handler(roves_v8::foreground::isolate_key(isolate), None);
++    cx.hooks.foreground.pending.lock().unwrap().clear();
++}
++
++/// Runs the foreground tasks waiting in `cx`'s runtime; returns whether any ran.
++pub(crate) fn run_pending_tasks(cx: *mut JSContext) -> bool {
++    let tasks = std::mem::take(&mut *hooks(cx).foreground.pending.lock().unwrap());
++    let ran = !tasks.is_empty();
++    for task in tasks {
++        task.run();
++    }
++    ran
++}
++
+ fn hooks<'h>(cx: *mut JSContext) -> &'h RuntimeHooks {
+     // SAFETY: callers pass this thread's live context.
+     unsafe { &(*cx).hooks }
+@@ -97,6 +160,7 @@ pub(crate) fn configure_isolate(isolate: &mut v8::Isolate) {
+     crate::modules_impl::configure_isolate(isolate);
+     isolate.set_modify_code_generation_from_strings_callback(code_generation_from_strings);
+     isolate.set_allow_wasm_code_generation_callback(wasm_code_generation);
++    configure_wasm_streaming(isolate);
+ }
+ 
+ // --- Interrupts ------------------------------------------------------------------------------
+@@ -312,8 +376,14 @@ unsafe extern "C" fn drain_microtasks(cx: *mut JSContext, _argc: u32, vp: *mut c
+ pub unsafe fn JobQueueMayNotBeEmpty(_cx: *mut JSContext) {}
+ 
+ /// Runs the pending promise jobs (a V8 microtask checkpoint).
++/// Runs the waiting foreground tasks and promise jobs (embedders without a job queue).
+ pub unsafe fn RunJobs(cx: *mut JSContext) {
+-    isolate(cx).perform_microtask_checkpoint();
++    loop {
++        isolate(cx).perform_microtask_checkpoint();
++        if !run_pending_tasks(cx) {
++            break;
++        }
++    }
+ }
+ 
+ pub unsafe fn SetPromiseRejectionTrackerCallback(cx: *mut JSContext, callback: PromiseRejectionTrackerCallback, data: *mut c_void) {
+@@ -477,12 +547,24 @@ pub unsafe fn CollectServoSizes(cx: *mut JSContext, sizes: *mut ServoSizes, _get
+     true
+ }
+ 
++/// Sets the embedder's dispatch callback, which brings V8's foreground tasks to its event loop.
+ pub unsafe fn SetUpEventLoopDispatch(cx: *mut JSContext, callback: RustDispatchToEventLoopCallback, closure: *mut c_void) {
+-    hooks(cx).event_loop_dispatch.set((callback, closure));
++    let foreground = &hooks(cx).foreground;
++    *foreground.dispatch.lock().unwrap() = Some(Dispatch(callback, closure));
++    let waiting = std::mem::take(&mut *foreground.pending.lock().unwrap());
++    for task in waiting {
++        foreground.post(task);
++    }
+ }
+ 
+-/// Runs a dispatched task (SpiderMonkey's off-thread work); none are dispatched on V8.
+-pub unsafe fn DispatchableRun(_cx: *mut JSContext, _ptr: *mut DispatchablePointer, _maybe_shutting_down: Dispatchable_MaybeShuttingDown) {}
++/// Runs a foreground task the embedder's event loop received (or drops it at shutdown).
++pub unsafe fn DispatchableRun(_cx: *mut JSContext, ptr: *mut DispatchablePointer, maybe_shutting_down: Dispatchable_MaybeShuttingDown) {
++    // SAFETY: dispatched pointers come from `Foreground::post`.
++    let task = unsafe { *Box::from_raw(ptr as *mut v8::Task) };
++    if maybe_shutting_down == Dispatchable_MaybeShuttingDown::NotShuttingDown {
++        task.run();
++    }
++}
+ 
+ pub unsafe fn InitConsumeStreamCallback(cx: *mut JSContext, consume: ConsumeStreamCallback, report: ReportStreamErrorCallback) {
+     hooks(cx).consume_stream.set((consume, report));
+@@ -497,18 +579,143 @@ pub unsafe fn RunScriptEnvironmentPreparerClosure(_cx: *mut JSContext, _closure:
+     false
+ }
+ 
+-// --- Stream consumers ------------------------------------------------------------------------
++// --- WebAssembly streaming ------------------------------------------------------------------
+ //
+-// SpiderMonkey hands streamed WebAssembly sources to the embedder's consume-stream callback,
+-// which feeds them back through these. V8's WebAssembly streaming is not wired, so the
+-// callback is never called and these are never reached with a live consumer.
++// `WebAssembly.compileStreaming`/`instantiateStreaming`: V8 hands the source (a `Response` or a
++// promise of one) to [`wasm_streaming`]. Once the source settles, the response goes to the
++// embedder's consume-stream callback (SpiderMonkey's model), which checks it and later feeds
++// its body back through the `StreamConsumer*` functions below into V8's streaming compiler.
+ 
+-pub unsafe fn StreamConsumerConsumeChunk(_sc: *mut crate::jsapi::StreamConsumer, _begin: *const u8, _length: usize) -> bool {
+-    false
++/// The `StreamConsumer` of one streaming compilation.
++struct WasmConsumer {
++    streaming: std::cell::RefCell<Option<v8::WasmStreaming<false>>>,
++}
++
++fn consumer<'c>(sc: *mut crate::jsapi::StreamConsumer) -> Option<&'c WasmConsumer> {
++    // SAFETY: consumers come from `wasm_streaming` and live until their stream ends.
++    unsafe { (sc as *const WasmConsumer).as_ref() }
++}
++
++/// Ends a streaming compilation: frees its consumer and returns its V8 stream.
++fn finish_consumer(sc: *mut crate::jsapi::StreamConsumer) -> Option<v8::WasmStreaming<false>> {
++    if sc.is_null() {
++        return None;
++    }
++    // SAFETY: as above; the stream has ended, so the embedder no longer uses the consumer.
++    let consumer = unsafe { Box::from_raw(sc as *mut WasmConsumer) };
++    consumer.streaming.take()
++}
++
++pub(crate) fn configure_wasm_streaming(isolate: &mut v8::Isolate) {
++    isolate.set_wasm_streaming_callback(wasm_streaming);
++}
++
++fn wasm_streaming<'s>(scope: &mut v8::PinScope<'s, '_>, source: v8::Local<'s, v8::Value>, streaming: v8::WasmStreaming<false>) {
++    let consumer = Box::into_raw(Box::new(WasmConsumer { streaming: std::cell::RefCell::new(Some(streaming)) }));
++    let settle = |scope: &mut v8::PinScope<'s, '_>| -> Option<()> {
++        let resolver = v8::PromiseResolver::new(scope)?;
++        resolver.resolve(scope, source)?;
++        let promise = resolver.get_promise(scope);
++        let data = v8::External::new(scope, consumer as *mut c_void);
++        let fulfilled = v8::Function::builder(wasm_source_fulfilled).data(data.into()).build(scope)?;
++        let rejected = v8::Function::builder(wasm_source_rejected).data(data.into()).build(scope)?;
++        promise.then2(scope, fulfilled, rejected)?;
++        Some(())
++    };
++    if settle(scope).is_none() {
++        if let Some(streaming) = finish_consumer(consumer as *mut crate::jsapi::StreamConsumer) {
++            streaming.abort(None);
++        }
++    }
++}
++
++fn wasm_source_rejected(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _: v8::ReturnValue) {
++    let Ok(data) = v8::Local::<v8::External>::try_from(args.data()) else { return };
++    if let Some(streaming) = finish_consumer(data.value() as *mut crate::jsapi::StreamConsumer) {
++        let reason = args.get(0);
++        streaming.abort(Some(reason));
++    }
++    let _ = scope;
+ }
+ 
+-pub unsafe fn StreamConsumerStreamEnd(_sc: *mut crate::jsapi::StreamConsumer) {}
++fn wasm_source_fulfilled(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _: v8::ReturnValue) {
++    let Ok(data) = v8::Local::<v8::External>::try_from(args.data()) else { return };
++    let sc = data.value() as *mut crate::jsapi::StreamConsumer;
++    let abort = |scope: &mut v8::PinScope, message: &str| {
++        let message = v8::String::new(scope, message).expect("a short string");
++        let error = v8::Exception::type_error(scope, message);
++        if let Some(streaming) = finish_consumer(sc) {
++            streaming.abort(Some(error));
++        }
++    };
++    let Some(cx) = crate::rust::Runtime::get() else { return };
++    let cx = cx.as_ptr();
++    let (Some(consume), _) = hooks(cx).consume_stream.get() else {
++        abort(scope, "WebAssembly streaming is not supported");
++        return;
++    };
++    let response = args.get(0);
++    if !response.is_object() {
++        abort(scope, "expected Response or Promise resolving to Response");
++        return;
++    }
++    let response = crate::jsval::from_v8(scope, response).to_object();
++    crate::rooted!(in(cx) let response = response);
++    // The embedder checks the response in the realm compiling it.
++    // SAFETY: the runtime's live context.
++    let raw = unsafe { &*cx };
++    let old = raw.current_realm.get();
++    raw.set_current_realm(crate::realm_impl::realm_of_context(scope.get_current_context()));
++    // SAFETY: SpiderMonkey's consume-stream contract (rooted response, live consumer).
++    let accepted = unsafe { consume(cx, response.handle().into(), crate::jsapi::MimeType::Wasm, sc) };
++    raw.set_current_realm(old);
++    if !accepted {
++        let exception = raw.pending_exception.borrow_mut().take().map(|exception| v8::Local::new(scope, exception));
++        match exception {
++            Some(exception) => {
++                if let Some(streaming) = finish_consumer(sc) {
++                    streaming.abort(Some(exception));
++                }
++            },
++            None => abort(scope, "the Response could not be consumed"),
++        }
++    }
++}
++
++pub unsafe fn StreamConsumerConsumeChunk(sc: *mut crate::jsapi::StreamConsumer, begin: *const u8, length: usize) -> bool {
++    let Some(consumer) = consumer(sc) else { return false };
++    let mut streaming = consumer.streaming.borrow_mut();
++    let Some(streaming) = streaming.as_mut() else { return false };
++    // SAFETY: callers pass a valid chunk.
++    let chunk = if length == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(begin, length) } };
++    JSContext::current().with_scope(|_| streaming.on_bytes_received(chunk));
++    true
++}
++
++pub unsafe fn StreamConsumerStreamEnd(sc: *mut crate::jsapi::StreamConsumer) {
++    if let Some(streaming) = finish_consumer(sc) {
++        JSContext::current().with_scope(|_| streaming.finish());
++    }
++}
+ 
+-pub unsafe fn StreamConsumerStreamError(_sc: *mut crate::jsapi::StreamConsumer, _error_code: usize) {}
++pub unsafe fn StreamConsumerStreamError(sc: *mut crate::jsapi::StreamConsumer, _error_code: usize) {
++    if let Some(streaming) = finish_consumer(sc) {
++        JSContext::current().with_scope(|scope| {
++            let message = v8::String::new(scope, "WebAssembly streaming failed").expect("a short string");
++            let error = v8::Exception::type_error(scope, message);
++            streaming.abort(Some(error));
++        });
++    }
++}
+ 
+-pub unsafe fn StreamConsumerNoteResponseURLs(_sc: *mut crate::jsapi::StreamConsumer, _maybe_url: *const c_char, _maybe_source_map_url: *const c_char) {}
++pub unsafe fn StreamConsumerNoteResponseURLs(sc: *mut crate::jsapi::StreamConsumer, maybe_url: *const c_char, _maybe_source_map_url: *const c_char) {
++    let Some(consumer) = consumer(sc) else { return };
++    if maybe_url.is_null() {
++        return;
++    }
++    // SAFETY: callers pass a NUL-terminated URL.
++    let url = unsafe { std::ffi::CStr::from_ptr(maybe_url) }.to_string_lossy();
++    if let Some(streaming) = consumer.streaming.borrow_mut().as_mut() {
++        streaming.set_url(&url);
++    }
++}
+diff --git a/components/roves-js/src/rust.rs b/components/roves-js/src/rust.rs
+index 2f23d312daa..0c2a3ed7451 100644
+--- a/components/roves-js/src/rust.rs
++++ b/components/roves-js/src/rust.rs
+@@ -417,6 +417,7 @@ impl Runtime {
+             crate::realm_impl::register_realm(&raw, scope, context, std::ptr::null_mut())
+         });
+         raw.current_realm.set(realm);
++        crate::runtime_impl::register_foreground(&raw, &isolate);
+         let thread_safe_handle = std::sync::Arc::new(std::sync::RwLock::new(Some(isolate.thread_safe_handle())));
+         // SAFETY: the raw context lives (boxed) as long as the runtime.
+         let cx = unsafe { crate::context::JSContext::from_ptr(NonNull::from(&*raw)) };
+@@ -474,6 +475,7 @@ impl Runtime {
+ impl Drop for Runtime {
+     fn drop(&mut self) {
+         self.thread_safe_handle.write().unwrap().take();
++        crate::runtime_impl::unregister_foreground(&self.raw, &self.isolate);
+         assert!(std::sync::Arc::get_mut(&mut self.outstanding_children).is_some(), "This runtime still has live children.");
+         CURRENT.with(|current| {
+             if current.get() == Some(NonNull::from(&*self.raw)) {
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index d30bceb8f3b..4c6039ea7cb 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -1040,6 +1040,90 @@ mod runtime_hooks {
+     static SECURITY_CALLBACKS: JSSecurityCallbacks =
+         JSSecurityCallbacks { contentSecurityPolicyAllows: Some(csp_check), codeForEvalGets: None, subsumes: None };
+ 
++    static DISPATCHED: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
++
++    /// An embedder's dispatch callback: may run on any thread.
++    unsafe extern "C" fn dispatch(closure: *mut c_void, task: *mut crate::glue::DispatchablePointer) -> bool {
++        assert_eq!(closure as usize, 11);
++        DISPATCHED.lock().unwrap().push(task as usize);
++        true
++    }
++
++    /// Runs foreground work until `condition` (a script) holds, for at most five seconds.
++    fn wait_for(runtime: &Runtime, condition: &str, mut step: impl FnMut()) -> bool {
++        let start = std::time::Instant::now();
++        while start.elapsed() < std::time::Duration::from_secs(5) {
++            step();
++            if eval(runtime, condition).to_boolean() {
++                return true;
++            }
++            std::thread::yield_now();
++        }
++        false
++    }
++
++    #[test]
++    fn foreground_tasks_finish_async_wasm_and_finalization() {
++        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        let compile = "globalThis.done = 0; WebAssembly.compile(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])).then(m => done = m instanceof WebAssembly.Module ? 1 : 2); 0";
++        // Without a dispatch callback, `RunJobs` runs the tasks.
++        eval(&runtime, compile);
++        assert!(wait_for(&runtime, "done === 1", || unsafe { RunJobs(cx) }), "WebAssembly.compile resolves");
++        // With one, the tasks reach the embedder's event loop and run in `DispatchableRun`.
++        unsafe { SetUpEventLoopDispatch(cx, Some(dispatch), 11 as *mut c_void) };
++        eval(&runtime, compile);
++        let run_dispatched = || {
++            let tasks = std::mem::take(&mut *DISPATCHED.lock().unwrap());
++            for task in tasks {
++                unsafe { DispatchableRun(cx, task as *mut _, Dispatchable_MaybeShuttingDown::NotShuttingDown) };
++            }
++            unsafe { RunJobs(cx) };
++        };
++        assert!(wait_for(&runtime, "done === 1", run_dispatched), "WebAssembly.compile resolves through dispatch");
++        // `FinalizationRegistry` callbacks run from a foreground task after a collection.
++        eval(&runtime, "globalThis.cleaned = ''; globalThis.registry = new FinalizationRegistry(held => cleaned = held); (function () { registry.register({}, 'held'); })(); 0");
++        let mut collected = false;
++        let start = std::time::Instant::now();
++        while !collected && start.elapsed() < std::time::Duration::from_secs(5) {
++            runtime.gc_for_testing();
++            run_dispatched();
++            collected = eval(&runtime, "cleaned === 'held'").to_boolean();
++        }
++        assert!(collected, "the FinalizationRegistry callback ran");
++    }
++
++    thread_local! {
++        static CONSUMER: Cell<usize> = const { Cell::new(0) };
++    }
++
++    unsafe extern "C" fn consume(_cx: *mut JSContext, _response: HandleObject, _mime_type: MimeType, consumer: *mut StreamConsumer) -> bool {
++        CONSUMER.with(|slot| slot.set(consumer as usize));
++        true
++    }
++
++    #[test]
++    fn wasm_streaming_feeds_the_embedders_stream() {
++        let runtime = Runtime::new(JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        unsafe { InitConsumeStreamCallback(cx, Some(consume), None) };
++        eval(&runtime, "globalThis.done = 0; WebAssembly.compileStreaming({ response: true }).then(m => done = m instanceof WebAssembly.Module ? 1 : 2, e => done = String(e)); 0");
++        assert!(wait_for(&runtime, "true", || unsafe { RunJobs(cx) }));
++        let consumer = CONSUMER.with(Cell::get) as *mut StreamConsumer;
++        assert!(!consumer.is_null(), "the response reached the consume-stream callback");
++        let bytes = [0u8, 97, 115, 109, 1, 0, 0, 0];
++        unsafe {
++            StreamConsumerNoteResponseURLs(consumer, c"https://example.test/m.wasm".as_ptr(), std::ptr::null());
++            assert!(StreamConsumerConsumeChunk(consumer, bytes.as_ptr(), 4));
++            assert!(StreamConsumerConsumeChunk(consumer, bytes[4..].as_ptr(), 4));
++            StreamConsumerStreamEnd(consumer);
++        }
++        assert!(wait_for(&runtime, "done === 1", || unsafe { RunJobs(cx) }), "{}", super::describe(&runtime, eval(&runtime, "String(done)")));
++        // A source that is not a response is rejected.
++        eval(&runtime, "done = 0; WebAssembly.compileStreaming(Promise.resolve(5)).then(() => done = 1, e => done = e instanceof TypeError ? 3 : 4); 0");
++        assert!(wait_for(&runtime, "done === 3", || unsafe { RunJobs(cx) }));
++    }
++
+     #[test]
+     fn csp_checks_eval_function_and_wasm() {
+         let runtime = Runtime::new(JSEngineHandle::for_tests());
+diff --git a/components/roves-v8/src/foreground.rs b/components/roves-v8/src/foreground.rs
+new file mode 100644
+index 00000000000..f7e87e29929
+--- /dev/null
++++ b/components/roves-v8/src/foreground.rs
+@@ -0,0 +1,156 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! V8's foreground tasks: work V8 posts, often from its background threads, to run on an
++//! isolate's own thread. Examples are finishing an asynchronous WebAssembly compilation,
++//! `FinalizationRegistry` cleanup and `Atomics.waitAsync` timeouts.
++//!
++//! The default V8 platform queues these tasks until the embedder pumps its message loop. The
++//! process-wide platform here hands each task to the handler registered for its isolate,
++//! which brings it to the isolate's event loop. roves-js registers one per runtime.
++//! - A task for an isolate without a handler is leaked, never run nor dropped: its isolate may
++//!   be gone, and destroying a V8 task can touch it.
++//! - Delayed tasks wait on one timer thread.
++
++use std::collections::{BinaryHeap, HashMap};
++use std::sync::{Arc, Condvar, Mutex, OnceLock};
++use std::time::{Duration, Instant};
++
++/// Receives the tasks of one isolate, on any thread.
++pub type Handler = Arc<dyn Fn(v8::Task) + Send + Sync>;
++
++fn handlers() -> &'static Mutex<HashMap<usize, Handler>> {
++    static HANDLERS: OnceLock<Mutex<HashMap<usize, Handler>>> = OnceLock::new();
++    HANDLERS.get_or_init(Default::default)
++}
++
++/// The key of `isolate` in the handler registry (its address).
++pub fn isolate_key(isolate: &v8::Isolate) -> usize {
++    // SAFETY: only the address is used.
++    let raw = unsafe { isolate.as_raw_isolate_ptr() };
++    // SAFETY: `UnsafeRawIsolatePtr` is one pointer.
++    unsafe { std::mem::transmute::<v8::UnsafeRawIsolatePtr, usize>(raw) }
++}
++
++/// Sets (or, with `None`, removes) the handler of the isolate with key `isolate`. Remove it
++/// before the isolate is disposed.
++pub fn set_handler(isolate: usize, handler: Option<Handler>) {
++    let mut handlers = handlers().lock().unwrap();
++    match handler {
++        Some(handler) => handlers.insert(isolate, handler),
++        None => handlers.remove(&isolate),
++    };
++}
++
++fn post(isolate: usize, task: v8::Task) {
++    let handler = handlers().lock().unwrap().get(&isolate).cloned();
++    match handler {
++        Some(handler) => handler(task),
++        None => std::mem::forget(task),
++    }
++}
++
++struct Delayed {
++    due: Instant,
++    sequence: u64,
++    isolate: usize,
++    task: v8::Task,
++}
++
++impl PartialEq for Delayed {
++    fn eq(&self, other: &Self) -> bool {
++        (self.due, self.sequence) == (other.due, other.sequence)
++    }
++}
++
++impl Eq for Delayed {}
++
++impl PartialOrd for Delayed {
++    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
++        Some(self.cmp(other))
++    }
++}
++
++impl Ord for Delayed {
++    // `BinaryHeap` is a max-heap: the earliest task compares greatest.
++    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
++        (other.due, other.sequence).cmp(&(self.due, self.sequence))
++    }
++}
++
++#[derive(Default)]
++struct Timer {
++    queue: Mutex<(BinaryHeap<Delayed>, u64)>,
++    wake: Condvar,
++}
++
++fn timer() -> &'static Timer {
++    static TIMER: OnceLock<Timer> = OnceLock::new();
++    TIMER.get_or_init(|| {
++        std::thread::Builder::new()
++            .name("roves-v8 timer".into())
++            .spawn(run_timer)
++            .expect("the V8 timer thread starts");
++        Timer::default()
++    })
++}
++
++fn post_delayed(isolate: usize, task: v8::Task, delay_in_seconds: f64) {
++    let delay = Duration::try_from_secs_f64(delay_in_seconds.max(0.0)).unwrap_or(Duration::MAX);
++    let Some(due) = Instant::now().checked_add(delay) else {
++        // Never due: like a task that never runs.
++        std::mem::forget(task);
++        return;
++    };
++    let timer = timer();
++    let mut queue = timer.queue.lock().unwrap();
++    queue.1 += 1;
++    let sequence = queue.1;
++    queue.0.push(Delayed { due, sequence, isolate, task });
++    timer.wake.notify_one();
++}
++
++fn run_timer() {
++    let timer = timer();
++    let mut queue = timer.queue.lock().unwrap();
++    loop {
++        let now = Instant::now();
++        match queue.0.peek().map(|next| next.due) {
++            Some(due) if due <= now => {
++                let Delayed { isolate, task, .. } = queue.0.pop().expect("a due task");
++                drop(queue);
++                post(isolate, task);
++                queue = timer.queue.lock().unwrap();
++            },
++            Some(due) => queue = timer.wake.wait_timeout(queue, due - now).unwrap().0,
++            None => queue = timer.wake.wait(queue).unwrap(),
++        }
++    }
++}
++
++/// The platform's foreground task runner.
++pub(crate) struct Platform;
++
++impl v8::PlatformImpl for Platform {
++    fn post_task(&self, isolate: *mut std::ffi::c_void, task: v8::Task) {
++        post(isolate as usize, task);
++    }
++
++    fn post_non_nestable_task(&self, isolate: *mut std::ffi::c_void, task: v8::Task) {
++        post(isolate as usize, task);
++    }
++
++    fn post_delayed_task(&self, isolate: *mut std::ffi::c_void, task: v8::Task, delay_in_seconds: f64) {
++        post_delayed(isolate as usize, task, delay_in_seconds);
++    }
++
++    fn post_non_nestable_delayed_task(&self, isolate: *mut std::ffi::c_void, task: v8::Task, delay_in_seconds: f64) {
++        post_delayed(isolate as usize, task, delay_in_seconds);
++    }
++
++    fn post_idle_task(&self, _isolate: *mut std::ffi::c_void, task: v8::IdleTask) {
++        // Idle tasks are disabled (`idle_task_support` is off): V8 does not post any.
++        std::mem::forget(task);
++    }
++}
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 61ee3d2520a..104707d220f 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -295,6 +295,8 @@ pub mod webidl {
+     }
+ }
+ 
++pub mod foreground;
++
+ use std::sync::Once;
+ 
+ static V8_PLATFORM_INIT: Once = Once::new();
+@@ -343,7 +345,8 @@ fn initialize_platform() {
+         #[cfg(test)]
+         v8::V8::set_flags_from_string("--expose-gc");
+ 
+-        let platform = v8::new_default_platform(0, false).make_shared();
++        // Foreground tasks go to the handler of their isolate (see `foreground`).
++        let platform = v8::new_custom_platform(0, false, false, foreground::Platform).make_shared();
+         v8::V8::initialize_platform(platform);
+         v8::V8::initialize();
+     }
+diff --git a/support/v8-smoke/suite2.html b/support/v8-smoke/suite2.html
+index 3a4d0a295dd..142e959436c 100644
+--- a/support/v8-smoke/suite2.html
++++ b/support/v8-smoke/suite2.html
+@@ -56,6 +56,8 @@ check("Atomics/SharedArrayBuffer availability", () => typeof Atomics === "object
+ check("String/Array modern methods", () => "abc".at(-1) === "c" && [3, 1, 2].toSorted().join() === "1,2,3" && Object.groupBy([1, 2, 3], x => x % 2 ? "o" : "e").o.length === 2);
+ check("Intl.Segmenter/RelativeTimeFormat", () => [...new Intl.Segmenter("en", { granularity: "word" }).segment("a b")].length === 3 && new Intl.RelativeTimeFormat("en").format(-1, "day") === "1 day ago");
+ check("getter/setter interface attributes", () => { const i = document.createElement("input"); i.value = "q"; i.type = "checkbox"; i.checked = true; return i.value === "q" && i.checked === true && i.type === "checkbox"; });
++check("WebAssembly.instantiate (async compile)", () => WebAssembly.instantiate(new Uint8Array([0,97,115,109,1,0,0,0,1,7,1,96,2,127,127,1,127,3,2,1,0,7,7,1,3,97,100,100,0,0,10,9,1,7,0,32,0,32,1,106,11])).then(r => r.instance.exports.add(2, 3) === 5));
++check("WebAssembly.compileStreaming", () => WebAssembly.compileStreaming(new Response(new Uint8Array([0,97,115,109,1,0,0,0]), { headers: { "content-type": "application/wasm" } })).then(m => m instanceof WebAssembly.Module));
+ check("element.style and CSSOM", () => { const d = document.createElement("div"); d.style.color = "red"; d.style.setProperty("--x", "1"); return d.style.color === "red" && d.style.getPropertyValue("--x") === "1" && document.styleSheets.length >= 1; });
+ 
+ Promise.all(pending).then(() => {
