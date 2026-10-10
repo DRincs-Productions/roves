@@ -878,3 +878,37 @@ typed_array_with_buffer! {
     JS_NewBigInt64ArrayWithBuffer => BigInt64Array, 8;
     JS_NewBigUint64ArrayWithBuffer => BigUint64Array, 8;
 }
+
+/// The embedder's free function for external buffer contents.
+struct ExternalFree {
+    free: crate::jsapi::BufferContentsFreeFunc,
+    user_data: *mut c_void,
+}
+
+unsafe extern "C" fn free_external_contents(data: *mut c_void, _length: usize, deleter_data: *mut c_void) {
+    // SAFETY: the deleter data is the boxed `ExternalFree` made for this buffer.
+    let external = unsafe { Box::from_raw(deleter_data as *mut ExternalFree) };
+    if let Some(free) = external.free {
+        // SAFETY: SpiderMonkey's free-function contract.
+        unsafe { free(data, external.user_data) };
+    }
+}
+
+/// A buffer on embedder-owned `contents`, released with `free_func(contents, user_data)`.
+pub unsafe fn NewExternalArrayBuffer(
+    cx: *mut JSContext,
+    nbytes: usize,
+    contents: *mut c_void,
+    free_func: crate::jsapi::BufferContentsFreeFunc,
+    free_user_data: *mut c_void,
+) -> *mut JSObject {
+    raw(cx)
+        .catching(|scope| {
+            let external = Box::into_raw(Box::new(ExternalFree { free: free_func, user_data: free_user_data }));
+            // SAFETY: the backing store releases the contents through the deleter.
+            let store = unsafe { v8::ArrayBuffer::new_backing_store_from_ptr(contents, nbytes, free_external_contents, external as *mut c_void) };
+            let buffer = v8::ArrayBuffer::with_backing_store(scope, &store.make_shared());
+            Some(from_v8(scope, buffer.into()).to_object())
+        })
+        .unwrap_or(std::ptr::null_mut())
+}

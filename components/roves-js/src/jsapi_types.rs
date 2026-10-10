@@ -55,6 +55,13 @@ pub struct BaseProxyHandler {
             _unused: [u8; 0],
         }
 
+        pub type BufferContentsFreeFunc = ::std::option::Option<
+            unsafe extern "C" fn(
+                contents: *mut std::os::raw::c_void,
+                userData: *mut std::os::raw::c_void,
+            ),
+        >;
+
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct BuildIdCharVector {

@@ -5,6 +5,7 @@ AsmJSOption
 AtomToLinearString
 AutoRequireNoGC
 BaseProxyHandler_Action
+BufferContentsFreeFunc
 BuildIdCharVector
 BuildIdOp
 CallArgs

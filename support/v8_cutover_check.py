@@ -10,7 +10,10 @@ The script temporarily points the workspace `js` dependency at components/roves-
 error kinds. It restores Cargo.toml and Cargo.lock afterwards. It uses a separate target
 directory, so the normal SpiderMonkey build cache is untouched.
 
-    python support/v8_cutover_check.py [crate] [--top N]
+    python support/v8_cutover_check.py [crate] [--top N] [--build [--release]]
+
+With `--build` it runs `cargo build` instead, producing a V8 build of the crate in
+target/v8-cutover (servoshell: a runnable browser on roves-js).
 """
 
 import argparse
@@ -30,6 +33,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("crate", nargs="?", default="servo-script-bindings")
     parser.add_argument("--top", type=int, default=25)
+    parser.add_argument("--build", action="store_true", help="cargo build instead of cargo check")
+    parser.add_argument("--release", action="store_true", help="with --build: a release build")
     args = parser.parse_args()
 
     manifest = ROOT / "Cargo.toml"
@@ -43,9 +48,12 @@ def main() -> int:
     try:
         manifest.write_text(MOZJS_LINE.sub(ROVES_JS_LINE, text), encoding="utf-8", newline="")
         env = dict(os.environ, AWS_LC_SYS_NO_ASM="1")
+        command = ["cargo", "build" if args.build else "check", "-p", args.crate, "--offline",
+                   "--message-format=short", "--target-dir", str(ROOT / "target" / "v8-cutover")]
+        if args.build and args.release:
+            command.append("--release")
         result = subprocess.run(
-            ["cargo", "check", "-p", args.crate, "--offline", "--message-format=short",
-             "--target-dir", str(ROOT / "target" / "v8-cutover")],
+            command,
             cwd=ROOT, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
         )
     finally:

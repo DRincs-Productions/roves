@@ -44,6 +44,17 @@ fn cstr<'s>(scope: &mut v8::PinScope<'s, '_>, name: *const c_char) -> Option<v8:
     v8::String::new(scope, &name.to_string_lossy())
 }
 
+/// An object's prototype. For proxies V8's `GetPrototype` reads the map's (null) prototype
+/// instead of running the `getPrototypeOf` trap, so they go through `Object.getPrototypeOf`.
+pub(crate) fn prototype_of<'s>(scope: &mut v8::PinScope<'s, '_>, object: v8::Local<'s, v8::Object>) -> Option<v8::Local<'s, v8::Value>> {
+    if !object.is_proxy() {
+        return object.get_prototype(scope);
+    }
+    let get_prototype = crate::values_impl::helper(scope, "GetPrototypeOf", "(function (o) { return Object.getPrototypeOf(o); })")?;
+    let undefined = v8::undefined(scope).into();
+    get_prototype.call(scope, undefined, &[object.into()])
+}
+
 /// The V8 property key of an id.
 pub(crate) fn id_key<'s>(scope: &mut v8::PinScope<'s, '_>, id: jsid) -> Option<v8::Local<'s, v8::Name>> {
     if id.is_int() {
@@ -233,7 +244,7 @@ pub unsafe fn JS_NewPlainObject(cx: *mut JSContext) -> *mut JSObject {
 pub unsafe fn JS_GetPrototype(cx: *mut JSContext, obj: HandleObject, mut result: MutableHandleObject) -> bool {
     let found = raw(cx).catching(|scope| {
         let target = object(scope, obj.get())?;
-        let prototype = target.get_prototype(scope)?;
+        let prototype = prototype_of(scope, target)?;
         Some(if prototype.is_object() { from_v8(scope, prototype).to_object() } else { std::ptr::null_mut() })
     });
     match found {
@@ -255,7 +266,7 @@ pub unsafe fn GetStaticPrototype(obj: *mut JSObject) -> *mut JSObject {
     JSContext::current()
         .catching(|scope| {
             let target = object(scope, obj)?;
-            let prototype = target.get_prototype(scope)?;
+            let prototype = prototype_of(scope, target)?;
             Some(if prototype.is_object() { from_v8(scope, prototype).to_object() } else { std::ptr::null_mut() })
         })
         .unwrap_or(std::ptr::null_mut())
@@ -547,7 +558,7 @@ fn get_descriptor(cx: &JSContext, obj: *mut JSObject, id: jsid, own: bool, desc:
             if own {
                 return Some(None);
             }
-            let prototype = target.get_prototype(scope)?;
+            let prototype = prototype_of(scope, target)?;
             match v8::Local::<v8::Object>::try_from(prototype) {
                 Ok(prototype) => target = prototype,
                 Err(_) => return Some(None),
@@ -1165,24 +1176,35 @@ pub unsafe fn JS_IterateCompartments(cx: *mut JSContext, data: *mut c_void, call
     }
 }
 
-pub unsafe fn IsWrapper(_obj: *mut JSObject) -> bool {
-    false
+/// Window proxies are the only wrappers on V8.
+pub unsafe fn IsWrapper(obj: *mut JSObject) -> bool {
+    // SAFETY: forwarded.
+    unsafe { crate::proxy::IsWindowProxy(obj) }
+}
+
+/// The only wrappers on V8 are window proxies: unwrapping one yields its window.
+fn unwrap_window_proxy(obj: *mut JSObject, stop_at_window_proxy: bool) -> *mut JSObject {
+    if stop_at_window_proxy || obj.is_null() {
+        return obj;
+    }
+    // SAFETY: a live object.
+    unsafe { crate::proxy::ToWindowIfWindowProxy(obj) }
 }
 
 pub unsafe fn CheckedUnwrapStatic(obj: *mut JSObject) -> *mut JSObject {
-    obj
+    unwrap_window_proxy(obj, false)
 }
 
 pub unsafe fn UnwrapObjectStatic(obj: *mut JSObject) -> *mut JSObject {
-    obj
+    unwrap_window_proxy(obj, false)
 }
 
-pub unsafe fn UncheckedUnwrapObject(obj: *mut JSObject, _stop_at_window_proxy: bool) -> *mut JSObject {
-    obj
+pub unsafe fn UncheckedUnwrapObject(obj: *mut JSObject, stop_at_window_proxy: bool) -> *mut JSObject {
+    unwrap_window_proxy(obj, stop_at_window_proxy)
 }
 
-pub unsafe fn UnwrapObjectDynamic(obj: *mut JSObject, _cx: *mut JSContext, _stop_at_window_proxy: bool) -> *mut JSObject {
-    obj
+pub unsafe fn UnwrapObjectDynamic(obj: *mut JSObject, _cx: *mut JSContext, stop_at_window_proxy: bool) -> *mut JSObject {
+    unwrap_window_proxy(obj, stop_at_window_proxy)
 }
 
 pub unsafe fn JS_WrapObject(_cx: *mut JSContext, _objp: MutableHandleObject) -> bool {

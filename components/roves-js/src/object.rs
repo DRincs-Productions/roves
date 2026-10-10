@@ -236,15 +236,18 @@ impl ClassTemplates {
             template.set_call_as_function_handler(call_class_hook, Some(data.into()));
         }
         if ops.is_some_and(|ops| ops.resolve.is_some() || ops.newEnumerate.is_some()) {
-            // SpiderMonkey's lazy properties: consulted only for properties the object does
-            // not have yet (V8's non-masking interceptors), as SpiderMonkey's resolve hook is.
+            // SpiderMonkey's lazy properties: the resolve hook runs during the object's own
+            // property lookup, before the prototype chain. A non-masking V8 interceptor would
+            // only run after the whole chain, which a proxy on the chain (a Window's named
+            // properties object) answers first; so the interceptor runs first and steps aside
+            // for properties the object already has.
             let data = v8::External::new(scope, class as *mut c_void);
             let configuration = v8::NamedPropertyHandlerConfiguration::new()
                 .getter(resolve_getter)
                 .query(resolve_query)
                 .enumerator(resolve_enumerator)
                 .data(data.into())
-                .flags(v8::PropertyHandlerFlags::NON_MASKING | v8::PropertyHandlerFlags::ONLY_INTERCEPT_STRINGS);
+                .flags(v8::PropertyHandlerFlags::ONLY_INTERCEPT_STRINGS);
             template.set_named_property_handler(configuration);
         }
         self.templates.borrow_mut().insert(class as usize, v8::Global::new(scope, template));
@@ -258,22 +261,34 @@ thread_local! {
     static RESOLVING: RefCell<Vec<(*mut JSObject, crate::jsid::jsid)>> = const { RefCell::new(Vec::new()) };
 }
 
-/// The class object behind an interceptor's holder (a global's holder is its proxy).
-fn interceptor_object(holder: v8::Local<v8::Object>) -> Option<*mut JSObject> {
-    let class_box = class_box_of_v8(holder)?;
-    let cell = class_box.cell.get();
-    (!cell.is_null()).then_some(cell as *mut JSObject)
+/// The class object behind an interceptor's holder. A global's holder may be its proxy (which
+/// carries the box) or, for unqualified name lookups, the inner global object: that one maps
+/// to its realm's global.
+fn interceptor_object(scope: &mut v8::PinScope, holder: v8::Local<v8::Object>) -> Option<*mut JSObject> {
+    if let Some(class_box) = class_box_of_v8(holder) {
+        let cell = class_box.cell.get();
+        return (!cell.is_null()).then_some(cell as *mut JSObject);
+    }
+    let context = holder.get_creation_context(scope)?;
+    let realm = crate::realm_impl::realm_of_context(context);
+    // SAFETY: realms come from `register_realm`.
+    let global = unsafe { crate::realm_impl::GetRealmGlobalOrNull(realm) };
+    (!global.is_null()).then_some(global)
 }
 
 /// Runs the class resolve hook for `key` on the holder; `Some(true)` when it defined the
 /// property, `None` when it threw (the exception is rethrown into V8).
 fn run_resolve_hook(scope: &mut v8::PinScope, data: v8::Local<v8::Value>, holder: v8::Local<v8::Object>, key: v8::Local<v8::Name>) -> Option<bool> {
+    // An existing own property is found by the normal lookup.
+    if holder.has_real_named_property(scope, key) == Some(true) {
+        return Some(false);
+    }
     let external = v8::Local::<v8::External>::try_from(data).ok()?;
     let class = external.value() as *const JSClass;
     // SAFETY: only classes with a resolve or enumerate hook get these interceptors.
     let ops = unsafe { &*(*class).cOps };
     let resolve = ops.resolve?;
-    let obj = interceptor_object(holder)?;
+    let obj = interceptor_object(scope, holder)?;
     let id = crate::jsapi_impl::key_id(scope, key.into());
     if RESOLVING.with(|resolving| resolving.borrow().contains(&(obj, id))) {
         return Some(false);
@@ -292,6 +307,12 @@ fn run_resolve_hook(scope: &mut v8::PinScope, data: v8::Local<v8::Value>, holder
     // SAFETY: SpiderMonkey's resolve contract (rooted arguments).
     let ok = unsafe { resolve(cx, object.handle().into_handle(), rooted_id.handle().into_handle(), &mut resolved) };
     RESOLVING.with(|resolving| resolving.borrow_mut().pop());
+    if ok && resolved {
+        // The caller reads the property back; lookups of it from there must not resolve it
+        // again (a hook may report success without defining anything, as Servo's does for
+        // interfaces disabled by preferences).
+        RESOLVING.with(|resolving| resolving.borrow_mut().push((obj, id)));
+    }
     if !ok {
         crate::native::rethrow_pending(scope, JSContext::current());
         return None;
@@ -309,7 +330,7 @@ fn resolve_getter<'s>(
     match run_resolve_hook(scope, args.data(), holder, key) {
         None => v8::Intercepted::kYes,
         Some(false) => v8::Intercepted::kNo,
-        Some(true) => match holder.get_real_named_property(scope, key) {
+        Some(true) => match finish_resolved(|| resolved_value(scope, holder, key, holder)) {
             Some(value) => {
                 retval.set(value);
                 v8::Intercepted::kYes
@@ -317,6 +338,53 @@ fn resolve_getter<'s>(
             None => v8::Intercepted::kNo,
         },
     }
+}
+
+/// Runs the read-back of a resolved property, then drops the guard `run_resolve_hook` left.
+fn finish_resolved<R>(read: impl FnOnce() -> R) -> R {
+    let result = read();
+    RESOLVING.with(|resolving| resolving.borrow_mut().pop());
+    result
+}
+
+/// A field of a resolved property's own descriptor.
+fn descriptor_field<'s>(scope: &mut v8::PinScope<'s, '_>, descriptor: v8::Local<'s, v8::Object>, name: &str) -> Option<v8::Local<'s, v8::Value>> {
+    let key = v8::String::new(scope, name)?;
+    descriptor.get(scope, key.into())
+}
+
+/// The value of the property the resolve hook just defined on the holder. Only the own
+/// property is read: V8's "real named property" lookups walk the prototype chain, which can
+/// reach named-property proxies (a Window's) that must not run here.
+fn resolved_value<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    holder: v8::Local<'s, v8::Object>,
+    key: v8::Local<'s, v8::Name>,
+    receiver: v8::Local<'s, v8::Object>,
+) -> Option<v8::Local<'s, v8::Value>> {
+    let descriptor = v8::Local::<v8::Object>::try_from(holder.get_own_property_descriptor(scope, key)?).ok()?;
+    let getter = descriptor_field(scope, descriptor, "get")?;
+    if let Ok(getter) = v8::Local::<v8::Function>::try_from(getter) {
+        return getter.call(scope, receiver.into(), &[]);
+    }
+    descriptor_field(scope, descriptor, "value")
+}
+
+/// The V8 attributes of the property the resolve hook just defined (own property only).
+fn resolved_attributes(scope: &mut v8::PinScope, holder: v8::Local<v8::Object>, key: v8::Local<v8::Name>) -> Option<v8::PropertyAttribute> {
+    let descriptor = v8::Local::<v8::Object>::try_from(holder.get_own_property_descriptor(scope, key)?).ok()?;
+    let mut attributes = v8::PropertyAttribute::NONE;
+    let writable = descriptor_field(scope, descriptor, "writable")?;
+    if !writable.is_undefined() && !writable.boolean_value(scope) {
+        attributes = attributes | v8::PropertyAttribute::READ_ONLY;
+    }
+    if !descriptor_field(scope, descriptor, "enumerable")?.boolean_value(scope) {
+        attributes = attributes | v8::PropertyAttribute::DONT_ENUM;
+    }
+    if !descriptor_field(scope, descriptor, "configurable")?.boolean_value(scope) {
+        attributes = attributes | v8::PropertyAttribute::DONT_DELETE;
+    }
+    Some(attributes)
 }
 
 fn resolve_query<'s>(
@@ -329,7 +397,7 @@ fn resolve_query<'s>(
     match run_resolve_hook(scope, args.data(), holder, key) {
         None => v8::Intercepted::kYes,
         Some(false) => v8::Intercepted::kNo,
-        Some(true) => match holder.get_real_named_property_attributes(scope, key) {
+        Some(true) => match finish_resolved(|| resolved_attributes(scope, holder, key)) {
             Some(attributes) => {
                 retval.set_int32(attributes.as_u32() as i32);
                 v8::Intercepted::kYes
@@ -346,7 +414,7 @@ fn resolve_enumerator<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::PropertyCa
     // SAFETY: as for `run_resolve_hook`.
     let ops = unsafe { &*(*class).cOps };
     let Some(enumerate) = ops.newEnumerate else { return };
-    let Some(obj) = interceptor_object(args.holder()) else { return };
+    let Some(obj) = interceptor_object(scope, args.holder()) else { return };
     let cx = JSContext::current() as *const JSContext as *mut JSContext;
     crate::rooted!(in(cx) let object = obj);
     // SAFETY: `cx` is this thread's live context.

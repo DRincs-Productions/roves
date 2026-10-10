@@ -139,6 +139,26 @@ pub unsafe fn JS_DefineProperties(cx: *mut JSContext, obj: HandleObject, ps: *co
     .unwrap_or(false)
 }
 
+/// The V8 counterpart of a SpiderMonkey self-hosted intrinsic used by binding tables
+/// (WebIDL iterable declarations use the array iteration methods).
+fn self_hosted<'s>(scope: &mut v8::PinScope<'s, '_>, name: &str) -> Option<v8::Local<'s, v8::Value>> {
+    let method = match name.trim_start_matches('$') {
+        "ArrayValues" => "values",
+        "ArrayKeys" => "keys",
+        "ArrayEntries" => "entries",
+        "ArrayForEach" => "forEach",
+        _ => return None,
+    };
+    let global = scope.get_current_context().global(scope);
+    let array_key = v8::String::new(scope, "Array")?;
+    let array = v8::Local::<v8::Object>::try_from(global.get(scope, array_key.into())?).ok()?;
+    let prototype_key = v8::String::new(scope, "prototype")?;
+    let prototype = v8::Local::<v8::Object>::try_from(array.get(scope, prototype_key.into())?).ok()?;
+    let method_key = v8::String::new(scope, method)?;
+    let function = prototype.get(scope, method_key.into())?;
+    function.is_function().then_some(function)
+}
+
 /// Defines each method of a `JS_FS_END`-terminated table on `obj`.
 pub unsafe fn JS_DefineFunctions(cx: *mut JSContext, obj: HandleObject, fs: *const JSFunctionSpec) -> bool {
     // SAFETY: callers pass a live context.
@@ -155,8 +175,17 @@ pub unsafe fn JS_DefineFunctions(cx: *mut JSContext, obj: HandleObject, fs: *con
             let name = unsafe { entry.name.symbol_ };
             let Some((key, text)) = spec_key(scope, name) else { break };
             if !entry.selfHostedName.is_null() {
-                crate::native::throw_type_error(scope, "self-hosted functions are not supported on V8");
-                return None;
+                // SAFETY: a NUL-terminated name.
+                let intrinsic = unsafe { CStr::from_ptr(entry.selfHostedName) }.to_string_lossy();
+                let Some(function) = self_hosted(scope, &intrinsic) else {
+                    crate::native::throw_type_error(scope, &format!("self-hosted function {intrinsic} is not available on V8"));
+                    return None;
+                };
+                let flags = entry.flags as u32;
+                object.define_own_property(scope, key, function, crate::api::property_attributes(flags))?;
+                // SAFETY: still inside the table.
+                spec = unsafe { spec.add(1) };
+                continue;
             }
             let flags = entry.flags as u32;
             let constructor = flags & crate::jsapi::JSFUN_CONSTRUCTOR != 0;

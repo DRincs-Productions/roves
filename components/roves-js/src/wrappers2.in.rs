@@ -191,6 +191,7 @@ wrap!(jsapi: pub fn JS_GetArrayBufferViewBuffer(cx: &mut JSContext, obj: Handle<
 wrap!(jsapi: pub fn JS_NewDataView(cx: &mut JSContext, buffer: Handle<*mut JSObject>, byteOffset: usize, byteLength: usize) -> *mut JSObject);
 wrap!(jsapi: pub fn JS_NewObjectWithoutMetadata(cx: &mut JSContext, clasp: *const JSClass, proto: Handle<*mut JSObject>) -> *mut JSObject);
 wrap!(jsapi: pub fn JS_InitializePropertiesFromCompatibleNativeObject(cx: &mut JSContext, dst: HandleObject, src: HandleObject) -> bool);
+wrap!(jsapi: pub fn NewExternalArrayBuffer(cx: &mut JSContext, nbytes: usize, contents: *mut ::std::os::raw::c_void, freeFunc: BufferContentsFreeFunc, freeUserData: *mut ::std::os::raw::c_void) -> *mut JSObject);
 wrap!(jsapi: pub fn NewArrayBufferWithContents(cx: &mut JSContext, nbytes: usize, contents: *mut ::std::os::raw::c_void) -> *mut JSObject);
 wrap!(jsapi: pub fn JS_GetOwnPropertyDescriptorById(cx: &mut JSContext, obj: HandleObject, id: HandleId, desc: MutableHandle<PropertyDescriptor>, isNone: *mut bool) -> bool);
 wrap!(jsapi: pub fn JS_GetPropertyDescriptorById(cx: &mut JSContext, obj: HandleObject, id: HandleId, desc: MutableHandle<PropertyDescriptor>, holder: MutableHandleObject, isNone: *mut bool) -> bool);

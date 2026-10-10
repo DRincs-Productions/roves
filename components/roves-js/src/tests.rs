@@ -601,6 +601,7 @@ mod realms {
         assert_eq!(eval(&runtime, "globalThis").to_object(), global.get(), "the global proxy is the class object");
         assert_ne!(eval(&runtime, "Object.prototype").to_object(), first_object_prototype);
         assert_eq!(unsafe { CurrentGlobalOrNull(cx) }, global.get());
+        assert!(eval(&runtime, "typeof console === 'undefined'").to_boolean(), "V8's console leaves room for the embedder's");
         eval(&runtime, "globalThis.inRealm = 1");
         unsafe { LeaveRealm(cx, old) };
         assert_eq!(unsafe { GetCurrentRealmOrNull(cx) }, first_realm);
@@ -733,6 +734,9 @@ mod proxies {
             assert!(!proxy.get().is_null());
             unsafe { SetProxyReservedSlot(proxy.get(), 0, &Int32Value(77)) };
             assert!(unsafe { IsProxyHandlerFamily(proxy.get()) });
+            rooted!(in(cx) let mut prototype = ptr::null_mut::<JSObject>());
+            assert!(unsafe { JS_GetPrototype(cx, proxy.handle().into_handle(), prototype.handle_mut().into_handle()) });
+            assert_eq!(prototype.get(), proto.get(), "a proxy's prototype comes from its getPrototypeOf trap");
             assert_eq!(unsafe { GetProxyHandler(proxy.get()) }, handler);
             assert_eq!(unsafe { GetProxyHandlerExtra(proxy.get()) }, &EXTRA as *const u8 as *const std::ffi::c_void);
             assert!(unsafe { crate::object::object_class(proxy.get()).as_ref() }.unwrap().flags & crate::object::JSCLASS_IS_PROXY != 0);
@@ -837,7 +841,21 @@ mod lazy_globals {
         !chars.is_null() && unsafe { std::slice::from_raw_parts(chars, length) } == b"LazyThing"
     }
 
+    fn is_phantom(id: jsid) -> bool {
+        if !id.is_string() {
+            return false;
+        }
+        let mut length = 0;
+        let chars = crate::api::latin1_chars(id.to_string(), &mut length);
+        !chars.is_null() && unsafe { std::slice::from_raw_parts(chars, length) } == b"Phantom"
+    }
+
     unsafe extern "C" fn resolve(cx: *mut JSContext, obj: HandleObject, id: HandleId, resolved: *mut bool) -> bool {
+        if is_phantom(id.get()) {
+            // Reports success without defining anything (Servo does for disabled interfaces).
+            unsafe { *resolved = true };
+            return true;
+        }
         if !is_lazy_name(id.get()) {
             unsafe { *resolved = false };
             return true;
@@ -858,7 +876,7 @@ mod lazy_globals {
     }
 
     unsafe extern "C" fn may_resolve(_names: *const JSAtomState, id: jsid, _obj: *mut JSObject) -> bool {
-        is_lazy_name(id)
+        is_lazy_name(id) || is_phantom(id)
     }
 
     unsafe extern "C" fn enumerate(cx: *mut JSContext, _obj: HandleObject, props: MutableHandleIdVector, _enumerable_only: bool) -> bool {
@@ -901,6 +919,11 @@ mod lazy_globals {
         let old = unsafe { EnterRealm(cx, global.get()) };
         let before = RESOLVE_CALLS.with(Cell::get);
         assert!(eval(&runtime, "typeof notLazy === 'undefined'").to_boolean(), "other names stay unresolved");
+        assert!(eval(&runtime, "typeof Phantom === 'undefined' && !('Phantom' in globalThis)").to_boolean(), "a hook that defines nothing does not recurse");
+        // A proxy on the prototype chain (like a Window's named properties object) must not
+        // hide lazy properties.
+        eval(&runtime, "Object.setPrototypeOf(Object.getPrototypeOf(globalThis), new Proxy({}, {}))");
+        assert_eq!(eval(&runtime, "(function () { return LazyThing; })()").to_int32(), 42);
         assert_eq!(eval(&runtime, "LazyThing").to_int32(), 42);
         assert_eq!(eval(&runtime, "LazyThing + LazyThing").to_int32(), 84);
         assert!(eval(&runtime, "'LazyThing' in globalThis && globalThis.hasOwnProperty('LazyThing')").to_boolean());
@@ -952,10 +975,8 @@ mod runtime_hooks {
         runtime.gc_for_testing();
         assert!(EXTRA_TRACED.with(Cell::get) > 0, "embedder root tracers run on every GC");
 
-        // Promise jobs run at the explicit checkpoint, not before.
-        eval(&runtime, "globalThis.done = false; Promise.resolve().then(() => { globalThis.done = true; })");
-        assert!(!eval(&runtime, "done").to_boolean());
-        unsafe { RunJobs(cx) };
+        // Promise jobs run once the script that queued them returns (not inside it).
+        assert!(!eval(&runtime, "globalThis.done = false; Promise.resolve().then(() => { globalThis.done = true; }); done").to_boolean());
         assert!(eval(&runtime, "done").to_boolean());
 
         // Unhandled rejections, then a late handler.

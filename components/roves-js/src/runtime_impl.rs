@@ -7,9 +7,10 @@
 //!
 //! **Promise jobs.** SpiderMonkey hands every promise job to the embedder's job queue
 //! (`JobQueueTraps::enqueuePromiseJob`), and the embedder runs it. V8 has no such hook: its
-//! microtask queue is the only queue. Runtimes use V8's explicit microtask policy, and
-//! [`RunJobs`] performs a microtask checkpoint; the embedder's job-queue traps are kept but
-//! not called for promise jobs.
+//! microtask queue is the only queue. Runtimes use V8's automatic microtask policy (jobs
+//! run when the script call depth returns to zero, after each script or callback, like
+//! HTML's microtask checkpoint after running script), and [`RunJobs`] performs a checkpoint
+//! on demand; the embedder's job-queue traps are kept but not called for promise jobs.
 //!
 //! Settings with no V8 counterpart (SpiderMonkey's GC parameters, JIT options, build ids,
 //! memory reporters) are recorded and otherwise ignored.
@@ -85,7 +86,7 @@ fn isolate<'i>(cx: *mut JSContext) -> &'i mut v8::Isolate {
 
 /// Configures a new runtime's isolate for the JSAPI's model.
 pub(crate) fn configure_isolate(isolate: &mut v8::Isolate) {
-    isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
+    isolate.set_microtasks_policy(v8::MicrotasksPolicy::Auto);
     isolate.set_promise_reject_callback(promise_reject_callback);
     crate::modules_impl::configure_isolate(isolate);
 }

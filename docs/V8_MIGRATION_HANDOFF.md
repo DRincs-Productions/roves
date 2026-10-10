@@ -429,7 +429,15 @@ strategia completa è in `docs/V8_MIGRATION.md` ("Cutover strategy"). Metrica:
   host tramite le callback di Servo), `WindowProxy` (handler wrapper che inoltrano al
   `Window`, outerize, transplant che preserva l'identità), stesso token di sicurezza V8 per
   tutti i realm. **`servo-script`: 0 errori.** Test: 22/22.
-- **Prossimi passi (dopo CP104):** `cargo check` dell'intero workspace con lo swap
+- **CP105:** `servoshell` compila, linka e **gira su V8**
+  (`python support/v8_cutover_check.py servoshell --build` → `target/v8-cutover/debug/servoshell.exe`;
+  servono le DLL di `target/debug` e ANGLE accanto all'eseguibile). Una pagina di test headless
+  esegue DOM, eventi, classi, JSON, promise, timer, interfacce lazy, `console.log` e viene
+  renderizzata. Correzioni in CUSTOMIZATIONS (CP105). Lacune: `window === globalThis` falso,
+  debugger devtools (serve l'inspector V8), l'esecuzione headless non termina da sola.
+- **Prossimi passi (dopo CP105):** global proxy V8 = `WindowProxy` di Servo; uscita pulita
+  in headless; più pagine e WPT; poi swap permanente (`engine-v8`).
+- **Storico (dopo CP104):** `cargo check` dell'intero workspace con lo swap
   (servoshell); rendere lo swap permanente (`engine-v8`); avviare pagine reali e chiudere le
   lacune runtime (global proxy V8 = `WindowProxy`, callback GC, prototipi immutabili,
   streaming wasm).

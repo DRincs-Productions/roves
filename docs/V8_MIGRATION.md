@@ -88,6 +88,16 @@ errors.
 
   The runtime gaps to close are listed in CUSTOMIZATIONS (CP104), among them V8's global
   proxy as Servo's `WindowProxy`.
+- CP105: `servoshell` type-checks (0 errors), **builds, links and runs pages on V8**
+  (`python support/v8_cutover_check.py servoshell --build`).
+  - A headless run of a test page executes DOM manipulation, events, classes, JSON,
+    promises, timers, lazily defined interfaces and `console.log`, and renders the result.
+  - The fixes are listed in CUSTOMIZATIONS (CP105).
+  - Remaining before making the swap permanent:
+    - V8's global proxy as Servo's `WindowProxy`;
+    - devtools on V8's inspector;
+    - clean headless exit;
+    - broad page and WPT coverage.
 
 **Surface.** An inventory of `script`, `script_bindings` and `script_webgpu` found about 590
 distinct `js::` items:

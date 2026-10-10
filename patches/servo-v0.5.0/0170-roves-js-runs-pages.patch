@@ -1,0 +1,563 @@
+diff --git a/components/roves-js/src/binding.rs b/components/roves-js/src/binding.rs
+index 6d94be42212..288d9211f7f 100644
+--- a/components/roves-js/src/binding.rs
++++ b/components/roves-js/src/binding.rs
+@@ -139,6 +139,26 @@ pub unsafe fn JS_DefineProperties(cx: *mut JSContext, obj: HandleObject, ps: *co
+     .unwrap_or(false)
+ }
+ 
++/// The V8 counterpart of a SpiderMonkey self-hosted intrinsic used by binding tables
++/// (WebIDL iterable declarations use the array iteration methods).
++fn self_hosted<'s>(scope: &mut v8::PinScope<'s, '_>, name: &str) -> Option<v8::Local<'s, v8::Value>> {
++    let method = match name.trim_start_matches('$') {
++        "ArrayValues" => "values",
++        "ArrayKeys" => "keys",
++        "ArrayEntries" => "entries",
++        "ArrayForEach" => "forEach",
++        _ => return None,
++    };
++    let global = scope.get_current_context().global(scope);
++    let array_key = v8::String::new(scope, "Array")?;
++    let array = v8::Local::<v8::Object>::try_from(global.get(scope, array_key.into())?).ok()?;
++    let prototype_key = v8::String::new(scope, "prototype")?;
++    let prototype = v8::Local::<v8::Object>::try_from(array.get(scope, prototype_key.into())?).ok()?;
++    let method_key = v8::String::new(scope, method)?;
++    let function = prototype.get(scope, method_key.into())?;
++    function.is_function().then_some(function)
++}
++
+ /// Defines each method of a `JS_FS_END`-terminated table on `obj`.
+ pub unsafe fn JS_DefineFunctions(cx: *mut JSContext, obj: HandleObject, fs: *const JSFunctionSpec) -> bool {
+     // SAFETY: callers pass a live context.
+@@ -155,8 +175,17 @@ pub unsafe fn JS_DefineFunctions(cx: *mut JSContext, obj: HandleObject, fs: *con
+             let name = unsafe { entry.name.symbol_ };
+             let Some((key, text)) = spec_key(scope, name) else { break };
+             if !entry.selfHostedName.is_null() {
+-                crate::native::throw_type_error(scope, "self-hosted functions are not supported on V8");
+-                return None;
++                // SAFETY: a NUL-terminated name.
++                let intrinsic = unsafe { CStr::from_ptr(entry.selfHostedName) }.to_string_lossy();
++                let Some(function) = self_hosted(scope, &intrinsic) else {
++                    crate::native::throw_type_error(scope, &format!("self-hosted function {intrinsic} is not available on V8"));
++                    return None;
++                };
++                let flags = entry.flags as u32;
++                object.define_own_property(scope, key, function, crate::api::property_attributes(flags))?;
++                // SAFETY: still inside the table.
++                spec = unsafe { spec.add(1) };
++                continue;
+             }
+             let flags = entry.flags as u32;
+             let constructor = flags & crate::jsapi::JSFUN_CONSTRUCTOR != 0;
+diff --git a/components/roves-js/src/jsapi_impl.rs b/components/roves-js/src/jsapi_impl.rs
+index 99f6f5b4a9c..7cc7a35388d 100644
+--- a/components/roves-js/src/jsapi_impl.rs
++++ b/components/roves-js/src/jsapi_impl.rs
+@@ -44,6 +44,17 @@ fn cstr<'s>(scope: &mut v8::PinScope<'s, '_>, name: *const c_char) -> Option<v8:
+     v8::String::new(scope, &name.to_string_lossy())
+ }
+ 
++/// An object's prototype. For proxies V8's `GetPrototype` reads the map's (null) prototype
++/// instead of running the `getPrototypeOf` trap, so they go through `Object.getPrototypeOf`.
++pub(crate) fn prototype_of<'s>(scope: &mut v8::PinScope<'s, '_>, object: v8::Local<'s, v8::Object>) -> Option<v8::Local<'s, v8::Value>> {
++    if !object.is_proxy() {
++        return object.get_prototype(scope);
++    }
++    let get_prototype = crate::values_impl::helper(scope, "GetPrototypeOf", "(function (o) { return Object.getPrototypeOf(o); })")?;
++    let undefined = v8::undefined(scope).into();
++    get_prototype.call(scope, undefined, &[object.into()])
++}
++
+ /// The V8 property key of an id.
+ pub(crate) fn id_key<'s>(scope: &mut v8::PinScope<'s, '_>, id: jsid) -> Option<v8::Local<'s, v8::Name>> {
+     if id.is_int() {
+@@ -233,7 +244,7 @@ pub unsafe fn JS_NewPlainObject(cx: *mut JSContext) -> *mut JSObject {
+ pub unsafe fn JS_GetPrototype(cx: *mut JSContext, obj: HandleObject, mut result: MutableHandleObject) -> bool {
+     let found = raw(cx).catching(|scope| {
+         let target = object(scope, obj.get())?;
+-        let prototype = target.get_prototype(scope)?;
++        let prototype = prototype_of(scope, target)?;
+         Some(if prototype.is_object() { from_v8(scope, prototype).to_object() } else { std::ptr::null_mut() })
+     });
+     match found {
+@@ -255,7 +266,7 @@ pub unsafe fn GetStaticPrototype(obj: *mut JSObject) -> *mut JSObject {
+     JSContext::current()
+         .catching(|scope| {
+             let target = object(scope, obj)?;
+-            let prototype = target.get_prototype(scope)?;
++            let prototype = prototype_of(scope, target)?;
+             Some(if prototype.is_object() { from_v8(scope, prototype).to_object() } else { std::ptr::null_mut() })
+         })
+         .unwrap_or(std::ptr::null_mut())
+@@ -547,7 +558,7 @@ fn get_descriptor(cx: &JSContext, obj: *mut JSObject, id: jsid, own: bool, desc:
+             if own {
+                 return Some(None);
+             }
+-            let prototype = target.get_prototype(scope)?;
++            let prototype = prototype_of(scope, target)?;
+             match v8::Local::<v8::Object>::try_from(prototype) {
+                 Ok(prototype) => target = prototype,
+                 Err(_) => return Some(None),
+@@ -1165,24 +1176,35 @@ pub unsafe fn JS_IterateCompartments(cx: *mut JSContext, data: *mut c_void, call
+     }
+ }
+ 
+-pub unsafe fn IsWrapper(_obj: *mut JSObject) -> bool {
+-    false
++/// Window proxies are the only wrappers on V8.
++pub unsafe fn IsWrapper(obj: *mut JSObject) -> bool {
++    // SAFETY: forwarded.
++    unsafe { crate::proxy::IsWindowProxy(obj) }
++}
++
++/// The only wrappers on V8 are window proxies: unwrapping one yields its window.
++fn unwrap_window_proxy(obj: *mut JSObject, stop_at_window_proxy: bool) -> *mut JSObject {
++    if stop_at_window_proxy || obj.is_null() {
++        return obj;
++    }
++    // SAFETY: a live object.
++    unsafe { crate::proxy::ToWindowIfWindowProxy(obj) }
+ }
+ 
+ pub unsafe fn CheckedUnwrapStatic(obj: *mut JSObject) -> *mut JSObject {
+-    obj
++    unwrap_window_proxy(obj, false)
+ }
+ 
+ pub unsafe fn UnwrapObjectStatic(obj: *mut JSObject) -> *mut JSObject {
+-    obj
++    unwrap_window_proxy(obj, false)
+ }
+ 
+-pub unsafe fn UncheckedUnwrapObject(obj: *mut JSObject, _stop_at_window_proxy: bool) -> *mut JSObject {
+-    obj
++pub unsafe fn UncheckedUnwrapObject(obj: *mut JSObject, stop_at_window_proxy: bool) -> *mut JSObject {
++    unwrap_window_proxy(obj, stop_at_window_proxy)
+ }
+ 
+-pub unsafe fn UnwrapObjectDynamic(obj: *mut JSObject, _cx: *mut JSContext, _stop_at_window_proxy: bool) -> *mut JSObject {
+-    obj
++pub unsafe fn UnwrapObjectDynamic(obj: *mut JSObject, _cx: *mut JSContext, stop_at_window_proxy: bool) -> *mut JSObject {
++    unwrap_window_proxy(obj, stop_at_window_proxy)
+ }
+ 
+ pub unsafe fn JS_WrapObject(_cx: *mut JSContext, _objp: MutableHandleObject) -> bool {
+diff --git a/components/roves-js/src/jsapi_types.rs b/components/roves-js/src/jsapi_types.rs
+index a56d4944286..c8d5b591737 100644
+--- a/components/roves-js/src/jsapi_types.rs
++++ b/components/roves-js/src/jsapi_types.rs
+@@ -55,6 +55,13 @@ pub struct BaseProxyHandler {
+             _unused: [u8; 0],
+         }
+ 
++        pub type BufferContentsFreeFunc = ::std::option::Option<
++            unsafe extern "C" fn(
++                contents: *mut std::os::raw::c_void,
++                userData: *mut std::os::raw::c_void,
++            ),
++        >;
++
+ #[repr(C)]
+ #[derive(Debug, Copy, Clone, PartialEq)]
+ pub struct BuildIdCharVector {
+diff --git a/components/roves-js/src/object.rs b/components/roves-js/src/object.rs
+index 74e28abe53b..2024baf9ec8 100644
+--- a/components/roves-js/src/object.rs
++++ b/components/roves-js/src/object.rs
+@@ -236,15 +236,18 @@ impl ClassTemplates {
+             template.set_call_as_function_handler(call_class_hook, Some(data.into()));
+         }
+         if ops.is_some_and(|ops| ops.resolve.is_some() || ops.newEnumerate.is_some()) {
+-            // SpiderMonkey's lazy properties: consulted only for properties the object does
+-            // not have yet (V8's non-masking interceptors), as SpiderMonkey's resolve hook is.
++            // SpiderMonkey's lazy properties: the resolve hook runs during the object's own
++            // property lookup, before the prototype chain. A non-masking V8 interceptor would
++            // only run after the whole chain, which a proxy on the chain (a Window's named
++            // properties object) answers first; so the interceptor runs first and steps aside
++            // for properties the object already has.
+             let data = v8::External::new(scope, class as *mut c_void);
+             let configuration = v8::NamedPropertyHandlerConfiguration::new()
+                 .getter(resolve_getter)
+                 .query(resolve_query)
+                 .enumerator(resolve_enumerator)
+                 .data(data.into())
+-                .flags(v8::PropertyHandlerFlags::NON_MASKING | v8::PropertyHandlerFlags::ONLY_INTERCEPT_STRINGS);
++                .flags(v8::PropertyHandlerFlags::ONLY_INTERCEPT_STRINGS);
+             template.set_named_property_handler(configuration);
+         }
+         self.templates.borrow_mut().insert(class as usize, v8::Global::new(scope, template));
+@@ -258,22 +261,34 @@ thread_local! {
+     static RESOLVING: RefCell<Vec<(*mut JSObject, crate::jsid::jsid)>> = const { RefCell::new(Vec::new()) };
+ }
+ 
+-/// The class object behind an interceptor's holder (a global's holder is its proxy).
+-fn interceptor_object(holder: v8::Local<v8::Object>) -> Option<*mut JSObject> {
+-    let class_box = class_box_of_v8(holder)?;
+-    let cell = class_box.cell.get();
+-    (!cell.is_null()).then_some(cell as *mut JSObject)
++/// The class object behind an interceptor's holder. A global's holder may be its proxy (which
++/// carries the box) or, for unqualified name lookups, the inner global object: that one maps
++/// to its realm's global.
++fn interceptor_object(scope: &mut v8::PinScope, holder: v8::Local<v8::Object>) -> Option<*mut JSObject> {
++    if let Some(class_box) = class_box_of_v8(holder) {
++        let cell = class_box.cell.get();
++        return (!cell.is_null()).then_some(cell as *mut JSObject);
++    }
++    let context = holder.get_creation_context(scope)?;
++    let realm = crate::realm_impl::realm_of_context(context);
++    // SAFETY: realms come from `register_realm`.
++    let global = unsafe { crate::realm_impl::GetRealmGlobalOrNull(realm) };
++    (!global.is_null()).then_some(global)
+ }
+ 
+ /// Runs the class resolve hook for `key` on the holder; `Some(true)` when it defined the
+ /// property, `None` when it threw (the exception is rethrown into V8).
+ fn run_resolve_hook(scope: &mut v8::PinScope, data: v8::Local<v8::Value>, holder: v8::Local<v8::Object>, key: v8::Local<v8::Name>) -> Option<bool> {
++    // An existing own property is found by the normal lookup.
++    if holder.has_real_named_property(scope, key) == Some(true) {
++        return Some(false);
++    }
+     let external = v8::Local::<v8::External>::try_from(data).ok()?;
+     let class = external.value() as *const JSClass;
+     // SAFETY: only classes with a resolve or enumerate hook get these interceptors.
+     let ops = unsafe { &*(*class).cOps };
+     let resolve = ops.resolve?;
+-    let obj = interceptor_object(holder)?;
++    let obj = interceptor_object(scope, holder)?;
+     let id = crate::jsapi_impl::key_id(scope, key.into());
+     if RESOLVING.with(|resolving| resolving.borrow().contains(&(obj, id))) {
+         return Some(false);
+@@ -292,6 +307,12 @@ fn run_resolve_hook(scope: &mut v8::PinScope, data: v8::Local<v8::Value>, holder
+     // SAFETY: SpiderMonkey's resolve contract (rooted arguments).
+     let ok = unsafe { resolve(cx, object.handle().into_handle(), rooted_id.handle().into_handle(), &mut resolved) };
+     RESOLVING.with(|resolving| resolving.borrow_mut().pop());
++    if ok && resolved {
++        // The caller reads the property back; lookups of it from there must not resolve it
++        // again (a hook may report success without defining anything, as Servo's does for
++        // interfaces disabled by preferences).
++        RESOLVING.with(|resolving| resolving.borrow_mut().push((obj, id)));
++    }
+     if !ok {
+         crate::native::rethrow_pending(scope, JSContext::current());
+         return None;
+@@ -309,7 +330,7 @@ fn resolve_getter<'s>(
+     match run_resolve_hook(scope, args.data(), holder, key) {
+         None => v8::Intercepted::kYes,
+         Some(false) => v8::Intercepted::kNo,
+-        Some(true) => match holder.get_real_named_property(scope, key) {
++        Some(true) => match finish_resolved(|| resolved_value(scope, holder, key, holder)) {
+             Some(value) => {
+                 retval.set(value);
+                 v8::Intercepted::kYes
+@@ -319,6 +340,53 @@ fn resolve_getter<'s>(
+     }
+ }
+ 
++/// Runs the read-back of a resolved property, then drops the guard `run_resolve_hook` left.
++fn finish_resolved<R>(read: impl FnOnce() -> R) -> R {
++    let result = read();
++    RESOLVING.with(|resolving| resolving.borrow_mut().pop());
++    result
++}
++
++/// A field of a resolved property's own descriptor.
++fn descriptor_field<'s>(scope: &mut v8::PinScope<'s, '_>, descriptor: v8::Local<'s, v8::Object>, name: &str) -> Option<v8::Local<'s, v8::Value>> {
++    let key = v8::String::new(scope, name)?;
++    descriptor.get(scope, key.into())
++}
++
++/// The value of the property the resolve hook just defined on the holder. Only the own
++/// property is read: V8's "real named property" lookups walk the prototype chain, which can
++/// reach named-property proxies (a Window's) that must not run here.
++fn resolved_value<'s>(
++    scope: &mut v8::PinScope<'s, '_>,
++    holder: v8::Local<'s, v8::Object>,
++    key: v8::Local<'s, v8::Name>,
++    receiver: v8::Local<'s, v8::Object>,
++) -> Option<v8::Local<'s, v8::Value>> {
++    let descriptor = v8::Local::<v8::Object>::try_from(holder.get_own_property_descriptor(scope, key)?).ok()?;
++    let getter = descriptor_field(scope, descriptor, "get")?;
++    if let Ok(getter) = v8::Local::<v8::Function>::try_from(getter) {
++        return getter.call(scope, receiver.into(), &[]);
++    }
++    descriptor_field(scope, descriptor, "value")
++}
++
++/// The V8 attributes of the property the resolve hook just defined (own property only).
++fn resolved_attributes(scope: &mut v8::PinScope, holder: v8::Local<v8::Object>, key: v8::Local<v8::Name>) -> Option<v8::PropertyAttribute> {
++    let descriptor = v8::Local::<v8::Object>::try_from(holder.get_own_property_descriptor(scope, key)?).ok()?;
++    let mut attributes = v8::PropertyAttribute::NONE;
++    let writable = descriptor_field(scope, descriptor, "writable")?;
++    if !writable.is_undefined() && !writable.boolean_value(scope) {
++        attributes = attributes | v8::PropertyAttribute::READ_ONLY;
++    }
++    if !descriptor_field(scope, descriptor, "enumerable")?.boolean_value(scope) {
++        attributes = attributes | v8::PropertyAttribute::DONT_ENUM;
++    }
++    if !descriptor_field(scope, descriptor, "configurable")?.boolean_value(scope) {
++        attributes = attributes | v8::PropertyAttribute::DONT_DELETE;
++    }
++    Some(attributes)
++}
++
+ fn resolve_query<'s>(
+     scope: &mut v8::PinScope<'s, '_>,
+     key: v8::Local<'s, v8::Name>,
+@@ -329,7 +397,7 @@ fn resolve_query<'s>(
+     match run_resolve_hook(scope, args.data(), holder, key) {
+         None => v8::Intercepted::kYes,
+         Some(false) => v8::Intercepted::kNo,
+-        Some(true) => match holder.get_real_named_property_attributes(scope, key) {
++        Some(true) => match finish_resolved(|| resolved_attributes(scope, holder, key)) {
+             Some(attributes) => {
+                 retval.set_int32(attributes.as_u32() as i32);
+                 v8::Intercepted::kYes
+@@ -346,7 +414,7 @@ fn resolve_enumerator<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::PropertyCa
+     // SAFETY: as for `run_resolve_hook`.
+     let ops = unsafe { &*(*class).cOps };
+     let Some(enumerate) = ops.newEnumerate else { return };
+-    let Some(obj) = interceptor_object(args.holder()) else { return };
++    let Some(obj) = interceptor_object(scope, args.holder()) else { return };
+     let cx = JSContext::current() as *const JSContext as *mut JSContext;
+     crate::rooted!(in(cx) let object = obj);
+     // SAFETY: `cx` is this thread's live context.
+diff --git a/components/roves-js/src/proxy.rs b/components/roves-js/src/proxy.rs
+index 9b2fdb9cdc1..21d159eca69 100644
+--- a/components/roves-js/src/proxy.rs
++++ b/components/roves-js/src/proxy.rs
+@@ -746,7 +746,7 @@ pub unsafe fn SetPropertyIgnoringNamedGetter(
+             let key: v8::Local<v8::Value> = crate::jsapi_impl::id_key(scope, id.get())?.into();
+             let value = unsafe { to_v8(scope, v.get()) };
+             let receiver = unsafe { to_v8(scope, receiver.get()) };
+-            let proto = target.get_prototype(scope)?;
++            let proto = crate::jsapi_impl::prototype_of(scope, target)?;
+             if proto.is_object() {
+                 return reflect(scope, "set", &[proto, key, value, receiver]).map(|set| set.boolean_value(scope));
+             }
+diff --git a/components/roves-js/src/realm_impl.rs b/components/roves-js/src/realm_impl.rs
+index e944dee5397..6b003d822b1 100644
+--- a/components/roves-js/src/realm_impl.rs
++++ b/components/roves-js/src/realm_impl.rs
+@@ -172,6 +172,11 @@ pub unsafe fn JS_NewGlobalObject(
+             }
+         }
+         let realm = register_realm(raw, scope, context, cell);
++        // V8 gives every context a built-in `console` (silent without an inspector), which
++        // would shadow the embedder's (Servo defines `console` lazily, like its interfaces).
++        // After registration: the realm's shared security token allows the access.
++        let console = v8::String::new(scope, "console")?;
++        global.delete(scope, console.into())?;
+         let data = realm_data(realm)?;
+         if !principals.is_null() {
+             // SAFETY: principals come from `CreateRustJSPrincipals`.
+diff --git a/components/roves-js/src/runtime_impl.rs b/components/roves-js/src/runtime_impl.rs
+index 07879377bb1..af7082d37e5 100644
+--- a/components/roves-js/src/runtime_impl.rs
++++ b/components/roves-js/src/runtime_impl.rs
+@@ -7,9 +7,10 @@
+ //!
+ //! **Promise jobs.** SpiderMonkey hands every promise job to the embedder's job queue
+ //! (`JobQueueTraps::enqueuePromiseJob`), and the embedder runs it. V8 has no such hook: its
+-//! microtask queue is the only queue. Runtimes use V8's explicit microtask policy, and
+-//! [`RunJobs`] performs a microtask checkpoint; the embedder's job-queue traps are kept but
+-//! not called for promise jobs.
++//! microtask queue is the only queue. Runtimes use V8's automatic microtask policy (jobs
++//! run when the script call depth returns to zero, after each script or callback, like
++//! HTML's microtask checkpoint after running script), and [`RunJobs`] performs a checkpoint
++//! on demand; the embedder's job-queue traps are kept but not called for promise jobs.
+ //!
+ //! Settings with no V8 counterpart (SpiderMonkey's GC parameters, JIT options, build ids,
+ //! memory reporters) are recorded and otherwise ignored.
+@@ -85,7 +86,7 @@ fn isolate<'i>(cx: *mut JSContext) -> &'i mut v8::Isolate {
+ 
+ /// Configures a new runtime's isolate for the JSAPI's model.
+ pub(crate) fn configure_isolate(isolate: &mut v8::Isolate) {
+-    isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
++    isolate.set_microtasks_policy(v8::MicrotasksPolicy::Auto);
+     isolate.set_promise_reject_callback(promise_reject_callback);
+     crate::modules_impl::configure_isolate(isolate);
+ }
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index f8df78a4d4e..bd4690ef071 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -601,6 +601,7 @@ mod realms {
+         assert_eq!(eval(&runtime, "globalThis").to_object(), global.get(), "the global proxy is the class object");
+         assert_ne!(eval(&runtime, "Object.prototype").to_object(), first_object_prototype);
+         assert_eq!(unsafe { CurrentGlobalOrNull(cx) }, global.get());
++        assert!(eval(&runtime, "typeof console === 'undefined'").to_boolean(), "V8's console leaves room for the embedder's");
+         eval(&runtime, "globalThis.inRealm = 1");
+         unsafe { LeaveRealm(cx, old) };
+         assert_eq!(unsafe { GetCurrentRealmOrNull(cx) }, first_realm);
+@@ -733,6 +734,9 @@ mod proxies {
+             assert!(!proxy.get().is_null());
+             unsafe { SetProxyReservedSlot(proxy.get(), 0, &Int32Value(77)) };
+             assert!(unsafe { IsProxyHandlerFamily(proxy.get()) });
++            rooted!(in(cx) let mut prototype = ptr::null_mut::<JSObject>());
++            assert!(unsafe { JS_GetPrototype(cx, proxy.handle().into_handle(), prototype.handle_mut().into_handle()) });
++            assert_eq!(prototype.get(), proto.get(), "a proxy's prototype comes from its getPrototypeOf trap");
+             assert_eq!(unsafe { GetProxyHandler(proxy.get()) }, handler);
+             assert_eq!(unsafe { GetProxyHandlerExtra(proxy.get()) }, &EXTRA as *const u8 as *const std::ffi::c_void);
+             assert!(unsafe { crate::object::object_class(proxy.get()).as_ref() }.unwrap().flags & crate::object::JSCLASS_IS_PROXY != 0);
+@@ -837,7 +841,21 @@ mod lazy_globals {
+         !chars.is_null() && unsafe { std::slice::from_raw_parts(chars, length) } == b"LazyThing"
+     }
+ 
++    fn is_phantom(id: jsid) -> bool {
++        if !id.is_string() {
++            return false;
++        }
++        let mut length = 0;
++        let chars = crate::api::latin1_chars(id.to_string(), &mut length);
++        !chars.is_null() && unsafe { std::slice::from_raw_parts(chars, length) } == b"Phantom"
++    }
++
+     unsafe extern "C" fn resolve(cx: *mut JSContext, obj: HandleObject, id: HandleId, resolved: *mut bool) -> bool {
++        if is_phantom(id.get()) {
++            // Reports success without defining anything (Servo does for disabled interfaces).
++            unsafe { *resolved = true };
++            return true;
++        }
+         if !is_lazy_name(id.get()) {
+             unsafe { *resolved = false };
+             return true;
+@@ -858,7 +876,7 @@ mod lazy_globals {
+     }
+ 
+     unsafe extern "C" fn may_resolve(_names: *const JSAtomState, id: jsid, _obj: *mut JSObject) -> bool {
+-        is_lazy_name(id)
++        is_lazy_name(id) || is_phantom(id)
+     }
+ 
+     unsafe extern "C" fn enumerate(cx: *mut JSContext, _obj: HandleObject, props: MutableHandleIdVector, _enumerable_only: bool) -> bool {
+@@ -901,6 +919,11 @@ mod lazy_globals {
+         let old = unsafe { EnterRealm(cx, global.get()) };
+         let before = RESOLVE_CALLS.with(Cell::get);
+         assert!(eval(&runtime, "typeof notLazy === 'undefined'").to_boolean(), "other names stay unresolved");
++        assert!(eval(&runtime, "typeof Phantom === 'undefined' && !('Phantom' in globalThis)").to_boolean(), "a hook that defines nothing does not recurse");
++        // A proxy on the prototype chain (like a Window's named properties object) must not
++        // hide lazy properties.
++        eval(&runtime, "Object.setPrototypeOf(Object.getPrototypeOf(globalThis), new Proxy({}, {}))");
++        assert_eq!(eval(&runtime, "(function () { return LazyThing; })()").to_int32(), 42);
+         assert_eq!(eval(&runtime, "LazyThing").to_int32(), 42);
+         assert_eq!(eval(&runtime, "LazyThing + LazyThing").to_int32(), 84);
+         assert!(eval(&runtime, "'LazyThing' in globalThis && globalThis.hasOwnProperty('LazyThing')").to_boolean());
+@@ -952,10 +975,8 @@ mod runtime_hooks {
+         runtime.gc_for_testing();
+         assert!(EXTRA_TRACED.with(Cell::get) > 0, "embedder root tracers run on every GC");
+ 
+-        // Promise jobs run at the explicit checkpoint, not before.
+-        eval(&runtime, "globalThis.done = false; Promise.resolve().then(() => { globalThis.done = true; })");
+-        assert!(!eval(&runtime, "done").to_boolean());
+-        unsafe { RunJobs(cx) };
++        // Promise jobs run once the script that queued them returns (not inside it).
++        assert!(!eval(&runtime, "globalThis.done = false; Promise.resolve().then(() => { globalThis.done = true; }); done").to_boolean());
+         assert!(eval(&runtime, "done").to_boolean());
+ 
+         // Unhandled rejections, then a late handler.
+diff --git a/components/roves-js/src/values_impl.rs b/components/roves-js/src/values_impl.rs
+index 2190f41865d..f360883c522 100644
+--- a/components/roves-js/src/values_impl.rs
++++ b/components/roves-js/src/values_impl.rs
+@@ -878,3 +878,37 @@ typed_array_with_buffer! {
+     JS_NewBigInt64ArrayWithBuffer => BigInt64Array, 8;
+     JS_NewBigUint64ArrayWithBuffer => BigUint64Array, 8;
+ }
++
++/// The embedder's free function for external buffer contents.
++struct ExternalFree {
++    free: crate::jsapi::BufferContentsFreeFunc,
++    user_data: *mut c_void,
++}
++
++unsafe extern "C" fn free_external_contents(data: *mut c_void, _length: usize, deleter_data: *mut c_void) {
++    // SAFETY: the deleter data is the boxed `ExternalFree` made for this buffer.
++    let external = unsafe { Box::from_raw(deleter_data as *mut ExternalFree) };
++    if let Some(free) = external.free {
++        // SAFETY: SpiderMonkey's free-function contract.
++        unsafe { free(data, external.user_data) };
++    }
++}
++
++/// A buffer on embedder-owned `contents`, released with `free_func(contents, user_data)`.
++pub unsafe fn NewExternalArrayBuffer(
++    cx: *mut JSContext,
++    nbytes: usize,
++    contents: *mut c_void,
++    free_func: crate::jsapi::BufferContentsFreeFunc,
++    free_user_data: *mut c_void,
++) -> *mut JSObject {
++    raw(cx)
++        .catching(|scope| {
++            let external = Box::into_raw(Box::new(ExternalFree { free: free_func, user_data: free_user_data }));
++            // SAFETY: the backing store releases the contents through the deleter.
++            let store = unsafe { v8::ArrayBuffer::new_backing_store_from_ptr(contents, nbytes, free_external_contents, external as *mut c_void) };
++            let buffer = v8::ArrayBuffer::with_backing_store(scope, &store.make_shared());
++            Some(from_v8(scope, buffer.into()).to_object())
++        })
++        .unwrap_or(std::ptr::null_mut())
++}
+diff --git a/components/roves-js/src/wrappers2.in.rs b/components/roves-js/src/wrappers2.in.rs
+index 05873006a2a..b6078c4c7db 100644
+--- a/components/roves-js/src/wrappers2.in.rs
++++ b/components/roves-js/src/wrappers2.in.rs
+@@ -191,6 +191,7 @@ wrap!(jsapi: pub fn JS_GetArrayBufferViewBuffer(cx: &mut JSContext, obj: Handle<
+ wrap!(jsapi: pub fn JS_NewDataView(cx: &mut JSContext, buffer: Handle<*mut JSObject>, byteOffset: usize, byteLength: usize) -> *mut JSObject);
+ wrap!(jsapi: pub fn JS_NewObjectWithoutMetadata(cx: &mut JSContext, clasp: *const JSClass, proto: Handle<*mut JSObject>) -> *mut JSObject);
+ wrap!(jsapi: pub fn JS_InitializePropertiesFromCompatibleNativeObject(cx: &mut JSContext, dst: HandleObject, src: HandleObject) -> bool);
++wrap!(jsapi: pub fn NewExternalArrayBuffer(cx: &mut JSContext, nbytes: usize, contents: *mut ::std::os::raw::c_void, freeFunc: BufferContentsFreeFunc, freeUserData: *mut ::std::os::raw::c_void) -> *mut JSObject);
+ wrap!(jsapi: pub fn NewArrayBufferWithContents(cx: &mut JSContext, nbytes: usize, contents: *mut ::std::os::raw::c_void) -> *mut JSObject);
+ wrap!(jsapi: pub fn JS_GetOwnPropertyDescriptorById(cx: &mut JSContext, obj: HandleObject, id: HandleId, desc: MutableHandle<PropertyDescriptor>, isNone: *mut bool) -> bool);
+ wrap!(jsapi: pub fn JS_GetPropertyDescriptorById(cx: &mut JSContext, obj: HandleObject, id: HandleId, desc: MutableHandle<PropertyDescriptor>, holder: MutableHandleObject, isNone: *mut bool) -> bool);
+diff --git a/support/roves_js/jsapi_type_names.txt b/support/roves_js/jsapi_type_names.txt
+index 07d14d13ad8..50068a65849 100644
+--- a/support/roves_js/jsapi_type_names.txt
++++ b/support/roves_js/jsapi_type_names.txt
+@@ -5,6 +5,7 @@ AsmJSOption
+ AtomToLinearString
+ AutoRequireNoGC
+ BaseProxyHandler_Action
++BufferContentsFreeFunc
+ BuildIdCharVector
+ BuildIdOp
+ CallArgs
+diff --git a/support/v8_cutover_check.py b/support/v8_cutover_check.py
+index 1c8a36902af..821db883201 100644
+--- a/support/v8_cutover_check.py
++++ b/support/v8_cutover_check.py
+@@ -10,7 +10,10 @@ The script temporarily points the workspace `js` dependency at components/roves-
+ error kinds. It restores Cargo.toml and Cargo.lock afterwards. It uses a separate target
+ directory, so the normal SpiderMonkey build cache is untouched.
+ 
+-    python support/v8_cutover_check.py [crate] [--top N]
++    python support/v8_cutover_check.py [crate] [--top N] [--build [--release]]
++
++With `--build` it runs `cargo build` instead, producing a V8 build of the crate in
++target/v8-cutover (servoshell: a runnable browser on roves-js).
+ """
+ 
+ import argparse
+@@ -30,6 +33,8 @@ def main() -> int:
+     parser = argparse.ArgumentParser(description=__doc__)
+     parser.add_argument("crate", nargs="?", default="servo-script-bindings")
+     parser.add_argument("--top", type=int, default=25)
++    parser.add_argument("--build", action="store_true", help="cargo build instead of cargo check")
++    parser.add_argument("--release", action="store_true", help="with --build: a release build")
+     args = parser.parse_args()
+ 
+     manifest = ROOT / "Cargo.toml"
+@@ -43,9 +48,12 @@ def main() -> int:
+     try:
+         manifest.write_text(MOZJS_LINE.sub(ROVES_JS_LINE, text), encoding="utf-8", newline="")
+         env = dict(os.environ, AWS_LC_SYS_NO_ASM="1")
++        command = ["cargo", "build" if args.build else "check", "-p", args.crate, "--offline",
++                   "--message-format=short", "--target-dir", str(ROOT / "target" / "v8-cutover")]
++        if args.build and args.release:
++            command.append("--release")
+         result = subprocess.run(
+-            ["cargo", "check", "-p", args.crate, "--offline", "--message-format=short",
+-             "--target-dir", str(ROOT / "target" / "v8-cutover")],
++            command,
+             cwd=ROOT, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
+         )
+     finally:

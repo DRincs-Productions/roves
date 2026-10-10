@@ -746,7 +746,7 @@ pub unsafe fn SetPropertyIgnoringNamedGetter(
             let key: v8::Local<v8::Value> = crate::jsapi_impl::id_key(scope, id.get())?.into();
             let value = unsafe { to_v8(scope, v.get()) };
             let receiver = unsafe { to_v8(scope, receiver.get()) };
-            let proto = target.get_prototype(scope)?;
+            let proto = crate::jsapi_impl::prototype_of(scope, target)?;
             if proto.is_object() {
                 return reflect(scope, "set", &[proto, key, value, receiver]).map(|set| set.boolean_value(scope));
             }

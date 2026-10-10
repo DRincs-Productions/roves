@@ -172,6 +172,11 @@ pub unsafe fn JS_NewGlobalObject(
             }
         }
         let realm = register_realm(raw, scope, context, cell);
+        // V8 gives every context a built-in `console` (silent without an inspector), which
+        // would shadow the embedder's (Servo defines `console` lazily, like its interfaces).
+        // After registration: the realm's shared security token allows the access.
+        let console = v8::String::new(scope, "console")?;
+        global.delete(scope, console.into())?;
         let data = realm_data(realm)?;
         if !principals.is_null() {
             // SAFETY: principals come from `CreateRustJSPrincipals`.

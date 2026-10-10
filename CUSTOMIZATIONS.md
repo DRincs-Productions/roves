@@ -11,6 +11,76 @@ reflector tests pass (2/2), as do all three `servo-dom-struct` macro tests. Patc
 reverse-checks against the working tree. CI is green: V8 37226916624 (6/6), Servo 37226916650
 (13/13), Android 37226916659, and iOS 37226916639.
 
+## 2026-10-10 - V8 cutover: servoshell builds, links and runs pages on V8 (CP105)
+
+**Servo files:**
+- `components/roves-js/src/`: `object.rs`, `realm_impl.rs`, `binding.rs`, `jsapi_impl.rs`,
+  `proxy.rs`, `values_impl.rs`, `runtime_impl.rs`, `tests.rs`, `jsapi_types.rs` and
+  `wrappers2.in.rs`;
+- `support/v8_cutover_check.py`, which gains `--build [--release]`;
+- `support/roves_js/jsapi_type_names.txt`.
+
+**Patch:** `0170-roves-js-runs-pages.patch` after 0169.
+
+**Milestone.**
+- `python support/v8_cutover_check.py servoshell` reports 0 errors.
+- `--build` produces `target/v8-cutover/debug/servoshell.exe`, a Servo linked against V8
+  through `roves-js`, with no SpiderMonkey.
+- Headless, it loads a page whose script does the following, and the page renders the
+  script's DOM changes in the screenshot:
+  - DOM reads and writes;
+  - `createElement`/`appendChild`;
+  - an event listener with `click()`;
+  - classes and getters;
+  - JSON;
+  - promises;
+  - `setTimeout`;
+  - lazily defined interfaces (`URL`, `URLSearchParams`, `HTMLDivElement`);
+  - `console.log`.
+
+**Fixes found by running real pages:**
+- **Lazy globals, timing:** the resolve interceptors run *before* the prototype chain, as
+  SpiderMonkey's resolve hook does, and step aside for properties the object already has.
+  Non-masking interceptors only ran after the whole chain, and a Window's chain contains its
+  named-properties proxy, which answered first: `URL`/`console` were never resolved.
+- **Lazy globals, read-back:** after resolving, only the holder's own descriptor is read. V8's
+  "real named property" lookups walk the chain into the named-properties proxy, whose getter
+  touched the not-yet-initialized document.
+- **Lazy globals, recursion:** a resolving guard covers the read-back. Servo's hook reports
+  success without defining anything for interfaces disabled by preferences, and the read-back
+  recursed through the query interceptor until the stack overflowed (found with `lldb`).
+- **Holder of unqualified lookups:** for a global it may be the inner global object, which
+  maps to its realm's global.
+- **`console`:** V8's built-in `console` (silent without an inspector) is removed from new
+  globals, after realm registration, so the shared security token allows it. Servo's
+  `console` then resolves.
+- **Self-hosted intrinsics:** WebIDL iterable declarations name SpiderMonkey self-hosted
+  functions (`ArrayValues`, `ArrayKeys`, `ArrayEntries`, `ArrayForEach`). These map to the
+  realm's `Array.prototype` methods. They broke `NodeList` and `define_methods`.
+- **Proxy prototypes:** V8's `Object::GetPrototype` on a `Proxy` returns the map's (null)
+  prototype without running the trap. `JS_GetPrototype`, `GetStaticPrototype`, the descriptor
+  walk and the `set` default use `Object.getPrototypeOf` for proxies.
+- **Window proxies:** `UnwrapObjectDynamic`/`UncheckedUnwrapObject`/`CheckedUnwrapStatic`
+  unwrap a window proxy to its window, and `IsWrapper` recognizes window proxies. DOM getters
+  called with `this === window` failed "does not implement interface Window".
+- **Microtasks:** V8's automatic microtask policy runs promise jobs when the script call depth
+  returns to zero. That is HTML's checkpoint after running script; Servo's own checkpoint does
+  not reach V8's queue. `RunJobs` still performs one on demand.
+- **`NewExternalArrayBuffer`:** a V8 backing store on embedder memory, released through the
+  embedder's free function. A servoshell feature uses it.
+
+**Known gaps:**
+- `window === globalThis` is false: V8's global proxy is not yet Servo's `WindowProxy`.
+- Servo's devtools debugger script needs SpiderMonkey's `Debugger` API; it needs V8's inspector
+  instead.
+- A headless run does not exit after writing its screenshot.
+
+**Tests:** `roves-js` 22/22, now also covering:
+- a proxy's prototype through `JS_GetPrototype`;
+- lazy globals behind a proxy prototype, and a hook that defines nothing;
+- no V8 `console` on new globals;
+- promise jobs after the script returns.
+
 ## 2026-10-10 - V8 cutover: structured clone, window proxies; `servo-script` type-checks on V8 (CP104)
 
 **Servo files:**
