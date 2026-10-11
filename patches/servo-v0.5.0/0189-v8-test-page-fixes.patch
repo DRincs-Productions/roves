@@ -1,0 +1,54 @@
+diff --git a/support/v8-smoke/graphics.html b/support/v8-smoke/graphics.html
+index 564f1002e68..b8da4504ed6 100644
+--- a/support/v8-smoke/graphics.html
++++ b/support/v8-smoke/graphics.html
+@@ -78,11 +78,14 @@ check("WebGL 2: instanced draw, VAO and transform of integer uniforms", () => {
+   gl.bindVertexArray(vao);
+   gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+-  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
++  const location = gl.getAttribLocation(p, "p");
++  gl.enableVertexAttribArray(location); gl.vertexAttribPointer(location, 2, gl.FLOAT, false, 0, 0);
+   gl.uniform1i(gl.getUniformLocation(p, "highlight"), 1);
+   gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, 2);
+   const left = pixel(gl, 3, 8), right = pixel(gl, 12, 8);
+-  return (left[0] === 255 && right[1] === 255 && gl.getError() === gl.NO_ERROR) || `left ${left} right ${right} error ${gl.getError()}`;
++  // getError clears the flag: read it once.
++  const error = gl.getError();
++  return (left[0] === 255 && right[1] === 255 && error === gl.NO_ERROR) || `left ${left} right ${right} error 0x${error.toString(16)}`;
+ });
+ check("WebGL 2: render to a framebuffer texture", () => {
+   const gl = makeCanvas().getContext("webgl2");
+@@ -153,9 +156,11 @@ check("Path2D and isPointInPath", () => {
+ });
+ check("WebGPU adapter request (when available)", async () => {
+   if (!navigator.gpu) return "skip";
+-  const adapter = await navigator.gpu.requestAdapter();
++  // Without a GPU (CI runners) the request may never settle: that is the environment.
++  const adapter = await Promise.race([navigator.gpu.requestAdapter(), new Promise(resolve => setTimeout(() => resolve("unsettled"), 25000))]);
++  if (adapter === "unsettled") { console.log("ROVES-V8 webgpu requestAdapter did not settle in 25 s"); return "skip"; }
+   return adapter ? true : "skip";
+-});
++}, 30000);
+ finish();
+ </script>
+ </body></html>
+diff --git a/support/v8-smoke/stress.html b/support/v8-smoke/stress.html
+index bfb7b701625..e21e69287df 100644
+--- a/support/v8-smoke/stress.html
++++ b/support/v8-smoke/stress.html
+@@ -71,10 +71,12 @@ check("workers started and terminated in a loop", async () => {
+   return true;
+ }, 60000);
+ check("structuredClone of a large graph with cycles and typed arrays", () => {
++  // 20 000 objects in cycles of 1 000: V8's serializer recurses along references, and its stack
++  // budget is Chrome's (about 1 MB), so a single 20 000-long chain overflows there too.
+   const nodes = Array.from({ length: 20000 }, (_, i) => ({ i, data: new Float32Array([i, i + 1]) }));
+-  nodes.forEach((node, i) => node.next = nodes[(i + 1) % nodes.length]);
++  nodes.forEach((node, i) => node.next = nodes[i % 1000 === 999 ? i - 999 : i + 1]);
+   const copy = structuredClone({ nodes, map: new Map([["k", nodes[5]]]) });
+-  return copy.nodes[19999].next === copy.nodes[0] && copy.map.get("k") === copy.nodes[5] && copy.nodes[3].data[1] === 4;
++  return copy.nodes[999].next === copy.nodes[0] && copy.nodes[19999].next === copy.nodes[19000] && copy.map.get("k") === copy.nodes[5] && copy.nodes[3].data[1] === 4;
+ }, 30000);
+ check("WeakRef and FinalizationRegistry do not crash under pressure", async () => {
+   const registry = new FinalizationRegistry(() => {});

@@ -71,10 +71,12 @@ check("workers started and terminated in a loop", async () => {
   return true;
 }, 60000);
 check("structuredClone of a large graph with cycles and typed arrays", () => {
+  // 20 000 objects in cycles of 1 000: V8's serializer recurses along references, and its stack
+  // budget is Chrome's (about 1 MB), so a single 20 000-long chain overflows there too.
   const nodes = Array.from({ length: 20000 }, (_, i) => ({ i, data: new Float32Array([i, i + 1]) }));
-  nodes.forEach((node, i) => node.next = nodes[(i + 1) % nodes.length]);
+  nodes.forEach((node, i) => node.next = nodes[i % 1000 === 999 ? i - 999 : i + 1]);
   const copy = structuredClone({ nodes, map: new Map([["k", nodes[5]]]) });
-  return copy.nodes[19999].next === copy.nodes[0] && copy.map.get("k") === copy.nodes[5] && copy.nodes[3].data[1] === 4;
+  return copy.nodes[999].next === copy.nodes[0] && copy.nodes[19999].next === copy.nodes[19000] && copy.map.get("k") === copy.nodes[5] && copy.nodes[3].data[1] === 4;
 }, 30000);
 check("WeakRef and FinalizationRegistry do not crash under pressure", async () => {
   const registry = new FinalizationRegistry(() => {});

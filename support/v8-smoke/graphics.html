@@ -78,11 +78,14 @@ check("WebGL 2: instanced draw, VAO and transform of integer uniforms", () => {
   gl.bindVertexArray(vao);
   gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
-  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  const location = gl.getAttribLocation(p, "p");
+  gl.enableVertexAttribArray(location); gl.vertexAttribPointer(location, 2, gl.FLOAT, false, 0, 0);
   gl.uniform1i(gl.getUniformLocation(p, "highlight"), 1);
   gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, 2);
   const left = pixel(gl, 3, 8), right = pixel(gl, 12, 8);
-  return (left[0] === 255 && right[1] === 255 && gl.getError() === gl.NO_ERROR) || `left ${left} right ${right} error ${gl.getError()}`;
+  // getError clears the flag: read it once.
+  const error = gl.getError();
+  return (left[0] === 255 && right[1] === 255 && error === gl.NO_ERROR) || `left ${left} right ${right} error 0x${error.toString(16)}`;
 });
 check("WebGL 2: render to a framebuffer texture", () => {
   const gl = makeCanvas().getContext("webgl2");
@@ -153,9 +156,11 @@ check("Path2D and isPointInPath", () => {
 });
 check("WebGPU adapter request (when available)", async () => {
   if (!navigator.gpu) return "skip";
-  const adapter = await navigator.gpu.requestAdapter();
+  // Without a GPU (CI runners) the request may never settle: that is the environment.
+  const adapter = await Promise.race([navigator.gpu.requestAdapter(), new Promise(resolve => setTimeout(() => resolve("unsettled"), 25000))]);
+  if (adapter === "unsettled") { console.log("ROVES-V8 webgpu requestAdapter did not settle in 25 s"); return "skip"; }
   return adapter ? true : "skip";
-});
+}, 30000);
 finish();
 </script>
 </body></html>

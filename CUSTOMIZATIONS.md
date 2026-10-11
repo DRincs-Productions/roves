@@ -12875,3 +12875,30 @@ Synced in the same effort:
   - the Console page covers JIT-less V8.
 
 `roves-api`'s `COMPATIBLE_SHELL_VERSION` is unchanged: no `roves:`/`steam:` protocol changed.
+
+## 2026-10-11 - V8 migration: first results of the new test pages; the JavaScript stack budget
+
+**Servo files:** `support/v8-smoke/graphics.html`, `stress.html`.
+**Patch:** `0189-v8-test-page-fixes.patch` after 0188.
+
+First CI run of the new pages, normal and JIT-less: modules 12/12, errors 12/12, events 14/14,
+games 10/10 (with Phaser), graphics 9/11 and stress 10/11. The failures:
+- **WebGL 2 instancing:** the pixels were right. The check read `getError()` twice, and the
+  call clears the flag, so the report lost the error. It now reads the error once and reports
+  it, and takes the attribute location from the program instead of assuming 0.
+- **WebGPU:** `requestAdapter()` never settled on the GPU-less runner. After 25 s the check now
+  logs that and reports `SUITE SKIP`.
+- **Deep `structuredClone`:** a 20 000-long reference chain threw "Maximum call stack size
+  exceeded". V8's serializer recurses along references, and V8's JavaScript stack budget is
+  its default of about 1 MB, the same as Chrome. SpiderMonkey, as Servo used it, could use the
+  script thread's whole 8 MiB stack. The check now clones 20 000 objects in cycles of 1 000.
+
+**Stack budget, investigated:**
+- Recursion depth with V8's default is about 12 500 frames, Chrome-like, on any thread size.
+- The per-isolate limit in rusty_v8's `CreateParams` (`set_stack_limit`) neither raises nor
+  lowers it.
+- The global `--stack-size` flag does raise it (8 MiB thread: about 100 000 frames). It applies
+  to every isolate, though, so a thread with a smaller stack would crash instead of throwing
+  `RangeError`.
+
+Roves keeps V8's default: deep recursion behaves as in Chrome, where web games are tested.
