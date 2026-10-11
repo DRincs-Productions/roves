@@ -60,6 +60,7 @@ const INSTALLED_MARKER: &str = ".roves-installed";
 /// Sub-folder name under whichever root [`resolve_saves_dir`] picks.
 const SAVES_SUBDIR: &str = "saves";
 
+#[derive(Clone)]
 pub struct SavesProtocolHandler {
     /// `None` when no save location could be resolved at all (no
     /// `current_exe()`, or creating the directory failed — e.g. a read-only
@@ -210,6 +211,24 @@ impl ProtocolHandler for SavesProtocolHandler {
             url.as_url().query_pairs().into_owned().collect();
         let command = url.path().to_owned();
 
+        // `write` with the save in a POST body (`fetch("saves:write?key=..", { method: "POST",
+        // body })`): a save can be megabytes (pixi-vn puts a screenshot in it), far too much
+        // for the query string the GET form uses.
+        if command == "write" && request.method.as_str() == "POST" {
+            if let Some(body) = servo::protocol_handler::read_request_body(request) {
+                let handler = self.clone();
+                let timing = ResourceFetchTiming::new(request.timing_type());
+                return Box::pin(async move {
+                    let key = query.get("key").and_then(|key| sanitize_key(key));
+                    let value = match (body.await, key, &handler.saves_dir) {
+                        (Some(data), Some(key), Some(saves_dir)) => write_save(&handler, saves_dir, &key, &data),
+                        _ => Value::Bool(false),
+                    };
+                    json_response_parts(url, timing, value.to_string())
+                });
+            }
+        }
+
         let body = handle_command(self, &command, &query);
 
         Box::pin(std::future::ready(match body {
@@ -245,13 +264,7 @@ fn handle_command(
         "write" => {
             let key = sanitize_key(query.get("key")?)?;
             let data = base64_decode(query.get("data")?)?;
-            let path = saves_dir.join(&key);
-            let ok = fs::write(&path, &data).is_ok();
-            if ok {
-                #[cfg(feature = "steam")]
-                steam_sync_write(handler, &key, &data);
-            }
-            Value::Bool(ok)
+            write_save(handler, saves_dir, &key, &data)
         },
 
         "read" => {
@@ -416,11 +429,30 @@ fn base64_decode(text: &str) -> Option<Vec<u8>> {
     base64::engine::general_purpose::STANDARD.decode(text).ok()
 }
 
+/// Writes save `key` (already sanitized) into `saves_dir`, mirrored to Steam Cloud when
+/// available. The `write` command's answer.
+fn write_save(handler: &SavesProtocolHandler, saves_dir: &Path, key: &str, data: &[u8]) -> Value {
+    let path = saves_dir.join(key);
+    let ok = fs::write(&path, data).is_ok();
+    if ok {
+        #[cfg(feature = "steam")]
+        steam_sync_write(handler, key, data);
+    }
+    #[cfg(not(feature = "steam"))]
+    let _ = handler;
+    Value::Bool(ok)
+}
+
 fn json_response(request: &Request, body: String) -> Response {
-    let mut response = Response::new(
+    json_response_parts(
         request.current_url(),
         ResourceFetchTiming::new(request.timing_type()),
-    );
+        body,
+    )
+}
+
+fn json_response_parts(url: servo::ServoUrl, timing: ResourceFetchTiming, body: String) -> Response {
+    let mut response = Response::new(url, timing);
     response.headers.typed_insert(ContentType::json());
     *response.body.lock() = ResponseBody::Done(body.into_bytes());
     response

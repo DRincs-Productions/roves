@@ -12923,3 +12923,37 @@ command. Because the draw is sent and its pixels are right, the error comes from
 driver under Servo: Mesa llvmpipe on the CI runner. It does not come from the engine, which only
 passes integers. The check still requires the right pixels and now logs that driver error as a
 note. Checking WebGL 2 instancing on a real GPU is on the manual test list.
+
+## 2026-10-11 - `saves:write` takes the save in a POST body (fixes freezes on rapid large saves)
+
+**Servo files:**
+- `components/servo/lib.rs` and `components/servo/request_body.rs`, new;
+- `ports/servoshell/desktop/protocols/saves.rs`;
+- `support/v8-smoke/run.sh` and `support/v8-smoke/saves.html`, new.
+
+**Patch:** `0192-saves-write-post-body.patch` after 0191.
+
+**Problem.** A user test of a visual novel on v0.7.0 showed the game freezing under rapid saves.
+`@drincs/roves-api`'s `saves.write` sent the whole save as base64 in the URL query string
+(`saves:write?key=..&data=..`). A pixi-vn save embeds a 1.6 MB base64 PNG screenshot, so every
+save was a URL of more than 2.4 MB. Servo parses that URL, copies it across threads and keeps it in
+resource-timing and network entries; under rapid saves this piled up until the game froze.
+
+**Fix.**
+- `servo::protocol_handler::read_request_body(&Request)` lets an embedder protocol handler read a
+  request's body. It connects to the body's chunk stream the way `net::http_loader` does for
+  HTTP. A dedicated thread receives the chunks, so net's async workers are never blocked, and the
+  call returns a `'static` future of the bytes.
+- `saves:write` with method POST reads the save from the body, with the key still in the query
+  string. The GET form with `data` in the query string keeps working for older roves-api versions.
+- The handler is now `Clone`, so the response future owns its save directory and Steam client.
+
+The roves-api side (POST first, falling back to the query string on shells up to v0.7.0) is in
+the roves-api repository.
+
+**CI:** `saves.html` in the V8 smoke run:
+- a 2 MB save read back intact;
+- 20 rapid 1.5 MB saves within 20 s;
+- the legacy query-string write;
+- a POST without a key refused;
+- cleanup.

@@ -57,6 +57,7 @@ run_suite errors.html errors.log
 run_suite events.html events.log
 run_suite graphics.html graphics.log
 run_suite stress.html stress.log 240
+run_suite saves.html saves.log 120
 echo "::notice title=V8 smoke suites::${TOTALS#%0A}"
 
 run_page test.html 30 test.log

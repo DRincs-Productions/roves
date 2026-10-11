@@ -1,0 +1,257 @@
+diff --git a/components/servo/lib.rs b/components/servo/lib.rs
+index 737ce154adf..a0f435b8784 100644
+--- a/components/servo/lib.rs
++++ b/components/servo/lib.rs
+@@ -49,6 +49,7 @@ mod gstreamer_plugins;
+ mod javascript_evaluator;
+ mod network_manager;
+ mod proxies;
++mod request_body;
+ mod responders;
+ mod servo;
+ mod servo_delegate;
+@@ -149,6 +150,9 @@ pub mod protocol_handler {
+     pub use net_traits::{NetworkError, ResourceFetchTiming};
+ 
+     pub use crate::webview_delegate::ProtocolHandlerRegistration;
++    // Roves: lets an embedder protocol handler read a POST body (`saves:write`, see
++    // `ports/servoshell/desktop/protocols/saves.rs`).
++    pub use crate::request_body::read_request_body;
+ }
+ 
+ // We need to reference this crate, in order for the linker not to remove it.
+diff --git a/components/servo/request_body.rs b/components/servo/request_body.rs
+new file mode 100644
+index 00000000000..e3df0a977da
+--- /dev/null
++++ b/components/servo/request_body.rs
+@@ -0,0 +1,55 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! Reading a request's body in an embedder protocol handler.
++//!
++//! A request body is not stored in the request: net pulls it from the script that sent it, one
++//! chunk at a time, through the body's chunk-request channel (see `net::http_loader`'s
++//! `obtain_response_setup_router_callback`, which does the same for HTTP). Roves's `saves:write`
++//! uses this to receive save data in a POST body instead of a (multi-megabyte) URL.
++
++use std::future::Future;
++use std::pin::Pin;
++
++use ipc_channel::ipc;
++use net_traits::request::{BodyChunkRequest, BodyChunkResponse, Request};
++
++/// Starts reading `request`'s whole body and returns a future of its bytes, or `None` when the
++/// request has no body or its stream is already closed. The future resolves to `None` if the
++/// stream fails. Call it from `ProtocolHandler::load` and await the future in the returned
++/// response future: it does not borrow the request.
++pub fn read_request_body(request: &Request) -> Option<Pin<Box<dyn Future<Output = Option<Vec<u8>>> + Send>>> {
++    let stream = request.body.as_ref()?.clone_stream();
++    let (sender, receiver) = ipc::channel::<BodyChunkResponse>().ok()?;
++    {
++        let mut lock = stream.lock();
++        let requester = lock.as_mut()?;
++        requester.send(BodyChunkRequest::Connect(sender)).ok()?;
++        requester.send(BodyChunkRequest::Chunk).ok()?;
++    }
++    let (done, result) = tokio::sync::oneshot::channel();
++    // The script sends the chunks; waiting for them must not block net's async workers.
++    std::thread::Builder::new()
++        .name("ProtocolRequestBody".into())
++        .spawn(move || {
++            let mut bytes = Vec::new();
++            let outcome = loop {
++                match receiver.recv() {
++                    Ok(BodyChunkResponse::Chunk(chunk)) => {
++                        bytes.extend_from_slice(&chunk);
++                        let mut lock = stream.lock();
++                        let Some(requester) = lock.as_mut() else { break None };
++                        if requester.send(BodyChunkRequest::Chunk).is_err() {
++                            break None;
++                        }
++                    },
++                    Ok(BodyChunkResponse::Done) => break Some(bytes),
++                    Ok(BodyChunkResponse::Error) | Err(_) => break None,
++                }
++            };
++            let _ = done.send(outcome);
++        })
++        .ok()?;
++    Some(Box::pin(async move { result.await.ok().flatten() }))
++}
+diff --git a/ports/servoshell/desktop/protocols/saves.rs b/ports/servoshell/desktop/protocols/saves.rs
+index 51ad7c5e51b..4a9ccf9575c 100644
+--- a/ports/servoshell/desktop/protocols/saves.rs
++++ b/ports/servoshell/desktop/protocols/saves.rs
+@@ -60,6 +60,7 @@ const INSTALLED_MARKER: &str = ".roves-installed";
+ /// Sub-folder name under whichever root [`resolve_saves_dir`] picks.
+ const SAVES_SUBDIR: &str = "saves";
+ 
++#[derive(Clone)]
+ pub struct SavesProtocolHandler {
+     /// `None` when no save location could be resolved at all (no
+     /// `current_exe()`, or creating the directory failed — e.g. a read-only
+@@ -210,6 +211,24 @@ impl ProtocolHandler for SavesProtocolHandler {
+             url.as_url().query_pairs().into_owned().collect();
+         let command = url.path().to_owned();
+ 
++        // `write` with the save in a POST body (`fetch("saves:write?key=..", { method: "POST",
++        // body })`): a save can be megabytes (pixi-vn puts a screenshot in it), far too much
++        // for the query string the GET form uses.
++        if command == "write" && request.method.as_str() == "POST" {
++            if let Some(body) = servo::protocol_handler::read_request_body(request) {
++                let handler = self.clone();
++                let timing = ResourceFetchTiming::new(request.timing_type());
++                return Box::pin(async move {
++                    let key = query.get("key").and_then(|key| sanitize_key(key));
++                    let value = match (body.await, key, &handler.saves_dir) {
++                        (Some(data), Some(key), Some(saves_dir)) => write_save(&handler, saves_dir, &key, &data),
++                        _ => Value::Bool(false),
++                    };
++                    json_response_parts(url, timing, value.to_string())
++                });
++            }
++        }
++
+         let body = handle_command(self, &command, &query);
+ 
+         Box::pin(std::future::ready(match body {
+@@ -245,13 +264,7 @@ fn handle_command(
+         "write" => {
+             let key = sanitize_key(query.get("key")?)?;
+             let data = base64_decode(query.get("data")?)?;
+-            let path = saves_dir.join(&key);
+-            let ok = fs::write(&path, &data).is_ok();
+-            if ok {
+-                #[cfg(feature = "steam")]
+-                steam_sync_write(handler, &key, &data);
+-            }
+-            Value::Bool(ok)
++            write_save(handler, saves_dir, &key, &data)
+         },
+ 
+         "read" => {
+@@ -416,11 +429,30 @@ fn base64_decode(text: &str) -> Option<Vec<u8>> {
+     base64::engine::general_purpose::STANDARD.decode(text).ok()
+ }
+ 
++/// Writes save `key` (already sanitized) into `saves_dir`, mirrored to Steam Cloud when
++/// available. The `write` command's answer.
++fn write_save(handler: &SavesProtocolHandler, saves_dir: &Path, key: &str, data: &[u8]) -> Value {
++    let path = saves_dir.join(key);
++    let ok = fs::write(&path, data).is_ok();
++    if ok {
++        #[cfg(feature = "steam")]
++        steam_sync_write(handler, key, data);
++    }
++    #[cfg(not(feature = "steam"))]
++    let _ = handler;
++    Value::Bool(ok)
++}
++
+ fn json_response(request: &Request, body: String) -> Response {
+-    let mut response = Response::new(
++    json_response_parts(
+         request.current_url(),
+         ResourceFetchTiming::new(request.timing_type()),
+-    );
++        body,
++    )
++}
++
++fn json_response_parts(url: servo::ServoUrl, timing: ResourceFetchTiming, body: String) -> Response {
++    let mut response = Response::new(url, timing);
+     response.headers.typed_insert(ContentType::json());
+     *response.body.lock() = ResponseBody::Done(body.into_bytes());
+     response
+diff --git a/support/v8-smoke/run.sh b/support/v8-smoke/run.sh
+index 0369cc3e709..6cc5a3fe601 100755
+--- a/support/v8-smoke/run.sh
++++ b/support/v8-smoke/run.sh
+@@ -57,6 +57,7 @@ run_suite errors.html errors.log
+ run_suite events.html events.log
+ run_suite graphics.html graphics.log
+ run_suite stress.html stress.log 240
++run_suite saves.html saves.log 120
+ echo "::notice title=V8 smoke suites::${TOTALS#%0A}"
+ 
+ run_page test.html 30 test.log
+diff --git a/support/v8-smoke/saves.html b/support/v8-smoke/saves.html
+new file mode 100644
+index 00000000000..69bf8e66542
+--- /dev/null
++++ b/support/v8-smoke/saves.html
+@@ -0,0 +1,71 @@
++<!doctype html>
++<html><head><meta charset="utf-8"><title>roves saves protocol</title>
++<script src="harness.js"></script>
++</head>
++<body>
++<script>
++// The `saves:` protocol (ports/servoshell/desktop/protocols/saves.rs) as @drincs/roves-api uses
++// it: large saves in a POST body, rapid saves, and the older query-string form.
++function bytes(size, seed) {
++  const data = new Uint8Array(size);
++  for (let i = 0; i < size; i++) data[i] = (i * 31 + seed) & 0xff;
++  return data;
++}
++function base64(data) {
++  let text = "";
++  for (let i = 0; i < data.length; i += 0x8000) text += String.fromCharCode(...data.subarray(i, i + 0x8000));
++  return btoa(text);
++}
++async function readBack(key) {
++  const encoded = await (await fetch(`saves:read?key=${encodeURIComponent(key)}`)).json();
++  if (typeof encoded !== "string") return null;
++  const text = atob(encoded);
++  const data = new Uint8Array(text.length);
++  for (let i = 0; i < text.length; i++) data[i] = text.charCodeAt(i);
++  return data;
++}
++function same(a, b) {
++  if (!a || a.length !== b.length) return false;
++  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
++  return true;
++}
++async function post(key, data) {
++  const response = await fetch(`saves:write?key=${encodeURIComponent(key)}`, { method: "POST", body: data });
++  return response.ok && (await response.json()) === true;
++}
++
++check("saves: protocol is available", async () => {
++  const available = await (await fetch("saves:is_available")).json();
++  return available === true || "skip";
++});
++check("a 2 MB save written in a POST body reads back intact", async () => {
++  const data = bytes(2 * 1024 * 1024, 7);
++  if (!(await post("smoke-large.save", data))) return "write failed";
++  return same(await readBack("smoke-large.save"), data) || "read-back mismatch";
++}, 30000);
++check("20 rapid 1.5 MB saves complete without freezing", async () => {
++  const start = performance.now();
++  const saves = Array.from({ length: 20 }, (_, i) => post(`smoke-rapid-${i}.save`, bytes(1536 * 1024, i)));
++  const results = await Promise.all(saves);
++  const elapsed = performance.now() - start;
++  const last = await readBack("smoke-rapid-19.save");
++  return (results.every(Boolean) && same(last, bytes(1536 * 1024, 19)) && elapsed < 20000) || `ok ${results.filter(Boolean).length}/20 in ${Math.round(elapsed)} ms`;
++}, 60000);
++check("the query-string write still works (older roves-api)", async () => {
++  const data = bytes(4096, 3);
++  const ok = await (await fetch(`saves:write?key=smoke-query.save&data=${encodeURIComponent(base64(data))}`)).json();
++  return (ok === true && same(await readBack("smoke-query.save"), data)) || `ok ${ok}`;
++});
++check("a POST without a key is refused", async () => {
++  const response = await fetch("saves:write", { method: "POST", body: new Uint8Array([1]) });
++  return (response.ok && (await response.json()) === false) || !response.ok;
++});
++check("cleanup", async () => {
++  for (const key of ["smoke-large.save", "smoke-query.save", ...Array.from({ length: 20 }, (_, i) => `smoke-rapid-${i}.save`)]) {
++    await fetch(`saves:delete?key=${encodeURIComponent(key)}`);
++  }
++  return true;
++});
++finish();
++</script>
++</body></html>

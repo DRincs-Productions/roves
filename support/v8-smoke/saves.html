@@ -1,0 +1,71 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>roves saves protocol</title>
+<script src="harness.js"></script>
+</head>
+<body>
+<script>
+// The `saves:` protocol (ports/servoshell/desktop/protocols/saves.rs) as @drincs/roves-api uses
+// it: large saves in a POST body, rapid saves, and the older query-string form.
+function bytes(size, seed) {
+  const data = new Uint8Array(size);
+  for (let i = 0; i < size; i++) data[i] = (i * 31 + seed) & 0xff;
+  return data;
+}
+function base64(data) {
+  let text = "";
+  for (let i = 0; i < data.length; i += 0x8000) text += String.fromCharCode(...data.subarray(i, i + 0x8000));
+  return btoa(text);
+}
+async function readBack(key) {
+  const encoded = await (await fetch(`saves:read?key=${encodeURIComponent(key)}`)).json();
+  if (typeof encoded !== "string") return null;
+  const text = atob(encoded);
+  const data = new Uint8Array(text.length);
+  for (let i = 0; i < text.length; i++) data[i] = text.charCodeAt(i);
+  return data;
+}
+function same(a, b) {
+  if (!a || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+async function post(key, data) {
+  const response = await fetch(`saves:write?key=${encodeURIComponent(key)}`, { method: "POST", body: data });
+  return response.ok && (await response.json()) === true;
+}
+
+check("saves: protocol is available", async () => {
+  const available = await (await fetch("saves:is_available")).json();
+  return available === true || "skip";
+});
+check("a 2 MB save written in a POST body reads back intact", async () => {
+  const data = bytes(2 * 1024 * 1024, 7);
+  if (!(await post("smoke-large.save", data))) return "write failed";
+  return same(await readBack("smoke-large.save"), data) || "read-back mismatch";
+}, 30000);
+check("20 rapid 1.5 MB saves complete without freezing", async () => {
+  const start = performance.now();
+  const saves = Array.from({ length: 20 }, (_, i) => post(`smoke-rapid-${i}.save`, bytes(1536 * 1024, i)));
+  const results = await Promise.all(saves);
+  const elapsed = performance.now() - start;
+  const last = await readBack("smoke-rapid-19.save");
+  return (results.every(Boolean) && same(last, bytes(1536 * 1024, 19)) && elapsed < 20000) || `ok ${results.filter(Boolean).length}/20 in ${Math.round(elapsed)} ms`;
+}, 60000);
+check("the query-string write still works (older roves-api)", async () => {
+  const data = bytes(4096, 3);
+  const ok = await (await fetch(`saves:write?key=smoke-query.save&data=${encodeURIComponent(base64(data))}`)).json();
+  return (ok === true && same(await readBack("smoke-query.save"), data)) || `ok ${ok}`;
+});
+check("a POST without a key is refused", async () => {
+  const response = await fetch("saves:write", { method: "POST", body: new Uint8Array([1]) });
+  return (response.ok && (await response.json()) === false) || !response.ok;
+});
+check("cleanup", async () => {
+  for (const key of ["smoke-large.save", "smoke-query.save", ...Array.from({ length: 20 }, (_, i) => `smoke-rapid-${i}.save`)]) {
+    await fetch(`saves:delete?key=${encodeURIComponent(key)}`);
+  }
+  return true;
+});
+finish();
+</script>
+</body></html>

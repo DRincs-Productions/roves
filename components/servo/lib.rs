@@ -49,6 +49,7 @@ mod gstreamer_plugins;
 mod javascript_evaluator;
 mod network_manager;
 mod proxies;
+mod request_body;
 mod responders;
 mod servo;
 mod servo_delegate;
@@ -149,6 +150,9 @@ pub mod protocol_handler {
     pub use net_traits::{NetworkError, ResourceFetchTiming};
 
     pub use crate::webview_delegate::ProtocolHandlerRegistration;
+    // Roves: lets an embedder protocol handler read a POST body (`saves:write`, see
+    // `ports/servoshell/desktop/protocols/saves.rs`).
+    pub use crate::request_body::read_request_body;
 }
 
 // We need to reference this crate, in order for the linker not to remove it.
