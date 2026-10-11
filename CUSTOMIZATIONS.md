@@ -12957,3 +12957,21 @@ the roves-api repository.
 - the legacy query-string write;
 - a POST without a key refused;
 - cleanup.
+
+## 2026-10-11 - Windows: 1 ms timer resolution (setTimeout and the frame loop were capped by 15.6 ms ticks)
+
+**Servo files:** `ports/servoshell/desktop/cli.rs`, `ports/servoshell/Cargo.toml` (windows-sys
+`Win32_Media`).
+**Patch:** `0193-windows-high-resolution-timers.patch` after 0192.
+
+A benchmark of the v0.7.0 release on Windows measured:
+- `setTimeout(f, 0)` at about **15 ms** each (200 in 3 060 ms);
+- `requestAnimationFrame` at **32 fps**.
+
+Windows rounds timed waits up to its timer resolution, 15.6 ms by default, and Servo's timers and
+frame loop wait on channels with timeouts. Measured on the user's machine: Rust's
+`recv_timeout(1 ms)` takes 15.68 ms by default, and 1.61 ms after `timeBeginPeriod(1)`.
+
+servoshell now holds 1 ms resolution for its whole run, as Chrome does (`HighResolutionTimers`:
+`timeBeginPeriod(1)` at start, `timeEndPeriod(1)` on exit). Since Windows 10 2004 the setting only
+affects this process. Other platforms are unaffected.

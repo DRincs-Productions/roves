@@ -1,0 +1,57 @@
+diff --git a/ports/servoshell/Cargo.toml b/ports/servoshell/Cargo.toml
+index 1f3cbdf546f..5ab7d39ca4c 100644
+--- a/ports/servoshell/Cargo.toml
++++ b/ports/servoshell/Cargo.toml
+@@ -153,7 +153,7 @@ accesskit_unix = { workspace = true }
+ [target.'cfg(target_os = "windows")'.dependencies]
+ accesskit_windows = { workspace = true }
+ servo = { workspace = true, features = ["no-wgl"] }
+-windows-sys = { workspace = true, features = ["Win32_Graphics_Gdi", "Win32_System_Console", "Win32_System_LibraryLoader"] }
++windows-sys = { workspace = true, features = ["Win32_Graphics_Gdi", "Win32_Media", "Win32_System_Console", "Win32_System_LibraryLoader"] }
+ 
+ [target.'cfg(target_os = "macos")'.dependencies]
+ accesskit_macos = { workspace = true }
+diff --git a/ports/servoshell/desktop/cli.rs b/ports/servoshell/desktop/cli.rs
+index b5b82a39d54..7d74b7c5519 100644
+--- a/ports/servoshell/desktop/cli.rs
++++ b/ports/servoshell/desktop/cli.rs
+@@ -14,6 +14,8 @@ use crate::prefs::{ArgumentParsingResult, parse_command_line_arguments};
+ pub fn main() {
+     crate::crash_handler::install();
+     crate::init_crypto();
++    // Held for the whole run: see `HighResolutionTimers`.
++    let _timers = HighResolutionTimers::request();
+ 
+     // Installed before anything else that could fail — including the panic
+     // hook and `resolve_bundled_launch_args` below — so a failure that
+@@ -199,3 +201,30 @@ mod tests {
+         ])));
+     }
+ }
++
++/// Windows rounds every timed wait (`sleep`, channel timeouts) up to its timer resolution,
++/// 15.6 ms by default. That turned `setTimeout(f, 0)` into about 15 ms and capped the animation
++/// frame loop near 32 fps (two ticks per frame). Like Chrome, Roves asks for 1 ms resolution
++/// while it runs; since Windows 10 2004 the setting applies to this process only.
++struct HighResolutionTimers;
++
++impl HighResolutionTimers {
++    fn request() -> Self {
++        #[cfg(windows)]
++        // SAFETY: plain winmm call; paired with `timeEndPeriod` in `Drop`.
++        unsafe {
++            windows_sys::Win32::Media::timeBeginPeriod(1);
++        }
++        HighResolutionTimers
++    }
++}
++
++impl Drop for HighResolutionTimers {
++    fn drop(&mut self) {
++        #[cfg(windows)]
++        // SAFETY: as above.
++        unsafe {
++            windows_sys::Win32::Media::timeEndPeriod(1);
++        }
++    }
++}

@@ -14,6 +14,8 @@ use crate::prefs::{ArgumentParsingResult, parse_command_line_arguments};
 pub fn main() {
     crate::crash_handler::install();
     crate::init_crypto();
+    // Held for the whole run: see `HighResolutionTimers`.
+    let _timers = HighResolutionTimers::request();
 
     // Installed before anything else that could fail — including the panic
     // hook and `resolve_bundled_launch_args` below — so a failure that
@@ -197,5 +199,32 @@ mod tests {
             "--headless",
             "--content-process"
         ])));
+    }
+}
+
+/// Windows rounds every timed wait (`sleep`, channel timeouts) up to its timer resolution,
+/// 15.6 ms by default. That turned `setTimeout(f, 0)` into about 15 ms and capped the animation
+/// frame loop near 32 fps (two ticks per frame). Like Chrome, Roves asks for 1 ms resolution
+/// while it runs; since Windows 10 2004 the setting applies to this process only.
+struct HighResolutionTimers;
+
+impl HighResolutionTimers {
+    fn request() -> Self {
+        #[cfg(windows)]
+        // SAFETY: plain winmm call; paired with `timeEndPeriod` in `Drop`.
+        unsafe {
+            windows_sys::Win32::Media::timeBeginPeriod(1);
+        }
+        HighResolutionTimers
+    }
+}
+
+impl Drop for HighResolutionTimers {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        // SAFETY: as above.
+        unsafe {
+            windows_sys::Win32::Media::timeEndPeriod(1);
+        }
     }
 }
