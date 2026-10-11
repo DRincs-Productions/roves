@@ -95,6 +95,52 @@ check("WebGL 2: instanced draw, VAO and transform of integer uniforms", () => {
   const nativeOnly = !firstError || firstError.startsWith("drawArraysInstanced:");
   return (left[0] === 255 && right[1] === 255 && nativeOnly) || `left ${left} right ${right} first error ${firstError}`;
 });
+check("WebGL 2: integer (vertexAttribIPointer) and normalized byte attributes draw without errors", () => {
+  const gl = makeCanvas().getContext("webgl2");
+  if (!gl) return "no webgl2";
+  // PixiJS's batcher feeds a float attribute from UNSIGNED_BYTE/UNSIGNED_SHORT data
+  // (vertexAttribPointer); integer attributes need vertexAttribIPointer.
+  const p = program(gl, `#version 300 es
+    in vec2 p; in uint id; in vec4 color; flat out uint vid; out vec4 vcolor;
+    void main() { vid = id; vcolor = color; gl_Position = vec4(p, 0.0, 1.0); }`,
+    `#version 300 es
+    precision mediump float; flat in uint vid; in vec4 vcolor; out vec4 outColor;
+    void main() { outColor = vid == 7u ? vcolor : vec4(1, 0, 0, 1); }`);
+  gl.useProgram(p);
+  gl.bindVertexArray(gl.createVertexArray());
+  const attribute = (name, data, size, type, integer, normalized) => {
+    const location = gl.getAttribLocation(p, name);
+    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(location);
+    if (integer) gl.vertexAttribIPointer(location, size, type, 0, 0);
+    else gl.vertexAttribPointer(location, size, type, normalized, 0, 0);
+  };
+  attribute("p", new Float32Array([-1, -1, 3, -1, -1, 3]), 2, gl.FLOAT, false, false);
+  attribute("id", new Uint8Array([7, 7, 7, 0]), 1, gl.UNSIGNED_BYTE, true, false);
+  attribute("color", new Uint8Array([0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255]), 4, gl.UNSIGNED_BYTE, false, true);
+  const indices = gl.createBuffer();
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indices);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array([0, 1, 2]), gl.STATIC_DRAW);
+  gl.getError();
+  gl.drawElements(gl.TRIANGLES, 3, gl.UNSIGNED_SHORT, 0);
+  const error = gl.getError();
+  const px = pixel(gl, 8, 8);
+  return (error === gl.NO_ERROR && px[1] === 255 && px[0] === 0) || `error 0x${error.toString(16)} pixel ${px}`;
+});
+check("WebGL 2: getProgramParameter(ACTIVE_UNIFORM_BLOCKS)", () => {
+  const gl = makeCanvas().getContext("webgl2");
+  if (!gl) return "no webgl2";
+  const p = program(gl, `#version 300 es
+    layout(std140) uniform Block { vec4 tint; }; in vec2 p;
+    void main() { gl_Position = vec4(p, 0.0, 1.0) * tint.x; }`,
+    `#version 300 es
+    precision mediump float; out vec4 c; void main() { c = vec4(1); }`);
+  gl.getError();
+  const blocks = gl.getProgramParameter(p, gl.ACTIVE_UNIFORM_BLOCKS);
+  const error = gl.getError();
+  return (blocks === 1 && error === gl.NO_ERROR) || `blocks ${blocks} error 0x${error.toString(16)}`;
+});
 check("WebGL 2: render to a framebuffer texture", () => {
   const gl = makeCanvas().getContext("webgl2");
   if (!gl) return "no webgl2";

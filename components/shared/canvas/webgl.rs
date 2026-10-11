@@ -404,6 +404,8 @@ pub enum WebGLCommand {
     VertexAttribI(u32, i32, i32, i32, i32),
     VertexAttribU(u32, u32, u32, u32, u32),
     VertexAttribPointer(u32, i32, u32, bool, i32, u32),
+    /// `vertexAttribIPointer` (WebGL 2): integer attributes, not converted to float.
+    VertexAttribIPointer(u32, i32, u32, i32, u32),
     VertexAttribPointer2f(u32, i32, bool, i32, u32),
     SetViewport(i32, i32, i32, i32),
     TexImage3D {

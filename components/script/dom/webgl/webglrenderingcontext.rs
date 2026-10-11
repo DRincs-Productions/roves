@@ -182,6 +182,8 @@ pub(crate) struct WebGLRenderingContext {
     #[ignore_malloc_size_of = "Defined in servo_canvas_traits"]
     #[no_trace]
     last_error: Cell<Option<WebGLError>>,
+    /// How many WebGL errors were logged as warnings (see `webgl_error`).
+    logged_errors: Cell<u32>,
     texture_packing_alignment: Cell<u8>,
     texture_unpacking_settings: Cell<TextureUnpacking>,
     // TODO(nox): Should be Cell<u8>.
@@ -252,6 +254,7 @@ impl WebGLRenderingContext {
                 limits: ctx_data.limits,
                 canvas,
                 last_error: Cell::new(None),
+                logged_errors: Cell::new(0),
                 texture_packing_alignment: Cell::new(4),
                 texture_unpacking_settings: Cell::new(TextureUnpacking::CONVERT_COLORSPACE),
                 texture_unpacking_alignment: Cell::new(4),
@@ -419,13 +422,47 @@ impl WebGLRenderingContext {
         self.send_with_fallibility(command, Operation::Fallible);
     }
 
+    /// `vertexAttribPointer`, or with `integer` WebGL 2's `vertexAttribIPointer`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn vertex_attrib_pointer_impl(
+        &self,
+        cx: &mut JSContext,
+        index: u32,
+        size: i32,
+        type_: u32,
+        normalized: bool,
+        stride: i32,
+        offset: i64,
+        integer: bool,
+    ) {
+        let res = match self.webgl_version() {
+            WebGLVersion::WebGL1 => self
+                .current_vao(cx)
+                .vertex_attrib_pointer(index, size, type_, normalized, stride, offset, integer),
+            WebGLVersion::WebGL2 => self
+                .current_vao_webgl2(cx)
+                .vertex_attrib_pointer(index, size, type_, normalized, stride, offset, integer),
+        };
+        handle_potential_webgl_error!(self, res);
+    }
+
     pub(crate) fn webgl_error(&self, err: WebGLError) {
         // TODO(emilio): Add useful debug messages to this
-        warn!(
-            "WebGL error: {:?}, previous error was {:?}",
-            err,
-            self.last_error.get()
-        );
+        // A content error repeated every frame wrote a warning per frame (formatting and a log
+        // file write each): the first ones are warnings, the rest debug output.
+        const LOGGED_ERRORS: u32 = 20;
+        let logged = self.logged_errors.get();
+        if logged < LOGGED_ERRORS {
+            self.logged_errors.set(logged + 1);
+            warn!(
+                "WebGL error: {:?}, previous error was {:?}{}",
+                err,
+                self.last_error.get(),
+                if logged + 1 == LOGGED_ERRORS { " (further WebGL errors of this context are logged at debug level)" } else { "" }
+            );
+        } else {
+            debug!("WebGL error: {:?}, previous error was {:?}", err, self.last_error.get());
+        }
 
         // If an error has been detected no further errors must be
         // recorded until `getError` has been called
@@ -4571,15 +4608,7 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
         stride: i32,
         offset: i64,
     ) {
-        let res = match self.webgl_version() {
-            WebGLVersion::WebGL1 => self
-                .current_vao(cx)
-                .vertex_attrib_pointer(index, size, type_, normalized, stride, offset),
-            WebGLVersion::WebGL2 => self
-                .current_vao_webgl2(cx)
-                .vertex_attrib_pointer(index, size, type_, normalized, stride, offset),
-        };
-        handle_potential_webgl_error!(self, res);
+        self.vertex_attrib_pointer_impl(cx, index, size, type_, normalized, stride, offset, false)
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.4>

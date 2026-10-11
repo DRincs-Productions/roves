@@ -13004,3 +13004,37 @@ per native call in roves-js itself. The fixes, with their measured effect:
 
 Net effect: a DOM-like getter went from about 500 ns to about 100 ns, and a script → native →
 script callback from about 720 ns to about 480 ns. roves-js tests are 32/32.
+
+## 2026-10-11 - WebGL 2: integer attributes work, no spurious per-frame draw error, ACTIVE_UNIFORM_BLOCKS
+
+**Servo files:**
+- `components/shared/canvas/webgl.rs`, `components/webgl/webgl_thread.rs`;
+- `components/script/dom/webgl/vertexarrayobject.rs`, `webglvertexarrayobject.rs`,
+  `webglvertexarrayobjectoes.rs`, `webglrenderingcontext.rs` and `webgl2renderingcontext.rs`;
+- `support/v8-smoke/graphics.html`.
+
+**Patch:** `0195-webgl2-integer-attributes-and-draw-validation.patch` after 0194.
+
+Found by instrumenting PixiJS 8 on v0.7.0 (getError after every GL call):
+- `drawElements` raised `INVALID_OPERATION` on **every frame**;
+- `getProgramParameter(…, ACTIVE_UNIFORM_BLOCKS)` raised `INVALID_ENUM`.
+
+The fixes:
+- **Draw validation.** WebGL 2's `validate_vertex_attribs_for_draw` took a `vertexAttribPointer`
+  attribute's data type (here `UNSIGNED_BYTE` colours and `UNSIGNED_SHORT` texture ids) as its
+  base type. Per spec, `vertexAttribPointer` data of any type feeds a float attribute, and only
+  `vertexAttribIPointer` data is integer. The draw still went ahead, but each frame recorded an
+  error and logged a warning. The base type is now float for `vertexAttribPointer` and int or uint
+  for `vertexAttribIPointer`.
+- **Integer attributes.** `vertexAttribIPointer` called the float `VertexAttribPointer` path, so
+  the GL thread ran `glVertexAttribPointer`, and integer attributes reached shaders converted to
+  float. There is now a `WebGLCommand::VertexAttribIPointer`, which runs
+  `glVertexAttribIPointer`. `VertexAttribData` records `integer`, and both entry points share
+  `vertex_attrib_pointer_impl`.
+- **`ACTIVE_UNIFORM_BLOCKS`** is answered by WebGL 2's `getProgramParameter`.
+- **Error log rate limit.** A WebGL error is logged as a warning only for the first 20 of each
+  context; the rest go to debug level. Before, one error per frame meant one formatted log line
+  and file write per frame.
+
+**CI:** `graphics.html` gains a draw with an integer attribute and a normalized byte attribute,
+which must give the right pixel and no error, and an `ACTIVE_UNIFORM_BLOCKS` query.

@@ -308,14 +308,22 @@ impl WebGL2RenderingContext {
                 .location
                 .map(|l| l as usize)
                 .unwrap_or(usize::MAX)];
+            // https://registry.khronos.org/webgl/specs/latest/2.0/#5.12: `vertexAttribPointer`
+            // data of any type feeds a float attribute; only `vertexAttribIPointer` data is
+            // integer (signed or unsigned by its type).
             let attrib_data_base_type = if !attrib.enabled_as_array {
                 match current_vertex_attrib {
                     VertexAttrib::Int(_, _, _, _) => constants::INT,
                     VertexAttrib::Uint(_, _, _, _) => constants::UNSIGNED_INT,
                     VertexAttrib::Float(_, _, _, _) => constants::FLOAT,
                 }
+            } else if !attrib.integer {
+                constants::FLOAT
             } else {
-                attrib.type_
+                match attrib.type_ {
+                    constants::BYTE | constants::SHORT | constants::INT => constants::INT,
+                    _ => constants::UNSIGNED_INT,
+                }
             };
 
             let contains = groups
@@ -2053,6 +2061,9 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
             constants::TRANSFORM_FEEDBACK_BUFFER_MODE => {
                 retval.set(Int32Value(program.transform_feedback_buffer_mode()))
             },
+            constants::ACTIVE_UNIFORM_BLOCKS => {
+                retval.set(Int32Value(program.active_uniform_blocks().len() as i32))
+            },
             _ => self.base.GetProgramParameter(cx, program, param_id, retval),
         }
     }
@@ -3142,7 +3153,7 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
             _ => return self.base.webgl_error(InvalidEnum),
         };
         self.base
-            .VertexAttribPointer(cx, index, size, type_, false, stride, offset)
+            .vertex_attrib_pointer_impl(cx, index, size, type_, false, stride, offset, true)
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.4>

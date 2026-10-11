@@ -1631,6 +1631,9 @@ impl WebGLImpl {
                     offset as _,
                 )
             },
+            WebGLCommand::VertexAttribIPointer(attrib_id, size, data_type, stride, offset) => unsafe {
+                gl.vertex_attrib_pointer_i32(attrib_id, size, data_type, stride, offset as _)
+            },
             WebGLCommand::VertexAttribPointer(
                 attrib_id,
                 size,

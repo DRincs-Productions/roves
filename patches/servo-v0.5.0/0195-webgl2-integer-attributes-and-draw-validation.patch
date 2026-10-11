@@ -1,0 +1,312 @@
+diff --git a/components/script/dom/webgl/vertexarrayobject.rs b/components/script/dom/webgl/vertexarrayobject.rs
+index 245fd11bd6d..8e6077e5999 100644
+--- a/components/script/dom/webgl/vertexarrayobject.rs
++++ b/components/script/dom/webgl/vertexarrayobject.rs
+@@ -104,6 +104,7 @@ impl VertexArrayObject {
+         normalized: bool,
+         stride: i32,
+         offset: i64,
++        integer: bool,
+     ) -> WebGLResult<()> {
+         let mut attribs = self.vertex_attribs.borrow_mut();
+         let data = attribs
+@@ -153,14 +154,11 @@ impl VertexArrayObject {
+             },
+             _ => {},
+         }
+-        context.send_command(WebGLCommand::VertexAttribPointer(
+-            index,
+-            size,
+-            type_,
+-            normalized,
+-            stride,
+-            offset as u32,
+-        ));
++        context.send_command(if integer {
++            WebGLCommand::VertexAttribIPointer(index, size, type_, stride, offset as u32)
++        } else {
++            WebGLCommand::VertexAttribPointer(index, size, type_, normalized, stride, offset as u32)
++        });
+         if let Some(old) = data.buffer() {
+             old.decrement_attached_counter(Operation::Infallible);
+         }
+@@ -175,6 +173,7 @@ impl VertexArrayObject {
+             offset: offset as u32,
+             buffer: buffer.map(|b| Dom::from_ref(&*b)),
+             divisor: data.divisor,
++            integer,
+         };
+ 
+         Ok(())
+@@ -279,6 +278,9 @@ pub(crate) struct VertexAttribData {
+     pub(crate) offset: u32,
+     pub(crate) buffer: Option<Dom<WebGLBuffer>>,
+     pub(crate) divisor: u32,
++    /// Set by `vertexAttribIPointer` (integer attribute), not `vertexAttribPointer` (whose data,
++    /// of any type, always feeds a float attribute).
++    pub(crate) integer: bool,
+ }
+ 
+ impl Default for VertexAttribData {
+@@ -293,6 +295,7 @@ impl Default for VertexAttribData {
+             offset: 0,
+             buffer: None,
+             divisor: 0,
++            integer: false,
+         }
+     }
+ }
+diff --git a/components/script/dom/webgl/webgl2renderingcontext.rs b/components/script/dom/webgl/webgl2renderingcontext.rs
+index 42042d7b981..edf6b3bc67b 100644
+--- a/components/script/dom/webgl/webgl2renderingcontext.rs
++++ b/components/script/dom/webgl/webgl2renderingcontext.rs
+@@ -308,14 +308,22 @@ impl WebGL2RenderingContext {
+                 .location
+                 .map(|l| l as usize)
+                 .unwrap_or(usize::MAX)];
++            // https://registry.khronos.org/webgl/specs/latest/2.0/#5.12: `vertexAttribPointer`
++            // data of any type feeds a float attribute; only `vertexAttribIPointer` data is
++            // integer (signed or unsigned by its type).
+             let attrib_data_base_type = if !attrib.enabled_as_array {
+                 match current_vertex_attrib {
+                     VertexAttrib::Int(_, _, _, _) => constants::INT,
+                     VertexAttrib::Uint(_, _, _, _) => constants::UNSIGNED_INT,
+                     VertexAttrib::Float(_, _, _, _) => constants::FLOAT,
+                 }
++            } else if !attrib.integer {
++                constants::FLOAT
+             } else {
+-                attrib.type_
++                match attrib.type_ {
++                    constants::BYTE | constants::SHORT | constants::INT => constants::INT,
++                    _ => constants::UNSIGNED_INT,
++                }
+             };
+ 
+             let contains = groups
+@@ -2053,6 +2061,9 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
+             constants::TRANSFORM_FEEDBACK_BUFFER_MODE => {
+                 retval.set(Int32Value(program.transform_feedback_buffer_mode()))
+             },
++            constants::ACTIVE_UNIFORM_BLOCKS => {
++                retval.set(Int32Value(program.active_uniform_blocks().len() as i32))
++            },
+             _ => self.base.GetProgramParameter(cx, program, param_id, retval),
+         }
+     }
+@@ -3142,7 +3153,7 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
+             _ => return self.base.webgl_error(InvalidEnum),
+         };
+         self.base
+-            .VertexAttribPointer(cx, index, size, type_, false, stride, offset)
++            .vertex_attrib_pointer_impl(cx, index, size, type_, false, stride, offset, true)
+     }
+ 
+     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.4>
+diff --git a/components/script/dom/webgl/webglrenderingcontext.rs b/components/script/dom/webgl/webglrenderingcontext.rs
+index a3f615da8d2..e82bc3f5ad1 100644
+--- a/components/script/dom/webgl/webglrenderingcontext.rs
++++ b/components/script/dom/webgl/webglrenderingcontext.rs
+@@ -182,6 +182,8 @@ pub(crate) struct WebGLRenderingContext {
+     #[ignore_malloc_size_of = "Defined in servo_canvas_traits"]
+     #[no_trace]
+     last_error: Cell<Option<WebGLError>>,
++    /// How many WebGL errors were logged as warnings (see `webgl_error`).
++    logged_errors: Cell<u32>,
+     texture_packing_alignment: Cell<u8>,
+     texture_unpacking_settings: Cell<TextureUnpacking>,
+     // TODO(nox): Should be Cell<u8>.
+@@ -252,6 +254,7 @@ impl WebGLRenderingContext {
+                 limits: ctx_data.limits,
+                 canvas,
+                 last_error: Cell::new(None),
++                logged_errors: Cell::new(0),
+                 texture_packing_alignment: Cell::new(4),
+                 texture_unpacking_settings: Cell::new(TextureUnpacking::CONVERT_COLORSPACE),
+                 texture_unpacking_alignment: Cell::new(4),
+@@ -419,13 +422,47 @@ impl WebGLRenderingContext {
+         self.send_with_fallibility(command, Operation::Fallible);
+     }
+ 
++    /// `vertexAttribPointer`, or with `integer` WebGL 2's `vertexAttribIPointer`.
++    #[allow(clippy::too_many_arguments)]
++    pub(crate) fn vertex_attrib_pointer_impl(
++        &self,
++        cx: &mut JSContext,
++        index: u32,
++        size: i32,
++        type_: u32,
++        normalized: bool,
++        stride: i32,
++        offset: i64,
++        integer: bool,
++    ) {
++        let res = match self.webgl_version() {
++            WebGLVersion::WebGL1 => self
++                .current_vao(cx)
++                .vertex_attrib_pointer(index, size, type_, normalized, stride, offset, integer),
++            WebGLVersion::WebGL2 => self
++                .current_vao_webgl2(cx)
++                .vertex_attrib_pointer(index, size, type_, normalized, stride, offset, integer),
++        };
++        handle_potential_webgl_error!(self, res);
++    }
++
+     pub(crate) fn webgl_error(&self, err: WebGLError) {
+         // TODO(emilio): Add useful debug messages to this
+-        warn!(
+-            "WebGL error: {:?}, previous error was {:?}",
+-            err,
+-            self.last_error.get()
+-        );
++        // A content error repeated every frame wrote a warning per frame (formatting and a log
++        // file write each): the first ones are warnings, the rest debug output.
++        const LOGGED_ERRORS: u32 = 20;
++        let logged = self.logged_errors.get();
++        if logged < LOGGED_ERRORS {
++            self.logged_errors.set(logged + 1);
++            warn!(
++                "WebGL error: {:?}, previous error was {:?}{}",
++                err,
++                self.last_error.get(),
++                if logged + 1 == LOGGED_ERRORS { " (further WebGL errors of this context are logged at debug level)" } else { "" }
++            );
++        } else {
++            debug!("WebGL error: {:?}, previous error was {:?}", err, self.last_error.get());
++        }
+ 
+         // If an error has been detected no further errors must be
+         // recorded until `getError` has been called
+@@ -4571,15 +4608,7 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
+         stride: i32,
+         offset: i64,
+     ) {
+-        let res = match self.webgl_version() {
+-            WebGLVersion::WebGL1 => self
+-                .current_vao(cx)
+-                .vertex_attrib_pointer(index, size, type_, normalized, stride, offset),
+-            WebGLVersion::WebGL2 => self
+-                .current_vao_webgl2(cx)
+-                .vertex_attrib_pointer(index, size, type_, normalized, stride, offset),
+-        };
+-        handle_potential_webgl_error!(self, res);
++        self.vertex_attrib_pointer_impl(cx, index, size, type_, normalized, stride, offset, false)
+     }
+ 
+     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.4>
+diff --git a/components/script/dom/webgl/webglvertexarrayobject.rs b/components/script/dom/webgl/webglvertexarrayobject.rs
+index 41721ef9d1f..390bc98f1f7 100644
+--- a/components/script/dom/webgl/webglvertexarrayobject.rs
++++ b/components/script/dom/webgl/webglvertexarrayobject.rs
+@@ -81,9 +81,10 @@ impl WebGLVertexArrayObject {
+         normalized: bool,
+         stride: i32,
+         offset: i64,
++        integer: bool,
+     ) -> WebGLResult<()> {
+         self.array_object
+-            .vertex_attrib_pointer(index, size, type_, normalized, stride, offset)
++            .vertex_attrib_pointer(index, size, type_, normalized, stride, offset, integer)
+     }
+ 
+     pub(crate) fn vertex_attrib_divisor(&self, index: u32, value: u32) {
+diff --git a/components/script/dom/webgl/webglvertexarrayobjectoes.rs b/components/script/dom/webgl/webglvertexarrayobjectoes.rs
+index 51803822a86..7e7b1154079 100644
+--- a/components/script/dom/webgl/webglvertexarrayobjectoes.rs
++++ b/components/script/dom/webgl/webglvertexarrayobjectoes.rs
+@@ -81,9 +81,10 @@ impl WebGLVertexArrayObjectOES {
+         normalized: bool,
+         stride: i32,
+         offset: i64,
++        integer: bool,
+     ) -> WebGLResult<()> {
+         self.array_object
+-            .vertex_attrib_pointer(index, size, type_, normalized, stride, offset)
++            .vertex_attrib_pointer(index, size, type_, normalized, stride, offset, integer)
+     }
+ 
+     pub(crate) fn vertex_attrib_divisor(&self, index: u32, value: u32) {
+diff --git a/components/shared/canvas/webgl.rs b/components/shared/canvas/webgl.rs
+index c5c6d654f35..aa37944d54b 100644
+--- a/components/shared/canvas/webgl.rs
++++ b/components/shared/canvas/webgl.rs
+@@ -404,6 +404,8 @@ pub enum WebGLCommand {
+     VertexAttribI(u32, i32, i32, i32, i32),
+     VertexAttribU(u32, u32, u32, u32, u32),
+     VertexAttribPointer(u32, i32, u32, bool, i32, u32),
++    /// `vertexAttribIPointer` (WebGL 2): integer attributes, not converted to float.
++    VertexAttribIPointer(u32, i32, u32, i32, u32),
+     VertexAttribPointer2f(u32, i32, bool, i32, u32),
+     SetViewport(i32, i32, i32, i32),
+     TexImage3D {
+diff --git a/components/webgl/webgl_thread.rs b/components/webgl/webgl_thread.rs
+index d8328c7ed9e..58f8641466e 100644
+--- a/components/webgl/webgl_thread.rs
++++ b/components/webgl/webgl_thread.rs
+@@ -1631,6 +1631,9 @@ impl WebGLImpl {
+                     offset as _,
+                 )
+             },
++            WebGLCommand::VertexAttribIPointer(attrib_id, size, data_type, stride, offset) => unsafe {
++                gl.vertex_attrib_pointer_i32(attrib_id, size, data_type, stride, offset as _)
++            },
+             WebGLCommand::VertexAttribPointer(
+                 attrib_id,
+                 size,
+diff --git a/support/v8-smoke/graphics.html b/support/v8-smoke/graphics.html
+index 95652f7add9..433666bceac 100644
+--- a/support/v8-smoke/graphics.html
++++ b/support/v8-smoke/graphics.html
+@@ -95,6 +95,52 @@ check("WebGL 2: instanced draw, VAO and transform of integer uniforms", () => {
+   const nativeOnly = !firstError || firstError.startsWith("drawArraysInstanced:");
+   return (left[0] === 255 && right[1] === 255 && nativeOnly) || `left ${left} right ${right} first error ${firstError}`;
+ });
++check("WebGL 2: integer (vertexAttribIPointer) and normalized byte attributes draw without errors", () => {
++  const gl = makeCanvas().getContext("webgl2");
++  if (!gl) return "no webgl2";
++  // PixiJS's batcher feeds a float attribute from UNSIGNED_BYTE/UNSIGNED_SHORT data
++  // (vertexAttribPointer); integer attributes need vertexAttribIPointer.
++  const p = program(gl, `#version 300 es
++    in vec2 p; in uint id; in vec4 color; flat out uint vid; out vec4 vcolor;
++    void main() { vid = id; vcolor = color; gl_Position = vec4(p, 0.0, 1.0); }`,
++    `#version 300 es
++    precision mediump float; flat in uint vid; in vec4 vcolor; out vec4 outColor;
++    void main() { outColor = vid == 7u ? vcolor : vec4(1, 0, 0, 1); }`);
++  gl.useProgram(p);
++  gl.bindVertexArray(gl.createVertexArray());
++  const attribute = (name, data, size, type, integer, normalized) => {
++    const location = gl.getAttribLocation(p, name);
++    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
++    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
++    gl.enableVertexAttribArray(location);
++    if (integer) gl.vertexAttribIPointer(location, size, type, 0, 0);
++    else gl.vertexAttribPointer(location, size, type, normalized, 0, 0);
++  };
++  attribute("p", new Float32Array([-1, -1, 3, -1, -1, 3]), 2, gl.FLOAT, false, false);
++  attribute("id", new Uint8Array([7, 7, 7, 0]), 1, gl.UNSIGNED_BYTE, true, false);
++  attribute("color", new Uint8Array([0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255]), 4, gl.UNSIGNED_BYTE, false, true);
++  const indices = gl.createBuffer();
++  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indices);
++  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array([0, 1, 2]), gl.STATIC_DRAW);
++  gl.getError();
++  gl.drawElements(gl.TRIANGLES, 3, gl.UNSIGNED_SHORT, 0);
++  const error = gl.getError();
++  const px = pixel(gl, 8, 8);
++  return (error === gl.NO_ERROR && px[1] === 255 && px[0] === 0) || `error 0x${error.toString(16)} pixel ${px}`;
++});
++check("WebGL 2: getProgramParameter(ACTIVE_UNIFORM_BLOCKS)", () => {
++  const gl = makeCanvas().getContext("webgl2");
++  if (!gl) return "no webgl2";
++  const p = program(gl, `#version 300 es
++    layout(std140) uniform Block { vec4 tint; }; in vec2 p;
++    void main() { gl_Position = vec4(p, 0.0, 1.0) * tint.x; }`,
++    `#version 300 es
++    precision mediump float; out vec4 c; void main() { c = vec4(1); }`);
++  gl.getError();
++  const blocks = gl.getProgramParameter(p, gl.ACTIVE_UNIFORM_BLOCKS);
++  const error = gl.getError();
++  return (blocks === 1 && error === gl.NO_ERROR) || `blocks ${blocks} error 0x${error.toString(16)}`;
++});
+ check("WebGL 2: render to a framebuffer texture", () => {
+   const gl = makeCanvas().getContext("webgl2");
+   if (!gl) return "no webgl2";
