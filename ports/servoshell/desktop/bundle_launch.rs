@@ -35,6 +35,8 @@ use roves_content_packer::extract;
 use crate::protocols::game::CONTENT_HOST;
 
 const LAUNCH_CONFIG_FILE: &str = "launch.json";
+/// Extra engine arguments for a bundled launch (see `resolve_bundled_launch_args`).
+const EXTRA_ARGS_ENV: &str = "ROVES_EXTRA_ARGS";
 
 /// The boot URL every bundled launch opens: `game://<CONTENT_HOST>/`, the virtual root —
 /// deliberately *not* `game://<CONTENT_HOST>/<entry_html>`. `GameProtocolHandler::load`'s
@@ -161,6 +163,13 @@ pub(crate) fn resolve_bundled_launch_args() -> Option<BundledLaunch> {
 
     let mut args = vec![url];
     args.extend(extra_args);
+    // `ROVES_EXTRA_ARGS` (whitespace-separated, no quoting) appends engine options to a shipped
+    // game's launch, which otherwise ignores the command line: e.g. `ROVES_EXTRA_ARGS="-p 5"`
+    // runs a bundled game under Servo's time profiler. A diagnostic switch, not a player option.
+    if let Ok(more) = env::var(EXTRA_ARGS_ENV) {
+        log::info!("{EXTRA_ARGS_ENV}: appending {more:?} to the launch arguments");
+        args.extend(more.split_whitespace().map(str::to_owned));
+    }
     Some(BundledLaunch {
         args,
         pending_boot_extraction,

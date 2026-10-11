@@ -13056,3 +13056,28 @@ Synced:
 - `@drincs/roves-api` 0.9.1 is tagged `v0.9.1`, which runs the npm publish workflow. `saves.write`
   uses POST with a query-string fallback, and `COMPATIBLE_SHELL_VERSION` is `v0.7.1`;
 - the wiki's saves page has a large-saves note (b5a7f5e).
+
+## 2026-10-11 - Diagnostics for shipped games: ROVES_EXTRA_ARGS, GC pause log, buffered log file
+
+**Servo files:** `ports/servoshell/desktop/bundle_launch.rs`, `ports/servoshell/desktop/logging.rs`,
+`components/roves-js/src/runtime_impl.rs`.
+**Patch:** `0196-diagnostics-extra-args-gc-log-buffered-log.patch` after 0195.
+
+These are the first step of the performance investigation's phase 2: profiling a real bundled
+game.
+- **`ROVES_EXTRA_ARGS`.** A bundled game's launch (`resolve_bundled_launch_args`) ignores the
+  command line, so Servo's profilers could not be used on a shipped game. The variable's
+  arguments (whitespace-separated, no quoting) are appended to `launch.json`'s; for example,
+  `ROVES_EXTRA_ARGS="-p 5"` turns on the time profiler. Only double-click launches are affected:
+  Servo's child processes have their own arguments.
+- **`[roves-gc]` log lines.** The roves-js GC prologue and epilogue now time every full
+  collection. One that takes at least 8 ms is logged with the JS heap's used and total size and
+  external memory. Every full collection is one stop-the-world pause, given the GC flags set in
+  roves-v8.
+- **Buffered `roves.log`.** Every log line, a game's `console.log` included, was a synchronous
+  write to an unbuffered file from whichever thread logged it. The file is now behind a 64 KB
+  `BufWriter`. `env_logger`'s per-record flush is deferred. The buffer is written out on every
+  warning or error (so crashes stay diagnosable), every 500 ms from a background thread, and on
+  `log::logger().flush()`.
+
+Wiki: the Shell page's performance diagnostics section documents both aids.

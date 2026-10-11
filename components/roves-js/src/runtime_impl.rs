@@ -263,12 +263,36 @@ fn report_gc(status: crate::jsapi::JSGCStatus) {
     }
 }
 
+thread_local! {
+    /// When the running full collection started (see `gc_epilogue`).
+    static GC_STARTED: Cell<Option<std::time::Instant>> = const { Cell::new(None) };
+}
+
+/// A full collection taking at least this long is logged (`[roves-gc]`): every full collection
+/// is one stop-the-world pause (see `roves_v8`'s GC flags), and a long one shows as a stutter.
+const LOGGED_GC_PAUSE: std::time::Duration = std::time::Duration::from_millis(8);
+
 unsafe extern "C" fn gc_prologue(_: v8::UnsafeRawIsolatePtr, _: v8::GCType, _: v8::GCCallbackFlags, _: *mut c_void) {
+    GC_STARTED.with(|started| started.set(Some(std::time::Instant::now())));
     report_gc(crate::jsapi::JSGCStatus::JSGC_BEGIN);
 }
 
 unsafe extern "C" fn gc_epilogue(_: v8::UnsafeRawIsolatePtr, _: v8::GCType, _: v8::GCCallbackFlags, _: *mut c_void) {
     report_gc(crate::jsapi::JSGCStatus::JSGC_END);
+    let Some(started) = GC_STARTED.with(|started| started.take()) else { return };
+    let pause = started.elapsed();
+    if pause >= LOGGED_GC_PAUSE {
+        if let Some(cx) = crate::rust::Runtime::get() {
+            let statistics = isolate(cx.as_ptr()).get_heap_statistics();
+            log::info!(
+                "[roves-gc] full GC {} ms (JS heap {} MB used of {} MB, external {} MB)",
+                pause.as_millis(),
+                statistics.used_heap_size() >> 20,
+                statistics.total_heap_size() >> 20,
+                statistics.external_memory() >> 20,
+            );
+        }
+    }
 }
 
 pub unsafe fn JS_SetGCParameter(cx: *mut JSContext, key: JSGCParamKey, value: u32) {

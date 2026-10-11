@@ -1,0 +1,157 @@
+diff --git a/components/roves-js/src/runtime_impl.rs b/components/roves-js/src/runtime_impl.rs
+index 573c13434cc..74688c67aed 100644
+--- a/components/roves-js/src/runtime_impl.rs
++++ b/components/roves-js/src/runtime_impl.rs
+@@ -263,12 +263,36 @@ fn report_gc(status: crate::jsapi::JSGCStatus) {
+     }
+ }
+ 
++thread_local! {
++    /// When the running full collection started (see `gc_epilogue`).
++    static GC_STARTED: Cell<Option<std::time::Instant>> = const { Cell::new(None) };
++}
++
++/// A full collection taking at least this long is logged (`[roves-gc]`): every full collection
++/// is one stop-the-world pause (see `roves_v8`'s GC flags), and a long one shows as a stutter.
++const LOGGED_GC_PAUSE: std::time::Duration = std::time::Duration::from_millis(8);
++
+ unsafe extern "C" fn gc_prologue(_: v8::UnsafeRawIsolatePtr, _: v8::GCType, _: v8::GCCallbackFlags, _: *mut c_void) {
++    GC_STARTED.with(|started| started.set(Some(std::time::Instant::now())));
+     report_gc(crate::jsapi::JSGCStatus::JSGC_BEGIN);
+ }
+ 
+ unsafe extern "C" fn gc_epilogue(_: v8::UnsafeRawIsolatePtr, _: v8::GCType, _: v8::GCCallbackFlags, _: *mut c_void) {
+     report_gc(crate::jsapi::JSGCStatus::JSGC_END);
++    let Some(started) = GC_STARTED.with(|started| started.take()) else { return };
++    let pause = started.elapsed();
++    if pause >= LOGGED_GC_PAUSE {
++        if let Some(cx) = crate::rust::Runtime::get() {
++            let statistics = isolate(cx.as_ptr()).get_heap_statistics();
++            log::info!(
++                "[roves-gc] full GC {} ms (JS heap {} MB used of {} MB, external {} MB)",
++                pause.as_millis(),
++                statistics.used_heap_size() >> 20,
++                statistics.total_heap_size() >> 20,
++                statistics.external_memory() >> 20,
++            );
++        }
++    }
+ }
+ 
+ pub unsafe fn JS_SetGCParameter(cx: *mut JSContext, key: JSGCParamKey, value: u32) {
+diff --git a/ports/servoshell/desktop/bundle_launch.rs b/ports/servoshell/desktop/bundle_launch.rs
+index 7a7afed01e6..ff0a8b56591 100644
+--- a/ports/servoshell/desktop/bundle_launch.rs
++++ b/ports/servoshell/desktop/bundle_launch.rs
+@@ -35,6 +35,8 @@ use roves_content_packer::extract;
+ use crate::protocols::game::CONTENT_HOST;
+ 
+ const LAUNCH_CONFIG_FILE: &str = "launch.json";
++/// Extra engine arguments for a bundled launch (see `resolve_bundled_launch_args`).
++const EXTRA_ARGS_ENV: &str = "ROVES_EXTRA_ARGS";
+ 
+ /// The boot URL every bundled launch opens: `game://<CONTENT_HOST>/`, the virtual root —
+ /// deliberately *not* `game://<CONTENT_HOST>/<entry_html>`. `GameProtocolHandler::load`'s
+@@ -161,6 +163,13 @@ pub(crate) fn resolve_bundled_launch_args() -> Option<BundledLaunch> {
+ 
+     let mut args = vec![url];
+     args.extend(extra_args);
++    // `ROVES_EXTRA_ARGS` (whitespace-separated, no quoting) appends engine options to a shipped
++    // game's launch, which otherwise ignores the command line: e.g. `ROVES_EXTRA_ARGS="-p 5"`
++    // runs a bundled game under Servo's time profiler. A diagnostic switch, not a player option.
++    if let Ok(more) = env::var(EXTRA_ARGS_ENV) {
++        log::info!("{EXTRA_ARGS_ENV}: appending {more:?} to the launch arguments");
++        args.extend(more.split_whitespace().map(str::to_owned));
++    }
+     Some(BundledLaunch {
+         args,
+         pending_boot_extraction,
+diff --git a/ports/servoshell/desktop/logging.rs b/ports/servoshell/desktop/logging.rs
+index 1d9f6b40acb..20ffea9a888 100644
+--- a/ports/servoshell/desktop/logging.rs
++++ b/ports/servoshell/desktop/logging.rs
+@@ -26,8 +26,9 @@
+ //! deliberate no-op, not a silently swallowed feature.
+ 
+ use std::fs::File;
++use std::io::{BufWriter, Write};
+ use std::path::Path;
+-use std::sync::{Mutex, OnceLock};
++use std::sync::{Arc, Mutex, OnceLock};
+ 
+ /// Filename of the on-disk log, truncated fresh on every launch (`File::create`)
+ /// so it never grows unbounded across repeated runs — old runs' output isn't
+@@ -80,6 +81,36 @@ fn note_potential_content_load_error(record: &log::Record) {
+ /// hook into Servo's script-loading internals.
+ struct RovesLogger {
+     inner: env_logger::Logger,
++    file: LogFile,
++}
++
++/// The log file, buffered: every line (a game's `console.log` included) used to be a synchronous
++/// disk write from whichever thread logged it. `env_logger` flushes its target after each record,
++/// so `flush` here defers; the buffer is written out by `flush_now`: for every warning or error
++/// (so a crash stays diagnosable), every 500 ms from a background thread, and on `log::logger()
++/// .flush()`.
++#[derive(Clone)]
++struct LogFile(Arc<Mutex<BufWriter<File>>>);
++
++impl LogFile {
++    fn flush_now(&self) {
++        if let Ok(mut file) = self.0.lock() {
++            let _ = file.flush();
++        }
++    }
++}
++
++impl Write for LogFile {
++    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
++        match self.0.lock() {
++            Ok(mut file) => file.write(bytes),
++            Err(_) => Ok(bytes.len()),
++        }
++    }
++
++    fn flush(&mut self) -> std::io::Result<()> {
++        Ok(())
++    }
+ }
+ 
+ impl log::Log for RovesLogger {
+@@ -90,10 +121,14 @@ impl log::Log for RovesLogger {
+     fn log(&self, record: &log::Record) {
+         note_potential_content_load_error(record);
+         self.inner.log(record);
++        if record.level() <= log::Level::Warn {
++            self.file.flush_now();
++        }
+     }
+ 
+     fn flush(&self) {
+         self.inner.flush();
++        self.file.flush_now();
+     }
+ }
+ 
+@@ -121,13 +156,19 @@ pub(crate) fn init(log_dir: &Path) -> Option<std::path::PathBuf> {
+     let log_path = log_dir.join(LOG_FILE_NAME);
+     let file = File::create(&log_path).ok()?;
+ 
++    let file = LogFile(Arc::new(Mutex::new(BufWriter::with_capacity(64 * 1024, file))));
+     let env = env_logger::Env::default().default_filter_or("info");
+     let mut builder = env_logger::Builder::from_env(env);
+-    builder.target(env_logger::Target::Pipe(Box::new(file)));
++    builder.target(env_logger::Target::Pipe(Box::new(file.clone())));
+     builder.format_timestamp_millis();
+     let logger = builder.build();
+     let filter = logger.filter();
+-    let logger = RovesLogger { inner: logger };
++    let flusher = file.clone();
++    let _ = std::thread::Builder::new().name("RovesLogFlush".into()).spawn(move || loop {
++        std::thread::sleep(std::time::Duration::from_millis(500));
++        flusher.flush_now();
++    });
++    let logger = RovesLogger { inner: logger, file };
+ 
+     log::set_boxed_logger(Box::new(logger)).ok()?;
+     log::set_max_level(filter);

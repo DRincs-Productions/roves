@@ -26,8 +26,9 @@
 //! deliberate no-op, not a silently swallowed feature.
 
 use std::fs::File;
+use std::io::{BufWriter, Write};
 use std::path::Path;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Filename of the on-disk log, truncated fresh on every launch (`File::create`)
 /// so it never grows unbounded across repeated runs — old runs' output isn't
@@ -80,6 +81,36 @@ fn note_potential_content_load_error(record: &log::Record) {
 /// hook into Servo's script-loading internals.
 struct RovesLogger {
     inner: env_logger::Logger,
+    file: LogFile,
+}
+
+/// The log file, buffered: every line (a game's `console.log` included) used to be a synchronous
+/// disk write from whichever thread logged it. `env_logger` flushes its target after each record,
+/// so `flush` here defers; the buffer is written out by `flush_now`: for every warning or error
+/// (so a crash stays diagnosable), every 500 ms from a background thread, and on `log::logger()
+/// .flush()`.
+#[derive(Clone)]
+struct LogFile(Arc<Mutex<BufWriter<File>>>);
+
+impl LogFile {
+    fn flush_now(&self) {
+        if let Ok(mut file) = self.0.lock() {
+            let _ = file.flush();
+        }
+    }
+}
+
+impl Write for LogFile {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        match self.0.lock() {
+            Ok(mut file) => file.write(bytes),
+            Err(_) => Ok(bytes.len()),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 impl log::Log for RovesLogger {
@@ -90,10 +121,14 @@ impl log::Log for RovesLogger {
     fn log(&self, record: &log::Record) {
         note_potential_content_load_error(record);
         self.inner.log(record);
+        if record.level() <= log::Level::Warn {
+            self.file.flush_now();
+        }
     }
 
     fn flush(&self) {
         self.inner.flush();
+        self.file.flush_now();
     }
 }
 
@@ -121,13 +156,19 @@ pub(crate) fn init(log_dir: &Path) -> Option<std::path::PathBuf> {
     let log_path = log_dir.join(LOG_FILE_NAME);
     let file = File::create(&log_path).ok()?;
 
+    let file = LogFile(Arc::new(Mutex::new(BufWriter::with_capacity(64 * 1024, file))));
     let env = env_logger::Env::default().default_filter_or("info");
     let mut builder = env_logger::Builder::from_env(env);
-    builder.target(env_logger::Target::Pipe(Box::new(file)));
+    builder.target(env_logger::Target::Pipe(Box::new(file.clone())));
     builder.format_timestamp_millis();
     let logger = builder.build();
     let filter = logger.filter();
-    let logger = RovesLogger { inner: logger };
+    let flusher = file.clone();
+    let _ = std::thread::Builder::new().name("RovesLogFlush".into()).spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        flusher.flush_now();
+    });
+    let logger = RovesLogger { inner: logger, file };
 
     log::set_boxed_logger(Box::new(logger)).ok()?;
     log::set_max_level(filter);
