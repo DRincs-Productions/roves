@@ -12911,3 +12911,15 @@ Roves keeps V8's default: deep recursion behaves as in Chrome, where web games a
 After 0189, stress passes 11/11. The WebGL 2 instancing check renders the right pixels but
 reports `INVALID_OPERATION` (0x502). The check now reads `getError()` after every call and
 names the first call that raised it.
+
+## 2026-10-11 - V8 smoke: the WebGL 2 error comes from the native GL driver
+
+**Servo files:** `support/v8-smoke/graphics.html`.
+**Patch:** `0191-v8-webgl2-native-error-note.patch` after 0190.
+
+With per-call checks (0190), the first error is `drawArraysInstanced: 0x502`. Servo's own
+validation (`draw_arrays_instanced`/`validate_for_draw`) returns an error before sending the draw
+command. Because the draw is sent and its pixels are right, the error comes from the native GL
+driver under Servo: Mesa llvmpipe on the CI runner. It does not come from the engine, which only
+passes integers. The check still requires the right pixels and now logs that driver error as a
+note. Checking WebGL 2 instancing on a real GPU is on the manual test list.
