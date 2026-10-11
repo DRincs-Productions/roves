@@ -13038,3 +13038,21 @@ The fixes:
 
 **CI:** `graphics.html` gains a draw with an integer attribute and a normalized byte attribute,
 which must give the right pixel and no error, and an `ACTIVE_UNIFORM_BLOCKS` query.
+
+## 2026-10-11 - Release v0.7.1
+
+`v0.7.1` was cut from b30be23, with all six assets attached. It carries:
+- saves in POST bodies (0192);
+- Windows 1 ms timers (0193);
+- faster roves-js native calls (0194);
+- the WebGL 2 fixes (0195).
+
+The CI on that commit was green: `test.yml` full build, and every V8 smoke page, graphics at
+12/12 and saves at 6/6.
+
+Synced:
+- `roves-action` pins `v0.7.1` (794243b);
+- `roves-packmaster` targets `v0.7.1` (47e36cc);
+- `@drincs/roves-api` 0.9.1 is tagged `v0.9.1`, which runs the npm publish workflow. `saves.write`
+  uses POST with a query-string fallback, and `COMPATIBLE_SHELL_VERSION` is `v0.7.1`;
+- the wiki's saves page has a large-saves note (b5a7f5e).
