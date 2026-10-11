@@ -1,0 +1,161 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>roves-js graphics</title>
+<script src="harness.js"></script>
+</head>
+<body>
+<script>
+// Graphics APIs through the V8 bindings: WebGL 1 and 2 (shaders, buffers, textures,
+// framebuffers, instancing), canvas 2D drawing and pixel round trips, and image encoding.
+function makeCanvas(width = 16, height = 16) {
+  const canvas = document.createElement("canvas");
+  canvas.width = width; canvas.height = height;
+  return canvas;
+}
+function program(gl, vertex, fragment) {
+  const compile = (type, source) => {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source); gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader));
+    return shader;
+  };
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, vertex));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fragment));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  return p;
+}
+function pixel(gl, x, y) { const px = new Uint8Array(4); gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); return Array.from(px); }
+
+check("WebGL: shader program draws a triangle", () => {
+  const gl = makeCanvas().getContext("webgl");
+  if (!gl) return "no webgl";
+  const p = program(gl, "attribute vec2 p; void main() { gl_Position = vec4(p, 0.0, 1.0); }", "precision mediump float; uniform vec4 c; void main() { gl_FragColor = c; }");
+  gl.useProgram(p);
+  const buffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  const location = gl.getAttribLocation(p, "p");
+  gl.enableVertexAttribArray(location);
+  gl.vertexAttribPointer(location, 2, gl.FLOAT, false, 0, 0);
+  gl.uniform4f(gl.getUniformLocation(p, "c"), 0, 0, 1, 1);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  const px = pixel(gl, 8, 8);
+  return (px[2] === 255 && px[0] === 0 && gl.getError() === gl.NO_ERROR) || `pixel ${px} error ${gl.getError()}`;
+});
+check("WebGL: texture upload from a canvas and sampling", () => {
+  const source = makeCanvas(2, 2);
+  const g = source.getContext("2d"); g.fillStyle = "#ff0000"; g.fillRect(0, 0, 2, 2);
+  const gl = makeCanvas().getContext("webgl");
+  if (!gl) return "no webgl";
+  const p = program(gl, "attribute vec2 p; varying vec2 uv; void main() { uv = p * 0.5 + 0.5; gl_Position = vec4(p, 0.0, 1.0); }",
+    "precision mediump float; varying vec2 uv; uniform sampler2D t; void main() { gl_FragColor = texture2D(t, uv); }");
+  gl.useProgram(p);
+  const texture = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  const px = pixel(gl, 8, 8);
+  return (px[0] === 255 && px[1] === 0) || `pixel ${px}`;
+});
+check("WebGL 2: instanced draw, VAO and transform of integer uniforms", () => {
+  const gl = makeCanvas().getContext("webgl2");
+  if (!gl) return "no webgl2";
+  const p = program(gl, `#version 300 es
+    in vec2 p; flat out int id;
+    void main() { id = gl_InstanceID; gl_Position = vec4(p * 0.5 + vec2(float(gl_InstanceID) - 0.5, 0.0), 0.0, 1.0); }`,
+    `#version 300 es
+    precision mediump float; flat in int id; uniform int highlight; out vec4 color;
+    void main() { color = id == highlight ? vec4(0, 1, 0, 1) : vec4(1, 0, 0, 1); }`);
+  gl.useProgram(p);
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  gl.uniform1i(gl.getUniformLocation(p, "highlight"), 1);
+  gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, 2);
+  const left = pixel(gl, 3, 8), right = pixel(gl, 12, 8);
+  return (left[0] === 255 && right[1] === 255 && gl.getError() === gl.NO_ERROR) || `left ${left} right ${right} error ${gl.getError()}`;
+});
+check("WebGL 2: render to a framebuffer texture", () => {
+  const gl = makeCanvas().getContext("webgl2");
+  if (!gl) return "no webgl2";
+  const texture = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, 4, 4);
+  const framebuffer = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+  if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) return "framebuffer incomplete";
+  gl.clearColor(1, 1, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+  const px = pixel(gl, 1, 1);
+  return (px[0] === 255 && px[1] === 255 && px[2] === 0) || `pixel ${px}`;
+});
+check("WebGL: context attributes, extensions and limits", () => {
+  const gl = makeCanvas().getContext("webgl", { antialias: false, alpha: false });
+  if (!gl) return "no webgl";
+  const attributes = gl.getContextAttributes();
+  return attributes.alpha === false && Array.isArray(gl.getSupportedExtensions()) && gl.getParameter(gl.MAX_TEXTURE_SIZE) >= 1024;
+});
+check("canvas 2D: paths, gradients, text and getImageData", () => {
+  const canvas = makeCanvas(32, 32);
+  const g = canvas.getContext("2d");
+  const gradient = g.createLinearGradient(0, 0, 32, 0);
+  gradient.addColorStop(0, "#000000"); gradient.addColorStop(1, "#ffffff");
+  g.fillStyle = gradient; g.fillRect(0, 0, 32, 16);
+  g.beginPath(); g.arc(16, 24, 6, 0, Math.PI * 2); g.fillStyle = "rgb(0, 0, 255)"; g.fill();
+  g.font = "10px sans-serif"; g.fillStyle = "red"; g.fillText("R", 0, 10);
+  const left = g.getImageData(1, 14, 1, 1).data, right = g.getImageData(30, 14, 1, 1).data, circle = g.getImageData(16, 24, 1, 1).data;
+  return (left[0] < right[0] && circle[2] === 255 && g.measureText("Roves").width > 0) || `left ${left} right ${right} circle ${circle}`;
+});
+check("canvas 2D: drawImage, transforms and putImageData", () => {
+  const source = makeCanvas(4, 4);
+  const sg = source.getContext("2d"); sg.fillStyle = "#00ff00"; sg.fillRect(0, 0, 4, 4);
+  const canvas = makeCanvas(16, 16);
+  const g = canvas.getContext("2d");
+  g.translate(8, 8); g.scale(2, 2); g.drawImage(source, 0, 0);
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  const image = g.createImageData(1, 1); image.data.set([255, 0, 255, 255]);
+  g.putImageData(image, 0, 0);
+  const drawn = g.getImageData(12, 12, 1, 1).data, put = g.getImageData(0, 0, 1, 1).data;
+  return (drawn[1] === 255 && put[0] === 255 && put[2] === 255) || `drawn ${drawn} put ${put}`;
+});
+check("canvas toDataURL and toBlob encode PNG", () => new Promise(resolve => {
+  const canvas = makeCanvas(4, 4);
+  canvas.getContext("2d").fillRect(0, 0, 4, 4);
+  const url = canvas.toDataURL("image/png");
+  canvas.toBlob(blob => resolve((url.startsWith("data:image/png;base64,") && blob && blob.type === "image/png" && blob.size > 0) || `${url.slice(0, 30)} ${blob && blob.type}`), "image/png");
+}));
+check("Image decoding from a data URL and drawing it", () => new Promise(resolve => {
+  const source = makeCanvas(2, 2);
+  const sg = source.getContext("2d"); sg.fillStyle = "#0000ff"; sg.fillRect(0, 0, 2, 2);
+  const image = new Image();
+  image.onload = () => {
+    const g = makeCanvas(2, 2).getContext("2d");
+    g.drawImage(image, 0, 0);
+    const px = g.getImageData(1, 1, 1, 1).data;
+    resolve((image.naturalWidth === 2 && px[2] === 255) || `size ${image.naturalWidth} pixel ${px}`);
+  };
+  image.onerror = () => resolve("image error");
+  image.src = source.toDataURL();
+}));
+check("Path2D and isPointInPath", () => {
+  const g = makeCanvas().getContext("2d");
+  const path = new Path2D("M0 0 L10 0 L10 10 Z");
+  return g.isPointInPath(path, 8, 2) && !g.isPointInPath(path, 2, 8);
+});
+check("WebGPU adapter request (when available)", async () => {
+  if (!navigator.gpu) return "skip";
+  const adapter = await navigator.gpu.requestAdapter();
+  return adapter ? true : "skip";
+});
+finish();
+</script>
+</body></html>

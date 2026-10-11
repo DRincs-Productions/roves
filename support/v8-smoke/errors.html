@@ -1,0 +1,74 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>roves-js errors and exceptions</title>
+<script src="harness.js"></script>
+</head>
+<body>
+<script>
+// Errors on V8: reporting of uncaught exceptions and rejections, stack traces, and exceptions
+// crossing the DOM bindings in both directions.
+check("window.onerror reports an uncaught exception with its location", () => new Promise(resolve => {
+  window.onerror = (message, source, line, column, error) => {
+    window.onerror = null;
+    resolve((String(message).includes("thrown from a timer") && source.endsWith("errors.html") && line > 0 && error instanceof Error) || `${message} ${source} ${line}`);
+    return true;
+  };
+  setTimeout(() => { throw new Error("thrown from a timer"); }, 0);
+}));
+check("error event on window for an uncaught exception", () => new Promise(resolve => {
+  const listener = event => { window.removeEventListener("error", listener); event.preventDefault(); resolve(event.error && event.error.message === "from an event listener" || String(event.message)); };
+  window.addEventListener("error", listener);
+  const target = new EventTarget();
+  target.addEventListener("ping", () => { throw new Error("from an event listener"); });
+  target.dispatchEvent(new Event("ping"));
+}));
+check("unhandledrejection reports an unhandled promise rejection", () => new Promise(resolve => {
+  const listener = event => { window.removeEventListener("unhandledrejection", listener); event.preventDefault(); resolve(event.reason === "rejected on purpose" || String(event.reason)); };
+  window.addEventListener("unhandledrejection", listener);
+  Promise.reject("rejected on purpose");
+}));
+check("rejectionhandled follows a late handler", () => new Promise(resolve => {
+  const promise = Promise.reject(new Error("late"));
+  const unhandled = event => {
+    if (event.promise !== promise) return;
+    window.removeEventListener("unhandledrejection", unhandled);
+    event.preventDefault();
+    window.addEventListener("rejectionhandled", handled => resolve(handled.promise === promise), { once: true });
+    setTimeout(() => promise.catch(() => {}), 0);
+  };
+  window.addEventListener("unhandledrejection", unhandled);
+}));
+check("Error.stack names the function and the file", () => {
+  function deepFunctionName() { return new Error("where").stack; }
+  const stack = deepFunctionName();
+  return (stack.includes("deepFunctionName") && stack.includes("errors.html")) || stack;
+});
+check("DOM methods throw DOMException with the right name and code", () => {
+  try { document.createElement("not a valid name"); return "no error"; } catch (error) {
+    return (error instanceof DOMException && error.name === "InvalidCharacterError" && error.code === 5) || String(error);
+  }
+});
+check("WebIDL argument conversion throws TypeError", () => {
+  try { document.body.appendChild("not a node"); return "no error"; } catch (error) { return error instanceof TypeError || String(error); }
+});
+check("an exception thrown by a callback reaches the caller through the bindings", () => {
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT, { acceptNode() { throw new RangeError("from acceptNode"); } });
+  try { walker.nextNode(); return "no error"; } catch (error) { return (error instanceof RangeError && error.message === "from acceptNode") || String(error); }
+});
+check("a getter throwing on a DOM proxy (dataset) propagates", () => {
+  const element = document.createElement("div");
+  try { element.dataset["bad-name"] = "x"; return "no error"; } catch (error) { return error instanceof DOMException || String(error); }
+});
+check("stack overflow is a catchable RangeError", () => {
+  function recurse(n) { return recurse(n + 1) + 1; }
+  try { recurse(0); return "no error"; } catch (error) { return error instanceof RangeError || String(error); }
+});
+check("Error.cause, AggregateError and error subclasses", () => {
+  class GameError extends Error { constructor(message) { super(message, { cause: "save" }); this.name = "GameError"; } }
+  const error = new GameError("broken");
+  const aggregate = new AggregateError([error], "many");
+  return error instanceof Error && error.cause === "save" && String(error) === "GameError: broken" && aggregate.errors[0] === error;
+});
+check("console.error and console.assert do not throw", () => { console.error("expected error output from errors.html"); console.assert(true); console.assert(false, "expected assertion output"); return true; });
+finish();
+</script>
+</body></html>

@@ -12796,3 +12796,60 @@ debugger global still exists and receives its events, with no listener.
 
 Devtools JavaScript debugging on V8 needs the V8 inspector protocol. That is a known gap of the
 migration.
+
+## 2026-10-11 - V8 migration: more kinds of CI tests
+
+**Servo files:** `components/roves-js/src/tests.rs`; `support/v8-smoke/run.sh` and `games.html`;
+new under `support/v8-smoke/`: `harness.js`, `modules.html` with `modules/`, `errors.html`,
+`events.html`, `graphics.html` and `stress.html`.
+
+**Patch:** `0188-v8-ci-test-pages.patch` after 0187.
+
+The CI job `servoshell-v8` (normal and JIT-less, on Linux) now also runs these pages:
+- **`modules.html`:**
+  - an ES module graph loaded from files: shared and cyclic imports, `import.meta.url`;
+  - dynamic import, including top-level await, JSON modules with import attributes and an
+    import map;
+  - import errors: an evaluation error, a missing module, a syntax error;
+  - module namespace semantics.
+- **`errors.html`:**
+  - `window.onerror` and the `error` event, with location;
+  - `unhandledrejection`/`rejectionhandled`;
+  - stack traces;
+  - `DOMException` names and codes, WebIDL `TypeError`s, exceptions from callbacks crossing
+    the bindings;
+  - stack overflow as a `RangeError`, error subclasses with `cause`.
+- **`events.html`:**
+  - the order of microtasks, timers and animation frames;
+  - capture/bubble/`stopPropagation`;
+  - synthetic keyboard and pointer events;
+  - passive listeners and `AbortSignal` removal, `handleEvent`, focus with `relatedTarget`;
+  - `MessageChannel` order.
+- **`graphics.html`:**
+  - WebGL shaders, canvas texture upload and sampling;
+  - WebGL 2 instancing with VAOs and integer uniforms, framebuffer rendering;
+  - canvas 2D gradients/paths/text/`drawImage`/transforms/`putImageData`;
+  - `toDataURL`/`toBlob`, image decoding, `Path2D`;
+  - a WebGPU adapter request, skipped without WebGPU.
+- **`stress.html`** (GC and lifetime pressure, checking results):
+  - 20 000 elements churned;
+  - wrapper identity and expandos across garbage;
+  - 10 000 chained promises;
+  - 200 blob fetches;
+  - 5 000 listener closures;
+  - 20 workers started and terminated;
+  - a 20 000-node cyclic `structuredClone`;
+  - WeakRef/FinalizationRegistry under pressure;
+  - 3 000 mutation records;
+  - 200 canvas contexts;
+  - 2 seconds of 1 ms timers.
+- **`games.html`:** gains a Phaser 3 scene with arcade physics (WebGL).
+
+The new pages share `harness.js`, which runs checks one after another, supports `skip`, and
+prints the lines `run.sh` reads. `run.sh` takes a per-suite timeout (stress: 240 s) and reports
+every suite's total in one annotation, since GitHub shows only 10 notices per step.
+
+**roves-js:** a lifetime stress test, 32/32 (JIT-less 31 + 1 ignored). 4 000 class objects
+are created with collections interleaved and half kept only by a JS array. Exactly the
+unreachable half is finalized once; the kept half keeps identity and reserved slots; dropping
+them finalizes the rest once.

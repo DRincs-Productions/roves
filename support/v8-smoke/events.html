@@ -1,0 +1,116 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>roves-js events and scheduling</title>
+<script src="harness.js"></script>
+<style>#target { width: 100px; height: 40px; }</style>
+</head>
+<body>
+<button id="target">target</button><input id="field">
+<script>
+// Event dispatch and task scheduling on V8: the order of microtasks, timers and animation
+// frames, synthetic input events, focus, listener options and custom events.
+check("microtasks run before timers, timers before the next frame callback", () => new Promise(resolve => {
+  const order = [];
+  setTimeout(() => order.push("timeout"), 0);
+  requestAnimationFrame(() => { order.push("frame"); resolve(order.join() === "sync,microtask,queueMicrotask,timeout,frame" || order.join()); });
+  Promise.resolve().then(() => order.push("microtask"));
+  queueMicrotask(() => order.push("queueMicrotask"));
+  order.push("sync");
+}));
+check("nested timers keep their order", () => new Promise(resolve => {
+  const order = [];
+  setTimeout(() => { order.push(1); setTimeout(() => { order.push(3); resolve(order.join() === "1,2,3" || order.join()); }, 0); }, 0);
+  setTimeout(() => order.push(2), 0);
+}));
+check("clearTimeout and clearInterval cancel callbacks", () => new Promise(resolve => {
+  let fired = false, ticks = 0;
+  const id = setTimeout(() => fired = true, 0);
+  clearTimeout(id);
+  const interval = setInterval(() => { if (++ticks === 3) clearInterval(interval); }, 5);
+  setTimeout(() => resolve((!fired && ticks === 3) || `fired ${fired} ticks ${ticks}`), 200);
+}));
+check("click dispatch with bubbling, capture and stopPropagation", () => {
+  const target = document.getElementById("target");
+  const order = [];
+  const capture = () => order.push("capture");
+  const bubble = () => order.push("bubble");
+  document.body.addEventListener("click", capture, true);
+  document.body.addEventListener("click", bubble);
+  target.addEventListener("click", event => { order.push("target"); event.stopPropagation(); }, { once: true });
+  target.click();
+  target.click();
+  document.body.removeEventListener("click", capture, true);
+  document.body.removeEventListener("click", bubble);
+  return order.join() === "capture,target,capture,bubble" || order.join();
+});
+check("synthetic keyboard and pointer events carry their data", () => {
+  const field = document.getElementById("field");
+  let key = null, pointer = null;
+  field.addEventListener("keydown", event => key = `${event.key}:${event.code}:${event.shiftKey}`, { once: true });
+  field.addEventListener("pointerdown", event => pointer = `${event.pointerType}:${event.clientX}:${event.button}`, { once: true });
+  field.dispatchEvent(new KeyboardEvent("keydown", { key: "A", code: "KeyA", shiftKey: true, bubbles: true }));
+  field.dispatchEvent(new PointerEvent("pointerdown", { pointerType: "mouse", clientX: 12, button: 0, bubbles: true }));
+  return (key === "A:KeyA:true" && pointer === "mouse:12:0") || `${key} ${pointer}`;
+});
+check("preventDefault and passive listeners", () => {
+  const target = new EventTarget();
+  target.addEventListener("go", event => event.preventDefault(), { passive: true });
+  const passiveResult = target.dispatchEvent(new Event("go", { cancelable: true }));
+  const other = new EventTarget();
+  other.addEventListener("go", event => event.preventDefault());
+  const activeResult = other.dispatchEvent(new Event("go", { cancelable: true }));
+  return passiveResult === true && activeResult === false;
+});
+check("AbortSignal removes listeners", () => {
+  const target = new EventTarget();
+  const controller = new AbortController();
+  let calls = 0;
+  target.addEventListener("tick", () => calls++, { signal: controller.signal });
+  target.dispatchEvent(new Event("tick"));
+  controller.abort();
+  target.dispatchEvent(new Event("tick"));
+  return calls === 1;
+});
+check("CustomEvent detail and EventTarget subclasses", () => {
+  class Bus extends EventTarget {}
+  const bus = new Bus();
+  let detail = null;
+  bus.addEventListener("score", event => detail = event.detail);
+  bus.dispatchEvent(new CustomEvent("score", { detail: { points: 7 } }));
+  return detail && detail.points === 7 && bus instanceof EventTarget;
+});
+check("handleEvent objects as listeners", () => {
+  const target = new EventTarget();
+  const listener = { count: 0, handleEvent(event) { this.count += event.type === "x" ? 1 : 0; } };
+  target.addEventListener("x", listener);
+  target.dispatchEvent(new Event("x"));
+  return listener.count === 1;
+});
+check("focus and blur events with relatedTarget", () => {
+  const button = document.getElementById("target"), field = document.getElementById("field");
+  let related = null;
+  field.addEventListener("focus", event => related = event.relatedTarget, { once: true });
+  button.focus();
+  field.focus();
+  return (document.activeElement === field && related === button) || `${document.activeElement && document.activeElement.id} ${related && related.id}`;
+});
+check("input events update the value", () => {
+  const field = document.getElementById("field");
+  let seen = null;
+  field.addEventListener("input", () => seen = field.value, { once: true });
+  field.value = "typed";
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+  return seen === "typed";
+});
+check("visibilitychange and document.visibilityState", () => ["visible", "hidden"].includes(document.visibilityState) && typeof document.hidden === "boolean");
+check("MessageChannel delivers as a task, in order", () => new Promise(resolve => {
+  const channel = new MessageChannel();
+  const received = [];
+  channel.port1.onmessage = event => { received.push(event.data); if (received.length === 3) resolve(received.join() === "1,2,3" || received.join()); };
+  [1, 2, 3].forEach(n => channel.port2.postMessage(n));
+}));
+check("requestAnimationFrame timestamps increase", () => new Promise(resolve => {
+  requestAnimationFrame(first => requestAnimationFrame(second => resolve((second >= first && first > 0) || `${first} ${second}`)));
+}));
+finish();
+</script>
+</body></html>

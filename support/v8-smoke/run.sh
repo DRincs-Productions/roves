@@ -11,6 +11,8 @@ shift
 RUNNER=("$@")
 DIR="$(cd "$(dirname "$0")" && pwd)"
 STATUS=0
+# Every suite's total, reported as one annotation at the end (at most 10 notices show per step).
+TOTALS=""
 
 run_page() {
   local page="$1" seconds="$2" log="$3"
@@ -25,8 +27,8 @@ run_page() {
 }
 
 run_suite() {
-  local page="$1" log="$2"
-  run_page "$page" 60 "$log"
+  local page="$1" log="$2" seconds="${3:-60}"
+  run_page "$page" "$seconds" "$log"
   # GitHub shows at most 10 annotations of a kind per step: one summary carries every failure.
   local total failures
   total=$(grep -a "^SUITE TOTAL " "$log" | head -1)
@@ -39,7 +41,7 @@ run_suite() {
     { echo "## $page: ${total#SUITE TOTAL }"; echo; grep -a "^SUITE " "$log" | sed 's/^/- /'; } >> "$GITHUB_STEP_SUMMARY"
   fi
   if [ -n "$total" ]; then
-    echo "::notice title=$page::$total"
+    TOTALS="$TOTALS%0A$page ${total#SUITE TOTAL }"
   else
     echo "::error::$page did not report its total"
     grep -a -v '^\s*$' "$log" | tail -20 | sed 's/^/::error::  /'
@@ -50,6 +52,12 @@ run_suite() {
 run_suite suite.html suite.log
 run_suite suite2.html suite2.log
 run_suite games.html games.log
+run_suite modules.html modules.log
+run_suite errors.html errors.log
+run_suite events.html events.log
+run_suite graphics.html graphics.log
+run_suite stress.html stress.log 240
+echo "::notice title=V8 smoke suites::${TOTALS#%0A}"
 
 run_page test.html 30 test.log
 for expected in "ROVES-V8 dom: changed by js" "ROVES-V8 click event click true" "ROVES-V8 promise 5" "ROVES-V8 timeout fired"; do

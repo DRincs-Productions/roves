@@ -33,6 +33,40 @@ check("PixiJS 8 renders a sprite scene (WebGL)", async () => {
   return (data[1] > 200 && data[0] < 50) || `pixel ${Array.from(data).slice(0, 4)} renderer ${app.renderer.name}`;
 });
 
+check("Phaser 3 runs a scene with arcade physics", async () => {
+  // Phaser ships a UMD build: loaded as a classic script, it defines globalThis.Phaser.
+  await new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://cdn.jsdelivr.net/npm/phaser@3.87.0/dist/phaser.min.js";
+    script.onload = resolve;
+    script.onerror = () => reject(new Error("phaser failed to load"));
+    document.head.appendChild(script);
+  });
+  return await new Promise(resolve => {
+    const game = new Phaser.Game({
+      type: Phaser.WEBGL, width: 64, height: 64, banner: false, audio: { noAudio: true },
+      physics: { default: "arcade", arcade: { gravity: { y: 600 } } },
+      scene: {
+        create() {
+          const graphics = this.add.graphics();
+          graphics.fillStyle(0x00ff00).fillRect(0, 0, 8, 8).generateTexture("box", 8, 8);
+          graphics.destroy();
+          this.box = this.physics.add.sprite(32, 0, "box");
+          this.frames = 0;
+        },
+        update() {
+          if (++this.frames === 30) {
+            const fell = this.box.y > 0 && this.box.body.velocity.y > 0;
+            const renderer = game.renderer.type === Phaser.WEBGL ? "webgl" : "canvas";
+            game.destroy(true);
+            resolve((fell && renderer === "webgl") || `y ${this.box.y} renderer ${renderer}`);
+          }
+        },
+      },
+    });
+  });
+});
+
 check("Three.js renders a lit mesh (WebGL)", async () => {
   const THREE = await import("https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.min.js");
   const canvas = document.createElement("canvas");

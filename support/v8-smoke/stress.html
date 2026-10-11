@@ -1,0 +1,115 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>roves-js stress</title>
+<script src="harness.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script>
+// GC and lifetime pressure through the V8 bindings: DOM churn, wrapper identity across
+// collections, many promises and native callbacks, workers started and stopped, large clones.
+// Each check also verifies results, so a premature collection shows up as a wrong value.
+check("DOM churn: 20 000 elements created, attached and removed", () => {
+  const root = document.getElementById("root");
+  for (let round = 0; round < 20; round++) {
+    const fragment = document.createDocumentFragment();
+    for (let i = 0; i < 1000; i++) {
+      const element = document.createElement(i % 2 ? "span" : "div");
+      element.dataset.index = String(i);
+      element.textContent = "node " + i;
+      fragment.appendChild(element);
+    }
+    root.appendChild(fragment);
+    if (root.children.length !== 1000 || root.lastElementChild.dataset.index !== "999") return `round ${round} has ${root.children.length}`;
+    root.replaceChildren();
+  }
+  return root.children.length === 0;
+}, 30000);
+check("wrapper identity and expandos survive garbage", () => {
+  const kept = document.createElement("section");
+  kept.expando = { score: 42 };
+  document.body.appendChild(kept);
+  let garbage = [];
+  for (let i = 0; i < 200000; i++) garbage.push({ i, s: "x" + i });
+  garbage = null;
+  for (let i = 0; i < 50; i++) new ArrayBuffer(1 << 20);
+  const found = document.body.querySelector("section");
+  return (found === kept && found.expando.score === 42) || "identity or expando lost";
+}, 30000);
+check("10 000 chained promises and async functions", async () => {
+  let promise = Promise.resolve(0);
+  for (let i = 0; i < 10000; i++) promise = promise.then(v => v + 1);
+  async function step(n) { return n === 0 ? 0 : 1 + await step(n - 1); }
+  const [chained, recursive] = await Promise.all([promise, step(2000)]);
+  return (chained === 10000 && recursive === 2000) || `${chained} ${recursive}`;
+}, 30000);
+check("many native promise callbacks (fetch of blobs)", async () => {
+  const urls = Array.from({ length: 200 }, (_, i) => URL.createObjectURL(new Blob([String(i)])));
+  const texts = await Promise.all(urls.map(url => fetch(url).then(response => response.text())));
+  urls.forEach(url => URL.revokeObjectURL(url));
+  return texts.every((text, i) => text === String(i)) || "wrong blob contents";
+}, 30000);
+check("event listeners on 5 000 nodes fire with the right closures", () => {
+  const container = document.createElement("div");
+  let sum = 0;
+  for (let i = 0; i < 5000; i++) {
+    const button = document.createElement("button");
+    button.addEventListener("click", () => sum += i);
+    container.appendChild(button);
+  }
+  for (let i = 0; i < 50; i++) new Array(100000).fill({ i });
+  for (const button of container.children) button.click();
+  return sum === (4999 * 5000) / 2 || `sum ${sum}`;
+}, 30000);
+check("workers started and terminated in a loop", async () => {
+  const source = URL.createObjectURL(new Blob(["onmessage = e => postMessage(e.data * 2);"], { type: "text/javascript" }));
+  for (let i = 0; i < 20; i++) {
+    const worker = new Worker(source);
+    const value = await new Promise((resolve, reject) => { worker.onmessage = e => resolve(e.data); worker.onerror = e => reject(e.message); worker.postMessage(i); });
+    worker.terminate();
+    if (value !== i * 2) return `worker ${i} answered ${value}`;
+  }
+  return true;
+}, 60000);
+check("structuredClone of a large graph with cycles and typed arrays", () => {
+  const nodes = Array.from({ length: 20000 }, (_, i) => ({ i, data: new Float32Array([i, i + 1]) }));
+  nodes.forEach((node, i) => node.next = nodes[(i + 1) % nodes.length]);
+  const copy = structuredClone({ nodes, map: new Map([["k", nodes[5]]]) });
+  return copy.nodes[19999].next === copy.nodes[0] && copy.map.get("k") === copy.nodes[5] && copy.nodes[3].data[1] === 4;
+}, 30000);
+check("WeakRef and FinalizationRegistry do not crash under pressure", async () => {
+  const registry = new FinalizationRegistry(() => {});
+  const refs = [];
+  for (let i = 0; i < 10000; i++) { const object = { i }; registry.register(object, i); refs.push(new WeakRef(object)); }
+  for (let i = 0; i < 30; i++) new ArrayBuffer(1 << 20);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  return refs.every(ref => { const value = ref.deref(); return value === undefined || typeof value.i === "number"; });
+}, 30000);
+check("MutationObserver records across many mutations", () => new Promise(resolve => {
+  const target = document.createElement("div");
+  document.body.appendChild(target);
+  let records = 0;
+  const observer = new MutationObserver(list => {
+    records += list.length;
+    if (records >= 3000) { observer.disconnect(); target.remove(); resolve(true); }
+  });
+  observer.observe(target, { childList: true, attributes: true });
+  for (let i = 0; i < 1000; i++) { const child = document.createElement("i"); target.appendChild(child); child.remove(); target.setAttribute("n", String(i)); }
+}), 30000);
+check("canvas contexts created and dropped repeatedly", () => {
+  for (let i = 0; i < 200; i++) {
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 32;
+    const g = canvas.getContext("2d");
+    g.fillStyle = "#123456"; g.fillRect(0, 0, 32, 32);
+    if (g.getImageData(1, 1, 1, 1).data[2] !== 0x56) return `canvas ${i} wrong pixel`;
+  }
+  return true;
+}, 30000);
+check("long-running timer loop (2 seconds of 1 ms timers)", () => new Promise(resolve => {
+  const end = performance.now() + 2000;
+  let ticks = 0;
+  (function tick() { ticks++; if (performance.now() < end) setTimeout(tick, 1); else resolve(ticks > 100 || `only ${ticks} ticks`); })();
+}), 30000);
+finish();
+</script>
+</body></html>

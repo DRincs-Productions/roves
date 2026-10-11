@@ -309,6 +309,51 @@ mod object_model {
     }
 
     #[test]
+    fn lifetime_stress_keeps_reachable_objects_and_finalizes_the_rest_once() {
+        let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        const COUNT: usize = 4000;
+        let finalized_before = HOOK_FINALIZED.with(Cell::get);
+        eval(&runtime, "globalThis.kept = []");
+        rooted!(in(cx) let kept = eval(&runtime, "kept").to_object());
+        let mut kept_pointers = Vec::new();
+        for i in 0..COUNT {
+            rooted!(in(cx) let thing = unsafe { JS_NewObject(cx, &CLASS) });
+            unsafe { JS_SetReservedSlot(thing.get(), 0, &Int32Value(42)) };
+            unsafe { JS_SetReservedSlot(thing.get(), 1, &Int32Value(i as i32)) };
+            if i % 2 == 0 {
+                // Reachable only from JavaScript (an array on the global).
+                rooted!(in(cx) let value = ObjectValue(thing.get()));
+                let name = std::ffi::CString::new((i / 2).to_string()).unwrap();
+                assert!(unsafe { JS_SetProperty(cx, kept.handle().into_handle(), name.as_ptr(), value.handle().into_handle()) });
+                kept_pointers.push(thing.get() as usize);
+            }
+            if i % 500 == 0 {
+                // Collections interleaved with allocation.
+                runtime.gc_for_testing();
+            }
+        }
+        for _ in 0..3 {
+            eval(&runtime, "{ let garbage = []; for (let i = 0; i < 20000; i++) garbage.push({ i }); }");
+            runtime.gc_for_testing();
+        }
+        assert_eq!(HOOK_FINALIZED.with(Cell::get), finalized_before + (COUNT / 2) as u32, "every unreachable object is finalized once");
+        // The reachable half keeps its identity and its reserved slots.
+        for (index, pointer) in kept_pointers.iter().enumerate().step_by(97) {
+            let object = eval(&runtime, &format!("kept[{index}]")).to_object();
+            assert_eq!(object as usize, *pointer, "identity of kept[{index}]");
+            let mut slot = UndefinedValue();
+            unsafe { JS_GetReservedSlot(object, 1, &mut slot) };
+            assert_eq!(slot.to_int32(), (index * 2) as i32);
+        }
+        // Dropping them finalizes the rest, once.
+        eval(&runtime, "kept.length = 0");
+        runtime.gc_for_testing();
+        runtime.gc_for_testing();
+        assert_eq!(HOOK_FINALIZED.with(Cell::get), finalized_before + COUNT as u32);
+    }
+
+    #[test]
     fn properties_by_name_and_id_and_descriptors() {
         let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
         let cx = runtime.raw_cx();

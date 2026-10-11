@@ -1,0 +1,780 @@
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 207836856bd..ba0475b8ce7 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -308,6 +308,51 @@ mod object_model {
+         assert_eq!(HOOK_FINALIZED.with(Cell::get), finalized_before + 1, "finalize sees the reserved slots once");
+     }
+ 
++    #[test]
++    fn lifetime_stress_keeps_reachable_objects_and_finalizes_the_rest_once() {
++        let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        const COUNT: usize = 4000;
++        let finalized_before = HOOK_FINALIZED.with(Cell::get);
++        eval(&runtime, "globalThis.kept = []");
++        rooted!(in(cx) let kept = eval(&runtime, "kept").to_object());
++        let mut kept_pointers = Vec::new();
++        for i in 0..COUNT {
++            rooted!(in(cx) let thing = unsafe { JS_NewObject(cx, &CLASS) });
++            unsafe { JS_SetReservedSlot(thing.get(), 0, &Int32Value(42)) };
++            unsafe { JS_SetReservedSlot(thing.get(), 1, &Int32Value(i as i32)) };
++            if i % 2 == 0 {
++                // Reachable only from JavaScript (an array on the global).
++                rooted!(in(cx) let value = ObjectValue(thing.get()));
++                let name = std::ffi::CString::new((i / 2).to_string()).unwrap();
++                assert!(unsafe { JS_SetProperty(cx, kept.handle().into_handle(), name.as_ptr(), value.handle().into_handle()) });
++                kept_pointers.push(thing.get() as usize);
++            }
++            if i % 500 == 0 {
++                // Collections interleaved with allocation.
++                runtime.gc_for_testing();
++            }
++        }
++        for _ in 0..3 {
++            eval(&runtime, "{ let garbage = []; for (let i = 0; i < 20000; i++) garbage.push({ i }); }");
++            runtime.gc_for_testing();
++        }
++        assert_eq!(HOOK_FINALIZED.with(Cell::get), finalized_before + (COUNT / 2) as u32, "every unreachable object is finalized once");
++        // The reachable half keeps its identity and its reserved slots.
++        for (index, pointer) in kept_pointers.iter().enumerate().step_by(97) {
++            let object = eval(&runtime, &format!("kept[{index}]")).to_object();
++            assert_eq!(object as usize, *pointer, "identity of kept[{index}]");
++            let mut slot = UndefinedValue();
++            unsafe { JS_GetReservedSlot(object, 1, &mut slot) };
++            assert_eq!(slot.to_int32(), (index * 2) as i32);
++        }
++        // Dropping them finalizes the rest, once.
++        eval(&runtime, "kept.length = 0");
++        runtime.gc_for_testing();
++        runtime.gc_for_testing();
++        assert_eq!(HOOK_FINALIZED.with(Cell::get), finalized_before + COUNT as u32);
++    }
++
+     #[test]
+     fn properties_by_name_and_id_and_descriptors() {
+         let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+diff --git a/support/v8-smoke/errors.html b/support/v8-smoke/errors.html
+new file mode 100644
+index 00000000000..46283e40bad
+--- /dev/null
++++ b/support/v8-smoke/errors.html
+@@ -0,0 +1,74 @@
++<!doctype html>
++<html><head><meta charset="utf-8"><title>roves-js errors and exceptions</title>
++<script src="harness.js"></script>
++</head>
++<body>
++<script>
++// Errors on V8: reporting of uncaught exceptions and rejections, stack traces, and exceptions
++// crossing the DOM bindings in both directions.
++check("window.onerror reports an uncaught exception with its location", () => new Promise(resolve => {
++  window.onerror = (message, source, line, column, error) => {
++    window.onerror = null;
++    resolve((String(message).includes("thrown from a timer") && source.endsWith("errors.html") && line > 0 && error instanceof Error) || `${message} ${source} ${line}`);
++    return true;
++  };
++  setTimeout(() => { throw new Error("thrown from a timer"); }, 0);
++}));
++check("error event on window for an uncaught exception", () => new Promise(resolve => {
++  const listener = event => { window.removeEventListener("error", listener); event.preventDefault(); resolve(event.error && event.error.message === "from an event listener" || String(event.message)); };
++  window.addEventListener("error", listener);
++  const target = new EventTarget();
++  target.addEventListener("ping", () => { throw new Error("from an event listener"); });
++  target.dispatchEvent(new Event("ping"));
++}));
++check("unhandledrejection reports an unhandled promise rejection", () => new Promise(resolve => {
++  const listener = event => { window.removeEventListener("unhandledrejection", listener); event.preventDefault(); resolve(event.reason === "rejected on purpose" || String(event.reason)); };
++  window.addEventListener("unhandledrejection", listener);
++  Promise.reject("rejected on purpose");
++}));
++check("rejectionhandled follows a late handler", () => new Promise(resolve => {
++  const promise = Promise.reject(new Error("late"));
++  const unhandled = event => {
++    if (event.promise !== promise) return;
++    window.removeEventListener("unhandledrejection", unhandled);
++    event.preventDefault();
++    window.addEventListener("rejectionhandled", handled => resolve(handled.promise === promise), { once: true });
++    setTimeout(() => promise.catch(() => {}), 0);
++  };
++  window.addEventListener("unhandledrejection", unhandled);
++}));
++check("Error.stack names the function and the file", () => {
++  function deepFunctionName() { return new Error("where").stack; }
++  const stack = deepFunctionName();
++  return (stack.includes("deepFunctionName") && stack.includes("errors.html")) || stack;
++});
++check("DOM methods throw DOMException with the right name and code", () => {
++  try { document.createElement("not a valid name"); return "no error"; } catch (error) {
++    return (error instanceof DOMException && error.name === "InvalidCharacterError" && error.code === 5) || String(error);
++  }
++});
++check("WebIDL argument conversion throws TypeError", () => {
++  try { document.body.appendChild("not a node"); return "no error"; } catch (error) { return error instanceof TypeError || String(error); }
++});
++check("an exception thrown by a callback reaches the caller through the bindings", () => {
++  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT, { acceptNode() { throw new RangeError("from acceptNode"); } });
++  try { walker.nextNode(); return "no error"; } catch (error) { return (error instanceof RangeError && error.message === "from acceptNode") || String(error); }
++});
++check("a getter throwing on a DOM proxy (dataset) propagates", () => {
++  const element = document.createElement("div");
++  try { element.dataset["bad-name"] = "x"; return "no error"; } catch (error) { return error instanceof DOMException || String(error); }
++});
++check("stack overflow is a catchable RangeError", () => {
++  function recurse(n) { return recurse(n + 1) + 1; }
++  try { recurse(0); return "no error"; } catch (error) { return error instanceof RangeError || String(error); }
++});
++check("Error.cause, AggregateError and error subclasses", () => {
++  class GameError extends Error { constructor(message) { super(message, { cause: "save" }); this.name = "GameError"; } }
++  const error = new GameError("broken");
++  const aggregate = new AggregateError([error], "many");
++  return error instanceof Error && error.cause === "save" && String(error) === "GameError: broken" && aggregate.errors[0] === error;
++});
++check("console.error and console.assert do not throw", () => { console.error("expected error output from errors.html"); console.assert(true); console.assert(false, "expected assertion output"); return true; });
++finish();
++</script>
++</body></html>
+diff --git a/support/v8-smoke/events.html b/support/v8-smoke/events.html
+new file mode 100644
+index 00000000000..73ed42426ed
+--- /dev/null
++++ b/support/v8-smoke/events.html
+@@ -0,0 +1,116 @@
++<!doctype html>
++<html><head><meta charset="utf-8"><title>roves-js events and scheduling</title>
++<script src="harness.js"></script>
++<style>#target { width: 100px; height: 40px; }</style>
++</head>
++<body>
++<button id="target">target</button><input id="field">
++<script>
++// Event dispatch and task scheduling on V8: the order of microtasks, timers and animation
++// frames, synthetic input events, focus, listener options and custom events.
++check("microtasks run before timers, timers before the next frame callback", () => new Promise(resolve => {
++  const order = [];
++  setTimeout(() => order.push("timeout"), 0);
++  requestAnimationFrame(() => { order.push("frame"); resolve(order.join() === "sync,microtask,queueMicrotask,timeout,frame" || order.join()); });
++  Promise.resolve().then(() => order.push("microtask"));
++  queueMicrotask(() => order.push("queueMicrotask"));
++  order.push("sync");
++}));
++check("nested timers keep their order", () => new Promise(resolve => {
++  const order = [];
++  setTimeout(() => { order.push(1); setTimeout(() => { order.push(3); resolve(order.join() === "1,2,3" || order.join()); }, 0); }, 0);
++  setTimeout(() => order.push(2), 0);
++}));
++check("clearTimeout and clearInterval cancel callbacks", () => new Promise(resolve => {
++  let fired = false, ticks = 0;
++  const id = setTimeout(() => fired = true, 0);
++  clearTimeout(id);
++  const interval = setInterval(() => { if (++ticks === 3) clearInterval(interval); }, 5);
++  setTimeout(() => resolve((!fired && ticks === 3) || `fired ${fired} ticks ${ticks}`), 200);
++}));
++check("click dispatch with bubbling, capture and stopPropagation", () => {
++  const target = document.getElementById("target");
++  const order = [];
++  const capture = () => order.push("capture");
++  const bubble = () => order.push("bubble");
++  document.body.addEventListener("click", capture, true);
++  document.body.addEventListener("click", bubble);
++  target.addEventListener("click", event => { order.push("target"); event.stopPropagation(); }, { once: true });
++  target.click();
++  target.click();
++  document.body.removeEventListener("click", capture, true);
++  document.body.removeEventListener("click", bubble);
++  return order.join() === "capture,target,capture,bubble" || order.join();
++});
++check("synthetic keyboard and pointer events carry their data", () => {
++  const field = document.getElementById("field");
++  let key = null, pointer = null;
++  field.addEventListener("keydown", event => key = `${event.key}:${event.code}:${event.shiftKey}`, { once: true });
++  field.addEventListener("pointerdown", event => pointer = `${event.pointerType}:${event.clientX}:${event.button}`, { once: true });
++  field.dispatchEvent(new KeyboardEvent("keydown", { key: "A", code: "KeyA", shiftKey: true, bubbles: true }));
++  field.dispatchEvent(new PointerEvent("pointerdown", { pointerType: "mouse", clientX: 12, button: 0, bubbles: true }));
++  return (key === "A:KeyA:true" && pointer === "mouse:12:0") || `${key} ${pointer}`;
++});
++check("preventDefault and passive listeners", () => {
++  const target = new EventTarget();
++  target.addEventListener("go", event => event.preventDefault(), { passive: true });
++  const passiveResult = target.dispatchEvent(new Event("go", { cancelable: true }));
++  const other = new EventTarget();
++  other.addEventListener("go", event => event.preventDefault());
++  const activeResult = other.dispatchEvent(new Event("go", { cancelable: true }));
++  return passiveResult === true && activeResult === false;
++});
++check("AbortSignal removes listeners", () => {
++  const target = new EventTarget();
++  const controller = new AbortController();
++  let calls = 0;
++  target.addEventListener("tick", () => calls++, { signal: controller.signal });
++  target.dispatchEvent(new Event("tick"));
++  controller.abort();
++  target.dispatchEvent(new Event("tick"));
++  return calls === 1;
++});
++check("CustomEvent detail and EventTarget subclasses", () => {
++  class Bus extends EventTarget {}
++  const bus = new Bus();
++  let detail = null;
++  bus.addEventListener("score", event => detail = event.detail);
++  bus.dispatchEvent(new CustomEvent("score", { detail: { points: 7 } }));
++  return detail && detail.points === 7 && bus instanceof EventTarget;
++});
++check("handleEvent objects as listeners", () => {
++  const target = new EventTarget();
++  const listener = { count: 0, handleEvent(event) { this.count += event.type === "x" ? 1 : 0; } };
++  target.addEventListener("x", listener);
++  target.dispatchEvent(new Event("x"));
++  return listener.count === 1;
++});
++check("focus and blur events with relatedTarget", () => {
++  const button = document.getElementById("target"), field = document.getElementById("field");
++  let related = null;
++  field.addEventListener("focus", event => related = event.relatedTarget, { once: true });
++  button.focus();
++  field.focus();
++  return (document.activeElement === field && related === button) || `${document.activeElement && document.activeElement.id} ${related && related.id}`;
++});
++check("input events update the value", () => {
++  const field = document.getElementById("field");
++  let seen = null;
++  field.addEventListener("input", () => seen = field.value, { once: true });
++  field.value = "typed";
++  field.dispatchEvent(new Event("input", { bubbles: true }));
++  return seen === "typed";
++});
++check("visibilitychange and document.visibilityState", () => ["visible", "hidden"].includes(document.visibilityState) && typeof document.hidden === "boolean");
++check("MessageChannel delivers as a task, in order", () => new Promise(resolve => {
++  const channel = new MessageChannel();
++  const received = [];
++  channel.port1.onmessage = event => { received.push(event.data); if (received.length === 3) resolve(received.join() === "1,2,3" || received.join()); };
++  [1, 2, 3].forEach(n => channel.port2.postMessage(n));
++}));
++check("requestAnimationFrame timestamps increase", () => new Promise(resolve => {
++  requestAnimationFrame(first => requestAnimationFrame(second => resolve((second >= first && first > 0) || `${first} ${second}`)));
++}));
++finish();
++</script>
++</body></html>
+diff --git a/support/v8-smoke/games.html b/support/v8-smoke/games.html
+index 9bb1dd0a6fb..c0dc527a554 100644
+--- a/support/v8-smoke/games.html
++++ b/support/v8-smoke/games.html
+@@ -33,6 +33,40 @@ check("PixiJS 8 renders a sprite scene (WebGL)", async () => {
+   return (data[1] > 200 && data[0] < 50) || `pixel ${Array.from(data).slice(0, 4)} renderer ${app.renderer.name}`;
+ });
+ 
++check("Phaser 3 runs a scene with arcade physics", async () => {
++  // Phaser ships a UMD build: loaded as a classic script, it defines globalThis.Phaser.
++  await new Promise((resolve, reject) => {
++    const script = document.createElement("script");
++    script.src = "https://cdn.jsdelivr.net/npm/phaser@3.87.0/dist/phaser.min.js";
++    script.onload = resolve;
++    script.onerror = () => reject(new Error("phaser failed to load"));
++    document.head.appendChild(script);
++  });
++  return await new Promise(resolve => {
++    const game = new Phaser.Game({
++      type: Phaser.WEBGL, width: 64, height: 64, banner: false, audio: { noAudio: true },
++      physics: { default: "arcade", arcade: { gravity: { y: 600 } } },
++      scene: {
++        create() {
++          const graphics = this.add.graphics();
++          graphics.fillStyle(0x00ff00).fillRect(0, 0, 8, 8).generateTexture("box", 8, 8);
++          graphics.destroy();
++          this.box = this.physics.add.sprite(32, 0, "box");
++          this.frames = 0;
++        },
++        update() {
++          if (++this.frames === 30) {
++            const fell = this.box.y > 0 && this.box.body.velocity.y > 0;
++            const renderer = game.renderer.type === Phaser.WEBGL ? "webgl" : "canvas";
++            game.destroy(true);
++            resolve((fell && renderer === "webgl") || `y ${this.box.y} renderer ${renderer}`);
++          }
++        },
++      },
++    });
++  });
++});
++
+ check("Three.js renders a lit mesh (WebGL)", async () => {
+   const THREE = await import("https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.min.js");
+   const canvas = document.createElement("canvas");
+diff --git a/support/v8-smoke/graphics.html b/support/v8-smoke/graphics.html
+new file mode 100644
+index 00000000000..564f1002e68
+--- /dev/null
++++ b/support/v8-smoke/graphics.html
+@@ -0,0 +1,161 @@
++<!doctype html>
++<html><head><meta charset="utf-8"><title>roves-js graphics</title>
++<script src="harness.js"></script>
++</head>
++<body>
++<script>
++// Graphics APIs through the V8 bindings: WebGL 1 and 2 (shaders, buffers, textures,
++// framebuffers, instancing), canvas 2D drawing and pixel round trips, and image encoding.
++function makeCanvas(width = 16, height = 16) {
++  const canvas = document.createElement("canvas");
++  canvas.width = width; canvas.height = height;
++  return canvas;
++}
++function program(gl, vertex, fragment) {
++  const compile = (type, source) => {
++    const shader = gl.createShader(type);
++    gl.shaderSource(shader, source); gl.compileShader(shader);
++    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader));
++    return shader;
++  };
++  const p = gl.createProgram();
++  gl.attachShader(p, compile(gl.VERTEX_SHADER, vertex));
++  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fragment));
++  gl.linkProgram(p);
++  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
++  return p;
++}
++function pixel(gl, x, y) { const px = new Uint8Array(4); gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); return Array.from(px); }
++
++check("WebGL: shader program draws a triangle", () => {
++  const gl = makeCanvas().getContext("webgl");
++  if (!gl) return "no webgl";
++  const p = program(gl, "attribute vec2 p; void main() { gl_Position = vec4(p, 0.0, 1.0); }", "precision mediump float; uniform vec4 c; void main() { gl_FragColor = c; }");
++  gl.useProgram(p);
++  const buffer = gl.createBuffer();
++  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
++  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
++  const location = gl.getAttribLocation(p, "p");
++  gl.enableVertexAttribArray(location);
++  gl.vertexAttribPointer(location, 2, gl.FLOAT, false, 0, 0);
++  gl.uniform4f(gl.getUniformLocation(p, "c"), 0, 0, 1, 1);
++  gl.drawArrays(gl.TRIANGLES, 0, 3);
++  const px = pixel(gl, 8, 8);
++  return (px[2] === 255 && px[0] === 0 && gl.getError() === gl.NO_ERROR) || `pixel ${px} error ${gl.getError()}`;
++});
++check("WebGL: texture upload from a canvas and sampling", () => {
++  const source = makeCanvas(2, 2);
++  const g = source.getContext("2d"); g.fillStyle = "#ff0000"; g.fillRect(0, 0, 2, 2);
++  const gl = makeCanvas().getContext("webgl");
++  if (!gl) return "no webgl";
++  const p = program(gl, "attribute vec2 p; varying vec2 uv; void main() { uv = p * 0.5 + 0.5; gl_Position = vec4(p, 0.0, 1.0); }",
++    "precision mediump float; varying vec2 uv; uniform sampler2D t; void main() { gl_FragColor = texture2D(t, uv); }");
++  gl.useProgram(p);
++  const texture = gl.createTexture();
++  gl.bindTexture(gl.TEXTURE_2D, texture);
++  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
++  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
++  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
++  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
++  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
++  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
++  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
++  gl.drawArrays(gl.TRIANGLES, 0, 3);
++  const px = pixel(gl, 8, 8);
++  return (px[0] === 255 && px[1] === 0) || `pixel ${px}`;
++});
++check("WebGL 2: instanced draw, VAO and transform of integer uniforms", () => {
++  const gl = makeCanvas().getContext("webgl2");
++  if (!gl) return "no webgl2";
++  const p = program(gl, `#version 300 es
++    in vec2 p; flat out int id;
++    void main() { id = gl_InstanceID; gl_Position = vec4(p * 0.5 + vec2(float(gl_InstanceID) - 0.5, 0.0), 0.0, 1.0); }`,
++    `#version 300 es
++    precision mediump float; flat in int id; uniform int highlight; out vec4 color;
++    void main() { color = id == highlight ? vec4(0, 1, 0, 1) : vec4(1, 0, 0, 1); }`);
++  gl.useProgram(p);
++  const vao = gl.createVertexArray();
++  gl.bindVertexArray(vao);
++  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
++  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
++  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
++  gl.uniform1i(gl.getUniformLocation(p, "highlight"), 1);
++  gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, 2);
++  const left = pixel(gl, 3, 8), right = pixel(gl, 12, 8);
++  return (left[0] === 255 && right[1] === 255 && gl.getError() === gl.NO_ERROR) || `left ${left} right ${right} error ${gl.getError()}`;
++});
++check("WebGL 2: render to a framebuffer texture", () => {
++  const gl = makeCanvas().getContext("webgl2");
++  if (!gl) return "no webgl2";
++  const texture = gl.createTexture();
++  gl.bindTexture(gl.TEXTURE_2D, texture);
++  gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, 4, 4);
++  const framebuffer = gl.createFramebuffer();
++  gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
++  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
++  if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) return "framebuffer incomplete";
++  gl.clearColor(1, 1, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
++  const px = pixel(gl, 1, 1);
++  return (px[0] === 255 && px[1] === 255 && px[2] === 0) || `pixel ${px}`;
++});
++check("WebGL: context attributes, extensions and limits", () => {
++  const gl = makeCanvas().getContext("webgl", { antialias: false, alpha: false });
++  if (!gl) return "no webgl";
++  const attributes = gl.getContextAttributes();
++  return attributes.alpha === false && Array.isArray(gl.getSupportedExtensions()) && gl.getParameter(gl.MAX_TEXTURE_SIZE) >= 1024;
++});
++check("canvas 2D: paths, gradients, text and getImageData", () => {
++  const canvas = makeCanvas(32, 32);
++  const g = canvas.getContext("2d");
++  const gradient = g.createLinearGradient(0, 0, 32, 0);
++  gradient.addColorStop(0, "#000000"); gradient.addColorStop(1, "#ffffff");
++  g.fillStyle = gradient; g.fillRect(0, 0, 32, 16);
++  g.beginPath(); g.arc(16, 24, 6, 0, Math.PI * 2); g.fillStyle = "rgb(0, 0, 255)"; g.fill();
++  g.font = "10px sans-serif"; g.fillStyle = "red"; g.fillText("R", 0, 10);
++  const left = g.getImageData(1, 14, 1, 1).data, right = g.getImageData(30, 14, 1, 1).data, circle = g.getImageData(16, 24, 1, 1).data;
++  return (left[0] < right[0] && circle[2] === 255 && g.measureText("Roves").width > 0) || `left ${left} right ${right} circle ${circle}`;
++});
++check("canvas 2D: drawImage, transforms and putImageData", () => {
++  const source = makeCanvas(4, 4);
++  const sg = source.getContext("2d"); sg.fillStyle = "#00ff00"; sg.fillRect(0, 0, 4, 4);
++  const canvas = makeCanvas(16, 16);
++  const g = canvas.getContext("2d");
++  g.translate(8, 8); g.scale(2, 2); g.drawImage(source, 0, 0);
++  g.setTransform(1, 0, 0, 1, 0, 0);
++  const image = g.createImageData(1, 1); image.data.set([255, 0, 255, 255]);
++  g.putImageData(image, 0, 0);
++  const drawn = g.getImageData(12, 12, 1, 1).data, put = g.getImageData(0, 0, 1, 1).data;
++  return (drawn[1] === 255 && put[0] === 255 && put[2] === 255) || `drawn ${drawn} put ${put}`;
++});
++check("canvas toDataURL and toBlob encode PNG", () => new Promise(resolve => {
++  const canvas = makeCanvas(4, 4);
++  canvas.getContext("2d").fillRect(0, 0, 4, 4);
++  const url = canvas.toDataURL("image/png");
++  canvas.toBlob(blob => resolve((url.startsWith("data:image/png;base64,") && blob && blob.type === "image/png" && blob.size > 0) || `${url.slice(0, 30)} ${blob && blob.type}`), "image/png");
++}));
++check("Image decoding from a data URL and drawing it", () => new Promise(resolve => {
++  const source = makeCanvas(2, 2);
++  const sg = source.getContext("2d"); sg.fillStyle = "#0000ff"; sg.fillRect(0, 0, 2, 2);
++  const image = new Image();
++  image.onload = () => {
++    const g = makeCanvas(2, 2).getContext("2d");
++    g.drawImage(image, 0, 0);
++    const px = g.getImageData(1, 1, 1, 1).data;
++    resolve((image.naturalWidth === 2 && px[2] === 255) || `size ${image.naturalWidth} pixel ${px}`);
++  };
++  image.onerror = () => resolve("image error");
++  image.src = source.toDataURL();
++}));
++check("Path2D and isPointInPath", () => {
++  const g = makeCanvas().getContext("2d");
++  const path = new Path2D("M0 0 L10 0 L10 10 Z");
++  return g.isPointInPath(path, 8, 2) && !g.isPointInPath(path, 2, 8);
++});
++check("WebGPU adapter request (when available)", async () => {
++  if (!navigator.gpu) return "skip";
++  const adapter = await navigator.gpu.requestAdapter();
++  return adapter ? true : "skip";
++});
++finish();
++</script>
++</body></html>
+diff --git a/support/v8-smoke/harness.js b/support/v8-smoke/harness.js
+new file mode 100644
+index 00000000000..945abcf0bc4
+--- /dev/null
++++ b/support/v8-smoke/harness.js
+@@ -0,0 +1,28 @@
++// Shared harness of the V8 smoke pages: `check(name, fn)` runs a synchronous or asynchronous
++// check (returning true to pass, "skip" when the environment lacks the feature, anything else
++// as the failure detail), after the previous one; `finish()` waits for every check and prints
++// the lines run.sh reads.
++"use strict";
++const results = [];
++// Checks run one after another, so a check installing global handlers (onerror,
++// unhandledrejection) never sees another check's events.
++let chain = Promise.resolve();
++
++function check(name, fn, timeoutMs = 10000) {
++  chain = chain.then(() => {
++    const run = (async () => fn())();
++    return Promise.race([run, new Promise(resolve => setTimeout(() => resolve("timeout"), timeoutMs))])
++      .then(outcome => results.push([name, outcome]), error => results.push([name, String((error && error.stack) || error)]));
++  });
++}
++
++async function finish() {
++  await chain;
++  let passed = 0, skipped = 0;
++  for (const [name, outcome] of results) {
++    if (outcome === "skip") { skipped++; console.log("SUITE SKIP " + name); continue; }
++    if (outcome === true) passed++;
++    console.log((outcome === true ? "SUITE PASS " : "SUITE FAIL ") + name + (outcome === true ? "" : " :: " + outcome));
++  }
++  console.log("SUITE TOTAL " + passed + "/" + (results.length - skipped) + (skipped ? " (" + skipped + " skipped)" : ""));
++}
+diff --git a/support/v8-smoke/modules.html b/support/v8-smoke/modules.html
+new file mode 100644
+index 00000000000..3f7f2e52620
+--- /dev/null
++++ b/support/v8-smoke/modules.html
+@@ -0,0 +1,44 @@
++<!doctype html>
++<html><head><meta charset="utf-8"><title>roves-js ES modules</title>
++<script src="harness.js"></script>
++<script type="importmap">{ "imports": { "shapes": "./modules/b.mjs" } }</script>
++</head>
++<body>
++<script type="module">
++// ES modules on V8: a static module graph loaded from files, cycles, top-level await, JSON
++// modules, import maps, import.meta and evaluation errors.
++import { a, bump, metaUrl } from "./modules/a.mjs";
++import Shape, { counter } from "./modules/b.mjs";
++import { sum } from "./modules/cycle1.mjs";
++
++check("static imports link a module graph", () => a === "ab" && new Shape().area() === 0);
++check("a module shared by two importers is evaluated once", () => { bump(); return counter.value === 1 && globalThis.__bEvaluations === 1; });
++check("cyclic imports resolve live bindings", () => sum() === 3);
++check("import.meta.url names the module file", () => metaUrl.endsWith("/modules/a.mjs") || metaUrl);
++check("dynamic import returns the same module namespace", async () => {
++  const again = await import("./modules/b.mjs");
++  return again.counter === counter && again.default === Shape;
++});
++check("dynamic import waits for top-level await", async () => (await import("./modules/tla.mjs")).ready === "ready");
++check("JSON module with import attributes", async () => {
++  const data = await import("./modules/data.json", { with: { type: "json" } });
++  return data.default.level === 4 && data.default.names[1] === "v8";
++});
++check("import map resolves a bare specifier", async () => (await import("shapes")).b === "b");
++check("a throwing module rejects its import", async () => {
++  try { await import("./modules/broken.mjs"); return "no error"; } catch (error) { return error.message === "module evaluation failed on purpose" || String(error); }
++});
++check("a missing module rejects its import", async () => {
++  try { await import("./modules/does-not-exist.mjs"); return "no error"; } catch (error) { return error instanceof TypeError || String(error); }
++});
++check("a syntax error in a module rejects its import", async () => {
++  const url = URL.createObjectURL(new Blob(["export const = ;"], { type: "text/javascript" }));
++  try { await import(url); return "no error"; } catch (error) { return error instanceof SyntaxError || String(error); }
++});
++check("module namespace objects are frozen and sealed", async () => {
++  const ns = await import("./modules/b.mjs");
++  return Object.isFrozen(ns) === false && Object.isSealed(ns) && Object.prototype.toString.call(ns) === "[object Module]";
++});
++await finish();
++</script>
++</body></html>
+diff --git a/support/v8-smoke/modules/a.mjs b/support/v8-smoke/modules/a.mjs
+new file mode 100644
+index 00000000000..a315a3ed013
+--- /dev/null
++++ b/support/v8-smoke/modules/a.mjs
+@@ -0,0 +1,4 @@
++import { b, counter } from "./b.mjs";
++export const a = "a" + b;
++export function bump() { return counter.value++; }
++export const metaUrl = import.meta.url;
+diff --git a/support/v8-smoke/modules/b.mjs b/support/v8-smoke/modules/b.mjs
+new file mode 100644
+index 00000000000..aba286e70ea
+--- /dev/null
++++ b/support/v8-smoke/modules/b.mjs
+@@ -0,0 +1,4 @@
++// Imported by a.mjs and by modules.html directly: evaluated once.
++export const counter = { value: 0, evaluations: (globalThis.__bEvaluations = (globalThis.__bEvaluations || 0) + 1) };
++export const b = "b";
++export default class Shape { area() { return 0; } }
+diff --git a/support/v8-smoke/modules/broken.mjs b/support/v8-smoke/modules/broken.mjs
+new file mode 100644
+index 00000000000..0131afc9516
+--- /dev/null
++++ b/support/v8-smoke/modules/broken.mjs
+@@ -0,0 +1,2 @@
++export const fine = 1;
++throw new Error("module evaluation failed on purpose");
+diff --git a/support/v8-smoke/modules/cycle1.mjs b/support/v8-smoke/modules/cycle1.mjs
+new file mode 100644
+index 00000000000..479568fa0e2
+--- /dev/null
++++ b/support/v8-smoke/modules/cycle1.mjs
+@@ -0,0 +1,3 @@
++import { two } from "./cycle2.mjs";
++export function one() { return 1; }
++export const sum = () => one() + two();
+diff --git a/support/v8-smoke/modules/cycle2.mjs b/support/v8-smoke/modules/cycle2.mjs
+new file mode 100644
+index 00000000000..e501ea3d69d
+--- /dev/null
++++ b/support/v8-smoke/modules/cycle2.mjs
+@@ -0,0 +1,2 @@
++import { one } from "./cycle1.mjs";
++export function two() { return one() + 1; }
+diff --git a/support/v8-smoke/modules/data.json b/support/v8-smoke/modules/data.json
+new file mode 100644
+index 00000000000..f014aa3e8f4
+--- /dev/null
++++ b/support/v8-smoke/modules/data.json
+@@ -0,0 +1 @@
++{ "level": 4, "names": ["roves", "v8"] }
+diff --git a/support/v8-smoke/modules/tla.mjs b/support/v8-smoke/modules/tla.mjs
+new file mode 100644
+index 00000000000..8a5aab7096c
+--- /dev/null
++++ b/support/v8-smoke/modules/tla.mjs
+@@ -0,0 +1 @@
++export const ready = await new Promise(resolve => setTimeout(() => resolve("ready"), 10));
+diff --git a/support/v8-smoke/run.sh b/support/v8-smoke/run.sh
+index ed9e37c372e..0369cc3e709 100755
+--- a/support/v8-smoke/run.sh
++++ b/support/v8-smoke/run.sh
+@@ -11,6 +11,8 @@ shift
+ RUNNER=("$@")
+ DIR="$(cd "$(dirname "$0")" && pwd)"
+ STATUS=0
++# Every suite's total, reported as one annotation at the end (at most 10 notices show per step).
++TOTALS=""
+ 
+ run_page() {
+   local page="$1" seconds="$2" log="$3"
+@@ -25,8 +27,8 @@ run_page() {
+ }
+ 
+ run_suite() {
+-  local page="$1" log="$2"
+-  run_page "$page" 60 "$log"
++  local page="$1" log="$2" seconds="${3:-60}"
++  run_page "$page" "$seconds" "$log"
+   # GitHub shows at most 10 annotations of a kind per step: one summary carries every failure.
+   local total failures
+   total=$(grep -a "^SUITE TOTAL " "$log" | head -1)
+@@ -39,7 +41,7 @@ run_suite() {
+     { echo "## $page: ${total#SUITE TOTAL }"; echo; grep -a "^SUITE " "$log" | sed 's/^/- /'; } >> "$GITHUB_STEP_SUMMARY"
+   fi
+   if [ -n "$total" ]; then
+-    echo "::notice title=$page::$total"
++    TOTALS="$TOTALS%0A$page ${total#SUITE TOTAL }"
+   else
+     echo "::error::$page did not report its total"
+     grep -a -v '^\s*$' "$log" | tail -20 | sed 's/^/::error::  /'
+@@ -50,6 +52,12 @@ run_suite() {
+ run_suite suite.html suite.log
+ run_suite suite2.html suite2.log
+ run_suite games.html games.log
++run_suite modules.html modules.log
++run_suite errors.html errors.log
++run_suite events.html events.log
++run_suite graphics.html graphics.log
++run_suite stress.html stress.log 240
++echo "::notice title=V8 smoke suites::${TOTALS#%0A}"
+ 
+ run_page test.html 30 test.log
+ for expected in "ROVES-V8 dom: changed by js" "ROVES-V8 click event click true" "ROVES-V8 promise 5" "ROVES-V8 timeout fired"; do
+diff --git a/support/v8-smoke/stress.html b/support/v8-smoke/stress.html
+new file mode 100644
+index 00000000000..bfb7b701625
+--- /dev/null
++++ b/support/v8-smoke/stress.html
+@@ -0,0 +1,115 @@
++<!doctype html>
++<html><head><meta charset="utf-8"><title>roves-js stress</title>
++<script src="harness.js"></script>
++</head>
++<body>
++<div id="root"></div>
++<script>
++// GC and lifetime pressure through the V8 bindings: DOM churn, wrapper identity across
++// collections, many promises and native callbacks, workers started and stopped, large clones.
++// Each check also verifies results, so a premature collection shows up as a wrong value.
++check("DOM churn: 20 000 elements created, attached and removed", () => {
++  const root = document.getElementById("root");
++  for (let round = 0; round < 20; round++) {
++    const fragment = document.createDocumentFragment();
++    for (let i = 0; i < 1000; i++) {
++      const element = document.createElement(i % 2 ? "span" : "div");
++      element.dataset.index = String(i);
++      element.textContent = "node " + i;
++      fragment.appendChild(element);
++    }
++    root.appendChild(fragment);
++    if (root.children.length !== 1000 || root.lastElementChild.dataset.index !== "999") return `round ${round} has ${root.children.length}`;
++    root.replaceChildren();
++  }
++  return root.children.length === 0;
++}, 30000);
++check("wrapper identity and expandos survive garbage", () => {
++  const kept = document.createElement("section");
++  kept.expando = { score: 42 };
++  document.body.appendChild(kept);
++  let garbage = [];
++  for (let i = 0; i < 200000; i++) garbage.push({ i, s: "x" + i });
++  garbage = null;
++  for (let i = 0; i < 50; i++) new ArrayBuffer(1 << 20);
++  const found = document.body.querySelector("section");
++  return (found === kept && found.expando.score === 42) || "identity or expando lost";
++}, 30000);
++check("10 000 chained promises and async functions", async () => {
++  let promise = Promise.resolve(0);
++  for (let i = 0; i < 10000; i++) promise = promise.then(v => v + 1);
++  async function step(n) { return n === 0 ? 0 : 1 + await step(n - 1); }
++  const [chained, recursive] = await Promise.all([promise, step(2000)]);
++  return (chained === 10000 && recursive === 2000) || `${chained} ${recursive}`;
++}, 30000);
++check("many native promise callbacks (fetch of blobs)", async () => {
++  const urls = Array.from({ length: 200 }, (_, i) => URL.createObjectURL(new Blob([String(i)])));
++  const texts = await Promise.all(urls.map(url => fetch(url).then(response => response.text())));
++  urls.forEach(url => URL.revokeObjectURL(url));
++  return texts.every((text, i) => text === String(i)) || "wrong blob contents";
++}, 30000);
++check("event listeners on 5 000 nodes fire with the right closures", () => {
++  const container = document.createElement("div");
++  let sum = 0;
++  for (let i = 0; i < 5000; i++) {
++    const button = document.createElement("button");
++    button.addEventListener("click", () => sum += i);
++    container.appendChild(button);
++  }
++  for (let i = 0; i < 50; i++) new Array(100000).fill({ i });
++  for (const button of container.children) button.click();
++  return sum === (4999 * 5000) / 2 || `sum ${sum}`;
++}, 30000);
++check("workers started and terminated in a loop", async () => {
++  const source = URL.createObjectURL(new Blob(["onmessage = e => postMessage(e.data * 2);"], { type: "text/javascript" }));
++  for (let i = 0; i < 20; i++) {
++    const worker = new Worker(source);
++    const value = await new Promise((resolve, reject) => { worker.onmessage = e => resolve(e.data); worker.onerror = e => reject(e.message); worker.postMessage(i); });
++    worker.terminate();
++    if (value !== i * 2) return `worker ${i} answered ${value}`;
++  }
++  return true;
++}, 60000);
++check("structuredClone of a large graph with cycles and typed arrays", () => {
++  const nodes = Array.from({ length: 20000 }, (_, i) => ({ i, data: new Float32Array([i, i + 1]) }));
++  nodes.forEach((node, i) => node.next = nodes[(i + 1) % nodes.length]);
++  const copy = structuredClone({ nodes, map: new Map([["k", nodes[5]]]) });
++  return copy.nodes[19999].next === copy.nodes[0] && copy.map.get("k") === copy.nodes[5] && copy.nodes[3].data[1] === 4;
++}, 30000);
++check("WeakRef and FinalizationRegistry do not crash under pressure", async () => {
++  const registry = new FinalizationRegistry(() => {});
++  const refs = [];
++  for (let i = 0; i < 10000; i++) { const object = { i }; registry.register(object, i); refs.push(new WeakRef(object)); }
++  for (let i = 0; i < 30; i++) new ArrayBuffer(1 << 20);
++  await new Promise(resolve => setTimeout(resolve, 50));
++  return refs.every(ref => { const value = ref.deref(); return value === undefined || typeof value.i === "number"; });
++}, 30000);
++check("MutationObserver records across many mutations", () => new Promise(resolve => {
++  const target = document.createElement("div");
++  document.body.appendChild(target);
++  let records = 0;
++  const observer = new MutationObserver(list => {
++    records += list.length;
++    if (records >= 3000) { observer.disconnect(); target.remove(); resolve(true); }
++  });
++  observer.observe(target, { childList: true, attributes: true });
++  for (let i = 0; i < 1000; i++) { const child = document.createElement("i"); target.appendChild(child); child.remove(); target.setAttribute("n", String(i)); }
++}), 30000);
++check("canvas contexts created and dropped repeatedly", () => {
++  for (let i = 0; i < 200; i++) {
++    const canvas = document.createElement("canvas");
++    canvas.width = canvas.height = 32;
++    const g = canvas.getContext("2d");
++    g.fillStyle = "#123456"; g.fillRect(0, 0, 32, 32);
++    if (g.getImageData(1, 1, 1, 1).data[2] !== 0x56) return `canvas ${i} wrong pixel`;
++  }
++  return true;
++}, 30000);
++check("long-running timer loop (2 seconds of 1 ms timers)", () => new Promise(resolve => {
++  const end = performance.now() + 2000;
++  let ticks = 0;
++  (function tick() { ticks++; if (performance.now() < end) setTimeout(tick, 1); else resolve(ticks > 100 || `only ${ticks} ticks`); })();
++}), 30000);
++finish();
++</script>
++</body></html>
