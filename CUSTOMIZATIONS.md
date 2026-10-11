@@ -12902,3 +12902,12 @@ games 10/10 (with Phaser), graphics 9/11 and stress 10/11. The failures:
   `RangeError`.
 
 Roves keeps V8's default: deep recursion behaves as in Chrome, where web games are tested.
+
+## 2026-10-11 - V8 smoke: locate the WebGL 2 error
+
+**Servo files:** `support/v8-smoke/graphics.html`.
+**Patch:** `0190-v8-webgl2-error-steps.patch` after 0189.
+
+After 0189, stress passes 11/11. The WebGL 2 instancing check renders the right pixels but
+reports `INVALID_OPERATION` (0x502). The check now reads `getError()` after every call and
+names the first call that raised it.

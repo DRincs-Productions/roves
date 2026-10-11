@@ -1,0 +1,47 @@
+diff --git a/support/v8-smoke/graphics.html b/support/v8-smoke/graphics.html
+index b8da4504ed6..a6a814669fe 100644
+--- a/support/v8-smoke/graphics.html
++++ b/support/v8-smoke/graphics.html
+@@ -67,25 +67,29 @@ check("WebGL: texture upload from a canvas and sampling", () => {
+ check("WebGL 2: instanced draw, VAO and transform of integer uniforms", () => {
+   const gl = makeCanvas().getContext("webgl2");
+   if (!gl) return "no webgl2";
++  // getError after each step names the first call that raised an error.
++  let firstError = null;
++  const step = name => { const error = gl.getError(); if (error && !firstError) firstError = `${name}: 0x${error.toString(16)}`; };
+   const p = program(gl, `#version 300 es
+     in vec2 p; flat out int id;
+     void main() { id = gl_InstanceID; gl_Position = vec4(p * 0.5 + vec2(float(gl_InstanceID) - 0.5, 0.0), 0.0, 1.0); }`,
+     `#version 300 es
+     precision mediump float; flat in int id; uniform int highlight; out vec4 color;
+     void main() { color = id == highlight ? vec4(0, 1, 0, 1) : vec4(1, 0, 0, 1); }`);
+-  gl.useProgram(p);
+-  const vao = gl.createVertexArray();
+-  gl.bindVertexArray(vao);
+-  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+-  const location = gl.getAttribLocation(p, "p");
+-  gl.enableVertexAttribArray(location); gl.vertexAttribPointer(location, 2, gl.FLOAT, false, 0, 0);
+-  gl.uniform1i(gl.getUniformLocation(p, "highlight"), 1);
+-  gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, 2);
+-  const left = pixel(gl, 3, 8), right = pixel(gl, 12, 8);
+-  // getError clears the flag: read it once.
+-  const error = gl.getError();
+-  return (left[0] === 255 && right[1] === 255 && error === gl.NO_ERROR) || `left ${left} right ${right} error 0x${error.toString(16)}`;
++  step("program");
++  gl.useProgram(p); step("useProgram");
++  const vao = gl.createVertexArray(); step("createVertexArray");
++  gl.bindVertexArray(vao); step("bindVertexArray");
++  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer()); step("bindBuffer");
++  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW); step("bufferData");
++  const location = gl.getAttribLocation(p, "p"); step("getAttribLocation");
++  gl.enableVertexAttribArray(location); step("enableVertexAttribArray");
++  gl.vertexAttribPointer(location, 2, gl.FLOAT, false, 0, 0); step("vertexAttribPointer");
++  gl.uniform1i(gl.getUniformLocation(p, "highlight"), 1); step("uniform1i");
++  gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, 2); step("drawArraysInstanced");
++  const left = pixel(gl, 3, 8); step("readPixels left");
++  const right = pixel(gl, 12, 8); step("readPixels right");
++  return (left[0] === 255 && right[1] === 255 && !firstError) || `left ${left} right ${right} first error ${firstError}`;
+ });
+ check("WebGL 2: render to a framebuffer texture", () => {
+   const gl = makeCanvas().getContext("webgl2");
