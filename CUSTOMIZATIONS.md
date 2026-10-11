@@ -13081,3 +13081,23 @@ game.
   `log::logger().flush()`.
 
 Wiki: the Shell page's performance diagnostics section documents both aids.
+
+## 2026-10-11 - Constellation message statistics (`[roves-perf-constellation]`)
+
+**Servo files:** `components/constellation/constellation.rs`.
+**Patch:** `0197-constellation-message-stats.patch` after 0196.
+
+Profiling the visual novel on v0.7.1, per thread, found two saturated threads: **Script#1 at 95%**
+and **Constellation at 79%** of a core, even idle at the menu. A plain PixiJS scene shows the
+Constellation at 0.8%. Pages repeating various calls every frame did not reproduce it:
+- `history.replaceState`, `document.title`, cursor changes, `localStorage`, `location.hash`;
+- canvas text uploaded as a WebGL texture, new canvases, data-URL SVG images.
+
+The Constellation's loop blocks in `select`, so it is handling a real message flood rather than
+spinning.
+
+With `ROVES_PERF_LOG_INTERVAL_MS` set (servoshell's existing counters), `handle_request` now
+counts handled messages by kind and sums their handling time. Kinds come from the enums' `strum`
+`IntoStaticStr` names. Each interval it logs the twelve busiest as
+`[roves-perf-constellation] interval_ms=.. messages=N Kind=count/us ...`. Without the variable
+nothing is counted.

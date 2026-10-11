@@ -1,0 +1,89 @@
+diff --git a/components/constellation/constellation.rs b/components/constellation/constellation.rs
+index 9727bac1bf6..f9ccb0d983b 100644
+--- a/components/constellation/constellation.rs
++++ b/components/constellation/constellation.rs
+@@ -1281,6 +1281,15 @@ where
+             Err(err) => return error!("Deserialization failed ({}).", err),
+         };
+ 
++        let kind: &'static str = match &request {
++            Request::PipelineNamespace(_) => "PipelineNamespace",
++            Request::Script((_, _, message)) => message.into(),
++            Request::BackgroundHangMonitor(_) => "BackgroundHangMonitor",
++            Request::Embedder(message) => message.into(),
++            Request::RemoveProcess(_) => "RemoveProcess",
++        };
++        let started = message_stats_enabled().then(std::time::Instant::now);
++
+         match request {
+             Request::PipelineNamespace(message) => {
+                 self.handle_request_for_pipeline_namespace(message)
+@@ -1294,6 +1303,9 @@ where
+             },
+             Request::RemoveProcess(index) => self.process_manager.remove(index),
+         }
++        if let Some(started) = started {
++            record_message(kind, started.elapsed());
++        }
+     }
+ 
+     #[servo_tracing::instrument(skip_all)]
+@@ -6052,3 +6064,58 @@ struct ScreenshotReadinessRequest {
+     state: Cell<ScreenshotRequestState>,
+     pipeline_states: RefCell<FxHashMap<PipelineId, Option<Epoch>>>,
+ }
++
++/// Roves: with `ROVES_PERF_LOG_INTERVAL_MS` set (servoshell's performance counters), the
++/// constellation counts the messages it handles by kind, with their total handling time, and logs
++/// the busiest kinds each interval as `[roves-perf-constellation]`. A profile of a real game
++/// showed this thread near a full core with no way to tell what it was busy with.
++struct MessageStats {
++    interval: std::time::Duration,
++    since: std::time::Instant,
++    kinds: HashMap<&'static str, (u64, std::time::Duration)>,
++}
++
++thread_local! {
++    static MESSAGE_STATS: RefCell<Option<MessageStats>> = RefCell::new(
++        std::env::var("ROVES_PERF_LOG_INTERVAL_MS")
++            .ok()
++            .and_then(|value| value.parse::<u64>().ok())
++            .filter(|interval| *interval > 0)
++            .map(|interval| MessageStats {
++                interval: std::time::Duration::from_millis(interval),
++                since: std::time::Instant::now(),
++                kinds: HashMap::new(),
++            }),
++    );
++}
++
++fn message_stats_enabled() -> bool {
++    MESSAGE_STATS.with(|stats| stats.borrow().is_some())
++}
++
++fn record_message(kind: &'static str, elapsed: std::time::Duration) {
++    MESSAGE_STATS.with(|stats| {
++        let mut stats = stats.borrow_mut();
++        let Some(stats) = stats.as_mut() else { return };
++        let entry = stats.kinds.entry(kind).or_default();
++        entry.0 += 1;
++        entry.1 += elapsed;
++        if stats.since.elapsed() < stats.interval {
++            return;
++        }
++        let total: u64 = stats.kinds.values().map(|(count, _)| count).sum();
++        let mut kinds: Vec<_> = stats.kinds.drain().collect();
++        kinds.sort_by(|a, b| b.1.1.cmp(&a.1.1).then(b.1.0.cmp(&a.1.0)));
++        let top: Vec<String> = kinds
++            .iter()
++            .take(12)
++            .map(|(kind, (count, time))| format!("{kind}={count}/{}us", time.as_micros()))
++            .collect();
++        info!(
++            "[roves-perf-constellation] interval_ms={} messages={total} {}",
++            stats.since.elapsed().as_millis(),
++            top.join(" ")
++        );
++        stats.since = std::time::Instant::now();
++    });
++}
