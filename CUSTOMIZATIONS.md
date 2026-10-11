@@ -12853,3 +12853,25 @@ every suite's total in one annotation, since GitHub shows only 10 notices per st
 are created with collections interleaved and half kept only by a JS array. Exactly the
 unreachable half is finalized once; the kept half keeps identity and reserved slots; dropping
 them finalizes the rest once.
+
+## 2026-10-11 - Release v0.7.0: the first Roves release on V8
+
+`v0.7.0` was cut from `main` at 23f61bf. `release.yml` built all six assets (Windows, macOS and
+Linux, plain and Steam) as the first optimized builds of Servo on V8, and they are attached to the
+release. The number skips `v0.6.0` on purpose: that is upstream Servo's tag, the likely next
+upgrade base, and reusing an upstream name has caused confusion before (see AGENTS.md on
+`v0.4.0`).
+
+Synced in the same effort:
+- `roves-action` pins `v0.7.0` (`action.yml`'s engine checkout ref and prebuilt-shell download
+  URL), commit e2a465b;
+- `roves-packmaster` targets `v0.7.0` (`TARGET_SHELL_VERSION`), commit 7365333;
+- README: the engine paragraph now says Roves runs JavaScript on V8 since v0.7.0, with the
+  JIT-less and devtools notes;
+- `roves-wiki`, commit 4b9b345:
+  - the Shell page explains what V8 means for games: WebAssembly, JIT-less without wasm, no
+    devtools JS debugging yet, navigated-away pages freed at exit;
+  - the Action page marks `debug-mozjs` deprecated;
+  - the Console page covers JIT-less V8.
+
+`roves-api`'s `COMPATIBLE_SHELL_VERSION` is unchanged: no `roves:`/`steam:` protocol changed.

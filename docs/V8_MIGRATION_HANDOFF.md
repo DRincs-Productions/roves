@@ -482,9 +482,11 @@ strategia completa è in `docs/V8_MIGRATION.md` ("Cutover strategy"). Metrica:
   JIT-less 8/8, 2 skip). Fase 6: rimosse feature/opzioni di build SpiderMonkey (patch 0185),
   `--debug-mozjs` deprecato e ignorato (anche in roves-action); `debugger.js` non eseguito
   (patch 0187).
-- **Restante per i criteri di completamento:** release + pin in roves-action/roves-packmaster
-  (chiedere conferma all'utente prima: cambia motore a tutti i consumatori); README e wiki
-  (Fase 7, ultimi per scelta dell'utente); lacune note: inspector V8 per devtools, durata dei
+- **Release v0.7.0 (2026-10-11):** prima release su V8, 6/6 asset; pin aggiornati
+  (roves-action e2a465b, roves-packmaster 7365333); README e wiki aggiornati (wiki 4b9b345).
+  Nuove pagine CI: modules/errors/events/graphics/stress + Phaser; stress test di lifetime in
+  roves-js. L'utente farà test manuali dopo.
+- **Restante per i criteri di completamento:** lacune note: inspector V8 per devtools, durata dei
   realm, prototipi immutabili, `eval(TrustedScript)`, trap cross-origin, WPT su larga scala.
 - **Prossimi passi (dopo CP112):** correggere i fallimenti di suite2 in CI (ora 38 controlli, incluso wasm); durata di
   privates di script/moduli e box delle classi chiamabili; devtools/inspector; swap permanente.

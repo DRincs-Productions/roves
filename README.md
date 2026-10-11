@@ -22,18 +22,18 @@ submodule — see [AGENTS.md](./AGENTS.md) for why, and [CUSTOMIZATIONS.md] for 
 changed on top of pristine upstream Servo and how those changes are carried forward when
 upstream is upgraded.
 
-V8 migration is in progress. Current releases still use SpiderMonkey; the isolated
-roves-v8 runtime is being validated with normal and JIT-less tests while WebIDL and DOM ownership
-are migrated. Its opt-in WebIDL pilot exercises mutable boolean/numeric and string attributes and
-returns, primitive operation returns, required/optional parameters, nullable values, ByteString
-conversion, explicit boolean/numeric defaults, and optional DOMString, USVString and ASCII
-ByteString defaults. Nullable string defaults preserve null separately from omission and explicit
-values. DOM reflectors now assign stable engine-neutral native identities, and generated pilot
-bindings can pass them to the V8 weak wrapper cache for identity-preserving reuse. Reflector
-equality uses those identities before wrapper creation, and the shared `DomObject` contract
-exposes them without an engine-specific handle. V8 production integration is still in progress.
-The isolated runtime also tests weak wrapper-identity reuse and
-reclamation; this is not the production scripting engine. Shared agent instructions live in
+**JavaScript engine: V8.** Since v0.7.0 Roves runs JavaScript on
+[V8](https://v8.dev/), the engine used by Chrome, instead of Servo's SpiderMonkey. Game code
+needs no changes: libraries such as PixiJS, Three.js and Phaser depend on standard JavaScript
+and Web APIs, not on the engine. Roves's engine layer is `components/roves-js`, which
+implements the JavaScript API Servo's DOM code expects on top of V8.
+
+V8 also has a **JIT-less** mode, the configuration for platforms that forbid generating
+executable code at runtime, such as consoles. In that mode there is no WebAssembly, so
+WebAssembly games (Unity, Godot or Emscripten exports) need the regular build. Developer-tools
+JavaScript debugging is not available on V8 yet. The migration plan and its status are in
+`docs/V8_MIGRATION.md`; the [Roves wiki](https://github.com/DRincs-Productions/roves-wiki)
+explains what the engine means for your game. Shared agent instructions live in
 [AGENTS.md](./AGENTS.md).
 
 [CUSTOMIZATIONS.md]: ./CUSTOMIZATIONS.md
