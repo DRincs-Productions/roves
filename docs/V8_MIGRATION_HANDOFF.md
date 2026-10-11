@@ -486,6 +486,11 @@ strategia completa è in `docs/V8_MIGRATION.md` ("Cutover strategy"). Metrica:
   (roves-action e2a465b, roves-packmaster 7365333); README e wiki aggiornati (wiki 4b9b345).
   Nuove pagine CI: modules/errors/events/graphics/stress + Phaser; stress test di lifetime in
   roves-js. L'utente farà test manuali dopo.
+- **CI finale (9c13dcd):** tutte le pagine verdi, normale e JIT-less: suite 34/34, suite2 38/38,
+  games 10/10, modules 12/12, errors 12/12, events 14/14, graphics 10/10, stress 11/11 (skip:
+  wasm in JIT-less, audio senza dispositivo, WebGPU senza GPU). roves-action su gioco reale con
+  v0.7.0: verde su tutte le piattaforme. Budget dello stack JS = default V8 (~1 MB, come Chrome):
+  il limite per isolate di rusty_v8 non ha effetto, il flag globale è rischioso per thread piccoli.
 - **Restante per i criteri di completamento:** lacune note: inspector V8 per devtools, durata dei
   realm, prototipi immutabili, `eval(TrustedScript)`, trap cross-origin, WPT su larga scala.
 - **Prossimi passi (dopo CP112):** correggere i fallimenti di suite2 in CI (ora 38 controlli, incluso wasm); durata di
