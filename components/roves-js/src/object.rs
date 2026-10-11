@@ -435,8 +435,7 @@ fn is_callable_class(class: *const JSClass) -> bool {
 }
 
 fn callable_class_key<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Private> {
-    let name = v8::String::new(scope, "roves-js callable class box").expect("a short string");
-    v8::Private::for_api(scope, Some(name))
+    crate::jsapi_impl::private_key(scope, crate::jsapi_impl::PrivateKey::CallableClassBox)
 }
 
 /// An object of a class with `call`/`construct` hooks (Servo's interface objects): a real V8
@@ -487,8 +486,8 @@ fn callable_class_callback(scope: &mut v8::PinScope, args: v8::FunctionCallbackA
         crate::native::throw_type_error(scope, "object is not callable");
         return;
     };
-    // SAFETY: the box's cell is the function's (alive while it is called).
-    let callee = unsafe { crate::cell::cell_value(scope, class_box.cell.get()) };
+    // The box's cell is the function's (alive while it is called).
+    let callee = crate::jsval::ObjectValue(class_box.cell.get() as *mut JSObject);
     crate::native::call_native(scope, &args, &mut retval, Some(native), callee, constructing);
 }
 
@@ -508,8 +507,8 @@ fn call_class_hook(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments
     // `o.f()` and `new obj()`), so it is the callee; the call's own receiver is not available.
     // Servo's callable classes are interface objects, called as constructors or plain
     // functions, where the receiver does not matter.
-    let callee = args.this();
-    crate::native::call_native(scope, &args, &mut retval, Some(native), callee.into(), constructing);
+    let callee = crate::jsval::from_v8(scope, args.this().into());
+    crate::native::call_native(scope, &args, &mut retval, Some(native), callee, constructing);
 }
 
 /// Allocates a class-based object with `proto` (or the realm's `Object.prototype` when

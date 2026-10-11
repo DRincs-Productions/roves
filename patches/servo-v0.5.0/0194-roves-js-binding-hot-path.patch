@@ -1,0 +1,405 @@
+diff --git a/components/roves-js/src/cell.rs b/components/roves-js/src/cell.rs
+index 82833cd4b66..37ea3b87857 100644
+--- a/components/roves-js/src/cell.rs
++++ b/components/roves-js/src/cell.rs
+@@ -62,6 +62,26 @@ impl Interned {
+     }
+ }
+ 
++/// A weak handle on a cell: its pointer while the cell lives (something else keeps it alive).
++#[derive(Default)]
++pub(crate) struct WeakCell(std::cell::RefCell<Option<WeakPersistent<Cell>>>);
++
++impl WeakCell {
++    pub(crate) fn get(&self) -> Option<*mut c_void> {
++        let entry = self.0.borrow();
++        let entry = entry.as_ref()?;
++        entry.get()?;
++        // SAFETY: the entry is alive (checked above).
++        Some(to_raw(unsafe { UnsafePtr::new(entry) }?))
++    }
++
++    pub(crate) fn set(&self, cell: *mut c_void) {
++        if let Some(pointer) = from_raw(cell) {
++            *self.0.borrow_mut() = Some(WeakPersistent::new(&pointer));
++        }
++    }
++}
++
+ fn identity_hash(value: v8::Local<v8::Value>) -> Option<i32> {
+     if let Ok(object) = v8::Local::<v8::Object>::try_from(value) {
+         return Some(object.get_identity_hash().get());
+@@ -170,9 +190,21 @@ pub(crate) fn new_cell(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) ->
+                 if !cell.is_null() {
+                     return cell;
+                 }
++                // A dynamic function: its cell while one lives, else a new one (remembered).
++                if let Some(cell) = function.weak_cell.get() {
++                    return cell;
++                }
++                let cell = interned_cell(scope, value);
++                function.weak_cell.set(cell);
++                return cell;
+             }
+         }
+     }
++    interned_cell(scope, value)
++}
++
++/// The cell of an object or symbol from the runtime's identity table (a new one if none lives).
++fn interned_cell(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) -> *mut c_void {
+     let Some(hash) = identity_hash(value) else { return new_cell_with_class(scope, value, None) };
+     let Some(cx) = crate::rust::Runtime::get() else { return new_cell_with_class(scope, value, None) };
+     // SAFETY: the runtime's raw context outlives its scopes.
+diff --git a/components/roves-js/src/jsapi.rs b/components/roves-js/src/jsapi.rs
+index 01b5086697a..cb7a2ee8a26 100644
+--- a/components/roves-js/src/jsapi.rs
++++ b/components/roves-js/src/jsapi.rs
+@@ -118,7 +118,8 @@ opaque!(JSObject, JSString, JSFunction, Symbol, BigInt, JSScript);
+ /// plus this thread's root stack (see `gc`).
+ pub struct JSContext {
+     pub(crate) isolate: *mut v8::Isolate,
+-    /// The current realm's V8 context (kept in sync with `current_realm`).
++    /// The runtime's initial V8 context, used before the first realm is registered (afterwards
++    /// the current realm's context comes from its realm data).
+     pub(crate) context: RefCell<v8::Global<v8::Context>>,
+     /// The current realm (see `realm_impl`).
+     pub(crate) current_realm: std::cell::Cell<*mut Realm>,
+@@ -134,6 +135,10 @@ pub struct JSContext {
+     pub(crate) native_functions: RefCell<Vec<Box<crate::jsapi_impl::NativeFunction>>>,
+     /// The size of `native_functions` at which the states of dead functions are dropped.
+     pub(crate) native_function_sweep: std::cell::Cell<usize>,
++    /// The states of defined native functions by their (fixed) cell.
++    pub(crate) defined_functions: RefCell<std::collections::HashMap<usize, *const crate::jsapi_impl::NativeFunction>>,
++    /// Private keys used on hot paths (see `jsapi_impl::private_key`).
++    pub(crate) private_keys: crate::jsapi_impl::PrivateKeys,
+     /// The cells of plain objects and symbols (see `cell`).
+     pub(crate) interned: crate::cell::Interned,
+     /// String atoms (see `jsapi_impl::atomize`).
+@@ -155,7 +160,12 @@ impl JSContext {
+         // out, and the isolate is only used from its own thread.
+         let isolate = unsafe { &mut *self.isolate };
+         v8::scope!(let scope, isolate);
+-        let context = v8::Local::new(scope, &*self.context.borrow());
++        // The current realm's context (its realm data owns it); the runtime's initial context
++        // before any realm is registered.
++        let context = match crate::realm_impl::realm_data(self.current_realm.get()) {
++            Some(data) => v8::Local::new(scope, &data.context),
++            None => v8::Local::new(scope, &*self.context.borrow()),
++        };
+         let scope = &mut v8::ContextScope::new(scope, context);
+         f(scope)
+     }
+@@ -176,10 +186,10 @@ impl JSContext {
+         })
+     }
+ 
+-    /// Makes `realm` the current realm.
++    /// Makes `realm` the current realm (only a pointer: `with_scope` reads its context from
++    /// the realm data, so entering a realm creates no V8 handle).
+     pub(crate) fn set_current_realm(&self, realm: *mut Realm) {
+-        if let Some(data) = crate::realm_impl::realm_data(realm) {
+-            *self.context.borrow_mut() = data.context.clone();
++        if crate::realm_impl::realm_data(realm).is_some() {
+             self.current_realm.set(realm);
+         }
+     }
+diff --git a/components/roves-js/src/jsapi_impl.rs b/components/roves-js/src/jsapi_impl.rs
+index adfe88f8b3e..db5c2517c67 100644
+--- a/components/roves-js/src/jsapi_impl.rs
++++ b/components/roves-js/src/jsapi_impl.rs
+@@ -787,6 +787,8 @@ pub(crate) struct NativeFunction {
+     pub(crate) cell: std::cell::Cell<*mut c_void>,
+     /// A dynamic function, weakly.
+     weak: std::cell::OnceCell<v8::Weak<v8::Function>>,
++    /// A dynamic function's cell while one lives (so calls skip the identity table).
++    pub(crate) weak_cell: crate::cell::WeakCell,
+     /// Where `GetFunctionNativeReserved` hands out a slot's value (refreshed on every read).
+     reserved: std::cell::RefCell<[JSVal; 2]>,
+     /// For a spec-defined method: its JIT info (`RUST_FUNCTION_VALUE_TO_JITINFO`).
+@@ -805,12 +807,15 @@ fn native_function_callback(scope: &mut v8::PinScope, args: v8::FunctionCallback
+     // SAFETY: the External points at this function's state, alive while the function is.
+     let function = unsafe { &*(external.value() as *const NativeFunction) };
+     let callee = match function.weak.get() {
+-        Some(weak) => match weak.to_local(scope) {
+-            Some(callee) => callee.into(),
+-            None => return,
++        Some(weak) => match function.weak_cell.get() {
++            Some(cell) => crate::jsval::ObjectValue(cell as *mut JSObject),
++            None => match weak.to_local(scope) {
++                Some(callee) => from_v8(scope, callee.into()),
++                None => return,
++            },
+         },
+-        // SAFETY: a defined function's cell is traced by the runtime.
+-        None => unsafe { crate::cell::cell_value(scope, function.cell.get()) },
++        // A defined function's cell, traced by the runtime.
++        None => crate::jsval::ObjectValue(function.cell.get() as *mut JSObject),
+     };
+     let constructing = !args.new_target().is_undefined();
+     crate::native::call_native(scope, &args, &mut retval, function.native, callee, constructing);
+@@ -831,6 +836,7 @@ pub(crate) fn new_native_function(
+         native,
+         cell: std::cell::Cell::new(std::ptr::null_mut()),
+         weak: std::cell::OnceCell::new(),
++        weak_cell: Default::default(),
+         reserved: std::cell::RefCell::new([UndefinedValue(); 2]),
+         info,
+     });
+@@ -853,6 +859,7 @@ pub(crate) fn new_native_function(
+     let Some(function) = created else { return std::ptr::null_mut() };
+     if defined {
+         state.cell.set(function as *mut c_void);
++        cx.defined_functions.borrow_mut().insert(function as usize, &*state as *const NativeFunction);
+     }
+     let mut functions = cx.native_functions.borrow_mut();
+     if functions.len() >= cx.native_function_sweep.get() {
+@@ -884,9 +891,36 @@ pub unsafe fn JS_GetFunctionObject(fun: *mut JSFunction) -> *mut JSObject {
+     fun as *mut JSObject
+ }
+ 
++/// The V8 private keys roves-js stores on objects on hot paths, created once per runtime
++/// (`Private::for_api` allocates its name and looks it up in the isolate's registry).
++#[derive(Clone, Copy)]
++pub(crate) enum PrivateKey {
++    NativeFunction,
++    NativeReserved0,
++    NativeReserved1,
++    CallableClassBox,
++}
++
++const PRIVATE_KEY_NAMES: [&str; 4] =
++    ["roves-js native function", "roves-js native reserved 0", "roves-js native reserved 1", "roves-js callable class box"];
++
++#[derive(Default)]
++pub(crate) struct PrivateKeys([std::cell::OnceCell<v8::Global<v8::Private>>; 4]);
++
++/// The private key `key` of this thread's runtime.
++pub(crate) fn private_key<'s>(scope: &mut v8::PinScope<'s, '_>, key: PrivateKey) -> v8::Local<'s, v8::Private> {
++    let slot = &JSContext::current().private_keys.0[key as usize];
++    if let Some(global) = slot.get() {
++        return v8::Local::new(scope, global);
++    }
++    let name = v8::String::new(scope, PRIVATE_KEY_NAMES[key as usize]).expect("a short string");
++    let local = v8::Private::for_api(scope, Some(name));
++    let _ = slot.set(v8::Global::new(scope, local));
++    local
++}
++
+ fn native_function_key<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Private> {
+-    let name = v8::String::new(scope, "roves-js native function").expect("a short string");
+-    v8::Private::for_api(scope, Some(name))
++    private_key(scope, PrivateKey::NativeFunction)
+ }
+ 
+ /// The state of a function made by `new_native_function`.
+@@ -899,6 +933,12 @@ pub(crate) fn native_function_of_v8<'f>(scope: &mut v8::PinScope, object: v8::Lo
+ }
+ 
+ fn native_function_of<'f>(cx: &JSContext, fun: *mut JSObject) -> Option<&'f NativeFunction> {
++    // A defined function (a DOM method or accessor) by its fixed cell, without entering V8:
++    // Servo's generic getters, setters and methods ask for their JIT info on every call.
++    if let Some(function) = cx.defined_functions.borrow().get(&(fun as usize)) {
++        // SAFETY: defined functions' states live as long as the runtime.
++        return Some(unsafe { &**function });
++    }
+     cx.with_scope(|scope| {
+         let target = object(scope, fun)?;
+         native_function_of_v8(scope, target)
+@@ -906,9 +946,7 @@ fn native_function_of<'f>(cx: &JSContext, fun: *mut JSObject) -> Option<&'f Nati
+ }
+ 
+ fn native_reserved_key<'s>(scope: &mut v8::PinScope<'s, '_>, which: usize) -> v8::Local<'s, v8::Private> {
+-    let name = if which == 0 { "roves-js native reserved 0" } else { "roves-js native reserved 1" };
+-    let name = v8::String::new(scope, name).expect("a short string");
+-    v8::Private::for_api(scope, Some(name))
++    private_key(scope, if which == 0 { PrivateKey::NativeReserved0 } else { PrivateKey::NativeReserved1 })
+ }
+ 
+ /// A native function's reserved slot: its value, read from the function's private property,
+diff --git a/components/roves-js/src/native.rs b/components/roves-js/src/native.rs
+index c1db714fc25..0254fd3dbaa 100644
+--- a/components/roves-js/src/native.rs
++++ b/components/roves-js/src/native.rs
+@@ -32,13 +32,19 @@ pub(crate) fn rethrow_pending(scope: &mut v8::PinScope, cx: &JSContext) {
+     }
+ }
+ 
++thread_local! {
++    /// Argument vectors of finished native calls, reused by later ones (a native call per DOM
++    /// property access made a heap allocation each). Nested calls each take their own.
++    static VP_POOL: std::cell::RefCell<Vec<Vec<JSVal>>> = const { std::cell::RefCell::new(Vec::new()) };
++}
++
+ /// Calls `native` for a V8 call of `callee` with `args`, writing its result to `retval`.
+ pub(crate) fn call_native(
+     scope: &mut v8::PinScope,
+     args: &v8::FunctionCallbackArguments,
+     retval: &mut v8::ReturnValue,
+     native: JSNative,
+-    callee: v8::Local<v8::Value>,
++    callee: JSVal,
+     constructing: bool,
+ ) {
+     let Some(native) = native else {
+@@ -48,8 +54,9 @@ pub(crate) fn call_native(
+     let cx = JSContext::current();
+     let raw_cx = cx as *const JSContext as *mut JSContext;
+     let argc = args.length().max(0) as u32;
+-    let mut vp: Vec<JSVal> = Vec::with_capacity(argc as usize + 3);
+-    vp.push(from_v8(scope, callee));
++    let mut vp: Vec<JSVal> = VP_POOL.with(|pool| pool.borrow_mut().pop()).unwrap_or_default();
++    vp.reserve(argc as usize + 3);
++    vp.push(callee);
+     vp.push(if constructing { magic_value() } else { from_v8(scope, args.this().into()) });
+     for index in 0..argc as i32 {
+         vp.push(from_v8(scope, args.get(index)));
+@@ -70,5 +77,12 @@ pub(crate) fn call_native(
+     } else {
+         rethrow_pending(scope, cx);
+     }
+-    rooted_vp.set(Vec::new());
++    let mut used = std::mem::take(&mut *rooted_vp);
++    used.clear();
++    VP_POOL.with(|pool| {
++        let mut pool = pool.borrow_mut();
++        if pool.len() < 16 {
++            pool.push(used);
++        }
++    });
+ }
+diff --git a/components/roves-js/src/object.rs b/components/roves-js/src/object.rs
+index 853d2a63e16..9f30893d7e9 100644
+--- a/components/roves-js/src/object.rs
++++ b/components/roves-js/src/object.rs
+@@ -435,8 +435,7 @@ fn is_callable_class(class: *const JSClass) -> bool {
+ }
+ 
+ fn callable_class_key<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Private> {
+-    let name = v8::String::new(scope, "roves-js callable class box").expect("a short string");
+-    v8::Private::for_api(scope, Some(name))
++    crate::jsapi_impl::private_key(scope, crate::jsapi_impl::PrivateKey::CallableClassBox)
+ }
+ 
+ /// An object of a class with `call`/`construct` hooks (Servo's interface objects): a real V8
+@@ -487,8 +486,8 @@ fn callable_class_callback(scope: &mut v8::PinScope, args: v8::FunctionCallbackA
+         crate::native::throw_type_error(scope, "object is not callable");
+         return;
+     };
+-    // SAFETY: the box's cell is the function's (alive while it is called).
+-    let callee = unsafe { crate::cell::cell_value(scope, class_box.cell.get()) };
++    // The box's cell is the function's (alive while it is called).
++    let callee = crate::jsval::ObjectValue(class_box.cell.get() as *mut JSObject);
+     crate::native::call_native(scope, &args, &mut retval, Some(native), callee, constructing);
+ }
+ 
+@@ -508,8 +507,8 @@ fn call_class_hook(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments
+     // `o.f()` and `new obj()`), so it is the callee; the call's own receiver is not available.
+     // Servo's callable classes are interface objects, called as constructors or plain
+     // functions, where the receiver does not matter.
+-    let callee = args.this();
+-    crate::native::call_native(scope, &args, &mut retval, Some(native), callee.into(), constructing);
++    let callee = crate::jsval::from_v8(scope, args.this().into());
++    crate::native::call_native(scope, &args, &mut retval, Some(native), callee, constructing);
+ }
+ 
+ /// Allocates a class-based object with `proto` (or the realm's `Object.prototype` when
+diff --git a/components/roves-js/src/rust.rs b/components/roves-js/src/rust.rs
+index 0c2a3ed7451..2b4d36ecd7f 100644
+--- a/components/roves-js/src/rust.rs
++++ b/components/roves-js/src/rust.rs
+@@ -397,6 +397,8 @@ impl Runtime {
+             class_templates: Default::default(),
+             native_functions: RefCell::new(Vec::new()),
+             native_function_sweep: std::cell::Cell::new(crate::jsapi_impl::NATIVE_FUNCTION_SWEEP_MIN),
++            private_keys: Default::default(),
++            defined_functions: Default::default(),
+             interned: Default::default(),
+             atoms: Default::default(),
+             hooks: Default::default(),
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index ba0475b8ce7..16dca91c444 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -531,6 +531,9 @@ mod object_model {
+     }
+ 
+     unsafe extern "C" fn answer_getter(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
++        // Servo's generic getter reads its JIT info from the callee on every call.
++        // SAFETY: the JSNative contract: `vp[0]` is the callee.
++        let _info = unsafe { RUST_FUNCTION_VALUE_TO_JITINFO(*vp) };
+         // SAFETY: the JSNative contract.
+         unsafe { *vp = Int32Value(42) };
+         true
+@@ -572,6 +575,71 @@ mod object_model {
+         },
+     ];
+ 
++    unsafe extern "C" fn noop_native(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
++        // SAFETY: the JSNative contract.
++        unsafe { *vp = Int32Value(1) };
++        true
++    }
++
++    /// Calls its first argument (a function) once: a native calling back into script, the way
++    /// Servo runs event listeners and timer callbacks.
++    unsafe extern "C" fn invoke_native(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
++        // SAFETY: the JSNative contract.
++        let args = unsafe { std::slice::from_raw_parts_mut(vp, argc as usize + 2) };
++        rooted!(in(cx) let this = UndefinedValue());
++        rooted!(in(cx) let function = args[2]);
++        rooted!(in(cx) let mut rval = UndefinedValue());
++        let no_args = HandleValueArray { length_: 0, elements_: std::ptr::null() };
++        // Servo's callbacks enter the callee's realm around the call (AutoRealm).
++        rooted!(in(cx) let callee = args[2].to_object());
++        let old = unsafe { EnterRealm(cx, callee.get()) };
++        let ok = unsafe { Call(cx, this.handle().into_handle(), function.handle().into_handle(), &no_args, rval.handle_mut().into_handle()) };
++        unsafe { LeaveRealm(cx, old) };
++        args[0] = rval.get();
++        ok
++    }
++
++    /// Per-call cost of natives called from script (`cargo test --release --lib
++    /// bench_native_calls -- --ignored --nocapture`): the binding hot path DOM code takes.
++    #[test]
++    #[ignore = "benchmark"]
++    fn bench_native_calls() {
++        let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        rooted!(in(cx) let proto = unsafe { GetRealmObjectPrototype(cx) });
++        rooted!(in(cx) let object = unsafe { JS_NewObjectWithGivenProto(cx, ptr::null(), proto.handle().into_handle()) });
++        assert!(unsafe { JS_DefineProperties(cx, object.handle().into_handle(), PROPERTIES.as_ptr()) });
++        let noop = unsafe { JS_NewFunction(cx, Some(noop_native), 0, 0, c"noop".as_ptr()) };
++        rooted!(in(cx) let noop = ObjectValue(unsafe { JS_GetFunctionObject(noop) }));
++        assert!(unsafe { JS_SetProperty(cx, object.handle().into_handle(), c"noop".as_ptr(), noop.handle().into_handle()) });
++        let invoke = unsafe { JS_NewFunction(cx, Some(invoke_native), 1, 0, c"invoke".as_ptr()) };
++        rooted!(in(cx) let invoke = ObjectValue(unsafe { JS_GetFunctionObject(invoke) }));
++        assert!(unsafe { JS_SetProperty(cx, object.handle().into_handle(), c"invoke".as_ptr(), invoke.handle().into_handle()) });
++        rooted!(in(cx) let global = global(&runtime).to_object());
++        rooted!(in(cx) let value = ObjectValue(object.get()));
++        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"spec".as_ptr(), value.handle().into_handle()) });
++        // A class object (like a DOM wrapper) with the same accessor.
++        rooted!(in(cx) let thing = unsafe { JS_NewObject(cx, &CLASS) });
++        assert!(unsafe { JS_DefineProperties(cx, thing.handle().into_handle(), PROPERTIES.as_ptr()) });
++        rooted!(in(cx) let thing_value = ObjectValue(thing.get()));
++        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"thing".as_ptr(), thing_value.handle().into_handle()) });
++        const N: u32 = 200_000;
++        for (label, body) in [
++            ("native getter on a class object (DOM-like)", "for (let i = 0; i < N; i++) s += thing.answer;"),
++            ("plain JS property", "const o = { a: 1 }; for (let i = 0; i < N; i++) s += o.a;"),
++            ("native getter (accessor spec)", "for (let i = 0; i < N; i++) s += spec.answer;"),
++            ("native method (JS_NewFunction)", "for (let i = 0; i < N; i++) s += spec.noop();"),
++            ("script -> native -> script callback (Call)", "const f = () => 1; for (let i = 0; i < N; i++) s += spec.invoke(f);"),
++        ] {
++            let source = format!("(() => {{ const N = {N}; let s = 0; {body} return s; }})()");
++            eval(&runtime, &source); // warm-up
++            let start = std::time::Instant::now();
++            eval(&runtime, &source);
++            let ns = start.elapsed().as_nanos() as f64 / N as f64;
++            eprintln!("BENCH {label}: {ns:.0} ns/op");
++        }
++    }
++
+     #[test]
+     fn property_specs_define_accessors_and_symbol_values() {
+         let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());

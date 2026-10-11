@@ -12975,3 +12975,32 @@ frame loop wait on channels with timeouts. Measured on the user's machine: Rust'
 servoshell now holds 1 ms resolution for its whole run, as Chrome does (`HighResolutionTimers`:
 `timeBeginPeriod(1)` at start, `timeEndPeriod(1)` on exit). Since Windows 10 2004 the setting only
 affects this process. Other platforms are unaffected.
+
+## 2026-10-11 - roves-js: faster native calls (DOM getters, setters, methods and callbacks)
+
+**Servo files:** `components/roves-js/src/native.rs`, `jsapi_impl.rs`, `object.rs`, `cell.rs`,
+`jsapi.rs`, `rust.rs` and `tests.rs`.
+**Patch:** `0194-roves-js-binding-hot-path.patch` after 0193.
+
+A benchmark of the v0.7.0 release showed DOM bindings at about 2.7 µs per property access
+(`el.id` ×200 000 in 546 ms). A new roves-js benchmark (`bench_native_calls`, `#[ignore]`; run with
+`cargo test --release --lib bench_native_calls -- --ignored --nocapture`) measured about 500 ns
+per native call in roves-js itself. The fixes, with their measured effect:
+1. **Private keys cached per runtime.** `Private::for_api` allocated its name and looked it up
+   in the isolate's registry on every use, several times per DOM call. The hot keys are now
+   created once (`jsapi_impl::private_key`). Getter: 515 → 149 ns.
+2. **The callee is passed as a `JSVal`.** A defined function's or callable class's cell is
+   already known, so it is no longer converted back.
+3. **Argument vectors are pooled** per thread instead of allocated per call. DOM-like getter:
+   118 → 82 ns.
+4. **Dynamic native functions remember their cell weakly** (`cell::WeakCell`), which skips the
+   identity table. These are promise handlers, as used by fetch and async code. 272 → 113 ns.
+5. **Entering a realm creates no V8 handle.** `set_current_realm` only stores the realm pointer,
+   and `with_scope` reads the context from the realm data, where it used to clone a `Global` on
+   every switch. Servo enters realms around every callback. Callback round trip: 722 → 655 ns.
+6. **JIT info of defined functions comes from a cell → state map**, without entering V8.
+   Servo's generic getter/setter/method asks for it on every call. DOM getter with JIT info:
+   167 → 98 ns.
+
+Net effect: a DOM-like getter went from about 500 ns to about 100 ns, and a script → native →
+script callback from about 720 ns to about 480 ns. roves-js tests are 32/32.

@@ -397,6 +397,8 @@ impl Runtime {
             class_templates: Default::default(),
             native_functions: RefCell::new(Vec::new()),
             native_function_sweep: std::cell::Cell::new(crate::jsapi_impl::NATIVE_FUNCTION_SWEEP_MIN),
+            private_keys: Default::default(),
+            defined_functions: Default::default(),
             interned: Default::default(),
             atoms: Default::default(),
             hooks: Default::default(),

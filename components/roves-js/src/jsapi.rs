@@ -118,7 +118,8 @@ opaque!(JSObject, JSString, JSFunction, Symbol, BigInt, JSScript);
 /// plus this thread's root stack (see `gc`).
 pub struct JSContext {
     pub(crate) isolate: *mut v8::Isolate,
-    /// The current realm's V8 context (kept in sync with `current_realm`).
+    /// The runtime's initial V8 context, used before the first realm is registered (afterwards
+    /// the current realm's context comes from its realm data).
     pub(crate) context: RefCell<v8::Global<v8::Context>>,
     /// The current realm (see `realm_impl`).
     pub(crate) current_realm: std::cell::Cell<*mut Realm>,
@@ -134,6 +135,10 @@ pub struct JSContext {
     pub(crate) native_functions: RefCell<Vec<Box<crate::jsapi_impl::NativeFunction>>>,
     /// The size of `native_functions` at which the states of dead functions are dropped.
     pub(crate) native_function_sweep: std::cell::Cell<usize>,
+    /// The states of defined native functions by their (fixed) cell.
+    pub(crate) defined_functions: RefCell<std::collections::HashMap<usize, *const crate::jsapi_impl::NativeFunction>>,
+    /// Private keys used on hot paths (see `jsapi_impl::private_key`).
+    pub(crate) private_keys: crate::jsapi_impl::PrivateKeys,
     /// The cells of plain objects and symbols (see `cell`).
     pub(crate) interned: crate::cell::Interned,
     /// String atoms (see `jsapi_impl::atomize`).
@@ -155,7 +160,12 @@ impl JSContext {
         // out, and the isolate is only used from its own thread.
         let isolate = unsafe { &mut *self.isolate };
         v8::scope!(let scope, isolate);
-        let context = v8::Local::new(scope, &*self.context.borrow());
+        // The current realm's context (its realm data owns it); the runtime's initial context
+        // before any realm is registered.
+        let context = match crate::realm_impl::realm_data(self.current_realm.get()) {
+            Some(data) => v8::Local::new(scope, &data.context),
+            None => v8::Local::new(scope, &*self.context.borrow()),
+        };
         let scope = &mut v8::ContextScope::new(scope, context);
         f(scope)
     }
@@ -176,10 +186,10 @@ impl JSContext {
         })
     }
 
-    /// Makes `realm` the current realm.
+    /// Makes `realm` the current realm (only a pointer: `with_scope` reads its context from
+    /// the realm data, so entering a realm creates no V8 handle).
     pub(crate) fn set_current_realm(&self, realm: *mut Realm) {
-        if let Some(data) = crate::realm_impl::realm_data(realm) {
-            *self.context.borrow_mut() = data.context.clone();
+        if crate::realm_impl::realm_data(realm).is_some() {
             self.current_realm.set(realm);
         }
     }

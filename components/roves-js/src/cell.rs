@@ -62,6 +62,26 @@ impl Interned {
     }
 }
 
+/// A weak handle on a cell: its pointer while the cell lives (something else keeps it alive).
+#[derive(Default)]
+pub(crate) struct WeakCell(std::cell::RefCell<Option<WeakPersistent<Cell>>>);
+
+impl WeakCell {
+    pub(crate) fn get(&self) -> Option<*mut c_void> {
+        let entry = self.0.borrow();
+        let entry = entry.as_ref()?;
+        entry.get()?;
+        // SAFETY: the entry is alive (checked above).
+        Some(to_raw(unsafe { UnsafePtr::new(entry) }?))
+    }
+
+    pub(crate) fn set(&self, cell: *mut c_void) {
+        if let Some(pointer) = from_raw(cell) {
+            *self.0.borrow_mut() = Some(WeakPersistent::new(&pointer));
+        }
+    }
+}
+
 fn identity_hash(value: v8::Local<v8::Value>) -> Option<i32> {
     if let Ok(object) = v8::Local::<v8::Object>::try_from(value) {
         return Some(object.get_identity_hash().get());
@@ -170,9 +190,21 @@ pub(crate) fn new_cell(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) ->
                 if !cell.is_null() {
                     return cell;
                 }
+                // A dynamic function: its cell while one lives, else a new one (remembered).
+                if let Some(cell) = function.weak_cell.get() {
+                    return cell;
+                }
+                let cell = interned_cell(scope, value);
+                function.weak_cell.set(cell);
+                return cell;
             }
         }
     }
+    interned_cell(scope, value)
+}
+
+/// The cell of an object or symbol from the runtime's identity table (a new one if none lives).
+fn interned_cell(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) -> *mut c_void {
     let Some(hash) = identity_hash(value) else { return new_cell_with_class(scope, value, None) };
     let Some(cx) = crate::rust::Runtime::get() else { return new_cell_with_class(scope, value, None) };
     // SAFETY: the runtime's raw context outlives its scopes.

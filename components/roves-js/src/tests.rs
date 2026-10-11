@@ -531,6 +531,9 @@ mod object_model {
     }
 
     unsafe extern "C" fn answer_getter(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+        // Servo's generic getter reads its JIT info from the callee on every call.
+        // SAFETY: the JSNative contract: `vp[0]` is the callee.
+        let _info = unsafe { RUST_FUNCTION_VALUE_TO_JITINFO(*vp) };
         // SAFETY: the JSNative contract.
         unsafe { *vp = Int32Value(42) };
         true
@@ -571,6 +574,71 @@ mod object_model {
             },
         },
     ];
+
+    unsafe extern "C" fn noop_native(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+        // SAFETY: the JSNative contract.
+        unsafe { *vp = Int32Value(1) };
+        true
+    }
+
+    /// Calls its first argument (a function) once: a native calling back into script, the way
+    /// Servo runs event listeners and timer callbacks.
+    unsafe extern "C" fn invoke_native(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+        // SAFETY: the JSNative contract.
+        let args = unsafe { std::slice::from_raw_parts_mut(vp, argc as usize + 2) };
+        rooted!(in(cx) let this = UndefinedValue());
+        rooted!(in(cx) let function = args[2]);
+        rooted!(in(cx) let mut rval = UndefinedValue());
+        let no_args = HandleValueArray { length_: 0, elements_: std::ptr::null() };
+        // Servo's callbacks enter the callee's realm around the call (AutoRealm).
+        rooted!(in(cx) let callee = args[2].to_object());
+        let old = unsafe { EnterRealm(cx, callee.get()) };
+        let ok = unsafe { Call(cx, this.handle().into_handle(), function.handle().into_handle(), &no_args, rval.handle_mut().into_handle()) };
+        unsafe { LeaveRealm(cx, old) };
+        args[0] = rval.get();
+        ok
+    }
+
+    /// Per-call cost of natives called from script (`cargo test --release --lib
+    /// bench_native_calls -- --ignored --nocapture`): the binding hot path DOM code takes.
+    #[test]
+    #[ignore = "benchmark"]
+    fn bench_native_calls() {
+        let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let proto = unsafe { GetRealmObjectPrototype(cx) });
+        rooted!(in(cx) let object = unsafe { JS_NewObjectWithGivenProto(cx, ptr::null(), proto.handle().into_handle()) });
+        assert!(unsafe { JS_DefineProperties(cx, object.handle().into_handle(), PROPERTIES.as_ptr()) });
+        let noop = unsafe { JS_NewFunction(cx, Some(noop_native), 0, 0, c"noop".as_ptr()) };
+        rooted!(in(cx) let noop = ObjectValue(unsafe { JS_GetFunctionObject(noop) }));
+        assert!(unsafe { JS_SetProperty(cx, object.handle().into_handle(), c"noop".as_ptr(), noop.handle().into_handle()) });
+        let invoke = unsafe { JS_NewFunction(cx, Some(invoke_native), 1, 0, c"invoke".as_ptr()) };
+        rooted!(in(cx) let invoke = ObjectValue(unsafe { JS_GetFunctionObject(invoke) }));
+        assert!(unsafe { JS_SetProperty(cx, object.handle().into_handle(), c"invoke".as_ptr(), invoke.handle().into_handle()) });
+        rooted!(in(cx) let global = global(&runtime).to_object());
+        rooted!(in(cx) let value = ObjectValue(object.get()));
+        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"spec".as_ptr(), value.handle().into_handle()) });
+        // A class object (like a DOM wrapper) with the same accessor.
+        rooted!(in(cx) let thing = unsafe { JS_NewObject(cx, &CLASS) });
+        assert!(unsafe { JS_DefineProperties(cx, thing.handle().into_handle(), PROPERTIES.as_ptr()) });
+        rooted!(in(cx) let thing_value = ObjectValue(thing.get()));
+        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"thing".as_ptr(), thing_value.handle().into_handle()) });
+        const N: u32 = 200_000;
+        for (label, body) in [
+            ("native getter on a class object (DOM-like)", "for (let i = 0; i < N; i++) s += thing.answer;"),
+            ("plain JS property", "const o = { a: 1 }; for (let i = 0; i < N; i++) s += o.a;"),
+            ("native getter (accessor spec)", "for (let i = 0; i < N; i++) s += spec.answer;"),
+            ("native method (JS_NewFunction)", "for (let i = 0; i < N; i++) s += spec.noop();"),
+            ("script -> native -> script callback (Call)", "const f = () => 1; for (let i = 0; i < N; i++) s += spec.invoke(f);"),
+        ] {
+            let source = format!("(() => {{ const N = {N}; let s = 0; {body} return s; }})()");
+            eval(&runtime, &source); // warm-up
+            let start = std::time::Instant::now();
+            eval(&runtime, &source);
+            let ns = start.elapsed().as_nanos() as f64 / N as f64;
+            eprintln!("BENCH {label}: {ns:.0} ns/op");
+        }
+    }
 
     #[test]
     fn property_specs_define_accessors_and_symbol_values() {

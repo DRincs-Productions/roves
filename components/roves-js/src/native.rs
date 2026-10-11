@@ -32,13 +32,19 @@ pub(crate) fn rethrow_pending(scope: &mut v8::PinScope, cx: &JSContext) {
     }
 }
 
+thread_local! {
+    /// Argument vectors of finished native calls, reused by later ones (a native call per DOM
+    /// property access made a heap allocation each). Nested calls each take their own.
+    static VP_POOL: std::cell::RefCell<Vec<Vec<JSVal>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// Calls `native` for a V8 call of `callee` with `args`, writing its result to `retval`.
 pub(crate) fn call_native(
     scope: &mut v8::PinScope,
     args: &v8::FunctionCallbackArguments,
     retval: &mut v8::ReturnValue,
     native: JSNative,
-    callee: v8::Local<v8::Value>,
+    callee: JSVal,
     constructing: bool,
 ) {
     let Some(native) = native else {
@@ -48,8 +54,9 @@ pub(crate) fn call_native(
     let cx = JSContext::current();
     let raw_cx = cx as *const JSContext as *mut JSContext;
     let argc = args.length().max(0) as u32;
-    let mut vp: Vec<JSVal> = Vec::with_capacity(argc as usize + 3);
-    vp.push(from_v8(scope, callee));
+    let mut vp: Vec<JSVal> = VP_POOL.with(|pool| pool.borrow_mut().pop()).unwrap_or_default();
+    vp.reserve(argc as usize + 3);
+    vp.push(callee);
     vp.push(if constructing { magic_value() } else { from_v8(scope, args.this().into()) });
     for index in 0..argc as i32 {
         vp.push(from_v8(scope, args.get(index)));
@@ -70,5 +77,12 @@ pub(crate) fn call_native(
     } else {
         rethrow_pending(scope, cx);
     }
-    rooted_vp.set(Vec::new());
+    let mut used = std::mem::take(&mut *rooted_vp);
+    used.clear();
+    VP_POOL.with(|pool| {
+        let mut pool = pool.borrow_mut();
+        if pool.len() < 16 {
+            pool.push(used);
+        }
+    });
 }

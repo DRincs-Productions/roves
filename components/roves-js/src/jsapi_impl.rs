@@ -787,6 +787,8 @@ pub(crate) struct NativeFunction {
     pub(crate) cell: std::cell::Cell<*mut c_void>,
     /// A dynamic function, weakly.
     weak: std::cell::OnceCell<v8::Weak<v8::Function>>,
+    /// A dynamic function's cell while one lives (so calls skip the identity table).
+    pub(crate) weak_cell: crate::cell::WeakCell,
     /// Where `GetFunctionNativeReserved` hands out a slot's value (refreshed on every read).
     reserved: std::cell::RefCell<[JSVal; 2]>,
     /// For a spec-defined method: its JIT info (`RUST_FUNCTION_VALUE_TO_JITINFO`).
@@ -805,12 +807,15 @@ fn native_function_callback(scope: &mut v8::PinScope, args: v8::FunctionCallback
     // SAFETY: the External points at this function's state, alive while the function is.
     let function = unsafe { &*(external.value() as *const NativeFunction) };
     let callee = match function.weak.get() {
-        Some(weak) => match weak.to_local(scope) {
-            Some(callee) => callee.into(),
-            None => return,
+        Some(weak) => match function.weak_cell.get() {
+            Some(cell) => crate::jsval::ObjectValue(cell as *mut JSObject),
+            None => match weak.to_local(scope) {
+                Some(callee) => from_v8(scope, callee.into()),
+                None => return,
+            },
         },
-        // SAFETY: a defined function's cell is traced by the runtime.
-        None => unsafe { crate::cell::cell_value(scope, function.cell.get()) },
+        // A defined function's cell, traced by the runtime.
+        None => crate::jsval::ObjectValue(function.cell.get() as *mut JSObject),
     };
     let constructing = !args.new_target().is_undefined();
     crate::native::call_native(scope, &args, &mut retval, function.native, callee, constructing);
@@ -831,6 +836,7 @@ pub(crate) fn new_native_function(
         native,
         cell: std::cell::Cell::new(std::ptr::null_mut()),
         weak: std::cell::OnceCell::new(),
+        weak_cell: Default::default(),
         reserved: std::cell::RefCell::new([UndefinedValue(); 2]),
         info,
     });
@@ -853,6 +859,7 @@ pub(crate) fn new_native_function(
     let Some(function) = created else { return std::ptr::null_mut() };
     if defined {
         state.cell.set(function as *mut c_void);
+        cx.defined_functions.borrow_mut().insert(function as usize, &*state as *const NativeFunction);
     }
     let mut functions = cx.native_functions.borrow_mut();
     if functions.len() >= cx.native_function_sweep.get() {
@@ -884,9 +891,36 @@ pub unsafe fn JS_GetFunctionObject(fun: *mut JSFunction) -> *mut JSObject {
     fun as *mut JSObject
 }
 
+/// The V8 private keys roves-js stores on objects on hot paths, created once per runtime
+/// (`Private::for_api` allocates its name and looks it up in the isolate's registry).
+#[derive(Clone, Copy)]
+pub(crate) enum PrivateKey {
+    NativeFunction,
+    NativeReserved0,
+    NativeReserved1,
+    CallableClassBox,
+}
+
+const PRIVATE_KEY_NAMES: [&str; 4] =
+    ["roves-js native function", "roves-js native reserved 0", "roves-js native reserved 1", "roves-js callable class box"];
+
+#[derive(Default)]
+pub(crate) struct PrivateKeys([std::cell::OnceCell<v8::Global<v8::Private>>; 4]);
+
+/// The private key `key` of this thread's runtime.
+pub(crate) fn private_key<'s>(scope: &mut v8::PinScope<'s, '_>, key: PrivateKey) -> v8::Local<'s, v8::Private> {
+    let slot = &JSContext::current().private_keys.0[key as usize];
+    if let Some(global) = slot.get() {
+        return v8::Local::new(scope, global);
+    }
+    let name = v8::String::new(scope, PRIVATE_KEY_NAMES[key as usize]).expect("a short string");
+    let local = v8::Private::for_api(scope, Some(name));
+    let _ = slot.set(v8::Global::new(scope, local));
+    local
+}
+
 fn native_function_key<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Private> {
-    let name = v8::String::new(scope, "roves-js native function").expect("a short string");
-    v8::Private::for_api(scope, Some(name))
+    private_key(scope, PrivateKey::NativeFunction)
 }
 
 /// The state of a function made by `new_native_function`.
@@ -899,6 +933,12 @@ pub(crate) fn native_function_of_v8<'f>(scope: &mut v8::PinScope, object: v8::Lo
 }
 
 fn native_function_of<'f>(cx: &JSContext, fun: *mut JSObject) -> Option<&'f NativeFunction> {
+    // A defined function (a DOM method or accessor) by its fixed cell, without entering V8:
+    // Servo's generic getters, setters and methods ask for their JIT info on every call.
+    if let Some(function) = cx.defined_functions.borrow().get(&(fun as usize)) {
+        // SAFETY: defined functions' states live as long as the runtime.
+        return Some(unsafe { &**function });
+    }
     cx.with_scope(|scope| {
         let target = object(scope, fun)?;
         native_function_of_v8(scope, target)
@@ -906,9 +946,7 @@ fn native_function_of<'f>(cx: &JSContext, fun: *mut JSObject) -> Option<&'f Nati
 }
 
 fn native_reserved_key<'s>(scope: &mut v8::PinScope<'s, '_>, which: usize) -> v8::Local<'s, v8::Private> {
-    let name = if which == 0 { "roves-js native reserved 0" } else { "roves-js native reserved 1" };
-    let name = v8::String::new(scope, name).expect("a short string");
-    v8::Private::for_api(scope, Some(name))
+    private_key(scope, if which == 0 { PrivateKey::NativeReserved0 } else { PrivateKey::NativeReserved1 })
 }
 
 /// A native function's reserved slot: its value, read from the function's private property,
