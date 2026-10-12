@@ -25,7 +25,6 @@ Tutto è spento per default e si attiva con variabili d'ambiente prima di avviar
 | `ROVES_PERF_LOG_INTERVAL_MS=5000` | Nel `roves.log`, tre tipi di riga: `[roves-perf]` (frame, redraw, presentazioni), `[roves-perf-time]` (µs per fase: `webview_paint`, `egui_run`, `shell_paint`, `present`) e `[roves-perf-constellation]` (messaggi del Constellation per tipo, con tempo di gestione) |
 | `ROVES_EXTRA_ARGS="-p 5"` | Avvia un gioco già impacchettato con argomenti extra; per esempio `-p 5` attiva il profiler temporale di Servo (script, layout, paint) |
 | `[roves-gc]` nel log | Sempre attivo: segnala ogni GC completa che dura 8 ms o più, con la dimensione dell'heap JS |
-| `ROVES_DIRECT_PRESENT=1` | Presentazione diretta: salta tassellazione e paint di egui |
 
 CPU per thread su Windows: PowerShell su `Get-Process play`, con i nomi dei thread letti tramite
 `GetThreadDescription` (accesso `0x0800`).
@@ -42,7 +41,7 @@ interazione, GTX 1050, 60 Hz:
 | --- | --- |
 | CPU totale | 110% di un core |
 | Thread `main` (paint WebRender, egui, present) | 38% |
-| Thread senza nome | 15,5% |
+| Thread del driver NVIDIA (`nvwgf2umx.dll`, senza nome) | 15,5% |
 | `WebGL` / `Script#1` / `WRRenderBackend` | 6% / 5% / 4% |
 | fps | 60 |
 | `webview_paint` per frame | ~8,7 ms |
@@ -63,16 +62,18 @@ Riferimento: shell v0.7.3 su pagina vuota 228 MB; scena PixiJS piccola 275 MB.
   concorrente non sono sicure, perché gli hook di trace di Servo non sono thread-safe; quella
   incrementale richiede barriere di scrittura in roves-js. Da affrontare se le righe
   `[roves-gc]` mostrano pause lunghe.
-- **Paint della WebView sul thread `main`:** circa 8,7 ms per frame, oltre metà del budget a
-  60 fps, ed è oggi il costo maggiore. Da capire quanto sia WebRender e quanto la composizione
-  dell'interfaccia React del gioco.
-- **Thread senza nome al 15%:** da identificare.
-- **egui:** gira a ogni frame anche quando non mostra nulla.
+- **Paint della WebView sul thread `main`:** è quasi tutto il render di WebRender (mediana
+  "Painting" del profiler di Servo ~4,3 ms) e avviene a ogni frame perché il menu anima un
+  canvas PixiJS. Il thread "senza nome" al 15% è il driver NVIDIA che esegue quel lavoro GL.
+  Si riduce solo con meno lavoro GL per frame (WebRender o il percorso WebGL → composizione).
 - **Formati audio:** `canPlayType` risponde vuoto per AAC, M4A e WebM. Probabilmente mancano
   plugin GStreamer nel pacchetto.
 - **Gamepad:** sostituire il polling hot-plug residuo (1 Hz) con gli eventi SDL.
 - **Steam:** rendere adattivo il polling delle callback nelle build `steam`.
 - **Allocatore:** mimalloc diventa default solo con un miglioramento ripetibile su hardware
   reale.
+
+Fatto il 12 ottobre: presentazione diretta predefinita (CPU da 98,6% a 91,1%; egui ora costa
+~0,1 ms per frame e non viene più tassellato).
 
 Interventi già fatti e relative misure: `CUSTOMIZATIONS.md`.

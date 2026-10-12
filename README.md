@@ -409,12 +409,11 @@ events/timeouts, redraw requests and coalescing, WebView paints, and final windo
 paint and window present. The diagnostic is disabled by default and does not create a sampling
 timer or background thread.
 
-Desktop builds also offer the experimental fast path A with `ROVES_DIRECT_PRESENT=1` (off by
-default; only the exact value `1` enables it). With one full-window WebView and no dialogs,
-status overlay, egui focus, active AccessKit or pending egui textures, it skips egui tessellation
-and paint while retaining Servo's off-screen rendering, blit and window present. Any failed
-condition uses the composed path in the same frame. Pair it with `ROVES_PERF_LOG_INTERVAL_MS=1000`
-to observe `direct_presents`; see [the rendering plan](./docs/FAST_PATH_RENDERING.md).
+Desktop builds present a full-window game directly (fast path A): with no dialog, status
+overlay, egui focus, active AccessKit or pending egui textures, the shell skips egui tessellation
+and paint and only blits Servo's off-screen frame; any other frame uses the composed path. Watch
+`direct_presents` with `ROVES_PERF_LOG_INTERVAL_MS=1000`; see
+[the rendering plan](./docs/FAST_PATH_RENDERING.md).
 
 [Tauri]: https://v2.tauri.app/distribute/
 

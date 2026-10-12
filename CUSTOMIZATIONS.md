@@ -13142,3 +13142,16 @@ to the constellation fell from about 3.3 million to about 270 per 5 s, Script#1 
 of a core, and the constellation from 79% to under 1%.
 
 `roves-action` and `roves-packmaster` pin `v0.7.3`.
+
+## 2026-10-12 - Direct presentation on by default
+
+**Servo file:** `ports/servoshell/desktop/gui.rs`.
+**Patch:** `0199-direct-present-by-default.patch` after 0198.
+
+Fast path A (2026-09-26 entry, patch 0041) no longer needs `ROVES_DIRECT_PRESENT=1`: the
+opt-in flag, its strict parser, the `direct_present_enabled` field and the parser test are
+removed, and `can_direct_present` takes only the safety conditions, which are unchanged. Every
+desktop smoke test already ran with the flag on. Measured on the visual novel menu (v0.7.3
+shell, 60 fps, 20 s): CPU from 98.6% to 91.1% of one core, `shell_paint` from ~128 to ~77 µs per
+frame, and no egui tessellation. `test.yml` stops exporting the variable, but still requires a
+positive `direct_presents` interval.

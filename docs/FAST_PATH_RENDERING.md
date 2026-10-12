@@ -33,9 +33,9 @@ richiesto dal gioco.
 
 ## Fast path A: presentazione diretta dell'off-screen
 
-Implementato, disabilitato per default. Solo il valore esatto `ROVES_DIRECT_PRESENT=1`
-abilita il percorso; valori assenti, non Unicode o diversi da `1` lo disabilitano.
-La configurazione viene letta alla creazione della GUI.
+Implementato e attivo per default dalla shell v0.7.4 (prima solo con `ROVES_DIRECT_PRESENT=1`).
+Misura sulla visual novel al menu, 60 fps: CPU da 98,6% a 91,1% di un core, `shell_paint` da
+~128 a ~77 µs per frame, nessuna tassellazione egui.
 
 Primo esperimento, a rischio contenuto:
 
@@ -129,8 +129,8 @@ anche nel percorso diretto; `egui_tessellations` e `egui_paints` contano solo i 
 
 ### Verifica automatica del percorso A
 
-Gli unit test coprono il parsing rigoroso, l'opzione disabilitata e ogni condizione di fallback.
-Gli smoke test desktop avviano i bundle reali con `ROVES_DIRECT_PRESENT=1` e
+Gli unit test coprono ogni condizione di fallback.
+Gli smoke test desktop avviano i bundle reali con
 `ROVES_PERF_LOG_INTERVAL_MS=1000` e falliscono senza almeno un intervallo con
 `direct_presents > 0`. Restano i controlli di avvio, salvataggio e ciclo finestra SDL3.
 Non sono imposte soglie CPU, RAM o frame-time sui runner condivisi.
