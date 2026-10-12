@@ -13131,3 +13131,14 @@ live in another global.
 Simple pages did not reproduce the loop: closed ports the constellation never registered, or a
 worker echoing to a closed port. Verification is the visual novel itself, comparing the
 constellation statistics with the build from CI.
+
+## 2026-10-12 - Releases v0.7.2 and v0.7.3
+
+- `v0.7.2` (80b9e94): diagnostics for shipped games (0196, 0197).
+- `v0.7.3` (e86a1c0): the MessagePort re-route livelock fix (0198).
+
+Before cutting v0.7.3, the fix was checked on the visual novel with the CI test build. Messages
+to the constellation fell from about 3.3 million to about 270 per 5 s, Script#1 from 95% to 3.4%
+of a core, and the constellation from 79% to under 1%.
+
+`roves-action` and `roves-packmaster` pin `v0.7.3`.
