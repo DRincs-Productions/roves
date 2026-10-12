@@ -115,6 +115,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         copy_steam_lib(build.parent().unwrap());
     }
 
+    if target_os == "windows" && target_env == "msvc" {
+        // Export the discrete-GPU hint statics from main.rs (see there) from the .exe.
+        println!("cargo:rustc-link-arg-bins=/EXPORT:NvOptimusEnablement");
+        println!("cargo:rustc-link-arg-bins=/EXPORT:AmdPowerXpressRequestHighPerformance");
+    }
+
     if target_os == "windows" {
         #[cfg(windows)]
         {

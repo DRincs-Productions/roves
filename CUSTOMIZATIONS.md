@@ -13173,3 +13173,17 @@ The SDL3 shell has no browser toolbar, so the leftovers of upstream's tab UI nev
 
 `cargo check -p servoshell --release` (also with `--tests`) now reports no servoshell warnings.
 No behavior change.
+
+## 2026-10-12 - servoshell: no WebXR, discrete GPU on hybrid Windows laptops
+
+**Servo files:** `ports/servoshell/{Cargo.toml,build.rs,main.rs,window.rs}`,
+`ports/servoshell/desktop/{app.rs,headed_window.rs,headless_window.rs,mod.rs}` (and
+`desktop/webxr.rs`, deleted), `ports/servoshell/egl/{app.rs,android/mod.rs,ohos/mod.rs}`.
+**Patch:** `0201-no-webxr-discrete-gpu.patch` after 0200.
+
+- WebXR is gone from the shell: the `webxr` feature (on by default), the XR discovery registry,
+  the stereo preview window and its keyboard-driven pose. Games do not use WebXR; the Servo
+  component keeps its own feature, so it can come back if ever needed.
+- `main.rs` exports `NvOptimusEnablement` and `AmdPowerXpressRequestHighPerformance` (`build.rs`
+  adds `/EXPORT:` linker arguments on Windows MSVC). NVIDIA Optimus and AMD switchable-graphics
+  drivers then run the game on the discrete GPU instead of the integrated one.

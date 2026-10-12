@@ -282,8 +282,6 @@ fn init_app(
         opts,
         preferences,
         servoshell_preferences,
-        #[cfg(feature = "webxr")]
-        xr_discovery: None,
     }))
 }
 

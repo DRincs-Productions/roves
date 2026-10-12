@@ -21,5 +21,3 @@ mod logging;
 pub(crate) mod performance;
 mod protocols;
 mod tracing;
-#[cfg(feature = "webxr")]
-mod webxr;

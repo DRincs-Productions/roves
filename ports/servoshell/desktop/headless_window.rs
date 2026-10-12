@@ -142,14 +142,6 @@ impl PlatformWindow for HeadlessWindow {
         self.fullscreen.get()
     }
 
-    #[cfg(feature = "webxr")]
-    fn new_glwindow(
-        &self,
-        _event_loop: &crate::desktop::event_loop::ActiveEventLoop,
-    ) -> Rc<dyn servo::webxr::GlWindow> {
-        unimplemented!()
-    }
-
     fn window_rect(&self) -> DeviceIndependentIntRect {
         convert_rect_to_css_pixel(
             DeviceIntRect::from_origin_and_size(self.window_position.get(), self.inner_size.get()),

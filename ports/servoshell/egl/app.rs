@@ -291,8 +291,6 @@ pub(crate) struct AppInitOptions {
     pub opts: Opts,
     pub preferences: Preferences,
     pub servoshell_preferences: ServoShellPreferences,
-    #[cfg(feature = "webxr")]
-    pub xr_discovery: Option<servo::webxr::Discovery>,
 }
 
 pub struct App {
@@ -362,8 +360,6 @@ impl App {
             .protocol_registry(protocol_registry)
             .event_loop_waker(init.event_loop_waker.clone());
         let servo = servo_builder.build();
-        #[cfg(feature = "webxr")]
-        servo.register_webxr_registry(Box::new(XrDiscoveryWebXrRegistry::new(init.xr_discovery)));
 
         let user_content_manager = Rc::new(UserContentManager::new(&servo));
         let state = Rc::new(RunningAppState::new(
@@ -744,29 +740,5 @@ impl App {
         }
         embedded_platform_window.request_repaint(&self.window());
         self.spin_event_loop();
-    }
-}
-
-#[cfg(feature = "webxr")]
-pub(crate) struct XrDiscoveryWebXrRegistry {
-    xr_discovery: RefCell<Option<servo::webxr::Discovery>>,
-}
-
-#[cfg(feature = "webxr")]
-impl XrDiscoveryWebXrRegistry {
-    pub(crate) fn new(xr_discovery: Option<servo::webxr::Discovery>) -> Self {
-        Self {
-            xr_discovery: RefCell::new(xr_discovery),
-        }
-    }
-}
-
-#[cfg(feature = "webxr")]
-impl servo::webxr::WebXrRegistry for XrDiscoveryWebXrRegistry {
-    fn register(&self, registry: &mut servo::webxr::MainThreadRegistry) {
-        log::debug!("XrDiscoveryWebXrRegistry::register");
-        if let Some(discovery) = self.xr_discovery.take() {
-            registry.register(discovery);
-        }
     }
 }

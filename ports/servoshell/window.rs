@@ -367,14 +367,6 @@ pub(crate) trait PlatformWindow {
     fn set_position(&self, _point: DeviceIntPoint) {}
     fn set_fullscreen(&self, _state: bool) {}
     fn set_cursor(&self, _cursor: Cursor) {}
-    #[cfg(all(
-        feature = "webxr",
-        not(any(target_os = "android", target_env = "ohos"))
-    ))]
-    fn new_glwindow(
-        &self,
-        event_loop: &crate::desktop::event_loop::ActiveEventLoop,
-    ) -> Rc<dyn servo::webxr::GlWindow>;
     /// This returns [`RenderingContext`] matching the viewport.
     fn rendering_context(&self) -> Rc<dyn RenderingContext>;
     fn theme(&self) -> servo::Theme {

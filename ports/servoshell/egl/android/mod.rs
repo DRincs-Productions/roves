@@ -49,8 +49,6 @@ struct InitOptions {
     url: Option<String>,
     viewport_rect: Rect<i32, DevicePixel>,
     density: f32,
-    #[cfg(feature = "webxr")]
-    xr_discovery: Option<servo::webxr::Discovery>,
     window_handle: RawWindowHandle,
     display_handle: RawDisplayHandle,
 }
@@ -226,8 +224,6 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_init<'local>(
                 opts,
                 preferences,
                 servoshell_preferences,
-                #[cfg(feature = "webxr")]
-                xr_discovery: init_opts.xr_discovery,
             });
             new_app.add_platform_window(
                 display_handle,
@@ -998,7 +994,6 @@ fn get_options<'local>(
         url,
         viewport_rect,
         density,
-        xr_discovery: None,
         window_handle,
         display_handle,
     };

@@ -53,6 +53,17 @@ use windows_sys::Win32::System::LibraryLoader::SetDllDirectoryW;
 // argument to the search order without removing the application directory from it (per its
 // own documented behavior), so this is purely additive -- it doesn't change how anything
 // already flat next to the binary resolves.
+// Hybrid-GPU Windows laptops: ask NVIDIA Optimus / AMD PowerXpress drivers to run this .exe
+// on the discrete GPU (exported via `/EXPORT` in build.rs; drivers read these symbols).
+#[cfg(target_os = "windows")]
+#[unsafe(no_mangle)]
+#[used]
+pub static NvOptimusEnablement: u32 = 1;
+#[cfg(target_os = "windows")]
+#[unsafe(no_mangle)]
+#[used]
+pub static AmdPowerXpressRequestHighPerformance: u32 = 1;
+
 #[cfg(target_os = "windows")]
 fn add_lib_dir_to_dll_search_path() {
     let Ok(exe_path) = std::env::current_exe() else {

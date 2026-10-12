@@ -415,6 +415,9 @@ and paint and only blits Servo's off-screen frame; any other frame uses the comp
 `direct_presents` with `ROVES_PERF_LOG_INTERVAL_MS=1000`; see
 [the rendering plan](./docs/FAST_PATH_RENDERING.md).
 
+On Windows laptops with two GPUs, the shell asks NVIDIA Optimus and AMD switchable graphics for
+the discrete GPU. WebXR is not built into the shell.
+
 [Tauri]: https://v2.tauri.app/distribute/
 
 ## Relationship to upstream Servo

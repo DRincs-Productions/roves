@@ -264,7 +264,7 @@ impl App {
                     log::error!("extracting boot content: {error}");
                 }
             }
-            self.finish_init(platform_window, None);
+            self.finish_init(platform_window);
             return;
         };
 
@@ -338,14 +338,14 @@ impl App {
             return;
         }
         let window = window.clone();
-        self.finish_init(window, Some(event_loop));
+        self.finish_init(window);
     }
 
     /// The rest of startup, deferred behind boot extraction when there is
     /// one (see `init`): builds the protocol registry/Servo instance,
     /// constructs `RunningAppState`, and opens the real webview into
     /// `platform_window` (already created by `init`).
-    fn finish_init(&mut self, platform_window: Rc<dyn PlatformWindow>, active_event_loop: Option<&ActiveEventLoop>) {
+    fn finish_init(&mut self, platform_window: Rc<dyn PlatformWindow>) {
         // Computed here rather than at `App::new` time: for a packed-content
         // launch, `init` only ever calls `finish_init` once any pending boot
         // extraction has actually finished (synchronously for headless, or
@@ -445,13 +445,6 @@ impl App {
         log::info!("building Servo instance");
         let servo = servo_builder.build();
         log::info!("built Servo instance");
-
-        #[cfg(feature = "webxr")]
-        servo.register_webxr_registry(super::webxr::XrDiscoveryWebXrRegistry::new_boxed(
-            platform_window.clone(),
-            active_event_loop,
-            &self.preferences,
-        ));
 
         servo.setup_logging();
 

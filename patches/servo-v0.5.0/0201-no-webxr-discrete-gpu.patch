@@ -1,0 +1,529 @@
+diff --git a/ports/servoshell/Cargo.toml b/ports/servoshell/Cargo.toml
+index 5ab7d39ca4c..2072c1314d1 100644
+--- a/ports/servoshell/Cargo.toml
++++ b/ports/servoshell/Cargo.toml
+@@ -41,7 +41,7 @@ OriginalFilename = "Roves.exe"
+ ProductName = "Roves"
+ 
+ [features]
+-default = ["baked-in-resources", "bundled_freetype", "gamepad", "servo/clipboard", "js_jit", "max_log_level", "webgpu", "webxr"]
++default = ["baked-in-resources", "bundled_freetype", "gamepad", "servo/clipboard", "js_jit", "max_log_level", "webgpu"]
+ baked-in-resources = ["servo/baked-in-resources"]
+ bundled_freetype = ["servo/bundled_freetype"]
+ crown = ["servo/crown"]
+@@ -59,7 +59,6 @@ tracing-tracy = ["tracing", "dep:tracing-tracy"]
+ vello = ["servo/vello"]
+ webgl_backtrace = ["servo/webgl_backtrace"]
+ webgpu = ["servo/webgpu"]
+-webxr = ["servo/webxr"]
+ # Desktop only (see the `not(any(target_os = "android", target_env = "ohos"))`
+ # dependency block below) — mirrors the equivalent `steam` feature in
+ # ../../../../src-tauri/Cargo.toml. Exposes a `steam:` protocol scheme to web
+diff --git a/ports/servoshell/build.rs b/ports/servoshell/build.rs
+index a640e385437..11b4059f854 100644
+--- a/ports/servoshell/build.rs
++++ b/ports/servoshell/build.rs
+@@ -115,6 +115,12 @@ fn main() -> Result<(), Box<dyn Error>> {
+         copy_steam_lib(build.parent().unwrap());
+     }
+ 
++    if target_os == "windows" && target_env == "msvc" {
++        // Export the discrete-GPU hint statics from main.rs (see there) from the .exe.
++        println!("cargo:rustc-link-arg-bins=/EXPORT:NvOptimusEnablement");
++        println!("cargo:rustc-link-arg-bins=/EXPORT:AmdPowerXpressRequestHighPerformance");
++    }
++
+     if target_os == "windows" {
+         #[cfg(windows)]
+         {
+diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
+index b4b1162f3e1..ca580b24be0 100644
+--- a/ports/servoshell/desktop/app.rs
++++ b/ports/servoshell/desktop/app.rs
+@@ -264,7 +264,7 @@ impl App {
+                     log::error!("extracting boot content: {error}");
+                 }
+             }
+-            self.finish_init(platform_window, None);
++            self.finish_init(platform_window);
+             return;
+         };
+ 
+@@ -338,14 +338,14 @@ impl App {
+             return;
+         }
+         let window = window.clone();
+-        self.finish_init(window, Some(event_loop));
++        self.finish_init(window);
+     }
+ 
+     /// The rest of startup, deferred behind boot extraction when there is
+     /// one (see `init`): builds the protocol registry/Servo instance,
+     /// constructs `RunningAppState`, and opens the real webview into
+     /// `platform_window` (already created by `init`).
+-    fn finish_init(&mut self, platform_window: Rc<dyn PlatformWindow>, active_event_loop: Option<&ActiveEventLoop>) {
++    fn finish_init(&mut self, platform_window: Rc<dyn PlatformWindow>) {
+         // Computed here rather than at `App::new` time: for a packed-content
+         // launch, `init` only ever calls `finish_init` once any pending boot
+         // extraction has actually finished (synchronously for headless, or
+@@ -446,13 +446,6 @@ impl App {
+         let servo = servo_builder.build();
+         log::info!("built Servo instance");
+ 
+-        #[cfg(feature = "webxr")]
+-        servo.register_webxr_registry(super::webxr::XrDiscoveryWebXrRegistry::new_boxed(
+-            platform_window.clone(),
+-            active_event_loop,
+-            &self.preferences,
+-        ));
+-
+         servo.setup_logging();
+ 
+         let user_content_manager = Rc::new(UserContentManager::new(&servo));
+diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/desktop/headed_window.rs
+index d9b3846082f..f0355644155 100644
+--- a/ports/servoshell/desktop/headed_window.rs
++++ b/ports/servoshell/desktop/headed_window.rs
+@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
+ use std::rc::Rc;
+ use std::time::{Duration, Instant};
+ 
+-use euclid::{Angle, Length, Point2D, Rect, Rotation3D, Scale, Size2D, UnknownUnit, Vector3D};
++use euclid::{Length, Point2D, Rect, Scale, Size2D};
+ use keyboard_types::ShortcutMatcher;
+ use log::debug;
+ use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawWindowHandle};
+@@ -272,7 +272,6 @@ pub struct HeadedWindow {
+     /// `ServoShellPreferences::config_dir`, e.g. when the config dir couldn't be resolved).
+     config_dir: Option<PathBuf>,
+     device_pixel_ratio_override: Option<f32>,
+-    xr_window_poses: RefCell<Vec<Rc<XRWindowPose>>>,
+     /// The `RenderingContext` of Servo itself. This is used to render Servo results
+     /// temporarily until they can be blitted into the egui scene.
+     rendering_context: Rc<OffscreenRenderingContext>,
+@@ -455,7 +454,6 @@ impl HeadedWindow {
+             screen_size: Cell::new(screen_size),
+             last_theme: Cell::new(current_sdl_theme()),
+             device_pixel_ratio_override: servoshell_preferences.device_pixel_ratio_override,
+-            xr_window_poses: RefCell::new(vec![]),
+             window_rendering_context,
+             touch_event_simulator: servoshell_preferences
+                 .simulate_touch_events
+@@ -573,10 +571,6 @@ impl HeadedWindow {
+         window: &Rc<ServoShellWindow>,
+         keyboard_event: KeyboardEvent,
+     ) {
+-        for pose in self.xr_window_poses.borrow().iter() {
+-            pose.handle_xr_rotation(&keyboard_event);
+-            pose.handle_xr_translation(&keyboard_event);
+-        }
+ 
+         // First, handle servoshell key bindings that are not overridable by, or visible to, the page.
+         if self.handle_intercepted_key_bindings(state, window, &keyboard_event) {
+@@ -1343,26 +1337,6 @@ impl PlatformWindow for HeadedWindow {
+         }
+     }
+ 
+-    #[cfg(feature = "webxr")]
+-    fn new_glwindow(&self, event_loop: &ActiveEventLoop) -> Rc<dyn servo::webxr::GlWindow> {
+-        let (width, height) = self.sdl_window.size();
+-
+-        let sdl_window = event_loop
+-            .video()
+-            .window("Roves XR", width, height)
+-            .opengl()
+-            .hidden()
+-            .build()
+-            .expect("Failed to create window.");
+-
+-        let pose = Rc::new(XRWindowPose {
+-            xr_rotation: Cell::new(Rotation3D::identity()),
+-            xr_translation: Cell::new(Vector3D::zero()),
+-        });
+-        self.xr_window_poses.borrow_mut().push(pose.clone());
+-        Rc::new(XRWindow { sdl_window, pose })
+-    }
+-
+     fn rendering_context(&self) -> Rc<dyn RenderingContext> {
+         self.rendering_context.clone()
+     }
+@@ -1587,120 +1561,6 @@ fn set_window_icon(window: &mut sdl3::video::Window) {
+     }
+ }
+ 
+-#[cfg(feature = "webxr")]
+-struct XRWindow {
+-    sdl_window: sdl3::video::Window,
+-    pose: Rc<XRWindowPose>,
+-}
+-
+-struct XRWindowPose {
+-    xr_rotation: Cell<Rotation3D<f32, UnknownUnit, UnknownUnit>>,
+-    xr_translation: Cell<Vector3D<f32, UnknownUnit>>,
+-}
+-
+-#[cfg(feature = "webxr")]
+-impl servo::webxr::GlWindow for XRWindow {
+-    fn get_render_target(
+-        &self,
+-        device: &mut surfman::Device,
+-        _context: &mut surfman::Context,
+-    ) -> servo::webxr::GlWindowRenderTarget {
+-        let _ = self.sdl_window.clone().show();
+-        let window_handle = self
+-            .sdl_window
+-            .window_handle()
+-            .expect("could not get window handle from window");
+-        let (width, height) = self.sdl_window.size();
+-        let size = Size2D::new(width as i32, height as i32);
+-        let native_widget = device
+-            .connection()
+-            .create_native_widget_from_window_handle(window_handle, size)
+-            .expect("Failed to create native widget");
+-        servo::webxr::GlWindowRenderTarget::NativeWidget(native_widget)
+-    }
+-
+-    fn get_rotation(&self) -> Rotation3D<f32, UnknownUnit, UnknownUnit> {
+-        self.pose.xr_rotation.get()
+-    }
+-
+-    fn get_translation(&self) -> Vector3D<f32, UnknownUnit> {
+-        self.pose.xr_translation.get()
+-    }
+-
+-    fn get_mode(&self) -> servo::webxr::GlWindowMode {
+-        use servo::pref;
+-        if pref!(dom_webxr_glwindow_red_cyan) {
+-            servo::webxr::GlWindowMode::StereoRedCyan
+-        } else if pref!(dom_webxr_glwindow_left_right) {
+-            servo::webxr::GlWindowMode::StereoLeftRight
+-        } else if pref!(dom_webxr_glwindow_spherical) {
+-            servo::webxr::GlWindowMode::Spherical
+-        } else if pref!(dom_webxr_glwindow_cubemap) {
+-            servo::webxr::GlWindowMode::Cubemap
+-        } else {
+-            servo::webxr::GlWindowMode::Blit
+-        }
+-    }
+-
+-    fn display_handle(&self) -> raw_window_handle::DisplayHandle<'_> {
+-        self.sdl_window
+-            .display_handle()
+-            .expect("Every window should have a display handle")
+-    }
+-}
+-
+-impl XRWindowPose {
+-    fn handle_xr_translation(&self, input: &KeyboardEvent) {
+-        if input.event.state != KeyState::Down {
+-            return;
+-        }
+-        const NORMAL_TRANSLATE: f32 = 0.1;
+-        const QUICK_TRANSLATE: f32 = 1.0;
+-        let mut x = 0.0;
+-        let mut z = 0.0;
+-        match input.event.key {
+-            Key::Character(ref k) => match &**k {
+-                "w" => z = -NORMAL_TRANSLATE,
+-                "W" => z = -QUICK_TRANSLATE,
+-                "s" => z = NORMAL_TRANSLATE,
+-                "S" => z = QUICK_TRANSLATE,
+-                "a" => x = -NORMAL_TRANSLATE,
+-                "A" => x = -QUICK_TRANSLATE,
+-                "d" => x = NORMAL_TRANSLATE,
+-                "D" => x = QUICK_TRANSLATE,
+-                _ => return,
+-            },
+-            _ => return,
+-        };
+-        let (old_x, old_y, old_z) = self.xr_translation.get().to_tuple();
+-        let vec = Vector3D::new(x + old_x, old_y, z + old_z);
+-        self.xr_translation.set(vec);
+-    }
+-
+-    fn handle_xr_rotation(&self, input: &KeyboardEvent) {
+-        if input.event.state != KeyState::Down {
+-            return;
+-        }
+-        let mut x = 0.0;
+-        let mut y = 0.0;
+-        match input.event.key {
+-            Key::Named(NamedKey::ArrowUp) => x = 1.0,
+-            Key::Named(NamedKey::ArrowDown) => x = -1.0,
+-            Key::Named(NamedKey::ArrowLeft) => y = 1.0,
+-            Key::Named(NamedKey::ArrowRight) => y = -1.0,
+-            _ => return,
+-        }
+-        if input.event.modifiers.contains(Modifiers::SHIFT) {
+-            x *= 10.0;
+-            y *= 10.0;
+-        }
+-        let x: Rotation3D<_, UnknownUnit, UnknownUnit> = Rotation3D::around_x(Angle::degrees(x));
+-        let y: Rotation3D<_, UnknownUnit, UnknownUnit> = Rotation3D::around_y(Angle::degrees(y));
+-        let rotation = self.xr_rotation.get().then(&x).then(&y);
+-        self.xr_rotation.set(rotation);
+-    }
+-}
+-
+ #[derive(Default)]
+ pub struct TouchEventSimulator {
+     pub left_mouse_button_down: Cell<bool>,
+diff --git a/ports/servoshell/desktop/headless_window.rs b/ports/servoshell/desktop/headless_window.rs
+index 0bb8f138b0a..7ba569dee36 100644
+--- a/ports/servoshell/desktop/headless_window.rs
++++ b/ports/servoshell/desktop/headless_window.rs
+@@ -142,14 +142,6 @@ impl PlatformWindow for HeadlessWindow {
+         self.fullscreen.get()
+     }
+ 
+-    #[cfg(feature = "webxr")]
+-    fn new_glwindow(
+-        &self,
+-        _event_loop: &crate::desktop::event_loop::ActiveEventLoop,
+-    ) -> Rc<dyn servo::webxr::GlWindow> {
+-        unimplemented!()
+-    }
+-
+     fn window_rect(&self) -> DeviceIndependentIntRect {
+         convert_rect_to_css_pixel(
+             DeviceIntRect::from_origin_and_size(self.window_position.get(), self.inner_size.get()),
+diff --git a/ports/servoshell/desktop/mod.rs b/ports/servoshell/desktop/mod.rs
+index 67f8bf4ea46..d2d14a742c7 100644
+--- a/ports/servoshell/desktop/mod.rs
++++ b/ports/servoshell/desktop/mod.rs
+@@ -21,5 +21,3 @@ mod logging;
+ pub(crate) mod performance;
+ mod protocols;
+ mod tracing;
+-#[cfg(feature = "webxr")]
+-mod webxr;
+diff --git a/ports/servoshell/desktop/webxr.rs b/ports/servoshell/desktop/webxr.rs
+deleted file mode 100644
+index 2d4fc061693..00000000000
+--- a/ports/servoshell/desktop/webxr.rs
++++ /dev/null
+@@ -1,90 +0,0 @@
+-/* This Source Code Form is subject to the terms of the Mozilla Public
+- * License, v. 2.0. If a copy of the MPL was not distributed with this
+- * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+-
+-use std::cell::RefCell;
+-use std::rc::Rc;
+-use std::sync::Arc;
+-use std::sync::atomic::{AtomicBool, Ordering};
+-
+-use servo::webxr::{GlWindowDiscovery, WebXrRegistry};
+-#[cfg(target_os = "windows")]
+-use servo::webxr::{OpenXrAppInfo, OpenXrDiscovery};
+-use servo::{Preferences, pref, prefs};
+-
+-use crate::desktop::event_loop::ActiveEventLoop;
+-use crate::window::PlatformWindow;
+-
+-enum XrDiscovery {
+-    GlWindow(GlWindowDiscovery),
+-    #[cfg(target_os = "windows")]
+-    OpenXr(OpenXrDiscovery),
+-}
+-
+-pub(crate) struct XrDiscoveryWebXrRegistry {
+-    xr_discovery: RefCell<Option<XrDiscovery>>,
+-}
+-
+-impl XrDiscoveryWebXrRegistry {
+-    pub(crate) fn new_boxed(
+-        window: Rc<dyn PlatformWindow>,
+-        event_loop: Option<&ActiveEventLoop>,
+-        preferences: &Preferences,
+-    ) -> Box<Self> {
+-        let Some(event_loop) = event_loop else {
+-            return Box::new(Self {
+-                xr_discovery: RefCell::new(None),
+-            });
+-        };
+-
+-        let xr_discovery = if preferences.dom_webxr_openxr_enabled {
+-            #[cfg(target_os = "windows")]
+-            {
+-                let app_info = OpenXrAppInfo::new("Roves", 0, "Servo", 0);
+-                Some(XrDiscovery::OpenXr(OpenXrDiscovery::new(None, app_info)))
+-            }
+-            #[cfg(not(target_os = "windows"))]
+-            None
+-        } else if preferences.dom_webxr_glwindow_enabled {
+-            let window = window.new_glwindow(event_loop);
+-            Some(XrDiscovery::GlWindow(GlWindowDiscovery::new(window)))
+-        } else {
+-            None
+-        };
+-
+-        Box::new(Self {
+-            xr_discovery: RefCell::new(xr_discovery),
+-        })
+-    }
+-}
+-
+-struct XrPrefObserver(Arc<AtomicBool>);
+-
+-impl prefs::PreferencesObserver for XrPrefObserver {
+-    fn prefs_changed(&self, changes: &[(&'static str, prefs::PrefValue)]) {
+-        if let Some((_, value)) = changes.iter().find(|(name, _)| *name == "dom_webxr_test") {
+-            let prefs::PrefValue::Bool(value) = value else {
+-                return;
+-            };
+-            self.0.store(*value, Ordering::Relaxed);
+-        }
+-    }
+-}
+-
+-impl WebXrRegistry for XrDiscoveryWebXrRegistry {
+-    fn register(&self, xr: &mut servo::webxr::MainThreadRegistry) {
+-        use servo::webxr::HeadlessMockDiscovery;
+-
+-        let mock_enabled = Arc::new(AtomicBool::new(pref!(dom_webxr_test)));
+-        xr.register_mock(HeadlessMockDiscovery::new(mock_enabled.clone()));
+-        prefs::add_observer(Box::new(XrPrefObserver(mock_enabled)));
+-
+-        if let Some(xr_discovery) = self.xr_discovery.take() {
+-            match xr_discovery {
+-                XrDiscovery::GlWindow(discovery) => xr.register(discovery),
+-                #[cfg(target_os = "windows")]
+-                XrDiscovery::OpenXr(discovery) => xr.register(discovery),
+-            }
+-        }
+-    }
+-}
+diff --git a/ports/servoshell/egl/android/mod.rs b/ports/servoshell/egl/android/mod.rs
+index f5ebf17ce35..dc2e581b867 100644
+--- a/ports/servoshell/egl/android/mod.rs
++++ b/ports/servoshell/egl/android/mod.rs
+@@ -49,8 +49,6 @@ struct InitOptions {
+     url: Option<String>,
+     viewport_rect: Rect<i32, DevicePixel>,
+     density: f32,
+-    #[cfg(feature = "webxr")]
+-    xr_discovery: Option<servo::webxr::Discovery>,
+     window_handle: RawWindowHandle,
+     display_handle: RawDisplayHandle,
+ }
+@@ -226,8 +224,6 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_init<'local>(
+                 opts,
+                 preferences,
+                 servoshell_preferences,
+-                #[cfg(feature = "webxr")]
+-                xr_discovery: init_opts.xr_discovery,
+             });
+             new_app.add_platform_window(
+                 display_handle,
+@@ -998,7 +994,6 @@ fn get_options<'local>(
+         url,
+         viewport_rect,
+         density,
+-        xr_discovery: None,
+         window_handle,
+         display_handle,
+     };
+diff --git a/ports/servoshell/egl/app.rs b/ports/servoshell/egl/app.rs
+index 474f7b4f58f..496fe7653df 100644
+--- a/ports/servoshell/egl/app.rs
++++ b/ports/servoshell/egl/app.rs
+@@ -291,8 +291,6 @@ pub(crate) struct AppInitOptions {
+     pub opts: Opts,
+     pub preferences: Preferences,
+     pub servoshell_preferences: ServoShellPreferences,
+-    #[cfg(feature = "webxr")]
+-    pub xr_discovery: Option<servo::webxr::Discovery>,
+ }
+ 
+ pub struct App {
+@@ -362,8 +360,6 @@ impl App {
+             .protocol_registry(protocol_registry)
+             .event_loop_waker(init.event_loop_waker.clone());
+         let servo = servo_builder.build();
+-        #[cfg(feature = "webxr")]
+-        servo.register_webxr_registry(Box::new(XrDiscoveryWebXrRegistry::new(init.xr_discovery)));
+ 
+         let user_content_manager = Rc::new(UserContentManager::new(&servo));
+         let state = Rc::new(RunningAppState::new(
+@@ -746,27 +742,3 @@ impl App {
+         self.spin_event_loop();
+     }
+ }
+-
+-#[cfg(feature = "webxr")]
+-pub(crate) struct XrDiscoveryWebXrRegistry {
+-    xr_discovery: RefCell<Option<servo::webxr::Discovery>>,
+-}
+-
+-#[cfg(feature = "webxr")]
+-impl XrDiscoveryWebXrRegistry {
+-    pub(crate) fn new(xr_discovery: Option<servo::webxr::Discovery>) -> Self {
+-        Self {
+-            xr_discovery: RefCell::new(xr_discovery),
+-        }
+-    }
+-}
+-
+-#[cfg(feature = "webxr")]
+-impl servo::webxr::WebXrRegistry for XrDiscoveryWebXrRegistry {
+-    fn register(&self, registry: &mut servo::webxr::MainThreadRegistry) {
+-        log::debug!("XrDiscoveryWebXrRegistry::register");
+-        if let Some(discovery) = self.xr_discovery.take() {
+-            registry.register(discovery);
+-        }
+-    }
+-}
+diff --git a/ports/servoshell/egl/ohos/mod.rs b/ports/servoshell/egl/ohos/mod.rs
+index 852cf62b031..90d3b0337e3 100644
+--- a/ports/servoshell/egl/ohos/mod.rs
++++ b/ports/servoshell/egl/ohos/mod.rs
+@@ -282,8 +282,6 @@ fn init_app(
+         opts,
+         preferences,
+         servoshell_preferences,
+-        #[cfg(feature = "webxr")]
+-        xr_discovery: None,
+     }))
+ }
+ 
+diff --git a/ports/servoshell/main.rs b/ports/servoshell/main.rs
+index e2476bcad07..a002ad47fec 100644
+--- a/ports/servoshell/main.rs
++++ b/ports/servoshell/main.rs
+@@ -53,6 +53,17 @@ use windows_sys::Win32::System::LibraryLoader::SetDllDirectoryW;
+ // argument to the search order without removing the application directory from it (per its
+ // own documented behavior), so this is purely additive -- it doesn't change how anything
+ // already flat next to the binary resolves.
++// Hybrid-GPU Windows laptops: ask NVIDIA Optimus / AMD PowerXpress drivers to run this .exe
++// on the discrete GPU (exported via `/EXPORT` in build.rs; drivers read these symbols).
++#[cfg(target_os = "windows")]
++#[unsafe(no_mangle)]
++#[used]
++pub static NvOptimusEnablement: u32 = 1;
++#[cfg(target_os = "windows")]
++#[unsafe(no_mangle)]
++#[used]
++pub static AmdPowerXpressRequestHighPerformance: u32 = 1;
++
+ #[cfg(target_os = "windows")]
+ fn add_lib_dir_to_dll_search_path() {
+     let Ok(exe_path) = std::env::current_exe() else {
+diff --git a/ports/servoshell/window.rs b/ports/servoshell/window.rs
+index 0a2cb291afd..19f810be4b2 100644
+--- a/ports/servoshell/window.rs
++++ b/ports/servoshell/window.rs
+@@ -367,14 +367,6 @@ pub(crate) trait PlatformWindow {
+     fn set_position(&self, _point: DeviceIntPoint) {}
+     fn set_fullscreen(&self, _state: bool) {}
+     fn set_cursor(&self, _cursor: Cursor) {}
+-    #[cfg(all(
+-        feature = "webxr",
+-        not(any(target_os = "android", target_env = "ohos"))
+-    ))]
+-    fn new_glwindow(
+-        &self,
+-        event_loop: &crate::desktop::event_loop::ActiveEventLoop,
+-    ) -> Rc<dyn servo::webxr::GlWindow>;
+     /// This returns [`RenderingContext`] matching the viewport.
+     fn rendering_context(&self) -> Rc<dyn RenderingContext>;
+     fn theme(&self) -> servo::Theme {

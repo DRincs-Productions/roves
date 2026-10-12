@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use euclid::{Angle, Length, Point2D, Rect, Rotation3D, Scale, Size2D, UnknownUnit, Vector3D};
+use euclid::{Length, Point2D, Rect, Scale, Size2D};
 use keyboard_types::ShortcutMatcher;
 use log::debug;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawWindowHandle};
@@ -272,7 +272,6 @@ pub struct HeadedWindow {
     /// `ServoShellPreferences::config_dir`, e.g. when the config dir couldn't be resolved).
     config_dir: Option<PathBuf>,
     device_pixel_ratio_override: Option<f32>,
-    xr_window_poses: RefCell<Vec<Rc<XRWindowPose>>>,
     /// The `RenderingContext` of Servo itself. This is used to render Servo results
     /// temporarily until they can be blitted into the egui scene.
     rendering_context: Rc<OffscreenRenderingContext>,
@@ -455,7 +454,6 @@ impl HeadedWindow {
             screen_size: Cell::new(screen_size),
             last_theme: Cell::new(current_sdl_theme()),
             device_pixel_ratio_override: servoshell_preferences.device_pixel_ratio_override,
-            xr_window_poses: RefCell::new(vec![]),
             window_rendering_context,
             touch_event_simulator: servoshell_preferences
                 .simulate_touch_events
@@ -573,10 +571,6 @@ impl HeadedWindow {
         window: &Rc<ServoShellWindow>,
         keyboard_event: KeyboardEvent,
     ) {
-        for pose in self.xr_window_poses.borrow().iter() {
-            pose.handle_xr_rotation(&keyboard_event);
-            pose.handle_xr_translation(&keyboard_event);
-        }
 
         // First, handle servoshell key bindings that are not overridable by, or visible to, the page.
         if self.handle_intercepted_key_bindings(state, window, &keyboard_event) {
@@ -1343,26 +1337,6 @@ impl PlatformWindow for HeadedWindow {
         }
     }
 
-    #[cfg(feature = "webxr")]
-    fn new_glwindow(&self, event_loop: &ActiveEventLoop) -> Rc<dyn servo::webxr::GlWindow> {
-        let (width, height) = self.sdl_window.size();
-
-        let sdl_window = event_loop
-            .video()
-            .window("Roves XR", width, height)
-            .opengl()
-            .hidden()
-            .build()
-            .expect("Failed to create window.");
-
-        let pose = Rc::new(XRWindowPose {
-            xr_rotation: Cell::new(Rotation3D::identity()),
-            xr_translation: Cell::new(Vector3D::zero()),
-        });
-        self.xr_window_poses.borrow_mut().push(pose.clone());
-        Rc::new(XRWindow { sdl_window, pose })
-    }
-
     fn rendering_context(&self) -> Rc<dyn RenderingContext> {
         self.rendering_context.clone()
     }
@@ -1584,120 +1558,6 @@ fn set_window_icon(window: &mut sdl3::video::Window) {
             }
         },
         Err(error) => log::warn!("Could not create the SDL3 window icon surface: {error}"),
-    }
-}
-
-#[cfg(feature = "webxr")]
-struct XRWindow {
-    sdl_window: sdl3::video::Window,
-    pose: Rc<XRWindowPose>,
-}
-
-struct XRWindowPose {
-    xr_rotation: Cell<Rotation3D<f32, UnknownUnit, UnknownUnit>>,
-    xr_translation: Cell<Vector3D<f32, UnknownUnit>>,
-}
-
-#[cfg(feature = "webxr")]
-impl servo::webxr::GlWindow for XRWindow {
-    fn get_render_target(
-        &self,
-        device: &mut surfman::Device,
-        _context: &mut surfman::Context,
-    ) -> servo::webxr::GlWindowRenderTarget {
-        let _ = self.sdl_window.clone().show();
-        let window_handle = self
-            .sdl_window
-            .window_handle()
-            .expect("could not get window handle from window");
-        let (width, height) = self.sdl_window.size();
-        let size = Size2D::new(width as i32, height as i32);
-        let native_widget = device
-            .connection()
-            .create_native_widget_from_window_handle(window_handle, size)
-            .expect("Failed to create native widget");
-        servo::webxr::GlWindowRenderTarget::NativeWidget(native_widget)
-    }
-
-    fn get_rotation(&self) -> Rotation3D<f32, UnknownUnit, UnknownUnit> {
-        self.pose.xr_rotation.get()
-    }
-
-    fn get_translation(&self) -> Vector3D<f32, UnknownUnit> {
-        self.pose.xr_translation.get()
-    }
-
-    fn get_mode(&self) -> servo::webxr::GlWindowMode {
-        use servo::pref;
-        if pref!(dom_webxr_glwindow_red_cyan) {
-            servo::webxr::GlWindowMode::StereoRedCyan
-        } else if pref!(dom_webxr_glwindow_left_right) {
-            servo::webxr::GlWindowMode::StereoLeftRight
-        } else if pref!(dom_webxr_glwindow_spherical) {
-            servo::webxr::GlWindowMode::Spherical
-        } else if pref!(dom_webxr_glwindow_cubemap) {
-            servo::webxr::GlWindowMode::Cubemap
-        } else {
-            servo::webxr::GlWindowMode::Blit
-        }
-    }
-
-    fn display_handle(&self) -> raw_window_handle::DisplayHandle<'_> {
-        self.sdl_window
-            .display_handle()
-            .expect("Every window should have a display handle")
-    }
-}
-
-impl XRWindowPose {
-    fn handle_xr_translation(&self, input: &KeyboardEvent) {
-        if input.event.state != KeyState::Down {
-            return;
-        }
-        const NORMAL_TRANSLATE: f32 = 0.1;
-        const QUICK_TRANSLATE: f32 = 1.0;
-        let mut x = 0.0;
-        let mut z = 0.0;
-        match input.event.key {
-            Key::Character(ref k) => match &**k {
-                "w" => z = -NORMAL_TRANSLATE,
-                "W" => z = -QUICK_TRANSLATE,
-                "s" => z = NORMAL_TRANSLATE,
-                "S" => z = QUICK_TRANSLATE,
-                "a" => x = -NORMAL_TRANSLATE,
-                "A" => x = -QUICK_TRANSLATE,
-                "d" => x = NORMAL_TRANSLATE,
-                "D" => x = QUICK_TRANSLATE,
-                _ => return,
-            },
-            _ => return,
-        };
-        let (old_x, old_y, old_z) = self.xr_translation.get().to_tuple();
-        let vec = Vector3D::new(x + old_x, old_y, z + old_z);
-        self.xr_translation.set(vec);
-    }
-
-    fn handle_xr_rotation(&self, input: &KeyboardEvent) {
-        if input.event.state != KeyState::Down {
-            return;
-        }
-        let mut x = 0.0;
-        let mut y = 0.0;
-        match input.event.key {
-            Key::Named(NamedKey::ArrowUp) => x = 1.0,
-            Key::Named(NamedKey::ArrowDown) => x = -1.0,
-            Key::Named(NamedKey::ArrowLeft) => y = 1.0,
-            Key::Named(NamedKey::ArrowRight) => y = -1.0,
-            _ => return,
-        }
-        if input.event.modifiers.contains(Modifiers::SHIFT) {
-            x *= 10.0;
-            y *= 10.0;
-        }
-        let x: Rotation3D<_, UnknownUnit, UnknownUnit> = Rotation3D::around_x(Angle::degrees(x));
-        let y: Rotation3D<_, UnknownUnit, UnknownUnit> = Rotation3D::around_y(Angle::degrees(y));
-        let rotation = self.xr_rotation.get().then(&x).then(&y);
-        self.xr_rotation.set(rotation);
     }
 }
 
