@@ -443,6 +443,10 @@ jobs:
       - name: mach build (debug)
         shell: bash
         working-directory: servo-src
+        # Line tables only: with full debug info the servo-script rlib outgrows what rustc's
+        # archive writer handles on Windows (ICE in ar_archive_writer). Backtraces still work.
+        env:
+          CARGO_PROFILE_DEV_DEBUG: line-tables-only
         run: ./mach build --features steam
 
       # The SDL3 windowing migration (see ../CUSTOMIZATIONS.md's 2026-09-19/20 entries)
