@@ -13101,3 +13101,33 @@ counts handled messages by kind and sums their handling time. Kinds come from th
 `IntoStaticStr` names. Each interval it logs the twelve busiest as
 `[roves-perf-constellation] interval_ms=.. messages=N Kind=count/us ...`. Without the variable
 nothing is counted.
+
+## 2026-10-12 - MessagePort: no endless re-routing of messages to closed ports
+
+**Servo files:** `components/script/dom/globalscope/globalscope.rs`.
+**Patch:** `0198-messageport-reroute-livelock.patch` after 0197.
+
+The `[roves-perf-constellation]` statistics (0197) on the visual novel, running v0.7.2 with
+`ROVES_PERF_LOG_INTERVAL_MS`, showed **about 670 000 `RerouteMessagePort` messages a second**.
+They took about 1.4 s of constellation time every 5 s; everything else was negligible. That is
+what kept Script#1 (95%) and the constellation (79%) busy.
+
+The cause is a ping-pong:
+- Script removes a closed port only from its own managed ports
+  (`perform_a_message_port_garbage_collection_checkpoint`; Servo's TODO notes that the
+  constellation is not told).
+- The constellation keeps the port as `Managed` by that global's router.
+- A message in flight to such a port reaches the global through the router (`NewTask`).
+- `route_task_to_port` does not find the port and re-routes the message to the constellation.
+- The constellation sends it back to the same router, and so on forever. Every such message
+  stays in the loop.
+
+`route_task_to_port` now takes `from_router`. A task the constellation delivered through this
+global's router, so the constellation already considers this global the owner, is dropped when
+the port is gone instead of being re-routed. A message to a closed port is not delivered anyway.
+Messages posted locally (`post_messageport_msg`) still re-route as before, since their port may
+live in another global.
+
+Simple pages did not reproduce the loop: closed ports the constellation never registered, or a
+worker echoing to a closed port. Verification is the visual novel itself, comparing the
+constellation statistics with the build from CI.

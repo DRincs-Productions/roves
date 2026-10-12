@@ -605,7 +605,7 @@ impl MessageListener {
                 let context = self.context.clone();
                 self.task_source.queue(task!(process_new_task: move |cx| {
                     let global = context.root();
-                    global.route_task_to_port(cx, port_id, task);
+                    global.route_task_to_port(cx, port_id, task, true);
                 }));
             },
         }
@@ -1219,7 +1219,7 @@ impl GlobalScope {
         };
         if let Some(message_buffer) = message_buffer {
             for task in message_buffer {
-                self.route_task_to_port(cx, *port_id, task);
+                self.route_task_to_port(cx, *port_id, task, false);
             }
             if dom_port.disentangled() {
                 // <https://html.spec.whatwg.org/multipage/#disentangle>
@@ -1282,7 +1282,7 @@ impl GlobalScope {
                         let global = this.root();
                         // Note: we do this in a task, as this will ensure the global and constellation
                         // are aware of any transfer that might still take place in the current task.
-                        global.route_task_to_port(cx, entangled_id, task);
+                        global.route_task_to_port(cx, entangled_id, task, false);
                     }));
             }
         } else {
@@ -1475,11 +1475,19 @@ impl GlobalScope {
 
     /// Custom routing logic, followed by the task steps of
     /// <https://html.spec.whatwg.org/multipage/#message-port-post-message-steps>
+    /// Roves: `from_router` is true for a task the constellation delivered to this global's
+    /// message-port router, i.e. the constellation already considers this global the port's
+    /// owner. If the port is no longer here (it was closed, and only this global forgot it, see
+    /// `perform_a_message_port_garbage_collection_checkpoint`), the task is dropped: re-routing
+    /// it sent it straight back here, a ping-pong through the constellation that never ended.
+    /// A visual novel (pixi-vn, React) piled up about 670 000 such messages a second, keeping the
+    /// script thread and the constellation near a full core each.
     fn route_task_to_port(
         &self,
         cx: &mut js::context::JSContext,
         port_id: MessagePortId,
         task: PortMessageTask,
+        from_router: bool,
     ) {
         rooted!(&in(cx) let mut cross_realm_transform = None);
 
@@ -1487,6 +1495,9 @@ impl GlobalScope {
             &mut *self.message_port_state.borrow_mut()
         {
             if !message_ports.contains_key(&port_id) {
+                if from_router {
+                    return debug!("Dropping a message for closed message port {:?}", port_id);
+                }
                 self.re_route_port_task(port_id, task);
                 return;
             }
@@ -1507,6 +1518,9 @@ impl GlobalScope {
                 },
             }
         } else {
+            if from_router {
+                return debug!("Dropping a message for message port {:?}: no ports here", port_id);
+            }
             self.re_route_port_task(port_id, task);
             return;
         };
