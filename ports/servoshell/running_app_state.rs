@@ -22,7 +22,7 @@ use servo::{
     AllowOrDenyRequest, AuthenticationRequest, BluetoothDeviceSelectionRequest, CSSPixel,
     ConsoleLogLevel, CreateNewWebViewRequest, DeviceIntPoint, DeviceIntSize, EmbedderControl,
     EmbedderControlId, EventLoopWaker, GenericSender, InputEvent, InputEventId, InputEventResult,
-    JSValue, LoadStatus, MediaSessionEvent, PermissionRequest, PrefValue, Preferences,
+    JSValue, LoadStatus, MediaSessionEvent, PermissionRequest, Preferences,
     ScreenshotCaptureError, Servo, ServoDelegate, ServoError, TraversalId, UserContentManager,
     WebDriverCommandMsg, WebDriverJSResult, WebDriverLoadStatus, WebDriverScriptCommand,
     WebDriverSenders, WebView, WebViewDelegate, WebViewId,
@@ -37,7 +37,7 @@ use url::Url;
     not(any(target_os = "android", target_env = "ohos"))
 ))]
 pub(crate) use crate::desktop::gamepad::ServoshellGamepadDelegate;
-use crate::prefs::{EXPERIMENTAL_PREFS, ServoShellPreferences};
+use crate::prefs::ServoShellPreferences;
 use crate::webdriver::WebDriverEmbedderControls;
 use crate::window::{PlatformWindow, ServoShellWindow, ServoShellWindowId};
 
@@ -113,11 +113,6 @@ impl WebViewCollection {
             .filter_map(move |id| self.webviews.get(id).map(|webview| (*id, webview)))
     }
 
-    /// Returns an iterator over all webview references (in arbitrary order).
-    pub fn values(&self) -> impl Iterator<Item = &WebView> {
-        self.webviews.values()
-    }
-
     /// Returns true if the collection contains no webviews.
     pub fn is_empty(&self) -> bool {
         self.webviews.is_empty()
@@ -149,16 +144,12 @@ impl WebViewCollection {
 }
 
 /// A command received via the user interacting with the user interface.
-#[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
+#[cfg(any(target_os = "android", target_env = "ohos"))]
 pub(crate) enum UserInterfaceCommand {
     Go(String),
     Back,
     Forward,
     Reload,
-    ReloadAll,
-    NewWebView,
-    CloseWebView(WebViewId),
-    NewWindow,
 }
 
 pub(crate) struct RunningAppState {
@@ -204,9 +195,6 @@ pub(crate) struct RunningAppState {
     /// Whether or not program exit has been triggered. This means that all windows
     /// will be destroyed and shutdown will start at the end of the current event loop.
     exit_scheduled: Cell<bool>,
-
-    /// Whether the user has enabled experimental preferences.
-    experimental_preferences_enabled: Cell<bool>,
 
     /// The set of [`ServoShellWindow`]s that currently exist for this instance of servoshell.
     // This is the last field of the struct to ensure that windows are dropped *after* all
@@ -261,9 +249,6 @@ impl RunningAppState {
             embedder_receiver
         });
 
-        let experimental_preferences_enabled =
-            Cell::new(servoshell_preferences.experimental_preferences_enabled);
-
         Self {
             windows: Default::default(),
             focused_window: Default::default(),
@@ -281,7 +266,6 @@ impl RunningAppState {
             achieved_stable_image: Default::default(),
             exit_scheduled: Default::default(),
             user_content_manager,
-            experimental_preferences_enabled,
             accessibility_active: Cell::new(false),
             initial_webview_id: Cell::new(None),
             initial_load_complete: Cell::new(false),
@@ -399,22 +383,6 @@ impl RunningAppState {
         }
     }
 
-    #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
-    pub(crate) fn experimental_preferences_enabled(&self) -> bool {
-        self.experimental_preferences_enabled.get()
-    }
-
-    #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
-    pub(crate) fn set_experimental_preferences_enabled(&self, new_value: bool) {
-        let old_value = self.experimental_preferences_enabled.replace(new_value);
-        if old_value == new_value {
-            return;
-        }
-        for pref in EXPERIMENTAL_PREFS {
-            self.servo.set_preference(pref, PrefValue::Bool(new_value));
-        }
-    }
-
     /// Close any [`ServoShellWindow`] that doesn't have an open [`WebView`].
     fn close_empty_windows(&self) {
         self.windows.borrow_mut().retain(|_, window| {
@@ -443,9 +411,12 @@ impl RunningAppState {
         create_platform_window: Option<&dyn Fn(Url) -> Rc<dyn PlatformWindow>>,
     ) -> bool {
         // We clone here to avoid a double borrow. User interface commands can update the list of windows.
-        let windows: Vec<_> = self.windows.borrow().values().cloned().collect();
-        for window in windows {
-            window.handle_interface_commands(self, create_platform_window);
+        #[cfg(any(target_os = "android", target_env = "ohos"))]
+        {
+            let windows: Vec<_> = self.windows.borrow().values().cloned().collect();
+            for window in windows {
+                window.handle_interface_commands(self);
+            }
         }
 
         self.handle_webdriver_messages(create_platform_window);

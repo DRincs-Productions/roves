@@ -7,6 +7,7 @@ use std::rc::Rc;
 use std::sync::atomic::AtomicU64;
 
 use euclid::Scale;
+#[cfg(any(target_os = "android", target_env = "ohos"))]
 use log::warn;
 use servo::{
     AuthenticationRequest, BluetoothDeviceSelectionRequest, ConsoleLogLevel, Cursor,
@@ -16,8 +17,11 @@ use servo::{
 };
 use url::Url;
 
+#[cfg(any(target_os = "android", target_env = "ohos"))]
 use crate::parser::location_bar_input_to_url;
-use crate::running_app_state::{RunningAppState, UserInterfaceCommand, WebViewCollection};
+#[cfg(any(target_os = "android", target_env = "ohos"))]
+use crate::running_app_state::UserInterfaceCommand;
+use crate::running_app_state::{RunningAppState, WebViewCollection};
 
 // This should vary by zoom level and maybe actual text size (focused or under cursor)
 #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
@@ -60,10 +64,8 @@ pub(crate) struct ServoShellWindow {
     /// Whether or not Servo needs to repaint its display. Currently this is global
     /// because every `WebView` shares a `RenderingContext`.
     needs_repaint: Cell<bool>,
-    /// List of webviews that have favicon textures which are not yet uploaded
-    /// to the GPU by egui.
-    pending_favicon_loads: RefCell<Vec<WebViewId>>,
     /// Pending [`UserInterfaceCommand`] that have yet to be processed by the main loop.
+    #[cfg(any(target_os = "android", target_env = "ohos"))]
     pending_commands: RefCell<Vec<UserInterfaceCommand>>,
 }
 
@@ -75,7 +77,7 @@ impl ServoShellWindow {
             close_scheduled: Default::default(),
             needs_update: Default::default(),
             needs_repaint: Default::default(),
-            pending_favicon_loads: Default::default(),
+            #[cfg(any(target_os = "android", target_env = "ohos"))]
             pending_commands: Default::default(),
         }
     }
@@ -250,17 +252,8 @@ impl ServoShellWindow {
         self.set_needs_repaint();
     }
 
-    pub(crate) fn notify_favicon_changed(&self, webview: WebView) {
-        self.pending_favicon_loads.borrow_mut().push(webview.id());
+    pub(crate) fn notify_favicon_changed(&self, _webview: WebView) {
         self.set_needs_repaint();
-    }
-
-    #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
-    pub(crate) fn hidpi_scale_factor_changed(&self) {
-        let new_scale_factor = self.platform_window.hidpi_scale_factor();
-        for webview in self.webview_collection.borrow().values() {
-            webview.set_hidpi_scale_factor(new_scale_factor);
-        }
     }
 
     pub(crate) fn active_webview(&self) -> Option<WebView> {
@@ -277,12 +270,6 @@ impl ServoShellWindow {
             .active()
             .or(webview_collection.newest())
             .cloned()
-    }
-
-    /// Return a list of all webviews that have favicons that have not yet been loaded by egui.
-    #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
-    pub(crate) fn take_pending_favicon_loads(&self) -> Vec<WebViewId> {
-        std::mem::take(&mut *self.pending_favicon_loads.borrow_mut())
     }
 
     pub(crate) fn show_embedder_control(
@@ -307,16 +294,14 @@ impl ServoShellWindow {
         self.set_needs_repaint();
     }
 
+#[cfg(any(target_os = "android", target_env = "ohos"))]
     pub(crate) fn queue_user_interface_command(&self, command: UserInterfaceCommand) {
         self.pending_commands.borrow_mut().push(command)
     }
 
     /// Takes any events generated during UI updates and performs their actions.
-    pub(crate) fn handle_interface_commands(
-        self: &Rc<Self>,
-        state: &Rc<RunningAppState>,
-        create_platform_window: Option<&dyn Fn(Url) -> Rc<dyn PlatformWindow>>,
-    ) {
+    #[cfg(any(target_os = "android", target_env = "ohos"))]
+    pub(crate) fn handle_interface_commands(self: &Rc<Self>, state: &Rc<RunningAppState>) {
         let commands = std::mem::take(&mut *self.pending_commands.borrow_mut());
         for event in commands {
             match event {
@@ -347,30 +332,6 @@ impl ServoShellWindow {
                     self.set_needs_update();
                     if let Some(active_webview) = self.active_webview() {
                         active_webview.reload();
-                    }
-                },
-                UserInterfaceCommand::ReloadAll => {
-                    for window in state.windows().values() {
-                        window.set_needs_update();
-                        for (_, webview) in window.webviews() {
-                            webview.reload();
-                        }
-                    }
-                },
-                UserInterfaceCommand::NewWebView => {
-                    self.set_needs_update();
-                    let url = Url::parse("servo:newtab").expect("Should always be able to parse");
-                    self.create_and_activate_toplevel_webview(state.clone(), url);
-                },
-                UserInterfaceCommand::CloseWebView(id) => {
-                    self.set_needs_update();
-                    self.close_webview(id);
-                },
-                UserInterfaceCommand::NewWindow => {
-                    if let Some(create_platform_window) = create_platform_window {
-                        let url = Url::parse("servo:newtab").unwrap();
-                        let platform_window = create_platform_window(url.clone());
-                        state.open_window(platform_window, url);
                     }
                 },
             }

@@ -104,8 +104,6 @@ pub(crate) struct ServoShellPreferences {
     /// `None` to disable WebDriver or `Some` with a port number to start a server to listen to
     /// remote WebDriver commands.
     pub webdriver_port: Cell<Option<u16>>,
-    /// Whether the CLI option to enable experimental prefs was present at startup.
-    pub experimental_preferences_enabled: bool,
     /// Whether the window should open already in fullscreen — persisted across launches
     /// (a marker file under `config_dir`, written/removed by `HeadedWindow::set_fullscreen`)
     /// so a game closed in fullscreen reopens that way, without a windowed-then-fullscreen
@@ -148,7 +146,6 @@ impl Default for ServoShellPreferences {
             log_filter: None,
             #[cfg(target_env = "ohos")]
             log_to_file: false,
-            experimental_preferences_enabled: false,
             start_fullscreen: false,
             config_dir: None,
         }
@@ -752,7 +749,6 @@ fn parse_arguments_helper(args_without_binary: Args) -> ArgumentParsingResult {
         exit_after_stable_image: cmd_args.exit,
         userscripts_directory: cmd_args.userscripts,
         user_stylesheets: cmd_args.user_stylesheet,
-        experimental_preferences_enabled: cmd_args.enable_experimental_web_platform_features,
         start_fullscreen,
         config_dir: config_dir.clone(),
         #[cfg(target_env = "ohos")]

@@ -368,13 +368,13 @@ fn handle_command(
             if let Ok(entries) = fs::read_dir(saves_dir) {
                 for entry in entries.flatten() {
                     if let Some(name) = entry.file_name().to_str()
-                        && let Some(key) = name.strip_suffix(".save")
+                        && name.ends_with(".save")
                     {
                         if fs::remove_file(entry.path()).is_err() {
                             ok = false;
                         }
                         #[cfg(feature = "steam")]
-                        steam_sync_delete(handler, &format!("{key}.save"));
+                        steam_sync_delete(handler, name);
                     }
                 }
             }

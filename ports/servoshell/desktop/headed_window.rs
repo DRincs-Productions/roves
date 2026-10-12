@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use euclid::{Angle, Length, Point2D, Rect, Rotation3D, Scale, Size2D, UnknownUnit, Vector3D};
 use keyboard_types::ShortcutMatcher;
-use log::{debug, info};
+use log::debug;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawWindowHandle};
 use servo::{
     AuthenticationRequest, BluetoothDeviceSelectionRequest, Cursor, DeviceIndependentIntRect,
@@ -52,7 +52,7 @@ use crate::desktop::gui::Gui;
 use crate::desktop::keyutils::CMD_OR_CONTROL;
 use crate::desktop::logging;
 use crate::prefs::ServoShellPreferences;
-use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
+use crate::running_app_state::RunningAppState;
 use crate::window::{
     LINE_HEIGHT, LINE_WIDTH, MIN_WINDOW_INNER_SIZE, PlatformWindow, ServoShellWindow,
     ServoShellWindowId,
@@ -315,8 +315,6 @@ pub struct HeadedWindow {
     visible_input_method: Cell<Option<EmbedderControlId>>,
     /// Whether a synthetic Servo composition Start has been emitted for the current SDL IME.
     ime_composing: Cell<bool>,
-    /// The position of the mouse cursor after the most recent `MouseMove` event.
-    last_mouse_position: Cell<Option<Point2D<f32, DeviceIndependentPixel>>>,
     /// Stable Servo identifiers for SDL3's 64-bit finger ids. Keeping an explicit map avoids
     /// truncating ids to Servo's i32 `TouchId` and releases entries on Up/Cancel.
     active_touch_ids: RefCell<HashMap<u64, TouchId>>,
@@ -469,7 +467,6 @@ impl HeadedWindow {
             dialogs: Default::default(),
             visible_input_method: Default::default(),
             ime_composing: Cell::new(false),
-            last_mouse_position: Default::default(),
             active_touch_ids: Default::default(),
             next_touch_id: Cell::new(0),
             page_load_splash_since: Cell::new(None),
@@ -910,13 +907,6 @@ impl HeadedWindow {
         if !still_has_dialogs {
             self.stop_text_input_if_unused();
         }
-    }
-
-    fn has_active_dialog_for_webview(&self, webview_id: WebViewId) -> bool {
-        // First lazily clean up any empty dialog vectors.
-        let mut dialogs = self.dialogs.borrow_mut();
-        dialogs.retain(|_, dialogs| !dialogs.is_empty());
-        dialogs.contains_key(&webview_id)
     }
 
     fn toolbar_height(&self) -> Length<f32, DeviceIndependentPixel> {

@@ -14,7 +14,7 @@
 
 use std::cell::Cell;
 use std::sync::Arc;
-use std::time::{self, Duration, Instant};
+use std::time::{self, Instant};
 
 use log::warn;
 use servo::EventLoopWaker;
@@ -331,7 +331,6 @@ pub(crate) enum ServoShellEventLoop {
     Sdl3 {
         sdl: sdl3::Sdl,
         video: sdl3::VideoSubsystem,
-        event_subsystem: sdl3::EventSubsystem,
         proxy: EventLoopProxy,
     },
     /// A fake event loop which contains a signalling flag used to ensure
@@ -353,7 +352,7 @@ impl ServoShellEventLoop {
             .register_custom_event::<AppEvent>()
             .expect("Could not register AppEvent as a custom SDL3 event type");
         let proxy = EventLoopProxy(Arc::new(event_subsystem.event_sender()));
-        ServoShellEventLoop::Sdl3 { sdl, video, event_subsystem, proxy }
+        ServoShellEventLoop::Sdl3 { sdl, video, proxy }
     }
 }
 

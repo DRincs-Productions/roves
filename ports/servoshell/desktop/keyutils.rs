@@ -12,12 +12,6 @@ pub const CMD_OR_CONTROL: Modifiers = Modifiers::META;
 #[cfg(not(target_os = "macos"))]
 pub const CMD_OR_CONTROL: Modifiers = Modifiers::CONTROL;
 
-// Some shortcuts use Cmd on Mac and Alt on other systems.
-#[cfg(target_os = "macos")]
-pub const CMD_OR_ALT: Modifiers = Modifiers::META;
-#[cfg(not(target_os = "macos"))]
-pub const CMD_OR_ALT: Modifiers = Modifiers::ALT;
-
 /// TODO(SDL3 windowing, real progress not completion — see TODO.md): covers the keys that
 /// actually matter for gameplay and this fork's own keyboard shortcuts (letters, digits,
 /// navigation, function keys, common punctuation, modifiers) — not the exhaustive ~300-variant

@@ -13155,3 +13155,21 @@ desktop smoke test already ran with the flag on. Measured on the visual novel me
 shell, 60 fps, 20 s): CPU from 98.6% to 91.1% of one core, `shell_paint` from ~128 to ~77 µs per
 frame, and no egui tessellation. `test.yml` stops exporting the variable, but still requires a
 positive `direct_presents` interval.
+
+## 2026-10-12 - servoshell: dead code removed
+
+**Servo files:** `ports/servoshell/{window.rs,running_app_state.rs,prefs.rs}` and
+`ports/servoshell/desktop/{gui.rs,event_loop.rs,headed_window.rs,keyutils.rs,protocols/saves.rs}`.
+**Patch:** `0200-servoshell-dead-code.patch` after 0199.
+
+The SDL3 shell has no browser toolbar, so the leftovers of upstream's tab UI never ran:
+- removed `browser_tab`, `toolbar_button`, the toolbar hit test, egui focus helpers, zoom setter
+  and `truncate_with_ellipsis`, and the never-consumed favicon queue;
+- removed the HiDPI change hook, the experimental-preferences mirror field (the CLI flag still
+  works through `prefs.rs`), `CMD_OR_ALT`, `last_mouse_position` and the stored SDL event
+  subsystem;
+- `UserInterfaceCommand` is kept only for Android/OHOS, which still uses Go, Back, Forward and
+  Reload. The variants nobody builds (ReloadAll, NewWebView, CloseWebView, NewWindow) are gone.
+
+`cargo check -p servoshell --release` (also with `--tests`) now reports no servoshell warnings.
+No behavior change.
