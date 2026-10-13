@@ -13187,3 +13187,23 @@ No behavior change.
 - `main.rs` exports `NvOptimusEnablement` and `AmdPowerXpressRequestHighPerformance` (`build.rs`
   adds `/EXPORT:` linker arguments on Windows MSVC). NVIDIA Optimus and AMD switchable-graphics
   drivers then run the game on the discrete GPU instead of the integrated one.
+
+## 2026-10-13 - Icons in the first frame; every JS/CSS chunk in the boot set
+
+**Servo file:** `components/net/image_cache.rs`. **Patch:** `0202-sync-small-svg-rasterization.patch`
+after 0201.
+
+On the visual novel's start menu the lucide icons appeared a moment after the buttons. Every SVG,
+inline or `<img>`, was rasterized on the thread pool: the first `rasterize_vector_image` call
+returned `None`, so the icon showed up only after a later reflow. SVGs up to 128x128 pixels are
+now rendered right away on the calling thread, then go through the same image-key path. Larger
+SVGs stay asynchronous. The resvg call is now one `rasterize_svg` function shared by both paths,
+and `ImageCacheStore::forget_failed_svg` holds the cleanup after a resvg panic. The 17 net
+`image_cache` tests pass.
+
+**Roves-only (no Servo patch):** `support/content-packer/src/pack.rs` puts every `.js`, `.mjs` and
+`.css` file in the boot set, not only those named by the HTML. A bundler's dynamic `import()`
+chunks are then extracted at boot, and no import waits for a whole asset pack to decompress
+under the global extraction lock. `tests/roundtrip.rs` now uses a JSON file as the lazy file and
+checks that an unnamed chunk is in the boot set. README and the wiki (`shell.mdx`, `action.mdx`)
+describe the new boot set.

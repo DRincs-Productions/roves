@@ -77,7 +77,8 @@ an unzipped release would otherwise find and lift straight out. Instead, `--cont
 packed into a handful of `tar`+`zstd` archives, split into two tiers:
 
 - A small **boot set** — the html file itself, plus whatever it directly references
-  (`<script src>`, `<link href>`, `modulepreload` hints, etc.), plus anything matched by
+  (`<script src>`, `<link href>`, `modulepreload` hints, etc.), every `.js`/`.mjs`/`.css` file
+  (so lazily imported chunks never wait on an asset pack), plus anything matched by
   `--content-boot-include`. This gets extracted eagerly, in full, before the engine even
   starts — into your OS's own cache directory (`~/.cache`, `Library/Caches`, `%LOCALAPPDATA%`
   — real disk, not anywhere inside the shipped game folder, and not a RAM-backed location

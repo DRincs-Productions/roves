@@ -189,12 +189,22 @@ fn detect_boot_set(
     }
 
     for f in packable {
-        if boot_include.iter().any(|p| p.matches(&f.rel_path)) {
+        if is_code(&f.rel_path) || boot_include.iter().any(|p| p.matches(&f.rel_path)) {
             boot.insert(f.rel_path.clone());
         }
     }
 
     Ok(boot)
+}
+
+/// Every script and stylesheet joins the boot set, not only the entry chunk the HTML names: a
+/// bundler's lazily imported chunks are small next to the assets, and having them extracted
+/// up front means no `import()` ever waits on decompressing a whole asset pack.
+fn is_code(rel_path: &str) -> bool {
+    Path::new(rel_path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "js" | "mjs" | "css"))
 }
 
 fn extract_local_refs(html: &str) -> Vec<String> {

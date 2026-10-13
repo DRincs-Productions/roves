@@ -26,7 +26,8 @@ fn build_fake_dist(dist: &Path) {
     );
     write(&dist.join("assets/entry.js"), b"console.log('entry')");
     write(&dist.join("assets/vendor.js"), b"console.log('vendor')");
-    write(&dist.join("assets/lazy-level1.js"), b"console.log('level 1, loaded on demand')");
+    write(&dist.join("assets/lazy-level1.json"), b"{\"level\": 1}");
+    write(&dist.join("assets/lazy-chunk.js"), b"console.log('imported on demand')");
     write(&dist.join("images/hero.png"), &[0u8; 128]);
     write(&dist.join("images/levels/level1-bg.png"), &[1u8; 256]);
     write(&dist.join("audio/theme.wav"), &[2u8; 64]);
@@ -47,7 +48,7 @@ fn pack_it(dist: &Path, out: &Path) {
 }
 
 #[test]
-fn boot_set_is_html_plus_directly_referenced_files_only() {
+fn boot_set_is_html_its_references_and_all_code() {
     let root = scratch("boot-set");
     let dist = root.join("dist");
     let out = root.join("packed");
@@ -65,8 +66,12 @@ fn boot_set_is_html_plus_directly_referenced_files_only() {
     assert!(is_boot_pack(pack_for("assets/entry.js")), "the directly-<script src>'d entry chunk must be in the boot set");
     assert!(is_boot_pack(pack_for("assets/vendor.js")), "a modulepreload-referenced chunk must be in the boot set");
     assert!(
-        !is_boot_pack(pack_for("assets/lazy-level1.js")),
-        "a chunk never referenced by index.html must NOT be in the boot set"
+        !is_boot_pack(pack_for("assets/lazy-level1.json")),
+        "a data file never referenced by index.html must NOT be in the boot set"
+    );
+    assert!(
+        is_boot_pack(pack_for("assets/lazy-chunk.js")),
+        "every JS chunk is in the boot set, even one index.html does not name"
     );
     assert!(
         !is_boot_pack(pack_for("images/levels/level1-bg.png")),
@@ -95,7 +100,7 @@ fn boot_extraction_only_materializes_boot_files() {
     assert!(dest.join("assets/entry.js").exists(), "directly-referenced script should be extracted eagerly");
     assert!(dest.join("assets/vendor.js").exists(), "modulepreload-referenced script should be extracted eagerly");
     assert!(
-        !dest.join("assets/lazy-level1.js").exists(),
+        !dest.join("assets/lazy-level1.json").exists(),
         "a file never referenced by index.html should NOT be extracted eagerly"
     );
     assert!(!dest.join("images/levels/level1-bg.png").exists(), "unreferenced image should stay lazy");
@@ -112,12 +117,12 @@ fn on_demand_extraction_materializes_exactly_the_requested_files_pack() {
 
     extract::extract_boot(&ExtractOptions { content_dir: out.clone(), dest: Some(dest.clone()), force: false })
         .unwrap();
-    assert!(!dest.join("assets/lazy-level1.js").exists());
+    assert!(!dest.join("assets/lazy-level1.json").exists());
 
     let manifest = extract::load_manifest(&out).unwrap();
-    let found = extract::ensure_file_available(&out, &dest, &manifest, "assets/lazy-level1.js").unwrap();
-    assert!(found, "lazy-level1.js is a real packed file, lookup must succeed");
-    assert!(dest.join("assets/lazy-level1.js").exists(), "the requested file must now be on disk");
+    let found = extract::ensure_file_available(&out, &dest, &manifest, "assets/lazy-level1.json").unwrap();
+    assert!(found, "lazy-level1.json is a real packed file, lookup must succeed");
+    assert!(dest.join("assets/lazy-level1.json").exists(), "the requested file must now be on disk");
 
     // A file from a *different* still-untouched bucket must remain lazy —
     // on-demand extraction is per-pack, not "extract everything once anything is touched".
@@ -142,14 +147,14 @@ fn unchanged_content_keeps_previously_extracted_lazy_files_across_relaunches() {
     extract::extract_boot(&ExtractOptions { content_dir: out.clone(), dest: Some(dest.clone()), force: false })
         .unwrap();
     let manifest = extract::load_manifest(&out).unwrap();
-    extract::ensure_file_available(&out, &dest, &manifest, "assets/lazy-level1.js").unwrap();
-    assert!(dest.join("assets/lazy-level1.js").exists());
+    extract::ensure_file_available(&out, &dest, &manifest, "assets/lazy-level1.json").unwrap();
+    assert!(dest.join("assets/lazy-level1.json").exists());
 
     // Simulate a second launch: extract_boot runs again, content is unchanged.
     extract::extract_boot(&ExtractOptions { content_dir: out.clone(), dest: Some(dest.clone()), force: false })
         .unwrap();
     assert!(
-        dest.join("assets/lazy-level1.js").exists(),
+        dest.join("assets/lazy-level1.json").exists(),
         "a lazily-extracted file from a previous session must survive a relaunch with unchanged content"
     );
 }
@@ -166,17 +171,17 @@ fn changed_content_wipes_the_destination_including_stale_lazy_extractions() {
     extract::extract_boot(&ExtractOptions { content_dir: out.clone(), dest: Some(dest.clone()), force: false })
         .unwrap();
     let manifest = extract::load_manifest(&out).unwrap();
-    extract::ensure_file_available(&out, &dest, &manifest, "assets/lazy-level1.js").unwrap();
-    assert!(dest.join("assets/lazy-level1.js").exists());
+    extract::ensure_file_available(&out, &dest, &manifest, "assets/lazy-level1.json").unwrap();
+    assert!(dest.join("assets/lazy-level1.json").exists());
 
     // Change the source content and re-pack into the same `out` location.
-    write(&dist.join("assets/lazy-level1.js"), b"console.log('level 1, changed content')");
+    write(&dist.join("assets/lazy-level1.json"), b"console.log('level 1, changed content')");
     pack_it(&dist, &out);
 
     extract::extract_boot(&ExtractOptions { content_dir: out.clone(), dest: Some(dest.clone()), force: false })
         .unwrap();
     assert!(
-        !dest.join("assets/lazy-level1.js").exists(),
+        !dest.join("assets/lazy-level1.json").exists(),
         "changed content must wipe stale lazily-extracted files, not silently keep old ones around"
     );
 }

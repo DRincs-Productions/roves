@@ -65,6 +65,63 @@ const FALLBACK_RIPPY: &[u8] = include_bytes!("resources/rippy.png");
 /// width/height of the pixmap allocated for rasterization.
 const MAX_SVG_PIXMAP_DIMENSION: u32 = 5000;
 
+/// Up to this many pixels (128x128) an SVG is rasterized synchronously.
+const SYNC_SVG_RASTERIZATION_MAX_PIXELS: u32 = 128 * 128;
+
+/// Renders a parsed SVG at `size`. `None` if resvg panicked (see the comment inside).
+fn rasterize_svg(
+    vector_image: &VectorImageData,
+    natural_size: tiny_skia::IntSize,
+    size: tiny_skia::IntSize,
+) -> Option<RasterImage> {
+    let transform = tiny_skia::Transform::from_scale(
+        size.width() as f32 / natural_size.width() as f32,
+        size.height() as f32 / natural_size.height() as f32,
+    );
+    let mut pixmap = tiny_skia::Pixmap::new(size.width(), size.height()).unwrap();
+
+    // Some SVG documents, primarily ones created by fuzzers, can cause resvg to fail
+    // assertions and panic. We catch any panics in `resvg::render` here so that we don't
+    // crash the whole engine for such cases. In case of a panic, the completion listeners
+    // added for this request will never get called.
+    //
+    // We also need to set `SUPPRESS_ABORT_IN_PANIC_HOOK` for the duration of the call
+    // because servoshell registers a custom hook that intercepts the panic and crashes
+    // the process when run in hard_fail mode.
+    //
+    // `AssertUnwindSafe` should be safe here since we will remove the `vector_image`
+    // from `store.vector_images` and won't use it again. This assumes `resvg::render`
+    // doesn't use internal global state that could become invalid after the panic.
+    SUPPRESS_ABORT_IN_PANIC_HOOK.set(true);
+    let resvg_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        resvg::render(&vector_image.svg_tree, transform, &mut pixmap.as_mut());
+
+        let bytes = pixmap.take();
+        let frame = ImageFrame {
+            delay: None,
+            byte_range: 0..bytes.len(),
+            width: size.width(),
+            height: size.height(),
+        };
+
+        RasterImage {
+            metadata: ImageMetadata {
+                width: size.width(),
+                height: size.height(),
+            },
+            format: PixelFormat::RGBA8,
+            frames: vec![frame],
+            bytes: Arc::new(bytes),
+            id: None,
+            cors_status: vector_image.cors_status,
+            is_opaque: false,
+            loop_count: None,
+        }
+    }));
+    SUPPRESS_ABORT_IN_PANIC_HOOK.set(false);
+    resvg_result.ok()
+}
+
 //
 // TODO(gw): Remaining work on image cache:
 //     * Make use of the prefetch support in various parts of the code.
@@ -540,6 +597,17 @@ struct ImageCacheStore {
 }
 
 impl ImageCacheStore {
+    /// Drops a failed rasterization (resvg panicked) and the image itself, so later requests
+    /// do not retry it; the panics so far seem independent of the size.
+    fn forget_failed_svg(&mut self, image_id: PendingImageId, requested_size: DeviceIntSize) {
+        warn!("resvg panicked while rasterizing SVG image {image_id:?} at {requested_size:?}");
+        self.svg_rasterization_task_store
+            .remove_being_rasterized(image_id, requested_size);
+        self.rasterized_vector_images
+            .remove(&(image_id, requested_size));
+        self.vector_images.remove(&image_id);
+    }
+
     #[cfg(feature = "test-util")]
     fn number_of_rasterize_tasks(&self) -> usize {
         self.svg_rasterization_task_store.0.len()
@@ -1089,85 +1157,41 @@ impl ImageCache for ImageCacheImpl {
             return None;
         }
 
-        let store = self.store.clone();
-        self.thread_pool.spawn(move || {
-            let transform = tiny_skia::Transform::from_scale(
-                tinyskia_requested_size.width() as f32 / natural_size.width() as f32,
-                tinyskia_requested_size.height() as f32 / natural_size.height() as f32,
-            );
-            let mut pixmap = tiny_skia::Pixmap::new(
-                tinyskia_requested_size.width(),
-                tinyskia_requested_size.height(),
-            )
-            .unwrap();
-
-            // Some SVG documents, primarily ones created by fuzzers, can cause resvg to fail
-            // assertions and panic. We catch any panics in `resvg::render` here so that we don't
-            // crash the whole engine for such cases. In case of a panic, the completion listeners
-            // added for this request will never get called.
-            //
-            // We also need to set `SUPPRESS_ABORT_IN_PANIC_HOOK` for the duration of the call
-            // because servoshell registers a custom hook that intercepts the panic and crashes
-            // the process when run in hard_fail mode.
-            //
-            // `AssertUnwindSafe` should be safe here since we will remove the `vector_image`
-            // from `store.vector_images` and won't use it again. This assumes `resvg::render`
-            // doesn't use internal global state that could become invalid after the panic.
-            SUPPRESS_ABORT_IN_PANIC_HOOK.set(true);
-            let resvg_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                resvg::render(&vector_image.svg_tree, transform, &mut pixmap.as_mut());
-
-                let bytes = pixmap.take();
-                let frame = ImageFrame {
-                    delay: None,
-                    byte_range: 0..bytes.len(),
-                    width: tinyskia_requested_size.width(),
-                    height: tinyskia_requested_size.height(),
-                };
-
-                RasterImage {
-                    metadata: ImageMetadata {
-                        width: tinyskia_requested_size.width(),
-                        height: tinyskia_requested_size.height(),
-                    },
-                    format: PixelFormat::RGBA8,
-                    frames: vec![frame],
-                    bytes: Arc::new(bytes),
-                    id: None,
-                    cors_status: vector_image.cors_status,
-                    is_opaque: false,
-                    loop_count: None,
-                }
-            }));
-            SUPPRESS_ABORT_IN_PANIC_HOOK.set(false);
-
-            match resvg_result {
-                Ok(rasterized_image) => {
-                    let mut store = store.lock();
+        // Small images (icons) are rasterized right away, so they appear in the same frame as
+        // the text around them instead of one frame later; larger ones go to the thread pool.
+        if tinyskia_requested_size.width() * tinyskia_requested_size.height() <=
+            SYNC_SVG_RASTERIZATION_MAX_PIXELS
+        {
+            match rasterize_svg(&vector_image, natural_size, tinyskia_requested_size) {
+                Some(raster_image) => {
                     store.load_image_with_keycache(PendingKey::Svg((
                         image_id,
-                        rasterized_image,
+                        raster_image,
                         requested_size,
                     )));
-                },
-                Err(_) => {
-                    warn!("resvg panicked while rasterizing SVG image {image_id:?} at {requested_size:?}");
-                    let mut store = store.lock();
-                    // Clean up data for this rasterization request.
-                    store
-                        .svg_rasterization_task_store
-                        .remove_being_rasterized(image_id, requested_size);
-                    store
+                    return store
                         .rasterized_vector_images
-                        .remove(&(image_id, requested_size));
-
-                    // Remove the `image_id` from `vector_images` so the check at the top of this
-                    // method will fail for subsequent calls and won't trigger rasterization
-                    // again. Note, however, this means subsequent rasterization requests for
-                    // a different `requested_size` will also fail, but the panics in resvg so far
-                    // seem indepenent of the size, so this should be good enough.
-                    store.vector_images.remove(&image_id);
+                        .get(&(image_id, requested_size))
+                        .and_then(|entry| entry.result.clone());
                 },
+                None => {
+                    store.forget_failed_svg(image_id, requested_size);
+                    return None;
+                },
+            }
+        }
+
+        let store = self.store.clone();
+        self.thread_pool.spawn(move || {
+            let result = rasterize_svg(&vector_image, natural_size, tinyskia_requested_size);
+            let mut store = store.lock();
+            match result {
+                Some(raster_image) => store.load_image_with_keycache(PendingKey::Svg((
+                    image_id,
+                    raster_image,
+                    requested_size,
+                ))),
+                None => store.forget_failed_svg(image_id, requested_size),
             }
         });
         None
