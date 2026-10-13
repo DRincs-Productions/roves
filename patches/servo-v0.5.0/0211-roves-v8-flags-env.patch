@@ -1,0 +1,18 @@
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 104707d220f..697ddaf3f5a 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -345,6 +345,13 @@ fn initialize_platform() {
+         #[cfg(test)]
+         v8::V8::set_flags_from_string("--expose-gc");
+ 
++        // `ROVES_V8_FLAGS` appends V8 flags (e.g. `--max-semi-space-size=32` to tune the young
++        // generation) for measurements on a shipped build. A diagnostic switch, like
++        // servoshell's `ROVES_EXTRA_ARGS`, not a player option.
++        if let Ok(flags) = std::env::var("ROVES_V8_FLAGS") {
++            v8::V8::set_flags_from_string(&flags);
++        }
++
+         // Foreground tasks go to the handler of their isolate (see `foreground`).
+         let platform = v8::new_custom_platform(0, false, false, foreground::Platform).make_shared();
+         v8::V8::initialize_platform(platform);

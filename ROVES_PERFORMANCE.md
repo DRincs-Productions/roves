@@ -24,6 +24,7 @@ Tutto è spento per default e si attiva con variabili d'ambiente prima di avviar
 | --- | --- |
 | `ROVES_PERF_LOG_INTERVAL_MS=5000` | Nel `roves.log`, tre tipi di riga: `[roves-perf]` (frame, redraw, presentazioni), `[roves-perf-time]` (µs per fase: `webview_paint`, `egui_run`, `shell_paint`, `present`) e `[roves-perf-constellation]` (messaggi del Constellation per tipo, con tempo di gestione) |
 | `ROVES_EXTRA_ARGS="-p 5"` | Avvia un gioco già impacchettato con argomenti extra; per esempio `-p 5` attiva il profiler temporale di Servo (script, layout, paint) |
+| `ROVES_V8_FLAGS="--max-semi-space-size=32"` | Opzioni aggiuntive per V8, per provare la taratura del GC senza ricompilare |
 | `[roves-gc]` nel log | Sempre attivo: segnala ogni GC completa che dura 8 ms o più, con la dimensione dell'heap JS |
 
 CPU per thread su Windows: PowerShell su `Get-Process play`, con i nomi dei thread letti tramite

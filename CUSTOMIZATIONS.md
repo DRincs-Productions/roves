@@ -13353,3 +13353,11 @@ never a subset of a real decoder's constrained template, so it always failed. It
 `opusparse` element (gst-plugins-bad, not bundled) on top of `opusdec`; the decoder is enough, as
 the Ogg and Matroska demuxers frame the packets themselves. Not compiled locally (no GStreamer
 development files on this machine).
+
+## 2026-10-13 - `ROVES_V8_FLAGS` diagnostic switch
+
+**File:** `components/roves-v8/src/lib.rs`. **Patch:** `0211-roves-v8-flags-env.patch` after 0210.
+
+`initialize_platform` appends the flags in the `ROVES_V8_FLAGS` environment variable after its own
+defaults. It is used to try V8 GC tuning on a shipped build without rebuilding, such as
+`--max-semi-space-size=32` for fewer promotions and fewer atomic full GCs. Unset, nothing changes.
