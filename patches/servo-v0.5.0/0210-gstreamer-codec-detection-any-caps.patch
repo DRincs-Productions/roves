@@ -1,0 +1,30 @@
+diff --git a/components/media/backends/gstreamer/registry_scanner.rs b/components/media/backends/gstreamer/registry_scanner.rs
+index 08a57f4fc91..53e48042e2f 100644
+--- a/components/media/backends/gstreamer/registry_scanner.rs
++++ b/components/media/backends/gstreamer/registry_scanner.rs
+@@ -69,10 +69,11 @@ impl GStreamerRegistryScanner {
+             self.supported_codecs.insert("mp4a*");
+         }
+ 
++        // A decoder is enough, as in WebKit: `opusparse` (gst-plugins-bad) is not shipped and
++        // `oggdemux`/`matroskademux` already frame Opus packets for `opusdec`.
+         let is_opus_supported =
+             has_element_for_media_type(&audio_decoder_factories, "audio/x-opus");
+-        if is_opus_supported && has_element_for_media_type(&audio_parser_factories, "audio/x-opus")
+-        {
++        if is_opus_supported {
+             self.supported_mime_types.insert("audio/opus");
+             self.supported_codecs.insert("opus");
+             self.supported_codecs.insert("x-opus");
+@@ -254,7 +255,10 @@ fn has_element_for_media_type(
+     match gstreamer::caps::Caps::from_str(media_type) {
+         Ok(caps) => {
+             for factory in factories {
+-                if factory.can_sink_all_caps(&caps) {
++                // `any`, as in WebKit: real decoders constrain fields (channel mapping, stream
++                // format...), so no decoder can sink *all* of a bare media type like
++                // "audio/x-opus", and Opus/AAC/H.264 were reported as unsupported.
++                if factory.can_sink_any_caps(&caps) {
+                     return true;
+                 }
+             }

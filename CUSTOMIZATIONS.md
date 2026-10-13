@@ -13337,3 +13337,19 @@ gfx_precache_shaders=true` removed the spikes but blocked startup for about 4 s,
 - Without a config dir there is no cache, which is the previous behavior.
 
 The unit test `shader_cache::tests::roundtrip_and_corruption` compiles but has not run yet.
+
+## 2026-10-13 - GStreamer codec detection: Opus, AAC/M4A, MP4 reported as supported
+
+**Servo file:** `components/media/backends/gstreamer/registry_scanner.rs`. **Patch:**
+`0210-gstreamer-codec-detection-any-caps.patch` after 0209.
+
+`canPlayType` answered "" for `audio/ogg; codecs=opus`, `audio/webm`, `audio/aac`, `audio/mp4`,
+`audio/x-m4a` and `video/mp4`, although `gstopus`, `gstlibav`, `gstisomp4` and `gstmatroska` are
+bundled and load: a `GST_DEBUG=GST_PLUGIN_LOADING:5` run shows every plugin loaded. howler.js and
+other audio libraries pick their format with `canPlayType`, so those files were skipped.
+`has_element_for_media_type` used `can_sink_all_caps`: a bare media type like `audio/x-opus` is
+never a subset of a real decoder's constrained template, so it always failed. It now uses
+`can_sink_any_caps`, like WebKit's registry scanner, which this code mirrors. Opus also required an
+`opusparse` element (gst-plugins-bad, not bundled) on top of `opusdec`; the decoder is enough, as
+the Ogg and Matroska demuxers frame the packets themselves. Not compiled locally (no GStreamer
+development files on this machine).
