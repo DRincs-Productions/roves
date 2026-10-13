@@ -8738,6 +8738,7 @@ dependencies = [
  "image",
  "ipc-channel",
  "log",
+ "postcard",
  "rayon",
  "rustc-hash 2.1.3",
  "servo-allocator",
@@ -11596,6 +11597,7 @@ checksum = "674538885dba825ee1ddda72ade941fef81364cb843bbb0452fe7d134068ed89"
 dependencies = [
  "bitflags 2.13.1",
  "lazy_static",
+ "serde",
 ]
 
 [[package]]

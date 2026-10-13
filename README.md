@@ -416,6 +416,8 @@ and paint and only blits Servo's off-screen frame; any other frame uses the comp
 `direct_presents` with `ROVES_PERF_LOG_INTERVAL_MS=1000`; see
 [the rendering plan](./docs/FAST_PATH_RENDERING.md).
 
+Compiled graphics shaders are cached per game on disk, so later launches skip shader-compile stalls.
+
 When the window is minimized or fully covered, the page becomes `document.hidden` (a
 `visibilitychange` event fires) and is throttled, as in Chrome, so games can pause their music.
 

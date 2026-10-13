@@ -13311,3 +13311,29 @@ Chrome. The platform sink inside `autoaudiosink` kept GStreamer's default 200 ms
 A `child-added` handler now sets `buffer-time` 40 ms and `latency-time` 10 ms on it when the sink
 has those properties. Not compiled locally (this machine has no GStreamer development files),
 so CI checks it.
+
+## 2026-10-13 - WebRender shader binary disk cache
+
+**Servo files:** `Cargo.toml` (webrender feature `serialize_program`),
+`components/paint/{Cargo.toml,lib.rs,painter.rs,shader_cache.rs (new)}`. **Patch:**
+`0209-webrender-shader-disk-cache.patch` after 0208.
+
+WebRender compiles each shader program the first time it is drawn. On the visual novel and on the
+test-page `typewriter` scenes this gave 180-410 ms page paints in the first seconds, the worst
+frames measured against Chrome. Chrome avoids them with a GPU shader cache. `--pref
+gfx_precache_shaders=true` removed the spikes but blocked startup for about 4 s, so it stays off.
+
+`shader_cache.rs` implements WebRender's own `ProgramCacheObserver`, passed as
+`WebRenderOptions::cached_programs`:
+- Binaries go in `<config_dir>/shader-cache/<gpu>/<digest>.bin`, postcard-encoded. Bundled games
+  have a per-game config dir since 0205. `<gpu>` hashes GL_VENDOR, GL_RENDERER and GL_VERSION,
+  because WebRender's digest only covers the renderer name, so a driver update starts a fresh
+  folder; older folders are removed.
+- `startup.list`, written when WebRender reports its startup set (frame 10), is pre-read by a
+  background thread at launch.
+- `try_load_shader_from_disk` hands binaries to `ProgramCache::load_program_binary`.
+- Writes go through one background thread, each to a temp file renamed into place.
+- A binary the driver rejects, or a file that does not decode, is deleted and counts as a miss.
+- Without a config dir there is no cache, which is the previous behavior.
+
+The unit test `shader_cache::tests::roundtrip_and_corruption` compiles but has not run yet.

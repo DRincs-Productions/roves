@@ -243,6 +243,8 @@ impl Painter {
                 upload_method,
                 workers,
                 size_of_op: Some(servo_allocator::usable_size),
+                // Persist linked shader binaries across runs (see `shader_cache.rs`).
+                cached_programs: crate::shader_cache::create_program_cache(&*webrender_gl),
                 // This ensures that we can use the `PainterId` as the `IdNamespace`, which allows mapping
                 // from `FontKey`, `FontInstanceKey`, and `ImageKey` back to `PainterId`.
                 namespace_alloc_by_client: true,

@@ -27,6 +27,7 @@ mod pipeline_details;
 mod refresh_driver;
 mod render_notifier;
 mod screenshot;
+mod shader_cache;
 mod touch;
 mod web_content_animation;
 mod webrender_external_images;

@@ -1,0 +1,295 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 676a171f52d..9b85b7fdf35 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -295,7 +295,7 @@ warp = "0.4.2"
+ web_atoms = "0.2.4"
+ webdriver = { version = "0.53.0", default-features = false }
+ webpki-roots = "1.0"
+-webrender = { version = "0.70", features = ["capture"] }
++webrender = { version = "0.70", features = ["capture", "serialize_program"] }
+ webrender_api = "0.70"
+ wgpu-core = "30"
+ wgpu-types = "30"
+diff --git a/components/paint/Cargo.toml b/components/paint/Cargo.toml
+index cfecda3ba59..604c944b5c3 100644
+--- a/components/paint/Cargo.toml
++++ b/components/paint/Cargo.toml
+@@ -36,6 +36,7 @@ log = { workspace = true }
+ malloc_size_of = { workspace = true }
+ media = { workspace = true }
+ paint_api = { workspace = true }
++postcard = { workspace = true }
+ profile_traits = { workspace = true }
+ rayon = { workspace = true }
+ rustc-hash = { workspace = true }
+diff --git a/components/paint/lib.rs b/components/paint/lib.rs
+index 5af2f73e333..2aa06d623a3 100644
+--- a/components/paint/lib.rs
++++ b/components/paint/lib.rs
+@@ -27,6 +27,7 @@ mod pipeline_details;
+ mod refresh_driver;
+ mod render_notifier;
+ mod screenshot;
++mod shader_cache;
+ mod touch;
+ mod web_content_animation;
+ mod webrender_external_images;
+diff --git a/components/paint/painter.rs b/components/paint/painter.rs
+index f94a1b5092e..40caa381c4c 100644
+--- a/components/paint/painter.rs
++++ b/components/paint/painter.rs
+@@ -243,6 +243,8 @@ impl Painter {
+                 upload_method,
+                 workers,
+                 size_of_op: Some(servo_allocator::usable_size),
++                // Persist linked shader binaries across runs (see `shader_cache.rs`).
++                cached_programs: crate::shader_cache::create_program_cache(&*webrender_gl),
+                 // This ensures that we can use the `PainterId` as the `IdNamespace`, which allows mapping
+                 // from `FontKey`, `FontInstanceKey`, and `ImageKey` back to `PainterId`.
+                 namespace_alloc_by_client: true,
+diff --git a/components/paint/shader_cache.rs b/components/paint/shader_cache.rs
+new file mode 100644
+index 00000000000..6914f3815cd
+--- /dev/null
++++ b/components/paint/shader_cache.rs
+@@ -0,0 +1,239 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! Persistent on-disk cache of linked WebRender shader program binaries, the equivalent of
++//! Chrome's GPU shader cache / Gecko's `program_cache.rs`. Without it every launch recompiles
++//! each shader the first time it is drawn with, stalling early frames by hundreds of ms.
++//!
++//! Layout: `<config_dir>/shader-cache/<gpu>/<digest>.bin` (one postcard-serialized
++//! [`ProgramBinary`] per program) plus `<gpu>/startup.list` (digests in use after the first
++//! frames, preloaded on a background thread at the next launch). `<gpu>` hashes GL vendor,
++//! renderer and version, because WebRender's digest only covers the renderer name, so a driver
++//! update must not reuse stale binaries. Every IO/decode failure is just a cache miss.
++
++use std::collections::hash_map::DefaultHasher;
++use std::hash::Hasher;
++use std::path::{Path, PathBuf};
++use std::rc::Rc;
++use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
++use std::sync::{Arc, Mutex, mpsc};
++use std::{fs, thread};
++
++use log::{debug, warn};
++use rustc_hash::FxHashMap;
++use webrender::{ProgramBinary, ProgramCache, ProgramCacheObserver, ProgramSourceDigest};
++
++const STARTUP_LIST: &str = "startup.list";
++static WARNED: AtomicBool = AtomicBool::new(false);
++
++fn warn_once(message: String) {
++    if !WARNED.swap(true, Ordering::Relaxed) {
++        warn!("Shader cache: {message} (further errors logged at debug level)");
++    } else {
++        debug!("Shader cache: {message}");
++    }
++}
++
++/// Create a [`ProgramCache`] backed by `<config_dir>/shader-cache`, or `None` without a config dir.
++pub(crate) fn create_program_cache(gl: &dyn gleam::gl::Gl) -> Option<Rc<ProgramCache>> {
++    let root = servo_config::opts::get()
++        .config_dir
++        .clone()?
++        .join("shader-cache");
++    let mut hasher = DefaultHasher::new();
++    hasher.write(b"roves-shader-cache-v1");
++    hasher.write(env!("CARGO_PKG_VERSION").as_bytes());
++    for name in [gleam::gl::VENDOR, gleam::gl::RENDERER, gleam::gl::VERSION] {
++        hasher.write(gl.get_string(name).as_bytes());
++        hasher.write_u8(0);
++    }
++    let gpu_dir_name = format!("{:016x}", hasher.finish());
++    let dir = root.join(&gpu_dir_name);
++    if let Err(error) = fs::create_dir_all(&dir) {
++        warn_once(format!("cannot create {}: {error}", dir.display()));
++        return None;
++    }
++    debug!("Shader cache: using {}", dir.display());
++
++    // Preload the previous run's startup shaders off the main thread, and prune caches left
++    // behind by other GPUs/drivers so the directory does not grow without bound.
++    let preloaded = Arc::new(Mutex::new(FxHashMap::default()));
++    let (preload_dir, preload_map) = (dir.clone(), preloaded.clone());
++    let _ = thread::Builder::new()
++        .name("ShaderCacheLoad".into())
++        .spawn(move || preload(&root, &gpu_dir_name, &preload_dir, &preload_map));
++
++    let (writer, jobs) = mpsc::channel::<WriteJob>();
++    let writer_dir = dir.clone();
++    let _ = thread::Builder::new()
++        .name("ShaderCacheWrite".into())
++        .spawn(move || {
++            for job in jobs {
++                match job {
++                    WriteJob::Binaries(entries) => entries
++                        .iter()
++                        .for_each(|binary| write_binary(&writer_dir, binary)),
++                    WriteJob::StartupList(list) => {
++                        write_atomically(&writer_dir.join(STARTUP_LIST), list.as_bytes())
++                    },
++                }
++            }
++        });
++
++    Some(ProgramCache::new(Some(Box::new(DiskShaderCache {
++        dir,
++        preloaded,
++        writer,
++    }))))
++}
++
++enum WriteJob {
++    Binaries(Vec<Arc<ProgramBinary>>),
++    StartupList(String),
++}
++
++struct DiskShaderCache {
++    dir: PathBuf,
++    /// Binaries read ahead from `startup.list`, keyed by digest string.
++    preloaded: Arc<Mutex<FxHashMap<String, Arc<ProgramBinary>>>>,
++    writer: mpsc::Sender<WriteJob>,
++}
++
++impl ProgramCacheObserver for DiskShaderCache {
++    fn save_shaders_to_disk(&self, entries: Vec<Arc<ProgramBinary>>) {
++        let _ = self.writer.send(WriteJob::Binaries(entries));
++    }
++
++    fn set_startup_shaders(&self, entries: Vec<Arc<ProgramBinary>>) {
++        let list = entries
++            .iter()
++            .map(|binary| format!("{}\n", binary.source_digest()))
++            .collect();
++        let _ = self.writer.send(WriteJob::StartupList(list));
++    }
++
++    fn try_load_shader_from_disk(
++        &self,
++        digest: &ProgramSourceDigest,
++        program_cache: &Rc<ProgramCache>,
++    ) {
++        let key = digest.to_string();
++        let preloaded = self
++            .preloaded
++            .lock()
++            .ok()
++            .and_then(|mut map| map.remove(&key));
++        if let Some(binary) = preloaded.or_else(|| read_binary(&self.dir, &key).map(Arc::new)) {
++            program_cache.load_program_binary(binary);
++        }
++    }
++
++    fn notify_program_binary_failed(&self, binary: &Arc<ProgramBinary>) {
++        let path = binary_path(&self.dir, &binary.source_digest().to_string());
++        warn_once(format!("driver rejected {}, removing it", path.display()));
++        let _ = fs::remove_file(path);
++    }
++}
++
++fn binary_path(dir: &Path, digest: &str) -> PathBuf {
++    dir.join(format!("{digest}.bin"))
++}
++
++fn preload(
++    root: &Path,
++    gpu_dir_name: &str,
++    dir: &Path,
++    map: &Mutex<FxHashMap<String, Arc<ProgramBinary>>>,
++) {
++    if let Ok(list) = fs::read_to_string(dir.join(STARTUP_LIST)) {
++        for digest in list.lines().filter(|line| !line.is_empty()) {
++            if let Some(binary) = read_binary(dir, digest) &&
++                let Ok(mut map) = map.lock()
++            {
++                map.insert(digest.to_owned(), Arc::new(binary));
++            }
++        }
++    }
++    for entry in fs::read_dir(root).into_iter().flatten().flatten() {
++        if entry.file_name() != gpu_dir_name && entry.path().is_dir() {
++            debug!("Shader cache: pruning stale {}", entry.path().display());
++            let _ = fs::remove_dir_all(entry.path());
++        }
++    }
++}
++
++fn read_binary(dir: &Path, digest: &str) -> Option<ProgramBinary> {
++    let path = binary_path(dir, digest);
++    let bytes = fs::read(&path).ok()?;
++    match postcard::from_bytes::<ProgramBinary>(&bytes) {
++        Ok(binary) if binary.source_digest().to_string() == digest => Some(binary),
++        _ => {
++            warn_once(format!("discarding corrupt {}", path.display()));
++            let _ = fs::remove_file(path);
++            None
++        },
++    }
++}
++
++fn write_binary(dir: &Path, binary: &ProgramBinary) {
++    match postcard::to_stdvec(binary) {
++        Ok(bytes) => write_atomically(
++            &binary_path(dir, &binary.source_digest().to_string()),
++            &bytes,
++        ),
++        Err(error) => warn_once(format!("cannot serialize program binary: {error}")),
++    }
++}
++
++/// Write via a unique temporary file + rename, so concurrent painters/processes and crashes
++/// never leave a truncated file behind.
++fn write_atomically(path: &Path, bytes: &[u8]) {
++    static COUNTER: AtomicU64 = AtomicU64::new(0);
++    let tmp = path.with_extension(format!(
++        "{}-{}.tmp",
++        std::process::id(),
++        COUNTER.fetch_add(1, Ordering::Relaxed)
++    ));
++    let result = fs::write(&tmp, bytes).and_then(|()| fs::rename(&tmp, path));
++    if let Err(error) = result {
++        warn_once(format!("cannot write {}: {error}", path.display()));
++        let _ = fs::remove_file(&tmp);
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    /// `ProgramBinary` has no public constructor; build one through its serde layout
++    /// (`bytes`, `format`, `source_digest`), which postcard encodes like this tuple.
++    fn make_binary(bytes: Vec<u8>, format: u32, digest: u64) -> ProgramBinary {
++        let encoded = postcard::to_stdvec(&(bytes, format, digest)).expect("encode");
++        postcard::from_bytes(&encoded).expect("decode")
++    }
++
++    #[test]
++    fn roundtrip_and_corruption() {
++        let dir =
++            std::env::temp_dir().join(format!("servo-shader-cache-test-{}", std::process::id()));
++        fs::create_dir_all(&dir).expect("temp dir");
++
++        let binary = make_binary(vec![1, 2, 3, 250], 0x8741, 0xdead_beef);
++        let digest = binary.source_digest().to_string();
++        write_binary(&dir, &binary);
++        let loaded = read_binary(&dir, &digest).expect("cache hit");
++        assert_eq!(
++            postcard::to_stdvec(&loaded).expect("encode"),
++            postcard::to_stdvec(&binary).expect("encode")
++        );
++
++        // A file whose content does not match its name is a miss and gets removed.
++        assert!(read_binary(&dir, "0123").is_none());
++        fs::copy(binary_path(&dir, &digest), binary_path(&dir, "0123")).expect("copy");
++        assert!(read_binary(&dir, "0123").is_none());
++        assert!(!binary_path(&dir, "0123").exists());
++
++        let _ = fs::remove_dir_all(&dir);
++    }
++}
