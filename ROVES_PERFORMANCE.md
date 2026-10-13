@@ -91,7 +91,9 @@ sopra PixiJS o three.js) scrivono una riga `RAFSTATS` nel log.
 La media è la stessa (60 fps); Roves però salta dei frame. Le cause misurate:
 - **Compilazione degli shader di WebRender al primo uso:** paint da 180 a 410 ms nei primi
   secondi. `--pref gfx_precache_shaders=true` toglie i picchi ma blocca l'avvio per circa 4 s.
-  La soluzione in corso è una cache su disco dei binari degli shader, come quella di Chrome.
+  Dalla v0.7.8 c'è una cache su disco dei binari degli shader, come quella di Chrome: sulla
+  scena typewriter + pixi il paint più lento dei primi secondi scende da 176 ms (v0.7.7) a
+  10-12 ms già dal secondo avvio.
 - **Pause del GC di V8:** una GC completa di 19 ms durante la scena. Il GC è atomico; renderlo
   incrementale richiede barriere di scrittura in roves-js.
 - A regime il paint della pagina resta sotto i 7 ms per frame.
@@ -108,7 +110,7 @@ test le misurano.
 | GSAP | Stili scritti da JavaScript a ogni frame | Funziona; paint della pagina sotto gli 8 ms con 48 elementi |
 | PixiJS, three.js | WebGL 2 | Funzionano; ogni chiamata WebGL è un messaggio verso il thread WebGL |
 | Tone.js | Web Audio, AudioWorklet | `AudioWorkletNode` assente |
-| howler.js | Web Audio, `<audio>`, `canPlayType` | WAV, MP3, OGG Vorbis e FLAC sì; Opus, AAC, M4A e MP4 rispondono "" pur con i plugin GStreamer nel pacchetto |
+| howler.js | Web Audio, `<audio>`, `canPlayType` | Dalla v0.7.8 sono riconosciuti WAV, MP3, OGG Vorbis e Opus, WebM, AAC, MP4/M4A (`audio/x-m4a`) e FLAC. Prima Opus, AAC e MP4 risultavano "" per un errore di rilevamento dei codec |
 
 ## Aperto
 
