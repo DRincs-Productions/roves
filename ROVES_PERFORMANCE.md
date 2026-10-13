@@ -67,8 +67,18 @@ Stesso gioco aperto in Chrome e in Roves v0.7.7, misurati insieme per 10 s:
 La memoria è alla pari. Chrome però, in quel momento, aveva quasi certamente la finestra coperta:
 Chrome sospende il rendering delle finestre non visibili, e lo dice lo 0% di GPU. Roves invece
 continuava a disegnare 60 frame al secondo. Dalla v0.7.8 anche Roves rallenta la pagina e la
-segna `hidden` quando la finestra è ridotta a icona, nascosta o coperta. Il confronto a finestre
-entrambe visibili resta da rifare.
+segna `hidden` quando la finestra è ridotta a icona, nascosta o coperta. Misura sulla v0.7.9 (patch 0212):
+
+| | Visibilità | fps | CPU |
+| --- | --- | --- | --- |
+| Pagina di prova WebGL, visibile | `visible` | 60 | 34% |
+| Ridotta a icona | `hidden` (evento `visibilitychange`) | 0 | 0% |
+| Ripristinata | `visible` | 60 | 27% |
+| Visual novel, visibile | | 60 | 54% |
+| Visual novel, ridotta a icona | `hidden`; pixi-vn chiama `muteAll()` | 0 | 1,9% (solo grafo audio) |
+
+Fino alla v0.7.8 ogni pagina risultava `hidden` anche a finestra visibile, un difetto di Servo
+corretto nella stessa patch. Il confronto a finestre entrambe visibili resta da rifare.
 
 ## Fluidità (frame pacing), 13 ottobre 2026
 
