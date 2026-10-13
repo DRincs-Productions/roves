@@ -76,4 +76,9 @@ Riferimento: shell v0.7.3 su pagina vuota 228 MB; scena PixiJS piccola 275 MB.
 Fatto il 12 ottobre: presentazione diretta predefinita (CPU da 98,6% a 91,1%; egui ora costa
 ~0,1 ms per frame e non viene più tassellato).
 
+Fatto il 13 ottobre (v0.7.7):
+- icone SVG del menu della visual novel: compaiono 230 ms dopo il menu, prima 1,4-2 s. Le
+  immagini `data:` non passano più dalla rete;
+- cache HTTP su disco: al secondo avvio nessuna richiesta di rete per l'audio remoto.
+
 Interventi già fatti e relative misure: `CUSTOMIZATIONS.md`.
