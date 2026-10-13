@@ -13268,3 +13268,46 @@ nothing served when stale) pass along with the 5 existing `http_cache` tests.
 
 Pre-existing drift noticed while verifying: the root `Cargo.toml` sets
 `webxr ... default-features = false` since the v0.5.0 migration, and no patch carries it.
+
+## 2026-10-13 - Flex min-content like Chrome (Settings panel without right padding)
+
+**Servo file:** `components/layout/flexbox/layout.rs`. **Patch:** `0206-flex-min-content-like-chrome.patch`
+after 0205.
+
+In the visual novel's Settings panel the right column ran to the window edge and ate its right
+padding, while in Chrome the text wraps inside the column. A row flex container with text plus a
+control that cannot shrink (a switch, a button) reported its max-content width as its min-content
+width. Servo followed the spec's flex-fraction algorithm for single-line min-content: the
+control's fraction of 0 is the largest, so the text items kept their max-content width. Inside a
+grid (`grid gap-4` columns) the whole column was then laid out wider than its track. Chrome and
+Firefox instead use the sum of the items' min-content contributions. Servo now does the same.
+Each contribution is capped or floored by the item's flex base size and clamped by its min/max
+main size, the rule it already used for multi-line containers. The min-content flex-fraction
+bookkeeping is gone (−31 lines). Reproduced with a page using the game's own Tailwind CSS:
+variant A (row with text plus button) overflowed; variant B (plain paragraph) wrapped.
+
+## 2026-10-13 - Minimized or covered window: page throttled and `hidden`
+
+**Servo files:** `components/script/{script_thread.rs,dom/document/document.rs}`,
+`ports/servoshell/desktop/{event_loop.rs,headed_window.rs,tracing.rs}`. **Patch:**
+`0207-minimized-window-hidden-visibility.patch` after 0206.
+
+Servo only changed `document.visibilityState` on unload, so a game never got `visibilitychange`
+when its window was minimized, and kept playing music (Chrome pauses it through that event).
+SDL `Minimized`, `Hidden` and `Occluded` now become a new `WindowEvent::Visible(false)`.
+`Restored` and `Shown` become `Visible(true)`, and so does the first `Exposed` redraw after an
+occlusion. `HeadedWindow::set_hidden` throttles the window's WebViews
+(`WebView::set_throttled`), so timers and animations slow down and CPU and GPU drop. The
+script thread's `SetThrottled` handler now also calls the new `Document::set_visibility`, which
+runs the spec's visibility-state update and fires `visibilitychange`.
+
+## 2026-10-13 - Lower Web Audio output latency (GStreamer)
+
+**Servo file:** `components/media/backends/gstreamer/audio_sink.rs`. **Patch:**
+`0208-gstreamer-audio-low-latency.patch` after 0207.
+
+When the game paused or resumed its music (opening Settings), Roves reacted noticeably later than
+Chrome. The platform sink inside `autoaudiosink` kept GStreamer's default 200 ms ring buffer.
+A `child-added` handler now sets `buffer-time` 40 ms and `latency-time` 10 ms on it when the sink
+has those properties. Not compiled locally (this machine has no GStreamer development files),
+so CI checks it.

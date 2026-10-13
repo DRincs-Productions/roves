@@ -54,6 +54,21 @@ interazione, GTX 1050, 60 Hz:
 
 Riferimento: shell v0.7.3 su pagina vuota 228 MB; scena PixiJS piccola 275 MB.
 
+## Confronto con Chrome (13 ottobre 2026)
+
+Stesso gioco aperto in Chrome e in Roves v0.7.7, misurati insieme per 10 s:
+
+| | CPU | GPU 3D | Memoria privata |
+| --- | --- | --- | --- |
+| Chrome (13 processi, compresi eventuali altri tab) | 11% | 0% | 999 MB |
+| Roves | 102% | 6,5% | 973 MB |
+
+La memoria è alla pari. Chrome però, in quel momento, aveva quasi certamente la finestra coperta:
+Chrome sospende il rendering delle finestre non visibili, e lo dice lo 0% di GPU. Roves invece
+continuava a disegnare 60 frame al secondo. Dalla v0.7.8 anche Roves rallenta la pagina e la
+segna `hidden` quando la finestra è ridotta a icona, nascosta o coperta. Il confronto a finestre
+entrambe visibili resta da rifare.
+
 ## Aperto
 
 - **RAM:** circa 850 MB già al menu. Serve una ripartizione tra heap JS
@@ -66,6 +81,11 @@ Riferimento: shell v0.7.3 su pagina vuota 228 MB; scena PixiJS piccola 275 MB.
   "Painting" del profiler di Servo ~4,3 ms) e avviene a ogni frame perché il menu anima un
   canvas PixiJS. Il thread "senza nome" al 15% è il driver NVIDIA che esegue quel lavoro GL.
   Si riduce solo con meno lavoro GL per frame (WebRender o il percorso WebGL → composizione).
+- **Confronto a finestre visibili con Chrome:** da rifare con le due finestre affiancate. A
+  finestra visibile, il costo per frame di Roves (render di WebRender più driver) resta il punto
+  debole.
+- **Latenza audio:** buffer di uscita portato da 200 a 40 ms (v0.7.8). Da verificare a orecchio
+  aprendo le impostazioni del gioco.
 - **Formati audio:** `canPlayType` risponde vuoto per AAC, M4A e WebM. Probabilmente mancano
   plugin GStreamer nel pacchetto.
 - **Gamepad:** sostituire il polling hot-plug residuo (1 Hz) con gli eventi SDL.

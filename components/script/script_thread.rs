@@ -1837,7 +1837,7 @@ impl ScriptThread {
                 self.handle_set_document_activity_msg(cx, pipeline_id, activity)
             },
             ScriptThreadMessage::SetThrottled(webview_id, pipeline_id, throttled) => {
-                self.handle_set_throttled_msg(webview_id, pipeline_id, throttled)
+                self.handle_set_throttled_msg(cx, webview_id, pipeline_id, throttled)
             },
             ScriptThreadMessage::SetThrottledInContainingIframe(
                 _,
@@ -2846,6 +2846,7 @@ impl ScriptThread {
 
     fn handle_set_throttled_msg(
         &self,
+        cx: &mut js::context::JSContext,
         webview_id: WebViewId,
         pipeline_id: PipelineId,
         throttled: bool,
@@ -2865,6 +2866,9 @@ impl ScriptThread {
         match window {
             Some(window) => {
                 window.set_throttled(throttled);
+                // The embedder throttles a top-level page whose window is minimized or hidden,
+                // which is exactly when its visibility state is `hidden`.
+                window.Document().set_visibility(cx, !throttled);
                 return;
             },
             None => {

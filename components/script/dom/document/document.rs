@@ -4783,6 +4783,22 @@ impl Document {
         *self.declarative_refresh.borrow_mut() = Some(refresh);
     }
 
+    /// Sets the visibility state from the embedder (window minimized or restored), firing
+    /// `visibilitychange` when it changes. Only for an active document.
+    pub(crate) fn set_visibility(&self, cx: &mut JSContext, visible: bool) {
+        if !self.is_fully_active() {
+            return;
+        }
+        self.update_visibility_state(
+            cx,
+            if visible {
+                DocumentVisibilityState::Visible
+            } else {
+                DocumentVisibilityState::Hidden
+            },
+        );
+    }
+
     /// <https://html.spec.whatwg.org/multipage/#visibility-state>
     fn update_visibility_state(
         &self,

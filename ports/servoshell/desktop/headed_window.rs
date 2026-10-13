@@ -259,6 +259,8 @@ pub struct HeadedWindow {
     /// The egui interface that is responsible for showing the user interface elements of
     /// this headed `Window`.
     gui: RefCell<Gui>,
+    /// Whether the window is minimized, hidden or occluded, so its pages are throttled.
+    hidden: Cell<bool>,
     screen_size: Cell<Size2D<u32, DeviceIndependentPixel>>,
     last_theme: Cell<Theme>,
     webview_relative_mouse_point: Cell<Point2D<f32, DevicePixel>>,
@@ -450,6 +452,7 @@ impl HeadedWindow {
             webview_relative_mouse_point: Cell::new(Point2D::zero()),
             fullscreen: Cell::new(servoshell_preferences.start_fullscreen),
             config_dir: servoshell_preferences.config_dir.clone(),
+            hidden: Cell::new(false),
             inner_size: Cell::new(inner_size),
             screen_size: Cell::new(screen_size),
             last_theme: Cell::new(current_sdl_theme()),
@@ -920,6 +923,17 @@ impl HeadedWindow {
     /// unreachable leftovers from that body, kept only because deleting carefully-written
     /// logic that will need re-deriving anyway seemed worse than a `#[expect(dead_code)]` —
     /// re-wire them once `WindowEvent` grows the variants they need.
+    /// Like Chrome: the pages of a minimized, hidden or covered window are throttled and
+    /// become `hidden`, so a game can pause its music on `visibilitychange`.
+    fn set_hidden(&self, window: &ServoShellWindow, hidden: bool) {
+        if self.hidden.replace(hidden) == hidden {
+            return;
+        }
+        for (_, webview) in window.webviews() {
+            webview.set_throttled(hidden);
+        }
+    }
+
     pub(crate) fn handle_window_event(
         &self,
         state: Rc<RunningAppState>,
@@ -1001,6 +1015,11 @@ impl HeadedWindow {
 
         match event {
             WindowEvent::Focused(true) => state.handle_focused(window.clone()),
+            // Like Chrome: a minimized window's page is throttled and becomes `hidden`, so a
+            // game can pause its music on `visibilitychange`, and resumes when restored.
+            WindowEvent::Visible(visible) => self.set_hidden(&window, !visible),
+            // SDL reports the end of an occlusion only as an expose (a redraw request).
+            WindowEvent::RedrawRequested if self.hidden.get() => self.set_hidden(&window, false),
             WindowEvent::CloseRequested => window.schedule_close(),
             // TODO(SDL3 windowing): no egui input is wired up yet on this branch (see
             // `gui.rs`'s own `SdlEguiGlow` doc comment) -- so unlike the old winit-based

@@ -85,6 +85,9 @@ pub(crate) enum WindowEvent {
     CloseRequested,
     RedrawRequested,
     Focused(bool),
+    /// The window was minimized, hidden or fully covered (`false`), or restored or shown again
+    /// (`true`). An occluded window becomes visible again with its next `RedrawRequested`.
+    Visible(bool),
     KeyDown {
         keycode: Option<sdl3::keyboard::Keycode>,
         scancode: Option<sdl3::keyboard::Scancode>,
@@ -166,6 +169,10 @@ fn translate_sdl_event(
                 SdlWindowEvent::Exposed => WindowEvent::RedrawRequested,
                 SdlWindowEvent::FocusGained => WindowEvent::Focused(true),
                 SdlWindowEvent::FocusLost => WindowEvent::Focused(false),
+                SdlWindowEvent::Minimized | SdlWindowEvent::Hidden | SdlWindowEvent::Occluded => {
+                    WindowEvent::Visible(false)
+                },
+                SdlWindowEvent::Restored | SdlWindowEvent::Shown => WindowEvent::Visible(true),
                 SdlWindowEvent::MouseLeave => WindowEvent::CursorLeft,
                 _ => return None,
             };

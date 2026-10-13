@@ -125,6 +125,18 @@ impl AudioSink for GStreamerAudioSink {
             .map_err(|error| {
                 AudioSinkError::Backend(format!("autoaudiosink creation failed: {error:?}"))
             })?;
+        // The platform sink's default 200 ms ring buffer delays every Web Audio change, e.g. a
+        // game pausing its music, by up to that much; Chrome stays around 10-20 ms. Ask the
+        // real sink, created inside `autoaudiosink`, for a 40 ms buffer in 10 ms periods.
+        if let Some(child_proxy) = sink.dynamic_cast_ref::<gstreamer::ChildProxy>() {
+            child_proxy.connect_child_added(|_, child, _| {
+                for (name, microseconds) in [("buffer-time", 40_000i64), ("latency-time", 10_000)] {
+                    if child.has_property(name) {
+                        child.set_property(name, microseconds);
+                    }
+                }
+            });
+        }
         self.pipeline
             .add_many([&appsrc, &resample, &convert, &sink])
             .map_err(|error| AudioSinkError::Backend(error.to_string()))?;

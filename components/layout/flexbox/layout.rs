@@ -401,9 +401,8 @@ struct FlexItemBoxInlineContentSizesInfo {
     outer_flex_base_size: Au,
     outer_min_main_size: Au,
     outer_max_main_size: Option<Au>,
-    min_flex_factors: DesiredFlexFractionAndGrowOrShrinkFactor,
     max_flex_factors: DesiredFlexFractionAndGrowOrShrinkFactor,
-    min_content_main_size_for_multiline_container: Au,
+    min_content_contribution: Au,
     depends_on_block_constraints: bool,
 }
 
@@ -482,7 +481,6 @@ impl FlexContainer {
         // > 1. For each flex item, subtract its outer flex base size from its max-content
         // > contribution size.
         let mut chosen_max_flex_fraction = f32::NEG_INFINITY;
-        let mut chosen_min_flex_fraction = f32::NEG_INFINITY;
         let mut sum_of_flex_grow_factors = 0.0;
         let mut sum_of_flex_shrink_factors = 0.0;
         let mut item_infos = vec![];
@@ -507,8 +505,6 @@ impl FlexContainer {
                     // > fraction.
                     chosen_max_flex_fraction =
                         chosen_max_flex_fraction.max(info.max_flex_factors.desired_flex_fraction);
-                    chosen_min_flex_fraction =
-                        chosen_min_flex_fraction.max(info.min_flex_factors.desired_flex_fraction);
 
                     item_infos.push(info)
                 },
@@ -532,7 +528,6 @@ impl FlexContainer {
             }
         };
 
-        let chosen_min_flex_fraction = normalize_flex_fraction(chosen_min_flex_fraction);
         let chosen_max_flex_fraction = normalize_flex_fraction(chosen_max_flex_fraction);
 
         let main_gap = match self.config.flex_axis {
@@ -558,9 +553,8 @@ impl FlexContainer {
             outer_flex_base_size,
             outer_min_main_size,
             outer_max_main_size,
-            min_flex_factors,
             max_flex_factors,
-            min_content_main_size_for_multiline_container,
+            min_content_contribution,
             depends_on_block_constraints,
         } in item_infos.iter()
         {
@@ -575,25 +569,15 @@ impl FlexContainer {
                 ))
             .clamp_between_extremums(*outer_min_main_size, *outer_max_main_size);
 
-            // > The min-content main size of a single-line flex container is calculated
-            // > identically to the max-content main size, except that the flex items’
-            // > min-content contributions are used instead of their max-content contributions.
-            //
-            // > However, for a multi-line container, the min-content main size is simply the
-            // > largest min-content contribution of all the non-collapsed flex items in the
-            // > flex container. For this purpose, each item’s contribution is capped by the
-            // > item’s flex base size if the item is not growable, floored by the item’s flex
-            // > base size if the item is not shrinkable, and then further clamped by the item’s
-            // > min and max main sizes.
+            // The min-content size is the sum of the items' min-content contributions for a
+            // single-line container (largest one for a multi-line container), like Chrome and
+            // Firefox. The spec's flex-fraction algorithm, which Servo used, lets a single item
+            // that cannot shrink (a button, a switch) keep its text siblings at max-content, so
+            // a row of text plus a control never wrapped inside a grid or table cell.
             if self.config.flex_wrap == FlexWrap::Nowrap {
-                container_min_content_size += (*outer_flex_base_size +
-                    Au::from_f32_px(
-                        min_flex_factors.flex_grow_or_shrink_factor * chosen_min_flex_fraction,
-                    ))
-                .clamp_between_extremums(*outer_min_main_size, *outer_max_main_size);
+                container_min_content_size += *min_content_contribution;
             } else {
-                container_min_content_size
-                    .max_assign(*min_content_main_size_for_multiline_container);
+                container_min_content_size.max_assign(*min_content_contribution);
             }
 
             container_depends_on_block_constraints |= depends_on_block_constraints;
@@ -2490,41 +2474,26 @@ impl FlexItemBox {
             outer_flex_base_size,
         );
 
-        // > The min-content main size of a single-line flex container is calculated
-        // > identically to the max-content main size, except that the flex items’
-        // > min-content contributions are used instead of their max-content contributions.
-        let min_flex_factors = self.desired_flex_factors_for_preferred_width(
-            content_contribution_sizes.min_content,
-            flex_base_size,
-            outer_flex_base_size,
-        );
-
-        // > However, for a multi-line container, the min-content main size is simply the
-        // > largest min-content contribution of all the non-collapsed flex items in the
-        // > flex container. For this purpose, each item’s contribution is capped by the
-        // > item’s flex base size if the item is not growable, floored by the item’s flex
-        // > base size if the item is not shrinkable, and then further clamped by the item’s
-        // > min and max main sizes.
-        let mut min_content_main_size_for_multiline_container =
-            content_contribution_sizes.min_content;
+        // Each item's min-content contribution is capped by its flex base size if it cannot
+        // grow, floored by it if it cannot shrink, then clamped by its min and max main sizes
+        // (<https://drafts.csswg.org/css-flexbox-1/#intrinsic-main-sizes>, multi-line case).
+        let mut min_content_contribution = content_contribution_sizes.min_content;
         let style_position = &self.style().get_position();
         if style_position.flex_grow.is_zero() {
-            min_content_main_size_for_multiline_container.min_assign(outer_flex_base_size);
+            min_content_contribution.min_assign(outer_flex_base_size);
         }
         if style_position.flex_shrink.is_zero() {
-            min_content_main_size_for_multiline_container.max_assign(outer_flex_base_size);
+            min_content_contribution.max_assign(outer_flex_base_size);
         }
-        min_content_main_size_for_multiline_container =
-            min_content_main_size_for_multiline_container
-                .clamp_between_extremums(outer_min_main_size, outer_max_main_size);
+        min_content_contribution =
+            min_content_contribution.clamp_between_extremums(outer_min_main_size, outer_max_main_size);
 
         FlexItemBoxInlineContentSizesInfo {
             outer_flex_base_size,
             outer_min_main_size,
             outer_max_main_size,
-            min_flex_factors,
             max_flex_factors,
-            min_content_main_size_for_multiline_container,
+            min_content_contribution,
             depends_on_block_constraints,
         }
     }
