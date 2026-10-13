@@ -69,6 +69,28 @@ continuava a disegnare 60 frame al secondo. Dalla v0.7.8 anche Roves rallenta la
 segna `hidden` quando la finestra è ridotta a icona, nascosta o coperta. Il confronto a finestre
 entrambe visibili resta da rifare.
 
+## Fluidità (frame pacing), 13 ottobre 2026
+
+Misura: intervalli tra un `requestAnimationFrame` e l'altro per 20 s. Nella pagina di test le
+scene `?perf=typewriter-pixi` e `?perf=typewriter-three` (motion + react-markdown-typewriter
+sopra PixiJS o three.js) scrivono una riga `RAFSTATS` nel log.
+
+| Scena | Browser | p95 | p99 | Peggiore | > 33 ms |
+| --- | --- | --- | --- | --- | --- |
+| Menu della visual novel (dopo 8 s) | Chrome | 17,0 ms | 17,1 ms | 17,3 ms | 0 |
+| Menu della visual novel (dopo 8 s) | Roves v0.7.7 | 18,3 ms | 23,9 ms | 70 ms | 4 |
+| typewriter + pixi (dal caricamento) | Chrome | 17,0 ms | 17,1 ms | 133 ms | 9 |
+| typewriter + pixi (dal caricamento) | Roves v0.7.7 | 18,5 ms | 48,8 ms | 326 ms | 13 |
+| typewriter + three (dal caricamento) | Roves v0.7.7 | 18,3 ms | 26,8 ms | 273 ms | 10 |
+
+La media è la stessa (60 fps); Roves però salta dei frame. Le cause misurate:
+- **Compilazione degli shader di WebRender al primo uso:** paint da 180 a 410 ms nei primi
+  secondi. `--pref gfx_precache_shaders=true` toglie i picchi ma blocca l'avvio per circa 4 s.
+  La soluzione in corso è una cache su disco dei binari degli shader, come quella di Chrome.
+- **Pause del GC di V8:** una GC completa di 19 ms durante la scena. Il GC è atomico; renderlo
+  incrementale richiede barriere di scrittura in roves-js.
+- A regime il paint della pagina resta sotto i 7 ms per frame.
+
 ## Aperto
 
 - **RAM:** circa 850 MB già al menu. Serve una ripartizione tra heap JS
