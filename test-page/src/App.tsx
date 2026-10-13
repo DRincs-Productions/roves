@@ -281,6 +281,8 @@ export default function App() {
         <a href="?perf=blank" style={{ color: "#8ab4f8" }}>blank</a>
         <a href="?perf=pixi-static" style={{ color: "#8ab4f8" }}>pixi-static</a>
         <a href="?perf=pixi-animated" style={{ color: "#8ab4f8" }}>pixi-animated</a>
+        <a href="?perf=typewriter-pixi" style={{ color: "#8ab4f8" }}>typewriter + pixi</a>
+        <a href="?perf=typewriter-three" style={{ color: "#8ab4f8" }}>typewriter + three</a>
       </div>
 
       <GpuInfoPanel />

@@ -1,10 +1,22 @@
 import PixiPanel from "./PixiPanel.tsx";
+import TypewriterFixture from "./TypewriterFixture.tsx";
 
-export type PerformanceFixtureMode = "blank" | "pixi-static" | "pixi-animated";
+export type PerformanceFixtureMode =
+  | "blank"
+  | "pixi-static"
+  | "pixi-animated"
+  | "typewriter-pixi"
+  | "typewriter-three";
 
 export function performanceFixtureMode(search: string): PerformanceFixtureMode | null {
   const value = new URLSearchParams(search).get("perf");
-  if (value === "blank" || value === "pixi-static" || value === "pixi-animated") {
+  if (
+    value === "blank" ||
+    value === "pixi-static" ||
+    value === "pixi-animated" ||
+    value === "typewriter-pixi" ||
+    value === "typewriter-three"
+  ) {
     return value;
   }
   return null;
@@ -16,6 +28,9 @@ export function performanceFixtureMode(search: string): PerformanceFixtureMode |
  * contaminate CPU/wake-up measurements, especially the static and blank baselines.
  */
 export default function PerformanceFixture({ mode }: { mode: PerformanceFixtureMode }) {
+  if (mode === "typewriter-pixi" || mode === "typewriter-three") {
+    return <TypewriterFixture scene={mode === "typewriter-pixi" ? "pixi" : "three"} />;
+  }
   return (
     <main
       data-performance-fixture={mode}
