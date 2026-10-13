@@ -1,5 +1,15 @@
 # Servo (vendored, customized)
 
+## Lingua e direzione del progetto
+
+- **In chat rispondi sempre in italiano.** Codice, commit, `CUSTOMIZATIONS.md` e patch restano
+  in inglese come oggi.
+- **Allontanarsi da Servo upstream non è un problema.** L'obiettivo è avere meno codice nostro:
+  delegare il più possibile a librerie mantenute da altri e scrivere solo il codice che serve a
+  farle lavorare insieme. Togli il codice non usato e, quando una libreria esistente copre una
+  parte del lavoro, preferiscila al codice scritto a mano. Restare compatibili con i futuri
+  aggiornamenti di Servo non è un vincolo. Piano e candidati sono in `docs/LIBRERIE_E_CONSOLE.md`.
+
 ## Active work: autonomous V8 migration
 
 Read `docs/V8_MIGRATION.md` and `docs/V8_MIGRATION_HANDOFF.md` before continuing the migration.
