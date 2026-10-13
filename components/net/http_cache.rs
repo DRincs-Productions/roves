@@ -8,6 +8,7 @@
 //! and <http://tools.ietf.org/html/rfc7232>.
 
 use std::ops::Bound;
+use std::path::PathBuf;
 use std::sync::Arc as StdArc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
@@ -33,6 +34,7 @@ use tokio::sync::mpsc::{UnboundedSender as TokioSender, unbounded_channel as unb
 use tokio::sync::{OwnedRwLockWriteGuard, RwLock as TokioRwLock};
 
 use crate::fetch::methods::{Data, DoneChannel};
+use crate::http_disk_cache::HttpDiskCache;
 
 /// The key used to differentiate requests in the cache.
 #[derive(Clone, Eq, Hash, MallocSizeOf, PartialEq)]
@@ -129,6 +131,8 @@ type QuickCachePlaceeholderGuard<'a> =
 pub struct HttpCache {
     /// cached responses.
     entries: QuickCache,
+    /// The persistent tier, consulted on a memory miss; `None` keeps the cache in memory only.
+    disk: Option<HttpDiskCache>,
 }
 
 impl MallocSizeOf for HttpCache {
@@ -147,6 +151,7 @@ impl Default for HttpCache {
             .expect("http_cache_size needs to fit into u64");
         Self {
             entries: Cache::new(size),
+            disk: None,
         }
     }
 }
@@ -810,6 +815,21 @@ fn resolve_location_url(
 }
 
 impl HttpCache {
+    /// Create a cache that also persists responses in `disk_cache_dir`.
+    pub fn with_disk_cache(disk_cache_dir: PathBuf) -> Self {
+        Self {
+            disk: Some(HttpDiskCache::new(disk_cache_dir)),
+            ..Default::default()
+        }
+    }
+
+    /// The persistent tier of this cache, if any and if caching is enabled.
+    pub(crate) fn disk_cache(&self) -> Option<&HttpDiskCache> {
+        self.disk
+            .as_ref()
+            .filter(|_| !pref!(network_http_cache_disabled))
+    }
+
     /// Wake-up consumers of cached resources
     /// whose response body was still receiving data when the resource was constructed,
     /// and whose response has now either been completed or cancelled.
@@ -869,6 +889,9 @@ impl HttpCache {
     /// Clear the contents of this cache.
     pub(crate) fn clear(&self) {
         self.entries.clear();
+        if let Some(disk) = &self.disk {
+            disk.clear();
+        }
     }
 
     /// Insert a response for `request` into the cache (used by tests that need direct access).

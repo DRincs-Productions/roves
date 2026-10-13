@@ -13236,3 +13236,35 @@ type, one chunk and the EOF. Any URL it cannot decode still takes the normal fet
 registers its image listener after this call, which is fine: `ImageCache::add_listener` also
 answers listeners of images that have already completed. This speeds up every `data:` image
 used by layout, not only inline SVG.
+
+## 2026-10-13 - Persistent HTTP disk cache (http-cache-semantics + cacache)
+
+**Servo files:** `Cargo.toml`, `components/net/{Cargo.toml,http_cache.rs,http_disk_cache.rs (new),
+http_loader.rs,lib.rs,resource_thread.rs,tests/http_cache.rs}`,
+`ports/servoshell/desktop/bundle_launch.rs`. **Patch:** `0205-http-disk-cache.patch` after 0204
+(no `Cargo.lock` hunk; CI re-resolves the lockfile).
+
+Games that load assets over http(s), such as the visual novel's remote images and audio,
+downloaded them again on every launch, because Servo's HTTP cache lives only in memory.
+`HttpDiskCache` adds a disk tier built on two maintained crates rather than our own code.
+`http-cache-semantics` 3.0 decides storability and freshness (RFC 9111, private-cache mode,
+`Vary`). `cacache` 13.1 (tokio runtime only) stores the body content-addressed, with the
+serialized `CachePolicy` as metadata.
+- Stored: complete `200` responses to `GET` over http(s) without `Authorization`, `Cookie` or
+  `Range`, with cache mode other than no-store or reload, and only while fresh. The write runs
+  in the background once the body succeeds; entries are capped at 256 MB.
+- Served: only on a memory miss, when `before_request` says `Fresh`. The entry is copied into
+  the memory cache, so range requests and cache modes keep using the existing logic. Stale
+  entries go to the network and get overwritten; nothing is revalidated from disk yet.
+- `HttpCache::clear` (ClearCache) also empties the disk directory. Private browsing stays
+  memory only.
+- The cache lives in `<config_dir>/http-cache`. Bundled games now get their own config dir,
+  `<game data dir>/config` (next to `roves.log` and the content cache), instead of the
+  `%APPDATA%\Servo` folder all games shared. Preferences and the fullscreen marker are per game
+  too; `--config-dir` in `launch.json` args still wins.
+
+Three new `net` tests (store and serve after a "restart", nothing stored when not storable,
+nothing served when stale) pass along with the 5 existing `http_cache` tests.
+
+Pre-existing drift noticed while verifying: the root `Cargo.toml` sets
+`webxr ... default-features = false` since the v0.5.0 migration, and no patch carries it.

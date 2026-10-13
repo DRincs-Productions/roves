@@ -416,6 +416,9 @@ and paint and only blits Servo's off-screen frame; any other frame uses the comp
 `direct_presents` with `ROVES_PERF_LOG_INTERVAL_MS=1000`; see
 [the rendering plan](./docs/FAST_PATH_RENDERING.md).
 
+Images, audio and other files a game downloads over http(s) are kept in a per-game disk cache
+and reused on later launches while the server marks them fresh.
+
 On Windows laptops with two GPUs, the shell asks NVIDIA Optimus and AMD switchable graphics for
 the discrete GPU. WebXR is not built into the shell.
 

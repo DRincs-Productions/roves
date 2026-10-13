@@ -2,9 +2,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use http::header::{CACHE_CONTROL, CONTENT_LENGTH, CONTENT_RANGE, EXPIRES, HeaderValue, RANGE};
+use http::header::{
+    AUTHORIZATION, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_RANGE, EXPIRES, HeaderValue, RANGE,
+};
 use http::{HeaderMap, StatusCode};
 use net::http_cache::{CacheKey, HttpCache, ValidationStatus, refresh};
+use net::http_disk_cache::HttpDiskCache;
 use net_traits::blob_url_store::UrlWithBlobClaim;
 use net_traits::request::{Referrer, RequestBuilder};
 use net_traits::response::{Response, ResponseBody};
@@ -224,4 +227,114 @@ async fn test_stale_while_revalidate_not_used_when_request_demands_revalidation(
         },
         "a no-cache request must trigger synchronous validation, not background revalidation"
     );
+}
+
+fn build_disk_cache_test_request(
+    url: &ServoUrl,
+    headers: HeaderMap,
+) -> net_traits::request::Request {
+    RequestBuilder::new(
+        None,
+        UrlWithBlobClaim::new(url.clone(), None),
+        Referrer::NoReferrer,
+    )
+    .pipeline_id(Some(TEST_PIPELINE_ID))
+    .origin(url.origin())
+    .headers(headers)
+    .build()
+}
+
+fn build_disk_cache_test_response(url: &ServoUrl, cache_control: &'static str) -> Response {
+    let mut response = Response::new(
+        url.clone(),
+        ResourceFetchTiming::new(ResourceTimingType::Resource),
+    );
+    response.status = StatusCode::OK.into();
+    response
+        .headers
+        .insert(CACHE_CONTROL, HeaderValue::from_static(cache_control));
+    response
+}
+
+#[tokio::test]
+async fn test_disk_cache_serves_fresh_response_after_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = ServoUrl::parse("https://example.com/assets/music.wav").unwrap();
+    let request = build_disk_cache_test_request(&url, HeaderMap::new());
+    let response = build_disk_cache_test_response(&url, "max-age=3600");
+
+    HttpDiskCache::new(dir.path().to_owned())
+        .prepare_store(&request, &response)
+        .expect("a fresh 200 response should be storable")
+        .write(vec![1, 2, 3])
+        .await;
+
+    // A new instance stands in for a later launch.
+    let disk_cache = HttpDiskCache::new(dir.path().to_owned());
+    let loaded = disk_cache
+        .load(&request)
+        .await
+        .expect("a fresh response should be served from disk");
+    assert_eq!(loaded.status, StatusCode::OK);
+    assert_eq!(*loaded.body.lock(), ResponseBody::Done(vec![1, 2, 3]));
+
+    // The loaded response can be promoted into the memory cache.
+    let memory_cache = HttpCache::default();
+    memory_cache.store(&request, &loaded).await;
+    assert!(
+        memory_cache
+            .construct_response(&request, &mut None)
+            .await
+            .is_some()
+    );
+
+    disk_cache.clear();
+    assert!(disk_cache.load(&request).await.is_none());
+}
+
+#[tokio::test]
+async fn test_disk_cache_does_not_store_non_storable_responses() {
+    let dir = tempfile::tempdir().unwrap();
+    let disk_cache = HttpDiskCache::new(dir.path().to_owned());
+    let url = ServoUrl::parse("https://example.com/assets/image.webp").unwrap();
+    let request = build_disk_cache_test_request(&url, HeaderMap::new());
+
+    let response = build_disk_cache_test_response(&url, "no-store");
+    assert!(disk_cache.prepare_store(&request, &response).is_none());
+
+    let mut credentials = HeaderMap::new();
+    credentials.insert(AUTHORIZATION, HeaderValue::from_static("Bearer secret"));
+    let request_with_credentials = build_disk_cache_test_request(&url, credentials);
+    let response = build_disk_cache_test_response(&url, "max-age=3600");
+    assert!(
+        disk_cache
+            .prepare_store(&request_with_credentials, &response)
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn test_disk_cache_does_not_serve_stale_responses() {
+    let dir = tempfile::tempdir().unwrap();
+    let disk_cache = HttpDiskCache::new(dir.path().to_owned());
+    let url = ServoUrl::parse("https://example.com/assets/video.webm").unwrap();
+    let request = build_disk_cache_test_request(&url, HeaderMap::new());
+    let response = build_disk_cache_test_response(&url, "max-age=1");
+
+    disk_cache
+        .prepare_store(&request, &response)
+        .expect("a fresh 200 response should be storable")
+        .write(vec![4, 5, 6])
+        .await;
+    assert!(disk_cache.load(&request).await.is_some());
+
+    // A request demanding revalidation is not answered from disk.
+    let mut no_cache = HeaderMap::new();
+    no_cache.insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    let revalidating_request = build_disk_cache_test_request(&url, no_cache);
+    assert!(disk_cache.load(&revalidating_request).await.is_none());
+
+    // Once expired, the entry is not served either.
+    std::thread::sleep(std::time::Duration::from_millis(2100));
+    assert!(disk_cache.load(&request).await.is_none());
 }

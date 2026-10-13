@@ -1554,6 +1554,24 @@ async fn http_network_or_cache_fetch(
         )
         .await;
 
+        // On a memory miss, promote a fresh response from the disk tier into the memory cache
+        // and construct the response from there, so ranges and cache modes are handled as usual.
+        if response.is_none() &&
+            matches!(cache_guard, CachedResourcesOrGuard::Guard(_)) &&
+            let Some(disk_cache) = context.state.http_cache.disk_cache() &&
+            let Some(disk_response) = disk_cache.load(http_request).await
+        {
+            cache_guard.insert(http_request, &disk_response);
+            cache_guard = block_for_cache_ready(
+                context,
+                http_request,
+                done_chan,
+                &mut revalidating_flag,
+                &mut response,
+            )
+            .await;
+        }
+
         // TODO(#33616): Step 9. If aborted, then return the appropriate network error for fetchParams.
 
         // Step 10. If response is null, then:
@@ -2271,6 +2289,13 @@ async fn http_network_fetch(
     response.referrer = request.referrer.to_url().cloned();
     response.referrer_policy = request.referrer_policy;
 
+    // Whether to persist the response is decided now; it is written once the body is complete.
+    let disk_store = context
+        .state
+        .http_cache
+        .disk_cache()
+        .and_then(|disk_cache| disk_cache.prepare_store(request, &response));
+
     let res_body = response.body.clone();
 
     // We're about to spawn a future to be waited on here
@@ -2340,6 +2365,9 @@ async fn http_network_fetch(
                     _ => vec![],
                 };
                 let devtools_response_body = completed_body.clone();
+                if let Some(disk_store) = disk_store {
+                    spawn_task(disk_store.write(completed_body.clone()));
+                }
                 *body = ResponseBody::Done(completed_body);
                 send_response_values_to_devtools(
                     Some(headers),

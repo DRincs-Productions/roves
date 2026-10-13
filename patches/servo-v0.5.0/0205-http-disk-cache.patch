@@ -1,0 +1,557 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 7f819e1d9a4..676a171f52d 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -62,6 +62,7 @@ byte-slice-cast = "1.2.3"
+ bytemuck = "1"
+ byteorder = "1.5"
+ bytes = "1.0"
++cacache = { version = "13.1.0", default-features = false, features = ["tokio-runtime"] }
+ cbc = { version = "0.2", features = ["alloc", "zeroize"] }
+ cc = "1.2"
+ cfg-if = "1.0.4"
+@@ -129,6 +130,7 @@ hkdf = "0.13"
+ html5ever = "0.39"
+ http = "1.4"
+ http-body-util = "0.1"
++http-cache-semantics = "3.0.0"
+ http02 = { package = "http", version = "0.2" }
+ httparse = "1.9"
+ hyper = "1.10"
+diff --git a/components/net/Cargo.toml b/components/net/Cargo.toml
+index e87e01bb1a2..a6460060195 100644
+--- a/components/net/Cargo.toml
++++ b/components/net/Cargo.toml
+@@ -26,6 +26,7 @@ async-recursion = { workspace = true }
+ async-tungstenite = { workspace = true }
+ base64 = { workspace = true }
+ bytes = { workspace = true }
++cacache = { workspace = true }
+ chrono = { workspace = true }
+ content-security-policy = { workspace = true }
+ cookie = { workspace = true }
+@@ -41,6 +42,7 @@ futures-util = { workspace = true }
+ headers = { workspace = true }
+ http = { workspace = true }
+ http-body-util = { workspace = true }
++http-cache-semantics = { workspace = true }
+ hyper = { workspace = true, features = ["client", "http1", "http2"] }
+ hyper-rustls = { workspace = true }
+ hyper-util = { workspace = true }
+@@ -68,6 +70,7 @@ rustls = { workspace = true, features = ["aws-lc-rs"] }
+ rustls-pki-types = { workspace = true }
+ rustls-platform-verifier = { workspace = true }
+ serde = { workspace = true }
++serde_json = { workspace = true }
+ servo-base = { workspace = true }
+ servo-config = { workspace = true }
+ servo-default-resources = { workspace = true, optional = true }
+@@ -99,6 +102,7 @@ hyper-util = { workspace = true, features = ["server-graceful"] }
+ net = { package = "servo-net", path = ".", features = ["test-util"] }
+ rustls = { workspace = true, features = ["aws-lc-rs"] }
+ servo-default-resources = { workspace = true }
++tempfile = { workspace = true }
+ 
+ [[test]]
+ name = "main"
+diff --git a/components/net/http_cache.rs b/components/net/http_cache.rs
+index 751c352158f..7e0c3b6ebae 100644
+--- a/components/net/http_cache.rs
++++ b/components/net/http_cache.rs
+@@ -8,6 +8,7 @@
+ //! and <http://tools.ietf.org/html/rfc7232>.
+ 
+ use std::ops::Bound;
++use std::path::PathBuf;
+ use std::sync::Arc as StdArc;
+ use std::sync::atomic::{AtomicBool, Ordering};
+ use std::time::{Duration, Instant, SystemTime};
+@@ -33,6 +34,7 @@ use tokio::sync::mpsc::{UnboundedSender as TokioSender, unbounded_channel as unb
+ use tokio::sync::{OwnedRwLockWriteGuard, RwLock as TokioRwLock};
+ 
+ use crate::fetch::methods::{Data, DoneChannel};
++use crate::http_disk_cache::HttpDiskCache;
+ 
+ /// The key used to differentiate requests in the cache.
+ #[derive(Clone, Eq, Hash, MallocSizeOf, PartialEq)]
+@@ -129,6 +131,8 @@ type QuickCachePlaceeholderGuard<'a> =
+ pub struct HttpCache {
+     /// cached responses.
+     entries: QuickCache,
++    /// The persistent tier, consulted on a memory miss; `None` keeps the cache in memory only.
++    disk: Option<HttpDiskCache>,
+ }
+ 
+ impl MallocSizeOf for HttpCache {
+@@ -147,6 +151,7 @@ impl Default for HttpCache {
+             .expect("http_cache_size needs to fit into u64");
+         Self {
+             entries: Cache::new(size),
++            disk: None,
+         }
+     }
+ }
+@@ -810,6 +815,21 @@ fn resolve_location_url(
+ }
+ 
+ impl HttpCache {
++    /// Create a cache that also persists responses in `disk_cache_dir`.
++    pub fn with_disk_cache(disk_cache_dir: PathBuf) -> Self {
++        Self {
++            disk: Some(HttpDiskCache::new(disk_cache_dir)),
++            ..Default::default()
++        }
++    }
++
++    /// The persistent tier of this cache, if any and if caching is enabled.
++    pub(crate) fn disk_cache(&self) -> Option<&HttpDiskCache> {
++        self.disk
++            .as_ref()
++            .filter(|_| !pref!(network_http_cache_disabled))
++    }
++
+     /// Wake-up consumers of cached resources
+     /// whose response body was still receiving data when the resource was constructed,
+     /// and whose response has now either been completed or cancelled.
+@@ -869,6 +889,9 @@ impl HttpCache {
+     /// Clear the contents of this cache.
+     pub(crate) fn clear(&self) {
+         self.entries.clear();
++        if let Some(disk) = &self.disk {
++            disk.clear();
++        }
+     }
+ 
+     /// Insert a response for `request` into the cache (used by tests that need direct access).
+diff --git a/components/net/http_disk_cache.rs b/components/net/http_disk_cache.rs
+new file mode 100644
+index 00000000000..3174ef1073e
+--- /dev/null
++++ b/components/net/http_disk_cache.rs
+@@ -0,0 +1,188 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++#![deny(missing_docs)]
++
++//! A persistent disk tier for the HTTP cache, so that remote resources (e.g. game assets)
++//! survive restarts. Storability and freshness are decided by `http-cache-semantics`
++//! (RFC 9111), storage is a content-addressable `cacache` directory.
++//!
++//! Only complete `200` responses to plain `GET` requests over http(s) without credentials
++//! are stored. Entries are only ever served while fresh: stale entries are left to the
++//! network path, which overwrites them with the new response.
++
++use std::path::PathBuf;
++use std::time::SystemTime;
++
++use http::header;
++use http_cache_semantics::{BeforeRequest, CacheOptions, CachePolicy};
++use log::{debug, warn};
++use net_traits::request::{CacheMode, Request};
++use net_traits::response::{Response, ResponseBody};
++use net_traits::{ResourceFetchTiming, ResourceTimingType};
++use servo_url::ServoUrl;
++
++/// Responses larger than this are not written to disk.
++const MAX_ENTRY_SIZE: usize = 256 * 1024 * 1024;
++
++/// A persistent HTTP cache stored in a directory.
++#[derive(Clone)]
++pub struct HttpDiskCache {
++    dir: PathBuf,
++}
++
++/// A response that is allowed to be stored, waiting for its body to complete.
++pub struct PendingDiskStore {
++    dir: PathBuf,
++    key: String,
++    policy: CachePolicy,
++}
++
++/// Whether `request` may be answered from, or stored in, the disk cache.
++fn is_candidate(request: &Request) -> bool {
++    let url = request.current_url();
++    request.method == http::Method::GET &&
++        matches!(url.scheme(), "http" | "https") &&
++        !matches!(request.cache_mode, CacheMode::NoStore | CacheMode::Reload) &&
++        !request.headers.contains_key(header::AUTHORIZATION) &&
++        !request.headers.contains_key(header::COOKIE)
++}
++
++/// The request as seen by `http-cache-semantics`; it only looks at the URI, method and headers.
++fn policy_request(request: &Request) -> Option<http::Request<()>> {
++    let mut url = request.current_url().into_url();
++    url.set_fragment(None);
++    let mut policy_request = http::Request::get(url.as_str()).body(()).ok()?;
++    *policy_request.headers_mut() = request.headers.clone();
++    Some(policy_request)
++}
++
++/// The cache options of a private (single-user) cache, as opposed to a shared proxy cache.
++fn cache_options() -> CacheOptions {
++    CacheOptions {
++        shared: false,
++        ..Default::default()
++    }
++}
++
++impl HttpDiskCache {
++    /// Create a disk cache stored in `dir`, which is created on the first write.
++    pub fn new(dir: PathBuf) -> Self {
++        Self { dir }
++    }
++
++    /// Decide, once the response headers are known, whether `response` should be written to
++    /// disk once its body is complete.
++    pub fn prepare_store(
++        &self,
++        request: &Request,
++        response: &Response,
++    ) -> Option<PendingDiskStore> {
++        // Range requests and their partial responses are left to the memory cache.
++        if !is_candidate(request) ||
++            request.headers.contains_key(header::RANGE) ||
++            response.status != http::StatusCode::OK
++        {
++            return None;
++        }
++        let mut policy_response = http::Response::new(());
++        *policy_response.status_mut() = http::StatusCode::OK;
++        *policy_response.headers_mut() = response.headers.clone();
++        let now = SystemTime::now();
++        let policy = CachePolicy::new_options(
++            &policy_request(request)?,
++            &policy_response,
++            now,
++            cache_options(),
++        );
++        // Responses that would never be served fresh are not worth a disk write.
++        if !policy.is_storable() || policy.is_stale(now) {
++            return None;
++        }
++        Some(PendingDiskStore {
++            dir: self.dir.clone(),
++            key: request.current_url().into_string(),
++            policy,
++        })
++    }
++
++    /// Load a fresh stored response for `request`, if there is one.
++    pub async fn load(&self, request: &Request) -> Option<Response> {
++        if !is_candidate(request) {
++            return None;
++        }
++        let url = request.current_url();
++        let entry = cacache::metadata(&self.dir, url.as_str()).await.ok()??;
++        let policy: CachePolicy = serde_json::from_value(entry.metadata).ok()?;
++        let BeforeRequest::Fresh(parts) =
++            policy.before_request(&policy_request(request)?, SystemTime::now())
++        else {
++            return None;
++        };
++        // `read_hash` verifies the content integrity, so a corrupted file is a miss.
++        let body = cacache::read_hash(&self.dir, &entry.integrity).await.ok()?;
++        debug!("serving {url} from the disk cache");
++        Some(build_response(url, request.timing_type(), parts, body))
++    }
++
++    /// Remove every stored response.
++    pub fn clear(&self) {
++        if self.dir.exists() &&
++            let Err(error) = cacache::clear_sync(&self.dir)
++        {
++            warn!("Failed to clear the HTTP disk cache: {error}");
++        }
++    }
++}
++
++fn build_response(
++    url: ServoUrl,
++    timing_type: ResourceTimingType,
++    parts: http::response::Parts,
++    body: Vec<u8>,
++) -> Response {
++    let mut response = Response::new(url, ResourceFetchTiming::new(timing_type));
++    response.status = parts.status.into();
++    // These headers carry an up-to-date `Age`, so the memory cache computes the remaining
++    // freshness correctly.
++    response.headers = parts.headers;
++    *response.body.lock() = ResponseBody::Done(body);
++    response
++}
++
++impl PendingDiskStore {
++    /// Write the complete `body` to disk, replacing any previous entry for the same URL.
++    pub async fn write(self, body: Vec<u8>) {
++        if body.len() > MAX_ENTRY_SIZE {
++            return;
++        }
++        let Ok(metadata) = serde_json::to_value(&self.policy) else {
++            return;
++        };
++        let previous = cacache::metadata(&self.dir, &self.key).await.ok().flatten();
++        let result = async {
++            let integrity = cacache::write_hash(&self.dir, &body).await?;
++            let options = cacache::WriteOpts::new()
++                .integrity(integrity.clone())
++                .size(body.len())
++                .metadata(metadata);
++            cacache::index::insert_async(&self.dir, &self.key, options).await?;
++            // Drop the content the previous entry pointed to, so that updated resources
++            // don't accumulate on disk.
++            if let Some(previous) = previous &&
++                previous.integrity != integrity
++            {
++                cacache::remove_hash(&self.dir, &previous.integrity).await?;
++            }
++            Ok::<_, cacache::Error>(())
++        }
++        .await;
++        if let Err(error) = result {
++            warn!(
++                "Failed to write {} to the HTTP disk cache: {error}",
++                self.key
++            );
++        }
++    }
++}
+diff --git a/components/net/http_loader.rs b/components/net/http_loader.rs
+index b4ef86885d6..393d64b9aa3 100644
+--- a/components/net/http_loader.rs
++++ b/components/net/http_loader.rs
+@@ -1554,6 +1554,24 @@ async fn http_network_or_cache_fetch(
+         )
+         .await;
+ 
++        // On a memory miss, promote a fresh response from the disk tier into the memory cache
++        // and construct the response from there, so ranges and cache modes are handled as usual.
++        if response.is_none() &&
++            matches!(cache_guard, CachedResourcesOrGuard::Guard(_)) &&
++            let Some(disk_cache) = context.state.http_cache.disk_cache() &&
++            let Some(disk_response) = disk_cache.load(http_request).await
++        {
++            cache_guard.insert(http_request, &disk_response);
++            cache_guard = block_for_cache_ready(
++                context,
++                http_request,
++                done_chan,
++                &mut revalidating_flag,
++                &mut response,
++            )
++            .await;
++        }
++
+         // TODO(#33616): Step 9. If aborted, then return the appropriate network error for fetchParams.
+ 
+         // Step 10. If response is null, then:
+@@ -2271,6 +2289,13 @@ async fn http_network_fetch(
+     response.referrer = request.referrer.to_url().cloned();
+     response.referrer_policy = request.referrer_policy;
+ 
++    // Whether to persist the response is decided now; it is written once the body is complete.
++    let disk_store = context
++        .state
++        .http_cache
++        .disk_cache()
++        .and_then(|disk_cache| disk_cache.prepare_store(request, &response));
++
+     let res_body = response.body.clone();
+ 
+     // We're about to spawn a future to be waited on here
+@@ -2340,6 +2365,9 @@ async fn http_network_fetch(
+                     _ => vec![],
+                 };
+                 let devtools_response_body = completed_body.clone();
++                if let Some(disk_store) = disk_store {
++                    spawn_task(disk_store.write(completed_body.clone()));
++                }
+                 *body = ResponseBody::Done(completed_body);
+                 send_response_values_to_devtools(
+                     Some(headers),
+diff --git a/components/net/lib.rs b/components/net/lib.rs
+index c3db7ee6c1a..45935e9fb69 100644
+--- a/components/net/lib.rs
++++ b/components/net/lib.rs
+@@ -15,6 +15,7 @@ pub mod filemanager_thread;
+ mod hosts;
+ pub mod hsts;
+ pub mod http_cache;
++pub mod http_disk_cache;
+ pub mod http_loader;
+ pub mod image_cache;
+ pub mod local_directory_listing;
+diff --git a/components/net/resource_thread.rs b/components/net/resource_thread.rs
+index cfdb5d1316e..68c2dcee704 100644
+--- a/components/net/resource_thread.rs
++++ b/components/net/resource_thread.rs
+@@ -213,13 +213,18 @@ fn create_http_states(
+         servo_base::read_json_from_file(&mut cookie_jar, config_dir, "cookie_jar.json");
+     }
+ 
++    // Only the public state persists responses; private browsing stays in memory.
++    let http_cache = match config_dir {
++        Some(config_dir) => HttpCache::with_disk_cache(config_dir.join("http-cache")),
++        None => HttpCache::default(),
++    };
+     let override_manager = CertificateErrorOverrideManager::new();
+     let http_state = HttpState {
+         hsts_list: RwLock::new(hsts_list),
+         cookie_jar: RwLock::new(cookie_jar),
+         auth_cache: RwLock::new(auth_cache),
+         history_states: RwLock::new(FxHashMap::default()),
+-        http_cache: HttpCache::default(),
++        http_cache,
+         client: create_http_client(create_tls_config(
+             ca_certificates.clone(),
+             ignore_certificate_errors,
+diff --git a/components/net/tests/http_cache.rs b/components/net/tests/http_cache.rs
+index a3dde67ab7e..4750be2d8d5 100644
+--- a/components/net/tests/http_cache.rs
++++ b/components/net/tests/http_cache.rs
+@@ -2,9 +2,12 @@
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+ 
+-use http::header::{CACHE_CONTROL, CONTENT_LENGTH, CONTENT_RANGE, EXPIRES, HeaderValue, RANGE};
++use http::header::{
++    AUTHORIZATION, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_RANGE, EXPIRES, HeaderValue, RANGE,
++};
+ use http::{HeaderMap, StatusCode};
+ use net::http_cache::{CacheKey, HttpCache, ValidationStatus, refresh};
++use net::http_disk_cache::HttpDiskCache;
+ use net_traits::blob_url_store::UrlWithBlobClaim;
+ use net_traits::request::{Referrer, RequestBuilder};
+ use net_traits::response::{Response, ResponseBody};
+@@ -225,3 +228,113 @@ async fn test_stale_while_revalidate_not_used_when_request_demands_revalidation(
+         "a no-cache request must trigger synchronous validation, not background revalidation"
+     );
+ }
++
++fn build_disk_cache_test_request(
++    url: &ServoUrl,
++    headers: HeaderMap,
++) -> net_traits::request::Request {
++    RequestBuilder::new(
++        None,
++        UrlWithBlobClaim::new(url.clone(), None),
++        Referrer::NoReferrer,
++    )
++    .pipeline_id(Some(TEST_PIPELINE_ID))
++    .origin(url.origin())
++    .headers(headers)
++    .build()
++}
++
++fn build_disk_cache_test_response(url: &ServoUrl, cache_control: &'static str) -> Response {
++    let mut response = Response::new(
++        url.clone(),
++        ResourceFetchTiming::new(ResourceTimingType::Resource),
++    );
++    response.status = StatusCode::OK.into();
++    response
++        .headers
++        .insert(CACHE_CONTROL, HeaderValue::from_static(cache_control));
++    response
++}
++
++#[tokio::test]
++async fn test_disk_cache_serves_fresh_response_after_restart() {
++    let dir = tempfile::tempdir().unwrap();
++    let url = ServoUrl::parse("https://example.com/assets/music.wav").unwrap();
++    let request = build_disk_cache_test_request(&url, HeaderMap::new());
++    let response = build_disk_cache_test_response(&url, "max-age=3600");
++
++    HttpDiskCache::new(dir.path().to_owned())
++        .prepare_store(&request, &response)
++        .expect("a fresh 200 response should be storable")
++        .write(vec![1, 2, 3])
++        .await;
++
++    // A new instance stands in for a later launch.
++    let disk_cache = HttpDiskCache::new(dir.path().to_owned());
++    let loaded = disk_cache
++        .load(&request)
++        .await
++        .expect("a fresh response should be served from disk");
++    assert_eq!(loaded.status, StatusCode::OK);
++    assert_eq!(*loaded.body.lock(), ResponseBody::Done(vec![1, 2, 3]));
++
++    // The loaded response can be promoted into the memory cache.
++    let memory_cache = HttpCache::default();
++    memory_cache.store(&request, &loaded).await;
++    assert!(
++        memory_cache
++            .construct_response(&request, &mut None)
++            .await
++            .is_some()
++    );
++
++    disk_cache.clear();
++    assert!(disk_cache.load(&request).await.is_none());
++}
++
++#[tokio::test]
++async fn test_disk_cache_does_not_store_non_storable_responses() {
++    let dir = tempfile::tempdir().unwrap();
++    let disk_cache = HttpDiskCache::new(dir.path().to_owned());
++    let url = ServoUrl::parse("https://example.com/assets/image.webp").unwrap();
++    let request = build_disk_cache_test_request(&url, HeaderMap::new());
++
++    let response = build_disk_cache_test_response(&url, "no-store");
++    assert!(disk_cache.prepare_store(&request, &response).is_none());
++
++    let mut credentials = HeaderMap::new();
++    credentials.insert(AUTHORIZATION, HeaderValue::from_static("Bearer secret"));
++    let request_with_credentials = build_disk_cache_test_request(&url, credentials);
++    let response = build_disk_cache_test_response(&url, "max-age=3600");
++    assert!(
++        disk_cache
++            .prepare_store(&request_with_credentials, &response)
++            .is_none()
++    );
++}
++
++#[tokio::test]
++async fn test_disk_cache_does_not_serve_stale_responses() {
++    let dir = tempfile::tempdir().unwrap();
++    let disk_cache = HttpDiskCache::new(dir.path().to_owned());
++    let url = ServoUrl::parse("https://example.com/assets/video.webm").unwrap();
++    let request = build_disk_cache_test_request(&url, HeaderMap::new());
++    let response = build_disk_cache_test_response(&url, "max-age=1");
++
++    disk_cache
++        .prepare_store(&request, &response)
++        .expect("a fresh 200 response should be storable")
++        .write(vec![4, 5, 6])
++        .await;
++    assert!(disk_cache.load(&request).await.is_some());
++
++    // A request demanding revalidation is not answered from disk.
++    let mut no_cache = HeaderMap::new();
++    no_cache.insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
++    let revalidating_request = build_disk_cache_test_request(&url, no_cache);
++    assert!(disk_cache.load(&revalidating_request).await.is_none());
++
++    // Once expired, the entry is not served either.
++    std::thread::sleep(std::time::Duration::from_millis(2100));
++    assert!(disk_cache.load(&request).await.is_none());
++}
+diff --git a/ports/servoshell/desktop/bundle_launch.rs b/ports/servoshell/desktop/bundle_launch.rs
+index ff0a8b56591..0df96d9e7a3 100644
+--- a/ports/servoshell/desktop/bundle_launch.rs
++++ b/ports/servoshell/desktop/bundle_launch.rs
+@@ -161,7 +161,11 @@ pub(crate) fn resolve_bundled_launch_args() -> Option<BundledLaunch> {
+             (url, None, Some((content_root, entry_html)))
+         };
+ 
+-    let mut args = vec![url];
++    // Each game gets its own config dir next to its log and content cache, instead of the
++    // shared `Servo` one: preferences, the fullscreen marker and the HTTP disk cache
++    // (`<config_dir>/http-cache`) stay per game. `launch.json` args can still override it.
++    let config_dir = extract::game_data_dir(peek_game_name_for_logging().as_deref()).join("config");
++    let mut args = vec![url, "--config-dir".to_owned(), config_dir.to_string_lossy().into_owned()];
+     args.extend(extra_args);
+     // `ROVES_EXTRA_ARGS` (whitespace-separated, no quoting) appends engine options to a shipped
+     // game's launch, which otherwise ignores the command line: e.g. `ROVES_EXTRA_ARGS="-p 5"`

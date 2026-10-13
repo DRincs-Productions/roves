@@ -161,7 +161,11 @@ pub(crate) fn resolve_bundled_launch_args() -> Option<BundledLaunch> {
             (url, None, Some((content_root, entry_html)))
         };
 
-    let mut args = vec![url];
+    // Each game gets its own config dir next to its log and content cache, instead of the
+    // shared `Servo` one: preferences, the fullscreen marker and the HTTP disk cache
+    // (`<config_dir>/http-cache`) stay per game. `launch.json` args can still override it.
+    let config_dir = extract::game_data_dir(peek_game_name_for_logging().as_deref()).join("config");
+    let mut args = vec![url, "--config-dir".to_owned(), config_dir.to_string_lossy().into_owned()];
     args.extend(extra_args);
     // `ROVES_EXTRA_ARGS` (whitespace-separated, no quoting) appends engine options to a shipped
     // game's launch, which otherwise ignores the command line: e.g. `ROVES_EXTRA_ARGS="-p 5"`
