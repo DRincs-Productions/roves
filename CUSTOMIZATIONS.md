@@ -13218,3 +13218,21 @@ that `installer` rejected as "the package path specified was invalid". The secon
 both macOS jobs of the v0.7.6 release. `download_pkg` now checks that each package starts with
 the `xar!` signature and downloads it again up to 3 times, waiting 10, 20 and 30 s, before it
 fails with a clear error.
+
+## 2026-10-13 - `data:` URL layout images load without a network fetch
+
+**Servo file:** `components/script/layout_image.rs`. **Patch:** `0204-data-url-layout-images-without-fetch.patch`
+after 0203.
+
+The 0202 fix alone did not cure the late menu icons. Screen captures of the visual novel still
+showed the icons about 1.4 s (v0.7.6) to 2 s (v0.7.5) after the buttons. Servo serializes each
+inline `<svg>` into a `data:image/svg+xml` URL, and layout loads that URL like any other image,
+through `fetch_image_for_layout` on the shared network thread pool. The pool was busy with the
+game's remote audio and slow DNS, so the icons waited in the queue.
+
+`fetch_image_for_layout` now decodes a `data:` URL in place (with the `data-url` crate script
+already depends on) and gives the image cache a complete response: metadata with the URL's MIME
+type, one chunk and the EOF. Any URL it cannot decode still takes the normal fetch. The window
+registers its image listener after this call, which is fine: `ImageCache::add_listener` also
+answers listeners of images that have already completed. This speeds up every `data:` image
+used by layout, not only inline SVG.

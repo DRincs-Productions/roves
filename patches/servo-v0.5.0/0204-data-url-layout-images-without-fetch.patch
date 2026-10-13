@@ -1,0 +1,67 @@
+diff --git a/components/script/layout_image.rs b/components/script/layout_image.rs
+index 1bfea008ff0..facdeafe005 100644
+--- a/components/script/layout_image.rs
++++ b/components/script/layout_image.rs
+@@ -11,7 +11,9 @@ use std::sync::Arc;
+ use net_traits::blob_url_store::UrlWithBlobClaim;
+ use net_traits::image_cache::{ImageCache, PendingImageId};
+ use net_traits::request::{Destination, InternalRequest, RequestBuilder, RequestId};
+-use net_traits::{FetchMetadata, FetchResponseMsg, NetworkError, ResourceFetchTiming};
++use net_traits::{
++    FetchMetadata, FetchResponseMsg, Metadata, NetworkError, ResourceFetchTiming, ResourceTimingType,
++};
+ use servo_url::ServoUrl;
+ 
+ use crate::dom::bindings::refcounted::Trusted;
+@@ -107,6 +109,13 @@ pub(crate) fn fetch_image_for_layout(
+     is_internal_request: InternalRequest,
+     cache: Arc<dyn ImageCache>,
+ ) {
++    // A `data:` URL already holds its bytes, so hand them to the image cache right here instead
++    // of a fetch on the network thread pool. Inline `<svg>` elements are serialized into such
++    // URLs: a busy pool (remote audio, slow DNS) used to delay a game's menu icons by seconds.
++    if url.scheme() == "data" && load_data_url_image(&url, id, &cache) {
++        return;
++    }
++
+     let document = node.owner_document();
+     let context = LayoutImageContext {
+         id,
+@@ -128,3 +137,37 @@ pub(crate) fn fetch_image_for_layout(
+     // Layout image loads do not delay the document load event.
+     document.fetch_background(request, context);
+ }
++
++/// Feeds a decoded `data:` URL to the image cache as a complete response. Returns false (so the
++/// caller falls back to a normal fetch) when the URL cannot be decoded.
++fn load_data_url_image(url: &ServoUrl, id: PendingImageId, cache: &Arc<dyn ImageCache>) -> bool {
++    let Ok(data_url) = data_url::DataUrl::process(url.as_str()) else {
++        return false;
++    };
++    let Ok((bytes, _fragment)) = data_url.decode_to_vec() else {
++        return false;
++    };
++    let mut metadata = Metadata::default(url.clone());
++    let mime = data_url.mime_type().to_string().parse::<mime::Mime>().ok();
++    metadata.set_content_type(mime.as_ref());
++
++    let request_id = RequestId::default();
++    cache.notify_pending_response(
++        id,
++        FetchResponseMsg::ProcessResponse(request_id, Ok(FetchMetadata::Unfiltered(metadata))),
++    );
++    cache.notify_pending_response(
++        id,
++        FetchResponseMsg::ProcessResponseChunk(request_id, bytes.into()),
++    );
++    cache.notify_pending_response(
++        id,
++        FetchResponseMsg::ProcessResponseEOF(
++            request_id,
++            Ok(()),
++            ResourceFetchTiming::new(ResourceTimingType::None),
++        ),
++    );
++    true
++}
++
