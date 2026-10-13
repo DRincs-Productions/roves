@@ -13207,3 +13207,14 @@ chunks are then extracted at boot, and no import waits for a whole asset pack to
 under the global extraction lock. `tests/roundtrip.rs` now uses a JSON file as the lazy file and
 checks that an unnamed chunk is in the boot set. README and the wiki (`shell.mdx`, `action.mdx`)
 describe the new boot set.
+
+## 2026-10-13 - macOS bootstrap: retry an invalid GStreamer package
+
+**Servo file:** `python/servo/platform/macos.py`. **Patch:** `0203-macos-gstreamer-download-retry.patch`
+after 0202.
+
+gstreamer.freedesktop.org failed twice in a row on CI: once with a 503, and once with a body
+that `installer` rejected as "the package path specified was invalid". The second failure broke
+both macOS jobs of the v0.7.6 release. `download_pkg` now checks that each package starts with
+the `xar!` signature and downloads it again up to 3 times, waiting 10, 20 and 30 s, before it
+fails with a clear error.
