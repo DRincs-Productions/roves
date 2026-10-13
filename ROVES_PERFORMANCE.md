@@ -83,6 +83,10 @@ sopra PixiJS o three.js) scrivono una riga `RAFSTATS` nel log.
 | typewriter + pixi (dal caricamento) | Roves v0.7.7 | 18,5 ms | 48,8 ms | 326 ms | 13 |
 | typewriter + three (dal caricamento) | Roves v0.7.7 | 18,3 ms | 26,8 ms | 273 ms | 10 |
 
+| gsap + pixi, 48 elementi (dal caricamento) | Chrome | 17,0 ms | 17,1 ms | 17,3 ms | 0 |
+| gsap + pixi, 48 elementi (dal caricamento) | Roves v0.7.7 | 18,5 ms | 20,0 ms | 212 ms | 3 |
+| motion + pixi, 48 elementi (dal caricamento) | Roves v0.7.7 | 18,5 ms | 19,7 ms | 55 ms | 4 |
+
 La media è la stessa (60 fps); Roves però salta dei frame. Le cause misurate:
 - **Compilazione degli shader di WebRender al primo uso:** paint da 180 a 410 ms nei primi
   secondi. `--pref gfx_precache_shaders=true` toglie i picchi ma blocca l'avvio per circa 4 s.
@@ -90,6 +94,20 @@ La media è la stessa (60 fps); Roves però salta dei frame. Le cause misurate:
 - **Pause del GC di V8:** una GC completa di 19 ms durante la scena. Il GC è atomico; renderlo
   incrementale richiede barriere di scrittura in roves-js.
 - A regime il paint della pagina resta sotto i 7 ms per frame.
+
+## Librerie dei giochi
+
+Ogni gioco usa motion o GSAP per l'interfaccia, PixiJS o three.js per la scena, Tone.js o
+howler.js per l'audio. Tutte devono funzionare bene in Roves. Le scene `?perf=` della pagina di
+test le misurano.
+
+| Libreria | API del motore | Stato |
+| --- | --- | --- |
+| motion | Web Animations (`element.animate`), altrimenti stili scritti da JavaScript a ogni frame | Funziona via JavaScript. Le Web Animations di Servo sono incomplete: accese, motion si blocca (il typewriter si ferma alla prima lettera), quindi restano spente |
+| GSAP | Stili scritti da JavaScript a ogni frame | Funziona; paint della pagina sotto gli 8 ms con 48 elementi |
+| PixiJS, three.js | WebGL 2 | Funzionano; ogni chiamata WebGL è un messaggio verso il thread WebGL |
+| Tone.js | Web Audio, AudioWorklet | `AudioWorkletNode` assente |
+| howler.js | Web Audio, `<audio>`, `canPlayType` | WAV, MP3, OGG Vorbis e FLAC sì; Opus, AAC, M4A e MP4 rispondono "" pur con i plugin GStreamer nel pacchetto |
 
 ## Aperto
 

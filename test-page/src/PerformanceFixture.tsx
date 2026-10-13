@@ -1,4 +1,5 @@
 import PixiPanel from "./PixiPanel.tsx";
+import DomAnimationFixture from "./DomAnimationFixture.tsx";
 import TypewriterFixture from "./TypewriterFixture.tsx";
 
 export type PerformanceFixtureMode =
@@ -6,7 +7,9 @@ export type PerformanceFixtureMode =
   | "pixi-static"
   | "pixi-animated"
   | "typewriter-pixi"
-  | "typewriter-three";
+  | "typewriter-three"
+  | "gsap-pixi"
+  | "motion-pixi";
 
 export function performanceFixtureMode(search: string): PerformanceFixtureMode | null {
   const value = new URLSearchParams(search).get("perf");
@@ -15,7 +18,9 @@ export function performanceFixtureMode(search: string): PerformanceFixtureMode |
     value === "pixi-static" ||
     value === "pixi-animated" ||
     value === "typewriter-pixi" ||
-    value === "typewriter-three"
+    value === "typewriter-three" ||
+    value === "gsap-pixi" ||
+    value === "motion-pixi"
   ) {
     return value;
   }
@@ -28,6 +33,9 @@ export function performanceFixtureMode(search: string): PerformanceFixtureMode |
  * contaminate CPU/wake-up measurements, especially the static and blank baselines.
  */
 export default function PerformanceFixture({ mode }: { mode: PerformanceFixtureMode }) {
+  if (mode === "gsap-pixi" || mode === "motion-pixi") {
+    return <DomAnimationFixture library={mode === "gsap-pixi" ? "gsap" : "motion"} />;
+  }
   if (mode === "typewriter-pixi" || mode === "typewriter-three") {
     return <TypewriterFixture scene={mode === "typewriter-pixi" ? "pixi" : "three"} />;
   }

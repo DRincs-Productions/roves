@@ -283,6 +283,8 @@ export default function App() {
         <a href="?perf=pixi-animated" style={{ color: "#8ab4f8" }}>pixi-animated</a>
         <a href="?perf=typewriter-pixi" style={{ color: "#8ab4f8" }}>typewriter + pixi</a>
         <a href="?perf=typewriter-three" style={{ color: "#8ab4f8" }}>typewriter + three</a>
+        <a href="?perf=gsap-pixi" style={{ color: "#8ab4f8" }}>gsap + pixi</a>
+        <a href="?perf=motion-pixi" style={{ color: "#8ab4f8" }}>motion + pixi</a>
       </div>
 
       <GpuInfoPanel />
