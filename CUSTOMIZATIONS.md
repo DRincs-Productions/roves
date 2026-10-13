@@ -13361,3 +13361,21 @@ development files on this machine).
 `initialize_platform` appends the flags in the `ROVES_V8_FLAGS` environment variable after its own
 defaults. It is used to try V8 GC tuning on a shipped build without rebuilding, such as
 `--max-semi-space-size=32` for fewer promotions and fewer atomic full GCs. Unset, nothing changes.
+
+## 2026-10-13 - Pages start `visible`; minimize detection fixed
+
+**Servo files:** `components/script/dom/document/document.rs`,
+`ports/servoshell/desktop/{event_loop.rs,headed_window.rs}`. **Patch:**
+`0212-document-visible-at-load-minimize-fixes.patch` after 0211.
+
+A v0.7.8 test page that logs `document.visibilityState` every second, while a script minimizes
+and restores the window, found two bugs:
+- **Upstream Servo:** every document is created `hidden` and becomes `visible` only when it is
+  reactivated from history. So `document.hidden` was `true` for every page, in v0.7.7 too. A
+  document with a browsing context now starts `visible`, its traversable's state; the embedder
+  hides it through `SetThrottled` (0207).
+- **0207:** the window is created hidden and shown after the first splash frame, so SDL's initial
+  `Hidden` event marked it hidden before any page existed. An expose (redraw request) during
+  minimization then made it visible again, the reverse of what was intended. `Hidden` is no longer
+  mapped. A redraw unhides the window only when SDL's flags say it is not minimized, occluded or
+  hidden (`HeadedWindow::is_visible_on_screen`).

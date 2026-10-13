@@ -923,6 +923,15 @@ impl HeadedWindow {
     /// unreachable leftovers from that body, kept only because deleting carefully-written
     /// logic that will need re-deriving anyway seemed worse than a `#[expect(dead_code)]` —
     /// re-wire them once `WindowEvent` grows the variants they need.
+    fn is_visible_on_screen(&self) -> bool {
+        let flags = sdl3::video::WindowFlags::from(self.sdl_window.window_flags());
+        !flags.intersects(
+            sdl3::video::WindowFlags::MINIMIZED |
+                sdl3::video::WindowFlags::OCCLUDED |
+                sdl3::video::WindowFlags::HIDDEN,
+        )
+    }
+
     /// Like Chrome: the pages of a minimized, hidden or covered window are throttled and
     /// become `hidden`, so a game can pause its music on `visibilitychange`.
     fn set_hidden(&self, window: &ServoShellWindow, hidden: bool) {
@@ -1018,8 +1027,11 @@ impl HeadedWindow {
             // Like Chrome: a minimized window's page is throttled and becomes `hidden`, so a
             // game can pause its music on `visibilitychange`, and resumes when restored.
             WindowEvent::Visible(visible) => self.set_hidden(&window, !visible),
-            // SDL reports the end of an occlusion only as an expose (a redraw request).
-            WindowEvent::RedrawRequested if self.hidden.get() => self.set_hidden(&window, false),
+            // SDL reports the end of an occlusion only as an expose (a redraw request); a
+            // minimized window can be exposed too, so check that it is really visible again.
+            WindowEvent::RedrawRequested if self.hidden.get() && self.is_visible_on_screen() => {
+                self.set_hidden(&window, false)
+            },
             WindowEvent::CloseRequested => window.schedule_close(),
             // TODO(SDL3 windowing): no egui input is wired up yet on this branch (see
             // `gui.rs`'s own `SdlEguiGlow` doc comment) -- so unlike the old winit-based

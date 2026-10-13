@@ -3834,7 +3834,14 @@ impl Document {
             declarative_refresh: Default::default(),
             resize_observers: Default::default(),
             fonts: Default::default(),
-            visibility_state: Cell::new(DocumentVisibilityState::Hidden),
+            // A document starts with its traversable's visibility: shown in a browsing
+            // context, hidden otherwise. Only `visible` on reactivation left every freshly
+            // loaded page `hidden` forever (the embedder hides it with `SetThrottled`).
+            visibility_state: Cell::new(if has_browsing_context {
+                DocumentVisibilityState::Visible
+            } else {
+                DocumentVisibilityState::Hidden
+            }),
             status_code,
             is_initial_about_blank: Cell::new(is_initial_about_blank),
             allow_declarative_shadow_roots: Cell::new(allow_declarative_shadow_roots),

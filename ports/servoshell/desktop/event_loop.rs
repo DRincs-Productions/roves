@@ -169,9 +169,9 @@ fn translate_sdl_event(
                 SdlWindowEvent::Exposed => WindowEvent::RedrawRequested,
                 SdlWindowEvent::FocusGained => WindowEvent::Focused(true),
                 SdlWindowEvent::FocusLost => WindowEvent::Focused(false),
-                SdlWindowEvent::Minimized | SdlWindowEvent::Hidden | SdlWindowEvent::Occluded => {
-                    WindowEvent::Visible(false)
-                },
+                // Not `Hidden`: the window is created hidden and shown after the first splash
+                // frame, so that event only ever precedes the first `Shown`.
+                SdlWindowEvent::Minimized | SdlWindowEvent::Occluded => WindowEvent::Visible(false),
                 SdlWindowEvent::Restored | SdlWindowEvent::Shown => WindowEvent::Visible(true),
                 SdlWindowEvent::MouseLeave => WindowEvent::CursorLeft,
                 _ => return None,
