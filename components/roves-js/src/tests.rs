@@ -353,6 +353,108 @@ mod object_model {
         assert_eq!(HOOK_FINALIZED.with(Cell::get), finalized_before + COUNT as u32);
     }
 
+    thread_local! {
+        static BENCH_PROTO: Cell<*mut JSObject> = const { Cell::new(ptr::null_mut()) };
+    }
+
+    /// Creates one class object the way Servo's `wrap` does (enter the realm, given prototype,
+    /// private in a reserved slot) and returns it.
+    unsafe extern "C" fn make_wrapper(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+        // SAFETY: the JSNative contract.
+        let args = unsafe { std::slice::from_raw_parts_mut(vp, argc as usize + 2) };
+        rooted!(in(cx) let proto = BENCH_PROTO.with(Cell::get));
+        rooted!(in(cx) let obj = unsafe { JS_NewObjectWithGivenProto(cx, &CLASS, proto.handle().into_handle()) });
+        unsafe { JS_SetReservedSlot(obj.get(), 0, &PrivateValue(8 as *const c_void)) };
+        // Servo's `init_reflector` accounts the native object's size.
+        unsafe { AddAssociatedMemory(obj.get(), 400, MemoryUse::DOMBinding) };
+        args[0] = ObjectValue(obj.get());
+        true
+    }
+
+    /// Takes a string argument as Servo's DOMString setters do (`jsstr_to_string`).
+    unsafe extern "C" fn take_string(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+        // SAFETY: the JSNative contract.
+        let args = unsafe { std::slice::from_raw_parts_mut(vp, argc as usize + 2) };
+        use crate::conversions::{ConversionResult, FromJSValConvertible};
+        let mut safe = unsafe { crate::context::JSContext::from_ptr(std::ptr::NonNull::new(cx).unwrap()) };
+        let value = unsafe { crate::rust::HandleValue::from_marked_location(&args[2]) };
+        let Ok(ConversionResult::Success(text)) = std::string::String::safe_from_jsval(&mut safe, value, ()) else { return false };
+        args[0] = Int32Value(text.len() as i32);
+        true
+    }
+
+    /// Cost of creating DOM-like wrappers (`cargo test --release --lib bench_wrapper_creation
+    /// -- --ignored --nocapture`).
+    #[test]
+    #[ignore = "benchmark"]
+    fn bench_wrapper_creation() {
+        let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let proto = unsafe { JS_NewPlainObject(cx) });
+        BENCH_PROTO.with(|cell| cell.set(proto.get()));
+        const N: u32 = 100_000;
+        for round in 0..3 {
+            let start = std::time::Instant::now();
+            for _ in 0..N {
+                rooted!(in(cx) let obj = unsafe { JS_NewObjectWithGivenProto(cx, &CLASS, proto.handle().into_handle()) });
+                unsafe { JS_SetReservedSlot(obj.get(), 0, &PrivateValue(8 as *const c_void)) };
+            }
+            let ns = start.elapsed().as_nanos() as f64 / N as f64;
+            eprintln!("BENCH round {round} JS_NewObjectWithGivenProto + slot (Rust loop): {ns:.0} ns/object");
+        }
+        {
+            let start = std::time::Instant::now();
+            for _ in 0..N {
+                rooted!(in(cx) let obj = unsafe { JS_NewObject(cx, &CLASS) });
+                unsafe { JS_SetReservedSlot(obj.get(), 0, &PrivateValue(8 as *const c_void)) };
+            }
+            let ns = start.elapsed().as_nanos() as f64 / N as f64;
+            eprintln!("BENCH JS_NewObject (default prototype, no SetPrototype) + slot: {ns:.0} ns/object");
+            let start = std::time::Instant::now();
+            for _ in 0..N {
+                rooted!(in(cx) let obj = unsafe { JS_NewPlainObject(cx) });
+            }
+            let ns = start.elapsed().as_nanos() as f64 / N as f64;
+            eprintln!("BENCH JS_NewPlainObject: {ns:.0} ns/object");
+        }
+        rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
+        for (name, native) in [(c"make", make_wrapper as unsafe extern "C" fn(*mut JSContext, u32, *mut JSVal) -> bool), (c"take", take_string)] {
+            let function = unsafe { JS_NewFunction(cx, Some(native), 1, 0, name.as_ptr()) };
+            rooted!(in(cx) let value = ObjectValue(unsafe { JS_GetFunctionObject(function) }));
+            assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), name.as_ptr(), value.handle().into_handle()) });
+        }
+        for (label, body) in [
+            ("script calls native that wraps (createElement-like)", "for (let i = 0; i < N; i++) s += make() ? 1 : 0;"),
+            ("script passes a string to a native (setter-like)", "for (let i = 0; i < N; i++) s += take('opacity 0.5');"),
+            ("script passes a fresh string to a native", "for (let i = 0; i < N; i++) s += take('x' + i);"),
+        ] {
+            let source = format!("(() => {{ const N = {N}; let s = 0; {body} return s; }})()");
+            eval(&runtime, &source); // warm-up
+            let start = std::time::Instant::now();
+            eval(&runtime, &source);
+            let ns = start.elapsed().as_nanos() as f64 / N as f64;
+            eprintln!("BENCH {label}: {ns:.0} ns/op");
+        }
+        // The same with a large live heap: a "DOM" of wrappers reachable from script, and
+        // garbage JS objects, as on a real page.
+        eval(&runtime, "globalThis.live = []; for (let i = 0; i < 50000; i++) live.push(make()); globalThis.junk = []; for (let i = 0; i < 200000; i++) junk.push({ i, s: 'x' + i });");
+        for round in 0..3 {
+            let source = format!("(() => {{ const N = {N}; let s = 0; for (let i = 0; i < N; i++) s += make() ? 1 : 0; return s; }})()");
+            let start = std::time::Instant::now();
+            eval(&runtime, &source);
+            let ns = start.elapsed().as_nanos() as f64 / N as f64;
+            eprintln!("BENCH round {round} createElement-like with 50k live wrappers: {ns:.0} ns/op");
+        }
+        for round in 0..2 {
+            let source = format!("(() => {{ const N = {N}; let s = 0; for (let i = 0; i < N; i++) s += take('opacity 0.5'); return s; }})()");
+            let start = std::time::Instant::now();
+            eval(&runtime, &source);
+            let ns = start.elapsed().as_nanos() as f64 / N as f64;
+            eprintln!("BENCH round {round} setter-like with 50k live wrappers: {ns:.0} ns/op");
+        }
+        BENCH_PROTO.with(|cell| cell.set(ptr::null_mut()));
+    }
+
     #[test]
     fn properties_by_name_and_id_and_descriptors() {
         let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
@@ -2127,3 +2229,4 @@ fn gc_callbacks_report_full_collections() {
     runtime.gc_for_testing();
     assert!(GC_EVENTS.with(|events| events.borrow().is_empty()));
 }
+

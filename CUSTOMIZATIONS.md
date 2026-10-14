@@ -13379,3 +13379,28 @@ and restores the window, found two bugs:
   minimization then made it visible again, the reverse of what was intended. `Hidden` is no longer
   mapped. A redraw unhides the window only when SDL's flags say it is not minimized, occluded or
   hidden (`HeadedWindow::is_visible_on_screen`).
+
+## 2026-10-14 - roves-js: cheaper wrapper creation and identity table
+
+**Files:** `components/roves-js/{Cargo.toml,src/object.rs,src/cell.rs,src/api.rs,src/conversions.rs,src/tests.rs}`.
+**Patch:** `0213-roves-js-wrapper-creation-speedups.patch` after 0212.
+
+A DOM microbenchmark (`test-page/public/dombench2.html`) showed `createElement` at 7.4 µs per
+call in Roves against 0.2 µs in Chrome. A new ignored benchmark, `bench_wrapper_creation`, follows
+the exact path Servo's `wrap` uses: a class with trace and finalize hooks, 2 reserved slots, a
+given prototype, a private slot value and associated memory. It puts the roves-js share of a
+wrapper at about 0.5 µs, so most of the cost is on the Servo side. Fixes kept:
+- `make_class_box` passed `Object::wrap` a throwaway `cppgc::Persistent`; it now passes the raw
+  pointer (about 90 ns less per wrapper). Reserved slots are a `SmallVec<[JSVal; 4]>` instead of a
+  heap `Vec`, and the template cache is an `FxHashMap`.
+- The identity table of cells swept every 4096 insertions; since cells die only at full GCs, it
+  kept growing and each conversion grew from 0.6 to 1.5 µs over 200k objects. The sweep interval
+  is now proportional to the entries that survived the last sweep, and the table is an
+  `FxHashMap` with `SmallVec` buckets: 776 → 449 ns, 1520 → 615 ns at larger sizes.
+- `string_chars` copies once through `v8::ValueView` instead of UTF-16 then Latin-1, `chars_of`
+  skips the scope when cached, and `latin1_to_string` has an ASCII fast path.
+
+Benchmark, ns per call before → after (noisy machine): wrapper with given prototype 583-674 →
+472-539, plain object 548-582 → 336-474, script calling a wrapping native 999-1088 → 759-978.
+`cargo test --release -p roves-js`: 32 passed, 2 ignored (the benchmarks), including the GC
+lifetime stress test.

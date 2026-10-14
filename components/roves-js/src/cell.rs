@@ -26,9 +26,16 @@ use v8::cppgc::{GarbageCollected, Member, UnsafePtr, Visitor, WeakPersistent};
 /// traced; its V8 value does not keep it alive). Owned by the runtime's raw context.
 #[derive(Default)]
 pub(crate) struct Interned {
-    cells: std::cell::RefCell<std::collections::HashMap<i32, Vec<WeakPersistent<Cell>>>>,
+    /// Keyed by V8's identity hash (already random, so a cheap hasher suffices); almost every
+    /// hash has one entry, kept inline.
+    cells: std::cell::RefCell<rustc_hash::FxHashMap<i32, smallvec::SmallVec<[WeakPersistent<Cell>; 1]>>>,
+    /// Insertions since the last sweep of dead entries, and the count that triggers the next.
     inserted: std::cell::Cell<usize>,
+    next_sweep: std::cell::Cell<usize>,
 }
+
+/// Insertions before the first sweep of the entries of collected cells.
+const INTERNED_SWEEP_MIN: usize = 4096;
 
 impl Interned {
     fn find(&self, scope: &mut v8::PinScope, hash: i32, value: v8::Local<v8::Value>) -> Option<*mut c_void> {
@@ -50,14 +57,19 @@ impl Interned {
         let Some(pointer) = from_raw(cell) else { return };
         let mut cells = self.cells.borrow_mut();
         cells.entry(hash).or_default().push(WeakPersistent::new(&pointer));
-        // Drop the entries of collected cells now and then.
+        // Drop the entries of collected cells now and then. Cells are only collected by full
+        // GCs, so the table can hold many live cells: sweeping after a number of insertions
+        // proportional to what survived the last sweep keeps the cost per insertion constant
+        // (a fixed interval made every insertion pay for scanning the whole table).
         let inserted = self.inserted.get() + 1;
         self.inserted.set(inserted);
-        if inserted % 4096 == 0 {
+        if inserted >= self.next_sweep.get().max(INTERNED_SWEEP_MIN) {
             cells.retain(|_, entries| {
                 entries.retain(|entry| entry.get().is_some());
                 !entries.is_empty()
             });
+            self.inserted.set(0);
+            self.next_sweep.set(cells.len());
         }
     }
 }
@@ -277,6 +289,17 @@ pub(crate) fn trace_cell(pointer: *mut c_void, visitor: &mut Visitor) {
     }
 }
 
+/// A string cell's characters if they were already copied out (no V8 access).
+///
+/// # Safety
+/// `pointer` must be a live string cell.
+pub(crate) unsafe fn cached_string_chars<'c>(pointer: *mut c_void) -> Option<&'c StringChars> {
+    let cell = from_raw(pointer).expect("a non-null string pointer");
+    // SAFETY: the caller guarantees the cell is alive; the returned reference is tied to it.
+    let cell: &'c Cell = unsafe { &*(cell.as_ref() as *const Cell) };
+    cell.chars.get()
+}
+
 /// A string cell's characters (Latin-1 when every code unit fits, else UTF-16), valid while
 /// the cell lives.
 ///
@@ -289,12 +312,16 @@ pub(crate) unsafe fn string_chars<'c>(scope: &mut v8::PinScope, pointer: *mut c_
     cell.chars.get_or_init(|| {
         let value = cell.value.get(scope).expect("a live cell holds its value");
         let string = v8::Local::<v8::String>::try_from(value).expect("a string cell");
-        let mut units = vec![0u16; string.length()];
-        string.write_v2(scope, 0, &mut units, v8::WriteFlags::empty());
-        if units.iter().all(|unit| *unit <= 0xFF) {
-            StringChars::Latin1(units.into_iter().map(|unit| unit as u8).collect())
-        } else {
-            StringChars::TwoByte(units)
+        // One copy out of V8's flat representation (no allocation can happen while the view
+        // lives). DOM strings are almost always one-byte: those were copied out as UTF-16 and
+        // narrowed in a second pass and allocation.
+        let view = v8::ValueView::new(scope, string);
+        match view.data() {
+            v8::ValueViewData::OneByte(bytes) => StringChars::Latin1(bytes.to_vec()),
+            v8::ValueViewData::TwoByte(units) if units.iter().all(|unit| *unit <= 0xFF) => {
+                StringChars::Latin1(units.iter().map(|unit| *unit as u8).collect())
+            },
+            v8::ValueViewData::TwoByte(units) => StringChars::TwoByte(units.to_vec()),
         }
     })
 }

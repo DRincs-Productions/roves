@@ -12,7 +12,6 @@
 //! is gone). The box's trace calls the class trace hook, its destruction the finalize hook.
 
 use std::cell::{Cell as StdCell, RefCell};
-use std::collections::HashMap;
 use std::ffi::c_void;
 
 use v8::cppgc::{GarbageCollected, Member, UnsafePtr, Visitor};
@@ -41,7 +40,9 @@ const CLASS_WRAP_TAG: u16 = 1;
 /// The per-object state of a class-based object.
 pub(crate) struct ClassBox {
     pub(crate) class: *const JSClass,
-    slots: RefCell<Vec<JSVal>>,
+    /// Inline for the few slots DOM classes declare: a wrapper is created per DOM node, and a
+    /// heap vector per wrapper was a `malloc`/`free` pair each.
+    slots: RefCell<Slots>,
     /// The object's own cell (set right after allocation).
     pub(crate) cell: StdCell<*mut c_void>,
     /// For a global object: its realm.
@@ -106,6 +107,9 @@ unsafe impl GarbageCollected for ClassBox {
         c"RovesJsClassBox"
     }
 }
+
+/// Reserved slot storage (DOM wrappers declare one to three slots; globals more).
+type Slots = smallvec::SmallVec<[JSVal; 4]>;
 
 /// Marks the extent of GC work run by roves-js (traces and finalizers).
 struct GcScope;
@@ -219,7 +223,8 @@ fn reserved_slot_count(class: &JSClass) -> usize {
 /// Per-runtime cache of the object template of each class.
 #[derive(Default)]
 pub(crate) struct ClassTemplates {
-    templates: RefCell<HashMap<usize, v8::Global<v8::ObjectTemplate>>>,
+    /// By class address (one lookup per class object created: a cheap hasher).
+    templates: RefCell<rustc_hash::FxHashMap<usize, v8::Global<v8::ObjectTemplate>>>,
 }
 
 impl ClassTemplates {
@@ -547,9 +552,9 @@ pub(crate) fn make_class_box(scope: &mut v8::PinScope, object: v8::Local<v8::Obj
     let class_box = new_class_box(scope, class);
     let raw = box_to_raw(&class_box);
     object.set_aligned_pointer_in_internal_field(0, raw, CLASS_BOX_TAG);
-    let root = v8::cppgc::Persistent::new(&class_box);
-    // SAFETY: the object is an API object from a template with one internal field.
-    unsafe { v8::Object::wrap::<CLASS_WRAP_TAG, ClassBox>(scope, object, &root) };
+    // SAFETY: the object is an API object from a template with one internal field; the box
+    // was just allocated, and no GC runs before the wrap makes the object keep it alive.
+    unsafe { v8::Object::wrap::<CLASS_WRAP_TAG, ClassBox>(scope, object, &class_box) };
     class_box
 }
 
@@ -564,7 +569,7 @@ pub(crate) fn new_class_box(scope: &mut v8::PinScope, class: *const JSClass) -> 
             heap,
             ClassBox {
                 class,
-                slots: RefCell::new(vec![UndefinedValue(); slots]),
+                slots: RefCell::new(smallvec::smallvec![UndefinedValue(); slots]),
                 cell: StdCell::new(std::ptr::null_mut()),
                 realm: RefCell::new(None),
                 proxy: StdCell::new(std::ptr::null()),

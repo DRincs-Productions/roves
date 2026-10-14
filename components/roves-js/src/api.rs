@@ -188,6 +188,12 @@ pub unsafe fn ToString(cx: &mut SafeJSContext, v: HandleValue) -> *mut JSString 
 // --- Strings -----------------------------------------------------------------------------
 
 fn chars_of<'c>(s: *mut JSString) -> &'c StringChars {
+    // Conversions ask for the characters several times (encoding, then the characters): only
+    // the first copies them out of V8.
+    // SAFETY: JSAPI callers pass live strings.
+    if let Some(chars) = unsafe { crate::cell::cached_string_chars(s as *mut std::ffi::c_void) } {
+        return chars;
+    }
     JSContext::current().with_scope(|scope| {
         // SAFETY: JSAPI callers pass live strings.
         unsafe { string_chars(scope, s as *mut std::ffi::c_void) }

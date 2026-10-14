@@ -595,6 +595,11 @@ pub unsafe fn latin1_to_string(cx: &crate::context::JSContext, s: NonNull<JSStri
 
         slice::from_raw_parts(chars, length as usize)
     };
+    // ASCII (almost every DOM string) is already UTF-8.
+    if chars.is_ascii() {
+        // SAFETY: ASCII is valid UTF-8.
+        return unsafe { String::from_utf8_unchecked(chars.to_vec()) };
+    }
     // The `encoding.rs` documentation for `convert_latin1_to_utf8` states that:
     // > The length of the destination buffer must be at least the length of the source
     // > buffer times two.

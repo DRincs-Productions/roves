@@ -1,0 +1,317 @@
+diff --git a/components/roves-js/Cargo.toml b/components/roves-js/Cargo.toml
+index 136a6d9fe09..1326aa4c6fc 100644
+--- a/components/roves-js/Cargo.toml
++++ b/components/roves-js/Cargo.toml
+@@ -22,6 +22,10 @@ encoding_rs = "0.8.35"
+ libc = "0.2.189"
+ log = "0.4.33"
+ num-traits = "0.2.19"
++# Inline reserved slots of class objects (see `object::ClassBox`).
++smallvec = "1.15"
++# The identity table of object cells (see `cell::Interned`).
++rustc-hash = "2.1"
+ 
+ # The mozjs features Servo's crates request; they have no meaning on V8.
+ [features]
+diff --git a/components/roves-js/src/api.rs b/components/roves-js/src/api.rs
+index f82b529da84..50272bdf42c 100644
+--- a/components/roves-js/src/api.rs
++++ b/components/roves-js/src/api.rs
+@@ -188,6 +188,12 @@ pub unsafe fn ToString(cx: &mut SafeJSContext, v: HandleValue) -> *mut JSString
+ // --- Strings -----------------------------------------------------------------------------
+ 
+ fn chars_of<'c>(s: *mut JSString) -> &'c StringChars {
++    // Conversions ask for the characters several times (encoding, then the characters): only
++    // the first copies them out of V8.
++    // SAFETY: JSAPI callers pass live strings.
++    if let Some(chars) = unsafe { crate::cell::cached_string_chars(s as *mut std::ffi::c_void) } {
++        return chars;
++    }
+     JSContext::current().with_scope(|scope| {
+         // SAFETY: JSAPI callers pass live strings.
+         unsafe { string_chars(scope, s as *mut std::ffi::c_void) }
+diff --git a/components/roves-js/src/cell.rs b/components/roves-js/src/cell.rs
+index 37ea3b87857..e2c37ea5dae 100644
+--- a/components/roves-js/src/cell.rs
++++ b/components/roves-js/src/cell.rs
+@@ -26,10 +26,17 @@ use v8::cppgc::{GarbageCollected, Member, UnsafePtr, Visitor, WeakPersistent};
+ /// traced; its V8 value does not keep it alive). Owned by the runtime's raw context.
+ #[derive(Default)]
+ pub(crate) struct Interned {
+-    cells: std::cell::RefCell<std::collections::HashMap<i32, Vec<WeakPersistent<Cell>>>>,
++    /// Keyed by V8's identity hash (already random, so a cheap hasher suffices); almost every
++    /// hash has one entry, kept inline.
++    cells: std::cell::RefCell<rustc_hash::FxHashMap<i32, smallvec::SmallVec<[WeakPersistent<Cell>; 1]>>>,
++    /// Insertions since the last sweep of dead entries, and the count that triggers the next.
+     inserted: std::cell::Cell<usize>,
++    next_sweep: std::cell::Cell<usize>,
+ }
+ 
++/// Insertions before the first sweep of the entries of collected cells.
++const INTERNED_SWEEP_MIN: usize = 4096;
++
+ impl Interned {
+     fn find(&self, scope: &mut v8::PinScope, hash: i32, value: v8::Local<v8::Value>) -> Option<*mut c_void> {
+         let mut cells = self.cells.borrow_mut();
+@@ -50,14 +57,19 @@ impl Interned {
+         let Some(pointer) = from_raw(cell) else { return };
+         let mut cells = self.cells.borrow_mut();
+         cells.entry(hash).or_default().push(WeakPersistent::new(&pointer));
+-        // Drop the entries of collected cells now and then.
++        // Drop the entries of collected cells now and then. Cells are only collected by full
++        // GCs, so the table can hold many live cells: sweeping after a number of insertions
++        // proportional to what survived the last sweep keeps the cost per insertion constant
++        // (a fixed interval made every insertion pay for scanning the whole table).
+         let inserted = self.inserted.get() + 1;
+         self.inserted.set(inserted);
+-        if inserted % 4096 == 0 {
++        if inserted >= self.next_sweep.get().max(INTERNED_SWEEP_MIN) {
+             cells.retain(|_, entries| {
+                 entries.retain(|entry| entry.get().is_some());
+                 !entries.is_empty()
+             });
++            self.inserted.set(0);
++            self.next_sweep.set(cells.len());
+         }
+     }
+ }
+@@ -277,6 +289,17 @@ pub(crate) fn trace_cell(pointer: *mut c_void, visitor: &mut Visitor) {
+     }
+ }
+ 
++/// A string cell's characters if they were already copied out (no V8 access).
++///
++/// # Safety
++/// `pointer` must be a live string cell.
++pub(crate) unsafe fn cached_string_chars<'c>(pointer: *mut c_void) -> Option<&'c StringChars> {
++    let cell = from_raw(pointer).expect("a non-null string pointer");
++    // SAFETY: the caller guarantees the cell is alive; the returned reference is tied to it.
++    let cell: &'c Cell = unsafe { &*(cell.as_ref() as *const Cell) };
++    cell.chars.get()
++}
++
+ /// A string cell's characters (Latin-1 when every code unit fits, else UTF-16), valid while
+ /// the cell lives.
+ ///
+@@ -289,12 +312,16 @@ pub(crate) unsafe fn string_chars<'c>(scope: &mut v8::PinScope, pointer: *mut c_
+     cell.chars.get_or_init(|| {
+         let value = cell.value.get(scope).expect("a live cell holds its value");
+         let string = v8::Local::<v8::String>::try_from(value).expect("a string cell");
+-        let mut units = vec![0u16; string.length()];
+-        string.write_v2(scope, 0, &mut units, v8::WriteFlags::empty());
+-        if units.iter().all(|unit| *unit <= 0xFF) {
+-            StringChars::Latin1(units.into_iter().map(|unit| unit as u8).collect())
+-        } else {
+-            StringChars::TwoByte(units)
++        // One copy out of V8's flat representation (no allocation can happen while the view
++        // lives). DOM strings are almost always one-byte: those were copied out as UTF-16 and
++        // narrowed in a second pass and allocation.
++        let view = v8::ValueView::new(scope, string);
++        match view.data() {
++            v8::ValueViewData::OneByte(bytes) => StringChars::Latin1(bytes.to_vec()),
++            v8::ValueViewData::TwoByte(units) if units.iter().all(|unit| *unit <= 0xFF) => {
++                StringChars::Latin1(units.iter().map(|unit| *unit as u8).collect())
++            },
++            v8::ValueViewData::TwoByte(units) => StringChars::TwoByte(units.to_vec()),
+         }
+     })
+ }
+diff --git a/components/roves-js/src/conversions.rs b/components/roves-js/src/conversions.rs
+index e00957bfb99..ba3afd48ebd 100644
+--- a/components/roves-js/src/conversions.rs
++++ b/components/roves-js/src/conversions.rs
+@@ -595,6 +595,11 @@ pub unsafe fn latin1_to_string(cx: &crate::context::JSContext, s: NonNull<JSStri
+ 
+         slice::from_raw_parts(chars, length as usize)
+     };
++    // ASCII (almost every DOM string) is already UTF-8.
++    if chars.is_ascii() {
++        // SAFETY: ASCII is valid UTF-8.
++        return unsafe { String::from_utf8_unchecked(chars.to_vec()) };
++    }
+     // The `encoding.rs` documentation for `convert_latin1_to_utf8` states that:
+     // > The length of the destination buffer must be at least the length of the source
+     // > buffer times two.
+diff --git a/components/roves-js/src/object.rs b/components/roves-js/src/object.rs
+index 9f30893d7e9..f2d9b91a43f 100644
+--- a/components/roves-js/src/object.rs
++++ b/components/roves-js/src/object.rs
+@@ -12,7 +12,6 @@
+ //! is gone). The box's trace calls the class trace hook, its destruction the finalize hook.
+ 
+ use std::cell::{Cell as StdCell, RefCell};
+-use std::collections::HashMap;
+ use std::ffi::c_void;
+ 
+ use v8::cppgc::{GarbageCollected, Member, UnsafePtr, Visitor};
+@@ -41,7 +40,9 @@ const CLASS_WRAP_TAG: u16 = 1;
+ /// The per-object state of a class-based object.
+ pub(crate) struct ClassBox {
+     pub(crate) class: *const JSClass,
+-    slots: RefCell<Vec<JSVal>>,
++    /// Inline for the few slots DOM classes declare: a wrapper is created per DOM node, and a
++    /// heap vector per wrapper was a `malloc`/`free` pair each.
++    slots: RefCell<Slots>,
+     /// The object's own cell (set right after allocation).
+     pub(crate) cell: StdCell<*mut c_void>,
+     /// For a global object: its realm.
+@@ -107,6 +108,9 @@ unsafe impl GarbageCollected for ClassBox {
+     }
+ }
+ 
++/// Reserved slot storage (DOM wrappers declare one to three slots; globals more).
++type Slots = smallvec::SmallVec<[JSVal; 4]>;
++
+ /// Marks the extent of GC work run by roves-js (traces and finalizers).
+ struct GcScope;
+ 
+@@ -219,7 +223,8 @@ fn reserved_slot_count(class: &JSClass) -> usize {
+ /// Per-runtime cache of the object template of each class.
+ #[derive(Default)]
+ pub(crate) struct ClassTemplates {
+-    templates: RefCell<HashMap<usize, v8::Global<v8::ObjectTemplate>>>,
++    /// By class address (one lookup per class object created: a cheap hasher).
++    templates: RefCell<rustc_hash::FxHashMap<usize, v8::Global<v8::ObjectTemplate>>>,
+ }
+ 
+ impl ClassTemplates {
+@@ -547,9 +552,9 @@ pub(crate) fn make_class_box(scope: &mut v8::PinScope, object: v8::Local<v8::Obj
+     let class_box = new_class_box(scope, class);
+     let raw = box_to_raw(&class_box);
+     object.set_aligned_pointer_in_internal_field(0, raw, CLASS_BOX_TAG);
+-    let root = v8::cppgc::Persistent::new(&class_box);
+-    // SAFETY: the object is an API object from a template with one internal field.
+-    unsafe { v8::Object::wrap::<CLASS_WRAP_TAG, ClassBox>(scope, object, &root) };
++    // SAFETY: the object is an API object from a template with one internal field; the box
++    // was just allocated, and no GC runs before the wrap makes the object keep it alive.
++    unsafe { v8::Object::wrap::<CLASS_WRAP_TAG, ClassBox>(scope, object, &class_box) };
+     class_box
+ }
+ 
+@@ -564,7 +569,7 @@ pub(crate) fn new_class_box(scope: &mut v8::PinScope, class: *const JSClass) ->
+             heap,
+             ClassBox {
+                 class,
+-                slots: RefCell::new(vec![UndefinedValue(); slots]),
++                slots: RefCell::new(smallvec::smallvec![UndefinedValue(); slots]),
+                 cell: StdCell::new(std::ptr::null_mut()),
+                 realm: RefCell::new(None),
+                 proxy: StdCell::new(std::ptr::null()),
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 16dca91c444..e11b1ffb985 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -353,6 +353,108 @@ mod object_model {
+         assert_eq!(HOOK_FINALIZED.with(Cell::get), finalized_before + COUNT as u32);
+     }
+ 
++    thread_local! {
++        static BENCH_PROTO: Cell<*mut JSObject> = const { Cell::new(ptr::null_mut()) };
++    }
++
++    /// Creates one class object the way Servo's `wrap` does (enter the realm, given prototype,
++    /// private in a reserved slot) and returns it.
++    unsafe extern "C" fn make_wrapper(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
++        // SAFETY: the JSNative contract.
++        let args = unsafe { std::slice::from_raw_parts_mut(vp, argc as usize + 2) };
++        rooted!(in(cx) let proto = BENCH_PROTO.with(Cell::get));
++        rooted!(in(cx) let obj = unsafe { JS_NewObjectWithGivenProto(cx, &CLASS, proto.handle().into_handle()) });
++        unsafe { JS_SetReservedSlot(obj.get(), 0, &PrivateValue(8 as *const c_void)) };
++        // Servo's `init_reflector` accounts the native object's size.
++        unsafe { AddAssociatedMemory(obj.get(), 400, MemoryUse::DOMBinding) };
++        args[0] = ObjectValue(obj.get());
++        true
++    }
++
++    /// Takes a string argument as Servo's DOMString setters do (`jsstr_to_string`).
++    unsafe extern "C" fn take_string(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
++        // SAFETY: the JSNative contract.
++        let args = unsafe { std::slice::from_raw_parts_mut(vp, argc as usize + 2) };
++        use crate::conversions::{ConversionResult, FromJSValConvertible};
++        let mut safe = unsafe { crate::context::JSContext::from_ptr(std::ptr::NonNull::new(cx).unwrap()) };
++        let value = unsafe { crate::rust::HandleValue::from_marked_location(&args[2]) };
++        let Ok(ConversionResult::Success(text)) = std::string::String::safe_from_jsval(&mut safe, value, ()) else { return false };
++        args[0] = Int32Value(text.len() as i32);
++        true
++    }
++
++    /// Cost of creating DOM-like wrappers (`cargo test --release --lib bench_wrapper_creation
++    /// -- --ignored --nocapture`).
++    #[test]
++    #[ignore = "benchmark"]
++    fn bench_wrapper_creation() {
++        let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        rooted!(in(cx) let proto = unsafe { JS_NewPlainObject(cx) });
++        BENCH_PROTO.with(|cell| cell.set(proto.get()));
++        const N: u32 = 100_000;
++        for round in 0..3 {
++            let start = std::time::Instant::now();
++            for _ in 0..N {
++                rooted!(in(cx) let obj = unsafe { JS_NewObjectWithGivenProto(cx, &CLASS, proto.handle().into_handle()) });
++                unsafe { JS_SetReservedSlot(obj.get(), 0, &PrivateValue(8 as *const c_void)) };
++            }
++            let ns = start.elapsed().as_nanos() as f64 / N as f64;
++            eprintln!("BENCH round {round} JS_NewObjectWithGivenProto + slot (Rust loop): {ns:.0} ns/object");
++        }
++        {
++            let start = std::time::Instant::now();
++            for _ in 0..N {
++                rooted!(in(cx) let obj = unsafe { JS_NewObject(cx, &CLASS) });
++                unsafe { JS_SetReservedSlot(obj.get(), 0, &PrivateValue(8 as *const c_void)) };
++            }
++            let ns = start.elapsed().as_nanos() as f64 / N as f64;
++            eprintln!("BENCH JS_NewObject (default prototype, no SetPrototype) + slot: {ns:.0} ns/object");
++            let start = std::time::Instant::now();
++            for _ in 0..N {
++                rooted!(in(cx) let obj = unsafe { JS_NewPlainObject(cx) });
++            }
++            let ns = start.elapsed().as_nanos() as f64 / N as f64;
++            eprintln!("BENCH JS_NewPlainObject: {ns:.0} ns/object");
++        }
++        rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
++        for (name, native) in [(c"make", make_wrapper as unsafe extern "C" fn(*mut JSContext, u32, *mut JSVal) -> bool), (c"take", take_string)] {
++            let function = unsafe { JS_NewFunction(cx, Some(native), 1, 0, name.as_ptr()) };
++            rooted!(in(cx) let value = ObjectValue(unsafe { JS_GetFunctionObject(function) }));
++            assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), name.as_ptr(), value.handle().into_handle()) });
++        }
++        for (label, body) in [
++            ("script calls native that wraps (createElement-like)", "for (let i = 0; i < N; i++) s += make() ? 1 : 0;"),
++            ("script passes a string to a native (setter-like)", "for (let i = 0; i < N; i++) s += take('opacity 0.5');"),
++            ("script passes a fresh string to a native", "for (let i = 0; i < N; i++) s += take('x' + i);"),
++        ] {
++            let source = format!("(() => {{ const N = {N}; let s = 0; {body} return s; }})()");
++            eval(&runtime, &source); // warm-up
++            let start = std::time::Instant::now();
++            eval(&runtime, &source);
++            let ns = start.elapsed().as_nanos() as f64 / N as f64;
++            eprintln!("BENCH {label}: {ns:.0} ns/op");
++        }
++        // The same with a large live heap: a "DOM" of wrappers reachable from script, and
++        // garbage JS objects, as on a real page.
++        eval(&runtime, "globalThis.live = []; for (let i = 0; i < 50000; i++) live.push(make()); globalThis.junk = []; for (let i = 0; i < 200000; i++) junk.push({ i, s: 'x' + i });");
++        for round in 0..3 {
++            let source = format!("(() => {{ const N = {N}; let s = 0; for (let i = 0; i < N; i++) s += make() ? 1 : 0; return s; }})()");
++            let start = std::time::Instant::now();
++            eval(&runtime, &source);
++            let ns = start.elapsed().as_nanos() as f64 / N as f64;
++            eprintln!("BENCH round {round} createElement-like with 50k live wrappers: {ns:.0} ns/op");
++        }
++        for round in 0..2 {
++            let source = format!("(() => {{ const N = {N}; let s = 0; for (let i = 0; i < N; i++) s += take('opacity 0.5'); return s; }})()");
++            let start = std::time::Instant::now();
++            eval(&runtime, &source);
++            let ns = start.elapsed().as_nanos() as f64 / N as f64;
++            eprintln!("BENCH round {round} setter-like with 50k live wrappers: {ns:.0} ns/op");
++        }
++        BENCH_PROTO.with(|cell| cell.set(ptr::null_mut()));
++    }
++
+     #[test]
+     fn properties_by_name_and_id_and_descriptors() {
+         let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+@@ -2127,3 +2229,4 @@ fn gc_callbacks_report_full_collections() {
+     runtime.gc_for_testing();
+     assert!(GC_EVENTS.with(|events| events.borrow().is_empty()));
+ }
++
