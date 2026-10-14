@@ -27,8 +27,6 @@ use style::stylesheet_set::{AuthorStylesheetSet, DocumentStylesheetSet};
 use tendril::TendrilSink;
 use tendril::fmt::UTF8;
 use tendril::stream::LossyDecoder;
-#[cfg(feature = "webxr")]
-use webxr_api::{Finger, Hand};
 use xml5ever::interface::TreeSink as XmlTreeSink;
 use xml5ever::tokenizer::XmlTokenizer;
 use xml5ever::tree_builder::{Tracer as XmlTracer, XmlTreeBuilder};
@@ -209,64 +207,6 @@ where
 {
     unsafe fn trace(&self, tracer: *mut JSTracer) {
         unsafe { self.inner_sink().trace(tracer) };
-    }
-}
-
-#[cfg(feature = "webxr")]
-unsafe impl<J> CustomTraceable for Hand<J>
-where
-    J: JSTraceable,
-{
-    #[inline]
-    unsafe fn trace(&self, trc: *mut JSTracer) {
-        // exhaustive match so we don't miss new fields
-        let Hand {
-            ref wrist,
-            ref thumb_metacarpal,
-            ref thumb_phalanx_proximal,
-            ref thumb_phalanx_distal,
-            ref thumb_phalanx_tip,
-            ref index,
-            ref middle,
-            ref ring,
-            ref little,
-        } = *self;
-        unsafe {
-            wrist.trace(trc);
-            thumb_metacarpal.trace(trc);
-            thumb_phalanx_proximal.trace(trc);
-            thumb_phalanx_distal.trace(trc);
-            thumb_phalanx_tip.trace(trc);
-            index.trace(trc);
-            middle.trace(trc);
-            ring.trace(trc);
-            little.trace(trc);
-        }
-    }
-}
-
-#[cfg(feature = "webxr")]
-unsafe impl<J> CustomTraceable for Finger<J>
-where
-    J: JSTraceable,
-{
-    #[inline]
-    unsafe fn trace(&self, trc: *mut JSTracer) {
-        // exhaustive match so we don't miss new fields
-        let Finger {
-            ref metacarpal,
-            ref phalanx_proximal,
-            ref phalanx_intermediate,
-            ref phalanx_distal,
-            ref phalanx_tip,
-        } = *self;
-        unsafe {
-            metacarpal.trace(trc);
-            phalanx_proximal.trace(trc);
-            phalanx_intermediate.trace(trc);
-            phalanx_distal.trace(trc);
-            phalanx_tip.trace(trc);
-        }
     }
 }
 

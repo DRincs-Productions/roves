@@ -64,8 +64,6 @@ use crate::dom::wakelock::WakeLock;
 #[cfg(feature = "webgpu")]
 use crate::dom::webgpu::gpu::GPU;
 use crate::dom::window::Window;
-#[cfg(feature = "webxr")]
-use crate::dom::xrsystem::XRSystem;
 use crate::fetch::RequestWithGlobalScope;
 use crate::network_listener::{FetchResponseListener, ResourceTimingListener, submit_timing};
 
@@ -120,8 +118,6 @@ pub(crate) struct Navigator {
     plugins: MutNullableDom<PluginArray>,
     mime_types: MutNullableDom<MimeTypeArray>,
     service_worker: MutNullableDom<ServiceWorkerContainer>,
-    #[cfg(feature = "webxr")]
-    xr: MutNullableDom<XRSystem>,
     mediadevices: MutNullableDom<MediaDevices>,
     /// <https://www.w3.org/TR/gamepad/#dfn-gamepads>
     #[cfg(feature = "gamepad")]
@@ -150,8 +146,6 @@ impl Navigator {
             plugins: Default::default(),
             mime_types: Default::default(),
             service_worker: Default::default(),
-            #[cfg(feature = "webxr")]
-            xr: Default::default(),
             mediadevices: Default::default(),
             #[cfg(feature = "gamepad")]
             gamepads: Default::default(),
@@ -171,11 +165,6 @@ impl Navigator {
 
     pub(crate) fn new(cx: &mut JSContext, window: &Window) -> DomRoot<Navigator> {
         reflect_dom_object_with_cx(Box::new(Navigator::new_inherited()), window, cx)
-    }
-
-    #[cfg(feature = "webxr")]
-    pub(crate) fn xr(&self) -> Option<DomRoot<XRSystem>> {
-        self.xr.get()
     }
 
     #[cfg(feature = "gamepad")]
@@ -467,13 +456,6 @@ impl NavigatorMethods<crate::DomTypeHolder> for Navigator {
     fn Permissions(&self, cx: &mut JSContext) -> DomRoot<Permissions> {
         self.permissions
             .or_init(|| Permissions::new(cx, &self.global()))
-    }
-
-    /// <https://immersive-web.github.io/webxr/#dom-navigator-xr>
-    #[cfg(feature = "webxr")]
-    fn Xr(&self, cx: &mut JSContext) -> DomRoot<XRSystem> {
-        self.xr
-            .or_init(|| XRSystem::new(cx, self.global().as_window()))
     }
 
     /// <https://w3c.github.io/mediacapture-main/#dom-navigator-mediadevices>

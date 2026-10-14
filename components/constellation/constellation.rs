@@ -457,9 +457,6 @@ pub struct Constellation<STF, SWF> {
     /// Entry point to create and get channels to a WebGLThread.
     pub(crate) webgl_threads: Option<WebGLThreads>,
 
-    /// The XR device registry
-    pub(crate) webxr_registry: Option<webxr_api::Registry>,
-
     /// Lazily initialized channels for canvas paint thread.
     canvas: OnceCell<(Sender<ConstellationCanvasMsg>, GenericSender<CanvasMsg>)>,
 
@@ -571,9 +568,6 @@ pub struct InitialConstellationState {
 
     /// Entry point to create and get channels to a WebGLThread.
     pub webgl_threads: Option<WebGLThreads>,
-
-    /// The XR device registry
-    pub webxr_registry: Option<webxr_api::Registry>,
 
     #[cfg(feature = "webgpu")]
     pub wgpu_image_map: WebGpuExternalImageMap,
@@ -722,7 +716,6 @@ where
                         (rng, probability)
                     }),
                     webgl_threads: state.webgl_threads,
-                    webxr_registry: state.webxr_registry,
                     canvas: OnceCell::new(),
                     pending_approval_navigations: Default::default(),
                     pressed_mouse_buttons: 0,

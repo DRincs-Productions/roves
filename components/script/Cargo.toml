@@ -33,7 +33,6 @@ webgpu = [
     "script_bindings/webgpu",
     "script_traits/webgpu",
 ]
-webxr = ["gamepad", "webxr-api", "script_bindings/webxr"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(crown)'] }
@@ -174,7 +173,6 @@ web_atoms = { workspace = true }
 webdriver = { workspace = true }
 webgpu_traits = { workspace = true, optional = true }
 webrender_api = { workspace = true }
-webxr-api = { workspace = true, optional = true }
 wgpu-core = { workspace = true, optional = true }
 wgpu-types = { workspace = true, optional = true }
 x25519-dalek = { workspace = true }

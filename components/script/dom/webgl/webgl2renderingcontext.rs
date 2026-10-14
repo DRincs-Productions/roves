@@ -3,8 +3,6 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::Cell;
-#[cfg(feature = "webxr")]
-use std::rc::Rc;
 use std::{cmp, ptr};
 
 use bitflags::bitflags;
@@ -47,8 +45,6 @@ use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::globalscope::GlobalScope;
-#[cfg(feature = "webxr")]
-use crate::dom::promise::Promise;
 use crate::dom::webgl::validations::WebGLValidator;
 use crate::dom::webgl::validations::tex_image_2d::{
     TexImage2DValidator, TexImage2DValidatorResult, TexStorageValidator, TexStorageValidatorResult,
@@ -1312,11 +1308,6 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
 
         if let Some(fb) = fb_slot.get() {
             // A selected framebuffer is bound to the target
-            handle_potential_webgl_error!(
-                self.base,
-                fb.validate_transparent(),
-                return rval.set(NullValue())
-            );
             handle_potential_webgl_error!(
                 self.base,
                 self.get_specific_fb_attachment_param(
@@ -5068,13 +5059,6 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
         depth: i32,
     ) {
         self.tex_storage(3, target, levels, internal_format, width, height, depth)
-    }
-
-    /// <https://immersive-web.github.io/webxr/#dom-webglrenderingcontextbase-makexrcompatible>
-    #[cfg(feature = "webxr")]
-    fn MakeXRCompatible(&self, cx: &mut js::context::JSContext) -> Rc<Promise> {
-        // XXXManishearth Fill in with compatibility checks when rust-webxr supports this
-        Promise::new_resolved(cx, &self.global(), ())
     }
 }
 

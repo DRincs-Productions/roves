@@ -17,7 +17,6 @@ path = "lib.rs"
 default = []
 tracing = ["dep:tracing"]
 webgpu = ["dep:webgpu"]
-webxr = ["dep:webxr", "dep:webxr-api"]
 
 [lints.clippy]
 unwrap_used = "deny"
@@ -56,8 +55,6 @@ webgl = { workspace = true }
 webgpu = { workspace = true, optional = true }
 webrender = { workspace = true }
 webrender_api = { workspace = true }
-webxr = { workspace = true, optional = true }
-webxr-api = { workspace = true, optional = true }
 wr_malloc_size_of = { workspace = true }
 
 [dev-dependencies]

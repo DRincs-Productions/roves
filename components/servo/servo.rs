@@ -77,8 +77,6 @@ use servo_wakelock::DefaultWakeLockDelegate;
 use storage::new_storage_threads;
 use storage_traits::StorageThreads;
 use style::global_style_data::StyleThreadPool;
-#[cfg(feature = "webxr")]
-use webxr::WebXrRegistry;
 
 use crate::clipboard_delegate::StringRequest;
 #[cfg(feature = "gamepad")]
@@ -1152,12 +1150,6 @@ impl Servo {
             .borrow_mut()
             .push(residue_event);
     }
-
-    #[cfg(feature = "webxr")]
-    /// Registers a [`WebXrRegistry`]
-    pub fn register_webxr_registry(&self, registry: Box<dyn WebXrRegistry>) {
-        self.0.paint.borrow().register_webxr_registry(registry);
-    }
 }
 
 fn create_embedder_channel(
@@ -1260,10 +1252,6 @@ fn create_constellation(
         private_storage_threads,
         time_profiler_chan,
         mem_profiler_chan,
-        #[cfg(feature = "webxr")]
-        webxr_registry: Some(paint.webxr_main_thread_registry()),
-        #[cfg(not(feature = "webxr"))]
-        webxr_registry: None,
         webgl_threads: Some(paint.webgl_threads()),
         webrender_external_image_id_manager: paint.webrender_external_image_id_manager(),
         #[cfg(feature = "webgpu")]

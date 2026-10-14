@@ -93,7 +93,7 @@ use crate::dom::bindings::codegen::Bindings::DocumentBinding::{
 use crate::dom::bindings::codegen::Bindings::ElementBinding::ScrollLogicalPosition;
 use crate::dom::bindings::codegen::Bindings::EventBinding::Event_Binding::EventMethods;
 use crate::dom::bindings::codegen::Bindings::HTMLIFrameElementBinding::HTMLIFrameElement_Binding::HTMLIFrameElementMethods;
-#[cfg(any(feature = "webxr", feature = "gamepad"))]
+#[cfg(feature = "gamepad")]
 use crate::dom::bindings::codegen::Bindings::NavigatorBinding::Navigator_Binding::NavigatorMethods;
 use crate::dom::bindings::codegen::Bindings::NodeBinding::NodeMethods;
 use crate::dom::bindings::codegen::Bindings::NodeFilterBinding::NodeFilter;
@@ -2306,7 +2306,7 @@ impl Document {
     }
 
     /// Step 9 of <https://html.spec.whatwg.org/multipage/#the-end>
-    fn queue_document_completion(&self, cx: &mut JSContext) {
+    fn queue_document_completion(&self, _cx: &mut JSContext) {
         self.loader.borrow_mut().inhibit_events();
 
         // The rest will ever run only once per document.
@@ -2398,16 +2398,6 @@ impl Document {
 
         // Step 11.
         // TODO: ready for post-load tasks.
-
-        // The dom.webxr.sessionavailable pref allows webxr
-        // content to immediately begin a session without waiting for a user gesture.
-        // TODO: should this only happen on the first document loaded?
-        // https://immersive-web.github.io/webxr/#user-intention
-        // https://github.com/immersive-web/navigation/issues/10
-        #[cfg(feature = "webxr")]
-        if pref!(dom_webxr_sessionavailable) && self.window.is_top_level() {
-            self.window.Navigator(cx).Xr(cx).dispatch_sessionavailable();
-        }
     }
 
     pub(crate) fn completely_loaded(&self) -> bool {

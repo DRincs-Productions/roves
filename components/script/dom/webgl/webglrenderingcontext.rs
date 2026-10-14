@@ -63,8 +63,6 @@ use crate::dom::event::{Event, EventBubbles, EventCancelable};
 #[cfg(feature = "webgl_backtrace")]
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::node::NodeTraits;
-#[cfg(feature = "webxr")]
-use crate::dom::promise::Promise;
 use crate::dom::webgl::extensions::WebGLExtensions;
 use crate::dom::webgl::validations::WebGLValidator;
 use crate::dom::webgl::validations::tex_image_2d::{
@@ -2140,12 +2138,6 @@ impl CanvasContext for WebGLRenderingContext {
             return;
         }
 
-        // Dirtying the canvas is unnecessary if we're actively displaying immersive
-        // XR content right now.
-        if self.global().as_window().in_immersive_xr_session() {
-            return;
-        }
-
         self.canvas.mark_as_dirty();
     }
 }
@@ -3225,10 +3217,6 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.6>
     fn DeleteFramebuffer(&self, framebuffer: Option<&WebGLFramebuffer>) {
         if let Some(framebuffer) = framebuffer {
-            // https://immersive-web.github.io/webxr/#opaque-framebuffer
-            // Can opaque framebuffers be deleted?
-            // https://github.com/immersive-web/webxr/issues/855
-            handle_potential_webgl_error!(self, framebuffer.validate_transparent(), return);
             handle_potential_webgl_error!(self, self.validate_ownership(framebuffer), return);
             if let Some(bound_object) = self.bound_draw_framebuffer.get() &&
                 bound_object.id() == framebuffer.id()
@@ -3400,15 +3388,7 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
         mut retval: MutableHandleValue,
     ) {
         // Check if currently bound framebuffer is non-zero as per spec.
-        if let Some(fb) = self.bound_draw_framebuffer.get() {
-            // Opaque framebuffers cannot have their attachments inspected
-            // https://immersive-web.github.io/webxr/#opaque-framebuffer
-            handle_potential_webgl_error!(
-                self,
-                fb.validate_transparent(),
-                return retval.set(NullValue())
-            );
-        } else {
+        if self.bound_draw_framebuffer.get().is_none() {
             self.webgl_error(InvalidOperation);
             return retval.set(NullValue());
         }
@@ -3516,8 +3496,6 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
         pname: u32,
         mut retval: MutableHandleValue,
     ) {
-        // We do not check to see if the renderbuffer came from an opaque framebuffer
-        // https://github.com/immersive-web/webxr/issues/862
         let target_matches = target == constants::RENDERBUFFER;
 
         let pname_matches = matches!(
@@ -5073,13 +5051,6 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
     fn GetAttachedShaders(&self, program: &WebGLProgram) -> Option<Vec<DomRoot<WebGLShader>>> {
         handle_potential_webgl_error!(self, self.validate_ownership(program), return None);
         handle_potential_webgl_error!(self, program.attached_shaders().map(Some), None)
-    }
-
-    /// <https://immersive-web.github.io/webxr/#dom-webglrenderingcontextbase-makexrcompatible>
-    #[cfg(feature = "webxr")]
-    fn MakeXRCompatible(&self, cx: &mut js::context::JSContext) -> Rc<Promise> {
-        // XXXManishearth Fill in with compatibility checks when rust-webxr supports this
-        Promise::new_resolved(cx, &self.global(), ())
     }
 }
 

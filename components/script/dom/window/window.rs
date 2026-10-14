@@ -392,11 +392,6 @@ pub(crate) struct Window {
     #[no_trace]
     webgl_chan: Option<WebGLChan>,
 
-    #[ignore_malloc_size_of = "defined in webxr"]
-    #[no_trace]
-    #[cfg(feature = "webxr")]
-    webxr_registry: Option<webxr_api::Registry>,
-
     /// When an element triggers an image load or starts watching an image load from the
     /// `ImageCache` it adds an entry to this list. When those loads are triggered from
     /// layout, they also add an etry to [`Self::pending_layout_images`].
@@ -696,11 +691,6 @@ impl Window {
     // TODO: rename the function to webgl_chan after the existing `webgl_chan` function is removed.
     pub(crate) fn webgl_chan_value(&self) -> Option<WebGLChan> {
         self.webgl_chan.clone()
-    }
-
-    #[cfg(feature = "webxr")]
-    pub(crate) fn webxr_registry(&self) -> Option<webxr_api::Registry> {
-        self.webxr_registry.clone()
     }
 
     fn new_paint_worklet(&self, cx: &mut JSContext) -> DomRoot<Worklet> {
@@ -3652,20 +3642,6 @@ impl Window {
             .unwrap();
     }
 
-    #[cfg(feature = "webxr")]
-    pub(crate) fn in_immersive_xr_session(&self) -> bool {
-        self.navigator
-            .get()
-            .as_ref()
-            .and_then(|nav| nav.xr())
-            .is_some_and(|xr| xr.pending_or_active_session())
-    }
-
-    #[cfg(not(feature = "webxr"))]
-    pub(crate) fn in_immersive_xr_session(&self) -> bool {
-        false
-    }
-
     /// Adds and removes entries from `document.fonts` as needed after a reflow.
     fn handle_new_or_removed_web_fonts_post_reflow(
         &self,
@@ -3874,7 +3850,6 @@ impl Window {
         top_level_creation_url: ServoUrl,
         navigation_start: CrossProcessInstant,
         webgl_chan: Option<WebGLChan>,
-        #[cfg(feature = "webxr")] webxr_registry: Option<webxr_api::Registry>,
         paint_api: CrossProcessPaintApi,
         unminify_js: bool,
         unminify_css: bool,
@@ -3947,8 +3922,6 @@ impl Window {
             #[cfg(feature = "bluetooth")]
             test_runner: Default::default(),
             webgl_chan,
-            #[cfg(feature = "webxr")]
-            webxr_registry,
             pending_image_callbacks: Default::default(),
             pending_layout_images: Default::default(),
             pending_images_for_rasterization: Default::default(),

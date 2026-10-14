@@ -31,4 +31,3 @@ servo-base = { workspace = true }
 strum = { workspace = true }
 stylo = { workspace = true }
 webrender_api = { workspace = true }
-webxr-api = { workspace = true }

@@ -5959,27 +5959,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
-name = "openxr"
-version = "0.21.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c2f814a47d257c79c762bc64042859661b6aa2f57cfa1f0ad4d778f419aeb0e"
-dependencies = [
- "libc",
- "libloading 0.9.0",
- "ndk-context",
- "openxr-sys",
-]
-
-[[package]]
-name = "openxr-sys"
-version = "0.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b8d66081de28c2fa40216182a37292fe38aeea20bc184612504d5e64daf5359"
-dependencies = [
- "libc",
-]
-
-[[package]]
 name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7741,8 +7720,6 @@ dependencies = [
  "servo-wakelock",
  "servo-webgl",
  "servo-webgpu",
- "servo-webxr",
- "servo-webxr-api",
  "stylo",
  "stylo_traits",
  "surfman",
@@ -7889,7 +7866,6 @@ dependencies = [
  "servo-fonts-traits",
  "servo-malloc-size-of",
  "servo-pixels",
- "servo-webxr-api",
  "strum",
  "stylo",
  "webrender_api",
@@ -7969,7 +7945,6 @@ dependencies = [
  "servo-url",
  "servo-webgpu",
  "servo-webgpu-traits",
- "servo-webxr-api",
  "stylo",
  "stylo_traits",
  "tracing",
@@ -8758,8 +8733,6 @@ dependencies = [
  "servo-tracing",
  "servo-webgl",
  "servo-webgpu",
- "servo-webxr",
- "servo-webxr-api",
  "smallvec",
  "stylo_traits",
  "surfman",
@@ -8967,7 +8940,6 @@ dependencies = [
  "servo-url",
  "servo-webgpu-traits",
  "servo-webvtt",
- "servo-webxr-api",
  "servo-xpath",
  "servo_arc",
  "sha1 0.11.0",
@@ -9034,7 +9006,6 @@ dependencies = [
  "servo-malloc-size-of",
  "servo-profile-traits",
  "servo-url",
- "servo-webxr-api",
  "servo_arc",
  "smallvec",
  "stylo",
@@ -9073,7 +9044,6 @@ dependencies = [
  "servo-storage-traits",
  "servo-url",
  "servo-webgpu-traits",
- "servo-webxr-api",
  "strum",
  "stylo_atoms",
  "stylo_traits",
@@ -9226,8 +9196,6 @@ dependencies = [
  "servo-canvas-traits",
  "servo-paint-api",
  "servo-pixels",
- "servo-webxr",
- "servo-webxr-api",
  "surfman",
  "webrender_api",
 ]
@@ -9273,39 +9241,6 @@ dependencies = [
  "markup5ever",
  "regex",
  "servo-webvtt",
-]
-
-[[package]]
-name = "servo-webxr"
-version = "0.5.0"
-dependencies = [
- "crossbeam-channel",
- "euclid",
- "glow",
- "log",
- "openxr",
- "raw-window-handle",
- "servo-base",
- "servo-profile-traits",
- "servo-webxr-api",
- "surfman",
- "winapi",
- "wio",
-]
-
-[[package]]
-name = "servo-webxr-api"
-version = "0.5.0"
-dependencies = [
- "euclid",
- "ipc-channel",
- "log",
- "malloc_size_of_derive",
- "serde",
- "servo-base",
- "servo-embedder-traits",
- "servo-malloc-size-of",
- "servo-profile-traits",
 ]
 
 [[package]]

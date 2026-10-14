@@ -189,7 +189,6 @@ ohos-vsync = "0.1.3"
 ohos-window-manager-sys = "0.1"
 ohos-window-sys = "0.1.7"
 once_cell = "1.21.4"
-openxr = "0.21"
 p256 = { version = "0.14", features = ["ecdh"] }
 p384 = { version = "0.14", features = ["ecdh"] }
 p521 = { version = "0.14", features = ["ecdh"] }
@@ -303,7 +302,6 @@ winapi = "0.3"
 windows-sys = "0.61"
 winit = "0.30.13"
 winresource = "0.1"
-wio = "0.2"
 wr_malloc_size_of = "0.2.2"
 x25519-dalek = { version = "3.0", features = ["getrandom", "static_secrets", "zeroize"] }
 x448 = { version = "=0.14.0-pre.12", features = ["static_secrets"] }
@@ -385,8 +383,6 @@ webdriver_server = { package = "servo-webdriver-server", version = "=0.5.0", pat
 webgl = { package = "servo-webgl", version = "=0.5.0", path = "components/webgl", default-features = false }
 webgpu = { package = "servo-webgpu", version = "=0.5.0", path = "components/webgpu" }
 webgpu_traits = { package = "servo-webgpu-traits", version = "=0.5.0", path = "components/shared/webgpu" }
-webxr = { package = "servo-webxr", version = "=0.5.0", path = "components/webxr", default-features = false }
-webxr-api = { package = "servo-webxr-api", version = "=0.5.0", path = "components/shared/webxr" }
 xpath = { package = "servo-xpath", version = "=0.5.0", path = "components/xpath" }
 # End workspace-version dependencies - Don't change this comment, we grep for it in scripts!
 

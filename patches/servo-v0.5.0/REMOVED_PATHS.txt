@@ -43,3 +43,53 @@ etc/vendor_servo.py
 etc/wpt-summarize.py
 etc/wpt-timing.py
 etc/wpt_result_analyzer.py
+
+# WebXR, deleted entirely (see CUSTOMIZATIONS.md, 2026-10-14 "Delete WebXR" entry; the
+# matching edits to the files that referenced it are patch 0217). servoshell never enabled
+# the `webxr` feature after patch 0201, so all of this was dead code.
+components/webxr
+components/shared/webxr
+components/script/dom/webxr
+components/webgl/webxr.rs
+components/script_bindings/webidls/FakeXRDevice.webidl
+components/script_bindings/webidls/FakeXRInputController.webidl
+components/script_bindings/webidls/XRBoundedReferenceSpace.webidl
+components/script_bindings/webidls/XRCompositionLayer.webidl
+components/script_bindings/webidls/XRCubeLayer.webidl
+components/script_bindings/webidls/XRCylinderLayer.webidl
+components/script_bindings/webidls/XREquirectLayer.webidl
+components/script_bindings/webidls/XRFrame.webidl
+components/script_bindings/webidls/XRHand.webidl
+components/script_bindings/webidls/XRHitTestResult.webidl
+components/script_bindings/webidls/XRHitTestSource.webidl
+components/script_bindings/webidls/XRInputSource.webidl
+components/script_bindings/webidls/XRInputSourceArray.webidl
+components/script_bindings/webidls/XRInputSourceEvent.webidl
+components/script_bindings/webidls/XRInputSourcesChangeEvent.webidl
+components/script_bindings/webidls/XRJointPose.webidl
+components/script_bindings/webidls/XRJointSpace.webidl
+components/script_bindings/webidls/XRLayer.webidl
+components/script_bindings/webidls/XRLayerEvent.webidl
+components/script_bindings/webidls/XRMediaBinding.webidl
+components/script_bindings/webidls/XRPose.webidl
+components/script_bindings/webidls/XRProjectionLayer.webidl
+components/script_bindings/webidls/XRQuadLayer.webidl
+components/script_bindings/webidls/XRRay.webidl
+components/script_bindings/webidls/XRReferenceSpace.webidl
+components/script_bindings/webidls/XRReferenceSpaceEvent.webidl
+components/script_bindings/webidls/XRRenderState.webidl
+components/script_bindings/webidls/XRRigidTransform.webidl
+components/script_bindings/webidls/XRSession.webidl
+components/script_bindings/webidls/XRSessionEvent.webidl
+components/script_bindings/webidls/XRSpace.webidl
+components/script_bindings/webidls/XRSubImage.webidl
+components/script_bindings/webidls/XRSystem.webidl
+components/script_bindings/webidls/XRTest.webidl
+components/script_bindings/webidls/XRView.webidl
+components/script_bindings/webidls/XRViewerPose.webidl
+components/script_bindings/webidls/XRViewport.webidl
+components/script_bindings/webidls/XRWebGLBinding.webidl
+components/script_bindings/webidls/XRWebGLLayer.webidl
+components/script_bindings/webidls/XRWebGLSubImage.webidl
+# Only read by the deleted `mach package` (package_commands.py); its one setting was VR prefs.
+resources/package-prefs.json

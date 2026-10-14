@@ -337,11 +337,6 @@ pub struct ScriptThread {
     #[no_trace]
     webgl_chan: Option<WebGLPipeline>,
 
-    /// The WebXR device registry
-    #[no_trace]
-    #[cfg(feature = "webxr")]
-    webxr_registry: Option<webxr_api::Registry>,
-
     /// The worklet thread pool
     worklet_thread_pool: DomRefCell<Option<Rc<WorkletThreadPool>>>,
 
@@ -1018,8 +1013,6 @@ impl ScriptThread {
                     mutation_observers: Default::default(),
                     system_font_service: Arc::new(state.system_font_service.to_proxy()),
                     webgl_chan: state.webgl_chan,
-                    #[cfg(feature = "webxr")]
-                    webxr_registry: state.webxr_registry,
                     worklet_thread_pool: Default::default(),
                     docs_with_no_blocking_loads: Default::default(),
                     custom_element_reaction_stack: Rc::new(CustomElementReactionStack::new()),
@@ -3543,8 +3536,6 @@ impl ScriptThread {
             final_url.clone(),
             incomplete.navigation_start,
             self.webgl_chan.as_ref().map(|chan| chan.channel()),
-            #[cfg(feature = "webxr")]
-            self.webxr_registry.clone(),
             self.paint_api.clone(),
             self.unminify_js,
             self.unminify_css,

@@ -47,8 +47,6 @@ use webgpu::canvas_context::WebGpuExternalImageMap;
 use webrender::{CaptureBits, MemoryReport};
 use webrender_api::units::{DevicePixel, DevicePoint};
 use webrender_api::{FontInstanceKey, FontKey, ImageKey};
-#[cfg(feature = "webxr")]
-use webxr::WebXrRegistry;
 
 use crate::InitialPaintState;
 use crate::painter::Painter;
@@ -134,10 +132,6 @@ pub struct Paint {
     /// when it's dropped.
     _mem_profiler_registration: ProfilerRegistration,
 
-    /// Some XR devices want to run on the main thread.
-    #[cfg(feature = "webxr")]
-    webxr_main_thread: RefCell<webxr::MainThreadRegistry>,
-
     /// An map of external images shared between all `WebGpuExternalImages`.
     #[cfg(feature = "webgpu")]
     webgpu_image_map: std::cell::OnceCell<WebGpuExternalImageMap>,
@@ -178,22 +172,12 @@ impl Paint {
             webgl_threads,
             swap_chains,
             busy_webgl_context_map,
-            #[cfg(feature = "webxr")]
-            webxr_layer_grand_manager,
             join_handle: webgl_join_handle,
         } = WebGLComm::new(
             state.paint_proxy.cross_process_paint_api.clone(),
             webrender_external_image_id_manager.clone(),
             painter_surfman_details_map.clone(),
         );
-
-        // Create the WebXR main thread
-        #[cfg(feature = "webxr")]
-        let webxr_main_thread = webxr::MainThreadRegistry::new(
-            state.event_loop_waker.clone(),
-            webxr_layer_grand_manager,
-        )
-        .expect("Failed to create WebXR device registry");
 
         Rc::new(RefCell::new(Paint {
             painters: Default::default(),
@@ -210,17 +194,9 @@ impl Paint {
             _mem_profiler_registration: registration,
             painter_surfman_details_map,
             busy_webgl_contexts_map: busy_webgl_context_map,
-            #[cfg(feature = "webxr")]
-            webxr_main_thread: RefCell::new(webxr_main_thread),
             #[cfg(feature = "webgpu")]
             webgpu_image_map: Default::default(),
         }))
-    }
-
-    #[cfg(feature = "webxr")]
-    pub fn register_webxr_registry(&self, registry: Box<dyn WebXrRegistry>) {
-        let mut webxr_main_thread = self.webxr_main_thread.borrow_mut();
-        registry.register(&mut webxr_main_thread)
     }
 
     pub fn register_rendering_context(
@@ -313,22 +289,6 @@ impl Paint {
 
     pub fn webrender_external_image_id_manager(&self) -> WebRenderExternalImageIdManager {
         self.webrender_external_image_id_manager.clone()
-    }
-
-    pub fn webxr_running(&self) -> bool {
-        #[cfg(feature = "webxr")]
-        {
-            self.webxr_main_thread.borrow().running()
-        }
-        #[cfg(not(feature = "webxr"))]
-        {
-            false
-        }
-    }
-
-    #[cfg(feature = "webxr")]
-    pub fn webxr_main_thread_registry(&self) -> webxr_api::Registry {
-        self.webxr_main_thread.borrow().registry()
     }
 
     #[cfg(feature = "webgpu")]
@@ -761,10 +721,6 @@ impl Paint {
         if self.shutdown_state() == ShutdownState::FinishedShuttingDown {
             return false;
         }
-
-        // Run the WebXR main thread
-        #[cfg(feature = "webxr")]
-        self.webxr_main_thread.borrow_mut().run_one_frame();
 
         for painter in &self.painters {
             painter.borrow_mut().perform_updates();

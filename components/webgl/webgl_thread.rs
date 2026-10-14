@@ -35,8 +35,6 @@ use servo_base::generic_channel::{
 };
 use servo_base::id::PainterId;
 use servo_canvas_traits::webgl;
-#[cfg(feature = "webxr")]
-use servo_canvas_traits::webgl::WebXRCommand;
 use servo_canvas_traits::webgl::{
     ActiveAttribInfo, ActiveUniformBlockInfo, ActiveUniformInfo, AlphaTreatment,
     GLContextAttributes, GLLimits, GlType, InternalFormatIntVec, ProgramLinkInfo, TexDataType,
@@ -58,8 +56,6 @@ use webrender_api::{
 };
 
 use crate::webgl_limits::GLLimitsDetect;
-#[cfg(feature = "webxr")]
-use crate::webxr::{WebXRBridge, WebXRBridgeInit};
 
 type GLint = i32;
 
@@ -243,10 +239,6 @@ pub(crate) struct WebGLThread {
     /// A usage map used to delay the deletion of WebGL contexts until all WebRender
     /// rendering is finished, so that any existing `Surface`s can be properly released.
     busy_webgl_context_map: WebGLContextBusyMap,
-
-    #[cfg(feature = "webxr")]
-    /// The bridge to WebXR
-    pub webxr_bridge: Option<WebXRBridge>,
 }
 
 /// The data required to initialize an instance of the WebGLThread type.
@@ -258,8 +250,6 @@ pub(crate) struct WebGLThreadInit {
     pub webrender_swap_chains: SwapChains<WebGLContextId, Device>,
     pub painter_surfman_details_map: PainterSurfmanDetailsMap,
     pub busy_webgl_context_map: WebGLContextBusyMap,
-    #[cfg(feature = "webxr")]
-    pub webxr_init: WebXRBridgeInit,
 }
 
 // A size at which it should be safe to create GL contexts
@@ -276,8 +266,6 @@ impl WebGLThread {
             webrender_swap_chains,
             painter_surfman_details_map,
             busy_webgl_context_map,
-            #[cfg(feature = "webxr")]
-            webxr_init,
         }: WebGLThreadInit,
     ) -> Self {
         WebGLThread {
@@ -292,8 +280,6 @@ impl WebGLThread {
             webrender_swap_chains,
             painter_surfman_details_map,
             busy_webgl_context_map,
-            #[cfg(feature = "webxr")]
-            webxr_bridge: Some(WebXRBridge::new(webxr_init)),
         }
     }
 
@@ -389,10 +375,6 @@ impl WebGLThread {
             WebGLMsg::WebGLCommand(ctx_id, command, backtrace) => {
                 self.handle_webgl_command(ctx_id, command, backtrace);
             },
-            WebGLMsg::WebXRCommand(_command) => {
-                #[cfg(feature = "webxr")]
-                self.handle_webxr_command(_command);
-            },
             WebGLMsg::SwapBuffers(swap_ids, canvas_epoch, sent_time) => {
                 self.handle_swap_buffers(canvas_epoch, swap_ids, sent_time);
             },
@@ -444,57 +426,11 @@ impl WebGLThread {
         Ok(entry.or_insert(Rc::new(device)).clone())
     }
 
-    #[cfg(feature = "webxr")]
-    /// Handles a WebXR message
-    fn handle_webxr_command(&mut self, command: WebXRCommand) {
-        trace!("processing {:?}", command);
-        // Take `webxr_bridge` from the `WebGLThread` in order to avoid a double mutable borrow.
-        let Some(mut webxr_bridge) = self.webxr_bridge.take() else {
-            return;
-        };
-        match command {
-            WebXRCommand::CreateLayerManager(sender) => {
-                let result = webxr_bridge.create_layer_manager(self);
-                let _ = sender.send(result);
-            },
-            WebXRCommand::DestroyLayerManager(manager_id) => {
-                webxr_bridge.destroy_layer_manager(manager_id);
-            },
-            WebXRCommand::CreateLayer(manager_id, context_id, layer_init, sender) => {
-                let result = webxr_bridge.create_layer(manager_id, self, context_id, layer_init);
-                let _ = sender.send(result);
-            },
-            WebXRCommand::DestroyLayer(manager_id, context_id, layer_id) => {
-                webxr_bridge.destroy_layer(manager_id, self, context_id, layer_id);
-            },
-            WebXRCommand::BeginFrame(manager_id, layers, sender) => {
-                let result = webxr_bridge.begin_frame(manager_id, self, &layers[..]);
-                let _ = sender.send(result);
-            },
-            WebXRCommand::EndFrame(manager_id, layers, sender) => {
-                let result = webxr_bridge.end_frame(manager_id, self, &layers[..]);
-                let _ = sender.send(result);
-            },
-        }
-
-        self.webxr_bridge.replace(webxr_bridge);
-    }
-
     fn device_for_context(&self, context_id: WebGLContextId) -> Rc<Device> {
-        self.maybe_device_for_context(context_id)
-            .expect("Should be called with a valid WebGLContextId")
-    }
-
-    /// A function like `Self::device_for_context`, except that it does not panic if the context
-    /// cannot be found. This is useful for WebXR, which might try to access WebGL contexts after
-    /// they have been cleaned up.
-    pub(crate) fn maybe_device_for_context(
-        &self,
-        context_id: WebGLContextId,
-    ) -> Option<Rc<Device>> {
         self.contexts
             .get(&context_id)
             .map(|context| context.device.clone())
+            .expect("Should be called with a valid WebGLContextId")
     }
 
     /// Handles a WebGLCommand for a specific WebGLContext
@@ -804,18 +740,6 @@ impl WebGLThread {
 
         // We need to make the context current so its resources can be disposed of.
         self.make_current_if_needed(context_id);
-
-        // Destroy WebXR layers associated with this context
-        #[cfg(feature = "webxr")]
-        {
-            // We must temporarily take the WebXRBridge, as we are passing self to a
-            // method on the bridge.
-            let mut webxr_bridge = self.webxr_bridge.take();
-            if let Some(webxr_bridge) = &mut webxr_bridge {
-                webxr_bridge.destroy_all_layers(self, context_id.into());
-            }
-            self.webxr_bridge = webxr_bridge;
-        }
 
         // Release GL context.
         let Some(mut data) = self.contexts.remove(&context_id) else {

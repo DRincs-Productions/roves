@@ -406,8 +406,6 @@ pub struct InitialScriptState {
     pub pipeline_namespace_id: PipelineNamespaceId,
     /// A channel to the WebGL thread used in this pipeline.
     pub webgl_chan: Option<WebGLPipeline>,
-    /// The XR device registry
-    pub webxr_registry: Option<webxr_api::Registry>,
     /// Access to `Paint` across a process boundary.
     pub cross_process_paint_api: CrossProcessPaintApi,
     /// Application window's GL Context for Media player

@@ -345,13 +345,9 @@ pub(crate) use self::wakelock::*;
 pub(crate) mod webgl;
 pub(crate) use self::webgl::extensions::ext::*;
 pub(crate) use self::webgl::*;
-pub(crate) mod websocket;
-#[cfg(feature = "webxr")]
-mod webxr;
-#[cfg(feature = "webxr")]
-pub(crate) use self::webxr::*;
 #[cfg(feature = "webgpu")]
 pub(crate) mod webgpu;
+pub(crate) mod websocket;
 #[cfg(feature = "webgpu")]
 pub(crate) use self::webgpu::*;
 #[cfg(not(feature = "webgpu"))]

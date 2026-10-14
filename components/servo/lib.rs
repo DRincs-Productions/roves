@@ -121,17 +121,6 @@ pub use crate::webview_delegate::{
     SimpleDialog, WebResourceLoad, WebViewDelegate,
 };
 
-#[cfg(feature = "webxr")]
-pub mod webxr {
-    #[cfg(not(any(target_os = "android", target_env = "ohos")))]
-    pub use webxr::glwindow::{GlWindow, GlWindowDiscovery, GlWindowMode, GlWindowRenderTarget};
-    #[cfg(not(any(target_os = "android", target_env = "ohos")))]
-    pub use webxr::headless::HeadlessMockDiscovery;
-    #[cfg(target_os = "windows")]
-    pub use webxr::openxr::{AppInfo as OpenXrAppInfo, OpenXrDiscovery};
-    pub use webxr::{Discovery, MainThreadRegistry, WebXrRegistry};
-}
-
 // TODO: The protocol handler interface needs to be cleaned and simplified.
 pub mod protocol_handler {
     pub use net::fetch::methods::{DoneChannel, FetchContext};

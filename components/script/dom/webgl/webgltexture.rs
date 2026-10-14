@@ -27,23 +27,11 @@ use crate::dom::webgl::webglframebuffer::WebGLFramebuffer;
 use crate::dom::webgl::webglobject::WebGLObject;
 use crate::dom::webgl::webglrenderingcontext::{Operation, WebGLRenderingContext};
 use crate::dom::webglrenderingcontext::capture_webgl_backtrace;
-#[cfg(feature = "webxr")]
-use crate::dom::xrsession::XRSession;
 
 pub(crate) enum TexParameterValue {
     Float(f32),
     Int(i32),
     Bool(bool),
-}
-
-// Textures generated for WebXR are owned by the WebXR device, not by the WebGL thread
-// so the GL texture should not be deleted when the texture is garbage collected.
-#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
-#[derive(JSTraceable, MallocSizeOf)]
-enum WebGLTextureOwner {
-    WebGL,
-    #[cfg(feature = "webxr")]
-    WebXR(WeakRef<XRSession>),
 }
 
 const MAX_LEVEL_COUNT: usize = 31;
@@ -56,7 +44,6 @@ struct DroppableWebGLTexture {
     #[no_trace]
     id: WebGLTextureId,
     is_deleted: Cell<bool>,
-    owner: WebGLTextureOwner,
 }
 
 impl DroppableWebGLTexture {
@@ -88,12 +75,6 @@ impl DroppableWebGLTexture {
                 if let Some(fb) = context.get_read_framebuffer_slot().get() {
                     let _ = fb.detach_texture(self.id);
                 }
-            }
-
-            // We don't delete textures owned by WebXR
-            #[cfg(feature = "webxr")]
-            if let WebGLTextureOwner::WebXR(_) = self.owner {
-                return;
             }
 
             self.send_with_fallibility(WebGLCommand::DeleteTexture(self.id), operation_fallibility);
@@ -129,11 +110,7 @@ pub(crate) struct WebGLTexture {
 }
 
 impl WebGLTexture {
-    fn new_inherited(
-        context: &WebGLRenderingContext,
-        id: WebGLTextureId,
-        #[cfg(feature = "webxr")] owner: Option<&XRSession>,
-    ) -> Self {
+    fn new_inherited(context: &WebGLRenderingContext, id: WebGLTextureId) -> Self {
         Self {
             webgl_object: WebGLObject::new_inherited(context),
             target: Cell::new(None),
@@ -148,12 +125,6 @@ impl WebGLTexture {
                 context: WeakRef::new(context),
                 id,
                 is_deleted: Cell::new(false),
-                #[cfg(feature = "webxr")]
-                owner: owner
-                    .map(|session| WebGLTextureOwner::WebXR(WeakRef::new(session)))
-                    .unwrap_or(WebGLTextureOwner::WebGL),
-                #[cfg(not(feature = "webxr"))]
-                owner: WebGLTextureOwner::WebGL,
             },
         }
     }
@@ -176,26 +147,7 @@ impl WebGLTexture {
         id: WebGLTextureId,
     ) -> DomRoot<Self> {
         reflect_dom_object_with_cx(
-            Box::new(WebGLTexture::new_inherited(
-                context,
-                id,
-                #[cfg(feature = "webxr")]
-                None,
-            )),
-            &*context.global(),
-            cx,
-        )
-    }
-
-    #[cfg(feature = "webxr")]
-    pub(crate) fn new_webxr(
-        cx: &mut JSContext,
-        context: &WebGLRenderingContext,
-        id: WebGLTextureId,
-        session: &XRSession,
-    ) -> DomRoot<Self> {
-        reflect_dom_object_with_cx(
-            Box::new(WebGLTexture::new_inherited(context, id, Some(session))),
+            Box::new(WebGLTexture::new_inherited(context, id)),
             &*context.global(),
             cx,
         )
@@ -305,14 +257,6 @@ impl WebGLTexture {
     }
 
     pub(crate) fn is_invalid(&self) -> bool {
-        // https://immersive-web.github.io/layers/#xrwebglsubimagetype
-        #[cfg(feature = "webxr")]
-        if let WebGLTextureOwner::WebXR(ref session) = self.droppable.owner &&
-            let Some(xr) = session.root() &&
-            xr.is_outside_raf()
-        {
-            return true;
-        }
         self.droppable.is_deleted.get()
     }
 

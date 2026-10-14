@@ -1748,7 +1748,6 @@ impl DocumentEventHandler {
                     axis_bounds,
                     button_bounds,
                     supported_haptic_effects,
-                    false,
                 );
 
                 // Step 3.3. Set navigator.[[gamepads]][gamepad.index] to gamepad.

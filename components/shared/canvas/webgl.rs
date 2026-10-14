@@ -26,10 +26,6 @@ pub use servo_base::generic_channel::SendResult as WebGLSendResult;
 use servo_base::id::PainterId;
 use servo_base::{Epoch, generic_channel};
 use webrender_api::ImageKey;
-use webxr_api::{
-    ContextId as WebXRContextId, Error as WebXRError, LayerId as WebXRLayerId,
-    LayerInit as WebXRLayerInit, SubImages as WebXRSubImages,
-};
 
 /// Helper function that creates a WebGL channel (WebGLSender, WebGLReceiver) to be used in WebGLCommands.
 pub fn webgl_channel<T>() -> Option<(GenericSender<T>, GenericReceiver<T>)>
@@ -130,9 +126,6 @@ pub enum WebGLMsg {
     RemoveContext(WebGLContextId),
     /// Runs a WebGLCommand in a specific WebGLContext.
     WebGLCommand(WebGLContextId, WebGLCommand, WebGLCommandBacktrace),
-    /// Runs a WebXRCommand (WebXR layers need to be created in the WebGL
-    /// thread, as they may have thread affinity).
-    WebXRCommand(WebXRCommand),
     /// Performs a buffer swap.
     ///
     /// The third field contains the time (in ns) when the request
@@ -596,30 +589,6 @@ pub enum WebGLCommand {
     DrawBuffers(Vec<u32>),
 }
 
-/// WebXR layer management
-#[derive(Debug, Deserialize, Serialize)]
-pub enum WebXRCommand {
-    CreateLayerManager(GenericSender<Result<WebXRLayerManagerId, WebXRError>>),
-    DestroyLayerManager(WebXRLayerManagerId),
-    CreateLayer(
-        WebXRLayerManagerId,
-        WebXRContextId,
-        WebXRLayerInit,
-        GenericSender<Result<WebXRLayerId, WebXRError>>,
-    ),
-    DestroyLayer(WebXRLayerManagerId, WebXRContextId, WebXRLayerId),
-    BeginFrame(
-        WebXRLayerManagerId,
-        Vec<(WebXRContextId, WebXRLayerId)>,
-        GenericSender<Result<Vec<WebXRSubImages>, WebXRError>>,
-    ),
-    EndFrame(
-        WebXRLayerManagerId,
-        Vec<(WebXRContextId, WebXRLayerId)>,
-        GenericSender<Result<(), WebXRError>>,
-    ),
-}
-
 macro_rules! nonzero_type {
     (u32) => {
         NonZeroU32
@@ -731,24 +700,11 @@ impl WebGLSyncId {
     }
 }
 define_resource_id!(WebGLVertexArrayId, u32, NativeVertexArray);
-define_resource_id!(WebXRLayerManagerId, u32);
 
 #[derive(
     Clone, Copy, Debug, Deserialize, Eq, Hash, MallocSizeOf, Ord, PartialEq, PartialOrd, Serialize,
 )]
 pub struct WebGLContextId(pub u64);
-
-impl From<WebXRContextId> for WebGLContextId {
-    fn from(id: WebXRContextId) -> Self {
-        Self(id.0)
-    }
-}
-
-impl From<WebGLContextId> for WebXRContextId {
-    fn from(id: WebGLContextId) -> Self {
-        Self(id.0)
-    }
-}
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize, MallocSizeOf)]
 pub enum WebGLError {

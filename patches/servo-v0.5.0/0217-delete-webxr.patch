@@ -1,0 +1,1817 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 25762150c91..0412a4b7453 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -5958,27 +5958,6 @@ version = "0.2.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
+ 
+-[[package]]
+-name = "openxr"
+-version = "0.21.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "2c2f814a47d257c79c762bc64042859661b6aa2f57cfa1f0ad4d778f419aeb0e"
+-dependencies = [
+- "libc",
+- "libloading 0.9.0",
+- "ndk-context",
+- "openxr-sys",
+-]
+-
+-[[package]]
+-name = "openxr-sys"
+-version = "0.13.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "4b8d66081de28c2fa40216182a37292fe38aeea20bc184612504d5e64daf5359"
+-dependencies = [
+- "libc",
+-]
+-
+ [[package]]
+ name = "option-ext"
+ version = "0.2.0"
+@@ -7741,8 +7720,6 @@ dependencies = [
+  "servo-wakelock",
+  "servo-webgl",
+  "servo-webgpu",
+- "servo-webxr",
+- "servo-webxr-api",
+  "stylo",
+  "stylo_traits",
+  "surfman",
+@@ -7889,7 +7866,6 @@ dependencies = [
+  "servo-fonts-traits",
+  "servo-malloc-size-of",
+  "servo-pixels",
+- "servo-webxr-api",
+  "strum",
+  "stylo",
+  "webrender_api",
+@@ -7969,7 +7945,6 @@ dependencies = [
+  "servo-url",
+  "servo-webgpu",
+  "servo-webgpu-traits",
+- "servo-webxr-api",
+  "stylo",
+  "stylo_traits",
+  "tracing",
+@@ -8758,8 +8733,6 @@ dependencies = [
+  "servo-tracing",
+  "servo-webgl",
+  "servo-webgpu",
+- "servo-webxr",
+- "servo-webxr-api",
+  "smallvec",
+  "stylo_traits",
+  "surfman",
+@@ -8967,7 +8940,6 @@ dependencies = [
+  "servo-url",
+  "servo-webgpu-traits",
+  "servo-webvtt",
+- "servo-webxr-api",
+  "servo-xpath",
+  "servo_arc",
+  "sha1 0.11.0",
+@@ -9034,7 +9006,6 @@ dependencies = [
+  "servo-malloc-size-of",
+  "servo-profile-traits",
+  "servo-url",
+- "servo-webxr-api",
+  "servo_arc",
+  "smallvec",
+  "stylo",
+@@ -9073,7 +9044,6 @@ dependencies = [
+  "servo-storage-traits",
+  "servo-url",
+  "servo-webgpu-traits",
+- "servo-webxr-api",
+  "strum",
+  "stylo_atoms",
+  "stylo_traits",
+@@ -9226,8 +9196,6 @@ dependencies = [
+  "servo-canvas-traits",
+  "servo-paint-api",
+  "servo-pixels",
+- "servo-webxr",
+- "servo-webxr-api",
+  "surfman",
+  "webrender_api",
+ ]
+@@ -9275,39 +9243,6 @@ dependencies = [
+  "servo-webvtt",
+ ]
+ 
+-[[package]]
+-name = "servo-webxr"
+-version = "0.5.0"
+-dependencies = [
+- "crossbeam-channel",
+- "euclid",
+- "glow",
+- "log",
+- "openxr",
+- "raw-window-handle",
+- "servo-base",
+- "servo-profile-traits",
+- "servo-webxr-api",
+- "surfman",
+- "winapi",
+- "wio",
+-]
+-
+-[[package]]
+-name = "servo-webxr-api"
+-version = "0.5.0"
+-dependencies = [
+- "euclid",
+- "ipc-channel",
+- "log",
+- "malloc_size_of_derive",
+- "serde",
+- "servo-base",
+- "servo-embedder-traits",
+- "servo-malloc-size-of",
+- "servo-profile-traits",
+-]
+-
+ [[package]]
+ name = "servo-xpath"
+ version = "0.5.0"
+diff --git a/Cargo.toml b/Cargo.toml
+index 9b85b7fdf35..aef156947e3 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -189,7 +189,6 @@ ohos-vsync = "0.1.3"
+ ohos-window-manager-sys = "0.1"
+ ohos-window-sys = "0.1.7"
+ once_cell = "1.21.4"
+-openxr = "0.21"
+ p256 = { version = "0.14", features = ["ecdh"] }
+ p384 = { version = "0.14", features = ["ecdh"] }
+ p521 = { version = "0.14", features = ["ecdh"] }
+@@ -303,7 +302,6 @@ winapi = "0.3"
+ windows-sys = "0.61"
+ winit = "0.30.13"
+ winresource = "0.1"
+-wio = "0.2"
+ wr_malloc_size_of = "0.2.2"
+ x25519-dalek = { version = "3.0", features = ["getrandom", "static_secrets", "zeroize"] }
+ x448 = { version = "=0.14.0-pre.12", features = ["static_secrets"] }
+@@ -385,8 +383,6 @@ webdriver_server = { package = "servo-webdriver-server", version = "=0.5.0", pat
+ webgl = { package = "servo-webgl", version = "=0.5.0", path = "components/webgl", default-features = false }
+ webgpu = { package = "servo-webgpu", version = "=0.5.0", path = "components/webgpu" }
+ webgpu_traits = { package = "servo-webgpu-traits", version = "=0.5.0", path = "components/shared/webgpu" }
+-webxr = { package = "servo-webxr", version = "=0.5.0", path = "components/webxr", default-features = false }
+-webxr-api = { package = "servo-webxr-api", version = "=0.5.0", path = "components/shared/webxr" }
+ xpath = { package = "servo-xpath", version = "=0.5.0", path = "components/xpath" }
+ # End workspace-version dependencies - Don't change this comment, we grep for it in scripts!
+ 
+diff --git a/components/config/prefs.rs b/components/config/prefs.rs
+index 8b5a65f9b29..04a2d509a1e 100644
+--- a/components/config/prefs.rs
++++ b/components/config/prefs.rs
+@@ -236,20 +236,6 @@ pub struct Preferences {
+     pub dom_webrtc_enabled: bool,
+     // feature: WebRTC Transceiver | #41396 | Web/API/RTCRtpTransceiver
+     pub dom_webrtc_transceiver_enabled: bool,
+-    pub dom_webxr_enabled: bool,
+-    pub dom_webxr_test: bool,
+-    pub dom_webxr_first_person_observer_view: bool,
+-    pub dom_webxr_glwindow_enabled: bool,
+-    pub dom_webxr_glwindow_left_right: bool,
+-    pub dom_webxr_glwindow_red_cyan: bool,
+-    pub dom_webxr_glwindow_spherical: bool,
+-    pub dom_webxr_glwindow_cubemap: bool,
+-    pub dom_webxr_hands_enabled: bool,
+-    // feature: WebXR Layers | #27468 | Web/API/XRCompositionLayer
+-    pub dom_webxr_layers_enabled: bool,
+-    pub dom_webxr_openxr_enabled: bool,
+-    pub dom_webxr_sessionavailable: bool,
+-    pub dom_webxr_unsafe_assume_user_intent: bool,
+     pub dom_worklet_enabled: bool,
+     pub dom_worklet_blockingsleep_enabled: bool,
+     pub dom_worklet_testing_enabled: bool,
+@@ -516,19 +502,6 @@ impl Preferences {
+             dom_webgpu_wgpu_backend: String::new(),
+             dom_webrtc_enabled: false,
+             dom_webrtc_transceiver_enabled: false,
+-            dom_webxr_enabled: true,
+-            dom_webxr_first_person_observer_view: false,
+-            dom_webxr_glwindow_cubemap: false,
+-            dom_webxr_glwindow_enabled: true,
+-            dom_webxr_glwindow_left_right: false,
+-            dom_webxr_glwindow_red_cyan: false,
+-            dom_webxr_glwindow_spherical: false,
+-            dom_webxr_hands_enabled: true,
+-            dom_webxr_layers_enabled: false,
+-            dom_webxr_openxr_enabled: true,
+-            dom_webxr_sessionavailable: false,
+-            dom_webxr_test: false,
+-            dom_webxr_unsafe_assume_user_intent: false,
+             dom_worklet_blockingsleep_enabled: false,
+             dom_worklet_enabled: false,
+             dom_worklet_testing_enabled: false,
+diff --git a/components/constellation/Cargo.toml b/components/constellation/Cargo.toml
+index e2b938ef625..39e9d0e7aa1 100644
+--- a/components/constellation/Cargo.toml
++++ b/components/constellation/Cargo.toml
+@@ -65,7 +65,6 @@ stylo_traits = { workspace = true }
+ tracing = { workspace = true, optional = true }
+ webgpu = { workspace = true, optional = true }
+ webgpu_traits = { workspace = true, optional = true }
+-webxr-api = { workspace = true }
+ 
+ [target.'cfg(any(target_os="macos", all(not(target_os = "windows"), not(target_os = "ios"), not(target_os="android"), not(target_env="ohos"), not(target_arch="arm"), not(target_arch="aarch64"), not(target_arch="riscv32"), not(target_arch="riscv64"))))'.dependencies]
+ gaol = { workspace = true }
+diff --git a/components/constellation/constellation.rs b/components/constellation/constellation.rs
+index f9ccb0d983b..2a5bb6dfd05 100644
+--- a/components/constellation/constellation.rs
++++ b/components/constellation/constellation.rs
+@@ -457,9 +457,6 @@ pub struct Constellation<STF, SWF> {
+     /// Entry point to create and get channels to a WebGLThread.
+     pub(crate) webgl_threads: Option<WebGLThreads>,
+ 
+-    /// The XR device registry
+-    pub(crate) webxr_registry: Option<webxr_api::Registry>,
+-
+     /// Lazily initialized channels for canvas paint thread.
+     canvas: OnceCell<(Sender<ConstellationCanvasMsg>, GenericSender<CanvasMsg>)>,
+ 
+@@ -572,9 +569,6 @@ pub struct InitialConstellationState {
+     /// Entry point to create and get channels to a WebGLThread.
+     pub webgl_threads: Option<WebGLThreads>,
+ 
+-    /// The XR device registry
+-    pub webxr_registry: Option<webxr_api::Registry>,
+-
+     #[cfg(feature = "webgpu")]
+     pub wgpu_image_map: WebGpuExternalImageMap,
+ 
+@@ -722,7 +716,6 @@ where
+                         (rng, probability)
+                     }),
+                     webgl_threads: state.webgl_threads,
+-                    webxr_registry: state.webxr_registry,
+                     canvas: OnceCell::new(),
+                     pending_approval_navigations: Default::default(),
+                     pressed_mouse_buttons: 0,
+diff --git a/components/constellation/event_loop.rs b/components/constellation/event_loop.rs
+index 4776cd827fc..56764548144 100644
+--- a/components/constellation/event_loop.rs
++++ b/components/constellation/event_loop.rs
+@@ -107,7 +107,6 @@ impl EventLoop {
+                 .webgl_threads
+                 .as_ref()
+                 .map(|threads| threads.pipeline()),
+-            webxr_registry: constellation.webxr_registry.clone(),
+             player_context: WindowGLContext::get(),
+             privileged_urls: constellation.privileged_urls.clone(),
+             user_contents_for_manager_id: constellation.user_contents_for_manager_id.clone(),
+diff --git a/components/paint/Cargo.toml b/components/paint/Cargo.toml
+index 604c944b5c3..fcaff70fe7f 100644
+--- a/components/paint/Cargo.toml
++++ b/components/paint/Cargo.toml
+@@ -17,7 +17,6 @@ path = "lib.rs"
+ default = []
+ tracing = ["dep:tracing"]
+ webgpu = ["dep:webgpu"]
+-webxr = ["dep:webxr", "dep:webxr-api"]
+ 
+ [lints.clippy]
+ unwrap_used = "deny"
+@@ -56,8 +55,6 @@ webgl = { workspace = true }
+ webgpu = { workspace = true, optional = true }
+ webrender = { workspace = true }
+ webrender_api = { workspace = true }
+-webxr = { workspace = true, optional = true }
+-webxr-api = { workspace = true, optional = true }
+ wr_malloc_size_of = { workspace = true }
+ 
+ [dev-dependencies]
+diff --git a/components/paint/paint.rs b/components/paint/paint.rs
+index 284bb8ce469..03734310a87 100644
+--- a/components/paint/paint.rs
++++ b/components/paint/paint.rs
+@@ -47,8 +47,6 @@ use webgpu::canvas_context::WebGpuExternalImageMap;
+ use webrender::{CaptureBits, MemoryReport};
+ use webrender_api::units::{DevicePixel, DevicePoint};
+ use webrender_api::{FontInstanceKey, FontKey, ImageKey};
+-#[cfg(feature = "webxr")]
+-use webxr::WebXrRegistry;
+ 
+ use crate::InitialPaintState;
+ use crate::painter::Painter;
+@@ -134,10 +132,6 @@ pub struct Paint {
+     /// when it's dropped.
+     _mem_profiler_registration: ProfilerRegistration,
+ 
+-    /// Some XR devices want to run on the main thread.
+-    #[cfg(feature = "webxr")]
+-    webxr_main_thread: RefCell<webxr::MainThreadRegistry>,
+-
+     /// An map of external images shared between all `WebGpuExternalImages`.
+     #[cfg(feature = "webgpu")]
+     webgpu_image_map: std::cell::OnceCell<WebGpuExternalImageMap>,
+@@ -178,8 +172,6 @@ impl Paint {
+             webgl_threads,
+             swap_chains,
+             busy_webgl_context_map,
+-            #[cfg(feature = "webxr")]
+-            webxr_layer_grand_manager,
+             join_handle: webgl_join_handle,
+         } = WebGLComm::new(
+             state.paint_proxy.cross_process_paint_api.clone(),
+@@ -187,14 +179,6 @@ impl Paint {
+             painter_surfman_details_map.clone(),
+         );
+ 
+-        // Create the WebXR main thread
+-        #[cfg(feature = "webxr")]
+-        let webxr_main_thread = webxr::MainThreadRegistry::new(
+-            state.event_loop_waker.clone(),
+-            webxr_layer_grand_manager,
+-        )
+-        .expect("Failed to create WebXR device registry");
+-
+         Rc::new(RefCell::new(Paint {
+             painters: Default::default(),
+             paint_proxy: state.paint_proxy,
+@@ -210,19 +194,11 @@ impl Paint {
+             _mem_profiler_registration: registration,
+             painter_surfman_details_map,
+             busy_webgl_contexts_map: busy_webgl_context_map,
+-            #[cfg(feature = "webxr")]
+-            webxr_main_thread: RefCell::new(webxr_main_thread),
+             #[cfg(feature = "webgpu")]
+             webgpu_image_map: Default::default(),
+         }))
+     }
+ 
+-    #[cfg(feature = "webxr")]
+-    pub fn register_webxr_registry(&self, registry: Box<dyn WebXrRegistry>) {
+-        let mut webxr_main_thread = self.webxr_main_thread.borrow_mut();
+-        registry.register(&mut webxr_main_thread)
+-    }
+-
+     pub fn register_rendering_context(
+         &mut self,
+         rendering_context: Rc<dyn RenderingContext>,
+@@ -315,22 +291,6 @@ impl Paint {
+         self.webrender_external_image_id_manager.clone()
+     }
+ 
+-    pub fn webxr_running(&self) -> bool {
+-        #[cfg(feature = "webxr")]
+-        {
+-            self.webxr_main_thread.borrow().running()
+-        }
+-        #[cfg(not(feature = "webxr"))]
+-        {
+-            false
+-        }
+-    }
+-
+-    #[cfg(feature = "webxr")]
+-    pub fn webxr_main_thread_registry(&self) -> webxr_api::Registry {
+-        self.webxr_main_thread.borrow().registry()
+-    }
+-
+     #[cfg(feature = "webgpu")]
+     pub fn webgpu_image_map(&self) -> WebGpuExternalImageMap {
+         self.webgpu_image_map.get_or_init(Default::default).clone()
+@@ -762,10 +722,6 @@ impl Paint {
+             return false;
+         }
+ 
+-        // Run the WebXR main thread
+-        #[cfg(feature = "webxr")]
+-        self.webxr_main_thread.borrow_mut().run_one_frame();
+-
+         for painter in &self.painters {
+             painter.borrow_mut().perform_updates();
+         }
+diff --git a/components/script/Cargo.toml b/components/script/Cargo.toml
+index 70050e727d8..60337b1f0a6 100644
+--- a/components/script/Cargo.toml
++++ b/components/script/Cargo.toml
+@@ -33,7 +33,6 @@ webgpu = [
+     "script_bindings/webgpu",
+     "script_traits/webgpu",
+ ]
+-webxr = ["gamepad", "webxr-api", "script_bindings/webxr"]
+ 
+ [lints.rust]
+ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(crown)'] }
+@@ -174,7 +173,6 @@ web_atoms = { workspace = true }
+ webdriver = { workspace = true }
+ webgpu_traits = { workspace = true, optional = true }
+ webrender_api = { workspace = true }
+-webxr-api = { workspace = true, optional = true }
+ wgpu-core = { workspace = true, optional = true }
+ wgpu-types = { workspace = true, optional = true }
+ x25519-dalek = { workspace = true }
+diff --git a/components/script/dom/document/document.rs b/components/script/dom/document/document.rs
+index ce5fb5f80b5..be566f64a56 100644
+--- a/components/script/dom/document/document.rs
++++ b/components/script/dom/document/document.rs
+@@ -93,7 +93,7 @@ use crate::dom::bindings::codegen::Bindings::DocumentBinding::{
+ use crate::dom::bindings::codegen::Bindings::ElementBinding::ScrollLogicalPosition;
+ use crate::dom::bindings::codegen::Bindings::EventBinding::Event_Binding::EventMethods;
+ use crate::dom::bindings::codegen::Bindings::HTMLIFrameElementBinding::HTMLIFrameElement_Binding::HTMLIFrameElementMethods;
+-#[cfg(any(feature = "webxr", feature = "gamepad"))]
++#[cfg(feature = "gamepad")]
+ use crate::dom::bindings::codegen::Bindings::NavigatorBinding::Navigator_Binding::NavigatorMethods;
+ use crate::dom::bindings::codegen::Bindings::NodeBinding::NodeMethods;
+ use crate::dom::bindings::codegen::Bindings::NodeFilterBinding::NodeFilter;
+@@ -2306,7 +2306,7 @@ impl Document {
+     }
+ 
+     /// Step 9 of <https://html.spec.whatwg.org/multipage/#the-end>
+-    fn queue_document_completion(&self, cx: &mut JSContext) {
++    fn queue_document_completion(&self, _cx: &mut JSContext) {
+         self.loader.borrow_mut().inhibit_events();
+ 
+         // The rest will ever run only once per document.
+@@ -2398,16 +2398,6 @@ impl Document {
+ 
+         // Step 11.
+         // TODO: ready for post-load tasks.
+-
+-        // The dom.webxr.sessionavailable pref allows webxr
+-        // content to immediately begin a session without waiting for a user gesture.
+-        // TODO: should this only happen on the first document loaded?
+-        // https://immersive-web.github.io/webxr/#user-intention
+-        // https://github.com/immersive-web/navigation/issues/10
+-        #[cfg(feature = "webxr")]
+-        if pref!(dom_webxr_sessionavailable) && self.window.is_top_level() {
+-            self.window.Navigator(cx).Xr(cx).dispatch_sessionavailable();
+-        }
+     }
+ 
+     pub(crate) fn completely_loaded(&self) -> bool {
+diff --git a/components/script/dom/document/document_event_handler.rs b/components/script/dom/document/document_event_handler.rs
+index eb1e0cc4ca5..4d208ac2522 100644
+--- a/components/script/dom/document/document_event_handler.rs
++++ b/components/script/dom/document/document_event_handler.rs
+@@ -1748,7 +1748,6 @@ impl DocumentEventHandler {
+                     axis_bounds,
+                     button_bounds,
+                     supported_haptic_effects,
+-                    false,
+                 );
+ 
+                 // Step 3.3. Set navigator.[[gamepads]][gamepad.index] to gamepad.
+diff --git a/components/script/dom/gamepad/gamepad.rs b/components/script/dom/gamepad/gamepad.rs
+index d0c6289b1bd..b3a5d73352d 100644
+--- a/components/script/dom/gamepad/gamepad.rs
++++ b/components/script/dom/gamepad/gamepad.rs
+@@ -115,18 +115,16 @@ impl Gamepad {
+         axis_bounds: (f64, f64),
+         button_bounds: (f64, f64),
+         supported_haptic_effects: GamepadSupportedHapticEffects,
+-        xr: bool,
+     ) -> DomRoot<Gamepad> {
+         let buttons = Gamepad::init_buttons(cx, window);
+         rooted_vec!(let buttons <- buttons.iter().map(DomRoot::as_traced));
+         let vibration_actuator =
+             GamepadHapticActuator::new(cx, window, gamepad_id, supported_haptic_effects);
+-        let index = if xr { -1 } else { 0 };
+         let gamepad = reflect_dom_object_with_cx(
+             Box::new(Gamepad::new_inherited(
+                 gamepad_id,
+                 id,
+-                index,
++                0,
+                 true,
+                 0.,
+                 mapping_type,
+diff --git a/components/script/dom/mod.rs b/components/script/dom/mod.rs
+index abe3bd24b91..2818dcbddef 100644
+--- a/components/script/dom/mod.rs
++++ b/components/script/dom/mod.rs
+@@ -345,13 +345,9 @@ pub(crate) use self::wakelock::*;
+ pub(crate) mod webgl;
+ pub(crate) use self::webgl::extensions::ext::*;
+ pub(crate) use self::webgl::*;
+-pub(crate) mod websocket;
+-#[cfg(feature = "webxr")]
+-mod webxr;
+-#[cfg(feature = "webxr")]
+-pub(crate) use self::webxr::*;
+ #[cfg(feature = "webgpu")]
+ pub(crate) mod webgpu;
++pub(crate) mod websocket;
+ #[cfg(feature = "webgpu")]
+ pub(crate) use self::webgpu::*;
+ #[cfg(not(feature = "webgpu"))]
+diff --git a/components/script/dom/navigator/navigator.rs b/components/script/dom/navigator/navigator.rs
+index 0109df563ac..0988bda85cf 100644
+--- a/components/script/dom/navigator/navigator.rs
++++ b/components/script/dom/navigator/navigator.rs
+@@ -64,8 +64,6 @@ use crate::dom::wakelock::WakeLock;
+ #[cfg(feature = "webgpu")]
+ use crate::dom::webgpu::gpu::GPU;
+ use crate::dom::window::Window;
+-#[cfg(feature = "webxr")]
+-use crate::dom::xrsystem::XRSystem;
+ use crate::fetch::RequestWithGlobalScope;
+ use crate::network_listener::{FetchResponseListener, ResourceTimingListener, submit_timing};
+ 
+@@ -120,8 +118,6 @@ pub(crate) struct Navigator {
+     plugins: MutNullableDom<PluginArray>,
+     mime_types: MutNullableDom<MimeTypeArray>,
+     service_worker: MutNullableDom<ServiceWorkerContainer>,
+-    #[cfg(feature = "webxr")]
+-    xr: MutNullableDom<XRSystem>,
+     mediadevices: MutNullableDom<MediaDevices>,
+     /// <https://www.w3.org/TR/gamepad/#dfn-gamepads>
+     #[cfg(feature = "gamepad")]
+@@ -150,8 +146,6 @@ impl Navigator {
+             plugins: Default::default(),
+             mime_types: Default::default(),
+             service_worker: Default::default(),
+-            #[cfg(feature = "webxr")]
+-            xr: Default::default(),
+             mediadevices: Default::default(),
+             #[cfg(feature = "gamepad")]
+             gamepads: Default::default(),
+@@ -173,11 +167,6 @@ impl Navigator {
+         reflect_dom_object_with_cx(Box::new(Navigator::new_inherited()), window, cx)
+     }
+ 
+-    #[cfg(feature = "webxr")]
+-    pub(crate) fn xr(&self) -> Option<DomRoot<XRSystem>> {
+-        self.xr.get()
+-    }
+-
+     #[cfg(feature = "gamepad")]
+     pub(crate) fn get_gamepad(&self, index: usize) -> Option<DomRoot<Gamepad>> {
+         self.gamepads.borrow().get(index).and_then(|g| g.get())
+@@ -469,13 +458,6 @@ impl NavigatorMethods<crate::DomTypeHolder> for Navigator {
+             .or_init(|| Permissions::new(cx, &self.global()))
+     }
+ 
+-    /// <https://immersive-web.github.io/webxr/#dom-navigator-xr>
+-    #[cfg(feature = "webxr")]
+-    fn Xr(&self, cx: &mut JSContext) -> DomRoot<XRSystem> {
+-        self.xr
+-            .or_init(|| XRSystem::new(cx, self.global().as_window()))
+-    }
+-
+     /// <https://w3c.github.io/mediacapture-main/#dom-navigator-mediadevices>
+     fn MediaDevices(&self, cx: &mut JSContext) -> DomRoot<MediaDevices> {
+         self.mediadevices
+diff --git a/components/script/dom/webgl/webgl2renderingcontext.rs b/components/script/dom/webgl/webgl2renderingcontext.rs
+index edf6b3bc67b..b77e3aa4cf2 100644
+--- a/components/script/dom/webgl/webgl2renderingcontext.rs
++++ b/components/script/dom/webgl/webgl2renderingcontext.rs
+@@ -3,8 +3,6 @@
+  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+ 
+ use std::cell::Cell;
+-#[cfg(feature = "webxr")]
+-use std::rc::Rc;
+ use std::{cmp, ptr};
+ 
+ use bitflags::bitflags;
+@@ -47,8 +45,6 @@ use crate::dom::bindings::reflector::DomGlobal;
+ use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
+ use crate::dom::bindings::str::DOMString;
+ use crate::dom::globalscope::GlobalScope;
+-#[cfg(feature = "webxr")]
+-use crate::dom::promise::Promise;
+ use crate::dom::webgl::validations::WebGLValidator;
+ use crate::dom::webgl::validations::tex_image_2d::{
+     TexImage2DValidator, TexImage2DValidatorResult, TexStorageValidator, TexStorageValidatorResult,
+@@ -1312,11 +1308,6 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
+ 
+         if let Some(fb) = fb_slot.get() {
+             // A selected framebuffer is bound to the target
+-            handle_potential_webgl_error!(
+-                self.base,
+-                fb.validate_transparent(),
+-                return rval.set(NullValue())
+-            );
+             handle_potential_webgl_error!(
+                 self.base,
+                 self.get_specific_fb_attachment_param(
+@@ -5069,13 +5060,6 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
+     ) {
+         self.tex_storage(3, target, levels, internal_format, width, height, depth)
+     }
+-
+-    /// <https://immersive-web.github.io/webxr/#dom-webglrenderingcontextbase-makexrcompatible>
+-    #[cfg(feature = "webxr")]
+-    fn MakeXRCompatible(&self, cx: &mut js::context::JSContext) -> Rc<Promise> {
+-        // XXXManishearth Fill in with compatibility checks when rust-webxr supports this
+-        Promise::new_resolved(cx, &self.global(), ())
+-    }
+ }
+ 
+ impl WebGL2RenderingContextHelpers for WebGL2RenderingContext {
+diff --git a/components/script/dom/webgl/webglframebuffer.rs b/components/script/dom/webgl/webglframebuffer.rs
+index 94d8f54dc6d..380368226b4 100644
+--- a/components/script/dom/webgl/webglframebuffer.rs
++++ b/components/script/dom/webgl/webglframebuffer.rs
+@@ -6,8 +6,6 @@
+ use std::cell::Cell;
+ 
+ use dom_struct::dom_struct;
+-#[cfg(feature = "webxr")]
+-use euclid::Size2D;
+ use js::context::JSContext;
+ use script_bindings::cell::DomRefCell;
+ use script_bindings::reflector::reflect_dom_object_with_cx;
+@@ -16,21 +14,15 @@ use servo_canvas_traits::webgl::{
+     WebGLCommand, WebGLError, WebGLFramebufferBindingRequest, WebGLFramebufferId,
+     WebGLRenderbufferId, WebGLResult, WebGLTextureId, WebGLVersion, webgl_channel,
+ };
+-#[cfg(feature = "webxr")]
+-use webxr_api::Viewport;
+ 
+ use crate::dom::bindings::codegen::Bindings::WebGL2RenderingContextBinding::WebGL2RenderingContextConstants as constants;
+ use crate::dom::bindings::inheritance::Castable;
+ use crate::dom::bindings::reflector::DomGlobal;
+-#[cfg(feature = "webxr")]
+-use crate::dom::bindings::root::MutNullableDom;
+ use crate::dom::bindings::root::{Dom, DomRoot};
+ use crate::dom::webgl::webglobject::WebGLObject;
+ use crate::dom::webgl::webglrenderbuffer::WebGLRenderbuffer;
+ use crate::dom::webgl::webglrenderingcontext::{Operation, WebGLRenderingContext};
+ use crate::dom::webgl::webgltexture::WebGLTexture;
+-#[cfg(feature = "webxr")]
+-use crate::dom::xrsession::XRSession;
+ 
+ pub(crate) enum CompleteForRendering {
+     Complete,
+@@ -161,10 +153,6 @@ pub(crate) struct WebGLFramebuffer {
+     color_read_buffer: Cell<u32>,
+     color_draw_buffers: DomRefCell<Vec<u32>>,
+     is_initialized: Cell<bool>,
+-    // Framebuffers for XR keep a reference to the XR session.
+-    // https://github.com/immersive-web/webxr/issues/856
+-    #[cfg(feature = "webxr")]
+-    xr_session: MutNullableDom<XRSession>,
+     droppable: DroppableWebGLFramebuffer,
+ }
+ 
+@@ -183,8 +171,6 @@ impl WebGLFramebuffer {
+             color_read_buffer: Cell::new(constants::COLOR_ATTACHMENT0),
+             color_draw_buffers: DomRefCell::new(vec![constants::COLOR_ATTACHMENT0]),
+             is_initialized: Cell::new(false),
+-            #[cfg(feature = "webxr")]
+-            xr_session: Default::default(),
+             droppable: DroppableWebGLFramebuffer::new(id, Cell::new(false), WeakRef::new(context)),
+         }
+     }
+@@ -200,22 +186,6 @@ impl WebGLFramebuffer {
+         Some(framebuffer)
+     }
+ 
+-    // TODO: depth, stencil and alpha
+-    // https://github.com/servo/servo/issues/24498
+-    #[cfg(feature = "webxr")]
+-    pub(crate) fn maybe_new_webxr(
+-        cx: &mut JSContext,
+-        session: &XRSession,
+-        context: &WebGLRenderingContext,
+-        size: Size2D<i32, Viewport>,
+-    ) -> Option<DomRoot<Self>> {
+-        let framebuffer = Self::maybe_new(cx, context)?;
+-        framebuffer.size.set(Some((size.width, size.height)));
+-        framebuffer.status.set(constants::FRAMEBUFFER_COMPLETE);
+-        framebuffer.xr_session.set(Some(session));
+-        Some(framebuffer)
+-    }
+-
+     pub(crate) fn new(
+         cx: &mut JSContext,
+         context: &WebGLRenderingContext,
+@@ -234,31 +204,11 @@ impl WebGLFramebuffer {
+         self.droppable.id()
+     }
+ 
+-    #[cfg(feature = "webxr")]
+-    fn is_in_xr_session(&self) -> bool {
+-        self.xr_session.get().is_some()
+-    }
+-
+-    #[cfg(not(feature = "webxr"))]
+-    fn is_in_xr_session(&self) -> bool {
+-        false
+-    }
+-
+-    pub(crate) fn validate_transparent(&self) -> WebGLResult<()> {
+-        if self.is_in_xr_session() {
+-            Err(WebGLError::InvalidOperation)
+-        } else {
+-            Ok(())
+-        }
+-    }
+-
+     pub(crate) fn bind(&self, target: u32) {
+-        if !self.is_in_xr_session() {
+-            // Update the framebuffer status on binding.  It may have
+-            // changed if its attachments were resized or deleted while
+-            // we've been unbound.
+-            self.update_status();
+-        }
++        // Update the framebuffer status on binding.  It may have
++        // changed if its attachments were resized or deleted while
++        // we've been unbound.
++        self.update_status();
+ 
+         self.target.set(Some(target));
+         self.upcast().send_command(WebGLCommand::BindFramebuffer(
+@@ -272,9 +222,6 @@ impl WebGLFramebuffer {
+     }
+ 
+     pub(crate) fn is_deleted(&self) -> bool {
+-        // TODO: if a framebuffer has an attachment which is invalid due to
+-        // being outside a webxr rAF, should this make the framebuffer invalid?
+-        // https://github.com/immersive-web/layers/issues/196
+         self.droppable.is_deleted()
+     }
+ 
+@@ -527,21 +474,7 @@ impl WebGLFramebuffer {
+     }
+ 
+     pub(crate) fn check_status(&self) -> u32 {
+-        // For opaque framebuffers, check to see if the XR session is currently processing an rAF
+-        // https://immersive-web.github.io/webxr/#opaque-framebuffer
+-        #[cfg(feature = "webxr")]
+-        if let Some(xr_session) = self.xr_session.get() {
+-            return if xr_session.is_outside_raf() {
+-                constants::FRAMEBUFFER_UNSUPPORTED
+-            } else {
+-                constants::FRAMEBUFFER_COMPLETE
+-            };
+-        }
+-
+         self.status.get()
+-        // TODO: if a framebuffer has an attachment which is invalid due to
+-        // being outside a webxr rAF, should this make the framebuffer incomplete?
+-        // https://github.com/immersive-web/layers/issues/196
+     }
+ 
+     pub(crate) fn check_status_for_rendering(&self) -> CompleteForRendering {
+@@ -550,13 +483,6 @@ impl WebGLFramebuffer {
+             return CompleteForRendering::Incomplete;
+         }
+ 
+-        // XR framebuffers are complete inside an rAF
+-        // https://github.com/immersive-web/webxr/issues/854
+-        #[cfg(feature = "webxr")]
+-        if self.xr_session.get().is_some() {
+-            return CompleteForRendering::Complete;
+-        }
+-
+         if self.colors.iter().all(|att| att.borrow().is_none()) {
+             return CompleteForRendering::MissingColorAttachment;
+         }
+@@ -595,10 +521,6 @@ impl WebGLFramebuffer {
+             self.is_initialized.set(true);
+         }
+ 
+-        // TODO: if a framebuffer has an attachment which is invalid due to
+-        // being outside a webxr rAF, should this make the framebuffer incomplete?
+-        // https://github.com/immersive-web/layers/issues/196
+-
+         CompleteForRendering::Complete
+     }
+ 
+@@ -607,9 +529,6 @@ impl WebGLFramebuffer {
+         attachment: u32,
+         rb: Option<&WebGLRenderbuffer>,
+     ) -> WebGLResult<()> {
+-        // Opaque framebuffers cannot have their attachments changed
+-        // https://immersive-web.github.io/webxr/#opaque-framebuffer
+-        self.validate_transparent()?;
+ 
+         let binding = self
+             .attachment_binding(attachment)
+@@ -651,9 +570,6 @@ impl WebGLFramebuffer {
+         binding: &DomRefCell<Option<WebGLFramebufferAttachment>>,
+         attachment: u32,
+     ) -> WebGLResult<()> {
+-        // Opaque framebuffers cannot have their attachments changed
+-        // https://immersive-web.github.io/webxr/#opaque-framebuffer
+-        self.validate_transparent()?;
+ 
+         if let Some(att) = &*binding.borrow() {
+             att.detach();
+@@ -682,9 +598,6 @@ impl WebGLFramebuffer {
+     }
+ 
+     fn reattach_depth_stencil(&self) -> WebGLResult<()> {
+-        // Opaque framebuffers cannot have their attachments changed
+-        // https://immersive-web.github.io/webxr/#opaque-framebuffer
+-        self.validate_transparent()?;
+ 
+         let reattach = |attachment: &WebGLFramebufferAttachment, attachment_point| {
+             let webgl_object = self.upcast();
+@@ -742,9 +655,6 @@ impl WebGLFramebuffer {
+         texture: Option<&WebGLTexture>,
+         level: i32,
+     ) -> WebGLResult<()> {
+-        // Opaque framebuffers cannot have their attachments changed
+-        // https://immersive-web.github.io/webxr/#opaque-framebuffer
+-        self.validate_transparent()?;
+         if let Some(texture) = texture {
+             //     "If texture is not zero, then texture must either
+             //      name an existing texture object with an target of
+@@ -788,10 +698,10 @@ impl WebGLFramebuffer {
+                 return Err(WebGLError::InvalidValue);
+             }
+         }
+-        self.texture2d_even_if_opaque(attachment, textarget, texture, level)
++        self.attach_texture2d(attachment, textarget, texture, level)
+     }
+ 
+-    pub(crate) fn texture2d_even_if_opaque(
++    fn attach_texture2d(
+         &self,
+         attachment: u32,
+         textarget: u32,
+@@ -964,9 +874,6 @@ impl WebGLFramebuffer {
+     }
+ 
+     pub(crate) fn detach_renderbuffer_by_id(&self, rb_id: &WebGLRenderbufferId) -> WebGLResult<()> {
+-        // Opaque framebuffers cannot have their attachments changed
+-        // https://immersive-web.github.io/webxr/#opaque-framebuffer
+-        self.validate_transparent()?;
+ 
+         let mut depth_or_stencil_updated = false;
+         self.with_matching_renderbuffers_id(rb_id, |att, name| {
+@@ -985,9 +892,6 @@ impl WebGLFramebuffer {
+     }
+ 
+     pub(crate) fn detach_texture(&self, tex_id: WebGLTextureId) -> WebGLResult<()> {
+-        // Opaque framebuffers cannot have their attachments changed
+-        // https://immersive-web.github.io/webxr/#opaque-framebuffer
+-        self.validate_transparent()?;
+ 
+         let mut depth_or_stencil_updated = false;
+         self.with_matching_textures_id(tex_id, |att, name| {
+diff --git a/components/script/dom/webgl/webglrenderingcontext.rs b/components/script/dom/webgl/webglrenderingcontext.rs
+index e82bc3f5ad1..fbc1f1ec54c 100644
+--- a/components/script/dom/webgl/webglrenderingcontext.rs
++++ b/components/script/dom/webgl/webglrenderingcontext.rs
+@@ -63,8 +63,6 @@ use crate::dom::event::{Event, EventBubbles, EventCancelable};
+ #[cfg(feature = "webgl_backtrace")]
+ use crate::dom::globalscope::GlobalScope;
+ use crate::dom::node::NodeTraits;
+-#[cfg(feature = "webxr")]
+-use crate::dom::promise::Promise;
+ use crate::dom::webgl::extensions::WebGLExtensions;
+ use crate::dom::webgl::validations::WebGLValidator;
+ use crate::dom::webgl::validations::tex_image_2d::{
+@@ -2140,12 +2138,6 @@ impl CanvasContext for WebGLRenderingContext {
+             return;
+         }
+ 
+-        // Dirtying the canvas is unnecessary if we're actively displaying immersive
+-        // XR content right now.
+-        if self.global().as_window().in_immersive_xr_session() {
+-            return;
+-        }
+-
+         self.canvas.mark_as_dirty();
+     }
+ }
+@@ -3225,10 +3217,6 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
+     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.6>
+     fn DeleteFramebuffer(&self, framebuffer: Option<&WebGLFramebuffer>) {
+         if let Some(framebuffer) = framebuffer {
+-            // https://immersive-web.github.io/webxr/#opaque-framebuffer
+-            // Can opaque framebuffers be deleted?
+-            // https://github.com/immersive-web/webxr/issues/855
+-            handle_potential_webgl_error!(self, framebuffer.validate_transparent(), return);
+             handle_potential_webgl_error!(self, self.validate_ownership(framebuffer), return);
+             if let Some(bound_object) = self.bound_draw_framebuffer.get() &&
+                 bound_object.id() == framebuffer.id()
+@@ -3400,15 +3388,7 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
+         mut retval: MutableHandleValue,
+     ) {
+         // Check if currently bound framebuffer is non-zero as per spec.
+-        if let Some(fb) = self.bound_draw_framebuffer.get() {
+-            // Opaque framebuffers cannot have their attachments inspected
+-            // https://immersive-web.github.io/webxr/#opaque-framebuffer
+-            handle_potential_webgl_error!(
+-                self,
+-                fb.validate_transparent(),
+-                return retval.set(NullValue())
+-            );
+-        } else {
++        if self.bound_draw_framebuffer.get().is_none() {
+             self.webgl_error(InvalidOperation);
+             return retval.set(NullValue());
+         }
+@@ -3516,8 +3496,6 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
+         pname: u32,
+         mut retval: MutableHandleValue,
+     ) {
+-        // We do not check to see if the renderbuffer came from an opaque framebuffer
+-        // https://github.com/immersive-web/webxr/issues/862
+         let target_matches = target == constants::RENDERBUFFER;
+ 
+         let pname_matches = matches!(
+@@ -5074,13 +5052,6 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
+         handle_potential_webgl_error!(self, self.validate_ownership(program), return None);
+         handle_potential_webgl_error!(self, program.attached_shaders().map(Some), None)
+     }
+-
+-    /// <https://immersive-web.github.io/webxr/#dom-webglrenderingcontextbase-makexrcompatible>
+-    #[cfg(feature = "webxr")]
+-    fn MakeXRCompatible(&self, cx: &mut js::context::JSContext) -> Rc<Promise> {
+-        // XXXManishearth Fill in with compatibility checks when rust-webxr supports this
+-        Promise::new_resolved(cx, &self.global(), ())
+-    }
+ }
+ 
+ #[derive(Default, JSTraceable, MallocSizeOf)]
+diff --git a/components/script/dom/webgl/webgltexture.rs b/components/script/dom/webgl/webgltexture.rs
+index fb660814146..43a43af3e11 100644
+--- a/components/script/dom/webgl/webgltexture.rs
++++ b/components/script/dom/webgl/webgltexture.rs
+@@ -27,8 +27,6 @@ use crate::dom::webgl::webglframebuffer::WebGLFramebuffer;
+ use crate::dom::webgl::webglobject::WebGLObject;
+ use crate::dom::webgl::webglrenderingcontext::{Operation, WebGLRenderingContext};
+ use crate::dom::webglrenderingcontext::capture_webgl_backtrace;
+-#[cfg(feature = "webxr")]
+-use crate::dom::xrsession::XRSession;
+ 
+ pub(crate) enum TexParameterValue {
+     Float(f32),
+@@ -36,16 +34,6 @@ pub(crate) enum TexParameterValue {
+     Bool(bool),
+ }
+ 
+-// Textures generated for WebXR are owned by the WebXR device, not by the WebGL thread
+-// so the GL texture should not be deleted when the texture is garbage collected.
+-#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
+-#[derive(JSTraceable, MallocSizeOf)]
+-enum WebGLTextureOwner {
+-    WebGL,
+-    #[cfg(feature = "webxr")]
+-    WebXR(WeakRef<XRSession>),
+-}
+-
+ const MAX_LEVEL_COUNT: usize = 31;
+ const MAX_FACE_COUNT: usize = 6;
+ 
+@@ -56,7 +44,6 @@ struct DroppableWebGLTexture {
+     #[no_trace]
+     id: WebGLTextureId,
+     is_deleted: Cell<bool>,
+-    owner: WebGLTextureOwner,
+ }
+ 
+ impl DroppableWebGLTexture {
+@@ -90,12 +77,6 @@ impl DroppableWebGLTexture {
+                 }
+             }
+ 
+-            // We don't delete textures owned by WebXR
+-            #[cfg(feature = "webxr")]
+-            if let WebGLTextureOwner::WebXR(_) = self.owner {
+-                return;
+-            }
+-
+             self.send_with_fallibility(WebGLCommand::DeleteTexture(self.id), operation_fallibility);
+         }
+     }
+@@ -129,11 +110,7 @@ pub(crate) struct WebGLTexture {
+ }
+ 
+ impl WebGLTexture {
+-    fn new_inherited(
+-        context: &WebGLRenderingContext,
+-        id: WebGLTextureId,
+-        #[cfg(feature = "webxr")] owner: Option<&XRSession>,
+-    ) -> Self {
++    fn new_inherited(context: &WebGLRenderingContext, id: WebGLTextureId) -> Self {
+         Self {
+             webgl_object: WebGLObject::new_inherited(context),
+             target: Cell::new(None),
+@@ -148,12 +125,6 @@ impl WebGLTexture {
+                 context: WeakRef::new(context),
+                 id,
+                 is_deleted: Cell::new(false),
+-                #[cfg(feature = "webxr")]
+-                owner: owner
+-                    .map(|session| WebGLTextureOwner::WebXR(WeakRef::new(session)))
+-                    .unwrap_or(WebGLTextureOwner::WebGL),
+-                #[cfg(not(feature = "webxr"))]
+-                owner: WebGLTextureOwner::WebGL,
+             },
+         }
+     }
+@@ -176,26 +147,7 @@ impl WebGLTexture {
+         id: WebGLTextureId,
+     ) -> DomRoot<Self> {
+         reflect_dom_object_with_cx(
+-            Box::new(WebGLTexture::new_inherited(
+-                context,
+-                id,
+-                #[cfg(feature = "webxr")]
+-                None,
+-            )),
+-            &*context.global(),
+-            cx,
+-        )
+-    }
+-
+-    #[cfg(feature = "webxr")]
+-    pub(crate) fn new_webxr(
+-        cx: &mut JSContext,
+-        context: &WebGLRenderingContext,
+-        id: WebGLTextureId,
+-        session: &XRSession,
+-    ) -> DomRoot<Self> {
+-        reflect_dom_object_with_cx(
+-            Box::new(WebGLTexture::new_inherited(context, id, Some(session))),
++            Box::new(WebGLTexture::new_inherited(context, id)),
+             &*context.global(),
+             cx,
+         )
+@@ -305,14 +257,6 @@ impl WebGLTexture {
+     }
+ 
+     pub(crate) fn is_invalid(&self) -> bool {
+-        // https://immersive-web.github.io/layers/#xrwebglsubimagetype
+-        #[cfg(feature = "webxr")]
+-        if let WebGLTextureOwner::WebXR(ref session) = self.droppable.owner &&
+-            let Some(xr) = session.root() &&
+-            xr.is_outside_raf()
+-        {
+-            return true;
+-        }
+         self.droppable.is_deleted.get()
+     }
+ 
+diff --git a/components/script/dom/window/window.rs b/components/script/dom/window/window.rs
+index 20457345f16..c0ed623cd4f 100644
+--- a/components/script/dom/window/window.rs
++++ b/components/script/dom/window/window.rs
+@@ -392,11 +392,6 @@ pub(crate) struct Window {
+     #[no_trace]
+     webgl_chan: Option<WebGLChan>,
+ 
+-    #[ignore_malloc_size_of = "defined in webxr"]
+-    #[no_trace]
+-    #[cfg(feature = "webxr")]
+-    webxr_registry: Option<webxr_api::Registry>,
+-
+     /// When an element triggers an image load or starts watching an image load from the
+     /// `ImageCache` it adds an entry to this list. When those loads are triggered from
+     /// layout, they also add an etry to [`Self::pending_layout_images`].
+@@ -698,11 +693,6 @@ impl Window {
+         self.webgl_chan.clone()
+     }
+ 
+-    #[cfg(feature = "webxr")]
+-    pub(crate) fn webxr_registry(&self) -> Option<webxr_api::Registry> {
+-        self.webxr_registry.clone()
+-    }
+-
+     fn new_paint_worklet(&self, cx: &mut JSContext) -> DomRoot<Worklet> {
+         debug!("Creating new paint worklet.");
+         Worklet::new(cx, self, WorkletGlobalScopeType::Paint)
+@@ -3652,20 +3642,6 @@ impl Window {
+             .unwrap();
+     }
+ 
+-    #[cfg(feature = "webxr")]
+-    pub(crate) fn in_immersive_xr_session(&self) -> bool {
+-        self.navigator
+-            .get()
+-            .as_ref()
+-            .and_then(|nav| nav.xr())
+-            .is_some_and(|xr| xr.pending_or_active_session())
+-    }
+-
+-    #[cfg(not(feature = "webxr"))]
+-    pub(crate) fn in_immersive_xr_session(&self) -> bool {
+-        false
+-    }
+-
+     /// Adds and removes entries from `document.fonts` as needed after a reflow.
+     fn handle_new_or_removed_web_fonts_post_reflow(
+         &self,
+@@ -3874,7 +3850,6 @@ impl Window {
+         top_level_creation_url: ServoUrl,
+         navigation_start: CrossProcessInstant,
+         webgl_chan: Option<WebGLChan>,
+-        #[cfg(feature = "webxr")] webxr_registry: Option<webxr_api::Registry>,
+         paint_api: CrossProcessPaintApi,
+         unminify_js: bool,
+         unminify_css: bool,
+@@ -3947,8 +3922,6 @@ impl Window {
+             #[cfg(feature = "bluetooth")]
+             test_runner: Default::default(),
+             webgl_chan,
+-            #[cfg(feature = "webxr")]
+-            webxr_registry,
+             pending_image_callbacks: Default::default(),
+             pending_layout_images: Default::default(),
+             pending_images_for_rasterization: Default::default(),
+diff --git a/components/script/script_thread.rs b/components/script/script_thread.rs
+index 8a47ed1c401..24867dc29be 100644
+--- a/components/script/script_thread.rs
++++ b/components/script/script_thread.rs
+@@ -337,11 +337,6 @@ pub struct ScriptThread {
+     #[no_trace]
+     webgl_chan: Option<WebGLPipeline>,
+ 
+-    /// The WebXR device registry
+-    #[no_trace]
+-    #[cfg(feature = "webxr")]
+-    webxr_registry: Option<webxr_api::Registry>,
+-
+     /// The worklet thread pool
+     worklet_thread_pool: DomRefCell<Option<Rc<WorkletThreadPool>>>,
+ 
+@@ -1018,8 +1013,6 @@ impl ScriptThread {
+                     mutation_observers: Default::default(),
+                     system_font_service: Arc::new(state.system_font_service.to_proxy()),
+                     webgl_chan: state.webgl_chan,
+-                    #[cfg(feature = "webxr")]
+-                    webxr_registry: state.webxr_registry,
+                     worklet_thread_pool: Default::default(),
+                     docs_with_no_blocking_loads: Default::default(),
+                     custom_element_reaction_stack: Rc::new(CustomElementReactionStack::new()),
+@@ -3543,8 +3536,6 @@ impl ScriptThread {
+             final_url.clone(),
+             incomplete.navigation_start,
+             self.webgl_chan.as_ref().map(|chan| chan.channel()),
+-            #[cfg(feature = "webxr")]
+-            self.webxr_registry.clone(),
+             self.paint_api.clone(),
+             self.unminify_js,
+             self.unminify_css,
+diff --git a/components/script_bindings/Cargo.toml b/components/script_bindings/Cargo.toml
+index c28bf98b07a..67d70ab5902 100644
+--- a/components/script_bindings/Cargo.toml
++++ b/components/script_bindings/Cargo.toml
+@@ -50,7 +50,6 @@ stylo = { workspace = true }
+ stylo_atoms = { workspace = true }
+ tendril = { workspace = true }
+ tracing = { workspace = true, optional = true }
+-webxr-api = { workspace = true, optional = true }
+ xml5ever = { workspace = true }
+ zeroize = { workspace = true, features = ["zeroize_derive"] }
+ 
+@@ -75,7 +74,6 @@ gamepad = []
+ testbinding = []
+ tracing = ["dep:tracing"]
+ webgpu = []
+-webxr = ["webxr-api"]
+ 
+ [lints.rust]
+ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(crown)'] }
+diff --git a/components/script_bindings/codegen/Bindings.conf b/components/script_bindings/codegen/Bindings.conf
+index def7b3b8184..54c66fed133 100644
+--- a/components/script_bindings/codegen/Bindings.conf
++++ b/components/script_bindings/codegen/Bindings.conf
+@@ -440,11 +440,6 @@ DOMInterfaces = {
+     'cx': ['Data', 'Ports'],
+ },
+ 
+-'FakeXRDevice': {
+-    'cx': ['SimulateInputSourceConnection'],
+-    'realm': ['Disconnect'],
+-},
+-
+ 'File': {
+     'weakReferenceable': True,
+ },
+@@ -1197,7 +1192,6 @@ DOMInterfaces = {
+     ],
+     'cx': [
+         'GetExtension',
+-        'MakeXRCompatible',
+         'GetBufferParameter',
+         'GetParameter',
+         'GetTexParameter',
+@@ -1258,7 +1252,6 @@ DOMInterfaces = {
+     ],
+     'cx': [
+         'GetExtension',
+-        'MakeXRCompatible',
+         'GetBufferParameter',
+         'GetTexParameter',
+         'GetUniform',
+@@ -1432,62 +1425,6 @@ DOMInterfaces = {
+     'cx': ['From'],
+ },
+ 
+-'XRBoundedReferenceSpace': {
+-    'cx': ['BoundsGeometry'],
+-},
+-
+-'XRFrame': {
+-    'cx': ['GetViewerPose', 'GetPose', 'GetHitTestResults', 'GetJointPose'],
+-},
+-
+-'XRHitTestResult': {
+-    'cx': ['GetPose'],
+-},
+-
+-'XRInputSource': {
+-    'cx': ['GetHand', 'GetGripSpace', 'TargetRaySpace'],
+-},
+-
+-'XRRay': {
+-    'cx': ['Origin', 'Direction', 'Matrix'],
+-},
+-
+-'XRReferenceSpace': {
+-    'cx': ['GetOffsetReferenceSpace'],
+-},
+-
+-'XRRenderState': {
+-    'cx': ['Layers'],
+-},
+-
+-'XRRigidTransform': {
+-    'cx': ['Inverse', 'Matrix', 'Orientation', 'Position'],
+-},
+-
+-'XRSession': {
+-    'cx': ['EnabledFeatures', 'GetSupportedFrameRates', 'UpdateRenderState'],
+-    'realm': ['End', 'RequestHitTestSource', 'RequestReferenceSpace', 'UpdateTargetFrameRate'],
+-    'weakReferenceable': True,
+-},
+-
+-'XRSystem': {
+-    'cx': ['Test'],
+-    'realm': ['IsSessionSupported', 'RequestSession'],
+-},
+-
+-'XRTest': {
+-    'realm': ['SimulateDeviceConnection', 'DisconnectAllDevices'],
+-    'cx': ['SimulateUserActivation']
+-},
+-
+-'XRView': {
+-    'cx': ['ProjectionMatrix'],
+-},
+-
+-'XRWebGLLayer': {
+-    'cx': ['GetViewport'],
+-},
+-
+ 'ReadableStream': {
+     'realm': ['PipeTo', 'PipeThrough'],
+     'cx': ['Cancel', 'GetReader', 'Tee']
+@@ -1661,9 +1598,6 @@ Dictionaries = {
+     'derives': ['Clone'],
+ },
+ 
+-'XRWebGLLayerInit': {
+-    'derives': ['Clone', 'Copy'],
+-},
+ }
+ 
+ Enums = {
+diff --git a/components/script_bindings/trace.rs b/components/script_bindings/trace.rs
+index 4db613b1601..b91297186bc 100644
+--- a/components/script_bindings/trace.rs
++++ b/components/script_bindings/trace.rs
+@@ -27,8 +27,6 @@ use style::stylesheet_set::{AuthorStylesheetSet, DocumentStylesheetSet};
+ use tendril::TendrilSink;
+ use tendril::fmt::UTF8;
+ use tendril::stream::LossyDecoder;
+-#[cfg(feature = "webxr")]
+-use webxr_api::{Finger, Hand};
+ use xml5ever::interface::TreeSink as XmlTreeSink;
+ use xml5ever::tokenizer::XmlTokenizer;
+ use xml5ever::tree_builder::{Tracer as XmlTracer, XmlTreeBuilder};
+@@ -212,64 +210,6 @@ where
+     }
+ }
+ 
+-#[cfg(feature = "webxr")]
+-unsafe impl<J> CustomTraceable for Hand<J>
+-where
+-    J: JSTraceable,
+-{
+-    #[inline]
+-    unsafe fn trace(&self, trc: *mut JSTracer) {
+-        // exhaustive match so we don't miss new fields
+-        let Hand {
+-            ref wrist,
+-            ref thumb_metacarpal,
+-            ref thumb_phalanx_proximal,
+-            ref thumb_phalanx_distal,
+-            ref thumb_phalanx_tip,
+-            ref index,
+-            ref middle,
+-            ref ring,
+-            ref little,
+-        } = *self;
+-        unsafe {
+-            wrist.trace(trc);
+-            thumb_metacarpal.trace(trc);
+-            thumb_phalanx_proximal.trace(trc);
+-            thumb_phalanx_distal.trace(trc);
+-            thumb_phalanx_tip.trace(trc);
+-            index.trace(trc);
+-            middle.trace(trc);
+-            ring.trace(trc);
+-            little.trace(trc);
+-        }
+-    }
+-}
+-
+-#[cfg(feature = "webxr")]
+-unsafe impl<J> CustomTraceable for Finger<J>
+-where
+-    J: JSTraceable,
+-{
+-    #[inline]
+-    unsafe fn trace(&self, trc: *mut JSTracer) {
+-        // exhaustive match so we don't miss new fields
+-        let Finger {
+-            ref metacarpal,
+-            ref phalanx_proximal,
+-            ref phalanx_intermediate,
+-            ref phalanx_distal,
+-            ref phalanx_tip,
+-        } = *self;
+-        unsafe {
+-            metacarpal.trace(trc);
+-            phalanx_proximal.trace(trc);
+-            phalanx_intermediate.trace(trc);
+-            phalanx_distal.trace(trc);
+-            phalanx_tip.trace(trc);
+-        }
+-    }
+-}
+-
+ unsafe impl<Handle: JSTraceable + Clone, Sink: TreeSink<Handle = Handle> + JSTraceable>
+     CustomTraceable for TreeBuilder<Handle, Sink>
+ {
+diff --git a/components/servo/Cargo.toml b/components/servo/Cargo.toml
+index 727efe2c7b3..93029982b3d 100644
+--- a/components/servo/Cargo.toml
++++ b/components/servo/Cargo.toml
+@@ -71,13 +71,6 @@ webgpu = [
+     "servo-constellation/webgpu",
+     "servo-constellation-traits/webgpu",
+ ]
+-webxr = [
+-    "dep:webxr",
+-    "dep:webxr-api",
+-    "paint/webxr",
+-    "webgl/webxr",
+-    "script/webxr",
+-]
+ 
+ [dependencies]
+ accesskit = { workspace = true }
+@@ -139,7 +132,6 @@ webgl = { workspace = true, default-features = false }
+ webgpu = { workspace = true, optional = true }
+ webrender = { workspace = true }
+ webrender_api = { workspace = true }
+-webxr-api = { workspace = true, optional = true }
+ 
+ # On most platforms we bake in the resources for simplicity. On ohos we load resources via the filesystem.
+ # In the future we might want to use this approach also for the other platforms.
+@@ -147,22 +139,12 @@ webxr-api = { workspace = true, optional = true }
+ [target.'cfg(not(target_env = "ohos"))'.dependencies]
+ servo-default-resources = { workspace = true, optional = true }
+ 
+-[target.'cfg(any(target_os = "android", target_env = "ohos"))'.dependencies]
+-webxr = { workspace = true, optional = true }
+-
+ [target.'cfg(not(any(target_os = "android", target_env = "ohos")))'.dependencies]
+ arboard = { workspace = true, optional = true }
+-webxr = { workspace = true, optional = true, features = ["glwindow", "headless"] }
+-
+-[target.'cfg(all(target_os = "linux", not(target_env = "ohos")))'.dependencies]
+-webxr = { workspace = true, optional = true, features = ["x11"] }
+ 
+ [target.'cfg(all(not(target_os = "windows"), not(target_os = "ios"), not(target_os = "android"), not(target_env = "ohos"), not(target_arch = "arm"), not(target_arch = "aarch64"), not(target_arch="riscv32"), not(target_arch="riscv64")))'.dependencies]
+ gaol = { workspace = true }
+ 
+-[target.'cfg(target_os = "windows")'.dependencies]
+-webxr = { workspace = true, optional = true, features = ["glwindow", "headless", "openxr-api"] }
+-
+ [target.'cfg(target_env = "ohos")'.dependencies]
+ servo-media-ohos = { workspace = true }
+ 
+diff --git a/components/servo/lib.rs b/components/servo/lib.rs
+index a0f435b8784..4aec323d004 100644
+--- a/components/servo/lib.rs
++++ b/components/servo/lib.rs
+@@ -121,17 +121,6 @@ pub use crate::webview_delegate::{
+     SimpleDialog, WebResourceLoad, WebViewDelegate,
+ };
+ 
+-#[cfg(feature = "webxr")]
+-pub mod webxr {
+-    #[cfg(not(any(target_os = "android", target_env = "ohos")))]
+-    pub use webxr::glwindow::{GlWindow, GlWindowDiscovery, GlWindowMode, GlWindowRenderTarget};
+-    #[cfg(not(any(target_os = "android", target_env = "ohos")))]
+-    pub use webxr::headless::HeadlessMockDiscovery;
+-    #[cfg(target_os = "windows")]
+-    pub use webxr::openxr::{AppInfo as OpenXrAppInfo, OpenXrDiscovery};
+-    pub use webxr::{Discovery, MainThreadRegistry, WebXrRegistry};
+-}
+-
+ // TODO: The protocol handler interface needs to be cleaned and simplified.
+ pub mod protocol_handler {
+     pub use net::fetch::methods::{DoneChannel, FetchContext};
+diff --git a/components/servo/servo.rs b/components/servo/servo.rs
+index 13be9d49c6d..8c6d9912a97 100644
+--- a/components/servo/servo.rs
++++ b/components/servo/servo.rs
+@@ -77,8 +77,6 @@ use servo_wakelock::DefaultWakeLockDelegate;
+ use storage::new_storage_threads;
+ use storage_traits::StorageThreads;
+ use style::global_style_data::StyleThreadPool;
+-#[cfg(feature = "webxr")]
+-use webxr::WebXrRegistry;
+ 
+ use crate::clipboard_delegate::StringRequest;
+ #[cfg(feature = "gamepad")]
+@@ -1152,12 +1150,6 @@ impl Servo {
+             .borrow_mut()
+             .push(residue_event);
+     }
+-
+-    #[cfg(feature = "webxr")]
+-    /// Registers a [`WebXrRegistry`]
+-    pub fn register_webxr_registry(&self, registry: Box<dyn WebXrRegistry>) {
+-        self.0.paint.borrow().register_webxr_registry(registry);
+-    }
+ }
+ 
+ fn create_embedder_channel(
+@@ -1260,10 +1252,6 @@ fn create_constellation(
+         private_storage_threads,
+         time_profiler_chan,
+         mem_profiler_chan,
+-        #[cfg(feature = "webxr")]
+-        webxr_registry: Some(paint.webxr_main_thread_registry()),
+-        #[cfg(not(feature = "webxr"))]
+-        webxr_registry: None,
+         webgl_threads: Some(paint.webgl_threads()),
+         webrender_external_image_id_manager: paint.webrender_external_image_id_manager(),
+         #[cfg(feature = "webgpu")]
+diff --git a/components/shared/canvas/Cargo.toml b/components/shared/canvas/Cargo.toml
+index 88498e614a3..c15233d1562 100644
+--- a/components/shared/canvas/Cargo.toml
++++ b/components/shared/canvas/Cargo.toml
+@@ -31,4 +31,3 @@ servo-base = { workspace = true }
+ strum = { workspace = true }
+ stylo = { workspace = true }
+ webrender_api = { workspace = true }
+-webxr-api = { workspace = true }
+diff --git a/components/shared/canvas/webgl.rs b/components/shared/canvas/webgl.rs
+index aa37944d54b..2bf8c6f0845 100644
+--- a/components/shared/canvas/webgl.rs
++++ b/components/shared/canvas/webgl.rs
+@@ -26,10 +26,6 @@ pub use servo_base::generic_channel::SendResult as WebGLSendResult;
+ use servo_base::id::PainterId;
+ use servo_base::{Epoch, generic_channel};
+ use webrender_api::ImageKey;
+-use webxr_api::{
+-    ContextId as WebXRContextId, Error as WebXRError, LayerId as WebXRLayerId,
+-    LayerInit as WebXRLayerInit, SubImages as WebXRSubImages,
+-};
+ 
+ /// Helper function that creates a WebGL channel (WebGLSender, WebGLReceiver) to be used in WebGLCommands.
+ pub fn webgl_channel<T>() -> Option<(GenericSender<T>, GenericReceiver<T>)>
+@@ -130,9 +126,6 @@ pub enum WebGLMsg {
+     RemoveContext(WebGLContextId),
+     /// Runs a WebGLCommand in a specific WebGLContext.
+     WebGLCommand(WebGLContextId, WebGLCommand, WebGLCommandBacktrace),
+-    /// Runs a WebXRCommand (WebXR layers need to be created in the WebGL
+-    /// thread, as they may have thread affinity).
+-    WebXRCommand(WebXRCommand),
+     /// Performs a buffer swap.
+     ///
+     /// The third field contains the time (in ns) when the request
+@@ -596,30 +589,6 @@ pub enum WebGLCommand {
+     DrawBuffers(Vec<u32>),
+ }
+ 
+-/// WebXR layer management
+-#[derive(Debug, Deserialize, Serialize)]
+-pub enum WebXRCommand {
+-    CreateLayerManager(GenericSender<Result<WebXRLayerManagerId, WebXRError>>),
+-    DestroyLayerManager(WebXRLayerManagerId),
+-    CreateLayer(
+-        WebXRLayerManagerId,
+-        WebXRContextId,
+-        WebXRLayerInit,
+-        GenericSender<Result<WebXRLayerId, WebXRError>>,
+-    ),
+-    DestroyLayer(WebXRLayerManagerId, WebXRContextId, WebXRLayerId),
+-    BeginFrame(
+-        WebXRLayerManagerId,
+-        Vec<(WebXRContextId, WebXRLayerId)>,
+-        GenericSender<Result<Vec<WebXRSubImages>, WebXRError>>,
+-    ),
+-    EndFrame(
+-        WebXRLayerManagerId,
+-        Vec<(WebXRContextId, WebXRLayerId)>,
+-        GenericSender<Result<(), WebXRError>>,
+-    ),
+-}
+-
+ macro_rules! nonzero_type {
+     (u32) => {
+         NonZeroU32
+@@ -731,25 +700,12 @@ impl WebGLSyncId {
+     }
+ }
+ define_resource_id!(WebGLVertexArrayId, u32, NativeVertexArray);
+-define_resource_id!(WebXRLayerManagerId, u32);
+ 
+ #[derive(
+     Clone, Copy, Debug, Deserialize, Eq, Hash, MallocSizeOf, Ord, PartialEq, PartialOrd, Serialize,
+ )]
+ pub struct WebGLContextId(pub u64);
+ 
+-impl From<WebXRContextId> for WebGLContextId {
+-    fn from(id: WebXRContextId) -> Self {
+-        Self(id.0)
+-    }
+-}
+-
+-impl From<WebGLContextId> for WebXRContextId {
+-    fn from(id: WebGLContextId) -> Self {
+-        Self(id.0)
+-    }
+-}
+-
+ #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize, MallocSizeOf)]
+ pub enum WebGLError {
+     InvalidEnum,
+diff --git a/components/shared/script/Cargo.toml b/components/shared/script/Cargo.toml
+index c3a5e2bb304..87c128a980f 100644
+--- a/components/shared/script/Cargo.toml
++++ b/components/shared/script/Cargo.toml
+@@ -46,4 +46,3 @@ stylo_atoms = { workspace = true }
+ stylo_traits = { workspace = true }
+ webgpu_traits = { workspace = true, optional = true }
+ webrender_api = { workspace = true }
+-webxr-api = { workspace = true }
+diff --git a/components/shared/script/lib.rs b/components/shared/script/lib.rs
+index 0eda1ecb017..f496a80071a 100644
+--- a/components/shared/script/lib.rs
++++ b/components/shared/script/lib.rs
+@@ -406,8 +406,6 @@ pub struct InitialScriptState {
+     pub pipeline_namespace_id: PipelineNamespaceId,
+     /// A channel to the WebGL thread used in this pipeline.
+     pub webgl_chan: Option<WebGLPipeline>,
+-    /// The XR device registry
+-    pub webxr_registry: Option<webxr_api::Registry>,
+     /// Access to `Paint` across a process boundary.
+     pub cross_process_paint_api: CrossProcessPaintApi,
+     /// Application window's GL Context for Media player
+diff --git a/components/webgl/Cargo.toml b/components/webgl/Cargo.toml
+index 625896decf2..57b9ed33c36 100644
+--- a/components/webgl/Cargo.toml
++++ b/components/webgl/Cargo.toml
+@@ -15,7 +15,6 @@ path = "lib.rs"
+ 
+ [features]
+ webgl_backtrace = ["servo-canvas-traits/webgl_backtrace"]
+-webxr = ["dep:webxr", "dep:webxr-api"]
+ 
+ [dependencies]
+ bitflags = { workspace = true }
+@@ -35,5 +34,3 @@ servo-base = { workspace = true }
+ servo-canvas-traits = { workspace = true }
+ surfman = { workspace = true }
+ webrender_api = { workspace = true }
+-webxr = { workspace = true, optional = true }
+-webxr-api = { workspace = true, optional = true }
+diff --git a/components/webgl/lib.rs b/components/webgl/lib.rs
+index 923e7faad24..8057f08d49a 100644
+--- a/components/webgl/lib.rs
++++ b/components/webgl/lib.rs
+@@ -9,5 +9,3 @@ pub use webgl_mode::WebGLComm;
+ mod webgl_limits;
+ mod webgl_mode;
+ pub mod webgl_thread;
+-#[cfg(feature = "webxr")]
+-mod webxr;
+diff --git a/components/webgl/webgl_mode/inprocess.rs b/components/webgl/webgl_mode/inprocess.rs
+index 84bca484381..452f07c5ca4 100644
+--- a/components/webgl/webgl_mode/inprocess.rs
++++ b/components/webgl/webgl_mode/inprocess.rs
+@@ -9,10 +9,6 @@ use paint_api::{CrossProcessPaintApi, PainterSurfmanDetailsMap, WebRenderExterna
+ use servo_canvas_traits::webgl::{WebGLContextId, WebGLMsg, WebGLThreads, webgl_channel};
+ use surfman::Device;
+ use surfman::chains::SwapChains;
+-#[cfg(feature = "webxr")]
+-use webxr::SurfmanGL as WebXRSurfman;
+-#[cfg(feature = "webxr")]
+-use webxr_api::LayerGrandManager as WebXRLayerGrandManager;
+ 
+ use crate::webgl_thread::{WebGLContextBusyMap, WebGLThread, WebGLThreadInit};
+ 
+@@ -20,8 +16,6 @@ pub struct WebGLComm {
+     pub webgl_threads: WebGLThreads,
+     pub swap_chains: SwapChains<WebGLContextId, Device>,
+     pub busy_webgl_context_map: WebGLContextBusyMap,
+-    #[cfg(feature = "webxr")]
+-    pub webxr_layer_grand_manager: WebXRLayerGrandManager<WebXRSurfman>,
+     /// A `JoinHandle` which can be joined after sending the `WebGLMsg::Exit`
+     /// message to the `WebGLThread`.
+     pub join_handle: JoinHandle<()>,
+@@ -39,11 +33,6 @@ impl WebGLComm {
+         let swap_chains = SwapChains::new();
+         let busy_webgl_context_map = WebGLContextBusyMap::default();
+ 
+-        #[cfg(feature = "webxr")]
+-        let webxr_init = crate::webxr::WebXRBridgeInit::new(sender.clone());
+-        #[cfg(feature = "webxr")]
+-        let webxr_layer_grand_manager = webxr_init.layer_grand_manager();
+-
+         // This implementation creates a single `WebGLThread` for all the pipelines.
+         let init = WebGLThreadInit {
+             paint_api,
+@@ -53,8 +42,6 @@ impl WebGLComm {
+             webrender_swap_chains: swap_chains.clone(),
+             painter_surfman_details_map,
+             busy_webgl_context_map: busy_webgl_context_map.clone(),
+-            #[cfg(feature = "webxr")]
+-            webxr_init,
+         };
+ 
+         let join_handle = WebGLThread::run_on_own_thread(init);
+@@ -63,8 +50,6 @@ impl WebGLComm {
+             webgl_threads: WebGLThreads(sender),
+             swap_chains,
+             busy_webgl_context_map,
+-            #[cfg(feature = "webxr")]
+-            webxr_layer_grand_manager,
+             join_handle,
+         }
+     }
+diff --git a/components/webgl/webgl_thread.rs b/components/webgl/webgl_thread.rs
+index 58f8641466e..b06b03a58d5 100644
+--- a/components/webgl/webgl_thread.rs
++++ b/components/webgl/webgl_thread.rs
+@@ -35,8 +35,6 @@ use servo_base::generic_channel::{
+ };
+ use servo_base::id::PainterId;
+ use servo_canvas_traits::webgl;
+-#[cfg(feature = "webxr")]
+-use servo_canvas_traits::webgl::WebXRCommand;
+ use servo_canvas_traits::webgl::{
+     ActiveAttribInfo, ActiveUniformBlockInfo, ActiveUniformInfo, AlphaTreatment,
+     GLContextAttributes, GLLimits, GlType, InternalFormatIntVec, ProgramLinkInfo, TexDataType,
+@@ -58,8 +56,6 @@ use webrender_api::{
+ };
+ 
+ use crate::webgl_limits::GLLimitsDetect;
+-#[cfg(feature = "webxr")]
+-use crate::webxr::{WebXRBridge, WebXRBridgeInit};
+ 
+ type GLint = i32;
+ 
+@@ -243,10 +239,6 @@ pub(crate) struct WebGLThread {
+     /// A usage map used to delay the deletion of WebGL contexts until all WebRender
+     /// rendering is finished, so that any existing `Surface`s can be properly released.
+     busy_webgl_context_map: WebGLContextBusyMap,
+-
+-    #[cfg(feature = "webxr")]
+-    /// The bridge to WebXR
+-    pub webxr_bridge: Option<WebXRBridge>,
+ }
+ 
+ /// The data required to initialize an instance of the WebGLThread type.
+@@ -258,8 +250,6 @@ pub(crate) struct WebGLThreadInit {
+     pub webrender_swap_chains: SwapChains<WebGLContextId, Device>,
+     pub painter_surfman_details_map: PainterSurfmanDetailsMap,
+     pub busy_webgl_context_map: WebGLContextBusyMap,
+-    #[cfg(feature = "webxr")]
+-    pub webxr_init: WebXRBridgeInit,
+ }
+ 
+ // A size at which it should be safe to create GL contexts
+@@ -276,8 +266,6 @@ impl WebGLThread {
+             webrender_swap_chains,
+             painter_surfman_details_map,
+             busy_webgl_context_map,
+-            #[cfg(feature = "webxr")]
+-            webxr_init,
+         }: WebGLThreadInit,
+     ) -> Self {
+         WebGLThread {
+@@ -292,8 +280,6 @@ impl WebGLThread {
+             webrender_swap_chains,
+             painter_surfman_details_map,
+             busy_webgl_context_map,
+-            #[cfg(feature = "webxr")]
+-            webxr_bridge: Some(WebXRBridge::new(webxr_init)),
+         }
+     }
+ 
+@@ -389,10 +375,6 @@ impl WebGLThread {
+             WebGLMsg::WebGLCommand(ctx_id, command, backtrace) => {
+                 self.handle_webgl_command(ctx_id, command, backtrace);
+             },
+-            WebGLMsg::WebXRCommand(_command) => {
+-                #[cfg(feature = "webxr")]
+-                self.handle_webxr_command(_command);
+-            },
+             WebGLMsg::SwapBuffers(swap_ids, canvas_epoch, sent_time) => {
+                 self.handle_swap_buffers(canvas_epoch, swap_ids, sent_time);
+             },
+@@ -444,57 +426,11 @@ impl WebGLThread {
+         Ok(entry.or_insert(Rc::new(device)).clone())
+     }
+ 
+-    #[cfg(feature = "webxr")]
+-    /// Handles a WebXR message
+-    fn handle_webxr_command(&mut self, command: WebXRCommand) {
+-        trace!("processing {:?}", command);
+-        // Take `webxr_bridge` from the `WebGLThread` in order to avoid a double mutable borrow.
+-        let Some(mut webxr_bridge) = self.webxr_bridge.take() else {
+-            return;
+-        };
+-        match command {
+-            WebXRCommand::CreateLayerManager(sender) => {
+-                let result = webxr_bridge.create_layer_manager(self);
+-                let _ = sender.send(result);
+-            },
+-            WebXRCommand::DestroyLayerManager(manager_id) => {
+-                webxr_bridge.destroy_layer_manager(manager_id);
+-            },
+-            WebXRCommand::CreateLayer(manager_id, context_id, layer_init, sender) => {
+-                let result = webxr_bridge.create_layer(manager_id, self, context_id, layer_init);
+-                let _ = sender.send(result);
+-            },
+-            WebXRCommand::DestroyLayer(manager_id, context_id, layer_id) => {
+-                webxr_bridge.destroy_layer(manager_id, self, context_id, layer_id);
+-            },
+-            WebXRCommand::BeginFrame(manager_id, layers, sender) => {
+-                let result = webxr_bridge.begin_frame(manager_id, self, &layers[..]);
+-                let _ = sender.send(result);
+-            },
+-            WebXRCommand::EndFrame(manager_id, layers, sender) => {
+-                let result = webxr_bridge.end_frame(manager_id, self, &layers[..]);
+-                let _ = sender.send(result);
+-            },
+-        }
+-
+-        self.webxr_bridge.replace(webxr_bridge);
+-    }
+-
+     fn device_for_context(&self, context_id: WebGLContextId) -> Rc<Device> {
+-        self.maybe_device_for_context(context_id)
+-            .expect("Should be called with a valid WebGLContextId")
+-    }
+-
+-    /// A function like `Self::device_for_context`, except that it does not panic if the context
+-    /// cannot be found. This is useful for WebXR, which might try to access WebGL contexts after
+-    /// they have been cleaned up.
+-    pub(crate) fn maybe_device_for_context(
+-        &self,
+-        context_id: WebGLContextId,
+-    ) -> Option<Rc<Device>> {
+         self.contexts
+             .get(&context_id)
+             .map(|context| context.device.clone())
++            .expect("Should be called with a valid WebGLContextId")
+     }
+ 
+     /// Handles a WebGLCommand for a specific WebGLContext
+@@ -805,18 +741,6 @@ impl WebGLThread {
+         // We need to make the context current so its resources can be disposed of.
+         self.make_current_if_needed(context_id);
+ 
+-        // Destroy WebXR layers associated with this context
+-        #[cfg(feature = "webxr")]
+-        {
+-            // We must temporarily take the WebXRBridge, as we are passing self to a
+-            // method on the bridge.
+-            let mut webxr_bridge = self.webxr_bridge.take();
+-            if let Some(webxr_bridge) = &mut webxr_bridge {
+-                webxr_bridge.destroy_all_layers(self, context_id.into());
+-            }
+-            self.webxr_bridge = webxr_bridge;
+-        }
+-
+         // Release GL context.
+         let Some(mut data) = self.contexts.remove(&context_id) else {
+             return;
+diff --git a/resources/wpt-prefs.json b/resources/wpt-prefs.json
+index 1aa9db0a085..fcff17015b7 100644
+--- a/resources/wpt-prefs.json
++++ b/resources/wpt-prefs.json
+@@ -1,5 +1,4 @@
+ {
+-  "dom_webxr_test": true,
+   "editing_caret_blink_time": 0,
+   "gfx_text_antialiasing_enabled": false,
+   "dom_testutils_enabled": true

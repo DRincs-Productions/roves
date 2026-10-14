@@ -9,5 +9,3 @@ pub use webgl_mode::WebGLComm;
 mod webgl_limits;
 mod webgl_mode;
 pub mod webgl_thread;
-#[cfg(feature = "webxr")]
-mod webxr;

@@ -6,8 +6,6 @@
 use std::cell::Cell;
 
 use dom_struct::dom_struct;
-#[cfg(feature = "webxr")]
-use euclid::Size2D;
 use js::context::JSContext;
 use script_bindings::cell::DomRefCell;
 use script_bindings::reflector::reflect_dom_object_with_cx;
@@ -16,21 +14,15 @@ use servo_canvas_traits::webgl::{
     WebGLCommand, WebGLError, WebGLFramebufferBindingRequest, WebGLFramebufferId,
     WebGLRenderbufferId, WebGLResult, WebGLTextureId, WebGLVersion, webgl_channel,
 };
-#[cfg(feature = "webxr")]
-use webxr_api::Viewport;
 
 use crate::dom::bindings::codegen::Bindings::WebGL2RenderingContextBinding::WebGL2RenderingContextConstants as constants;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::reflector::DomGlobal;
-#[cfg(feature = "webxr")]
-use crate::dom::bindings::root::MutNullableDom;
 use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::webgl::webglobject::WebGLObject;
 use crate::dom::webgl::webglrenderbuffer::WebGLRenderbuffer;
 use crate::dom::webgl::webglrenderingcontext::{Operation, WebGLRenderingContext};
 use crate::dom::webgl::webgltexture::WebGLTexture;
-#[cfg(feature = "webxr")]
-use crate::dom::xrsession::XRSession;
 
 pub(crate) enum CompleteForRendering {
     Complete,
@@ -161,10 +153,6 @@ pub(crate) struct WebGLFramebuffer {
     color_read_buffer: Cell<u32>,
     color_draw_buffers: DomRefCell<Vec<u32>>,
     is_initialized: Cell<bool>,
-    // Framebuffers for XR keep a reference to the XR session.
-    // https://github.com/immersive-web/webxr/issues/856
-    #[cfg(feature = "webxr")]
-    xr_session: MutNullableDom<XRSession>,
     droppable: DroppableWebGLFramebuffer,
 }
 
@@ -183,8 +171,6 @@ impl WebGLFramebuffer {
             color_read_buffer: Cell::new(constants::COLOR_ATTACHMENT0),
             color_draw_buffers: DomRefCell::new(vec![constants::COLOR_ATTACHMENT0]),
             is_initialized: Cell::new(false),
-            #[cfg(feature = "webxr")]
-            xr_session: Default::default(),
             droppable: DroppableWebGLFramebuffer::new(id, Cell::new(false), WeakRef::new(context)),
         }
     }
@@ -197,22 +183,6 @@ impl WebGLFramebuffer {
         context.send_command(WebGLCommand::CreateFramebuffer(sender));
         let id = receiver.recv().unwrap()?;
         let framebuffer = WebGLFramebuffer::new(cx, context, id);
-        Some(framebuffer)
-    }
-
-    // TODO: depth, stencil and alpha
-    // https://github.com/servo/servo/issues/24498
-    #[cfg(feature = "webxr")]
-    pub(crate) fn maybe_new_webxr(
-        cx: &mut JSContext,
-        session: &XRSession,
-        context: &WebGLRenderingContext,
-        size: Size2D<i32, Viewport>,
-    ) -> Option<DomRoot<Self>> {
-        let framebuffer = Self::maybe_new(cx, context)?;
-        framebuffer.size.set(Some((size.width, size.height)));
-        framebuffer.status.set(constants::FRAMEBUFFER_COMPLETE);
-        framebuffer.xr_session.set(Some(session));
         Some(framebuffer)
     }
 
@@ -234,31 +204,11 @@ impl WebGLFramebuffer {
         self.droppable.id()
     }
 
-    #[cfg(feature = "webxr")]
-    fn is_in_xr_session(&self) -> bool {
-        self.xr_session.get().is_some()
-    }
-
-    #[cfg(not(feature = "webxr"))]
-    fn is_in_xr_session(&self) -> bool {
-        false
-    }
-
-    pub(crate) fn validate_transparent(&self) -> WebGLResult<()> {
-        if self.is_in_xr_session() {
-            Err(WebGLError::InvalidOperation)
-        } else {
-            Ok(())
-        }
-    }
-
     pub(crate) fn bind(&self, target: u32) {
-        if !self.is_in_xr_session() {
-            // Update the framebuffer status on binding.  It may have
-            // changed if its attachments were resized or deleted while
-            // we've been unbound.
-            self.update_status();
-        }
+        // Update the framebuffer status on binding.  It may have
+        // changed if its attachments were resized or deleted while
+        // we've been unbound.
+        self.update_status();
 
         self.target.set(Some(target));
         self.upcast().send_command(WebGLCommand::BindFramebuffer(
@@ -272,9 +222,6 @@ impl WebGLFramebuffer {
     }
 
     pub(crate) fn is_deleted(&self) -> bool {
-        // TODO: if a framebuffer has an attachment which is invalid due to
-        // being outside a webxr rAF, should this make the framebuffer invalid?
-        // https://github.com/immersive-web/layers/issues/196
         self.droppable.is_deleted()
     }
 
@@ -527,34 +474,13 @@ impl WebGLFramebuffer {
     }
 
     pub(crate) fn check_status(&self) -> u32 {
-        // For opaque framebuffers, check to see if the XR session is currently processing an rAF
-        // https://immersive-web.github.io/webxr/#opaque-framebuffer
-        #[cfg(feature = "webxr")]
-        if let Some(xr_session) = self.xr_session.get() {
-            return if xr_session.is_outside_raf() {
-                constants::FRAMEBUFFER_UNSUPPORTED
-            } else {
-                constants::FRAMEBUFFER_COMPLETE
-            };
-        }
-
         self.status.get()
-        // TODO: if a framebuffer has an attachment which is invalid due to
-        // being outside a webxr rAF, should this make the framebuffer incomplete?
-        // https://github.com/immersive-web/layers/issues/196
     }
 
     pub(crate) fn check_status_for_rendering(&self) -> CompleteForRendering {
         let result = self.check_status();
         if result != constants::FRAMEBUFFER_COMPLETE {
             return CompleteForRendering::Incomplete;
-        }
-
-        // XR framebuffers are complete inside an rAF
-        // https://github.com/immersive-web/webxr/issues/854
-        #[cfg(feature = "webxr")]
-        if self.xr_session.get().is_some() {
-            return CompleteForRendering::Complete;
         }
 
         if self.colors.iter().all(|att| att.borrow().is_none()) {
@@ -595,10 +521,6 @@ impl WebGLFramebuffer {
             self.is_initialized.set(true);
         }
 
-        // TODO: if a framebuffer has an attachment which is invalid due to
-        // being outside a webxr rAF, should this make the framebuffer incomplete?
-        // https://github.com/immersive-web/layers/issues/196
-
         CompleteForRendering::Complete
     }
 
@@ -607,9 +529,6 @@ impl WebGLFramebuffer {
         attachment: u32,
         rb: Option<&WebGLRenderbuffer>,
     ) -> WebGLResult<()> {
-        // Opaque framebuffers cannot have their attachments changed
-        // https://immersive-web.github.io/webxr/#opaque-framebuffer
-        self.validate_transparent()?;
 
         let binding = self
             .attachment_binding(attachment)
@@ -651,9 +570,6 @@ impl WebGLFramebuffer {
         binding: &DomRefCell<Option<WebGLFramebufferAttachment>>,
         attachment: u32,
     ) -> WebGLResult<()> {
-        // Opaque framebuffers cannot have their attachments changed
-        // https://immersive-web.github.io/webxr/#opaque-framebuffer
-        self.validate_transparent()?;
 
         if let Some(att) = &*binding.borrow() {
             att.detach();
@@ -682,9 +598,6 @@ impl WebGLFramebuffer {
     }
 
     fn reattach_depth_stencil(&self) -> WebGLResult<()> {
-        // Opaque framebuffers cannot have their attachments changed
-        // https://immersive-web.github.io/webxr/#opaque-framebuffer
-        self.validate_transparent()?;
 
         let reattach = |attachment: &WebGLFramebufferAttachment, attachment_point| {
             let webgl_object = self.upcast();
@@ -742,9 +655,6 @@ impl WebGLFramebuffer {
         texture: Option<&WebGLTexture>,
         level: i32,
     ) -> WebGLResult<()> {
-        // Opaque framebuffers cannot have their attachments changed
-        // https://immersive-web.github.io/webxr/#opaque-framebuffer
-        self.validate_transparent()?;
         if let Some(texture) = texture {
             //     "If texture is not zero, then texture must either
             //      name an existing texture object with an target of
@@ -788,10 +698,10 @@ impl WebGLFramebuffer {
                 return Err(WebGLError::InvalidValue);
             }
         }
-        self.texture2d_even_if_opaque(attachment, textarget, texture, level)
+        self.attach_texture2d(attachment, textarget, texture, level)
     }
 
-    pub(crate) fn texture2d_even_if_opaque(
+    fn attach_texture2d(
         &self,
         attachment: u32,
         textarget: u32,
@@ -964,9 +874,6 @@ impl WebGLFramebuffer {
     }
 
     pub(crate) fn detach_renderbuffer_by_id(&self, rb_id: &WebGLRenderbufferId) -> WebGLResult<()> {
-        // Opaque framebuffers cannot have their attachments changed
-        // https://immersive-web.github.io/webxr/#opaque-framebuffer
-        self.validate_transparent()?;
 
         let mut depth_or_stencil_updated = false;
         self.with_matching_renderbuffers_id(rb_id, |att, name| {
@@ -985,9 +892,6 @@ impl WebGLFramebuffer {
     }
 
     pub(crate) fn detach_texture(&self, tex_id: WebGLTextureId) -> WebGLResult<()> {
-        // Opaque framebuffers cannot have their attachments changed
-        // https://immersive-web.github.io/webxr/#opaque-framebuffer
-        self.validate_transparent()?;
 
         let mut depth_or_stencil_updated = false;
         self.with_matching_textures_id(tex_id, |att, name| {

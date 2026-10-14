@@ -13498,3 +13498,68 @@ deleting `REMOVED_PATHS.txt`, gives a `python/` and `etc/` byte-identical to thi
 `./mach --help` (the full command list) fails with `ValueError: action 'store_true' is not
 valid for positional arguments` in mach's `dispatcher.py` under Python 3.14. That code is
 untouched here, so the failure predates this change.
+
+## 2026-10-14 - Delete WebXR
+
+**Servo files:** the workspace `Cargo.toml` and `Cargo.lock`; `Cargo.toml` of `servo`, `paint`,
+`webgl`, `script`, `script_bindings`, `constellation`, `shared/canvas` and `shared/script`;
+`components/config/prefs.rs`; `components/constellation/{constellation,event_loop}.rs`;
+`components/paint/paint.rs`; `components/servo/{lib,servo}.rs`;
+`components/shared/canvas/webgl.rs`; `components/shared/script/lib.rs`;
+`components/webgl/{lib,webgl_thread}.rs` and `webgl_mode/inprocess.rs`;
+`components/script_bindings/{trace.rs,codegen/Bindings.conf}`; in `components/script/`:
+`script_thread.rs`, `dom/mod.rs`, `dom/navigator/navigator.rs`, `dom/window/window.rs`,
+`dom/document/{document,document_event_handler}.rs`, `dom/gamepad/gamepad.rs` and
+`dom/webgl/{webglrenderingcontext,webgl2renderingcontext,webglframebuffer,webgltexture}.rs`;
+`resources/wpt-prefs.json`. **Patch:** `0217-delete-webxr.patch` after 0216, plus a new section
+in `REMOVED_PATHS.txt`.
+
+servoshell stopped enabling the `webxr` feature in patch 0201, so every WebXR line was compiled
+out of the game binary. This entry deletes the code itself.
+
+- Deleted (14,485 lines, 110 tracked files): `components/webxr/` (the OpenXR, glwindow and
+  headless backends, 4841 lines), `components/shared/webxr/` (the `webxr-api` types, 2161),
+  `components/script/dom/webxr/` (the XR DOM objects, 6086), `components/webgl/webxr.rs` (the
+  WebGL-thread layer bridge, 314), the 40 `XR*.webidl`/`FakeXR*.webidl` files (1070), and
+  `resources/package-prefs.json`, which only the deleted `mach package` read and whose one
+  setting turned on VR prefs. All are listed in `REMOVED_PATHS.txt`.
+- The `webxr` cargo feature is gone from `servo`, `paint`, `webgl`, `script` and
+  `script_bindings`, with every `cfg(feature = "webxr")` item and the code it gated. The
+  `servo::webxr` re-export module, `Servo::register_webxr_registry` and `Paint`'s XR main-thread
+  registry are gone. The workspace no longer declares `openxr` or `wio`. `Cargo.lock` drops
+  `openxr`, `openxr-sys`, `servo-webxr` and `servo-webxr-api`.
+- `components/shared/webxr` was a non-optional dependency of `constellation`,
+  `shared/canvas` and `shared/script`, but only for code that WebXR itself used:
+  `WebGLMsg::WebXRCommand` and its `WebXRCommand` enum, `WebXRLayerManagerId`, the
+  `WebGLContextId` conversions, and the `webxr_registry: Option<webxr_api::Registry>` field
+  carried from `Servo` through the constellation and `InitialScriptState` into every `Window`
+  (always `None` without the feature). All of it is removed, so nothing replaces the crate.
+- Code that only existed for XR sessions is simplified: `WebGLFramebuffer` loses
+  `xr_session`, `maybe_new_webxr` and `validate_transparent` (which always succeeded), and
+  `texture2d_even_if_opaque` becomes the private `attach_texture2d`; `WebGLTexture` loses the
+  `WebGLTextureOwner` enum and `new_webxr`; `Window::in_immersive_xr_session` (always false)
+  and the check in `WebGLRenderingContext::mark_as_dirty` are gone; `Gamepad::new` loses its
+  `xr` argument; `WebGLThread::maybe_device_for_context` is folded into `device_for_context`.
+- Thirteen `dom_webxr_*` preferences are removed from `components/config/prefs.rs`, and
+  `dom_webxr_test` from `resources/wpt-prefs.json`. `Bindings.conf` loses the 13 `XR*`
+  descriptors, `FakeXRDevice`, the `XRWebGLLayerInit` dictionary and the two
+  `MakeXRCompatible` entries. `makeXRCompatible()` and `navigator.xr` came from partial
+  interfaces in the deleted XR webidls, so no other webidl needed editing. `Gamepad.hand` and
+  `GamepadHapticActuator` stay: they belong to the Gamepad spec, not WebXR.
+- `queue_document_completion` in `document.rs` now names its unused `cx` `_cx`; it was only used
+  by the deleted `dom_webxr_sessionavailable` block.
+
+Kept on purpose: `resources/resource_protocol/license.html` still lists `openxr`,
+`openxr-sys`, `servo-webxr` and `servo-webxr-api`. It is a generated upstream file that was
+already out of date (it predates V8), so it was left as is.
+
+Verified: `AWS_LC_SYS_PREBUILT_NASM=1 cargo check -p servoshell --release` and `cargo check
+--release --tests -p servoshell -p servo -p servo-webgl -p servo-paint -p servo-canvas-traits`
+finish with no errors. The only warnings in the touched crates (`servo.rs`' unused
+`GenericSender` import and some never-used animation test helpers in `servo-script`) are not in
+code this change touched. `python -m unittest discover -s components/script_bindings/codegen -p
+test_v8.py` passes 73 tests. Applying 0001-0216 (skipping 0042, as CI does) and then 0217 to the
+pristine v0.5.0 archive and deleting `REMOVED_PATHS.txt` gives all 34 modified source files
+byte-identical to this tree. The deleted paths are absent. The rebuilt `Cargo.lock` differs from
+this tree's by the same 2131 diff lines before and after 0217, so that drift predates this
+change.

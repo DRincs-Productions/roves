@@ -115,18 +115,16 @@ impl Gamepad {
         axis_bounds: (f64, f64),
         button_bounds: (f64, f64),
         supported_haptic_effects: GamepadSupportedHapticEffects,
-        xr: bool,
     ) -> DomRoot<Gamepad> {
         let buttons = Gamepad::init_buttons(cx, window);
         rooted_vec!(let buttons <- buttons.iter().map(DomRoot::as_traced));
         let vibration_actuator =
             GamepadHapticActuator::new(cx, window, gamepad_id, supported_haptic_effects);
-        let index = if xr { -1 } else { 0 };
         let gamepad = reflect_dom_object_with_cx(
             Box::new(Gamepad::new_inherited(
                 gamepad_id,
                 id,
-                index,
+                0,
                 true,
                 0.,
                 mapping_type,

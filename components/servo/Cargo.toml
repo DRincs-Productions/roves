@@ -71,13 +71,6 @@ webgpu = [
     "servo-constellation/webgpu",
     "servo-constellation-traits/webgpu",
 ]
-webxr = [
-    "dep:webxr",
-    "dep:webxr-api",
-    "paint/webxr",
-    "webgl/webxr",
-    "script/webxr",
-]
 
 [dependencies]
 accesskit = { workspace = true }
@@ -139,7 +132,6 @@ webgl = { workspace = true, default-features = false }
 webgpu = { workspace = true, optional = true }
 webrender = { workspace = true }
 webrender_api = { workspace = true }
-webxr-api = { workspace = true, optional = true }
 
 # On most platforms we bake in the resources for simplicity. On ohos we load resources via the filesystem.
 # In the future we might want to use this approach also for the other platforms.
@@ -147,21 +139,11 @@ webxr-api = { workspace = true, optional = true }
 [target.'cfg(not(target_env = "ohos"))'.dependencies]
 servo-default-resources = { workspace = true, optional = true }
 
-[target.'cfg(any(target_os = "android", target_env = "ohos"))'.dependencies]
-webxr = { workspace = true, optional = true }
-
 [target.'cfg(not(any(target_os = "android", target_env = "ohos")))'.dependencies]
 arboard = { workspace = true, optional = true }
-webxr = { workspace = true, optional = true, features = ["glwindow", "headless"] }
-
-[target.'cfg(all(target_os = "linux", not(target_env = "ohos")))'.dependencies]
-webxr = { workspace = true, optional = true, features = ["x11"] }
 
 [target.'cfg(all(not(target_os = "windows"), not(target_os = "ios"), not(target_os = "android"), not(target_env = "ohos"), not(target_arch = "arm"), not(target_arch = "aarch64"), not(target_arch="riscv32"), not(target_arch="riscv64")))'.dependencies]
 gaol = { workspace = true }
-
-[target.'cfg(target_os = "windows")'.dependencies]
-webxr = { workspace = true, optional = true, features = ["glwindow", "headless", "openxr-api"] }
 
 [target.'cfg(target_env = "ohos")'.dependencies]
 servo-media-ohos = { workspace = true }
