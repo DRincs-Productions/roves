@@ -68,6 +68,11 @@ jobs:
             echo "Applying $(basename "$p")..."
             patch --batch --forward -p1 -d servo-src < "$p"
           done
+          # Upstream paths Roves deleted (a patch can't cheaply carry whole-tree deletions).
+          # After the patches: 0185 still edits python/servo/try_parser.py.
+          grep -v '^#' "patches/servo-v${SERVO_TAG}/REMOVED_PATHS.txt" | while read -r rp; do
+            if [ -n "$rp" ]; then rm -rf "servo-src/$rp"; fi
+          done
 
   # Check SDL3 event and native virtual-gamepad contracts independently.
   sdl3-windowing-contracts:
@@ -228,6 +233,11 @@ jobs:
             esac
             echo "Applying $(basename "$p")..."
             "$PATCH" -p1 < "../$p"
+          done
+          # Upstream paths Roves deleted (see patches/servo-v<tag>/REMOVED_PATHS.txt); removed
+          # after the patches because 0185 still edits python/servo/try_parser.py.
+          grep -v '^#' "../patches/servo-v${SERVO_TAG}/REMOVED_PATHS.txt" | while read -r rp; do
+            if [ -n "$rp" ]; then rm -rf "./$rp"; fi
           done
 
           # test-page/ isn't part of any patch (../CUSTOMIZATIONS.md: plain test
@@ -1210,6 +1220,11 @@ jobs:
             esac
             echo "Applying $(basename "$p")..."
             "$PATCH" -p1 < "../$p"
+          done
+          # Upstream paths Roves deleted (see patches/servo-v<tag>/REMOVED_PATHS.txt); removed
+          # after the patches because 0185 still edits python/servo/try_parser.py.
+          grep -v '^#' "../patches/servo-v${SERVO_TAG}/REMOVED_PATHS.txt" | while read -r rp; do
+            if [ -n "$rp" ]; then rm -rf "./$rp"; fi
           done
 
           mkdir -p test-page

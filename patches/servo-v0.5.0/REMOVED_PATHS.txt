@@ -1,0 +1,45 @@
+# Upstream Servo v0.5.0 paths deleted from Roves (see CUSTOMIZATIONS.md, 2026-10-14
+# "Remove unused upstream mach tooling" entry). A unified diff can't carry deletions of
+# whole trees cheaply, so every workflow that rebuilds the tree from pristine Servo +
+# patches/servo-v0.5.0/*.patch deletes each path below *after* applying the patches
+# (patch 0185 still touches python/servo/try_parser.py, so deleting first would fail it).
+# One repo-relative path per line; blank lines and lines starting with `#` are ignored.
+
+# mach command modules no CI/consumer uses (`package`, `install`, `release`, `check`,
+# `clippy`, `fetch`, ...); `test-tidy`/`test-wpt`/`try`/... went with testing_commands.py's
+# rewrite (patch 0216).
+python/servo/package_commands.py
+python/servo/devenv_commands.py
+python/servo/try_parser.py
+python/servo/devtools_tests
+
+# WPT and tidy support packages (the only reason mach needed tests/wpt/tests/tools).
+python/wpt
+python/tidy
+
+# Upstream CI/maintenance scripts. etc/coverage_workspace_wrapper.py is kept: `mach build
+# --coverage` (also exposed by roves-action) uses it.
+etc/about.hbs
+etc/blink-perf-test-runner
+etc/ci
+etc/devtools_parser.py
+etc/devtools_parser_test.json
+etc/devtools_parser_test.pcap
+etc/doc.servo.org
+etc/install_macos_gstreamer.sh
+etc/macos_sign.py
+etc/memory_chart.html
+etc/memory_reports_over_time.py
+etc/patch-trace-template.py
+etc/profilicate.py
+etc/run_in_headless_android_emulator.py
+etc/servo_automation_screenshot.py
+etc/servo_gdb.py
+etc/show-stale-intermittent-issues.sh
+etc/start_servo.py
+etc/untracked-allocations.py
+etc/valgrind-memcheck.supp
+etc/vendor_servo.py
+etc/wpt-summarize.py
+etc/wpt-timing.py
+etc/wpt_result_analyzer.py

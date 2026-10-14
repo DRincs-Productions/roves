@@ -13,12 +13,12 @@ import json
 import os
 import os.path as path
 import plistlib
+import random
 import shutil
 import subprocess
+import time
 import urllib.request
 import uuid
-from subprocess import CompletedProcess
-from shutil import copy2
 from typing import Any, Optional, List, NamedTuple, cast
 
 import mozdebug
@@ -43,13 +43,31 @@ from servo.command_base import (
     is_macosx,
     is_windows,
 )
-from servo.package_commands import check_call_with_randomized_backoff
 from servo.platform.build_target import is_android
 from servo.util import delete
 
 from python.servo.command_base import BuildType
 
 ANDROID_APP_NAME = "org.servo.servoshell"
+
+
+def check_call_with_randomized_backoff(args: list[str], retries: int) -> int:
+    """
+    Run the given command-line arguments via `subprocess.check_call()`. If the command
+    fails sleep for a random number of seconds between 2 and 5 and then try to the command
+    again, the given number of times.
+    """
+    try:
+        return subprocess.check_call(args)
+    except subprocess.CalledProcessError as e:
+        if retries == 0:
+            raise e
+
+        sleep_time = random.uniform(2, 5)
+        print(f"Running {args} failed with {e.returncode}. Trying again in {sleep_time}s")
+        time.sleep(sleep_time)
+        return check_call_with_randomized_backoff(args, retries - 1)
+
 
 # Written next to the engine binary itself (same directory `std::env::current_exe()`'s
 # `.parent()` resolves to at runtime -- see `ports/servoshell/desktop/protocols/saves.rs`)
@@ -1726,8 +1744,8 @@ class PostBuildCommands(CommandBase):
         """Wraps the play.app bundle already built into `stage_dir` (by
         `_bundle_macos` + `_place_bundle_content`) into an installable
         `.dmg` disk image via `hdiutil` — the same tool upstream's own
-        `./mach package` uses for stock Servo's `Servo.app` (see
-        package_commands.py's `package` command), adapted here to wrap our
+        `./mach package` used for stock Servo's `Servo.app` (upstream's
+        package_commands.py, since removed here), adapted here to wrap our
         content-bearing `play.app` instead. An `/Applications` symlink
         sits alongside the `.app` inside the mounted volume so Finder's
         usual drag-to-install gesture works.
@@ -1742,8 +1760,8 @@ class PostBuildCommands(CommandBase):
             os.remove(dmg_path)
         try:
             # hdiutil gives "Resource busy" failures on GitHub Actions at
-            # times — see package_commands.py's own use of this same retry
-            # helper for the identical issue with stock Servo's .dmg.
+            # times — upstream's (since removed) package_commands.py used this
+            # same retry helper for the identical issue with stock Servo's .dmg.
             check_call_with_randomized_backoff(
                 ["hdiutil", "create", "-volname", package_name, "-srcfolder", stage_dir, dmg_path],
                 retries=3,
@@ -1952,31 +1970,3 @@ Description: {package_name} (Servo-based application bundle)
                 print("rr binary can't be found!")
             else:
                 raise e
-
-    @Command("doc", description="Generate documentation", category="post-build")
-    @CommandArgument("params", nargs="...", help="Command-line arguments to be passed through to cargo doc")
-    @CommandBase.common_command_arguments(build_configuration=True, build_type=False)
-    def doc(self, params: list[str], **kwargs: Any) -> CompletedProcess[bytes] | int | None:
-        self.ensure_bootstrapped()
-
-        docs = path.join(servo.util.get_target_dir(), "doc")
-        if not path.exists(docs):
-            os.makedirs(docs)
-
-        # Document library crates to avoid package name conflict between servoshell
-        # and libservo. Besides, main.rs in servoshell is just a stub.
-        params.insert(0, "--lib")
-        # Documentation build errors shouldn't cause the entire build to fail. This
-        # prevents issues with dependencies from breaking our documentation build,
-        # with the downside that it hides documentation issues.
-        params.insert(0, "--keep-going")
-
-        env = self.build_env()
-        env["RUSTC"] = "rustc"
-        returncode = self.run_cargo_build_like_command("doc", params, env=env, **kwargs)
-        if returncode:
-            return returncode
-
-        static = path.join(self.context.topdir, "etc", "doc.servo.org")
-        for name in os.listdir(static):
-            copy2(path.join(static, name), path.join(docs, name))

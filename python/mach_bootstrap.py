@@ -6,13 +6,6 @@ import os
 import sys
 from typing import TYPE_CHECKING
 
-SCRIPT_PATH = os.path.abspath(os.path.dirname(__file__))
-TOP_DIR = os.path.abspath(os.path.join(SCRIPT_PATH, ".."))
-WPT_PATH = os.path.join(TOP_DIR, "tests", "wpt")
-WPT_TOOLS_PATH = os.path.join(WPT_PATH, "tests", "tools")
-WPT_RUNNER_PATH = os.path.join(WPT_TOOLS_PATH, "wptrunner")
-WPT_SERVE_PATH = os.path.join(WPT_TOOLS_PATH, "wptserve")
-
 SEARCH_PATHS = [
     os.path.join("python", "mach"),
     os.path.join("third_party", "mozdebug"),
@@ -24,8 +17,6 @@ MACH_MODULES = [
     os.path.join("python", "servo", "build_commands.py"),
     os.path.join("python", "servo", "testing_commands.py"),
     os.path.join("python", "servo", "post_build_commands.py"),
-    os.path.join("python", "servo", "package_commands.py"),
-    os.path.join("python", "servo", "devenv_commands.py"),
 ]
 
 CATEGORIES = {
@@ -49,20 +40,10 @@ CATEGORIES = {
         "long": "Run tests.",
         "priority": 60,
     },
-    "devenv": {
-        "short": "Development Environment",
-        "long": "Set up and configure your development environment.",
-        "priority": 50,
-    },
     "build-dev": {
         "short": "Low-level Build System Interaction",
         "long": "Interact with specific parts of the build system.",
         "priority": 20,
-    },
-    "package": {
-        "short": "Package",
-        "long": "Create objects to distribute",
-        "priority": 15,
     },
     "misc": {
         "short": "Potpourri",
@@ -147,7 +128,6 @@ def bootstrap(topdir: str) -> "Mach":
         raise AttributeError(key)
 
     sys.path[0:0] = [os.path.join(topdir, path) for path in SEARCH_PATHS]
-    sys.path[0:0] = [WPT_PATH, WPT_RUNNER_PATH, WPT_SERVE_PATH]
 
     import mach.main
 

@@ -33,7 +33,6 @@ concurrency:
 
 env:
   PACKAGE_NAME: 'roves'
-  SERVO_TAG: '0.5.0'
   RELEASE_TAG: 'perf-ab'
 
 jobs:
@@ -81,22 +80,6 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-
-      # Same reasoning as release.yml: mach's command loader imports WPT tooling from tests/wpt/.
-      - name: fetch tests/wpt/tests/tools (mach's command loader needs it to exist)
-        shell: bash
-        run: |
-          rm -rf /tmp/wpt-tools-src
-          git init -q /tmp/wpt-tools-src
-          git -C /tmp/wpt-tools-src remote add origin https://github.com/servo/servo.git
-          git -C /tmp/wpt-tools-src config core.sparseCheckout true
-          git -C /tmp/wpt-tools-src sparse-checkout init --cone
-          git -C /tmp/wpt-tools-src sparse-checkout set tests/wpt/tests/tools
-          git -C /tmp/wpt-tools-src fetch --depth 1 --filter=blob:none origin "v${SERVO_TAG}"
-          git -C /tmp/wpt-tools-src checkout FETCH_HEAD
-          mkdir -p tests/wpt
-          cp -r /tmp/wpt-tools-src/tests/wpt/tests tests/wpt/tests
-          rm -rf /tmp/wpt-tools-src
 
       - name: setup python
         uses: actions/setup-python@v5

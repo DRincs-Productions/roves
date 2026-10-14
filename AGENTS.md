@@ -386,26 +386,13 @@ at its `html_url`.
   with "Permission denied" (exit 126). `release.yml` does this explicitly; if this ever
   regresses (e.g. a future commit re-adds `mach` without the bit), re-run `git update-index
   --chmod=+x mach`.
-- **`mach` needs `tests/wpt/tests/tools/` to exist, even for `build`/`bundle`**: mach's own
-  command loader (`python/mach_bootstrap.py`'s `MACH_MODULES` list) unconditionally loads
-  `python/servo/testing_commands.py` on every invocation except `bootstrap` itself (which has
-  its own fast path in the `mach` script that skips this) — and that module imports WPT test
-  tooling (`tidy`, `wpt.manifestupdate`, etc.) that lives under `tests/wpt/`, the directory
-  this repo deliberately excludes from git (~1.3GB of WPT conformance tests, irrelevant here).
-  Without it, `mach build`/`mach bundle` crash immediately with `ModuleNotFoundError: No
-  module named 'localpaths'` — confirmed by reproducing this locally. This isn't specific to
-  CI: a plain `git clone` + `./mach build`, exactly as README.md's own "Getting started"
-  instructs, hits the same crash, and so would `roves-action` (which checks out this repo the
-  same direct way). `release.yml` works around this by sparse-checking-out just
-  `tests/wpt/tests/tools/` (~90MB — the WPT tooling code, not the multi-GB test content
-  itself) from the pinned upstream tag before running `mach build`. This is a workaround, not
-  a fix — the real fix would be making `python/wpt/__init__.py`, `manifestupdate.py`,
-  `run.py`, `update.py`, and `tidy/tidy.py`'s top-level WPT imports lazy so `mach build`/
-  `bundle` don't need `tests/wpt/` at all (a bigger, riskier change across several vendored
-  files, deliberately deferred — see the git history around when this comment was added for
-  the discussion). Whoever revisits this should consider doing that properly at some point,
-  since the workaround has to be repeated by every consumer building directly from a checkout
-  of this repo (this workflow, `roves-action`, any contributor following README.md).
+- **`mach` no longer needs `tests/wpt/tests/tools/`** (since 2026-10-14, patch 0216): the
+  upstream `tidy`/`wpt` packages, `package`/`devenv` command modules and every
+  `testing_commands.py` command except `test-unit`/`fmt` were deleted, so `bootstrap`,
+  `build`, `bundle` and `test-unit` run from a plain checkout. The old sparse-checkout
+  workaround is gone from every workflow and from `roves-action`. Deleted upstream paths are
+  listed in `patches/servo-v0.5.0/REMOVED_PATHS.txt`; workflows that rebuild the tree from
+  pristine Servo delete them after applying the patches.
 
 ## Upgrading to a newer Servo version (rough steps)
 
@@ -470,7 +457,7 @@ alone is touched by more than a dozen old patches; one early failure there poiso
    subsystem/directory instead of by logical change specifically so a file only ever needs
    reconciling in one place on the *next* upgrade too) and verify each one applies cleanly to
    a fresh pristine extraction of the new tag before moving on.
-7. Update `SERVO_TAG` in `test.yml`/`android.yml`/`release.yml` (this directory's own, plus
+7. Update `SERVO_TAG` in `test.yml`/`android.yml` (this directory's own, plus
    `../.github/workflows/embedded.yml` if that's ever wired to the patched build instead of
    upstream's stock binary — see TODO.md #1) — but only *after* step 6, since those workflows
    look for `patches/servo-v${SERVO_TAG}/*.patch` and will fail outright if that directory

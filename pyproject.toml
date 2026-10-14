@@ -6,7 +6,7 @@ requires-python = ">=3.11"
 dynamic = ["dependencies"]
 
 [tool.setuptools.dynamic.dependencies]
-file = ["python/requirements.txt", "tests/wpt/tests/tools/requirements_tests.txt", "tests/wpt/tests/tools/wptrunner/requirements.txt", "tests/wpt/tests/tools/requirements_flake8.txt"]
+file = ["python/requirements.txt"]
 
 [tool.setuptools.packages.find]
 exclude = ["config*"]
@@ -49,34 +49,24 @@ ignore = [
 "**/test.py" = ["ANN"]
 "**/*_tests.py" = ["ANN"]
 "**/tests/**/*.py" = ["ANN"]
-"python/servo/devtools_tests/**" = ["ANN"]
 
 [tool.pyrefly]
 search-path = [
     "python",
-    "tests/wpt/tests",
-    "tests/wpt/tests/tools",
-    "tests/wpt/tests/tools/third_party/pytest/src",
-    "tests/wpt/tests/tools/wptrunner",
-    "tests/wpt/tests/tools/wptserve",
     "python/mach",
-    "python/wpt",
     "components/script_bindings/third_party/WebIDL/parser",
     "components/script_bindings/codegen",
 ]
 project-includes = [
     "python/**/*.py",
     "components/script_bindings",
-    "etc/ci/*.py",
 ]
 project-excludes = [
     "**/venv/**",
     "**/.venv/**",
-    "tests/wpt/tests/**",
     "**/test.py",
     "**/*_tests.py",
     "**/tests/**",
-    "python/servo/devtools_tests/**",
     "python/mach/**/*.py",
     "components/script_bindings/third_party/**",
 ]

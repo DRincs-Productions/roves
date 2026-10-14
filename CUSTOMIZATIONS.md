@@ -13437,3 +13437,64 @@ Servo's DOM test interfaces into the game binary (about 1970 lines of Rust plus 
 bindings). Both features are now off; only `background_hang_monitor` stays. `cargo check -p
 servoshell --release` reports no servoshell warnings. Deleting the now-uncompiled crates is a
 separate step.
+
+## 2026-10-14 - Remove unused upstream mach tooling
+
+**Servo files:** `python/mach_bootstrap.py`, `python/servo/{testing_commands,build_commands,post_build_commands}.py`,
+`pyproject.toml`, `python/requirements.txt`, `uv.lock`, `python/README.md`.
+**Patch:** `0216-remove-unused-mach-tooling.patch` after 0215. **Deleted paths:**
+`patches/servo-v0.5.0/REMOVED_PATHS.txt`. Roves-only: `.github/workflows/{test,release,android,ios,perf-ab}.yml`,
+`AGENTS.md`, `roves-action/{action.yml,CLAUDE.md}`.
+
+CI and roves-action only run `mach bootstrap`, `build`, `bundle` and `test-unit`. Every other
+mach command still loaded at startup, and `testing_commands.py` imported `tidy` and `wpt` at
+module level, so every workflow and roves-action fetched about 90 MB of `tests/wpt/tests/tools`
+from upstream before running mach. The unused tooling is gone and mach now runs from a plain
+checkout without `tests/wpt`.
+
+- `mach_bootstrap.py` no longer loads `package_commands.py` (`package`, `install`,
+  `upload-nightly`, `release`) or `devenv_commands.py` (`check`, `clippy`, `fetch`, `rustc`, ...),
+  no longer puts the WPT tool directories on `sys.path`, and drops the empty `package`/`devenv`
+  categories.
+- `testing_commands.py` (1133 → 247 lines) keeps only `test-unit` (unchanged) and `fmt` with its
+  rustfmt/ruff/taplo helpers. `test-tidy`, `test-wpt`, `update-wpt`, `test-devtools`,
+  `test-scripts`, `smoketest`, `try`, the jQuery/Dromaeo/Speedometer/WebGL/WebGPU commands and
+  their helpers are gone.
+- `post_build_commands.py` imported `check_call_with_randomized_backoff` (the `hdiutil` retry
+  for `--dmg`) from `package_commands.py`; the function now lives in `post_build_commands.py`.
+  The `doc` command, which only built the upstream doc.servo.org site, is removed.
+- `build_commands.py` no longer dispatches `mach package` after an Android/OpenHarmony build.
+  `--no-package` is still accepted, and ignored, because roves-action passes it; `mach bundle
+  --android` builds the APK and never used that path.
+- Deleted (about 23,000 lines, 187 tracked files): `python/wpt/` (37 files, 6924 lines),
+  `python/tidy/` (37, 2114), `python/servo/devtools_tests/` (36, 2413),
+  `python/servo/package_commands.py` (631), `python/servo/devenv_commands.py` (178),
+  `python/servo/try_parser.py` (515), and everything in `etc/` (74 files, about 10,200 lines)
+  except `etc/coverage_workspace_wrapper.py`, which `mach build --coverage` (also a roves-action
+  input) still uses. The rewritten `testing_commands.py` removes another 886 lines.
+- `pyproject.toml` read its dependencies from `python/requirements.txt` and three
+  `tests/wpt/tests/tools` requirement files; it now reads only the first. `packaging`, which
+  `python/servo/platform/build_target.py` needs and previously came only from wptrunner's list,
+  is now pinned in `python/requirements.txt` (26.2, the version already locked). Removed from
+  `requirements.txt`: `mozlog`, `mozleak`, `mozrunner`, `mozversion`, `mozcrash`, `redo`,
+  `flask`, `requests`, `types-requests`, `geckordp`, `pytest-xdist`. `uv lock` dropped 80 of 98
+  locked packages and kept the versions of the rest. Kept: `blessed`, `distro`, `mozinfo`,
+  `setuptools`, `toml`, `packaging`, `ruff`, `ply`, `colorama`, `six`, `Mako`, `pyrefly`. The
+  pyrefly and ruff settings no longer name the deleted paths.
+
+`REMOVED_PATHS.txt` lists every deleted upstream path, one per line, with `#` comments. A
+unified diff can't carry whole-tree deletions cheaply, so each `test.yml` job that rebuilds
+the tree from pristine Servo plus `patches/servo-v0.5.0/*.patch` deletes those paths after the
+patch loop. It has to be after the loop, not before: 0185 still edits
+`python/servo/try_parser.py`. The `fetch tests/wpt/tests/tools` steps are removed from
+`release.yml`, `android.yml` (both jobs), `ios.yml`, `perf-ab.yml` and roves-action's
+`action.yml`, along with the then-unused `SERVO_TAG` env in `release.yml`, `ios.yml` and
+`perf-ab.yml`.
+
+Verified locally with `tests/wpt` moved aside and a fresh uv environment built from the new
+lock: `./mach build --help`, `bundle --help`, `test-unit --help` and `fmt --help` all exit 0.
+Applying 0001-0215 (skipping 0042, as CI does) and then 0216 to the pristine v0.5.0 archive, then
+deleting `REMOVED_PATHS.txt`, gives a `python/` and `etc/` byte-identical to this tree.
+`./mach --help` (the full command list) fails with `ValueError: action 'store_true' is not
+valid for positional arguments` in mach's `dispatcher.py` under Python 3.14. That code is
+untouched here, so the failure predates this change.

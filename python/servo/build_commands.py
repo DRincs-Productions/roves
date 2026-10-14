@@ -25,7 +25,6 @@ from mach.decorators import (
     CommandProvider,
     Command,
 )
-from mach.registrar import Registrar
 
 import servo.platform
 import servo.platform.macos
@@ -85,7 +84,9 @@ class MachCommands(CommandBase):
     @Command("build", description="Build Servo", category="build")
     @CommandArgument("--jobs", "-j", default=None, help="Number of jobs to run in parallel")
     @CommandArgument(
-        "--no-package", action="store_true", help="For Android, disable packaging into a .apk after building"
+        "--no-package",
+        action="store_true",
+        help="Accepted for compatibility and ignored: `mach build` never packages (use `mach bundle`)",
     )
     @CommandArgument("--verbose", "-v", action="store_true", help="Print verbose output")
     @CommandArgument("--very-verbose", "-vv", action="store_true", help="Print very verbose output")
@@ -165,13 +166,6 @@ class MachCommands(CommandBase):
         status = self.run_cargo_build_like_command("rustc", opts, env=env, verbose=verbose, **kwargs)
 
         if status == 0:
-            if not no_package and self.target.needs_packaging():
-                return_value = Registrar.dispatch(
-                    "package", context=self.context, build_type=build_type, flavor=flavor, sanitizer=sanitizer
-                )
-                if return_value:
-                    return return_value
-
             return_value = self.run_post_build_tasks(build_type, sanitizer)
             if return_value:
                 return return_value
