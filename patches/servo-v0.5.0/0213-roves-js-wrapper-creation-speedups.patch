@@ -315,3 +315,16 @@ index 16dca91c444..e11b1ffb985 100644
      assert!(GC_EVENTS.with(|events| events.borrow().is_empty()));
  }
 +
+diff --git a/components/roves-js/Cargo.lock b/components/roves-js/Cargo.lock
+index fbd93595ed6..15c32434f81 100644
+--- a/components/roves-js/Cargo.lock
++++ b/components/roves-js/Cargo.lock
+@@ -466,6 +466,8 @@ dependencies = [
+  "log",
+  "num-traits",
+  "roves-v8",
++ "rustc-hash",
++ "smallvec",
+  "v8",
+ ]
+ 

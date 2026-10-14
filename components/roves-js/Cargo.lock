@@ -466,6 +466,8 @@ dependencies = [
  "log",
  "num-traits",
  "roves-v8",
+ "rustc-hash",
+ "smallvec",
  "v8",
 ]
 

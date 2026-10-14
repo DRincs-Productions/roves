@@ -13404,3 +13404,5 @@ Benchmark, ns per call before → after (noisy machine): wrapper with given prot
 472-539, plain object 548-582 → 336-474, script calling a wrapping native 999-1088 → 759-978.
 `cargo test --release -p roves-js`: 32 passed, 2 ignored (the benchmarks), including the GC
 lifetime stress test.
+`components/roves-js/Cargo.lock`, the standalone lockfile the V8 workflow builds with `--locked`, also
+lists the two new dependencies; the first push without it failed that workflow.
