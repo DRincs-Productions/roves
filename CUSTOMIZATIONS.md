@@ -13425,3 +13425,15 @@ On Windows `servo-allocator` now selects mimalloc unless `use-system-allocator` 
 mimalloc crates are unconditional Windows dependencies. servoshell gains a `system-allocator`
 feature for A/B runs, and `perf-ab.yml`'s "system" variant now passes it, because an empty
 feature list would build mimalloc too. Other targets are unchanged.
+
+## 2026-10-14 - Shell built without `bluetooth` and `testbinding`
+
+**Servo file:** `ports/servoshell/Cargo.toml`. **Patch:** `0215-no-bluetooth-testbinding-in-shell.patch`
+after 0214.
+
+servoshell enabled `servo/bluetooth` and `servo/testbinding`. Bluetooth was dead weight: without
+`native-bluetooth` the adapter is empty and `dom_bluetooth_enabled` is false. `testbinding` puts
+Servo's DOM test interfaces into the game binary (about 1970 lines of Rust plus generated
+bindings). Both features are now off; only `background_hang_monitor` stays. `cargo check -p
+servoshell --release` reports no servoshell warnings. Deleting the now-uncompiled crates is a
+separate step.
