@@ -108,6 +108,28 @@ La media è la stessa (60 fps); Roves però salta dei frame. Le cause misurate:
   incrementale richiede barriere di scrittura in roves-js.
 - A regime il paint della pagina resta sotto i 7 ms per frame.
 
+## Costo dei binding DOM (14 ottobre 2026)
+
+A regime (dopo 5 s) motion e GSAP su PixiJS non hanno quasi frame lunghi: motion 0 frame oltre
+i 33 ms, GSAP 1. Il typewriter invece ne ha 8-11, fino a circa 200 ms, contro i 2 frame da 33 ms
+di Chrome. Il GC non li spiega: in 30 s ci sono 13 scavenge (quasi tutti da 1-2 ms) e una sola
+Mark-Compact da 21 ms. Il tempo va nella ricreazione delle 314 `<span>` del dialogo.
+
+`test-page/public/dombench2.html`, ms per 1000 chiamate:
+
+| Operazione | Chrome | Roves v0.7.9 |
+| --- | --- | --- |
+| `document.createElement` | 0,2 | 7,4 |
+| `document.createTextNode` | 0,2 | 6,6 |
+| `textContent`, `style.opacity` (scrittura) | 0,2 | 3,0-3,3 |
+| `setAttribute`, `className`, `appendChild` | 0,1-0,2 | 1,4-1,8 |
+| getter (`tagName`, `nodeType`) | ~0 | 0,2-0,45 |
+| JavaScript puro (ciclo, oggetti) | 3,2 / 8,2 | 3,8 / 11,1 |
+
+Il JavaScript puro è in linea con Chrome. Il collo di bottiglia è la creazione del wrapper JS
+di ogni nodo DOM in roves-js (circa 7 µs a oggetto) e, in misura minore, il costo di ogni
+chiamata ai setter.
+
 ## Librerie dei giochi
 
 Ogni gioco usa motion o GSAP per l'interfaccia, PixiJS o three.js per la scena, Tone.js o

@@ -1,19 +1,20 @@
 import { useEffect } from "react";
 
 /**
- * Logs `RAFSTATS ...` once, after `seconds` of `requestAnimationFrame` callbacks, so the same
+ * Logs `RAFSTATS ...` once, after `seconds` of `requestAnimationFrame` callbacks (skipping the first `warmupSeconds`), so the same
  * frame-pacing numbers can be read from `roves.log` in Roves and from the console in Chrome.
  */
-export function useFramePacingProbe(label: string, seconds = 20) {
+export function useFramePacingProbe(label: string, seconds = 20, warmupSeconds = 5) {
   useEffect(() => {
     const intervals: number[] = [];
     let last = 0;
     let start = 0;
     let handle = requestAnimationFrame(function frame(now) {
       if (!start) start = now;
-      if (last) intervals.push(now - last);
+      // Page load, first shader compiles and the first GC are not steady-state frame pacing.
+      if (last && now - start > warmupSeconds * 1000) intervals.push(now - last);
       last = now;
-      if (now - start < seconds * 1000) {
+      if (now - start < (warmupSeconds + seconds) * 1000) {
         handle = requestAnimationFrame(frame);
         return;
       }
@@ -28,6 +29,6 @@ export function useFramePacingProbe(label: string, seconds = 20) {
       );
     });
     return () => cancelAnimationFrame(handle);
-  }, [label, seconds]);
+  }, [label, seconds, warmupSeconds]);
 }
 

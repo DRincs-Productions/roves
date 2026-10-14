@@ -1,0 +1,17 @@
+<!doctype html><html><body><div id="root"></div><script>
+function t(name, fn, reps = 7) { const r = []; for (let i = 0; i < reps; i++) { const a = performance.now(); fn(); r.push(performance.now() - a); } r.sort((x, y) => x - y); return `${name}=${r[Math.floor(r.length / 2)].toFixed(2)}`; }
+const root = document.getElementById('root'); const N = 1000; const out = []; let els = [];
+out.push(t('createElement', () => { els = []; for (let i = 0; i < N; i++) els.push(document.createElement('span')); }));
+out.push(t('createTextNode', () => { for (let i = 0; i < N; i++) document.createTextNode('a'); }));
+out.push(t('textContent', () => { for (const e of els) e.textContent = 'a'; }));
+out.push(t('styleProp', () => { for (const e of els) e.style.opacity = '0'; }));
+out.push(t('styleGet', () => { for (const e of els) e.style; }));
+out.push(t('setAttribute', () => { for (const e of els) e.setAttribute('data-i', '1'); }));
+out.push(t('className', () => { for (const e of els) e.className = 'a b'; }));
+out.push(t('appendChild', () => { root.textContent = ''; for (const e of els) root.appendChild(e); }));
+out.push(t('getter_tagName', () => { let n = 0; for (const e of els) n += e.tagName.length; }));
+out.push(t('getter_nodeType', () => { let n = 0; for (const e of els) n += e.nodeType; }));
+out.push(t('jsloop2e6', () => { let x = 0; for (let i = 0; i < 2e6; i++) x += i % 7; window.__x = x; }));
+out.push(t('jsobjects', () => { const a = []; for (let i = 0; i < 1e5; i++) a.push({ i, s: 'x' + i }); window.__a = a.length; }));
+const msg = 'DOMBENCH2 ' + out.join(' '); console.log(msg); document.title = msg;
+</script></body></html>

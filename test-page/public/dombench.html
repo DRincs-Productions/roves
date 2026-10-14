@@ -1,0 +1,14 @@
+<!doctype html><html><body><div id="root"></div><script>
+function t(name, fn, reps = 5) { const r = []; for (let i = 0; i < reps; i++) { const a = performance.now(); fn(); r.push(performance.now() - a); } r.sort((x, y) => x - y); return `${name}=${r[Math.floor(r.length / 2)].toFixed(2)}`; }
+const root = document.getElementById('root'); const N = 300; const out = [];
+out.push(t('create300', () => { root.textContent = ''; const f = document.createDocumentFragment(); for (let i = 0; i < N; i++) { const s = document.createElement('span'); s.textContent = 'a'; s.style.opacity = '0'; s.setAttribute('data-i', i); f.appendChild(s); } root.appendChild(f); }));
+const spans = [...root.children];
+out.push(t('styleWrite300', () => { for (const s of spans) { s.style.opacity = String(Math.random()); s.style.transform = `translateX(${Math.random()}px)`; } }));
+out.push(t('styleWrite+layout', () => { for (const s of spans) s.style.opacity = String(Math.random()); root.getBoundingClientRect(); }));
+out.push(t('rectRead300', () => { for (const s of spans) s.getBoundingClientRect(); }));
+out.push(t('computed300', () => { for (const s of spans) getComputedStyle(s).opacity; }));
+out.push(t('interleaved30', () => { for (let i = 0; i < 30; i++) { spans[i].style.width = i + 'px'; spans[i].getBoundingClientRect(); } }));
+out.push(t('remove+recreate', () => { root.textContent = ''; for (let i = 0; i < N; i++) { const s = document.createElement('span'); s.className = 'x y z'; s.textContent = 'a'; root.appendChild(s); } root.offsetHeight; }));
+out.push(t('jsonly', () => { let x = 0; for (let i = 0; i < 2e6; i++) x += i % 7; window.__x = x; }));
+const msg = 'DOMBENCH ' + out.join(' '); console.log(msg); document.title = msg;
+</script></body></html>
