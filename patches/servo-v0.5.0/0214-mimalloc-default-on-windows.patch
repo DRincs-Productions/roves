@@ -1,0 +1,73 @@
+diff --git a/components/allocator/Cargo.toml b/components/allocator/Cargo.toml
+index 5be25f79ce8..fbc8d3b00fb 100644
+--- a/components/allocator/Cargo.toml
++++ b/components/allocator/Cargo.toml
+@@ -15,7 +15,8 @@ path = "lib.rs"
+ [features]
+ allocation-tracking = ["backtrace", "dep:rustc-hash", "log"]
+ use-system-allocator = ["libc"]
+-# Opt-in mimalloc global allocator (Roves). Mutually exclusive with use-system-allocator.
++# mimalloc global allocator (Roves): always on for Windows, opt-in elsewhere. Mutually exclusive
++# with use-system-allocator.
+ use-mimalloc = ["dep:mimalloc", "dep:libmimalloc-sys"]
+ 
+ [dependencies]
+@@ -32,6 +33,9 @@ tikv-jemallocator = { workspace = true }
+ 
+ [target.'cfg(windows)'.dependencies]
+ windows-sys = { workspace = true, features = ["Win32_System_Memory"] }
++# mimalloc is the Windows default; `use-system-allocator` opts back into the system heap.
++libmimalloc-sys = { version = "0.1.49", default-features = false, features = ["extended"] }
++mimalloc = { version = "0.1.52", default-features = false }
+ 
+ [target.'cfg(target_env = "ohos")'.dependencies]
+ libc = { workspace = true }
+diff --git a/components/allocator/lib.rs b/components/allocator/lib.rs
+index 144bf3accd7..94f0592d476 100644
+--- a/components/allocator/lib.rs
++++ b/components/allocator/lib.rs
+@@ -193,7 +193,7 @@ mod platform {
+     }
+ }
+ 
+-#[cfg(all(windows, not(feature = "use-mimalloc")))]
++#[cfg(all(windows, feature = "use-system-allocator"))]
+ mod platform {
+     pub use std::alloc::System as Allocator;
+     use std::os::raw::c_void;
+@@ -229,11 +229,14 @@ mod platform {
+ #[cfg(all(feature = "use-mimalloc", feature = "use-system-allocator"))]
+ compile_error!("servo-allocator: `use-mimalloc` and `use-system-allocator` are mutually exclusive");
+ 
+-/// Opt-in mimalloc (Roves), for allocator A/B measurements; off by default on every target.
+-/// Every entry point below goes through mimalloc too, so memory crossing FFI (FreeType's
++/// mimalloc (Roves): the default on Windows, where the system heap made DOM-heavy pages (node
++/// creation, setters) 13-27% slower in A/B builds; opt-in elsewhere. Every entry point below goes through mimalloc too, so memory crossing FFI (FreeType's
+ /// `libc_compat` hooks) is always freed or resized by the allocator that created it, and
+ /// `usable_size` is only ever asked about blocks mimalloc owns.
+-#[cfg(feature = "use-mimalloc")]
++#[cfg(any(
++    feature = "use-mimalloc",
++    all(windows, not(feature = "use-system-allocator"))
++))]
+ mod platform {
+     use std::os::raw::c_void;
+     use std::ptr;
+diff --git a/ports/servoshell/Cargo.toml b/ports/servoshell/Cargo.toml
+index 2072c1314d1..21796672af7 100644
+--- a/ports/servoshell/Cargo.toml
++++ b/ports/servoshell/Cargo.toml
+@@ -64,9 +64,11 @@ webgpu = ["servo/webgpu"]
+ # ../../../../src-tauri/Cargo.toml. Exposes a `steam:` protocol scheme to web
+ # content; see desktop/protocols/steam.rs.
+ steam = ["dep:steamworks"]
+-# Opt-in mimalloc global allocator (Roves), for allocator A/B measurements; see
+-# components/allocator/lib.rs. Off by default: every target keeps its existing allocator.
++# Global allocator (Roves), see components/allocator/lib.rs: Windows uses mimalloc by default
++# (jemalloc elsewhere). `mimalloc` forces it on every target, `system-allocator` forces the
++# system heap; both exist for allocator A/B measurements.
+ mimalloc = ["servo-allocator/use-mimalloc"]
++system-allocator = ["servo-allocator/use-system-allocator"]
+ 
+ [dependencies]
+ accesskit = { workspace = true }

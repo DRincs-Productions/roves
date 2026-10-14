@@ -13406,3 +13406,22 @@ Benchmark, ns per call before → after (noisy machine): wrapper with given prot
 lifetime stress test.
 `components/roves-js/Cargo.lock`, the standalone lockfile the V8 workflow builds with `--locked`, also
 lists the two new dependencies; the first push without it failed that workflow.
+
+## 2026-10-14 - mimalloc is the default allocator on Windows
+
+**Servo files:** `components/allocator/{Cargo.toml,lib.rs}`, `ports/servoshell/Cargo.toml`.
+**Patch:** `0214-mimalloc-default-on-windows.patch` after 0213. Roves-only:
+`.github/workflows/perf-ab.yml`.
+
+Windows used the system heap, and every other desktop target uses jemalloc. The opt-in mimalloc
+(2026-09-28 entry, patch 0048) was to become the default only after a repeatable improvement on
+real hardware. The `perf-ab` A/B builds, run three times each on `test-page/public/dombench2.html`
+on a GTX 1050 desktop, gave (ms per 1000 calls, system → mimalloc): `createElement` 6.6-6.95 →
+5.7-5.9, `createTextNode` 5.7-5.9 → 5.0-5.1, `textContent` 2.6-2.75 → 2.24-2.34, `style.opacity`
+3.3-3.5 → 2.7-3.0, `setAttribute` 1.6 → 1.12-1.27, `className` 1.2-1.4 → 0.91-0.95. Plain
+JavaScript did not change.
+
+On Windows `servo-allocator` now selects mimalloc unless `use-system-allocator` is set; the
+mimalloc crates are unconditional Windows dependencies. servoshell gains a `system-allocator`
+feature for A/B runs, and `perf-ab.yml`'s "system" variant now passes it, because an empty
+feature list would build mimalloc too. Other targets are unchanged.

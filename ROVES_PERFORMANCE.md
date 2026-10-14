@@ -126,6 +126,12 @@ Mark-Compact da 21 ms. Il tempo va nella ricreazione delle 314 `<span>` del dial
 | getter (`tagName`, `nodeType`) | ~0 | 0,2-0,45 |
 | JavaScript puro (ciclo, oggetti) | 3,2 / 8,2 | 3,8 / 11,1 |
 
+Dalla v0.7.10 Windows usa mimalloc al posto dell'allocatore di sistema: nelle build A/B,
+ripetute 3 volte, le operazioni DOM costano dal 13% al 27% in meno (`createElement` 6,6-6,95 →
+5,7-5,9 ms, `setAttribute` 1,6 → 1,1-1,3 ms per 1000 chiamate). Anche roves-js crea i wrapper in
+meno tempo (patch 0213), ma il grosso del costo resta nel codice DOM di Servo: serve un profilo
+con i simboli.
+
 Il JavaScript puro è in linea con Chrome. Il collo di bottiglia è la creazione del wrapper JS
 di ogni nodo DOM in roves-js (circa 7 µs a oggetto) e, in misura minore, il costo di ogni
 chiamata ai setter.
@@ -165,8 +171,6 @@ test le misurano.
   plugin GStreamer nel pacchetto.
 - **Gamepad:** sostituire il polling hot-plug residuo (1 Hz) con gli eventi SDL.
 - **Steam:** rendere adattivo il polling delle callback nelle build `steam`.
-- **Allocatore:** mimalloc diventa default solo con un miglioramento ripetibile su hardware
-  reale.
 
 Fatto il 12 ottobre: presentazione diretta predefinita (CPU da 98,6% a 91,1%; egui ora costa
 ~0,1 ms per frame e non viene più tassellato).

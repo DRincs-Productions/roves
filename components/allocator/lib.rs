@@ -193,7 +193,7 @@ mod platform {
     }
 }
 
-#[cfg(all(windows, not(feature = "use-mimalloc")))]
+#[cfg(all(windows, feature = "use-system-allocator"))]
 mod platform {
     pub use std::alloc::System as Allocator;
     use std::os::raw::c_void;
@@ -229,11 +229,14 @@ mod platform {
 #[cfg(all(feature = "use-mimalloc", feature = "use-system-allocator"))]
 compile_error!("servo-allocator: `use-mimalloc` and `use-system-allocator` are mutually exclusive");
 
-/// Opt-in mimalloc (Roves), for allocator A/B measurements; off by default on every target.
-/// Every entry point below goes through mimalloc too, so memory crossing FFI (FreeType's
+/// mimalloc (Roves): the default on Windows, where the system heap made DOM-heavy pages (node
+/// creation, setters) 13-27% slower in A/B builds; opt-in elsewhere. Every entry point below goes through mimalloc too, so memory crossing FFI (FreeType's
 /// `libc_compat` hooks) is always freed or resized by the allocator that created it, and
 /// `usable_size` is only ever asked about blocks mimalloc owns.
-#[cfg(feature = "use-mimalloc")]
+#[cfg(any(
+    feature = "use-mimalloc",
+    all(windows, not(feature = "use-system-allocator"))
+))]
 mod platform {
     use std::os::raw::c_void;
     use std::ptr;

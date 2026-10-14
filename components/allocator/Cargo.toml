@@ -15,7 +15,8 @@ path = "lib.rs"
 [features]
 allocation-tracking = ["backtrace", "dep:rustc-hash", "log"]
 use-system-allocator = ["libc"]
-# Opt-in mimalloc global allocator (Roves). Mutually exclusive with use-system-allocator.
+# mimalloc global allocator (Roves): always on for Windows, opt-in elsewhere. Mutually exclusive
+# with use-system-allocator.
 use-mimalloc = ["dep:mimalloc", "dep:libmimalloc-sys"]
 
 [dependencies]
@@ -32,6 +33,9 @@ tikv-jemallocator = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_System_Memory"] }
+# mimalloc is the Windows default; `use-system-allocator` opts back into the system heap.
+libmimalloc-sys = { version = "0.1.49", default-features = false, features = ["extended"] }
+mimalloc = { version = "0.1.52", default-features = false }
 
 [target.'cfg(target_env = "ohos")'.dependencies]
 libc = { workspace = true }

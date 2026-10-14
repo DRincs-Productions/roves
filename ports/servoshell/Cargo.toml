@@ -64,9 +64,11 @@ webgpu = ["servo/webgpu"]
 # ../../../../src-tauri/Cargo.toml. Exposes a `steam:` protocol scheme to web
 # content; see desktop/protocols/steam.rs.
 steam = ["dep:steamworks"]
-# Opt-in mimalloc global allocator (Roves), for allocator A/B measurements; see
-# components/allocator/lib.rs. Off by default: every target keeps its existing allocator.
+# Global allocator (Roves), see components/allocator/lib.rs: Windows uses mimalloc by default
+# (jemalloc elsewhere). `mimalloc` forces it on every target, `system-allocator` forces the
+# system heap; both exist for allocator A/B measurements.
 mimalloc = ["servo-allocator/use-mimalloc"]
+system-allocator = ["servo-allocator/use-system-allocator"]
 
 [dependencies]
 accesskit = { workspace = true }

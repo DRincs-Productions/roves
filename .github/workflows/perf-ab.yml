@@ -75,7 +75,7 @@ jobs:
       matrix:
         include:
           - allocator: system
-            build_features: ''
+            build_features: '--features system-allocator'
           - allocator: mimalloc
             build_features: '--features mimalloc'
     runs-on: windows-latest
