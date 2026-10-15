@@ -191,6 +191,7 @@ hardware ancora aperta (IME CJK/dead key, screen reader, ecc.).
 
 ## Dipendenze, release e manutenzione
 
+- [ ] **GStreamer dal sito ufficiale:** da ottobre 2026 `gstreamer.freedesktop.org` tronca i download dopo circa 1 MiB e spesso risponde 503. Per questo le build Windows/macOS e `mach bootstrap` scaricano gli installer di GStreamer dalla copia verificata nella release `deps-gstreamer-<versione>` di questo repo (`.github/workflows/gstreamer-mirror.yml`, `support/gstreamer_mirror.py`, `python/servo/platform/{macos,windows}.py`), e usano il sito ufficiale solo come ripiego. Quando il sito ufficiale torna affidabile, rimettere il link ufficiale come fonte principale, oppure decidere di tenere la copia come cache; a ogni nuova versione di GStreamer, rilanciare il mirror con un tag `deps-gstreamer-<versione>`.
 - [ ] **Aggiornamenti mirati:** valutare mozjs nella serie attuale e runtime nativo GStreamer, poi prove coordinate egui/ANGLE/zstd/allocatore. Analisi separata nella [PR #9](https://github.com/DRincs-Productions/roves/pull/9); nessun bump è già stato applicato.
 - [ ] **Grafo desktop effettivo:** controllare feature e duplicazioni del target scelto prima di rimuovere dipendenze o deduplicare major incompatibili; non trattare tutto il lockfile workspace come contenuto del binario.
 - [ ] **Distribuzione del fork:** verificare che i consumer esterni (`roves-action`, Packmaster) scarichino Roves patchato al tag corretto — vedi anche il pin `roves-ref`/`TARGET_SHELL_VERSION`, va bumped a ogni release rilevante (vedi `AGENTS.md`).
