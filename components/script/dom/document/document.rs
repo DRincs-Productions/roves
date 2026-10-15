@@ -76,6 +76,7 @@ use style::stylesheet_set::DocumentStylesheetSet;
 use style::stylesheets::{Origin, OriginSet, Stylesheet};
 use style::stylist::Stylist;
 use stylo_atoms::Atom;
+#[cfg(feature = "testbinding")]
 use time::Duration as TimeDuration;
 use url::{Host, Position};
 
@@ -3184,8 +3185,16 @@ impl Document {
     /// <https://drafts.csswg.org/resize-observer/#has-active-resize-observations>
     pub(crate) fn gather_active_resize_observations_at_depth(
         &self,
+        cx: &mut JSContext,
         depth: &ResizeObservationDepth,
     ) -> bool {
+        if self.resize_observers.borrow().is_empty() {
+            return false;
+        }
+        // One layout flush for every observation below (`ResizeObservation::is_active` reads boxes
+        // without reflowing), instead of one reflow per observed element.
+        self.window()
+            .reflow_for_non_flushing_update_the_rendering_queries(cx);
         let mut has_active_resize_observations = false;
         for observer in self.resize_observers.borrow_mut().iter_mut() {
             observer.gather_active_resize_observations_at_depth(
@@ -4610,6 +4619,7 @@ impl Document {
             .collect()
     }
 
+    #[cfg(feature = "testbinding")]
     pub(crate) fn advance_animation_timeline_for_testing(&self, delta: TimeDuration) {
         self.timeline.advance_specific(delta);
         let current_timeline_value = self.current_animation_timeline_value();

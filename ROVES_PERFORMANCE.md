@@ -136,6 +136,27 @@ Il JavaScript puro è in linea con Chrome. Il collo di bottiglia è la creazione
 di ogni nodo DOM in roves-js (circa 7 µs a oggetto) e, in misura minore, il costo di ogni
 chiamata ai setter.
 
+## Profilo del thread di script (15 ottobre 2026)
+
+Registrato con samply (WPT installato, prompt UAC) sulla scena `?perf=typewriter-pixi`, build
+`perf-ab` con mimalloc e simboli. Il thread `Script#1` è occupato circa il 37% del tempo:
+
+| Voce (sul tempo occupato) | Inclusivo |
+| --- | --- |
+| Callback JavaScript (rAF, eventi, scheduler di React via MessagePort) | 58% |
+| Layout (`reflow`) | 27% |
+| ResizeObserver: un layout per ogni elemento osservato a ogni frame | 15,8% |
+| Costruzione della display list | 10% |
+
+`createElement` e i binding DOM non sono tra le voci principali. Il costo del typewriter viene dai
+layout forzati dal ResizeObserver, che PixiJS, motion e molte librerie React usano. La patch 0221
+fa un solo layout prima di controllare tutti gli elementi osservati, come Servo già fa per
+IntersectionObserver.
+
+Per ripetere il profilo: `samply record --save-only --unstable-presymbolicate -o profile.json.gz --
+play.exe <url>` da un PowerShell amministratore (richiede il Windows Performance Toolkit), poi i
+nomi dal `.pdb` con `llvm-symbolizer`.
+
 ## Librerie dei giochi
 
 Ogni gioco usa motion o GSAP per l'interfaccia, PixiJS o three.js per la scena, Tone.js o

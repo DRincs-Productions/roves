@@ -13653,3 +13653,45 @@ succeeds; that reads the whole archive and catches truncation. It makes up to 5 
 Windows the workflows downloaded the GStreamer installer with a single `Invoke-WebRequest` ("The
 response ended prematurely"); every workflow now retries it up to 5 times, waiting 15 s more
 after each failure.
+
+## 2026-10-15 - ResizeObserver: one layout flush per gather, not one per observed element
+
+**Servo files:** `components/script/dom/resizeobserver/resizeobserver.rs`,
+`components/script/dom/document/document.rs`, `components/script/script_thread.rs`,
+`components/script/dom/window/window.rs`. **Patch:** `0221-resizeobserver-one-flush-per-gather.patch`
+after 0220.
+
+A samply profile (with `perf-ab` symbols) of the test page's `?perf=typewriter-pixi` scene showed
+15.8% of the script thread's busy time in `ResizeObservation::is_active` → `calculate_box_size` →
+`Window::box_area_query` → `layout_reflow`. Every rendering update asked whether each observed
+element had changed size, and each box query started its own layout reflow. PixiJS, motion and
+many React libraries observe elements. `Document::gather_active_resize_observations_at_depth`
+(now taking `cx`) returns early when nothing is observed. Otherwise it flushes layout once through
+`reflow_for_non_flushing_update_the_rendering_queries`, as the IntersectionObserver steps already
+do, and `is_active` reads boxes with `box_area_query_without_reflow`. When an entry is built for
+the callback, the first box query still flushes and the next two reuse that layout; callbacks run
+afterwards and can change the DOM. Unrelated cleanup: `Window::advance_animation_clock`,
+`Document::advance_animation_timeline_for_testing` and
+`ScriptThread::handle_tick_all_animations_for_testing`, plus their `TimeDuration` imports, are now
+`cfg(feature = "testbinding")`. Since 0215 only the test utilities call them, and the shell build
+warned that they were unused. `cargo check -p servo-script --release` is clean with and without
+`--features testbinding`.
+
+## 2026-10-15 - GStreamer downloads from Roves' own verified copy
+
+**Servo files:** `python/servo/platform/{macos.py,windows.py}`. **Patch:**
+`0220-gstreamer-from-roves-mirror.patch` after 0219 (listed after 0221 here because it was
+committed later). Roves-only: `.github/workflows/{release,perf-ab,test,v8}.yml`,
+`.github/workflows/gstreamer-mirror.yml`, `support/gstreamer_mirror.py`, `TODO.md`.
+
+Since 2026-10-14 gstreamer.freedesktop.org cuts every response after about 1 MiB, ranged ones
+included, and often answers 503. Some cache nodes also refuse to resume. No number of retries
+fetched the 526 MB Windows installer, so the v0.7.11 release failed on Windows and macOS.
+`gstreamer-mirror.yml`, started by a `deps-gstreamer-*` tag, runs `support/gstreamer_mirror.py`.
+It fetches the three GStreamer 1.28.7 installers (Windows MSVC, macOS runtime and devel) in 1 MiB
+ranges, retrying each range until it arrives whole. It checks the published SHA-256 and uploads
+the files to the `deps-gstreamer-1.28.7` release of this repo. Workflows, macOS `download_pkg`
+(still accepted only after `pkgutil --check-signature`) and the Windows bootstrap download from
+that copy first, and fall back to the official site: resumed with `curl -C -` on Windows and
+macOS, plain `util.download_file` in the Windows bootstrap. `TODO.md` tracks making the official
+link the primary source again.

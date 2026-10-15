@@ -100,6 +100,7 @@ use style::str::HTML_SPACE_CHARACTERS;
 use style::stylesheets::UrlExtraData;
 use style_traits::CSSPixel;
 use stylo_atoms::Atom;
+#[cfg(feature = "testbinding")]
 use time::Duration as TimeDuration;
 use webrender_api::ExternalScrollId;
 use webrender_api::units::{DeviceIntSize, DevicePixel, LayoutPixel, LayoutPoint};
@@ -2600,6 +2601,7 @@ impl Window {
         receiver.recv().unwrap_or_default()
     }
 
+    #[cfg(feature = "testbinding")]
     /// Prepares to tick animations and then does a reflow which also advances the
     /// layout animation clock.
     pub(crate) fn advance_animation_clock(&self, delta: TimeDuration) {

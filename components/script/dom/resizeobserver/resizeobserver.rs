@@ -176,13 +176,13 @@ fn create_and_populate_a_resizeobserverentry(
     observation: &ResizeObservation,
 ) -> DomRoot<ResizeObserverEntry> {
     // Step 3. Set this.borderBoxSize slot to result of calculating box size given target and observedBox of "border-box".
-    let border_box_size = calculate_box_size(target, &ResizeObserverBoxOptions::Border_box);
+    let border_box_size = calculate_box_size(target, &ResizeObserverBoxOptions::Border_box, true);
     // Step 4. Set this.contentBoxSize slot to result of calculating box size given target and observedBox of "content-box".
-    let content_box_size = calculate_box_size(target, &ResizeObserverBoxOptions::Content_box);
+    let content_box_size = calculate_box_size(target, &ResizeObserverBoxOptions::Content_box, false);
 
     // Step 5. Set this.devicePixelContentBoxSize slot to result of calculating box size given target and observedBox of "device-pixel-content-box".
     let device_pixel_content_box =
-        calculate_box_size(target, &ResizeObserverBoxOptions::Device_pixel_content_box);
+        calculate_box_size(target, &ResizeObserverBoxOptions::Device_pixel_content_box, false);
 
     // Note: this is safe because an observation is
     // initialized with one reported size (zero).
@@ -356,7 +356,8 @@ impl ResizeObservation {
         let Some(last_reported_size) = self.last_reported_sizes.borrow().first().copied() else {
             return true;
         };
-        let box_size = calculate_box_size(target, &self.observed_box);
+        // Layout was flushed once by `Document::gather_active_resize_observations_at_depth`.
+        let box_size = calculate_box_size(target, &self.observed_box, false);
         box_size.width() != last_reported_size.inline_size() ||
             box_size.height() != last_reported_size.block_size()
     }
@@ -369,6 +370,17 @@ fn calculate_depth_for_node(target: &Element) -> ResizeObservationDepth {
     ResizeObservationDepth(depth)
 }
 
+/// A box of `target`, flushing layout first only when `flush` is set: the rendering update
+/// flushes once before gathering observations, instead of once per observed element.
+fn box_area(target: &Element, area: BoxAreaType, flush: bool) -> Option<Rect<Au, CSSPixel>> {
+    let window = target.owner_window();
+    if flush {
+        window.box_area_query(target.upcast(), area, true)
+    } else {
+        window.box_area_query_without_reflow(target.upcast(), area, true)
+    }
+}
+
 /// <https://drafts.csswg.org/resize-observer/#calculate-box-size>
 ///
 /// The dimensions of the returned `Rect` depend on the type of box being observed.
@@ -378,14 +390,13 @@ fn calculate_depth_for_node(target: &Element) -> ResizeObservationDepth {
 fn calculate_box_size(
     target: &Element,
     observed_box: &ResizeObserverBoxOptions,
+    flush: bool,
 ) -> Rect<f64, CSSPixel> {
     match observed_box {
         ResizeObserverBoxOptions::Content_box => {
             // Note: only taking first fragment,
             // but the spec will expand to cover all fragments.
-            let content_box = target
-                .owner_window()
-                .box_area_query(target.upcast(), BoxAreaType::Content, true)
+            let content_box = box_area(target, BoxAreaType::Content, flush)
                 .unwrap_or_else(Rect::zero);
 
             Rect::new(
@@ -399,9 +410,7 @@ fn calculate_box_size(
         ResizeObserverBoxOptions::Border_box => {
             // Note: only taking first fragment,
             // but the spec will expand to cover all fragments.
-            let border_box = target
-                .owner_window()
-                .box_area_query(target.upcast(), BoxAreaType::Border, true)
+            let border_box = box_area(target, BoxAreaType::Border, flush)
                 .unwrap_or_else(Rect::zero);
 
             Rect::new(
@@ -414,9 +423,7 @@ fn calculate_box_size(
         },
         ResizeObserverBoxOptions::Device_pixel_content_box => {
             let device_pixel_ratio = target.owner_window().device_pixel_ratio().get() as f64;
-            let content_box = target
-                .owner_window()
-                .box_area_query(target.upcast(), BoxAreaType::Content, true)
+            let content_box = box_area(target, BoxAreaType::Content, flush)
                 .unwrap_or_else(Rect::zero);
 
             let to_device_px = |length: Au| (length.to_f64_px() * device_pixel_ratio).round();

@@ -125,15 +125,19 @@ jobs:
           $version = "1.28.7"
           $name = "gstreamer-1.0-msvc-x86_64-$version.exe"
           $installer = Join-Path $env:RUNNER_TEMP $name
-          # gstreamer.freedesktop.org sometimes ends a response early: retry with a growing pause.
-          for ($attempt = 1; $attempt -le 5; $attempt++) {
-            try {
-              Invoke-WebRequest -Uri "https://gstreamer.freedesktop.org/data/pkg/windows/$version/msvc/$name" -OutFile $installer
-              break
-            } catch {
-              if ($attempt -eq 5) { throw }
-              Write-Host "GStreamer download failed (attempt $attempt/5): $_"
-              Start-Sleep -Seconds (15 * $attempt)
+          # Our own copy first (see gstreamer-mirror.yml); gstreamer.freedesktop.org cuts responses
+          # after ~1 MiB, so it is only the fallback, fetched by resuming until complete.
+          $mirror = "https://github.com/DRincs-Productions/roves/releases/download/deps-gstreamer-$version/$name"
+          $url = "https://gstreamer.freedesktop.org/data/pkg/windows/$version/msvc/$name"
+          try {
+            Invoke-WebRequest -Uri $mirror -OutFile $installer
+          } catch {
+            Write-Host "GStreamer mirror unavailable ($_), falling back to gstreamer.freedesktop.org"
+            $length = [int64](((curl.exe -sIL $url) -match '^content-length:' | Select-Object -Last 1) -replace '\D', '')
+            for ($request = 0; -not ((Test-Path $installer) -and (Get-Item $installer).Length -ge $length); $request++) {
+              if ($request -ge 4000) { throw "GStreamer download did not complete" }
+              curl.exe -sSL -C - -o $installer $url
+              if ($LASTEXITCODE -ne 0) { Start-Sleep -Seconds 5 }
             }
           }
           $installDir = Join-Path (Get-Location) "target\dependencies\gstreamer\1.0\msvc_X86_64"

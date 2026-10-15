@@ -1251,7 +1251,7 @@ impl ScriptThread {
 
             // Run the resize observer steps.
             let mut depth = Default::default();
-            while document.gather_active_resize_observations_at_depth(&depth) {
+            while document.gather_active_resize_observations_at_depth(cx, &depth) {
                 // Note: this will reflow the doc.
                 depth = document.broadcast_active_resize_observations(cx);
             }
@@ -3333,6 +3333,7 @@ impl ScriptThread {
         debug!("Exited script thread.");
     }
 
+    #[cfg(feature = "testbinding")]
     /// Handles animation tick requested during testing.
     pub(crate) fn handle_tick_all_animations_for_testing(id: PipelineId) {
         with_script_thread(|script_thread| {

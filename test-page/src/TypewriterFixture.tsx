@@ -1,11 +1,11 @@
 import { motion } from "motion/react";
 import { useState } from "react";
-import { MarkdownTypewriter } from "react-markdown-typewriter";
+import { MarkdownTypewriter } from "markdown-typewriter/react";
 import PixiPanel from "./PixiPanel.tsx";
 import ThreePanel from "./ThreePanel.tsx";
 import { useFramePacingProbe } from "./framePacing.ts";
 
-const DIALOGUE = `**Alice:** Welcome back! This line is written by *react-markdown-typewriter*, one
+const DIALOGUE = `**Alice:** Welcome back! This line is written by *markdown-typewriter*, one
 character at a time with **motion**, over a moving scene.
 
 - Each letter fades in on its own animation.
@@ -17,7 +17,7 @@ export type TypewriterScene = "pixi" | "three";
 
 /**
  * motion + a WebGL scene, the combination every pixi-vn game uses: a typewriter dialogue
- * (react-markdown-typewriter, built on motion) and a looping motion box over PixiJS or three.js.
+ * (markdown-typewriter, built on motion) and a looping motion box over PixiJS or three.js.
  */
 export default function TypewriterFixture({ scene }: { scene: TypewriterScene }) {
   const [run, setRun] = useState(0);

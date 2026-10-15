@@ -185,7 +185,13 @@ class Windows(Base):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             installer = os.path.join(temp_dir, GSTREAMER_URL.rsplit("/", maxsplit=1)[-1])
-            util.download_file("GStreamer", GSTREAMER_URL, installer)
+            # Roves' verified copy first (gstreamer-mirror.yml): the official server cuts
+            # responses after ~1 MiB.
+            mirror = f"https://github.com/DRincs-Productions/roves/releases/download/deps-gstreamer-{GSTREAMER_VERSION}/{os.path.basename(installer)}"
+            try:
+                util.download_file("GStreamer", mirror, installer)
+            except (Exception, SystemExit):  # util.download exits on HTTP errors
+                util.download_file("GStreamer", GSTREAMER_URL, installer)
 
             # Same nested layout the old MSI's `TARGETDIR` admin-install used to produce
             # (see gstreamer_root() above) -- pointing /DIR straight at it means no change is

@@ -1,0 +1,166 @@
+diff --git a/components/script/dom/document/document.rs b/components/script/dom/document/document.rs
+index be566f64a56..94cada48c05 100644
+--- a/components/script/dom/document/document.rs
++++ b/components/script/dom/document/document.rs
+@@ -76,6 +76,7 @@ use style::stylesheet_set::DocumentStylesheetSet;
+ use style::stylesheets::{Origin, OriginSet, Stylesheet};
+ use style::stylist::Stylist;
+ use stylo_atoms::Atom;
++#[cfg(feature = "testbinding")]
+ use time::Duration as TimeDuration;
+ use url::{Host, Position};
+ 
+@@ -3184,8 +3185,16 @@ impl Document {
+     /// <https://drafts.csswg.org/resize-observer/#has-active-resize-observations>
+     pub(crate) fn gather_active_resize_observations_at_depth(
+         &self,
++        cx: &mut JSContext,
+         depth: &ResizeObservationDepth,
+     ) -> bool {
++        if self.resize_observers.borrow().is_empty() {
++            return false;
++        }
++        // One layout flush for every observation below (`ResizeObservation::is_active` reads boxes
++        // without reflowing), instead of one reflow per observed element.
++        self.window()
++            .reflow_for_non_flushing_update_the_rendering_queries(cx);
+         let mut has_active_resize_observations = false;
+         for observer in self.resize_observers.borrow_mut().iter_mut() {
+             observer.gather_active_resize_observations_at_depth(
+@@ -4610,6 +4619,7 @@ impl Document {
+             .collect()
+     }
+ 
++    #[cfg(feature = "testbinding")]
+     pub(crate) fn advance_animation_timeline_for_testing(&self, delta: TimeDuration) {
+         self.timeline.advance_specific(delta);
+         let current_timeline_value = self.current_animation_timeline_value();
+diff --git a/components/script/dom/resizeobserver/resizeobserver.rs b/components/script/dom/resizeobserver/resizeobserver.rs
+index a5eea04307c..d3ea4dfeb47 100644
+--- a/components/script/dom/resizeobserver/resizeobserver.rs
++++ b/components/script/dom/resizeobserver/resizeobserver.rs
+@@ -176,13 +176,13 @@ fn create_and_populate_a_resizeobserverentry(
+     observation: &ResizeObservation,
+ ) -> DomRoot<ResizeObserverEntry> {
+     // Step 3. Set this.borderBoxSize slot to result of calculating box size given target and observedBox of "border-box".
+-    let border_box_size = calculate_box_size(target, &ResizeObserverBoxOptions::Border_box);
++    let border_box_size = calculate_box_size(target, &ResizeObserverBoxOptions::Border_box, true);
+     // Step 4. Set this.contentBoxSize slot to result of calculating box size given target and observedBox of "content-box".
+-    let content_box_size = calculate_box_size(target, &ResizeObserverBoxOptions::Content_box);
++    let content_box_size = calculate_box_size(target, &ResizeObserverBoxOptions::Content_box, false);
+ 
+     // Step 5. Set this.devicePixelContentBoxSize slot to result of calculating box size given target and observedBox of "device-pixel-content-box".
+     let device_pixel_content_box =
+-        calculate_box_size(target, &ResizeObserverBoxOptions::Device_pixel_content_box);
++        calculate_box_size(target, &ResizeObserverBoxOptions::Device_pixel_content_box, false);
+ 
+     // Note: this is safe because an observation is
+     // initialized with one reported size (zero).
+@@ -356,7 +356,8 @@ impl ResizeObservation {
+         let Some(last_reported_size) = self.last_reported_sizes.borrow().first().copied() else {
+             return true;
+         };
+-        let box_size = calculate_box_size(target, &self.observed_box);
++        // Layout was flushed once by `Document::gather_active_resize_observations_at_depth`.
++        let box_size = calculate_box_size(target, &self.observed_box, false);
+         box_size.width() != last_reported_size.inline_size() ||
+             box_size.height() != last_reported_size.block_size()
+     }
+@@ -369,6 +370,17 @@ fn calculate_depth_for_node(target: &Element) -> ResizeObservationDepth {
+     ResizeObservationDepth(depth)
+ }
+ 
++/// A box of `target`, flushing layout first only when `flush` is set: the rendering update
++/// flushes once before gathering observations, instead of once per observed element.
++fn box_area(target: &Element, area: BoxAreaType, flush: bool) -> Option<Rect<Au, CSSPixel>> {
++    let window = target.owner_window();
++    if flush {
++        window.box_area_query(target.upcast(), area, true)
++    } else {
++        window.box_area_query_without_reflow(target.upcast(), area, true)
++    }
++}
++
+ /// <https://drafts.csswg.org/resize-observer/#calculate-box-size>
+ ///
+ /// The dimensions of the returned `Rect` depend on the type of box being observed.
+@@ -378,14 +390,13 @@ fn calculate_depth_for_node(target: &Element) -> ResizeObservationDepth {
+ fn calculate_box_size(
+     target: &Element,
+     observed_box: &ResizeObserverBoxOptions,
++    flush: bool,
+ ) -> Rect<f64, CSSPixel> {
+     match observed_box {
+         ResizeObserverBoxOptions::Content_box => {
+             // Note: only taking first fragment,
+             // but the spec will expand to cover all fragments.
+-            let content_box = target
+-                .owner_window()
+-                .box_area_query(target.upcast(), BoxAreaType::Content, true)
++            let content_box = box_area(target, BoxAreaType::Content, flush)
+                 .unwrap_or_else(Rect::zero);
+ 
+             Rect::new(
+@@ -399,9 +410,7 @@ fn calculate_box_size(
+         ResizeObserverBoxOptions::Border_box => {
+             // Note: only taking first fragment,
+             // but the spec will expand to cover all fragments.
+-            let border_box = target
+-                .owner_window()
+-                .box_area_query(target.upcast(), BoxAreaType::Border, true)
++            let border_box = box_area(target, BoxAreaType::Border, flush)
+                 .unwrap_or_else(Rect::zero);
+ 
+             Rect::new(
+@@ -414,9 +423,7 @@ fn calculate_box_size(
+         },
+         ResizeObserverBoxOptions::Device_pixel_content_box => {
+             let device_pixel_ratio = target.owner_window().device_pixel_ratio().get() as f64;
+-            let content_box = target
+-                .owner_window()
+-                .box_area_query(target.upcast(), BoxAreaType::Content, true)
++            let content_box = box_area(target, BoxAreaType::Content, flush)
+                 .unwrap_or_else(Rect::zero);
+ 
+             let to_device_px = |length: Au| (length.to_f64_px() * device_pixel_ratio).round();
+diff --git a/components/script/dom/window/window.rs b/components/script/dom/window/window.rs
+index c0ed623cd4f..ac24c7ec342 100644
+--- a/components/script/dom/window/window.rs
++++ b/components/script/dom/window/window.rs
+@@ -100,6 +100,7 @@ use style::str::HTML_SPACE_CHARACTERS;
+ use style::stylesheets::UrlExtraData;
+ use style_traits::CSSPixel;
+ use stylo_atoms::Atom;
++#[cfg(feature = "testbinding")]
+ use time::Duration as TimeDuration;
+ use webrender_api::ExternalScrollId;
+ use webrender_api::units::{DeviceIntSize, DevicePixel, LayoutPixel, LayoutPoint};
+@@ -2600,6 +2601,7 @@ impl Window {
+         receiver.recv().unwrap_or_default()
+     }
+ 
++    #[cfg(feature = "testbinding")]
+     /// Prepares to tick animations and then does a reflow which also advances the
+     /// layout animation clock.
+     pub(crate) fn advance_animation_clock(&self, delta: TimeDuration) {
+diff --git a/components/script/script_thread.rs b/components/script/script_thread.rs
+index 24867dc29be..6a179c41a08 100644
+--- a/components/script/script_thread.rs
++++ b/components/script/script_thread.rs
+@@ -1251,7 +1251,7 @@ impl ScriptThread {
+ 
+             // Run the resize observer steps.
+             let mut depth = Default::default();
+-            while document.gather_active_resize_observations_at_depth(&depth) {
++            while document.gather_active_resize_observations_at_depth(cx, &depth) {
+                 // Note: this will reflow the doc.
+                 depth = document.broadcast_active_resize_observations(cx);
+             }
+@@ -3333,6 +3333,7 @@ impl ScriptThread {
+         debug!("Exited script thread.");
+     }
+ 
++    #[cfg(feature = "testbinding")]
+     /// Handles animation tick requested during testing.
+     pub(crate) fn handle_tick_all_animations_for_testing(id: PipelineId) {
+         with_script_thread(|script_thread| {

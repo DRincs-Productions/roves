@@ -13,7 +13,6 @@ import tempfile
 import time
 from typing import Any, Optional
 
-from .. import util
 from .base import Base
 from .build_target import BuildTarget
 
@@ -27,17 +26,38 @@ GSTREAMER_URL = f"{URL_BASE}/{GSTREAMER_FILENAME}"
 GSTREAMER_DEVEL_FILENAME = f"gstreamer-1.0-devel-{GSTREAMER_PLUGIN_VERSION}-universal.pkg"
 GSTREAMER_DEVEL_URL = f"{URL_BASE}/{GSTREAMER_DEVEL_FILENAME}"
 GSTREAMER_ROOT = "/Library/Frameworks/GStreamer.framework/Versions/1.0"
+# Roves keeps verified copies of these installers in its own release (gstreamer-mirror.yml),
+# because gstreamer.freedesktop.org cuts responses after ~1 MiB and often answers 503.
+MIRROR_BASE = f"https://github.com/DRincs-Productions/roves/releases/download/deps-gstreamer-{GSTREAMER_PLUGIN_VERSION}"
 
+
+
+def _download_complete(url: str, path: str) -> bool:
+    """Whether `path` has the full length the server advertises for `url`."""
+    head = subprocess.run(["curl", "-sIL", url], capture_output=True, text=True).stdout
+    lengths = [line.split(":", 1)[1].strip() for line in head.splitlines() if line.lower().startswith("content-length:")]
+    return bool(lengths) and os.path.getsize(path) >= int(lengths[-1])
 
 
 def download_pkg(description: str, url: str, destination_path: str, attempts: int = 5) -> None:
     """Download a macOS installer package, retrying when the server hands back something that is
     not a complete one (gstreamer.freedesktop.org sometimes cuts the body short). `pkgutil
     --check-signature` reads the whole archive, so unlike a header check it catches truncation."""
+    mirror_url = f"{MIRROR_BASE}/{os.path.basename(url)}"
+    if subprocess.run(["curl", "-sSfL", "-o", destination_path, mirror_url]).returncode == 0:
+        if subprocess.run(["pkgutil", "--check-signature", destination_path], capture_output=True).returncode == 0:
+            return
+        print(f"{description}: mirror copy invalid, falling back to {url}")
     for attempt in range(1, attempts + 1):
         if os.path.exists(destination_path):
             os.remove(destination_path)
-        util.download_file(description, url, destination_path)
+        print(f"Downloading {description} ...")
+        # The server ends every response after 1 MiB, so resume (`-C -`) until curl reports
+        # nothing left to fetch (exit 33/416 once the file is complete is treated as done).
+        for _ in range(4000):
+            result = subprocess.run(["curl", "-sSL", "-C", "-", "-o", destination_path, url])
+            if result.returncode == 0 and _download_complete(url, destination_path):
+                break
         check = subprocess.run(["pkgutil", "--check-signature", destination_path], capture_output=True)
         if check.returncode == 0:
             return
