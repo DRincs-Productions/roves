@@ -21,7 +21,7 @@ use embedder_traits::user_contents::{
 use embedder_traits::{
     EmbedderControlId, EmbedderControlResponse, InputEventAndId, JavaScriptEvaluationId,
     MediaSessionActionType, NewWebViewDetails, PaintHitTestResult, Theme, TraversalId, UrlRequest,
-    ViewportDetails, WebDriverCommandMsg,
+    ViewportDetails,
 };
 pub use from_script_message::*;
 use malloc_size_of_derive::MallocSizeOf;
@@ -63,8 +63,6 @@ pub enum EmbedderToConstellationMessage {
     /// asynchronous image uploads for the given `Pipeline`. These are mainly used
     /// by canvas to perform uploads while the display list is being built.
     NoLongerWaitingOnAsynchronousImageUpdates(Vec<PipelineId>),
-    /// Dispatch a webdriver command
-    WebDriverCommand(WebDriverCommandMsg),
     /// Reload a top-level browsing context.
     Reload(WebViewId),
     /// A log entry, with the top-level browsing context id and thread name

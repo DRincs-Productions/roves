@@ -417,6 +417,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "arraydeque"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d902e3d592a523def97af8f317b08ce16b7ab854c1985a0c671e6f15cebc236"
+
+[[package]]
 name = "arrayref"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1498,16 +1504,6 @@ dependencies = [
  "serde",
  "sha2 0.10.9",
  "url",
-]
-
-[[package]]
-name = "cookie"
-version = "0.16.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e859cd57d0710d9e06c381b550c06e76992472a8c6d527aecd2fc673dcc231fb"
-dependencies = [
- "time",
- "version_check",
 ]
 
 [[package]]
@@ -3587,7 +3583,7 @@ dependencies = [
  "fnv",
  "futures-core",
  "futures-sink",
- "http 1.5.0",
+ "http",
  "indexmap",
  "slab",
  "tokio",
@@ -3698,7 +3694,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "headers-core",
- "http 1.5.0",
+ "http",
  "httpdate",
  "mime",
  "sha1 0.10.6",
@@ -3710,7 +3706,7 @@ version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "54b4a22553d4242c49fddb9ba998a99962b5cc6f22cb5a3482bec22522403ce4"
 dependencies = [
- "http 1.5.0",
+ "http",
 ]
 
 [[package]]
@@ -3788,17 +3784,6 @@ dependencies = [
 
 [[package]]
 name = "http"
-version = "0.2.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "601cbb57e577e2f5ef5be8e7b83f0f63994f25aa94d673e54a92d5c516d101f1"
-dependencies = [
- "bytes",
- "fnv",
- "itoa",
-]
-
-[[package]]
-name = "http"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "918d3568bebf352712bc2ef3d46a8bcf1a75b373be6539de198e9105cbbf9ce0"
@@ -3814,7 +3799,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca2a8f2913ee65f60facd6a5905613afaa448497a0230cc41ce022d93290bc2c"
 dependencies = [
  "bytes",
- "http 1.5.0",
+ "http",
 ]
 
 [[package]]
@@ -3825,7 +3810,7 @@ checksum = "e9f41fd6a08e4d4ec69df65976da761afd5ad5e58a9d4acb46bd1c953a9e3ff2"
 dependencies = [
  "bytes",
  "futures-core",
- "http 1.5.0",
+ "http",
  "http-body",
  "pin-project-lite",
 ]
@@ -3836,7 +3821,7 @@ version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0603b99309a1e404c2c0945650c0f775b50bb72ac90ae570cb93f9ff05d9efe7"
 dependencies = [
- "http 1.5.0",
+ "http",
  "http-serde",
  "serde",
  "time",
@@ -3848,7 +3833,7 @@ version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0f056c8559e3757392c8d091e796416e4649d8e49e88b8d76df6c002f05027fd"
 dependencies = [
- "http 1.5.0",
+ "http",
  "serde",
 ]
 
@@ -3887,7 +3872,7 @@ dependencies = [
  "futures-channel",
  "futures-core",
  "h2",
- "http 1.5.0",
+ "http",
  "http-body",
  "httparse",
  "httpdate",
@@ -3904,7 +3889,7 @@ version = "0.27.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "33ca68d021ef39cf6463ab54c1d0f5daf03377b70561305bb89a8f83aab66e0f"
 dependencies = [
- "http 1.5.0",
+ "http",
  "hyper",
  "hyper-util",
  "log",
@@ -3925,7 +3910,7 @@ dependencies = [
  "bytes",
  "futures-channel",
  "futures-util",
- "http 1.5.0",
+ "http",
  "http-body",
  "hyper",
  "ipnet",
@@ -4548,7 +4533,30 @@ checksum = "0fbe853b403ae61a04233030ae8a79d94975281ed9770a1f9e246732b534b28d"
 dependencies = [
  "bitflags 2.13.1",
  "serde",
- "unicode-segmentation",
+]
+
+[[package]]
+name = "keycode"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "29541831d33940ea1c68a1b8980382c1a507c95a528a98c0e335b361b9726975"
+dependencies = [
+ "arraydeque",
+ "arrayvec",
+ "bitflags 2.13.1",
+ "keycode_macro",
+]
+
+[[package]]
+name = "keycode_macro"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4facccc788054d521c263b66648eee8caf470f59cf8340d8cd0cce4a74ebcab2"
+dependencies = [
+ "anyhow",
+ "heck 0.5.0",
+ "proc-macro2",
+ "quote",
 ]
 
 [[package]]
@@ -7046,12 +7054,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
-name = "ryu"
-version = "1.0.23"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
-
-[[package]]
 name = "same-file"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7395,18 +7397,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_urlencoded"
-version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3491c14715ca2294c4d6a88f15e84739788c1d030eed8c110436aafdaa2f3fd"
-dependencies = [
- "form_urlencoded",
- "itoa",
- "ryu",
- "serde",
-]
-
-[[package]]
 name = "serdect"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7425,14 +7415,14 @@ dependencies = [
  "arboard",
  "bitflags 2.13.1",
  "content-security-policy",
- "cookie 0.18.1",
+ "cookie",
  "crossbeam-channel",
  "dpi",
  "env_logger",
  "euclid",
  "gaol",
  "gstreamer",
- "http 1.5.0",
+ "http",
  "http-body-util",
  "hyper",
  "image",
@@ -7719,7 +7709,7 @@ dependencies = [
  "content-security-policy",
  "encoding_rs",
  "euclid",
- "http 1.5.0",
+ "http",
  "ipc-channel",
  "log",
  "malloc_size_of_derive",
@@ -7772,7 +7762,7 @@ dependencies = [
  "chrono",
  "crossbeam-channel",
  "headers",
- "http 1.5.0",
+ "http",
  "log",
  "malloc_size_of_derive",
  "parking_lot",
@@ -7796,7 +7786,7 @@ dependencies = [
 name = "servo-devtools-traits"
 version = "0.5.0"
 dependencies = [
- "http 1.5.0",
+ "http",
  "malloc_size_of_derive",
  "serde",
  "servo-base",
@@ -7825,16 +7815,14 @@ dependencies = [
  "accesskit",
  "bitflags 2.13.1",
  "content-security-policy",
- "cookie 0.18.1",
  "crossbeam-channel",
  "euclid",
- "http 1.5.0",
+ "http",
  "image",
  "inventory",
  "keyboard-types",
  "log",
  "malloc_size_of_derive",
- "rustc-hash 2.1.3",
  "serde",
  "servo-base",
  "servo-geometry",
@@ -7847,7 +7835,6 @@ dependencies = [
  "stylo_traits",
  "url",
  "uuid",
- "webdriver",
  "webrender_api",
 ]
 
@@ -7949,9 +7936,9 @@ dependencies = [
 name = "servo-hyper-serde"
 version = "0.5.0"
 dependencies = [
- "cookie 0.18.1",
+ "cookie",
  "headers",
- "http 1.5.0",
+ "http",
  "hyper",
  "ipc-channel",
  "mime",
@@ -8075,7 +8062,7 @@ dependencies = [
  "data-url",
  "encoding_rs",
  "euclid",
- "http 1.5.0",
+ "http",
  "icu_locid",
  "indexmap",
  "ipc-channel",
@@ -8333,7 +8320,7 @@ dependencies = [
  "cacache",
  "chrono",
  "content-security-policy",
- "cookie 0.18.1",
+ "cookie",
  "crossbeam-channel",
  "data-url",
  "flate2",
@@ -8342,7 +8329,7 @@ dependencies = [
  "futures-core",
  "futures-util",
  "headers",
- "http 1.5.0",
+ "http",
  "http-body-util",
  "http-cache-semantics",
  "hyper",
@@ -8405,11 +8392,11 @@ name = "servo-net-traits"
 version = "0.5.0"
 dependencies = [
  "content-security-policy",
- "cookie 0.18.1",
+ "cookie",
  "crossbeam-channel",
  "data-url",
  "headers",
- "http 1.5.0",
+ "http",
  "hyper-util",
  "ipc-channel",
  "log",
@@ -8586,7 +8573,7 @@ dependencies = [
  "chardetng",
  "chrono",
  "content-security-policy",
- "cookie 0.18.1",
+ "cookie",
  "crossbeam-channel",
  "crypto-bigint",
  "cshake",
@@ -8605,7 +8592,7 @@ dependencies = [
  "headers",
  "hkdf",
  "html5ever",
- "http 1.5.0",
+ "http",
  "httparse",
  "icu_locid",
  "indexmap",
@@ -8702,7 +8689,6 @@ dependencies = [
  "urlpattern",
  "uuid",
  "web_atoms",
- "webdriver",
  "webrender_api",
  "wgpu-core 30.0.0",
  "wgpu-types 30.0.0",
@@ -8885,37 +8871,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "servo-webdriver-server"
-version = "0.5.0"
-dependencies = [
- "base64 0.23.0",
- "bytes",
- "cookie 0.18.1",
- "crossbeam-channel",
- "euclid",
- "http 0.2.12",
- "http 1.5.0",
- "image",
- "keyboard-types",
- "log",
- "rustc-hash 2.1.3",
- "serde",
- "serde_json",
- "servo-base",
- "servo-config",
- "servo-embedder-traits",
- "servo-geometry",
- "servo-url",
- "stylo_traits",
- "time",
- "tokio",
- "url",
- "uuid",
- "warp",
- "webdriver",
-]
-
-[[package]]
 name = "servo-webgl"
 version = "0.5.0"
 dependencies = [
@@ -9025,10 +8980,11 @@ dependencies = [
  "euclid",
  "glow",
  "headers",
- "http 1.5.0",
+ "http",
  "image",
  "jni 0.22.4",
  "keyboard-types",
+ "keycode",
  "libc",
  "log",
  "mime_guess",
@@ -9042,7 +8998,6 @@ dependencies = [
  "serde_json",
  "servo",
  "servo-allocator",
- "servo-webdriver-server",
  "signal-hook-registry",
  "steamworks",
  "surfman",
@@ -10293,7 +10248,6 @@ version = "0.1.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
 dependencies = [
- "log",
  "pin-project-lite",
  "tracing-attributes",
  "tracing-core",
@@ -10423,7 +10377,7 @@ checksum = "e48ac77174b19c110a50ab2128b24215ac9cb40e0e12e093fb602d175c569d22"
 dependencies = [
  "bytes",
  "data-encoding",
- "http 1.5.0",
+ "http",
  "httparse",
  "log",
  "rand 0.10.2",
@@ -10873,35 +10827,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "warp"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0a808122a8a77eecdabaefd88ddb1913c4be5ea1465399f63ba64c7aa705fea"
-dependencies = [
- "bytes",
- "futures-util",
- "headers",
- "http 1.5.0",
- "http-body",
- "http-body-util",
- "hyper",
- "hyper-util",
- "log",
- "mime",
- "mime_guess",
- "percent-encoding",
- "pin-project",
- "scoped-tls",
- "serde",
- "serde_json",
- "serde_urlencoded",
- "tokio",
- "tokio-util",
- "tower-service",
- "tracing",
-]
-
-[[package]]
 name = "wasi"
 version = "0.11.1+wasi-snapshot-preview1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11153,26 +11078,6 @@ dependencies = [
  "phf_codegen",
  "string_cache",
  "string_cache_codegen",
-]
-
-[[package]]
-name = "webdriver"
-version = "0.53.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91d53921e1bef27512fa358179c9a22428d55778d2c2ae3c5c37a52b82ce6e92"
-dependencies = [
- "base64 0.22.1",
- "bytes",
- "cookie 0.16.2",
- "http 0.2.12",
- "icu_segmenter",
- "log",
- "serde",
- "serde_derive",
- "serde_json",
- "thiserror 1.0.69",
- "time",
- "url",
 ]
 
 [[package]]

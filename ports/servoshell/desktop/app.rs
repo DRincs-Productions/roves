@@ -473,9 +473,7 @@ impl App {
         let running_state = Rc::new(RunningAppState::new(
             servo,
             self.servoshell_preferences.clone(),
-            self.waker.clone(),
             user_content_manager,
-            self.preferences.clone(),
             // Headed-only, same as everything else keyed off `event_loop_proxy` here — no
             // window to receive gamepad input in headless mode.
             #[cfg(feature = "gamepad")]
@@ -522,13 +520,12 @@ impl App {
         )
     }
 
-    pub fn pump_servo_event_loop(&mut self, active_event_loop: Option<&ActiveEventLoop>) -> bool {
+    pub fn pump_servo_event_loop(&mut self) -> bool {
         let AppState::Running(state) = &self.state else {
             return false;
         };
 
-        let create_platform_window = |url: Url| self.create_platform_window(url, active_event_loop);
-        if !state.spin_event_loop(Some(&create_platform_window)) {
+        if !state.spin_event_loop() {
             self.state = AppState::ShuttingDown;
             return false;
         }
@@ -631,7 +628,7 @@ impl App {
             headed_window.handle_window_event(state.clone(), window, window_event);
         }
 
-        if !self.pump_servo_event_loop(event_loop.into()) {
+        if !self.pump_servo_event_loop() {
             event_loop.exit();
         }
         set_running_control_flow(event_loop, &state);
@@ -654,7 +651,7 @@ impl App {
             return;
         };
         gamepad_delegate.handle_sdl_event(&state, event);
-        if !self.pump_servo_event_loop(event_loop.into()) {
+        if !self.pump_servo_event_loop() {
             event_loop.exit();
         }
         set_running_control_flow(event_loop, &state);
@@ -773,7 +770,7 @@ impl App {
             },
         }
 
-        if !self.pump_servo_event_loop(event_loop.into()) {
+        if !self.pump_servo_event_loop() {
             event_loop.exit();
         }
 

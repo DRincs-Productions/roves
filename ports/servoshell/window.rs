@@ -11,9 +11,9 @@ use euclid::Scale;
 use log::warn;
 use servo::{
     AuthenticationRequest, BluetoothDeviceSelectionRequest, ConsoleLogLevel, Cursor,
-    DeviceIndependentIntRect, DeviceIndependentPixel, DeviceIntPoint, DeviceIntSize, DevicePixel,
-    EmbedderControl, EmbedderControlId, InputEventId, InputEventResult, MediaSessionEvent,
-    PermissionRequest, RenderingContext, ScreenGeometry, WebView, WebViewBuilder, WebViewId,
+    DeviceIndependentPixel, DeviceIntPoint, DeviceIntSize, DevicePixel, EmbedderControl,
+    EmbedderControlId, InputEventId, InputEventResult, MediaSessionEvent, PermissionRequest,
+    RenderingContext, ScreenGeometry, WebView, WebViewBuilder, WebViewId,
 };
 use url::Url;
 
@@ -151,10 +151,6 @@ impl ServoShellWindow {
     /// Whether or not this [`ServoShellWindow`] has any [`WebView`]s.
     pub(crate) fn should_close(&self) -> bool {
         self.webview_collection.borrow().is_empty() || self.close_scheduled.get()
-    }
-
-    pub(crate) fn webview_by_id(&self, id: WebViewId) -> Option<WebView> {
-        self.webview_collection.borrow().get(id).cloned()
     }
 
     pub(crate) fn set_needs_update(&self) {
@@ -366,8 +362,6 @@ pub(crate) trait PlatformWindow {
     fn theme(&self) -> servo::Theme {
         servo::Theme::Light
     }
-    fn window_rect(&self) -> DeviceIndependentIntRect;
-    fn maximize(&self, _: &WebView) {}
     fn focus(&self) {}
     fn has_platform_focus(&self) -> bool {
         true

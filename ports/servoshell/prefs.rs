@@ -3,7 +3,6 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use core::panic;
-use std::cell::Cell;
 use std::collections::HashMap;
 use std::fs::{self, read_to_string};
 use std::path::{Path, PathBuf};
@@ -101,9 +100,6 @@ pub(crate) struct ServoShellPreferences {
     pub userscripts_directory: Option<PathBuf>,
     /// A set of [`UserStylesheets`] to load for content.
     pub user_stylesheets: Vec<Rc<UserStyleSheet>>,
-    /// `None` to disable WebDriver or `Some` with a port number to start a server to listen to
-    /// remote WebDriver commands.
-    pub webdriver_port: Cell<Option<u16>>,
     /// Whether the window should open already in fullscreen — persisted across launches
     /// (a marker file under `config_dir`, written/removed by `HeadedWindow::set_fullscreen`)
     /// so a game closed in fullscreen reopens that way, without a windowed-then-fullscreen
@@ -134,7 +130,6 @@ impl Default for ServoShellPreferences {
             exit_after_stable_image: false,
             userscripts_directory: None,
             user_stylesheets: Default::default(),
-            webdriver_port: Cell::new(None),
             start_fullscreen: false,
             config_dir: None,
         }
@@ -362,17 +357,6 @@ fn userscripts() -> impl Parser<Option<PathBuf>> {
     construct!([arg]).optional()
 }
 
-fn webdriver_port() -> impl Parser<Option<u16>> {
-    flag_with_default_parser(
-        None,
-        "webdriver",
-        "7000",
-        "Start remote WebDriver server on port",
-        7000,
-        |val| val,
-    )
-}
-
 fn map_debug_options(arg: String) -> Vec<String> {
     arg.split(',').map(|s| s.to_owned()).collect()
 }
@@ -557,10 +541,6 @@ struct CmdArgs {
     fallback(vec![]))]
     user_stylesheet: Vec<Rc<UserStyleSheet>>,
 
-    /// Start remote WebDriver server on port.
-    #[bpaf(external)]
-    webdriver_port: Option<u16>,
-
     ///
     ///  Override the native window's title — set once at startup and never changed
     ///  afterward, even if the page's own `document.title` changes (the window title
@@ -617,10 +597,6 @@ fn update_preferences_from_command_line_arguments(
 
     if let Some(user_agent) = cmd_args.user_agent.clone() {
         preferences.user_agent = user_agent;
-    }
-
-    if cmd_args.webdriver_port.is_some() {
-        preferences.dom_testing_html_input_element_select_files_enabled = true;
     }
 
     if cmd_args.zealous_gc {
@@ -722,7 +698,6 @@ fn parse_arguments_helper(args_without_binary: Args) -> ArgumentParsingResult {
         window_title_override: cmd_args.window_title,
         screen_size_override: cmd_args.screen_size_override,
         simulate_touch_events: cmd_args.simulate_touch_events,
-        webdriver_port: Cell::new(cmd_args.webdriver_port),
         output_image_path: cmd_args.output.map(|p| p.to_string_lossy().into_owned()),
         exit_after_stable_image: cmd_args.exit,
         userscripts_directory: cmd_args.userscripts,

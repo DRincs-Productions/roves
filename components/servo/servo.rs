@@ -1086,12 +1086,6 @@ impl Servo {
             .send(EmbedderToConstellationMessage::CreateMemoryReport(snd));
     }
 
-    pub fn execute_webdriver_command(&self, command: WebDriverCommandMsg) {
-        self.0
-            .constellation_proxy
-            .send(EmbedderToConstellationMessage::WebDriverCommand(command));
-    }
-
     pub fn set_preference(&self, name: &str, value: PrefValue) {
         let mut preferences = prefs::get().clone();
         preferences.set_value(name, value);

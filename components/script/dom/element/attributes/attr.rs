@@ -3,7 +3,6 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::mem;
-use std::sync::LazyLock;
 
 use dom_struct::dom_struct;
 use html5ever::{LocalName, Namespace, Prefix, local_name, ns};
@@ -244,52 +243,4 @@ impl<'dom> LayoutDom<'dom, Attr> {
 pub(crate) fn is_relevant_attribute(namespace: &Namespace, local_name: &LocalName) -> bool {
     // <https://svgwg.org/svg2-draft/linking.html#XLinkHrefAttribute>
     namespace == &ns!() || (namespace == &ns!(xlink) && local_name == &local_name!("href"))
-}
-
-/// A help function to check if an attribute is a boolean attribute.
-pub(crate) fn is_boolean_attribute(name: &str) -> bool {
-    // The full list of attributes can be found in [1]. All attributes marked as "Boolean
-    // attribute" in the "Value" column are boolean attributes. Note that "hidden" is effectively
-    // treated as a boolean attribute, according to WPT test "test_global_boolean_attributes" in
-    // webdriver/tests/classic/get_element_attribute/get.py
-    //
-    // [1] <https://html.spec.whatwg.org/multipage/#attributes-3>
-    static BOOLEAN_ATTRIBUTES: LazyLock<[&str; 30]> = LazyLock::new(|| {
-        [
-            "allowfullscreen",
-            "alpha",
-            "async",
-            "autofocus",
-            "autoplay",
-            "checked",
-            "controls",
-            "default",
-            "defer",
-            "disabled",
-            "formnovalidate",
-            "hidden",
-            "inert",
-            "ismap",
-            "itemscope",
-            "loop",
-            "multiple",
-            "muted",
-            "nomodule",
-            "novalidate",
-            "open",
-            "playsinline",
-            "readonly",
-            "required",
-            "reversed",
-            "selected",
-            "shadowrootclonable",
-            "shadowrootcustomelementregistry",
-            "shadowrootdelegatesfocus",
-            "shadowrootserializable",
-        ]
-    });
-
-    BOOLEAN_ATTRIBUTES
-        .iter()
-        .any(|&boolean_attr| boolean_attr.eq_ignore_ascii_case(name))
 }

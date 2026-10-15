@@ -20,7 +20,6 @@ mod protocols;
 #[cfg(not(target_os = "android"))]
 mod resources;
 mod running_app_state;
-mod webdriver;
 mod window;
 
 pub mod platform {

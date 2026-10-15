@@ -18,7 +18,6 @@
 //! loop.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
 use std::default::Default;
 use std::option::Option;
 use std::rc::{Rc, Weak};
@@ -43,7 +42,7 @@ use embedder_traits::user_contents::{UserContentManagerId, UserContents, UserScr
 use embedder_traits::{
     EmbedderControlId, EmbedderControlResponse, EmbedderMsg, FocusSequenceNumber,
     InputEventOutcome, JavaScriptEvaluationError, JavaScriptEvaluationId, MediaSessionActionType,
-    Theme, ViewportDetails, WebDriverScriptCommand,
+    Theme, ViewportDetails,
 };
 use encoding_rs::Encoding;
 use fonts::{FontContext, SystemFontServiceProxy, WebFontLoadEvent};
@@ -110,6 +109,7 @@ use url::Position;
 #[cfg(feature = "webgpu")]
 use webgpu_traits::{WebGPUDevice, WebGPUMsg};
 
+use crate::devtools;
 use crate::devtools::DevtoolsState;
 use crate::document_collection::DocumentCollection;
 use crate::document_loader::DocumentLoader;
@@ -146,6 +146,7 @@ use crate::dom::windowproxy::{CreatorBrowsingContextInfo, WindowProxy};
 use crate::dom::worklet::WorkletThreadPool;
 use crate::dom::workletglobalscope::WorkletGlobalScopeInit;
 use crate::fetch::FetchCanceller;
+use crate::js_value_serialization::jsval_to_js_value;
 use crate::messaging::{
     CommonScriptMsg, MainThreadScriptMsg, MixedMessage, ScriptEventLoopSender,
     ScriptThreadReceivers, ScriptThreadSenders,
@@ -162,8 +163,6 @@ use crate::script_runtime::{
 use crate::script_window_proxies::ScriptWindowProxies;
 use crate::svg_font::SvgFontResolver;
 use crate::task_queue::TaskQueue;
-use crate::webdriver_handlers::jsval_to_webdriver;
-use crate::{devtools, webdriver_handlers};
 
 thread_local!(static SCRIPT_THREAD_ROOT: Cell<Option<*const ScriptThread>> = const { Cell::new(None) });
 
@@ -187,8 +186,6 @@ pub(crate) fn with_script_thread<R: Default>(f: impl FnOnce(&ScriptThread) -> R)
 pub(crate) struct IncompleteParserContexts(RefCell<Vec<(PipelineId, ParserContext)>>);
 
 unsafe_no_jsmanaged_fields!(TaskQueue<MainThreadScriptMsg>);
-
-type NodeIdSet = HashSet<String>;
 
 /// A simple guard structure that restore the user interacting state when dropped
 #[derive(Default)]
@@ -378,10 +375,6 @@ pub struct ScriptThread {
     /// Application window's GL Context for Media player
     #[no_trace]
     player_context: WindowGLContext,
-
-    /// A map from pipelines to all owned nodes ever created in this script thread
-    #[no_trace]
-    pipeline_to_node_ids: DomRefCell<FxHashMap<PipelineId, NodeIdSet>>,
 
     /// Code is running as a consequence of a user interaction
     is_user_interacting: Rc<Cell<bool>>,
@@ -613,8 +606,8 @@ impl ScriptThread {
     /// <https://github.com/whatwg/html/issues/2591>
     fn check_load_origin(source: &LoadOrigin, target: &OriginSnapshot) -> bool {
         match source {
-            LoadOrigin::Constellation | LoadOrigin::WebDriver => {
-                // Always allow loads initiated by the constellation or webdriver.
+            LoadOrigin::Constellation => {
+                // Always allow loads initiated by the constellation.
                 true
             },
             LoadOrigin::Script(source_origin) => source_origin.same_origin_domain(target),
@@ -863,27 +856,6 @@ impl ScriptThread {
         })
     }
 
-    pub(crate) fn save_node_id(pipeline: PipelineId, node_id: String) {
-        with_script_thread(|script_thread| {
-            script_thread
-                .pipeline_to_node_ids
-                .borrow_mut()
-                .entry(pipeline)
-                .or_default()
-                .insert(node_id);
-        })
-    }
-
-    pub(crate) fn has_node_id(pipeline: PipelineId, node_id: &str) -> bool {
-        with_script_thread(|script_thread| {
-            script_thread
-                .pipeline_to_node_ids
-                .borrow()
-                .get(&pipeline)
-                .is_some_and(|node_ids| node_ids.contains(node_id))
-        })
-    }
-
     /// Creates a new script thread.
     #[servo_tracing::instrument(name = "ScripThread::new", level = "debug", skip_all)]
     pub(crate) fn new(
@@ -1026,7 +998,6 @@ impl ScriptThread {
                     shared_style_locks,
                     user_contents_for_manager_id: RefCell::new(user_contents_for_manager_id),
                     player_context: state.player_context,
-                    pipeline_to_node_ids: Default::default(),
                     is_user_interacting: Rc::new(Cell::new(false)),
                     #[cfg(feature = "webgpu")]
                     gpu_id_hub,
@@ -1894,9 +1865,6 @@ impl ScriptThread {
             ScriptThreadMessage::FocusDocument(pipeline_id, remote_focus_operation) => {
                 self.handle_focus_document(cx, pipeline_id, remote_focus_operation);
             },
-            ScriptThreadMessage::WebDriverScriptCommand(pipeline_id, msg) => {
-                self.handle_webdriver_msg(pipeline_id, msg, cx)
-            },
             ScriptThreadMessage::WebFontLoadFinished(pipeline_id, event) => {
                 // If the font load did not succeed then this message only serves to bump the script thread
                 // so it attempts to resolve the document.fonts.ready promise. This happens as a result
@@ -2384,349 +2352,6 @@ impl ScriptThread {
                 }
             },
         };
-    }
-
-    fn handle_webdriver_msg(
-        &self,
-        pipeline_id: PipelineId,
-        msg: WebDriverScriptCommand,
-        cx: &mut js::context::JSContext,
-    ) {
-        let documents = self.documents.borrow();
-        match msg {
-            WebDriverScriptCommand::AddCookie(params, reply) => {
-                webdriver_handlers::handle_add_cookie(&documents, pipeline_id, params, reply)
-            },
-            WebDriverScriptCommand::DeleteCookies(reply) => {
-                webdriver_handlers::handle_delete_cookies(&documents, pipeline_id, reply)
-            },
-            WebDriverScriptCommand::DeleteCookie(name, reply) => {
-                webdriver_handlers::handle_delete_cookie(&documents, pipeline_id, name, reply)
-            },
-            WebDriverScriptCommand::ElementClear(element_id, reply) => {
-                webdriver_handlers::handle_element_clear(
-                    cx,
-                    &documents,
-                    pipeline_id,
-                    element_id,
-                    reply,
-                )
-            },
-            WebDriverScriptCommand::FindElementsCSSSelector(selector, reply) => {
-                webdriver_handlers::handle_find_elements_css_selector(
-                    cx,
-                    &documents,
-                    pipeline_id,
-                    selector,
-                    reply,
-                )
-            },
-            WebDriverScriptCommand::FindElementsLinkText(selector, partial, reply) => {
-                webdriver_handlers::handle_find_elements_link_text(
-                    cx,
-                    &documents,
-                    pipeline_id,
-                    selector,
-                    partial,
-                    reply,
-                )
-            },
-            WebDriverScriptCommand::FindElementsTagName(selector, reply) => {
-                webdriver_handlers::handle_find_elements_tag_name(
-                    cx,
-                    &documents,
-                    pipeline_id,
-                    selector,
-                    reply,
-                )
-            },
-            WebDriverScriptCommand::FindElementsXpathSelector(selector, reply) => {
-                webdriver_handlers::handle_find_elements_xpath_selector(
-                    cx,
-                    &documents,
-                    pipeline_id,
-                    selector,
-                    reply,
-                )
-            },
-            WebDriverScriptCommand::FindElementElementsCSSSelector(selector, element_id, reply) => {
-                webdriver_handlers::handle_find_element_elements_css_selector(
-                    cx,
-                    &documents,
-                    pipeline_id,
-                    element_id,
-                    selector,
-                    reply,
-                )
-            },
-            WebDriverScriptCommand::FindElementElementsLinkText(
-                selector,
-                element_id,
-                partial,
-                reply,
-            ) => webdriver_handlers::handle_find_element_elements_link_text(
-                cx,
-                &documents,
-                pipeline_id,
-                element_id,
-                selector,
-                partial,
-                reply,
-            ),
-            WebDriverScriptCommand::FindElementElementsTagName(selector, element_id, reply) => {
-                webdriver_handlers::handle_find_element_elements_tag_name(
-                    cx,
-                    &documents,
-                    pipeline_id,
-                    element_id,
-                    selector,
-                    reply,
-                )
-            },
-            WebDriverScriptCommand::FindElementElementsXPathSelector(
-                selector,
-                element_id,
-                reply,
-            ) => webdriver_handlers::handle_find_element_elements_xpath_selector(
-                cx,
-                &documents,
-                pipeline_id,
-                element_id,
-                selector,
-                reply,
-            ),
-            WebDriverScriptCommand::FindShadowElementsCSSSelector(
-                selector,
-                shadow_root_id,
-                reply,
-            ) => webdriver_handlers::handle_find_shadow_elements_css_selector(
-                cx,
-                &documents,
-                pipeline_id,
-                shadow_root_id,
-                selector,
-                reply,
-            ),
-            WebDriverScriptCommand::FindShadowElementsLinkText(
-                selector,
-                shadow_root_id,
-                partial,
-                reply,
-            ) => webdriver_handlers::handle_find_shadow_elements_link_text(
-                cx,
-                &documents,
-                pipeline_id,
-                shadow_root_id,
-                selector,
-                partial,
-                reply,
-            ),
-            WebDriverScriptCommand::FindShadowElementsTagName(selector, shadow_root_id, reply) => {
-                webdriver_handlers::handle_find_shadow_elements_tag_name(
-                    cx,
-                    &documents,
-                    pipeline_id,
-                    shadow_root_id,
-                    selector,
-                    reply,
-                )
-            },
-            WebDriverScriptCommand::FindShadowElementsXPathSelector(
-                selector,
-                shadow_root_id,
-                reply,
-            ) => webdriver_handlers::handle_find_shadow_elements_xpath_selector(
-                cx,
-                &documents,
-                pipeline_id,
-                shadow_root_id,
-                selector,
-                reply,
-            ),
-            WebDriverScriptCommand::GetElementShadowRoot(element_id, reply) => {
-                webdriver_handlers::handle_get_element_shadow_root(
-                    &documents,
-                    pipeline_id,
-                    element_id,
-                    reply,
-                )
-            },
-            WebDriverScriptCommand::ElementClick(element_id, reply) => {
-                webdriver_handlers::handle_element_click(
-                    cx,
-                    &documents,
-                    pipeline_id,
-                    element_id,
-                    reply,
-                )
-            },
-            WebDriverScriptCommand::GetKnownElement(element_id, reply) => {
-                webdriver_handlers::handle_get_known_element(
-                    &documents,
-                    pipeline_id,
-                    element_id,
-                    reply,
-                )
-            },
-            WebDriverScriptCommand::GetKnownWindow(webview_id, reply) => {
-                webdriver_handlers::handle_get_known_window(
-                    &documents,
-                    pipeline_id,
-                    webview_id,
-                    reply,
-                )
-            },
-            WebDriverScriptCommand::GetKnownShadowRoot(element_id, reply) => {
-                webdriver_handlers::handle_get_known_shadow_root(
-                    &documents,
-                    pipeline_id,
-                    element_id,
-                    reply,
-                )
-            },
-            WebDriverScriptCommand::GetActiveElement(reply) => {
-                webdriver_handlers::handle_get_active_element(&documents, pipeline_id, reply)
-            },
-            WebDriverScriptCommand::GetComputedRole(node_id, reply) => {
-                webdriver_handlers::handle_get_computed_role(
-                    &documents,
-                    pipeline_id,
-                    node_id,
-                    reply,
-                )
-            },
-            WebDriverScriptCommand::GetPageSource(reply) => {
-                webdriver_handlers::handle_get_page_source(cx, &documents, pipeline_id, reply)
-            },
-            WebDriverScriptCommand::GetCookies(reply) => {
-                webdriver_handlers::handle_get_cookies(&documents, pipeline_id, reply)
-            },
-            WebDriverScriptCommand::GetCookie(name, reply) => {
-                webdriver_handlers::handle_get_cookie(&documents, pipeline_id, name, reply)
-            },
-            WebDriverScriptCommand::GetElementTagName(node_id, reply) => {
-                webdriver_handlers::handle_get_name(&documents, pipeline_id, node_id, reply)
-            },
-            WebDriverScriptCommand::GetElementAttribute(node_id, name, reply) => {
-                webdriver_handlers::handle_get_attribute(
-                    cx,
-                    &documents,
-                    pipeline_id,
-                    node_id,
-                    name,
-                    reply,
-                )
-            },
-            WebDriverScriptCommand::GetElementProperty(node_id, name, reply) => {
-                webdriver_handlers::handle_get_property(
-                    &documents,
-                    pipeline_id,
-                    node_id,
-                    name,
-                    reply,
-                    cx,
-                )
-            },
-            WebDriverScriptCommand::GetElementCSS(node_id, name, reply) => {
-                webdriver_handlers::handle_get_css(
-                    cx,
-                    &documents,
-                    pipeline_id,
-                    node_id,
-                    name,
-                    reply,
-                )
-            },
-            WebDriverScriptCommand::GetElementRect(node_id, reply) => {
-                webdriver_handlers::handle_get_rect(cx, &documents, pipeline_id, node_id, reply)
-            },
-            WebDriverScriptCommand::ScrollAndGetBoundingClientRect(node_id, reply) => {
-                webdriver_handlers::handle_scroll_and_get_bounding_client_rect(
-                    cx,
-                    &documents,
-                    pipeline_id,
-                    node_id,
-                    reply,
-                )
-            },
-            WebDriverScriptCommand::GetElementText(node_id, reply) => {
-                webdriver_handlers::handle_get_text(&documents, pipeline_id, node_id, reply)
-            },
-            WebDriverScriptCommand::GetElementInViewCenterPoint(node_id, reply) => {
-                webdriver_handlers::handle_get_element_in_view_center_point(
-                    cx,
-                    &documents,
-                    pipeline_id,
-                    node_id,
-                    reply,
-                )
-            },
-            WebDriverScriptCommand::GetParentFrameId(reply) => {
-                webdriver_handlers::handle_get_parent_frame_id(&documents, pipeline_id, reply)
-            },
-            WebDriverScriptCommand::GetBrowsingContextId(webdriver_frame_id, reply) => {
-                webdriver_handlers::handle_get_browsing_context_id(
-                    &documents,
-                    pipeline_id,
-                    webdriver_frame_id,
-                    reply,
-                )
-            },
-            WebDriverScriptCommand::GetUrl(reply) => {
-                webdriver_handlers::handle_get_url(&documents, pipeline_id, reply)
-            },
-            WebDriverScriptCommand::IsEnabled(element_id, reply) => {
-                webdriver_handlers::handle_is_enabled(&documents, pipeline_id, element_id, reply)
-            },
-            WebDriverScriptCommand::IsSelected(element_id, reply) => {
-                webdriver_handlers::handle_is_selected(&documents, pipeline_id, element_id, reply)
-            },
-            WebDriverScriptCommand::GetTitle(reply) => {
-                webdriver_handlers::handle_get_title(&documents, pipeline_id, reply)
-            },
-            WebDriverScriptCommand::WillSendKeys(
-                element_id,
-                text,
-                strict_file_interactability,
-                reply,
-            ) => webdriver_handlers::handle_will_send_keys(
-                cx,
-                &documents,
-                pipeline_id,
-                element_id,
-                text,
-                strict_file_interactability,
-                reply,
-            ),
-            WebDriverScriptCommand::AddLoadStatusSender(_, response_sender) => {
-                webdriver_handlers::handle_add_load_status_sender(
-                    &documents,
-                    pipeline_id,
-                    response_sender,
-                )
-            },
-            WebDriverScriptCommand::RemoveLoadStatusSender(_) => {
-                webdriver_handlers::handle_remove_load_status_sender(&documents, pipeline_id)
-            },
-            // https://github.com/servo/servo/issues/23535
-            // The Script messages need different treatment since the JS script might mutate
-            // `self.documents`, which would conflict with the immutable borrow of it that
-            // occurs for the rest of the messages.
-            // We manually drop the immutable borrow first, and quickly
-            // end the borrow of documents to avoid runtime error.
-            WebDriverScriptCommand::ExecuteScriptWithCallback(script, reply) => {
-                let window = documents.find_window(pipeline_id);
-                drop(documents);
-                webdriver_handlers::handle_execute_async_script(window, script, reply, cx);
-            },
-            WebDriverScriptCommand::SetProtocolHandlerAutomationMode(mode) => {
-                webdriver_handlers::set_protocol_handler_automation_mode(
-                    &documents,
-                    pipeline_id,
-                    mode,
-                )
-            },
-        }
     }
 
     /// Batch window resize operations into a single "update the rendering" task,
@@ -4387,7 +4012,7 @@ impl ScriptThread {
             return;
         };
 
-        let result = jsval_to_webdriver(cx, global_scope, return_value.handle());
+        let result = jsval_to_js_value(cx, global_scope, return_value.handle());
         let _ = self.senders.pipeline_to_constellation_sender.send((
             webview_id,
             pipeline_id,

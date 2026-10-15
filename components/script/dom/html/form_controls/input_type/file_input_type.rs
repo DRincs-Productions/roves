@@ -82,23 +82,6 @@ impl FileInputType {
     ) {
         let mut files = Vec::new();
 
-        if let Some(pending_webdriver_reponse) = input.take_pending_webdriver_response() {
-            // From: <https://w3c.github.io/webdriver/#dfn-dispatch-actions-for-a-string>
-            // "Complete implementation specific steps equivalent to setting the selected
-            // files on the input element. If multiple is true files are be appended to
-            // element's selected files."
-            //
-            // Note: This is annoying.
-            if input.Multiple() &&
-                let Some(filelist) = self.get_files()
-            {
-                files = filelist.iter_files().map(|file| file.as_rooted()).collect();
-            }
-
-            let number_files_selected = response.as_ref().map(Vec::len).unwrap_or_default();
-            pending_webdriver_reponse.finish(number_files_selected);
-        }
-
         let Some(response_files) = response else {
             return;
         };

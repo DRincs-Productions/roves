@@ -13695,3 +13695,104 @@ the files to the `deps-gstreamer-1.28.7` release of this repo. Workflows, macOS 
 that copy first, and fall back to the official site: resumed with `curl -C -` on Windows and
 macOS, plain `util.download_file` in the Windows bootstrap. `TODO.md` tracks making the official
 link the primary source again.
+
+## 2026-10-15 - Remove WebDriver
+
+**Servo files:** workspace `Cargo.toml`, `components/constellation/{constellation,tracing}.rs`,
+`components/net/resource_thread.rs`, `components/script/{Cargo.toml,devtools.rs,lib.rs,messaging.rs,navigation.rs,script_thread.rs}`,
+`components/script/js_value_serialization.rs` (new), `components/script/dom/{document/document.rs,element/attributes/attr.rs,element/element.rs,geometry/domrectlist.rs,html/form_controls/htmlinputelement.rs,html/form_controls/input_type/file_input_type.rs,html/htmlformelement.rs,html/htmltextareaelement.rs,node/node.rs,window/window.rs}`,
+`components/script_bindings/{codegen/Bindings.conf,webidls/Window.webidl}`,
+`components/servo/servo.rs`, `components/shared/constellation/{from_script_message,lib}.rs`,
+`components/shared/embedder/{Cargo.toml,lib.rs}`, `components/shared/net/lib.rs`,
+`components/shared/script/lib.rs`, `ports/servoshell/{Cargo.toml,lib.rs,prefs.rs,running_app_state.rs,window.rs}`,
+`ports/servoshell/desktop/{app,event_loop,headed_window,headless_window}.rs`,
+`ports/servoshell/egl/app.rs`, `Cargo.lock`. **Patch:** `0222-remove-webdriver.patch` after 0221,
+plus a new section in `REMOVED_PATHS.txt`.
+
+Roves never starts the WebDriver server: no workflow, test page, `roves-action` input or
+Packmaster setting passes `--webdriver`, and neither `README.md` nor the wiki documents it. This
+entry deletes WebDriver end to end.
+
+- Deleted (8713 lines, 12 tracked files), all listed in `REMOVED_PATHS.txt`:
+  `components/webdriver_server/` (the HTTP server, 5882 lines), `ports/servoshell/webdriver.rs`
+  (servoshell's command handler, 340), `components/script/webdriver_handlers.rs` (the
+  script-thread handlers, 2190) and `components/shared/embedder/webdriver.rs` (the message types
+  `WebDriverCommandMsg`, `WebDriverScriptCommand`, `WebDriverLoadStatus`, `WebDriverSenders`
+  and friends, 301).
+- servoshell: the `--webdriver[=PORT]` option and `webdriver_port` preference, the receiver,
+  senders, pending-event map and virtual dialog container in `RunningAppState`, and the
+  WebDriver branches in `schedule_exit`, `spin_event_loop` (exit when the last window closes is
+  now unconditional), `request_create_new` (`window.open()` always activates the new WebView,
+  which was already the non-WebDriver path), `notify_input_event_handled`,
+  `notify_load_status_changed`, `notify_traversal_complete` (now the trait's no-op default) and
+  `show_embedder_control`/`hide_embedder_control`. `RunningAppState::new` no longer takes the
+  event-loop waker and default preferences, `spin_event_loop` and `App::pump_servo_event_loop`
+  no longer take the window factory that only `NewWindow` used. Helpers only WebDriver called
+  are gone: `PlatformWindow::{window_rect, maximize}` and their headed, headless and Android
+  implementations, `RunningAppState::webview_by_id`, `ServoShellWindow::webview_by_id`,
+  `WebViewCollection::get`.
+- Engine: `EmbedderToConstellationMessage::WebDriverCommand`, `ScriptThreadMessage::WebDriverScriptCommand`,
+  `LoadOrigin::WebDriver`, `Servo::execute_webdriver_command`, the constellation's
+  `handle_webdriver_msg` and WebDriver load-status sender, the script thread's
+  `handle_webdriver_msg`, the `Window` load-status/script channels and the six `webdriver*`
+  methods `Window.webidl` exposed to every page, the protocol-handler automation mode (only
+  WebDriver set it and nothing read it), the `<input type=file>` WebDriver file-selection
+  response, and `CoreResourceMsg::DeleteCookie` (only WebDriver sent it). Methods that only
+  WebDriver called were deleted: `HTMLInputElement::{clear, is_nontypeable}`,
+  `HTMLTextAreaElement::clear`, `Element::{is_active_element, outer_html}`,
+  `DOMRectList::first`, `FormControl::is_candidate_for_constraint_validation`,
+  `attr::is_boolean_attribute`, and `ScriptThread::{save_node_id, has_node_id}` with their
+  per-pipeline set of node ids, which only WebDriver read and which otherwise grew for every
+  node that got an id (`Node::unique_id` no longer takes a pipeline).
+- Kept: the JSON clone that turns a JS value into an embedder `JSValue` is also what
+  `WebView::evaluate_javascript` returns, so `jsval_to_webdriver` and its helpers moved
+  unchanged to `components/script/js_value_serialization.rs` as `jsval_to_js_value` (one
+  needless `unsafe` around `JS_IsExceptionPending` dropped). `JSValue::{Element, ShadowRoot,
+  Window, Frame}` stay because that function produces them. Input-event completion messages,
+  `ScreenshotCaptureError` and the `dom_testing_html_input_element_select_files_enabled`
+  preference (still used by the net unit tests) stay.
+- Workspace: the `webdriver`, `warp`, `http02` and `servo-webdriver-server` dependencies and
+  keyboard-types' `webdriver` feature are gone, and `embedder_traits` drops `webdriver`,
+  `cookie` and `rustc-hash`. `Cargo.lock` loses `servo-webdriver-server`, `webdriver`, `warp`,
+  `http` 0.2.12, `cookie` 0.16.2, `serde_urlencoded` and `ryu`.
+
+Edits remove 1222 lines and add 401, of which 337 are the moved JSON clone (without
+`Cargo.lock`): about 9530 lines fewer in total.
+
+Verified: `AWS_LC_SYS_PREBUILT_NASM=1 cargo check -p servoshell --release` finishes with no
+errors and no warnings in `servoshell`. The remaining warnings are the ones listed under the
+OpenHarmony entry, plus `advance_specific` and `Promise::duplicate` being unused without the
+`testbinding` feature (since 0221; neither was used by WebDriver). The Android target is not
+installed on the Windows dev box, so `egl/app.rs` was checked by reading it.
+`support/check_sdl3_windowing_contracts.py` passes. Applying 0001-0223 (skipping 0042, as CI
+does) to the pristine v0.5.0 archive and deleting `REMOVED_PATHS.txt` gives every modified
+source file byte-identical to this tree, and the deleted paths are absent. As for 0218, the
+`Cargo.lock` hunks of 0222 and 0223 are written against the rebuilt `Cargo.lock` (the same
+packages and dependency lines removed or added as in this tree's lock); the rebuilt lock still
+differs from this tree's by 2123 diff lines, as before.
+
+## 2026-10-15 - Keyboard `code` from Chromium's USB HID table (`keycode` crate)
+
+**Servo files:** workspace `Cargo.toml`, `ports/servoshell/Cargo.toml`,
+`ports/servoshell/desktop/keyutils.rs`, `Cargo.lock`. **Patch:**
+`0223-keycode-crate-for-scancodes.patch` after 0222.
+
+`code_from_scancode` mapped SDL3 scancodes to DOM `code` values with a hand-written, admittedly
+incomplete match of about 130 keys. SDL3 scancodes are USB HID usage IDs on the keyboard page
+(0x07), so it now asks the `keycode` crate (1.0.0, MIT, `no_std`; Chromium's
+`keycode_converter_data.inc` table) for `KeyMap::from_usb_code(0x07, scancode)`, and parses the
+returned code name with `keyboard_types::Code::from_str`. Keys without a DOM code, or with one
+`keyboard-types` does not know, still report `Code::Unidentified`. Every key the old match
+covered maps to the same `Code`; the table also covers keys it missed (`IntlBackslash`,
+`IntlRo`, `IntlYen`, `Lang1`-`Lang5`, `Convert`/`NonConvert`, `KanaMode`, `Power`, `Help`,
+`Undo`, extra numpad keys). `key_from_keycode`, `location_from_scancode` and the modifier mapping
+are unchanged. The crate adds `keycode`, `keycode_macro` (a proc macro that expands the table at
+build time) and `arraydeque` to `Cargo.lock`.
+
+A new unit test, `maps_scancodes_to_dom_codes`, checks letters, digits, Enter, Space, Backquote,
+the arrows, F1/F12/F24, NumLock and numpad keys, four modifiers, ContextMenu and
+AudioVolumeMute. `AWS_LC_SYS_PREBUILT_NASM=1 cargo test -p servoshell --release --lib keyutils`
+passes (4 tests).
+
+Applying the series to the pristine archive gives `keyutils.rs` and both manifests
+byte-identical to this tree (see the WebDriver entry above for the `Cargo.lock` hunks).

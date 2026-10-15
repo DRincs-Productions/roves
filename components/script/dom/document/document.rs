@@ -21,9 +21,7 @@ use cookie::Cookie;
 use data_url::mime::Mime;
 use devtools_traits::ScriptToDevtoolsControlMsg;
 use dom_struct::dom_struct;
-use embedder_traits::{
-    AllowOrDeny, AnimationState, CustomHandlersAutomationMode, EmbedderMsg, Image, LoadStatus,
-};
+use embedder_traits::{AllowOrDeny, AnimationState, EmbedderMsg, Image, LoadStatus};
 use encoding_rs::{Encoding, UTF_8};
 use html5ever::{LocalName, QualName, local_name, ns};
 use hyper_serde::Serde;
@@ -664,10 +662,6 @@ pub(crate) struct Document {
     /// <https://html.spec.whatwg.org/multipage/#details-name-group>
     details_name_groups: DomRefCell<Option<DetailsNameGroups>>,
 
-    /// <https://html.spec.whatwg.org/multipage/#registerprotocolhandler()-automation-mode>
-    #[no_trace]
-    protocol_handler_automation_mode: RefCell<CustomHandlersAutomationMode>,
-
     /// Reflect the value of that preferences to prevent paying the cost of a RwLock access.
     layout_animations_test_enabled: bool,
 
@@ -1029,10 +1023,6 @@ impl Document {
     /// TODO: Remove this when we create documents after processing headers
     pub(crate) fn mark_as_internal(&self) {
         *self.origin.borrow_mut() = MutableOrigin::new(ImmutableOrigin::new_opaque());
-    }
-
-    pub(crate) fn set_protocol_handler_automation_mode(&self, mode: CustomHandlersAutomationMode) {
-        *self.protocol_handler_automation_mode.borrow_mut() = mode;
     }
 
     /// <https://dom.spec.whatwg.org/#concept-document-url>
@@ -3863,7 +3853,6 @@ impl Document {
             favicon: RefCell::new(None),
             websockets: DOMTracker::new(),
             details_name_groups: Default::default(),
-            protocol_handler_automation_mode: Default::default(),
             layout_animations_test_enabled: pref!(layout_animations_test_enabled),
             state_override: Default::default(),
             value_override: Default::default(),

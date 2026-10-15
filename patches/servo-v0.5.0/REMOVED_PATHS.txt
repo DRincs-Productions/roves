@@ -104,3 +104,13 @@ support/openharmony
 support/hitrace-bencher
 components/media/backends/ohos
 components/fonts/platform/freetype/ohos
+
+# WebDriver, deleted entirely (see CUSTOMIZATIONS.md, 2026-10-15 "Remove WebDriver" entry; the
+# matching edits to the files that referenced it are patch 0222). Roves never starts the
+# WebDriver server: the HTTP server crate, servoshell's command handler, the script-thread
+# command handlers and the shared message types. The JSON clone of `evaluate_javascript`
+# results moved from webdriver_handlers.rs to components/script/js_value_serialization.rs.
+components/webdriver_server
+ports/servoshell/webdriver.rs
+components/script/webdriver_handlers.rs
+components/shared/embedder/webdriver.rs

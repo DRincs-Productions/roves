@@ -76,8 +76,6 @@ impl ScriptToConstellationChan {
 pub enum LoadOrigin {
     /// A load originating in the constellation.
     Constellation,
-    /// A load originating in webdriver.
-    WebDriver,
     /// A load originating in script.
     Script(OriginSnapshot),
 }

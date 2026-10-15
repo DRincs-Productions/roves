@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use std::cell::{Cell, RefCell, RefMut};
+use std::cell::{Cell, RefMut};
 use std::{f64, ptr};
 
 use dom_struct::dom_struct;
@@ -22,7 +22,6 @@ use layout_api::{ScriptSelection, SharedSelection};
 use num_traits::ToPrimitive;
 use script_bindings::cell::{DomRefCell, Ref};
 use script_bindings::domstring::parse_floating_point_number;
-use servo_base::generic_channel::GenericSender;
 use servo_base::text::Utf16CodeUnits;
 use style::attr::AttrValue;
 use style::str::split_commas;
@@ -30,7 +29,6 @@ use stylo_atoms::Atom;
 use stylo_dom::ElementState;
 use time::OffsetDateTime;
 use unicode_bidi::{BidiClass, bidi_class};
-use webdriver::error::ErrorStatus;
 
 use crate::dom::activation::Activatable;
 use crate::dom::bindings::codegen::Bindings::ElementBinding::ElementMethods;
@@ -129,8 +127,6 @@ pub(crate) struct HTMLInputElement {
     form_owner: MutNullableDom<HTMLFormElement>,
     labels_node_list: MutNullableDom<NodeList>,
     validity_state: MutNullableDom<ValidityState>,
-    #[no_trace]
-    pending_webdriver_response: RefCell<Option<PendingWebDriverResponse>>,
 
     /// <https://w3c.github.io/selection-api/#dfn-has-scheduled-selectionchange-event>
     has_scheduled_selectionchange_event: Cell<bool>,
@@ -189,7 +185,6 @@ impl HTMLInputElement {
             form_owner: Default::default(),
             labels_node_list: MutNullableDom::new(None),
             validity_state: Default::default(),
-            pending_webdriver_response: Default::default(),
             has_scheduled_selectionchange_event: Default::default(),
         }
     }
@@ -275,23 +270,6 @@ impl HTMLInputElement {
     #[inline]
     pub(crate) fn input_type(&self) -> Ref<'_, InputType> {
         self.input_type.borrow()
-    }
-
-    /// <https://w3c.github.io/webdriver/#dfn-non-typeable-form-control>
-    pub(crate) fn is_nontypeable(&self) -> bool {
-        matches!(
-            *self.input_type(),
-            InputType::Button(_) |
-                InputType::Checkbox(_) |
-                InputType::Color(_) |
-                InputType::File(_) |
-                InputType::Hidden(_) |
-                InputType::Image(_) |
-                InputType::Radio(_) |
-                InputType::Range(_) |
-                InputType::Reset(_) |
-                InputType::Submit(_)
-        )
     }
 
     #[inline]
@@ -1746,35 +1724,6 @@ impl HTMLInputElement {
         self.value_changed(cx);
     }
 
-    /// <https://w3c.github.io/webdriver/#ref-for-dfn-clear-algorithm-3>
-    /// Used by WebDriver to clear the input element.
-    pub(crate) fn clear(&self, cx: &mut JSContext) {
-        // Step 1. Reset dirty value and dirty checkedness flags.
-        self.value_dirty.set(false);
-        self.checked_changed.set(false);
-        // Step 2. Set value to empty string.
-        self.textinput.borrow_mut().set_content(DOMString::from(""));
-        // Step 3. Set checkedness based on presence of content attribute.
-        self.update_checked_state(cx, self.DefaultChecked(), false);
-        // Step 4. Empty selected files
-        if self.input_type().as_specific().get_files().is_some() {
-            let window = self.owner_window();
-            let filelist = FileList::new(cx, &window, vec![]);
-            self.input_type().as_specific().set_files(&filelist);
-        }
-
-        // Step 5. Invoke the value sanitization algorithm iff the type attribute's
-        // current state defines one.
-        {
-            let mut textinput = self.textinput.borrow_mut();
-            let mut value = textinput.get_content();
-            self.sanitize_value(&mut value);
-            textinput.set_content(value);
-        }
-
-        self.value_changed(cx);
-    }
-
     fn update_placeholder_shown_state(&self) {
         if !self.input_type().is_textual_or_password() {
             self.upcast::<Element>().set_placeholder_shown_state(false);
@@ -1784,28 +1733,6 @@ impl HTMLInputElement {
             self.upcast::<Element>()
                 .set_placeholder_shown_state(has_placeholder && !has_value);
         }
-    }
-
-    pub(crate) fn select_files_for_webdriver(
-        &self,
-        test_paths: Vec<DOMString>,
-        response_sender: GenericSender<Result<bool, ErrorStatus>>,
-    ) {
-        let mut stored_sender = self.pending_webdriver_response.borrow_mut();
-        assert!(stored_sender.is_none());
-
-        *stored_sender = Some(PendingWebDriverResponse {
-            response_sender,
-            expected_file_count: test_paths.len(),
-        });
-
-        self.input_type()
-            .as_specific()
-            .select_files(self, Some(test_paths));
-    }
-
-    pub(crate) fn take_pending_webdriver_response(&self) -> Option<PendingWebDriverResponse> {
-        self.pending_webdriver_response.borrow_mut().take()
     }
 
     /// <https://html.spec.whatwg.org/multipage/#value-sanitization-algorithm>
@@ -2673,28 +2600,5 @@ fn matches_js_regex(cx: &mut JSContext, regex_obj: HandleObject, value: &str) ->
     } else {
         unsafe { JS_ClearPendingException(cx) };
         Err(())
-    }
-}
-
-/// When WebDriver asks the [`HTMLInputElement`] to do some asynchronous actions, such
-/// as selecting files, this stores the details necessary to complete the response when
-/// the action is complete.
-#[derive(MallocSizeOf)]
-pub(crate) struct PendingWebDriverResponse {
-    /// An [`IpcSender`] to use to send the reply when the response is ready.
-    response_sender: GenericSender<Result<bool, ErrorStatus>>,
-    /// The number of files expected to be selected when the selection process is done.
-    expected_file_count: usize,
-}
-
-impl PendingWebDriverResponse {
-    pub(crate) fn finish(self, number_files_selected: usize) {
-        if number_files_selected == self.expected_file_count {
-            let _ = self.response_sender.send(Ok(false));
-        } else {
-            // If not all files are found the WebDriver specification says to return
-            // the InvalidArgument error.
-            let _ = self.response_sender.send(Err(ErrorStatus::InvalidArgument));
-        }
     }
 }

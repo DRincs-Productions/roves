@@ -479,13 +479,6 @@ impl ResourceChannelManager {
                 }
                 return true;
             },
-            CoreResourceMsg::DeleteCookie(request, name) => {
-                http_state
-                    .cookie_jar
-                    .write()
-                    .delete_cookie_with_name(&request, name);
-                return true;
-            },
             CoreResourceMsg::DeleteCookieAsync(cookie_store_id, url, name) => {
                 http_state
                     .cookie_jar

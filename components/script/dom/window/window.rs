@@ -23,9 +23,8 @@ use devtools_traits::{ScriptToDevtoolsControlMsg, TimelineMarker, TimelineMarker
 use dom_struct::dom_struct;
 use embedder_traits::user_contents::UserScript;
 use embedder_traits::{
-    AlertResponse, ConfirmResponse, EmbedderMsg, JavaScriptEvaluationError, PromptResponse,
-    ScriptToEmbedderChan, SimpleDialogRequest, Theme, UntrustedNodeAddress, ViewportDetails,
-    WebDriverJSResult, WebDriverLoadStatus,
+    AlertResponse, ConfirmResponse, EmbedderMsg, PromptResponse, ScriptToEmbedderChan,
+    SimpleDialogRequest, Theme, UntrustedNodeAddress, ViewportDetails,
 };
 use euclid::{Point2D, Rect, Scale, Size2D, Vector2D};
 use fonts::{
@@ -71,7 +70,6 @@ use script_bindings::dom::UnrootedDom;
 use script_bindings::interfaces::{HasOrigin, WindowHelpers};
 use script_bindings::like::Setlike;
 use script_bindings::reflector::DomObject;
-use script_bindings::root::Root;
 use script_traits::{ConstellationInputEvent, ScriptThreadMessage};
 use selectors::attr::CaseSensitivity;
 use servo_arc::Arc as ServoArc;
@@ -125,9 +123,7 @@ use crate::dom::bindings::codegen::Bindings::WindowBinding::{
 use crate::dom::bindings::codegen::UnionTypes::{
     RequestOrUSVString, TrustedScriptOrString, TrustedScriptOrStringOrFunction,
 };
-use crate::dom::bindings::error::{
-    Error, ErrorInfo, ErrorResult, Fallible, javascript_error_info_from_error_info,
-};
+use crate::dom::bindings::error::{Error, ErrorResult, Fallible};
 use crate::dom::bindings::inheritance::{Castable, ElementTypeId, HTMLElementTypeId, NodeTypeId};
 use crate::dom::bindings::num::Finite;
 use crate::dom::bindings::refcounted::Trusted;
@@ -179,7 +175,6 @@ use crate::dom::screen::Screen;
 use crate::dom::scrolling_box::{ScrollingBox, ScrollingBoxSource};
 use crate::dom::selection::Selection;
 use crate::dom::serviceworker::cachestorage::CacheStorage;
-use crate::dom::shadowroot::ShadowRoot;
 use crate::dom::storage::Storage;
 #[cfg(feature = "bluetooth")]
 use crate::dom::testrunner::TestRunner;
@@ -204,7 +199,6 @@ use crate::task_manager::TaskManager;
 use crate::task_source::SendableTaskSource;
 use crate::timers::{IsInterval, OneshotTimers, TimerCallback};
 use crate::unminify::unminified_path;
-use crate::webdriver_handlers::{find_node_by_unique_id_in_document, jsval_to_webdriver};
 use crate::{fetch, window_named_properties};
 
 /// A callback to call when a response comes back from the `ImageCache`.
@@ -369,14 +363,6 @@ pub(crate) struct Window {
     /// cases.
     #[no_trace]
     layout_blocker: Cell<LayoutBlocker>,
-
-    /// A channel for communicating results of async scripts back to the webdriver server
-    #[no_trace]
-    webdriver_script_chan: DomRefCell<Option<GenericSender<WebDriverJSResult>>>,
-
-    /// A channel to notify webdriver if there is a navigation
-    #[no_trace]
-    webdriver_load_status_sender: RefCell<Option<GenericSender<WebDriverLoadStatus>>>,
 
     /// The current state of the window object
     current_state: Cell<WindowState>,
@@ -1883,61 +1869,6 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
     }
 
     // check-tidy: no specs after this line
-    fn WebdriverCallback(&self, realm: &mut CurrentRealm, value: HandleValue) {
-        let webdriver_script_sender = self.webdriver_script_chan.borrow_mut().take();
-        if let Some(webdriver_script_sender) = webdriver_script_sender {
-            let result = jsval_to_webdriver(realm, &self.globalscope, value);
-            let _ = webdriver_script_sender.send(result);
-        }
-    }
-
-    fn WebdriverException(&self, cx: &mut JSContext, value: HandleValue) {
-        let webdriver_script_sender = self.webdriver_script_chan.borrow_mut().take();
-        if let Some(webdriver_script_sender) = webdriver_script_sender {
-            let error_info = ErrorInfo::from_value(cx, value);
-            let _ = webdriver_script_sender.send(Err(
-                JavaScriptEvaluationError::EvaluationFailure(Some(
-                    javascript_error_info_from_error_info(cx, &error_info, value),
-                )),
-            ));
-        }
-    }
-
-    fn WebdriverElement(&self, id: DOMString) -> Option<DomRoot<Element>> {
-        find_node_by_unique_id_in_document(&self.Document(), id.into()).and_then(Root::downcast)
-    }
-
-    fn WebdriverFrame(&self, browsing_context_id: DOMString) -> Option<DomRoot<WindowProxy>> {
-        self.Document()
-            .iframes()
-            .iter()
-            .find(|iframe| {
-                iframe
-                    .browsing_context_id()
-                    .as_ref()
-                    .map(BrowsingContextId::to_string) ==
-                    Some(browsing_context_id.to_string())
-            })
-            .and_then(|iframe| iframe.GetContentWindow())
-    }
-
-    fn WebdriverWindow(&self, webview_id: DOMString) -> DomRoot<WindowProxy> {
-        let window_proxy = &self
-            .window_proxy
-            .get()
-            .expect("Should always have a WindowProxy when calling WebdriverWindow");
-        assert!(
-            self.is_top_level(),
-            "Window must be top level browsing context."
-        );
-        assert!(self.webview_id().to_string() == webview_id);
-        DomRoot::from_ref(window_proxy)
-    }
-
-    fn WebdriverShadowRoot(&self, id: DOMString) -> Option<DomRoot<ShadowRoot>> {
-        find_node_by_unique_id_in_document(&self.Document(), id.into()).and_then(Root::downcast)
-    }
-
     /// <https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle>
     fn GetComputedStyle(
         &self,
@@ -3469,23 +3400,6 @@ impl Window {
         }
     }
 
-    pub(crate) fn set_webdriver_script_chan(&self, chan: Option<GenericSender<WebDriverJSResult>>) {
-        *self.webdriver_script_chan.borrow_mut() = chan;
-    }
-
-    pub(crate) fn set_webdriver_load_status_sender(
-        &self,
-        sender: Option<GenericSender<WebDriverLoadStatus>>,
-    ) {
-        *self.webdriver_load_status_sender.borrow_mut() = sender;
-    }
-
-    pub(crate) fn webdriver_load_status_sender(
-        &self,
-    ) -> Option<GenericSender<WebDriverLoadStatus>> {
-        self.webdriver_load_status_sender.borrow().clone()
-    }
-
     pub(crate) fn is_alive(&self) -> bool {
         self.current_state.get() == WindowState::Alive
     }
@@ -3917,8 +3831,6 @@ impl Window {
             current_state: Cell::new(WindowState::Alive),
             devtools_marker_sender: Default::default(),
             devtools_markers: Default::default(),
-            webdriver_script_chan: Default::default(),
-            webdriver_load_status_sender: Default::default(),
             error_reporter,
             media_query_lists: DOMTracker::new(),
             #[cfg(feature = "bluetooth")]

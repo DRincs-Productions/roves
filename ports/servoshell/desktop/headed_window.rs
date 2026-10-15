@@ -20,15 +20,14 @@ use keyboard_types::ShortcutMatcher;
 use log::debug;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawWindowHandle};
 use servo::{
-    AuthenticationRequest, BluetoothDeviceSelectionRequest, Cursor, DeviceIndependentIntRect,
-    DeviceIndependentPixel, DeviceIntPoint, DeviceIntRect, DeviceIntSize, DevicePixel, DevicePoint,
-    EmbedderControl, EmbedderControlId, ImeEvent, InputEvent, InputEventId, InputEventResult,
-    InputMethodControl, Key, KeyState, KeyboardEvent, Modifiers, MouseButton as ServoMouseButton,
-    MouseButtonAction, MouseButtonEvent, MouseLeftViewportEvent, MouseMoveEvent, NamedKey,
-    OffscreenRenderingContext, PermissionRequest, RenderingContext, ScreenGeometry, Theme,
-    TouchEvent, TouchEventType, TouchId, TouchPointerType, WebRenderDebugOption, WebView,
-    WebViewId, WheelDelta, WheelEvent, WheelMode, WindowRenderingContext,
-    convert_rect_to_css_pixel,
+    AuthenticationRequest, BluetoothDeviceSelectionRequest, Cursor, DeviceIndependentPixel,
+    DeviceIntPoint, DeviceIntRect, DeviceIntSize, DevicePixel, DevicePoint, EmbedderControl,
+    EmbedderControlId, ImeEvent, InputEvent, InputEventId, InputEventResult, InputMethodControl,
+    Key, KeyState, KeyboardEvent, Modifiers, MouseButton as ServoMouseButton, MouseButtonAction,
+    MouseButtonEvent, MouseLeftViewportEvent, MouseMoveEvent, NamedKey, OffscreenRenderingContext,
+    PermissionRequest, RenderingContext, ScreenGeometry, Theme, TouchEvent, TouchEventType, TouchId,
+    TouchPointerType, WebRenderDebugOption, WebView, WebViewId, WheelDelta, WheelEvent, WheelMode,
+    WindowRenderingContext,
 };
 use url::Url;
 use dpi::PhysicalSize;
@@ -1290,20 +1289,6 @@ impl PlatformWindow for HeadedWindow {
         }
     }
 
-    fn window_rect(&self) -> DeviceIndependentIntRect {
-        let (width, height) = self.sdl_window.size();
-        let scale = self.hidpi_scale_factor();
-
-        let outer_size = DeviceIntSize::new(width as i32, height as i32);
-
-        let (x, y) = self.sdl_window.position();
-        let origin = DeviceIntPoint::new(x, y);
-        convert_rect_to_css_pixel(
-            DeviceIntRect::from_origin_and_size(origin, outer_size),
-            scale,
-        )
-    }
-
     fn set_position(&self, point: DeviceIntPoint) {
         let _ = self
             .sdl_window
@@ -1378,10 +1363,6 @@ impl PlatformWindow for HeadedWindow {
     /// so this is right in the common case).
     fn theme(&self) -> servo::Theme {
         current_sdl_theme()
-    }
-
-    fn maximize(&self, _webview: &WebView) {
-        let _ = self.sdl_window.clone().maximize();
     }
 
     /// Handle servoshell key bindings that may have been prevented by the page in the active webview.

@@ -70,7 +70,7 @@ pub(crate) struct DevtoolsState {
 
 impl PerPipelineState {
     fn register_node(&mut self, node: &Node) {
-        let unique_id = node.unique_id(self.pipeline);
+        let unique_id = node.unique_id();
         self.known_nodes
             .entry(unique_id)
             .or_insert_with(|| Dom::from_ref(node));

@@ -41,7 +41,6 @@ use script_bindings::reflector::{
     reflect_weak_referenceable_dom_object_with_proto,
 };
 use script_traits::DocumentActivity;
-use servo_base::id::PipelineId;
 use servo_config::pref;
 use smallvec::SmallVec;
 use style::Atom;
@@ -1824,13 +1823,11 @@ impl Node {
         .map(|unique_id| unique_id.borrow().simple().to_string())
     }
 
-    pub(crate) fn unique_id(&self, pipeline: PipelineId) -> String {
+    pub(crate) fn unique_id(&self) -> String {
         let mut rare_data = self.ensure_rare_data();
 
         if rare_data.unique_id.is_none() {
-            let node_id = UniqueId::new();
-            ScriptThread::save_node_id(pipeline, node_id.borrow().simple().to_string());
-            rare_data.unique_id = Some(node_id);
+            rare_data.unique_id = Some(UniqueId::new());
         }
         rare_data
             .unique_id
@@ -1844,7 +1841,6 @@ impl Node {
     pub(crate) fn summarize(&self, cx: &mut JSContext) -> NodeInfo {
         let USVString(base_uri) = self.BaseURI();
         let node_type = self.NodeType();
-        let pipeline = self.owner_window().pipeline_id();
 
         let maybe_shadow_root = self.downcast::<ShadowRoot>();
         let shadow_root_mode = maybe_shadow_root
@@ -1852,7 +1848,7 @@ impl Node {
             .map(ShadowRootMode::convert);
         let host = maybe_shadow_root
             .map(ShadowRoot::Host)
-            .map(|host| host.upcast::<Node>().unique_id(pipeline));
+            .map(|host| host.upcast::<Node>().unique_id());
         let is_shadow_host = self.downcast::<Element>().is_some_and(|potential_host| {
             let Some(root) = potential_host.shadow_root() else {
                 return false;
@@ -1883,12 +1879,12 @@ impl Node {
         let attrs = element.map(Element::summarize).unwrap_or_default();
 
         NodeInfo {
-            unique_id: self.unique_id(pipeline),
+            unique_id: self.unique_id(),
             host,
             base_uri,
             parent: self
                 .GetParentNode()
-                .map_or("".to_owned(), |node| node.unique_id(pipeline)),
+                .map_or("".to_owned(), |node| node.unique_id()),
             node_type,
             is_top_level_document: node_type == NodeConstants::DOCUMENT_NODE,
             node_name: String::from(self.NodeName()),

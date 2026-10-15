@@ -49,7 +49,7 @@
 //! * The font cache, image cache, and resource manager, which load
 //!   and cache shared fonts, images, or other resources.
 //! * The service worker manager.
-//! * The devtools and webdriver servers.
+//! * The devtools server.
 //!
 //! The constellation passes messages between the threads, and updates its state
 //! to track the evolving state of the browsing context tree.
@@ -112,7 +112,6 @@ use embedder_traits::{
     JavaScriptEvaluationError, JavaScriptEvaluationId, KeyboardEvent, MediaSessionActionType,
     MediaSessionEvent, MediaSessionPlaybackState, MouseButton, MouseButtonAction, MouseButtonEvent,
     NewWebViewDetails, PaintHitTestResult, Theme, ViewportDetails, WakeLockDelegate, WakeLockType,
-    WebDriverCommandMsg, WebDriverLoadStatus, WebDriverScriptCommand,
 };
 use euclid::Size2D;
 use euclid::default::Size2D as UntypedSize2D;
@@ -434,9 +433,6 @@ pub struct Constellation<STF, SWF> {
     /// and the namespaces are allocated by the constellation.
     next_pipeline_namespace_id: Cell<PipelineNamespaceId>,
 
-    /// A [`GenericSender`] to notify navigation events to webdriver.
-    webdriver_load_status_sender: Option<(GenericSender<WebDriverLoadStatus>, PipelineId)>,
-
     /// Document states for loaded pipelines (used only when writing screenshots).
     document_states: FxHashMap<PipelineId, DocumentState>,
 
@@ -702,7 +698,6 @@ where
                     time_profiler_chan: state.time_profiler_chan,
                     mem_profiler_chan: state.mem_profiler_chan.clone(),
                     phantom: PhantomData,
-                    webdriver_load_status_sender: None,
                     document_states: Default::default(),
                     #[cfg(feature = "webgpu")]
                     webrender_wgpu,
@@ -1350,12 +1345,6 @@ where
                                 pending.target_snapshot_params,
                             );
                         } else {
-                            if let Some((sender, id)) = &self.webdriver_load_status_sender &&
-                                pipeline_id == *id
-                            {
-                                let _ = sender.send(WebDriverLoadStatus::NavigationStop);
-                            }
-
                             let pipeline_is_top_level_pipeline = self
                                 .browsing_contexts
                                 .get(&BrowsingContextId::from(webview_id))
@@ -1454,9 +1443,6 @@ where
             EmbedderToConstellationMessage::NoLongerWaitingOnAsynchronousImageUpdates(
                 pipeline_ids,
             ) => self.handle_no_longer_waiting_on_asynchronous_image_updates(pipeline_ids),
-            EmbedderToConstellationMessage::WebDriverCommand(command) => {
-                self.handle_webdriver_msg(command);
-            },
             EmbedderToConstellationMessage::Reload(webview_id) => {
                 self.handle_reload_msg(webview_id);
             },
@@ -3913,10 +3899,6 @@ where
                 };
                 if let Err(e) = result {
                     self.handle_send_error(parent_pipeline_id, e);
-                } else if let Some((sender, id)) = &self.webdriver_load_status_sender &&
-                    source_id == *id
-                {
-                    let _ = sender.send(WebDriverLoadStatus::NavigationStop);
                 }
 
                 None
@@ -4784,68 +4766,6 @@ where
         };
         if let Err(e) = response_sender.send(response) {
             warn!("Create canvas paint thread response failed ({})", e);
-        }
-    }
-
-    #[servo_tracing::instrument(skip_all)]
-    fn handle_webdriver_msg(&mut self, msg: WebDriverCommandMsg) {
-        // Find the script channel for the given parent pipeline,
-        // and pass the event to that script thread.
-        match msg {
-            WebDriverCommandMsg::IsBrowsingContextOpen(browsing_context_id, response_sender) => {
-                let is_open = self.browsing_contexts.contains_key(&browsing_context_id);
-                let _ = response_sender.send(is_open);
-            },
-            WebDriverCommandMsg::FocusBrowsingContext(browsing_context_id) => {
-                self.handle_focus_remote_browsing_context(
-                    browsing_context_id,
-                    RemoteFocusOperation::Viewport,
-                );
-            },
-            // TODO: This should use the ScriptThreadMessage::EvaluateJavaScript command
-            WebDriverCommandMsg::ScriptCommand(browsing_context_id, cmd) => {
-                let pipeline_id = if let Some(browsing_context) =
-                    self.browsing_contexts.get(&browsing_context_id)
-                {
-                    browsing_context.pipeline_id
-                } else {
-                    return warn!("{}: Browsing context is not ready", browsing_context_id);
-                };
-
-                match &cmd {
-                    WebDriverScriptCommand::AddLoadStatusSender(_, sender) => {
-                        self.webdriver_load_status_sender = Some((sender.clone(), pipeline_id));
-                    },
-                    WebDriverScriptCommand::RemoveLoadStatusSender(_) => {
-                        self.webdriver_load_status_sender = None;
-                    },
-                    _ => {},
-                };
-
-                let control_msg = ScriptThreadMessage::WebDriverScriptCommand(pipeline_id, cmd);
-                self.send_message_to_pipeline(
-                    pipeline_id,
-                    control_msg,
-                    "ScriptCommand after closure",
-                );
-            },
-            WebDriverCommandMsg::CloseWebView(..) |
-            WebDriverCommandMsg::NewWindow(..) |
-            WebDriverCommandMsg::FocusWebView(..) |
-            WebDriverCommandMsg::IsWebViewOpen(..) |
-            WebDriverCommandMsg::GetWindowRect(..) |
-            WebDriverCommandMsg::GetViewportSize(..) |
-            WebDriverCommandMsg::SetWindowRect(..) |
-            WebDriverCommandMsg::MaximizeWebView(..) |
-            WebDriverCommandMsg::LoadUrl(..) |
-            WebDriverCommandMsg::Refresh(..) |
-            WebDriverCommandMsg::InputEvent(..) |
-            WebDriverCommandMsg::TakeScreenshot(..) => {
-                unreachable!("This command should be send directly to the embedder.");
-            },
-            _ => {
-                warn!("Unhandled WebDriver command: {:?}", msg);
-            },
         }
     }
 

@@ -12,13 +12,12 @@ use log::{info, warn};
 use raw_window_handle::{DisplayHandle, RawWindowHandle, WindowHandle};
 use servo::protocol_handler::ProtocolRegistry;
 use servo::{
-    DeviceIndependentIntRect, DeviceIndependentPixel, DeviceIntSize, DevicePixel, DevicePoint,
-    DeviceVector2D, EmbedderControl, EmbedderControlId, EventLoopWaker, ImeEvent, InputEvent,
-    KeyboardEvent, LoadStatus, MediaSessionActionType, MediaSessionEvent, MouseButton,
-    MouseButtonAction, MouseButtonEvent, MouseMoveEvent, Opts, Preferences, RefreshDriver,
-    RenderingContext, ScreenGeometry, Scroll, Servo, ServoBuilder, SimpleDialog, TouchEvent,
-    TouchEventType, TouchId, TouchPointerType, UserContentManager, WebView, WebViewId,
-    WindowRenderingContext, convert_rect_to_css_pixel,
+    DeviceIndependentPixel, DeviceIntSize, DevicePixel, DevicePoint, DeviceVector2D,
+    EmbedderControl, EmbedderControlId, EventLoopWaker, ImeEvent, InputEvent, KeyboardEvent,
+    LoadStatus, MediaSessionActionType, MediaSessionEvent, MouseButton, MouseButtonAction,
+    MouseButtonEvent, MouseMoveEvent, Opts, Preferences, RefreshDriver, RenderingContext,
+    ScreenGeometry, Scroll, Servo, ServoBuilder, SimpleDialog, TouchEvent, TouchEventType, TouchId,
+    TouchPointerType, UserContentManager, WebView, WebViewId, WindowRenderingContext,
 };
 use url::Url;
 
@@ -141,13 +140,6 @@ impl PlatformWindow for EmbeddedPlatformWindow {
 
     fn rendering_context(&self) -> Rc<dyn RenderingContext> {
         self.rendering_context.clone()
-    }
-
-    fn window_rect(&self) -> DeviceIndependentIntRect {
-        convert_rect_to_css_pixel(
-            self.viewport_rect.borrow().to_box2d(),
-            self.hidpi_scale_factor(),
-        )
     }
 
     fn show_embedder_control(&self, webview_id: WebViewId, embedder_control: EmbedderControl) {
@@ -309,18 +301,16 @@ impl App {
 
         let servo_builder = ServoBuilder::default()
             .opts(init.opts)
-            .preferences(init.preferences.clone())
+            .preferences(init.preferences)
             .protocol_registry(protocol_registry)
-            .event_loop_waker(init.event_loop_waker.clone());
+            .event_loop_waker(init.event_loop_waker);
         let servo = servo_builder.build();
 
         let user_content_manager = Rc::new(UserContentManager::new(&servo));
         let state = Rc::new(RunningAppState::new(
             servo,
             init.servoshell_preferences,
-            init.event_loop_waker,
             user_content_manager,
-            init.preferences,
         ));
 
         Rc::new(Self {
@@ -407,10 +397,7 @@ impl App {
     /// everytime wakeup is called or when embedder wants Servo
     /// to act on its pending events.
     pub fn spin_event_loop(&self) {
-        if !self
-            .state
-            .spin_event_loop(None /* create_platform_window */)
-        {
+        if !self.state.spin_event_loop() {
             self.host.on_shutdown_complete()
         }
     }

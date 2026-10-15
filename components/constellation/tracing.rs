@@ -56,7 +56,6 @@ mod from_embedder {
                 Self::ChangeViewportDetails(..) => target!("ChangeViewportDetails"),
                 Self::ThemeChange(..) => target!("ThemeChange"),
                 Self::TickAnimation(..) => target!("TickAnimation"),
-                Self::WebDriverCommand(..) => target!("WebDriverCommand"),
                 Self::Reload(..) => target!("Reload"),
                 Self::LogEntry(..) => target!("LogEntry"),
                 Self::NewWebView(..) => target!("NewWebView"),

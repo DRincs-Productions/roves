@@ -1898,17 +1898,6 @@ pub(crate) trait FormControl: DomObject<ReflectorType = ()> + NodeTraits {
         }
     }
 
-    /// <https://html.spec.whatwg.org/multipage/#candidate-for-constraint-validation>
-    fn is_candidate_for_constraint_validation(&self) -> bool {
-        let element = self.to_element();
-        let html_element = element.downcast::<HTMLElement>();
-        if let Some(html_element) = html_element {
-            html_element.is_submittable_element() || element.is_instance_validatable()
-        } else {
-            false
-        }
-    }
-
     fn moving_steps(&self, cx: &mut JSContext) {
         // If movedNode is a form-associated element with a non-null form owner and movedNode and
         // its form owner are no longer in the same tree, then reset the form owner of movedNode.

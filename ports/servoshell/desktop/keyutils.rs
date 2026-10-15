@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use std::str::FromStr;
+
 use keyboard_types::{Code, Key, KeyState, Location, Modifiers, NamedKey};
 use sdl3::keyboard::{Keycode, Mod, Scancode};
 use servo::KeyboardEvent;
@@ -12,145 +14,19 @@ pub const CMD_OR_CONTROL: Modifiers = Modifiers::META;
 #[cfg(not(target_os = "macos"))]
 pub const CMD_OR_CONTROL: Modifiers = Modifiers::CONTROL;
 
-/// TODO(SDL3 windowing, real progress not completion — see TODO.md): covers the keys that
-/// actually matter for gameplay and this fork's own keyboard shortcuts (letters, digits,
-/// navigation, function keys, common punctuation, modifiers) — not the exhaustive ~300-variant
-/// match the previous winit-based version had (TV remote keys, launcher keys, etc., which SDL3
-/// itself barely reports on desktop anyway). Anything not covered falls back to
-/// `Code::Unidentified`/`Key::Named(NamedKey::Unidentified)`, the same fallback the old code
-/// already used for keys winit itself didn't recognize.
+/// The USB HID usage page of keyboard keys, which SDL3 scancodes are usages of.
+const USB_KEYBOARD_PAGE: u16 = 0x07;
+
+/// SDL3 scancodes are USB HID usage IDs on the keyboard page (0x07), so Chromium's USB HID to
+/// DOM `code` table (the `keycode` crate) gives the DOM [`Code`]. Keys without a DOM code, or
+/// with one `keyboard-types` does not know, report `Code::Unidentified`.
 fn code_from_scancode(scancode: Option<Scancode>) -> Code {
-    let Some(scancode) = scancode else {
-        return Code::Unidentified;
-    };
-    match scancode {
-        Scancode::A => Code::KeyA,
-        Scancode::B => Code::KeyB,
-        Scancode::C => Code::KeyC,
-        Scancode::D => Code::KeyD,
-        Scancode::E => Code::KeyE,
-        Scancode::F => Code::KeyF,
-        Scancode::G => Code::KeyG,
-        Scancode::H => Code::KeyH,
-        Scancode::I => Code::KeyI,
-        Scancode::J => Code::KeyJ,
-        Scancode::K => Code::KeyK,
-        Scancode::L => Code::KeyL,
-        Scancode::M => Code::KeyM,
-        Scancode::N => Code::KeyN,
-        Scancode::O => Code::KeyO,
-        Scancode::P => Code::KeyP,
-        Scancode::Q => Code::KeyQ,
-        Scancode::R => Code::KeyR,
-        Scancode::S => Code::KeyS,
-        Scancode::T => Code::KeyT,
-        Scancode::U => Code::KeyU,
-        Scancode::V => Code::KeyV,
-        Scancode::W => Code::KeyW,
-        Scancode::X => Code::KeyX,
-        Scancode::Y => Code::KeyY,
-        Scancode::Z => Code::KeyZ,
-        Scancode::_0 => Code::Digit0,
-        Scancode::_1 => Code::Digit1,
-        Scancode::_2 => Code::Digit2,
-        Scancode::_3 => Code::Digit3,
-        Scancode::_4 => Code::Digit4,
-        Scancode::_5 => Code::Digit5,
-        Scancode::_6 => Code::Digit6,
-        Scancode::_7 => Code::Digit7,
-        Scancode::_8 => Code::Digit8,
-        Scancode::_9 => Code::Digit9,
-        Scancode::Return => Code::Enter,
-        Scancode::Escape => Code::Escape,
-        Scancode::Backspace => Code::Backspace,
-        Scancode::Tab => Code::Tab,
-        Scancode::Space => Code::Space,
-        Scancode::Minus => Code::Minus,
-        Scancode::Equals => Code::Equal,
-        Scancode::LeftBracket => Code::BracketLeft,
-        Scancode::RightBracket => Code::BracketRight,
-        Scancode::Backslash => Code::Backslash,
-        Scancode::Semicolon => Code::Semicolon,
-        Scancode::Apostrophe => Code::Quote,
-        Scancode::Grave => Code::Backquote,
-        Scancode::Comma => Code::Comma,
-        Scancode::Period => Code::Period,
-        Scancode::Slash => Code::Slash,
-        Scancode::CapsLock => Code::CapsLock,
-        Scancode::F1 => Code::F1,
-        Scancode::F2 => Code::F2,
-        Scancode::F3 => Code::F3,
-        Scancode::F4 => Code::F4,
-        Scancode::F5 => Code::F5,
-        Scancode::F6 => Code::F6,
-        Scancode::F7 => Code::F7,
-        Scancode::F8 => Code::F8,
-        Scancode::F9 => Code::F9,
-        Scancode::F10 => Code::F10,
-        Scancode::F11 => Code::F11,
-        Scancode::F12 => Code::F12,
-        Scancode::F13 => Code::F13,
-        Scancode::F14 => Code::F14,
-        Scancode::F15 => Code::F15,
-        Scancode::F16 => Code::F16,
-        Scancode::F17 => Code::F17,
-        Scancode::F18 => Code::F18,
-        Scancode::F19 => Code::F19,
-        Scancode::F20 => Code::F20,
-        Scancode::F21 => Code::F21,
-        Scancode::F22 => Code::F22,
-        Scancode::F23 => Code::F23,
-        Scancode::F24 => Code::F24,
-        Scancode::PrintScreen => Code::PrintScreen,
-        Scancode::ScrollLock => Code::ScrollLock,
-        Scancode::Pause => Code::Pause,
-        Scancode::Insert => Code::Insert,
-        Scancode::Home => Code::Home,
-        Scancode::PageUp => Code::PageUp,
-        Scancode::Delete => Code::Delete,
-        Scancode::End => Code::End,
-        Scancode::PageDown => Code::PageDown,
-        Scancode::Right => Code::ArrowRight,
-        Scancode::Left => Code::ArrowLeft,
-        Scancode::Down => Code::ArrowDown,
-        Scancode::Up => Code::ArrowUp,
-        Scancode::NumLockClear => Code::NumLock,
-        Scancode::KpDivide => Code::NumpadDivide,
-        Scancode::KpMultiply => Code::NumpadMultiply,
-        Scancode::KpMinus => Code::NumpadSubtract,
-        Scancode::KpPlus => Code::NumpadAdd,
-        Scancode::KpEnter => Code::NumpadEnter,
-        Scancode::Kp0 => Code::Numpad0,
-        Scancode::Kp1 => Code::Numpad1,
-        Scancode::Kp2 => Code::Numpad2,
-        Scancode::Kp3 => Code::Numpad3,
-        Scancode::Kp4 => Code::Numpad4,
-        Scancode::Kp5 => Code::Numpad5,
-        Scancode::Kp6 => Code::Numpad6,
-        Scancode::Kp7 => Code::Numpad7,
-        Scancode::Kp8 => Code::Numpad8,
-        Scancode::Kp9 => Code::Numpad9,
-        Scancode::KpPeriod => Code::NumpadDecimal,
-        Scancode::KpEquals => Code::NumpadEqual,
-        Scancode::KpComma => Code::NumpadComma,
-        Scancode::Application => Code::ContextMenu,
-        Scancode::Cut => Code::Cut,
-        Scancode::Copy => Code::Copy,
-        Scancode::Paste => Code::Paste,
-        Scancode::Find => Code::Find,
-        Scancode::Mute => Code::AudioVolumeMute,
-        Scancode::VolumeUp => Code::AudioVolumeUp,
-        Scancode::VolumeDown => Code::AudioVolumeDown,
-        Scancode::LCtrl => Code::ControlLeft,
-        Scancode::LShift => Code::ShiftLeft,
-        Scancode::LAlt => Code::AltLeft,
-        Scancode::LGui => Code::MetaLeft,
-        Scancode::RCtrl => Code::ControlRight,
-        Scancode::RShift => Code::ShiftRight,
-        Scancode::RAlt => Code::AltRight,
-        Scancode::RGui => Code::MetaRight,
-        _ => Code::Unidentified,
-    }
+    scancode
+        .and_then(|scancode| u16::try_from(scancode.to_i32()).ok())
+        .and_then(|usage| keycode::KeyMap::from_usb_code(USB_KEYBOARD_PAGE, usage).ok())
+        .and_then(|key_map| key_map.code)
+        .and_then(|code| Code::from_str(&code.to_string()).ok())
+        .unwrap_or(Code::Unidentified)
 }
 
 fn location_from_scancode(scancode: Option<Scancode>) -> Location {
@@ -367,6 +243,39 @@ mod tests {
         assert_eq!(event.code, Code::NumpadEnter);
         assert_eq!(event.location, Location::Numpad);
         assert!(event.modifiers.is_empty());
+    }
+
+    #[test]
+    fn maps_scancodes_to_dom_codes() {
+        for (scancode, code) in [
+            (Scancode::A, Code::KeyA),
+            (Scancode::Z, Code::KeyZ),
+            (Scancode::_0, Code::Digit0),
+            (Scancode::_9, Code::Digit9),
+            (Scancode::Return, Code::Enter),
+            (Scancode::Space, Code::Space),
+            (Scancode::Grave, Code::Backquote),
+            (Scancode::Up, Code::ArrowUp),
+            (Scancode::Down, Code::ArrowDown),
+            (Scancode::Left, Code::ArrowLeft),
+            (Scancode::Right, Code::ArrowRight),
+            (Scancode::F1, Code::F1),
+            (Scancode::F12, Code::F12),
+            (Scancode::F24, Code::F24),
+            (Scancode::NumLockClear, Code::NumLock),
+            (Scancode::Kp0, Code::Numpad0),
+            (Scancode::KpEnter, Code::NumpadEnter),
+            (Scancode::KpPlus, Code::NumpadAdd),
+            (Scancode::KpPeriod, Code::NumpadDecimal),
+            (Scancode::LCtrl, Code::ControlLeft),
+            (Scancode::RShift, Code::ShiftRight),
+            (Scancode::LAlt, Code::AltLeft),
+            (Scancode::RGui, Code::MetaRight),
+            (Scancode::Application, Code::ContextMenu),
+            (Scancode::Mute, Code::AudioVolumeMute),
+        ] {
+            assert_eq!(code_from_scancode(Some(scancode)), code, "{scancode:?}");
+        }
     }
 
     #[test]

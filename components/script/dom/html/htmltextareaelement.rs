@@ -565,13 +565,6 @@ impl HTMLTextAreaElementMethods<crate::DomTypeHolder> for HTMLTextAreaElement {
 }
 
 impl HTMLTextAreaElement {
-    /// <https://w3c.github.io/webdriver/#ref-for-dfn-clear-algorithm-4>
-    /// Used by WebDriver to clear the textarea element.
-    pub(crate) fn clear(&self) {
-        self.value_dirty.set(false);
-        self.textinput.borrow_mut().set_content(DOMString::from(""));
-    }
-
     pub(crate) fn reset(&self, cx: &mut JSContext) {
         // https://html.spec.whatwg.org/multipage/#the-textarea-element:concept-form-reset-control
         self.value_dirty.set(false);

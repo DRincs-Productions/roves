@@ -1,0 +1,3159 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 9ecbbe7..d6b6f1a 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1481,16 +1481,6 @@ dependencies = [
+  "url",
+ ]
+ 
+-[[package]]
+-name = "cookie"
+-version = "0.16.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "e859cd57d0710d9e06c381b550c06e76992472a8c6d527aecd2fc673dcc231fb"
+-dependencies = [
+- "time",
+- "version_check",
+-]
+-
+ [[package]]
+ name = "cookie"
+ version = "0.18.1"
+@@ -3606,7 +3596,7 @@ dependencies = [
+  "fnv",
+  "futures-core",
+  "futures-sink",
+- "http 1.5.0",
++ "http",
+  "indexmap",
+  "slab",
+  "tokio",
+@@ -3717,7 +3707,7 @@ dependencies = [
+  "base64 0.22.1",
+  "bytes",
+  "headers-core",
+- "http 1.5.0",
++ "http",
+  "httpdate",
+  "mime",
+  "sha1 0.10.6",
+@@ -3729,7 +3719,7 @@ version = "0.3.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "54b4a22553d4242c49fddb9ba998a99962b5cc6f22cb5a3482bec22522403ce4"
+ dependencies = [
+- "http 1.5.0",
++ "http",
+ ]
+ 
+ [[package]]
+@@ -3796,17 +3786,6 @@ dependencies = [
+  "markup5ever",
+ ]
+ 
+-[[package]]
+-name = "http"
+-version = "0.2.12"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "601cbb57e577e2f5ef5be8e7b83f0f63994f25aa94d673e54a92d5c516d101f1"
+-dependencies = [
+- "bytes",
+- "fnv",
+- "itoa",
+-]
+-
+ [[package]]
+ name = "http"
+ version = "1.5.0"
+@@ -3824,7 +3803,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "ca2a8f2913ee65f60facd6a5905613afaa448497a0230cc41ce022d93290bc2c"
+ dependencies = [
+  "bytes",
+- "http 1.5.0",
++ "http",
+ ]
+ 
+ [[package]]
+@@ -3835,7 +3814,7 @@ checksum = "e9f41fd6a08e4d4ec69df65976da761afd5ad5e58a9d4acb46bd1c953a9e3ff2"
+ dependencies = [
+  "bytes",
+  "futures-core",
+- "http 1.5.0",
++ "http",
+  "http-body",
+  "pin-project-lite",
+ ]
+@@ -3875,7 +3854,7 @@ dependencies = [
+  "futures-channel",
+  "futures-core",
+  "h2",
+- "http 1.5.0",
++ "http",
+  "http-body",
+  "httparse",
+  "httpdate",
+@@ -3892,7 +3871,7 @@ version = "0.27.9"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "33ca68d021ef39cf6463ab54c1d0f5daf03377b70561305bb89a8f83aab66e0f"
+ dependencies = [
+- "http 1.5.0",
++ "http",
+  "hyper",
+  "hyper-util",
+  "log",
+@@ -3913,7 +3892,7 @@ dependencies = [
+  "bytes",
+  "futures-channel",
+  "futures-util",
+- "http 1.5.0",
++ "http",
+  "http-body",
+  "hyper",
+  "ipnet",
+@@ -4751,7 +4730,6 @@ checksum = "0fbe853b403ae61a04233030ae8a79d94975281ed9770a1f9e246732b534b28d"
+ dependencies = [
+  "bitflags 2.13.1",
+  "serde",
+- "unicode-segmentation",
+ ]
+ 
+ [[package]]
+@@ -7188,12 +7166,6 @@ version = "1.0.23"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
+ 
+-[[package]]
+-name = "ryu"
+-version = "1.0.23"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+-
+ [[package]]
+ name = "same-file"
+ version = "1.0.6"
+@@ -7454,18 +7426,6 @@ dependencies = [
+  "serde",
+ ]
+ 
+-[[package]]
+-name = "serde_urlencoded"
+-version = "0.7.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "d3491c14715ca2294c4d6a88f15e84739788c1d030eed8c110436aafdaa2f3fd"
+-dependencies = [
+- "form_urlencoded",
+- "itoa",
+- "ryu",
+- "serde",
+-]
+-
+ [[package]]
+ name = "serdect"
+ version = "0.4.3"
+@@ -7485,14 +7445,14 @@ dependencies = [
+  "arboard",
+  "bitflags 2.13.1",
+  "content-security-policy",
+- "cookie 0.18.1",
++ "cookie",
+  "crossbeam-channel",
+  "dpi",
+  "env_logger",
+  "euclid",
+  "gaol",
+  "gstreamer",
+- "http 1.5.0",
++ "http",
+  "http-body-util",
+  "hyper",
+  "image",
+@@ -7784,7 +7744,7 @@ dependencies = [
+  "content-security-policy",
+  "encoding_rs",
+  "euclid",
+- "http 1.5.0",
++ "http",
+  "ipc-channel",
+  "log",
+  "malloc_size_of_derive",
+@@ -7837,7 +7797,7 @@ dependencies = [
+  "chrono",
+  "crossbeam-channel",
+  "headers",
+- "http 1.5.0",
++ "http",
+  "log",
+  "malloc_size_of_derive",
+  "parking_lot",
+@@ -7861,7 +7821,7 @@ dependencies = [
+ name = "servo-devtools-traits"
+ version = "0.5.0"
+ dependencies = [
+- "http 1.5.0",
++ "http",
+  "malloc_size_of_derive",
+  "serde",
+  "servo-base",
+@@ -7890,16 +7850,14 @@ dependencies = [
+  "accesskit",
+  "bitflags 2.13.1",
+  "content-security-policy",
+- "cookie 0.18.1",
+  "crossbeam-channel",
+  "euclid",
+- "http 1.5.0",
++ "http",
+  "image",
+  "inventory",
+  "keyboard-types",
+  "log",
+  "malloc_size_of_derive",
+- "rustc-hash 2.1.3",
+  "serde",
+  "servo-base",
+  "servo-geometry",
+@@ -7912,7 +7870,6 @@ dependencies = [
+  "stylo_traits",
+  "url",
+  "uuid",
+- "webdriver",
+  "webrender_api",
+ ]
+ 
+@@ -8014,9 +7971,9 @@ dependencies = [
+ name = "servo-hyper-serde"
+ version = "0.5.0"
+ dependencies = [
+- "cookie 0.18.1",
++ "cookie",
+  "headers",
+- "http 1.5.0",
++ "http",
+  "hyper",
+  "ipc-channel",
+  "mime",
+@@ -8140,7 +8097,7 @@ dependencies = [
+  "data-url",
+  "encoding_rs",
+  "euclid",
+- "http 1.5.0",
++ "http",
+  "icu_locid",
+  "indexmap",
+  "ipc-channel",
+@@ -8397,7 +8354,7 @@ dependencies = [
+  "bytes",
+  "chrono",
+  "content-security-policy",
+- "cookie 0.18.1",
++ "cookie",
+  "crossbeam-channel",
+  "data-url",
+  "flate2",
+@@ -8406,7 +8363,7 @@ dependencies = [
+  "futures-core",
+  "futures-util",
+  "headers",
+- "http 1.5.0",
++ "http",
+  "http-body-util",
+  "hyper",
+  "hyper-rustls",
+@@ -8466,11 +8423,11 @@ name = "servo-net-traits"
+ version = "0.5.0"
+ dependencies = [
+  "content-security-policy",
+- "cookie 0.18.1",
++ "cookie",
+  "crossbeam-channel",
+  "data-url",
+  "headers",
+- "http 1.5.0",
++ "http",
+  "hyper-util",
+  "ipc-channel",
+  "log",
+@@ -8646,7 +8603,7 @@ dependencies = [
+  "chardetng",
+  "chrono",
+  "content-security-policy",
+- "cookie 0.18.1",
++ "cookie",
+  "crossbeam-channel",
+  "crypto-bigint",
+  "cshake",
+@@ -8665,7 +8622,7 @@ dependencies = [
+  "headers",
+  "hkdf",
+  "html5ever",
+- "http 1.5.0",
++ "http",
+  "httparse",
+  "icu_locid",
+  "indexmap",
+@@ -8762,7 +8719,6 @@ dependencies = [
+  "urlpattern",
+  "uuid",
+  "web_atoms",
+- "webdriver",
+  "webrender_api",
+  "wgpu-core 30.0.0",
+  "wgpu-types 30.0.0",
+@@ -8944,37 +8900,6 @@ dependencies = [
+  "servo-embedder-traits",
+ ]
+ 
+-[[package]]
+-name = "servo-webdriver-server"
+-version = "0.5.0"
+-dependencies = [
+- "base64 0.23.0",
+- "bytes",
+- "cookie 0.18.1",
+- "crossbeam-channel",
+- "euclid",
+- "http 0.2.12",
+- "http 1.5.0",
+- "image",
+- "keyboard-types",
+- "log",
+- "rustc-hash 2.1.3",
+- "serde",
+- "serde_json",
+- "servo-base",
+- "servo-config",
+- "servo-embedder-traits",
+- "servo-geometry",
+- "servo-url",
+- "stylo_traits",
+- "time",
+- "tokio",
+- "url",
+- "uuid",
+- "warp",
+- "webdriver",
+-]
+-
+ [[package]]
+ name = "servo-webgl"
+ version = "0.5.0"
+@@ -9096,7 +9021,6 @@ dependencies = [
+  "serde_json",
+  "servo",
+  "servo-allocator",
+- "servo-webdriver-server",
+  "signal-hook-registry",
+  "surfman",
+  "tokio",
+@@ -10252,7 +10176,6 @@ version = "0.1.44"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
+ dependencies = [
+- "log",
+  "pin-project-lite",
+  "tracing-attributes",
+  "tracing-core",
+@@ -10350,7 +10273,7 @@ checksum = "e48ac77174b19c110a50ab2128b24215ac9cb40e0e12e093fb602d175c569d22"
+ dependencies = [
+  "bytes",
+  "data-encoding",
+- "http 1.5.0",
++ "http",
+  "httparse",
+  "log",
+  "rand 0.10.2",
+@@ -10775,35 +10698,6 @@ dependencies = [
+  "try-lock",
+ ]
+ 
+-[[package]]
+-name = "warp"
+-version = "0.4.3"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "c0a808122a8a77eecdabaefd88ddb1913c4be5ea1465399f63ba64c7aa705fea"
+-dependencies = [
+- "bytes",
+- "futures-util",
+- "headers",
+- "http 1.5.0",
+- "http-body",
+- "http-body-util",
+- "hyper",
+- "hyper-util",
+- "log",
+- "mime",
+- "mime_guess",
+- "percent-encoding",
+- "pin-project",
+- "scoped-tls",
+- "serde",
+- "serde_json",
+- "serde_urlencoded",
+- "tokio",
+- "tokio-util",
+- "tower-service",
+- "tracing",
+-]
+-
+ [[package]]
+ name = "wasi"
+ version = "0.11.1+wasi-snapshot-preview1"
+@@ -11058,26 +10952,6 @@ dependencies = [
+  "string_cache_codegen",
+ ]
+ 
+-[[package]]
+-name = "webdriver"
+-version = "0.53.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "91d53921e1bef27512fa358179c9a22428d55778d2c2ae3c5c37a52b82ce6e92"
+-dependencies = [
+- "base64 0.22.1",
+- "bytes",
+- "cookie 0.16.2",
+- "http 0.2.12",
+- "icu_segmenter",
+- "log",
+- "serde",
+- "serde_derive",
+- "serde_json",
+- "thiserror 1.0.69",
+- "time",
+- "url",
+-]
+-
+ [[package]]
+ name = "webpki-root-certs"
+ version = "1.0.9"
+diff --git a/Cargo.toml b/Cargo.toml
+index e5e19f47145..fec0a84a556 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -128,7 +128,6 @@ html5ever = "0.39"
+ http = "1.4"
+ http-body-util = "0.1"
+ http-cache-semantics = "3.0.0"
+-http02 = { package = "http", version = "0.2" }
+ httparse = "1.9"
+ hyper = "1.10"
+ hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "tls12", "webpki-tokio"] }
+@@ -145,7 +144,7 @@ itertools = "0.15"
+ jni = "0.22"
+ js = { package = "roves-js", path = "components/roves-js" }
+ k12 = "0.5"
+-keyboard-types = { version = "0.8.3", features = ["serde", "webdriver"] }
++keyboard-types = { version = "0.8.3", features = ["serde"] }
+ kurbo = { version = "0.13.1", features = ["euclid"] }
+ libc = "0.2"
+ log = "0.4.32"
+@@ -275,9 +274,7 @@ urlpattern = "0.3"
+ uuid = { version = "1.23.3", features = ["v4", "v5"] }
+ vello = "0.9"
+ vello_cpu = { version = "0.0.9", features = ["multithreading"] }
+-warp = "0.4.2"
+ web_atoms = "0.2.4"
+-webdriver = { version = "0.53.0", default-features = false }
+ webpki-roots = "1.0"
+ webrender = { version = "0.70", features = ["capture", "serialize_program"] }
+ webrender_api = "0.70"
+@@ -362,7 +359,6 @@ servo-webvtt = { version = "=0.5.0", path = "components/webvtt" }
+ storage = { package = "servo-storage", version = "=0.5.0", path = "components/storage" }
+ storage_traits = { package = "servo-storage-traits", version = "=0.5.0", path = "components/shared/storage" }
+ timers = { package = "servo-timers", version = "=0.5.0", path = "components/timers" }
+-webdriver_server = { package = "servo-webdriver-server", version = "=0.5.0", path = "components/webdriver_server" }
+ webgl = { package = "servo-webgl", version = "=0.5.0", path = "components/webgl", default-features = false }
+ webgpu = { package = "servo-webgpu", version = "=0.5.0", path = "components/webgpu" }
+ webgpu_traits = { package = "servo-webgpu-traits", version = "=0.5.0", path = "components/shared/webgpu" }
+diff --git a/components/constellation/constellation.rs b/components/constellation/constellation.rs
+index 2a5bb6dfd05..9b42745f59d 100644
+--- a/components/constellation/constellation.rs
++++ b/components/constellation/constellation.rs
+@@ -49,7 +49,7 @@
+ //! * The font cache, image cache, and resource manager, which load
+ //!   and cache shared fonts, images, or other resources.
+ //! * The service worker manager.
+-//! * The devtools and webdriver servers.
++//! * The devtools server.
+ //!
+ //! The constellation passes messages between the threads, and updates its state
+ //! to track the evolving state of the browsing context tree.
+@@ -112,7 +112,6 @@ use embedder_traits::{
+     JavaScriptEvaluationError, JavaScriptEvaluationId, KeyboardEvent, MediaSessionActionType,
+     MediaSessionEvent, MediaSessionPlaybackState, MouseButton, MouseButtonAction, MouseButtonEvent,
+     NewWebViewDetails, PaintHitTestResult, Theme, ViewportDetails, WakeLockDelegate, WakeLockType,
+-    WebDriverCommandMsg, WebDriverLoadStatus, WebDriverScriptCommand,
+ };
+ use euclid::Size2D;
+ use euclid::default::Size2D as UntypedSize2D;
+@@ -434,9 +433,6 @@ pub struct Constellation<STF, SWF> {
+     /// and the namespaces are allocated by the constellation.
+     next_pipeline_namespace_id: Cell<PipelineNamespaceId>,
+ 
+-    /// A [`GenericSender`] to notify navigation events to webdriver.
+-    webdriver_load_status_sender: Option<(GenericSender<WebDriverLoadStatus>, PipelineId)>,
+-
+     /// Document states for loaded pipelines (used only when writing screenshots).
+     document_states: FxHashMap<PipelineId, DocumentState>,
+ 
+@@ -702,7 +698,6 @@ where
+                     time_profiler_chan: state.time_profiler_chan,
+                     mem_profiler_chan: state.mem_profiler_chan.clone(),
+                     phantom: PhantomData,
+-                    webdriver_load_status_sender: None,
+                     document_states: Default::default(),
+                     #[cfg(feature = "webgpu")]
+                     webrender_wgpu,
+@@ -1350,12 +1345,6 @@ where
+                                 pending.target_snapshot_params,
+                             );
+                         } else {
+-                            if let Some((sender, id)) = &self.webdriver_load_status_sender &&
+-                                pipeline_id == *id
+-                            {
+-                                let _ = sender.send(WebDriverLoadStatus::NavigationStop);
+-                            }
+-
+                             let pipeline_is_top_level_pipeline = self
+                                 .browsing_contexts
+                                 .get(&BrowsingContextId::from(webview_id))
+@@ -1454,9 +1443,6 @@ where
+             EmbedderToConstellationMessage::NoLongerWaitingOnAsynchronousImageUpdates(
+                 pipeline_ids,
+             ) => self.handle_no_longer_waiting_on_asynchronous_image_updates(pipeline_ids),
+-            EmbedderToConstellationMessage::WebDriverCommand(command) => {
+-                self.handle_webdriver_msg(command);
+-            },
+             EmbedderToConstellationMessage::Reload(webview_id) => {
+                 self.handle_reload_msg(webview_id);
+             },
+@@ -3913,10 +3899,6 @@ where
+                 };
+                 if let Err(e) = result {
+                     self.handle_send_error(parent_pipeline_id, e);
+-                } else if let Some((sender, id)) = &self.webdriver_load_status_sender &&
+-                    source_id == *id
+-                {
+-                    let _ = sender.send(WebDriverLoadStatus::NavigationStop);
+                 }
+ 
+                 None
+@@ -4787,68 +4769,6 @@ where
+         }
+     }
+ 
+-    #[servo_tracing::instrument(skip_all)]
+-    fn handle_webdriver_msg(&mut self, msg: WebDriverCommandMsg) {
+-        // Find the script channel for the given parent pipeline,
+-        // and pass the event to that script thread.
+-        match msg {
+-            WebDriverCommandMsg::IsBrowsingContextOpen(browsing_context_id, response_sender) => {
+-                let is_open = self.browsing_contexts.contains_key(&browsing_context_id);
+-                let _ = response_sender.send(is_open);
+-            },
+-            WebDriverCommandMsg::FocusBrowsingContext(browsing_context_id) => {
+-                self.handle_focus_remote_browsing_context(
+-                    browsing_context_id,
+-                    RemoteFocusOperation::Viewport,
+-                );
+-            },
+-            // TODO: This should use the ScriptThreadMessage::EvaluateJavaScript command
+-            WebDriverCommandMsg::ScriptCommand(browsing_context_id, cmd) => {
+-                let pipeline_id = if let Some(browsing_context) =
+-                    self.browsing_contexts.get(&browsing_context_id)
+-                {
+-                    browsing_context.pipeline_id
+-                } else {
+-                    return warn!("{}: Browsing context is not ready", browsing_context_id);
+-                };
+-
+-                match &cmd {
+-                    WebDriverScriptCommand::AddLoadStatusSender(_, sender) => {
+-                        self.webdriver_load_status_sender = Some((sender.clone(), pipeline_id));
+-                    },
+-                    WebDriverScriptCommand::RemoveLoadStatusSender(_) => {
+-                        self.webdriver_load_status_sender = None;
+-                    },
+-                    _ => {},
+-                };
+-
+-                let control_msg = ScriptThreadMessage::WebDriverScriptCommand(pipeline_id, cmd);
+-                self.send_message_to_pipeline(
+-                    pipeline_id,
+-                    control_msg,
+-                    "ScriptCommand after closure",
+-                );
+-            },
+-            WebDriverCommandMsg::CloseWebView(..) |
+-            WebDriverCommandMsg::NewWindow(..) |
+-            WebDriverCommandMsg::FocusWebView(..) |
+-            WebDriverCommandMsg::IsWebViewOpen(..) |
+-            WebDriverCommandMsg::GetWindowRect(..) |
+-            WebDriverCommandMsg::GetViewportSize(..) |
+-            WebDriverCommandMsg::SetWindowRect(..) |
+-            WebDriverCommandMsg::MaximizeWebView(..) |
+-            WebDriverCommandMsg::LoadUrl(..) |
+-            WebDriverCommandMsg::Refresh(..) |
+-            WebDriverCommandMsg::InputEvent(..) |
+-            WebDriverCommandMsg::TakeScreenshot(..) => {
+-                unreachable!("This command should be send directly to the embedder.");
+-            },
+-            _ => {
+-                warn!("Unhandled WebDriver command: {:?}", msg);
+-            },
+-        }
+-    }
+-
+     #[servo_tracing::instrument(skip_all)]
+     fn set_webview_throttled(&mut self, webview_id: WebViewId, throttled: bool) {
+         let browsing_context_id = BrowsingContextId::from(webview_id);
+diff --git a/components/constellation/tracing.rs b/components/constellation/tracing.rs
+index 936f1957e5f..b4b9718cad0 100644
+--- a/components/constellation/tracing.rs
++++ b/components/constellation/tracing.rs
+@@ -56,7 +56,6 @@ mod from_embedder {
+                 Self::ChangeViewportDetails(..) => target!("ChangeViewportDetails"),
+                 Self::ThemeChange(..) => target!("ThemeChange"),
+                 Self::TickAnimation(..) => target!("TickAnimation"),
+-                Self::WebDriverCommand(..) => target!("WebDriverCommand"),
+                 Self::Reload(..) => target!("Reload"),
+                 Self::LogEntry(..) => target!("LogEntry"),
+                 Self::NewWebView(..) => target!("NewWebView"),
+diff --git a/components/net/resource_thread.rs b/components/net/resource_thread.rs
+index 68c2dcee704..8cd9acfe2ba 100644
+--- a/components/net/resource_thread.rs
++++ b/components/net/resource_thread.rs
+@@ -479,13 +479,6 @@ impl ResourceChannelManager {
+                 }
+                 return true;
+             },
+-            CoreResourceMsg::DeleteCookie(request, name) => {
+-                http_state
+-                    .cookie_jar
+-                    .write()
+-                    .delete_cookie_with_name(&request, name);
+-                return true;
+-            },
+             CoreResourceMsg::DeleteCookieAsync(cookie_store_id, url, name) => {
+                 http_state
+                     .cookie_jar
+diff --git a/components/script/Cargo.toml b/components/script/Cargo.toml
+index 60337b1f0a6..48543c1a188 100644
+--- a/components/script/Cargo.toml
++++ b/components/script/Cargo.toml
+@@ -170,7 +170,6 @@ url = { workspace = true }
+ urlpattern = { workspace = true }
+ uuid = { workspace = true, features = ["serde"] }
+ web_atoms = { workspace = true }
+-webdriver = { workspace = true }
+ webgpu_traits = { workspace = true, optional = true }
+ webrender_api = { workspace = true }
+ wgpu-core = { workspace = true, optional = true }
+diff --git a/components/script/devtools.rs b/components/script/devtools.rs
+index 6cd3218feb2..173d7571654 100644
+--- a/components/script/devtools.rs
++++ b/components/script/devtools.rs
+@@ -70,7 +70,7 @@ pub(crate) struct DevtoolsState {
+ 
+ impl PerPipelineState {
+     fn register_node(&mut self, node: &Node) {
+-        let unique_id = node.unique_id(self.pipeline);
++        let unique_id = node.unique_id();
+         self.known_nodes
+             .entry(unique_id)
+             .or_insert_with(|| Dom::from_ref(node));
+diff --git a/components/script/dom/document/document.rs b/components/script/dom/document/document.rs
+index 94cada48c05..c37ef4827ed 100644
+--- a/components/script/dom/document/document.rs
++++ b/components/script/dom/document/document.rs
+@@ -21,9 +21,7 @@ use cookie::Cookie;
+ use data_url::mime::Mime;
+ use devtools_traits::ScriptToDevtoolsControlMsg;
+ use dom_struct::dom_struct;
+-use embedder_traits::{
+-    AllowOrDeny, AnimationState, CustomHandlersAutomationMode, EmbedderMsg, Image, LoadStatus,
+-};
++use embedder_traits::{AllowOrDeny, AnimationState, EmbedderMsg, Image, LoadStatus};
+ use encoding_rs::{Encoding, UTF_8};
+ use html5ever::{LocalName, QualName, local_name, ns};
+ use hyper_serde::Serde;
+@@ -664,10 +662,6 @@ pub(crate) struct Document {
+     /// <https://html.spec.whatwg.org/multipage/#details-name-group>
+     details_name_groups: DomRefCell<Option<DetailsNameGroups>>,
+ 
+-    /// <https://html.spec.whatwg.org/multipage/#registerprotocolhandler()-automation-mode>
+-    #[no_trace]
+-    protocol_handler_automation_mode: RefCell<CustomHandlersAutomationMode>,
+-
+     /// Reflect the value of that preferences to prevent paying the cost of a RwLock access.
+     layout_animations_test_enabled: bool,
+ 
+@@ -1031,10 +1025,6 @@ impl Document {
+         *self.origin.borrow_mut() = MutableOrigin::new(ImmutableOrigin::new_opaque());
+     }
+ 
+-    pub(crate) fn set_protocol_handler_automation_mode(&self, mode: CustomHandlersAutomationMode) {
+-        *self.protocol_handler_automation_mode.borrow_mut() = mode;
+-    }
+-
+     /// <https://dom.spec.whatwg.org/#concept-document-url>
+     pub(crate) fn url(&self) -> ServoUrl {
+         self.url.borrow().clone()
+@@ -3863,7 +3853,6 @@ impl Document {
+             favicon: RefCell::new(None),
+             websockets: DOMTracker::new(),
+             details_name_groups: Default::default(),
+-            protocol_handler_automation_mode: Default::default(),
+             layout_animations_test_enabled: pref!(layout_animations_test_enabled),
+             state_override: Default::default(),
+             value_override: Default::default(),
+diff --git a/components/script/dom/element/attributes/attr.rs b/components/script/dom/element/attributes/attr.rs
+index 39b5e343d6f..9d75f54b26e 100644
+--- a/components/script/dom/element/attributes/attr.rs
++++ b/components/script/dom/element/attributes/attr.rs
+@@ -3,7 +3,6 @@
+  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+ 
+ use std::mem;
+-use std::sync::LazyLock;
+ 
+ use dom_struct::dom_struct;
+ use html5ever::{LocalName, Namespace, Prefix, local_name, ns};
+@@ -245,51 +244,3 @@ pub(crate) fn is_relevant_attribute(namespace: &Namespace, local_name: &LocalNam
+     // <https://svgwg.org/svg2-draft/linking.html#XLinkHrefAttribute>
+     namespace == &ns!() || (namespace == &ns!(xlink) && local_name == &local_name!("href"))
+ }
+-
+-/// A help function to check if an attribute is a boolean attribute.
+-pub(crate) fn is_boolean_attribute(name: &str) -> bool {
+-    // The full list of attributes can be found in [1]. All attributes marked as "Boolean
+-    // attribute" in the "Value" column are boolean attributes. Note that "hidden" is effectively
+-    // treated as a boolean attribute, according to WPT test "test_global_boolean_attributes" in
+-    // webdriver/tests/classic/get_element_attribute/get.py
+-    //
+-    // [1] <https://html.spec.whatwg.org/multipage/#attributes-3>
+-    static BOOLEAN_ATTRIBUTES: LazyLock<[&str; 30]> = LazyLock::new(|| {
+-        [
+-            "allowfullscreen",
+-            "alpha",
+-            "async",
+-            "autofocus",
+-            "autoplay",
+-            "checked",
+-            "controls",
+-            "default",
+-            "defer",
+-            "disabled",
+-            "formnovalidate",
+-            "hidden",
+-            "inert",
+-            "ismap",
+-            "itemscope",
+-            "loop",
+-            "multiple",
+-            "muted",
+-            "nomodule",
+-            "novalidate",
+-            "open",
+-            "playsinline",
+-            "readonly",
+-            "required",
+-            "reversed",
+-            "selected",
+-            "shadowrootclonable",
+-            "shadowrootcustomelementregistry",
+-            "shadowrootdelegatesfocus",
+-            "shadowrootserializable",
+-        ]
+-    });
+-
+-    BOOLEAN_ATTRIBUTES
+-        .iter()
+-        .any(|&boolean_attr| boolean_attr.eq_ignore_ascii_case(name))
+-}
+diff --git a/components/script/dom/element/element.rs b/components/script/dom/element/element.rs
+index dc80a488b74..c07f7e929df 100644
+--- a/components/script/dom/element/element.rs
++++ b/components/script/dom/element/element.rs
+@@ -1908,15 +1908,6 @@ impl Element {
+         }
+     }
+ 
+-    /// <https://html.spec.whatwg.org/multipage/#dom-document-activeelement>
+-    pub(crate) fn is_active_element(&self) -> bool {
+-        if let Some(active_element) = self.owner_document().GetActiveElement() {
+-            *active_element == *self
+-        } else {
+-            false
+-        }
+-    }
+-
+     pub(crate) fn is_editing_host(&self) -> bool {
+         self.downcast::<HTMLElement>()
+             .is_some_and(|element| element.IsContentEditable())
+@@ -2735,13 +2726,6 @@ impl Element {
+         }))
+     }
+ 
+-    pub(crate) fn outer_html(&self, cx: &mut JSContext) -> Fallible<DOMString> {
+-        match self.GetOuterHTML(cx)? {
+-            TrustedHTMLOrNullIsEmptyString::NullIsEmptyString(str) => Ok(str),
+-            TrustedHTMLOrNullIsEmptyString::TrustedHTML(_) => unreachable!(),
+-        }
+-    }
+-
+     pub(crate) fn compute_source_position(&self, line_number: u32) -> SourcePosition {
+         SourcePosition {
+             source_file: self.owner_global().get_url().to_string(),
+@@ -4747,7 +4731,7 @@ impl VirtualMethods for Element {
+                     let devtools_message = ScriptToDevtoolsControlMsg::DomMutation(
+                         pipeline_id,
+                         DomMutation::AttributeModified {
+-                            node: self.upcast::<Node>().unique_id(pipeline_id),
++                            node: self.upcast::<Node>().unique_id(),
+                             attribute_name: attr.local_name().to_string(),
+                             new_value: mutation.new_value(attr).map(|value| value.to_string()),
+                         },
+diff --git a/components/script/dom/geometry/domrectlist.rs b/components/script/dom/geometry/domrectlist.rs
+index 20c414aa14a..32630ef25fa 100644
+--- a/components/script/dom/geometry/domrectlist.rs
++++ b/components/script/dom/geometry/domrectlist.rs
+@@ -42,10 +42,6 @@ impl DOMRectList {
+             None,
+         )
+     }
+-
+-    pub(crate) fn first(&self) -> Option<DomRoot<DOMRect>> {
+-        self.rects.borrow().first().map(Dom::as_rooted)
+-    }
+ }
+ 
+ impl DOMRectListMethods<crate::DomTypeHolder> for DOMRectList {
+diff --git a/components/script/dom/html/form_controls/htmlinputelement.rs b/components/script/dom/html/form_controls/htmlinputelement.rs
+index f46bcbf19ba..4e5b105bc6c 100644
+--- a/components/script/dom/html/form_controls/htmlinputelement.rs
++++ b/components/script/dom/html/form_controls/htmlinputelement.rs
+@@ -2,7 +2,7 @@
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+ 
+-use std::cell::{Cell, RefCell, RefMut};
++use std::cell::{Cell, RefMut};
+ use std::{f64, ptr};
+ 
+ use dom_struct::dom_struct;
+@@ -22,7 +22,6 @@ use layout_api::{ScriptSelection, SharedSelection};
+ use num_traits::ToPrimitive;
+ use script_bindings::cell::{DomRefCell, Ref};
+ use script_bindings::domstring::parse_floating_point_number;
+-use servo_base::generic_channel::GenericSender;
+ use servo_base::text::Utf16CodeUnits;
+ use style::attr::AttrValue;
+ use style::str::split_commas;
+@@ -30,7 +29,6 @@ use stylo_atoms::Atom;
+ use stylo_dom::ElementState;
+ use time::OffsetDateTime;
+ use unicode_bidi::{BidiClass, bidi_class};
+-use webdriver::error::ErrorStatus;
+ 
+ use crate::dom::activation::Activatable;
+ use crate::dom::bindings::codegen::Bindings::ElementBinding::ElementMethods;
+@@ -129,8 +127,6 @@ pub(crate) struct HTMLInputElement {
+     form_owner: MutNullableDom<HTMLFormElement>,
+     labels_node_list: MutNullableDom<NodeList>,
+     validity_state: MutNullableDom<ValidityState>,
+-    #[no_trace]
+-    pending_webdriver_response: RefCell<Option<PendingWebDriverResponse>>,
+ 
+     /// <https://w3c.github.io/selection-api/#dfn-has-scheduled-selectionchange-event>
+     has_scheduled_selectionchange_event: Cell<bool>,
+@@ -189,7 +185,6 @@ impl HTMLInputElement {
+             form_owner: Default::default(),
+             labels_node_list: MutNullableDom::new(None),
+             validity_state: Default::default(),
+-            pending_webdriver_response: Default::default(),
+             has_scheduled_selectionchange_event: Default::default(),
+         }
+     }
+@@ -277,23 +272,6 @@ impl HTMLInputElement {
+         self.input_type.borrow()
+     }
+ 
+-    /// <https://w3c.github.io/webdriver/#dfn-non-typeable-form-control>
+-    pub(crate) fn is_nontypeable(&self) -> bool {
+-        matches!(
+-            *self.input_type(),
+-            InputType::Button(_) |
+-                InputType::Checkbox(_) |
+-                InputType::Color(_) |
+-                InputType::File(_) |
+-                InputType::Hidden(_) |
+-                InputType::Image(_) |
+-                InputType::Radio(_) |
+-                InputType::Range(_) |
+-                InputType::Reset(_) |
+-                InputType::Submit(_)
+-        )
+-    }
+-
+     #[inline]
+     pub(crate) fn is_submit_button(&self) -> bool {
+         matches!(
+@@ -1746,35 +1724,6 @@ impl HTMLInputElement {
+         self.value_changed(cx);
+     }
+ 
+-    /// <https://w3c.github.io/webdriver/#ref-for-dfn-clear-algorithm-3>
+-    /// Used by WebDriver to clear the input element.
+-    pub(crate) fn clear(&self, cx: &mut JSContext) {
+-        // Step 1. Reset dirty value and dirty checkedness flags.
+-        self.value_dirty.set(false);
+-        self.checked_changed.set(false);
+-        // Step 2. Set value to empty string.
+-        self.textinput.borrow_mut().set_content(DOMString::from(""));
+-        // Step 3. Set checkedness based on presence of content attribute.
+-        self.update_checked_state(cx, self.DefaultChecked(), false);
+-        // Step 4. Empty selected files
+-        if self.input_type().as_specific().get_files().is_some() {
+-            let window = self.owner_window();
+-            let filelist = FileList::new(cx, &window, vec![]);
+-            self.input_type().as_specific().set_files(&filelist);
+-        }
+-
+-        // Step 5. Invoke the value sanitization algorithm iff the type attribute's
+-        // current state defines one.
+-        {
+-            let mut textinput = self.textinput.borrow_mut();
+-            let mut value = textinput.get_content();
+-            self.sanitize_value(&mut value);
+-            textinput.set_content(value);
+-        }
+-
+-        self.value_changed(cx);
+-    }
+-
+     fn update_placeholder_shown_state(&self) {
+         if !self.input_type().is_textual_or_password() {
+             self.upcast::<Element>().set_placeholder_shown_state(false);
+@@ -1786,28 +1735,6 @@ impl HTMLInputElement {
+         }
+     }
+ 
+-    pub(crate) fn select_files_for_webdriver(
+-        &self,
+-        test_paths: Vec<DOMString>,
+-        response_sender: GenericSender<Result<bool, ErrorStatus>>,
+-    ) {
+-        let mut stored_sender = self.pending_webdriver_response.borrow_mut();
+-        assert!(stored_sender.is_none());
+-
+-        *stored_sender = Some(PendingWebDriverResponse {
+-            response_sender,
+-            expected_file_count: test_paths.len(),
+-        });
+-
+-        self.input_type()
+-            .as_specific()
+-            .select_files(self, Some(test_paths));
+-    }
+-
+-    pub(crate) fn take_pending_webdriver_response(&self) -> Option<PendingWebDriverResponse> {
+-        self.pending_webdriver_response.borrow_mut().take()
+-    }
+-
+     /// <https://html.spec.whatwg.org/multipage/#value-sanitization-algorithm>
+     fn sanitize_value(&self, value: &mut DOMString) {
+         self.input_type().as_specific().sanitize_value(self, value);
+@@ -2675,26 +2602,3 @@ fn matches_js_regex(cx: &mut JSContext, regex_obj: HandleObject, value: &str) ->
+         Err(())
+     }
+ }
+-
+-/// When WebDriver asks the [`HTMLInputElement`] to do some asynchronous actions, such
+-/// as selecting files, this stores the details necessary to complete the response when
+-/// the action is complete.
+-#[derive(MallocSizeOf)]
+-pub(crate) struct PendingWebDriverResponse {
+-    /// An [`IpcSender`] to use to send the reply when the response is ready.
+-    response_sender: GenericSender<Result<bool, ErrorStatus>>,
+-    /// The number of files expected to be selected when the selection process is done.
+-    expected_file_count: usize,
+-}
+-
+-impl PendingWebDriverResponse {
+-    pub(crate) fn finish(self, number_files_selected: usize) {
+-        if number_files_selected == self.expected_file_count {
+-            let _ = self.response_sender.send(Ok(false));
+-        } else {
+-            // If not all files are found the WebDriver specification says to return
+-            // the InvalidArgument error.
+-            let _ = self.response_sender.send(Err(ErrorStatus::InvalidArgument));
+-        }
+-    }
+-}
+diff --git a/components/script/dom/html/form_controls/input_type/file_input_type.rs b/components/script/dom/html/form_controls/input_type/file_input_type.rs
+index 09368323b96..cd96b183e27 100644
+--- a/components/script/dom/html/form_controls/input_type/file_input_type.rs
++++ b/components/script/dom/html/form_controls/input_type/file_input_type.rs
+@@ -82,23 +82,6 @@ impl FileInputType {
+     ) {
+         let mut files = Vec::new();
+ 
+-        if let Some(pending_webdriver_reponse) = input.take_pending_webdriver_response() {
+-            // From: <https://w3c.github.io/webdriver/#dfn-dispatch-actions-for-a-string>
+-            // "Complete implementation specific steps equivalent to setting the selected
+-            // files on the input element. If multiple is true files are be appended to
+-            // element's selected files."
+-            //
+-            // Note: This is annoying.
+-            if input.Multiple() &&
+-                let Some(filelist) = self.get_files()
+-            {
+-                files = filelist.iter_files().map(|file| file.as_rooted()).collect();
+-            }
+-
+-            let number_files_selected = response.as_ref().map(Vec::len).unwrap_or_default();
+-            pending_webdriver_reponse.finish(number_files_selected);
+-        }
+-
+         let Some(response_files) = response else {
+             return;
+         };
+diff --git a/components/script/dom/html/htmlformelement.rs b/components/script/dom/html/htmlformelement.rs
+index c27b7d253c2..1b2428752f4 100644
+--- a/components/script/dom/html/htmlformelement.rs
++++ b/components/script/dom/html/htmlformelement.rs
+@@ -1898,17 +1898,6 @@ pub(crate) trait FormControl: DomObject<ReflectorType = ()> + NodeTraits {
+         }
+     }
+ 
+-    /// <https://html.spec.whatwg.org/multipage/#candidate-for-constraint-validation>
+-    fn is_candidate_for_constraint_validation(&self) -> bool {
+-        let element = self.to_element();
+-        let html_element = element.downcast::<HTMLElement>();
+-        if let Some(html_element) = html_element {
+-            html_element.is_submittable_element() || element.is_instance_validatable()
+-        } else {
+-            false
+-        }
+-    }
+-
+     fn moving_steps(&self, cx: &mut JSContext) {
+         // If movedNode is a form-associated element with a non-null form owner and movedNode and
+         // its form owner are no longer in the same tree, then reset the form owner of movedNode.
+diff --git a/components/script/dom/html/htmltextareaelement.rs b/components/script/dom/html/htmltextareaelement.rs
+index 0c03f84105f..852e0e668dc 100644
+--- a/components/script/dom/html/htmltextareaelement.rs
++++ b/components/script/dom/html/htmltextareaelement.rs
+@@ -565,13 +565,6 @@ impl HTMLTextAreaElementMethods<crate::DomTypeHolder> for HTMLTextAreaElement {
+ }
+ 
+ impl HTMLTextAreaElement {
+-    /// <https://w3c.github.io/webdriver/#ref-for-dfn-clear-algorithm-4>
+-    /// Used by WebDriver to clear the textarea element.
+-    pub(crate) fn clear(&self) {
+-        self.value_dirty.set(false);
+-        self.textinput.borrow_mut().set_content(DOMString::from(""));
+-    }
+-
+     pub(crate) fn reset(&self, cx: &mut JSContext) {
+         // https://html.spec.whatwg.org/multipage/#the-textarea-element:concept-form-reset-control
+         self.value_dirty.set(false);
+diff --git a/components/script/dom/node/node.rs b/components/script/dom/node/node.rs
+index 5eefc8afffc..3b09f49e1b5 100644
+--- a/components/script/dom/node/node.rs
++++ b/components/script/dom/node/node.rs
+@@ -41,7 +41,6 @@ use script_bindings::reflector::{
+     reflect_weak_referenceable_dom_object_with_proto,
+ };
+ use script_traits::DocumentActivity;
+-use servo_base::id::PipelineId;
+ use servo_config::pref;
+ use smallvec::SmallVec;
+ use style::Atom;
+@@ -1824,13 +1823,11 @@ impl Node {
+         .map(|unique_id| unique_id.borrow().simple().to_string())
+     }
+ 
+-    pub(crate) fn unique_id(&self, pipeline: PipelineId) -> String {
++    pub(crate) fn unique_id(&self) -> String {
+         let mut rare_data = self.ensure_rare_data();
+ 
+         if rare_data.unique_id.is_none() {
+-            let node_id = UniqueId::new();
+-            ScriptThread::save_node_id(pipeline, node_id.borrow().simple().to_string());
+-            rare_data.unique_id = Some(node_id);
++            rare_data.unique_id = Some(UniqueId::new());
+         }
+         rare_data
+             .unique_id
+@@ -1844,7 +1841,6 @@ impl Node {
+     pub(crate) fn summarize(&self, cx: &mut JSContext) -> NodeInfo {
+         let USVString(base_uri) = self.BaseURI();
+         let node_type = self.NodeType();
+-        let pipeline = self.owner_window().pipeline_id();
+ 
+         let maybe_shadow_root = self.downcast::<ShadowRoot>();
+         let shadow_root_mode = maybe_shadow_root
+@@ -1852,7 +1848,7 @@ impl Node {
+             .map(ShadowRootMode::convert);
+         let host = maybe_shadow_root
+             .map(ShadowRoot::Host)
+-            .map(|host| host.upcast::<Node>().unique_id(pipeline));
++            .map(|host| host.upcast::<Node>().unique_id());
+         let is_shadow_host = self.downcast::<Element>().is_some_and(|potential_host| {
+             let Some(root) = potential_host.shadow_root() else {
+                 return false;
+@@ -1883,12 +1879,12 @@ impl Node {
+         let attrs = element.map(Element::summarize).unwrap_or_default();
+ 
+         NodeInfo {
+-            unique_id: self.unique_id(pipeline),
++            unique_id: self.unique_id(),
+             host,
+             base_uri,
+             parent: self
+                 .GetParentNode()
+-                .map_or("".to_owned(), |node| node.unique_id(pipeline)),
++                .map_or("".to_owned(), |node| node.unique_id()),
+             node_type,
+             is_top_level_document: node_type == NodeConstants::DOCUMENT_NODE,
+             node_name: String::from(self.NodeName()),
+diff --git a/components/script/dom/window/window.rs b/components/script/dom/window/window.rs
+index ac24c7ec342..d84f1ea4c00 100644
+--- a/components/script/dom/window/window.rs
++++ b/components/script/dom/window/window.rs
+@@ -23,9 +23,8 @@ use devtools_traits::{ScriptToDevtoolsControlMsg, TimelineMarker, TimelineMarker
+ use dom_struct::dom_struct;
+ use embedder_traits::user_contents::UserScript;
+ use embedder_traits::{
+-    AlertResponse, ConfirmResponse, EmbedderMsg, JavaScriptEvaluationError, PromptResponse,
+-    ScriptToEmbedderChan, SimpleDialogRequest, Theme, UntrustedNodeAddress, ViewportDetails,
+-    WebDriverJSResult, WebDriverLoadStatus,
++    AlertResponse, ConfirmResponse, EmbedderMsg, PromptResponse, ScriptToEmbedderChan,
++    SimpleDialogRequest, Theme, UntrustedNodeAddress, ViewportDetails,
+ };
+ use euclid::{Point2D, Rect, Scale, Size2D, Vector2D};
+ use fonts::{
+@@ -71,7 +70,6 @@ use script_bindings::dom::UnrootedDom;
+ use script_bindings::interfaces::{HasOrigin, WindowHelpers};
+ use script_bindings::like::Setlike;
+ use script_bindings::reflector::DomObject;
+-use script_bindings::root::Root;
+ use script_traits::{ConstellationInputEvent, ScriptThreadMessage};
+ use selectors::attr::CaseSensitivity;
+ use servo_arc::Arc as ServoArc;
+@@ -125,9 +123,7 @@ use crate::dom::bindings::codegen::Bindings::WindowBinding::{
+ use crate::dom::bindings::codegen::UnionTypes::{
+     RequestOrUSVString, TrustedScriptOrString, TrustedScriptOrStringOrFunction,
+ };
+-use crate::dom::bindings::error::{
+-    Error, ErrorInfo, ErrorResult, Fallible, javascript_error_info_from_error_info,
+-};
++use crate::dom::bindings::error::{Error, ErrorResult, Fallible};
+ use crate::dom::bindings::inheritance::{Castable, ElementTypeId, HTMLElementTypeId, NodeTypeId};
+ use crate::dom::bindings::num::Finite;
+ use crate::dom::bindings::refcounted::Trusted;
+@@ -179,7 +175,6 @@ use crate::dom::screen::Screen;
+ use crate::dom::scrolling_box::{ScrollingBox, ScrollingBoxSource};
+ use crate::dom::selection::Selection;
+ use crate::dom::serviceworker::cachestorage::CacheStorage;
+-use crate::dom::shadowroot::ShadowRoot;
+ use crate::dom::storage::Storage;
+ #[cfg(feature = "bluetooth")]
+ use crate::dom::testrunner::TestRunner;
+@@ -204,7 +199,6 @@ use crate::task_manager::TaskManager;
+ use crate::task_source::SendableTaskSource;
+ use crate::timers::{IsInterval, OneshotTimers, TimerCallback};
+ use crate::unminify::unminified_path;
+-use crate::webdriver_handlers::{find_node_by_unique_id_in_document, jsval_to_webdriver};
+ use crate::{fetch, window_named_properties};
+ 
+ /// A callback to call when a response comes back from the `ImageCache`.
+@@ -370,14 +364,6 @@ pub(crate) struct Window {
+     #[no_trace]
+     layout_blocker: Cell<LayoutBlocker>,
+ 
+-    /// A channel for communicating results of async scripts back to the webdriver server
+-    #[no_trace]
+-    webdriver_script_chan: DomRefCell<Option<GenericSender<WebDriverJSResult>>>,
+-
+-    /// A channel to notify webdriver if there is a navigation
+-    #[no_trace]
+-    webdriver_load_status_sender: RefCell<Option<GenericSender<WebDriverLoadStatus>>>,
+-
+     /// The current state of the window object
+     current_state: Cell<WindowState>,
+ 
+@@ -1883,61 +1869,6 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
+     }
+ 
+     // check-tidy: no specs after this line
+-    fn WebdriverCallback(&self, realm: &mut CurrentRealm, value: HandleValue) {
+-        let webdriver_script_sender = self.webdriver_script_chan.borrow_mut().take();
+-        if let Some(webdriver_script_sender) = webdriver_script_sender {
+-            let result = jsval_to_webdriver(realm, &self.globalscope, value);
+-            let _ = webdriver_script_sender.send(result);
+-        }
+-    }
+-
+-    fn WebdriverException(&self, cx: &mut JSContext, value: HandleValue) {
+-        let webdriver_script_sender = self.webdriver_script_chan.borrow_mut().take();
+-        if let Some(webdriver_script_sender) = webdriver_script_sender {
+-            let error_info = ErrorInfo::from_value(cx, value);
+-            let _ = webdriver_script_sender.send(Err(
+-                JavaScriptEvaluationError::EvaluationFailure(Some(
+-                    javascript_error_info_from_error_info(cx, &error_info, value),
+-                )),
+-            ));
+-        }
+-    }
+-
+-    fn WebdriverElement(&self, id: DOMString) -> Option<DomRoot<Element>> {
+-        find_node_by_unique_id_in_document(&self.Document(), id.into()).and_then(Root::downcast)
+-    }
+-
+-    fn WebdriverFrame(&self, browsing_context_id: DOMString) -> Option<DomRoot<WindowProxy>> {
+-        self.Document()
+-            .iframes()
+-            .iter()
+-            .find(|iframe| {
+-                iframe
+-                    .browsing_context_id()
+-                    .as_ref()
+-                    .map(BrowsingContextId::to_string) ==
+-                    Some(browsing_context_id.to_string())
+-            })
+-            .and_then(|iframe| iframe.GetContentWindow())
+-    }
+-
+-    fn WebdriverWindow(&self, webview_id: DOMString) -> DomRoot<WindowProxy> {
+-        let window_proxy = &self
+-            .window_proxy
+-            .get()
+-            .expect("Should always have a WindowProxy when calling WebdriverWindow");
+-        assert!(
+-            self.is_top_level(),
+-            "Window must be top level browsing context."
+-        );
+-        assert!(self.webview_id().to_string() == webview_id);
+-        DomRoot::from_ref(window_proxy)
+-    }
+-
+-    fn WebdriverShadowRoot(&self, id: DOMString) -> Option<DomRoot<ShadowRoot>> {
+-        find_node_by_unique_id_in_document(&self.Document(), id.into()).and_then(Root::downcast)
+-    }
+-
+     /// <https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle>
+     fn GetComputedStyle(
+         &self,
+@@ -3469,23 +3400,6 @@ impl Window {
+         }
+     }
+ 
+-    pub(crate) fn set_webdriver_script_chan(&self, chan: Option<GenericSender<WebDriverJSResult>>) {
+-        *self.webdriver_script_chan.borrow_mut() = chan;
+-    }
+-
+-    pub(crate) fn set_webdriver_load_status_sender(
+-        &self,
+-        sender: Option<GenericSender<WebDriverLoadStatus>>,
+-    ) {
+-        *self.webdriver_load_status_sender.borrow_mut() = sender;
+-    }
+-
+-    pub(crate) fn webdriver_load_status_sender(
+-        &self,
+-    ) -> Option<GenericSender<WebDriverLoadStatus>> {
+-        self.webdriver_load_status_sender.borrow().clone()
+-    }
+-
+     pub(crate) fn is_alive(&self) -> bool {
+         self.current_state.get() == WindowState::Alive
+     }
+@@ -3917,8 +3831,6 @@ impl Window {
+             current_state: Cell::new(WindowState::Alive),
+             devtools_marker_sender: Default::default(),
+             devtools_markers: Default::default(),
+-            webdriver_script_chan: Default::default(),
+-            webdriver_load_status_sender: Default::default(),
+             error_reporter,
+             media_query_lists: DOMTracker::new(),
+             #[cfg(feature = "bluetooth")]
+diff --git a/components/script/js_value_serialization.rs b/components/script/js_value_serialization.rs
+new file mode 100644
+index 00000000000..ce9b08e0a57
+--- /dev/null
++++ b/components/script/js_value_serialization.rs
+@@ -0,0 +1,337 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! Converts a JavaScript value into an embedder [`JSValue`], following the WebDriver
++//! JSON clone algorithm. Used to return the result of `WebView::evaluate_javascript`.
++
++use std::collections::{HashMap, HashSet};
++use std::ffi::CString;
++use std::ptr::NonNull;
++
++use embedder_traits::{
++    JSValue, JavaScriptEvaluationError, JavaScriptEvaluationResultSerializationError,
++};
++use js::context::JSContext;
++use js::conversions::{FromJSValConvertible, jsstr_to_string};
++use js::jsapi::{HandleValueArray, JSITER_OWNONLY, JSType, PropertyDescriptor};
++use js::jsval::UndefinedValue;
++use js::realm::CurrentRealm;
++use js::rust::wrappers2::{
++    GetPropertyKeys, JS_CallFunctionName, JS_GetOwnPropertyDescriptorById, JS_GetProperty,
++    JS_GetPropertyById, JS_HasOwnProperty, JS_IsExceptionPending, JS_TypeOfValue,
++};
++use js::rust::{HandleObject, HandleValue, IdVector, ToString};
++use script_bindings::codegen::GenericBindings::ShadowRootBinding::ShadowRootMethods;
++use script_bindings::conversions::is_array_like;
++use script_bindings::settings_stack::run_a_script;
++
++use crate::DomTypeHolder;
++use crate::dom::bindings::conversions::{
++    ConversionBehavior, ConversionResult, get_property, get_property_jsval, jsid_to_string,
++    root_from_object,
++};
++use crate::dom::bindings::error::{Error, report_pending_exception, throw_dom_exception};
++use crate::dom::bindings::inheritance::Castable;
++use crate::dom::element::Element;
++use crate::dom::globalscope::GlobalScope;
++use crate::dom::node::{Node, NodeTraits};
++use crate::dom::types::ShadowRoot;
++use crate::dom::window::Window;
++
++type JSValueResult = Result<JSValue, JavaScriptEvaluationError>;
++
++/// <https://w3c.github.io/webdriver/#dfn-is-stale>
++fn is_stale(element: &Element) -> bool {
++    // An element is stale if its node document is not the active document
++    // or if it is not connected.
++    !element.owner_document().is_active() || !element.is_connected()
++}
++
++/// <https://w3c.github.io/webdriver/#dfn-is-detached>
++fn is_detached(shadow_root: &ShadowRoot) -> bool {
++    // A shadow root is detached if its node document is not the active document
++    // or if the element node referred to as its host is stale.
++    !shadow_root.owner_document().is_active() || is_stale(&shadow_root.Host())
++}
++
++#[expect(unsafe_code)]
++fn object_has_to_json_property(
++    cx: &mut JSContext,
++    global_scope: &GlobalScope,
++    object: HandleObject,
++) -> bool {
++    let name = CString::new("toJSON").unwrap();
++    let mut found = false;
++    if unsafe { JS_HasOwnProperty(cx, object, name.as_ptr(), &mut found) } && found {
++        rooted!(&in(cx) let mut value = UndefinedValue());
++        let result = unsafe { JS_GetProperty(cx, object, name.as_ptr(), value.handle_mut()) };
++        if !result {
++            throw_dom_exception(cx, global_scope, Error::JSFailed);
++            false
++        } else {
++            result && unsafe { JS_TypeOfValue(cx, value.handle()) } == JSType::JSTYPE_FUNCTION
++        }
++    } else if JS_IsExceptionPending(cx) {
++        throw_dom_exception(cx, global_scope, Error::JSFailed);
++        false
++    } else {
++        false
++    }
++}
++
++#[expect(unsafe_code)]
++/// <https://w3c.github.io/webdriver/#dfn-collection>
++fn is_arguments_object(cx: &mut JSContext, value: HandleValue) -> bool {
++    rooted!(&in(cx) let class_name = unsafe { ToString(cx, value) });
++    let Some(class_name) = NonNull::new(class_name.get()) else {
++        return false;
++    };
++    let class_name = unsafe { jsstr_to_string(cx, class_name) };
++    class_name == "[object Arguments]"
++}
++
++#[derive(Clone, Eq, Hash, PartialEq)]
++struct HashableJSVal(u64);
++
++impl From<HandleValue<'_>> for HashableJSVal {
++    fn from(v: HandleValue<'_>) -> HashableJSVal {
++        HashableJSVal(v.get().asBits_)
++    }
++}
++
++/// <https://w3c.github.io/webdriver/#dfn-json-clone>
++pub(crate) fn jsval_to_js_value(
++    cx: &mut CurrentRealm,
++    global_scope: &GlobalScope,
++    val: HandleValue,
++) -> JSValueResult {
++    run_a_script::<DomTypeHolder, _, _>(cx, global_scope, |cx| {
++        let mut seen = HashSet::new();
++        let result = jsval_to_js_value_inner(cx, global_scope, val, &mut seen);
++
++        if result.is_err() {
++            report_pending_exception(cx);
++        }
++        result
++    })
++}
++
++#[expect(unsafe_code)]
++/// <https://w3c.github.io/webdriver/#dfn-internal-json-clone>
++fn jsval_to_js_value_inner(
++    cx: &mut CurrentRealm,
++    global_scope: &GlobalScope,
++    val: HandleValue,
++    seen: &mut HashSet<HashableJSVal>,
++) -> JSValueResult {
++    if val.get().is_undefined() {
++        Ok(JSValue::Undefined)
++    } else if val.get().is_null() {
++        Ok(JSValue::Null)
++    } else if val.get().is_boolean() {
++        Ok(JSValue::Boolean(val.get().to_boolean()))
++    } else if val.get().is_number() {
++        Ok(JSValue::Number(val.to_number()))
++    } else if val.get().is_string() {
++        let string = NonNull::new(val.to_string()).expect("Should have a non-Null String");
++        let string = unsafe { jsstr_to_string(cx, string) };
++        Ok(JSValue::String(string))
++    } else if val.get().is_object() {
++        rooted!(&in(cx) let object = match FromJSValConvertible::safe_from_jsval(cx, val, ()).unwrap() {
++            ConversionResult::Success(object) => object,
++            _ => unreachable!(),
++        });
++
++        if let Ok(element) = unsafe { root_from_object::<Element>(cx, *object) } {
++            // If the element is stale, return error with error code stale element reference.
++            if is_stale(&element) {
++                Err(JavaScriptEvaluationError::SerializationError(
++                    JavaScriptEvaluationResultSerializationError::StaleElementReference,
++                ))
++            } else {
++                Ok(JSValue::Element(element.upcast::<Node>().unique_id()))
++            }
++        } else if let Ok(shadow_root) = unsafe { root_from_object::<ShadowRoot>(cx, *object) } {
++            // If the shadow root is detached, return error with error code detached shadow root.
++            if is_detached(&shadow_root) {
++                Err(JavaScriptEvaluationError::SerializationError(
++                    JavaScriptEvaluationResultSerializationError::DetachedShadowRoot,
++                ))
++            } else {
++                Ok(JSValue::ShadowRoot(
++                    shadow_root.upcast::<Node>().unique_id(),
++                ))
++            }
++        } else if let Ok(window) = unsafe { root_from_object::<Window>(cx, *object) } {
++            let window_proxy = window.window_proxy();
++            if window_proxy.is_browsing_context_discarded() {
++                Err(JavaScriptEvaluationError::SerializationError(
++                    JavaScriptEvaluationResultSerializationError::StaleElementReference,
++                ))
++            } else if window_proxy.browsing_context_id() == window_proxy.webview_id() {
++                Ok(JSValue::Window(window.webview_id().to_string()))
++            } else {
++                Ok(JSValue::Frame(
++                    window_proxy.browsing_context_id().to_string(),
++                ))
++            }
++        } else if object_has_to_json_property(cx, global_scope, object.handle()) {
++            let name = CString::new("toJSON").unwrap();
++            rooted!(&in(cx) let mut value = UndefinedValue());
++            let call_result = unsafe {
++                JS_CallFunctionName(
++                    cx,
++                    object.handle(),
++                    name.as_ptr(),
++                    &HandleValueArray::empty(),
++                    value.handle_mut(),
++                )
++            };
++
++            if call_result {
++                Ok(jsval_to_js_value_inner(
++                    cx,
++                    global_scope,
++                    value.handle(),
++                    seen,
++                )?)
++            } else {
++                throw_dom_exception(cx, global_scope, Error::JSFailed);
++                Err(JavaScriptEvaluationError::SerializationError(
++                    JavaScriptEvaluationResultSerializationError::OtherJavaScriptError,
++                ))
++            }
++        } else {
++            clone_an_object(cx, global_scope, val, seen, object.handle())
++        }
++    } else {
++        Err(JavaScriptEvaluationError::SerializationError(
++            JavaScriptEvaluationResultSerializationError::UnknownType,
++        ))
++    }
++}
++
++#[expect(unsafe_code)]
++/// <https://w3c.github.io/webdriver/#dfn-clone-an-object>
++fn clone_an_object(
++    cx: &mut CurrentRealm,
++    global_scope: &GlobalScope,
++    val: HandleValue,
++    seen: &mut HashSet<HashableJSVal>,
++    object_handle: HandleObject,
++) -> JSValueResult {
++    let hashable = val.into();
++    // Step 1. If value is in `seen`, return error with error code javascript error.
++    if seen.contains(&hashable) {
++        return Err(JavaScriptEvaluationError::SerializationError(
++            JavaScriptEvaluationResultSerializationError::OtherJavaScriptError,
++        ));
++    }
++    // Step 2. Append value to `seen`.
++    seen.insert(hashable.clone());
++
++    let return_val =
++        if is_array_like::<crate::DomTypeHolder>(cx, val) || is_arguments_object(cx, val) {
++            let mut result: Vec<JSValue> = Vec::new();
++
++            let get_property_result =
++                get_property::<u32>(cx, object_handle, c"length", ConversionBehavior::Default);
++            let length = match get_property_result {
++                Ok(length) => match length {
++                    Some(length) => length,
++                    _ => {
++                        return Err(JavaScriptEvaluationError::SerializationError(
++                            JavaScriptEvaluationResultSerializationError::UnknownType,
++                        ));
++                    },
++                },
++                Err(error) => {
++                    throw_dom_exception(cx, global_scope, error);
++                    return Err(JavaScriptEvaluationError::SerializationError(
++                        JavaScriptEvaluationResultSerializationError::OtherJavaScriptError,
++                    ));
++                },
++            };
++            // Step 4. For each enumerable property in value, run the following substeps:
++            for i in 0..length {
++                rooted!(&in(cx) let mut item = UndefinedValue());
++                let cname = CString::new(i.to_string()).unwrap();
++                let get_property_result =
++                    get_property_jsval(cx, object_handle, &cname, item.handle_mut());
++                match get_property_result {
++                    Ok(_) => {
++                        let converted_item =
++                            jsval_to_js_value_inner(cx, global_scope, item.handle(), seen)?;
++
++                        result.push(converted_item);
++                    },
++                    Err(error) => {
++                        throw_dom_exception(cx, global_scope, error);
++                        return Err(JavaScriptEvaluationError::SerializationError(
++                            JavaScriptEvaluationResultSerializationError::OtherJavaScriptError,
++                        ));
++                    },
++                }
++            }
++            Ok(JSValue::Array(result))
++        } else {
++            let mut result = HashMap::new();
++
++            let mut ids = unsafe { IdVector::new(cx.raw_cx()) };
++            let succeeded =
++                unsafe { GetPropertyKeys(cx, object_handle, JSITER_OWNONLY, ids.handle_mut()) };
++            if !succeeded {
++                return Err(JavaScriptEvaluationError::SerializationError(
++                    JavaScriptEvaluationResultSerializationError::OtherJavaScriptError,
++                ));
++            }
++            for id in ids.iter() {
++                rooted!(&in(cx) let id = *id);
++                rooted!(&in(cx) let mut desc = PropertyDescriptor::default());
++
++                let mut is_none = false;
++                let succeeded = unsafe {
++                    JS_GetOwnPropertyDescriptorById(
++                        cx,
++                        object_handle,
++                        id.handle(),
++                        desc.handle_mut(),
++                        &mut is_none,
++                    )
++                };
++                if !succeeded {
++                    return Err(JavaScriptEvaluationError::SerializationError(
++                        JavaScriptEvaluationResultSerializationError::OtherJavaScriptError,
++                    ));
++                }
++
++                rooted!(&in(cx) let mut property = UndefinedValue());
++                let succeeded = unsafe {
++                    JS_GetPropertyById(cx, object_handle, id.handle(), property.handle_mut())
++                };
++                if !succeeded {
++                    return Err(JavaScriptEvaluationError::SerializationError(
++                        JavaScriptEvaluationResultSerializationError::OtherJavaScriptError,
++                    ));
++                }
++
++                if !property.is_undefined() {
++                    let name = jsid_to_string(cx, id.handle());
++                    let Some(name) = name else {
++                        return Err(JavaScriptEvaluationError::SerializationError(
++                            JavaScriptEvaluationResultSerializationError::OtherJavaScriptError,
++                        ));
++                    };
++
++                    let value = jsval_to_js_value_inner(cx, global_scope, property.handle(), seen)?;
++                    result.insert(name.into(), value);
++                }
++            }
++            Ok(JSValue::Object(result))
++        };
++    // Step 5. Remove the last element of `seen`.
++    seen.remove(&hashable);
++    // Step 6. Return success with data `result`.
++    return_val
++}
+diff --git a/components/script/lib.rs b/components/script/lib.rs
+index d07aa60a0d9..84921e04596 100644
+--- a/components/script/lib.rs
++++ b/components/script/lib.rs
+@@ -35,6 +35,7 @@ pub(crate) use dom::canvas_context;
+ pub(crate) mod fetch;
+ pub(crate) mod indexeddb;
+ mod init;
++mod js_value_serialization;
+ mod layout_image;
+ mod url;
+ 
+@@ -65,7 +66,6 @@ mod task_queue;
+ mod task_source;
+ pub mod test;
+ mod timers;
+-mod webdriver_handlers;
+ mod window_named_properties;
+ mod xpath;
+ 
+diff --git a/components/script/messaging.rs b/components/script/messaging.rs
+index 250d16497e7..7048959b250 100644
+--- a/components/script/messaging.rs
++++ b/components/script/messaging.rs
+@@ -81,7 +81,6 @@ impl MixedMessage {
+                 ScriptThreadMessage::FocusDocumentAsPartOfFocusingSteps(id, ..) => Some(*id),
+                 ScriptThreadMessage::UnfocusDocumentAsPartOfFocusingSteps(id, ..) => Some(*id),
+                 ScriptThreadMessage::FocusDocument(id, ..) => Some(*id),
+-                ScriptThreadMessage::WebDriverScriptCommand(id, ..) => Some(*id),
+                 ScriptThreadMessage::TickAllAnimations(..) => None,
+                 ScriptThreadMessage::WebFontLoadFinished(id, ..) => Some(*id),
+                 ScriptThreadMessage::DispatchIFrameLoadEvent {
+diff --git a/components/script/navigation.rs b/components/script/navigation.rs
+index b04a9a678cb..89ca5c57174 100644
+--- a/components/script/navigation.rs
++++ b/components/script/navigation.rs
+@@ -11,7 +11,7 @@ use std::cell::Cell;
+ use content_security_policy::sandboxing_directive::SandboxingFlagSet;
+ use crossbeam_channel::Sender;
+ use embedder_traits::user_contents::UserContentManagerId;
+-use embedder_traits::{Theme, ViewportDetails, WebDriverLoadStatus};
++use embedder_traits::{Theme, ViewportDetails};
+ use http::header;
+ use js::context::JSContext;
+ use net_traits::blob_url_store::UrlWithBlobClaim;
+@@ -433,15 +433,8 @@ pub(crate) fn navigate(
+     {
+         // Step 14.1. Navigate to a fragment given navigable, url, historyHandling,
+         // userInvolvement, sourceElement, navigationAPIState, and navigationId.
+-        let webdriver_sender = window.webdriver_load_status_sender();
+-        if let Some(ref sender) = webdriver_sender {
+-            let _ = sender.send(WebDriverLoadStatus::NavigationStart);
+-        }
+         navigate_to_fragment(cx, window, &load_data.url, history_handling);
+         // Step 14.2. Return.
+-        if let Some(sender) = webdriver_sender {
+-            let _ = sender.send(WebDriverLoadStatus::NavigationStop);
+-        }
+         return;
+     }
+ 
+@@ -459,9 +452,6 @@ pub(crate) fn navigate(
+     // and a new WebDriver BiDi navigation status whose id is navigationId,
+     // status is "pending", and url is url.
+     // TODO
+-    if let Some(sender) = window.webdriver_load_status_sender() {
+-        let _ = sender.send(WebDriverLoadStatus::NavigationStart);
+-    }
+ 
+     // Step 18. If navigable's ongoing navigation is "traversal", then:
+     // TODO
+diff --git a/components/script/script_thread.rs b/components/script/script_thread.rs
+index 6a179c41a08..eba52ceb214 100644
+--- a/components/script/script_thread.rs
++++ b/components/script/script_thread.rs
+@@ -18,7 +18,6 @@
+ //! loop.
+ 
+ use std::cell::{Cell, RefCell};
+-use std::collections::HashSet;
+ use std::default::Default;
+ use std::option::Option;
+ use std::rc::{Rc, Weak};
+@@ -43,7 +42,7 @@ use embedder_traits::user_contents::{UserContentManagerId, UserContents, UserScr
+ use embedder_traits::{
+     EmbedderControlId, EmbedderControlResponse, EmbedderMsg, FocusSequenceNumber,
+     InputEventOutcome, JavaScriptEvaluationError, JavaScriptEvaluationId, MediaSessionActionType,
+-    Theme, ViewportDetails, WebDriverScriptCommand,
++    Theme, ViewportDetails,
+ };
+ use encoding_rs::Encoding;
+ use fonts::{FontContext, SystemFontServiceProxy, WebFontLoadEvent};
+@@ -110,6 +109,7 @@ use url::Position;
+ #[cfg(feature = "webgpu")]
+ use webgpu_traits::{WebGPUDevice, WebGPUMsg};
+ 
++use crate::devtools;
+ use crate::devtools::DevtoolsState;
+ use crate::document_collection::DocumentCollection;
+ use crate::document_loader::DocumentLoader;
+@@ -146,6 +146,7 @@ use crate::dom::windowproxy::{CreatorBrowsingContextInfo, WindowProxy};
+ use crate::dom::worklet::WorkletThreadPool;
+ use crate::dom::workletglobalscope::WorkletGlobalScopeInit;
+ use crate::fetch::FetchCanceller;
++use crate::js_value_serialization::jsval_to_js_value;
+ use crate::messaging::{
+     CommonScriptMsg, MainThreadScriptMsg, MixedMessage, ScriptEventLoopSender,
+     ScriptThreadReceivers, ScriptThreadSenders,
+@@ -162,8 +163,6 @@ use crate::script_runtime::{
+ use crate::script_window_proxies::ScriptWindowProxies;
+ use crate::svg_font::SvgFontResolver;
+ use crate::task_queue::TaskQueue;
+-use crate::webdriver_handlers::jsval_to_webdriver;
+-use crate::{devtools, webdriver_handlers};
+ 
+ thread_local!(static SCRIPT_THREAD_ROOT: Cell<Option<*const ScriptThread>> = const { Cell::new(None) });
+ 
+@@ -188,8 +187,6 @@ pub(crate) struct IncompleteParserContexts(RefCell<Vec<(PipelineId, ParserContex
+ 
+ unsafe_no_jsmanaged_fields!(TaskQueue<MainThreadScriptMsg>);
+ 
+-type NodeIdSet = HashSet<String>;
+-
+ /// A simple guard structure that restore the user interacting state when dropped
+ #[derive(Default)]
+ pub(crate) struct ScriptUserInteractingGuard {
+@@ -379,10 +376,6 @@ pub struct ScriptThread {
+     #[no_trace]
+     player_context: WindowGLContext,
+ 
+-    /// A map from pipelines to all owned nodes ever created in this script thread
+-    #[no_trace]
+-    pipeline_to_node_ids: DomRefCell<FxHashMap<PipelineId, NodeIdSet>>,
+-
+     /// Code is running as a consequence of a user interaction
+     is_user_interacting: Rc<Cell<bool>>,
+ 
+@@ -613,8 +606,8 @@ impl ScriptThread {
+     /// <https://github.com/whatwg/html/issues/2591>
+     fn check_load_origin(source: &LoadOrigin, target: &OriginSnapshot) -> bool {
+         match source {
+-            LoadOrigin::Constellation | LoadOrigin::WebDriver => {
+-                // Always allow loads initiated by the constellation or webdriver.
++            LoadOrigin::Constellation => {
++                // Always allow loads initiated by the constellation.
+                 true
+             },
+             LoadOrigin::Script(source_origin) => source_origin.same_origin_domain(target),
+@@ -863,27 +856,6 @@ impl ScriptThread {
+         })
+     }
+ 
+-    pub(crate) fn save_node_id(pipeline: PipelineId, node_id: String) {
+-        with_script_thread(|script_thread| {
+-            script_thread
+-                .pipeline_to_node_ids
+-                .borrow_mut()
+-                .entry(pipeline)
+-                .or_default()
+-                .insert(node_id);
+-        })
+-    }
+-
+-    pub(crate) fn has_node_id(pipeline: PipelineId, node_id: &str) -> bool {
+-        with_script_thread(|script_thread| {
+-            script_thread
+-                .pipeline_to_node_ids
+-                .borrow()
+-                .get(&pipeline)
+-                .is_some_and(|node_ids| node_ids.contains(node_id))
+-        })
+-    }
+-
+     /// Creates a new script thread.
+     #[servo_tracing::instrument(name = "ScripThread::new", level = "debug", skip_all)]
+     pub(crate) fn new(
+@@ -1026,7 +998,6 @@ impl ScriptThread {
+                     shared_style_locks,
+                     user_contents_for_manager_id: RefCell::new(user_contents_for_manager_id),
+                     player_context: state.player_context,
+-                    pipeline_to_node_ids: Default::default(),
+                     is_user_interacting: Rc::new(Cell::new(false)),
+                     #[cfg(feature = "webgpu")]
+                     gpu_id_hub,
+@@ -1894,9 +1865,6 @@ impl ScriptThread {
+             ScriptThreadMessage::FocusDocument(pipeline_id, remote_focus_operation) => {
+                 self.handle_focus_document(cx, pipeline_id, remote_focus_operation);
+             },
+-            ScriptThreadMessage::WebDriverScriptCommand(pipeline_id, msg) => {
+-                self.handle_webdriver_msg(pipeline_id, msg, cx)
+-            },
+             ScriptThreadMessage::WebFontLoadFinished(pipeline_id, event) => {
+                 // If the font load did not succeed then this message only serves to bump the script thread
+                 // so it attempts to resolve the document.fonts.ready promise. This happens as a result
+@@ -2386,349 +2354,6 @@ impl ScriptThread {
+         };
+     }
+ 
+-    fn handle_webdriver_msg(
+-        &self,
+-        pipeline_id: PipelineId,
+-        msg: WebDriverScriptCommand,
+-        cx: &mut js::context::JSContext,
+-    ) {
+-        let documents = self.documents.borrow();
+-        match msg {
+-            WebDriverScriptCommand::AddCookie(params, reply) => {
+-                webdriver_handlers::handle_add_cookie(&documents, pipeline_id, params, reply)
+-            },
+-            WebDriverScriptCommand::DeleteCookies(reply) => {
+-                webdriver_handlers::handle_delete_cookies(&documents, pipeline_id, reply)
+-            },
+-            WebDriverScriptCommand::DeleteCookie(name, reply) => {
+-                webdriver_handlers::handle_delete_cookie(&documents, pipeline_id, name, reply)
+-            },
+-            WebDriverScriptCommand::ElementClear(element_id, reply) => {
+-                webdriver_handlers::handle_element_clear(
+-                    cx,
+-                    &documents,
+-                    pipeline_id,
+-                    element_id,
+-                    reply,
+-                )
+-            },
+-            WebDriverScriptCommand::FindElementsCSSSelector(selector, reply) => {
+-                webdriver_handlers::handle_find_elements_css_selector(
+-                    cx,
+-                    &documents,
+-                    pipeline_id,
+-                    selector,
+-                    reply,
+-                )
+-            },
+-            WebDriverScriptCommand::FindElementsLinkText(selector, partial, reply) => {
+-                webdriver_handlers::handle_find_elements_link_text(
+-                    cx,
+-                    &documents,
+-                    pipeline_id,
+-                    selector,
+-                    partial,
+-                    reply,
+-                )
+-            },
+-            WebDriverScriptCommand::FindElementsTagName(selector, reply) => {
+-                webdriver_handlers::handle_find_elements_tag_name(
+-                    cx,
+-                    &documents,
+-                    pipeline_id,
+-                    selector,
+-                    reply,
+-                )
+-            },
+-            WebDriverScriptCommand::FindElementsXpathSelector(selector, reply) => {
+-                webdriver_handlers::handle_find_elements_xpath_selector(
+-                    cx,
+-                    &documents,
+-                    pipeline_id,
+-                    selector,
+-                    reply,
+-                )
+-            },
+-            WebDriverScriptCommand::FindElementElementsCSSSelector(selector, element_id, reply) => {
+-                webdriver_handlers::handle_find_element_elements_css_selector(
+-                    cx,
+-                    &documents,
+-                    pipeline_id,
+-                    element_id,
+-                    selector,
+-                    reply,
+-                )
+-            },
+-            WebDriverScriptCommand::FindElementElementsLinkText(
+-                selector,
+-                element_id,
+-                partial,
+-                reply,
+-            ) => webdriver_handlers::handle_find_element_elements_link_text(
+-                cx,
+-                &documents,
+-                pipeline_id,
+-                element_id,
+-                selector,
+-                partial,
+-                reply,
+-            ),
+-            WebDriverScriptCommand::FindElementElementsTagName(selector, element_id, reply) => {
+-                webdriver_handlers::handle_find_element_elements_tag_name(
+-                    cx,
+-                    &documents,
+-                    pipeline_id,
+-                    element_id,
+-                    selector,
+-                    reply,
+-                )
+-            },
+-            WebDriverScriptCommand::FindElementElementsXPathSelector(
+-                selector,
+-                element_id,
+-                reply,
+-            ) => webdriver_handlers::handle_find_element_elements_xpath_selector(
+-                cx,
+-                &documents,
+-                pipeline_id,
+-                element_id,
+-                selector,
+-                reply,
+-            ),
+-            WebDriverScriptCommand::FindShadowElementsCSSSelector(
+-                selector,
+-                shadow_root_id,
+-                reply,
+-            ) => webdriver_handlers::handle_find_shadow_elements_css_selector(
+-                cx,
+-                &documents,
+-                pipeline_id,
+-                shadow_root_id,
+-                selector,
+-                reply,
+-            ),
+-            WebDriverScriptCommand::FindShadowElementsLinkText(
+-                selector,
+-                shadow_root_id,
+-                partial,
+-                reply,
+-            ) => webdriver_handlers::handle_find_shadow_elements_link_text(
+-                cx,
+-                &documents,
+-                pipeline_id,
+-                shadow_root_id,
+-                selector,
+-                partial,
+-                reply,
+-            ),
+-            WebDriverScriptCommand::FindShadowElementsTagName(selector, shadow_root_id, reply) => {
+-                webdriver_handlers::handle_find_shadow_elements_tag_name(
+-                    cx,
+-                    &documents,
+-                    pipeline_id,
+-                    shadow_root_id,
+-                    selector,
+-                    reply,
+-                )
+-            },
+-            WebDriverScriptCommand::FindShadowElementsXPathSelector(
+-                selector,
+-                shadow_root_id,
+-                reply,
+-            ) => webdriver_handlers::handle_find_shadow_elements_xpath_selector(
+-                cx,
+-                &documents,
+-                pipeline_id,
+-                shadow_root_id,
+-                selector,
+-                reply,
+-            ),
+-            WebDriverScriptCommand::GetElementShadowRoot(element_id, reply) => {
+-                webdriver_handlers::handle_get_element_shadow_root(
+-                    &documents,
+-                    pipeline_id,
+-                    element_id,
+-                    reply,
+-                )
+-            },
+-            WebDriverScriptCommand::ElementClick(element_id, reply) => {
+-                webdriver_handlers::handle_element_click(
+-                    cx,
+-                    &documents,
+-                    pipeline_id,
+-                    element_id,
+-                    reply,
+-                )
+-            },
+-            WebDriverScriptCommand::GetKnownElement(element_id, reply) => {
+-                webdriver_handlers::handle_get_known_element(
+-                    &documents,
+-                    pipeline_id,
+-                    element_id,
+-                    reply,
+-                )
+-            },
+-            WebDriverScriptCommand::GetKnownWindow(webview_id, reply) => {
+-                webdriver_handlers::handle_get_known_window(
+-                    &documents,
+-                    pipeline_id,
+-                    webview_id,
+-                    reply,
+-                )
+-            },
+-            WebDriverScriptCommand::GetKnownShadowRoot(element_id, reply) => {
+-                webdriver_handlers::handle_get_known_shadow_root(
+-                    &documents,
+-                    pipeline_id,
+-                    element_id,
+-                    reply,
+-                )
+-            },
+-            WebDriverScriptCommand::GetActiveElement(reply) => {
+-                webdriver_handlers::handle_get_active_element(&documents, pipeline_id, reply)
+-            },
+-            WebDriverScriptCommand::GetComputedRole(node_id, reply) => {
+-                webdriver_handlers::handle_get_computed_role(
+-                    &documents,
+-                    pipeline_id,
+-                    node_id,
+-                    reply,
+-                )
+-            },
+-            WebDriverScriptCommand::GetPageSource(reply) => {
+-                webdriver_handlers::handle_get_page_source(cx, &documents, pipeline_id, reply)
+-            },
+-            WebDriverScriptCommand::GetCookies(reply) => {
+-                webdriver_handlers::handle_get_cookies(&documents, pipeline_id, reply)
+-            },
+-            WebDriverScriptCommand::GetCookie(name, reply) => {
+-                webdriver_handlers::handle_get_cookie(&documents, pipeline_id, name, reply)
+-            },
+-            WebDriverScriptCommand::GetElementTagName(node_id, reply) => {
+-                webdriver_handlers::handle_get_name(&documents, pipeline_id, node_id, reply)
+-            },
+-            WebDriverScriptCommand::GetElementAttribute(node_id, name, reply) => {
+-                webdriver_handlers::handle_get_attribute(
+-                    cx,
+-                    &documents,
+-                    pipeline_id,
+-                    node_id,
+-                    name,
+-                    reply,
+-                )
+-            },
+-            WebDriverScriptCommand::GetElementProperty(node_id, name, reply) => {
+-                webdriver_handlers::handle_get_property(
+-                    &documents,
+-                    pipeline_id,
+-                    node_id,
+-                    name,
+-                    reply,
+-                    cx,
+-                )
+-            },
+-            WebDriverScriptCommand::GetElementCSS(node_id, name, reply) => {
+-                webdriver_handlers::handle_get_css(
+-                    cx,
+-                    &documents,
+-                    pipeline_id,
+-                    node_id,
+-                    name,
+-                    reply,
+-                )
+-            },
+-            WebDriverScriptCommand::GetElementRect(node_id, reply) => {
+-                webdriver_handlers::handle_get_rect(cx, &documents, pipeline_id, node_id, reply)
+-            },
+-            WebDriverScriptCommand::ScrollAndGetBoundingClientRect(node_id, reply) => {
+-                webdriver_handlers::handle_scroll_and_get_bounding_client_rect(
+-                    cx,
+-                    &documents,
+-                    pipeline_id,
+-                    node_id,
+-                    reply,
+-                )
+-            },
+-            WebDriverScriptCommand::GetElementText(node_id, reply) => {
+-                webdriver_handlers::handle_get_text(&documents, pipeline_id, node_id, reply)
+-            },
+-            WebDriverScriptCommand::GetElementInViewCenterPoint(node_id, reply) => {
+-                webdriver_handlers::handle_get_element_in_view_center_point(
+-                    cx,
+-                    &documents,
+-                    pipeline_id,
+-                    node_id,
+-                    reply,
+-                )
+-            },
+-            WebDriverScriptCommand::GetParentFrameId(reply) => {
+-                webdriver_handlers::handle_get_parent_frame_id(&documents, pipeline_id, reply)
+-            },
+-            WebDriverScriptCommand::GetBrowsingContextId(webdriver_frame_id, reply) => {
+-                webdriver_handlers::handle_get_browsing_context_id(
+-                    &documents,
+-                    pipeline_id,
+-                    webdriver_frame_id,
+-                    reply,
+-                )
+-            },
+-            WebDriverScriptCommand::GetUrl(reply) => {
+-                webdriver_handlers::handle_get_url(&documents, pipeline_id, reply)
+-            },
+-            WebDriverScriptCommand::IsEnabled(element_id, reply) => {
+-                webdriver_handlers::handle_is_enabled(&documents, pipeline_id, element_id, reply)
+-            },
+-            WebDriverScriptCommand::IsSelected(element_id, reply) => {
+-                webdriver_handlers::handle_is_selected(&documents, pipeline_id, element_id, reply)
+-            },
+-            WebDriverScriptCommand::GetTitle(reply) => {
+-                webdriver_handlers::handle_get_title(&documents, pipeline_id, reply)
+-            },
+-            WebDriverScriptCommand::WillSendKeys(
+-                element_id,
+-                text,
+-                strict_file_interactability,
+-                reply,
+-            ) => webdriver_handlers::handle_will_send_keys(
+-                cx,
+-                &documents,
+-                pipeline_id,
+-                element_id,
+-                text,
+-                strict_file_interactability,
+-                reply,
+-            ),
+-            WebDriverScriptCommand::AddLoadStatusSender(_, response_sender) => {
+-                webdriver_handlers::handle_add_load_status_sender(
+-                    &documents,
+-                    pipeline_id,
+-                    response_sender,
+-                )
+-            },
+-            WebDriverScriptCommand::RemoveLoadStatusSender(_) => {
+-                webdriver_handlers::handle_remove_load_status_sender(&documents, pipeline_id)
+-            },
+-            // https://github.com/servo/servo/issues/23535
+-            // The Script messages need different treatment since the JS script might mutate
+-            // `self.documents`, which would conflict with the immutable borrow of it that
+-            // occurs for the rest of the messages.
+-            // We manually drop the immutable borrow first, and quickly
+-            // end the borrow of documents to avoid runtime error.
+-            WebDriverScriptCommand::ExecuteScriptWithCallback(script, reply) => {
+-                let window = documents.find_window(pipeline_id);
+-                drop(documents);
+-                webdriver_handlers::handle_execute_async_script(window, script, reply, cx);
+-            },
+-            WebDriverScriptCommand::SetProtocolHandlerAutomationMode(mode) => {
+-                webdriver_handlers::set_protocol_handler_automation_mode(
+-                    &documents,
+-                    pipeline_id,
+-                    mode,
+-                )
+-            },
+-        }
+-    }
+-
+     /// Batch window resize operations into a single "update the rendering" task,
+     /// or, if a load is in progress, set the window size directly.
+     pub(crate) fn handle_resize_message(
+@@ -4387,7 +4012,7 @@ impl ScriptThread {
+             return;
+         };
+ 
+-        let result = jsval_to_webdriver(cx, global_scope, return_value.handle());
++        let result = jsval_to_js_value(cx, global_scope, return_value.handle());
+         let _ = self.senders.pipeline_to_constellation_sender.send((
+             webview_id,
+             pipeline_id,
+diff --git a/components/script_bindings/codegen/Bindings.conf b/components/script_bindings/codegen/Bindings.conf
+index 54c66fed133..3c24a170658 100644
+--- a/components/script_bindings/codegen/Bindings.conf
++++ b/components/script_bindings/codegen/Bindings.conf
+@@ -1333,7 +1333,7 @@ DOMInterfaces = {
+ 
+ 'Window': {
+     'additionalTraits': ['crate::interfaces::WindowHelpers', 'crate::interfaces::HasOrigin'],
+-    'realm': ['CreateImageBitmap', 'CreateImageBitmap_', 'WebdriverCallback', 'GetOpener', 'Fetch'],
++    'realm': ['CreateImageBitmap', 'CreateImageBitmap_', 'GetOpener', 'Fetch'],
+     'cx': [
+         'ClientInformation',
+         'Caches',
+@@ -1373,7 +1373,6 @@ DOMInterfaces = {
+         'StructuredClone',
+         'TestRunner',
+         'TrustedTypes',
+-        'WebdriverException',
+         'IndexedDB',
+     ],
+     'cx_no_gc': ['QueueMicrotask'],
+diff --git a/components/script_bindings/webidls/Window.webidl b/components/script_bindings/webidls/Window.webidl
+index 7e6144afb8e..95ac1c1f87e 100644
+--- a/components/script_bindings/webidls/Window.webidl
++++ b/components/script_bindings/webidls/Window.webidl
+@@ -137,17 +137,6 @@ partial interface Window {
+   [Replaceable] readonly attribute double devicePixelRatio;
+ };
+ 
+-// WebDriver extensions
+-partial interface Window {
+-  // Shouldn't be public, but just to make things work for now
+-  undefined webdriverCallback(optional any result);
+-  undefined webdriverException(optional any result);
+-  Element? webdriverElement(DOMString id);
+-  WindowProxy? webdriverFrame(DOMString id);
+-  WindowProxy webdriverWindow(DOMString id);
+-  ShadowRoot? webdriverShadowRoot(DOMString id);
+-};
+-
+ // https://html.spec.whatwg.org/multipage/#dom-sessionstorage
+ interface mixin WindowSessionStorage {
+   [Throws] readonly attribute Storage sessionStorage;
+diff --git a/components/servo/servo.rs b/components/servo/servo.rs
+index 512cf84e783..43c116be930 100644
+--- a/components/servo/servo.rs
++++ b/components/servo/servo.rs
+@@ -1086,12 +1086,6 @@ impl Servo {
+             .send(EmbedderToConstellationMessage::CreateMemoryReport(snd));
+     }
+ 
+-    pub fn execute_webdriver_command(&self, command: WebDriverCommandMsg) {
+-        self.0
+-            .constellation_proxy
+-            .send(EmbedderToConstellationMessage::WebDriverCommand(command));
+-    }
+-
+     pub fn set_preference(&self, name: &str, value: PrefValue) {
+         let mut preferences = prefs::get().clone();
+         preferences.set_value(name, value);
+diff --git a/components/shared/constellation/from_script_message.rs b/components/shared/constellation/from_script_message.rs
+index b1ca67d649f..d1d3f6f8fe4 100644
+--- a/components/shared/constellation/from_script_message.rs
++++ b/components/shared/constellation/from_script_message.rs
+@@ -76,8 +76,6 @@ impl ScriptToConstellationChan {
+ pub enum LoadOrigin {
+     /// A load originating in the constellation.
+     Constellation,
+-    /// A load originating in webdriver.
+-    WebDriver,
+     /// A load originating in script.
+     Script(OriginSnapshot),
+ }
+diff --git a/components/shared/constellation/lib.rs b/components/shared/constellation/lib.rs
+index eeb042d0025..51590d5e43d 100644
+--- a/components/shared/constellation/lib.rs
++++ b/components/shared/constellation/lib.rs
+@@ -21,7 +21,7 @@ use embedder_traits::user_contents::{
+ use embedder_traits::{
+     EmbedderControlId, EmbedderControlResponse, InputEventAndId, JavaScriptEvaluationId,
+     MediaSessionActionType, NewWebViewDetails, PaintHitTestResult, Theme, TraversalId, UrlRequest,
+-    ViewportDetails, WebDriverCommandMsg,
++    ViewportDetails,
+ };
+ pub use from_script_message::*;
+ use malloc_size_of_derive::MallocSizeOf;
+@@ -63,8 +63,6 @@ pub enum EmbedderToConstellationMessage {
+     /// asynchronous image uploads for the given `Pipeline`. These are mainly used
+     /// by canvas to perform uploads while the display list is being built.
+     NoLongerWaitingOnAsynchronousImageUpdates(Vec<PipelineId>),
+-    /// Dispatch a webdriver command
+-    WebDriverCommand(WebDriverCommandMsg),
+     /// Reload a top-level browsing context.
+     Reload(WebViewId),
+     /// A log entry, with the top-level browsing context id and thread name
+diff --git a/components/shared/embedder/Cargo.toml b/components/shared/embedder/Cargo.toml
+index af49b75d0d0..5c3b5c30f45 100644
+--- a/components/shared/embedder/Cargo.toml
++++ b/components/shared/embedder/Cargo.toml
+@@ -20,7 +20,6 @@ gamepad = []
+ accesskit = { workspace = true }
+ bitflags = { workspace = true }
+ content-security-policy = { workspace = true }
+-cookie = { workspace = true }
+ crossbeam-channel = { workspace = true }
+ euclid = { workspace = true }
+ http = { workspace = true }
+@@ -32,7 +31,6 @@ log = { workspace = true }
+ malloc_size_of = { workspace = true }
+ malloc_size_of_derive = { workspace = true }
+ pixels = { workspace = true }
+-rustc-hash = { workspace = true }
+ serde = { workspace = true }
+ servo-base = { workspace = true }
+ servo-geometry = { workspace = true }
+@@ -42,5 +40,4 @@ stylo = { workspace = true }
+ stylo_traits = { workspace = true }
+ url = { workspace = true }
+ uuid = { workspace = true }
+-webdriver = { workspace = true }
+ webrender_api = { workspace = true }
+diff --git a/components/shared/embedder/lib.rs b/components/shared/embedder/lib.rs
+index edf2338b2af..aca4f0e252d 100644
+--- a/components/shared/embedder/lib.rs
++++ b/components/shared/embedder/lib.rs
+@@ -12,7 +12,6 @@ pub mod embedder_controls;
+ pub mod input_events;
+ pub mod resources;
+ pub mod user_contents;
+-pub mod webdriver;
+ 
+ use std::collections::HashMap;
+ use std::ffi::c_void;
+@@ -52,7 +51,6 @@ use webrender_api::units::{
+ pub use crate::embedder_controls::*;
+ pub use crate::input_events::*;
+ use crate::user_contents::UserContentManagerId;
+-pub use crate::webdriver::*;
+ 
+ /// A point in a `WebView`, either expressed in device pixels or page pixels.
+ /// Page pixels are CSS pixels, which take into account device pixel scale,
+diff --git a/components/shared/net/lib.rs b/components/shared/net/lib.rs
+index 572a603ed08..7c36252f783 100644
+--- a/components/shared/net/lib.rs
++++ b/components/shared/net/lib.rs
+@@ -758,7 +758,6 @@ pub enum CoreResourceMsg {
+     DeleteCookies(Option<ServoUrl>, Option<IpcSender<()>>),
+     /// Delete all session cookies (cookies without an expiry or max-age).
+     DeleteSessionCookies(GenericSender<()>),
+-    DeleteCookie(ServoUrl, String),
+     DeleteCookieAsync(CookieStoreId, ServoUrl, String),
+     NewCookieListener(
+         CookieStoreId,
+diff --git a/components/shared/script/lib.rs b/components/shared/script/lib.rs
+index f496a80071a..0fe9e0a8923 100644
+--- a/components/shared/script/lib.rs
++++ b/components/shared/script/lib.rs
+@@ -17,7 +17,7 @@ use embedder_traits::user_contents::{UserContentManagerId, UserContents};
+ use embedder_traits::{
+     EmbedderControlId, EmbedderControlResponse, FocusSequenceNumber, InputEventAndId,
+     JavaScriptEvaluationId, MediaSessionActionType, PaintHitTestResult, ScriptToEmbedderChan,
+-    Theme, ViewportDetails, WebDriverScriptCommand,
++    Theme, ViewportDetails,
+ };
+ use euclid::{Scale, Size2D};
+ use fonts_traits::{SystemFontServiceProxySender, WebFontLoadEvent};
+@@ -246,8 +246,6 @@ pub enum ScriptThreadMessage {
+     ///   up the frame tree.
+     /// - When doing sequential focus navigation into and out of frames.
+     FocusDocument(PipelineId, RemoteFocusOperation),
+-    /// Passes a webdriver command to the script thread for execution
+-    WebDriverScriptCommand(PipelineId, WebDriverScriptCommand),
+     /// Notifies script thread that all animations are done
+     TickAllAnimations(Vec<WebViewId>),
+     /// Notifies the script thread that a web font has finished loading.
+diff --git a/ports/servoshell/Cargo.toml b/ports/servoshell/Cargo.toml
+index 2bd181e3fe8..9c9007d499e 100644
+--- a/ports/servoshell/Cargo.toml
++++ b/ports/servoshell/Cargo.toml
+@@ -94,7 +94,6 @@ tracing-perfetto = { workspace = true, optional = true }
+ tracing-subscriber = { workspace = true, optional = true, features = ["env-filter"] }
+ tracing-tracy = { workspace = true, optional = true }
+ url = { workspace = true }
+-webdriver_server = { workspace = true }
+ 
+ [target.'cfg(target_os = "android")'.dependencies]
+ android_logger = { workspace = true }
+diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
+index ca580b24be0..00d1b9ce1ae 100644
+--- a/ports/servoshell/desktop/app.rs
++++ b/ports/servoshell/desktop/app.rs
+@@ -473,9 +473,7 @@ impl App {
+         let running_state = Rc::new(RunningAppState::new(
+             servo,
+             self.servoshell_preferences.clone(),
+-            self.waker.clone(),
+             user_content_manager,
+-            self.preferences.clone(),
+             // Headed-only, same as everything else keyed off `event_loop_proxy` here — no
+             // window to receive gamepad input in headless mode.
+             #[cfg(feature = "gamepad")]
+@@ -522,13 +520,12 @@ impl App {
+         )
+     }
+ 
+-    pub fn pump_servo_event_loop(&mut self, active_event_loop: Option<&ActiveEventLoop>) -> bool {
++    pub fn pump_servo_event_loop(&mut self) -> bool {
+         let AppState::Running(state) = &self.state else {
+             return false;
+         };
+ 
+-        let create_platform_window = |url: Url| self.create_platform_window(url, active_event_loop);
+-        if !state.spin_event_loop(Some(&create_platform_window)) {
++        if !state.spin_event_loop() {
+             self.state = AppState::ShuttingDown;
+             return false;
+         }
+@@ -631,7 +628,7 @@ impl App {
+             headed_window.handle_window_event(state.clone(), window, window_event);
+         }
+ 
+-        if !self.pump_servo_event_loop(event_loop.into()) {
++        if !self.pump_servo_event_loop() {
+             event_loop.exit();
+         }
+         set_running_control_flow(event_loop, &state);
+@@ -654,7 +651,7 @@ impl App {
+             return;
+         };
+         gamepad_delegate.handle_sdl_event(&state, event);
+-        if !self.pump_servo_event_loop(event_loop.into()) {
++        if !self.pump_servo_event_loop() {
+             event_loop.exit();
+         }
+         set_running_control_flow(event_loop, &state);
+@@ -773,7 +770,7 @@ impl App {
+             },
+         }
+ 
+-        if !self.pump_servo_event_loop(event_loop.into()) {
++        if !self.pump_servo_event_loop() {
+             event_loop.exit();
+         }
+ 
+diff --git a/ports/servoshell/desktop/event_loop.rs b/ports/servoshell/desktop/event_loop.rs
+index e4ebb70f90d..c28da615283 100644
+--- a/ports/servoshell/desktop/event_loop.rs
++++ b/ports/servoshell/desktop/event_loop.rs
+@@ -517,7 +517,7 @@ impl HeadlessEventLoop {
+ 
+         loop {
+             self.sleep();
+-            if !app.pump_servo_event_loop(None) {
++            if !app.pump_servo_event_loop() {
+                 break;
+             }
+             *self.guard.lock().unwrap() = false;
+diff --git a/ports/servoshell/desktop/headed_window.rs b/ports/servoshell/desktop/headed_window.rs
+index 0208358c3f4..f230af302e2 100644
+--- a/ports/servoshell/desktop/headed_window.rs
++++ b/ports/servoshell/desktop/headed_window.rs
+@@ -20,15 +20,14 @@ use keyboard_types::ShortcutMatcher;
+ use log::debug;
+ use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawWindowHandle};
+ use servo::{
+-    AuthenticationRequest, BluetoothDeviceSelectionRequest, Cursor, DeviceIndependentIntRect,
+-    DeviceIndependentPixel, DeviceIntPoint, DeviceIntRect, DeviceIntSize, DevicePixel, DevicePoint,
+-    EmbedderControl, EmbedderControlId, ImeEvent, InputEvent, InputEventId, InputEventResult,
+-    InputMethodControl, Key, KeyState, KeyboardEvent, Modifiers, MouseButton as ServoMouseButton,
+-    MouseButtonAction, MouseButtonEvent, MouseLeftViewportEvent, MouseMoveEvent, NamedKey,
+-    OffscreenRenderingContext, PermissionRequest, RenderingContext, ScreenGeometry, Theme,
+-    TouchEvent, TouchEventType, TouchId, TouchPointerType, WebRenderDebugOption, WebView,
+-    WebViewId, WheelDelta, WheelEvent, WheelMode, WindowRenderingContext,
+-    convert_rect_to_css_pixel,
++    AuthenticationRequest, BluetoothDeviceSelectionRequest, Cursor, DeviceIndependentPixel,
++    DeviceIntPoint, DeviceIntRect, DeviceIntSize, DevicePixel, DevicePoint, EmbedderControl,
++    EmbedderControlId, ImeEvent, InputEvent, InputEventId, InputEventResult, InputMethodControl,
++    Key, KeyState, KeyboardEvent, Modifiers, MouseButton as ServoMouseButton, MouseButtonAction,
++    MouseButtonEvent, MouseLeftViewportEvent, MouseMoveEvent, NamedKey, OffscreenRenderingContext,
++    PermissionRequest, RenderingContext, ScreenGeometry, Theme, TouchEvent, TouchEventType, TouchId,
++    TouchPointerType, WebRenderDebugOption, WebView, WebViewId, WheelDelta, WheelEvent, WheelMode,
++    WindowRenderingContext,
+ };
+ use url::Url;
+ use dpi::PhysicalSize;
+@@ -1290,20 +1289,6 @@ impl PlatformWindow for HeadedWindow {
+         }
+     }
+ 
+-    fn window_rect(&self) -> DeviceIndependentIntRect {
+-        let (width, height) = self.sdl_window.size();
+-        let scale = self.hidpi_scale_factor();
+-
+-        let outer_size = DeviceIntSize::new(width as i32, height as i32);
+-
+-        let (x, y) = self.sdl_window.position();
+-        let origin = DeviceIntPoint::new(x, y);
+-        convert_rect_to_css_pixel(
+-            DeviceIntRect::from_origin_and_size(origin, outer_size),
+-            scale,
+-        )
+-    }
+-
+     fn set_position(&self, point: DeviceIntPoint) {
+         let _ = self
+             .sdl_window
+@@ -1380,10 +1365,6 @@ impl PlatformWindow for HeadedWindow {
+         current_sdl_theme()
+     }
+ 
+-    fn maximize(&self, _webview: &WebView) {
+-        let _ = self.sdl_window.clone().maximize();
+-    }
+-
+     /// Handle servoshell key bindings that may have been prevented by the page in the active webview.
+     fn notify_input_event_handled(
+         &self,
+diff --git a/ports/servoshell/desktop/headless_window.rs b/ports/servoshell/desktop/headless_window.rs
+index 7ba569dee36..6553776da55 100644
+--- a/ports/servoshell/desktop/headless_window.rs
++++ b/ports/servoshell/desktop/headless_window.rs
+@@ -14,9 +14,8 @@ use std::sync::atomic::AtomicU64;
+ use euclid::{Point2D, Scale, Size2D};
+ use log::error;
+ use servo::{
+-    DeviceIndependentIntRect, DeviceIndependentPixel, DeviceIntPoint, DeviceIntRect, DeviceIntSize,
+-    DevicePixel, RenderingContext, ScreenGeometry, SoftwareRenderingContext, WebView,
+-    convert_rect_to_css_pixel,
++    DeviceIndependentPixel, DeviceIntPoint, DeviceIntRect, DeviceIntSize, DevicePixel,
++    RenderingContext, ScreenGeometry, SoftwareRenderingContext, WebView,
+ };
+ use dpi::PhysicalSize;
+ 
+@@ -142,29 +141,10 @@ impl PlatformWindow for HeadlessWindow {
+         self.fullscreen.get()
+     }
+ 
+-    fn window_rect(&self) -> DeviceIndependentIntRect {
+-        convert_rect_to_css_pixel(
+-            DeviceIntRect::from_origin_and_size(self.window_position.get(), self.inner_size.get()),
+-            self.hidpi_scale_factor(),
+-        )
+-    }
+-
+     fn rendering_context(&self) -> Rc<dyn RenderingContext> {
+         self.rendering_context.clone()
+     }
+ 
+-    fn maximize(&self, webview: &WebView) {
+-        self.window_position.set(Point2D::zero());
+-        self.inner_size.set(self.screen_size);
+-        // Because we are managing the rendering surface ourselves, there will be no other
+-        // notification (such as from the display manager) that it has changed size, so we
+-        // must notify the `Paint` here.
+-        webview.resize(PhysicalSize::new(
+-            self.screen_size.width as u32,
+-            self.screen_size.height as u32,
+-        ));
+-    }
+-
+     fn show_console_message(&self, level: servo::ConsoleLogLevel, message: &str) {
+         println!("{message}");
+         log::log!(level.into(), "{message}");
+diff --git a/ports/servoshell/egl/app.rs b/ports/servoshell/egl/app.rs
+index 427aafcb7c9..d9291b3bd9d 100644
+--- a/ports/servoshell/egl/app.rs
++++ b/ports/servoshell/egl/app.rs
+@@ -12,13 +12,12 @@ use log::{info, warn};
+ use raw_window_handle::{DisplayHandle, RawWindowHandle, WindowHandle};
+ use servo::protocol_handler::ProtocolRegistry;
+ use servo::{
+-    DeviceIndependentIntRect, DeviceIndependentPixel, DeviceIntSize, DevicePixel, DevicePoint,
+-    DeviceVector2D, EmbedderControl, EmbedderControlId, EventLoopWaker, ImeEvent, InputEvent,
+-    KeyboardEvent, LoadStatus, MediaSessionActionType, MediaSessionEvent, MouseButton,
+-    MouseButtonAction, MouseButtonEvent, MouseMoveEvent, Opts, Preferences, RefreshDriver,
+-    RenderingContext, ScreenGeometry, Scroll, Servo, ServoBuilder, SimpleDialog, TouchEvent,
+-    TouchEventType, TouchId, TouchPointerType, UserContentManager, WebView, WebViewId,
+-    WindowRenderingContext, convert_rect_to_css_pixel,
++    DeviceIndependentPixel, DeviceIntSize, DevicePixel, DevicePoint, DeviceVector2D,
++    EmbedderControl, EmbedderControlId, EventLoopWaker, ImeEvent, InputEvent, KeyboardEvent,
++    LoadStatus, MediaSessionActionType, MediaSessionEvent, MouseButton, MouseButtonAction,
++    MouseButtonEvent, MouseMoveEvent, Opts, Preferences, RefreshDriver, RenderingContext,
++    ScreenGeometry, Scroll, Servo, ServoBuilder, SimpleDialog, TouchEvent, TouchEventType, TouchId,
++    TouchPointerType, UserContentManager, WebView, WebViewId, WindowRenderingContext,
+ };
+ use url::Url;
+ 
+@@ -143,13 +142,6 @@ impl PlatformWindow for EmbeddedPlatformWindow {
+         self.rendering_context.clone()
+     }
+ 
+-    fn window_rect(&self) -> DeviceIndependentIntRect {
+-        convert_rect_to_css_pixel(
+-            self.viewport_rect.borrow().to_box2d(),
+-            self.hidpi_scale_factor(),
+-        )
+-    }
+-
+     fn show_embedder_control(&self, webview_id: WebViewId, embedder_control: EmbedderControl) {
+         let control_id = embedder_control.id();
+         match embedder_control {
+@@ -309,18 +301,16 @@ impl App {
+ 
+         let servo_builder = ServoBuilder::default()
+             .opts(init.opts)
+-            .preferences(init.preferences.clone())
++            .preferences(init.preferences)
+             .protocol_registry(protocol_registry)
+-            .event_loop_waker(init.event_loop_waker.clone());
++            .event_loop_waker(init.event_loop_waker);
+         let servo = servo_builder.build();
+ 
+         let user_content_manager = Rc::new(UserContentManager::new(&servo));
+         let state = Rc::new(RunningAppState::new(
+             servo,
+             init.servoshell_preferences,
+-            init.event_loop_waker,
+             user_content_manager,
+-            init.preferences,
+         ));
+ 
+         Rc::new(Self {
+@@ -407,10 +397,7 @@ impl App {
+     /// everytime wakeup is called or when embedder wants Servo
+     /// to act on its pending events.
+     pub fn spin_event_loop(&self) {
+-        if !self
+-            .state
+-            .spin_event_loop(None /* create_platform_window */)
+-        {
++        if !self.state.spin_event_loop() {
+             self.host.on_shutdown_complete()
+         }
+     }
+diff --git a/ports/servoshell/lib.rs b/ports/servoshell/lib.rs
+index abdb7ff056a..4e1b2dc6768 100644
+--- a/ports/servoshell/lib.rs
++++ b/ports/servoshell/lib.rs
+@@ -20,7 +20,6 @@ mod protocols;
+ #[cfg(not(target_os = "android"))]
+ mod resources;
+ mod running_app_state;
+-mod webdriver;
+ mod window;
+ 
+ pub mod platform {
+diff --git a/ports/servoshell/prefs.rs b/ports/servoshell/prefs.rs
+index 6cf96ba43c3..789cbdf5444 100644
+--- a/ports/servoshell/prefs.rs
++++ b/ports/servoshell/prefs.rs
+@@ -3,7 +3,6 @@
+  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+ 
+ use core::panic;
+-use std::cell::Cell;
+ use std::collections::HashMap;
+ use std::fs::{self, read_to_string};
+ use std::path::{Path, PathBuf};
+@@ -101,9 +100,6 @@ pub(crate) struct ServoShellPreferences {
+     pub userscripts_directory: Option<PathBuf>,
+     /// A set of [`UserStylesheets`] to load for content.
+     pub user_stylesheets: Vec<Rc<UserStyleSheet>>,
+-    /// `None` to disable WebDriver or `Some` with a port number to start a server to listen to
+-    /// remote WebDriver commands.
+-    pub webdriver_port: Cell<Option<u16>>,
+     /// Whether the window should open already in fullscreen — persisted across launches
+     /// (a marker file under `config_dir`, written/removed by `HeadedWindow::set_fullscreen`)
+     /// so a game closed in fullscreen reopens that way, without a windowed-then-fullscreen
+@@ -134,7 +130,6 @@ impl Default for ServoShellPreferences {
+             exit_after_stable_image: false,
+             userscripts_directory: None,
+             user_stylesheets: Default::default(),
+-            webdriver_port: Cell::new(None),
+             start_fullscreen: false,
+             config_dir: None,
+         }
+@@ -362,17 +357,6 @@ fn userscripts() -> impl Parser<Option<PathBuf>> {
+     construct!([arg]).optional()
+ }
+ 
+-fn webdriver_port() -> impl Parser<Option<u16>> {
+-    flag_with_default_parser(
+-        None,
+-        "webdriver",
+-        "7000",
+-        "Start remote WebDriver server on port",
+-        7000,
+-        |val| val,
+-    )
+-}
+-
+ fn map_debug_options(arg: String) -> Vec<String> {
+     arg.split(',').map(|s| s.to_owned()).collect()
+ }
+@@ -557,10 +541,6 @@ struct CmdArgs {
+     fallback(vec![]))]
+     user_stylesheet: Vec<Rc<UserStyleSheet>>,
+ 
+-    /// Start remote WebDriver server on port.
+-    #[bpaf(external)]
+-    webdriver_port: Option<u16>,
+-
+     ///
+     ///  Override the native window's title — set once at startup and never changed
+     ///  afterward, even if the page's own `document.title` changes (the window title
+@@ -619,10 +599,6 @@ fn update_preferences_from_command_line_arguments(
+         preferences.user_agent = user_agent;
+     }
+ 
+-    if cmd_args.webdriver_port.is_some() {
+-        preferences.dom_testing_html_input_element_select_files_enabled = true;
+-    }
+-
+     if cmd_args.zealous_gc {
+         warn!("The zealous-gc option has no effect: V8 has no GC zeal mode.");
+ 
+@@ -722,7 +698,6 @@ fn parse_arguments_helper(args_without_binary: Args) -> ArgumentParsingResult {
+         window_title_override: cmd_args.window_title,
+         screen_size_override: cmd_args.screen_size_override,
+         simulate_touch_events: cmd_args.simulate_touch_events,
+-        webdriver_port: Cell::new(cmd_args.webdriver_port),
+         output_image_path: cmd_args.output.map(|p| p.to_string_lossy().into_owned()),
+         exit_after_stable_image: cmd_args.exit,
+         userscripts_directory: cmd_args.userscripts,
+diff --git a/ports/servoshell/running_app_state.rs b/ports/servoshell/running_app_state.rs
+index b2421e1d15b..5ee98799ee9 100644
+--- a/ports/servoshell/running_app_state.rs
++++ b/ports/servoshell/running_app_state.rs
+@@ -6,23 +6,17 @@
+ 
+ use std::cell::{Cell, Ref, RefCell};
+ use std::collections::HashMap;
+-use std::collections::hash_map::Entry;
+ use std::rc::Rc;
+ 
+-use crossbeam_channel::{Receiver, Sender, unbounded};
+-use euclid::Rect;
+-use image::{DynamicImage, ImageFormat, RgbaImage};
++use image::{DynamicImage, ImageFormat};
+ #[cfg(all(any(coverage, llvm_pgo), target_os = "android"))]
+ use libc::c_char;
+-use log::{error, info, warn};
++use log::{error, info};
+ use servo::{
+-    AllowOrDenyRequest, AuthenticationRequest, BluetoothDeviceSelectionRequest, CSSPixel,
+-    ConsoleLogLevel, CreateNewWebViewRequest, DeviceIntPoint, DeviceIntSize, EmbedderControl,
+-    EmbedderControlId, EventLoopWaker, GenericSender, InputEvent, InputEventId, InputEventResult,
+-    JSValue, LoadStatus, MediaSessionEvent, PermissionRequest, Preferences,
+-    ScreenshotCaptureError, Servo, ServoDelegate, ServoError, TraversalId, UserContentManager,
+-    WebDriverCommandMsg, WebDriverJSResult, WebDriverLoadStatus, WebDriverScriptCommand,
+-    WebDriverSenders, WebView, WebViewDelegate, WebViewId,
++    AllowOrDenyRequest, AuthenticationRequest, BluetoothDeviceSelectionRequest, ConsoleLogLevel,
++    CreateNewWebViewRequest, DeviceIntPoint, DeviceIntSize, EmbedderControl, EmbedderControlId,
++    InputEventId, InputEventResult, LoadStatus, MediaSessionEvent, PermissionRequest, Servo,
++    ServoDelegate, ServoError, UserContentManager, WebView, WebViewDelegate, WebViewId,
+ };
+ use url::Url;
+ 
+@@ -32,7 +26,6 @@ use url::Url;
+ #[cfg(all(feature = "gamepad", not(target_os = "android")))]
+ pub(crate) use crate::desktop::gamepad::ServoshellGamepadDelegate;
+ use crate::prefs::ServoShellPreferences;
+-use crate::webdriver::WebDriverEmbedderControls;
+ use crate::window::{PlatformWindow, ServoShellWindow, ServoShellWindowId};
+ 
+ #[cfg(all(any(coverage, llvm_pgo), target_os = "android"))]
+@@ -79,10 +72,6 @@ impl WebViewCollection {
+         removed_webview
+     }
+ 
+-    pub fn get(&self, id: WebViewId) -> Option<&WebView> {
+-        self.webviews.get(&id)
+-    }
+-
+     pub fn active(&self) -> Option<&WebView> {
+         self.active_webview_id.and_then(|id| self.webviews.get(&id))
+     }
+@@ -150,23 +139,6 @@ pub(crate) struct RunningAppState {
+     #[cfg(all(feature = "gamepad", not(target_os = "android")))]
+     gamepad_delegate: Option<Rc<ServoshellGamepadDelegate>>,
+ 
+-    /// The [`WebDriverSenders`] used to reply to pending WebDriver requests.
+-    pub(crate) webdriver_senders: RefCell<WebDriverSenders>,
+-
+-    /// When running in WebDriver mode, [`WebDriverEmbedderControls`] is a virtual container
+-    /// for all embedder controls. This overrides the normal behavior where these controls
+-    /// are shown in the GUI or not processed at all in headless mode.
+-    pub(crate) webdriver_embedder_controls: WebDriverEmbedderControls,
+-
+-    /// A [`HashMap`] of pending WebDriver events. It is the WebDriver embedder's responsibility
+-    /// to inform the WebDriver server when the event has been fully handled. This map is used
+-    /// to report back to WebDriver when that happens.
+-    pub(crate) pending_webdriver_events: RefCell<HashMap<InputEventId, Sender<()>>>,
+-
+-    /// A [`Receiver`] for receiving commands from a running WebDriver server, if WebDriver
+-    /// was enabled.
+-    pub(crate) webdriver_receiver: Option<Receiver<WebDriverCommandMsg>>,
+-
+     /// servoshell specific preferences created during startup of the application.
+     pub(crate) servoshell_preferences: ServoShellPreferences,
+ 
+@@ -215,34 +187,17 @@ impl RunningAppState {
+     pub(crate) fn new(
+         servo: Servo,
+         servoshell_preferences: ServoShellPreferences,
+-        event_loop_waker: Box<dyn EventLoopWaker>,
+         user_content_manager: Rc<UserContentManager>,
+-        default_preferences: Preferences,
+         #[cfg(all(feature = "gamepad", not(target_os = "android")))]
+         gamepad_delegate: Option<Rc<ServoshellGamepadDelegate>>,
+     ) -> Self {
+         servo.set_delegate(Rc::new(ServoShellServoDelegate));
+ 
+-        let webdriver_receiver = servoshell_preferences.webdriver_port.get().map(|port| {
+-            let (embedder_sender, embedder_receiver) = unbounded();
+-            webdriver_server::start_server(
+-                port,
+-                embedder_sender,
+-                event_loop_waker,
+-                default_preferences,
+-            );
+-            embedder_receiver
+-        });
+-
+         Self {
+             windows: Default::default(),
+             focused_window: Default::default(),
+             #[cfg(all(feature = "gamepad", not(target_os = "android")))]
+             gamepad_delegate,
+-            webdriver_senders: RefCell::default(),
+-            webdriver_embedder_controls: Default::default(),
+-            pending_webdriver_events: Default::default(),
+-            webdriver_receiver,
+             servoshell_preferences,
+             servo,
+             achieved_stable_image: Default::default(),
+@@ -311,16 +266,6 @@ impl RunningAppState {
+         self.windows.borrow().get(&id).cloned()
+     }
+ 
+-    pub(crate) fn webview_by_id(&self, webview_id: WebViewId) -> Option<WebView> {
+-        self.windows()
+-            .values()
+-            .find_map(|window| window.webview_by_id(webview_id))
+-    }
+-
+-    pub(crate) fn webdriver_receiver(&self) -> Option<&Receiver<WebDriverCommandMsg>> {
+-        self.webdriver_receiver.as_ref()
+-    }
+-
+     pub(crate) fn servo(&self) -> &Servo {
+         &self.servo
+     }
+@@ -331,12 +276,6 @@ impl RunningAppState {
+     }
+ 
+     pub(crate) fn schedule_exit(&self) {
+-        // When explicitly required to shutdown, unset webdriver port
+-        // which allows normal shutdown.
+-        // Note that when not explicitly required to shutdown, we still keep Servo alive
+-        // when all tabs are closed when `webdriver_port` enabled, which is necessary
+-        // to run wpt test using servodriver.
+-        self.servoshell_preferences.webdriver_port.set(None);
+         self.exit_scheduled.set(true);
+ 
+         #[cfg(all(any(coverage, llvm_pgo), target_os = "android"))]
+@@ -382,10 +321,7 @@ impl RunningAppState {
+     ///   delegate methods.
+     ///
+     /// Returns true if the event loop should continue spinning and false if it should exit.
+-    pub(crate) fn spin_event_loop(
+-        self: &Rc<Self>,
+-        create_platform_window: Option<&dyn Fn(Url) -> Rc<dyn PlatformWindow>>,
+-    ) -> bool {
++    pub(crate) fn spin_event_loop(self: &Rc<Self>) -> bool {
+         // We clone here to avoid a double borrow. User interface commands can update the list of windows.
+         #[cfg(target_os = "android")]
+         {
+@@ -395,8 +331,6 @@ impl RunningAppState {
+             }
+         }
+ 
+-        self.handle_webdriver_messages(create_platform_window);
+-
+         self.servo.spin_event_loop();
+ 
+         for window in self.windows.borrow().values() {
+@@ -409,11 +343,8 @@ impl RunningAppState {
+ 
+         self.close_empty_windows();
+ 
+-        // When no more windows are open, exit the application. Do not do this when
+-        // running WebDriver, which expects to keep running with no WebView open.
+-        if self.servoshell_preferences.webdriver_port.get().is_none() &&
+-            self.windows.borrow().is_empty()
+-        {
++        // When no more windows are open, exit the application.
++        if self.windows.borrow().is_empty() {
+             self.schedule_exit()
+         }
+ 
+@@ -483,149 +414,11 @@ impl RunningAppState {
+         });
+     }
+ 
+-    pub(crate) fn set_pending_traversal(
+-        &self,
+-        traversal_id: TraversalId,
+-        sender: GenericSender<WebDriverLoadStatus>,
+-    ) {
+-        self.webdriver_senders
+-            .borrow_mut()
+-            .pending_traversals
+-            .insert(traversal_id, sender);
+-    }
+-
+-    pub(crate) fn set_load_status_sender(
+-        &self,
+-        webview_id: WebViewId,
+-        sender: GenericSender<WebDriverLoadStatus>,
+-    ) {
+-        self.webdriver_senders
+-            .borrow_mut()
+-            .load_status_senders
+-            .insert(webview_id, sender);
+-    }
+-
+-    fn remove_load_status_sender(&self, webview_id: WebViewId) {
+-        self.webdriver_senders
+-            .borrow_mut()
+-            .load_status_senders
+-            .remove(&webview_id);
+-    }
+-
+-    fn set_script_command_interrupt_sender(
+-        &self,
+-        sender: Option<GenericSender<WebDriverJSResult>>,
+-    ) {
+-        self.webdriver_senders
+-            .borrow_mut()
+-            .script_evaluation_interrupt_sender = sender;
+-    }
+-
+-    pub(crate) fn handle_webdriver_input_event(
+-        &self,
+-        webview_id: WebViewId,
+-        input_event: InputEvent,
+-        response_sender: Option<Sender<()>>,
+-    ) {
+-        if let Some(webview) = self.webview_by_id(webview_id) {
+-            let event_id = webview.notify_input_event(input_event);
+-            if let Some(response_sender) = response_sender {
+-                self.pending_webdriver_events
+-                    .borrow_mut()
+-                    .insert(event_id, response_sender);
+-            }
+-        } else {
+-            error!("Could not find WebView ({webview_id:?}) for WebDriver event: {input_event:?}");
+-        };
+-    }
+-
+-    pub(crate) fn handle_webdriver_screenshot(
+-        &self,
+-        webview_id: WebViewId,
+-        rect: Option<Rect<f32, CSSPixel>>,
+-        result_sender: Sender<Result<RgbaImage, ScreenshotCaptureError>>,
+-    ) {
+-        if let Some(webview) = self.webview_by_id(webview_id) {
+-            let rect = rect.map(|rect| rect.to_box2d().into());
+-            webview.take_screenshot(rect, move |result| {
+-                if let Err(error) = result_sender.send(result) {
+-                    warn!("Failed to send response to TakeScreenshot: {error}");
+-                }
+-            });
+-        } else if let Err(error) =
+-            result_sender.send(Err(ScreenshotCaptureError::WebViewDoesNotExist))
+-        {
+-            error!("Failed to send response to TakeScreenshot: {error}");
+-        }
+-    }
+-
+-    pub(crate) fn handle_webdriver_script_command(&self, script_command: &WebDriverScriptCommand) {
+-        match script_command {
+-            WebDriverScriptCommand::ExecuteScriptWithCallback(_webview_id, response_sender) => {
+-                // Give embedder a chance to interrupt the script command.
+-                // Webdriver only handles 1 script command at a time, so we can
+-                // safely set a new interrupt sender and remove the previous one here.
+-                self.set_script_command_interrupt_sender(Some(response_sender.clone()));
+-            },
+-            WebDriverScriptCommand::AddLoadStatusSender(webview_id, load_status_sender) => {
+-                self.set_load_status_sender(*webview_id, load_status_sender.clone());
+-            },
+-            WebDriverScriptCommand::RemoveLoadStatusSender(webview_id) => {
+-                self.remove_load_status_sender(*webview_id);
+-            },
+-            _ => {
+-                self.set_script_command_interrupt_sender(None);
+-            },
+-        }
+-    }
+-
+-    pub(crate) fn handle_webdriver_load_url(
+-        &self,
+-        webview_id: WebViewId,
+-        url: Url,
+-        load_status_sender: GenericSender<WebDriverLoadStatus>,
+-    ) {
+-        let Some(webview) = self.webview_by_id(webview_id) else {
+-            return;
+-        };
+-
+-        self.platform_window_for_webview(&webview)
+-            .dismiss_embedder_controls_for_webview(webview_id);
+-
+-        info!("Loading URL in webview {}: {}", webview_id, url);
+-        self.set_load_status_sender(webview_id, load_status_sender);
+-        webview.load(url);
+-    }
+-
+-
+     #[cfg(not(target_os = "android"))]
+     pub(crate) fn handle_focused(&self, window: Rc<ServoShellWindow>) {
+         *self.focused_window.borrow_mut() = Some(window);
+     }
+ 
+-    /// Interrupt any ongoing WebDriver-based script evaluation.
+-    ///
+-    /// From <https://w3c.github.io/webdriver/#dfn-execute-a-function-body>:
+-    /// > The rules to execute a function body are as follows. The algorithm returns
+-    /// > an ECMAScript completion record.
+-    /// >
+-    /// > If at any point during the algorithm a user prompt appears, immediately return
+-    /// > Completion { Type: normal, Value: null, Target: empty }, but continue to run the
+-    /// >  other steps of this algorithm in parallel.
+-    fn interrupt_webdriver_script_evaluation(&self) {
+-        if let Some(sender) = &self
+-            .webdriver_senders
+-            .borrow()
+-            .script_evaluation_interrupt_sender
+-        {
+-            sender.send(Ok(JSValue::Null)).unwrap_or_else(|err| {
+-                info!(
+-                    "Notify dialog appear failed. Maybe the channel to webdriver is closed: {err}"
+-                );
+-            });
+-        }
+-    }
+-
+     #[cfg(not(target_os = "android"))]
+     pub(crate) fn set_accessibility_active(&self, active: bool) {
+         let was_active = self.accessibility_active.replace(active);
+@@ -664,14 +457,6 @@ impl WebViewDelegate for RunningAppState {
+         self.window_for_webview(&webview).set_needs_update();
+     }
+ 
+-    fn notify_traversal_complete(&self, _webview: WebView, traversal_id: TraversalId) {
+-        let mut webdriver_state = self.webdriver_senders.borrow_mut();
+-        if let Entry::Occupied(entry) = webdriver_state.pending_traversals.entry(traversal_id) {
+-            let sender = entry.remove();
+-            let _ = sender.send(WebDriverLoadStatus::Complete);
+-        }
+-    }
+-
+     fn request_move_to(&self, webview: WebView, new_position: DeviceIntPoint) {
+         self.platform_window_for_webview(&webview)
+             .set_position(new_position);
+@@ -704,14 +489,8 @@ impl WebViewDelegate for RunningAppState {
+         webview.notify_theme_change(platform_window.theme());
+         window.add_webview(webview.clone());
+ 
+-        // When WebDriver is enabled, do not focus and raise the WebView to the top,
+-        // as that is what the specification expects. Otherwise, we would like `window.open()`
+-        // to create a new foreground tab
+-        if self.servoshell_preferences.webdriver_port.get().is_none() {
+-            window.activate_webview(webview.id());
+-        } else {
+-            webview.hide();
+-        }
++        // `window.open()` creates a new foreground tab.
++        window.activate_webview(webview.id());
+     }
+ 
+     fn notify_closed(&self, webview: WebView) {
+@@ -727,9 +506,6 @@ impl WebViewDelegate for RunningAppState {
+     ) {
+         self.platform_window_for_webview(&webview)
+             .notify_input_event_handled(&webview, id, result);
+-        if let Some(response_sender) = self.pending_webdriver_events.borrow_mut().remove(&id) {
+-            let _ = response_sender.send(());
+-        }
+     }
+ 
+     fn notify_cursor_changed(&self, webview: WebView, cursor: servo::Cursor) {
+@@ -749,14 +525,6 @@ impl WebViewDelegate for RunningAppState {
+             if self.initial_webview_id.get() == Some(webview.id()) {
+                 self.initial_load_complete.set(true);
+             }
+-            if let Some(sender) = self
+-                .webdriver_senders
+-                .borrow_mut()
+-                .load_status_senders
+-                .remove(&webview.id())
+-            {
+-                let _ = sender.send(WebDriverLoadStatus::Complete);
+-            }
+             self.maybe_request_screenshot(webview);
+         }
+     }
+@@ -785,37 +553,11 @@ impl WebViewDelegate for RunningAppState {
+     }
+ 
+     fn show_embedder_control(&self, webview: WebView, embedder_control: EmbedderControl) {
+-        if self.servoshell_preferences.webdriver_port.get().is_some() {
+-            if matches!(&embedder_control, EmbedderControl::SimpleDialog(..)) {
+-                self.interrupt_webdriver_script_evaluation();
+-
+-                // Dialogs block the page load, so need need to notify WebDriver
+-                if let Some(sender) = self
+-                    .webdriver_senders
+-                    .borrow_mut()
+-                    .load_status_senders
+-                    .get(&webview.id())
+-                {
+-                    let _ = sender.send(WebDriverLoadStatus::Blocked);
+-                };
+-            }
+-
+-            self.webdriver_embedder_controls
+-                .show_embedder_control(webview.id(), embedder_control);
+-            return;
+-        }
+-
+         self.window_for_webview(&webview)
+             .show_embedder_control(webview, embedder_control);
+     }
+ 
+     fn hide_embedder_control(&self, webview: WebView, embedder_control_id: EmbedderControlId) {
+-        if self.servoshell_preferences.webdriver_port.get().is_some() {
+-            self.webdriver_embedder_controls
+-                .hide_embedder_control(webview.id(), embedder_control_id);
+-            return;
+-        }
+-
+         self.window_for_webview(&webview)
+             .hide_embedder_control(webview, embedder_control_id);
+     }
+diff --git a/ports/servoshell/window.rs b/ports/servoshell/window.rs
+index 7f689c850ed..100edab24a7 100644
+--- a/ports/servoshell/window.rs
++++ b/ports/servoshell/window.rs
+@@ -11,9 +11,9 @@ use euclid::Scale;
+ use log::warn;
+ use servo::{
+     AuthenticationRequest, BluetoothDeviceSelectionRequest, ConsoleLogLevel, Cursor,
+-    DeviceIndependentIntRect, DeviceIndependentPixel, DeviceIntPoint, DeviceIntSize, DevicePixel,
+-    EmbedderControl, EmbedderControlId, InputEventId, InputEventResult, MediaSessionEvent,
+-    PermissionRequest, RenderingContext, ScreenGeometry, WebView, WebViewBuilder, WebViewId,
++    DeviceIndependentPixel, DeviceIntPoint, DeviceIntSize, DevicePixel, EmbedderControl,
++    EmbedderControlId, InputEventId, InputEventResult, MediaSessionEvent, PermissionRequest,
++    RenderingContext, ScreenGeometry, WebView, WebViewBuilder, WebViewId,
+ };
+ use url::Url;
+ 
+@@ -153,10 +153,6 @@ impl ServoShellWindow {
+         self.webview_collection.borrow().is_empty() || self.close_scheduled.get()
+     }
+ 
+-    pub(crate) fn webview_by_id(&self, id: WebViewId) -> Option<WebView> {
+-        self.webview_collection.borrow().get(id).cloned()
+-    }
+-
+     pub(crate) fn set_needs_update(&self) {
+         self.needs_update.set(true);
+     }
+@@ -366,8 +362,6 @@ pub(crate) trait PlatformWindow {
+     fn theme(&self) -> servo::Theme {
+         servo::Theme::Light
+     }
+-    fn window_rect(&self) -> DeviceIndependentIntRect;
+-    fn maximize(&self, _: &WebView) {}
+     fn focus(&self) {}
+     fn has_platform_focus(&self) -> bool {
+         true

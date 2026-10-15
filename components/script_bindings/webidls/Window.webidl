@@ -137,17 +137,6 @@ partial interface Window {
   [Replaceable] readonly attribute double devicePixelRatio;
 };
 
-// WebDriver extensions
-partial interface Window {
-  // Shouldn't be public, but just to make things work for now
-  undefined webdriverCallback(optional any result);
-  undefined webdriverException(optional any result);
-  Element? webdriverElement(DOMString id);
-  WindowProxy? webdriverFrame(DOMString id);
-  WindowProxy webdriverWindow(DOMString id);
-  ShadowRoot? webdriverShadowRoot(DOMString id);
-};
-
 // https://html.spec.whatwg.org/multipage/#dom-sessionstorage
 interface mixin WindowSessionStorage {
   [Throws] readonly attribute Storage sessionStorage;

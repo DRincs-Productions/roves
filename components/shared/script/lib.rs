@@ -17,7 +17,7 @@ use embedder_traits::user_contents::{UserContentManagerId, UserContents};
 use embedder_traits::{
     EmbedderControlId, EmbedderControlResponse, FocusSequenceNumber, InputEventAndId,
     JavaScriptEvaluationId, MediaSessionActionType, PaintHitTestResult, ScriptToEmbedderChan,
-    Theme, ViewportDetails, WebDriverScriptCommand,
+    Theme, ViewportDetails,
 };
 use euclid::{Scale, Size2D};
 use fonts_traits::{SystemFontServiceProxySender, WebFontLoadEvent};
@@ -246,8 +246,6 @@ pub enum ScriptThreadMessage {
     ///   up the frame tree.
     /// - When doing sequential focus navigation into and out of frames.
     FocusDocument(PipelineId, RemoteFocusOperation),
-    /// Passes a webdriver command to the script thread for execution
-    WebDriverScriptCommand(PipelineId, WebDriverScriptCommand),
     /// Notifies script thread that all animations are done
     TickAllAnimations(Vec<WebViewId>),
     /// Notifies the script thread that a web font has finished loading.

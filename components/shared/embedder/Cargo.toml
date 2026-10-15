@@ -20,7 +20,6 @@ gamepad = []
 accesskit = { workspace = true }
 bitflags = { workspace = true }
 content-security-policy = { workspace = true }
-cookie = { workspace = true }
 crossbeam-channel = { workspace = true }
 euclid = { workspace = true }
 http = { workspace = true }
@@ -32,7 +31,6 @@ log = { workspace = true }
 malloc_size_of = { workspace = true }
 malloc_size_of_derive = { workspace = true }
 pixels = { workspace = true }
-rustc-hash = { workspace = true }
 serde = { workspace = true }
 servo-base = { workspace = true }
 servo-geometry = { workspace = true }
@@ -42,5 +40,4 @@ stylo = { workspace = true }
 stylo_traits = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }
-webdriver = { workspace = true }
 webrender_api = { workspace = true }

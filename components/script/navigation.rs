@@ -11,7 +11,7 @@ use std::cell::Cell;
 use content_security_policy::sandboxing_directive::SandboxingFlagSet;
 use crossbeam_channel::Sender;
 use embedder_traits::user_contents::UserContentManagerId;
-use embedder_traits::{Theme, ViewportDetails, WebDriverLoadStatus};
+use embedder_traits::{Theme, ViewportDetails};
 use http::header;
 use js::context::JSContext;
 use net_traits::blob_url_store::UrlWithBlobClaim;
@@ -433,15 +433,8 @@ pub(crate) fn navigate(
     {
         // Step 14.1. Navigate to a fragment given navigable, url, historyHandling,
         // userInvolvement, sourceElement, navigationAPIState, and navigationId.
-        let webdriver_sender = window.webdriver_load_status_sender();
-        if let Some(ref sender) = webdriver_sender {
-            let _ = sender.send(WebDriverLoadStatus::NavigationStart);
-        }
         navigate_to_fragment(cx, window, &load_data.url, history_handling);
         // Step 14.2. Return.
-        if let Some(sender) = webdriver_sender {
-            let _ = sender.send(WebDriverLoadStatus::NavigationStop);
-        }
         return;
     }
 
@@ -459,9 +452,6 @@ pub(crate) fn navigate(
     // and a new WebDriver BiDi navigation status whose id is navigationId,
     // status is "pending", and url is url.
     // TODO
-    if let Some(sender) = window.webdriver_load_status_sender() {
-        let _ = sender.send(WebDriverLoadStatus::NavigationStart);
-    }
 
     // Step 18. If navigable's ongoing navigation is "traversal", then:
     // TODO

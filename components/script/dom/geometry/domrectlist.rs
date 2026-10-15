@@ -42,10 +42,6 @@ impl DOMRectList {
             None,
         )
     }
-
-    pub(crate) fn first(&self) -> Option<DomRoot<DOMRect>> {
-        self.rects.borrow().first().map(Dom::as_rooted)
-    }
 }
 
 impl DOMRectListMethods<crate::DomTypeHolder> for DOMRectList {

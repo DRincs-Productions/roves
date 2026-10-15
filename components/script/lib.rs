@@ -35,6 +35,7 @@ pub(crate) use dom::canvas_context;
 pub(crate) mod fetch;
 pub(crate) mod indexeddb;
 mod init;
+mod js_value_serialization;
 mod layout_image;
 mod url;
 
@@ -65,7 +66,6 @@ mod task_queue;
 mod task_source;
 pub mod test;
 mod timers;
-mod webdriver_handlers;
 mod window_named_properties;
 mod xpath;
 

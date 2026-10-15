@@ -758,7 +758,6 @@ pub enum CoreResourceMsg {
     DeleteCookies(Option<ServoUrl>, Option<IpcSender<()>>),
     /// Delete all session cookies (cookies without an expiry or max-age).
     DeleteSessionCookies(GenericSender<()>),
-    DeleteCookie(ServoUrl, String),
     DeleteCookieAsync(CookieStoreId, ServoUrl, String),
     NewCookieListener(
         CookieStoreId,

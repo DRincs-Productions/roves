@@ -1908,15 +1908,6 @@ impl Element {
         }
     }
 
-    /// <https://html.spec.whatwg.org/multipage/#dom-document-activeelement>
-    pub(crate) fn is_active_element(&self) -> bool {
-        if let Some(active_element) = self.owner_document().GetActiveElement() {
-            *active_element == *self
-        } else {
-            false
-        }
-    }
-
     pub(crate) fn is_editing_host(&self) -> bool {
         self.downcast::<HTMLElement>()
             .is_some_and(|element| element.IsContentEditable())
@@ -2733,13 +2724,6 @@ impl Element {
                 .expect("ensure_element_internals should only be called for an HTMLElement");
             Dom::from_ref(&*ElementInternals::new(cx, elem))
         }))
-    }
-
-    pub(crate) fn outer_html(&self, cx: &mut JSContext) -> Fallible<DOMString> {
-        match self.GetOuterHTML(cx)? {
-            TrustedHTMLOrNullIsEmptyString::NullIsEmptyString(str) => Ok(str),
-            TrustedHTMLOrNullIsEmptyString::TrustedHTML(_) => unreachable!(),
-        }
     }
 
     pub(crate) fn compute_source_position(&self, line_number: u32) -> SourcePosition {
@@ -4747,7 +4731,7 @@ impl VirtualMethods for Element {
                     let devtools_message = ScriptToDevtoolsControlMsg::DomMutation(
                         pipeline_id,
                         DomMutation::AttributeModified {
-                            node: self.upcast::<Node>().unique_id(pipeline_id),
+                            node: self.upcast::<Node>().unique_id(),
                             attribute_name: attr.local_name().to_string(),
                             new_value: mutation.new_value(attr).map(|value| value.to_string()),
                         },

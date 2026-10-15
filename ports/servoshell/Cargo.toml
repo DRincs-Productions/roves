@@ -94,7 +94,6 @@ tracing-perfetto = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true, features = ["env-filter"] }
 tracing-tracy = { workspace = true, optional = true }
 url = { workspace = true }
-webdriver_server = { workspace = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = { workspace = true }
@@ -111,6 +110,7 @@ egui = { workspace = true }
 egui-file-dialog = { workspace = true }
 egui_glow = { workspace = true }
 glow = { workspace = true }
+keycode = { workspace = true }
 sdl3 = { workspace = true }
 serde_json = { workspace = true }
 # For optional feature servo-allocator/use-system-allocator and servo-allocator/allocation-tracking

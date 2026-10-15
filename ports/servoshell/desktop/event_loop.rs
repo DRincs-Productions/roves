@@ -517,7 +517,7 @@ impl HeadlessEventLoop {
 
         loop {
             self.sleep();
-            if !app.pump_servo_event_loop(None) {
+            if !app.pump_servo_event_loop() {
                 break;
             }
             *self.guard.lock().unwrap() = false;

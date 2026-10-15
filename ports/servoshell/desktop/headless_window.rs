@@ -14,9 +14,8 @@ use std::sync::atomic::AtomicU64;
 use euclid::{Point2D, Scale, Size2D};
 use log::error;
 use servo::{
-    DeviceIndependentIntRect, DeviceIndependentPixel, DeviceIntPoint, DeviceIntRect, DeviceIntSize,
-    DevicePixel, RenderingContext, ScreenGeometry, SoftwareRenderingContext, WebView,
-    convert_rect_to_css_pixel,
+    DeviceIndependentPixel, DeviceIntPoint, DeviceIntRect, DeviceIntSize, DevicePixel,
+    RenderingContext, ScreenGeometry, SoftwareRenderingContext, WebView,
 };
 use dpi::PhysicalSize;
 
@@ -142,27 +141,8 @@ impl PlatformWindow for HeadlessWindow {
         self.fullscreen.get()
     }
 
-    fn window_rect(&self) -> DeviceIndependentIntRect {
-        convert_rect_to_css_pixel(
-            DeviceIntRect::from_origin_and_size(self.window_position.get(), self.inner_size.get()),
-            self.hidpi_scale_factor(),
-        )
-    }
-
     fn rendering_context(&self) -> Rc<dyn RenderingContext> {
         self.rendering_context.clone()
-    }
-
-    fn maximize(&self, webview: &WebView) {
-        self.window_position.set(Point2D::zero());
-        self.inner_size.set(self.screen_size);
-        // Because we are managing the rendering surface ourselves, there will be no other
-        // notification (such as from the display manager) that it has changed size, so we
-        // must notify the `Paint` here.
-        webview.resize(PhysicalSize::new(
-            self.screen_size.width as u32,
-            self.screen_size.height as u32,
-        ));
     }
 
     fn show_console_message(&self, level: servo::ConsoleLogLevel, message: &str) {
