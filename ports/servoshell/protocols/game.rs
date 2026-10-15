@@ -60,7 +60,7 @@
 //!
 //! Registered only for the fixed authority `content` — `mach bundle`/
 //! Packmaster/`roves-action` (desktop) and `MainActivity.kt`'s own extracted
-//! launch (Android/OpenHarmony, via `egl/app.rs`) are the only things that
+//! launch (Android, via `egl/app.rs`) are the only things that
 //! ever construct a `game:` URL, always with that exact host, so anything
 //! else reaching this handler is a bug elsewhere, not a real request.
 //! `file.rs`'s own on-demand packed-content extraction
@@ -107,8 +107,8 @@ impl GameProtocolHandler {
     }
 
     /// See `PackedContent::ensure_available` — a no-op when this launch has no
-    /// managed packed content at all (`--content-compress=none`, or the Android/
-    /// OpenHarmony target, which has no packed-content support at all yet).
+    /// managed packed content at all (`--content-compress=none`, or the Android
+    /// target, which has no packed-content support at all yet).
     fn ensure_available(&self, file_path: &Path) {
         if let Some(packed) = &self.packed {
             packed.ensure_available(file_path);

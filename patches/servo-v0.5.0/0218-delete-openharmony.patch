@@ -1,0 +1,2886 @@
+diff --git a/.gitattributes b/.gitattributes
+index 442980b7d4e..9573511577f 100644
+--- a/.gitattributes
++++ b/.gitattributes
+@@ -1,7 +1,6 @@
+ * text=auto eol=lf
+ tests/blink_perf_tests/** linguist-vendored
+ tests/wpt/** linguist-vendored
+-support/openharmony/**/*.ets linguist-language=ts
+ 
+ # Denote all files that are truly binary and should not be modified.
+ *.png binary
+diff --git a/Cargo.lock b/Cargo.lock
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -408,15 +408,6 @@
+ ]
+ 
+ [[package]]
+-name = "arc-swap"
+-version = "1.9.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "c049c0be4daef0b145cb3555416b3b8ef5b7888a38aea1a3a155801fe7b0810b"
+-dependencies = [
+- "rustversion",
+-]
+-
+-[[package]]
+ name = "arg_enum_proc_macro"
+ version = "0.3.4"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+@@ -440,16 +431,6 @@
+ ]
+ 
+ [[package]]
+-name = "arkui-sys"
+-version = "0.3.4"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "6a48752cedd8bb17119f54c0eccd5176eca7e4d034aef123ad58815889ee7a72"
+-dependencies = [
+- "ohos-drawing-sys",
+- "ohos-sys-opaque-types",
+-]
+-
+-[[package]]
+ name = "arrayref"
+ version = "0.3.9"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+@@ -485,7 +466,7 @@
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "0bb44936d800fea8f016d7f2311c6a4f97aebd5dc86f09906139ec848cf3a46f"
+ dependencies = [
+- "libloading 0.8.9",
++ "libloading",
+ ]
+ 
+ [[package]]
+@@ -1346,7 +1327,7 @@
+ dependencies = [
+  "glob",
+  "libc",
+- "libloading 0.8.9",
++ "libloading",
+ ]
+ 
+ [[package]]
+@@ -1501,15 +1482,6 @@
+ ]
+ 
+ [[package]]
+-name = "convert_case"
+-version = "0.11.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "affbf0190ed2caf063e3def54ff444b449371d55c58e513a95ab98eca50adb49"
+-dependencies = [
+- "unicode-segmentation",
+-]
+-
+-[[package]]
+ name = "cookie"
+ version = "0.16.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+@@ -1792,12 +1764,6 @@
+ ]
+ 
+ [[package]]
+-name = "ctor"
+-version = "1.0.12"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "2d83cb7e7a873830708d6b02a78cd36a592c6fa14bf267b68725103b85c0d77f"
+-
+-[[package]]
+ name = "ctr"
+ version = "0.10.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+@@ -2133,7 +2099,7 @@
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "ab8ecd87370524b461f8557c119c405552c396ed91fc0a8eec68679eab26f94a"
+ dependencies = [
+- "libloading 0.8.9",
++ "libloading",
+ ]
+ 
+ [[package]]
+@@ -3803,43 +3769,6 @@
+ checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
+ 
+ [[package]]
+-name = "hilog"
+-version = "0.2.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "2cde43461a56942d36c0392c0eb8e108af2fbb48966c145fd126df4ce7b5c6c1"
+-dependencies = [
+- "arc-swap",
+- "env_filter",
+- "hilog-sys",
+- "log",
+-]
+-
+-[[package]]
+-name = "hilog-sys"
+-version = "0.1.8"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "f715f263b6e73aa2322b59057134b4daf56a765cbebc2f6b35e640ffded3361b"
+-dependencies = [
+- "log",
+-]
+-
+-[[package]]
+-name = "hitrace"
+-version = "0.2.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "1c3f6973c97140d216f538db9341d209bba665c23ccbf7b1ec8c1a7896701fbc"
+-dependencies = [
+- "hitrace-sys",
+- "tracing-core",
+-]
+-
+-[[package]]
+-name = "hitrace-sys"
+-version = "0.1.10"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "1955ab89524976e5949c171fe571bf1821bb28574b71b262f8787e34e32b7f10"
+-
+-[[package]]
+ name = "hkdf"
+ version = "0.13.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+@@ -4832,7 +4761,7 @@
+ checksum = "6aae1df220ece3c0ada96b8153459b67eebe9ae9212258bb0134ae60416fdf76"
+ dependencies = [
+  "libc",
+- "libloading 0.8.9",
++ "libloading",
+  "pkg-config",
+ ]
+ 
+@@ -4918,16 +4847,6 @@
+ ]
+ 
+ [[package]]
+-name = "libloading"
+-version = "0.9.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "754ca22de805bb5744484a5b151a9e1a8e837d5dc232c2d7d8c2e3492edc8b60"
+-dependencies = [
+- "cfg-if",
+- "windows-link 0.2.1",
+-]
+-
+-[[package]]
+ name = "libm"
+ version = "0.2.16"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+@@ -5353,63 +5272,6 @@
+ ]
+ 
+ [[package]]
+-name = "napi-build-ohos"
+-version = "1.2.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "617bcd176a3dc3d96c0acad112a482f592242d6fba6773a9eb8d90e042a35260"
+-
+-[[package]]
+-name = "napi-derive-backend-ohos"
+-version = "1.2.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "5b06bf282ab442eed04c89f8a833bd06d4cf22f18654f50d848449db9e94438a"
+-dependencies = [
+- "convert_case",
+- "proc-macro2",
+- "quote",
+- "semver",
+- "syn",
+-]
+-
+-[[package]]
+-name = "napi-derive-ohos"
+-version = "1.2.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "419b1721d9f21d76c1a5cb38e2628211cb786b5efb9e1dd2fc049ba1cb938e47"
+-dependencies = [
+- "convert_case",
+- "ctor",
+- "napi-derive-backend-ohos",
+- "proc-macro2",
+- "quote",
+- "syn",
+-]
+-
+-[[package]]
+-name = "napi-ohos"
+-version = "1.2.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "fe1a014105134b7889e85f5ab6f8ec5240db43ed37e6c4a38bd7b4a164b345e0"
+-dependencies = [
+- "bitflags 2.13.1",
+- "ctor",
+- "futures",
+- "napi-build-ohos",
+- "napi-sys-ohos",
+- "nohash-hasher",
+- "rustc-hash 2.1.3",
+-]
+-
+-[[package]]
+-name = "napi-sys-ohos"
+-version = "1.2.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "266964b97e57f3ca023ed13e7c78d4c8f3900aa00466bbeb8cb7746653cabc5f"
+-dependencies = [
+- "libloading 0.9.0",
+-]
+-
+-[[package]]
+ name = "ndk"
+ version = "0.9.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+@@ -6032,106 +5894,6 @@
+ ]
+ 
+ [[package]]
+-name = "ohos-abilitykit-sys"
+-version = "0.1.6"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "7d6aec8b93b80963e0617eecfda4519eb3a8e57a19f9f8be6243bd02020632b3"
+-dependencies = [
+- "ohos-sys-opaque-types",
+-]
+-
+-[[package]]
+-name = "ohos-deviceinfo"
+-version = "0.1.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "b8e75dc6477dd4a8bafe2e7b1feb9cf10e882d3b15903e51f320a80015a59d93"
+-dependencies = [
+- "ohos-deviceinfo-sys",
+-]
+-
+-[[package]]
+-name = "ohos-deviceinfo-sys"
+-version = "0.1.7"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "ee8ebdc19fbffb06eead79d6ab628b05fa8514d5ac881540719d04469c772738"
+-
+-[[package]]
+-name = "ohos-drawing-sys"
+-version = "0.3.4"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "5ea45a01534a3756d12afd6cc20c9ce3cb831a5f8a148e6e80b507da71b026f5"
+-dependencies = [
+- "ohos-sys-opaque-types",
+-]
+-
+-[[package]]
+-name = "ohos-ime"
+-version = "0.4.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "e3d9911e7da9c4d59d9438fc8612afa4a109825f7a90a30a0df2c9a5bb7aedce"
+-dependencies = [
+- "log",
+- "ohos-ime-sys",
+-]
+-
+-[[package]]
+-name = "ohos-ime-sys"
+-version = "0.2.4"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "84136a706a16231219ce643b2a7b75e690a84d234ec57a0f856fbd6cf450767f"
+-dependencies = [
+- "ohos-sys-opaque-types",
+-]
+-
+-[[package]]
+-name = "ohos-media-sys"
+-version = "0.1.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "6ffb75eb3dc3eefa0e4c9d641369b609091d77e395f1f56c9eaddead6e9330b6"
+-dependencies = [
+- "ohos-sys-opaque-types",
+-]
+-
+-[[package]]
+-name = "ohos-sys-opaque-types"
+-version = "0.1.10"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "f0135000ddab1491bd02a60e855c02e71be855845ca354162c1e189dea79d015"
+-
+-[[package]]
+-name = "ohos-vsync"
+-version = "0.1.3"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "fa1d0e6aeb34bd6ba2ad5649d51f30f7fa69f56b4da6c9ce49c508755a6806f1"
+-dependencies = [
+- "ohos-vsync-sys",
+-]
+-
+-[[package]]
+-name = "ohos-vsync-sys"
+-version = "0.1.6"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "41d5d6c8e9a296dab3b7631db09cc0e1cf718ab39a705f17611966d307fef603"
+-
+-[[package]]
+-name = "ohos-window-manager-sys"
+-version = "0.1.4"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "846cdada69199bfd4679d0d144ddc90dd6b9a02f10e1c4dae704428b9ced4acf"
+-dependencies = [
+- "ohos-sys-opaque-types",
+-]
+-
+-[[package]]
+-name = "ohos-window-sys"
+-version = "0.1.7"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "2bd994e92b2c9daaa310068b45e3c3108d1a7c26a01daded0f3ddada692e688e"
+-dependencies = [
+- "ohos-sys-opaque-types",
+-]
+-
+-[[package]]
+ name = "once_cell"
+ version = "1.21.4"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+@@ -7763,7 +7525,6 @@
+  "servo-media",
+  "servo-media-dummy",
+  "servo-media-gstreamer",
+- "servo-media-ohos",
+  "servo-media-thread",
+  "servo-net",
+  "servo-net-traits",
+@@ -8182,7 +7943,6 @@
+  "objc2-core-foundation",
+  "objc2-core-graphics",
+  "objc2-core-text",
+- "ohos-deviceinfo-sys",
+  "parking_lot",
+  "postcard",
+  "read-fonts 0.41.0",
+@@ -8557,28 +8317,6 @@
+ ]
+ 
+ [[package]]
+-name = "servo-media-ohos"
+-version = "0.5.0"
+-dependencies = [
+- "crossbeam-channel",
+- "libc",
+- "log",
+- "mime",
+- "ohos-media-sys",
+- "ohos-sys-opaque-types",
+- "ohos-window-sys",
+- "serde_json",
+- "servo-base",
+- "servo-media",
+- "servo-media-audio",
+- "servo-media-player",
+- "servo-media-streams",
+- "servo-media-traits",
+- "servo-media-webrtc",
+- "yuv",
+-]
+-
+-[[package]]
+ name = "servo-media-player"
+ version = "0.5.0"
+ dependencies = [
+@@ -9340,37 +9078,24 @@
+  "egui-file-dialog",
+  "egui-winit",
+  "egui_glow",
+- "env_filter",
+  "euclid",
+  "gilrs",
+  "glow",
+  "headers",
+- "hilog",
+- "hitrace",
+  "image",
+- "ipc-channel",
+  "jni 0.22.4",
+  "keyboard-types",
+  "libc",
+  "log",
+  "mime_guess",
+- "napi-derive-ohos",
+- "napi-ohos",
+  "nix",
+  "objc2-app-kit 0.3.2",
+  "objc2-foundation 0.3.2",
+- "ohos-abilitykit-sys",
+- "ohos-deviceinfo",
+- "ohos-ime",
+- "ohos-ime-sys",
+- "ohos-vsync",
+- "ohos-window-manager-sys",
+  "raw-window-handle",
+  "rustls",
+  "serde_json",
+  "servo",
+  "servo-allocator",
+- "servo-base",
+  "servo-webdriver-server",
+  "signal-hook-registry",
+  "surfman",
+@@ -9382,7 +9107,6 @@
+  "windows-sys 0.61.2",
+  "winit",
+  "winresource",
+- "xcomponent-sys",
+ ]
+ 
+ [[package]]
+@@ -11620,7 +11344,7 @@
+  "js-sys",
+  "khronos-egl",
+  "libc",
+- "libloading 0.8.9",
++ "libloading",
+  "log",
+  "naga 29.0.4",
+  "ndk-sys",
+@@ -11673,7 +11397,7 @@
+  "js-sys",
+  "khronos-egl",
+  "libc",
+- "libloading 0.8.9",
++ "libloading",
+  "log",
+  "naga 30.0.0",
+  "naga-types",
+@@ -12337,7 +12061,7 @@
+  "as-raw-xcb-connection",
+  "gethostname",
+  "libc",
+- "libloading 0.8.9",
++ "libloading",
+  "once_cell",
+  "rustix 1.1.4",
+  "x11rb-protocol",
+@@ -12382,17 +12106,6 @@
+ ]
+ 
+ [[package]]
+-name = "xcomponent-sys"
+-version = "0.3.6"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "52f3d0f0bc477f9a5e25bcdede5520c27faa2b39d505f867d836f43f99189add"
+-dependencies = [
+- "arkui-sys",
+- "keyboard-types",
+- "ohos-sys-opaque-types",
+-]
+-
+-[[package]]
+ name = "xcursor"
+ version = "0.3.10"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+@@ -12487,16 +12200,6 @@
+ ]
+ 
+ [[package]]
+-name = "yuv"
+-version = "0.8.16"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "5d85a782d94ee43f078bcfd6fa82d4e6a5b2d1cfbbad168e4df5a9f7b39ef48c"
+-dependencies = [
+- "num-traits",
+- "rayon",
+-]
+-
+-[[package]]
+ name = "zbus"
+ version = "5.18.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+diff --git a/Cargo.toml b/Cargo.toml
+index aef156947e3..e5e19f47145 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -90,7 +90,6 @@ egui-file-dialog = "0.15.0"
+ egui_glow = { version = "0.36.2", default-features = false }
+ elliptic-curve = { version = "0.14", features = ["pkcs8"] }
+ encoding_rs = { version = "0.8", features = ["serde"] }
+-env_filter = "0.1.4"
+ env_logger = "0.11"
+ euclid = "0.22"
+ flate2 = "1.1"
+@@ -124,8 +123,6 @@ gstreamer-webrtc = { version = "0.25", features = ["v1_18"] }
+ half = "2"
+ harfbuzz-sys = { version = "0.7", default-features = false }
+ headers = "0.4"
+-hilog = "0.2.2"
+-hitrace = { version = "0.2.0", features = ["api-19", "tracing-rs"] }
+ hkdf = "0.13"
+ html5ever = "0.39"
+ http = "1.4"
+@@ -161,8 +158,6 @@ mime_guess = "2.0.5"
+ ml-dsa = { version = "0.1", features = ["zeroize"] }
+ ml-kem = { version = "0.3", features = ["getrandom", "pkcs8", "zeroize"] }
+ mozangle = "0.7"
+-napi-derive-ohos = "1.2.0"
+-napi-ohos = "1.2.0"
+ nix = "0.30"
+ nom = "8.0.0"
+ nom-rfc8288 = "0.4.0"
+@@ -178,16 +173,6 @@ objc2-core-graphics = "0.3.2"
+ objc2-core-text = "0.3.2"
+ objc2-foundation = { version = "0.3.1", default-features = false }
+ ocb3 = { version = "=0.2.0-rc.3", features = ["zeroize"] }
+-ohos-abilitykit-sys = "0.1.6"
+-ohos-deviceinfo = "0.1.0"
+-ohos-deviceinfo-sys = "0.1.7"
+-ohos-ime = "0.4.2"
+-ohos-ime-sys = "0.2.4"
+-ohos-media-sys = "0.1.1"
+-ohos-sys-opaque-types = "0.1.7"
+-ohos-vsync = "0.1.3"
+-ohos-window-manager-sys = "0.1"
+-ohos-window-sys = "0.1.7"
+ once_cell = "1.21.4"
+ p256 = { version = "0.14", features = ["ecdh"] }
+ p384 = { version = "0.14", features = ["ecdh"] }
+@@ -305,7 +290,6 @@ winresource = "0.1"
+ wr_malloc_size_of = "0.2.2"
+ x25519-dalek = { version = "3.0", features = ["getrandom", "static_secrets", "zeroize"] }
+ x448 = { version = "=0.14.0-pre.12", features = ["static_secrets"] }
+-xcomponent-sys = "0.3.6"
+ xml = "1.1"
+ xml5ever = "0.39"
+ yuv = { version = "0.8.14", features = ["rayon"] }
+@@ -367,7 +351,6 @@ servo-media-gstreamer = { version = "=0.5.0", path = "components/media/backends/
+ servo-media-gstreamer-render = { version = "=0.5.0", path = "components/media/backends/gstreamer/render" }
+ servo-media-gstreamer-render-android = { version = "=0.5.0", path = "components/media/backends/gstreamer/render-android" }
+ servo-media-gstreamer-render-unix = { version = "=0.5.0", path = "components/media/backends/gstreamer/render-unix" }
+-servo-media-ohos = { version = "=0.5.0", path = "components/media/backends/ohos" }
+ servo-media-player = { version = "=0.5.0", path = "components/media/player" }
+ servo-media-streams = { version = "=0.5.0", path = "components/media/streams" }
+ servo-media-traits = { version = "=0.5.0", path = "components/media/traits" }
+diff --git a/components/allocator/Cargo.toml b/components/allocator/Cargo.toml
+index fbc8d3b00fb..ca0d1bd9366 100644
+--- a/components/allocator/Cargo.toml
++++ b/components/allocator/Cargo.toml
+@@ -26,7 +26,7 @@ rustc-hash = { workspace = true, optional = true }
+ libmimalloc-sys = { version = "0.1.49", optional = true, default-features = false, features = ["extended"] }
+ mimalloc = { version = "0.1.52", optional = true, default-features = false }
+ 
+-[target.'cfg(not(any(windows, target_env = "ohos")))'.dependencies]
++[target.'cfg(not(windows))'.dependencies]
+ libc = { workspace = true, optional = true }
+ tikv-jemalloc-sys = { workspace = true }
+ tikv-jemallocator = { workspace = true }
+@@ -36,6 +36,3 @@ windows-sys = { workspace = true, features = ["Win32_System_Memory"] }
+ # mimalloc is the Windows default; `use-system-allocator` opts back into the system heap.
+ libmimalloc-sys = { version = "0.1.49", default-features = false, features = ["extended"] }
+ mimalloc = { version = "0.1.52", default-features = false }
+-
+-[target.'cfg(target_env = "ohos")'.dependencies]
+-libc = { workspace = true }
+diff --git a/components/allocator/lib.rs b/components/allocator/lib.rs
+index 94f0592d476..53e770fe80c 100644
+--- a/components/allocator/lib.rs
++++ b/components/allocator/lib.rs
+@@ -58,12 +58,7 @@ pub static enclosing_size: Option<EnclosingSizeFn> = Some(crate::enclosing_size_
+ #[cfg(not(feature = "allocation-tracking"))]
+ pub static enclosing_size: Option<EnclosingSizeFn> = None;
+ 
+-#[cfg(not(any(
+-    windows,
+-    feature = "use-system-allocator",
+-    feature = "use-mimalloc",
+-    target_env = "ohos"
+-)))]
++#[cfg(not(any(windows, feature = "use-system-allocator", feature = "use-mimalloc")))]
+ mod platform {
+     use std::ffi::CStr;
+     use std::mem::size_of_val;
+@@ -155,7 +150,7 @@ mod platform {
+ #[cfg(all(
+     not(windows),
+     not(feature = "use-mimalloc"),
+-    any(feature = "use-system-allocator", target_env = "ohos")
++    feature = "use-system-allocator"
+ ))]
+ mod platform {
+     pub use std::alloc::System as Allocator;
+diff --git a/components/background_hang_monitor/Cargo.toml b/components/background_hang_monitor/Cargo.toml
+index 1eac56b4285..da2aee49ea9 100644
+--- a/components/background_hang_monitor/Cargo.toml
++++ b/components/background_hang_monitor/Cargo.toml
+@@ -29,7 +29,7 @@ servo-base = { workspace = true }
+ [target.'cfg(target_os = "macos")'.dependencies]
+ mach2 = { workspace = true, optional = true }
+ 
+-[target.'cfg(all(target_os = "linux", not(any(target_arch = "arm", target_arch = "aarch64", target_env = "ohos", target_env = "musl"))))'.dependencies]
++[target.'cfg(all(target_os = "linux", not(any(target_arch = "arm", target_arch = "aarch64", target_env = "musl"))))'.dependencies]
+ nix = { workspace = true, features = ["signal"], optional = true }
+ 
+ [target.'cfg(target_os = "android")'.dependencies]
+diff --git a/components/background_hang_monitor/lib.rs b/components/background_hang_monitor/lib.rs
+index 41eaef6ca9c..2253c6fe77f 100644
+--- a/components/background_hang_monitor/lib.rs
++++ b/components/background_hang_monitor/lib.rs
+@@ -9,12 +9,7 @@ mod sampler;
+ #[cfg(all(
+     feature = "sampler",
+     target_os = "linux",
+-    not(any(
+-        target_arch = "arm",
+-        target_arch = "aarch64",
+-        target_env = "ohos",
+-        target_env = "musl"
+-    ))
++    not(any(target_arch = "arm", target_arch = "aarch64", target_env = "musl"))
+ ))]
+ mod sampler_linux;
+ #[cfg(all(feature = "sampler", target_os = "android"))]
+@@ -29,12 +24,7 @@ pub use self::background_hang_monitor::*;
+     not(feature = "sampler"),
+     all(
+         target_os = "linux",
+-        any(
+-            target_arch = "arm",
+-            target_arch = "aarch64",
+-            target_env = "ohos",
+-            target_env = "musl"
+-        )
++        any(target_arch = "arm", target_arch = "aarch64", target_env = "musl")
+     ),
+     all(target_os = "windows", target_arch = "aarch64"),
+     target_os = "freebsd"
+@@ -43,12 +33,7 @@ pub(crate) use crate::sampler::DummySampler as SamplerImpl;
+ #[cfg(all(
+     feature = "sampler",
+     target_os = "linux",
+-    not(any(
+-        target_arch = "arm",
+-        target_arch = "aarch64",
+-        target_env = "ohos",
+-        target_env = "musl"
+-    ))
++    not(any(target_arch = "arm", target_arch = "aarch64", target_env = "musl"))
+ ))]
+ pub(crate) use crate::sampler_linux::LinuxSampler as SamplerImpl;
+ #[cfg(all(feature = "sampler", target_os = "android"))]
+diff --git a/components/background_hang_monitor/sampler.rs b/components/background_hang_monitor/sampler.rs
+index f24229dc6e9..f1b35a7c146 100644
+--- a/components/background_hang_monitor/sampler.rs
++++ b/components/background_hang_monitor/sampler.rs
+@@ -42,7 +42,6 @@ impl NativeStack {
+     #[cfg_attr(
+         any(
+             target_os = "windows",
+-            target_env = "ohos",
+             all(target_os = "linux", target_arch = "aarch64")
+         ),
+         expect(dead_code)
+diff --git a/components/config/prefs.rs b/components/config/prefs.rs
+index 04a2d509a1e..8db8f93658d 100644
+--- a/components/config/prefs.rs
++++ b/components/config/prefs.rs
+@@ -388,7 +388,6 @@ pub struct Preferences {
+     pub user_agent: String,
+     /// Whether or not the viewport meta tag is enabled.
+     pub viewport_meta_enabled: bool,
+-    pub log_filter: String,
+     /// Whether the accessibility code is enabled.
+     pub accessibility_enabled: bool,
+     /// Whether to run accessibility tree integrity checks, and any other expensive checks.
+@@ -488,9 +487,7 @@ impl Preferences {
+             dom_testperf_enabled: false,
+             dom_testutils_enabled: false,
+             // Following Firefox and Chrome, we are enabling the touch events legacy APIs for android.
+-            // Additionally, enabling it in ohos for compatibility as well.
+-            dom_touch_events_legacy_apis_enabled: cfg!(target_os = "android") |
+-                cfg!(target_env = "ohos"),
++            dom_touch_events_legacy_apis_enabled: cfg!(target_os = "android"),
+             dom_transient_activation_duration_ms: 5000,
+             dom_web_animations_enabled: false,
+             // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the
+@@ -599,7 +596,6 @@ impl Preferences {
+             network_max_content_length: 5 * 1024 * 1024,
+             session_history_max_length: 20,
+             shell_background_color_rgba: [1.0, 1.0, 1.0, 1.0],
+-            log_filter: String::new(),
+             thread_pool_workers_max: 4,
+             thread_pool_async_runtime_workers_max: 6,
+             thread_pool_fallback_workers: 3,
+@@ -646,7 +642,6 @@ impl Default for Preferences {
+ pub enum UserAgentPlatform {
+     Desktop,
+     Android,
+-    OpenHarmony,
+     Ios,
+ }
+ 
+@@ -656,8 +651,6 @@ impl UserAgentPlatform {
+     pub const fn default() -> Self {
+         if cfg!(target_os = "android") {
+             Self::Android
+-        } else if cfg!(target_env = "ohos") {
+-            Self::OpenHarmony
+         } else if cfg!(target_os = "ios") {
+             Self::Ios
+         } else {
+@@ -694,9 +687,6 @@ impl UserAgentPlatform {
+                     "Mozilla/5.0 (Android 10; Mobile; rv:140.0) Servo/{SERVO_VERSION} Firefox/140.0"
+                 )
+             },
+-            UserAgentPlatform::OpenHarmony => format!(
+-                "Mozilla/5.0 (OpenHarmony; Mobile; rv:140.0) Servo/{SERVO_VERSION} Firefox/140.0"
+-            ),
+             UserAgentPlatform::Ios => format!(
+                 "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X; rv:140.0) Servo/{SERVO_VERSION} Firefox/140.0"
+             ),
+diff --git a/components/constellation/Cargo.toml b/components/constellation/Cargo.toml
+index 39e9d0e7aa1..62f607baefe 100644
+--- a/components/constellation/Cargo.toml
++++ b/components/constellation/Cargo.toml
+@@ -66,5 +66,5 @@ tracing = { workspace = true, optional = true }
+ webgpu = { workspace = true, optional = true }
+ webgpu_traits = { workspace = true, optional = true }
+ 
+-[target.'cfg(any(target_os="macos", all(not(target_os = "windows"), not(target_os = "ios"), not(target_os="android"), not(target_env="ohos"), not(target_arch="arm"), not(target_arch="aarch64"), not(target_arch="riscv32"), not(target_arch="riscv64"))))'.dependencies]
++[target.'cfg(any(target_os="macos", all(not(target_os = "windows"), not(target_os = "ios"), not(target_os="android"), not(target_arch="arm"), not(target_arch="aarch64"), not(target_arch="riscv32"), not(target_arch="riscv64"))))'.dependencies]
+ gaol = { workspace = true }
+diff --git a/components/constellation/sandboxing.rs b/components/constellation/sandboxing.rs
+index 85111659f36..83af64a4194 100644
+--- a/components/constellation/sandboxing.rs
++++ b/components/constellation/sandboxing.rs
+@@ -11,7 +11,6 @@ use std::{env, process};
+         not(target_os = "windows"),
+         not(target_os = "ios"),
+         not(target_os = "android"),
+-        not(target_env = "ohos"),
+         not(target_arch = "arm"),
+         not(target_arch = "aarch64"),
+         not(target_arch = "riscv32"),
+@@ -99,7 +98,6 @@ pub fn content_process_sandbox_profile() -> Profile {
+     not(target_os = "windows"),
+     not(target_os = "ios"),
+     not(target_os = "android"),
+-    not(target_env = "ohos"),
+     not(target_arch = "arm"),
+     not(target_arch = "aarch64"),
+     not(target_arch = "riscv32"),
+@@ -132,7 +130,6 @@ pub fn content_process_sandbox_profile() -> Profile {
+     target_os = "windows",
+     target_os = "ios",
+     target_os = "android",
+-    target_env = "ohos",
+     target_arch = "arm",
+     target_arch = "riscv32",
+     target_arch = "riscv64",
+@@ -148,7 +145,6 @@ pub fn content_process_sandbox_profile() {
+ #[cfg(any(
+     target_os = "windows",
+     target_os = "android",
+-    target_env = "ohos",
+     target_arch = "arm",
+     target_arch = "aarch64",
+     target_arch = "riscv32",
+@@ -181,7 +177,6 @@ pub fn spawn_multiprocess(content: UnprivilegedContent) -> Result<Process, IpcEr
+     not(target_os = "windows"),
+     not(target_os = "ios"),
+     not(target_os = "android"),
+-    not(target_env = "ohos"),
+     not(target_arch = "arm"),
+     not(target_arch = "aarch64"),
+     not(target_arch = "riscv32"),
+diff --git a/components/fonts/Cargo.toml b/components/fonts/Cargo.toml
+index 25a0b4642be..2be2db6ea4d 100644
+--- a/components/fonts/Cargo.toml
++++ b/components/fonts/Cargo.toml
+@@ -19,7 +19,7 @@ doctest = false
+ # Compile FreeType from source (freetype-sys/bundled) instead of searching
+ # via pkg-config. If this feature is disabled, and pkg-config fails to find a
+ # suitable freetype version, the build will fail!
+-# Only affects targets where freetype-sys is a dependency (Linux/Android/OHOS)
++# Only affects targets where freetype-sys is a dependency (Linux/Android)
+ bundled_freetype = ["freetype-sys/bundled"]
+ tracing = ["dep:tracing"]
+ 
+@@ -44,7 +44,6 @@ malloc_size_of_derive = { workspace = true }
+ memmap2 = { workspace = true }
+ net_traits = { workspace = true }
+ num-traits = { workspace = true }
+-ohos-deviceinfo-sys = { workspace = true }
+ paint_api = { workspace = true }
+ parking_lot = { workspace = true }
+ postcard = { workspace = true }
+@@ -81,20 +80,15 @@ freetype-sys = { workspace = true }
+ harfbuzz-sys = { workspace = true, features = ["freetype"] }
+ servo-allocator = { workspace = true }
+ 
+-[target.'cfg(all(any(target_os = "linux", target_os = "freebsd"), not(target_env = "ohos")))'.dependencies]
++[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+ fontconfig_sys = { workspace = true }
+ 
+ [target.'cfg(target_os = "android")'.dependencies]
+ xml = { workspace = true }
+-
+-[target.'cfg(any(target_os = "android",target_env = "ohos"))'.dependencies]
+-# Always bundle freetype on android and openharmony
++# Always bundle freetype on android
+ freetype-sys = { workspace = true, features = ["bundled"] }
+ 
+ [target.'cfg(target_os = "windows")'.dependencies]
+ dwrote = { workspace = true }
+ harfbuzz-sys = { workspace = true, features = ["directwrite"] }
+ winapi = { workspace = true }
+-
+-[lints.rust]
+-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(ohos_mock)'] }
+diff --git a/components/fonts/font.rs b/components/fonts/font.rs
+index f588efa63b0..ea0edc947ab 100644
+--- a/components/fonts/font.rs
++++ b/components/fonts/font.rs
+@@ -1083,10 +1083,7 @@ pub struct FontBaseline {
+ /// ];
+ /// let mapped_weight = apply_font_config_to_style_mapping(&mapping, weight as f64);
+ /// ```
+-#[cfg(all(
+-    any(target_os = "linux", target_os = "macos", target_os = "freebsd"),
+-    not(target_env = "ohos")
+-))]
++#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+ pub(crate) fn map_platform_values_to_style_values(mapping: &[(f64, f64)], value: f64) -> f64 {
+     if value < mapping[0].0 {
+         return mapping[0].1;
+diff --git a/components/fonts/platform/freetype/mod.rs b/components/fonts/platform/freetype/mod.rs
+index c1f3c4e18b4..9aa15d03954 100644
+--- a/components/fonts/platform/freetype/mod.rs
++++ b/components/fonts/platform/freetype/mod.rs
+@@ -5,10 +5,7 @@
+ pub mod font;
+ mod freetype_face;
+ 
+-#[cfg(any(
+-    all(target_os = "linux", not(target_env = "ohos"), not(ohos_mock)),
+-    target_os = "freebsd"
+-))]
++#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+ pub mod font_list;
+ 
+ #[cfg(target_os = "android")]
+@@ -19,12 +16,4 @@ mod android {
+ #[cfg(target_os = "android")]
+ pub use self::android::font_list;
+ 
+-#[cfg(any(target_env = "ohos", ohos_mock))]
+-mod ohos {
+-    mod font_cache;
+-    pub mod font_list;
+-}
+-#[cfg(any(target_env = "ohos", ohos_mock))]
+-pub use self::ohos::font_list;
+-
+ mod library_handle;
+diff --git a/components/fonts/platform/mod.rs b/components/fonts/platform/mod.rs
+index b35e0f05906..a7f96fcc725 100644
+--- a/components/fonts/platform/mod.rs
++++ b/components/fonts/platform/mod.rs
+@@ -4,21 +4,18 @@
+ 
+ #[cfg(all(
+     any(target_os = "linux", target_os = "macos", target_os = "freebsd"),
+-    not(target_os = "android"),
+-    not(target_env = "ohos")
++    not(target_os = "android")
+ ))]
+ use servo_base::text::{UnicodeBlock, UnicodeBlockMethod};
+ #[cfg(all(
+     any(target_os = "linux", target_os = "macos", target_os = "freebsd"),
+-    not(target_os = "android"),
+-    not(target_env = "ohos")
++    not(target_os = "android")
+ ))]
+ use unicode_script::Script;
+ 
+ #[cfg(all(
+     any(target_os = "linux", target_os = "macos", target_os = "freebsd"),
+-    not(target_os = "android"),
+-    not(target_env = "ohos")
++    not(target_os = "android")
+ ))]
+ use crate::FallbackFontSelectionOptions;
+ #[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
+@@ -46,8 +43,7 @@ mod windows {
+ 
+ #[cfg(all(
+     any(target_os = "linux", target_os = "macos", target_os = "freebsd"),
+-    not(target_os = "android"),
+-    not(target_env = "ohos")
++    not(target_os = "android")
+ ))]
+ pub(crate) fn add_noto_fallback_families(
+     options: FallbackFontSelectionOptions,
+diff --git a/components/script/init.rs b/components/script/init.rs
+index da0cd4b8830..040c6424361 100644
+--- a/components/script/init.rs
++++ b/components/script/init.rs
+@@ -58,117 +58,14 @@ unsafe extern "C" fn is_dom_object(obj: *mut JSObject) -> bool {
+     !obj.is_null() && (is_platform_object_static(obj) || unsafe { is_dom_proxy(obj) })
+ }
+ 
+-/// Returns true if JIT is forbidden
+-///
+-/// Spidermonkey will crash if JIT is not allowed on a system, so we do a short detection
+-/// if jit is allowed or not.
+-///
+-/// Note: This implementation should work fine on all Linux systems, perhaps even Unix systems,
+-/// but for now we only enable it on OpenHarmony, since that is where it is most needed.
+-#[cfg(target_env = "ohos")]
+-#[expect(unsafe_code)]
+-fn jit_forbidden() -> bool {
+-    debug!("Testing if JIT is allowed.");
+-
+-    fn mem_is_writable(ptr: *mut core::ffi::c_void) -> std::io::Result<bool> {
+-        debug!("Testing if ptr {ptr:?} is writable");
+-        // Safety: This is cursed, but we can use read to determine if ptr
+-        // can be written to. `read` is a syscall and will return an error code
+-        // if ptr can't be written (instead of a segfault as with a regular access).
+-        // We also take care to always close `fd`.
+-        #[expect(unsafe_code)]
+-        unsafe {
+-            let fd = libc::open(c"/dev/zero".as_ptr(), libc::O_RDONLY);
+-            if fd < 0 {
+-                return Err(std::io::Error::last_os_error());
+-            }
+-            let writable = libc::read(fd, ptr, 1) > 0;
+-            if !writable {
+-                debug!(
+-                    "addr is not writable. Error: {}",
+-                    std::io::Error::last_os_error()
+-                );
+-            }
+-            libc::close(fd);
+-            Ok(writable)
+-        }
+-    }
+-
+-    // We need to allocate at least one page, so we query the page size on the system.
+-    let map_size: libc::size_t = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as libc::size_t };
+-    let flags = libc::MAP_NORESERVE | libc::MAP_PRIVATE | libc::MAP_ANON;
+-    // SAFETY: We mmap one anonymous page, with no special flags, so this has no safety
+-    // implications.
+-    let first_mmap = unsafe {
+-        libc::mmap(
+-            core::ptr::null_mut(),
+-            map_size,
+-            libc::PROT_NONE,
+-            flags,
+-            -1,
+-            0,
+-        )
+-    };
+-    assert_ne!(first_mmap, libc::MAP_FAILED, "mmap not allowed?");
+-
+-    let remap_flags =
+-        libc::MAP_ANONYMOUS | libc::MAP_FIXED | libc::MAP_PRIVATE | libc::MAP_EXECUTABLE;
+-    // remap the page with PROT_EXEC. If this fails, JIT is not possible.
+-    let second_mmap = unsafe {
+-        libc::mmap(
+-            first_mmap,
+-            map_size,
+-            libc::PROT_READ | libc::PROT_EXEC,
+-            remap_flags,
+-            -1,
+-            0,
+-        )
+-    };
+-    let mut jit_forbidden = second_mmap == libc::MAP_FAILED;
+-    if !jit_forbidden {
+-        // Spidermonkey uses mprotect to make the memory writable.
+-        // SAFETY: We obtained the memory in question via `mmap` and are not using the memory
+-        // in any way.
+-        let res =
+-            unsafe { libc::mprotect(first_mmap, map_size, libc::PROT_READ | libc::PROT_WRITE) };
+-        if res != 0 {
+-            // `mprotect` failed (to add write permissions), so we presume it is because JIT is forbidden.
+-            jit_forbidden = true;
+-        } else {
+-            // Additionally check if `mprotect` actually succeeded in adding `PROT_WRITE`.
+-            // We observed before that `mprotect` silently ignores the write permission without
+-            // returning an error.
+-            let is_writable = mem_is_writable(first_mmap)
+-                .inspect_err(|_e| {
+-                    debug!("Failed to determine if JIT is allowed. Conservatively assuming it is forbidden.");
+-                })
+-                .unwrap_or(false); // writable == false -> JIT is forbidden.
+-            jit_forbidden = !is_writable;
+-        }
+-    }
+-    // Ignore the result, since there is nothing we could do if unmap failed for whatever reason.
+-    // SAFETY: We unmap the `mmap`ed region completely again. There is no other `munmap` call in
+-    // this function, and we do not have any early returns in this function.
+-    let _ = unsafe { libc::munmap(first_mmap, map_size) };
+-
+-    jit_forbidden
+-}
+-
+-#[cfg(not(target_env = "ohos"))]
+-fn jit_forbidden() -> bool {
+-    false
+-}
+-
+ #[expect(unsafe_code)]
+ #[servo_tracing::instrument(name = "script::init")]
+ pub fn init() -> JSEngineSetup {
+-    if pref!(js_disable_jit) || jit_forbidden() {
+-        let reason = if pref!(js_disable_jit) {
+-            "preference `js_disable_jit` is set to true"
+-        } else {
+-            "runtime test determined JIT is forbidden on this system"
+-        };
+-        warn!("Disabling JIT for Javascript, since {reason}. This may cause subpar performance");
++    if pref!(js_disable_jit) {
++        warn!(
++            "Disabling JIT for Javascript, since preference `js_disable_jit` is set to true. \
++             This may cause subpar performance"
++        );
+         // SAFETY: This function has no particular preconditions.
+         unsafe {
+             js::jsapi::DisableJitBackend();
+diff --git a/components/servo/Cargo.toml b/components/servo/Cargo.toml
+index 93029982b3d..599294dafd1 100644
+--- a/components/servo/Cargo.toml
++++ b/components/servo/Cargo.toml
+@@ -20,8 +20,7 @@ crate-type = ["rlib"]
+ # need to add features that should be default to ports/servoshell/Cargo.toml
+ default = ["baked-in-resources", "bundled_freetype", "clipboard", "js_jit"]
+ background_hang_monitor = ["servo-background-hang-monitor/sampler"]
+-# This is slightly magical, but this will also work on ohos, where `servo-default-resource` is not added,
+-# which makes `baked-in-resources a no-op (as intended) on ohos (and perhaps other platforms in the future).
++# If the feature is turned off, a resource reader must be injected into the build via `inventory::submit!()`.
+ baked-in-resources = ["dep:servo-default-resources"]
+ bluetooth = [
+     "servo-bluetooth-traits",
+@@ -113,6 +112,7 @@ servo-canvas-traits = { workspace = true }
+ servo-config = { workspace = true }
+ servo-constellation = { workspace = true }
+ servo-constellation-traits = { workspace = true }
++servo-default-resources = { workspace = true, optional = true }
+ servo-geometry = { workspace = true }
+ servo-media = { workspace = true }
+ servo-media-dummy = { workspace = true }
+@@ -133,21 +133,12 @@ webgpu = { workspace = true, optional = true }
+ webrender = { workspace = true }
+ webrender_api = { workspace = true }
+ 
+-# On most platforms we bake in the resources for simplicity. On ohos we load resources via the filesystem.
+-# In the future we might want to use this approach also for the other platforms.
+-# If the feature is turned off, a resource reader must be injected into the build via `inventory::submit!()`.
+-[target.'cfg(not(target_env = "ohos"))'.dependencies]
+-servo-default-resources = { workspace = true, optional = true }
+-
+-[target.'cfg(not(any(target_os = "android", target_env = "ohos")))'.dependencies]
++[target.'cfg(not(target_os = "android"))'.dependencies]
+ arboard = { workspace = true, optional = true }
+ 
+-[target.'cfg(all(not(target_os = "windows"), not(target_os = "ios"), not(target_os = "android"), not(target_env = "ohos"), not(target_arch = "arm"), not(target_arch = "aarch64"), not(target_arch="riscv32"), not(target_arch="riscv64")))'.dependencies]
++[target.'cfg(all(not(target_os = "windows"), not(target_os = "ios"), not(target_os = "android"), not(target_arch = "arm"), not(target_arch = "aarch64"), not(target_arch="riscv32"), not(target_arch="riscv64")))'.dependencies]
+ gaol = { workspace = true }
+ 
+-[target.'cfg(target_env = "ohos")'.dependencies]
+-servo-media-ohos = { workspace = true }
+-
+ [dev-dependencies]
+ accesskit_consumer = { workspace = true }
+ content-security-policy = { workspace = true }
+diff --git a/components/servo/clipboard_delegate.rs b/components/servo/clipboard_delegate.rs
+index ec7953a148c..05138430167 100644
+--- a/components/servo/clipboard_delegate.rs
++++ b/components/servo/clipboard_delegate.rs
+@@ -109,10 +109,7 @@ mod fallback_clipboard {
+     }
+ }
+ 
+-#[cfg(all(
+-    feature = "clipboard",
+-    not(any(target_os = "android", target_env = "ohos"))
+-))]
++#[cfg(all(feature = "clipboard", not(target_os = "android")))]
+ mod clipboard {
+     use std::sync::OnceLock;
+ 
+@@ -158,7 +155,7 @@ mod clipboard {
+     }
+ }
+ 
+-#[cfg(any(not(feature = "clipboard"), target_os = "android", target_env = "ohos"))]
++#[cfg(any(not(feature = "clipboard"), target_os = "android"))]
+ mod clipboard {
+     use super::StringRequest;
+     use crate::clipboard_delegate::fallback_clipboard;
+diff --git a/components/servo/lib.rs b/components/servo/lib.rs
+index 4aec323d004..da0a1c16be6 100644
+--- a/components/servo/lib.rs
++++ b/components/servo/lib.rs
+@@ -145,5 +145,5 @@ pub mod protocol_handler {
+ }
+ 
+ // We need to reference this crate, in order for the linker not to remove it.
+-#[cfg(all(feature = "baked-in-resources", not(target_env = "ohos")))]
++#[cfg(feature = "baked-in-resources")]
+ use servo_default_resources as _;
+diff --git a/components/servo/servo.rs b/components/servo/servo.rs
+index 8c6d9912a97..512cf84e783 100644
+--- a/components/servo/servo.rs
++++ b/components/servo/servo.rs
+@@ -20,7 +20,6 @@ use fonts::SystemFontService;
+     not(target_arch = "aarch64"),
+     not(target_arch = "riscv32"),
+     not(target_arch = "riscv64"),
+-    not(target_env = "ohos"),
+ ))]
+ use gaol::sandbox::{ChildSandbox, ChildSandboxMethods};
+ use ipc_channel::ipc::{self, IpcSender};
+@@ -60,7 +59,6 @@ use servo_config::{opts, pref, prefs};
+     not(target_arch = "aarch64"),
+     not(target_arch = "riscv32"),
+     not(target_arch = "riscv64"),
+-    not(target_env = "ohos"),
+ ))]
+ use servo_constellation::content_process_sandbox_profile;
+ use servo_constellation::{
+@@ -132,17 +130,7 @@ mod media_platform {
+     }
+ }
+ 
+-#[cfg(all(not(feature = "media-gstreamer"), target_env = "ohos"))]
+-mod media_platform {
+-    use servo_media_ohos::OhosBackend;
+-
+-    use super::ServoMedia;
+-    pub fn init() {
+-        ServoMedia::init::<OhosBackend>();
+-    }
+-}
+-
+-#[cfg(all(not(feature = "media-gstreamer"), not(target_env = "ohos")))]
++#[cfg(not(feature = "media-gstreamer"))]
+ mod media_platform {
+     use super::ServoMedia;
+     pub fn init() {
+@@ -1389,7 +1377,6 @@ pub fn run_content_process(token: String) {
+     not(target_arch = "aarch64"),
+     not(target_arch = "riscv32"),
+     not(target_arch = "riscv64"),
+-    not(target_env = "ohos"),
+ ))]
+ fn create_sandbox() {
+     ChildSandbox::new(content_process_sandbox_profile())
+@@ -1405,7 +1392,6 @@ fn create_sandbox() {
+     target_arch = "aarch64",
+     target_arch = "riscv32",
+     target_arch = "riscv64",
+-    target_env = "ohos",
+ ))]
+ fn create_sandbox() {
+     panic!("Sandboxing is not supported on Windows, iOS, ARM, RISC-V targets and android.");
+diff --git a/components/webdriver_server/lib.rs b/components/webdriver_server/lib.rs
+index cbbb73e5087..45219d96a77 100644
+--- a/components/webdriver_server/lib.rs
++++ b/components/webdriver_server/lib.rs
+@@ -2357,14 +2357,14 @@ impl Handler {
+         let id = Uuid::new_v4().to_string();
+ 
+         let pointer_ids = self.session()?.pointer_ids();
+-        #[cfg(not(any(target_env = "ohos", target_os = "android")))]
++        #[cfg(not(target_os = "android"))]
+         let pointer_type = PointerType::Mouse;
+ 
+         // There is currently no spec for touchscreen element click support,
+         // which assumes mouse event.
+         // There is an ongoing discussion in W3C:
+         // <https://github.com/w3c/webdriver/issues/1925>
+-        #[cfg(any(target_env = "ohos", target_os = "android"))]
++        #[cfg(target_os = "android")]
+         let pointer_type = PointerType::Touch;
+ 
+         self.session_mut()?.input_state_table.insert(
+diff --git a/ports/servoshell/Cargo.toml b/ports/servoshell/Cargo.toml
+index d01aba0e158..2bd181e3fe8 100644
+--- a/ports/servoshell/Cargo.toml
++++ b/ports/servoshell/Cargo.toml
+@@ -53,13 +53,12 @@ max_log_level = ["log/release_max_level_info"]
+ media-gstreamer = ["servo/media-gstreamer"]
+ native-bluetooth = ["servo/native-bluetooth"]
+ tracing = ["dep:tracing", "dep:tracing-subscriber", "servo/tracing"]
+-tracing-hitrace = ["tracing", "dep:hitrace"]
+ tracing-perfetto = ["tracing", "dep:tracing-perfetto"]
+ tracing-tracy = ["tracing", "dep:tracing-tracy"]
+ vello = ["servo/vello"]
+ webgl_backtrace = ["servo/webgl_backtrace"]
+ webgpu = ["servo/webgpu"]
+-# Desktop only (see the `not(any(target_os = "android", target_env = "ohos"))`
++# Desktop only (see the `not(target_os = "android")`
+ # dependency block below) — mirrors the equivalent `steam` feature in
+ # ../../../../src-tauri/Cargo.toml. Exposes a `steam:` protocol scheme to web
+ # content; see desktop/protocols/steam.rs.
+@@ -79,7 +78,6 @@ dpi = { workspace = true }
+ env_logger = { workspace = true }
+ euclid = { workspace = true }
+ headers = { workspace = true }
+-hitrace = { workspace = true, optional = true }
+ http = { workspace = true }
+ image = { workspace = true }
+ keyboard-types = { workspace = true }
+@@ -101,33 +99,12 @@ webdriver_server = { workspace = true }
+ [target.'cfg(target_os = "android")'.dependencies]
+ android_logger = { workspace = true }
+ jni = { workspace = true }
+-
+-[target.'cfg(not(target_os = "android"))'.dependencies]
+-backtrace = { workspace = true }
+-
+-[target.'cfg(target_env = "ohos")'.dependencies]
+-env_filter = { workspace = true }
+-euclid = { workspace = true }
+-hilog = { workspace = true }
+-# force inprocess until we add multi-process support for ohos
+-ipc-channel = { workspace = true, features = ["force-inprocess"] }
+-napi-derive-ohos = { workspace = true }
+-napi-ohos = { workspace = true }
+-ohos-abilitykit-sys = { workspace = true, features = ["api-14"] }
+-ohos-deviceinfo = { workspace = true }
+-ohos-ime = { workspace = true }
+-ohos-ime-sys = { workspace = true }
+-ohos-vsync = { workspace = true }
+-ohos-window-manager-sys = { workspace = true, features = ["api-14"] }
+-xcomponent-sys = { workspace = true, features = ["api-14", "keyboard-types"] }
+-
+-[target.'cfg(any(target_os = "android", target_env = "ohos"))'.dependencies]
+ nix = { workspace = true, features = ["fs"] }
+ serde_json = { workspace = true }
+-servo-base = { workspace = true }
+ surfman = { workspace = true, features = ["sm-angle-default"] }
+ 
+-[target.'cfg(not(any(target_os = "android", target_env = "ohos")))'.dependencies]
++[target.'cfg(not(target_os = "android"))'.dependencies]
++backtrace = { workspace = true }
+ base64 = { workspace = true }
+ dirs = { workspace = true }
+ egui = { workspace = true }
+@@ -142,10 +119,10 @@ steamworks = { version = "0.13", optional = true }
+ surfman = { workspace = true, features = ["sm-raw-window-handle-06"] }
+ sysinfo = { workspace = true }
+ 
+-[target.'cfg(any(all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))'.dependencies]
++[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+ signal-hook-registry = { workspace = true }
+ 
+-[target.'cfg(all(target_os = "linux", not(target_env = "ohos")))'.dependencies]
++[target.'cfg(target_os = "linux")'.dependencies]
+ surfman = { workspace = true, features = ["sm-x11"] }
+ 
+ [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+diff --git a/ports/servoshell/backtrace.rs b/ports/servoshell/backtrace.rs
+index 655d7f5a893..7d34b489df4 100644
+--- a/ports/servoshell/backtrace.rs
++++ b/ports/servoshell/backtrace.rs
+@@ -24,17 +24,6 @@ pub(crate) fn print(w: &mut dyn std::io::Write) -> Result<(), std::io::Error> {
+     )
+ }
+ 
+-#[cfg(target_env = "ohos")]
+-pub(crate) fn print_ohos() {
+-    // Print to `hilog`
+-    log::error!(
+-        "{:?}",
+-        Print {
+-            print_fn_address: (print as *const ()).addr(),
+-        }
+-    )
+-}
+-
+ struct Print {
+     /// Function pointer without provenance - do not cast back and dereference.
+     print_fn_address: usize,
+diff --git a/ports/servoshell/build.rs b/ports/servoshell/build.rs
+index 11b4059f854..ce2e21df5c3 100644
+--- a/ports/servoshell/build.rs
++++ b/ports/servoshell/build.rs
+@@ -181,27 +181,5 @@ fn main() -> Result<(), Box<dyn Error>> {
+     if target_os == "linux" {
+         println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
+     }
+-
+-    // On OpenHarmony, libservoshell.so is loaded by ArkTS as a NAPI module.
+-    // Passing a version script allows us to inform the linker about required
+-    // symbol visibility (only one), which improves stripping of unused sections.
+-    if target_env == "ohos" {
+-        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")?;
+-        let version_script = Path::new(&manifest_dir)
+-            .join("platform")
+-            .join("openharmony")
+-            .join("libservoshell.ver");
+-        let version_script_str = version_script.to_str().expect("Expected UTF-8 text");
+-        assert!(
+-            version_script.exists(),
+-            "Expected version script to exist at path `{version_script_str}`"
+-        );
+-        println!("cargo:rerun-if-changed={version_script_str}");
+-        // Using `rustc-link-arg-cdylib` causes a false-positive warning:
+-        // https://github.com/rust-lang/cargo/issues/16487
+-        // We work around this by just using the unconditional link-arg, which
+-        // should be fine, since we always build servo as a cdylib on OpenHarmony.
+-        println!("cargo:rustc-link-arg=-Wl,--version-script={version_script_str}");
+-    }
+     Ok(())
+ }
+diff --git a/ports/servoshell/desktop/accelerated_gl_media.rs b/ports/servoshell/desktop/accelerated_gl_media.rs
+index 0d935572c4e..cb1972161f7 100644
+--- a/ports/servoshell/desktop/accelerated_gl_media.rs
++++ b/ports/servoshell/desktop/accelerated_gl_media.rs
+@@ -6,13 +6,10 @@ use std::cell::RefMut;
+ 
+ use surfman::{Context, Device};
+ 
+-#[cfg(not(any(
+-    target_os = "windows",
+-    all(target_os = "linux", not(target_env = "ohos"))
+-)))]
++#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+ pub(crate) fn setup_gl_accelerated_media(_: RefMut<'_, Device>, _: RefMut<'_, Context>) {}
+ 
+-#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
++#[cfg(target_os = "linux")]
+ pub(crate) fn setup_gl_accelerated_media(device: RefMut<'_, Device>, context: RefMut<'_, Context>) {
+     use servo::{MediaGlContext, MediaNativeDisplay, Servo};
+     use surfman::multi::connection::NativeConnection;
+@@ -50,10 +47,7 @@ pub(crate) fn setup_gl_accelerated_media(device: RefMut<'_, Device>, context: Re
+     Servo::initialize_gl_accelerated_media(display, api, context);
+ }
+ 
+-#[cfg(any(
+-    all(target_os = "linux", not(target_env = "ohos")),
+-    target_os = "windows"
+-))]
++#[cfg(any(target_os = "linux", target_os = "windows"))]
+ fn api(device: &RefMut<Device>, context: &RefMut<Context>) -> servo::MediaGlApi {
+     use servo::MediaGlApi;
+     use surfman::GLApi;
+diff --git a/ports/servoshell/desktop/protocols/mod.rs b/ports/servoshell/desktop/protocols/mod.rs
+index 0744c2ce712..88b807173cd 100644
+--- a/ports/servoshell/desktop/protocols/mod.rs
++++ b/ports/servoshell/desktop/protocols/mod.rs
+@@ -3,7 +3,7 @@
+  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+ 
+ // `file`/`game`/`packed_content` moved out to `crate::protocols` (2026-09-12) so the
+-// Android/OpenHarmony EGL shell (`egl/app.rs`) could reuse them too -- see that module's own
++// Android EGL shell (`egl/app.rs`) could reuse them too -- see that module's own
+ // doc comment. Everything below here is still desktop-only.
+ pub(crate) mod resource;
+ pub(crate) mod roves;
+diff --git a/ports/servoshell/egl/app.rs b/ports/servoshell/egl/app.rs
+index 496fe7653df..427aafcb7c9 100644
+--- a/ports/servoshell/egl/app.rs
++++ b/ports/servoshell/egl/app.rs
+@@ -80,13 +80,9 @@ impl PlatformWindow for EmbeddedPlatformWindow {
+         false
+     }
+ 
+-    #[cfg_attr(
+-        not(all(feature = "tracing", feature = "tracing-hitrace")),
+-        expect(unused_variables)
+-    )]
+     fn update_user_interface_state(
+         &self,
+-        state: &RunningAppState,
++        _state: &RunningAppState,
+         window: &ServoShellWindow,
+     ) -> bool {
+         let Some(active_webview) = window.active_webview() else {
+@@ -130,32 +126,6 @@ impl PlatformWindow for EmbeddedPlatformWindow {
+         let load_status_changed = Some(new_load_status) != self.current_load_status.get();
+         if load_status_changed {
+             self.host.notify_load_status_changed(new_load_status);
+-
+-            #[cfg(all(feature = "tracing", feature = "tracing-hitrace"))]
+-            if new_load_status == LoadStatus::Complete {
+-                let (callback, receiver) =
+-                    servo_base::generic_channel::GenericCallback::new_blocking()
+-                        .expect("Could not create channel");
+-                state.servo().create_memory_report(callback);
+-                std::thread::spawn(move || {
+-                    let result = receiver.recv().expect("Could not get memory report");
+-                    let reports = result
+-                        .results
+-                        .first()
+-                        .expect("We should have some memory report");
+-                    let search_string = String::from("resident-according-to-smaps");
+-                    let sum = reports
+-                        .reports
+-                        .iter()
+-                        .filter(|report| report.path.contains(&search_string))
+-                        .map(|report| report.size)
+-                        .sum::<usize>();
+-                    hitrace::trace_metric_str(
+-                        "servo_memory_profiling:resident-according-to-smaps/sum",
+-                        sum as i64,
+-                    );
+-                });
+-            }
+         }
+ 
+         title_changed || url_changed || back_forward_changed || load_status_changed
+@@ -241,19 +211,12 @@ impl PlatformWindow for EmbeddedPlatformWindow {
+ 
+ pub(crate) struct VsyncRefreshDriver {
+     start_frame_callbacks: RefCell<Vec<Box<dyn Fn() + Send>>>,
+-    /// On OHOS we own the `OH_NativeVSync` handle and request a single callback
+-    /// only when an observer asks for one.
+-    #[cfg(target_env = "ohos")]
+-    native_vsync: ohos_vsync::NativeVsync,
+ }
+ 
+ impl VsyncRefreshDriver {
+     pub(crate) fn new() -> Self {
+         Self {
+             start_frame_callbacks: Default::default(),
+-            #[cfg(target_env = "ohos")]
+-            native_vsync: ohos_vsync::NativeVsync::new("ServoVsync")
+-                .expect("Failed to create NativeVsync"),
+         }
+     }
+ 
+@@ -268,19 +231,9 @@ impl VsyncRefreshDriver {
+ 
+ impl RefreshDriver for VsyncRefreshDriver {
+     fn observe_next_frame(&self, new_start_frame_callback: Box<dyn Fn() + Send + 'static>) {
+-        // We only need to request a vsync callback if the queue is empty,
+-        // otherwise we will already have a pending callback.
+-        #[cfg_attr(not(target_env = "ohos"), allow(unused_variables))]
+-        let was_empty = {
+-            let mut callbacks = self.start_frame_callbacks.borrow_mut();
+-            let was_empty = callbacks.is_empty();
+-            callbacks.push(new_start_frame_callback);
+-            was_empty
+-        };
+-        #[cfg(target_env = "ohos")]
+-        if was_empty {
+-            super::ohos::request_vsync_callback(&self.native_vsync);
+-        }
++        self.start_frame_callbacks
++            .borrow_mut()
++            .push(new_start_frame_callback);
+     }
+ }
+ 
+@@ -328,7 +281,7 @@ impl App {
+             crate::protocols::file::FileProtocolHandler::new(initial_file_path.as_deref()),
+         );
+ 
+-        // Every Android/OpenHarmony launch is a bundled-game launch -- `MainActivity.kt`
++        // Every Android launch is a bundled-game launch -- `MainActivity.kt`
+         // always passes a `file:` URL to a real, already-extracted entry HTML (there's no
+         // "raw dev --url" mode here the way desktop has). When that resolves to a real file,
+         // boot at the `game:` virtual root instead of the literal `file:` path -- confirmed
+@@ -655,7 +608,7 @@ impl App {
+     }
+ 
+     pub fn ime_insert_text(&self, text: String) {
+-        // In OHOS, we get empty text after the intended text.
++        // Some IMEs send an empty text after the intended text.
+         if text.is_empty() {
+             return;
+         }
+diff --git a/ports/servoshell/egl/mod.rs b/ports/servoshell/egl/mod.rs
+index 29fd9e238d9..0e4d1ce34f2 100644
+--- a/ports/servoshell/egl/mod.rs
++++ b/ports/servoshell/egl/mod.rs
+@@ -7,5 +7,3 @@ mod android;
+ pub(crate) mod app;
+ mod host_trait;
+ mod log;
+-#[cfg(target_env = "ohos")]
+-mod ohos;
+diff --git a/ports/servoshell/lib.rs b/ports/servoshell/lib.rs
+index 1f71f89e76d..abdb7ff056a 100644
+--- a/ports/servoshell/lib.rs
++++ b/ports/servoshell/lib.rs
+@@ -2,25 +2,22 @@
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+ 
+-use cfg_if::cfg_if;
+-
+ #[cfg(test)]
+ mod test;
+ 
+ #[cfg(not(target_os = "android"))]
+ mod backtrace;
+-#[cfg(not(target_env = "ohos"))]
+ mod crash_handler;
+-#[cfg(not(any(target_os = "android", target_env = "ohos")))]
++#[cfg(not(target_os = "android"))]
+ pub(crate) mod desktop;
+-#[cfg(any(target_os = "android", target_env = "ohos"))]
++#[cfg(target_os = "android")]
+ mod egl;
+-#[cfg(not(any(target_os = "android", target_env = "ohos")))]
++#[cfg(not(target_os = "android"))]
+ mod panic_hook;
+ mod parser;
+ mod prefs;
+ mod protocols;
+-#[cfg(not(any(target_os = "android", target_env = "ohos")))]
++#[cfg(not(target_os = "android"))]
+ mod resources;
+ mod running_app_state;
+ mod webdriver;
+@@ -37,7 +34,7 @@ pub mod platform {
+     pub fn deinit(_clean_shutdown: bool) {}
+ }
+ 
+-#[cfg(not(any(target_os = "android", target_env = "ohos")))]
++#[cfg(not(target_os = "android"))]
+ pub fn main() {
+     desktop::cli::main()
+ }
+@@ -71,12 +68,6 @@ pub fn init_tracing(filter_directives: Option<&str>) {
+             subscriber.with(perfetto_layer)
+         };
+ 
+-        #[cfg(all(feature = "tracing-hitrace", target_env = "ohos"))]
+-        let subscriber = {
+-            // Set up a HitraceLayer for performance tracing.
+-            subscriber.with(HitraceLayer::default())
+-        };
+-
+         // Deep, developer/profiling-build-only tracing (frame/CPU/GPU zones, allocations,
+         // locks) via a live Tracy connection — see docs/DEPENDENCY_REVIEW.md's "Tracy e
+         // Perfetto" decision. Never enabled by default (see the `tracing-tracy` feature's own
+@@ -125,227 +116,3 @@ pub fn init_tracing(filter_directives: Option<&str>) {
+ }
+ 
+ pub const VERSION: &str = concat!("Servo ", env!("CARGO_PKG_VERSION"), "-", env!("GIT_SHA"));
+-
+-/// Plumbs tracing spans into HiTrace, with the following caveats:
+-///
+-/// - We ignore spans unless they have a `servo_profiling` field.
+-/// - We map span entry ([`Layer::on_enter`]) to `OH_HiTrace_StartTraceEx(metadata.name(), fields)`.
+-/// - We map span exit ([`Layer::on_exit`]) to `OH_HiTrace_FinishTraceEx()`.
+-///
+-/// As a result, within each thread, spans must exit in reverse order of their entry, otherwise the
+-/// resultant profiling data will be incorrect (see the section below). This is not necessarily the
+-/// case for tracing spans, since there can be multiple [trace trees], so we check that this
+-/// invariant is upheld when debug assertions are enabled, logging errors if it is violated.
+-///
+-/// [trace trees]: https://docs.rs/tracing/0.1.40/tracing/span/index.html#span-relationships
+-///
+-/// # Uniquely identifying spans
+-///
+-/// We need to ensure that the start and end points of one span are not mixed up with other spans.
+-/// For now, we use the HiTrace [synchronous API], which restricts how spans must behave.
+-///
+-/// In the HiTrace [synchronous API], spans must have stack-like behaviour, because spans are keyed
+-/// entirely on their *name* string, and OH_HiTrace_FinishTrace always ends the most recent span.
+-/// While synchronous API spans are thread-local, callers could still violate this invariant with
+-/// reentrant or asynchronous code.
+-///
+-/// In the [asynchronous API], spans are keyed on a (*name*,*taskId*) pair, where *name* is again
+-/// a string, and *taskId* is an arbitrary [`i32`]. This makes *taskId* a good place for a unique
+-/// identifier, but asynchronous spans can cross thread boundaries, so the identifier needs to be
+-/// temporally unique in the whole process.
+-///
+-/// Tracing spans have such an identifier ([`Id`]), but they’re [`u64`]-based, and their format
+-/// is an internal implementation detail of the [`Subscriber`]. For [`Registry`], those values
+-/// [come from] a [packed representation] of a generation number, thread number, page number, and
+-/// variable-length index. This makes them hard to compress robustly into an [`i32`].
+-///
+-/// If we move to the asynchronous API, we will need to generate our own *taskId* values, perhaps
+-/// by combining some sort of thread id with a thread-local atomic counter. [`ThreadId`] is opaque
+-/// in stable Rust, and converts to a [`u64`] in unstable Rust, so we would also need to make our
+-/// own thread ids, perhaps by having a global atomic counter cached in a thread-local.
+-///
+-/// [synchronous API]: https://docs.rs/hitrace-sys/0.1.9/hitrace_sys/fn.OH_HiTrace_StartTraceEx.html
+-/// [asynchronous API]: https://docs.rs/hitrace-sys/0.1.9/hitrace_sys/fn.OH_HiTrace_StartAsyncTraceEx.html
+-/// [`Registry`]: tracing_subscriber::Registry
+-/// [come from]: https://docs.rs/tracing-subscriber/0.3.18/src/tracing_subscriber/registry/sharded.rs.html#237-269
+-/// [packed representation]: https://docs.rs/sharded-slab/0.1.7/sharded_slab/trait.Config.html
+-/// [`ThreadId`]: std::thread::ThreadId
+-#[cfg(all(feature = "tracing-hitrace", target_env = "ohos"))]
+-#[derive(Default)]
+-struct HitraceLayer {}
+-
+-cfg_if! {
+-    if #[cfg(all(feature = "tracing-hitrace", target_env = "ohos"))] {
+-        use std::cell::RefCell;
+-        use std::fmt;
+-        use std::fmt::Write;
+-
+-        use tracing::field::{Field, Visit};
+-        use tracing::Level;
+-        use tracing::span::Id;
+-        use tracing::Subscriber;
+-        use tracing_subscriber::Layer;
+-
+-        #[derive(Default)]
+-        struct HitraceFields(String);
+-
+-        impl HitraceFields {
+-            fn record_value(&mut self, field: &Field, value: &dyn fmt::Debug) {
+-                if field.name() == "servo_profiling" {
+-                    return;
+-                }
+-
+-                if !self.0.is_empty() {
+-                    self.0.push(',');
+-                }
+-                write!(&mut self.0, "{}={value:?}", field.name())
+-                    .expect("Writing to a String should never fail");
+-            }
+-        }
+-
+-        impl Visit for HitraceFields {
+-            fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+-                self.record_value(field, value);
+-            }
+-        }
+-
+-        #[cfg(debug_assertions)]
+-        thread_local! {
+-            /// Stack of span names, to ensure the HiTrace synchronous API is not misused.
+-            static HITRACE_NAME_STACK: RefCell<Vec<String>> = RefCell::default();
+-        }
+-
+-        /// Map a tracing level to a HiTrace level.
+-        ///
+-        /// The log-level of hitrace itself can only be configured globally,
+-        /// which drastically increases the amount of data that needs to be saved.
+-        /// For our purposes, the tracing-rs internal filtering is sufficient,
+-        /// and we don't need additional `debug` log level on the hitrace side,
+-        /// so we just map anything below INFO to INFO.
+-        fn convert_level(tracing_level: Level) -> hitrace::api_19::HiTraceOutputLevel {
+-            if tracing_level < Level::INFO {
+-                Level::INFO.into()
+-            } else {
+-                tracing_level.into()
+-            }
+-        }
+-
+-        impl<S: Subscriber + for<'lookup> tracing_subscriber::registry::LookupSpan<'lookup>>
+-            Layer<S> for HitraceLayer
+-        {
+-            fn on_new_span(
+-                &self,
+-                attrs: &tracing::span::Attributes<'_>,
+-                id: &Id,
+-                ctx: tracing_subscriber::layer::Context<'_, S>,
+-            ) {
+-                if attrs.metadata().fields().field("servo_profiling").is_none() {
+-                    return;
+-                }
+-
+-                let Some(span) = ctx.span(id) else {
+-                    return;
+-                };
+-
+-                let mut fields = HitraceFields::default();
+-                attrs.record(&mut fields);
+-                span.extensions_mut().insert(fields);
+-            }
+-
+-            fn on_record(
+-                &self,
+-                id: &Id,
+-                values: &tracing::span::Record<'_>,
+-                ctx: tracing_subscriber::layer::Context<'_, S>,
+-            ) {
+-                let Some(span) = ctx.span(id) else {
+-                    return;
+-                };
+-
+-                let mut extensions = span.extensions_mut();
+-                let Some(fields) = extensions.get_mut::<HitraceFields>() else {
+-                    return;
+-                };
+-
+-                values.record(fields);
+-            }
+-
+-            fn on_enter(&self, id: &Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
+-                let Some(span) = ctx.span(id) else {
+-                    return;
+-                };
+-                let extensions = span.extensions();
+-                // The HitraceFields extension being present implies `servo_profiling` was set.
+-                let Some(fields) = extensions.get::<HitraceFields>() else {
+-                    return;
+-                };
+-                // We can't take the String out of the extensions, so
+-                //  unfortunately, this won't reuse the allocation.
+-                let custom_args = std::ffi::CString::new(fields.0.as_str())
+-                        .expect("Failed to convert to CString");
+-
+-                let metadata = span.metadata();
+-                let level = convert_level(*metadata.level());
+-                let name = metadata.name();
+-
+-                #[cfg(debug_assertions)]
+-                HITRACE_NAME_STACK.with_borrow_mut(|stack|
+-                    stack.push(name.to_owned()));
+-
+-                hitrace::start_trace_ex(
+-                    level,
+-                    &std::ffi::CString::new(name)
+-                        .expect("Failed to convert str to CString"),
+-                    &custom_args,
+-                );
+-
+-            }
+-
+-            fn on_event(&self, event: &tracing::Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+-                let mut fields = HitraceFields::default();
+-                event.record(&mut fields);
+-                let metadata = event.metadata();
+-                let level = convert_level(*metadata.level());
+-
+-                hitrace::start_trace_ex(
+-                    level,
+-                    &std::ffi::CString::new(metadata.name())
+-                        .expect("Failed to convert str to CString"),
+-                    &std::ffi::CString::new(fields.0)
+-                        .expect("Failed to convert str to CString"),
+-                );
+-
+-                hitrace::finish_trace_ex(level);
+-            }
+-
+-
+-            fn on_exit(&self, id: &Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
+-                let Some(span) = ctx.span(id) else {
+-                    return;
+-                };
+-                if span.extensions().get::<HitraceFields>().is_none() {
+-                    return;
+-                }
+-
+-                let level = convert_level(*span.metadata().level());
+-                hitrace::finish_trace_ex(level);
+-
+-                #[cfg(debug_assertions)]
+-                HITRACE_NAME_STACK.with_borrow_mut(|stack| {
+-                    let metadata = span.metadata();
+-                    if stack.last().map(|name| &**name) != Some(metadata.name()) {
+-                        log::error!(
+-                            "Tracing span out of order: {} (stack: {:?})",
+-                            metadata.name(),
+-                            stack
+-                        );
+-                    }
+-                    if !stack.is_empty() {
+-                        stack.pop();
+-                    }
+-                });
+-            }
+-
+-        }
+-    }
+-}
+diff --git a/ports/servoshell/main.rs b/ports/servoshell/main.rs
+index a002ad47fec..1828f238e19 100644
+--- a/ports/servoshell/main.rs
++++ b/ports/servoshell/main.rs
+@@ -107,17 +107,15 @@ fn main() {
+         let _result = Console::AttachConsole(Console::ATTACH_PARENT_PROCESS);
+     }
+     cfg_if::cfg_if! {
+-        if #[cfg(not(any(target_os = "android", target_env = "ohos")))] {
++        if #[cfg(not(target_os = "android"))] {
+             servoshell::main()
+         } else {
+             // Android: see ports/servoshell/egl/android/mod.rs.
+-            // OpenHarmony: see ports/servoshell/egl/ohos/mod.rs.
+             println!(
+-                "Cannot run the servoshell `bin` executable on platforms such as \
+-                 Android or OpenHarmony. On these platforms you need to compile \
+-                 the servoshell library as a `cdylib` and integrate it with the \
+-                 platform app code into an `apk` (android) or `hap` (OpenHarmony).\
+-                 For Android `mach build` will do these steps automatically for you."
++                "Cannot run the servoshell `bin` executable on Android. There you need to \
++                 compile the servoshell library as a `cdylib` and integrate it with the \
++                 platform app code into an `apk`. `mach build` will do these steps \
++                 automatically for you."
+             );
+         }
+     }
+diff --git a/ports/servoshell/parser.rs b/ports/servoshell/parser.rs
+index 637c05abe29..ead91e70af4 100644
+--- a/ports/servoshell/parser.rs
++++ b/ports/servoshell/parser.rs
+@@ -2,12 +2,12 @@
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+ 
+-#[cfg(not(any(target_os = "android", target_env = "ohos")))]
++#[cfg(not(target_os = "android"))]
+ use std::path::{Path, PathBuf};
+ 
+ use servo::{ServoUrl, is_reg_domain};
+ 
+-#[cfg(not(any(target_os = "android", target_env = "ohos")))]
++#[cfg(not(target_os = "android"))]
+ pub fn parse_url_or_filename(cwd: &Path, input: &str) -> Result<ServoUrl, ()> {
+     // Kiosk/embedded fork: an absolute Windows path (`C:\dir\index.html`) is a
+     // perfectly *valid* URL as far as the WHATWG parser is concerned — scheme
+@@ -52,7 +52,7 @@ pub fn parse_url_or_filename(cwd: &Path, input: &str) -> Result<ServoUrl, ()> {
+ /// the conversion above is guarded by `Url::from_file_path` succeeding, which
+ /// on a non-Windows build rejects both shapes (neither is an absolute path
+ /// there), so behavior off Windows is unchanged.
+-#[cfg(not(any(target_os = "android", target_env = "ohos")))]
++#[cfg(not(target_os = "android"))]
+ fn is_windows_absolute_path(input: &str) -> bool {
+     let bytes = input.as_bytes();
+     let drive_absolute = bytes.len() >= 3 &&
+@@ -62,7 +62,7 @@ fn is_windows_absolute_path(input: &str) -> bool {
+     drive_absolute || input.starts_with(r"\\")
+ }
+ 
+-#[cfg(not(any(target_os = "android", target_env = "ohos")))]
++#[cfg(not(target_os = "android"))]
+ pub fn get_default_url(
+     url_opt: Option<&str>,
+     cwd: impl AsRef<Path>,
+diff --git a/ports/servoshell/prefs.rs b/ports/servoshell/prefs.rs
+index 335d38dc929..6cf96ba43c3 100644
+--- a/ports/servoshell/prefs.rs
++++ b/ports/servoshell/prefs.rs
+@@ -9,7 +9,7 @@ use std::fs::{self, read_to_string};
+ use std::path::{Path, PathBuf};
+ use std::rc::Rc;
+ use std::str::FromStr;
+-#[cfg(any(target_os = "android", target_env = "ohos"))]
++#[cfg(target_os = "android")]
+ use std::sync::OnceLock;
+ use std::{env, fmt};
+ 
+@@ -55,7 +55,7 @@ pub(crate) static EXPERIMENTAL_PREFS: &[&str] = &[
+     "layout_variable_fonts_enabled",
+ ];
+ 
+-#[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
++#[cfg_attr(target_os = "android", expect(dead_code))]
+ #[derive(Clone)]
+ pub(crate) struct ServoShellPreferences {
+     /// A URL to load when starting servoshell.
+@@ -113,13 +113,6 @@ pub(crate) struct ServoShellPreferences {
+     /// `--config-dir`) and kept here so `HeadedWindow` can persist UI state (currently just
+     /// `start_fullscreen`) back to the same directory without re-deriving it.
+     pub config_dir: Option<PathBuf>,
+-    /// Log filter given in the `log_filter` spec as a String, if any.
+-    /// If a filter is passed, the logger should adjust accordingly.
+-    #[cfg(target_env = "ohos")]
+-    pub log_filter: Option<String>,
+-    /// Log also to a file
+-    #[cfg(target_env = "ohos")]
+-    pub log_to_file: bool,
+ }
+ 
+ impl Default for ServoShellPreferences {
+@@ -142,10 +135,6 @@ impl Default for ServoShellPreferences {
+             userscripts_directory: None,
+             user_stylesheets: Default::default(),
+             webdriver_port: Cell::new(None),
+-            #[cfg(target_env = "ohos")]
+-            log_filter: None,
+-            #[cfg(target_env = "ohos")]
+-            log_to_file: false,
+             start_fullscreen: false,
+             config_dir: None,
+         }
+@@ -156,8 +145,7 @@ impl Default for ServoShellPreferences {
+     unix,
+     not(target_os = "macos"),
+     not(target_os = "ios"),
+-    not(target_os = "android"),
+-    not(target_env = "ohos")
++    not(target_os = "android")
+ ))]
+ pub fn default_config_dir() -> Option<PathBuf> {
+     let mut config_dir = ::dirs::config_dir().unwrap();
+@@ -167,9 +155,9 @@ pub fn default_config_dir() -> Option<PathBuf> {
+ }
+ 
+ /// Overrides the default preference dir
+-#[cfg(any(target_os = "android", target_env = "ohos"))]
++#[cfg(target_os = "android")]
+ pub(crate) static DEFAULT_CONFIG_DIR: OnceLock<PathBuf> = OnceLock::new();
+-#[cfg(any(target_os = "android", target_env = "ohos"))]
++#[cfg(target_os = "android")]
+ pub fn default_config_dir() -> Option<PathBuf> {
+     DEFAULT_CONFIG_DIR.get().cloned()
+ }
+@@ -243,7 +231,7 @@ pub fn read_prefs_map(txt: &str) -> HashMap<String, PrefValue> {
+ }
+ 
+ #[expect(clippy::large_enum_variant)]
+-#[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
++#[cfg_attr(target_os = "android", expect(dead_code))]
+ pub(crate) enum ArgumentParsingResult {
+     ChromeProcess(Opts, Preferences, ServoShellPreferences),
+     ContentProcess(String),
+@@ -481,16 +469,6 @@ struct CmdArgs {
+     #[bpaf(argument("~/.local/share/servo"))]
+     local_script_source: Option<PathBuf>,
+ 
+-    #[cfg(target_env = "ohos")]
+-    /// Define a custom filter for logging.
+-    #[bpaf(argument("FILTER"))]
+-    log_filter: Option<String>,
+-
+-    #[cfg(target_env = "ohos")]
+-    /// Also log to a file (/data/app/el2/100/base/org.servo.servo/cache/servo.log).
+-    #[bpaf(long)]
+-    log_to_file: bool,
+-
+     /// Run in multiprocess mode.
+     #[bpaf(short('M'), long)]
+     multiprocess: bool,
+@@ -669,7 +647,7 @@ fn parse_arguments_helper(args_without_binary: Args) -> ArgumentParsingResult {
+         Err(error) => {
+             // Servo will exit after printing the parsing error, which makes the stdout / stderr
+             // redirection via a seperate thread racy, so we log directly to the system logger.
+-            if cfg!(target_os = "android") || cfg!(target_env = "ohos") {
++            if cfg!(target_os = "android") {
+                 match &error {
+                     ParseFailure::Stderr(doc) => log::error!("{doc}"),
+                     // '--help' will be parsed by the next one.
+@@ -751,12 +729,6 @@ fn parse_arguments_helper(args_without_binary: Args) -> ArgumentParsingResult {
+         user_stylesheets: cmd_args.user_stylesheet,
+         start_fullscreen,
+         config_dir: config_dir.clone(),
+-        #[cfg(target_env = "ohos")]
+-        log_filter: cmd_args.log_filter.or_else(|| {
+-            (!preferences.log_filter.is_empty()).then(|| preferences.log_filter.clone())
+-        }),
+-        #[cfg(target_env = "ohos")]
+-        log_to_file: cmd_args.log_to_file,
+         ..Default::default()
+     };
+ 
+diff --git a/ports/servoshell/protocols/game.rs b/ports/servoshell/protocols/game.rs
+index c1e5511f70a..efa35b6049b 100644
+--- a/ports/servoshell/protocols/game.rs
++++ b/ports/servoshell/protocols/game.rs
+@@ -60,7 +60,7 @@
+ //!
+ //! Registered only for the fixed authority `content` — `mach bundle`/
+ //! Packmaster/`roves-action` (desktop) and `MainActivity.kt`'s own extracted
+-//! launch (Android/OpenHarmony, via `egl/app.rs`) are the only things that
++//! launch (Android, via `egl/app.rs`) are the only things that
+ //! ever construct a `game:` URL, always with that exact host, so anything
+ //! else reaching this handler is a bug elsewhere, not a real request.
+ //! `file.rs`'s own on-demand packed-content extraction
+@@ -107,8 +107,8 @@ impl GameProtocolHandler {
+     }
+ 
+     /// See `PackedContent::ensure_available` — a no-op when this launch has no
+-    /// managed packed content at all (`--content-compress=none`, or the Android/
+-    /// OpenHarmony target, which has no packed-content support at all yet).
++    /// managed packed content at all (`--content-compress=none`, or the Android
++    /// target, which has no packed-content support at all yet).
+     fn ensure_available(&self, file_path: &Path) {
+         if let Some(packed) = &self.packed {
+             packed.ensure_available(file_path);
+diff --git a/ports/servoshell/protocols/mod.rs b/ports/servoshell/protocols/mod.rs
+index 5c52353c91d..7e0df7fd512 100644
+--- a/ports/servoshell/protocols/mod.rs
++++ b/ports/servoshell/protocols/mod.rs
+@@ -3,7 +3,7 @@
+  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+ 
+ //! Protocol handlers shared between the desktop shell (`desktop/protocols/`, which has its
+-//! own additional desktop-only handlers alongside these) and the Android/OpenHarmony EGL
++//! own additional desktop-only handlers alongside these) and the Android EGL
+ //! shell (`egl/app.rs`) -- unlike `desktop/protocols/`, this module isn't gated to any
+ //! specific target. Moved out of `desktop/protocols/` (2026-09-12) so both the `file:`
+ //! rebasing fix and the full `game:` virtual-origin protocol could be reused on Android
+diff --git a/ports/servoshell/protocols/packed_content.rs b/ports/servoshell/protocols/packed_content.rs
+index 50ba51998f5..42adfd711bb 100644
+--- a/ports/servoshell/protocols/packed_content.rs
++++ b/ports/servoshell/protocols/packed_content.rs
+@@ -9,7 +9,7 @@
+ //! a not-yet-extracted file lives in, the first time it's touched" only needs to exist once.
+ //! Extracted out of `file.rs` when `game.rs` was added rather than duplicated — see
+ //! CUSTOMIZATIONS.md's "Virtual content root (game: protocol)" entry. `resolve` returns
+-//! `None` on Android/OpenHarmony today, harmlessly: `mach bundle --android` has no
++//! `None` on Android today, harmlessly: `mach bundle --android` has no
+ //! `--content-compress` support at all yet, so no `.roves-content-source` marker this looks
+ //! for is ever written there.
+ 
+diff --git a/ports/servoshell/running_app_state.rs b/ports/servoshell/running_app_state.rs
+index e54b503e485..b2421e1d15b 100644
+--- a/ports/servoshell/running_app_state.rs
++++ b/ports/servoshell/running_app_state.rs
+@@ -12,10 +12,7 @@ use std::rc::Rc;
+ use crossbeam_channel::{Receiver, Sender, unbounded};
+ use euclid::Rect;
+ use image::{DynamicImage, ImageFormat, RgbaImage};
+-#[cfg(all(
+-    any(coverage, llvm_pgo),
+-    any(target_os = "android", target_env = "ohos")
+-))]
++#[cfg(all(any(coverage, llvm_pgo), target_os = "android"))]
+ use libc::c_char;
+ use log::{error, info, warn};
+ use servo::{
+@@ -32,19 +29,13 @@ use url::Url;
+ // On macOS the delegate is compiled but only created when `ROVES_MACOS_GAMEPAD=1` (see
+ // `desktop::gamepad::runtime_enabled`): SDL3's gamepad init once hung the shell there, cause
+ // unconfirmed on a real Mac. See CUSTOMIZATIONS.md's SDL3 gamepad entries.
+-#[cfg(all(
+-    feature = "gamepad",
+-    not(any(target_os = "android", target_env = "ohos"))
+-))]
++#[cfg(all(feature = "gamepad", not(target_os = "android")))]
+ pub(crate) use crate::desktop::gamepad::ServoshellGamepadDelegate;
+ use crate::prefs::ServoShellPreferences;
+ use crate::webdriver::WebDriverEmbedderControls;
+ use crate::window::{PlatformWindow, ServoShellWindow, ServoShellWindowId};
+ 
+-#[cfg(all(
+-    any(coverage, llvm_pgo),
+-    any(target_os = "android", target_env = "ohos")
+-))]
++#[cfg(all(any(coverage, llvm_pgo), target_os = "android"))]
+ unsafe extern "C" {
+     fn __llvm_profile_set_filename(file: *const c_char);
+     fn __llvm_profile_write_file();
+@@ -144,7 +135,7 @@ impl WebViewCollection {
+ }
+ 
+ /// A command received via the user interacting with the user interface.
+-#[cfg(any(target_os = "android", target_env = "ohos"))]
++#[cfg(target_os = "android")]
+ pub(crate) enum UserInterfaceCommand {
+     Go(String),
+     Back,
+@@ -156,10 +147,7 @@ pub(crate) struct RunningAppState {
+     /// The gamepad provider, used for handling gamepad events and set on each WebView.
+     /// May be `None` if gamepad support is disabled or failed to initialize, or on macOS
+     /// without the runtime opt-in (see the `use` above).
+-    #[cfg(all(
+-        feature = "gamepad",
+-        not(any(target_os = "android", target_env = "ohos"))
+-    ))]
++    #[cfg(all(feature = "gamepad", not(target_os = "android")))]
+     gamepad_delegate: Option<Rc<ServoshellGamepadDelegate>>,
+ 
+     /// The [`WebDriverSenders`] used to reply to pending WebDriver requests.
+@@ -230,10 +218,7 @@ impl RunningAppState {
+         event_loop_waker: Box<dyn EventLoopWaker>,
+         user_content_manager: Rc<UserContentManager>,
+         default_preferences: Preferences,
+-        #[cfg(all(
+-            feature = "gamepad",
+-            not(any(target_os = "android", target_env = "ohos"))
+-        ))]
++        #[cfg(all(feature = "gamepad", not(target_os = "android")))]
+         gamepad_delegate: Option<Rc<ServoshellGamepadDelegate>>,
+     ) -> Self {
+         servo.set_delegate(Rc::new(ServoShellServoDelegate));
+@@ -252,10 +237,7 @@ impl RunningAppState {
+         Self {
+             windows: Default::default(),
+             focused_window: Default::default(),
+-            #[cfg(all(
+-                feature = "gamepad",
+-                not(any(target_os = "android", target_env = "ohos"))
+-            ))]
++            #[cfg(all(feature = "gamepad", not(target_os = "android")))]
+             gamepad_delegate,
+             webdriver_senders: RefCell::default(),
+             webdriver_embedder_controls: Default::default(),
+@@ -324,7 +306,7 @@ impl RunningAppState {
+         *self.focused_window.borrow_mut() = Some(window);
+     }
+ 
+-    #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
++    #[cfg_attr(target_os = "android", expect(dead_code))]
+     pub(crate) fn window(&self, id: ServoShellWindowId) -> Option<Rc<ServoShellWindow>> {
+         self.windows.borrow().get(&id).cloned()
+     }
+@@ -343,10 +325,7 @@ impl RunningAppState {
+         &self.servo
+     }
+ 
+-    #[cfg(all(
+-        feature = "gamepad",
+-        not(any(target_os = "android", target_env = "ohos"))
+-    ))]
++    #[cfg(all(feature = "gamepad", not(target_os = "android")))]
+     pub(crate) fn gamepad_delegate(&self) -> Option<Rc<ServoshellGamepadDelegate>> {
+         self.gamepad_delegate.clone()
+     }
+@@ -360,10 +339,7 @@ impl RunningAppState {
+         self.servoshell_preferences.webdriver_port.set(None);
+         self.exit_scheduled.set(true);
+ 
+-        #[cfg(all(
+-            any(coverage, llvm_pgo),
+-            any(target_os = "android", target_env = "ohos")
+-        ))]
++        #[cfg(all(any(coverage, llvm_pgo), target_os = "android"))]
+         {
+             use std::ffi::CString;
+ 
+@@ -411,7 +387,7 @@ impl RunningAppState {
+         create_platform_window: Option<&dyn Fn(Url) -> Rc<dyn PlatformWindow>>,
+     ) -> bool {
+         // We clone here to avoid a double borrow. User interface commands can update the list of windows.
+-        #[cfg(any(target_os = "android", target_env = "ohos"))]
++        #[cfg(target_os = "android")]
+         {
+             let windows: Vec<_> = self.windows.borrow().values().cloned().collect();
+             for window in windows {
+@@ -622,7 +598,7 @@ impl RunningAppState {
+     }
+ 
+ 
+-    #[cfg(not(any(target_os = "android", target_env = "ohos")))]
++    #[cfg(not(target_os = "android"))]
+     pub(crate) fn handle_focused(&self, window: Rc<ServoShellWindow>) {
+         *self.focused_window.borrow_mut() = Some(window);
+     }
+@@ -650,7 +626,7 @@ impl RunningAppState {
+         }
+     }
+ 
+-    #[cfg(not(any(target_os = "android", target_env = "ohos")))]
++    #[cfg(not(target_os = "android"))]
+     pub(crate) fn set_accessibility_active(&self, active: bool) {
+         let was_active = self.accessibility_active.replace(active);
+         if active == was_active {
+@@ -766,10 +742,7 @@ impl WebViewDelegate for RunningAppState {
+ 
+         if status == LoadStatus::Complete {
+             // A new document knows no gamepads yet; see `announce_connected_gamepads`.
+-            #[cfg(all(
+-                feature = "gamepad",
+-                not(any(target_os = "android", target_env = "ohos"))
+-            ))]
++            #[cfg(all(feature = "gamepad", not(target_os = "android")))]
+             if let Some(gamepad_delegate) = self.gamepad_delegate() {
+                 gamepad_delegate.announce_connected_gamepads(self);
+             }
+@@ -893,7 +866,7 @@ impl ServoDelegate for ServoShellServoDelegate {
+ 
+     fn show_console_message(&self, level: ConsoleLogLevel, message: String) {
+         // For messages without a WebView context, apply platform-specific behavior
+-        #[cfg(not(any(target_os = "android", target_env = "ohos")))]
++        #[cfg(not(target_os = "android"))]
+         println!("{message}");
+         log::log!(level.into(), "{message}");
+     }
+diff --git a/ports/servoshell/window.rs b/ports/servoshell/window.rs
+index 19f810be4b2..7f689c850ed 100644
+--- a/ports/servoshell/window.rs
++++ b/ports/servoshell/window.rs
+@@ -7,7 +7,7 @@ use std::rc::Rc;
+ use std::sync::atomic::AtomicU64;
+ 
+ use euclid::Scale;
+-#[cfg(any(target_os = "android", target_env = "ohos"))]
++#[cfg(target_os = "android")]
+ use log::warn;
+ use servo::{
+     AuthenticationRequest, BluetoothDeviceSelectionRequest, ConsoleLogLevel, Cursor,
+@@ -17,21 +17,21 @@ use servo::{
+ };
+ use url::Url;
+ 
+-#[cfg(any(target_os = "android", target_env = "ohos"))]
++#[cfg(target_os = "android")]
+ use crate::parser::location_bar_input_to_url;
+-#[cfg(any(target_os = "android", target_env = "ohos"))]
++#[cfg(target_os = "android")]
+ use crate::running_app_state::UserInterfaceCommand;
+ use crate::running_app_state::{RunningAppState, WebViewCollection};
+ 
+ // This should vary by zoom level and maybe actual text size (focused or under cursor)
+-#[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
++#[cfg_attr(target_os = "android", expect(dead_code))]
+ pub(crate) const LINE_HEIGHT: f32 = 76.0;
+-#[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
++#[cfg_attr(target_os = "android", expect(dead_code))]
+ pub(crate) const LINE_WIDTH: f32 = 76.0;
+ 
+ /// <https://github.com/web-platform-tests/wpt/blob/9320b1f724632c52929a3fdb11bdaf65eafc7611/webdriver/tests/classic/set_window_rect/set.py#L287-L290>
+ /// "A window size of 10x10px shouldn't be supported by any browser."
+-#[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
++#[cfg_attr(target_os = "android", expect(dead_code))]
+ pub(crate) const MIN_WINDOW_INNER_SIZE: DeviceIntSize = DeviceIntSize::new(100, 100);
+ 
+ static SERVOSHELL_WINDOW_ID: AtomicU64 = AtomicU64::new(0);
+@@ -46,7 +46,7 @@ impl From<u64> for ServoShellWindowId {
+ }
+ 
+ impl ServoShellWindowId {
+-    #[cfg_attr(not(any(target_os = "android", target_env = "ohos")), expect(unused))]
++    #[cfg_attr(not(target_os = "android"), expect(unused))]
+     pub(crate) fn next() -> ServoShellWindowId {
+         ServoShellWindowId(SERVOSHELL_WINDOW_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
+     }
+@@ -65,7 +65,7 @@ pub(crate) struct ServoShellWindow {
+     /// because every `WebView` shares a `RenderingContext`.
+     needs_repaint: Cell<bool>,
+     /// Pending [`UserInterfaceCommand`] that have yet to be processed by the main loop.
+-    #[cfg(any(target_os = "android", target_env = "ohos"))]
++    #[cfg(target_os = "android")]
+     pending_commands: RefCell<Vec<UserInterfaceCommand>>,
+ }
+ 
+@@ -77,7 +77,7 @@ impl ServoShellWindow {
+             close_scheduled: Default::default(),
+             needs_update: Default::default(),
+             needs_repaint: Default::default(),
+-            #[cfg(any(target_os = "android", target_env = "ohos"))]
++            #[cfg(target_os = "android")]
+             pending_commands: Default::default(),
+         }
+     }
+@@ -104,7 +104,7 @@ impl ServoShellWindow {
+         state: Rc<RunningAppState>,
+         url: Url,
+     ) -> WebView {
+-        #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(unused_mut))]
++        #[cfg_attr(target_os = "android", expect(unused_mut))]
+         let mut webview_builder =
+             WebViewBuilder::new(state.servo(), self.platform_window.rendering_context())
+                 .url(url)
+@@ -112,10 +112,7 @@ impl ServoShellWindow {
+                 .user_content_manager(state.user_content_manager.clone())
+                 .delegate(state.clone());
+ 
+-        #[cfg(all(
+-            feature = "gamepad",
+-            not(any(target_os = "android", target_env = "ohos"))
+-        ))]
++        #[cfg(all(feature = "gamepad", not(target_os = "android")))]
+         if let Some(gamepad_delegate) = state.gamepad_delegate() {
+             webview_builder = webview_builder.gamepad_delegate(gamepad_delegate);
+         }
+@@ -207,7 +204,7 @@ impl ServoShellWindow {
+         self.set_needs_update();
+     }
+ 
+-    #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
++    #[cfg_attr(target_os = "android", expect(dead_code))]
+     pub(crate) fn activate_webview_by_index(&self, index_to_activate: usize) {
+         self.webview_collection
+             .borrow_mut()
+@@ -215,7 +212,7 @@ impl ServoShellWindow {
+         self.set_needs_update();
+     }
+ 
+-    #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
++    #[cfg_attr(target_os = "android", expect(dead_code))]
+     pub(crate) fn get_active_webview_index(&self) -> Option<usize> {
+         let active_id = self.webview_collection.borrow().active_id()?;
+         self.webviews()
+@@ -260,10 +257,7 @@ impl ServoShellWindow {
+         self.webview_collection.borrow().active().cloned()
+     }
+ 
+-    #[cfg_attr(
+-        not(any(target_os = "android", target_env = "ohos")),
+-        expect(dead_code)
+-    )]
++    #[cfg_attr(not(target_os = "android"), expect(dead_code))]
+     pub(crate) fn active_or_newest_webview(&self) -> Option<WebView> {
+         let webview_collection = self.webview_collection.borrow();
+         webview_collection
+@@ -294,13 +288,13 @@ impl ServoShellWindow {
+         self.set_needs_repaint();
+     }
+ 
+-#[cfg(any(target_os = "android", target_env = "ohos"))]
++    #[cfg(target_os = "android")]
+     pub(crate) fn queue_user_interface_command(&self, command: UserInterfaceCommand) {
+         self.pending_commands.borrow_mut().push(command)
+     }
+ 
+     /// Takes any events generated during UI updates and performs their actions.
+-    #[cfg(any(target_os = "android", target_env = "ohos"))]
++    #[cfg(target_os = "android")]
+     pub(crate) fn handle_interface_commands(self: &Rc<Self>, state: &Rc<RunningAppState>) {
+         let commands = std::mem::take(&mut *self.pending_commands.borrow_mut());
+         for event in commands {
+@@ -345,10 +339,10 @@ impl ServoShellWindow {
+ pub(crate) trait PlatformWindow {
+     fn id(&self) -> ServoShellWindowId;
+     fn screen_geometry(&self) -> ScreenGeometry;
+-    #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
++    #[cfg_attr(target_os = "android", expect(dead_code))]
+     fn device_hidpi_scale_factor(&self) -> Scale<f32, DeviceIndependentPixel, DevicePixel>;
+     fn hidpi_scale_factor(&self) -> Scale<f32, DeviceIndependentPixel, DevicePixel>;
+-    #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
++    #[cfg_attr(target_os = "android", expect(dead_code))]
+     fn get_fullscreen(&self) -> bool;
+     /// Inform the `Window` that the state of a `WebView` has changed and that it should
+     /// do an incremental update of user interface state. Returns `true` if the user
+@@ -403,13 +397,13 @@ pub(crate) trait PlatformWindow {
+     fn notify_crashed(&self, _: WebView, _reason: String, _backtrace: Option<String>) {}
+     fn show_console_message(&self, _level: ConsoleLogLevel, _message: &str) {}
+ 
+-    #[cfg(not(any(target_os = "android", target_env = "ohos")))]
++    #[cfg(not(target_os = "android"))]
+     /// If this window is a headed window, access the concrete type.
+     fn as_headed_window(&self) -> Option<&crate::desktop::headed_window::HeadedWindow> {
+         None
+     }
+ 
+-    #[cfg(any(target_os = "android", target_env = "ohos"))]
++    #[cfg(target_os = "android")]
+     /// If this window is a headed window, access the concrete type.
+     fn as_headed_window(&self) -> Option<&crate::egl::app::EmbeddedPlatformWindow> {
+         None
+diff --git a/python/servo/build_commands.py b/python/servo/build_commands.py
+index 98971000406..1a48c0b8987 100644
+--- a/python/servo/build_commands.py
++++ b/python/servo/build_commands.py
+@@ -40,7 +40,6 @@ from python.servo.platform.build_target import SanitizerKind
+ SUPPORTED_ASAN_TARGETS = [
+     "aarch64-apple-darwin",
+     "aarch64-unknown-linux-gnu",
+-    "aarch64-unknown-linux-ohos",
+     "x86_64-apple-darwin",
+     "x86_64-unknown-linux-gnu",
+ ]
+diff --git a/python/servo/command_base.py b/python/servo/command_base.py
+index 701d108d0be..8a1f95ceafb 100644
+--- a/python/servo/command_base.py
++++ b/python/servo/command_base.py
+@@ -34,7 +34,7 @@ from mach.decorators import CommandArgument, CommandArgumentGroup
+ 
+ import servo.platform
+ import servo.util as util
+-from servo.platform.build_target import AndroidTarget, BuildTarget, OpenHarmonyTarget
++from servo.platform.build_target import AndroidTarget, BuildTarget
+ from servo.util import get_default_cache_dir
+ 
+ from python.servo.platform.build_target import SanitizerKind
+@@ -317,7 +317,6 @@ class CommandBase(object):
+ 
+         self.config.setdefault("build", {})
+         self.config["build"].setdefault("android", False)
+-        self.config["build"].setdefault("ohos", False)
+         self.config["build"].setdefault("mode", "")
+         self.config["build"].setdefault("debug-assertions", False)
+         self.config["build"].setdefault("debug-mozjs", False)
+@@ -334,8 +333,6 @@ class CommandBase(object):
+         self.config["android"].setdefault("ndk", "")
+         self.config["android"].setdefault("toolchain", "")
+ 
+-        self.config.setdefault("ohos", {})
+-        self.config["ohos"].setdefault("ndk", "")
+ 
+     _rust_toolchain = None
+ 
+@@ -493,13 +490,6 @@ class CommandBase(object):
+                     help="Build for Android. If --target is not specified, this "
+                     f"will choose the default target architecture ({AndroidTarget.DEFAULT_TRIPLE}).",
+                 ),
+-                CommandArgument(
+-                    "--ohos",
+-                    default=None,
+-                    action="store_true",
+-                    help="Build for OpenHarmony. If --target is not specified, this "
+-                    f"will choose a default target architecture ({OpenHarmonyTarget.DEFAULT_TRIPLE}).",
+-                ),
+                 CommandArgument("--win-arm64", action="store_true", help="Use arm64 Windows target"),
+                 CommandArgumentGroup("Feature Selection"),
+                 CommandArgument(
+@@ -548,7 +538,7 @@ class CommandBase(object):
+                     "--flavor",
+                     default=None,
+                     group="Packaging options",
+-                    help="Product flavor to be used when packaging with Gradle/Hvigor (android/ohos).",
++                    help="Product flavor to be used when packaging with Gradle (android).",
+                 ),
+             ]
+ 
+@@ -602,7 +592,7 @@ class CommandBase(object):
+ 
+                 if binary_selection:
+                     if "servo_binary" not in kwargs:
+-                        # For packaged targets (Android, OpenHarmony) the binary is not important,
++                        # For packaged targets (Android) the binary is not important,
+                         # since we can't run it directly. We could return the shared library object,
+                         # but that doesn't seem very useful.
+                         #
+@@ -648,7 +638,6 @@ class CommandBase(object):
+             self.configure_build_target(kwargs, suppress_log=True)
+             kwargs.pop("target", False)
+             kwargs.pop("android", False)
+-            kwargs.pop("ohos", False)
+             return original_function(self, *args, **kwargs)
+ 
+         return target_configuration_decorator
+@@ -698,13 +687,8 @@ class CommandBase(object):
+             return
+ 
+         android = kwargs.get("android") or self.config["build"]["android"]
+-        ohos = kwargs.get("ohos") or self.config["build"]["ohos"]
+         target_triple = kwargs.get("target")
+ 
+-        if android and ohos:
+-            print("Cannot build both android and ohos targets simultaneously.")
+-            sys.exit(1)
+-
+         if android and target_triple:
+             print("Please specify either --target or --android.")
+             sys.exit(1)
+@@ -713,14 +697,6 @@ class CommandBase(object):
+         if android and not target_triple:
+             target_triple = AndroidTarget.DEFAULT_TRIPLE
+ 
+-        if ohos and target_triple:
+-            print("Please specify either --target or --ohos.")
+-            sys.exit(1)
+-
+-        #  Set the default OpenHarmony target
+-        if ohos and not target_triple:
+-            target_triple = OpenHarmonyTarget.DEFAULT_TRIPLE
+-
+         self.target = BuildTarget.from_triple(target_triple)
+ 
+         self.context.target = self.target
+@@ -782,9 +758,9 @@ class CommandBase(object):
+ 
+         if self.target.is_cross_build():
+             args += ["--target", self.target.triple()]
+-            if type(self.target) in [AndroidTarget, OpenHarmonyTarget]:
++            if type(self.target) is AndroidTarget:
+                 # Note: in practice `cargo rustc` should just be used unconditionally.
+-                assert command != "build", "For Android / OpenHarmony `cargo rustc` must be used instead of cargo build"
++                assert command != "build", "For Android `cargo rustc` must be used instead of cargo build"
+                 if command == "rustc":
+                     args += ["--lib", "--crate-type=cdylib"]
+         elif target_override:
+diff --git a/python/servo/platform/build_target.py b/python/servo/platform/build_target.py
+index 66adacda2af..e21219370da 100644
+--- a/python/servo/platform/build_target.py
++++ b/python/servo/platform/build_target.py
+@@ -8,8 +8,6 @@
+ # except according to those terms.
+ 
+ from typing import TypeGuard
+-import errno
+-import json
+ import os
+ import pathlib
+ import platform
+@@ -20,7 +18,6 @@ import toml
+ from enum import Enum
+ 
+ from os import path
+-from packaging.version import parse as parse_version
+ from typing import Any, Optional
+ 
+ import servo.platform
+@@ -59,8 +56,6 @@ class BuildTarget(object):
+         if target_triple:
+             if "android" in target_triple:
+                 return AndroidTarget(target_triple)
+-            elif "ohos" in target_triple:
+-                return OpenHarmonyTarget(target_triple)
+             elif target_triple != host_triple:
+                 raise Exception(f"Unknown build target {target_triple}")
+         return BuildTarget(host_triple)
+@@ -284,236 +279,5 @@ class AndroidTarget(CrossBuildTarget):
+         return path.join(base_path, build_type_directory, apk_name)
+ 
+ 
+-class OpenHarmonyTarget(CrossBuildTarget):
+-    DEFAULT_TRIPLE = "aarch64-unknown-linux-ohos"
+-
+-    def configure_build_environment(self, env: dict[str, str], config: dict[str, Any], topdir: pathlib.Path) -> None:
+-        # Paths to OpenHarmony SDK and build tools:
+-        # Note: `OHOS_SDK_NATIVE` is the CMake variable name the `hvigor` build-system
+-        # uses for the native directory of the SDK, so we use the same name to be consistent.
+-        if "OHOS_SDK_NATIVE" not in env and config["ohos"]["ndk"]:
+-            env["OHOS_SDK_NATIVE"] = config["ohos"]["ndk"]
+-
+-        if "OHOS_SDK_NATIVE" not in env:
+-            print(
+-                "Please set the OHOS_SDK_NATIVE environment variable to the location of the `native` directory "
+-                "in the OpenHarmony SDK.",
+-                file=sys.stderr,
+-            )
+-            sys.exit(1)
+-
+-        ndk_root = pathlib.Path(env["OHOS_SDK_NATIVE"])
+-
+-        if not ndk_root.is_dir():
+-            print(f"OHOS_SDK_NATIVE is not set to a valid directory: `{ndk_root}`", file=sys.stderr)
+-            sys.exit(1)
+-
+-        ndk_root = ndk_root.resolve()
+-        package_info = ndk_root.joinpath("oh-uni-package.json")
+-        try:
+-            with open(package_info) as meta_file:
+-                meta = json.load(meta_file)
+-            ohos_api_version = int(meta["apiVersion"])
+-            ohos_sdk_version = parse_version(meta["version"])
+-            if ohos_sdk_version < parse_version("5.0") or ohos_api_version < 14:
+-                raise RuntimeError("Building servo for OpenHarmony requires SDK version 5.0.2 (API-14) or newer.")
+-            print(
+-                f"Info: The OpenHarmony SDK {ohos_sdk_version} is targeting API-level {ohos_api_version}",
+-                file=sys.stderr,
+-            )
+-        except (OSError, json.JSONDecodeError) as e:
+-            print(f"Failed to read metadata information from {package_info}", file=sys.stderr)
+-            print(f"Exception: {e}", file=sys.stderr)
+-
+-        llvm_toolchain = ndk_root.joinpath("llvm")
+-        llvm_bin = llvm_toolchain.joinpath("bin")
+-        ohos_sysroot = ndk_root.joinpath("sysroot")
+-        if not (llvm_toolchain.is_dir() and llvm_bin.is_dir()):
+-            print(
+-                f"Expected to find `llvm` and `llvm/bin` folder under $OHOS_SDK_NATIVE at `{llvm_toolchain}`",
+-                file=sys.stderr,
+-            )
+-            sys.exit(1)
+-        if not ohos_sysroot.is_dir():
+-            print(f"Could not find OpenHarmony sysroot in {ndk_root}", file=sys.stderr)
+-            sys.exit(1)
+-        # When passing the sysroot to Rust crates such as `cc-rs` or bindgen, we should pass
+-        # POSIX paths, since otherwise the backslashes in windows paths may be interpreted as
+-        # escapes and lead to errors.
+-        ohos_sysroot_posix = ohos_sysroot.as_posix()
+-
+-        # Note: We don't use the `<target_triple>-clang` wrappers on purpose, since
+-        # a) the OH 4.0 SDK does not have them yet AND
+-        # b) the wrappers in the newer SDKs are bash scripts, which can cause problems
+-        # on windows, depending on how the wrapper is called.
+-        # Instead, we ensure that all the necessary flags for the c-compiler are set
+-        # via environment variables such as `TARGET_CFLAGS`.
+-        def to_sdk_llvm_bin(prog: str) -> str:
+-            if sys.platform == "win32":
+-                prog = prog + ".exe"
+-            llvm_prog = llvm_bin.joinpath(prog)
+-            if not llvm_prog.is_file():
+-                raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), llvm_prog)
+-            return llvm_bin.joinpath(prog).as_posix()
+-
+-        # CC and CXX should already be set to appropriate host compilers by `build_env()`
+-        env["HOST_CC"] = env["CC"]
+-        env["HOST_CXX"] = env["CXX"]
+-        env["TARGET_AR"] = to_sdk_llvm_bin("llvm-ar")
+-        env["TARGET_RANLIB"] = to_sdk_llvm_bin("llvm-ranlib")
+-        env["TARGET_READELF"] = to_sdk_llvm_bin("llvm-readelf")
+-        env["TARGET_OBJCOPY"] = to_sdk_llvm_bin("llvm-objcopy")
+-        env["TARGET_STRIP"] = to_sdk_llvm_bin("llvm-strip")
+-
+-        target_triple = self.triple()
+-        rust_target_triple = str(target_triple).replace("-", "_")
+-        ndk_clang = to_sdk_llvm_bin("clang")
+-        ndk_clangxx = to_sdk_llvm_bin("clang++")
+-        env[f"CC_{rust_target_triple}"] = ndk_clang
+-        env[f"CXX_{rust_target_triple}"] = ndk_clangxx
+-        # The clang target name is different from the LLVM target name
+-        clang_target_triple = str(target_triple).replace("-unknown-", "-")
+-        clang_target_triple_underscore = clang_target_triple.replace("-", "_")
+-        env[f"CC_{clang_target_triple_underscore}"] = ndk_clang
+-        env[f"CXX_{clang_target_triple_underscore}"] = ndk_clangxx
+-        # rustc linker
+-        env[f"CARGO_TARGET_{rust_target_triple.upper()}_LINKER"] = ndk_clang
+-
+-        link_args = [
+-            "-fuse-ld=lld",
+-            f"--target={clang_target_triple}",
+-            f"--sysroot={ohos_sysroot_posix}",
+-            "-Wl,--build-id",
+-        ]
+-
+-        env["HOST_CFLAGS"] = ""
+-        env["HOST_CXXFLAGS"] = ""
+-        ohos_cflags = [
+-            "-D__MUSL__",
+-            "-DMDB_USE_ROBUST=0",
+-            f" --target={clang_target_triple}",
+-            f" --sysroot={ohos_sysroot_posix}",
+-            "-Wno-error=unused-command-line-argument",
+-        ]
+-        if clang_target_triple.startswith("armv7-"):
+-            ohos_cflags.extend(["-march=armv7-a", "-mfloat-abi=softfp", "-mtune=generic-armv7-a", "-mthumb"])
+-        ohos_cflags_str = " ".join(ohos_cflags)
+-
+-        env["TARGET_CFLAGS"] = env.get("TARGET_CFLAGS", "") + " " + ohos_cflags_str
+-        env["TARGET_CPPFLAGS"] = env.get("TARGET_CPPFLAGS", "") + " " + "-D__MUSL__"
+-        env["TARGET_CXXFLAGS"] = env.get("TARGET_CXXFLAGS", "") + " " + ohos_cflags_str
+-
+-        # CMake related flags
+-        env["CMAKE"] = ndk_root.joinpath("build-tools", "cmake", "bin", "cmake").as_posix()
+-        cmake_toolchain_file = ndk_root.joinpath("build", "cmake", "ohos.toolchain.cmake")
+-        if cmake_toolchain_file.is_file():
+-            env[f"CMAKE_TOOLCHAIN_FILE_{rust_target_triple}"] = cmake_toolchain_file.as_posix()
+-        else:
+-            print(
+-                f"Warning: Failed to find the OpenHarmony CMake Toolchain file - Expected it at {cmake_toolchain_file}"
+-            )
+-        env[f"CMAKE_C_COMPILER_{rust_target_triple}"] = ndk_clang
+-        env[f"CMAKE_CXX_COMPILER_{rust_target_triple}"] = ndk_clangxx
+-
+-        # pkg-config
+-        pkg_config_path = "{}:{}".format(
+-            ohos_sysroot.joinpath("usr", "lib", "pkgconfig").as_posix(),
+-            ohos_sysroot.joinpath("usr", "share", "pkgconfig").as_posix(),
+-        )
+-        env[f"PKG_CONFIG_SYSROOT_DIR_{rust_target_triple}"] = ohos_sysroot_posix
+-        env[f"PKG_CONFIG_PATH_{rust_target_triple}"] = pkg_config_path
+-
+-        # bindgen / libclang-sys
+-        env["LIBCLANG_PATH"] = path.join(llvm_toolchain, "lib")
+-        env["CLANG_PATH"] = ndk_clangxx
+-        env[f"CXXSTDLIB_{clang_target_triple_underscore}"] = "c++"
+-        bindgen_extra_clangs_args_var = f"BINDGEN_EXTRA_CLANG_ARGS_{rust_target_triple}"
+-        bindgen_extra_clangs_args = env.get(bindgen_extra_clangs_args_var, "")
+-        bindgen_extra_clangs_args = bindgen_extra_clangs_args + " " + ohos_cflags_str
+-        env[bindgen_extra_clangs_args_var] = bindgen_extra_clangs_args
+-
+-        sanitizer: SanitizerKind = config["build"]["sanitizer"]
+-        san_compile_flags = []
+-        if sanitizer.is_some():
+-            # Lookup `<sdk>/native/llvm/lib/clang/15.0.4/lib/aarch64-linux-ohos/libclang_rt.asan.so`
+-            lib_clang = llvm_toolchain.joinpath("lib", "clang")
+-            children = [f.path for f in os.scandir(lib_clang) if f.is_dir()]
+-            if len(children) != 1:
+-                raise RuntimeError(f"Expected exactly 1 libclang version: `{children}`")
+-            lib_clang_version_dir = pathlib.Path(children[0])
+-            libclang_arch = lib_clang_version_dir.joinpath("lib", clang_target_triple).resolve()
+-            # Use the clangrt from the NDK to use the same library for both C++ and Rust.
+-            env["RUSTFLAGS"] += " -Zexternal-clangrt"
+-            san_compile_flags.append("-fno-omit-frame-pointer")
+-
+-            # On OpenHarmony we add some additional flags when asan is enabled
+-            if sanitizer.is_asan():
+-                libasan_so_path = libclang_arch.joinpath("libclang_rt.asan.so")
+-                libasan_preinit_path = libclang_arch.joinpath("libclang_rt.asan-preinit.a")
+-                if not libasan_so_path.exists():
+-                    raise RuntimeError(f"Couldn't find ASAN runtime library at {libasan_so_path}")
+-                link_args.extend(
+-                    [
+-                        "-fsanitize=address",
+-                        "--rtlib=compiler-rt",
+-                        "-shared-libasan",
+-                        str(libasan_so_path),
+-                        "-Wl,--whole-archive",
+-                        "-Wl," + str(libasan_preinit_path),
+-                        "-Wl,--no-whole-archive",
+-                    ]
+-                )
+-
+-                san_compile_flags.extend(["-fsanitize=address", "-shared-libasan", "-fsanitize-recover=address"])
+-
+-                arch_asan_ignore_list = lib_clang_version_dir.joinpath("share", "asan_ignorelist.txt")
+-                if arch_asan_ignore_list.exists():
+-                    san_compile_flags.append("-fsanitize-system-ignorelist=" + str(arch_asan_ignore_list))
+-                else:
+-                    print(f"Warning: Couldn't find system ASAN ignorelist at `{arch_asan_ignore_list}`")
+-            elif sanitizer.is_tsan():
+-                libtsan_so_path = libclang_arch.joinpath("libclang_rt.tsan.so")
+-                builtins_path = libclang_arch.joinpath("libclang_rt.builtins.a")
+-
+-                link_args.extend(
+-                    [
+-                        "-fsanitize=thread",
+-                        "--rtlib=compiler-rt",
+-                        "-shared-libsan",
+-                        str(libtsan_so_path),
+-                        str(builtins_path),
+-                    ]
+-                )
+-                san_compile_flags.append("-shared-libsan")
+-
+-        link_args = [f"-Clink-arg={arg}" for arg in link_args]
+-        env["RUSTFLAGS"] += " " + " ".join(link_args)
+-        env["TARGET_CFLAGS"] += " " + " ".join(san_compile_flags)
+-        env["TARGET_CXXFLAGS"] += " " + " ".join(san_compile_flags)
+-
+-    def binary_name(self) -> str:
+-        return "libservoshell.so"
+-
+-    def needs_packaging(self) -> bool:
+-        return True
+-
+-    def get_package_path(self, build_type_directory: str, flavor: Optional[str] = None) -> str:
+-        base_path = util.get_target_dir()
+-        base_path = path.join(base_path, "openharmony", self.triple())
+-        hap_name = "servoshell-default-signed.hap"
+-        if not flavor:
+-            flavor = "default"
+-        build_output_path = path.join("entry", "build", flavor, "outputs", "default")
+-        return path.join(base_path, build_type_directory, build_output_path, hap_name)
+-
+-    def abi_string(self) -> str:
+-        abi_map = {"aarch64-unknown-linux-ohos": "arm64-v8a", "x86_64-unknown-linux-ohos": "x86_64"}
+-        return abi_map[self.triple()]
+-
+-
+ def is_android(target: BuildTarget) -> TypeGuard[AndroidTarget]:
+     return isinstance(target, AndroidTarget)
+-
+-
+-def is_openharmony(target: BuildTarget) -> TypeGuard[OpenHarmonyTarget]:
+-    return isinstance(target, OpenHarmonyTarget)
+diff --git a/python/servo/post_build_commands.py b/python/servo/post_build_commands.py
+index 7a6e01c0e81..c4574593190 100644
+--- a/python/servo/post_build_commands.py
++++ b/python/servo/post_build_commands.py
+@@ -926,7 +926,7 @@ class PostBuildCommands(CommandBase):
+             print("--dmg is only supported on macOS.")
+             return 1
+ 
+-        # `servo_binary` is `None` for a "packaged" target (Android, OpenHarmony) --
++        # `servo_binary` is `None` for a "packaged" target (Android) --
+         # command_base.py's own `binary_selection` deliberately nulls it out for those (see
+         # that file's own comment: there's no single runnable binary to hand back). Only
+         # matters here as a *default* output location when `--output` isn't given --
+diff --git a/python/servo/util.py b/python/servo/util.py
+index 128b46f3898..9023c0864f5 100644
+--- a/python/servo/util.py
++++ b/python/servo/util.py
+@@ -6,9 +6,6 @@
+ # <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
+ # option. This file may not be copied, modified, or distributed
+ # except according to those terms.
+-import pathlib
+-import subprocess
+-import tempfile
+ from os import PathLike
+ import hashlib
+ import os
+@@ -20,9 +17,8 @@ import time
+ import urllib.error
+ import urllib.request
+ import zipfile
+-from subprocess import CompletedProcess
+ from zipfile import ZipInfo
+-from typing import Union, Any, Optional
++from typing import Union, Any
+ from collections.abc import Callable
+ 
+ from io import BufferedIOBase, BytesIO
+@@ -216,99 +212,3 @@ def prepend_paths_to_env(env: dict[str, str], key: str, paths: Union[str, list[s
+ 
+ def get_target_dir() -> str:
+     return os.environ.get("CARGO_TARGET_DIR", os.path.join(SERVO_ROOT, "target"))
+-
+-
+-class HarmonyDeviceConnector:
+-    @staticmethod
+-    def _which_hdc() -> pathlib.Path:
+-        hdc_path = shutil.which("hdc")
+-        if hdc_path is None:
+-            ohos_sdk_native = os.getenv("OHOS_SDK_NATIVE")
+-            assert ohos_sdk_native, "hdc not found in PATH and OHOS_SDK_NATIVE not set."
+-            hdc_path = os.path.join(ohos_sdk_native, "../", "toolchains", "hdc")
+-            assert pathlib.Path(hdc_path).exists()
+-        hdc_path = pathlib.Path(hdc_path).resolve()
+-        return hdc_path
+-
+-    def __init__(self) -> None:
+-        self.hdc_path = self._which_hdc()
+-        self._wait()
+-
+-    """Run `command` on the device. Pass additional arguments through to `subprocess.run`"""
+-
+-    def cmd(self, command: str, **kwargs) -> CompletedProcess:  # noqa: ANN003
+-        print(f"Executing hdc command: {command}")
+-        return subprocess.run([self.hdc_path, "shell", command], check=True, **kwargs)
+-
+-    def _wait(self, timeout: float = 5) -> None:
+-        try:
+-            subprocess.run([self.hdc_path, "wait"], timeout=timeout)
+-        except subprocess.TimeoutExpired as e:
+-            print(f"Failed to find hdc device in {timeout} seconds")
+-            raise e
+-
+-    """Wakeup system and turn screen on"""
+-
+-    def wakeup(self) -> None:
+-        self._wait()
+-        self.cmd("power-shell wakeup")
+-
+-    """Suspend system and turn screen off"""
+-
+-    def suspend(self) -> None:
+-        self.cmd("power-shell suspend")
+-
+-    def recv_file(self, device_filepath: str, host_filepath: Optional[str] = None) -> None:
+-        cmd = [self.hdc_path, "file", "recv", device_filepath]
+-        if host_filepath is not None:
+-            cmd.append(host_filepath)
+-        subprocess.run(cmd)
+-
+-    def read_file(self, device_filepath: str) -> Optional[str]:
+-        with tempfile.TemporaryDirectory() as temp_dir:
+-            assert pathlib.Path(temp_dir).exists()
+-            host_file = temp_dir + "/servo.log"
+-            self.recv_file(device_filepath, host_file)
+-            if pathlib.Path(host_file).exists():
+-                with open(host_file, mode="r", encoding="utf-8") as logfile:
+-                    return logfile.read()
+-            else:
+-                return None
+-
+-    def send_file(self, host_filepath: str, device_filepath: str) -> None:
+-        subprocess.run([self.hdc_path, "file", "send", host_filepath, device_filepath])
+-
+-    def screenshot(self, host_filepath: str) -> None:
+-        device_path = "/data/local/tmp/servo.jpeg"
+-        self.cmd(f"rm -f {device_path}")
+-        # -t [jpeg | png] [-w width] [-h height]
+-        self.cmd(f"snapshot_display -f {device_path}")
+-        self.recv_file(device_path, host_filepath)
+-
+-
+-class HarmonyDevicePerfMode:
+-    """
+-    A helper class to enter performance mode using python `with` syntax.
+-    Currently does wake up the screen.
+-    """
+-
+-    def __init__(self, screen_timeout_seconds: int = 600, hdc: Optional[HarmonyDeviceConnector] = None) -> None:
+-        if hdc is None:
+-            self.hdc = HarmonyDeviceConnector()
+-        else:
+-            self.hdc = hdc
+-        self.screen_timeout_seconds: int = screen_timeout_seconds
+-
+-    def __enter__(self) -> None:
+-        self.hdc.cmd("power-shell setmode 602")
+-        screen_timeout_ms = self.screen_timeout_seconds * 1000
+-        self.hdc.cmd(f"power-shell timeout -o {screen_timeout_ms}")
+-        self.hdc.wakeup()
+-
+-    def __exit__(self, exception_type: Any, exception_value: Any, exception_traceback: Any) -> None:
+-        # Back to normal mode
+-        try:
+-            self.hdc.cmd("power-shell setmode 600")
+-            self.hdc.cmd("power-shell timeout -r")
+-        except Exception as e:
+-            print(f"Warning: Failed to restore power-shell settings: {e}")
+diff --git a/servobuild.example b/servobuild.example
+index a43894a9e96..6ffe7650e17 100644
+--- a/servobuild.example
++++ b/servobuild.example
+@@ -52,8 +52,3 @@ media-stack = "auto"
+ # Defaults to the value of $ANDROID_SDK_ROOT, $ANDROID_NDK_ROOT respectively
+ #sdk = "/opt/android-sdk"
+ #ndk = "/opt/android-ndk"
+-
+-# OpenHarmony
+-[ohos]
+-# Defaults to the value of $OHOS_SDK_NATIVE
+-#ndk = "/path/to/ohos-sdk/<host-os>/native"

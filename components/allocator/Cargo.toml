@@ -26,7 +26,7 @@ rustc-hash = { workspace = true, optional = true }
 libmimalloc-sys = { version = "0.1.49", optional = true, default-features = false, features = ["extended"] }
 mimalloc = { version = "0.1.52", optional = true, default-features = false }
 
-[target.'cfg(not(any(windows, target_env = "ohos")))'.dependencies]
+[target.'cfg(not(windows))'.dependencies]
 libc = { workspace = true, optional = true }
 tikv-jemalloc-sys = { workspace = true }
 tikv-jemallocator = { workspace = true }
@@ -36,6 +36,3 @@ windows-sys = { workspace = true, features = ["Win32_System_Memory"] }
 # mimalloc is the Windows default; `use-system-allocator` opts back into the system heap.
 libmimalloc-sys = { version = "0.1.49", default-features = false, features = ["extended"] }
 mimalloc = { version = "0.1.52", default-features = false }
-
-[target.'cfg(target_env = "ohos")'.dependencies]
-libc = { workspace = true }

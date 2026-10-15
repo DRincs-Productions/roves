@@ -2,12 +2,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-#[cfg(not(any(target_os = "android", target_env = "ohos")))]
+#[cfg(not(target_os = "android"))]
 use std::path::{Path, PathBuf};
 
 use servo::{ServoUrl, is_reg_domain};
 
-#[cfg(not(any(target_os = "android", target_env = "ohos")))]
+#[cfg(not(target_os = "android"))]
 pub fn parse_url_or_filename(cwd: &Path, input: &str) -> Result<ServoUrl, ()> {
     // Kiosk/embedded fork: an absolute Windows path (`C:\dir\index.html`) is a
     // perfectly *valid* URL as far as the WHATWG parser is concerned — scheme
@@ -52,7 +52,7 @@ pub fn parse_url_or_filename(cwd: &Path, input: &str) -> Result<ServoUrl, ()> {
 /// the conversion above is guarded by `Url::from_file_path` succeeding, which
 /// on a non-Windows build rejects both shapes (neither is an absolute path
 /// there), so behavior off Windows is unchanged.
-#[cfg(not(any(target_os = "android", target_env = "ohos")))]
+#[cfg(not(target_os = "android"))]
 fn is_windows_absolute_path(input: &str) -> bool {
     let bytes = input.as_bytes();
     let drive_absolute = bytes.len() >= 3 &&
@@ -62,7 +62,7 @@ fn is_windows_absolute_path(input: &str) -> bool {
     drive_absolute || input.starts_with(r"\\")
 }
 
-#[cfg(not(any(target_os = "android", target_env = "ohos")))]
+#[cfg(not(target_os = "android"))]
 pub fn get_default_url(
     url_opt: Option<&str>,
     cwd: impl AsRef<Path>,

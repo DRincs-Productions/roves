@@ -9,12 +9,7 @@ mod sampler;
 #[cfg(all(
     feature = "sampler",
     target_os = "linux",
-    not(any(
-        target_arch = "arm",
-        target_arch = "aarch64",
-        target_env = "ohos",
-        target_env = "musl"
-    ))
+    not(any(target_arch = "arm", target_arch = "aarch64", target_env = "musl"))
 ))]
 mod sampler_linux;
 #[cfg(all(feature = "sampler", target_os = "android"))]
@@ -29,12 +24,7 @@ pub use self::background_hang_monitor::*;
     not(feature = "sampler"),
     all(
         target_os = "linux",
-        any(
-            target_arch = "arm",
-            target_arch = "aarch64",
-            target_env = "ohos",
-            target_env = "musl"
-        )
+        any(target_arch = "arm", target_arch = "aarch64", target_env = "musl")
     ),
     all(target_os = "windows", target_arch = "aarch64"),
     target_os = "freebsd"
@@ -43,12 +33,7 @@ pub(crate) use crate::sampler::DummySampler as SamplerImpl;
 #[cfg(all(
     feature = "sampler",
     target_os = "linux",
-    not(any(
-        target_arch = "arm",
-        target_arch = "aarch64",
-        target_env = "ohos",
-        target_env = "musl"
-    ))
+    not(any(target_arch = "arm", target_arch = "aarch64", target_env = "musl"))
 ))]
 pub(crate) use crate::sampler_linux::LinuxSampler as SamplerImpl;
 #[cfg(all(feature = "sampler", target_os = "android"))]

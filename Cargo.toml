@@ -90,7 +90,6 @@ egui-file-dialog = "0.15.0"
 egui_glow = { version = "0.36.2", default-features = false }
 elliptic-curve = { version = "0.14", features = ["pkcs8"] }
 encoding_rs = { version = "0.8", features = ["serde"] }
-env_filter = "0.1.4"
 env_logger = "0.11"
 euclid = "0.22"
 flate2 = "1.1"
@@ -124,8 +123,6 @@ gstreamer-webrtc = { version = "0.25", features = ["v1_18"] }
 half = "2"
 harfbuzz-sys = { version = "0.7", default-features = false }
 headers = "0.4"
-hilog = "0.2.2"
-hitrace = { version = "0.2.0", features = ["api-19", "tracing-rs"] }
 hkdf = "0.13"
 html5ever = "0.39"
 http = "1.4"
@@ -161,8 +158,6 @@ mime_guess = "2.0.5"
 ml-dsa = { version = "0.1", features = ["zeroize"] }
 ml-kem = { version = "0.3", features = ["getrandom", "pkcs8", "zeroize"] }
 mozangle = "0.7"
-napi-derive-ohos = "1.2.0"
-napi-ohos = "1.2.0"
 nix = "0.30"
 nom = "8.0.0"
 nom-rfc8288 = "0.4.0"
@@ -178,16 +173,6 @@ objc2-core-graphics = "0.3.2"
 objc2-core-text = "0.3.2"
 objc2-foundation = { version = "0.3.1", default-features = false }
 ocb3 = { version = "=0.2.0-rc.3", features = ["zeroize"] }
-ohos-abilitykit-sys = "0.1.6"
-ohos-deviceinfo = "0.1.0"
-ohos-deviceinfo-sys = "0.1.7"
-ohos-ime = "0.4.2"
-ohos-ime-sys = "0.2.4"
-ohos-media-sys = "0.1.1"
-ohos-sys-opaque-types = "0.1.7"
-ohos-vsync = "0.1.3"
-ohos-window-manager-sys = "0.1"
-ohos-window-sys = "0.1.7"
 once_cell = "1.21.4"
 p256 = { version = "0.14", features = ["ecdh"] }
 p384 = { version = "0.14", features = ["ecdh"] }
@@ -305,7 +290,6 @@ winresource = "0.1"
 wr_malloc_size_of = "0.2.2"
 x25519-dalek = { version = "3.0", features = ["getrandom", "static_secrets", "zeroize"] }
 x448 = { version = "=0.14.0-pre.12", features = ["static_secrets"] }
-xcomponent-sys = "0.3.6"
 xml = "1.1"
 xml5ever = "0.39"
 yuv = { version = "0.8.14", features = ["rayon"] }
@@ -367,7 +351,6 @@ servo-media-gstreamer = { version = "=0.5.0", path = "components/media/backends/
 servo-media-gstreamer-render = { version = "=0.5.0", path = "components/media/backends/gstreamer/render" }
 servo-media-gstreamer-render-android = { version = "=0.5.0", path = "components/media/backends/gstreamer/render-android" }
 servo-media-gstreamer-render-unix = { version = "=0.5.0", path = "components/media/backends/gstreamer/render-unix" }
-servo-media-ohos = { version = "=0.5.0", path = "components/media/backends/ohos" }
 servo-media-player = { version = "=0.5.0", path = "components/media/player" }
 servo-media-streams = { version = "=0.5.0", path = "components/media/streams" }
 servo-media-traits = { version = "=0.5.0", path = "components/media/traits" }

@@ -19,7 +19,7 @@ doctest = false
 # Compile FreeType from source (freetype-sys/bundled) instead of searching
 # via pkg-config. If this feature is disabled, and pkg-config fails to find a
 # suitable freetype version, the build will fail!
-# Only affects targets where freetype-sys is a dependency (Linux/Android/OHOS)
+# Only affects targets where freetype-sys is a dependency (Linux/Android)
 bundled_freetype = ["freetype-sys/bundled"]
 tracing = ["dep:tracing"]
 
@@ -44,7 +44,6 @@ malloc_size_of_derive = { workspace = true }
 memmap2 = { workspace = true }
 net_traits = { workspace = true }
 num-traits = { workspace = true }
-ohos-deviceinfo-sys = { workspace = true }
 paint_api = { workspace = true }
 parking_lot = { workspace = true }
 postcard = { workspace = true }
@@ -81,20 +80,15 @@ freetype-sys = { workspace = true }
 harfbuzz-sys = { workspace = true, features = ["freetype"] }
 servo-allocator = { workspace = true }
 
-[target.'cfg(all(any(target_os = "linux", target_os = "freebsd"), not(target_env = "ohos")))'.dependencies]
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 fontconfig_sys = { workspace = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 xml = { workspace = true }
-
-[target.'cfg(any(target_os = "android",target_env = "ohos"))'.dependencies]
-# Always bundle freetype on android and openharmony
+# Always bundle freetype on android
 freetype-sys = { workspace = true, features = ["bundled"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 dwrote = { workspace = true }
 harfbuzz-sys = { workspace = true, features = ["directwrite"] }
 winapi = { workspace = true }
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(ohos_mock)'] }

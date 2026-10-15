@@ -9,7 +9,7 @@ use std::fs::{self, read_to_string};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::str::FromStr;
-#[cfg(any(target_os = "android", target_env = "ohos"))]
+#[cfg(target_os = "android")]
 use std::sync::OnceLock;
 use std::{env, fmt};
 
@@ -55,7 +55,7 @@ pub(crate) static EXPERIMENTAL_PREFS: &[&str] = &[
     "layout_variable_fonts_enabled",
 ];
 
-#[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
+#[cfg_attr(target_os = "android", expect(dead_code))]
 #[derive(Clone)]
 pub(crate) struct ServoShellPreferences {
     /// A URL to load when starting servoshell.
@@ -113,13 +113,6 @@ pub(crate) struct ServoShellPreferences {
     /// `--config-dir`) and kept here so `HeadedWindow` can persist UI state (currently just
     /// `start_fullscreen`) back to the same directory without re-deriving it.
     pub config_dir: Option<PathBuf>,
-    /// Log filter given in the `log_filter` spec as a String, if any.
-    /// If a filter is passed, the logger should adjust accordingly.
-    #[cfg(target_env = "ohos")]
-    pub log_filter: Option<String>,
-    /// Log also to a file
-    #[cfg(target_env = "ohos")]
-    pub log_to_file: bool,
 }
 
 impl Default for ServoShellPreferences {
@@ -142,10 +135,6 @@ impl Default for ServoShellPreferences {
             userscripts_directory: None,
             user_stylesheets: Default::default(),
             webdriver_port: Cell::new(None),
-            #[cfg(target_env = "ohos")]
-            log_filter: None,
-            #[cfg(target_env = "ohos")]
-            log_to_file: false,
             start_fullscreen: false,
             config_dir: None,
         }
@@ -156,8 +145,7 @@ impl Default for ServoShellPreferences {
     unix,
     not(target_os = "macos"),
     not(target_os = "ios"),
-    not(target_os = "android"),
-    not(target_env = "ohos")
+    not(target_os = "android")
 ))]
 pub fn default_config_dir() -> Option<PathBuf> {
     let mut config_dir = ::dirs::config_dir().unwrap();
@@ -167,9 +155,9 @@ pub fn default_config_dir() -> Option<PathBuf> {
 }
 
 /// Overrides the default preference dir
-#[cfg(any(target_os = "android", target_env = "ohos"))]
+#[cfg(target_os = "android")]
 pub(crate) static DEFAULT_CONFIG_DIR: OnceLock<PathBuf> = OnceLock::new();
-#[cfg(any(target_os = "android", target_env = "ohos"))]
+#[cfg(target_os = "android")]
 pub fn default_config_dir() -> Option<PathBuf> {
     DEFAULT_CONFIG_DIR.get().cloned()
 }
@@ -243,7 +231,7 @@ pub fn read_prefs_map(txt: &str) -> HashMap<String, PrefValue> {
 }
 
 #[expect(clippy::large_enum_variant)]
-#[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
+#[cfg_attr(target_os = "android", expect(dead_code))]
 pub(crate) enum ArgumentParsingResult {
     ChromeProcess(Opts, Preferences, ServoShellPreferences),
     ContentProcess(String),
@@ -481,16 +469,6 @@ struct CmdArgs {
     #[bpaf(argument("~/.local/share/servo"))]
     local_script_source: Option<PathBuf>,
 
-    #[cfg(target_env = "ohos")]
-    /// Define a custom filter for logging.
-    #[bpaf(argument("FILTER"))]
-    log_filter: Option<String>,
-
-    #[cfg(target_env = "ohos")]
-    /// Also log to a file (/data/app/el2/100/base/org.servo.servo/cache/servo.log).
-    #[bpaf(long)]
-    log_to_file: bool,
-
     /// Run in multiprocess mode.
     #[bpaf(short('M'), long)]
     multiprocess: bool,
@@ -669,7 +647,7 @@ fn parse_arguments_helper(args_without_binary: Args) -> ArgumentParsingResult {
         Err(error) => {
             // Servo will exit after printing the parsing error, which makes the stdout / stderr
             // redirection via a seperate thread racy, so we log directly to the system logger.
-            if cfg!(target_os = "android") || cfg!(target_env = "ohos") {
+            if cfg!(target_os = "android") {
                 match &error {
                     ParseFailure::Stderr(doc) => log::error!("{doc}"),
                     // '--help' will be parsed by the next one.
@@ -751,12 +729,6 @@ fn parse_arguments_helper(args_without_binary: Args) -> ArgumentParsingResult {
         user_stylesheets: cmd_args.user_stylesheet,
         start_fullscreen,
         config_dir: config_dir.clone(),
-        #[cfg(target_env = "ohos")]
-        log_filter: cmd_args.log_filter.or_else(|| {
-            (!preferences.log_filter.is_empty()).then(|| preferences.log_filter.clone())
-        }),
-        #[cfg(target_env = "ohos")]
-        log_to_file: cmd_args.log_to_file,
         ..Default::default()
     };
 

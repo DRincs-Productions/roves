@@ -926,7 +926,7 @@ class PostBuildCommands(CommandBase):
             print("--dmg is only supported on macOS.")
             return 1
 
-        # `servo_binary` is `None` for a "packaged" target (Android, OpenHarmony) --
+        # `servo_binary` is `None` for a "packaged" target (Android) --
         # command_base.py's own `binary_selection` deliberately nulls it out for those (see
         # that file's own comment: there's no single runnable binary to hand back). Only
         # matters here as a *default* output location when `--output` isn't given --

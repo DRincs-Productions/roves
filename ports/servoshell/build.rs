@@ -181,27 +181,5 @@ fn main() -> Result<(), Box<dyn Error>> {
     if target_os == "linux" {
         println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
     }
-
-    // On OpenHarmony, libservoshell.so is loaded by ArkTS as a NAPI module.
-    // Passing a version script allows us to inform the linker about required
-    // symbol visibility (only one), which improves stripping of unused sections.
-    if target_env == "ohos" {
-        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")?;
-        let version_script = Path::new(&manifest_dir)
-            .join("platform")
-            .join("openharmony")
-            .join("libservoshell.ver");
-        let version_script_str = version_script.to_str().expect("Expected UTF-8 text");
-        assert!(
-            version_script.exists(),
-            "Expected version script to exist at path `{version_script_str}`"
-        );
-        println!("cargo:rerun-if-changed={version_script_str}");
-        // Using `rustc-link-arg-cdylib` causes a false-positive warning:
-        // https://github.com/rust-lang/cargo/issues/16487
-        // We work around this by just using the unconditional link-arg, which
-        // should be fine, since we always build servo as a cdylib on OpenHarmony.
-        println!("cargo:rustc-link-arg=-Wl,--version-script={version_script_str}");
-    }
     Ok(())
 }

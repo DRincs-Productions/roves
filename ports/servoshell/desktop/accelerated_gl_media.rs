@@ -6,13 +6,10 @@ use std::cell::RefMut;
 
 use surfman::{Context, Device};
 
-#[cfg(not(any(
-    target_os = "windows",
-    all(target_os = "linux", not(target_env = "ohos"))
-)))]
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 pub(crate) fn setup_gl_accelerated_media(_: RefMut<'_, Device>, _: RefMut<'_, Context>) {}
 
-#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+#[cfg(target_os = "linux")]
 pub(crate) fn setup_gl_accelerated_media(device: RefMut<'_, Device>, context: RefMut<'_, Context>) {
     use servo::{MediaGlContext, MediaNativeDisplay, Servo};
     use surfman::multi::connection::NativeConnection;
@@ -50,10 +47,7 @@ pub(crate) fn setup_gl_accelerated_media(device: RefMut<'_, Device>, context: Re
     Servo::initialize_gl_accelerated_media(display, api, context);
 }
 
-#[cfg(any(
-    all(target_os = "linux", not(target_env = "ohos")),
-    target_os = "windows"
-))]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn api(device: &RefMut<Device>, context: &RefMut<Context>) -> servo::MediaGlApi {
     use servo::MediaGlApi;
     use surfman::GLApi;

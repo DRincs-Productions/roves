@@ -80,13 +80,9 @@ impl PlatformWindow for EmbeddedPlatformWindow {
         false
     }
 
-    #[cfg_attr(
-        not(all(feature = "tracing", feature = "tracing-hitrace")),
-        expect(unused_variables)
-    )]
     fn update_user_interface_state(
         &self,
-        state: &RunningAppState,
+        _state: &RunningAppState,
         window: &ServoShellWindow,
     ) -> bool {
         let Some(active_webview) = window.active_webview() else {
@@ -130,32 +126,6 @@ impl PlatformWindow for EmbeddedPlatformWindow {
         let load_status_changed = Some(new_load_status) != self.current_load_status.get();
         if load_status_changed {
             self.host.notify_load_status_changed(new_load_status);
-
-            #[cfg(all(feature = "tracing", feature = "tracing-hitrace"))]
-            if new_load_status == LoadStatus::Complete {
-                let (callback, receiver) =
-                    servo_base::generic_channel::GenericCallback::new_blocking()
-                        .expect("Could not create channel");
-                state.servo().create_memory_report(callback);
-                std::thread::spawn(move || {
-                    let result = receiver.recv().expect("Could not get memory report");
-                    let reports = result
-                        .results
-                        .first()
-                        .expect("We should have some memory report");
-                    let search_string = String::from("resident-according-to-smaps");
-                    let sum = reports
-                        .reports
-                        .iter()
-                        .filter(|report| report.path.contains(&search_string))
-                        .map(|report| report.size)
-                        .sum::<usize>();
-                    hitrace::trace_metric_str(
-                        "servo_memory_profiling:resident-according-to-smaps/sum",
-                        sum as i64,
-                    );
-                });
-            }
         }
 
         title_changed || url_changed || back_forward_changed || load_status_changed
@@ -241,19 +211,12 @@ impl PlatformWindow for EmbeddedPlatformWindow {
 
 pub(crate) struct VsyncRefreshDriver {
     start_frame_callbacks: RefCell<Vec<Box<dyn Fn() + Send>>>,
-    /// On OHOS we own the `OH_NativeVSync` handle and request a single callback
-    /// only when an observer asks for one.
-    #[cfg(target_env = "ohos")]
-    native_vsync: ohos_vsync::NativeVsync,
 }
 
 impl VsyncRefreshDriver {
     pub(crate) fn new() -> Self {
         Self {
             start_frame_callbacks: Default::default(),
-            #[cfg(target_env = "ohos")]
-            native_vsync: ohos_vsync::NativeVsync::new("ServoVsync")
-                .expect("Failed to create NativeVsync"),
         }
     }
 
@@ -268,19 +231,9 @@ impl VsyncRefreshDriver {
 
 impl RefreshDriver for VsyncRefreshDriver {
     fn observe_next_frame(&self, new_start_frame_callback: Box<dyn Fn() + Send + 'static>) {
-        // We only need to request a vsync callback if the queue is empty,
-        // otherwise we will already have a pending callback.
-        #[cfg_attr(not(target_env = "ohos"), allow(unused_variables))]
-        let was_empty = {
-            let mut callbacks = self.start_frame_callbacks.borrow_mut();
-            let was_empty = callbacks.is_empty();
-            callbacks.push(new_start_frame_callback);
-            was_empty
-        };
-        #[cfg(target_env = "ohos")]
-        if was_empty {
-            super::ohos::request_vsync_callback(&self.native_vsync);
-        }
+        self.start_frame_callbacks
+            .borrow_mut()
+            .push(new_start_frame_callback);
     }
 }
 
@@ -328,7 +281,7 @@ impl App {
             crate::protocols::file::FileProtocolHandler::new(initial_file_path.as_deref()),
         );
 
-        // Every Android/OpenHarmony launch is a bundled-game launch -- `MainActivity.kt`
+        // Every Android launch is a bundled-game launch -- `MainActivity.kt`
         // always passes a `file:` URL to a real, already-extracted entry HTML (there's no
         // "raw dev --url" mode here the way desktop has). When that resolves to a real file,
         // boot at the `game:` virtual root instead of the literal `file:` path -- confirmed
@@ -655,7 +608,7 @@ impl App {
     }
 
     pub fn ime_insert_text(&self, text: String) {
-        // In OHOS, we get empty text after the intended text.
+        // Some IMEs send an empty text after the intended text.
         if text.is_empty() {
             return;
         }

@@ -109,10 +109,7 @@ mod fallback_clipboard {
     }
 }
 
-#[cfg(all(
-    feature = "clipboard",
-    not(any(target_os = "android", target_env = "ohos"))
-))]
+#[cfg(all(feature = "clipboard", not(target_os = "android")))]
 mod clipboard {
     use std::sync::OnceLock;
 
@@ -158,7 +155,7 @@ mod clipboard {
     }
 }
 
-#[cfg(any(not(feature = "clipboard"), target_os = "android", target_env = "ohos"))]
+#[cfg(any(not(feature = "clipboard"), target_os = "android"))]
 mod clipboard {
     use super::StringRequest;
     use crate::clipboard_delegate::fallback_clipboard;

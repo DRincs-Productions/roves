@@ -5,10 +5,7 @@
 pub mod font;
 mod freetype_face;
 
-#[cfg(any(
-    all(target_os = "linux", not(target_env = "ohos"), not(ohos_mock)),
-    target_os = "freebsd"
-))]
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
 pub mod font_list;
 
 #[cfg(target_os = "android")]
@@ -18,13 +15,5 @@ mod android {
 }
 #[cfg(target_os = "android")]
 pub use self::android::font_list;
-
-#[cfg(any(target_env = "ohos", ohos_mock))]
-mod ohos {
-    mod font_cache;
-    pub mod font_list;
-}
-#[cfg(any(target_env = "ohos", ohos_mock))]
-pub use self::ohos::font_list;
 
 mod library_handle;

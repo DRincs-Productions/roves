@@ -8,8 +8,6 @@
 # except according to those terms.
 
 from typing import TypeGuard
-import errno
-import json
 import os
 import pathlib
 import platform
@@ -20,7 +18,6 @@ import toml
 from enum import Enum
 
 from os import path
-from packaging.version import parse as parse_version
 from typing import Any, Optional
 
 import servo.platform
@@ -59,8 +56,6 @@ class BuildTarget(object):
         if target_triple:
             if "android" in target_triple:
                 return AndroidTarget(target_triple)
-            elif "ohos" in target_triple:
-                return OpenHarmonyTarget(target_triple)
             elif target_triple != host_triple:
                 raise Exception(f"Unknown build target {target_triple}")
         return BuildTarget(host_triple)
@@ -284,236 +279,5 @@ class AndroidTarget(CrossBuildTarget):
         return path.join(base_path, build_type_directory, apk_name)
 
 
-class OpenHarmonyTarget(CrossBuildTarget):
-    DEFAULT_TRIPLE = "aarch64-unknown-linux-ohos"
-
-    def configure_build_environment(self, env: dict[str, str], config: dict[str, Any], topdir: pathlib.Path) -> None:
-        # Paths to OpenHarmony SDK and build tools:
-        # Note: `OHOS_SDK_NATIVE` is the CMake variable name the `hvigor` build-system
-        # uses for the native directory of the SDK, so we use the same name to be consistent.
-        if "OHOS_SDK_NATIVE" not in env and config["ohos"]["ndk"]:
-            env["OHOS_SDK_NATIVE"] = config["ohos"]["ndk"]
-
-        if "OHOS_SDK_NATIVE" not in env:
-            print(
-                "Please set the OHOS_SDK_NATIVE environment variable to the location of the `native` directory "
-                "in the OpenHarmony SDK.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-        ndk_root = pathlib.Path(env["OHOS_SDK_NATIVE"])
-
-        if not ndk_root.is_dir():
-            print(f"OHOS_SDK_NATIVE is not set to a valid directory: `{ndk_root}`", file=sys.stderr)
-            sys.exit(1)
-
-        ndk_root = ndk_root.resolve()
-        package_info = ndk_root.joinpath("oh-uni-package.json")
-        try:
-            with open(package_info) as meta_file:
-                meta = json.load(meta_file)
-            ohos_api_version = int(meta["apiVersion"])
-            ohos_sdk_version = parse_version(meta["version"])
-            if ohos_sdk_version < parse_version("5.0") or ohos_api_version < 14:
-                raise RuntimeError("Building servo for OpenHarmony requires SDK version 5.0.2 (API-14) or newer.")
-            print(
-                f"Info: The OpenHarmony SDK {ohos_sdk_version} is targeting API-level {ohos_api_version}",
-                file=sys.stderr,
-            )
-        except (OSError, json.JSONDecodeError) as e:
-            print(f"Failed to read metadata information from {package_info}", file=sys.stderr)
-            print(f"Exception: {e}", file=sys.stderr)
-
-        llvm_toolchain = ndk_root.joinpath("llvm")
-        llvm_bin = llvm_toolchain.joinpath("bin")
-        ohos_sysroot = ndk_root.joinpath("sysroot")
-        if not (llvm_toolchain.is_dir() and llvm_bin.is_dir()):
-            print(
-                f"Expected to find `llvm` and `llvm/bin` folder under $OHOS_SDK_NATIVE at `{llvm_toolchain}`",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        if not ohos_sysroot.is_dir():
-            print(f"Could not find OpenHarmony sysroot in {ndk_root}", file=sys.stderr)
-            sys.exit(1)
-        # When passing the sysroot to Rust crates such as `cc-rs` or bindgen, we should pass
-        # POSIX paths, since otherwise the backslashes in windows paths may be interpreted as
-        # escapes and lead to errors.
-        ohos_sysroot_posix = ohos_sysroot.as_posix()
-
-        # Note: We don't use the `<target_triple>-clang` wrappers on purpose, since
-        # a) the OH 4.0 SDK does not have them yet AND
-        # b) the wrappers in the newer SDKs are bash scripts, which can cause problems
-        # on windows, depending on how the wrapper is called.
-        # Instead, we ensure that all the necessary flags for the c-compiler are set
-        # via environment variables such as `TARGET_CFLAGS`.
-        def to_sdk_llvm_bin(prog: str) -> str:
-            if sys.platform == "win32":
-                prog = prog + ".exe"
-            llvm_prog = llvm_bin.joinpath(prog)
-            if not llvm_prog.is_file():
-                raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), llvm_prog)
-            return llvm_bin.joinpath(prog).as_posix()
-
-        # CC and CXX should already be set to appropriate host compilers by `build_env()`
-        env["HOST_CC"] = env["CC"]
-        env["HOST_CXX"] = env["CXX"]
-        env["TARGET_AR"] = to_sdk_llvm_bin("llvm-ar")
-        env["TARGET_RANLIB"] = to_sdk_llvm_bin("llvm-ranlib")
-        env["TARGET_READELF"] = to_sdk_llvm_bin("llvm-readelf")
-        env["TARGET_OBJCOPY"] = to_sdk_llvm_bin("llvm-objcopy")
-        env["TARGET_STRIP"] = to_sdk_llvm_bin("llvm-strip")
-
-        target_triple = self.triple()
-        rust_target_triple = str(target_triple).replace("-", "_")
-        ndk_clang = to_sdk_llvm_bin("clang")
-        ndk_clangxx = to_sdk_llvm_bin("clang++")
-        env[f"CC_{rust_target_triple}"] = ndk_clang
-        env[f"CXX_{rust_target_triple}"] = ndk_clangxx
-        # The clang target name is different from the LLVM target name
-        clang_target_triple = str(target_triple).replace("-unknown-", "-")
-        clang_target_triple_underscore = clang_target_triple.replace("-", "_")
-        env[f"CC_{clang_target_triple_underscore}"] = ndk_clang
-        env[f"CXX_{clang_target_triple_underscore}"] = ndk_clangxx
-        # rustc linker
-        env[f"CARGO_TARGET_{rust_target_triple.upper()}_LINKER"] = ndk_clang
-
-        link_args = [
-            "-fuse-ld=lld",
-            f"--target={clang_target_triple}",
-            f"--sysroot={ohos_sysroot_posix}",
-            "-Wl,--build-id",
-        ]
-
-        env["HOST_CFLAGS"] = ""
-        env["HOST_CXXFLAGS"] = ""
-        ohos_cflags = [
-            "-D__MUSL__",
-            "-DMDB_USE_ROBUST=0",
-            f" --target={clang_target_triple}",
-            f" --sysroot={ohos_sysroot_posix}",
-            "-Wno-error=unused-command-line-argument",
-        ]
-        if clang_target_triple.startswith("armv7-"):
-            ohos_cflags.extend(["-march=armv7-a", "-mfloat-abi=softfp", "-mtune=generic-armv7-a", "-mthumb"])
-        ohos_cflags_str = " ".join(ohos_cflags)
-
-        env["TARGET_CFLAGS"] = env.get("TARGET_CFLAGS", "") + " " + ohos_cflags_str
-        env["TARGET_CPPFLAGS"] = env.get("TARGET_CPPFLAGS", "") + " " + "-D__MUSL__"
-        env["TARGET_CXXFLAGS"] = env.get("TARGET_CXXFLAGS", "") + " " + ohos_cflags_str
-
-        # CMake related flags
-        env["CMAKE"] = ndk_root.joinpath("build-tools", "cmake", "bin", "cmake").as_posix()
-        cmake_toolchain_file = ndk_root.joinpath("build", "cmake", "ohos.toolchain.cmake")
-        if cmake_toolchain_file.is_file():
-            env[f"CMAKE_TOOLCHAIN_FILE_{rust_target_triple}"] = cmake_toolchain_file.as_posix()
-        else:
-            print(
-                f"Warning: Failed to find the OpenHarmony CMake Toolchain file - Expected it at {cmake_toolchain_file}"
-            )
-        env[f"CMAKE_C_COMPILER_{rust_target_triple}"] = ndk_clang
-        env[f"CMAKE_CXX_COMPILER_{rust_target_triple}"] = ndk_clangxx
-
-        # pkg-config
-        pkg_config_path = "{}:{}".format(
-            ohos_sysroot.joinpath("usr", "lib", "pkgconfig").as_posix(),
-            ohos_sysroot.joinpath("usr", "share", "pkgconfig").as_posix(),
-        )
-        env[f"PKG_CONFIG_SYSROOT_DIR_{rust_target_triple}"] = ohos_sysroot_posix
-        env[f"PKG_CONFIG_PATH_{rust_target_triple}"] = pkg_config_path
-
-        # bindgen / libclang-sys
-        env["LIBCLANG_PATH"] = path.join(llvm_toolchain, "lib")
-        env["CLANG_PATH"] = ndk_clangxx
-        env[f"CXXSTDLIB_{clang_target_triple_underscore}"] = "c++"
-        bindgen_extra_clangs_args_var = f"BINDGEN_EXTRA_CLANG_ARGS_{rust_target_triple}"
-        bindgen_extra_clangs_args = env.get(bindgen_extra_clangs_args_var, "")
-        bindgen_extra_clangs_args = bindgen_extra_clangs_args + " " + ohos_cflags_str
-        env[bindgen_extra_clangs_args_var] = bindgen_extra_clangs_args
-
-        sanitizer: SanitizerKind = config["build"]["sanitizer"]
-        san_compile_flags = []
-        if sanitizer.is_some():
-            # Lookup `<sdk>/native/llvm/lib/clang/15.0.4/lib/aarch64-linux-ohos/libclang_rt.asan.so`
-            lib_clang = llvm_toolchain.joinpath("lib", "clang")
-            children = [f.path for f in os.scandir(lib_clang) if f.is_dir()]
-            if len(children) != 1:
-                raise RuntimeError(f"Expected exactly 1 libclang version: `{children}`")
-            lib_clang_version_dir = pathlib.Path(children[0])
-            libclang_arch = lib_clang_version_dir.joinpath("lib", clang_target_triple).resolve()
-            # Use the clangrt from the NDK to use the same library for both C++ and Rust.
-            env["RUSTFLAGS"] += " -Zexternal-clangrt"
-            san_compile_flags.append("-fno-omit-frame-pointer")
-
-            # On OpenHarmony we add some additional flags when asan is enabled
-            if sanitizer.is_asan():
-                libasan_so_path = libclang_arch.joinpath("libclang_rt.asan.so")
-                libasan_preinit_path = libclang_arch.joinpath("libclang_rt.asan-preinit.a")
-                if not libasan_so_path.exists():
-                    raise RuntimeError(f"Couldn't find ASAN runtime library at {libasan_so_path}")
-                link_args.extend(
-                    [
-                        "-fsanitize=address",
-                        "--rtlib=compiler-rt",
-                        "-shared-libasan",
-                        str(libasan_so_path),
-                        "-Wl,--whole-archive",
-                        "-Wl," + str(libasan_preinit_path),
-                        "-Wl,--no-whole-archive",
-                    ]
-                )
-
-                san_compile_flags.extend(["-fsanitize=address", "-shared-libasan", "-fsanitize-recover=address"])
-
-                arch_asan_ignore_list = lib_clang_version_dir.joinpath("share", "asan_ignorelist.txt")
-                if arch_asan_ignore_list.exists():
-                    san_compile_flags.append("-fsanitize-system-ignorelist=" + str(arch_asan_ignore_list))
-                else:
-                    print(f"Warning: Couldn't find system ASAN ignorelist at `{arch_asan_ignore_list}`")
-            elif sanitizer.is_tsan():
-                libtsan_so_path = libclang_arch.joinpath("libclang_rt.tsan.so")
-                builtins_path = libclang_arch.joinpath("libclang_rt.builtins.a")
-
-                link_args.extend(
-                    [
-                        "-fsanitize=thread",
-                        "--rtlib=compiler-rt",
-                        "-shared-libsan",
-                        str(libtsan_so_path),
-                        str(builtins_path),
-                    ]
-                )
-                san_compile_flags.append("-shared-libsan")
-
-        link_args = [f"-Clink-arg={arg}" for arg in link_args]
-        env["RUSTFLAGS"] += " " + " ".join(link_args)
-        env["TARGET_CFLAGS"] += " " + " ".join(san_compile_flags)
-        env["TARGET_CXXFLAGS"] += " " + " ".join(san_compile_flags)
-
-    def binary_name(self) -> str:
-        return "libservoshell.so"
-
-    def needs_packaging(self) -> bool:
-        return True
-
-    def get_package_path(self, build_type_directory: str, flavor: Optional[str] = None) -> str:
-        base_path = util.get_target_dir()
-        base_path = path.join(base_path, "openharmony", self.triple())
-        hap_name = "servoshell-default-signed.hap"
-        if not flavor:
-            flavor = "default"
-        build_output_path = path.join("entry", "build", flavor, "outputs", "default")
-        return path.join(base_path, build_type_directory, build_output_path, hap_name)
-
-    def abi_string(self) -> str:
-        abi_map = {"aarch64-unknown-linux-ohos": "arm64-v8a", "x86_64-unknown-linux-ohos": "x86_64"}
-        return abi_map[self.triple()]
-
-
 def is_android(target: BuildTarget) -> TypeGuard[AndroidTarget]:
     return isinstance(target, AndroidTarget)
-
-
-def is_openharmony(target: BuildTarget) -> TypeGuard[OpenHarmonyTarget]:
-    return isinstance(target, OpenHarmonyTarget)

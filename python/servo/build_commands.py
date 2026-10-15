@@ -40,7 +40,6 @@ from python.servo.platform.build_target import SanitizerKind
 SUPPORTED_ASAN_TARGETS = [
     "aarch64-apple-darwin",
     "aarch64-unknown-linux-gnu",
-    "aarch64-unknown-linux-ohos",
     "x86_64-apple-darwin",
     "x86_64-unknown-linux-gnu",
 ]

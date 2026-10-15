@@ -4,21 +4,18 @@
 
 #[cfg(all(
     any(target_os = "linux", target_os = "macos", target_os = "freebsd"),
-    not(target_os = "android"),
-    not(target_env = "ohos")
+    not(target_os = "android")
 ))]
 use servo_base::text::{UnicodeBlock, UnicodeBlockMethod};
 #[cfg(all(
     any(target_os = "linux", target_os = "macos", target_os = "freebsd"),
-    not(target_os = "android"),
-    not(target_env = "ohos")
+    not(target_os = "android")
 ))]
 use unicode_script::Script;
 
 #[cfg(all(
     any(target_os = "linux", target_os = "macos", target_os = "freebsd"),
-    not(target_os = "android"),
-    not(target_env = "ohos")
+    not(target_os = "android")
 ))]
 use crate::FallbackFontSelectionOptions;
 #[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
@@ -46,8 +43,7 @@ mod windows {
 
 #[cfg(all(
     any(target_os = "linux", target_os = "macos", target_os = "freebsd"),
-    not(target_os = "android"),
-    not(target_env = "ohos")
+    not(target_os = "android")
 ))]
 pub(crate) fn add_noto_fallback_families(
     options: FallbackFontSelectionOptions,

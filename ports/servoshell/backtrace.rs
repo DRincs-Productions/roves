@@ -24,17 +24,6 @@ pub(crate) fn print(w: &mut dyn std::io::Write) -> Result<(), std::io::Error> {
     )
 }
 
-#[cfg(target_env = "ohos")]
-pub(crate) fn print_ohos() {
-    // Print to `hilog`
-    log::error!(
-        "{:?}",
-        Print {
-            print_fn_address: (print as *const ()).addr(),
-        }
-    )
-}
-
 struct Print {
     /// Function pointer without provenance - do not cast back and dereference.
     print_fn_address: usize,

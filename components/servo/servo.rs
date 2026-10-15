@@ -20,7 +20,6 @@ use fonts::SystemFontService;
     not(target_arch = "aarch64"),
     not(target_arch = "riscv32"),
     not(target_arch = "riscv64"),
-    not(target_env = "ohos"),
 ))]
 use gaol::sandbox::{ChildSandbox, ChildSandboxMethods};
 use ipc_channel::ipc::{self, IpcSender};
@@ -60,7 +59,6 @@ use servo_config::{opts, pref, prefs};
     not(target_arch = "aarch64"),
     not(target_arch = "riscv32"),
     not(target_arch = "riscv64"),
-    not(target_env = "ohos"),
 ))]
 use servo_constellation::content_process_sandbox_profile;
 use servo_constellation::{
@@ -132,17 +130,7 @@ mod media_platform {
     }
 }
 
-#[cfg(all(not(feature = "media-gstreamer"), target_env = "ohos"))]
-mod media_platform {
-    use servo_media_ohos::OhosBackend;
-
-    use super::ServoMedia;
-    pub fn init() {
-        ServoMedia::init::<OhosBackend>();
-    }
-}
-
-#[cfg(all(not(feature = "media-gstreamer"), not(target_env = "ohos")))]
+#[cfg(not(feature = "media-gstreamer"))]
 mod media_platform {
     use super::ServoMedia;
     pub fn init() {
@@ -1389,7 +1377,6 @@ pub fn run_content_process(token: String) {
     not(target_arch = "aarch64"),
     not(target_arch = "riscv32"),
     not(target_arch = "riscv64"),
-    not(target_env = "ohos"),
 ))]
 fn create_sandbox() {
     ChildSandbox::new(content_process_sandbox_profile())
@@ -1405,7 +1392,6 @@ fn create_sandbox() {
     target_arch = "aarch64",
     target_arch = "riscv32",
     target_arch = "riscv64",
-    target_env = "ohos",
 ))]
 fn create_sandbox() {
     panic!("Sandboxing is not supported on Windows, iOS, ARM, RISC-V targets and android.");

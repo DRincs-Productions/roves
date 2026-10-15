@@ -13563,3 +13563,93 @@ pristine v0.5.0 archive and deleting `REMOVED_PATHS.txt` gives all 34 modified s
 byte-identical to this tree. The deleted paths are absent. The rebuilt `Cargo.lock` differs from
 this tree's by the same 2131 diff lines before and after 0217, so that drift predates this
 change.
+
+## 2026-10-15 - Delete the OpenHarmony port
+
+**Servo files:** `.gitattributes`, `servobuild.example`, the workspace `Cargo.toml` and
+`Cargo.lock`; `Cargo.toml` of `servo-allocator`, `background_hang_monitor`, `constellation`,
+`fonts`, `servo` and `servoshell`; `components/allocator/lib.rs`;
+`components/background_hang_monitor/{lib,sampler}.rs`; `components/config/prefs.rs`;
+`components/constellation/sandboxing.rs`; `components/fonts/{font.rs,platform/mod.rs,
+platform/freetype/mod.rs}`; `components/script/init.rs`;
+`components/servo/{clipboard_delegate,lib,servo}.rs`; `components/webdriver_server/lib.rs`; in
+`ports/servoshell/`: `build.rs`, `lib.rs`, `main.rs`, `backtrace.rs`, `parser.rs`, `prefs.rs`,
+`running_app_state.rs`, `window.rs`, `egl/{app,mod}.rs`, `desktop/accelerated_gl_media.rs`,
+`desktop/protocols/mod.rs` and `protocols/{game,mod,packed_content}.rs`; in `python/servo/`:
+`build_commands.py`, `command_base.py`, `platform/build_target.py`, `post_build_commands.py` and
+`util.py`. Roves-only: `support/check_sdl3_windowing_contracts.py` and `.github/workflows/test.yml`.
+**Patch:** `0218-delete-openharmony.patch` after 0217, plus a new section in
+`REMOVED_PATHS.txt`.
+
+Roves never built for OpenHarmony (`target_env = "ohos"`): no workflow, `roves-action` path or
+release asset targets it. This entry deletes the port and every `cfg` branch that only existed
+for it.
+
+- Deleted (4654 lines, 43 tracked files), all listed in `REMOVED_PATHS.txt`:
+  `ports/servoshell/egl/ohos/` (the NAPI/XComponent shell, 1305 lines),
+  `ports/servoshell/platform/openharmony/libservoshell.ver` (the cdylib version script),
+  `support/openharmony/` (the ArkTS/hvigor app, 594 lines, including the three icon
+  placeholders), `support/hitrace-bencher/` (169), `components/media/backends/ohos/` (the
+  AVPlayer media backend `servo-media-ohos`, 1888) and
+  `components/fonts/platform/freetype/ohos/` (the OHOS font list, 685).
+- Edits remove another 1123 lines and add 169 (without `Cargo.lock`). The workspace no longer
+  declares `hilog`, `hitrace`, `napi-ohos`, `napi-derive-ohos`, the ten `ohos-*` crates,
+  `xcomponent-sys`, `env_filter` or `servo-media-ohos`. `Cargo.lock` drops 29 packages
+  (`hilog*`, `hitrace*`, `napi-*-ohos`, `ohos-*`, `arkui-sys`, `xcomponent-sys`,
+  `servo-media-ohos`, and `yuv`, `ctor`, `convert_case`, `arc-swap` and one `libloading`
+  version that only they pulled in).
+- Every `any(target_os = "android", target_env = "ohos")` became `target_os = "android"` and
+  every `not(any(...))` its negation, so the Android build selects exactly the same items as
+  before. Desktop-only `not(target_env = "ohos")` terms were dropped from the Linux, sandbox
+  (`gaol`), allocator, hang-monitor sampler, fontconfig and GL-accelerated-media `cfg`s; they
+  were always true on Windows, Linux, macOS, Android and iOS. In `servoshell/Cargo.toml` the old
+  shared Android/OHOS block (`nix`, `serde_json`, `surfman` with `sm-angle-default`) is merged
+  into the Android block; its `servo-base` dependency was only used by the HiTrace memory
+  metric and is gone.
+- Removed OHOS-only code: the `HitraceLayer` tracing layer and the `tracing-hitrace` feature,
+  `backtrace::print_ohos`, the OHOS vsync callback in `VsyncRefreshDriver`, the
+  libservoshell version-script step in `build.rs`, the `--log-filter`/`--log-to-file` options
+  and the `log_filter` preference (only the OHOS logger read them), the `OpenHarmony` user
+  agent platform, the OHOS media backend selection in `servo.rs`, the
+  `cfg(not(target_env = "ohos"))` gate around `servo-default-resources` (now a plain optional
+  dependency of `servo`), the `ohos_mock` font `cfg`, and `jit_forbidden()` in
+  `script/init.rs`, which only probed on OHOS and returned `false` everywhere else (JIT is
+  still disabled by `js_disable_jit`).
+- `mach`: `--ohos`, the `[ohos]` `.servobuild` section, `OpenHarmonyTarget` and
+  `is_openharmony`, the `aarch64-unknown-linux-ohos` ASan target and the `hdc` device helpers in
+  `util.py` are gone. `--flavor` stays (Android Gradle uses it).
+- `test.yml` no longer copies the three OHOS icon placeholders into the rebuilt tree: no patch
+  touches them and `REMOVED_PATHS.txt` deletes `support/openharmony/`.
+  `check_sdl3_windowing_contracts.py` asserts the new Linux `cfg` strings.
+
+Kept on purpose: `resources/resource_protocol/license.html` still lists the OHOS crates. It is
+a generated upstream file that was already out of date (see the WebXR entry). Comments that
+only mention OpenHarmony now say Android. `roves-action` still has an `ohos` input that passes
+`--ohos`; it has to be removed when `roves-action` moves to a release that contains this
+change, since `mach build --ohos` is now an error.
+
+Verified: `AWS_LC_SYS_PREBUILT_NASM=1 cargo check -p servoshell --release` finishes with no
+errors. Its warnings (`roves-js` unsafe-op and unused items, unused `IntoHandle` imports and
+unneeded `unsafe` blocks in `script`/`script_bindings`, `servo.rs`' unused `GenericSender`) are
+all in code this change did not touch. The Android target is not installed on the Windows dev
+box, so the Android `cfg`s were checked by reading them. `ruff check --select F` passes on the
+edited Python files, `support/check_sdl3_windowing_contracts.py` passes, and `./mach build
+--help` and `./mach bundle --help` work. Applying 0001-0218 (skipping 0042, as CI does) to the
+pristine v0.5.0 archive and deleting `REMOVED_PATHS.txt` gives every modified source file
+byte-identical to this tree, and the deleted paths are absent. The `Cargo.lock` hunks in 0218
+are written against the rebuilt `Cargo.lock` (which already differed from this tree's by 2131
+diff lines), because the hunks from this tree's lock did not apply there; afterwards the
+difference is 2123 lines.
+
+## 2026-10-15 - GStreamer downloads: check the whole package, retry on Windows too
+
+**Servo file:** `python/servo/platform/macos.py`. **Patch:** `0219-macos-gstreamer-pkgutil-check.patch`
+after 0218. Roves-only: `.github/workflows/{release,perf-ab,test,v8}.yml`.
+
+The v0.7.11 release failed on 3 of 6 jobs because gstreamer.freedesktop.org cut responses short.
+On macOS the truncated `.pkg` still started with `xar!`, so 0203's header check let it through and
+`installer` rejected it. `download_pkg` now accepts a package only when `pkgutil --check-signature`
+succeeds; that reads the whole archive and catches truncation. It makes up to 5 attempts. On
+Windows the workflows downloaded the GStreamer installer with a single `Invoke-WebRequest` ("The
+response ended prematurely"); every workflow now retries it up to 5 times, waiting 15 s more
+after each failure.

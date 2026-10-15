@@ -53,13 +53,12 @@ max_log_level = ["log/release_max_level_info"]
 media-gstreamer = ["servo/media-gstreamer"]
 native-bluetooth = ["servo/native-bluetooth"]
 tracing = ["dep:tracing", "dep:tracing-subscriber", "servo/tracing"]
-tracing-hitrace = ["tracing", "dep:hitrace"]
 tracing-perfetto = ["tracing", "dep:tracing-perfetto"]
 tracing-tracy = ["tracing", "dep:tracing-tracy"]
 vello = ["servo/vello"]
 webgl_backtrace = ["servo/webgl_backtrace"]
 webgpu = ["servo/webgpu"]
-# Desktop only (see the `not(any(target_os = "android", target_env = "ohos"))`
+# Desktop only (see the `not(target_os = "android")`
 # dependency block below) — mirrors the equivalent `steam` feature in
 # ../../../../src-tauri/Cargo.toml. Exposes a `steam:` protocol scheme to web
 # content; see desktop/protocols/steam.rs.
@@ -79,7 +78,6 @@ dpi = { workspace = true }
 env_logger = { workspace = true }
 euclid = { workspace = true }
 headers = { workspace = true }
-hitrace = { workspace = true, optional = true }
 http = { workspace = true }
 image = { workspace = true }
 keyboard-types = { workspace = true }
@@ -101,33 +99,12 @@ webdriver_server = { workspace = true }
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = { workspace = true }
 jni = { workspace = true }
+nix = { workspace = true, features = ["fs"] }
+serde_json = { workspace = true }
+surfman = { workspace = true, features = ["sm-angle-default"] }
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 backtrace = { workspace = true }
-
-[target.'cfg(target_env = "ohos")'.dependencies]
-env_filter = { workspace = true }
-euclid = { workspace = true }
-hilog = { workspace = true }
-# force inprocess until we add multi-process support for ohos
-ipc-channel = { workspace = true, features = ["force-inprocess"] }
-napi-derive-ohos = { workspace = true }
-napi-ohos = { workspace = true }
-ohos-abilitykit-sys = { workspace = true, features = ["api-14"] }
-ohos-deviceinfo = { workspace = true }
-ohos-ime = { workspace = true }
-ohos-ime-sys = { workspace = true }
-ohos-vsync = { workspace = true }
-ohos-window-manager-sys = { workspace = true, features = ["api-14"] }
-xcomponent-sys = { workspace = true, features = ["api-14", "keyboard-types"] }
-
-[target.'cfg(any(target_os = "android", target_env = "ohos"))'.dependencies]
-nix = { workspace = true, features = ["fs"] }
-serde_json = { workspace = true }
-servo-base = { workspace = true }
-surfman = { workspace = true, features = ["sm-angle-default"] }
-
-[target.'cfg(not(any(target_os = "android", target_env = "ohos")))'.dependencies]
 base64 = { workspace = true }
 dirs = { workspace = true }
 egui = { workspace = true }
@@ -142,10 +119,10 @@ steamworks = { version = "0.13", optional = true }
 surfman = { workspace = true, features = ["sm-raw-window-handle-06"] }
 sysinfo = { workspace = true }
 
-[target.'cfg(any(all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))'.dependencies]
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 signal-hook-registry = { workspace = true }
 
-[target.'cfg(all(target_os = "linux", not(target_env = "ohos")))'.dependencies]
+[target.'cfg(target_os = "linux")'.dependencies]
 surfman = { workspace = true, features = ["sm-x11"] }
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]

@@ -12,10 +12,7 @@ use std::rc::Rc;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use euclid::Rect;
 use image::{DynamicImage, ImageFormat, RgbaImage};
-#[cfg(all(
-    any(coverage, llvm_pgo),
-    any(target_os = "android", target_env = "ohos")
-))]
+#[cfg(all(any(coverage, llvm_pgo), target_os = "android"))]
 use libc::c_char;
 use log::{error, info, warn};
 use servo::{
@@ -32,19 +29,13 @@ use url::Url;
 // On macOS the delegate is compiled but only created when `ROVES_MACOS_GAMEPAD=1` (see
 // `desktop::gamepad::runtime_enabled`): SDL3's gamepad init once hung the shell there, cause
 // unconfirmed on a real Mac. See CUSTOMIZATIONS.md's SDL3 gamepad entries.
-#[cfg(all(
-    feature = "gamepad",
-    not(any(target_os = "android", target_env = "ohos"))
-))]
+#[cfg(all(feature = "gamepad", not(target_os = "android")))]
 pub(crate) use crate::desktop::gamepad::ServoshellGamepadDelegate;
 use crate::prefs::ServoShellPreferences;
 use crate::webdriver::WebDriverEmbedderControls;
 use crate::window::{PlatformWindow, ServoShellWindow, ServoShellWindowId};
 
-#[cfg(all(
-    any(coverage, llvm_pgo),
-    any(target_os = "android", target_env = "ohos")
-))]
+#[cfg(all(any(coverage, llvm_pgo), target_os = "android"))]
 unsafe extern "C" {
     fn __llvm_profile_set_filename(file: *const c_char);
     fn __llvm_profile_write_file();
@@ -144,7 +135,7 @@ impl WebViewCollection {
 }
 
 /// A command received via the user interacting with the user interface.
-#[cfg(any(target_os = "android", target_env = "ohos"))]
+#[cfg(target_os = "android")]
 pub(crate) enum UserInterfaceCommand {
     Go(String),
     Back,
@@ -156,10 +147,7 @@ pub(crate) struct RunningAppState {
     /// The gamepad provider, used for handling gamepad events and set on each WebView.
     /// May be `None` if gamepad support is disabled or failed to initialize, or on macOS
     /// without the runtime opt-in (see the `use` above).
-    #[cfg(all(
-        feature = "gamepad",
-        not(any(target_os = "android", target_env = "ohos"))
-    ))]
+    #[cfg(all(feature = "gamepad", not(target_os = "android")))]
     gamepad_delegate: Option<Rc<ServoshellGamepadDelegate>>,
 
     /// The [`WebDriverSenders`] used to reply to pending WebDriver requests.
@@ -230,10 +218,7 @@ impl RunningAppState {
         event_loop_waker: Box<dyn EventLoopWaker>,
         user_content_manager: Rc<UserContentManager>,
         default_preferences: Preferences,
-        #[cfg(all(
-            feature = "gamepad",
-            not(any(target_os = "android", target_env = "ohos"))
-        ))]
+        #[cfg(all(feature = "gamepad", not(target_os = "android")))]
         gamepad_delegate: Option<Rc<ServoshellGamepadDelegate>>,
     ) -> Self {
         servo.set_delegate(Rc::new(ServoShellServoDelegate));
@@ -252,10 +237,7 @@ impl RunningAppState {
         Self {
             windows: Default::default(),
             focused_window: Default::default(),
-            #[cfg(all(
-                feature = "gamepad",
-                not(any(target_os = "android", target_env = "ohos"))
-            ))]
+            #[cfg(all(feature = "gamepad", not(target_os = "android")))]
             gamepad_delegate,
             webdriver_senders: RefCell::default(),
             webdriver_embedder_controls: Default::default(),
@@ -324,7 +306,7 @@ impl RunningAppState {
         *self.focused_window.borrow_mut() = Some(window);
     }
 
-    #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
+    #[cfg_attr(target_os = "android", expect(dead_code))]
     pub(crate) fn window(&self, id: ServoShellWindowId) -> Option<Rc<ServoShellWindow>> {
         self.windows.borrow().get(&id).cloned()
     }
@@ -343,10 +325,7 @@ impl RunningAppState {
         &self.servo
     }
 
-    #[cfg(all(
-        feature = "gamepad",
-        not(any(target_os = "android", target_env = "ohos"))
-    ))]
+    #[cfg(all(feature = "gamepad", not(target_os = "android")))]
     pub(crate) fn gamepad_delegate(&self) -> Option<Rc<ServoshellGamepadDelegate>> {
         self.gamepad_delegate.clone()
     }
@@ -360,10 +339,7 @@ impl RunningAppState {
         self.servoshell_preferences.webdriver_port.set(None);
         self.exit_scheduled.set(true);
 
-        #[cfg(all(
-            any(coverage, llvm_pgo),
-            any(target_os = "android", target_env = "ohos")
-        ))]
+        #[cfg(all(any(coverage, llvm_pgo), target_os = "android"))]
         {
             use std::ffi::CString;
 
@@ -411,7 +387,7 @@ impl RunningAppState {
         create_platform_window: Option<&dyn Fn(Url) -> Rc<dyn PlatformWindow>>,
     ) -> bool {
         // We clone here to avoid a double borrow. User interface commands can update the list of windows.
-        #[cfg(any(target_os = "android", target_env = "ohos"))]
+        #[cfg(target_os = "android")]
         {
             let windows: Vec<_> = self.windows.borrow().values().cloned().collect();
             for window in windows {
@@ -622,7 +598,7 @@ impl RunningAppState {
     }
 
 
-    #[cfg(not(any(target_os = "android", target_env = "ohos")))]
+    #[cfg(not(target_os = "android"))]
     pub(crate) fn handle_focused(&self, window: Rc<ServoShellWindow>) {
         *self.focused_window.borrow_mut() = Some(window);
     }
@@ -650,7 +626,7 @@ impl RunningAppState {
         }
     }
 
-    #[cfg(not(any(target_os = "android", target_env = "ohos")))]
+    #[cfg(not(target_os = "android"))]
     pub(crate) fn set_accessibility_active(&self, active: bool) {
         let was_active = self.accessibility_active.replace(active);
         if active == was_active {
@@ -766,10 +742,7 @@ impl WebViewDelegate for RunningAppState {
 
         if status == LoadStatus::Complete {
             // A new document knows no gamepads yet; see `announce_connected_gamepads`.
-            #[cfg(all(
-                feature = "gamepad",
-                not(any(target_os = "android", target_env = "ohos"))
-            ))]
+            #[cfg(all(feature = "gamepad", not(target_os = "android")))]
             if let Some(gamepad_delegate) = self.gamepad_delegate() {
                 gamepad_delegate.announce_connected_gamepads(self);
             }
@@ -893,7 +866,7 @@ impl ServoDelegate for ServoShellServoDelegate {
 
     fn show_console_message(&self, level: ConsoleLogLevel, message: String) {
         // For messages without a WebView context, apply platform-specific behavior
-        #[cfg(not(any(target_os = "android", target_env = "ohos")))]
+        #[cfg(not(target_os = "android"))]
         println!("{message}");
         log::log!(level.into(), "{message}");
     }

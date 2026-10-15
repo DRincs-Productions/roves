@@ -30,17 +30,18 @@ GSTREAMER_ROOT = "/Library/Frameworks/GStreamer.framework/Versions/1.0"
 
 
 
-def download_pkg(description: str, url: str, destination_path: str, attempts: int = 3) -> None:
+def download_pkg(description: str, url: str, destination_path: str, attempts: int = 5) -> None:
     """Download a macOS installer package, retrying when the server hands back something that is
-    not one (gstreamer.freedesktop.org sometimes returns a truncated or error body)."""
+    not a complete one (gstreamer.freedesktop.org sometimes cuts the body short). `pkgutil
+    --check-signature` reads the whole archive, so unlike a header check it catches truncation."""
     for attempt in range(1, attempts + 1):
         if os.path.exists(destination_path):
             os.remove(destination_path)
         util.download_file(description, url, destination_path)
-        with open(destination_path, "rb") as package:
-            if package.read(4) == b"xar!":
-                return
-        print(f"{description}: downloaded file is not a valid package (attempt {attempt}/{attempts})")
+        check = subprocess.run(["pkgutil", "--check-signature", destination_path], capture_output=True)
+        if check.returncode == 0:
+            return
+        print(f"{description}: downloaded package is incomplete or invalid (attempt {attempt}/{attempts})")
         time.sleep(10 * attempt)
     raise RuntimeError(f"Could not download a valid package from {url}")
 

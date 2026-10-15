@@ -93,3 +93,14 @@ components/script_bindings/webidls/XRWebGLLayer.webidl
 components/script_bindings/webidls/XRWebGLSubImage.webidl
 # Only read by the deleted `mach package` (package_commands.py); its one setting was VR prefs.
 resources/package-prefs.json
+
+# OpenHarmony (OHOS) port, deleted entirely (see CUSTOMIZATIONS.md, 2026-10-15 "Delete the
+# OpenHarmony port" entry; the matching edits to the files that referenced it are patch 0218).
+# Roves never built for `target_env = "ohos"`: the ArkTS app, the NAPI shell, the OHOS media
+# backend and font list, the libservoshell.so version script and the HiTrace bench config.
+ports/servoshell/egl/ohos
+ports/servoshell/platform/openharmony
+support/openharmony
+support/hitrace-bencher
+components/media/backends/ohos
+components/fonts/platform/freetype/ohos

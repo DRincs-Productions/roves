@@ -100,10 +100,10 @@ def main() -> None:
     # Keep this explicit so an attempted dependency removal cannot silently disable it.
     assert "setup_gl_accelerated_media(details.0, details.1)" in headed_source
     assert "#[cfg(target_os = \"windows\")]" in accelerated_media_source
-    assert "#[cfg(all(target_os = \"linux\", not(target_env = \"ohos\")))]" in accelerated_media_source
+    assert "#[cfg(target_os = \"linux\")]" in accelerated_media_source
     assert "initialize_gl_accelerated_media" in accelerated_media_source
     assert 'surfman = { workspace = true, features = ["sm-raw-window-handle-06"] }' in servoshell_manifest
-    assert '[target.\'cfg(all(target_os = "linux", not(target_env = "ohos")))\'.dependencies]' in servoshell_manifest
+    assert "[target.'cfg(target_os = \"linux\")'.dependencies]" in servoshell_manifest
     assert 'surfman = { workspace = true, features = ["sm-x11"] }' in servoshell_manifest
     assert "egui::Event::Text(text.to_owned())" in gui_source, (
         "SDL TextInput must become egui Event::Text so dialog TextEdits accept typing"

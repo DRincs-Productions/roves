@@ -2357,14 +2357,14 @@ impl Handler {
         let id = Uuid::new_v4().to_string();
 
         let pointer_ids = self.session()?.pointer_ids();
-        #[cfg(not(any(target_env = "ohos", target_os = "android")))]
+        #[cfg(not(target_os = "android"))]
         let pointer_type = PointerType::Mouse;
 
         // There is currently no spec for touchscreen element click support,
         // which assumes mouse event.
         // There is an ongoing discussion in W3C:
         // <https://github.com/w3c/webdriver/issues/1925>
-        #[cfg(any(target_env = "ohos", target_os = "android"))]
+        #[cfg(target_os = "android")]
         let pointer_type = PointerType::Touch;
 
         self.session_mut()?.input_state_table.insert(

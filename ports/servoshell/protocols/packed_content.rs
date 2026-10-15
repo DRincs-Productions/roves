@@ -9,7 +9,7 @@
 //! a not-yet-extracted file lives in, the first time it's touched" only needs to exist once.
 //! Extracted out of `file.rs` when `game.rs` was added rather than duplicated — see
 //! CUSTOMIZATIONS.md's "Virtual content root (game: protocol)" entry. `resolve` returns
-//! `None` on Android/OpenHarmony today, harmlessly: `mach bundle --android` has no
+//! `None` on Android today, harmlessly: `mach bundle --android` has no
 //! `--content-compress` support at all yet, so no `.roves-content-source` marker this looks
 //! for is ever written there.
 

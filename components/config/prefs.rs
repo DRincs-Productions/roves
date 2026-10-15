@@ -388,7 +388,6 @@ pub struct Preferences {
     pub user_agent: String,
     /// Whether or not the viewport meta tag is enabled.
     pub viewport_meta_enabled: bool,
-    pub log_filter: String,
     /// Whether the accessibility code is enabled.
     pub accessibility_enabled: bool,
     /// Whether to run accessibility tree integrity checks, and any other expensive checks.
@@ -488,9 +487,7 @@ impl Preferences {
             dom_testperf_enabled: false,
             dom_testutils_enabled: false,
             // Following Firefox and Chrome, we are enabling the touch events legacy APIs for android.
-            // Additionally, enabling it in ohos for compatibility as well.
-            dom_touch_events_legacy_apis_enabled: cfg!(target_os = "android") |
-                cfg!(target_env = "ohos"),
+            dom_touch_events_legacy_apis_enabled: cfg!(target_os = "android"),
             dom_transient_activation_duration_ms: 5000,
             dom_web_animations_enabled: false,
             // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the
@@ -599,7 +596,6 @@ impl Preferences {
             network_max_content_length: 5 * 1024 * 1024,
             session_history_max_length: 20,
             shell_background_color_rgba: [1.0, 1.0, 1.0, 1.0],
-            log_filter: String::new(),
             thread_pool_workers_max: 4,
             thread_pool_async_runtime_workers_max: 6,
             thread_pool_fallback_workers: 3,
@@ -646,7 +642,6 @@ impl Default for Preferences {
 pub enum UserAgentPlatform {
     Desktop,
     Android,
-    OpenHarmony,
     Ios,
 }
 
@@ -656,8 +651,6 @@ impl UserAgentPlatform {
     pub const fn default() -> Self {
         if cfg!(target_os = "android") {
             Self::Android
-        } else if cfg!(target_env = "ohos") {
-            Self::OpenHarmony
         } else if cfg!(target_os = "ios") {
             Self::Ios
         } else {
@@ -694,9 +687,6 @@ impl UserAgentPlatform {
                     "Mozilla/5.0 (Android 10; Mobile; rv:140.0) Servo/{SERVO_VERSION} Firefox/140.0"
                 )
             },
-            UserAgentPlatform::OpenHarmony => format!(
-                "Mozilla/5.0 (OpenHarmony; Mobile; rv:140.0) Servo/{SERVO_VERSION} Firefox/140.0"
-            ),
             UserAgentPlatform::Ios => format!(
                 "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X; rv:140.0) Servo/{SERVO_VERSION} Firefox/140.0"
             ),

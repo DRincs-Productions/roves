@@ -394,15 +394,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arc-swap"
-version = "1.9.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c049c0be4daef0b145cb3555416b3b8ef5b7888a38aea1a3a155801fe7b0810b"
-dependencies = [
- "rustversion",
-]
-
-[[package]]
 name = "arg_enum_proc_macro"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -423,16 +414,6 @@ dependencies = [
  "blake2",
  "cpufeatures 0.3.0",
  "password-hash",
-]
-
-[[package]]
-name = "arkui-sys"
-version = "0.3.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a48752cedd8bb17119f54c0eccd5176eca7e4d034aef123ad58815889ee7a72"
-dependencies = [
- "ohos-drawing-sys",
- "ohos-sys-opaque-types",
 ]
 
 [[package]]
@@ -471,7 +452,7 @@ version = "0.38.0+1.3.281"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bb44936d800fea8f016d7f2311c6a4f97aebd5dc86f09906139ec848cf3a46f"
 dependencies = [
- "libloading 0.8.9",
+ "libloading",
 ]
 
 [[package]]
@@ -1365,7 +1346,7 @@ checksum = "157a8ba7b480713b56f4c09fd13fc3e0a22a5dfab8097ba61cbc5feef950788a"
 dependencies = [
  "glob",
  "libc",
- "libloading 0.8.9",
+ "libloading",
 ]
 
 [[package]]
@@ -1517,15 +1498,6 @@ dependencies = [
  "serde",
  "sha2 0.10.9",
  "url",
-]
-
-[[package]]
-name = "convert_case"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "affbf0190ed2caf063e3def54ff444b449371d55c58e513a95ab98eca50adb49"
-dependencies = [
- "unicode-segmentation",
 ]
 
 [[package]]
@@ -1809,12 +1781,6 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
-
-[[package]]
-name = "ctor"
-version = "1.0.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d83cb7e7a873830708d6b02a78cd36a592c6fa14bf267b68725103b85c0d77f"
 
 [[package]]
 name = "ctr"
@@ -2157,7 +2123,7 @@ version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab8ecd87370524b461f8557c119c405552c396ed91fc0a8eec68679eab26f94a"
 dependencies = [
- "libloading 0.8.9",
+ "libloading",
 ]
 
 [[package]]
@@ -3784,43 +3750,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
 
 [[package]]
-name = "hilog"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2cde43461a56942d36c0392c0eb8e108af2fbb48966c145fd126df4ce7b5c6c1"
-dependencies = [
- "arc-swap",
- "env_filter",
- "hilog-sys",
- "log",
-]
-
-[[package]]
-name = "hilog-sys"
-version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f715f263b6e73aa2322b59057134b4daf56a765cbebc2f6b35e640ffded3361b"
-dependencies = [
- "log",
-]
-
-[[package]]
-name = "hitrace"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c3f6973c97140d216f538db9341d209bba665c23ccbf7b1ec8c1a7896701fbc"
-dependencies = [
- "hitrace-sys",
- "tracing-core",
-]
-
-[[package]]
-name = "hitrace-sys"
-version = "0.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1955ab89524976e5949c171fe571bf1821bb28574b71b262f8787e34e32b7f10"
-
-[[package]]
 name = "hkdf"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4629,7 +4558,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6aae1df220ece3c0ada96b8153459b67eebe9ae9212258bb0134ae60416fdf76"
 dependencies = [
  "libc",
- "libloading 0.8.9",
+ "libloading",
  "pkg-config",
 ]
 
@@ -4709,16 +4638,6 @@ name = "libloading"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
-dependencies = [
- "cfg-if",
- "windows-link 0.2.1",
-]
-
-[[package]]
-name = "libloading"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "754ca22de805bb5744484a5b151a9e1a8e837d5dc232c2d7d8c2e3492edc8b60"
 dependencies = [
  "cfg-if",
  "windows-link 0.2.1",
@@ -5157,63 +5076,6 @@ dependencies = [
  "rustc-hash 1.1.0",
  "serde",
  "thiserror 2.0.18",
-]
-
-[[package]]
-name = "napi-build-ohos"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "617bcd176a3dc3d96c0acad112a482f592242d6fba6773a9eb8d90e042a35260"
-
-[[package]]
-name = "napi-derive-backend-ohos"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b06bf282ab442eed04c89f8a833bd06d4cf22f18654f50d848449db9e94438a"
-dependencies = [
- "convert_case",
- "proc-macro2",
- "quote",
- "semver",
- "syn 2.0.119",
-]
-
-[[package]]
-name = "napi-derive-ohos"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "419b1721d9f21d76c1a5cb38e2628211cb786b5efb9e1dd2fc049ba1cb938e47"
-dependencies = [
- "convert_case",
- "ctor",
- "napi-derive-backend-ohos",
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
-name = "napi-ohos"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe1a014105134b7889e85f5ab6f8ec5240db43ed37e6c4a38bd7b4a164b345e0"
-dependencies = [
- "bitflags 2.13.1",
- "ctor",
- "futures",
- "napi-build-ohos",
- "napi-sys-ohos",
- "nohash-hasher",
- "rustc-hash 2.1.3",
-]
-
-[[package]]
-name = "napi-sys-ohos"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "266964b97e57f3ca023ed13e7c78d4c8f3900aa00466bbeb8cb7746653cabc5f"
-dependencies = [
- "libloading 0.9.0",
 ]
 
 [[package]]
@@ -5832,106 +5694,6 @@ dependencies = [
  "dbl",
  "subtle",
  "zeroize",
-]
-
-[[package]]
-name = "ohos-abilitykit-sys"
-version = "0.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d6aec8b93b80963e0617eecfda4519eb3a8e57a19f9f8be6243bd02020632b3"
-dependencies = [
- "ohos-sys-opaque-types",
-]
-
-[[package]]
-name = "ohos-deviceinfo"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8e75dc6477dd4a8bafe2e7b1feb9cf10e882d3b15903e51f320a80015a59d93"
-dependencies = [
- "ohos-deviceinfo-sys",
-]
-
-[[package]]
-name = "ohos-deviceinfo-sys"
-version = "0.1.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee8ebdc19fbffb06eead79d6ab628b05fa8514d5ac881540719d04469c772738"
-
-[[package]]
-name = "ohos-drawing-sys"
-version = "0.3.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ea45a01534a3756d12afd6cc20c9ce3cb831a5f8a148e6e80b507da71b026f5"
-dependencies = [
- "ohos-sys-opaque-types",
-]
-
-[[package]]
-name = "ohos-ime"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3d9911e7da9c4d59d9438fc8612afa4a109825f7a90a30a0df2c9a5bb7aedce"
-dependencies = [
- "log",
- "ohos-ime-sys",
-]
-
-[[package]]
-name = "ohos-ime-sys"
-version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "84136a706a16231219ce643b2a7b75e690a84d234ec57a0f856fbd6cf450767f"
-dependencies = [
- "ohos-sys-opaque-types",
-]
-
-[[package]]
-name = "ohos-media-sys"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ffb75eb3dc3eefa0e4c9d641369b609091d77e395f1f56c9eaddead6e9330b6"
-dependencies = [
- "ohos-sys-opaque-types",
-]
-
-[[package]]
-name = "ohos-sys-opaque-types"
-version = "0.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0135000ddab1491bd02a60e855c02e71be855845ca354162c1e189dea79d015"
-
-[[package]]
-name = "ohos-vsync"
-version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa1d0e6aeb34bd6ba2ad5649d51f30f7fa69f56b4da6c9ce49c508755a6806f1"
-dependencies = [
- "ohos-vsync-sys",
-]
-
-[[package]]
-name = "ohos-vsync-sys"
-version = "0.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41d5d6c8e9a296dab3b7631db09cc0e1cf718ab39a705f17611966d307fef603"
-
-[[package]]
-name = "ohos-window-manager-sys"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "846cdada69199bfd4679d0d144ddc90dd6b9a02f10e1c4dae704428b9ced4acf"
-dependencies = [
- "ohos-sys-opaque-types",
-]
-
-[[package]]
-name = "ohos-window-sys"
-version = "0.1.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2bd994e92b2c9daaa310068b45e3c3108d1a7c26a01daded0f3ddada692e688e"
-dependencies = [
- "ohos-sys-opaque-types",
 ]
 
 [[package]]
@@ -7703,7 +7465,6 @@ dependencies = [
  "servo-media",
  "servo-media-dummy",
  "servo-media-gstreamer",
- "servo-media-ohos",
  "servo-media-thread",
  "servo-net",
  "servo-net-traits",
@@ -8117,7 +7878,6 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-core-text",
- "ohos-deviceinfo-sys",
  "parking_lot",
  "postcard",
  "read-fonts 0.41.0",
@@ -8489,28 +8249,6 @@ dependencies = [
  "gstreamer-video",
  "servo-media-gstreamer-render",
  "servo-media-player",
-]
-
-[[package]]
-name = "servo-media-ohos"
-version = "0.5.0"
-dependencies = [
- "crossbeam-channel",
- "libc",
- "log",
- "mime",
- "ohos-media-sys",
- "ohos-sys-opaque-types",
- "ohos-window-sys",
- "serde_json",
- "servo-base",
- "servo-media",
- "servo-media-audio",
- "servo-media-player",
- "servo-media-streams",
- "servo-media-traits",
- "servo-media-webrtc",
- "yuv",
 ]
 
 [[package]]
@@ -9283,32 +9021,20 @@ dependencies = [
  "egui",
  "egui-file-dialog",
  "egui_glow",
- "env_filter",
  "env_logger",
  "euclid",
  "glow",
  "headers",
- "hilog",
- "hitrace",
  "http 1.5.0",
  "image",
- "ipc-channel",
  "jni 0.22.4",
  "keyboard-types",
  "libc",
  "log",
  "mime_guess",
- "napi-derive-ohos",
- "napi-ohos",
  "nix",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
- "ohos-abilitykit-sys",
- "ohos-deviceinfo",
- "ohos-ime",
- "ohos-ime-sys",
- "ohos-vsync",
- "ohos-window-manager-sys",
  "raw-window-handle",
  "roves-content-packer",
  "rustls",
@@ -9316,7 +9042,6 @@ dependencies = [
  "serde_json",
  "servo",
  "servo-allocator",
- "servo-base",
  "servo-webdriver-server",
  "signal-hook-registry",
  "steamworks",
@@ -9330,7 +9055,6 @@ dependencies = [
  "url",
  "windows-sys 0.61.2",
  "winresource",
- "xcomponent-sys",
 ]
 
 [[package]]
@@ -11718,7 +11442,7 @@ dependencies = [
  "js-sys",
  "khronos-egl",
  "libc",
- "libloading 0.8.9",
+ "libloading",
  "log",
  "naga 29.0.4",
  "ndk-sys",
@@ -11771,7 +11495,7 @@ dependencies = [
  "js-sys",
  "khronos-egl",
  "libc",
- "libloading 0.8.9",
+ "libloading",
  "log",
  "naga 30.0.0",
  "naga-types",
@@ -12456,7 +12180,7 @@ dependencies = [
  "as-raw-xcb-connection",
  "gethostname",
  "libc",
- "libloading 0.8.9",
+ "libloading",
  "once_cell",
  "rustix 1.1.4",
  "x11rb-protocol",
@@ -12498,17 +12222,6 @@ checksum = "32e45ad4206f6d2479085147f02bc2ef834ac85886624a23575ae137c8aa8156"
 dependencies = [
  "libc",
  "rustix 1.1.4",
-]
-
-[[package]]
-name = "xcomponent-sys"
-version = "0.3.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52f3d0f0bc477f9a5e25bcdede5520c27faa2b39d505f867d836f43f99189add"
-dependencies = [
- "arkui-sys",
- "keyboard-types",
- "ohos-sys-opaque-types",
 ]
 
 [[package]]
@@ -12632,16 +12345,6 @@ dependencies = [
  "quote",
  "syn 3.0.5",
  "synstructure 0.14.0",
-]
-
-[[package]]
-name = "yuv"
-version = "0.8.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d85a782d94ee43f078bcfd6fa82d4e6a5b2d1cfbbad168e4df5a9f7b39ef48c"
-dependencies = [
- "num-traits",
- "rayon",
 ]
 
 [[package]]

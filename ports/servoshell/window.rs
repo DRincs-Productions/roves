@@ -7,7 +7,7 @@ use std::rc::Rc;
 use std::sync::atomic::AtomicU64;
 
 use euclid::Scale;
-#[cfg(any(target_os = "android", target_env = "ohos"))]
+#[cfg(target_os = "android")]
 use log::warn;
 use servo::{
     AuthenticationRequest, BluetoothDeviceSelectionRequest, ConsoleLogLevel, Cursor,
@@ -17,21 +17,21 @@ use servo::{
 };
 use url::Url;
 
-#[cfg(any(target_os = "android", target_env = "ohos"))]
+#[cfg(target_os = "android")]
 use crate::parser::location_bar_input_to_url;
-#[cfg(any(target_os = "android", target_env = "ohos"))]
+#[cfg(target_os = "android")]
 use crate::running_app_state::UserInterfaceCommand;
 use crate::running_app_state::{RunningAppState, WebViewCollection};
 
 // This should vary by zoom level and maybe actual text size (focused or under cursor)
-#[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
+#[cfg_attr(target_os = "android", expect(dead_code))]
 pub(crate) const LINE_HEIGHT: f32 = 76.0;
-#[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
+#[cfg_attr(target_os = "android", expect(dead_code))]
 pub(crate) const LINE_WIDTH: f32 = 76.0;
 
 /// <https://github.com/web-platform-tests/wpt/blob/9320b1f724632c52929a3fdb11bdaf65eafc7611/webdriver/tests/classic/set_window_rect/set.py#L287-L290>
 /// "A window size of 10x10px shouldn't be supported by any browser."
-#[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
+#[cfg_attr(target_os = "android", expect(dead_code))]
 pub(crate) const MIN_WINDOW_INNER_SIZE: DeviceIntSize = DeviceIntSize::new(100, 100);
 
 static SERVOSHELL_WINDOW_ID: AtomicU64 = AtomicU64::new(0);
@@ -46,7 +46,7 @@ impl From<u64> for ServoShellWindowId {
 }
 
 impl ServoShellWindowId {
-    #[cfg_attr(not(any(target_os = "android", target_env = "ohos")), expect(unused))]
+    #[cfg_attr(not(target_os = "android"), expect(unused))]
     pub(crate) fn next() -> ServoShellWindowId {
         ServoShellWindowId(SERVOSHELL_WINDOW_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
     }
@@ -65,7 +65,7 @@ pub(crate) struct ServoShellWindow {
     /// because every `WebView` shares a `RenderingContext`.
     needs_repaint: Cell<bool>,
     /// Pending [`UserInterfaceCommand`] that have yet to be processed by the main loop.
-    #[cfg(any(target_os = "android", target_env = "ohos"))]
+    #[cfg(target_os = "android")]
     pending_commands: RefCell<Vec<UserInterfaceCommand>>,
 }
 
@@ -77,7 +77,7 @@ impl ServoShellWindow {
             close_scheduled: Default::default(),
             needs_update: Default::default(),
             needs_repaint: Default::default(),
-            #[cfg(any(target_os = "android", target_env = "ohos"))]
+            #[cfg(target_os = "android")]
             pending_commands: Default::default(),
         }
     }
@@ -104,7 +104,7 @@ impl ServoShellWindow {
         state: Rc<RunningAppState>,
         url: Url,
     ) -> WebView {
-        #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(unused_mut))]
+        #[cfg_attr(target_os = "android", expect(unused_mut))]
         let mut webview_builder =
             WebViewBuilder::new(state.servo(), self.platform_window.rendering_context())
                 .url(url)
@@ -112,10 +112,7 @@ impl ServoShellWindow {
                 .user_content_manager(state.user_content_manager.clone())
                 .delegate(state.clone());
 
-        #[cfg(all(
-            feature = "gamepad",
-            not(any(target_os = "android", target_env = "ohos"))
-        ))]
+        #[cfg(all(feature = "gamepad", not(target_os = "android")))]
         if let Some(gamepad_delegate) = state.gamepad_delegate() {
             webview_builder = webview_builder.gamepad_delegate(gamepad_delegate);
         }
@@ -207,7 +204,7 @@ impl ServoShellWindow {
         self.set_needs_update();
     }
 
-    #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
+    #[cfg_attr(target_os = "android", expect(dead_code))]
     pub(crate) fn activate_webview_by_index(&self, index_to_activate: usize) {
         self.webview_collection
             .borrow_mut()
@@ -215,7 +212,7 @@ impl ServoShellWindow {
         self.set_needs_update();
     }
 
-    #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
+    #[cfg_attr(target_os = "android", expect(dead_code))]
     pub(crate) fn get_active_webview_index(&self) -> Option<usize> {
         let active_id = self.webview_collection.borrow().active_id()?;
         self.webviews()
@@ -260,10 +257,7 @@ impl ServoShellWindow {
         self.webview_collection.borrow().active().cloned()
     }
 
-    #[cfg_attr(
-        not(any(target_os = "android", target_env = "ohos")),
-        expect(dead_code)
-    )]
+    #[cfg_attr(not(target_os = "android"), expect(dead_code))]
     pub(crate) fn active_or_newest_webview(&self) -> Option<WebView> {
         let webview_collection = self.webview_collection.borrow();
         webview_collection
@@ -294,13 +288,13 @@ impl ServoShellWindow {
         self.set_needs_repaint();
     }
 
-#[cfg(any(target_os = "android", target_env = "ohos"))]
+    #[cfg(target_os = "android")]
     pub(crate) fn queue_user_interface_command(&self, command: UserInterfaceCommand) {
         self.pending_commands.borrow_mut().push(command)
     }
 
     /// Takes any events generated during UI updates and performs their actions.
-    #[cfg(any(target_os = "android", target_env = "ohos"))]
+    #[cfg(target_os = "android")]
     pub(crate) fn handle_interface_commands(self: &Rc<Self>, state: &Rc<RunningAppState>) {
         let commands = std::mem::take(&mut *self.pending_commands.borrow_mut());
         for event in commands {
@@ -345,10 +339,10 @@ impl ServoShellWindow {
 pub(crate) trait PlatformWindow {
     fn id(&self) -> ServoShellWindowId;
     fn screen_geometry(&self) -> ScreenGeometry;
-    #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
+    #[cfg_attr(target_os = "android", expect(dead_code))]
     fn device_hidpi_scale_factor(&self) -> Scale<f32, DeviceIndependentPixel, DevicePixel>;
     fn hidpi_scale_factor(&self) -> Scale<f32, DeviceIndependentPixel, DevicePixel>;
-    #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
+    #[cfg_attr(target_os = "android", expect(dead_code))]
     fn get_fullscreen(&self) -> bool;
     /// Inform the `Window` that the state of a `WebView` has changed and that it should
     /// do an incremental update of user interface state. Returns `true` if the user
@@ -403,13 +397,13 @@ pub(crate) trait PlatformWindow {
     fn notify_crashed(&self, _: WebView, _reason: String, _backtrace: Option<String>) {}
     fn show_console_message(&self, _level: ConsoleLogLevel, _message: &str) {}
 
-    #[cfg(not(any(target_os = "android", target_env = "ohos")))]
+    #[cfg(not(target_os = "android"))]
     /// If this window is a headed window, access the concrete type.
     fn as_headed_window(&self) -> Option<&crate::desktop::headed_window::HeadedWindow> {
         None
     }
 
-    #[cfg(any(target_os = "android", target_env = "ohos"))]
+    #[cfg(target_os = "android")]
     /// If this window is a headed window, access the concrete type.
     fn as_headed_window(&self) -> Option<&crate::egl::app::EmbeddedPlatformWindow> {
         None

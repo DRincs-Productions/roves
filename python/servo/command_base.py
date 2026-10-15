@@ -34,7 +34,7 @@ from mach.decorators import CommandArgument, CommandArgumentGroup
 
 import servo.platform
 import servo.util as util
-from servo.platform.build_target import AndroidTarget, BuildTarget, OpenHarmonyTarget
+from servo.platform.build_target import AndroidTarget, BuildTarget
 from servo.util import get_default_cache_dir
 
 from python.servo.platform.build_target import SanitizerKind
@@ -317,7 +317,6 @@ class CommandBase(object):
 
         self.config.setdefault("build", {})
         self.config["build"].setdefault("android", False)
-        self.config["build"].setdefault("ohos", False)
         self.config["build"].setdefault("mode", "")
         self.config["build"].setdefault("debug-assertions", False)
         self.config["build"].setdefault("debug-mozjs", False)
@@ -334,8 +333,6 @@ class CommandBase(object):
         self.config["android"].setdefault("ndk", "")
         self.config["android"].setdefault("toolchain", "")
 
-        self.config.setdefault("ohos", {})
-        self.config["ohos"].setdefault("ndk", "")
 
     _rust_toolchain = None
 
@@ -493,13 +490,6 @@ class CommandBase(object):
                     help="Build for Android. If --target is not specified, this "
                     f"will choose the default target architecture ({AndroidTarget.DEFAULT_TRIPLE}).",
                 ),
-                CommandArgument(
-                    "--ohos",
-                    default=None,
-                    action="store_true",
-                    help="Build for OpenHarmony. If --target is not specified, this "
-                    f"will choose a default target architecture ({OpenHarmonyTarget.DEFAULT_TRIPLE}).",
-                ),
                 CommandArgument("--win-arm64", action="store_true", help="Use arm64 Windows target"),
                 CommandArgumentGroup("Feature Selection"),
                 CommandArgument(
@@ -548,7 +538,7 @@ class CommandBase(object):
                     "--flavor",
                     default=None,
                     group="Packaging options",
-                    help="Product flavor to be used when packaging with Gradle/Hvigor (android/ohos).",
+                    help="Product flavor to be used when packaging with Gradle (android).",
                 ),
             ]
 
@@ -602,7 +592,7 @@ class CommandBase(object):
 
                 if binary_selection:
                     if "servo_binary" not in kwargs:
-                        # For packaged targets (Android, OpenHarmony) the binary is not important,
+                        # For packaged targets (Android) the binary is not important,
                         # since we can't run it directly. We could return the shared library object,
                         # but that doesn't seem very useful.
                         #
@@ -648,7 +638,6 @@ class CommandBase(object):
             self.configure_build_target(kwargs, suppress_log=True)
             kwargs.pop("target", False)
             kwargs.pop("android", False)
-            kwargs.pop("ohos", False)
             return original_function(self, *args, **kwargs)
 
         return target_configuration_decorator
@@ -698,12 +687,7 @@ class CommandBase(object):
             return
 
         android = kwargs.get("android") or self.config["build"]["android"]
-        ohos = kwargs.get("ohos") or self.config["build"]["ohos"]
         target_triple = kwargs.get("target")
-
-        if android and ohos:
-            print("Cannot build both android and ohos targets simultaneously.")
-            sys.exit(1)
 
         if android and target_triple:
             print("Please specify either --target or --android.")
@@ -712,14 +696,6 @@ class CommandBase(object):
         #  Set the default Android target
         if android and not target_triple:
             target_triple = AndroidTarget.DEFAULT_TRIPLE
-
-        if ohos and target_triple:
-            print("Please specify either --target or --ohos.")
-            sys.exit(1)
-
-        #  Set the default OpenHarmony target
-        if ohos and not target_triple:
-            target_triple = OpenHarmonyTarget.DEFAULT_TRIPLE
 
         self.target = BuildTarget.from_triple(target_triple)
 
@@ -782,9 +758,9 @@ class CommandBase(object):
 
         if self.target.is_cross_build():
             args += ["--target", self.target.triple()]
-            if type(self.target) in [AndroidTarget, OpenHarmonyTarget]:
+            if type(self.target) is AndroidTarget:
                 # Note: in practice `cargo rustc` should just be used unconditionally.
-                assert command != "build", "For Android / OpenHarmony `cargo rustc` must be used instead of cargo build"
+                assert command != "build", "For Android `cargo rustc` must be used instead of cargo build"
                 if command == "rustc":
                     args += ["--lib", "--crate-type=cdylib"]
         elif target_override:

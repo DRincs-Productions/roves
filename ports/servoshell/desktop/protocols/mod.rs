@@ -3,7 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 // `file`/`game`/`packed_content` moved out to `crate::protocols` (2026-09-12) so the
-// Android/OpenHarmony EGL shell (`egl/app.rs`) could reuse them too -- see that module's own
+// Android EGL shell (`egl/app.rs`) could reuse them too -- see that module's own
 // doc comment. Everything below here is still desktop-only.
 pub(crate) mod resource;
 pub(crate) mod roves;
