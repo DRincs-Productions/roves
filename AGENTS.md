@@ -19,6 +19,14 @@ necessario e rimuovi il codice sostituito. Valuta manutenzione, licenza, compati
 piattaforme e impatto su CPU, RAM e GPU. Non aggiungere dipendenze senza un uso concreto;
 se nessuna libreria è adatta, spiega brevemente il motivo prima di implementare codice nostro.
 
+### Diagnosi del browser con Chrome DevTools (MCP)
+
+Usa Chrome DevTools (MCP), quando disponibile, per ispezionare pagine, console, rete e
+prestazioni e per raccogliere il riferimento Chrome nei confronti con Roves. Registra versioni,
+scena e condizioni di misura, distinguendo esecuzioni visibili e headless. Annuncia prima
+profili o misure costose. Se il MCP non è disponibile o l'accesso è bloccato, dichiaralo
+esplicitamente e non presentare misure ottenute con altri strumenti come risultati del MCP.
+
 ## Active work: autonomous V8 migration
 
 Read `docs/V8_MIGRATION.md` and `docs/V8_MIGRATION_HANDOFF.md` before continuing the migration.

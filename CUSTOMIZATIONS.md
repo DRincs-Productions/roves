@@ -1,3 +1,10 @@
+## 2026-10-16 - Document Chrome DevTools MCP usage
+
+Add guidance in `AGENTS.md` to use Chrome DevTools MCP when available for browser diagnosis
+and Chrome comparison measurements, recording reproducible conditions and reporting access
+limitations accurately. Announce costly profiling beforehand. Agent instructions only;
+no runtime change, engine patch or build is required.
+
 ## 2026-10-16 - Consolidate performance documentation and library selection guidance
 
 Move `ROVES_PERFORMANCE.md` to `docs/ROVES_PERFORMANCE.md` and update active links,
