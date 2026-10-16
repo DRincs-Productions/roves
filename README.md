@@ -404,7 +404,8 @@ measurement. The measurement plan and current findings are tracked in
 [`ROVES_PERFORMANCE.md`](./docs/ROVES_PERFORMANCE.md).
 
 The current development tree caches actual WebGL drawing-buffer dimensions between resizes
-to avoid repeated synchronous thread queries. Its performance impact still needs measurement.
+to avoid repeated synchronous thread queries. Isolated getter benchmarks show lower latency;
+the effect on whole-game CPU still needs measurement.
 Pixi comparison fixtures explicitly select WebGL and disable their FPS polling timer.
 The development tree also delegates Web Audio frequency analysis to RealFFT/RustFFT,
 replacing the quadratic direct transform while preserving Web Audio scaling and smoothing.

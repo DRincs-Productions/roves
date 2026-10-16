@@ -110,6 +110,10 @@ Il profiling samply è già stato eseguito: non ripartire dall'ipotesi che manch
 - [ ] Completare Web Animations per motion riusando Stylo/WebRender: timing, riproduzione,
   promise/eventi e campionamento; poi valutare compositing di transform/opacity.
 - [ ] Misurare traffico WebGL e attese sincrone di PixiJS/three.js prima di introdurre batching.
+- [ ] Misurare il trasporto AnalyserNode con 0/1/più nodi: oggi ogni blocco da 128 campioni
+  genera un callback e un task DOM anche senza letture dello spettro. Valutare un trasporto
+  limitato e raggruppato tramite librerie mantenute, preservando storia e ordine dei campioni
+  senza bloccare il thread audio; vincoli in `docs/ROVES_PERFORMANCE.md`.
 - [ ] Valutare AudioWorklet sul grafo servo-media esistente: isolate V8 dedicato, moduli,
   MessagePort e processori audio; nessun callback sul thread DOM per ogni blocco audio.
 - [ ] Verificare howler.js e Tone.js con playback reale, automazione, loop, sospensione,

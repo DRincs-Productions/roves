@@ -10,7 +10,6 @@ Le rimozioni e migrazioni completate sono registrate in `CUSTOMIZATIONS.md`.
 
 | Area | Oggi | Direzione |
 | --- | --- | --- |
-| Shader WebRender | Ricompilati a ogni avvio | Cache su disco dei program binary (`ProgramCache` di WebRender con un observer): meno tempo al primo frame e meno scatti |
 | WebGPU | Attivo per default (wgpu + naga, binario e thread in più) | Tenerlo: serve ai giochi. Valutare l'avvio pigro del thread |
 | `mach bundle` (`post_build_commands.py`, ~1,7k righe nostre) | Packaging scritto a mano | Valutare `cargo-packager` per msi/dmg/deb; tenere solo la logica Roves (contenuti, icone, Steam) |
 | Tastiera e gamepad | `code` dal crate `keycode`; `key` e gamepad mappati a mano | Restano come glue: usare il più possibile i tipi del crate `sdl3` |

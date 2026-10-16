@@ -186,6 +186,30 @@ test le misurano.
 | Tone.js | Web Audio, AudioWorklet | `AudioWorkletNode` assente |
 | howler.js | Web Audio, `<audio>`, `canPlayType` | Dalla v0.7.8 sono riconosciuti WAV, MP3, OGG Vorbis e Opus, WebM, AAC, MP4/M4A (`audio/x-m4a`) e FLAC. Prima Opus, AAC e MP4 risultavano "" per un errore di rilevamento dei codec |
 
+## Ulteriore audit CPU: trasporto dei campioni audio (16 ottobre 2026)
+
+Lettura del codice, non una misura di CPU: `components/media/audio/analyser_node.rs`
+clona e miscela il blocco di ingresso, poi invia un callback per ogni quantum di 128 campioni.
+`components/script/dom/audio/analysernode.rs` accoda per ogni callback un task DOM
+`append_analysis_block`, che aggiorna il ring buffer dell'analizzatore. Il percorso resta
+attivo anche senza chiamate JavaScript ai getter di analisi.
+
+A 44,1 kHz questo implica circa 345 callback/task al secondo per analizzatore; a 48 kHz,
+375. Sono frequenze ricavate dal codice, non campioni di profiling. RealFFT riduce il costo
+dello spettro ma non questo traffico. Con più analizzatori vanno misurati task, CPU del thread
+script e memoria delle code, separando analizzatori letti e non letti.
+
+Prima di cambiare il trasporto, valutare i canali bounded di `crossbeam-channel`, già presente,
+e un buffer audio mantenuto esternamente. Non aggiungere una coda scritta a mano. Una soluzione
+deve preservare gli ultimi 32768 campioni, ordine, downmix, silenzio, fftSize e smoothing,
+senza bloccare il thread audio. Non basta scartare blocchi o conservare solo l'ultimo:
+altererebbe lo spettro. Verificare anche backlog durante script occupato e distruzione del nodo.
+
+Priorità: misurare il costo con 0/1/più analizzatori prima di implementare il batching.
+Il tentativo di avviare la nuova prova locale è stato respinto dal controllo automatico con
+`blocked by policy`; non sono disponibili nuovi risultati CPU o confronti Chrome da questa
+sessione e il runtime non è stato modificato sulla base di questa sola ipotesi.
+
 ## Aperto
 
 - **RAM:** circa 850 MB già al menu. Serve una ripartizione tra heap JS

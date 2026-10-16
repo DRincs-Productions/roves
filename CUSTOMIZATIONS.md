@@ -1,3 +1,13 @@
+## 2026-10-16 - Audit analyser transport CPU costs
+
+Document the per-128-frame analyser callback and DOM-task path, distinguish code-derived
+task rates from measured CPU, and record requirements for evaluating bounded library-based
+transport without losing sample history or blocking audio. Add the measurement task to
+TODO, remove the completed shader-cache proposal from the library plan, and correct README's
+outdated statement that isolated WebGL getter measurements are missing. The local measurement
+launch was rejected by automatic policy review; no new performance result is claimed.
+Documentation only; no runtime patch or build is required.
+
 ## 2026-10-16 - Document Chrome DevTools MCP usage
 
 Add guidance in `AGENTS.md` to use Chrome DevTools MCP when available for browser diagnosis
